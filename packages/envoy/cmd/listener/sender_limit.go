@@ -263,12 +263,12 @@ type senderRefusal struct {
 	retryAfterSeconds int
 }
 
-// senderRateLimitedAnswer is the 429's body. Error is what the agent reads: each client shows
-// a refusal's error as it is written and sends nothing below 500 again
-// (packages/envoy-client/src/transport.ts), so the sentence alone tells the agent that its sending
-// is limited, that this message went nowhere, and when to send it again. Reason is the outcome the
-// request's log line records, and not apiauth.go's rate_limited, which refuses a broker token's
-// check rather than a session's sending.
+// senderRateLimitedAnswer is the 429's body. Error is what the agent reads: each client shows a
+// refusal's error as it is written and does not send the request again on a 429
+// (packages/envoy-client/src/transport.ts sends a request again only on a 5xx or a 408), so the
+// sentence alone tells the agent that its sending is limited, that this message went nowhere, and
+// when to send it again. Reason is the outcome the request's log line records, and not
+// apiauth.go's rate_limited, which refuses a broker token's check rather than a session's sending.
 type senderRateLimitedAnswer struct {
 	Error             string         `json:"error"`
 	Reason            requestOutcome `json:"reason"`

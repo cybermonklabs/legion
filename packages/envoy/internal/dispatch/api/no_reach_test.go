@@ -100,10 +100,10 @@ func onePersonRead(t *testing.T) {
 	}
 	// What a caller may hand it: the login the path names, and the page. A node kind, a filter
 	// or an edge to walk is what this route exists not to take.
-	shape, shaped := routeShapes[personNodesRoute]
-	if !shaped {
+	if !read.Shape.stated() {
 		t.Fatalf("%s declares no shape", personNodesRoute)
 	}
+	shape := read.Shape
 	keys := queryTagsOf(shape.Params)
 	sort.Strings(keys)
 	if want := []string{"limit", "offset"}; !slices.Equal(keys, want) {
@@ -652,6 +652,7 @@ func routeProbeQueries(owned crossProject) map[string]string {
 		"GET /api/v1/asks/open":            url.Values{"project": {"TEST"}}.Encode(),
 		"GET /api/v1/credential-requests":  url.Values{"approver": {"me"}}.Encode(),
 		"GET /api/v1/near-copy-checks":     url.Values{"project": {"TEST"}}.Encode(),
+		"GET /api/v1/deploys":              url.Values{"repo": {owned.deployRepo}}.Encode(),
 		// The session that opened the seeded ask (createIssueAsk writes it as sessionActor): its
 		// ask.opened event and its follow of the ask are records knownSessionsStatement counts.
 		"GET /api/v1/agents/known": url.Values{"id": {sessionActor()["id"].(string)}}.Encode(),
@@ -738,7 +739,8 @@ func seededProbePath(pattern string, owned crossProject) string {
 // undeclaredTraversal is the traversal one route is sent: every traversal word the route does
 // not declare as a query parameter of its own, each with a value a traversal would take.
 func undeclaredTraversal(route string) string {
-	declared := queryTagsOf(routeShapes[route].Params)
+	declaration, _ := declaredRoute(route)
+	declared := queryTagsOf(declaration.Shape.Params)
 	query := url.Values{}
 	for _, word := range traversalWords {
 		if !slices.Contains(declared, word) {
@@ -802,13 +804,17 @@ type crossProject struct {
 	architectureSource string
 	// nearCopyCheck is the id of the near-copy gate's record of one of the project's creates.
 	nearCopyCheck string
+	// deployRepo is the repository, owner/repo, of the one deploy seedTwoProjects records: the
+	// repository the read of deploys is sent, so that read answers a row.
+	deployRepo string
 }
 
 // seedTwoProjects writes one project with an issue, a document of the issue (design.md), a
 // comment, an ask, a message, a run of a step of the issue and a run of its retro, a project
 // document and a block of each document, an architecture source, and the Legion daemon it names
 // with a read of it; a second project with an issue, which the cross-project probe addresses them
-// under; and one priority, which belongs to neither project and is read at its own id. Under the
+// under; one priority, which belongs to neither project and is read at its own id; and one deploy
+// of a repository, which belongs to no project and is read by its repository. Under the
 // second project's key the probe sends each route the object of the first its path names
 // (crossProjectPath): design.md to a route of an issue document, the project document to a route
 // of a project document, the message to the message read, the run of a step to the step write,
@@ -881,6 +887,11 @@ func seedTwoProjects(t *testing.T, handler http.Handler, database *store.Store) 
 	// answers a row only for a priority the store holds: at a placeholder id it answers 404, and
 	// its traversal probe would read nothing.
 	owned.priority = createTestPriority(t, handler, map[string]any{"title": "A priority of the deployment"}, "alice").ID
+	// A deploy is written through its route, as a person writes one, because the read of a
+	// repository's deploys answers an empty list for a repository Dispatch holds none of, and its
+	// traversal probe would read nothing.
+	owned.deployRepo = "acme/widgets"
+	postDeploy(t, handler, map[string]any{"repo": owned.deployRepo, "program": "worker", "commit": headCommit}, http.StatusCreated)
 	// Every create records the near-copy gate's answer (issue_create.go, recordNearCopyCheck), so
 	// the project's own creates above left records; one of them is the row the read of a record
 	// by its id answers, which at a placeholder id answers 404 and reads nothing.

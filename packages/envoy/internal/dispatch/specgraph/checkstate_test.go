@@ -219,13 +219,13 @@ func TestCheckState(t *testing.T) {
 			c.Results = append(c.Results, checkRun("c2", OutcomePass, checkStateRun.Add(time.Hour)), missed)
 		}, want: CheckState{State: "unknown", Reason: "failing_example_missed"}},
 		{name: "v-state 17: no setting makes the failing example optional", change: func(c *checkCase) {
-			block, err := checkStateCheck.Print()
+			document, err := checkStateCheck.Print()
 			if err != nil {
 				c.t.Fatal(err)
 			}
-			optional := strings.Replace(block, ` job="go-checks"}`, ` job="go-checks" failing_example="optional"}`, 1)
-			if _, problems := Parse(map[string][]byte{"spec.md": []byte(optional)}); len(problems) == 0 || problems[0].Rule != "unknown-attribute" {
-				c.t.Errorf("Parse of a check that makes its failing example optional: %+v, want unknown-attribute", problems)
+			optional := document + "failing_example_optional: true\n"
+			if _, problems := Parse(map[string][]byte{"spec.yaml": []byte(optional)}); len(problems) != 1 || problems[0].Rule != "schema" {
+				c.t.Errorf("Parse of a check that makes its failing example optional: %+v, want one schema problem", problems)
 			}
 			c.Results = c.Results[:1]
 		}, want: CheckState{State: "unknown", Reason: "no_failing_example"}},
@@ -261,24 +261,24 @@ func TestCheckState(t *testing.T) {
 		// rule as the detail, whatever its results (TestNoTreeThatTheRulesRefuseReadsTrueOrMet).
 		{name: "the tree rules refuse a program check that names no job", change: func(c *checkCase) {
 			c.refuse(func(r *Check) { r.Test.Job = "" })
-		}, want: CheckState{State: "unknown", Reason: "refused", Detail: "no-job"}},
+		}, want: CheckState{State: "unknown", Reason: "refused", Detail: "schema"}},
 		{name: "the tree rules refuse a program check that names no test", change: func(c *checkCase) {
 			c.refuse(func(r *Check) { r.Test = nil })
-		}, want: CheckState{State: "unknown", Reason: "refused", Detail: "no-test"}},
+		}, want: CheckState{State: "unknown", Reason: "refused", Detail: "schema"}},
 		{name: "the tree rules refuse a check whose claim has no letter and no digit", change: func(c *checkCase) {
 			c.refuse(func(r *Check) { r.Claim = "-" })
 		}, want: CheckState{State: "unknown", Reason: "refused", Detail: "no-claim"}},
 		{name: "the tree rules refuse a check of a procedure that is not program, query or agent", change: func(c *checkCase) {
 			c.refuse(func(r *Check) { r.Procedure = "script" })
-		}, want: CheckState{State: "unknown", Reason: "refused", Detail: "bad-procedure"}},
+		}, want: CheckState{State: "unknown", Reason: "refused", Detail: "schema"}},
 		{name: "the tree rules refuse a check of a subject that is not code, production or graph", change: func(c *checkCase) {
 			c.refuse(func(r *Check) { r.Subject = "staging" })
-		}, want: CheckState{State: "unknown", Reason: "refused", Detail: "bad-subject"}},
+		}, want: CheckState{State: "unknown", Reason: "refused", Detail: "schema"}},
 		{name: "the tree rules refuse the file of the check for a problem of a term", change: func(c *checkCase) {
-			c.files["spec.md"] = append(c.files["spec.md"], Term{ID: "message", Name: "message", Definition: "-"})
+			c.files["spec.yaml"] = append(c.files["spec.yaml"], Term{ID: "message", Name: "message", Definition: "-"})
 		}, want: CheckState{State: "unknown", Reason: "refused", Detail: "bad-term"}},
 		{name: "the tree rules refuse a file that holds no check and no statement for a problem of a term", change: func(c *checkCase) {
-			c.files["terms.md"] = []specNode{Term{ID: "message", Name: "message", Definition: "-"}}
+			c.files["terms.yaml"] = []Node{Term{ID: "message", Name: "message", Definition: "-"}}
 		}, want: CheckState{State: "unknown", Reason: "refused", Detail: "bad-term"}},
 		{name: "v-state 18: a merge changes a file that the test reads", change: func(c *checkCase) {
 			c.commit("c2", "c1", "packages/envoy/cmd/listener/testdata/a.json")
@@ -318,7 +318,7 @@ func TestCheckState(t *testing.T) {
 			c.reapprove(checkStateRun.Add(2*time.Hour), changed)
 		}, want: CheckState{State: "unknown", Reason: "statement_changed", Detail: checkStateLeaf.ID}},
 		{name: "v-suspect 2: L moves to another file with the same text", change: func(c *checkCase) {
-			c.files = map[string][]specNode{"spec.md": {checkStateTop, checkStateCheck}, "restart.md": {checkStateLeaf}}
+			c.files = map[string][]Node{"spec.yaml": {checkStateTop, checkStateCheck}, "restart.yaml": {checkStateLeaf}}
 		}, want: CheckState{State: "true", Reason: "passed", From: "c1"}},
 		{name: "T's text, above L's, is approved again after the pass", change: func(c *checkCase) {
 			changed := checkStateTop
@@ -836,7 +836,7 @@ func TestDeriveChecksJudgesTheApprovedChecks(t *testing.T) {
 	t.Parallel()
 	s := newCheckCase(t)
 	s.add(checkStateGraph)
-	s.files["spec.md"] = append(s.files["spec.md"], checkStateProduction) // in the files, never approved
+	s.files["spec.yaml"] = append(s.files["spec.yaml"], checkStateProduction) // in the files, never approved
 	s.Subject = Point{Commit: "c1", Deploy: "d1", GraphTx: "tx1"}
 	earlier := checkStateCheck
 	earlier.Claim = "A message that the listener stores before a restart reaches its session."
@@ -854,10 +854,11 @@ func TestDeriveChecksJudgesTheApprovedChecks(t *testing.T) {
 
 // R9: "No setting makes the failing example optional", and a check "whose current text has no
 // failing example that failed when it should" reads unknown. The rules of the tree and the
-// derivation read a missing failing example by one rule: Validate refuses the check with
-// no-failing-example exactly when deriveChecks reads it unknown, no_failing_example, whatever its
-// results. Each row is the base of TestCheckState, a pass and a caught fault at c1, with the failing
-// example of C's text, in the files and in the approved spec, replaced by the row's text.
+// derivation read a missing failing example by one rule: the schema (an absent one) or Validate
+// (one of no letter and no digit) refuses the check exactly when deriveChecks reads it unknown,
+// no_failing_example, whatever its results. Each row is the base of TestCheckState, a pass and a
+// caught fault at c1, with the failing example of C's text, in the files and in the approved spec,
+// replaced by the row's text.
 func TestTheTreeAndTheDerivationReadOneMissingFailingExample(t *testing.T) {
 	t.Parallel()
 	for _, row := range []struct {
@@ -877,11 +878,12 @@ func TestTheTreeAndTheDerivationReadOneMissingFailingExample(t *testing.T) {
 			c := checkStateCheck
 			c.FailingExample = row.text
 			s.replace(c)
-			refused := slices.ContainsFunc(Validate(s.parse(), Options{}), func(p Problem) bool {
-				return p.Node == c.ID && p.Rule == "no-failing-example"
+			tree := s.parse()
+			refused := slices.ContainsFunc(append(schemaProblems(tree), Validate(tree, Options{})...), func(p Problem) bool {
+				return p.Node == c.ID && (p.Rule == "no-failing-example" || p.Rule == "schema" && strings.Contains(p.Detail, "failing_example"))
 			})
 			if refused != row.missing {
-				t.Errorf("Validate refuses the failing example %q with no-failing-example: %t, want %t", row.text, refused, row.missing)
+				t.Errorf("the rules refuse the failing example %q (no-failing-example, or the schema for no failing example): %t, want %t", row.text, refused, row.missing)
 			}
 			want := CheckState{ID: c.ID, State: "true", Reason: "passed", From: "c1"}
 			if row.missing {

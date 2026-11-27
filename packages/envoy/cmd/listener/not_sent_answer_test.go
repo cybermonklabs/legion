@@ -29,6 +29,7 @@ import (
 // bus_unavailable outcome, and says nothing of a message not sent. It fails a classification that
 // looks at bus.ErrSubjectNotDeployed alone.
 func TestARefusalBeforeAnythingWasSentSaysTheMessageWasNotSent(t *testing.T) {
+	t.Parallel()
 	topic := contracts.LegacyAgentSubject("ses_not_sent_target")
 	// As internal/bus's subjectNotDeployed names it: the sentinel, the stream and the topic.
 	notDeployed := fmt.Errorf("%w (stream %s, topic %s)", bus.ErrSubjectNotDeployed, bus.Stream, topic)

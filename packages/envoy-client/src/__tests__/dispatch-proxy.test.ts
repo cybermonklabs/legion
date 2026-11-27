@@ -2389,6 +2389,7 @@ const COMMAND_OF: Partial<Record<ClientMethod, string>> = {
   recordResult: "result",
   dryRunResult: "result",
   retractResult: "result",
+  recordDeploy: "deploy",
   writeHandoff: "handoff-write",
   createProject: "project",
   turnOnProvenSessions: "project-update",

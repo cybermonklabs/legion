@@ -19,7 +19,7 @@ GATE = gate("docs", "docs", runs=[
     ("docs/site/**", f"{at_docs('Typecheck the docs site')}, screenshots (docs/site/media/shots.ts) and build (generate.ts + astro build) in docs/site"),
     ("packages/dispatch/**", f"{at_docs('Build the Dispatch dashboard the screenshots show')}; `docs/site/media/harness.ts#startHarness` boots packages/dispatch/e2e/harness-start.ts"),
     ("packages/proof-editor/src/**", "`packages/dispatch/web/vite.config.ts#@legion/proof-editor` aliases (build:web)"),
-    (CONTRACTS_SRC, '`packages/dispatch/web/vite.config.ts#"@legion/contracts/dispatch-snippet"`, `packages/dispatch/web/vite.config.ts#"@legion/contracts/dispatch-tools"` and `packages/dispatch/web/vite.config.ts#"@legion/contracts"` aliases; `docs/site/generators/dispatch-tools.ts#dispatchToolSpecs`'),
+    (CONTRACTS_SRC, '`packages/dispatch/web/vite.config.ts#"@legion/contracts/dispatch-snippet"`, `packages/dispatch/web/vite.config.ts#"@legion/contracts/dispatch-tools"`, `packages/dispatch/web/vite.config.ts#"@legion/contracts/http-status"` and `packages/dispatch/web/vite.config.ts#"@legion/contracts"` aliases; `docs/site/generators/dispatch-tools.ts#dispatchToolSpecs`'),
     # This gate is the one reader of envoy-client's sources that does not compile
     # cipher-client with them: every generator entry resolves to src/dispatch-command.ts,
     # whose program holds no cipher-client source (`bunx tsc --listFilesOnly`, 0 of 7), so
@@ -31,7 +31,6 @@ GATE = gate("docs", "docs", runs=[
     (".github/scripts/check-private-names.sh", at("private-names", "Check the built site has no private name, internal host, tailnet host, or term of the deployment's own list", DOCS_SITE)),
     (".github/scripts/repo-paths.sh", "`docs/site/repo-paths.ts#script` and `docs/site/repo-paths.ts#execFileSync` runs it for the site's own URL, base and edit links "
                                       f"(astro.config.mjs), read by {at_docs('Build the docs site')}"),
-    (f"{ENVOY}/internal/dispatch/api/routes_table.go", "docs/site/generators/dispatch-api.ts's page sources it, checked by generators/lib/markdown.ts's writePage"),
     (f"{ENVOY}/cmd/dispatch/settings.go", "docs/site/generators/dispatch-config.ts's page sources it, checked by generators/lib/markdown.ts's writePage"),
     (f"{DAEMON}/internal/config/keytable.go", "docs/site/generators/legion-config.ts's page sources it, checked by generators/lib/markdown.ts's writePage"),
     (BUILD_BINARIES, f"`docs/site/scripts/generate.ts#scripts/build-binaries.sh` runs it ({at_docs('Build the docs site')})"),

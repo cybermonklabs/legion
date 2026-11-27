@@ -38,6 +38,8 @@ import (
 // freeze on the same rig: each answers 200, or the 404 the bucket's word that the key is absent
 // earns.
 func TestTheInterestReadRoutesAnswerABusThatStoppedAnsweringInsideTheBudget(t *testing.T) {
+	// Not parallel: it requires GET /v1/interests/<id> on a silent bus to answer inside 4 s, and
+	// that read waits out sendRequestBudget (3.5 s).
 	const (
 		missed = "ses_interest_routes_subscribed_to_nothing"
 		cached = "ses_interest_routes_cached_interest"

@@ -1,0 +1,9 @@
+kind: Fixed
+body: |-
+  A NATS credential keeper (`keepNatsCredential`) that is stopped while a renewal is in flight
+  warns of nothing when that renewal fails after the stop, and renews nothing more. Before this,
+  the failure was warned of, and pi-envoy showed the warning in the pane of a session whose stop
+  had begun.
+time: 2026-11-21T21:11:02Z
+custom:
+    Issue: pr4194

@@ -4,13 +4,16 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/sjawhar/envoy/steprecord"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
@@ -18,6 +21,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
@@ -114,15 +118,17 @@ func TestRegisterPlanTakesAPlanAndRefusesWithReasons(t *testing.T) {
 	refusedSaying(t, registerPlan(h, architect.grant(t), "LEGION-208", planDoc, 10), http.StatusConflict, "VERSION_NOT_IN_DISPATCH",
 		"Dispatch shows "+planDoc+" at version 9, not 10; give register_plan a version that Dispatch has")
 	twoTasks := PlanReason{Reason: "the plan has 2 tasks (a, b), and this release runs one task for each issue. This release of Legion does not carry it out yet."}
-	assertPlanRefused(t, registerPlan(h, architect.grant(t), "LEGION-208", planDoc, 1), twoTasks)
+	twoSinks := PlanReason{Reason: "the plan has 2 tasks that no task needs (a, b), and the work of each would merge by itself. This release of Legion does not carry it out yet."}
+	assertPlanRefused(t, registerPlan(h, architect.grant(t), "LEGION-208", planDoc, 1), twoTasks, twoSinks)
 	assertPlanRefused(t, registerPlan(h, architect.grant(t), "LEGION-208", planDoc, 2),
 		PlanReason{Task: "a", Reason: "step 2 of task a names the role prober, which neither the deployment nor the plan defines."})
-	assertPlanRefused(t, registerPlan(h, architect.grant(t), "LEGION-208", planDoc, 3), twoTasks,
+	assertPlanRefused(t, registerPlan(h, architect.grant(t), "LEGION-208", planDoc, 3), twoTasks, twoSinks,
 		PlanReason{Task: "b", Reason: "step 2 of task b names the role prober, which neither the deployment nor the plan defines."})
 	// A version that keeps the task of the default steps and adds a second is a plan of two tasks
 	// like any other: the route refuses it, so the workflow never takes it.
 	assertPlanRefused(t, registerPlan(h, architect.grant(t), "LEGION-208", planDoc, 6),
-		PlanReason{Reason: "the plan has 2 tasks (default, a), and this release runs one task for each issue. This release of Legion does not carry it out yet."})
+		PlanReason{Reason: "the plan has 2 tasks (default, a), and this release runs one task for each issue. This release of Legion does not carry it out yet."},
+		PlanReason{Reason: "the plan has 2 tasks that no task needs (a, default), and the work of each would merge by itself. This release of Legion does not carry it out yet."})
 	if got := facts.recorded(); len(got) != 0 {
 		t.Fatalf("refused registrations recorded %#v, want nothing", got)
 	}
@@ -194,6 +200,264 @@ func TestRegisterPlanAnswersADocumentItCannotRead(t *testing.T) {
 		"Dispatch read of "+planDoc+" at version 1 failed; retry register_plan")
 	if got := facts.recorded(); len(got) != 0 {
 		t.Fatalf("unreadable documents recorded %#v, want nothing", got)
+	}
+}
+
+// needing is block with `needs` writing the words needs.
+func needing(block dispatch.DocumentBlock, needs string) dispatch.DocumentBlock {
+	block.Attributes["needs"] = needs
+	return block
+}
+
+// register_plan reads each need as the task it names (plan.FromBlocks) before either check, so
+// the reasons name the task a reference names, a task a reference names is needed (b alone ends
+// the first plan), and a word that names no task gets the reason no release lifts rather than the reason of a
+// need this release does not carry out yet; the plan recorded is the one both checks read. The
+// fault is a route that checks, and records, the words as the blocks write them; the control is
+// a FromBlocks that keeps each word whole, which answers `task b needs dispatch://LEGION-208/artifact/plan-md#b-a.`
+// and `task b needs x.`, each as not carried out yet, and a and b as two tasks that no task needs.
+func TestRegisterPlanReadsEachNeedAsTheTaskItNames(t *testing.T) {
+	h, facts, statuses := planHarness(t)
+	architect := newLiveClaim(t, h, "LEGION-208", claim.RoleArchitect)
+	statuses.givePlan(planDoc, 1, taskBlock("a", "implementer reviewer"),
+		needing(taskBlock("b", "implementer reviewer"), "dispatch://LEGION-208/artifact/plan-md#b-a"))
+	statuses.givePlan(planDoc, 2, taskBlock("a", "implementer reviewer"), needing(taskBlock("b", "implementer reviewer"), "x"))
+
+	twoTasks := PlanReason{Reason: "the plan has 2 tasks (a, b), and this release runs one task for each issue. This release of Legion does not carry it out yet."}
+	assertPlanRefused(t, registerPlan(h, architect.grant(t), "LEGION-208", planDoc, 1), twoTasks,
+		PlanReason{Task: "b", Reason: "task b needs a. This release of Legion does not carry it out yet."})
+	assertPlanRefused(t, registerPlan(h, architect.grant(t), "LEGION-208", planDoc, 2), twoTasks,
+		PlanReason{Reason: "the plan has 2 tasks that no task needs (a, b), and the work of each would merge by itself. This release of Legion does not carry it out yet."},
+		PlanReason{Task: "b", Reason: "task b needs x, which names no task of this plan."})
+	if got := facts.recorded(); len(got) != 0 {
+		t.Fatalf("refused registrations recorded %#v, want nothing", got)
+	}
+}
+
+// A plan whose tasks need each other in a cycle is refused, and among its reasons is the cycle's,
+// which names the chain, whatever reasons of this release's come before it. The fault is a cycle
+// answered only as needs this release does not carry out yet; the control is Validate without its
+// check of cycles, whose answer holds no reason naming the chain.
+func TestRegisterPlanRefusesACycleOfNeedsNamingIt(t *testing.T) {
+	h, facts, statuses := planHarness(t)
+	architect := newLiveClaim(t, h, "LEGION-208", claim.RoleArchitect)
+	statuses.givePlan(planDoc, 1, needing(taskBlock("a", "implementer reviewer"), "dispatch://LEGION-208/artifact/plan-md#b-b"),
+		needing(taskBlock("b", "implementer reviewer"), "dispatch://LEGION-208/artifact/plan-md#b-a"))
+
+	answer := registerPlan(h, architect.grant(t), "LEGION-208", planDoc, 1)
+	if answer.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409; body %s", answer.Code, answer.Body)
+	}
+	var refusal PlanRefusal
+	decodeInto(t, answer, &refusal)
+	cycle := PlanReason{Task: "a", Reason: "task a needs itself: a needs b, b needs a."}
+	if refusal.Code != "PLAN_REFUSED" || !slices.Contains(refusal.Reasons, cycle) || !strings.Contains(refusal.Error, cycle.Reason) {
+		t.Fatalf("refusal = %+v, want PLAN_REFUSED holding the reason %+v", refusal, cycle)
+	}
+	if got := facts.recorded(); len(got) != 0 {
+		t.Fatalf("a refused registration recorded %#v, want nothing", got)
+	}
+}
+
+// A refused plan's answer has a bound in bytes, whatever the plan holds. It names the first
+// plan.MostReasons reasons of each kind of cause and counts the rest of the kind in one more; a
+// task id is at most steprecord.TaskIDMax, since a longer one is refused by one reason of its own;
+// each other word of the plan a reason quotes is cut to plan.MostQuotedBytes and marked; and a
+// reason lists at most plan.MostReasons task ids. Three versions below are one `plan_task` block
+// whose one attribute holds 1 MiB of words, the most a Dispatch document holds as its server
+// writes it, each word a cause of its own: 262,144 `needs` words that name no task, 209,712 roles
+// nobody defines, and 116,508 steps `tester:k`, each with a key and with no implementer before
+// it. Each answer is within perKind bytes for each kind it holds, and counts the rest of each kind
+// past the bound, in its sentence too. Three more quote or list long values, each within
+// perLongKind for each kind, a bound computed from those constants: a ring of 40,000 tasks, whose
+// reasons list the plan's tasks and the cycle through them; a task whose id is 900 KB; and a task
+// whose one need is a word of 1 MiB, each of the last two quoted with its mark. The faults are an
+// answer with a reason for each cause and one that quotes or lists a value whole; the controls
+// take out plan's bound of the reasons, under which the three versions are answered in 34, 44 and
+// 66 MB and the ring in 9.6 MB, and quoted's cut with listed's and chainOf's, under which the
+// ring, the long id and the long need are answered whole. It holds the counts and the size, and no
+// sentence.
+func TestRegisterPlanAnswersAPlanOfManyCausesWithinABound(t *testing.T) {
+	// perKind is plan.MostReasons reasons of one kind and its count, each written twice (in
+	// `error` and in `reasons`) at under 200 bytes with its JSON.
+	const perKind = (plan.MostReasons + 1) * 2 * 200
+	// longReason is the longest reason: its sentence, under 300 bytes, and a list of
+	// plan.MostReasons pairs of task ids, `<id> needs <id>, ` (a cycle's chain), which is longer
+	// than a word cut to plan.MostQuotedBytes with its mark. perLongKind is plan.MostReasons such
+	// reasons and a count, each written twice with its task id and its JSON.
+	const longReason = 300 + plan.MostReasons*(2*steprecord.TaskIDMax+len(" needs , "))
+	const perLongKind = (plan.MostReasons + 1) * (2*longReason + steprecord.TaskIDMax + 50)
+	const mib = 1 << 20
+	// digits is i written in n digits of the base len(alphabet), the first digit the largest.
+	digits := func(i int, alphabet string, n int) string {
+		word := make([]byte, n)
+		for at := n - 1; at >= 0; at-- {
+			word[at] = alphabet[i%len(alphabet)]
+			i /= len(alphabet)
+		}
+		return string(word)
+	}
+	// Each three-character word over 64 characters, each a need that names no task.
+	words := make([]string, 64*64*64)
+	for i := range words {
+		words[i] = digits(i, "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ-_", 3)
+	}
+	// The implementer, then roles of four characters, a letter and three of [a-z0-9-], each once.
+	const letters, rest = "abcdefghijklmnopqrstuvwxyz", "abcdefghijklmnopqrstuvwxyz0123456789-"
+	roles := []string{"implementer"}
+	for i := range (mib - len("implementer ")) / len("abcd ") {
+		roles = append(roles, string(letters[i/(37*37*37)])+digits(i, rest, 3))
+	}
+	steps := mib / len("tester:k ")
+	keyed := strings.TrimSuffix(strings.Repeat("tester:k ", steps), " ")
+	// The ring: t00000 to t39999, each needing the next and the last the first.
+	const ringSize = 40_000
+	ring := make([]dispatch.DocumentBlock, ringSize)
+	for i := range ring {
+		ring[i] = needing(taskBlock(fmt.Sprintf("t%05d", i), "implementer reviewer"), fmt.Sprintf("t%05d", (i+1)%ringSize))
+	}
+	longID := strings.Repeat("a", 900<<10)
+	longNeed := strings.Repeat("x", mib)
+	for _, tc := range []struct {
+		name    string
+		blocks  []dispatch.DocumentBlock
+		bound   int
+		reasons int    // the reasons the answer holds
+		counts  []int  // what the reasons that count the rest of a kind count
+		cut     string // the mark of a value quoted in part, which the sentence holds
+	}{
+		{"262,144 needs words that name no task", []dispatch.DocumentBlock{needing(taskBlock("a", "implementer reviewer"), strings.Join(words, " "))},
+			perKind, plan.MostReasons + 1, []int{len(words) - plan.MostReasons}, ""},
+		{"209,712 roles nobody defines", []dispatch.DocumentBlock{taskBlock("a", strings.Join(roles, " "))},
+			perKind, plan.MostReasons + 1, []int{len(roles) - 1 - plan.MostReasons}, ""},
+		// Four kinds: a key at each step, the role tester at two steps, no implementer, and no
+		// implementer before each step.
+		{"116,508 steps tester:k", []dispatch.DocumentBlock{taskBlock("a", keyed)},
+			4 * perKind, 2*(plan.MostReasons+1) + 2, []int{steps - plan.MostReasons, steps - plan.MostReasons}, ""},
+		// Three kinds: the plan's tasks, the need of each task, and the one cycle.
+		{"a ring of 40,000 tasks", ring, 3 * perLongKind, 1 + plan.MostReasons + 1 + 1, []int{ringSize - plan.MostReasons}, ""},
+		// The id alone is refused; with steps that each name it, a whole id gave tens of MB.
+		{"a task whose id is 900 KB", []dispatch.DocumentBlock{taskBlock(longID, "tester:k tester:k")},
+			perLongKind, 1, nil, fmt.Sprintf("… (cut from %d bytes)", len(longID))},
+		{"a task whose one need is a word of 1 MiB", []dispatch.DocumentBlock{needing(taskBlock("a", "implementer reviewer"), longNeed)},
+			perLongKind, 1, nil, fmt.Sprintf("… (cut from %d bytes)", len(longNeed))},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h, facts, statuses := planHarness(t)
+			architect := newLiveClaim(t, h, "LEGION-208", claim.RoleArchitect)
+			statuses.givePlan(planDoc, 1, tc.blocks...)
+
+			answer := registerPlan(h, architect.grant(t), "LEGION-208", planDoc, 1)
+			size := answer.Body.Len()
+			t.Logf("%s: answered %d in %d bytes, the bound %d", tc.name, answer.Code, size, tc.bound)
+			if answer.Code != http.StatusConflict || size > tc.bound {
+				t.Fatalf("%s is answered %d in %d bytes, want 409 in at most %d", tc.name, answer.Code, size, tc.bound)
+			}
+			var refusal PlanRefusal
+			decodeInto(t, answer, &refusal)
+			if refusal.Code != "PLAN_REFUSED" || len(refusal.Reasons) != tc.reasons {
+				t.Fatalf("refusal %s of %d reasons, want PLAN_REFUSED of %d", refusal.Code, len(refusal.Reasons), tc.reasons)
+			}
+			if !strings.Contains(refusal.Error, tc.cut) {
+				t.Errorf("the sentence holds no mark %q of a value quoted in part: %.3000s", tc.cut, refusal.Error)
+			}
+			for _, left := range tc.counts {
+				count := fmt.Sprintf(" %d ", left)
+				if !strings.Contains(refusal.Error, count) || !slices.ContainsFunc(refusal.Reasons, func(reason PlanReason) bool {
+					return reason.Task == "" && strings.Contains(reason.Reason, count)
+				}) {
+					t.Errorf("no reason of the whole plan counts %d more, in `reasons` and in the sentence: %.3000s", left, refusal.Error)
+				}
+			}
+			if got := facts.recorded(); len(got) != 0 {
+				t.Fatalf("a refused registration recorded %#v, want nothing", got)
+			}
+		})
+	}
+}
+
+// plantedUser is the user name a planted URL carries as its userinfo, 300 bytes, written as the
+// redact package's tests write theirs: a user name with no password, which a secret scanner takes
+// for no credential, and which redact.URLCredentials removes as it removes a password or a token.
+// plantedURL carries it, and redactedURL is what the URL rule (redact.URLCredentials) leaves of
+// plantedURL, read from the rule and never written out here, so that a rule that removes the
+// userinfo and one that writes a mark in place of the whole authority both leave the test true;
+// it is still past plan.MostQuotedBytes, so a reason quotes it cut.
+var (
+	plantedUser = strings.Repeat("planted-reader-", 20)
+	plantedURL  = "https://" + plantedUser + "@h.example/" + strings.Repeat("p", 200)
+	redactedURL = redact.URLCredentials(plantedURL)
+)
+
+// credentialIn is the first run of six bytes of plantedUser that text holds, and "" where it holds
+// none.
+func credentialIn(text string) string {
+	for at := 0; at+6 <= len(plantedUser); at++ {
+		if part := plantedUser[at : at+6]; strings.Contains(text, part) {
+			return part
+		}
+	}
+	return ""
+}
+
+// register_plan's answer to a plan whose words carry a URL with a credential holds no byte of the
+// credential, in its `error` and in each of its `reasons`, however long the word: the plan
+// package reads each word it quotes whole through the URL rule before it cuts it, so the route's
+// own redaction of `error` has nothing left to find, and `reasons`, which the route writes as they
+// came, holds what the rule left. A need, a step whose role is the URL, a step whose key is the
+// URL, a task block's id, a role block's id and one id on two blocks each carry plantedURL. Each
+// answer quotes redactedURL cut and marked, in a reason of the task named and in the sentence, and
+// holds no run of six bytes of plantedUser. The fault is a cut made before the rule, which ends
+// inside the userinfo, before its "@", so the route's redaction of `error` finds no userinfo and
+// `reasons` are never redacted; the control is the plan package's quoted cutting first, under
+// which each answer keeps 120 bytes of plantedUser in both.
+func TestRegisterPlanQuotesNoByteOfAURLsCredential(t *testing.T) {
+	cut := func(word string) string {
+		return fmt.Sprintf("%s… (cut from %d bytes)", word[:plan.MostQuotedBytes], len(word))
+	}
+	quote := cut(redactedURL)
+	roleBlock := dispatch.DocumentBlock{ID: plantedURL, Type: plan.RoleBlockType, Attributes: map[string]string{}}
+	for _, tc := range []struct {
+		name   string
+		blocks []dispatch.DocumentBlock
+		task   string // the task of the reason that quotes the word
+		quote  string
+	}{
+		{"a need", []dispatch.DocumentBlock{needing(taskBlock("a", "implementer reviewer"), plantedURL)}, "a", quote},
+		{"a step whose role is the URL", []dispatch.DocumentBlock{taskBlock("a", plantedURL)}, "", quote},
+		{"a step whose key is the URL", []dispatch.DocumentBlock{taskBlock("a", "implementer reviewer:"+plantedURL)}, "", cut("reviewer:" + redactedURL)},
+		{"a task block's id", []dispatch.DocumentBlock{taskBlock(plantedURL, "implementer reviewer")}, "", quote},
+		{"a role block's id", []dispatch.DocumentBlock{roleBlock, taskBlock("a", "implementer reviewer")}, "", quote},
+		{"one id on two blocks", []dispatch.DocumentBlock{roleBlock, taskBlock(plantedURL, "implementer reviewer")}, "", quote},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h, facts, statuses := planHarness(t)
+			architect := newLiveClaim(t, h, "LEGION-208", claim.RoleArchitect)
+			statuses.givePlan(planDoc, 1, tc.blocks...)
+
+			answer := registerPlan(h, architect.grant(t), "LEGION-208", planDoc, 1)
+			if answer.Code != http.StatusConflict {
+				t.Fatalf("status = %d, want 409; body %.2000s", answer.Code, answer.Body)
+			}
+			var refusal PlanRefusal
+			decodeInto(t, answer, &refusal)
+			if refusal.Code != "PLAN_REFUSED" || !strings.Contains(refusal.Error, tc.quote) || !slices.ContainsFunc(refusal.Reasons, func(reason PlanReason) bool {
+				return reason.Task == tc.task && strings.Contains(reason.Reason, tc.quote)
+			}) {
+				t.Fatalf("refusal %.3000v, want PLAN_REFUSED quoting %.300q in its sentence and in a reason of task %q", refusal, tc.quote, tc.task)
+			}
+			if part := credentialIn(refusal.Error); part != "" {
+				t.Errorf("`error` %.2000q holds %q of the URL's credential", refusal.Error, part)
+			}
+			for _, reason := range refusal.Reasons {
+				if part := credentialIn(reason.Reason); part != "" {
+					t.Errorf("the reason %.2000q holds %q of the URL's credential", reason.Reason, part)
+				}
+			}
+			if got := facts.recorded(); len(got) != 0 {
+				t.Fatalf("a refused registration recorded %#v, want nothing", got)
+			}
+		})
 	}
 }
 

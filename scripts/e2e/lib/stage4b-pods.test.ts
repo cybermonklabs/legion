@@ -320,6 +320,29 @@ describe("the pod shape's --connect rule", () => {
       'pod containers ["architect"], want only ["roles"]'
     );
   });
+
+  // The earlier layout ran workspace-fetch before workspace-init. A check that only asks for a
+  // workspace-init passes that layout, and one that asks only that no init container be another
+  // passes a pod with none, so each departs here and the golden pod stays quiet.
+  test("a pod whose init containers are not workspace-init alone departs, naming them", () => {
+    const withInits = (names: string[]) => {
+      const object = pod();
+      const [init] = object.spec.initContainers as Container[];
+      object.spec.initContainers = names.map((name) => ({ ...init, name }));
+      return object;
+    };
+    const initLines = (object: object) =>
+      shapeProblemLines(object).filter((line) => line.startsWith("pod init containers"));
+    expect(initLines(pod())).toEqual([]);
+    for (const names of [["workspace-fetch", "workspace-init"], ["workspace-fetch"], []]) {
+      expect(initLines(withInits(names)), JSON.stringify(names)).toEqual([
+        `pod init containers ${JSON.stringify(names)}, want only ["workspace-init"]`,
+      ]);
+    }
+    const without = pod();
+    delete without.spec.initContainers;
+    expect(initLines(without)).toEqual(['pod init containers [], want only ["workspace-init"]']);
+  });
 });
 
 // ghProblems is shape_problems' gh credential lines alone (LEGION-631): each role's gh-<role>
@@ -435,7 +458,7 @@ describe("the pod shape's reservation rule", () => {
     const departs = (name: string) =>
       `container ${name} reserves cpu 2, memory 8Gi, ephemeral-storage 6Gi of 80Gi, not the run's cpu 2950m, memory 16Gi, ephemeral-storage 6Gi of 80Gi for the issue pod`;
     expect(reservationProblems(pod(), { resources: overrides })).toEqual(
-      ["workspace-fetch", "workspace-init", "roles"].map(departs)
+      ["workspace-init", "roles"].map(departs)
     );
     const overridden = pod();
     for (const container of [
@@ -501,9 +524,9 @@ describe("the pod shape's reservation rule", () => {
     ]);
   });
 
-  test("an init container carries the issue pod's one reservation, whichever launch created the pod", () => {
-    expect(reservationProblems(reserving("workspace-fetch", reservation("1", "1Gi")))).toEqual([
-      "container workspace-fetch reserves cpu 1, memory 1Gi, ephemeral-storage 6Gi of 80Gi, not the run's cpu 2, memory 8Gi, ephemeral-storage 6Gi of 80Gi for the issue pod",
+  test("workspace-init carries the issue pod's one reservation, whichever launch created the pod", () => {
+    expect(reservationProblems(reserving("workspace-init", reservation("1", "1Gi")))).toEqual([
+      "container workspace-init reserves cpu 1, memory 1Gi, ephemeral-storage 6Gi of 80Gi, not the run's cpu 2, memory 8Gi, ephemeral-storage 6Gi of 80Gi for the issue pod",
     ]);
   });
 
@@ -517,7 +540,7 @@ describe("the pod shape's reservation rule", () => {
       },
     };
     expect(reservationProblems(pinned)).toEqual([
-      'affinity {"podAffinity":{"requiredDuringSchedulingIgnoredDuringExecution":[{"topologyKey":"kubernetes.io/hostname"}]}}: a Legion pod asks nothing of its placement beyond the pool',
+      'affinity {"podAffinity":{"requiredDuringSchedulingIgnoredDuringExecution":[{"topologyKey":"kubernetes.io/hostname"}]}}: a Legion pod asks nothing of its placement beyond the operator\'s scheduling',
     ]);
   });
 

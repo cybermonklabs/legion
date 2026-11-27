@@ -3,41 +3,49 @@ package dispatch
 import (
 	"encoding/json"
 	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/claim"
 )
 
 // The JSON forms of Dispatch's answers and of the daemon's request bodies, which HTTPClient
 // decodes and encodes (client.go) and hands to its callers only as the package's own types.
 
 type issueSummaryResponse struct {
-	Key          string         `json:"key"`
-	Title        string         `json:"title"`
-	Status       string         `json:"status"`
-	Parent       *string        `json:"parent"`
-	Rank         string         `json:"rank"`
-	Priority     *int           `json:"priority"`
-	Labels       []string       `json:"labels"`
-	LastSeq      int64          `json:"last_seq"`
-	ResolvedRepo *string        `json:"resolved_repo"`
-	BlockedBy    []string       `json:"blocked_by"`
-	Claim        *claimResponse `json:"claim"`
+	Key      string  `json:"key"`
+	Title    string  `json:"title"`
+	Status   string  `json:"status"`
+	Parent   *string `json:"parent"`
+	Rank     string  `json:"rank"`
+	Priority *int    `json:"priority"`
+	// ResolvedPriority is raw so that an absent field, a Dispatch release that resolves no
+	// priority, reads apart from a present null (resolvedPriority).
+	ResolvedPriority json.RawMessage `json:"resolved_priority"`
+	PriorityFrom     *string         `json:"priority_from"`
+	Labels           []string        `json:"labels"`
+	LastSeq          int64           `json:"last_seq"`
+	ResolvedRepo     *string         `json:"resolved_repo"`
+	BlockedBy        []string        `json:"blocked_by"`
+	Claim            *claimResponse  `json:"claim"`
 }
 
 type issueResponse struct {
-	Key                    string         `json:"key"`
-	Project                string         `json:"project"`
-	Title                  string         `json:"title"`
-	Status                 string         `json:"status"`
-	Parent                 *string        `json:"parent"`
-	Rank                   string         `json:"rank"`
-	Priority               *int           `json:"priority"`
-	Labels                 []string       `json:"labels"`
-	PrimaryArtifactID      string         `json:"primary_artifact_id"`
-	VerificationArtifactID string         `json:"verification_artifact_id"`
-	DecisionsArtifactID    string         `json:"decisions_artifact_id"`
-	LastSeq                int64          `json:"last_seq"`
-	ResolvedRepo           *string        `json:"resolved_repo"`
-	BlockedBy              []string       `json:"blocked_by"`
-	Claim                  *claimResponse `json:"claim"`
+	Key                    string          `json:"key"`
+	Project                string          `json:"project"`
+	Title                  string          `json:"title"`
+	Status                 string          `json:"status"`
+	Parent                 *string         `json:"parent"`
+	Rank                   string          `json:"rank"`
+	Priority               *int            `json:"priority"`
+	ResolvedPriority       json.RawMessage `json:"resolved_priority"`
+	PriorityFrom           *string         `json:"priority_from"`
+	Labels                 []string        `json:"labels"`
+	PrimaryArtifactID      string          `json:"primary_artifact_id"`
+	VerificationArtifactID string          `json:"verification_artifact_id"`
+	DecisionsArtifactID    string          `json:"decisions_artifact_id"`
+	LastSeq                int64           `json:"last_seq"`
+	ResolvedRepo           *string         `json:"resolved_repo"`
+	BlockedBy              []string        `json:"blocked_by"`
+	Claim                  *claimResponse  `json:"claim"`
 }
 
 // issue is the response as Issue: Dispatch's issue detail, and the issue its PATCH answers with.
@@ -50,6 +58,7 @@ func (r issueResponse) issue() Issue {
 		Parent:                 r.Parent,
 		Rank:                   r.Rank,
 		Priority:               r.Priority,
+		Resolved:               resolvedPriority(r.ResolvedPriority, r.PriorityFrom),
 		Labels:                 r.Labels,
 		HandedOver:             CarriesLegionLabel(r.Labels),
 		PrimaryArtifactID:      r.PrimaryArtifactID,
@@ -61,6 +70,27 @@ func (r issueResponse) issue() Issue {
 		Claim:                  r.Claim.claim(),
 		ClaimUnread:            r.Claim.unread(),
 	}
+}
+
+// resolvedPriority is a read's `resolved_priority` and `priority_from`: nil where the read carries no
+// `resolved_priority`, and else its level, nil for a present null, and the issue it comes from. A
+// value that is no integer at all reads as a present null: Dispatch writes none, and the issue's own
+// fields are still read. A `priority_from` that is no issue key reads as none, as null and empty do:
+// the state serves it as `priorityFrom`, which its readers take for an issue key (the plugin's
+// schema refuses the whole state for one that is not), and these reads have no channel to name it
+// on, as they have none for the level that is no integer.
+func resolvedPriority(raw json.RawMessage, from *string) *ResolvedPriority {
+	if raw == nil {
+		return nil
+	}
+	resolved := &ResolvedPriority{}
+	if key := deref(from); claim.IsIssueKey(key) {
+		resolved.From = key
+	}
+	if err := json.Unmarshal(raw, &resolved.Priority); err != nil {
+		resolved.Priority = nil
+	}
+	return resolved
 }
 
 // claimResponse is an issue's claim as Dispatch's issue reads serve it (null for none).

@@ -1,18 +1,11 @@
 kind: Fixed
 body: |-
-  An issue pod holds its repository once. `workspace-init` now clones the feed with
-  `git clone --shared`, so the clone's `.git/objects/info/alternates` names the feed's objects on
-  the read-only `/legion/feed` path every container that runs git or jj mounts, and the clone's own
-  objects hold only what it writes. Before, the local clone copied every feed object, since a hard
-  link cannot cross the pod's two mounts of its disk, and a 19 GiB feed and its copy filled a
-  50 GiB issue volume. Because a clone now borrows the feed's objects, `workspace-fetch` never
-  removes or replaces a feed it finds present: a feed in a shape it does not write (a symlink, a
-  hook, a configuration key, grafts or alternates of anyone else's) fails the fetch, which names
-  why and keeps the feed, and the pod dies as at any `workspace-fetch` failure; before, the fetch
-  removed such a feed and filled it afresh. The repository cache's own fetch, whose clone no clone
-  borrows from (a pod takes a tar of it), still removes a clone it did not write and fills it
-  afresh. This reverses the release that moved clones off alternates after a feed replaced under a
-  borrowing clone left it without history.
+  An issue pod holds its repository once. Its one init container, `workspace-init` running
+  `legion workspace-init provision`, fills the issue's clone directly from the repository cache and
+  GitHub, so the issue volume holds no second copy of the repository beside the clone. Before, a pod
+  kept a copy of the repository on the issue volume beside a clone of it, and a 19 GiB repository
+  and its copy filled a 50 GiB issue volume. The repository cache's own fetch still removes a clone
+  it did not write and fills it afresh.
 time: 2026-11-24T13:15:02Z
 custom:
     Issue: pr5385

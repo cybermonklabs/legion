@@ -1,12 +1,12 @@
 kind: Fixed
 body: |-
-  The sandbox runtime's stop of a role whose pod is still in, or failed in, an init container
-  (`workspace-fetch` or `workspace-init`), with no launcher of it connected, answers at once: no
-  launcher of such a pod has run, so no role process runs there to stop. Before, the stop waited
-  the boot timeout and the termination grace for a launcher that could not connect, about ten
-  minutes, and then failed "did not connect", while the claim and the issue's suspension, which
-  deletes the Sandbox, waited behind it. A stop of a launcher that is connected still waits for its
-  answer, as does one of a pod past its init containers whose launcher is reconnecting.
+  The sandbox runtime's stop of a role whose pod is still in, or failed in, its init container
+  (`workspace-init`), with no launcher of it connected, answers at once: no launcher of such a pod
+  has run, so no role process runs there to stop. Before, the stop waited the boot timeout and the
+  termination grace for a launcher that could not connect, about ten minutes, and then failed "did
+  not connect", while the claim and the issue's suspension, which deletes the Sandbox, waited behind
+  it. A stop of a launcher that is connected still waits for its answer, as does one of a pod past
+  its init container whose launcher is reconnecting.
 time: 2026-11-24T13:15:01Z
 custom:
     Issue: pr5385

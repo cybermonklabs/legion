@@ -14,26 +14,27 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
 )
 
-// agentInfraFile is testdata/deployment-profiles-kinds.json: the deployment repository main's
+// deploymentFile is testdata/deployment-profiles-kinds.json: the deployment repository main's
 // broker/profiles.json (read at f62fbb2bdbe8) moved to kinds, as its rollout moves it. Each proxy
 // block's kind is declared under kinds; a profile of its source's own name loses its block and
 // keeps its allow, its source tagged with the kind; the four profiles of the two GitHub Apps keep
 // the proxy string "github" until their sources are tagged; GITHUB_ENTERPRISE_ADMIN's five rows
 // and AWS_ADMIN's one each name the one host the block bound. Every person's address is
-// owner@example.com, every person's GitHub login example-user, and the per-person App profiles,
-// which no proxy block names, are left out. It holds 18 names behind the proxy.
-const agentInfraFile = "testdata/deployment-profiles-kinds.json"
+// owner@example.com, every person's GitHub login example-user, and the company's name, in the one
+// profile name and the one Google Cloud project that hold it, example; the per-person App
+// profiles, which no proxy block names, are left out. It holds 18 names behind the proxy.
+const deploymentFile = "testdata/deployment-profiles-kinds.json"
 
-// agentInfraOwner is the owner of every secret of the fixture's store, and its requesters.
-const agentInfraOwner = "owner@example.com"
+// deploymentOwner is the owner of every secret of the fixture's store, and its requesters.
+const deploymentOwner = "owner@example.com"
 
-// agentInfraSecrets is the store behind agentInfraFile, as the rollout tags it: each source of a
+// deploymentSecrets is the store behind deploymentFile, as the rollout tags it: each source of a
 // name behind the proxy carries its kind's proxy tag, the narrowed ones (GITHUB_ENTERPRISE_ADMIN,
 // AWS_ADMIN and the three ANTHROPIC_ADMIN_*) proxy-narrowed=true, and each a max-grant within its
 // kind's max_grant; the two GitHub Apps whose profiles carry the proxy string carry no proxy tag. The
 // three Anthropic admin secrets are anthropic-federation, human tier, admin and an hour at most.
 // tagged false leaves every proxy tag off.
-func agentInfraSecrets(tagged bool) []secrets.LocalSecret {
+func deploymentSecrets(tagged bool) []secrets.LocalSecret {
 	with := func(s secrets.LocalSecret, tags map[string]string) secrets.LocalSecret {
 		for k, v := range tags {
 			if !tagged && (k == policy.TagProxy || k == policy.TagProxyNarrowed) {
@@ -44,17 +45,17 @@ func agentInfraSecrets(tagged bool) []secrets.LocalSecret {
 		return s
 	}
 	app := func(name, owners string) secrets.LocalSecret {
-		return with(policytest.TypeSecret(name, agentInfraOwner, policy.TierAgent, policy.TypeGitHubApp, policytest.TypeValue(policy.TypeGitHubApp)),
+		return with(policytest.TypeSecret(name, deploymentOwner, policy.TierAgent, policy.TypeGitHubApp, policytest.TypeValue(policy.TypeGitHubApp)),
 			map[string]string{policy.TagGitHubOwners: owners, policy.TagMaxGrant: "12h"})
 	}
 	stored := func(name, kind, maxGrant string) secrets.LocalSecret {
-		return with(policytest.Secret(name, agentInfraOwner, policy.TierHuman, name+"-v1"), map[string]string{policy.TagProxy: kind, policy.TagMaxGrant: maxGrant})
+		return with(policytest.Secret(name, deploymentOwner, policy.TierHuman, name+"-v1"), map[string]string{policy.TagProxy: kind, policy.TagMaxGrant: maxGrant})
 	}
 	typed := func(name, secretType, kind, maxGrant string) secrets.LocalSecret {
-		return with(policytest.TypeSecret(name, agentInfraOwner, policy.TierHuman, secretType, policytest.TypeValue(secretType)), map[string]string{policy.TagProxy: kind, policy.TagMaxGrant: maxGrant})
+		return with(policytest.TypeSecret(name, deploymentOwner, policy.TierHuman, secretType, policytest.TypeValue(secretType)), map[string]string{policy.TagProxy: kind, policy.TagMaxGrant: maxGrant})
 	}
 	admin := func(s secrets.LocalSecret, kind string) secrets.LocalSecret {
-		return with(s, map[string]string{policy.TagAdmin: policy.AdminTrue, policy.TagRequesters: agentInfraOwner, policy.TagMaxGrant: "1h", policy.TagProxy: kind, policy.TagProxyNarrowed: policy.ProxyNarrowedTrue})
+		return with(s, map[string]string{policy.TagAdmin: policy.AdminTrue, policy.TagRequesters: deploymentOwner, policy.TagMaxGrant: "1h", policy.TagProxy: kind, policy.TagProxyNarrowed: policy.ProxyNarrowedTrue})
 	}
 	return []secrets.LocalSecret{
 		app("LEGION_IMPLEMENT_APP", "cybermonklabs example-user example-org"),
@@ -68,27 +69,27 @@ func agentInfraSecrets(tagged bool) []secrets.LocalSecret {
 		stored("TAILSCALE_API_KEY", "tailscale", "12h"),
 		typed("GCLOUD_OWNER", policy.TypeGoogleLogin, "gcp", "24h"),
 		typed("AZURE_ADMIN", policy.TypeAzureLogin, "azure", "1h"),
-		typed("GWS_THEOREM_ADMIN_OAUTH", policy.TypeGoogleLogin, "gws", "24h"),
-		admin(policytest.Secret("GITHUB_ENTERPRISE_ADMIN", agentInfraOwner, policy.TierHuman, "gea-v1"), "github"),
-		admin(policytest.TypeSecret("ANTHROPIC_ADMIN_HDO", agentInfraOwner, policy.TierHuman, policy.TypeAnthropicFederation, policytest.TypeValue(policy.TypeAnthropicFederation)), "anthropic"),
-		admin(policytest.TypeSecret("ANTHROPIC_ADMIN_HDO_V2", agentInfraOwner, policy.TierHuman, policy.TypeAnthropicFederation, policytest.TypeValue(policy.TypeAnthropicFederation)), "anthropic"),
-		admin(policytest.TypeSecret("ANTHROPIC_ADMIN_PBC", agentInfraOwner, policy.TierHuman, policy.TypeAnthropicFederation, policytest.TypeValue(policy.TypeAnthropicFederation)), "anthropic"),
-		admin(policytest.TypeSecret("AWS_ADMIN", agentInfraOwner, policy.TierHuman, policy.TypeGoogleServiceAccount, policytest.TypeValue(policy.TypeGoogleServiceAccount)), "gcp"),
+		typed("GWS_EXAMPLE_ADMIN_OAUTH", policy.TypeGoogleLogin, "gws", "24h"),
+		admin(policytest.Secret("GITHUB_ENTERPRISE_ADMIN", deploymentOwner, policy.TierHuman, "gea-v1"), "github"),
+		admin(policytest.TypeSecret("ANTHROPIC_ADMIN_HDO", deploymentOwner, policy.TierHuman, policy.TypeAnthropicFederation, policytest.TypeValue(policy.TypeAnthropicFederation)), "anthropic"),
+		admin(policytest.TypeSecret("ANTHROPIC_ADMIN_HDO_V2", deploymentOwner, policy.TierHuman, policy.TypeAnthropicFederation, policytest.TypeValue(policy.TypeAnthropicFederation)), "anthropic"),
+		admin(policytest.TypeSecret("ANTHROPIC_ADMIN_PBC", deploymentOwner, policy.TierHuman, policy.TypeAnthropicFederation, policytest.TypeValue(policy.TypeAnthropicFederation)), "anthropic"),
+		admin(policytest.TypeSecret("AWS_ADMIN", deploymentOwner, policy.TierHuman, policy.TypeGoogleServiceAccount, policytest.TypeValue(policy.TypeGoogleServiceAccount)), "gcp"),
 	}
 }
 
-// readDeploymentFile is agentInfraFile's text, with each of edits, an old and a new text, replaced
+// readDeploymentFile is deploymentFile's text, with each of edits, an old and a new text, replaced
 // once; an edit whose old text the file does not hold is a test bug.
 func readDeploymentFile(t *testing.T, edits ...[2]string) string {
 	t.Helper()
-	data, err := os.ReadFile(agentInfraFile)
+	data, err := os.ReadFile(deploymentFile)
 	if err != nil {
 		t.Fatal(err)
 	}
 	file := string(data)
 	for _, edit := range edits {
 		if !strings.Contains(file, edit[0]) {
-			t.Fatalf("%s holds no %q to edit", agentInfraFile, edit[0])
+			t.Fatalf("%s holds no %q to edit", deploymentFile, edit[0])
 		}
 		file = strings.Replace(file, edit[0], edit[1], 1)
 	}
@@ -115,7 +116,7 @@ var anthropicRows = []proxyrules.Allow{
 func TestDeploymentMainMovedToKindsServesEveryProxiedName(t *testing.T) {
 	file := readDeploymentFile(t)
 	profiles := policytest.Profiles(t, file, daemonService)
-	set := policytest.ProfiledCurrent(t, secrets.NewLocal(agentInfraSecrets(true)...), file, daemonService).Get()
+	set := policytest.ProfiledCurrent(t, secrets.NewLocal(deploymentSecrets(true)...), file, daemonService).Get()
 	if len(set.Refused) != 0 {
 		t.Fatalf("the moved file refuses %+v; want every name served", set.Refused)
 	}
@@ -128,7 +129,7 @@ func TestDeploymentMainMovedToKindsServesEveryProxiedName(t *testing.T) {
 		"GITHUB_APP_OWNER_AGENT": {"github", "mint", -1},
 		"AIRLOCK_PROBE":          {"github", "swap", -1}, "GITHUB_ADMIN_PAT": {"github", "swap", -1}, "GITHUB_PERSONAL_ADMIN_PAT": {"github", "swap", -1},
 		"AIRLOCK_AWS_PROBE": {"aws", "sign", -1}, "LEGION_SLACK_BOT_TOKEN": {"slack", "swap", -1}, "TAILSCALE_API_KEY": {"tailscale", "swap", -1},
-		"GCLOUD_OWNER": {"gcp", "mint", -1}, "AZURE_ADMIN": {"azure", "exchange", -1}, "GWS_THEOREM_ADMIN_OAUTH": {"gws", "mint", -1},
+		"GCLOUD_OWNER": {"gcp", "mint", -1}, "AZURE_ADMIN": {"azure", "exchange", -1}, "GWS_EXAMPLE_ADMIN_OAUTH": {"gws", "mint", -1},
 		"GITHUB_ENTERPRISE_ADMIN": {"github", "swap", 5},
 		"ANTHROPIC_ADMIN_HDO":     {"anthropic", "mint", 3}, "ANTHROPIC_ADMIN_HDO_V2": {"anthropic", "mint", 3}, "ANTHROPIC_ADMIN_PBC": {"anthropic", "mint", 3},
 		"AWS_ADMIN": {"gcp", "mint", 1},
@@ -180,7 +181,7 @@ func TestDeploymentMainMovedToKindsServesEveryProxiedName(t *testing.T) {
         { "method": "DELETE", "pathPrefix": "/v1/organizations/" }
       ]`, `      "max_grant": "1h",
       "allow": [{ "method": "GET", "pathPrefix": "/v1/organizations/" }]`})
-		set := policytest.ProfiledCurrent(t, secrets.NewLocal(agentInfraSecrets(true)...), getOnly, daemonService).Get()
+		set := policytest.ProfiledCurrent(t, secrets.NewLocal(deploymentSecrets(true)...), getOnly, daemonService).Get()
 		for _, name := range []string{"ANTHROPIC_ADMIN_HDO", "ANTHROPIC_ADMIN_HDO_V2", "ANTHROPIC_ADMIN_PBC"} {
 			refusal := refusedProfile(t, set, name, policy.ReasonProfileAllowOutsideKind)
 			if !strings.Contains(refusal.Detail, "POST /v1/organizations/ and DELETE /v1/organizations/") || strings.Contains(refusal.Detail, "GET") {
@@ -190,7 +191,7 @@ func TestDeploymentMainMovedToKindsServesEveryProxiedName(t *testing.T) {
 		servedProfile(t, set, "GITHUB_ENTERPRISE_ADMIN")
 	})
 	t.Run("the control: no source carries a proxy tag", func(t *testing.T) {
-		set := policytest.ProfiledCurrent(t, secrets.NewLocal(agentInfraSecrets(false)...), file, daemonService).Get()
+		set := policytest.ProfiledCurrent(t, secrets.NewLocal(deploymentSecrets(false)...), file, daemonService).Get()
 		for _, name := range []string{"AIRLOCK_PROBE", "LEGION_SLACK_BOT_TOKEN", "GCLOUD_OWNER", "AZURE_ADMIN", "GITHUB_ENTERPRISE_ADMIN", "ANTHROPIC_ADMIN_HDO", "ANTHROPIC_ADMIN_PBC"} {
 			refusedProfile(t, set, name, policy.ReasonProfileSourceNotProxied)
 			refusedSecret(t, set, name, policy.ReasonProfileSourceNotProxied)
@@ -201,7 +202,7 @@ func TestDeploymentMainMovedToKindsServesEveryProxiedName(t *testing.T) {
 	})
 }
 
-// anthropicKinds is agentInfraFile's kinds as a JSON list, for a file of other profiles under the
+// anthropicKinds is deploymentFile's kinds as a JSON list, for a file of other profiles under the
 // same kinds.
 func anthropicKinds(t *testing.T) string {
 	t.Helper()
@@ -213,7 +214,7 @@ func anthropicKinds(t *testing.T) string {
 }
 
 // TestK47AnAnthropicSecretIsBoundByItsKindAndItsProfile is k47's pair at the policy load and the
-// decision it feeds, under the anthropic kind of agentInfraFile, which binds api.anthropic.com
+// decision it feeds, under the anthropic kind of deploymentFile, which binds api.anthropic.com
 // alone, names Authorization, allows GET, POST and DELETE under /v1/organizations/, takes the way
 // mint, names ANTHROPIC_ADMIN_TOKEN and caps a grant at an hour. Secret K, tagged proxy=anthropic
 // with no profile and no proxy-narrowed tag, is served by its own name with the kind's allow alone;
@@ -230,7 +231,7 @@ func TestK47AnAnthropicSecretIsBoundByItsKindAndItsProfile(t *testing.T) {
       {"method": "POST", "pathPrefix": "/v1/organizations/"},
       {"method": "DELETE", "pathPrefix": "/v1/organizations/"}]}`)
 	anthropic := func(name string, narrowed bool) secrets.LocalSecret {
-		s := policytest.TypeSecret(name, agentInfraOwner, policy.TierHuman, policy.TypeAnthropicFederation, policytest.TypeValue(policy.TypeAnthropicFederation))
+		s := policytest.TypeSecret(name, deploymentOwner, policy.TierHuman, policy.TypeAnthropicFederation, policytest.TypeValue(policy.TypeAnthropicFederation))
 		s.Tags[policy.TagAdmin] = policy.AdminTrue
 		s = policytest.Proxied(s, "anthropic")
 		if narrowed {

@@ -38,13 +38,14 @@ describe("tradeFailureReason", () => {
     );
   });
 
-  test.each([
-    ...KNOWN_BROKER_REFUSALS,
-  ])("the known refusal %p prints as the broker wrote it", (text) => {
-    expect(tradeFailureReason(new BrokerRefusedError(403, "invalid_grant", text, "probe"))).toBe(
-      `the secrets broker refused the identity traded: HTTP 403 invalid_grant: ${text}`
-    );
-  });
+  test.each([...KNOWN_BROKER_REFUSALS])(
+    "the known refusal %p prints as the broker wrote it",
+    (text) => {
+      expect(tradeFailureReason(new BrokerRefusedError(403, "invalid_grant", text, "probe"))).toBe(
+        `the secrets broker refused the identity traded: HTTP 403 invalid_grant: ${text}`
+      );
+    }
+  );
 
   // The broker's sentences that carry a remedy print, with only a person or a project in their
   // slots; the same sentence with a token in the slot is withheld.

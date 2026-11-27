@@ -139,11 +139,10 @@ const (
 )
 
 // liveIssueVolume is the issue volume's size, the daemon configuration's default. The run sets no
-// scheduling beyond the Legion pool the runtime selects: no pod asks for another pod's node or
-// keeps off one (every issue pod owns its volume, LEGION-632), and every pod reserves what
-// liveResources gives its roles, so the scheduler, and Karpenter under the `legion` NodePool's
-// floor (karpenter.k8s.aws/instance-cpu Gt 3, set in the deployment repository), place it where
-// the pool has room.
+// scheduling: no pod asks for another pod's node or keeps off one (every issue pod owns its volume,
+// LEGION-632), and every pod reserves what liveResources gives its roles, so the scheduler places
+// it wherever a node of the cluster has room, and the cluster's autoscaler adds a node when none
+// has.
 var liveIssueVolume = resource.MustParse("20Gi")
 
 // liveRepositoryCache is the daemon's default repository cache (config.DefaultRepositoryCache), as

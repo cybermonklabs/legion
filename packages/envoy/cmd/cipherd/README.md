@@ -22,10 +22,19 @@ The broker takes no flags and reads its configuration from `BROKER_*` environmen
 (`BROKER_SECRETS_STORE`: AWS Secrets Manager, or Google Cloud Secret Manager under Application
 Default Credentials): every secret under `BROKER_SECRETS_PREFIX`, carrying `owner` and `tier` (AWS
 tags, or Secret Manager annotations) and encrypted with the agent-secrets key
-(`BROKER_SECRETS_KMS_KEY_ARN`, or `BROKER_SECRETS_KMS_KEY_NAME`). It also needs its own OpenID
-Connect client, through which a person signs in to the approval page: `BROKER_SIGNIN_ISSUER`,
-`BROKER_SIGNIN_CLIENT_ID`, `BROKER_SIGNIN_CLIENT_SECRET_FILE` and `BROKER_SIGNIN_DOMAIN` are all
-required, and a broker missing any of them refuses to start, naming the missing ones.
+(`BROKER_SECRETS_KMS_KEY_ARN`, or `BROKER_SECRETS_KMS_KEY_NAME`). On Secret Manager, a deployment
+that moves its secrets to another prefix sets `BROKER_SECRETS_SECOND_PREFIX` to the other prefix of
+the move while it runs: a grant whose request froze a source under that prefix, with the same
+secret id after it and the same type, goes on releasing, and the release reads the value from the
+secret under `BROKER_SECRETS_PREFIX` alone. Nothing else of the broker reads the second prefix, and
+the broker refuses it under AWS Secrets Manager and when it equals or nests with
+`BROKER_SECRETS_PREFIX`. The deployment sets it before the move, swaps the two at the move, rewrites
+its live grants' frozen sources once no pod of the earlier setting serves, and removes it once none
+is left under the old prefix (the operate page's "Moving the store to another prefix"). It also
+needs its own OpenID Connect client, through which a person signs in to the approval page:
+`BROKER_SIGNIN_ISSUER`, `BROKER_SIGNIN_CLIENT_ID`, `BROKER_SIGNIN_CLIENT_SECRET_FILE` and
+`BROKER_SIGNIN_DOMAIN` are all required, and a broker missing any of them refuses to start, naming
+the missing ones.
 `GET /signin/status` reports what that sign-in has done, for an operator or a production check.
 The one broker that starts without them is one with `BROKER_SIGNIN=off`, which signs nobody in:
 it serves no approval page and denies at once every request a person would have to approve,
@@ -216,3 +225,7 @@ unless `AIRLOCK_MODEL` names a built Lean model (`internal/cipher/proxyrules/air
 The broker's docs (`docs/site/src/content/docs/broker/`: `concepts.md`, `operate.md` and
 `guides/`) say how its packages, policy, enrollment and CLI work; `cmd/cipher-refgen` writes their
 reference pages from the code's doc comments at the docs build, not in `go test`.
+
+Cipher's proxy signs each bound host's leaf with a pod's own intermediate; "The proxy's chain" in
+`concepts.md` says which names its constraints bind, and in which clients.
+A copied intermediate key can sign, for up to 7 days, a certificate with no DNS alternative name that curl, Python and Node accept for a name outside the allowed ones when its common name is one label, such as `localhost`, or a wildcard over two or more labels, such as `*.evil.example` for `a.evil.example`. They refuse a plain name, such as `evil.example`, and a wildcard over one label, such as `*.example`, so for them the key reaches names of one label, and names of three or more labels through a wildcard, but no name of two labels. Bun accepts any name through the common name when the certificate also has a URI, email or registered-ID alternative name. git on GnuTLS rejects every form. Only the 7-day life limits this.

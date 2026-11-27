@@ -15,12 +15,11 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
-// inInit is the tester's issue pod still in its init containers, its spec naming both of them:
-// workspace-fetch ended 0 and workspace-init's status is init.
+// inInit is the tester's issue pod while workspace-init has the status init.
 func inInit(init corev1.ContainerStatus) *corev1.Pod {
 	pod := runningPod(workerToken, recorded, claim.RoleTester)
-	pod.Spec.InitContainers = []corev1.Container{{Name: fetchContainer}, {Name: initContainer}}
-	pod.Status = corev1.PodStatus{Phase: corev1.PodPending, InitContainerStatuses: []corev1.ContainerStatus{terminated(fetchContainer, 0, "Completed"), init}}
+	pod.Spec.InitContainers = []corev1.Container{{Name: initContainer}}
+	pod.Status = corev1.PodStatus{Phase: corev1.PodPending, InitContainerStatuses: []corev1.ContainerStatus{init}}
 	return pod
 }
 
@@ -43,11 +42,15 @@ var failedInitStatuses = map[string]corev1.ContainerStatus{
 // "did not connect": on 2026-11-24 a tester whose pods died of a full disk in workspace-init was
 // held so from 08:46:47Z to 08:56:57Z.
 func TestSuspendOfAPodWhoseLauncherNeverConnectedReturnsAtOnce(t *testing.T) {
-	// Not parallel: it holds Suspend's answer, timed on the wall clock, to under the rig's 2 s boot
-	// timeout, a bound other tests' load could move.
+	t.Parallel()
 	for name, status := range failedInitStatuses {
 		t.Run(name, func(t *testing.T) {
-			g := newRig(t, []k8sruntime.Object{runningSandbox(t, workerToken, claim.RoleTester), inInit(status)}, withoutController())
+			// BootTimeout is this row's measured bound: Suspend's init-container branch makes no
+			// wait at all, while the former wrong path waited a boot timeout. A minute leaves room
+			// a loaded runner cannot eat, and Bounded keeps this test's failure before its binary
+			// deadline on an explicitly short invocation.
+			g := newRig(t, []k8sruntime.Object{runningSandbox(t, workerToken, claim.RoleTester), inInit(status)}, withoutController(),
+				withMeasuredBootTimeout(testwait.Bounded(t, time.Minute, time.Second)))
 			loc := sandboxLocator(workerToken, recorded)
 			if err := g.r.ReconcileOrphans(g.ctx, []runtime.Known{{Claim: workerToken, Locator: &loc}}, time.Hour); err != nil {
 				t.Fatal(err)

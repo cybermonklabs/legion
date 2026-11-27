@@ -43,17 +43,21 @@ func TestScenarioRefusals(t *testing.T) {
 	// approvedParent sets the parent of a-message-survives-a-restart in wait-cycle's approved.json.
 	approvedParent := func(parent string) func(t *testing.T, dir string) {
 		return func(t *testing.T, dir string) {
+			value := parent
+			if value == " " {
+				value = "' '"
+			}
 			editApproved(t, filepath.Join(dir, "approved.json"), func(nodes []specgraph.ApprovedNode) []specgraph.ApprovedNode {
 				v := &approvedNode(t, nodes, "a-message-survives-a-restart").Versions[0]
-				v.Block = strings.Replace(v.Block, `parent="envoy-delivers-messages"`, `parent="`+parent+`"`, 1)
+				v.Document = strings.Replace(v.Document, "parent: envoy-delivers-messages\n", "parent: "+value+"\n", 1)
 				return nodes
 			})
 		}
 	}
-	const failingExample = "Failing example: A listener that deletes its stored messages when it starts.\n"
+	const failingExample = "failing_example:\n  - A listener that deletes its stored messages when it starts.\n"
 	const firstOutcome = `"outcome": "pass",`
-	serving := ":::requirement{#messages-reach-sessions kind=\"behavior\"}"
-	loop := ":::requirement{#messages-reach-sessions kind=\"behavior\" serves=\"a-stored-message-survives-a-restart\"}"
+	serving := "---\ntype: requirement\nid: messages-reach-sessions\nkind: behavior\n"
+	loop := "---\ntype: requirement\nid: messages-reach-sessions\nkind: behavior\nserves:\n  - a-stored-message-survives-a-restart\n"
 	loopDetail := "loop: a-stored-message-survives-a-restart -[parent]-> messages-reach-sessions -[serves]-> a-stored-message-survives-a-restart"
 	const resultForm = `{"check":"<check id>","check_version":<whole number from 1>,"kind":"<run or failing_example>","outcome":"<pass, fail or could_not_run>","commit":"<commit>","deploy":"<deploy>","graph_tx":"<transaction>","job":"<job>","leg":"<leg>","attempt":<whole number>,"at":"` + timeForm + `","seq":<whole number from 1>,"fault_author":"<author>","test_authors":["<author>", …],"test_commit":"<commit>","planted_on":"<commit>","fault_paths":["<repository path>", …]}`
 	const unitForm = `{"id":"<unit>","serves":["<statement id>", …],"needs":["<unit>", …],"waits_on":["<statement id>", …]}`
@@ -75,18 +79,18 @@ func TestScenarioRefusals(t *testing.T) {
 		{"a check with no failing example", "carry", func(t *testing.T, dir string) {
 			editApproved(t, filepath.Join(dir, "approved.json"), func(nodes []specgraph.ApprovedNode) []specgraph.ApprovedNode {
 				v := &approvedNode(t, nodes, "a-restart-loses-no-message").Versions[0]
-				v.Block = strings.Replace(v.Block, failingExample, "", 1)
+				v.Document = strings.Replace(v.Document, failingExample, "", 1)
 				return nodes
 			})
 			editSpecFiles(t, dir, failingExample, "")
-		}, filepath.Join("files", "c2", "spec.md") + ":20", "a-restart-loses-no-message: no-failing-example: the check has no failing example"},
+		}, filepath.Join("files", "c2", "spec.yaml") + ":32", "a-restart-loses-no-message: schema: node: missing property 'failing_example'"},
 		// R6: "Each leaf statement has one or more checks."
 		{"a leaf with no check", "carry", func(t *testing.T, dir string) { removeCheck(t, dir, "production-delivery-takes-under-a-second") },
-			filepath.Join("files", "c2", "spec.md") + ":1", "delivery-is-fast: leaf-without-check: no statement is under it and no check serves it"},
+			filepath.Join("files", "c2", "spec.yaml") + ":1", "delivery-is-fast: leaf-without-check: no statement is under it and no check serves it"},
 		// R5: "The parent and support relations taken together form no cycle, and Dispatch refuses a
 		// change that makes one."
 		{"a loop of parent and support relations in the files", "carry", func(t *testing.T, dir string) { editSpecFiles(t, dir, serving, loop) },
-			filepath.Join("files", "c2", "spec.md") + ":16", "a-stored-message-survives-a-restart: " + loopDetail},
+			filepath.Join("files", "c2", "spec.yaml") + ":27", "a-stored-message-survives-a-restart: " + loopDetail},
 		{"a loop of parent and support relations in the approved spec", "carry", func(t *testing.T, dir string) {
 			looping := specgraph.Statement{ID: "messages-reach-sessions", Kind: specgraph.KindBehavior,
 				Serves: []string{"a-stored-message-survives-a-restart"}, Text: "Envoy delivers each message to the session that it is for."}
@@ -95,7 +99,7 @@ func TestScenarioRefusals(t *testing.T) {
 				t.Fatal(err)
 			}
 			editApproved(t, filepath.Join(dir, "approved.json"), func(nodes []specgraph.ApprovedNode) []specgraph.ApprovedNode {
-				approvedNode(t, nodes, "messages-reach-sessions").Versions[0].Block = block
+				approvedNode(t, nodes, "messages-reach-sessions").Versions[0].Document = block
 				return nodes
 			})
 		}, "approved.json", "specgraph: approved spec: " + loopDetail},
@@ -104,7 +108,7 @@ func TestScenarioRefusals(t *testing.T) {
 		// A change of the approved spec is a new version of a node, so the loop rule reads the newest
 		// text of each node (TestALoopThatOnlyAnOlderVersionOfTheApprovedSpecMadeIsTaken, the control).
 		{"a statement that version 2 of its two approved versions makes its own parent", "wait-cycle", func(t *testing.T, dir string) {
-			withSecondVersion(t, dir, "a-message-survives-a-restart", `parent="envoy-delivers-messages"`, `parent="a-message-survives-a-restart"`, 2)
+			withSecondVersion(t, dir, "a-message-survives-a-restart", "parent: envoy-delivers-messages\n", "parent: a-message-survives-a-restart\n", 2)
 		}, "approved.json", "specgraph: approved spec: loop: a-message-survives-a-restart -[parent]-> a-message-survives-a-restart"},
 		// The one strict JSON reader: RFC 8259 "JSON text … MUST be encoded using UTF-8", and a member
 		// is the format's, in its own letters, one time in its object.
@@ -194,8 +198,8 @@ func TestScenarioRefusals(t *testing.T) {
 			"notes.txt", "the format of a scenario holds no such file"},
 		{"no subjects.json", "carry", func(t *testing.T, dir string) { removeAll(t, filepath.Join(dir, "subjects.json")) },
 			"subjects.json", "does not exist"},
-		{"a spec file that does not parse", "carry", write(filepath.Join("files", "c2", "spec.md"), "A line outside a block.\n"),
-			filepath.Join("files", "c2", "spec.md") + ":1", "-: text-outside-block: a spec file holds only blocks, headings and blank lines"},
+		{"a spec file that does not parse", "carry", write(filepath.Join("files", "c2", "spec.yaml"), "A YAML value that is no node.\n"),
+			filepath.Join("files", "c2", "spec.yaml") + ":1", "-: schema: node: got string, want object"},
 		{"a subject whose commit has no spec files", "carry", func(t *testing.T, dir string) { removeAll(t, filepath.Join(dir, "files", "c4")) },
 			filepath.Join("files", "c4"), "does not exist, and subject 4 reads the spec files of its commit there"},
 		{"spec files that no subject reads", "carry", func(t *testing.T, dir string) {
@@ -260,11 +264,11 @@ func TestScenarioRefusals(t *testing.T) {
 		// refuses the approval of a change request that puts a statement under a parent that the
 		// approved spec does not hold").
 		{"an approved block whose parent is no id", "wait-cycle", approvedParent(" "),
-			"approved.json", `specgraph: approved node "a-message-survives-a-restart" version 1: bad-approved-block: parent " " names no node of the approved spec (line 1 of its block)`},
+			"approved.json", `specgraph: approved node "a-message-survives-a-restart" version 1: bad-approved-document: parent " " is no id (line 1 of its document)`},
 		{"an approved block whose parent names no node", "wait-cycle", approvedParent("no-such-statement"),
-			"approved.json", `specgraph: approved node "a-message-survives-a-restart" version 1: bad-approved-block: parent "no-such-statement" names no node of the approved spec (line 1 of its block)`},
+			"approved.json", `specgraph: approved node "a-message-survives-a-restart" version 1: bad-approved-document: parent "no-such-statement" names no node of the approved spec (line 1 of its document)`},
 		{"an approved block whose parent is a check", "wait-cycle", approvedParent("a-restart-keeps-the-message"),
-			"approved.json", `specgraph: approved node "a-message-survives-a-restart" version 1: bad-approved-block: parent "a-restart-keeps-the-message" names a check, not a statement (line 1 of its block)`},
+			"approved.json", `specgraph: approved node "a-message-survives-a-restart" version 1: bad-approved-document: parent "a-restart-keeps-the-message" names a check, not a statement (line 1 of its document)`},
 		// A node that the approved spec removed is one that it holds, and a relation to it is taken
 		// only where its kind is right: a removed check is no parent.
 		{"an approved block whose parent is a check that the approved spec removed", "wait-cycle", func(t *testing.T, dir string) {
@@ -272,11 +276,11 @@ func TestScenarioRefusals(t *testing.T) {
 				removed := *approvedNode(t, nodes, "a-late-session-gets-the-message")
 				removed.ID, removed.Removed = "an-old-check", true
 				removed.Versions = []specgraph.ApprovedVersion{removed.Versions[0]}
-				removed.Versions[0].Block = strings.Replace(removed.Versions[0].Block, "#a-late-session-gets-the-message", "#an-old-check", 1)
+				removed.Versions[0].Document = strings.Replace(removed.Versions[0].Document, "id: a-late-session-gets-the-message\n", "id: an-old-check\n", 1)
 				return append(nodes, removed)
 			})
 			approvedParent("an-old-check")(t, dir)
-		}, "approved.json", `specgraph: approved node "a-message-survives-a-restart" version 1: bad-approved-block: parent "an-old-check" names a check, not a statement (line 1 of its block)`},
+		}, "approved.json", `specgraph: approved node "a-message-survives-a-restart" version 1: bad-approved-document: parent "an-old-check" names a check, not a statement (line 1 of its document)`},
 		// R6: a check's claim is "narrower than its statement", so a check serves one statement: one
 		// whose approved block leaves out serves names none, and its failure would count under no
 		// statement, so envoy-delivers-messages would read met (with a second, passing check beside
@@ -284,10 +288,10 @@ func TestScenarioRefusals(t *testing.T) {
 		{"an approved check block that leaves out serves", "wait-cycle", func(t *testing.T, dir string) {
 			editApproved(t, filepath.Join(dir, "approved.json"), func(nodes []specgraph.ApprovedNode) []specgraph.ApprovedNode {
 				v := &approvedNode(t, nodes, "a-restart-keeps-the-message").Versions[0]
-				v.Block = strings.Replace(v.Block, ` serves="a-message-survives-a-restart"`, "", 1)
+				v.Document = strings.Replace(v.Document, "serves: a-message-survives-a-restart\n", "", 1)
 				return nodes
 			})
-		}, "approved.json", `specgraph: approved node "a-restart-keeps-the-message" version 1: bad-approved-block: serves "" names no node of the approved spec (line 1 of its block)`},
+		}, "approved.json", `specgraph: approved node "a-restart-keeps-the-message" version 1: bad-approved-document: serves "" names no node of the approved spec (line 1 of its document)`},
 		{"a run of a program check with no job", "carry",
 			write("results.json", `[{"check":"a-restart-loses-no-message","check_version":1,"kind":"run","outcome":"fail","commit":"c1","leg":"","at":"2026-11-12T11:00:00Z","seq":5}]`),
 			"results.json", "result 1: it sets no job, and only the reports of the job of its check count"},

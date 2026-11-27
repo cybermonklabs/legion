@@ -24,10 +24,10 @@ import (
 // the environment.
 //
 // It takes any duration it can read, zero and negative ones included, so it is the reader for a
-// setting where zero says something: ENVOY_UNPLACEABLE_RETRY_WINDOW=0s asks for no retry of an
-// unplaceable delivery at all (cmd/listener/unplaceable_delivery.go), and the acceptance test of
-// the exception lane sets exactly that. A setting zero cannot mean is read through
-// PositiveDuration instead.
+// setting where zero says something: ENVOY_UNPLACEABLE_RETRY_WINDOW is the one wait the listener
+// takes before it reports the wake of a session with no record (cmd/listener's
+// unplaceable_delivery.go), and 0s asks for no wait, so the wake is reported at the message's
+// first delivery. A setting zero cannot mean is read through PositiveDuration instead.
 func Duration(logger *slog.Logger, environment func(string) (string, bool), name string, fallback time.Duration) time.Duration {
 	v, _ := environment(name)
 	if v == "" {

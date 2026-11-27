@@ -87,8 +87,10 @@ listener_pid=
 daemon_keeper_pid=
 deadline_keeper_pid=
 profile=legion-e2e2-$$-$(date +%s)
-project="S2E$$$(date +%s)"            # a retired claim is never spawned again: a fresh key per run
-deadline_project="S2D$$$(date +%s)"
+# A retired claim is never spawned again: a fresh key per run, for each daemon. Each key is a
+# Dispatch project key of at most ten characters, the one shape the loader takes.
+project="S2E$(( ($$ + $(date +%s)) % 10000000 ))"
+deadline_project="S2D$(( ($$ + $(date +%s)) % 10000000 ))"
 ptoken=${project,,} # the daemon's project token: its tmux socket, its claim tokens
 deadline_ptoken=${deadline_project,,}
 nats_container=legion-e2e2-nats-$$
@@ -500,7 +502,7 @@ begin gate-refuses-a-skill-only-a-role-prompt-loads
 # refusal of the plugin without legion-controller names roles/controller-root.md, which only a gate
 # that reads the daemon's own role prompts can name.
 mv "$work/pi-legion/dist/skills/legion-controller" "$work/controller-skill.aside"
-expect_refusal prompt-only-skill "finds no skill legion-controller (loaded by dist/skills/legion-worker/references/findings.md, roles/controller-root.md)"
+expect_refusal prompt-only-skill "finds no skill legion-controller (loaded by dist/skills/legion-architect/references/operations.md, roles/controller-root.md)"
 mv "$work/controller-skill.aside" "$work/pi-legion/dist/skills/legion-controller"
 [ -f "$work/pi-legion/dist/skills/legion-controller/SKILL.md" ] || fail "the legion-controller skill was not restored"
 pass

@@ -407,6 +407,24 @@ function issue(fields: Record<string, unknown> = {}): Record<string, unknown> {
 
 const documentOwner = { artifact_id: "artifact-1", issue_key: null, project: "CORE" } as const;
 
+/** The outbox's `role.undelivered` on one owner, CORE-1 unless `owner` names another: written as
+ *  a system actor, so it wakes nobody. */
+function roleUndelivered(owner: Partial<DispatchEvent> = {}): DispatchEvent {
+  return event(
+    "role.undelivered",
+    {
+      dropped_at: "2026-10-26T03:00:00Z",
+      event_id: 11,
+      event_type: "comment.created",
+      keeps: 3,
+      kept_at: "2026-10-26T02:00:00Z",
+      reason: "expired",
+      role: "reviewer",
+    },
+    { actor: { id: "dispatch-outbox", kind: "system" }, notify: false, ...owner }
+  );
+}
+
 interface Rule {
   readonly event: DispatchEvent;
   readonly page?: Partial<PageOptions>;
@@ -757,6 +775,17 @@ const rules: Record<string, Rule> = {
     event: event("issue.deployed", { number: 1, repo: "acme/widgets" }),
     refreshes: ["detail", "log"],
     spares: ["steps", "collaborators"],
+  },
+  "a change of the role holders refreshes the issue's log and no step or collaborator": {
+    event: event("issue.role_holders_changed", {
+      holders: [{ recorded_at: "2026-11-25T18:06:17Z", role: "architect", session: "session-b" }],
+      key: "CORE-1",
+      previous_holders: [
+        { recorded_at: "2026-11-25T00:34:14Z", role: "architect", session: "session-a" },
+      ],
+    }),
+    refreshes: ["detail", "log", "projectList"],
+    spares: ["steps", "collaborators", "summary", "pinned", "inbox", "projects"],
   },
   "a person's edit notice refreshes the issue's log only, since each edit's version refreshed the rest":
     {
@@ -1202,6 +1231,51 @@ const rules: Record<string, Rule> = {
     ),
     refreshes: [],
     spares: ["detail", "unrelatedDetail", "projects", "projectList", "inbox", "pinned"],
+  },
+  // The outbox's report that an event's copy for a role reached no session moves only its
+  // owner's log: an issue's, which the page reads; a project document's, which takes the
+  // document's path; and a project's, which no page reads.
+  "a role.undelivered on an issue refreshes its detail, its log and its project list alone": {
+    event: roleUndelivered(),
+    refreshes: ["detail", "log", "projectList"],
+    spares: [
+      "unrelatedDetail",
+      "parent",
+      "summary",
+      "projects",
+      "inbox",
+      "pinned",
+      "otherProjectList",
+      "steps",
+      "collaborators",
+      "referencesTab",
+    ],
+  },
+  "a role.undelivered on a project document refreshes that document's page and no issue read": {
+    event: roleUndelivered(documentOwner),
+    refreshes: ["documentPage"],
+    spares: [
+      "otherDocumentPage",
+      "docSummary",
+      "detail",
+      "log",
+      "projectList",
+      "inbox",
+      "projects",
+    ],
+  },
+  "a role.undelivered on a project refreshes nothing": {
+    event: roleUndelivered({ artifact_id: null, issue_key: null }),
+    refreshes: [],
+    spares: [
+      "detail",
+      "unrelatedDetail",
+      "log",
+      "projectList",
+      "projects",
+      "inbox",
+      "documentPage",
+    ],
   },
   // The Inbox's thread rows, by the event that moves each of them.
   "an issue-less message.created naming the viewer refreshes the Inbox's Agent rows": {
@@ -1721,6 +1795,22 @@ test("a recorded result refreshes the results of the check's issue and of the re
   ]);
 });
 
+test("a recorded deploy refreshes the receiving issue's verification results", () => {
+  const incoming = event("deploy.recorded", {
+    repo: "acme/widgets",
+    program: "worker",
+    commit: "c".repeat(40),
+    deployed_at: "2026-10-25T00:00:00Z",
+    source: "route",
+  });
+  expect(eventRefreshTargets(incoming, "alice").map((target) => target.queryKey)).toEqual([
+    ["issue", "CORE-1"],
+    ["events", "CORE-1"],
+    ["issues", "project", "CORE"],
+    ["issue", "CORE-1", "results"],
+  ]);
+});
+
 // A retraction moves exactly the two reads a record moves, for the same reason: the result
 // stays in both listings and stops counting as evidence there. A tab that did not refetch would
 // keep showing a retracted result as proof.
@@ -1810,18 +1900,18 @@ const HOLDS_LINKAGE: NonNullable<PageOptions["advances"]> = {
 // an issue row carries a priority by its id alone, so not one issue read refetches, even where
 // every row names the priority. The description autosaves as the person types, so each save
 // would otherwise refetch both fault lists on every open Priorities page.
-test.each([
-  "created",
-  "updated",
-] as const)("a priority.updated of a %s priority refreshes ['priorities'] and no issue read", (change) => {
-  const incoming = priorityWrite(change);
-  expect(eventRefreshTargets(incoming, "alice")).toEqual([{ queryKey: ["priorities"] }]);
-  expect(refreshedReads(incoming, { advances: HOLDS_LINKAGE }).sort()).toEqual([
-    "priorities",
-    "priorityHistory",
-    "prioritySummary",
-  ]);
-});
+test.each(["created", "updated"] as const)(
+  "a priority.updated of a %s priority refreshes ['priorities'] and no issue read",
+  (change) => {
+    const incoming = priorityWrite(change);
+    expect(eventRefreshTargets(incoming, "alice")).toEqual([{ queryKey: ["priorities"] }]);
+    expect(refreshedReads(incoming, { advances: HOLDS_LINKAGE }).sort()).toEqual([
+      "priorities",
+      "priorityHistory",
+      "prioritySummary",
+    ]);
+  }
+);
 
 // A delete takes the priority out of every relation and writes no issue event: the work under it
 // and the work under none read again whatever they hold, and every issue read and issue list
@@ -1938,7 +2028,19 @@ const eventsByType: Record<EventType, DispatchEvent> = {
   "issue.closed": event("issue.closed", issue({ status: "done" })),
   "issue.created": event("issue.created", issue()),
   "issue.deployed": event("issue.deployed", { number: 1, repo: "acme/widgets" }),
+  "deploy.recorded": event("deploy.recorded", {
+    repo: "acme/widgets",
+    program: "worker",
+    commit: "c".repeat(40),
+    deployed_at: "2026-10-25T00:00:00Z",
+    source: "route",
+  }),
   "issue.released": event("issue.released", { key: "CORE-1" }),
+  "issue.role_holders_changed": event("issue.role_holders_changed", {
+    holders: [],
+    key: "CORE-1",
+    previous_holders: [],
+  }),
   "issue.updated": event("issue.updated", issue()),
   "message.accepted": event("message.accepted", { target: "session:planner" }),
   "message.answered": event("message.answered", { id: "message-2" }),
@@ -1981,6 +2083,7 @@ const eventsByType: Record<EventType, DispatchEvent> = {
     to: "CORE-2",
     source: "branch",
   }),
+  "role.undelivered": roleUndelivered(),
   "settings.architecture_source.updated": event(
     "settings.architecture_source.updated",
     {},
@@ -2013,13 +2116,16 @@ test.each(
   Object.entries(eventsByType).filter(
     ([type, incoming]) => incoming.issue_key !== null && type !== "subscription.remove_requested"
   )
-)("%s refreshes its issue's detail, its log and its project list, and no other issue's detail", (_type, incoming) => {
-  const refreshed = refreshedReads(incoming);
-  expect(refreshed).toContain("detail");
-  expect(refreshed).toContain("log");
-  expect(refreshed).toContain("projectList");
-  expect(refreshed).not.toContain("otherProjectList");
-});
+)(
+  "%s refreshes its issue's detail, its log and its project list, and no other issue's detail",
+  (_type, incoming) => {
+    const refreshed = refreshedReads(incoming);
+    expect(refreshed).toContain("detail");
+    expect(refreshed).toContain("log");
+    expect(refreshed).toContain("projectList");
+    expect(refreshed).not.toContain("otherProjectList");
+  }
+);
 
 test("a feed event prepends a newer event to the loaded log page", () => {
   const client = new QueryClient();

@@ -22,7 +22,7 @@ dispatch search --query 'reviewer threads OR review comments'
 
 `dispatch issue` and `dispatch ask` also search. Open each `advice.suggestions` hit too.
 
-- **Work already tracked:** put the finding on that issue. File a new issue only when no hit covers the work, and cite the nearest one you ruled out (`dispatch://KEY`).
+- **Work already tracked:** put the finding on that issue. It is no reason to wait: fix what stops you, in any repository your credentials reach, and say there what you did. Wait only on a claimed, `in_progress` issue whose holder said on Envoy it works on it now: tell them what you need by when, and fix it yourself after that time. If your fix touches files of another tree's open pull request, tell its architect in a comment and go on, waiting for no answer. File a new issue only when no hit covers the work, and cite the nearest one you ruled out (`dispatch://KEY`).
 - **Question already decided:** cite the answered ask (`dispatch://KEY/ask/<id>`) and never ask again.
 - **Duplicate found, or a likely duplicate a create names:** fold it only when it is the same work. Keep the issue with the spec, copy to it what only the duplicate has, and close the duplicate (`--status done --reason 'Duplicate of dispatch://KEY.'`). When it has the `legion` label or another holder's claim, comment the kept issue's name on it instead.
 

@@ -11,6 +11,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/sjawhar/envoy/testpool"
 )
 
 // The cases for DatabaseURL, the rewrite of LEGION_TEST_PG_DSN a test binary of this module
@@ -240,8 +242,8 @@ func TestDatabaseURLRefusesARewriteThatMovesTheConnection(t *testing.T) {
 	}
 }
 
-// PoolBounded gives a pool on the URL the pool keys LEGION_TEST_PG_DSN sets (server) in place of
-// any the URL holds, and pool_max_conns=PoolConns where server sets no size: a size the DSN sets,
+// PoolBounded gives a pool the URL pool keys LEGION_TEST_PG_DSN sets (server) in place of any the
+// URL holds, and pool_max_conns=testpool.PoolConns where server sets no size: a size the DSN sets,
 // as internal/daemon's daemonDSN sets one connection, is kept, whether the URL is server itself or
 // a URL DatabaseURL made without it. It keeps every byte of the query it does not change: pgx
 // reads the query with its own libpq-style parser, which decodes only %XX and keeps a `+`, so a
@@ -254,15 +256,15 @@ func TestPoolBoundedHoldsThePoolUnlessTheDSNSizesItItself(t *testing.T) {
 		conns                   int32
 	}{
 		{"a DSN that sets no size", "postgres://legion_test@127.0.0.1:5433/run?sslmode=disable", "postgres://legion_test@127.0.0.1:5433/run?sslmode=disable",
-			"postgres://legion_test@127.0.0.1:5433/run?sslmode=disable&pool_max_conns=4", PoolConns},
+			"postgres://legion_test@127.0.0.1:5433/run?sslmode=disable&pool_max_conns=4", testpool.PoolConns},
 		{"a DSN with no query", "postgres://legion_test@127.0.0.1:5433/run", "postgres://legion_test@127.0.0.1:5433/run",
-			"postgres://legion_test@127.0.0.1:5433/run?pool_max_conns=4", PoolConns},
+			"postgres://legion_test@127.0.0.1:5433/run?pool_max_conns=4", testpool.PoolConns},
 		{"a DSN that sets its own size", "postgres://legion_test@127.0.0.1:5433/run?pool_max_conns=1&sslmode=disable", "postgres://legion_test@127.0.0.1:5433/run?pool_max_conns=1&sslmode=disable",
 			"postgres://legion_test@127.0.0.1:5433/run?sslmode=disable&pool_max_conns=1", 1},
 		{"a database URL made from a DSN that sets its own size", "postgres://legion_test@127.0.0.1:5433/legion?pool_max_conns=2&pool_min_conns=1&sslmode=disable", "postgres://legion_test@127.0.0.1:5433/run?sslmode=disable",
 			"postgres://legion_test@127.0.0.1:5433/run?sslmode=disable&pool_max_conns=2&pool_min_conns=1", 2},
 		{"a DSN whose options hold an encoded space", "postgres://legion_test@127.0.0.1:5433/run?options=-c%20search_path%3Dx&sslmode=disable", "postgres://legion_test@127.0.0.1:5433/run?options=-c%20search_path%3Dx&sslmode=disable",
-			"postgres://legion_test@127.0.0.1:5433/run?options=-c%20search_path%3Dx&sslmode=disable&pool_max_conns=4", PoolConns},
+			"postgres://legion_test@127.0.0.1:5433/run?options=-c%20search_path%3Dx&sslmode=disable&pool_max_conns=4", testpool.PoolConns},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got, err := PoolBounded(tc.server, tc.dsn)

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/redact"
 )
 
 // reportTimeout bounds one report's call. A turn's outcome is a few hundred bytes to a daemon on
@@ -150,16 +151,21 @@ func (r *turnReports) post(request claim.TurnOutcomeRequest) {
 	}()
 	post, err := http.NewRequestWithContext(ctx, http.MethodPost, r.url, bytes.NewReader(body))
 	if err != nil {
-		r.log.Printf("could not report the outcome of turn %d: %v", request.Sequence, err)
+		r.log.Printf("could not report the outcome of turn %d: %v", request.Sequence, redact.RequestError("the daemon", r.url, err))
 		return
 	}
 	post.Header.Set("Content-Type", "application/json")
+	// LEGION_DAEMON_URL is the daemon's daemon_url, which can carry a user name and a password: a
+	// report that got no answer is named through redact.RequestError, so neither the URL's
+	// credential nor the host a dial's error names (a password's tail, when it holds an unencoded
+	// "@") is logged.
 	response, err := r.client.Do(post)
 	if err != nil {
+		shown := redact.RequestError("the daemon", r.url, err)
 		if cause := context.Cause(ctx); cause != nil {
-			err = fmt.Errorf("%w (%v)", cause, err)
+			shown = fmt.Errorf("%w (%v)", cause, shown)
 		}
-		r.log.Printf("could not report the outcome of turn %d (%s): %v", request.Sequence, request.Outcome, err)
+		r.log.Printf("could not report the outcome of turn %d (%s): %v", request.Sequence, request.Outcome, shown)
 		return
 	}
 	defer func() { _ = response.Body.Close() }()
