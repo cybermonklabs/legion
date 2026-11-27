@@ -327,6 +327,11 @@ forward_job() {
       for dir in "$SKILL_SCENARIOS_WORK/runs/$scenario-$world-$label-"*/; do
         [ -d "$dir" ] || continue
         dir=${dir%/}
+        # A launch the rig failed never reached the label's daemon, so row 1's line would blame it.
+        if jq -e '.outcome == "rig-error"' "$dir/row.json" >/dev/null 2>&1; then
+          say "path check of ${dir##*/}: the rig failed the run, so it has no path to check"
+          continue
+        fi
         say "path check of ${dir##*/}:"
         bun "$here/score.ts" path-check "$dir" || say "the path check of ${dir##*/} could not read its files"
       done

@@ -2361,7 +2361,11 @@ daemon_request() {
   local omp pane_daemon=label
   case ${SKILL_SCENARIOS_PATH_CONTROL:-} in
   '') ;;
-  intercept) pane_daemon=intercept-report ;;
+  intercept)
+    # The intercepting proxy keeps the report from the label's daemon: a scored run never gets it.
+    [ "${SKILL_SCENARIOS_PATH_CHECK:-}" = 1 ] || fail "intercept is the path check's control: it needs SKILL_SCENARIOS_PATH_CHECK=1"
+    pane_daemon=intercept-report
+    ;;
   *) fail "SKILL_SCENARIOS_PATH_CONTROL is '$SKILL_SCENARIOS_PATH_CONTROL': it is intercept, or unset" ;;
   esac
   omp=$(rig_omp "$pin") || exit 1
