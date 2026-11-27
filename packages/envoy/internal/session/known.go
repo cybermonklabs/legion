@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"reflect"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -119,6 +120,10 @@ type KnownSession struct {
 	PrincipalRecorded bool `json:"principal_recorded,omitempty"`
 }
 
+// knownSessionKeys are KnownSession's JSON keys; any other key of a stored record is kept beside
+// the record (KnownSessions.unknown).
+var knownSessionKeys = store.JSONKeys(reflect.TypeFor[KnownSession]())
+
 type KnownSessionsOption func(*knownSessionsOpts)
 
 type knownSessionsOpts struct {
@@ -197,9 +202,10 @@ type KnownSessions struct {
 	watchOptions     []kvwatch.Option
 	chunkBarrierWait time.Duration
 
-	// mu guards records, chunks, markers and topics, which are kept in step: every record the copy
-	// stores or removes for the bucket's sake is indexed or unindexed through its rows
-	// (newKnownSessions), and the sweep removes from both. chunks is the copy of the bucket's
+	// mu guards records, chunks, markers, topics and unknown, which are kept in step: every record
+	// the copy stores or removes for the bucket's sake is indexed or unindexed, and its unknown keys
+	// kept or dropped, through its rows (newKnownSessions) and the write-through (writeWithin), and
+	// the sweep removes from records, topics and unknown alike. chunks is the copy of the bucket's
 	// chunks (kvchunk.Chunks), fed and swept by the same reads as records: the copy joins a record
 	// stored in chunks from it, and the sweep collects from it the chunks no record names. markers
 	// is the chunk keys the watcher delivered as removed, which the marker pass purges
@@ -209,6 +215,17 @@ type KnownSessions struct {
 	chunks  *kvchunk.Chunks
 	markers *kvchunk.Markers
 	topics  *store.TopicMatcher
+	// unknown holds the JSON of every key a record the copy holds carries that KnownSession does
+	// not name - a field a newer build writes - for each record that carries one, by session id.
+	// writeWithin writes them back beside the known fields (store.EncodeKeeping), so a rewrite
+	// through this build (RecordWithin, TouchWithin) keeps them while pods of two builds take
+	// turns writing one session's record during a roll, as a registration keeps a newer build's
+	// keys of its session entry (SessionEntry.unknown). They are kept here rather than in a field
+	// of KnownSession because nearly no record carries any: a field would widen every slot of the
+	// copy's map by 8 bytes, 1 MiB over the 100,000 records
+	// TestKnownSessionsMemoryForAHundredThousandRecords holds. A value is never modified once
+	// decoded, so a write may carry it as it stands.
+	unknown map[string]map[string]json.RawMessage
 	// markerPurgeFailed is set once a marker pass that failed has been logged, so a NATS user
 	// without STREAM.PURGE on the bucket says so once per process rather than every pass, and
 	// cleared by a pass that purged.
@@ -278,11 +295,27 @@ func newKnownSessions(conn *nats.Conn, opts knownSessionsOpts) *KnownSessions {
 		stopped:      make(chan struct{}),
 	}
 	s.records = kvwatch.NewCopy(kvwatch.Rows[knownRow]{
-		Decode:  s.decodeKnownLocked,
-		Stored:  func(key string, row knownRow) { s.topics.Set(key, row.Topics) },
-		Removed: func(key string, _ knownRow) { s.topics.Remove(key) },
+		Decode: s.decodeKnownLocked,
+		Stored: func(key string, row knownRow) { s.topics.Set(key, row.Topics) },
+		Removed: func(key string, _ knownRow) {
+			s.topics.Remove(key)
+			delete(s.unknown, key)
+		},
 	})
 	return s
+}
+
+// keepUnknown records unknown as the keys this build does not name of the record the copy holds
+// for key, none when it is nil. The caller holds mu.
+func (s *KnownSessions) keepUnknown(key string, unknown map[string]json.RawMessage) {
+	if unknown == nil {
+		delete(s.unknown, key)
+		return
+	}
+	if s.unknown == nil {
+		s.unknown = map[string]map[string]json.RawMessage{}
+	}
+	s.unknown[key] = unknown
 }
 
 // OpenKnownSessions opens the envoy_known_sessions bucket, creating it with a 30-day TTL
@@ -707,17 +740,27 @@ func (s *KnownSessions) Get(sessionID string) (KnownSession, bool) {
 }
 
 // cached is the row the copy holds for sessionID within the retention, whether or not the store
-// answers: what a write compares against, replaces and a clean stop rewrites. Callers hold no
-// lock.
+// answers (cachedKeeping, without the keys it keeps): the record Get answers and the one a clean
+// stop rewrites (TouchWithin). Callers hold no lock.
 func (s *KnownSessions) cached(sessionID string) (knownRow, bool) {
+	row, _, ok := s.cachedKeeping(sessionID)
+	return row, ok
+}
+
+// cachedKeeping is the row the copy holds for sessionID within the retention, whether or not the
+// store answers, with the keys of its record this build does not name (unknown): what a write
+// (writeWithin) compares against for its throttle, replaces, deleting the chunks of its layout
+// that no other record names (ownLayout), and carries those keys onto the record it writes.
+// Callers hold no lock.
+func (s *KnownSessions) cachedKeeping(sessionID string) (knownRow, map[string]json.RawMessage, bool) {
 	cutoff := s.cutoff()
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	row, ok := s.records.Get(sessionID)
 	if !ok || row.LastSeen < cutoff {
-		return knownRow{}, false
+		return knownRow{}, nil, false
 	}
-	return row, true
+	return row, s.unknown[sessionID], true
 }
 
 // MatchEach calls visit with each record whose topics match topic (routing.Match's rules), once
@@ -752,7 +795,7 @@ func (s *KnownSessions) eachMatch(topic string, visit func(KnownSession)) {
 // written while that one is younger than
 // KnownSessionRefreshAge, so a session's 90-second heartbeat costs one write per refresh age
 // rather than one per heartbeat. What that skip compares is this listener's own copy of the record
-// (cached), never the bucket: the record as this listener's watcher last delivered it, or
+// (cachedKeeping), never the bucket: the record as this listener's watcher last delivered it, or
 // as this listener's own write left it (store.Registry.UpsertWithin, by contrast, reads the stored
 // row). A record another listener wrote is therefore compared as this listener's watcher last
 // delivered it: the throttle holds across every listener that serves the session once each one's
@@ -817,17 +860,21 @@ func (s *KnownSessions) writeWithin(ctx context.Context, record KnownSession, th
 	if watcher == nil || record.SessionID == "" {
 		return nil
 	}
-	held, ok := s.cached(record.SessionID)
-	if admission == nil && ok {
+	now := s.now()
+	// The record a write replaces is this listener's copy of it (cachedKeeping), and the keys of it
+	// this build does not know - a newer build's fields (unknown) - are carried onto the write, so
+	// neither a registration's record nor a clean stop's drops them: they are the session's, not
+	// this write's. A record the copy does not hold yet carries none, as in the throttle below.
+	held, unknown, holds := s.cachedKeeping(record.SessionID)
+	if admission == nil && holds {
 		record.Principal, record.PrincipalRecorded = held.Principal, held.PrincipalRecorded
 	}
-	now := s.now()
 	record.LastSeen = now.UnixMilli()
-	buf, err := json.Marshal(record)
+	buf, err := store.EncodeKeeping(record, unknown)
 	if err != nil {
 		return err
 	}
-	if throttled && ok && now.UnixMilli()-held.LastSeen < KnownSessionRefreshAge.Milliseconds() {
+	if throttled && holds && now.UnixMilli()-held.LastSeen < KnownSessionRefreshAge.Milliseconds() {
 		// What the skip asks is whether this write would store the record already there, so it
 		// compares the two encodings rather than the fields one by one: a field added to
 		// KnownSession, and the difference between a null and an empty list, are then covered by
@@ -835,7 +882,7 @@ func (s *KnownSessions) writeWithin(ctx context.Context, record KnownSession, th
 		// field a write of unchanged content would move.
 		unchanged := held.KnownSession
 		unchanged.LastSeen = record.LastSeen
-		stored, err := json.Marshal(unchanged)
+		stored, err := store.EncodeKeeping(unchanged, unknown)
 		if err != nil {
 			return err
 		}
@@ -845,7 +892,7 @@ func (s *KnownSessions) writeWithin(ctx context.Context, record KnownSession, th
 	}
 	kv, epoch := watcher.Handle()
 	if admission != nil {
-		written, err := s.writeRecord(ctx, watcher, kv, epoch, record, buf, held.stored(), func(value []byte) (uint64, error) {
+		written, err := s.writeRecord(ctx, watcher, kv, epoch, record, buf, unknown, held.stored(), func(value []byte) (uint64, error) {
 			return kv.Update(record.SessionID, value, admission.revision)
 		})
 		if err != nil {
@@ -863,7 +910,7 @@ func (s *KnownSessions) writeWithin(ctx context.Context, record KnownSession, th
 			return fmt.Errorf("session: keep the principal of the known-session record of %s: %w", record.SessionID, err)
 		}
 		record.Principal, record.PrincipalRecorded = leaderPrincipal(stored)
-		if buf, err = json.Marshal(record); err != nil {
+		if buf, err = store.EncodeKeeping(record, unknown); err != nil {
 			return err
 		}
 		head := func(value []byte) (uint64, error) {
@@ -872,7 +919,7 @@ func (s *KnownSessions) writeWithin(ctx context.Context, record KnownSession, th
 			}
 			return kv.Update(record.SessionID, value, stored.Revision)
 		}
-		written, err := s.writeRecord(ctx, watcher, kv, epoch, record, buf, held.stored(), head)
+		written, err := s.writeRecord(ctx, watcher, kv, epoch, record, buf, unknown, held.stored(), head)
 		if err != nil {
 			return err
 		}
@@ -888,11 +935,12 @@ func (s *KnownSessions) writeWithin(ctx context.Context, record KnownSession, th
 
 // writeRecord writes record, encoded as buf, under its session id through kv with head, the write
 // of the record's head - a compare-and-swap, or a put (kvchunk.Write) - and replaced the layout of
-// the record head replaces, and puts a record the bucket stored in the copy. A head the bucket
+// the record head replaces, and puts a record the bucket stored in the copy, with unknown, the
+// keys of it this build does not name that buf carries (store.EncodeKeeping). A head the bucket
 // refused as a compare-and-swap another write beat stores nothing, and is Written.Stored false
 // with no error.
 func (s *KnownSessions) writeRecord(ctx context.Context, watcher *kvwatch.Watcher, kv bus.KeyValue, epoch uint64, record KnownSession, buf []byte,
-	replaced kvchunk.Layout, head func(value []byte) (uint64, error)) (kvchunk.Written, error) {
+	unknown map[string]json.RawMessage, replaced kvchunk.Layout, head func(value []byte) (uint64, error)) (kvchunk.Written, error) {
 	// A chunked record's manifest carries the record with the topics it can fit in place of its
 	// full list (store.ChunkedRecordView), which a listener of an earlier build reads as this
 	// session: such a listener does not join chunks, and would otherwise know nothing of a
@@ -915,8 +963,11 @@ func (s *KnownSessions) writeRecord(ctx context.Context, watcher *kvwatch.Watche
 	// newer revision another listener wrote - a re-registration of the same session through that
 	// listener - and putting this record back over it would answer the older one until the next
 	// write of the key. A write through a handle on a bucket since recreated is dropped there too.
+	// A record the copy takes holds the keys this write carried.
 	s.mu.Lock()
-	s.records.Put(watcher, epoch, record.SessionID, newKnownRow(record, written.Layout), written.Revision)
+	if s.records.Put(watcher, epoch, record.SessionID, newKnownRow(record, written.Layout), written.Revision) == kvwatch.Applied {
+		s.keepUnknown(record.SessionID, unknown)
+	}
 	s.mu.Unlock()
 	return written, nil
 }
@@ -1096,10 +1147,10 @@ func (s *KnownSessions) sweepUntilStopped() {
 }
 
 // sweep drops every record that has aged out of KnownSessionRetention, giving back the strings and
-// topic lists it held and the index nodes its topics alone kept. The bucket's TTL removes such a
-// record with no record of the removal a watcher delivers, so nothing else would ever drop it. The
-// copy keeps the key's revision in its fence (kvwatch.Copy.Remove) until a completed read finds
-// the bucket no longer holds the key.
+// topic lists it held, the keys of it this build does not name, and the index nodes its topics
+// alone kept. The bucket's TTL removes such a record with no record of the removal a watcher
+// delivers, so nothing else would ever drop it. The copy keeps the key's revision in its fence
+// (kvwatch.Copy.Remove) until a completed read finds the bucket no longer holds the key.
 func (s *KnownSessions) sweep() {
 	cutoff := s.cutoff()
 	s.mu.Lock()
@@ -1108,6 +1159,7 @@ func (s *KnownSessions) sweep() {
 		if record.LastSeen < cutoff {
 			s.records.Remove(key)
 			s.topics.Remove(key)
+			delete(s.unknown, key)
 		}
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"reflect"
 
 	"github.com/sjawhar/envoy/internal/kvchunk"
 	"github.com/sjawhar/envoy/internal/kvwatch"
@@ -29,6 +30,28 @@ func (r *Registry) unindexInterestLocked(sessionID string, _ storedRow) {
 	if r.index != nil {
 		r.index.remove(sessionID)
 	}
+}
+
+// interestKeys are Interest's JSON keys; any other key of a stored interest is kept in its
+// unknown map, and written back by every rewrite of the record, so pods of two builds taking
+// turns at one record during a roll do not drop each other's fields.
+var interestKeys = JSONKeys(reflect.TypeFor[Interest]())
+
+// decodeInterestValue reads a stored interest record, keeping the keys this build does not name.
+func decodeInterestValue(data []byte) (Interest, error) {
+	var item Interest
+	unknown, err := DecodeKeeping(data, &item, interestKeys)
+	if err != nil {
+		return Interest{}, err
+	}
+	item.unknown = unknown
+	return item, nil
+}
+
+// encodeInterest writes item for the bucket: its known fields, and the unknown keys it was decoded
+// with.
+func encodeInterest(item Interest) ([]byte, error) {
+	return EncodeKeeping(item, item.unknown)
 }
 
 // interestCache is the registry as the cache its watcher feeds (kvwatch.Cache). The hooks are its

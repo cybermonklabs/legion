@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -159,7 +160,7 @@ func TestAClaimThatNamesNoProcessIsFreedByNoReleaseButTheForce(t *testing.T) {
 
 			if tc.frees {
 				assertRoleHolder(t, reg, role, "")
-			} else if stood := storedRoleClaim(t, reg, role); stood != seeded {
+			} else if stood := storedRoleClaim(t, reg, role); !reflect.DeepEqual(stood, seeded) {
 				t.Fatalf("the claim after the release is %+v, want it exactly as it stood, %+v: an absent process matches nothing in a release", stood, seeded)
 			}
 			assertInterestMissing(t, reg, holder)
@@ -218,7 +219,7 @@ func TestARefusedReleaseLeavesTheStoredClaimAtItsOwnRevision(t *testing.T) {
 		t.Fatalf("release every interest of %s: %v", holder, err)
 	}
 
-	if after := storedRoleClaim(t, reg, role); after != before {
+	if after := storedRoleClaim(t, reg, role); !reflect.DeepEqual(after, before) {
 		t.Fatalf("the claim is now %+v, want it exactly as it stood, %+v", after, before)
 	}
 }
@@ -414,7 +415,7 @@ func releaseUnderAFreshGrant(t *testing.T, holder, another string, grantAfter ti
 
 							stood := storedRoleClaim(t, reg, role)
 							t.Logf("the grant to %s as %q, id %q claimed at %d, over the claim read with id %q at %d: standing after the release: %t (the record: %+v)",
-								winner.session, winner.instance, granted.GrantID, granted.ClaimedAt, read.GrantID, read.ClaimedAt, stood == granted, stood)
+								winner.session, winner.instance, granted.GrantID, granted.ClaimedAt, read.GrantID, read.ClaimedAt, reflect.DeepEqual(stood, granted), stood)
 							if granted.ClaimedAt-read.ClaimedAt != grantAfter.Milliseconds() {
 								t.Fatalf("the grant was claimed at %d and the claim the release read at %d, want the grant %d ms past it", granted.ClaimedAt, read.ClaimedAt, grantAfter.Milliseconds())
 							}
@@ -424,7 +425,7 @@ func releaseUnderAFreshGrant(t *testing.T, holder, another string, grantAfter ti
 							if racing.deletes != 1 {
 								t.Fatalf("the release sent %d conditional deletes, want one: a claim granted since the read is never deleted", racing.deletes)
 							}
-							if stood != granted {
+							if !reflect.DeepEqual(stood, granted) {
 								t.Fatalf("the claim after the release is %+v, want the grant %+v untouched: the release read no claim this grant made", stood, granted)
 							}
 						})
@@ -478,7 +479,7 @@ func TestARefusedRoleReleaseLeavesAGrantMadeSinceItsReadToTheNextRelease(t *test
 			if racing.deletes != 1 {
 				t.Fatalf("the release sent %d conditional deletes, want one: a claim granted since its read is never deleted", racing.deletes)
 			}
-			if stood := storedRoleClaim(t, reg, role); stood != granted {
+			if stood := storedRoleClaim(t, reg, role); !reflect.DeepEqual(stood, granted) {
 				t.Fatalf("the claim after the release is %+v, want the new grant %+v untouched", stood, granted)
 			}
 
@@ -539,7 +540,7 @@ func TestADeregistrationLeavesAGrantMadeSinceTheRowsReadStanding(t *testing.T) {
 			if racing.deletes != 1 {
 				t.Fatalf("the deregistration sent %d conditional deletes, want one: the row's release, which a grant made since its read beat; the scan leaves a role the row's release weighed alone", racing.deletes)
 			}
-			if stood := storedRoleClaim(t, reg, role); stood != granted {
+			if stood := storedRoleClaim(t, reg, role); !reflect.DeepEqual(stood, granted) {
 				t.Fatalf("the claim after the deregistration is %+v, want the new grant %+v untouched", stood, granted)
 			}
 		})
@@ -631,7 +632,7 @@ func TestOnlyAHandBackStatingNoProcessMarksAClaimItCannotFree(t *testing.T) {
 				}
 				want.HandedBack, want.Revision = true, claim.Revision
 			}
-			if claim != want {
+			if !reflect.DeepEqual(claim, want) {
 				t.Fatalf("the claim after the release is %+v, want %+v: a hand-back writes the mark alone, and every other release writes nothing", claim, want)
 			}
 		})
@@ -745,7 +746,7 @@ func TestAMarkThatRacesAFreshGrantByItsOwnProcessMarksNothing(t *testing.T) {
 			if want := seeded.ClaimedAt + later.Milliseconds(); granted.ClaimedAt != want {
 				t.Fatalf("the grant was claimed at %d and the claim the release read at %d, want the grant at %d", granted.ClaimedAt, seeded.ClaimedAt, want)
 			}
-			if stood := storedRoleClaim(t, reg, role); stood != granted {
+			if stood := storedRoleClaim(t, reg, role); !reflect.DeepEqual(stood, granted) {
 				t.Fatalf("the claim after the hand-back is %+v, want the grant %+v untouched: the hand-back released no claim this grant made", stood, granted)
 			}
 			assertRoleHolder(t, reg, role, holder)

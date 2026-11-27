@@ -219,9 +219,9 @@ func TestARegistrationThisListenerDidNotAnswerSettlesOnTheBucketsRowWhereTheFenc
 }
 
 // refusingEntryKV is a session bucket whose writes all fail, after before has run: the write of
-// a registration's session entry, whichever call makes it (Put, or the Create and Update the
-// entry write sends conditionally, session.SessionRegistry.PutWithin), and the window before it
-// where another writer's interest row lands.
+// a registration's session entry, whichever call makes it (Put, Create, or the Update at the
+// revision it read that the registry's compare-and-set sends, session.SessionRegistry.PutWithin),
+// and the window before it where another writer's interest row lands.
 type refusingEntryKV struct {
 	nats.KeyValue
 	before func()

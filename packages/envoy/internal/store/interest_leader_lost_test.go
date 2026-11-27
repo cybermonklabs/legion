@@ -146,13 +146,13 @@ func TestALaneHoldersReadLostWithItsConnectionFailsAtTheReconnectNotAtItsBound(t
 }
 
 // A plan made again after a refused registration write (Registry.PlanInterestAfterConflict) whose
-// read of the session's interest record from the bucket stream's leader (readRow, readLeader)
+// read of the session's interest record from the bucket stream's leader (readInterest, readLeader)
 // reached the socket and died with it fails with bus.ErrRequestLostWithConnection at the
 // reconnect, rather than waiting out its bound. The read is bus.KeyValue.ReadFromLeader's, a
 // stream message get, `$JS.API.STREAM.MSG.GET.KV_<interest bucket>`, which the relay drops before
 // the cut. The reconnect takes at most a quarter of the bound, and the plan fails before half of
 // it; the plan made again on the connection that came back is made over the stored record, at its
-// revision. Control: with readRow's leader read made without bus.BoundedOn, it waits out its
+// revision. Control: with readInterest's leader read made without bus.BoundedOn, it waits out its
 // bound and the row fails.
 func TestAPlanAfterAConflictLostWithItsConnectionFailsAtTheReconnectNotAtItsBound(t *testing.T) {
 	const (
@@ -184,8 +184,8 @@ func TestAPlanAfterAConflictLostWithItsConnectionFailsAtTheReconnectNotAtItsBoun
 // A read of a session's interest record from the bucket rather than the cache (Registry.RefreshAt,
 // the read a relay restart makes of the session's row) whose request reached the socket and died
 // with it fails with bus.ErrRequestLostWithConnection at the reconnect, rather than waiting out its
-// bound. It is readRow's other read, bus.KeyValue.ReadStored, and the record is the session's own
-// row, so it is the direct get alone,
+// bound. It is readInterest's other read, bus.KeyValue.ReadStored (latestStored for a caller that
+// plans a write), and the record is the session's own row, so it is the direct get alone,
 // `$JS.API.DIRECT.GET.KV_<interest bucket>.$KV.<interest bucket>.<session id>`, which the relay
 // drops before the cut. The reconnect takes at most a quarter of the bound, and the read fails
 // before half of it; the read made again on the connection that came back answers the record.

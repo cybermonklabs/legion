@@ -26,8 +26,10 @@ import (
 // Every read and write goes through the bucket's legacy nats.KeyValue, except what nats.go runs as
 // a watcher and the reads beside them: a watch of the bucket (WatchKeys), a key's history
 // (ReadHistory) and its stream's state (ReadStreamState) go through the same bucket's
-// jetstream.KeyValue instead, and the leader-answered read of one key (GetFromLeader) makes
-// nats.go's legacy GetLastMsg call on that jetstream context's connection. nats.go's legacy KV
+// jetstream.KeyValue instead, and the read of a key's newest message (newestMessage) makes
+// nats.go's legacy GetLastMsg call on that jetstream context's connection: the leader-answered
+// reads of one key (NewestFromLeader, and ReadFromLeader, GetFromLeader and GetLatestFromLeader
+// through it) and GetLatest's marker read (newestMarker) all make it. nats.go's legacy KV
 // watcher, which its legacy Watch, History and Keys all run, arms an init timer while its scan is
 // pending whose callback can send on the channels the subscription's end has just closed, a "send
 // on closed channel" panic in a goroutine nats.go owns (the `initDoneTimer.Reset` of
@@ -51,12 +53,13 @@ type KeyValue struct {
 	// goes through.
 	watch jetstream.KeyValue
 	// streams is the same connection's jetstream context, which every read of the bucket's stream
-	// goes through (ReadStreamState), and whose connection the leader read takes (GetFromLeader):
-	// each read fetches the stream afresh. The jetstream handle's own Status stores the info it
-	// read in the handle's shared stream value with no lock (the `s.info = &cached` of nats.go's
-	// `(*stream).Info`, which `(*kvs).Status` calls on the stream `mapStreamToKVS` built that
-	// handle over), so two reads of one handle at once -- a watcher's stream probe beside its
-	// completion check -- race on it.
+	// goes through (ReadStreamState), and whose connection the reads of a key's newest message
+	// take (newestMessage: GetFromLeader, and GetLatest's marker read): each read fetches the
+	// stream afresh. The jetstream handle's own Status stores the info it read in the handle's
+	// shared stream value with no lock (the `s.info = &cached` of nats.go's `(*stream).Info`,
+	// which `(*kvs).Status` calls on the stream `mapStreamToKVS` built that handle over), so two
+	// reads of one handle at once -- a watcher's stream probe beside its completion check -- race
+	// on it.
 	streams jetstream.JetStream
 	// owner is the client that owns the connection streams is on, found once when the handle is
 	// built (clientOwning), whose record of the server's refusals the handle's calls read
@@ -393,6 +396,79 @@ func (kv KeyValue) Get(key string) (nats.KeyValueEntry, error) {
 	return entry, kvAnswer(key, err)
 }
 
+// LatestEntry is what GetLatest answers for a key: Entry, the value Get answered, nil where Get
+// answered nats.ErrKeyNotFound, and Revision, the revision a write over what the read found is
+// conditioned on - the value's, a delete or purge marker's where that is the key's newest entry,
+// and 0 where the bucket holds no entry for the key at all.
+type LatestEntry struct {
+	Entry    nats.KeyValueEntry
+	Revision uint64
+}
+
+// GetLatest reads key as Get reads it and also answers the revision a write over what it found is
+// conditioned on (LatestEntry). Get reports a key whose newest entry is a delete or purge marker
+// as nats.ErrKeyNotFound and hides the marker's revision (nats.go@v1.55.0 kv.go:617-627, whose get
+// answers nats.ErrKeyDeleted at kv.go:684-693), and so does this, with the marker's revision
+// beside the error.
+//
+// That revision is what a write that must land only over the very entry its plan read names:
+// Update at it, which nats.go sends with Nats-Expected-Last-Subject-Sequence for every revision, 0
+// included (kv.go:784-804), so the stream refuses it over any entry stored since, and Update at 0
+// over any entry at all, a marker included. Create cannot be that write: refused over a marker,
+// nats.go's Create reads the key again and updates at that marker's revision (kv.go:729-739), so a
+// create planned before a delete, or abandoned and landing after one, lands over that delete.
+//
+// A key Get finds is answered by that one read. A key it reports not found is read once more, for
+// the marker, as the stream's newest message on the key's subject (newestMarker): the same direct
+// get, `$JS.API.DIRECT.GET.KV_<bucket>.$KV.<bucket>.<key>`, that nats.go's kvs.get sends through
+// GetLastMsg with nats.DirectGet on the AllowDirect stream behind every bucket this package opens
+// (Get states why each carries it), read here with its KV-Operation header (kvOperationHeader).
+// So the grant that lets a process Get a key lets it read this (natsgrant.KVWrite holds
+// $JS.API.DIRECT.GET.KV_<bucket>.> beside the bucket's writes). A
+// handle whose client reads by stream message gets (WithStreamMessageReads, an edge listener's,
+// whose grant holds no direct get) reads the marker as its Get reads the key, with a stream
+// message get, `$JS.API.STREAM.MSG.GET.KV_<bucket>`, which carries the same header. Either goes
+// out on the connection the handle's jetstream context holds, the one BoundedOn watches; it
+// waits RequestTimeout, the MaxWait the listener and Dispatch open their legacy handles with. A
+// value that read finds was stored after Get answered none, and answers revision 0, so the write
+// is refused over it and its caller reads again; a marker stored between the two reads names a key
+// that holds no value either way, so the write lands over that marker. With ENVOY_NATS_REPLICAS
+// above 1 a copy one write behind can answer either read, as it can answer Get: a write at the
+// older revision it answers is refused, and its caller reads again.
+func (kv KeyValue) GetLatest(key string) (LatestEntry, error) {
+	entry, err := kv.Get(key)
+	if err == nil {
+		return LatestEntry{Entry: entry, Revision: entry.Revision()}, nil
+	}
+	if !errors.Is(err, nats.ErrKeyNotFound) {
+		return LatestEntry{}, err
+	}
+	revision, err := kv.newestMarker(key)
+	if err != nil {
+		return LatestEntry{}, err
+	}
+	return LatestEntry{Revision: revision}, nats.ErrKeyNotFound
+}
+
+// newestMarker is the revision of key's newest entry where that is a delete or purge marker, and 0
+// where it is a value or the bucket holds no entry for key (GetLatest).
+func (kv KeyValue) newestMarker(key string) (uint64, error) {
+	opts := []nats.JSOpt{nats.MaxWait(RequestTimeout)}
+	if kv.owner == nil || !kv.owner.streamMessageReads {
+		opts = append(opts, nats.DirectGet())
+	}
+	message, marker, err := kv.newestMessage(key, opts...)
+	switch {
+	case errors.Is(err, nats.ErrMsgNotFound):
+		return 0, nil
+	case err != nil:
+		return 0, fmt.Errorf("read the newest entry of key %s of KV bucket %s: %w", key, kv.Bucket(), err)
+	case marker:
+		return message.Sequence, nil
+	}
+	return 0, nil
+}
+
 // BoundedOn is Bounded for call, a call on kv - a read, a write or a delete of its bucket, or any
 // run of them - that also ends when the connection kv's calls go out on is lost before call
 // answers: replaced by another its client dialled, closed, or reconnected in place
@@ -672,6 +748,12 @@ func (kv KeyValue) PutString(key string, value string) (uint64, error) {
 	return revision, kv.tooLarge(key, len(value), kvAnswer(key, err))
 }
 
+// Create writes value under key when the bucket holds no value for it. A key whose newest entry is
+// a delete or purge marker holds none: nats.go's Create, refused over the marker, reads the key
+// again and updates at the marker's revision (nats.go@v1.55.0 kv.go:729-739). So it is the write
+// of a caller to which a deleted key is a key never written - a spent DPoP proof - and not of one
+// whose write must land only over the entry a read of its own found: such a caller reads with
+// GetLatest and writes with Update at the revision that read answered, 0 for no entry at all.
 func (kv KeyValue) Create(key string, value []byte) (uint64, error) {
 	if err := kv.write(key); err != nil {
 		return 0, err
@@ -680,11 +762,22 @@ func (kv KeyValue) Create(key string, value []byte) (uint64, error) {
 	return revision, kv.tooLarge(key, len(value), kvAnswer(key, err))
 }
 
+// Update writes value under key only while the key's newest entry is the one at revision last, a
+// delete or purge marker's included, and at last 0 only while the key has no entry at all
+// (nats.go's update sends Nats-Expected-Last-Subject-Sequence for every revision, 0 included,
+// kv.go:784-804). A refusal matches nats.ErrKeyExists whichever wrong-last-sequence answer the
+// stream sent: nats.go wraps both in nats.ErrKeyRevisionMismatch (kv.go:766-773), and a single
+// server's (10071) matches nats.ErrKeyExists by its code, while a clustered stream's answer for a
+// key a write to which is still in process (10164) does not, so it is wrapped here as nats.go's
+// Create wraps it (kv.go:741-750).
 func (kv KeyValue) Update(key string, value []byte, last uint64) (uint64, error) {
 	if err := kv.write(key); err != nil {
 		return 0, err
 	}
 	revision, err := refusedAfterOn(kv, kv.keySubjects(key), func() (uint64, error) { return kv.legacy.Update(key, value, last) })
+	if errors.Is(err, nats.ErrKeyRevisionMismatch) && !errors.Is(err, nats.ErrKeyExists) {
+		err = fmt.Errorf("%w: %w", err, nats.ErrKeyExists)
+	}
 	return revision, kv.tooLarge(key, len(value), kvAnswer(key, err))
 }
 
@@ -698,9 +791,11 @@ func (kv KeyValue) Update(key string, value []byte, last uint64) (uint64, error)
 // is how a loser of a race on a replicated bucket is answered when it reaches the leader before the
 // winner has landed. nats.go v1.55.0 names a Create's conflict nats.ErrKeyExists and an Update's,
 // Delete's or Purge's nats.ErrKeyRevisionMismatch, under either code, but nats.ErrKeyExists itself
-// matches an error by its code, 10071 alone: a lost Update, Delete or Purge on a replicated bucket
-// is not nats.ErrKeyExists. A conflict is therefore asked of this and never of nats.ErrKeyExists. A
-// publish's 10164 nats.go names nothing, so it is matched by its code.
+// matches an error by its code, 10071 alone: a lost Delete or Purge on a replicated bucket is not
+// nats.ErrKeyExists. This package's Update is the exception: it wraps its refusal in
+// nats.ErrKeyExists whichever code the stream sent (Update). A conflict is therefore asked of this
+// and never of nats.ErrKeyExists. A publish's 10164 nats.go names nothing, so it is matched by its
+// code.
 func IsCASConflict(err error) bool {
 	return errors.Is(err, nats.ErrKeyExists) || errors.Is(err, nats.ErrKeyRevisionMismatch) || errors.Is(err, wrongLastSequenceReplicated)
 }

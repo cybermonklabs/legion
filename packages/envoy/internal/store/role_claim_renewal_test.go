@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -447,7 +448,7 @@ func TestARenewalMovesNoClaimTheRegisteringProcessDoesNotHold(t *testing.T) {
 			if !slices.Equal(renewal.Set, []string{role}) || len(renewal.Renewed) != 0 {
 				t.Fatalf("the renewal weighed %v and renewed %v, want %s weighed and nothing renewed", renewal.Set, renewal.Renewed, role)
 			}
-			if stored := storedRoleClaim(t, reg, role); stored != claimed {
+			if stored := storedRoleClaim(t, reg, role); !reflect.DeepEqual(stored, claimed) {
 				t.Fatalf("the claim is now %+v, want it exactly as it stood, %+v", stored, claimed)
 			}
 			assertNoRenewalFailure(t, reg, role, tc.session)
@@ -552,7 +553,7 @@ func TestNoRegistrationRenewsAClaimItsHolderHandedBack(t *testing.T) {
 			if _, err := renewRoleClaims(t, reg, holder, instance); err != nil {
 				t.Fatalf("a registration %s after the hand-back by process %q: %v; want it to renew nothing, not fail", since, instance, err)
 			}
-			if stood := storedRoleClaim(t, reg, role); stood != marked {
+			if stood := storedRoleClaim(t, reg, role); !reflect.DeepEqual(stood, marked) {
 				t.Fatalf("the claim %s after the hand-back, registered by process %q, is %+v, want it exactly as the hand-back left it, %+v",
 					since, instance, stood, marked)
 			}
@@ -608,7 +609,7 @@ func TestARegistrationThatStatesNoProcessRenewsTheClaimsThatNameNone(t *testing.
 	if _, err := renewRoleClaims(t, reg, holder, roleClaimSecondInstance); err != nil {
 		t.Fatalf("a registration stating a process after that renewal: %v", err)
 	}
-	if stood := storedRoleClaim(t, reg, role); stood != renewed {
+	if stood := storedRoleClaim(t, reg, role); !reflect.DeepEqual(stood, renewed) {
 		t.Fatalf("the claim after a registration stating a process is %+v, want it exactly as the renewal that stated none left it, %+v: a claim its holder renews stating no process is adopted by no registration", stood, renewed)
 	}
 

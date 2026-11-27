@@ -11,6 +11,7 @@ package store
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -152,7 +153,7 @@ func TestARoleClaimThatNamesNoProcess(t *testing.T) {
 
 				releaseClaimOn(t, reg, path, holder, role, RoleReleaseAuthority{ClientInstanceID: roleClaimSecondInstance})
 
-				if stood := storedRoleClaim(t, reg, role); stood != seeded {
+				if stood := storedRoleClaim(t, reg, role); !reflect.DeepEqual(stood, seeded) {
 					t.Fatalf("the claim after the release is %+v, want it exactly as it stood, %+v: a release that states a process frees no claim that names none, and marks none", stood, seeded)
 				}
 				if path.handsBack {
@@ -171,7 +172,7 @@ func TestARoleClaimThatNamesNoProcess(t *testing.T) {
 					marked := storedRoleClaim(t, reg, role)
 					want := seeded
 					want.HandedBack, want.Revision = true, marked.Revision
-					if marked.Revision == seeded.Revision || marked != want {
+					if marked.Revision == seeded.Revision || !reflect.DeepEqual(marked, want) {
 						t.Fatalf("the claim after the hand-back is %+v (revision %d), want %+v marked handed back and nothing else changed", marked, marked.Revision, seeded)
 					}
 					assertInterestTopicsForSession(t, reg, holder, releaseKeptTopic, lane)
@@ -182,7 +183,7 @@ func TestARoleClaimThatNamesNoProcess(t *testing.T) {
 							if _, err := renewRoleClaims(t, reg, holder, instance); err != nil {
 								t.Fatalf("a registration %s after the hand-back by process %q: %v", since, instance, err)
 							}
-							if stood := storedRoleClaim(t, reg, role); stood != marked {
+							if stood := storedRoleClaim(t, reg, role); !reflect.DeepEqual(stood, marked) {
 								t.Fatalf("the claim %s after the hand-back, registered by process %q, is %+v, want it exactly as the hand-back left it, %+v", since, instance, stood, marked)
 							}
 						}
@@ -276,7 +277,7 @@ func TestARoleClaimThatNamesNoProcess(t *testing.T) {
 								if want := seeded.ClaimedAt + moment.later.Milliseconds(); granted.ClaimedAt != want {
 									t.Fatalf("the grant was claimed at %d and the claim the hand-back read at %d, want the grant at %d", granted.ClaimedAt, seeded.ClaimedAt, want)
 								}
-								if stood := storedRoleClaim(t, reg, role); stood != granted {
+								if stood := storedRoleClaim(t, reg, role); !reflect.DeepEqual(stood, granted) {
 									t.Fatalf("the claim after the hand-back is %+v (revision %d), want the grant %+v (revision %d) standing and unmarked", stood, stood.Revision, granted, granted.Revision)
 								}
 							})
@@ -290,7 +291,7 @@ func TestARoleClaimThatNamesNoProcess(t *testing.T) {
 
 					releaseClaimOn(t, reg, path, holder, role, RoleReleaseAuthority{})
 
-					if stood := storedRoleClaim(t, reg, role); stood != seeded {
+					if stood := storedRoleClaim(t, reg, role); !reflect.DeepEqual(stood, seeded) {
 						t.Fatalf("the claim after the deregistration is %+v, want it exactly as it stood, %+v: a deregistration that states no process frees nothing, and marks nothing", stood, seeded)
 					}
 					assertInterestMissing(t, reg, holder)
@@ -319,7 +320,7 @@ func TestARoleClaimThatNamesNoProcess(t *testing.T) {
 
 					releaseClaimOn(t, reg, path, holder, role, RoleReleaseAuthority{ClientInstanceID: roleClaimSecondInstance})
 
-					if stood := storedRoleClaim(t, reg, role); stood != seeded {
+					if stood := storedRoleClaim(t, reg, role); !reflect.DeepEqual(stood, seeded) {
 						t.Fatalf("the claim after another process's release is %+v, want it exactly as it stood, %+v", stood, seeded)
 					}
 				})
@@ -422,7 +423,7 @@ func TestARoleClaimThatNamesNoProcessIsAdoptedOnlyAtItsFirstHeartbeat(t *testing
 					if _, err := renewRoleClaims(t, listener, holder, roleClaimSecondInstance); err != nil {
 						t.Fatalf("the second process's registration through %s: %v", name, err)
 					}
-					if stood := storedRoleClaim(t, first, role); stood != renewed {
+					if stood := storedRoleClaim(t, first, role); !reflect.DeepEqual(stood, renewed) {
 						t.Fatalf("the claim after the second process's registration through %s is %+v, want it exactly as the holder's renewal left it, %+v: a claim renewed since it was written is adopted by no registration", name, stood, renewed)
 					}
 				}
@@ -457,7 +458,7 @@ func TestARoleClaimThatNamesNoProcessIsAdoptedOnlyAtItsFirstHeartbeat(t *testing
 						if _, err := renewRoleClaims(t, listener, holder, instance); err != nil {
 							t.Fatalf("a registration by process %q through %s: %v", instance, name, err)
 						}
-						if stood := storedRoleClaim(t, first, role); stood != adopted {
+						if stood := storedRoleClaim(t, first, role); !reflect.DeepEqual(stood, adopted) {
 							t.Fatalf("the claim after a registration by process %q through %s is %+v, want it exactly as the adoption left it, %+v", instance, name, stood, adopted)
 						}
 					}

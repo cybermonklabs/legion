@@ -48,7 +48,8 @@ func (r *Registry) decodeStoredLocked(entry kvwatch.Entry) (storedRow, bool, err
 }
 
 // decodeRecord decodes a record joined or read whole, stored under key, into the row it holds:
-// key's own row (boundInterest), or the error that says why it is none.
+// key's own row (boundInterest), with every key Interest does not name in its unknown map, which
+// the row's rewrite writes back (encodeInterest), or the error that says why it is none.
 func decodeRecord(key string, record []byte, layout kvchunk.Layout) (storedRow, error) {
 	item, err := boundInterest(key, record)
 	if err != nil {
@@ -111,27 +112,40 @@ func (r *Registry) malformedRecordAs(msg, sessionID string, revision uint64, err
 	return fmt.Errorf("%w: %w", ErrMalformedInterest, err)
 }
 
-// putInterestAt writes record as sessionID's interest record only while its latest revision is
-// revision, creating it when revision is 0, which names the session that had no row when its plan
-// read the bucket (createInterest). replaced is the layout of the record read at revision. It
+// putInterestAt writes record as sessionID's interest record only while the key's newest entry is
+// the one at revision, the revision its plan read (getLatest, or readRow for an unsubscribe, which
+// writes only over a row it found): the plan's own row, the delete or purge marker that ended the
+// row it found gone, or, at revision 0, no entry at all. Its head - the record itself, or the
+// manifest naming its chunks - is an Update at that revision every time, which nats.go conditions
+// on the key's newest entry, 0 included, so the write is refused over any entry stored since the
+// plan read, a marker among them. replaced is the layout of the record read at revision. It
 // reports what the write stored (kvchunk.Written: the revision written, the layout record was
 // stored in, and whether the bucket took the write) and the epoch of the handle it was written
-// through. A bucket that refused the write holds another writer's row since, which is no error
-// here (bus.IsCASConflict, the wrong-last-sequence answer a Create and an Update share), and the
-// caller plans again over that row. Each call waits no longer than ctx and ends at the loss of
-// the connection it went out on (bus.BoundedOn, in kvchunk.Write); a write ctx abandoned may still
-// land, and is safe for the same reason a conditional delete is: it stores only over the very
-// revision it read, so it cannot undo a write that landed after it.
+// through. A bucket that refused the write holds another writer's entry since, which is no error
+// here (bus.IsCASConflict), and the caller plans again over what it holds. Each call waits no
+// longer than ctx and ends at the loss of the connection it went out on (bus.BoundedOn, in
+// kvchunk.Write); a write ctx abandoned may still land, and is safe for the same reason a
+// conditional delete is: it stores only over the very entry its plan read, so it cannot undo a
+// write or a delete that landed after that read. A Create would not be: at revision 0, refused over
+// a marker, nats.go's Create updates at the marker's revision (nats.go v1.55.0 kv.go:729-739), so a
+// create planned before an unsubscribe or a reap, or one landing after it, would bring the record
+// back over it. A marker the server copied from another key's carries the source's Nats-Sequence
+// header ahead of its own, so the revision a direct get reports for it (getLatest) is the source's
+// and this write is refused; the write made again reads the key from the stream's leader
+// (readLeader), which reports the sequence the marker is stored at.
 //
 // A record past one message is written as its chunks and then its manifest, the manifest with that
-// same compare-and-swap, and the chunks replaced named are deleted once it lands: replaced is the
-// layout of a row of this session, since both the cache's rows and a bucket read's decode through
-// decodeRecord, which gives a layout only to a record boundInterest binds to its key,
-// and a chunk is written once, under a generation no other write uses, so no other row names them
-// (kvchunk.Write says what else a write deletes and what it leaves to the reaper's collection).
-// The manifest carries row's view for an earlier build (ChunkedRecordView), so a listener of that
-// build serves and counts the session from it. A session id under the chunk keys' prefix is
-// refused (kvchunk.ReservedKey): no record stands there.
+// same compare-and-swap, so a write that loses the swap, or stops before it, leaves only chunks no
+// manifest names, never a manifest naming chunks that are not there. The chunks replaced named are
+// deleted once the manifest lands, and only then: the swap landing at revision is what proves the
+// record replaced was the one read at revision, and replaced is the layout of a row of this
+// session, since both the cache's rows and a bucket read's decode through decodeRecord, which
+// gives a layout only to a record boundInterest binds to its key, and a chunk is written once,
+// under a generation no other write uses, so no other row names them (kvchunk.Write says what else
+// a write deletes and what it leaves to the reaper's collection). The manifest carries row's view
+// for an earlier build (ChunkedRecordView), so a listener of that build serves and counts the
+// session from it. A session id under the chunk keys' prefix is refused (kvchunk.ReservedKey): no
+// record stands there.
 func (r *Registry) putInterestAt(ctx context.Context, sessionID string, row Interest, record []byte, revision uint64, replaced kvchunk.Layout) (kvchunk.Written, uint64, error) {
 	kv, epoch := r.watcher.Handle()
 	view := func(room int) ([]byte, error) {
@@ -142,9 +156,6 @@ func (r *Registry) putInterestAt(ctx context.Context, sessionID string, row Inte
 		})
 	}
 	written, err := kvchunk.Write(ctx, kv, sessionID, record, view, replaced, func(head []byte) (uint64, error) {
-		if revision == 0 {
-			return createInterest(ctx, kv, sessionID, head)
-		}
 		return kv.Update(sessionID, head, revision)
 	}, r.now, r.logger(), interestRecord)
 	return written, epoch, err

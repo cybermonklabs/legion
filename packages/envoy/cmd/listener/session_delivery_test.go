@@ -896,6 +896,72 @@ func TestSessionConsumerRoleClaimKeepsConsumerDelivery(t *testing.T) {
 	}
 }
 
+// A role claim's refresh over a session whose record the bucket no longer holds writes the
+// machine, the self-subscription, the claim token's projects and a stamped UpdatedAt and nothing
+// else (session.SessionRegistry.PutClearingGap), no delivery set. The claim route reads the claimant
+// through the cache (liveSessionEntry), so it reaches that write when the bucket lost the record
+// with no delete marker, as its maximum age removes one, while the cache still holds it. A message
+// sent to the session meanwhile is held on its consumer, neither delivered elsewhere nor
+// acknowledged away: the relay stops for a record that is not on consumer delivery
+// (sessionRelays.wanted), and the session's next heartbeat writes its full record and the relay
+// delivers the message then, once.
+//
+// Control: a relay that reads the bare record as final - it goes on relaying a record that names
+// its machine whatever the record's delivery, and acknowledges undelivered each frame of a session
+// whose record records no consumer delivery - takes the message off the consumer, and the session
+// never receives it after the heartbeat.
+func TestARoleClaimOverAMissingRecordHoldsAMessageUntilTheHeartbeat(t *testing.T) {
+	t.Parallel()
+	rig := newRelayRig(t)
+	const sessionID = "ses_claim_over_missing"
+	agent := contracts.LegacyAgentSubject(sessionID)
+	standIn := startSessionStandIn(t, rig.url, sessionID, answerDone)
+	rig.subscribe(t, consumerRegistration(sessionID, "epoch-1"))
+	// The relay is pulling: a message stored now reaches the session, which answers it.
+	first, firstSeq := rig.storeEvent(t, agent)
+	requireFrames(t, standIn.collect(t, 1, 5*time.Second), first)
+
+	// The record leaves the bucket with no delete marker, as the bucket's maximum age removes one
+	// (a purge of the key's subject on the bucket's stream, which a KV bucket's DenyDelete leaves
+	// allowed), so the watcher hears nothing and the cache still holds it.
+	if err := rig.harness.client.JS().PurgeStream("KV_"+bus.SessionBucket, &natsgo.StreamPurgeRequest{Subject: testnats.KVSubject(bus.SessionBucket, sessionID)}); err != nil {
+		t.Fatalf("remove the record of %s from the bucket: %v", sessionID, err)
+	}
+	if entry := rig.entry(t, sessionID); entry.Delivery != session.DeliveryConsumer {
+		t.Fatalf("precondition: the cache reads %s as %+v, want the registration on consumer delivery", sessionID, entry)
+	}
+
+	rig.post(t, "/v1/roles/set", `{"session_id":"`+sessionID+`","role":"claim-over-missing"}`)
+	waitFor(t, "the cache to read the claim's bare record of "+sessionID, func() bool {
+		entry, err := rig.harness.sessions.Get(sessionID)
+		return err == nil && entry.Delivery == ""
+	})
+	bare := rig.entry(t, sessionID)
+	if bare.MachineID != "test-machine" || !bare.SelfSubscribed || bare.Epoch != "" || bare.ConsumerStart != 0 || bare.Title != "" {
+		t.Fatalf("the claim over the missing record wrote %+v, want test-machine, self-subscribed and no delivery set", bare)
+	}
+	// The relay stops for the bare record: its hand-over line is written once the run has returned.
+	stopped, _ := relayHandOverLines(relayCancelNotOurs)
+	if !testwait.Holds(5*time.Second, 20*time.Millisecond, func() bool {
+		return len(linesIn(rig.harness.logs.String(), stopped, map[string]any{"session_id": sessionID, "reason": relayCancelNotOurs.String()})) > 0
+	}) {
+		t.Errorf("the relay of %s did not stop for the bare record within 5 s", sessionID)
+	}
+
+	sent, _ := rig.storeEvent(t, agent)
+	standIn.none(t, time.Second)
+	rig.awaitPending(t, sessionID, 1)
+
+	// The heartbeat, carrying the resume point of the last frame the session received.
+	rig.subscribe(t, `{"session_id":"`+sessionID+`","self_subscribed":true,"topics":[],
+		"delivery":{"consumer":true,"epoch":"epoch-1","resume":{"stream_id":"`+rig.streamID(t)+`","seq":`+jsonUint(firstSeq)+`}}}`)
+	if entry := rig.entry(t, sessionID); entry.Delivery != session.DeliveryConsumer {
+		t.Fatalf("the heartbeat left the record %+v, want consumer delivery", entry)
+	}
+	requireFrames(t, standIn.collect(t, 1, 5*time.Second), sent)
+	standIn.none(t, time.Second)
+}
+
 // recordingRelay records what the session-consumer manager tells the relay.
 type recordingRelay struct {
 	mu    sync.Mutex

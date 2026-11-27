@@ -1,6 +1,7 @@
 package store
 
 import (
+	"encoding/json"
 	"slices"
 
 	"github.com/sjawhar/envoy/internal/bus"
@@ -8,10 +9,35 @@ import (
 	"github.com/sjawhar/envoy/listenerwire"
 )
 
-// Interest is one session's persisted interest record, the value the interest bucket stores and
-// the listener's interest routes answer, which the listener's wire package declares
-// (listenerwire.Interest).
-type Interest = listenerwire.Interest
+// Interest is one session's persisted interest record, the value the interest bucket stores. The
+// listener's interest routes answer it as the listener's wire package declares it
+// (listenerwire.Interest, which Wire builds), and the two name the same JSON keys
+// (TestAnInterestAnswersEveryKeyTheWireDeclares). It is a type of its own rather than that one
+// because of unknown, which no answer carries.
+type Interest struct {
+	SessionID string   `json:"session_id"`
+	MachineID string   `json:"machine_id"`
+	Dir       string   `json:"dir"`
+	Topics    []string `json:"topics"`
+	UpdatedAt int64    `json:"updated_at"`
+
+	// unknown holds the JSON of every key a stored interest carries that Interest does not name: a
+	// field a newer build writes, which encodeInterest writes back so a heartbeat through this build
+	// keeps it. It is never modified once decoded, so copies of an interest may share it.
+	unknown map[string]json.RawMessage
+}
+
+// Wire is item as the listener's interest routes and its registration answer carry it: every
+// field Interest names, and none of the keys only a newer build names, which stay in the bucket.
+func (item Interest) Wire() listenerwire.Interest {
+	return listenerwire.Interest{
+		SessionID: item.SessionID,
+		MachineID: item.MachineID,
+		Dir:       item.Dir,
+		Topics:    item.Topics,
+		UpdatedAt: item.UpdatedAt,
+	}
+}
 
 func Merge(item Interest, topics []string) Interest {
 	seen := map[string]bool{}

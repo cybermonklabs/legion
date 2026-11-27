@@ -453,7 +453,9 @@ func handOverTakenRole(ctx context.Context, cfg listenerDeliveryHandlerConfig, r
 // listener. A failed pass is logged at WARN, except a read of the previous holder's floor that this
 // listener's NATS user may not make (bus.ErrConsumerNotGranted), which is logged at debug and ends
 // every pass of records: the records came from passRecords, so the grant went away since, and
-// every other record's first pass would be refused the same.
+// every other record's first pass would be refused the same. A record another pass wrote, or the
+// stream removed, since this pass read it (bus.ErrTakeoverRecordMoved) is logged at debug too: its
+// next pass reads it again.
 func runTakeoverPasses(ctx context.Context, cfg listenerDeliveryHandlerConfig, records []bus.StoredTakeoverRecord) {
 	for _, stored := range records {
 		for !stored.Record.Finished && ctx.Err() == nil {
@@ -461,7 +463,7 @@ func runTakeoverPasses(ctx context.Context, cfg listenerDeliveryHandlerConfig, r
 			if err != nil {
 				refused := errors.Is(err, bus.ErrConsumerNotGranted)
 				level := slog.LevelWarn
-				if refused {
+				if refused || errors.Is(err, bus.ErrTakeoverRecordMoved) {
 					level = slog.LevelDebug
 				}
 				cfg.logger.LogEvent(level, "listener takeover copy pass failed; the next pass goes on from its record",
@@ -823,9 +825,10 @@ func takeoverStart(ctx context.Context, cfg listenerDeliveryHandlerConfig, recor
 // writeTakeoverRecord writes record on stored's subject while that subject's newest message is
 // still the one stored was read at, and returns the sequence it stored
 // (bus.Client.WriteTakeoverRecordAt), within takeoverRecordWindow of ctx. A write another pass
-// moved under it is bus.ErrTakeoverRecordMoved: this pass writes nothing and the next one reads
-// the record again, so a pass held since its read cannot write an older state over a later
-// pass's, the finish among it.
+// moved under it, or one over a record the stream removed since the pass read it, is
+// bus.ErrTakeoverRecordMoved: this pass writes nothing and the next one reads the record again, so
+// a pass held since its read, or one whose write comes late, cannot write an older state over a
+// later pass's, the finish among it, nor bring back a record that was removed.
 func writeTakeoverRecord(ctx context.Context, cfg listenerDeliveryHandlerConfig, stored bus.StoredTakeoverRecord, record bus.TakeoverRecord) (uint64, error) {
 	if hook := cfg.takeoverFaults.faults().beforeRecordWrite; hook != nil {
 		hook(record.Role, record.Previous, record.Next, record.Finished)

@@ -20,8 +20,8 @@ var replicatedConflict = &nats.APIError{ErrorCode: nats.JSErrCodeStreamWrongLast
 // replicated is answered 10164, not the 10071 a bucket of one copy answers, and IsCASConflict counts
 // it a conflict all the same: a Create of the key, an Update at its revision, and a Delete and a
 // Purge at its revision (nats.LastRevision). nats.ErrKeyExists matches 10071 alone, so it misses the
-// Update, the Delete and the Purge; nats.go v1.55.0 names those nats.ErrKeyRevisionMismatch, and
-// wraps a Create's 10164 in nats.ErrKeyExists itself.
+// Delete and the Purge, which nats.go v1.55.0 names nats.ErrKeyRevisionMismatch; nats.go wraps a
+// Create's 10164 in nats.ErrKeyExists itself, and this package's Update wraps its own (Update).
 func TestAConditionalWriteThatLosesToAReplicatingWriteIsACASConflict(t *testing.T) {
 	cluster := testnats.StartCluster(t, 3)
 	conn, js := memberJetStream(t, cluster, 0)
@@ -57,7 +57,7 @@ func TestAConditionalWriteThatLosesToAReplicatingWriteIsACASConflict(t *testing.
 		{"an update at the key's revision", "update", func(key string, revision uint64) error {
 			_, err := kv.Update(key, []byte("x"), revision)
 			return err
-		}, false},
+		}, true},
 		{"a delete at the key's revision", "delete", func(key string, revision uint64) error {
 			return kv.Delete(key, nats.LastRevision(revision))
 		}, false},
@@ -91,11 +91,11 @@ func TestAConditionalWriteThatLosesToAReplicatingWriteIsACASConflict(t *testing.
 // its write at revision 0, reads the key back on that write's refusal, and, finding the delete
 // marker (nats.ErrKeyDeleted), sends the write again at the marker's revision and returns that
 // write's error as it is (kv.go:737-738): neither nats.ErrKeyExists nor nats.ErrKeyRevisionMismatch
-// wraps it, so the leader's 10164 is caught by IsCASConflict's code alone. The store's role claim
-// takes this path whenever it writes at revision 0 over a deleted record. The store's interest
-// write does not: it replaces a delete marker by an Update at the revision the stream's leader
-// reports for the marker (store's createInterest), and nats.go names that Update's lost race
-// nats.ErrKeyRevisionMismatch, which IsCASConflict matches by class.
+// wraps it, so the leader's 10164 is caught by IsCASConflict's code alone. Neither the store's
+// interest write nor its role claim takes this path: each writes with an Update at the revision of
+// the entry its read found, a delete marker's included (putInterestAt, roleClaimToWrite), and
+// nats.go names that Update's lost race nats.ErrKeyRevisionMismatch, which IsCASConflict matches by
+// class.
 //
 // The read must be answered while the routes are frozen. A direct get, which every bucket of this
 // build reads by, goes to whichever copy's queue subscriber the server picks, a remote one as
@@ -117,9 +117,7 @@ func TestACreateOverADeleteMarkerThatLosesToAReplicatingWriteIsACASConflict(t *t
 	}
 	undirected := info.Config
 	undirected.AllowDirect = false
-	if _, err := js.UpdateStream(&undirected); err != nil {
-		t.Fatalf("take direct gets off the bucket's stream: %v", err)
-	}
+	testnats.UpdateStream(t, js, undirected)
 	cluster.MoveStreamLeader(t, "KV_"+bucket, 0)
 	// No span of its own: an answer can come late on a loaded machine with nothing wrong.
 	bucketJS, err := conn.JetStream(testnats.MaxWait(t))
@@ -206,5 +204,40 @@ func TestACursorWriteThatLosesToAReplicatingWriteIsCursorMoved(t *testing.T) {
 	}
 	if !errors.Is(err, ErrCursorMoved) {
 		t.Fatalf("the cursor write = %v, want an error wrapping ErrCursorMoved", err)
+	}
+}
+
+// A takeover record write over a sequence that loses to a write of its subject still being
+// replicated, on a stream of three copies, is ErrTakeoverRecordMoved: the leader answers it 10164,
+// not the 10071 a stream of one copy answers, and a lost race is a lost race whichever it answers.
+// Only 10071 was ErrTakeoverRecordMoved, so a takeover pass that lost its record to another write
+// on a replicated stream logged the loss as a failed write rather than skipping it as a lost race.
+// It must not run in parallel: routes frozen past the 4 s election timeout let a follower campaign.
+func TestATakeoverRecordWriteThatLosesToAReplicatingWriteIsMoved(t *testing.T) {
+	cluster := testnats.StartCluster(t, 3)
+	client, err := ConnectOwningStream([]string{cluster.Servers[0].URL()}, WithReplicas(3))
+	if err != nil {
+		t.Fatalf("start on member %s: %v", cluster.Name(0), err)
+	}
+	t.Cleanup(client.Close)
+	cluster.MoveStreamLeader(t, Stream, 0)
+	ctx := testwait.Context(t)
+	subject := TakeoverSubject("replicated-takeover", "ses_previous", "attempt")
+	record := TakeoverRecord{Role: "replicated-takeover", Previous: "ses_previous", ClaimedAt: 1}
+	first, err := client.WriteTakeoverRecordAt(ctx, StoredTakeoverRecord{Subject: subject}, record)
+	if err != nil {
+		t.Fatalf("the first takeover record write: %v", err)
+	}
+
+	read := StoredTakeoverRecord{Subject: subject, Sequence: first, Record: record}
+	record.Next = 2
+	release := cluster.HoldReplicatingWrite(t, Stream, subject)
+	_, err = client.WriteTakeoverRecordAt(ctx, read, record)
+	release()
+	if !errors.Is(err, replicatedConflict) {
+		t.Fatalf("the takeover record write = %v, want the replicated stream's wrong last sequence, 10164", err)
+	}
+	if !errors.Is(err, ErrTakeoverRecordMoved) {
+		t.Fatalf("the takeover record write = %v, want an error wrapping ErrTakeoverRecordMoved", err)
 	}
 }

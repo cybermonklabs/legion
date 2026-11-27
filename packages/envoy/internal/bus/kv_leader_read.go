@@ -1,6 +1,30 @@
-// The leader-answered reads of one key of a KV bucket (KeyValue.GetFromLeader,
-// KeyValue.NewestFromLeader), beside their test: the reads of this package that may not be a
-// direct get, because what they decide is a delete or the revision a write is fenced on.
+// The leader-answered reads of one key of a KV bucket, beside their test, each read so because a
+// copy behind the leader, which a direct get may reach, would answer it wrongly, and because only
+// the leader's answer carries the headers the stream stored a message with:
+// KeyValue.GetFromLeader, whose callers decide a delete or a release on the strength of a key
+// being absent (session.SessionRegistry.RefreshFromLeader, for the delete of a session's consumer
+// and the interest and role claim reapers, and internal/session's readForStop, for a conditional
+// stop), whether a claim takes a role from its holder or is written for its claimant
+// (RefreshFromLeader again: a soft claim's reads of the holder, and the claim route's read of its
+// claimant), which client instance a delete names (RefreshFromLeader again: the registration view
+// of GET /v1/registry/<id>, whose caller names the id it reads in the delete that follows), the
+// revision a write or a delete is fenced on (KeyValue.ReadStored, and store's latestStored),
+// whether a CI record's change is declined and the revision its retry writes at,
+// and whether a settlement's claim still holds before it is published (internal/cistore's
+// Store.casState and Store.ClaimStillHeld, each passing context.Background, so RequestTimeout
+// alone bounds it), and which session holds a Legion controller's notice lane, which decides a
+// session's consumer filter (store's roleClaimFromLeader, under Registry.ReadLaneHolders);
+// KeyValue.NewestFromLeader and KeyValue.ReadFromLeader, whose callers decide a delete or the
+// revision a write is fenced on, and who holds a role, for the session relay's judgement of a role
+// message and the kept lane's handover (store.Registry.RoleClaimFromLeader); and
+// KeyValue.GetLatestFromLeader, whose one caller, internal/session's readLatest, reads it for the
+// revision a conditional write that lost to another writes at next (session.SessionRegistry's
+// registration writes), for the record each pass of a rewrite of a session's entry decides from
+// and the revision it writes at, its first pass included, before any write was lost
+// (SessionRegistry.PutClearingGap, SetRepositoryGap, ClearRepositoryGap and RenewWithin), and for
+// SessionRegistry.StoredByWriter, whose callers decide whether the edge listener shows a session,
+// sends to it or names it as a role's holder (cmd/listener's project_scope.go). The read of a key's
+// newest message they all make (newestMessage) is GetLatest's marker read too.
 //
 // Three deletes are decided from a copy - a store's cache, fed by its watcher of the bucket, or
 // the list of chunk markers that watcher delivered - and not from the leader, and no
@@ -61,15 +85,47 @@ import (
 )
 
 // kvOperationHeader is the header nats.go marks a KV delete or a KV purge marker with, and
-// kvDeleteMarker and kvPurgeMarker are the two values it writes (nats.go@v1.55.0 kv.go:291-316).
-// A read that takes a key's newest message from the bucket's stream itself (NewestFromLeader)
-// reads them for itself, where nats.go's Get reads them on its caller's behalf and reports either
-// marker as a key that is not there.
+// kvDeleteMarker and kvPurgeMarker are the two values it writes (nats.go@v1.55.0 kv.go:304-306).
+// A read that takes a key's newest message from the bucket's stream itself (NewestFromLeader, and
+// the marker read of KeyValue.GetLatest) reads them for itself, where nats.go's Get reads them on
+// its caller's behalf and reports either marker as a key that is not there.
 const (
 	kvOperationHeader = "KV-Operation"
 	kvDeleteMarker    = "DEL"
 	kvPurgeMarker     = "PURGE"
 )
+
+// kvOperation is the KV operation a message of a bucket's stream records, read from its
+// KV-Operation header: a delete or a purge marker, and a put for every other message.
+func kvOperation(header nats.Header) nats.KeyValueOp {
+	switch header.Get(kvOperationHeader) {
+	case kvDeleteMarker:
+		return nats.KeyValueDelete
+	case kvPurgeMarker:
+		return nats.KeyValuePurge
+	}
+	return nats.KeyValuePut
+}
+
+// newestMessage is key's newest message in the bucket's stream, the one GetLastMsg sent with opts
+// answers for the key's subject `$KV.<bucket>.<key>`, and whether it is a delete or purge marker:
+// the read NewestFromLeader and GetLatest's marker read (newestMarker) both make. It goes out on
+// the legacy JetStream context of the connection this handle reads the bucket's stream through;
+// building one sends nothing, so each read builds its own rather than keep one on the handle. Its
+// read names a refusal while nats.go reconnects (namedRequests). A subject that holds no message
+// answers nats.ErrMsgNotFound, and every other error is nats.go's own, which each caller names.
+func (kv KeyValue) newestMessage(key string, opts ...nats.JSOpt) (*nats.RawStreamMsg, bool, error) {
+	js, err := JetStreamOn(kv.streams.Conn())
+	if err != nil {
+		return nil, false, err
+	}
+	bucket := kv.Bucket()
+	message, err := js.GetLastMsg("KV_"+bucket, "$KV."+bucket+"."+key, opts...)
+	if err != nil {
+		return nil, false, err
+	}
+	return message, kvOperation(message.Header) != nats.KeyValuePut, nil
+}
 
 // leaderEntry is a key's newest message, read from the bucket's own stream (NewestFromLeader), as
 // the nats.KeyValueEntry Get answers for that key: the bucket, the key, the value, the stream
@@ -111,8 +167,9 @@ var serverWrittenHeaders = [...]string{nats.JSStream, nats.JSSubject, nats.JSSeq
 // stream was given. nats.go reads a KV entry's revision from the first Nats-Sequence header of a
 // direct get's answer, so such a message carrying one is reported at another stream's sequence, and
 // a write fenced on that is refused at every attempt; the leader's read reports the sequence it is
-// stored at. An entry of any other read is no leader read, and answers false. ReadFromLeader
-// classifies a leader read with it; LeaderEntry.WrittenByServer answers the classified result.
+// stored at. An entry of any other read is no leader read, and answers false. ReadFromLeader and
+// GetLatestFromLeader classify a leader read with it; LeaderEntry.WrittenByServer answers the
+// classified result.
 func isServerWritten(entry nats.KeyValueEntry) bool {
 	read, ok := entry.(leaderEntry)
 	if !ok {
@@ -225,6 +282,27 @@ func (kv KeyValue) GetFromLeader(ctx context.Context, key string) (nats.KeyValue
 	return entry, nil
 }
 
+// GetLatestFromLeader reads key as GetLatest reads it, from the leader of the bucket's stream, as
+// NewestFromLeader reads it: the one stream message get of the key's newest message, which answers
+// a delete or purge marker's revision too, so no second read finds the marker. A conditional write
+// that lost to another write reads the key so before it writes again (internal/session's
+// registration writes), since a copy that keeps answering a write behind would hand it the revision
+// it just lost on, again and again. A put the server wrote (isServerWritten) is answered as no
+// entry, nats.ErrKeyNotFound with the revision it is stored at, as a marker is: the headers that
+// tell it from a writer's record reach this read alone, never GetLatest's direct get, so a write
+// fenced on that revision replaces it there and never carries its body forward as a writer's.
+// Everything else is GetFromLeader's: its refusals, its errors and its bound on ctx.
+func (kv KeyValue) GetLatestFromLeader(ctx context.Context, key string) (LatestEntry, error) {
+	entry, err := kv.NewestFromLeader(ctx, key)
+	switch {
+	case err != nil:
+		return LatestEntry{}, err
+	case entry.Operation() != nats.KeyValuePut || isServerWritten(entry):
+		return LatestEntry{Revision: entry.Revision()}, nats.ErrKeyNotFound
+	}
+	return LatestEntry{Entry: entry, Revision: entry.Revision()}, nil
+}
+
 // LeaderReads is a bucket handle that answers a read from the stream's leader itself, in place of
 // the stream: the fault seam for a test whose wrapper of a handle (NewKeyValue, KeyValue.Legacy)
 // plants a fault in every read of the bucket, the leader's included. NewestFromLeader, and so
@@ -262,34 +340,17 @@ func (kv KeyValue) NewestFromLeader(ctx context.Context, key string) (nats.KeyVa
 		defer cancel()
 	}
 	bucket := kv.Bucket()
-	named := func(err error) error {
-		return fmt.Errorf("read key %s of KV bucket %s from its stream's leader: %w", key, bucket, err)
-	}
-	// The legacy JetStream context of the connection this handle reads the bucket's stream
-	// through: building one sends nothing, and these reads are its only callers, so it is built
-	// here rather than kept on the handle. Its read names a refusal while nats.go reconnects
-	// (namedRequests).
-	js, err := JetStreamOn(kv.streams.Conn())
-	if err != nil {
-		return nil, named(err)
-	}
 	// A read the grant refuses draws no answer; the record names the refusal after the read's own
 	// wait (refusedAfter), which costs a read the leader answers nothing.
 	message, err := refusedAfter(kv.owner, func() []string { return []string{jsAPI("STREAM.MSG.GET", "KV_"+bucket)} }, func() (*nats.RawStreamMsg, error) {
-		return js.GetLastMsg("KV_"+bucket, "$KV."+bucket+"."+key, nats.Context(ctx))
+		message, _, err := kv.newestMessage(key, nats.Context(ctx))
+		return message, err
 	})
 	if errors.Is(err, nats.ErrMsgNotFound) {
 		return nil, nats.ErrKeyNotFound
 	}
 	if err != nil {
-		return nil, named(err)
-	}
-	op := nats.KeyValuePut
-	switch message.Header.Get(kvOperationHeader) {
-	case kvDeleteMarker:
-		op = nats.KeyValueDelete
-	case kvPurgeMarker:
-		op = nats.KeyValuePurge
+		return nil, fmt.Errorf("read key %s of KV bucket %s from its stream's leader: %w", key, bucket, err)
 	}
 	return leaderEntry{
 		bucket:   bucket,
@@ -297,7 +358,7 @@ func (kv KeyValue) NewestFromLeader(ctx context.Context, key string) (nats.KeyVa
 		value:    message.Data,
 		revision: message.Sequence,
 		created:  message.Time,
-		op:       op,
+		op:       kvOperation(message.Header),
 		header:   message.Header,
 	}, nil
 }

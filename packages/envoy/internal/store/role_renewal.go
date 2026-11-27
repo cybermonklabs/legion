@@ -17,7 +17,6 @@ package store
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -396,7 +395,7 @@ func (r *Registry) renewRoleClaim(ctx context.Context, role, sessionID, clientIn
 			renewed.ClientInstanceID = clientInstanceID
 			renewed.RenewedWithoutProcess = clientInstanceID == ""
 			renewed.RenewedAt = r.now().UnixMilli()
-			data, err := json.Marshal(renewed)
+			data, err := encodeRoleClaim(renewed)
 			if err != nil {
 				return 0, err
 			}

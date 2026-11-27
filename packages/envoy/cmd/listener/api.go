@@ -220,15 +220,23 @@ func writeListRefilling(w http.ResponseWriter) {
 // take whole, or a session id or role whose KV key would make a subject too long (bus.ErrTooLarge),
 // is a 413, and any other refusal, a topic or key NATS does not accept in a subject
 // (bus.ErrInvalidSubject) or a key outside nats.go's key alphabet (bus.ErrInvalidKey: `ses:bad`), a
-// 400. Any other failure is status with message. It returns the status it wrote: a caller that
-// also records the answer (requestRecord, request_record.go) reads this one classification back
-// instead of repeating it, so no record can disagree with the response that was sent.
+// 400. A registration or interest write that lost its compare-and-set to other listeners' writes on
+// every attempt (session.ErrWriteConflict, or the interest writer's own give-up,
+// store.ErrInterestTopicsNotMerged and store.ErrInterestTopicsNotRemoved) wrote nothing and is a
+// 503 with Retry-After, whatever status the caller names. Any other failure is status with
+// message. It returns the status it wrote: a caller that also records the answer (requestRecord,
+// request_record.go) reads this one classification back instead of repeating it, so no record can
+// disagree with the response that was sent.
 func writeNATSError(w http.ResponseWriter, err error, status int, message string) int {
 	switch {
 	case errors.Is(err, bus.ErrTooLarge):
 		status, message = http.StatusRequestEntityTooLarge, err.Error()
 	case errors.Is(err, bus.ErrRefused):
 		status, message = http.StatusBadRequest, err.Error()
+	case errors.Is(err, session.ErrWriteConflict), errors.Is(err, store.ErrInterestTopicsNotMerged),
+		errors.Is(err, store.ErrInterestTopicsNotRemoved):
+		w.Header().Set("Retry-After", "1")
+		status, message = http.StatusServiceUnavailable, err.Error()
 	}
 	writeJSONError(w, status, message)
 	return status
@@ -454,11 +462,14 @@ func writeGrantGuardRefusal(w http.ResponseWriter, role, holder string, err erro
 
 // storeAnswered reports whether err, from the store work of a /v1 route that writes, done within
 // ctx, is the store's own answer: a key NATS refuses (bus.ErrRefused), no key (nats.ErrKeyNotFound),
-// a record this build cannot decode (store.ErrMalformedInterest, store.ErrMalformedRoleClaim), or a
-// conditional write or delete another writer's change beat (bus.IsCASConflict). Every other error
-// did not answer, whatever it names, and so does any error once ctx has ended. An errors.Join of
-// failures (store.Registry.SetRoleWithPrevious joins a lost claim with its holder read and its
-// rollback) answered only when every part of it did.
+// a record this build cannot decode (store.ErrMalformedInterest, store.ErrMalformedRoleClaim), a
+// conditional write or delete another writer's change beat (bus.IsCASConflict), or a registration
+// or interest write that lost its compare-and-set on every attempt (session.ErrWriteConflict,
+// store.ErrInterestTopicsNotMerged, store.ErrInterestTopicsNotRemoved), which writeNATSError
+// answers as its own 503. Every other error did not
+// answer, whatever it names, and so does any error once ctx has ended. An errors.Join of failures
+// (store.Registry.SetRoleWithPrevious joins a lost claim with its holder read and its rollback)
+// answered only when every part of it did.
 func storeAnswered(ctx context.Context, err error) bool {
 	if ctx.Err() != nil {
 		return false
@@ -484,13 +495,15 @@ func storeAnswer(err error) bool {
 		}
 	}
 	return errors.Is(err, bus.ErrRefused) || errors.Is(err, nats.ErrKeyNotFound) || bus.IsCASConflict(err) ||
-		errors.Is(err, store.ErrMalformedInterest) || errors.Is(err, store.ErrMalformedRoleClaim)
+		errors.Is(err, store.ErrMalformedInterest) || errors.Is(err, store.ErrMalformedRoleClaim) ||
+		errors.Is(err, session.ErrWriteConflict) || errors.Is(err, store.ErrInterestTopicsNotMerged) ||
+		errors.Is(err, store.ErrInterestTopicsNotRemoved)
 }
 
 // writeStoreError answers err from a write route's store work done within ctx: a store answer
 // (storeAnswered) as status naming err, as the route always answered it (a refused key still the
-// 413 or 400 writeNATSError gives it), and anything else as the bus-unavailable 503 with
-// Retry-After: 1 (writeBusUnavailable).
+// 413 or 400 writeNATSError gives it, a lost compare-and-set its 503 with Retry-After), and anything
+// else as the bus-unavailable 503 with Retry-After: 1 (writeBusUnavailable).
 func writeStoreError(ctx context.Context, w http.ResponseWriter, err error, status int) {
 	if storeAnswered(ctx, err) {
 		writeNATSError(w, err, status, err.Error())
@@ -1833,45 +1846,6 @@ func writeUnshownSession(ctx context.Context, w http.ResponseWriter, scope *edge
 	return false
 }
 
-// claimRefreshProjects is the projects a role claim's refresh writes on the claimant's session
-// entry (session.SessionEntry.Projects, through PutWithin), keeping the stored record's projects
-// only where that record is the session's own registration, and taking the claim token's projects
-// otherwise, so a forged record's projects are never written back as this session's own:
-//   - the stored record names sessionID (entry.SessionID, a cheap pre-check on the cached entry),
-//     and the stream's leader confirms its newest message is a writer's that names sessionID
-//     (session.SessionRegistry.StoredByWriter), not a RePublish of another stream the server stored
-//     at the key, which session.DecodeEntry can read as a record of this very key naming any
-//     projects. Both "names its key" and "is a writer's" are judged on the one record the leader
-//     returns, never on the direct get the pre-check reads, so a writer's write landing between the
-//     two reads cannot leave a RePublished record's projects standing. Every listener confirms, not
-//     the edge alone: once an in-house listener writes a RePublished record's projects back as a
-//     registration, the edge can no longer tell it from one (edgeScope.showsConfirmed).
-//   - otherwise - a record that names another key, one an earlier build wrote naming no key, one the
-//     server wrote, and a claim with no broker token - the projects of the token this claim was made
-//     with (registeringProjects), [] for a claim that presented none, which the edge shows no
-//     project on.
-//
-// The error is the confirmation read that did not answer, which the caller answers as the
-// bus-unavailable 503, so a hiccup never wipes a session's projects. clearForged is true when the
-// cached entry names sessionID but the stream leader holds no writer's record for it (the RePublish
-// case above): its non-project fields may be a RePublish's too, so the caller carries back none of
-// them.
-func claimRefreshProjects(ctx context.Context, sessions *session.SessionRegistry, r *http.Request, sessionID string, entry session.SessionEntry) (projects []string, clearForged bool, err error) {
-	if entry.SessionID == sessionID {
-		readCtx, cancel := context.WithTimeout(ctx, roleHolderReadTimeout)
-		confirmed, ok, readErr := sessions.StoredByWriter(readCtx, sessionID)
-		cancel()
-		if readErr != nil {
-			return nil, false, fmt.Errorf("confirm role claimant registration: %w", readErr)
-		}
-		if ok && confirmed.SessionID == sessionID {
-			return confirmed.Projects, false, nil
-		}
-		return registeringProjects(r), true, nil
-	}
-	return registeringProjects(r), false, nil
-}
-
 // sessionEntryHandler answers GET /v1/registry/<session_id>, the one question a caller holding a
 // session id asks before it addresses that session: is this session live, and how is it named? The
 // read goes through liveSessionEntry, so a session this listener's cache does not hold yet — the
@@ -2008,7 +1982,7 @@ func sessionEntryHandler(d *listenerDeps) http.HandlerFunc {
 // (session.SessionRegistry.LastSeen), else none. A listener restart empties those records, so a
 // session that died before it reads as unknown.
 func interestRowFor(sessions *session.SessionRegistry, item store.Interest) listenerwire.InterestRow {
-	row := listenerwire.InterestRow{Interest: item}
+	row := listenerwire.InterestRow{Interest: item.Wire()}
 	if entry, err := sessions.Get(item.SessionID); err == nil {
 		row.LastSeen = entry.UpdatedAt
 	} else {
@@ -2376,60 +2350,32 @@ func roleSetHandler(d *listenerDeps, machineID string, logger *logging.Logger) h
 		body.Role, roleWarning = d.registry.ClaimedRole(body.Role)
 		ctx, cancel := context.WithTimeout(r.Context(), sendRequestBudget)
 		defer cancel()
-		entry, err := d.sessions.Get(body.SessionID)
-		if errors.Is(err, nats.ErrKeyNotFound) {
+		// The claimant's registration is read through liveSessionEntry, so one another listener
+		// wrote a moment ago, in the bucket and not yet in this listener's cache, is found. The
+		// bucket read is the leader's (RefreshFromLeader): it decides the claim's write, and on a
+		// replicated bucket a copy that has not applied the registration would refuse the claim as
+		// unregistered, or hand the predecessor rule below an instance id the session has replaced.
+		entry, _, err := liveSessionEntry(ctx, d.sessions, body.SessionID, roleHolderReadTimeout, notGone, d.sessions.RefreshFromLeader)
+		switch {
+		case errors.Is(err, bus.ErrRefused):
+			// The read reports a refused key as a missing one too, so this test comes first:
+			// writeStoreError answers it as the 413 or 400 it is.
+			writeStoreError(ctx, w, err, http.StatusBadRequest)
+			return
+		case errors.Is(err, nats.ErrKeyNotFound):
 			writeJSONError(w, http.StatusNotFound, "session is not registered")
 			return
-		}
-		if err != nil {
-			writeJSONError(w, http.StatusServiceUnavailable, "read session registration: "+err.Error())
+		case err != nil:
+			writeStoreError(ctx, w, fmt.Errorf("read session registration: %w", err), http.StatusServiceUnavailable)
 			return
-		}
-		// Get answers from the cache alone, and the cache follows the session bucket through a
-		// watcher and so trails it. A trailing cache would decide this claim twice over: it would
-		// read an empty client instance id from an entry this process has not caught up with,
-		// demoting a claim weighed against a predecessor to the "no instance id" case below, and
-		// PutWithin would write that stale entry back over a newer one. So the claimant's own
-		// entry is read from the bucket itself, and when that read answers, its entry is the one
-		// refreshed here and the one the predecessor rule falls back to. A read that does not
-		// answer keeps the cache's entry and goes on, so this claim is never worse off than it
-		// was without the bucket read.
-		if fresh, freshErr := bucketSessionEntry(ctx, d.sessions, body.SessionID, roleHolderReadTimeout); freshErr == nil {
-			entry = fresh
 		}
 		// The process this claim is made by is the one the request states, and the claim records
 		// it: a session id names no process, since a second process can resume a live session's
 		// id, and the session record then names whichever of them registered the id last. That
 		// record is the thing this route stops trusting, so it is read for one decision alone -
-		// the predecessor rule's fallback below - and registeredInstanceID is read before the
-		// refresh overwrites nothing of it.
+		// the predecessor rule's fallback below (registeredInstanceID, taken from the refresh's
+		// read of the record where that record is the session's own, and from entry otherwise).
 		claimantInstanceID := body.ClientInstanceID
-		registeredInstanceID := entry.ClientInstanceID
-		entry.MachineID = machineID
-		entry.SelfSubscribed = true
-		// The claim renews the claimant's registration by writing back the entry it read, and
-		// it never writes the instance the request states into that entry: one registration per
-		// session id is a non-goal, and a process that wants a registration of its own
-		// registers (POST /v1/sessions/subscribe).
-		//
-		// The refresh writes the port out of the entry: no registration this build stores
-		// carries one (subscribeHandler refuses a registration that names a serving port) and
-		// no delivery opens a connection to a session, so a renewed entry still carrying the
-		// port an earlier build's listener stored would keep answering GET /v1/sessions with it
-		// (listenerwire.SessionInfo.Port) for as long as the claims keep refreshing the entry,
-		// where writing it out lets it lapse with the entry it came on.
-		entry.Port = 0
-		// claimRefreshProjects keeps the stored record's projects only where the stream's leader
-		// confirms that record is this session's own registration, and takes the claim token's
-		// projects (registeringProjects) otherwise, so a forged record's projects are never written
-		// back as this session's own. A confirmation read that did not answer is the bus-unavailable
-		// 503, so a hiccup never wipes a session's projects.
-		projects, clearForged, projectsErr := claimRefreshProjects(ctx, d.sessions, r, body.SessionID, entry)
-		if projectsErr != nil {
-			writeStoreError(ctx, w, projectsErr, http.StatusServiceUnavailable)
-			return
-		}
-		entry.Projects = projects
 		// The refresh names this machine as the session's relay, so a claim made through
 		// another edge replica than the one the session registered through moves the relay
 		// here. An edge relay holds the session's frames to the projects of the token this
@@ -2442,27 +2388,46 @@ func roleSetHandler(d *listenerDeps, machineID string, logger *logging.Logger) h
 		// listener's cache with no bucket call, as a registration reads it (registerPass): a
 		// claimant the refresh makes live again is handed its roles' kept lanes, by the rule above.
 		_, before := d.sessions.Lookup(body.SessionID)
-		var writeErr error
-		if clearForged {
-			// The stream leader holds no writer's record for the key the cached entry names, so none
-			// of its fields but the machine, self-subscription and the claim token's projects may be
-			// the session's own: a RePublish could set its own session's title, a non-consumer
-			// delivery that pauses its relay until the next registration, a display field or a gap
-			// mark. PutClearingGap writes only those three over a record no writer's stands for, as the
-			// gap and renewal writes carry back nothing of a server-written record (the F3 rule); where
-			// the session's own registration landed in the race between this confirmation and the
-			// write, it writes that record back with only those three changed, keeping its delivery set
-			// and the rest, rather than clearing a live session's own.
-			writeErr = d.sessions.PutClearingGap(ctx, body.SessionID, entry.MachineID, entry.SelfSubscribed, entry.Projects)
-		} else {
-			writeErr = d.sessions.PutWithin(ctx, body.SessionID, entry)
-		}
-		if writeErr != nil {
-			writeStoreError(ctx, w, fmt.Errorf("refresh role claimant registration: %w", writeErr), http.StatusServiceUnavailable)
+		// The registration is rewritten as self-subscribed through this listener from one read of
+		// the stream leader's record, written at that read's revision
+		// (session.SessionRegistry.PutClearingGap), so a write the server or another writer lands
+		// in between is no write this one overwrites: it loses, and the next pass reads and decides
+		// again. That read decides what is written. The session's own writer's record is written
+		// back with only the machine, the self-subscription and the port changed and its UpdatedAt
+		// stamped, so the newer host another listener stored is kept, and so are its projects and
+		// the client instance id the registration carries: this write names none of its own. A
+		// record an earlier build wrote, naming no key, is written back the same way, but its
+		// projects become the claim token's (registeringProjects) and the keys this build does not
+		// know are dropped, as it may be another session's record the server copied here.
+		// Any other - a record the server wrote, a copy of another key's, a marker or none - is
+		// cleared to the machine, the self-subscription and the claim token's projects, with its
+		// UpdatedAt stamped: a RePublish could set its own session's title, a non-consumer delivery
+		// that pauses its relay until the next registration, a display field or a gap mark, and none
+		// of them is written back as the session's own registration. The port is written out because
+		// no registration this build stores carries one (subscribeHandler refuses a registration that
+		// names a serving port) and no delivery opens a connection to a session, so a renewed entry
+		// still carrying the port an earlier build's listener stored would keep answering GET
+		// /v1/sessions with it (listenerwire.SessionInfo.Port) for as long as the claims keep
+		// refreshing the entry. One registration per session id is a non-goal, and a process that
+		// wants a registration of its own registers (POST /v1/sessions/subscribe). A leader read that
+		// did not answer is the bus-unavailable 503, so a hiccup never wipes a session's projects.
+		prior, own, err := d.sessions.PutClearingGap(ctx, body.SessionID, machineID, true, registeringProjects(r))
+		if err != nil {
+			writeStoreError(ctx, w, fmt.Errorf("refresh role claimant registration: %w", err), http.StatusServiceUnavailable)
 			return
 		}
 		// At the edge the claim just recorded the session's admission, which resumes its relay there (resumeHeld).
 		d.consumers.resumeHeld(r, body.SessionID)
+		// The claimant's registered client instance id, which the predecessor rule falls back to, is
+		// the one PutClearingGap's leader read found, as the record stood before the refresh, where
+		// that record is the session's own registration naming its key; any other record keeps the
+		// id of entry, liveSessionEntry's read: this listener's cached entry, or else the leader's record
+		// (RefreshFromLeader), either of which a RePublish can have written, since neither judges the
+		// headers that tell one from a registration. PutClearingGap says what each record answers.
+		registeredInstanceID := entry.ClientInstanceID
+		if own {
+			registeredInstanceID = prior.ClientInstanceID
+		}
 		// landed is set by a claim that landed, whose own handover hands the claimed role's lane
 		// over, so the handovers of a claimant this refresh made live again leave that role out.
 		// At the edge a claimant is handed the kept lanes of its token's projects' roles alone
@@ -3885,7 +3850,7 @@ func subscribeHandler(d *listenerDeps, machineID string, logger *logging.Logger)
 			Capabilities: body.Capabilities,
 			Topics:       item.Topics,
 			Principal:    principal,
-		}, listenerwire.SubscribeResponse{Interest: item, Warnings: warnings, Delivery: delivery.answer}, logger)
+		}, listenerwire.SubscribeResponse{Interest: item.Wire(), Warnings: warnings, Delivery: delivery.answer}, logger)
 	}
 }
 

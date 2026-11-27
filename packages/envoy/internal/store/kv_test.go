@@ -781,6 +781,58 @@ func TestGet_ColdCacheMissReturnsError(t *testing.T) {
 	}
 }
 
+// countingGets counts the Gets made through it, each one read of the bucket.
+type countingGets struct {
+	natsgo.KeyValue
+	gets int
+}
+
+func (kv *countingGets) Get(key string) (natsgo.KeyValueEntry, error) {
+	kv.gets++
+	return kv.KeyValue.Get(key)
+}
+
+// A read of a session whose interest record a delete ended answers not found from the one Get of
+// the bucket that found no record: Get and RefreshAt read no marker revision, which only a write
+// planned over the missing record needs (getLatest). The marker read here would fail, on a
+// connection already closed, so a read that made it would turn the not-found into a failure,
+// which GET /v1/interests/{id} answers 503 rather than 404.
+func TestAReadOfADeletedInterestAnswersNotFoundFromOneBucketRead(t *testing.T) {
+	conn, cleanup := connectNATS(t)
+	defer cleanup()
+	reg, kv := coldRegistry(t, conn)
+	const sessionID = "ses_deleted"
+	putInterest(t, kv, Interest{SessionID: sessionID, MachineID: "m1", Topics: []string{"topic.a"}})
+	if err := kv.Delete(sessionID); err != nil {
+		t.Fatalf("delete %s's interest record: %v", sessionID, err)
+	}
+	handle := reg.watcher.KV()
+	if latest, err := handle.GetLatest(sessionID); !errors.Is(err, natsgo.ErrKeyNotFound) || latest.Revision == 0 {
+		t.Fatalf("GetLatest(%s) = %+v, %v; the row needs a delete marker as the key's newest entry", sessionID, latest, err)
+	}
+	closed := testnats.Connect(t, testnats.URL(t))
+	closed.Close()
+	streams, err := jetstream.New(closed)
+	if err != nil {
+		t.Fatalf("open a jetstream context on the closed connection: %v", err)
+	}
+	counted := &countingGets{KeyValue: kv}
+	reg.watcher = kvwatch.New("interest registry", bus.NewKeyValue(counted, handle.WatchHandle(), streams), interestCache{reg})
+
+	if _, err := reg.Get(context.Background(), sessionID); !errors.Is(err, natsgo.ErrKeyNotFound) {
+		t.Fatalf("Get(%s) = %v, want nats.ErrKeyNotFound: the read of a deleted record failed on a marker read", sessionID, err)
+	}
+	if counted.gets != 1 {
+		t.Fatalf("Get(%s) read the bucket %d times, want 1", sessionID, counted.gets)
+	}
+	if _, revision, err := reg.RefreshAt(context.Background(), sessionID); !errors.Is(err, natsgo.ErrKeyNotFound) || revision != 0 {
+		t.Fatalf("RefreshAt(%s) = revision %d, %v; want revision 0 and nats.ErrKeyNotFound", sessionID, revision, err)
+	}
+	if counted.gets != 2 {
+		t.Fatalf("RefreshAt(%s) read the bucket %d times, want 1", sessionID, counted.gets-1)
+	}
+}
+
 // A read whose context has already ended still answers from the cache: Get's cache hit never
 // consults ctx. Every read that would go to the bucket - a Get that misses, a claim read, and a
 // release's read - instead returns ctx's end, naming the call, and a release left that way deletes
@@ -2460,11 +2512,12 @@ func TestSetRoleRollsBackWhenInterestUpsertFails(t *testing.T) {
 		t.Fatalf("seed role claim: %v", err)
 	}
 
-	// The claimant has no row, so the write that merges its role topic in is the create of one at
-	// the revision its read answered, which is none (UpsertWithin).
+	// The claimant has no row, so the write that merges its role topic in is the conditional
+	// write at the revision its read answered, 0 for a key that holds no entry (UpsertWithin,
+	// putInterestAt): an Update the bucket refuses over any entry.
 	useKV(t, reg, &failingKeyValue{
 		KeyValue:     kv,
-		failCreateAt: 1,
+		failUpdateAt: 1,
 		err:          errors.New("injected interest write failure"),
 	})
 	if _, err := reg.SetRole(newSession, "example-host", role, false); err == nil {
@@ -2513,9 +2566,10 @@ func TestSetRoleLeavesInterestWhenRoleWriteFails(t *testing.T) {
 	assertInterestMissing(t, reg, newSession)
 }
 
-// A soft claim of an unheld role creates its claim conditionally, so a genuine failure of that
-// create is still a failure: nothing holds the role and the claimant's role topic is rolled back.
-func TestSetRoleRollsBackWhenRoleCreateFails(t *testing.T) {
+// A soft claim of an unheld role writes its claim conditionally, at revision 0 where the role's
+// key holds no entry (an Update the bucket refuses over any entry), so a genuine failure of that
+// write is still a failure: nothing holds the role and the claimant's role topic is rolled back.
+func TestSetRoleRollsBackWhenTheRoleWriteOverNoClaimFails(t *testing.T) {
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
 
@@ -2526,11 +2580,11 @@ func TestSetRoleRollsBackWhenRoleCreateFails(t *testing.T) {
 	)
 	reg.roleKV = bus.NewKeyValue(&failingKeyValue{
 		KeyValue:     reg.roleKV.Legacy(),
-		failCreateAt: 1,
-		err:          errors.New("injected role create failure"),
+		failUpdateAt: 1,
+		err:          errors.New("injected role write failure"),
 	}, reg.roleKV.WatchHandle(), reg.roleKV.Streams())
 	if _, err := reg.SetRole(sessionID, "example-host", role, true); err == nil {
-		t.Fatal("SetRole must return the failed role create")
+		t.Fatal("SetRole must return the failed role write")
 	}
 
 	assertRoleHolder(t, reg, role, "")
@@ -2562,11 +2616,12 @@ func TestSetRoleSucceedsWhenOldHolderCleanupFails(t *testing.T) {
 	}
 
 	// The cleanup of the old holder's role topic is a compare-and-swap on the row the bucket
-	// holds (removeInterestTopics), and the only update this handle sees: the claimant has no row
-	// of its own, so the write before it creates one (UpsertWithin).
+	// holds (removeInterestTopics), the second update this handle sees: the claimant has no row
+	// of its own, so the write before it is the update at revision 0 that stores one
+	// (UpsertWithin, putInterestAt).
 	useKV(t, reg, &failingKeyValue{
 		KeyValue:     kv,
-		failUpdateAt: 1,
+		failUpdateAt: 2,
 		err:          errors.New("injected old-holder cleanup failure"),
 	})
 	if _, err := reg.SetRole(newSession, "example-host", role, false); err != nil {
@@ -2649,12 +2704,10 @@ func useKV(t *testing.T, r *Registry, kv natsgo.KeyValue) {
 type failingKeyValue struct {
 	natsgo.KeyValue
 
-	failPutAt    int
-	failCreateAt int
 	failUpdateAt int
-	puts         int
-	creates      int
+	failPutAt    int
 	updates      int
+	puts         int
 	err          error
 }
 
@@ -2664,14 +2717,6 @@ func (kv *failingKeyValue) Put(key string, value []byte) (uint64, error) {
 		return 0, kv.err
 	}
 	return kv.KeyValue.Put(key, value)
-}
-
-func (kv *failingKeyValue) Create(key string, value []byte) (uint64, error) {
-	kv.creates++
-	if kv.failCreateAt == kv.creates {
-		return 0, kv.err
-	}
-	return kv.KeyValue.Create(key, value)
 }
 
 func (kv *failingKeyValue) Update(key string, value []byte, revision uint64) (uint64, error) {
@@ -2734,10 +2779,10 @@ func captureRegistryLogs(t *testing.T) *lockedBuffer {
 
 type lockedBuffer = logtest.Buffer
 
-// A soft claim's create is conditional, and the claim that beat it to the key was this very
-// process's own concurrent claim: the role is held by the process that asked for it, so the
-// call is the success it would have been had it won, not *ErrRoleHeld against itself and not a
-// failure.
+// A soft claim's write over no claim is conditional, and the claim that beat it to the key was
+// this very process's own concurrent claim: the role is held by the process that asked for it, so
+// the call is the success it would have been had it won, not *ErrRoleHeld against itself and not
+// a failure.
 //
 // Both claims name one process, because the claim that stands is read as the claimant's own
 // concurrent success only where it names the claimant's process as well as its session
@@ -2755,12 +2800,12 @@ func TestSetRoleSoftTreatsSameProcessCASConflictAsConcurrentSuccess(t *testing.T
 		roleTopic = "notifications.role.legion-controller"
 	)
 	claim := RoleClaimRequest{SessionID: sessionID, MachineID: "example-host", ClientInstanceID: roleClaimInstance, Role: role, Soft: true}
-	racingKV := &racingCreateKeyValue{KeyValue: reg.roleKV.Legacy()}
+	racingKV := &racingWriteOverNoEntry{KeyValue: reg.roleKV.Legacy()}
 	reg.roleKV = bus.NewKeyValue(racingKV, reg.roleKV.WatchHandle(), reg.roleKV.Streams())
 
 	var concurrent Interest
 	var concurrentErr error
-	racingKV.beforeFirstCreate = func() {
+	racingKV.beforeFirstWrite = func() {
 		concurrent, concurrentErr = reg.SetRoleWithPrevious(context.Background(), claim)
 	}
 	first, firstErr := reg.SetRoleWithPrevious(context.Background(), claim)
@@ -2986,9 +3031,9 @@ func TestRemoveDoesNotOverwriteNewerWatcherValue(t *testing.T) {
 	pollMatch(t, reg, machineID, "notifications.a", 1, 5*time.Second)
 
 	interestKV := reg.watcher.KV()
-	useKV(t, reg, &interleavingPutKeyValue{
+	useKV(t, reg, &interleavingWriteKeyValue{
 		KeyValue: interestKV.Legacy(),
-		afterFirstPut: func() {
+		afterFirstWrite: func() {
 			putInterest(t, interestKV.Legacy(), Interest{
 				SessionID: sessionID,
 				MachineID: machineID,
@@ -3011,20 +3056,33 @@ func TestRemoveDoesNotOverwriteNewerWatcherValue(t *testing.T) {
 	}
 }
 
-type racingCreateKeyValue struct {
+// racingWriteOverNoEntry loses the first write through it over a key that holds no entry - an
+// Update at revision 0, the write a plan that found no entry makes (putInterestAt,
+// SetRoleWithPrevious) - to whatever beforeFirstWrite stores: it runs that and answers the
+// refusal the bucket would, nats.ErrKeyExists.
+type racingWriteOverNoEntry struct {
 	natsgo.KeyValue
 
-	creates           int
-	beforeFirstCreate func()
+	writes           int
+	beforeFirstWrite func()
 }
 
-func (kv *racingCreateKeyValue) Create(key string, value []byte) (uint64, error) {
-	kv.creates++
-	if kv.creates == 1 {
-		kv.beforeFirstCreate()
+func (kv *racingWriteOverNoEntry) Update(key string, value []byte, revision uint64) (uint64, error) {
+	if revision == 0 && kv.racing() {
 		return 0, natsgo.ErrKeyExists
 	}
-	return kv.KeyValue.Create(key, value)
+	return kv.KeyValue.Update(key, value, revision)
+}
+
+// racing counts a write over no entry and reports whether it is the first, once beforeFirstWrite
+// has run for it.
+func (kv *racingWriteOverNoEntry) racing() bool {
+	kv.writes++
+	if kv.writes != 1 {
+		return false
+	}
+	kv.beforeFirstWrite()
+	return true
 }
 
 type racingDeleteKeyValue struct {
@@ -3044,37 +3102,39 @@ func (kv *racingDeleteKeyValue) Delete(key string, opts ...natsgo.DeleteOpt) err
 	return kv.KeyValue.Delete(key, opts...)
 }
 
-type interleavingPutKeyValue struct {
+// interleavingWriteKeyValue runs afterFirstWrite once the first write through it (Put, Create or
+// Update) has landed, before the registry applies its write-through.
+type interleavingWriteKeyValue struct {
 	natsgo.KeyValue
 
-	puts          int
-	afterFirstPut func()
+	writes          int
+	afterFirstWrite func()
 }
 
-func (kv *interleavingPutKeyValue) Put(key string, value []byte) (uint64, error) {
-	kv.puts++
-	revision, err := kv.KeyValue.Put(key, value)
+func (kv *interleavingWriteKeyValue) wrote(revision uint64, err error) (uint64, error) {
 	if err != nil {
 		return 0, err
 	}
-	if kv.puts == 1 {
-		kv.afterFirstPut()
+	kv.writes++
+	if kv.writes == 1 {
+		kv.afterFirstWrite()
 	}
 	return revision, nil
 }
 
+func (kv *interleavingWriteKeyValue) Put(key string, value []byte) (uint64, error) {
+	return kv.wrote(kv.KeyValue.Put(key, value))
+}
+
+func (kv *interleavingWriteKeyValue) Create(key string, value []byte) (uint64, error) {
+	return kv.wrote(kv.KeyValue.Create(key, value))
+}
+
 // The write removeInterestTopics makes is conditional on the revision of the row it read, so the
-// interleaved write is driven from here too: the hook fires after the first write of either kind.
-func (kv *interleavingPutKeyValue) Update(key string, value []byte, revision uint64) (uint64, error) {
-	kv.puts++
-	written, err := kv.KeyValue.Update(key, value, revision)
-	if err != nil {
-		return 0, err
-	}
-	if kv.puts == 1 {
-		kv.afterFirstPut()
-	}
-	return written, nil
+// interleaved write is driven from here too.
+// 2af83d53fc (#2603) added this Update arm to interleavingPutKeyValue; 68fea2de7c's interleavingWriteKeyValue already had it.
+func (kv *interleavingWriteKeyValue) Update(key string, value []byte, last uint64) (uint64, error) {
+	return kv.wrote(kv.KeyValue.Update(key, value, last))
 }
 
 func TestDeleteHistoryFailureSuppressesStaleWatcherUpdate(t *testing.T) {

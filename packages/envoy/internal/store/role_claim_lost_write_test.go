@@ -51,8 +51,8 @@ func TestAClaimWhoseWriteFailedIsSuccessOnlyForTheClaimantsOwnProcess(t *testing
 			conn, cleanup := connectNATS(t)
 			t.Cleanup(cleanup)
 			reg, _ := coldRegistry(t, conn)
-			racing := &racingCreateKeyValue{KeyValue: reg.roleKV.Legacy()}
-			racing.beforeFirstCreate = func() {
+			racing := &racingWriteOverNoEntry{KeyValue: reg.roleKV.Legacy()}
+			racing.beforeFirstWrite = func() {
 				claimRoleAs(t, reg, holder, "example-host", role, tc.standing)
 			}
 			reg.roleKV = bus.NewKeyValue(racing, reg.roleKV.WatchHandle(), reg.roleKV.Streams())
@@ -65,7 +65,7 @@ func TestAClaimWhoseWriteFailedIsSuccessOnlyForTheClaimantsOwnProcess(t *testing
 				Soft:             true,
 			})
 
-			if racing.creates == 0 {
+			if racing.writes == 0 {
 				t.Fatalf("the claim never reached a conditional write, so it never raced")
 			}
 			if tc.granted {

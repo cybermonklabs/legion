@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
+	"reflect"
 	"slices"
 	"sort"
 	"strings"
@@ -82,7 +83,17 @@ type RoleClaim struct {
 	// /v1/roles/<role> reports as claim_revision, so a caller can read a role and then claim
 	// it only while no other claim has landed.
 	Revision uint64 `json:"-"`
+
+	// unknown holds the JSON of every key a stored claim carries that RoleClaim does not name: a
+	// field a newer build writes, which a role claim through this build writes back. It is never
+	// modified once decoded, so copies of a claim may share it.
+	unknown map[string]json.RawMessage
 }
+
+// roleClaimKeys are RoleClaim's JSON keys; any other key of a stored claim is kept in its unknown
+// map, and written back by every rewrite of the claim, so pods of two builds taking turns at one
+// record during a roll do not drop each other's fields.
+var roleClaimKeys = JSONKeys(reflect.TypeFor[RoleClaim]())
 
 // LastAnsweredAt is the wall clock in milliseconds at which this claim's holder last answered for
 // it: RenewedAt where the record carries one, and ClaimedAt, the moment the claim was written,
@@ -692,9 +703,10 @@ func (r *Registry) roleClaimsUntil(ctx context.Context) ([]scannedRoleClaim, err
 // failed, and reading it again returns the same record; each error wrapping it names which.
 var ErrMalformedRoleClaim = errors.New("malformed role claim")
 
-// DecodeRoleClaim reads a stored role claim record: a structured claim naming a holder, or a bare
-// session id an earlier build stored. Any other record is ErrMalformedRoleClaim. Dispatch's outbox
-// reads the role bucket through it too (roles.Buckets), so the two readers cannot drift.
+// DecodeRoleClaim reads a stored role claim record: the fields RoleClaim names, every other key
+// into its unknown map, or a bare session id an earlier build stored. Any other record is
+// ErrMalformedRoleClaim. Dispatch's outbox reads the role bucket through it too (roles.Buckets),
+// so the two readers cannot drift.
 //
 // A record that carries no client instance id, no renewal, or neither is read, not refused: a
 // claim an earlier build wrote names no process and no renewal, and both fields are left zero, as
@@ -702,11 +714,12 @@ var ErrMalformedRoleClaim = errors.New("malformed role claim")
 // record this build cannot read at all.
 func DecodeRoleClaim(value []byte) (RoleClaim, error) {
 	var claim RoleClaim
-	err := json.Unmarshal(value, &claim)
+	unknown, err := DecodeKeeping(value, &claim, roleClaimKeys)
 	if err == nil {
 		if strings.TrimSpace(claim.HolderSessionID) == "" {
 			return RoleClaim{}, fmt.Errorf("%w: it names no holder", ErrMalformedRoleClaim)
 		}
+		claim.unknown = unknown
 		return claim, nil
 	}
 	if json.Valid(value) {
@@ -719,6 +732,12 @@ func DecodeRoleClaim(value []byte) (RoleClaim, error) {
 		return RoleClaim{}, fmt.Errorf("%w: a legacy record with an empty holder", ErrMalformedRoleClaim)
 	}
 	return RoleClaim{HolderSessionID: holder}, nil
+}
+
+// encodeRoleClaim writes claim for the bucket: its known fields, and the unknown keys it was
+// decoded with (DecodeRoleClaim).
+func encodeRoleClaim(claim RoleClaim) ([]byte, error) {
+	return EncodeKeeping(claim, claim.unknown)
 }
 
 // newRoleHolderCopy is an empty copy of the role claim bucket, which keeps the session each claim
@@ -1032,6 +1051,14 @@ func (e *ErrRoleHeld) Error() string {
 // there is none. No claim record was written: the role is left exactly as the claim that stands
 // left it, and a claim that lost the write's compare-and-swap rolled its own topic back unless
 // the winning claim names the claimant itself.
+//
+// The two revisions are equal only for a claim whose write lost its compare-and-swap and whose
+// read after that (rollBackUnlessHeld) found the revision the claim required: 0 when a claim
+// landed after this claim's read and was released before the read after it, so the role has no
+// claim record again but its key a newer entry than the one the write was conditional on
+// (roleClaimToWrite), and the required revision itself when a copy of a replicated bucket that
+// has not applied the write that won answered that read (RoleClaim's direct get). Error then says
+// the write lost, rather than naming one revision twice as the one held and the one required.
 type ErrRoleClaimRevisionMismatch struct {
 	Role     string
 	Expected uint64
@@ -1040,14 +1067,19 @@ type ErrRoleClaimRevisionMismatch struct {
 }
 
 func (e *ErrRoleClaimRevisionMismatch) Error() string {
+	if e.Actual == e.Expected {
+		return fmt.Sprintf("role %s's claim changed after this claim read it at revision %d: its conditional write lost to a write that landed since", e.Role, e.Expected)
+	}
 	return fmt.Sprintf("role %s's claim is at revision %d, not the %d this claim required", e.Role, e.Actual, e.Expected)
 }
 
 // RoleClaim reads role's claim from the bucket, waiting no longer than ctx (bus.BoundedOn). The
 // claim it returns carries the entry's revision (RoleClaim.Revision), which is what a conditional
-// claim and GET /v1/roles/<role> compare against; a role with no claim record returns a zero
-// claim without an error, so a zero revision names a role no record claims, and a record that is
-// not a claim returns ErrMalformedRoleClaim.
+// claim compares against and what GET /v1/roles/<role> reports as claim_revision; a role
+// with no claim record returns a zero claim without an error, so a zero revision names a role no
+// record claims, and a JSON record that is not a claim returns ErrMalformedRoleClaim. A value
+// that is not JSON is read as an earlier build's bare holder id (DecodeRoleClaim), not as
+// malformed.
 //
 // That revision is the whole of what the entry the read answered says beyond the claim itself,
 // which is why this hands back no entry: a caller testing whether the bucket holds a record for
@@ -1065,6 +1097,35 @@ func (r *Registry) RoleClaim(ctx context.Context, role string) (RoleClaim, error
 	if err != nil {
 		return RoleClaim{}, err
 	}
+	return decodeReadRoleClaim(entry)
+}
+
+// roleClaimToWrite is RoleClaim for the claim SetRoleWithPrevious is about to write over the
+// record it reads, with the revision that write is conditional on. The key is read with
+// bus.KeyValue.GetLatest, so that revision is the claim's own where a claim record stands, the
+// revision of the delete or purge marker that ended the last claim where none does, and 0 where
+// the key holds no entry at all, and the conditional write lands only over that very entry. The
+// claim hides the marker, as RoleClaim does: its zero Revision is what a caller reading the role
+// compares (IfClaimRevision).
+func (r *Registry) roleClaimToWrite(ctx context.Context, role string) (RoleClaim, uint64, error) {
+	roles := r.roles()
+	read, answered, err := bus.BoundedOn(ctx, roles, func() (bus.LatestEntry, error) { return roles.GetLatest(role) })
+	if !answered {
+		return RoleClaim{}, 0, fmt.Errorf("read role %s's claim: %w", role, err)
+	}
+	if errors.Is(err, nats.ErrKeyNotFound) {
+		return RoleClaim{}, read.Revision, nil
+	}
+	if err != nil {
+		return RoleClaim{}, 0, err
+	}
+	claim, err := decodeReadRoleClaim(read.Entry)
+	return claim, read.Revision, err
+}
+
+// decodeReadRoleClaim is the claim entry holds, stamped with the entry's revision
+// (RoleClaim.Revision).
+func decodeReadRoleClaim(entry nats.KeyValueEntry) (RoleClaim, error) {
 	claim, err := DecodeRoleClaim(entry.Value())
 	if err != nil {
 		return RoleClaim{}, err

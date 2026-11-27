@@ -1931,6 +1931,40 @@ func TestRoleSetHandlerSoftClaimPredecessorInstance(t *testing.T) {
 	})
 }
 
+// A soft claim that states no client instance is weighed against its named predecessor with the
+// instance the claimant's registration carries, read from the record the refresh of that
+// registration read from the stream leader (session.SessionRegistry.PutClearingGap), not from the
+// entry a trailing cache still holds. The observer cached the claimant registered under one
+// instance; the claimant then registered again, through the other listener, under the instance its
+// live predecessor runs in, which the observer's cache has not followed. The predecessor gives the
+// role up to the instance it runs in. Control: with the fallback taken from the cached entry alone
+// (roleSetHandler's `if own` block deleted), the claimant reads as another instance and the live
+// predecessor keeps the role, a 409 naming it.
+func TestASoftClaimFallsBackToTheClaimantsInstanceTheRefreshReadNotATrailingCache(t *testing.T) {
+	t.Parallel()
+	const (
+		cachedInstance = "1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a"
+		bucketInstance = "2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b"
+	)
+	claimant, observer := trailingListeners(t)
+	claimRole(t, claimant, "ses_pred", "trailing-claimant")
+	registerInstance(t, claimant.sessions, "ses_pred", bucketInstance)
+	registerInstance(t, observer.sessions, "ses_claimant", cachedInstance)
+	registerInstance(t, claimant.sessions, "ses_claimant", bucketInstance)
+	if cached, _ := observer.sessions.Lookup("ses_claimant"); cached.ClientInstanceID != cachedInstance {
+		t.Fatalf("the observer's cached claimant carries instance %q, want %q: its cache does not trail the bucket, so this test proves nothing", cached.ClientInstanceID, cachedInstance)
+	}
+	recorder := httptest.NewRecorder()
+	roleSetHandler(observer, "test-machine", logging.New("test")).ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/v1/roles/set",
+		strings.NewReader(`{"session_id":"ses_claimant","role":"trailing-claimant","soft":true,"previous_session_id":"ses_pred"}`)))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("soft claim naming a predecessor live in the instance the claimant's registration carries, through a listener whose cache holds the claimant's earlier instance: status %d %s, want 200", recorder.Code, recorder.Body.String())
+	}
+	if holder, err := claimant.registry.RoleHolder("trailing-claimant"); err != nil || holder != "ses_claimant" {
+		t.Fatalf("holder after the claim = %q, %v; want ses_claimant", holder, err)
+	}
+}
+
 func TestSubscribeHandlerWarnsWhenGitHubRepositoryIsUnwired(t *testing.T) {
 	t.Parallel()
 	client := setupPublishTestClient(t)
@@ -2302,6 +2336,26 @@ func TestSubscribeHandlerFailsWhenSessionRegistryPutFails(t *testing.T) {
 	}
 	if want := busUnansweredPrefix + ": session registry unavailable: "; !strings.HasPrefix(refusal.Error, want) {
 		t.Fatalf("body = %q, want it to begin %q", refusal.Error, want)
+	}
+	if got := recorder.Header().Get("Retry-After"); got != "1" {
+		t.Fatalf("Retry-After = %q, want 1", got)
+	}
+}
+
+// An interest write that loses its compare-and-set on every attempt is a 503 with Retry-After, not
+// a 500: nothing was written and the caller may retry, which envoy-client's backoff reads from the
+// header (packages/envoy-client/src/dispatch-http.ts, retryAfterMs). The interest writer
+// (2af83d53fc, #2603) gives up with store.ErrInterestTopicsNotMerged, so the row names the status
+// and the header rather than the error's spelling. Its control: with
+// that error taken out of writeNATSError's case, the answer is the 500 the caller does not retry.
+func TestAnInterestWriteThatGivesUpIsRetryable(t *testing.T) {
+	t.Parallel()
+	recorder := httptest.NewRecorder()
+	status := writeNATSError(recorder, fmt.Errorf("merge topics into %s's interest record: %w after %d attempts",
+		"ses_raced", store.ErrInterestTopicsNotMerged, 3), http.StatusInternalServerError, "write the interest record")
+	if status != http.StatusServiceUnavailable || recorder.Code != http.StatusServiceUnavailable {
+		t.Fatalf("writeNATSError answered %d (recorder %d), want 503: a write that gave up is retryable",
+			status, recorder.Code)
 	}
 	if got := recorder.Header().Get("Retry-After"); got != "1" {
 		t.Fatalf("Retry-After = %q, want 1", got)

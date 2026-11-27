@@ -12,6 +12,7 @@ package store
 import (
 	"context"
 	"encoding/json"
+	"reflect"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -193,7 +194,7 @@ func TestAClaimTheEarlierReleaseStoredRenewsReleasesAndIsMarked(t *testing.T) {
 			marked := storedRoleClaim(t, reg, role)
 			want := stored
 			want.HandedBack, want.Revision = true, marked.Revision
-			if marked.Revision == stored.Revision || marked != want {
+			if marked.Revision == stored.Revision || !reflect.DeepEqual(marked, want) {
 				t.Fatalf("the claim after the hand-back is %+v, want %+v marked handed back and nothing else changed", marked, stored)
 			}
 		})
@@ -269,7 +270,7 @@ func TestAClaimTheEarlierReleaseStoredRenewsReleasesAndIsMarked(t *testing.T) {
 				if racing.updates != 1 {
 					t.Fatalf("the hand-back sent %d conditional writes, want one: a claim granted since the read is never marked", racing.updates)
 				}
-				if stood := storedRoleClaim(t, reg, role); stood != granted || stood.HandedBack {
+				if stood := storedRoleClaim(t, reg, role); !reflect.DeepEqual(stood, granted) || stood.HandedBack {
 					t.Fatalf("the claim after the hand-back is %+v, want the grant %+v standing and unmarked", stood, granted)
 				}
 			})
@@ -335,7 +336,7 @@ func TestAHandBackMarksAClaimTheEarlierReleaseRenewed(t *testing.T) {
 		if racing.updates != 1 {
 			t.Fatalf("the hand-back sent %d conditional writes, want one: a claim granted since the read is never marked", racing.updates)
 		}
-		if stood := storedRoleClaim(t, reg, role); stood != granted || stood.HandedBack {
+		if stood := storedRoleClaim(t, reg, role); !reflect.DeepEqual(stood, granted) || stood.HandedBack {
 			t.Fatalf("the claim after the hand-back is %+v, want the earlier release's grant %+v standing and unmarked", stood, granted)
 		}
 	})
@@ -406,7 +407,7 @@ func TestAReleaseFreesAClaimTheEarlierReleaseRenewedUnderItsDelete(t *testing.T)
 				if racing.deletes != 1 {
 					t.Fatalf("the release sent %d conditional deletes, want one: a claim granted since the read is never deleted", racing.deletes)
 				}
-				if stood := storedRoleClaim(t, reg, role); stood != granted {
+				if stood := storedRoleClaim(t, reg, role); !reflect.DeepEqual(stood, granted) {
 					t.Fatalf("the claim after the release is %+v, want the earlier release's grant %+v untouched", stood, granted)
 				}
 			})

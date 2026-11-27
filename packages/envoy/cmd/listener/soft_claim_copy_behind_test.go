@@ -69,3 +69,49 @@ func TestASoftClaimLeavesALiveHolderItsRoleWhileTheSessionsCopyIsBehind(t *testi
 		})
 	}
 }
+
+// A claim is granted to a claimant whose registration the session bucket holds, even where the
+// copy of the bucket a direct get reaches has not applied that registration and this listener's
+// cache does not hold it either: the claim route reads the claimant's registration from the bucket
+// stream's leader (liveSessionEntry with session.SessionRegistry.RefreshFromLeader). A
+// registration made through another pod a moment ago is the one this misses. Before, a direct get
+// in that place answered "no record" through the copy, and the claim was refused 404 "session is
+// not registered" for a session that is. Control: a claimant the bucket has no record of is
+// refused 404 through the same copy.
+func TestAClaimByAClaimantWhoseRegistrationTheSessionsCopyHasNotAppliedIsGranted(t *testing.T) {
+	t.Parallel()
+	const claimantInstance = "6d5c4b3a2f1e0d9c6d5c4b3a2f1e0d9c"
+	for _, tc := range []struct {
+		name       string
+		registered bool
+	}{
+		{"a claimant the copy answers absent", true},
+		{"control: a claimant the bucket has no record of", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			claimantID := map[bool]string{true: "ses_claim_copy_behind_registered", false: "ses_claim_copy_behind_unknown"}[tc.registered]
+			const role = "claim-copy-behind"
+			claimant, observer := trailingListeners(t)
+			if tc.registered {
+				registerInstance(t, claimant.sessions, claimantID, claimantInstance)
+			}
+			behindForSession(t, observer, claimantID)
+
+			recorder := httptest.NewRecorder()
+			roleSetHandler(observer, "test-machine", logging.New("test")).ServeHTTP(recorder,
+				httptest.NewRequest(http.MethodPost, "/v1/roles/set", strings.NewReader(`{"session_id":"`+claimantID+`","role":"`+role+`"}`)))
+			wantHolder := ""
+			switch {
+			case tc.registered && recorder.Code != http.StatusOK:
+				t.Fatalf("claim by a registered claimant through a copy behind and a cache without it: status %d %s, want 200", recorder.Code, recorder.Body.String())
+			case tc.registered:
+				wantHolder = claimantID
+			case recorder.Code != http.StatusNotFound || !strings.Contains(recorder.Body.String(), "session is not registered"):
+				t.Fatalf("claim by a claimant the bucket has no record of: status %d %s, want 404 session is not registered", recorder.Code, recorder.Body.String())
+			}
+			if got, err := claimant.registry.RoleHolder(role); err != nil || got != wantHolder {
+				t.Fatalf("%s's holder after the claim = %q, %v; want %q", role, got, err, wantHolder)
+			}
+		})
+	}
+}

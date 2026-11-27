@@ -73,8 +73,8 @@ func TestAnEntryWriteStopsAfterABoundOfLostWrites(t *testing.T) {
 
 // staleGetKV is a session bucket whose direct get of key answers stale, an entry the bucket has
 // since written over, as a copy of a replicated bucket that stays a write behind does; every other
-// call is the bucket's own, a read from the stream's leader (bus.KeyValue.GetFromLeader) among
-// them, which does not go through this handle.
+// call is the bucket's own, a read from the stream's leader (bus.KeyValue.GetLatestFromLeader)
+// among them, which does not go through this handle.
 type staleGetKV struct {
 	nats.KeyValue
 	key   string
@@ -95,7 +95,7 @@ func (kv staleGetKV) Get(key string) (nats.KeyValueEntry, error) {
 // (SetRepositoryGap through rewriteStoredEntry) each land at their second write. Here the
 // registry's copy is held behind the bucket by stopping its watch, and its direct get answers the
 // entry the bucket held before. Control: with every read after a lost write a direct get
-// (readEntry before this row), each write reads the stale entry again until it has lost 32 writes,
+// (readLatest before this row), each write reads the stale entry again until it has lost 32 writes,
 // and the row fails.
 func TestAnEntryWriteReadsTheLeaderAfterALostWrite(t *testing.T) {
 	client := setupNATS(t)

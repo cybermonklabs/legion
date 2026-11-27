@@ -3,7 +3,6 @@ package store
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -162,7 +161,7 @@ func (r *Registry) Upsert(item Interest, topics []string) (Interest, error) {
 // this build cannot decode (ErrMalformedInterest) is replaced by item and topics alone, and the
 // registry logs that at WARN naming the session.
 //
-// The row it merges into is the one the bucket holds, read with its revision and layout (readRow)
+// The row it merges into is the one the bucket holds, read with its revision and layout (getLatest)
 // and never from the cache, and the write is one compare-and-swap at that revision
 // (putInterestAt), as an unsubscribe's is (removeInterestTopics). A role claim - the one
 // production caller, through SetRoleWithPrevious - built from a cached row a write on another
@@ -195,12 +194,13 @@ func (r *Registry) UpsertWithin(ctx context.Context, item Interest, topics []str
 	for attempt := range interestWriteAttempts {
 		// A retry follows a write the bucket refused at the revision the last read reported, so it
 		// reads the row from the stream's leader (readLeader): a record the server wrote, which a
-		// direct get reports at another stream's sequence, is replaced at the one it is stored at.
+		// direct get reports at another stream's sequence, and a marker a direct get reports at
+		// another key's, are replaced at the sequence each is stored at.
 		read := readBucket
 		if attempt > 0 {
 			read = readLeader
 		}
-		cur, revision, getErr := r.readRow(ctx, item.SessionID, read)
+		cur, revision, getErr := r.getLatest(ctx, item.SessionID, read)
 		roles, err := r.controllerLaneRoles(ctx, item.SessionID, cur.Topics, item.Topics, topics)
 		if err != nil {
 			return Interest{}, err
@@ -258,7 +258,7 @@ func (r *Registry) PlanInterestAfterConflict(ctx context.Context, sessionID stri
 // leader for a plan made again after the bucket refused a write at the revision the last plan
 // read, which must see the row that refused it, which the cache may not hold yet.
 func (r *Registry) planInterest(ctx context.Context, sessionID string, requested []string, read interestRead) (InterestPlan, error) {
-	cur, revision, err := r.getWithRevision(ctx, sessionID, read)
+	cur, revision, err := r.getLatest(ctx, sessionID, read)
 	if err != nil && !errors.Is(err, nats.ErrKeyNotFound) && !errors.Is(err, ErrMalformedInterest) {
 		return InterestPlan{}, err
 	}
@@ -311,7 +311,7 @@ func (r *Registry) UpsertPlanned(ctx context.Context, item Interest, plan Intere
 	if plan.read == readLeader {
 		read = readLeader
 	}
-	cur, revision, getErr := r.readRow(ctx, item.SessionID, read)
+	cur, revision, getErr := r.getLatest(ctx, item.SessionID, read)
 	if revision != plan.Revision {
 		return Interest{}, fmt.Errorf("write %s's interest record: %w", item.SessionID, ErrInterestPlanConflict)
 	}
@@ -373,19 +373,20 @@ func (r *Registry) interestRow(cur Interest, getErr error, item Interest, plan I
 	if err != nil {
 		return Interest{}, nil, false, err
 	}
-	buf, err = json.Marshal(merged)
+	buf, err = encodeInterest(merged)
 	if err != nil {
 		return Interest{}, nil, false, err
 	}
 	if getErr == nil && now-cur.UpdatedAt < InterestRefreshAge.Milliseconds() {
 		// What the skip asks is whether this write would store the row it holds, so it compares
 		// the encoding of merged with that of the current row rather than the fields one by one:
-		// a field added to Interest, and the difference between a null and an empty topic list,
-		// are then covered by the encoding itself. The current row is stamped with merged's
-		// UpdatedAt, the one field a write of an unchanged row would move.
+		// a field added to Interest, a key only a newer build knows (Interest.unknown), and the
+		// difference between a null and an empty topic list are then covered by the encoding
+		// itself. The current row is stamped with merged's UpdatedAt, the one field a write of an
+		// unchanged row would move.
 		stored := cur
 		stored.UpdatedAt = merged.UpdatedAt
-		encoded, err := json.Marshal(stored)
+		encoded, err := encodeInterest(stored)
 		if err != nil {
 			return Interest{}, nil, false, err
 		}
@@ -410,26 +411,6 @@ func (r *Registry) recordInterest(stored storedRow, revision, epoch uint64, getE
 			slog.Any("topics", stored.Topics),
 		)
 	}
-}
-
-// createInterest writes value as sessionID's row where the read its write was planned from found
-// none. A key with no row can still hold a message, a delete or a purge marker, which the write
-// replaces at the sequence the stream's leader reports it stored at (bus.KeyValue.ReadFromLeader);
-// only a key the stream holds no message for is created. nats.go's Create would replace the marker
-// at the revision a direct get reports for it, which for a marker the server copied from another
-// key's is the source's: the copy carries the source's Nats-Sequence header ahead of its own, so
-// that write was refused at every attempt, and every registration of the session answered 503 for
-// as long as the copy stood. A key whose newest message is a row stored since that read is left to
-// Create, which the bucket refuses with nats.ErrKeyExists.
-func createInterest(ctx context.Context, kv bus.KeyValue, sessionID string, value []byte) (uint64, error) {
-	leader, err := kv.ReadFromLeader(ctx, sessionID)
-	switch {
-	case err != nil:
-		return 0, err
-	case leader.Kind == bus.LeaderMarker:
-		return kv.Update(sessionID, value, leader.Revision)
-	}
-	return kv.Create(sessionID, value)
 }
 
 // mergeForUpsert computes the Interest to persist by reconciling the requested
@@ -882,7 +863,7 @@ func (r *Registry) removeInterestTopics(ctx context.Context, sessionID string, t
 			continue
 		}
 		item.UpdatedAt = r.now().UnixMilli()
-		buf, err := json.Marshal(item)
+		buf, err := encodeInterest(item)
 		if err != nil {
 			return err
 		}

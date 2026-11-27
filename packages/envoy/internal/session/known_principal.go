@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/kvchunk"
 	"github.com/sjawhar/envoy/internal/kvwatch"
+	"github.com/sjawhar/envoy/internal/store"
 )
 
 // ErrKnownSessionsUnavailable is Read's answer from a store whose bucket is not open, a nil store
@@ -218,9 +219,11 @@ func (s *KnownSessions) AdmitRegistration(ctx context.Context, sessionID, princi
 
 // clearPrincipal writes sessionID's record, as the bucket's leader held it in stored, again with
 // no principal recorded, over stored's revision, and answers the revision it wrote at. Every
-// other field is kept as the record held it, last_seen included, since nothing of the session
-// changed but the principal it may be registered as; and a record stored in chunks is joined from
-// the leader's chunks first (kvchunk.Read), so it is written again with every topic it held. A
+// other field is kept as the record held it, last_seen included, and so is every key of it this
+// build does not name (store.DecodeKeeping), as every write of the store keeps them, since nothing
+// of the session changed but the principal it may be registered as; and a record stored in chunks
+// is joined from the leader's chunks first (kvchunk.Read), so it is written again with every topic
+// it held. A
 // record whose chunks are gone (kvchunk.ErrDamaged), which no reader can join, is written whole
 // from its manifest's view instead, which carries every field but the topics it could not fit
 // (store.ChunkedRecordView), so it costs that session those topics rather than refuse each of its
@@ -229,8 +232,9 @@ func (s *KnownSessions) AdmitRegistration(ctx context.Context, sessionID, princi
 func (s *KnownSessions) clearPrincipal(ctx context.Context, watcher *kvwatch.Watcher, sessionID string, stored bus.LeaderEntry) (uint64, error) {
 	kv, epoch := watcher.Handle()
 	value, layout, revision, err := kvchunk.Read(ctx, kv, sessionID, stored.Value, stored.Revision)
+	damaged := errors.Is(err, kvchunk.ErrDamaged)
 	switch {
-	case errors.Is(err, kvchunk.ErrDamaged):
+	case damaged:
 		value, layout, revision = stored.Value, kvchunk.Layout{}, stored.Revision
 	case err != nil:
 		return 0, fmt.Errorf("read the record whole: %w", err)
@@ -238,17 +242,25 @@ func (s *KnownSessions) clearPrincipal(ctx context.Context, watcher *kvwatch.Wat
 	if revision != stored.Revision {
 		return 0, fmt.Errorf("the record was written again after its read at revision %d", stored.Revision)
 	}
+	// A record read whole keeps the keys of it this build does not name; a damaged record's
+	// manifest carries none beside its own layout, which the record written whole from it drops.
 	var record KnownSession
-	if err := json.Unmarshal(value, &record); err != nil {
+	var unknown map[string]json.RawMessage
+	if damaged {
+		err = json.Unmarshal(value, &record)
+	} else {
+		unknown, err = store.DecodeKeeping(value, &record, knownSessionKeys)
+	}
+	if err != nil {
 		return 0, fmt.Errorf("decode the record: %w", err)
 	}
 	record.SessionID = sessionID
 	record.Principal, record.PrincipalRecorded = "", false
-	buf, err := json.Marshal(record)
+	buf, err := store.EncodeKeeping(record, unknown)
 	if err != nil {
 		return 0, err
 	}
-	written, err := s.writeRecord(ctx, watcher, kv, epoch, record, buf, layout, func(value []byte) (uint64, error) {
+	written, err := s.writeRecord(ctx, watcher, kv, epoch, record, buf, unknown, layout, func(value []byte) (uint64, error) {
 		return kv.Update(sessionID, value, stored.Revision)
 	})
 	if err != nil {
