@@ -18,6 +18,12 @@ body: |-
   role prompt no longer says a tester completion that rejects the implementer's results goes back
   by the daemon's table: the tester's completion carries no verdict, and the move follows the state
   of each check at the head the tester's record names.
+  The architect's gate paragraph says the rule once and in one direction: the `before_merge` checks
+  are read at every open head of the issue, and a check that does not read yes at every open head
+  is not met, whether it fails at one, holds a pass and a fail at one, or has no result at one. It
+  no longer opens with "read at the issue's own head", which one run of the acceptance batch read
+  as licence to decide on one head and call a fail at another open head irrelevant, and it says
+  that every open head counts whichever of the issue's pull requests stands at it.
 time: 2026-11-21T15:12:22Z
 custom:
     Issue: check-states-prompts

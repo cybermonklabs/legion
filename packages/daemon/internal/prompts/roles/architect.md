@@ -175,10 +175,13 @@ A news task can name this child while you hold it in `accepting`: its news start
 changed in the root's approved design. Read each named section and check at the new version.
 Then sign the child off, or send it back to the phase of an earlier step of its task, with a
 `reason` that names the version and the change.
-The gate is the `before_merge` checks of the issue's own Verification document, read at the
-issue's own head: each must read yes at each open head of the issue, a check carrying `ci_check` among them, which
-`dispatch results --issue <issue>` shows. A pass and a fail at any open head make the check not known: send
-the issue back at once, naming the check, do not accept it, and do not wait for a later result, a CI run still going or GitHub that Dispatch could not read.
+The gate is the `before_merge` checks of the issue's own Verification document, read at every open
+head of the issue: each must read yes at each open head, a check carrying `ci_check` among them, which
+`dispatch results --issue <issue>` shows. A check that does not read yes at every open head is not
+met, whether it fails at one, holds a pass and a fail at one, or has no result at one: send
+the issue back at once, naming the check and the head it does not read yes at, do not accept it, and do not wait for a later result, a CI run still going or GitHub that Dispatch could not read.
+Every open head counts, whichever of the issue's pull requests stands at it: a fail at the head of
+one open pull request is a fail of that check, and another open head reading yes does not answer it.
 At acceptance, read each CI-proved check's derived result and each result its CI job recorded.
 To give a check to CI, write a new check block under a new id; retracting a result does not lift the old rule.
 A result one of its children recorded against one of
