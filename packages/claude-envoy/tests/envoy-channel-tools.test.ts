@@ -53,10 +53,13 @@ const identity = new SessionIdentity("ses_claude", process.cwd())
 /** The client instance of the channel-server process the tools act for. */
 const INSTANCE = "a1b2c3d4e5f60718293a4b5c6d7e8f90"
 
-test("declares exactly the shared Envoy tools, the bounded inbox included", () => {
+test("declares exactly the shared Envoy tools, each with its shared description, the bounded inbox included", () => {
   const definitions = channelToolDefinitions()
 
   expect(definitions.map(({ name }) => name)).toEqual(envoyToolSpecs.map(({ name }) => name))
+  expect(definitions.map(({ description }) => description)).toEqual(
+    envoyToolSpecs.map(({ description }) => description),
+  )
   expect(definitions.map(({ name }) => name)).toContain("envoy_inbox")
 })
 
@@ -334,16 +337,6 @@ test("a kept publish says until when it is kept", async () => {
   }
   const publish = (topic: string) =>
     executeEnvoyTool(runtime, "envoy_publish", { topic, message: "the worker is stalled" })
-
-  // The tool's description names the hour, kept_until and the message that follows it.
-  const description = channelToolDefinitions().find(
-    ({ name }) => name === "envoy_publish",
-  )?.description
-  expect(description).toContain("The listener then keeps the message for one hour.")
-  expect(description).toContain("its kept_until is the time that hour ends")
-  expect(description).toContain(
-    "If no session takes the message by kept_until, Envoy drops it. If the publish named your session as its source, Envoy then sends your session a message that names the dropped message, unless it dropped it more than an hour late.",
-  )
 
   expect(await publish("notifications.role.legion-architect")).toEqual({
     message: `published evt-kept. Envoy kept it for the role until ${until}: no live session holds the role now. The next session to hold the role before then gets it. If none does, Envoy drops it and sends you a message that names it, unless it drops it more than an hour late.`,

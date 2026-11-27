@@ -36,12 +36,14 @@ const sendStateSender = "ses_state_sender"
 // connection of its own (sessionConsumerRig), so a registration gets the consumer every
 // registration needs, and with the known-session store open, as main wires the routes with every
 // store open. clock is what that store stamps each record with and reads its 30-day retention and
-// its refresh age against; a test moves it.
+// its refresh age against; a test moves it. The store's own goroutines read it too - its sweeper's
+// marker pass, every kvchunk.MarkerGrace until the store stops - so it is a listenerClock, moved
+// under a lock.
 type knownSessionRig struct {
 	*sessionConsumerRig
 	known *session.KnownSessions
 	url   string
-	clock time.Time
+	clock *listenerClock
 }
 
 func newKnownSessionRig(t *testing.T) *knownSessionRig {
@@ -59,8 +61,8 @@ func newKnownSessionRig(t *testing.T) *knownSessionRig {
 // one whose grant it set among them.
 func newKnownSessionRigOn(t *testing.T, client *bus.Client, url string) *knownSessionRig {
 	t.Helper()
-	rig := &knownSessionRig{sessionConsumerRig: newSessionConsumerRigOn(t, client, url), url: url, clock: time.Now()}
-	rig.known = openKnownSessionsOn(t, client.Conn, func() time.Time { return rig.clock })
+	rig := &knownSessionRig{sessionConsumerRig: newSessionConsumerRigOn(t, client, url), url: url, clock: &listenerClock{now: time.Now()}}
+	rig.known = openKnownSessionsOn(t, client.Conn, rig.clock.Now)
 	// The routes read the deps they were built over at each request, so the store set here is the
 	// one every route below answers from. The confirmation record is the publish route's own, as
 	// main wires it, for a role send.
@@ -577,7 +579,7 @@ func TestASendToASessionNeitherStoreKnowsIsTheNotFound(t *testing.T) {
 	young := rig.send(t, aged, nil)
 	young.requireAnswer(t, "a send to a session with a fresh record", sessionStateStopped, session.Gone)
 
-	rig.clock = rig.clock.Add(session.KnownSessionRetention + time.Hour)
+	rig.clock.Advance(session.KnownSessionRetention + time.Hour)
 	if _, known := rig.known.Get(aged); known {
 		t.Fatalf("the store still answers a record of %s past its retention, so the route's answer shows nothing", aged)
 	}
@@ -769,7 +771,7 @@ func TestASendRaisesTheWakeWhereTheEntryIsGoneAndNotForAProbeStoppedEntry(t *tes
 
 	const cleanlyStopped = "ses_wake_clean_stop"
 	rig.register(t, cleanlyStopped, nil)
-	rig.clock = rig.clock.Add(time.Minute)
+	rig.clock.Advance(time.Minute)
 	rig.stop(t, cleanlyStopped)
 	record := rig.record(t, cleanlyStopped)
 	stopped := rig.send(t, cleanlyStopped, nil)

@@ -11,6 +11,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/pods"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
@@ -80,6 +81,14 @@ func TestAMergeHoldsChangeReachesTheArchitectInAcceptingAndTheMergerInMerging(t 
 	if left := outboxRows(t, pool); left != 1 {
 		t.Fatalf("outbox rows left = %d, want the merger's row waiting for the woken pod", left)
 	}
+
+	// The woken launch comes up and registers the session the merger's claim records, as the
+	// merger's plugin does once its agent has booted: this message is held to the role's current
+	// launch, so it is published only once that launch registered its session (deliverHeld), and
+	// the fake runtime boots no agent of its own. The merge-queue removal's rig does the same
+	// (registerWoken), and so does the merge-forward ask's woken case.
+	sup.deps.Conns.(*fake.Conns).Register(mustClaimToken(t, "LEGION-209", claim.RoleMerger), fake.NewConn())
+	comesUp(t, merger, false)
 
 	clock = clock.Add(time.Minute)
 	if err := runner.RunOnce(ctx); err != nil {

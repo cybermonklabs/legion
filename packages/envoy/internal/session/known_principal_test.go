@@ -55,8 +55,10 @@ func TestKnownSessionsKeepThePrincipalAWriteDoesNotCarry(t *testing.T) {
 		person    = "ada@example.com"
 		service   = "example-fleet"
 	)
-	// The store's watcher reads the clock on its own goroutine for each entry it applies
-	// (knownCache.Apply), so the subtests below move the clock through knownClock's lock.
+	// The store's sweeper reads the clock on its own goroutine, in its marker pass every
+	// kvchunk.MarkerGrace until the store stops (sweepUntilStopped). The watcher reads it only for
+	// a chunk key (knownCache.Apply), and this test's records are stored whole. So the subtests
+	// below move the clock through knownClock's lock.
 	clock := &knownClock{at: time.Now()}
 	known := openKnown(t, clock.Now)
 	ctx := context.Background()

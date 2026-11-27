@@ -10,6 +10,7 @@ import {
   zodSchemaApi,
 } from "@legion/contracts";
 import { z } from "zod";
+import { STORED_TOPIC_KINDS } from "./stream-topics";
 import { formatZodIssues, ToolInputError } from "./tool-input-errors";
 import {
   type KeyTakenResult,
@@ -45,25 +46,30 @@ const PUBLISH_COUNTS =
   "sends neither, and a role topic names its holder instead.";
 
 /**
- * The sentence `stored`, with the lanes it names (`lanes`), and what a stored message does: it
- * reaches each subscribed session once from its durable consumer.
+ * The sentence `stored`, with the kinds of topic it names (`kinds`), and what a stored message
+ * does: it reaches each subscribed session once from its durable consumer.
  */
-const storedDelivery = (stored: string, lanes: string): string =>
-  `${stored} (${lanes}; a role message reaches its holder as a stored copy on the holder's ` +
-  "agent topic), and reaches each subscribed session once from the durable consumer its " +
+const storedDelivery = (stored: string, kinds: readonly string[]): string =>
+  `${stored} (${kinds.join(", ")}; a role message reaches its holder as a stored copy on the ` +
+  "holder's agent topic), and reaches each subscribed session once from the durable consumer its " +
   "listener relays to it, also one that was away or restarted. A 200 means the stream stored " +
   "the message for each subscribed session's consumer, not that any recipient has read it.";
 
-const STORED_DELIVERY = storedDelivery(
+/** What a subscription reaches, in envoy_subscribe's text: every kind of topic the stream stores. */
+export const STORED_DELIVERY = storedDelivery(
   "Every notification topic is stored",
-  "agent, dispatch, github, slack, legion, ghostwispr, whatsapp, team"
+  STORED_TOPIC_KINDS
 );
 
 // The listener's publish route refuses these topics by name (`publishHandler`, R7 of
 // dispatch://INFRA-3589): the agent topics, Dispatch's and GitHub's lanes, which no NATS grant can
 // refuse an HTTP caller of a listener whose own user holds one, the Legion wake subject, and the
 // listener's own lanes (`bus.ListenerOwnLaneOf`). So the publish tool lists none of them as stored.
-const PUBLISHED_DELIVERY =
+const PUBLISH_REFUSED_KINDS: readonly string[] = ["agent", "dispatch", "github"];
+
+/** What a publish reaches, in envoy_publish's text: the topics it refuses, and every other kind
+ *  of topic the stream stores. */
+export const PUBLISHED_DELIVERY =
   "The listener refuses a publish to each of these topics by name, and stores nothing: an agent " +
   "topic, since envoy_send sends to one session; a topic under notifications.dispatch., since " +
   "only Dispatch publishes on Dispatch's lane; a topic under notifications.github., since only " +
@@ -72,13 +78,13 @@ const PUBLISHED_DELIVERY =
   "under notifications.envoy.kept., notifications.envoy.resume. or notifications.envoy.takeover., " +
   `since those lanes are the listener's own. ${storedDelivery(
     "Every other topic the stream captures is stored",
-    "slack, legion, ghostwispr, whatsapp, team"
+    STORED_TOPIC_KINDS.filter((kind) => !PUBLISH_REFUSED_KINDS.includes(kind))
   )}`;
 
 // The listener's 503 under `MESSAGE_NOT_SENT_PREFIX` (`@legion/contracts`): the bus refused the
 // message before anything went out, because the deployed stream does not capture its topic for
 // now (a hub move's quiesce). It is temporary, and the transport throws the listener's own text.
-const NOT_SENT_GUIDE =
+export const NOT_SENT_GUIDE =
   "An error that says the message was not sent means nothing was stored, so the same message may " +
   "be sent again later.";
 
