@@ -261,6 +261,9 @@ WantedBy=default.target
 		if err := systemctl("daemon-reload", "--no-ask-password"); err != nil { // PLANT: a flag added to a call; never merge.
 			return err
 		}
+		if err := systemctl("planted-seventh"); err != nil { // PLANT: a seventh call the machine holds 11 s; never merge.
+			return err
+		}
 		if err := systemctl("enable", "--now", helper.UnitName); err != nil {
 			return err
 		}
