@@ -10,6 +10,10 @@ body: |-
     carries the failure (`commit_pull_reads.failed`), so every read the claim refuses, in any
     process, answers the same. Before, a commit whose list passed the cap failed every read, and
     each read answered `other_commit` and pass_stands `no` for passes GitHub would have placed.
+    A `before_merge` result at a commit of a linked repository is likewise `unknown`, with the
+    reason `head_not_read`, while a pull request of its issue is owed a read (as after a push
+    inside the second of GitHub's answer before it), as a result in the issue's own repository
+    already was.
 time: 2026-11-27T22:41:18.000000000Z
 custom:
     Issue: pr4209

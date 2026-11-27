@@ -671,12 +671,14 @@ func (c *comparisonReader) commitStands(
 //
 // A `before_merge` result whose commit is taken to be of a linked repository
 // (commitRepositoryOf) is decided by that repository, as its record and its read-through are:
-// unknown with model.ReasonRepositoryUnreadable where the App cannot read it, and another commit
-// otherwise, since a read-through of that repository would have taught Dispatch a pull request
-// headed at the commit (commitRepository.readable, the answer readThroughRepository reads for
-// readThroughHeads too). The issue's own repository has nothing to say about a commit of another
-// repository: read through it, a result there would stand unknown for good wherever the App
-// cannot read the issue's own.
+// unknown with model.ReasonRepositoryUnreadable where the App cannot read it, unknown with
+// model.ReasonHeadNotRead where a pull request of the issue's is owed a read, since its head can
+// be the one the result stands at, as atNoBasis answers for the issue's own repository, and another
+// commit otherwise, since a read-through of that repository would have taught Dispatch a pull
+// request headed at the commit (commitRepository.readable, the answer readThroughRepository reads
+// for readThroughHeads too). The issue's own repository has nothing to say about a commit of
+// another repository: read through it, a result there would stand unknown for good wherever the
+// App cannot read the issue's own.
 //
 // An issue that resolves to no repository is never unknown, whatever the check's `when`, but
 // for a `before_merge` result whose row names a linked repository, which that repository decides
@@ -729,6 +731,11 @@ func (c *comparisonReader) placeCommit(
 		if owner := c.commitRepositoryOf(ctx, check.IssueKey, result.CommitRepo); owner.linked != "" {
 			if !owner.readable {
 				return model.ResultCommitStands{Answer: model.CommitUnknown, Reason: model.ReasonRepositoryUnreadable, Repo: owner.linked}
+			}
+			if len(compared.headsNotRead) > 0 {
+				// A pull request of the issue's whose head Dispatch has not read can be headed at
+				// this commit, as in the issue's own repository (atNoBasis).
+				return model.ResultCommitStands{Answer: model.CommitUnknown, Reason: model.ReasonHeadNotRead, Repo: owner.linked}
 			}
 			return model.ResultCommitStands{Answer: model.CommitOtherCommit, Repo: owner.linked}
 		}
