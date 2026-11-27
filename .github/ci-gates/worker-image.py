@@ -38,6 +38,7 @@ EXCLUDED = excluded('worker_image', "gates worker-image.yaml's image build; .git
     'packages/envoy/githubrate/**',
     'packages/envoy/httpoutage/**',
     'packages/envoy/internal/**',
+    'packages/envoy/legiontasks/**',
     'packages/envoy/listenerwire/**',
     'packages/envoy/listenfd/**',
     'packages/envoy/loadtest/**',

@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/envoy/githubrate"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/classify"
 	"github.com/sjawhar/legion/daemon/internal/githubrest"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -54,8 +55,8 @@ const issueRead = 30 * time.Second
 // It answers whether GitHub is still computing the merge of the pull request's head: its read
 // found the pull request open with `mergeable` null, or an answer the readers read again
 // (answerIncomplete: `unknown`, or `blocked` missing part of what the round decides it on). The
-// start read queues a ladder of reads for such an issue (readIssuesAtStart), which a handoff's
-// read does not.
+// start read queues a ladder of reads for such an issue unless it stands in merging
+// (readIssuesAtStart, ladderAtStart), which a handoff's read does not.
 // A read whose reviews read must stop - ctx ended, or GitHub's rate limit, which the ladder's reads
 // would meet as well - answers false.
 func (w *workflowRuntime) readIssuePullRequest(ctx context.Context, issue string) (bool, error) {
@@ -228,21 +229,27 @@ func issueRecord(ctx context.Context, pool *store.Pool, records record.Store, ke
 // implementer completed with none open or merged recorded, which is the pull request this read
 // looks up by the branch. It is what covers a daemon that was down while GitHub made the
 // deliveries nothing redelivers. A read that fails is logged and the boot goes on; the record's
-// open pull request is handed to the reads of its base (followOnBase), and a run of null
-// `mergeable` reads it holds asks the round again (readFailed): a round that waits quietly on the
-// head has no handoff coming that would read it. GitHub's rate limit ends the start read there,
-// because every read after it on the same installation meets the same limit, and the panes share
-// it; the hand-off makes no GitHub call, so the limited issue and every one after it are handed
-// to the reads of their base all the same, which wait out the limit.
+// open pull request is handed to the reads of its base (startReadFailed): a follow of its head
+// (followOnBase), or for an issue in merging the one read the start read did not make
+// (classify.MergeStateReadOnce). A run of null `mergeable` reads the record holds asks the round
+// again (readFailed): a round that waits quietly on the head has no handoff coming that would read
+// it. GitHub's rate limit ends the start read there, because every read after it on the same
+// installation meets the same limit, and the panes share it; the hand-off makes no GitHub call, so
+// the limited issue and every one after it are handed to the reads of their base all the same,
+// which wait out the limit.
 //
-// A read that finds GitHub still computing the merge of an open pull request's head - merge state
-// `unknown`, or `mergeable` null - queues a ladder of reads for the issue (queueMergeState), which
+// A read that finds GitHub still computing the merge of an open pull request's head - `mergeable`
+// null, or an answer the readers read again (answerIncomplete: `unknown`, or `blocked` missing part
+// of what the round decides it on) - queues a ladder of reads for the issue (ladderAtStart), which
 // climbs and then hands the head to the reads of its base, which follow it while GitHub goes on
-// answering `unknown` (followOnBase, followBase).
+// answering so (followOnBase, followBase).
 // The reads that followed GitHub's merge state before the daemon stopped were held in memory, and
-// this is what goes on with them after a restart (dispatch://INFRA-4374 R4). GitHub's `unknown` is
+// this is what goes on with them after a restart (dispatch://INFRA-4374 R4). GitHub's computing is
 // the whole reason: no rule of classify.MergeStateReadOwed is read for it, and a read that answers
-// a state queues nothing.
+// a state the round can decide on queues nothing. An issue that stands in merging is the
+// exception: its head sits in the merge queue, where GitHub answers `unknown`, and the start read
+// was its one read (classify.MergeStateReadOnce), so whichever of those answers it found queues
+// nothing either.
 func (w *workflowRuntime) readIssuesAtStart(ctx context.Context) {
 	issues, err := w.issuesInWorkflow(ctx)
 	if err != nil {
@@ -258,8 +265,7 @@ func (w *workflowRuntime) readIssuesAtStart(ctx context.Context) {
 		computing, err := w.readIssuePullRequest(ctx, issue)
 		if err == nil {
 			if computing {
-				w.log.Info("github: the start read found GitHub's merge state unknown; a ladder reads the pull request again", "issue", issue)
-				w.queueMergeState(issue)
+				w.ladderAtStart(ctx, issue)
 			}
 			continue
 		}
@@ -282,20 +288,52 @@ func (w *workflowRuntime) readIssuesAtStart(ctx context.Context) {
 }
 
 // startReadFailed hands the open pull request the record holds for issue to the reads of its base
-// after the start read of it failed (followOnBase), and asks its round again for a run of null
-// `mergeable` reads the record holds (readFailed), so the head is read, and a persistent null is
-// told, though no handoff is coming. An issue whose record cannot be read, or holds no open pull
+// after the start read of it failed, and asks its round again for a run of null `mergeable` reads
+// the record holds (readFailed), so the head is read, and a persistent null is told, though no
+// handoff is coming. The reads of its base follow the head (followOnBase), except for an issue that
+// stands in merging (classify.MergeStateReadOnce): its head sits in the merge queue, where GitHub
+// answers `unknown`, and the start read was to be its one read, so its base's batch makes that one
+// read in its place (readOnceOnBase). An issue whose record cannot be read, or holds no open pull
 // request, has nothing to hand.
 func (w *workflowRuntime) startReadFailed(ctx context.Context, issue string) {
-	_, pr, err := issueRecord(ctx, w.pool, w.records, issue)
+	recorded, pr, err := issueRecord(ctx, w.pool, w.records, issue)
 	if err != nil || pr == nil || pr.State != record.PullRequestOpen {
 		if err != nil && ctx.Err() == nil {
 			w.log.Warn("read the record of an issue whose start read failed; its next handoff reads it", "issue", issue, "error", err)
 		}
 		return
 	}
-	w.followOnBase(issue, *pr)
+	if recorded != nil && classify.MergeStateReadOnce(*recorded, classify.MergeStateFactStartRead) {
+		w.readOnceOnBase(issue, *pr)
+	} else {
+		w.followOnBase(issue, *pr)
+	}
 	w.readFailed(ctx, *pr)
+}
+
+// ladderAtStart queues the ladder of reads for issue whose start read found GitHub still computing
+// its head's merge (readIssuesAtStart, queueMergeState): `unknown`, `mergeable` null, or a
+// `blocked` answer missing part of what the round decides it on (answerIncomplete). It queues
+// none when that read was the one read the issue is owed: it reads the issue's record once more,
+// as it stands after the start read applied what it found, and asks classify.MergeStateReadOnce,
+// which holds for an issue that stands in merging, whose head sits in the merge queue. For such an
+// issue the start read is its one read whichever of those answers it found. The decision is that
+// one rule's, which a base push of the same issue asks as well, so the daemon tests no phase of
+// its own. A failed read of the record is logged and queues nothing, as startReadFailed queues
+// nothing for a record it cannot read: the issue's next fact or handoff reads it again.
+func (w *workflowRuntime) ladderAtStart(ctx context.Context, issue string) {
+	recorded, err := w.recordedIssue(ctx, issue)
+	switch {
+	case err != nil:
+		if ctx.Err() == nil {
+			w.log.Warn("read the record of an issue whose start read found GitHub still computing its merge state; no ladder reads it", "issue", issue, "error", err)
+		}
+	case recorded != nil && classify.MergeStateReadOnce(*recorded, classify.MergeStateFactStartRead):
+		w.log.Info("github: the start read found GitHub still computing the merge state of an issue in merging, whose head sits in the merge queue; that read was its one read", "issue", issue)
+	default:
+		w.log.Info("github: the start read found GitHub still computing the merge state; a ladder reads the pull request again", "issue", issue)
+		w.queueMergeState(issue)
+	}
 }
 
 // issuesInWorkflow is every issue of the project the per-issue read has something to read for, by

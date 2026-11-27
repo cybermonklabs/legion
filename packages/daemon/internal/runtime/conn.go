@@ -8,30 +8,20 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 )
 
-// ErrPromptRefused is Oh My Pi answering a prompt frame with `success: false`. Prompt wraps it
-// for a refusal and for nothing else, because the two failures are charged differently: an agent
-// that refuses prompts spends its prompt budget (a worker that refused every prompt would
-// otherwise be retried forever), while a prompt lost to the transport was never the agent's
-// answer and is sent again at no charge. A refusal also carries the words Oh My Pi gave
-// (RefusalReason), for the log, and the stream's refusal carries the outcome it minted from the
-// code beside them (RefusalOutcome, stream.RefusedError), since one of them — a turn already
-// running — is no refusal of the work. Which outcomes charge is supervise.Charges's alone.
-var ErrPromptRefused = errors.New("runtime: the agent refused the prompt")
-
 // ErrAdoptRefused is the agent's shim answering AdoptWorkingCopy with `ok: false`: the working
 // copy could not be given the role's App identity — a jj wedged on a stale lock, a metaedit that
 // failed, the shim's own command timeout. AdoptWorkingCopy wraps it for a refusal and for nothing
-// else, and the supervisor charges it to the same prompt budget ErrPromptRefused is charged to,
-// as supervise.OutcomeAdoptionRefused.
-// The two are the far side's own answer about this workspace, so asking again in a minute changes
-// nothing by itself, and an unbounded retry of either is a silent stop: the task is never
-// delivered, nothing fails, and the claim waits for hours with no one told (INFRA-1480, where two
-// planning tasks were held 31 and 33 hours by a stale lock). Charged, the claim runs out of budget
-// and fails, which the workflow reports.
+// else, and the supervisor charges it to the claim's prompt budget, as
+// runtime.OutcomeAdoptionRefused, which the one policy charges (supervise.Charges). It is the far
+// side's own answer about this workspace, so asking again in a minute changes nothing by itself,
+// and an unbounded retry is a silent stop: the task is never delivered, nothing fails, and the
+// claim waits for hours with no one told (INFRA-1480, where two planning tasks were held 31 and
+// 33 hours by a stale lock). Charged, the claim runs out of budget and fails, which the workflow
+// reports.
 //
 // What is not this, and is charged nothing because it is no answer about the workspace: no answer
 // within the request's reply deadline (ErrNoAnswer), a closed connection, a frame lost on the way
-// — the prompt never reached the far side — and a failure to mint the role's identity, which is
+// — the request never reached the far side — and a failure to mint the role's identity, which is
 // ErrIdentityUnavailable below.
 //
 // Every `ok: false` is this, the shim's own command timeout included, and the refusal's text is
@@ -61,15 +51,6 @@ var ErrIdentityUnavailable = errors.New("runtime: the role's GitHub App identity
 // workspace's work wait for the shim's own timeout plus the RPC timeout, the round trip. It is the
 // transport's silence, which is no answer of either kind.
 var ErrNoAnswer = errors.New("no answer on the worker stream within the request's reply deadline")
-
-// ErrPromptUnanswered is a prompt whose frame the daemon wrote to the worker stream and whose
-// reply did not come within its deadline. It says the frame was written, not that the agent
-// received it. It is the one no-answer of a send that says a prompt frame went out: an adoption,
-// an identity mint or a protocol negotiation that times out comes before the prompt is written,
-// and carries ErrNoAnswer or the context's error alone. Oh My Pi can hold a prompt it was handed
-// and answer it only later — it parks a prompt that reaches it while a handoff runs until the
-// handoff ends — so the prompt this names may still run.
-var ErrPromptUnanswered = errors.New("the prompt was written and no answer came within its wait")
 
 // RefusalReason is the words the agent refused with — Oh My Pi's `error` beside its
 // `success: false` — read from the error in err's chain that carries them, or "" when none does.
@@ -106,28 +87,17 @@ const WorkspaceWorkTimeout = 30 * time.Second
 const CompactTimeout = 10 * time.Minute
 
 // Conn is one agent's live connection, as everything above the transport sees it: a way to ask
-// the agent to do something, and nothing more. The facts that come back — the acknowledgement,
-// the turn starting, the turn ending, the connection closing — are events on the stream, never
-// return values here (an acknowledged prompt is not a delivered one, and the difference is the
-// whole of LEGION-10).
+// the agent to do something, and nothing more. The facts that come back — the turn starting, the
+// turn ending, the connection closing — are events on the stream, never return values here. The
+// daemon hands the agent no task through it: a task is a value the worker takes (supervise's
+// take.go).
 //
 // The interface lives in this package so that the runtime, its fake, and the supervisor depend
 // on these methods rather than on the stream's own struct.
 type Conn interface {
-	// Prompt hands the agent a task and returns when Oh My Pi has acknowledged the frame — or
-	// refused it, or the transport failed. Its errors are of three kinds, which the supervisor
-	// tells apart (supervise's refused). A refusal wraps ErrPromptRefused. A reply deadline that
-	// passes after the prompt frame was written wraps ErrPromptUnanswered beside its own cause
-	// (ErrNoAnswer or the context's deadline): the frame was written, not known to be received,
-	// and the agent may still run it. Every other error is transport and wraps neither, a deadline
-	// that passes before the prompt frame is written among them, such as a protocol
-	// negotiation's: an implementation wraps ErrPromptUnanswered only once the frame is written.
-	// The turn it may start is observed on the stream. The delivery id is the daemon's: an agent
-	// that receives the same id twice answers it without starting a second turn.
-	Prompt(ctx context.Context, deliveryID, message string) error
 	// GetState asks the agent what it is doing. The one field the daemon reads back is whether
-	// a turn is in flight, which is how a restart tells a delivery already in progress from one
-	// that never arrived.
+	// a turn is in flight, which is how a restart tells a turn still running from one that ended
+	// while the daemon was away.
 	GetState(ctx context.Context) (ConnState, error)
 	// Shutdown asks the agent to end its own process — the graceful half of a stop.
 	Shutdown(ctx context.Context) error
@@ -171,7 +141,12 @@ type Conns interface {
 	Conn(claim claim.Token) (Conn, bool)
 }
 
-// ConnState is the agent's answer to `get_state`, reduced to the one field the daemon acts on.
+// ConnState is the agent's answer to `get_state`, reduced to the one field the daemon acts on,
+// and Ask, the id of the ask it answers, which the worker stream's event of that same answer names
+// too (stream.TurnAnswered): a caller holding the answer can tell that event from every other
+// answer's, and the stream delivers it behind every frame the shim sent before the answer. ""
+// where no ask went over a stream.
 type ConnState struct {
 	IsStreaming bool
+	Ask         string
 }

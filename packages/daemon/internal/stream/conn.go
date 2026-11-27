@@ -33,35 +33,14 @@ var (
 // a shim's failed adoption, enrollment, token read or workspace read. The connection is
 // fine; the agent said no.
 //
-// A refused prompt is runtime.ErrPromptRefused, a refused adoption runtime.ErrAdoptRefused, and a
-// refused token request runtime.ErrTokenRefused. No other refusal is any of them — a refused
-// negotiation ahead of the prompt, a refused get_state — so the match is on the command rather
-// than an unconditional Unwrap.
-//
-// Outcome is the member of the closed set (runtime.Outcome) this refusal is, minted here from the
-// frame that carried it, since this is where the daemon reads the far side's answer: a refused
-// prompt is PromptRefusalOutcome of its code, a refused adoption runtime.OutcomeAdoptionRefused
-// whatever its words say (the shim's own answer about a working copy, never a turn's), and every
-// other refusal carries none. Whether it charges a budget is supervise.Charges's alone.
+// A refused adoption is runtime.ErrAdoptRefused, which the supervisor charges to the claim's
+// prompt budget, and a refused token request is runtime.ErrTokenRefused. No other refusal is
+// either of them — a refused negotiation, a refused get_state, a refused compaction — so the
+// match is on the command rather than an unconditional Unwrap.
 type RefusedError struct {
 	Claim   claim.Token
 	Command string
 	Reason  string
-	Outcome runtime.Outcome
-}
-
-// refusal is the far side refusing command in reason's words, with code the machine-readable
-// reason it gave beside them ("" for none, as no shim's own answer gives one), and the outcome
-// that refusal is.
-func (c *Conn) refusal(command, reason, code string) *RefusedError {
-	refused := &RefusedError{Claim: c.claim, Command: command, Reason: reason}
-	switch command {
-	case shimwire.TypePrompt:
-		refused.Outcome = c.promptRefusal(reason, code)
-	case shimwire.TypeAdoptWorkingCopy:
-		refused.Outcome = runtime.OutcomeAdoptionRefused
-	}
-	return refused
 }
 
 func (e *RefusedError) Error() string {
@@ -74,82 +53,14 @@ func (e *RefusedError) Error() string {
 // RefusalReason is the words the far side refused with (runtime.RefusalReason).
 func (e *RefusedError) RefusalReason() string { return e.Reason }
 
-// RefusalOutcome is the outcome this refusal was minted as, which the supervisor reads from the
-// send's error rather than from its words (runtime.RefusalOutcome).
-func (e *RefusedError) RefusalOutcome() runtime.Outcome { return e.Outcome }
-
 func (e *RefusedError) Is(target error) bool {
 	switch target {
-	case runtime.ErrPromptRefused:
-		return e.Command == shimwire.TypePrompt
 	case runtime.ErrAdoptRefused:
 		return e.Command == shimwire.TypeAdoptWorkingCopy
 	case runtime.ErrTokenRefused:
 		return e.Command == shimwire.TypeAgentSecretsToken
 	}
 	return false
-}
-
-// PromptRefusalOutcome is the outcome a refusal of a prompt is, read from the machine-readable
-// code beside it: runtime.OutcomeAgentBusy where the code is shimwire.CodeSessionBusy, the agent
-// saying it is busy (each refusal that code covers); runtime.OutcomePromptRefused for any other
-// code; and runtime.OutcomeUnrecognised for a refusal with no code, which names nothing the daemon
-// can tell apart. It reads both refusal frames of a prompt, before its acknowledgement
-// (RefusedError) and after it (LateRefusal).
-//
-// The refusal's words are never read to decide. They are a sentence for a person, free to change
-// with any release of the agent, and an outcome read from them would fail without a sound when
-// they did: a busy agent would be retired for being busy. An agent that says it is busy in words
-// alone is therefore unrecognised here, and charged (supervise.Charges) unless the daemon's own
-// record or the agent's get_state shows it in a turn (supervise's agentRefusalOutcome);
-// promptRefusal logs each such refusal so the mismatch is seen.
-func PromptRefusalOutcome(code string) runtime.Outcome {
-	switch code {
-	case shimwire.CodeSessionBusy:
-		return runtime.OutcomeAgentBusy
-	case "":
-		return runtime.OutcomeUnrecognised
-	}
-	return runtime.OutcomePromptRefused
-}
-
-// promptRefusal is PromptRefusalOutcome of a prompt refusal this connection read, after logging
-// it if it carries no code (logCodeless).
-func (c *Conn) promptRefusal(reason, code string) runtime.Outcome {
-	if code == "" {
-		c.logCodeless(reason)
-	}
-	return PromptRefusalOutcome(code)
-}
-
-// codelessEvery is how often at most a connection logs a prompt refusal or failure that carries
-// no machine-readable code. An Oh My Pi release that gives its busy refusal of a prompt no code
-// sends one for every prompt that meets a running turn, so a line for each would bury the log; the
-// first on a connection is always written, and each later line counts the ones it did not write.
-const codelessEvery = time.Minute
-
-// logCodeless writes, at warn and at most once per codelessEvery on this connection, that the
-// agent refused or failed a prompt with no code: that is charged whatever its words say, unless
-// the daemon's own record or the agent's get_state shows the agent in a turn, so an agent that
-// says it is busy in words alone and shows neither is charged for being busy. The words are logged
-// for the person who reads the line, and compared with nothing. The hello names no release of the
-// agent, so the line names what the connection knows of it: the RPC protocol it speaks.
-func (c *Conn) logCodeless(reason string) {
-	c.mu.Lock()
-	now := time.Now()
-	if !c.codelessAt.IsZero() && now.Sub(c.codelessAt) < codelessEvery {
-		c.codelessUnlogged++
-		c.mu.Unlock()
-		return
-	}
-	unlogged := c.codelessUnlogged
-	c.codelessAt, c.codelessUnlogged = now, 0
-	c.mu.Unlock()
-	c.log.Warn("worker-stream: the agent refused a prompt with no machine-readable code, so it is charged unless "+
-		"the daemon's record or the agent's get_state shows it in a turn: Legion reads a busy answer from code "+
-		"session_busy and never from a refusal's words (dispatch://INFRA-3538)",
-		"claim", c.claim, "error", reason, "agent", fmt.Sprintf("RPC protocol v%d, release not named by the hello", protocolVersion),
-		"unloggedSinceLast", unlogged)
 }
 
 // The RPC protocol version the daemon speaks: v2 is the one with rpc_chunk, without which OMP
@@ -176,38 +87,14 @@ type Conn struct {
 	events     *eventQueue
 
 	mu      sync.Mutex
-	pending map[string]pendingRequest
-	// acked is the prompt OMP last answered `{success:true}` on this connection, until its turn
-	// ends or another prompt supersedes it: the only prompt a later `{success:false}` can take
-	// back (worker-rpc.ts:359-368). It is set by the reader when the answer is read, so it
-	// follows wire order rather than the order the waiting goroutine wakes in.
-	acked *ackedPrompt
-	// sent holds the request ids of the prompts this connection wrote. A prompt refusal naming one
-	// it did not write was replayed from the shim's backlog, answering a prompt an earlier
-	// connection sent (promptDelivery).
-	sent   map[string]struct{}
-	closed bool
-	done   chan struct{}
-	// codelessAt is when this connection last logged a prompt refusal with no code, and
-	// codelessUnlogged how many it has met since then without a line (logCodeless).
-	codelessAt       time.Time
-	codelessUnlogged int
+	pending map[string]chan shimwire.Frame
+	closed  bool
+	done    chan struct{}
 
 	// negotiation is a one-slot semaphore rather than a mutex so a request queued behind another
 	// goroutine's negotiation still answers to its own context.
 	negotiation chan struct{}
 	negotiated  bool
-}
-
-type pendingRequest struct {
-	answer chan shimwire.Frame
-	// deliveryID is set for a prompt, and names the delivery a late refusal would take back.
-	deliveryID string
-}
-
-type ackedPrompt struct {
-	requestID  string
-	deliveryID string
 }
 
 func newConn(nc net.Conn, token claim.Token, rpcTimeout time.Duration, log *slog.Logger, events *eventQueue) *Conn {
@@ -218,8 +105,7 @@ func newConn(nc net.Conn, token claim.Token, rpcTimeout time.Duration, log *slog
 		rpcTimeout:  rpcTimeout,
 		log:         log,
 		events:      events,
-		pending:     map[string]pendingRequest{},
-		sent:        map[string]struct{}{},
+		pending:     map[string]chan shimwire.Frame{},
 		done:        make(chan struct{}),
 		negotiation: make(chan struct{}, 1),
 	}
@@ -228,6 +114,11 @@ func newConn(nc net.Conn, token claim.Token, rpcTimeout time.Duration, log *slog
 // Negotiate opens protocol v2 on this connection. It is sent once: a connection already
 // negotiated answers at once, and one whose negotiation failed tries again on the next call.
 func (c *Conn) Negotiate(ctx context.Context) error {
+	return c.negotiateWithin(ctx, c.rpcTimeout)
+}
+
+// negotiateWithin is Negotiate with the negotiation's answer awaited for bound.
+func (c *Conn) negotiateWithin(ctx context.Context, bound time.Duration) error {
 	select {
 	case c.negotiation <- struct{}{}:
 	case <-ctx.Done():
@@ -238,86 +129,68 @@ func (c *Conn) Negotiate(ctx context.Context) error {
 		return nil
 	}
 	id := rand.Text()
-	if _, err := c.call(ctx, shimwire.NegotiateProtocol{ID: id, ProtocolVersion: protocolVersion}, id, ""); err != nil {
+	if _, err := c.callWithin(ctx, shimwire.NegotiateProtocol{ID: id, ProtocolVersion: protocolVersion}, id, bound); err != nil {
 		return err
 	}
 	c.negotiated = true
 	return nil
 }
 
-// Prompt hands OMP a task and returns on its acknowledgement — which is not delivery: OMP
-// answers `{success:true}` before the turn starts, and the turn is observed on Events(). OMP
-// refusing the prompt is a *RefusedError that is runtime.ErrPromptRefused; every other failure —
-// ErrClosed, runtime.ErrNoAnswer, the context, a refused negotiation — is transport and is not.
-// A wait that runs out after the prompt's frame was written is runtime.ErrPromptUnanswered as
-// well as its own cause: the prompt went out, and Oh My Pi may still run it. A negotiation that
-// times out comes before that write and is not.
-func (c *Conn) Prompt(ctx context.Context, deliveryID, message string) error {
-	if deliveryID == "" {
-		return fmt.Errorf("worker-stream: %s: a prompt needs a delivery id, the one thing the shim dedupes a retry on", c.claim)
-	}
-	if err := c.Negotiate(ctx); err != nil {
-		return err
-	}
-	id := deliveryID + promptIDSeparator + rand.Text()
-	_, err := c.call(ctx, shimwire.Prompt{ID: id, DeliveryID: deliveryID, Message: message}, id, deliveryID)
-	if errors.Is(err, runtime.ErrNoAnswer) || errors.Is(err, context.DeadlineExceeded) {
-		// request ends with no answer only from its wait, after it wrote the frame.
-		return fmt.Errorf("%w: %w", runtime.ErrPromptUnanswered, err)
-	}
-	return err
-}
-
 // Sequence is the order the listener registered this connection in (Listener.register).
 func (c *Conn) Sequence() uint64 { return c.seq }
 
-// promptIDSeparator ends the delivery id a prompt's request id begins with. OMP's answer carries
-// only the request id, and a refusal it gave while no daemon was connected reaches a later
-// connection, which never sent that request; the id is how that refusal still names its delivery.
-// The random suffix Prompt appends never holds the separator, and neither does either kind of
-// delivery id the daemon makes: random text, or an outbox row's `outbox:<row>`.
-const promptIDSeparator = "."
-
-// promptDelivery is the delivery a prompt's request id names, or "" for an id no prompt carried.
-// It splits at the last separator, the one Prompt put before its own suffix.
-func promptDelivery(requestID string) string {
-	at := strings.LastIndex(requestID, promptIDSeparator)
-	if at < 0 {
-		return ""
-	}
-	return requestID[:at]
-}
-
 // GetState asks OMP whether a turn is running. An answer that does not say is an error, never
-// "not streaming": a restart decides between confirming a delivery and re-sending it on this.
+// "not streaming": a restart decides on it whether the turn it recorded is still running. An
+// answer that says reaches the event queue too (TurnAnswered, dispatch), while this request still
+// waits for it: its id is one the connection waits on (pending) from before the frame is written
+// until it is answered or the request ends.
+//
+// The answer is awaited for the RPC timeout, or until the caller's deadline where that is later:
+// the one ask a hello makes over a take a handoff may still run over waits for its answer behind
+// the handoff on Oh My Pi's serial queue, the negotiation ahead of it too (supervise's
+// askProtected). Every other ask carries no deadline past the RPC timeout.
 func (c *Conn) GetState(ctx context.Context) (runtime.ConnState, error) {
-	if err := c.Negotiate(ctx); err != nil {
+	bound := c.rpcTimeout
+	if deadline, ok := ctx.Deadline(); ok {
+		bound = max(bound, time.Until(deadline))
+	}
+	if err := c.negotiateWithin(ctx, bound); err != nil {
 		return runtime.ConnState{}, err
 	}
 	id := rand.Text()
-	response, err := c.call(ctx, shimwire.GetState{ID: id}, id, "")
+	response, err := c.callWithin(ctx, shimwire.GetState{ID: id}, id, bound)
 	if err != nil {
 		return runtime.ConnState{}, err
 	}
+	streaming, err := c.streamingOf(response)
+	if err != nil {
+		return runtime.ConnState{}, err
+	}
+	return runtime.ConnState{IsStreaming: streaming, Ask: id}, nil
+}
+
+// streamingOf is what a get_state answer says: whether a turn is running, and an error where it
+// does not say.
+func (c *Conn) streamingOf(response shimwire.Response) (bool, error) {
 	var data shimwire.StateData
 	if len(response.Data) > 0 {
 		if err := json.Unmarshal(response.Data, &data); err != nil {
-			return runtime.ConnState{}, fmt.Errorf("worker-stream: %s get_state answer: %w", c.claim, err)
+			return false, fmt.Errorf("worker-stream: %s get_state answer: %w", c.claim, err)
 		}
 	}
 	if data.IsStreaming == nil {
-		return runtime.ConnState{}, fmt.Errorf("worker-stream: %s get_state answer carries no data.isStreaming", c.claim)
+		return false, fmt.Errorf("worker-stream: %s get_state answer carries no data.isStreaming", c.claim)
 	}
-	return runtime.ConnState{IsStreaming: *data.IsStreaming}, nil
+	return *data.IsStreaming, nil
 }
 
 // Compact shortens Oh My Pi's session context with a handoff (shimwire.Handoff), and never with
 // Oh My Pi's `compact`, whose summary request Anthropic's classifier refuses for a long Claude
-// session (dispatch://INFRA-5798). The shim answers nothing of it and forwards it as it forwards
-// a prompt, so the answer is Oh My Pi's own `response` to the command, read by handoffResult.
-// `success: false` is a handoff Oh My Pi refused — one asked for while a turn runs, a session with
-// nothing to hand off, a model call that failed — which is a *RefusedError carrying Oh My Pi's
-// reason (runtime.RefusalReason reads the words).
+// session (dispatch://INFRA-5798). The shim answers nothing of it and forwards it to Oh My Pi, so
+// the answer is Oh My Pi's own `response` to the command, read by handoffResult. `success: false`
+// is a handoff Oh My Pi refused — one asked for while a turn runs, a session with nothing to hand
+// off, a model call that failed — which is a *RefusedError carrying Oh My Pi's reason
+// (runtime.RefusalReason reads the words).
 //
 // The wait is the request's own bound rather than the RPC timeout: Oh My Pi answers only once
 // the session's model has written the document over the whole transcript.
@@ -330,7 +203,7 @@ func (c *Conn) Compact(ctx context.Context, customInstructions string, bound tim
 	if err := frame.Validate(); err != nil {
 		return fmt.Errorf("worker-stream: %s: %w", c.claim, err)
 	}
-	response, err := c.callWithin(ctx, frame, id, "", bound)
+	response, err := c.callWithin(ctx, frame, id, bound)
 	if err != nil {
 		return err
 	}
@@ -404,7 +277,7 @@ func (c *Conn) AdoptWorkingCopy(ctx context.Context, identity runtime.GitIdentit
 	if err := frame.Validate(); err != nil {
 		return fmt.Errorf("worker-stream: %s: %w", c.claim, err)
 	}
-	answer, err := c.request(ctx, frame, id, "", timeout+c.rpcTimeout)
+	answer, err := c.request(ctx, frame, id, timeout+c.rpcTimeout)
 	if err != nil {
 		return err
 	}
@@ -413,12 +286,12 @@ func (c *Conn) AdoptWorkingCopy(ctx context.Context, identity runtime.GitIdentit
 		if answer.OK {
 			return nil
 		}
-		return c.refusal(shimwire.TypeAdoptWorkingCopy, answer.Error, "")
+		return &RefusedError{Claim: c.claim, Command: shimwire.TypeAdoptWorkingCopy, Reason: answer.Error}
 	case shimwire.Response:
 		// A shim that does not answer the frame itself forwards it, and OMP refuses a command
 		// it does not know.
 		if !answer.Success {
-			return c.refusal(shimwire.TypeAdoptWorkingCopy, answer.Error, answer.Code)
+			return &RefusedError{Claim: c.claim, Command: shimwire.TypeAdoptWorkingCopy, Reason: answer.Error}
 		}
 	}
 	return fmt.Errorf("worker-stream: %s %s answered by a %s frame", c.claim, shimwire.TypeAdoptWorkingCopy, answer.FrameType())
@@ -434,7 +307,7 @@ func (c *Conn) WorkspaceWork(ctx context.Context, issue string, timeout time.Dur
 	if err := frame.Validate(); err != nil {
 		return runtime.WorkspaceWork{}, fmt.Errorf("worker-stream: %s: %w", c.claim, err)
 	}
-	answer, err := c.request(ctx, frame, id, "", timeout+c.rpcTimeout)
+	answer, err := c.request(ctx, frame, id, timeout+c.rpcTimeout)
 	if err != nil {
 		return runtime.WorkspaceWork{}, err
 	}
@@ -467,7 +340,7 @@ func (c *Conn) AgentSecretsEnrollment(ctx context.Context, enrollmentID string) 
 	if err := frame.Validate(); err != nil {
 		return fmt.Errorf("worker-stream: %s: %w", c.claim, err)
 	}
-	answer, err := c.request(ctx, frame, id, "", c.rpcTimeout)
+	answer, err := c.request(ctx, frame, id, c.rpcTimeout)
 	if err != nil {
 		return err
 	}
@@ -490,7 +363,7 @@ func (c *Conn) AgentSecretsEnrollment(ctx context.Context, enrollmentID string) 
 // it to OMP, whose unknown-command answer is a refusal like the shim's own.
 func (c *Conn) AgentSecretsToken(ctx context.Context) (string, error) {
 	id := rand.Text()
-	answer, err := c.request(ctx, shimwire.AgentSecretsToken{ID: id}, id, "", c.rpcTimeout)
+	answer, err := c.request(ctx, shimwire.AgentSecretsToken{ID: id}, id, c.rpcTimeout)
 	if err != nil {
 		return "", err
 	}
@@ -510,14 +383,14 @@ func (c *Conn) AgentSecretsToken(ctx context.Context) (string, error) {
 
 // call is a request OMP answers with a response to the same command, successful, within the RPC
 // timeout.
-func (c *Conn) call(ctx context.Context, frame shimwire.Frame, id, deliveryID string) (shimwire.Response, error) {
-	return c.callWithin(ctx, frame, id, deliveryID, c.rpcTimeout)
+func (c *Conn) call(ctx context.Context, frame shimwire.Frame, id string) (shimwire.Response, error) {
+	return c.callWithin(ctx, frame, id, c.rpcTimeout)
 }
 
 // callWithin is call bounded by the request's own wait rather than the RPC timeout: the bound a
 // command whose work is not a frame the far side answers at once carries (Compact).
-func (c *Conn) callWithin(ctx context.Context, frame shimwire.Frame, id, deliveryID string, bound time.Duration) (shimwire.Response, error) {
-	answer, err := c.request(ctx, frame, id, deliveryID, bound)
+func (c *Conn) callWithin(ctx context.Context, frame shimwire.Frame, id string, bound time.Duration) (shimwire.Response, error) {
+	answer, err := c.request(ctx, frame, id, bound)
 	if err != nil {
 		return shimwire.Response{}, err
 	}
@@ -530,25 +403,20 @@ func (c *Conn) callWithin(ctx context.Context, frame shimwire.Frame, id, deliver
 		return shimwire.Response{}, fmt.Errorf("worker-stream: %s %s answered by a %s response", c.claim, command, response.Command)
 	}
 	if !response.Success {
-		return shimwire.Response{}, c.refusal(command, response.Error, response.Code)
+		return shimwire.Response{}, &RefusedError{Claim: c.claim, Command: command, Reason: response.Error}
 	}
 	return response, nil
 }
 
 // request writes frame and waits for the frame that answers id.
-func (c *Conn) request(ctx context.Context, frame shimwire.Frame, id, deliveryID string, bound time.Duration) (shimwire.Frame, error) {
+func (c *Conn) request(ctx context.Context, frame shimwire.Frame, id string, bound time.Duration) (shimwire.Frame, error) {
 	answer := make(chan shimwire.Frame, 1)
 	c.mu.Lock()
 	if c.closed {
 		c.mu.Unlock()
 		return nil, fmt.Errorf("worker-stream: %s %s: %w", c.claim, frame.FrameType(), ErrClosed)
 	}
-	c.pending[id] = pendingRequest{answer: answer, deliveryID: deliveryID}
-	if deliveryID != "" {
-		c.sent[id] = struct{}{}
-		// A new prompt supersedes the last one's claim to a late refusal (worker-rpc.ts:450).
-		c.acked = nil
-	}
+	c.pending[id] = answer
 	c.mu.Unlock()
 	defer func() {
 		c.mu.Lock()
@@ -643,16 +511,22 @@ func (c *Conn) logNotAFrame(line []byte, err error) {
 // plugin's tool, when its session_start fails) and is on no other record the daemon reads, so it
 // is logged.
 //
-// A prompt_result whose request id names no delivery is dropped: every prompt this daemon sends
-// carries one (Prompt), so such a frame answers a `prompt` command something else wrote.
+// The daemon sends no prompt (a task is a value the worker takes, supervise's take.go), so a
+// prompt's frames an older worker still writes — the `prompt_result` Oh My Pi writes behind a
+// turn's end, a `prompt` response a shim replays from its backlog — are dropped here quietly:
+// the first decodes to Raw and the second answers no request this connection is waiting on.
+//
+// A get_state answer that says whether a turn is running is pushed as TurnAnswered before it is
+// handed to the request waiting on it, and only while a get_state this connection wrote still
+// waits on it (stateAnswered): pushed here, in the order the frames were read, it follows every
+// event of a frame read before it — a shim's replay of what it held while no daemon was attached
+// among them — and precedes the connection's Closed, so the decision that waits for it reads the
+// claim with all of those applied (supervise's turnAnswered).
 func (c *Conn) dispatch(frame shimwire.Frame) {
 	switch frame := frame.(type) {
 	case shimwire.AgentStart:
-		c.events.push(TurnStart{Claim: c.claim, DeliveryID: frame.DeliveryID})
+		c.events.push(TurnStart{Claim: c.claim})
 	case shimwire.AgentEnd:
-		c.mu.Lock()
-		c.acked = nil
-		c.mu.Unlock()
 		c.events.push(TurnEnd{Claim: c.claim})
 	case shimwire.ToolExecutionStart:
 		c.events.push(ToolStep{Claim: c.claim, Tool: frame.ToolName, CallID: frame.ToolCallID,
@@ -660,37 +534,11 @@ func (c *Conn) dispatch(frame shimwire.Frame) {
 	case shimwire.ToolExecutionEnd:
 		c.events.push(ToolStep{Claim: c.claim, Tool: frame.ToolName, CallID: frame.ToolCallID,
 			End: true, ConnSequence: c.seq})
-	case shimwire.PromptResult:
-		if delivery := promptDelivery(frame.ID); delivery != "" {
-			event := PromptResult{
-				Claim: c.claim, DeliveryID: delivery, AgentInvoked: frame.AgentInvoked, Error: frame.Reason(),
-			}
-			if frame.Error != nil {
-				// Oh My Pi's error object, not the message alone: the structured members are what
-				// a failure is judged on, its class (Code) among them.
-				event.Retryable = frame.Error.Retryable
-				event.HTTPStatus = frame.Error.HTTPStatus
-				event.Provider = frame.Error.Provider
-				event.Model = frame.Error.Model
-				event.Code = frame.Error.Code
-			}
-			if !frame.AgentInvoked {
-				// A prompt that ran no turn says why with the code a refusal would carry, the busy
-				// code among them (PromptRefusalOutcome); any other code, or none, is a prompt that
-				// ran no turn and names no turn of the agent's own. A failure with no code is
-				// logged as a refusal with none is (logCodeless).
-				event.Outcome = runtime.OutcomeNoTurnRun
-				if frame.Error != nil && event.Code == "" {
-					c.logCodeless(event.Error)
-				}
-				if PromptRefusalOutcome(event.Code) == runtime.OutcomeAgentBusy {
-					event.Outcome = runtime.OutcomeAgentBusy
-				}
-			}
-			c.events.push(event)
-		}
 	case shimwire.Response:
-		c.answer(frame)
+		if frame.Command == shimwire.TypeGetState && frame.Success {
+			c.stateAnswered(frame)
+		}
+		c.answerRequest(frame.ID, frame)
 	case shimwire.Raw:
 		switch frame.Type {
 		case "extension_error":
@@ -708,14 +556,42 @@ func (c *Conn) dispatch(frame shimwire.Frame) {
 			}
 		}
 	case shimwire.AdoptWorkingCopyResult:
-		c.answerShim(frame.ID, frame)
+		c.answerRequest(frame.ID, frame)
 	case shimwire.AgentSecretsEnrollmentResult:
-		c.answerShim(frame.ID, frame)
+		c.answerRequest(frame.ID, frame)
 	case shimwire.AgentSecretsTokenResult:
-		c.answerShim(frame.ID, frame)
+		c.answerRequest(frame.ID, frame)
 	case shimwire.WorkspaceWorkResult:
-		c.answerShim(frame.ID, frame)
+		c.answerRequest(frame.ID, frame)
 	}
+}
+
+// stateAnswered is a get_state answer that says whether a turn is running, read in its wire place
+// (dispatch). It is a TurnAnswered only where it answers a request this connection wrote and still
+// waits on (pending), which dispatch hands it to after it (answerRequest), spending the id, so the
+// same answer read twice is one. The ids are random, and dispatch reads only an answer that names
+// get_state as its command, so the answer to another request of the connection, which names that
+// request's command, is none.
+// Any other answers no ask this connection is waiting on: an answer the shim replays from its
+// backlog after the connection that asked broke between the ask and the answer, a repeat, or the
+// answer to a request that ended first. It is logged and pushes nothing. A replayed answer of no
+// turn would otherwise decide a restored claim's stale-plugin relaunch ahead of the turn the
+// replay goes on to show, and cut that turn (supervise's turnAnswered); the supervisor asks again
+// on the current connection where its request ended unanswered (supervise's askRestoredTurn).
+func (c *Conn) stateAnswered(response shimwire.Response) {
+	streaming, err := c.streamingOf(response)
+	if err != nil {
+		return
+	}
+	c.mu.Lock()
+	_, asked := c.pending[response.ID]
+	c.mu.Unlock()
+	if !asked {
+		c.log.Info("worker-stream: a get_state answer to no ask this connection waits on; it decides nothing",
+			"claim", c.claim, "streaming", streaming)
+		return
+	}
+	c.events.push(TurnAnswered{Claim: c.claim, Streaming: streaming, Ask: response.ID})
 }
 
 // stepArgsHash is the fingerprint of a call's arguments: the first eight bytes of their SHA-256,
@@ -776,60 +652,16 @@ func (c *Conn) answeredBy(raw json.RawMessage) (Answered, bool) {
 	return answered, true
 }
 
-// answerShim hands a frame the shim answered itself to the request waiting on its id; one nobody
-// waits on any longer (its request timed out) is dropped.
-func (c *Conn) answerShim(id string, frame shimwire.Frame) {
+// answerRequest hands frame to the request waiting on id — a response Oh My Pi sent, or a result
+// the shim answered itself. One nobody is waiting on — a request that gave up, or a prompt's
+// answer an older shim replays from its backlog — is dropped.
+func (c *Conn) answerRequest(id string, frame shimwire.Frame) {
 	c.mu.Lock()
-	request, waiting := c.pending[id]
+	answer, waiting := c.pending[id]
 	delete(c.pending, id)
 	c.mu.Unlock()
 	if waiting {
-		request.answer <- frame
-	}
-}
-
-// answer routes a response to the request waiting on its id. One nobody is waiting on is either
-// a success for a request that gave up — the shim fans OMP's one answer out to every request id
-// of a retried delivery (worker-shim.ts:254-270), and a retry's earlier ids are long abandoned —
-// or a refusal. A refusal reverses the acknowledged prompt it names; one of a prompt this
-// connection never sent, replayed from the shim's backlog, is a replayed LateRefusal for the
-// delivery its request id names; any other is logged.
-func (c *Conn) answer(response shimwire.Response) {
-	c.mu.Lock()
-	request, waiting := c.pending[response.ID]
-	_, sentHere := c.sent[response.ID]
-	var late *ackedPrompt
-	var earlier string
-	refusal := response.Command == shimwire.TypePrompt && !response.Success
-	switch {
-	case waiting:
-		delete(c.pending, response.ID)
-		if request.deliveryID != "" && response.Command == shimwire.TypePrompt && response.Success {
-			c.acked = &ackedPrompt{requestID: response.ID, deliveryID: request.deliveryID}
-		}
-	case refusal && c.acked != nil && c.acked.requestID == response.ID:
-		late, c.acked = c.acked, nil
-	case refusal && !sentHere:
-		earlier = promptDelivery(response.ID)
-	}
-	c.mu.Unlock()
-
-	switch {
-	case waiting:
-		request.answer <- response
-	case late != nil:
-		c.log.Warn("worker-stream: prompt refused after its acknowledgement",
-			"claim", c.claim, "deliveryId", late.deliveryID, "error", response.Error, "code", response.Code)
-		c.events.push(LateRefusal{Claim: c.claim, DeliveryID: late.deliveryID, Error: response.Error,
-			Outcome: c.promptRefusal(response.Error, response.Code), ConnSequence: c.seq})
-	case earlier != "":
-		c.log.Warn("worker-stream: a refusal replayed from an earlier connection names its delivery",
-			"claim", c.claim, "deliveryId", earlier, "error", response.Error, "code", response.Code)
-		c.events.push(LateRefusal{Claim: c.claim, DeliveryID: earlier, Error: response.Error,
-			Outcome: c.promptRefusal(response.Error, response.Code), Replayed: true, ConnSequence: c.seq})
-	case refusal:
-		c.log.Warn("worker-stream: refusal for a prompt request this connection is not waiting on",
-			"claim", c.claim, "request", response.ID, "error", response.Error)
+		answer <- frame
 	}
 }
 
@@ -838,7 +670,6 @@ func (c *Conn) answer(response shimwire.Response) {
 func (c *Conn) finish() {
 	c.mu.Lock()
 	c.closed = true
-	c.acked = nil
 	c.mu.Unlock()
 	close(c.done)
 }

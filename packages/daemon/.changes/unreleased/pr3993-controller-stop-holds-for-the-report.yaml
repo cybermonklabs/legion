@@ -1,0 +1,10 @@
+kind: Changed
+body: |-
+  The controller's `stop` of an agent (`POST /legion/v1/agents/stop`) waits for the report of the
+  agent's take's turn, as the operator's `legion claims stop` of one claim does: a stop that
+  reaches an agent after its take's turn ended and before the worker's report of that turn came is
+  answered 202, and the daemon stops the agent once the report finishes the task, or at the bound of
+  the wait for it. A stop during a running turn still cuts that turn off. While the controller's
+  stop waits, the operator's suspension of the same agent takes the agent over and drops that stop,
+  since the controller may not get past the operator's suspension: the agent ends suspended by the
+  operator at the report rather than stopped.

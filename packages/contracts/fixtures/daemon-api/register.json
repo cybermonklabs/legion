@@ -12,5 +12,11 @@
     "plan-reviewer",
     "thermonuclear-code-quality",
     "thermonuclear-deep-review"
-  ]
+  ],
+  "task": {
+    "number": 4,
+    "epoch": "2026-11-13T16:21:44.123456789Z",
+    "revision": 12
+  },
+  "finished": 3
 }

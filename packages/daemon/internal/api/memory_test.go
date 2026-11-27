@@ -241,6 +241,11 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 		// contract in the header (podContracts), so every pod this table places is below it and is
 		// served no object, and a caller served this daemon's own body is served it.
 		credential bool
+		// unseen is whether the caller is served `unseenTaskValues`, the claims whose task value
+		// nobody reported seeing, which TaskTakeContract added. No pod's claims place a caller at
+		// it (callerKind.reaches), so the rows served it are the three this daemon serves its own
+		// body.
+		unseen bool
 		// repos is whether the caller is served the repositories block repositoriesLiveContract
 		// writes, `live` beside `caches` and `withoutWebhookApp`, so a caller at it or above is
 		// served that block and every caller below it the block in contract 152's shape, from the
@@ -371,20 +376,22 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 		{name: "a pod just below pauseContract", remote: statePodAddr + ":41000", claims: podClaims(pauseContract - 1), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true, apps: true, contract: pauseContract - 1},
 		// The band from pauseContract to below shapedAnswersContract, the last band a pod's
 		// reading reaches (callerKind.reaches): every key a later row of stateNarrowings adds is
-		// held back, `intakeGiveUps` and the four repository keys among them, the repositories
-		// block written in the shape contract 152 gave it, as is the repository caches' row's
-		// `source`, the value cachesSourceContract added, at the band's foot and at its top alike.
-		// The populated state holds no pause, so these rows read as the band below them. The
-		// pause's band is read over pausedState, by
+		// held back, `intakeGiveUps`, `unseenTaskValues` (TaskTakeContract) and the four repository
+		// keys among them, the repositories block written in the shape contract 152 gave it, as is
+		// the repository caches' row's `source`, the value cachesSourceContract added, at the
+		// band's foot and at its top alike. The populated state holds no pause, so these rows read
+		// as the band below them. The pause's band is read over pausedState, by
 		// TestTheStateRouteServesAPodItsPluginContractsPause. A claim at shapedAnswersContract or
 		// above is in no pod's reading (podContracts), since its build states its contract in the
 		// header, so the bands above this one reach a caller by its header alone
-		// (contract_shapes_test.go).
+		// (contract_shapes_test.go), and the three rows after the band are served this daemon's own
+		// body: `intakeGiveUps`, `unseenTaskValues`, the four repository keys, the caches' row's
+		// `source` and the new repositories block with it.
 		{name: "a pod at pauseContract", remote: statePodAddr + ":41000", claims: podClaims(pauseContract), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true, apps: true, contract: pauseContract},
 		{name: "a pod just below shapedAnswersContract", remote: statePodAddr + ":41000", claims: podClaims(shapedAnswersContract - 1), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true, apps: true, contract: shapedAnswersContract - 1},
-		{name: "a pod at this contract", remote: statePodAddr + ":41000", claims: podClaims(DaemonAPIVersion()), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true, apps: true, repos: true, plans: true, correction: true, priority: true, seq: true, caches: true, giveUps: true, contract: DaemonAPIVersion(), basis: true, credential: true},
-		{name: "a pod whose claims record no contract", remote: statePodAddr + ":41000", claims: podClaims(0), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true, apps: true, repos: true, plans: true, correction: true, priority: true, seq: true, caches: true, giveUps: true, contract: DaemonAPIVersion(), basis: true, credential: true},
-		{name: "a caller in no pod", remote: "192.0.2.1:41000", claims: podClaims(memoryContract - 1), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true, apps: true, repos: true, plans: true, correction: true, priority: true, seq: true, caches: true, giveUps: true, contract: DaemonAPIVersion(), basis: true, credential: true},
+		{name: "a pod at this contract", remote: statePodAddr + ":41000", claims: podClaims(DaemonAPIVersion()), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true, apps: true, unseen: true, repos: true, plans: true, correction: true, priority: true, seq: true, caches: true, giveUps: true, contract: DaemonAPIVersion(), basis: true, credential: true},
+		{name: "a pod whose claims record no contract", remote: statePodAddr + ":41000", claims: podClaims(0), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true, apps: true, unseen: true, repos: true, plans: true, correction: true, priority: true, seq: true, caches: true, giveUps: true, contract: DaemonAPIVersion(), basis: true, credential: true},
+		{name: "a caller in no pod", remote: "192.0.2.1:41000", claims: podClaims(memoryContract - 1), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true, apps: true, unseen: true, repos: true, plans: true, correction: true, priority: true, seq: true, caches: true, giveUps: true, contract: DaemonAPIVersion(), basis: true, credential: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			body := stateFrom(t, populatedState(t), tc.remote, tc.claims)
@@ -503,6 +510,9 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 			if tc.refresh && count != fullCount {
 				t.Errorf("the state %s says the lane has %d claims left, want the fixture's %d", body, count, fullCount)
 			}
+			if unseen := strings.Contains(string(body), `"unseenTaskValues"`); unseen != tc.unseen {
+				t.Errorf("the state %s carries the `unseenTaskValues` key = %v, want %v; the reader before TaskTakeContract refuses it, empty as much as filled", body, unseen, tc.unseen)
+			}
 			if _, carried := stateSeqServed(t, body); carried != tc.seq {
 				t.Errorf("the state %s carries daemon.stateSeq = %v, want %v; the reader before entryNumber(stateSeqContract) refuses it", body, carried, tc.seq)
 			}
@@ -530,6 +540,9 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 			}
 			if !tc.refresh {
 				delete(want, ClaimsToRefreshField)
+			}
+			if !tc.unseen {
+				delete(want, "unseenTaskValues")
 			}
 			// A caller below dispatchCredentialContract is served no `dispatchCredential`, the one
 			// key that contract added (api's withoutDispatchCredential), which is every pod this

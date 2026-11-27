@@ -10,11 +10,11 @@ import (
 )
 
 // Since #3711 a root architect's entry start can carry the decisions a person made while nobody
-// in its tree could hear them and news of the approved design together. At its send, a decision
-// whose issue has left the tree is dropped from the task (Deps.RootTask). The task's text and the
-// news it carries are written by the one render (Deps.DesignNews, and Deps.RootTask's own
-// narrowing through it), so a narrowed task carries exactly the news its text names: its prompt
-// holds that news, its confirmation credits exactly what that prompt named, and a later send
+// in its tree could hear them and news of the approved design together. At the take of it, a
+// decision whose issue has left the tree is dropped from the task (Deps.RootTask). The task's text
+// and the news it carries are written by the one render (Deps.DesignNews, and Deps.RootTask's own
+// narrowing through it), so a narrowed task carries exactly the news its text names: the accepted
+// take's text holds that news, the accept copies exactly what that text named, and a later take
 // renders from the narrowed text, never naming the released decision again.
 
 const (
@@ -102,19 +102,19 @@ func narrowingRootTask(t *testing.T) func(context.Context, Claim, Delivery) (str
 func wantNamesExactly(t *testing.T, when, message string, news []byte) {
 	t.Helper()
 	if len(news) == 0 {
-		t.Fatalf("%s: the delivery carries no news, want the news the held task carried (the prompt is %q)", when, message)
+		t.Fatalf("%s: the delivery carries no news, want the news the held task carried (the take's text is %q)", when, message)
 	}
 	want := renderFakeNews(t, news)
 	before, found := strings.CutSuffix(message, want)
 	if !found || strings.Contains(before, "The approved spec") {
-		t.Fatalf("%s: the prompt is %q, but the news the delivery carries, %s, renders %q", when, message, news, want)
+		t.Fatalf("%s: the take's text is %q, but the news the delivery carries, %s, renders %q", when, message, news, want)
 	}
 }
 
 // A root architect's entry task held with kept decisions and news, one of whose decisions leaves
-// the tree before its send, is sent narrowed with its news: the prompt names that news and not
-// the released decision, the confirmation credits exactly the news the prompt named, and the send
-// after a provider error takes the task back renders from the narrowed text again.
+// the tree before its take, is taken narrowed with its news: the accepted take's text names that
+// news and not the released decision, the accept copies exactly the news that text named, and
+// the take after a provider error takes the task back renders from the narrowed text again.
 func TestANarrowedRootTaskIsSentWithTheNewsItCarriesAndCreditsOnlyThat(t *testing.T) {
 	h := newBareHarness(t)
 	h.token = rootToken
@@ -136,27 +136,27 @@ func TestANarrowedRootTaskIsSentWithTheNewsItCarriesAndCreditsOnlyThat(t *testin
 
 	sent := h.wantPrompts(1)[0]
 	if strings.Contains(sent.Message, "LEGION-209") {
-		t.Fatalf("the prompt %q names LEGION-209, which has left the tree", sent.Message)
+		t.Fatalf("the take's text %q names LEGION-209, which has left the tree", sent.Message)
 	}
 	p := h.pending()
-	wantNamesExactly(t, "at the narrowed task's send", sent.Message, p.News)
+	wantNamesExactly(t, "at the narrowed task's take", sent.Message, p.News)
 	if sent.DeliveryID != p.ID {
-		t.Fatalf("the prompt went under %s while the delivery is %s", sent.DeliveryID, p.ID)
+		t.Fatalf("the take was of %s while the delivery is %s", sent.DeliveryID, p.ID)
 	}
-
-	h.must(StreamTurnStart{Claim: rootToken})
 	confirmed, ok := h.store.delivery(rootToken)
 	if !ok || confirmed.ConfirmedAt.IsZero() {
-		t.Fatalf("the delivery after its turn started = %+v (held %t), want it confirmed", confirmed, ok)
+		t.Fatalf("the delivery after its take = %+v (held %t), want it taken", confirmed, ok)
 	}
-	wantNamesExactly(t, "at the confirmation, the copy it credits", sent.Message, confirmed.Carried)
+	wantNamesExactly(t, "at the accept, the copy it credits", sent.Message, confirmed.Carried)
 
-	h.errorTurn(StreamPromptResult{Error: "overloaded_error", HTTPStatus: 529})
+	h.must(StreamTurnStart{Claim: rootToken})
+	h.errorTurn(ProviderError{Message: "overloaded_error", Status: 529})
 	h.advance(30 * time.Second)
 	prompts := h.wantPrompts(2)
 	resent := prompts[1]
 	if strings.Contains(resent.Message, "LEGION-209") {
-		t.Fatalf("the prompt sent again after the provider error, %q, names LEGION-209 again", resent.Message)
+		t.Fatalf("the take after the provider error, %q, names LEGION-209 again", resent.Message)
 	}
-	wantNamesExactly(t, "at the send after the provider error", resent.Message, h.pending().News)
+	wantNamesExactly(t, "at the take after the provider error", resent.Message, h.pending().News)
+	wantNamesExactly(t, "at the accept after the provider error, the copy it credits", resent.Message, h.pending().Carried)
 }

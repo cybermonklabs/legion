@@ -305,7 +305,8 @@ holds the reviewer's prompt to, the GitHub App helper
 `packages/daemon/internal/api/real_github_test.go#runGitHubAppsLib` sources, and the examples and
 docs its tests hold to the code (`packages/daemon/cmd/legion/config_example_test.go#stageShippedExample`,
 `packages/daemon/internal/config/controller_test.go#TestLoadControllerReadsTheShippedExample`,
-`packages/daemon/internal/config/kubernetes_test.go#operatorRoutePod`).
+`packages/daemon/internal/config/kubernetes_test.go#operatorRoutePod`,
+`packages/daemon/cmd/legion/task_cost_doc_test.go#taskCostPage`).
 It also names the forced-order step's script, packages/envoy/scripts/forced-order.sh,
 and the hooks under packages/envoy/internal/testnats/testdata/hooked that the script
 patches nats-server with.
@@ -787,7 +788,8 @@ reaches testdata and goldens across the module.
 Of packages/daemon the job reads the .go files its own file_copy_test.go walks,
 the .go files the supervise pins type-check from source - internal/supervise and
 every package of this module it imports - the prompt the `text_checks` filter names (`packages/daemon/internal/prompts/roles/architect-root.md`), the committed copies
-its text checks hold to the texts they copy, and the store's migrations; and its
+its text checks hold to the texts they copy, the store's migrations, and
+internal/supervise's testdata, which the pins' compile of that package's tests reads; and its
 credential-argument check reads every text file of the repository, so the `text_checks` filter's `'**'`
 selects the job for every change but one under docs/plans or docs/superpowers. The
 patterns after it name what the other checks read, which `**` covers too, so that

@@ -58,6 +58,7 @@ func newPluginSupervisor(t *testing.T, contract int, relaunchable bool) (*superv
 		Limits:             supervise.Limits{LaunchFailures: 2, PromptFailures: 2, PromptRetires: 2},
 		Timeouts:           supervise.Timeouts{Boot: time.Second, RegistrationIntervals: 2, RPC: time.Second, Probe: time.Second, Stop: time.Second, LaunchBackoff: time.Millisecond},
 		PluginContract:     contract,
+		TaskTakeContract:   api.TaskTakeContract(),
 		PluginRelaunchable: relaunchable,
 		RefreshGate:        supervise.NewRefreshGate(0),
 	}
@@ -467,7 +468,7 @@ func TestBootSuspendsAStaleClaimWhoseSuspensionIsHeldAtItsTurnsEnd(t *testing.T)
 		Token: token, Project: project, Tree: "LEGION-1", Issue: "LEGION-1", Role: claim.RoleImplementer,
 		Generation: 1, State: supervise.StateWorking, Session: "ses_impl", SessionFile: "/sessions/impl.jsonl",
 		PluginContract: 1, Locator: pluginTestLocator(token),
-		Pending: &supervise.Delivery{ID: "delivery-1", Task: "implement the plan", QueuedAt: now, DeliveredAt: now, ConfirmedAt: now},
+		Pending: &supervise.Delivery{ID: "delivery-1", Task: "implement the plan", QueuedAt: now, ConfirmedAt: now, TurnStarted: true},
 	}
 	if _, err := sup.restore(context.Background(), []supervise.Claim{c}); err != nil {
 		t.Fatalf("restore: %v", err)

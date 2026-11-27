@@ -129,10 +129,10 @@ func TestProjectShowsARootsArchitectHandshake(t *testing.T) {
 	}
 	taken := supervise.EntryHandshake{Entry: 1, Generation: 2, QueuedAt: queued, ConfirmedAt: confirmed}
 	claims := []supervise.Claim{
-		// The task of entry 1, queued and confirmed by a turn of its worker, which ended and
-		// retired the task: the claim holds nothing and its handshake stands.
+		// The task of entry 1, queued and taken by its worker, a take the daemon accepted and
+		// whose turn ended and retired the task: the claim holds nothing and its handshake stands.
 		architect("LEGION-70", 1, taken, nil),
-		// The same task, which no turn has confirmed: the root whose architect took nothing.
+		// The same task, of which no take stands accepted: the root whose architect took nothing.
 		architect("LEGION-80", 1, supervise.EntryHandshake{Entry: 1, Generation: 2, QueuedAt: queued},
 			&supervise.Delivery{ID: "d-80", Entry: 1, Generation: 2, QueuedAt: queued}),
 		// A wake's task, which carries no entry and leaves the given number and the handshake of

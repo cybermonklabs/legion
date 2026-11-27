@@ -276,6 +276,51 @@ func TestARoleCopySurplusClaimIsOutWithinTheRepairBound(t *testing.T) {
 	}
 }
 
+// The role holder change hook (OnRoleHolderChange), which wakes the Envoy listener's task relay to
+// send a claim's task value to its role's holder, hears each change the repair makes to the copy:
+// a claim the copy lost that the scheduled read puts back, and a claim the bucket no longer holds
+// that the read's sweep takes out. Neither change has another source here, so the relay hears a
+// claim change the copy missed once the repair has made it.
+func TestTheRoleClaimRepairTellsTheRoleHolderChangeHook(t *testing.T) {
+	const (
+		lost    = "planner"
+		holder  = "ses_hook_lost"
+		surplus = "surplus-role"
+		gone    = "ses_hook_surplus"
+	)
+	rig := newRepairRig(t, func(roles natsgo.KeyValue) {
+		putRoleClaim(t, roles, lost, holder)
+	})
+	loseRoleClaim(rig.reg, lost)
+	rig.reg.applyRoleClaim(roleClaimEntry(surplus, gone, 1))
+
+	var mu sync.Mutex
+	heard := map[string]int{}
+	stop := rig.reg.OnRoleHolderChange(func(role string) {
+		mu.Lock()
+		defer mu.Unlock()
+		heard[role]++
+	})
+	t.Cleanup(stop)
+	heardOf := func(role string) int {
+		mu.Lock()
+		defer mu.Unlock()
+		return heard[role]
+	}
+
+	repaired := rig.repair()
+	if repaired.PutBack != 1 || repaired.TookOut != 1 {
+		t.Fatalf("the scheduled read's report = %+v, want one claim put back and one taken out", repaired)
+	}
+	waitFor(t, 10*time.Second, func() bool { return heardOf(lost) > 0 && heardOf(surplus) > 0 })
+	if got := holderOf(rig.reg, lost); got != holder {
+		t.Fatalf("after the scheduled read the copy names %q for %s, want %s", got, lost, holder)
+	}
+	if got := holderOf(rig.reg, surplus); got != "" {
+		t.Fatalf("after the scheduled read the copy names %q for %s, want nobody", got, surplus)
+	}
+}
+
 // The first read of an epoch fills the copy rather than repairing it, so it counts nothing: the
 // start's read of a bucket holding claims, and the first read of that bucket recreated with other
 // claims, each report none put back and none taken out, and neither logs a repair. The time of each

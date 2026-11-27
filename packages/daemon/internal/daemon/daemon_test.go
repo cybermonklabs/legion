@@ -52,6 +52,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/stream"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/supervise/supervisetest"
 	"github.com/sjawhar/legion/daemon/internal/testnats"
 	"github.com/sjawhar/legion/daemon/internal/testpg"
 	"github.com/sjawhar/legion/daemon/internal/testpg/testdb"
@@ -379,7 +380,11 @@ type built struct {
 }
 
 // fakeRuntime is a daemon whose runtime is rt — the fake, or a test's runtime built over it: the
-// real stream listener, store, and machines, with nothing launched for real.
+// real stream listener, store, and machines, with nothing launched for real. Its task bucket is
+// in memory (supervisetest), in place of the daemon's own on Envoy's NATS, so a test of a daemon
+// whose configuration names no NATS still launches its workers, and a takeDriver reads through
+// claims/task the value this bucket holds; a test of the daemon's own bucket sets taskValues back
+// to nil.
 func fakeRuntime(rt runtime.Runtime, record *built) overrides {
 	return overrides{
 		runtime: func(_ context.Context, listener *stream.Listener, address string, apps appauth.Source,
@@ -389,8 +394,9 @@ func fakeRuntime(rt runtime.Runtime, record *built) overrides {
 			record.conns, record.address, record.apps, record.repository, record.store, record.cached = listener, address, apps, repository, st, cached
 			return rt, nil
 		},
-		clock:  stillClock{},
-		listen: heldListen,
+		clock:      stillClock{},
+		listen:     heldListen,
+		taskValues: supervisetest.NewTaskValues(),
 	}
 }
 
@@ -745,6 +751,29 @@ func TestRunLogsTheLeakCheckLineAtBoot(t *testing.T) {
 				t.Fatalf("the boot logged the configured line naming %s %d times, want %d; log:\n%s", named, got, tc.configured, logged.String())
 			}
 		})
+	}
+}
+
+// The first line every boot writes is the starting line with the project
+// (supervise.DaemonStartingLine): run writes it before anything else it does, so the cost reading
+// takes it for where this daemon began, and no other line of the boot for one of the daemon
+// before. A boot that then fails on its port has written it all the same.
+func TestRunLogsTheStartingLineFirstAtBoot(t *testing.T) {
+	t.Parallel()
+	cfg := testConfig(t)
+	o := fakeRuntime(fake.NewRuntime(), &built{})
+	o.listen = nil
+	var logged strings.Builder
+	if err := run(context.Background(), cfg, slog.New(slog.NewJSONHandler(&logged, nil)), o); err == nil {
+		t.Fatal("run returned no error although another listener held its port")
+	}
+	first, _, _ := strings.Cut(logged.String(), "\n")
+	var line struct {
+		Msg     string `json:"msg"`
+		Project string `json:"project"`
+	}
+	if json.Unmarshal([]byte(first), &line) != nil || line.Msg != supervise.DaemonStartingLine || line.Project != cfg.Project {
+		t.Fatalf("the boot's first line is %s, want %q naming project %q; log:\n%s", first, supervise.DaemonStartingLine, cfg.Project, logged.String())
 	}
 }
 
@@ -1511,28 +1540,6 @@ func (s *shim) closed() {
 	if line, err := s.lines.ReadBytes('\n'); err == nil {
 		s.t.Fatalf("the daemon sent %q where the connection should have closed", line)
 	}
-}
-
-// prompt answers each negotiation the daemon sends before the prompt, as the real shim answers
-// every one it reads, and returns the prompt frame that follows. A connection can be negotiated
-// more than once: a negotiation that ends unanswered or refused is tried again by the next call
-// (stream.Conn.Negotiate).
-func (s *shim) prompt() shimwire.Prompt {
-	s.t.Helper()
-	frame := s.next()
-	for {
-		negotiate, ok := frame.(shimwire.NegotiateProtocol)
-		if !ok {
-			break
-		}
-		s.send(shimwire.Response{ID: negotiate.ID, Command: shimwire.TypeNegotiateProtocol, Success: true})
-		frame = s.next()
-	}
-	prompt, ok := frame.(shimwire.Prompt)
-	if !ok {
-		s.t.Fatalf("the daemon sent %#v, want a prompt", frame)
-	}
-	return prompt
 }
 
 // repoProjectsBoard is the Dispatch of a daemon whose project names no repository: the calls every

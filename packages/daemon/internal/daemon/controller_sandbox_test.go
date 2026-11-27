@@ -931,11 +931,12 @@ func (p *controllerSandboxPods) shimsLine() string {
 // token the launcher wrote for the generation, registers the generation's agent with the daemon
 // once, with this daemon's contract so no relaunch installs a plugin pair (specs'
 // stalePluginInstall), and reports it ready, as registeredLaunch and the controller launch tests
-// do; it answers the daemon's frames as the idle rig's role process answers them, a prompt with a
-// turn; and it dials again whenever the stream drops, as `legion worker-shim` does, so a daemon
-// that boots again finds the generation's shim back. It lives as long as its generation: once the
-// launcher has removed the generation's private directory, which it does once the generation's
-// process has ended, the shim closes its connection and dials no more.
+// do; it answers the daemon's frames as the idle rig's role process answers them, and takes the
+// claim's task with a turn as that process does, since the daemon pushes no task over the worker
+// stream (takeTasks); and it dials again whenever the stream drops, as `legion worker-shim` does,
+// so a daemon that boots again finds the generation's shim back. It lives as long as its
+// generation: once the launcher has removed the generation's private directory, which it does
+// once the generation's process has ended, the shim closes its connection and dials no more.
 type controllerSandboxShim struct {
 	pods       *controllerSandboxPods
 	address    string
@@ -943,9 +944,16 @@ type controllerSandboxShim struct {
 	bootToken  string
 	dir        string
 	client     *http.Client
+	// tasks is the generation's plugin taking the claim's task once the generation is registered
+	// (takeTasks).
+	tasks *takeDriver
+	// taking counts the goroutine of takeTasks, which run waits for before it returns (run).
+	taking sync.WaitGroup
 
-	mu         sync.Mutex
-	conn       net.Conn
+	mu   sync.Mutex
+	conn net.Conn
+	// writer is the current connection's, which the frames of a take's turn go out on (send).
+	writer     *shimwire.Writer
 	acks       int
 	registered bool
 	ended      bool
@@ -973,7 +981,10 @@ func (s *controllerSandboxShim) isEnded() bool {
 	return s.ended
 }
 
-// run dials until the generation's process has ended or the pod is gone.
+// run dials until the generation's process has ended or the pod is gone. Before it returns, it
+// ends the shim and waits for its take of the claim's tasks to stop (takeTasks), so nothing of the
+// generation answers the daemon once the pod's removal, which waits for run, is done. That wait
+// lasts at most the pass of takeTasks in flight, each request of which the shim's client bounds.
 func (s *controllerSandboxShim) run(ctx context.Context) {
 	var watching sync.WaitGroup
 	stop := make(chan struct{})
@@ -1000,6 +1011,8 @@ func (s *controllerSandboxShim) run(ctx context.Context) {
 	defer func() {
 		close(stop)
 		watching.Wait()
+		s.end()
+		s.taking.Wait()
 	}()
 	for !s.isEnded() {
 		err := s.connect()
@@ -1022,16 +1035,16 @@ func (s *controllerSandboxShim) connect() error {
 	if err != nil {
 		return err
 	}
+	writer := shimwire.NewWriter(conn)
 	s.mu.Lock()
 	if s.ended {
 		s.mu.Unlock()
 		_ = conn.Close()
 		return errors.New("the generation ended")
 	}
-	s.conn = conn
+	s.conn, s.writer = conn, writer
 	s.mu.Unlock()
 	defer conn.Close()
-	writer := shimwire.NewWriter(conn)
 	lines := bufio.NewReader(conn)
 	if err := writer.WriteFrame(shimwire.Hello2{BootToken: s.bootToken}); err != nil {
 		return fmt.Errorf("send the hello: %w", err)
@@ -1113,10 +1126,50 @@ func (s *controllerSandboxShim) register() error {
 	if err != nil || status != http.StatusNoContent {
 		return fmt.Errorf("report generation %d ready: %d %v", s.generation, status, err)
 	}
+	s.tasks = newTakeDriver(func(path string, body, answer any) error {
+		_, err := s.post(path, body, answer)
+		return err
+	}, s.send, claim.AgentCaller{ClaimToken: registration.ClaimToken, SessionID: controllerSandboxSession, Secret: registration.Secret}, s.generation)
+	s.taking.Add(1)
+	go func() {
+		defer s.taking.Done()
+		s.takeTasks()
+	}()
 	s.mu.Lock()
 	s.registered = true
 	s.mu.Unlock()
 	return nil
+}
+
+// send writes frame on the generation's current connection, as the shim forwards the agent's
+// frames on whichever connection it holds.
+func (s *controllerSandboxShim) send(frame shimwire.Frame) error {
+	s.mu.Lock()
+	writer := s.writer
+	s.mu.Unlock()
+	return writer.WriteFrame(frame)
+}
+
+// takeTasks takes each task the claim's value names until the generation ends, as the idle rig's
+// role process does (idleRigRoleProcess.takeTasks), and works each with a whole turn: the turn
+// starts and ends on the worker stream, and its report names the task, which finishes it. A read
+// or a take the daemon does not answer, a daemon booting again among them, is tried again.
+func (s *controllerSandboxShim) takeTasks() {
+	for !s.isEnded() {
+		value, answer, asked, err := s.tasks.poll()
+		switch {
+		case err != nil:
+			s.pods.logf("controller shim g%d: read or take the claim's task: %v", s.generation, err)
+			time.Sleep(time.Second)
+			continue
+		case asked && answer.Outcome == string(supervise.TakeOutcomeAccepted):
+			started := s.tasks.startTurn()
+			if err := errors.Join(started, s.tasks.endTurn()); err != nil {
+				s.pods.logf("controller shim g%d: the turn of task %d: %v", s.generation, value.Number, err)
+			}
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
 }
 
 // post sends body to the daemon's path and decodes a 2xx answer into answer, when it is given
@@ -1143,8 +1196,8 @@ func (s *controllerSandboxShim) post(path string, body, answer any) (int, error)
 }
 
 // answer answers one of the daemon's frames as the idle rig's role process does
-// (idleRigRoleProcess.serve): a prompt with a whole turn, the state as not streaming, the
-// protocol as accepted, and a shutdown by having the generation's process exit.
+// (idleRigRoleProcess.serve): the state as not streaming, the protocol as accepted, and a
+// shutdown by having the generation's process exit.
 func (s *controllerSandboxShim) answer(writer *shimwire.Writer, frame shimwire.Frame) error {
 	switch f := frame.(type) {
 	case shimwire.NegotiateProtocol:
@@ -1156,16 +1209,6 @@ func (s *controllerSandboxShim) answer(writer *shimwire.Writer, frame shimwire.F
 			return err
 		}
 		return writer.WriteFrame(shimwire.Response{ID: f.ID, Command: shimwire.TypeGetState, Success: true, Data: data})
-	case shimwire.Prompt:
-		for _, reply := range []shimwire.Frame{
-			shimwire.Response{ID: f.ID, Command: shimwire.TypePrompt, Success: true},
-			shimwire.AgentStart{}, shimwire.AgentEnd{},
-			shimwire.PromptResult{ID: f.ID, AgentInvoked: true},
-		} {
-			if err := writer.WriteFrame(reply); err != nil {
-				return err
-			}
-		}
 	case shimwire.AdoptWorkingCopy:
 		return writer.WriteFrame(shimwire.AdoptWorkingCopyResult{ID: f.ID, OK: true})
 	case shimwire.Shutdown:

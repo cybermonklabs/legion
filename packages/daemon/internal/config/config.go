@@ -140,18 +140,49 @@ type Config struct {
 	WorkerBootTimeout time.Duration
 	// WorkerBootRegistrationDeadlineIntervals × WorkerBootTimeout is the registration deadline: a
 	// pane whose process is alive but whose agent has not registered by then, or has not said it is
-	// ready that long after its registration, is retired and counted as a launch failure.
+	// ready that long after its registration, is retired and counted as a launch failure. It is the
+	// reconnect deadline too (supervise's reconnectBound): a ready agent's live process whose shim
+	// says no hello by then, after a daemon start or after its connection closed while its claim
+	// held a task, is retired and counted as a launch failure (never_reconnected), and one whose
+	// agent does not say by then whether it is in a turn, after its shim's reconnect hello, is
+	// relaunched, charged nothing. Where the operator's stop or a replacement of the process waits
+	// for the report of a take's turn that ended, the same deadline ends that wait instead
+	// (supervise's stopAtDeadline, replacementAtDeadline): the task is taken back as a cut turn,
+	// and the stop or the replacement runs, charged nothing. One exception: over a take accepted
+	// whose turn has not started and over which a compaction's handoff may still run (Oh My Pi
+	// answers nothing behind a handoff), the reconnect deadline is never earlier than the
+	// handoff's own bound, runtime.CompactTimeout from the handoff's ask, or from a daemon start
+	// that finds the claim stored working over such a take (supervise's handoffGuard).
 	WorkerBootRegistrationDeadlineIntervals int
 	WorkerRPCTimeout                        time.Duration
 	WorkerStopTimeout                       time.Duration
-	TreeStopTimeout                         time.Duration
-	SlowCommandTimeout                      time.Duration
+	// WorkerTakeTimeout is R5's first bound (`worker_take_timeout_seconds`, five minutes by
+	// default): how long a ready, idle worker under no hold that reported its task's value seen
+	// has to ask to take it before it is charged, and how often a value nobody reported seeing
+	// is written again (supervise.Timeouts.Take). WorkerTurnStartTimeout is R5's second bound
+	// (`worker_turn_start_timeout_seconds`, twenty-five minutes by default): how long after an
+	// accepted take its turn has to start before the worker is charged and the task taken back
+	// (supervise.Timeouts.TurnStart), and how long the take's report may be late after its turn
+	// ends before the task is taken back as a cut turn (supervise's report wait). Both of the
+	// second's waits, and the first over a value the worker reported seeing, run only while the
+	// worker's connection shows the daemon every frame of its turns: time with the connection cut
+	// counts toward none, and each starts again whole once the agent answers the daemon's ask
+	// after its shim's reconnect hello, or a turn starts or ends. The second's default is twice the
+	// compaction timeout and the longest launch-to-turn the fleet measured, added (2 × (10 min +
+	// 150 s), INFRA-2811's decision 13); it is not a floor, and both are refused only when not a
+	// positive integer.
+	WorkerTakeTimeout      time.Duration
+	WorkerTurnStartTimeout time.Duration
+	TreeStopTimeout        time.Duration
+	SlowCommandTimeout     time.Duration
 	// ProbeInterval is how often the runtime sweeps every recorded process.
 	ProbeInterval time.Duration
 
 	// The supervision budgets: launches that failed (and, under the same limit, deaths of a ready
-	// agent while it had work outstanding), prompts acknowledged without a turn, and panes retired
-	// for those, each before the claim is failed.
+	// agent while it had work outstanding), the charges a worker earns where it did not act (R5's
+	// two waits passed — a value it reported seeing and asked no take of, an accepted take with no
+	// turn — and a take whose adoption the shim refused), and panes retired for those charges, each
+	// before the claim is failed.
 	LaunchFailureLimit int
 	PromptFailureLimit int
 	PromptRetireLimit  int
@@ -220,10 +251,10 @@ type Config struct {
 	ProductionCheckBound time.Duration
 	// PodUpdateGrace is how long a pod's update round waits for its roles after it opens
 	// (`pod_update_grace_minutes`, thirty minutes by default): an answer from every role the round
-	// asks ends the round before it once no turn runs and no claim's activity report holds it
-	// (internal/daemon's roundEnd.holding), and no answer, turn or background work holds the round
-	// past it. It is a decimal number of minutes, as `worker_silence_minutes` is, so a live proof
-	// can drive the bound inside one run.
+	// asks ends the round before it once no turn runs, no take whose turn ended still owes its
+	// report and no claim's activity report holds it (internal/daemon's roundEnd.holding), and no
+	// answer, turn or background work holds the round past it. It is a decimal number of minutes,
+	// as `worker_silence_minutes` is, so a live proof can drive the bound inside one run.
 	PodUpdateGrace time.Duration
 	// StalledTreeNotice bounds the stalled-tree notice (`stalled_tree_notice_hours`, six hours by
 	// default, a decimal number of hours as `production_check_hours` is): when a tree this daemon
@@ -244,11 +275,12 @@ type Config struct {
 	// rather than hours, so a tree still quiet after six has stopped rather than paused.
 	StalledTreeNotice time.Duration
 	// WorkerSilence is how long a phase worker's last recorded step may be in the past before the
-	// daemon reads that worker as one nothing will prompt and sends it its phase's task again
-	// (`worker_silence_minutes`, thirty minutes by default): workflow.SilentPhaseWorker takes it as
-	// the bound it judges a worker that is up, between turns and holding no task by. The key is a
-	// number of minutes rather than of hours because the bound is tens of minutes (readMinutes),
-	// and no deployment may set it under its floor (minWorkerSilence, checkWorkerSilence).
+	// daemon reads that worker as one nothing will prompt and writes its phase's task again for it
+	// to take (`worker_silence_minutes`, thirty minutes by default): workflow.SilentPhaseWorker
+	// takes it as the bound it judges a worker that is up, between turns and holding no task by.
+	// The key is a number of minutes rather than of hours because the bound is tens of minutes
+	// (readMinutes), and no deployment may set it under its floor (minWorkerSilence,
+	// checkWorkerSilence).
 	WorkerSilence time.Duration
 	// WorkerBackground is how long the background work a phase worker's own session reports may
 	// stand before the daemon tells that worker's architect of it (`worker_background_hours`,

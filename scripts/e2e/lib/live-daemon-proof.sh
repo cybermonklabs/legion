@@ -14,10 +14,10 @@
 # is a `git archive` of the base commit, so this run's EXIT trap is that subshell's and the script
 # goes on to read the run's proof.log.
 #
-# live_daemon_proof LABEL SLUG TEST EVIDENCE [TIMEOUT [DRIVER [STAMP]]] runs four checks, each
-# printing `== <check>`, what it observed and `ok <check> (<s>s)`; the first that fails prints
-# `FAIL <check>: <why>` and ends the run non-zero. Exit 2 is an input of the caller's the run
-# refuses. Exit 1 is every other failure.
+# live_daemon_proof LABEL SLUG TEST EVIDENCE [TIMEOUT [DRIVER [STAMP [SERVICES]]]] runs four
+# checks, each printing `== <check>`, what it observed and `ok <check> (<s>s)`; the first that
+# fails prints `FAIL <check>: <why>` and ends the run non-zero. Exit 2 is an input of the caller's
+# the run refuses. Exit 1 is every other failure.
 # prerequisites wants LEGION_TEST_PG_DSN, the PostgreSQL the daemon migrates and runs on, which
 # nothing here starts or prints, go, awk and python3, the libpq lib/loopback-dsn.py loads, and a
 # nats-server: LEGION_E2E_NATS_BIN's, or the pinned one installed with `go install`. It refuses
@@ -37,6 +37,13 @@
 # approved-version-news.sh's part two runs real model sessions for longer than that. The driver
 # check builds with STAMP when the caller gives one (build_daemon_driver's second argument), and
 # owner-steps-client.sh alone gives one; a handed DRIVER was stamped, or not, by its caller.
+#
+# SERVICES, the eighth argument, when the caller names one, is a function of the entry script's
+# that starts what its driver needs beside the broker: the run calls it between broker and driver,
+# with the broker's port in port_nats and the run's work and evidence directories in work and
+# evidence, and it makes checks of its own with begin, note, pass and fail, exports what the driver
+# reads, and adds the pid of each process it starts to service_pids, which every exit stops before
+# the broker. task-take.sh's starts the Envoy listener it builds.
 #
 # SLUG names the run's own files: the work directory legion-e2e-SLUG.<pid>.* under TMPDIR (or /tmp
 # when it is unset), which holds the broker's store and the driver binary SLUG.test, where the
@@ -97,6 +104,7 @@ work=''
 driver=''
 nats_pid=''
 port_nats=''
+service_pids=''
 check=setup
 started=''
 check_started=''
@@ -123,11 +131,15 @@ build_daemon_driver() {
 }
 
 cleanup() {
-  local status=$?
-  if [ -n "$nats_pid" ] && kill -0 "$nats_pid" 2>/dev/null; then
-    kill -TERM "$nats_pid" 2>/dev/null || true
-    wait "$nats_pid" 2>/dev/null || true
-  fi
+  local status=$? pid
+  # The services go first and the broker last: each service runs against the broker, and a
+  # listener whose NATS went first would spend its stop reconnecting.
+  for pid in $service_pids $nats_pid; do
+    if kill -0 "$pid" 2>/dev/null; then
+      kill -TERM "$pid" 2>/dev/null || true
+      wait "$pid" 2>/dev/null || true
+    fi
+  done
   rm -rf "$work"
   run_verdict "$status" \
     "$proof_label e2e: PASS in $((SECONDS - started))s (evidence: $evidence)" \
@@ -135,7 +147,7 @@ cleanup() {
 }
 
 live_daemon_proof() {
-  local slug=$2 test_name=$3 timeout=${5:-20m} handed=${6:-} stamp=${7:-} tool nats_bin db_host
+  local slug=$2 test_name=$3 timeout=${5:-20m} handed=${6:-} stamp=${7:-} services=${8:-} tool nats_bin db_host
   proof_label=$1
   evidence=${4:-$(mktemp -d "${TMPDIR:-/tmp}/legion-e2e-$slug-evidence.XXXXXXXX")}
   mkdir -p "$evidence"
@@ -198,6 +210,10 @@ live_daemon_proof() {
   [ -n "$port_nats" ] || fail "the nats-server logged no client port; see $evidence/nats.log"
   note "JetStream on nats://127.0.0.1:$port_nats, store $work/nats-store, log $evidence/nats.log"
   pass
+
+  if [ -n "$services" ]; then
+    "$services"
+  fi
 
   begin driver
   # The build is the branch a test that holds takes: a signal that ends the shell in the build

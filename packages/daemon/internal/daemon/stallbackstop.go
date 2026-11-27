@@ -31,11 +31,12 @@ import (
 // never read again. A claim in no turn has no turn to end: a claim's record is never cleared, so
 // the step of a turn that ended hours ago still stands on an idle claim, and reading it would end
 // a turn nobody is in. A claim in an update round is the round's to carry: the round replaces
-// that process with its pod once every worker of the pod has answered, no turn runs and no
-// claim's activity report holds it (roundEnd.holding), or at the round's bound whatever the
-// workers answered and whatever runs, and tells the controller when something holds it past that
-// bound (reconcilePodUpdates, tellUpdateStalled), so a backstop relaunch under it would replace a
-// process the round is about to replace and start its clock again.
+// that process with its pod once every worker of the pod has answered, no turn runs, no take whose
+// turn ended still owes its report and no claim's activity report holds it (roundEnd.holding), or
+// at the round's bound whatever the workers answered and whatever runs, and tells the controller
+// when something holds it past that bound (reconcilePodUpdates, tellUpdateStalled), so a backstop
+// relaunch under it would replace a process the round is about to replace and start its clock
+// again.
 //
 // The stop itself is the machine's (supervise's backstopStalledTurn), which re-reads the claim's
 // own record before it acts and charges nothing. The post is made at every tick that finds the
@@ -309,9 +310,11 @@ func stallRecordInWords(c supervise.Claim, stop supervise.StallBackstopStop, sil
 // running that turn still; what the daemon has done to it is take the turn off the claim, which
 // is what this says instead.
 //
-// An end that kept the claim's process kept the turn on it (supervise.EndRelaunchParked): the
-// task the turn was serving went back to waiting and the process runs on. An end this daemon
-// has no row for says neither, and names the turn alone (stallFateUnsaid, stallBackstopEnd).
+// An end that kept the claim's process kept the turn on it (supervise.EndRelaunchParked): a
+// parked launch makes no take-back at the park, so the turn runs on with the task it was serving
+// until the wake's turn, whose take-back takes that task back as it lets the process go
+// (supervise's launchReplacing, runWake). An end this daemon has no row for says neither, and
+// names the turn alone (stallFateUnsaid, stallBackstopEnd).
 func stallTurnClause(process stallProcessFate, stop supervise.StallBackstopStop) string {
 	switch process {
 	case stallProcessLetGo:
@@ -320,7 +323,7 @@ func stallTurnClause(process stallProcessFate, stop supervise.StallBackstopStop)
 		}
 		return stallTurnEnded
 	case stallProcessKept:
-		return stallTurnTaskTakenBack
+		return stallTurnLeftRunning
 	}
 	return stallTurnActedOn
 }
@@ -328,10 +331,10 @@ func stallTurnClause(process stallProcessFate, stop supervise.StallBackstopStop)
 // The four openings stallTurnClause picks between, which are the whole of what this notice
 // claims about the stalled turn itself.
 const (
-	stallTurnEnded         = "the daemon ended the " + stallRoleWord + "'s turn"
-	stallTurnOffTheClaim   = "the daemon took the " + stallRoleWord + "'s turn off its claim"
-	stallTurnTaskTakenBack = "the daemon took back the " + stallRoleWord + "'s task without ending its turn"
-	stallTurnActedOn       = "the daemon's stall backstop acted on the " + stallRoleWord + "'s stalled turn"
+	stallTurnEnded       = "the daemon ended the " + stallRoleWord + "'s turn"
+	stallTurnOffTheClaim = "the daemon took the " + stallRoleWord + "'s turn off its claim"
+	stallTurnLeftRunning = "the daemon left the " + stallRoleWord + "'s turn running"
+	stallTurnActedOn     = "the daemon's stall backstop acted on the " + stallRoleWord + "'s stalled turn"
 )
 
 // stallStopClause is what the notice says of the stalled process itself, and the whole of what
@@ -507,7 +510,7 @@ var stallBackstopEnds = map[supervise.ProcessEnd]stallEndWords{
 		end:     "its session was brought back on the replacement the daemon started",
 		process: stallProcessLetGo},
 	supervise.EndRelaunchParked: {
-		did: "and queued the replacement launch",
+		did: "and queued the replacement launch, whose take-back of the task waits until the pacing lets that launch out",
 		end: "the launch that replaces it is queued in the daemon's wake pacing, which estimated, when the daemon read it for this notice, that it lets the launch out at " + stallDueWord +
 			": a change to the pacing's queues or to its pace can move that moment earlier or later, for example a wake ahead of it in its own queue that leaves moves it earlier, and a wake that joins and is let out ahead of it moves it later. " +
 			"What the park settled is that launch queued and the claim waiting on it until the pacing lets it out. What the pacing lets out then may be nothing at all, or not the launch the park queued — a suspension waiting for this claim, " +

@@ -2104,24 +2104,26 @@ package api
 // architect's work stands at and the entry its claim was queued, as a child's carries its
 // implementer's. Beside them each issue of `GET /legion/v1/state` carries the two times of a
 // claim's handshake of the last entry it was queued a task of: `entryQueuedAt`, when a task of
-// that entry was first queued to the claim, and `entryConfirmedAt`, when a turn of that claim's
-// worker first confirmed one. The claim keeps both in a record of its own
+// that entry was first queued to the claim, and `entryConfirmedAt`, when the daemon first accepted
+// a take of one by that claim's worker. The claim keeps both in a record of its own
 // (`supervise.Claim.Handshake`, the four `claims.handshake_*` columns store migration
-// 20261114020537 adds), so they outlast the task, which the end of the confirming turn retires.
-// A tree's own root carries its architect's handshake whatever phase it stands in, through
+// 20261114020537 adds), so they outlast the task, which the end of the accepted take's turn
+// retires. A tree's own root carries its architect's handshake whatever phase it stands in, through
 // `awaiting_person` and the phases a phase role works, where the two numbers are that role's and
 // the two times are still the architect's; any other issue carries the handshake of the role of
 // its current phase. Both are absent where no entry was queued to that claim in the issue's
 // current generation — a role the daemon holds no claim row of, a re-admitted root whose new
 // architect entry is not queued yet, and a root of the release before this one, whose migration
 // gives the claim the two numbers and no handshake, which is how a reader tells such a root from
-// one this release served — and `entryConfirmedAt` alone is absent while no turn has confirmed a
-// task of the entry, which is the root whose architect took nothing.
+// one this release served — and `entryConfirmedAt` alone is absent until the daemon accepts a take
+// of a task of the entry, and again once a take that awaited its turn is taken back, which is the
+// root whose architect took nothing.
 // A tree's own root carries `architectStalls` too: every arm of INFRA-2614's architect-stalled
 // reading that holds for its architect at that read, as `record.ArchitectStallArm`'s values —
 // `took-nothing` (the task of the entry its `phases` row names was first queued to its claim more
-// than ten minutes ago and no turn confirmed it, counted from that first queueing however many
-// times the daemon sent that entry's task again; a task whose turn ended with the claim's process,
+// than ten minutes ago and no take of it by that claim's worker stands accepted, counted from that
+// first queueing however many times the daemon sent that entry's task again; a task whose turn
+// ended with the claim's process,
 // at a death or at a replacement the daemon made, counts only while the claim is ready, working or
 // idle, and from the relaunched agent's ready where that is later; and a task the root's own
 // record has superseded, one that carries an entry, of a run before its generation or of an entry

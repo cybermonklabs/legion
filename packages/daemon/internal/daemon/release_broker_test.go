@@ -225,12 +225,13 @@ func newReleaseRig(t *testing.T, exchange bool) *releaseRig {
 	sup := newSupervisor(ctx, st, "legion", t.TempDir(), quietLogger())
 	sup.deps = supervise.Deps{
 		Runtime: rt, Conns: conns, Store: st, Specs: outboxSpecs{}, Clock: clock, Log: slog.New(slog.NewTextHandler(logs, nil)),
-		Limits:         supervise.Limits{LaunchFailures: 2, PromptFailures: 2, PromptRetires: 2},
-		Timeouts:       supervise.Timeouts{Boot: time.Minute, RegistrationIntervals: 2, RPC: 5 * time.Second, Probe: time.Hour, Stop: time.Second, LaunchBackoff: time.Millisecond},
-		PluginContract: api.DaemonAPIVersion(),
-		Secrets:        enrollsEveryPod{},
-		Registrar:      registrar,
-		RefreshGate:    supervise.NewRefreshGate(0),
+		Limits:           supervise.Limits{LaunchFailures: 2, PromptFailures: 2, PromptRetires: 2},
+		Timeouts:         supervise.Timeouts{Boot: time.Minute, RegistrationIntervals: 2, RPC: 5 * time.Second, Probe: time.Hour, Stop: time.Second, LaunchBackoff: time.Millisecond},
+		PluginContract:   api.DaemonAPIVersion(),
+		TaskTakeContract: api.TaskTakeContract(),
+		Secrets:          enrollsEveryPod{},
+		Registrar:        registrar,
+		RefreshGate:      supervise.NewRefreshGate(0),
 	}
 	t.Cleanup(sup.stop)
 	rt.ScriptSpawn(fake.SpawnResult{Locator: runtime.Locator{

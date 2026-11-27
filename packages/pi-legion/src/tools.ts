@@ -997,7 +997,7 @@ export function createLegionTool(deps: {
         "The controller's replace_pod (issue) asks the daemon to replace the pod that runs the roles of an issue of its " +
         "own project. The daemon opens its update round over that pod, also where an earlier round kept the pod. It " +
         "asks each role in the pod to push its work and answer ready_for_update. The round ends once each role has " +
-        "answered, no turn runs and each role's report since its last turn names no running background work, or at " +
+        "answered, no turn runs, no take's report is owed and each role's report since its last turn names no running background work, or at " +
         "the round's bound whatever the roles said. Then the daemon reads the workspace of the pod. It replaces the " +
         "pod only if that read finds nothing that no branch or tag on origin holds. If the read finds such work, or " +
         "if the read fails, the round keeps the pod and ends with no replacement, and the daemon tells the open " +
@@ -1047,8 +1047,9 @@ export function createLegionTool(deps: {
         "runs ends it with the same code, after your own suspension of the agent ran: the agent keeps the session its " +
         "claim recorded. " +
         "compact (issue, role) shortens one agent's session instead: the daemon has Oh My Pi write a text summary of the " +
-        "session so far, and the agent keeps its session, its workspace and everything it knows of its issue and is sent " +
-        "whatever task it owes again. Try compact first for an agent whose session a provider keeps refusing, and " +
+        "session so far, and the agent keeps its session, its workspace and everything it knows of its issue and takes " +
+        "again whatever task it owes, which the daemon writes again. Try compact first for an agent whose session a " +
+        "provider keeps refusing, and " +
         "fresh_session for an agent whose claim no process stands behind, which compact refuses and fresh_session reaches. The answer " +
         "says whether the session was compacted and, when it was not, why; the agent is back either way. The daemon " +
         "refuses it for an agent whose claim is suspended, failed or retired, and for one whose claim is stored working " +
@@ -1071,7 +1072,9 @@ export function createLegionTool(deps: {
         "suspended, and suspensionHeld with suspensionHeldBy while a suspension waits for a turn to end. " +
         "stop ends the agent: the daemon stops it at once, also in a turn, which loses that turn, and " +
         "retires it with its session kept on record. Only retry, or a start of its issue's phase, runs " +
-        "it again. The daemon refuses stop for a tree's root architect, which ends only with its tree: suspend " +
+        "it again. An agent whose turn on its task has ended and whose report of that turn has not reached " +
+        "the daemon yet is stopped once that report lands, or at the bound of the wait for it, so that task " +
+        "is not run a second time. The daemon refuses stop for a tree's root architect, which ends only with its tree: suspend " +
         "it instead. " +
         "retry starts an agent that failed, or that a stop retired, again in the session its claim recorded, with " +
         "new launch budgets. A phase worker is started through its issue's current phase, so it has that " +
@@ -1079,9 +1082,10 @@ export function createLegionTool(deps: {
         "retry for an agent whose claim is stored working (CLAIM_IN_A_TURN) and for a suspended agent: resume_agent that agent instead, unless the operator suspended it. " +
         "suspend stops the agent and keeps its session and the task it owes. An agent in a turn " +
         "keeps that turn until it ends, or until the stop timeout, which cuts the turn off, and the answer " +
-        "shows suspensionHeld until then. Your suspension holds: no rule of the daemon's starts the agent " +
+        "shows suspensionHeld until then. An agent whose turn on its task has ended keeps its process until " +
+        "the daemon has that turn's report, within the same timeout. Your suspension holds: no rule of the daemon's starts the agent " +
         "again until your resume_agent or the operator's legion claims resume. " +
-        "resume_agent starts a suspended agent again in the session its claim recorded, and sends it the task it owes. " +
+        "resume_agent starts a suspended agent again in the session its claim recorded, and its worker takes again the task it owes. " +
         "The daemon refuses resume_agent for an agent whose claim is stored working (CLAIM_IN_A_TURN). " +
         "The daemon refuses resume_agent, suspend, stop, retry and fresh_session for an agent the operator suspended, or whose " +
         "suspension by the operator waits for a turn to end (SUSPENDED_BY_OPERATOR), before any refusal of its " +

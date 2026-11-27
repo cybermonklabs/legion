@@ -259,8 +259,9 @@ func TestAProviderErrorInTheTurnANewsOnlyStartReachedSendsThePhaseTaskAgain(t *t
 	if err := tester.Handle(r.ctx, supervise.StreamTurnEnd{Claim: token}); err != nil {
 		t.Fatalf("end the tester's turn: %v", err)
 	}
-	if err := tester.Handle(r.ctx, supervise.StreamPromptResult{Claim: token, DeliveryID: phaseTask.ID, AgentInvoked: true,
-		Error: "overloaded_error", HTTPStatus: 529}); err != nil {
+	if err := tester.Handle(r.ctx, supervise.RequestTurnOutcome{Claim: token, Generation: tester.Claim().Generation,
+		Sequence: turnSequence.Add(1), Task: phaseTask.Number,
+		ProviderError: &supervise.ProviderError{Message: "overloaded_error", Status: 529}}); err != nil {
 		t.Fatalf("report the provider error of the tester's turn: %v", err)
 	}
 	owed := tester.Claim().Pending

@@ -21,16 +21,17 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
-	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
-// The cases here hold to one rule, the whole way from the fact to the told row: a confirmation
-// raises what the prompt of the turn it confirms carried, never what the task holds when the turn
-// starts. A send renders a task's news again from the record, so a later send can carry an opening
-// an earlier prompt did not, and the turn that starts can be that earlier prompt's: after a
-// restart, after a resend Oh My Pi answers busy, or after the gate closed and opened again. A send
-// that never reached the agent carried nothing, and a task retired before its turn's result said
-// the turn ran gives its news back. Each case runs through the daemon's own parts, as the
+// The cases here hold to one rule, the whole way from the fact to the told row: under the take, a
+// copy is the news a take's answer carried, written at the accept, and it is credited only once
+// that take's turn has started and folded only when a report naming its number finishes it. A
+// take renders a task's news again from the record, so a retake can carry an opening an earlier
+// take did not. A take the second bound took back carries no credit, so a late turn of its text is
+// no take's turn and the news it read is told again, never missed; a report naming the number
+// after a retake was accepted finishes the retake and folds the retake's copy (plan.md v138). A
+// take that never reached the agent carried nothing, and a task retired before its turn's report
+// said the turn ran gives its news back. Each case runs through the daemon's own parts, as the
 // newsPathRig cases do.
 
 const (
@@ -44,7 +45,7 @@ const (
 // that move starts and end its turn on it, and answers the reviewer's machine, connection and
 // token. The move queued the reconcile of the tree's news, which has not run: the phase start
 // carried none of the news the reviewer is owed, since what changed is not recorded yet.
-func (r *newsPathRig) reviewerBetweenTurns(key string) (*supervise.Machine, *fake.Conn, claim.Token) {
+func (r *newsPathRig) reviewerBetweenTurns(key string) (*supervise.Machine, *newsConn, claim.Token) {
 	r.t.Helper()
 	token := mustClaimToken(r.t, key, claim.RoleReviewer)
 	r.complete(key)
@@ -109,28 +110,44 @@ func (r *newsPathRig) restartDaemon() {
 }
 
 // reconnect is the shim of key's role connecting to the booted daemon, its agent in a turn where
-// streaming says so: the connection registers, and the machine and the connection are answered. A
-// hello, posted by the caller, is what sends the task the claim holds.
-func (r *newsPathRig) reconnect(key string, role claim.Role, streaming bool) (*supervise.Machine, *fake.Conn) {
+// streaming says so: the connection registers, and the machine and the worker's connection are
+// answered. A hello, posted by the caller, makes the claim's view of its connection whole.
+func (r *newsPathRig) reconnect(key string, role claim.Role, streaming bool) (*supervise.Machine, *newsConn) {
 	r.t.Helper()
 	token := mustClaimToken(r.t, key, role)
 	machine, found := r.sup.Machine(token)
 	if !found {
 		r.t.Fatalf("the booted daemon restored no claim of %s's %s", key, role)
 	}
-	conn := fake.NewConn()
+	conn := newNewsConn(r.t, r.ctx, r.conns, machine)
 	conn.SetStreaming(streaming)
-	r.conns.Register(token, conn)
+	conn.busy = streaming
 	return machine, conn
 }
 
-// hello is the shim of machine's claim saying hello on its connection, which sends what the claim
-// holds; it waits for the send's outcome.
+// hello is the shim of machine's claim saying hello on its connection; it waits for what the hello
+// decides. A claim holding a pending task asks its agent at the hello whether it is in a turn
+// (supervise's askView), and the shim answers that ask on its stream, which the daemon's pump reads
+// as a turn answer (supervisor's mapping of stream.TurnAnswered): the fake connection's get_state
+// answers only the call, so hello posts that answer as the pump would, from the connection's state.
+// An answer no ask waits on changes nothing.
 func (r *newsPathRig) hello(machine *supervise.Machine) {
 	r.t.Helper()
 	held := machine.Claim()
 	if err := machine.Handle(r.ctx, supervise.StreamHello{Claim: held.Token, Generation: held.Generation}); err != nil {
 		r.t.Fatalf("hello of %s: %v", held.Token, err)
+	}
+	machine.Wait()
+	conn, ok := newsConns.Load(machine)
+	if !ok {
+		return
+	}
+	state, err := conn.(*newsConn).Conn.GetState(r.ctx)
+	if err != nil {
+		r.t.Fatalf("the state of %s's agent: %v", held.Token, err)
+	}
+	if err := machine.Handle(r.ctx, supervise.StreamTurnAnswered{Claim: held.Token, Streaming: state.IsStreaming}); err != nil {
+		r.t.Fatalf("the answer of %s's shim to the hello's ask: %v", held.Token, err)
 	}
 	machine.Wait()
 }
@@ -146,13 +163,14 @@ func (r *newsPathRig) sweepNews() {
 	}
 }
 
-// An earlier daemon sent the reviewer its news task, the change list of version 4 and no opening,
-// and Oh My Pi acknowledged it; the daemon stopped before the task's turn started. The gate then
-// closed and opened again while the reviewer was still owed that news, so its row owes the opening
-// and no opened message went. The booted daemon's send renders the task again, which takes the
-// owed opening on, and only then asks the agent whether the turn it is in is the task's. The agent
-// answers that it is streaming, and that turn is the earlier prompt's, which carried no opening:
-// the confirmation raises the version that prompt told and leaves the opening owed.
+// An earlier daemon accepted the reviewer's take of its news task, the change list of version 4
+// and no opening; the daemon stopped before the take's turn started. The copy the accept wrote is
+// no standing credit until that turn starts (20261122160000_design_news_credit_at_turn_start), so
+// when the gate then closed and opened again the reviewer was still owed that news: its row owes
+// the opening and no opened message went. The booted daemon restores the take with the text it
+// kept, and the agent answers its hello's ask that it is streaming: over a take awaiting its turn
+// that answer is the take's turn start (supervise's answerView), and the turn carried no
+// opening, so its start makes the take's credit stand, version 4 taken, and leaves the opening owed.
 func TestARestartsConfirmationOfATaskSentWithoutTheOpeningLeavesTheOpeningOwed(t *testing.T) {
 	t.Parallel()
 	r := newNewsPathRig(t, 4, pathMember{key: pathRoot, at: phase.Testing})
@@ -172,60 +190,135 @@ func TestARestartsConfirmationOfATaskSentWithoutTheOpeningLeavesTheOpeningOwed(t
 	restored, conn := r.reconnect(pathRoot, claim.RoleReviewer, true)
 	r.hello(restored)
 
-	if held := restored.Claim().Pending; held == nil || held.ConfirmedAt.IsZero() {
-		t.Fatalf("the booted daemon's reviewer holds %+v, want the task the earlier daemon sent confirmed by the turn the agent is in", held)
+	if held := restored.Claim().Pending; held == nil || held.ConfirmedAt.IsZero() || !held.TurnStarted {
+		t.Fatalf("the booted daemon's reviewer holds %+v, want the take the earlier daemon accepted, its turn the one the agent is in", held)
 	}
 	if prompted := conn.Prompts(); len(prompted) != 0 {
-		t.Fatalf("the booted daemon prompted %+v, want nothing sent into the turn of the earlier prompt", prompted)
+		t.Fatalf("the booted daemon's worker took %+v, want nothing taken in the turn of the restored take", prompted)
 	}
 	r.wantTold("after the restart's confirmation of a task sent without the opening", pathRoot, record.AudienceHolder, 4, true)
 }
 
-// The reviewer's news task, the change list of version 4 and no opening, is acknowledged, and its
-// turn does not start within the wait (noTurn): the task is taken back under a new id, and the
-// first prompt stays outstanding. The gate closes and opens again meanwhile, so the reviewer's row
-// owes the opening. The next trigger sends the task again, rendered with the opening, and Oh My Pi
-// answers that send busy, since it is preparing the first prompt's turn. That turn starts: it
-// confirms the task, and raises what the first prompt carried, which said nothing of the opening.
+// The reviewer's take of its news task X, the change list of version 4 and no opening, is
+// accepted over a connection whose view is whole, which arms R5's second bound
+// (Timeouts.TurnStart), and X's turn does not start within it while Oh My Pi prepares it: the
+// worker is charged and the task taken back untaken, under the same id and number. The gate
+// closes and opens again meanwhile, so the reviewer's row owes the opening. The worker, which
+// handed X's text to its host, takes nothing more (decision 9). X's turn then starts late, and
+// under the take it is no take's turn, since the take-back ended X's take and its credit: it
+// confirms nothing, and a take while it runs is refused in-turn with no text (the take's
+// counterpart of Oh My Pi's busy answer to a resend). The record says version 3 with the opening
+// owed: version 4 is under-credited and told twice, never missed, and the opening the task now
+// renders is raised by no turn that did not carry it. Once the host is idle the worker takes the
+// task again, and that retake leads with the opening. What follows depends on which reaches the
+// daemon first, the late turn's report, which names the task's number, or the retake:
+//
+//   - the late report first: no take holds the number, so it finishes nothing and the record
+//     stays at version 3 with the opening owed; the retake's turn and its report then leave
+//     version 4 taken and nothing owed;
+//   - the retake first: the late report names the number the retake holds, so it finishes the
+//     task and folds the retake's copy, the opening included, though the retake's text has not
+//     run; the record ends at version 4 with the opening cleared, and the worker still holds the
+//     retake's text.
 func TestALateTurnOfAFirstPromptLeavesTheOpeningABusyResendRenderedOwed(t *testing.T) {
 	t.Parallel()
-	r := newNewsPathRig(t, 4, pathMember{key: pathRoot, at: phase.Testing})
-	clock := &heldClock{}
-	const wait = 7 * time.Second
-	r.sup.deps.Clock, r.sup.deps.Timeouts.RPC = clock, wait
-	r.told(pathRoot, record.AudienceHolder, 3)
-	r.told(pathRoot, record.AudienceArchitect, 4)
-	reviewer, conn, token := r.reviewerBetweenTurns(pathRoot)
-	r.queueNewsTask(pathRoot)
-	first := r.delivered(reviewer)
+	for _, tc := range []struct {
+		name        string
+		retakeFirst bool
+	}{
+		{name: "the late report lands before the retake"},
+		{name: "the retake is accepted before the late report lands", retakeFirst: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newNewsPathRig(t, 4, pathMember{key: pathRoot, at: phase.Testing})
+			clock := &heldClock{}
+			const wait = 7 * time.Second
+			r.sup.deps.Clock, r.sup.deps.Timeouts.TurnStart = clock, wait
+			r.told(pathRoot, record.AudienceHolder, 3)
+			r.told(pathRoot, record.AudienceArchitect, 4)
+			reviewer, conn, token := r.reviewerBetweenTurns(pathRoot)
+			r.queueNewsTask(pathRoot)
+			first := r.delivered(reviewer)
+			if news := pendingNewsOf(t, reviewer); len(news.Items) != 1 || len(news.Openings) != 0 {
+				t.Fatalf("the reviewer's news task carries %+v, want the item of version 4 and no opening", news)
+			}
 
-	r.closeAndReopen()
-	r.wantTold("at the reopening", pathRoot, record.AudienceHolder, 3, true)
-	if fired := clock.fire(wait); fired != 1 {
-		t.Fatalf("timers fired at the wait for the first prompt's turn = %d, want that one wait", fired)
-	}
-	if held := reviewer.Claim().Pending; held == nil || held.ID == first.ID || !held.ConfirmedAt.IsZero() {
-		t.Fatalf("the reviewer holds %+v after the wait ran out, want the task taken back under a new id", held)
-	}
+			r.closeAndReopen()
+			r.wantTold("at the reopening", pathRoot, record.AudienceHolder, 3, true)
+			if fired := clock.fire(wait); fired != 1 {
+				t.Fatalf("timers fired at the second bound over the first take = %d, want that one wait", fired)
+			}
+			if held := reviewer.Claim().Pending; held == nil || held.ID != first.ID || held.Number != first.Number || !held.ConfirmedAt.IsZero() {
+				t.Fatalf("the reviewer holds %+v after the second bound passed, want the task taken back untaken, its id %s and number %d kept",
+					held, first.ID, first.Number)
+			}
 
-	conn.FailPrompt(keptBusy)
-	before := len(conn.Prompts())
-	r.hello(reviewer)
-	resent := promptsAfter(conn, before)
-	if len(resent) != 1 || !strings.Contains(resent[0].Message, carriedOpened) {
-		t.Fatalf("the resend = %+v, want one prompt rendered with the opening the reopening owes", resent)
-	}
-	if state := reviewer.Claim().State; state != supervise.StateWorking {
-		t.Fatalf("the reviewer is %s after the busy answer, want working for the first prompt's turn", state)
-	}
+			// Oh My Pi is still preparing X's turn, so the worker takes nothing until its host is idle.
+			conn.SetStreaming(true)
+			before := len(conn.Prompts())
+			if err := reviewer.Handle(r.ctx, supervise.StreamTurnStart{Claim: token}); err != nil {
+				t.Fatalf("the first take's late turn starts: %v", err)
+			}
+			if state := reviewer.Claim().State; state != supervise.StateWorking {
+				t.Fatalf("the reviewer is %s after the first take's late turn started, want working", state)
+			}
+			c := reviewer.Claim()
+			answer, err := reviewer.Take(r.ctx, supervise.RequestTake{Claim: c.Token, Generation: c.Generation, Session: c.Session, Number: first.Number})
+			if err != nil || answer.Outcome != supervise.TakeOutcomeRefused || answer.Hold != supervise.HoldInTurn || answer.Text != "" {
+				t.Fatalf("a take of task %d while the first take's late turn runs = %+v, %v; want it refused in-turn with no text", first.Number, answer, err)
+			}
+			reviewer.Wait()
+			if held := reviewer.Claim().Pending; held == nil || held.Number != first.Number || !held.ConfirmedAt.IsZero() {
+				t.Fatalf("the reviewer holds %+v in the first take's late turn, want the task untaken: the take-back ended that take", held)
+			}
+			r.wantTold("after the first take's late turn started", pathRoot, record.AudienceHolder, 3, true)
 
-	if err := reviewer.Handle(r.ctx, supervise.StreamTurnStart{Claim: token}); err != nil {
-		t.Fatalf("the first prompt's turn starts: %v", err)
+			if err := reviewer.Handle(r.ctx, supervise.StreamTurnEnd{Claim: token}); err != nil {
+				t.Fatalf("the first take's late turn ends: %v", err)
+			}
+			// lateReport is the worker's report of X's late turn, which names the task's number, as
+			// the worker ran X's text under it.
+			lateReport := func() {
+				t.Helper()
+				if err := reviewer.Handle(r.ctx, supervise.RequestTurnOutcome{Claim: token, Generation: reviewer.Claim().Generation,
+					Sequence: turnSequence.Add(1), Task: first.Number}); err != nil {
+					t.Fatalf("the first take's late turn reports task %d: %v", first.Number, err)
+				}
+				reviewer.Wait()
+			}
+			if !tc.retakeFirst {
+				lateReport()
+				if held := reviewer.Claim().Pending; held == nil || held.Number != first.Number || !held.ConfirmedAt.IsZero() {
+					t.Fatalf("the reviewer holds %+v after the late turn's report, want the task still owed and untaken: no take holds that turn", held)
+				}
+				r.wantTold("after the first take's late turn and its report", pathRoot, record.AudienceHolder, 3, true)
+			}
+
+			conn.SetStreaming(false)
+			resent := promptsAfter(conn, before)
+			if len(resent) != 1 || resent[0].DeliveryID != first.ID || !strings.Contains(resent[0].Message, carriedOpened) {
+				t.Fatalf("the takes once the host is idle = %+v, want one take of %s rendered with the opening the reopening owes", resent, first.ID)
+			}
+			if tc.retakeFirst {
+				r.wantTold("after the retake was accepted", pathRoot, record.AudienceHolder, 3, true)
+				lateReport()
+				if held := reviewer.Claim().Pending; held != nil {
+					t.Fatalf("the reviewer holds %+v after the late report, want the task finished: the report names the number the retake holds", held)
+				}
+				if taken := conn.Prompts(); len(taken) != before+1 || taken[before].Message != resent[0].Message {
+					t.Fatalf("the worker's takes after the late report = %+v, want the retake's text, opening included, still the last it holds", taken[before:])
+				}
+				r.wantTold("after the late report finished the retake's task", pathRoot, record.AudienceHolder, 4, false)
+				return
+			}
+			r.startTurn(reviewer)
+			endTurn(r.ctx, t, reviewer, token)
+			if held := reviewer.Claim().Pending; held != nil {
+				t.Fatalf("the reviewer holds %+v after the retake's report, want the news task finished", held)
+			}
+			r.wantTold("after the retake's turn and its report", pathRoot, record.AudienceHolder, 4, false)
+		})
 	}
-	if held := reviewer.Claim().Pending; held == nil || held.ConfirmedAt.IsZero() {
-		t.Fatalf("the reviewer holds %+v after the first prompt's turn started, want the task confirmed", held)
-	}
-	r.wantTold("after the first prompt's late turn", pathRoot, record.AudienceHolder, 4, true)
 }
 
 // The reviewer is in a turn of its own when the reconcile queues its news task, and the gate
@@ -273,12 +366,13 @@ func TestAConfirmationOfAnOpeningACloseAndReopeningReplacedLeavesTheReopeningOwe
 	r.wantTold("after the confirmation of the task that told the reopening", pathRoot, record.AudienceHolder, 4, false)
 }
 
-// The reviewer's news task is sent while the working copy's adoption is refused, or while the
-// reviewer's GitHub App identity cannot be minted, so its prompt never reaches the agent, though
-// the send marked the task prompted. The daemon is restarted, and the agent of the booted daemon
-// is in a turn of its own, an Envoy message's, when its first turn start is read: that turn is not
-// the task's, so it confirms nothing and raises nothing. The turn's end sends the task, and the
-// turn its prompt starts confirms it.
+// The reviewer's news task is queued while the working copy's adoption is refused, or while the
+// reviewer's GitHub App identity cannot be minted. Under the take both are decided before the take
+// is answered, so the worker's take is refused and the task stays pending, unconfirmed, its text
+// never handed to the agent. The daemon is restarted, and the agent of the booted daemon is in a
+// turn of its own, an Envoy message's, when its first turn start is read: that turn is not the
+// task's, so it confirms nothing and raises nothing. At the turn's end the worker takes the task,
+// and the turn the take starts makes its credit stand.
 func TestARestartNeverConfirmsANewsTaskWhoseSendFailedBeforeItsPrompt(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -332,10 +426,11 @@ func TestARestartNeverConfirmsANewsTaskWhoseSendFailedBeforeItsPrompt(t *testing
 				t.Fatalf("the agent's own turn ends: %v", err)
 			}
 			restored.Wait()
+			prompted := booted.Prompts()
 			sent := r.delivered(restored)
-			if prompted := booted.Prompts(); len(prompted) != 1 || prompted[0].DeliveryID != sent.ID ||
+			if len(prompted) != 1 || prompted[0].DeliveryID != sent.ID ||
 				!strings.Contains(prompted[0].Message, "version 4, since version 3, which your phase last took") {
-				t.Fatalf("the booted daemon's prompts = %+v, want the news task, once", prompted)
+				t.Fatalf("the booted daemon's takes = %+v, want the news task, once", prompted)
 			}
 			r.startTurn(restored)
 			r.wantTold("after the turn the news task's prompt started", pathRoot, record.AudienceHolder, 4, false)
@@ -368,9 +463,10 @@ func TestAConfirmedNewsTaskANewerTaskReplacedBeforeItsTurnsResultGivesItsNewsBac
 	if err := reviewer.Handle(r.ctx, supervise.StreamTurnEnd{Claim: token}); err != nil {
 		t.Fatalf("the news task's turn ends: %v", err)
 	}
-	if err := reviewer.Handle(r.ctx, supervise.StreamPromptResult{Claim: token, DeliveryID: news.ID, AgentInvoked: true,
-		Error: "overloaded_error: Overloaded", HTTPStatus: 529}); err != nil {
-		t.Fatalf("the news task's prompt reports its provider error: %v", err)
+	if err := reviewer.Handle(r.ctx, supervise.RequestTurnOutcome{Claim: token, Generation: reviewer.Claim().Generation,
+		Sequence: turnSequence.Add(1), Task: news.Number,
+		ProviderError: &supervise.ProviderError{Message: "overloaded_error: Overloaded", Status: 529}}); err != nil {
+		t.Fatalf("the news task's turn reports its provider error: %v", err)
 	}
 	reviewer.Wait()
 	r.wantTold("after the provider error the fence dropped", pathRoot, record.AudienceHolder, 3, false)
@@ -393,34 +489,33 @@ func TestAConfirmedNewsTaskANewerTaskReplacedBeforeItsTurnsResultGivesItsNewsBac
 	r.wantTold("after the confirmation of the news sent again", pathRoot, record.AudienceHolder, 4, false)
 }
 
-// The reviewer's news task is sent, and Oh My Pi takes its prompt and runs its turn to its end,
-// but the reviewer's machine is handed that turn's start and end before the send's
-// acknowledgement: the stream's frames reach it on the stream's queue, and the acknowledgement on
-// the send's own goroutine, in whatever order the two are scheduled. The turn's start is taken for
-// the task's while the send is in flight, which confirms it, and its end retires nothing while
-// that send has had no answer. The prompt's result, decided after the acknowledgement or before
-// it, says the turn ran, which makes the credit of the news final: the reviewer took version 4
-// once, and the sweep queues no reconcile to tell it again. A task retired at that end has its
-// result dropped as stale and gives the news back, and the reviewer is told version 4 twice.
-// A pause held over that turn also waits: a stop before the result would delete the delivery's
-// only credit for version 4. The result folds the credit into the told row before the pause
-// stops the claim and the delivery is retired.
-func TestANewsTaskWhoseTurnEndsBeforeItsSendIsAcknowledgedIsToldOnce(t *testing.T) {
+// The reviewer takes its news task and runs the take's turn to its end, but the reviewer's
+// machine is handed that turn's end before the turn-outcome report that names the task: the end
+// comes over the worker stream and the report over HTTP, in whatever order the two arrive. The
+// end finishes nothing, since only the report naming the task's number does (reportedTask), and
+// the report, read after the end or before it, says the turn ran, which makes the credit of the
+// news final: the reviewer took version 4 once, and the sweep queues no reconcile to tell it
+// again. A task finished at that end would have its credit made final with no report to say the
+// turn ran, and one taken back there would give the news back and tell the reviewer version 4
+// twice. A pause held over that turn waits for the report too (reportwait.go): a stop before it
+// would delete the delivery's only credit for version 4. The report folds the credit into the told
+// row before the pause stops the claim and the delivery is retired.
+func TestANewsTaskWhoseTurnEndsBeforeItsReportIsToldOnce(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
 		name        string
-		resultFirst bool
+		reportFirst bool
 		pause       bool
 	}{
-		{name: "the acknowledgement, then the result"},
-		{name: "the result, then the acknowledgement", resultFirst: true},
-		{name: "a held pause, then the result before the acknowledgement", resultFirst: true, pause: true},
+		{name: "the turn's end, then the report"},
+		{name: "the report, then the turn's end", reportFirst: true},
+		{name: "a held pause, the turn's end, then the report", pause: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r := newNewsPathRig(t, 4, pathMember{key: pathRoot, at: phase.Testing})
-			// The case holds the news task's send at the door while its turn starts and ends, so
-			// the send's own deadline is a hang guard here and no part of what the case reads.
-			r.sup.deps.Timeouts.RPC = testwait.Remaining(t)
+			// The worker's plugin names its task's number in its reports, so the report alone
+			// finishes the task; a plugin below the contract is finished by the end frame.
+			r.sup.deps.PluginContract = r.sup.deps.TaskTakeContract
 			flag := &orderPause{}
 			if tc.pause {
 				st := r.sup.deps.Store.(*store.Store)
@@ -439,17 +534,9 @@ func TestANewsTaskWhoseTurnEndsBeforeItsSendIsAcknowledgedIsToldOnce(t *testing.
 			r.told(pathRoot, record.AudienceHolder, 3)
 			r.told(pathRoot, record.AudienceArchitect, 4)
 			reviewer, _, token := r.reviewerBetweenTurns(pathRoot)
-			gated := newGatedPrompt()
-			r.conns.Register(token, gated)
 			r.queueNewsTask(pathRoot)
-			news := testwait.Receive(t, "the send of the reviewer's news task", gated.entered)
-
-			if err := reviewer.Handle(r.ctx, supervise.StreamTurnStart{Claim: token}); err != nil {
-				t.Fatalf("the news task's turn starts: %v", err)
-			}
-			if held := reviewer.Claim().Pending; held == nil || held.ID != news || held.ConfirmedAt.IsZero() {
-				t.Fatalf("the reviewer holds %+v after its turn started, want the news task %s confirmed: its send is in flight", held, news)
-			}
+			news := r.delivered(reviewer)
+			r.startTurn(reviewer)
 			if tc.pause {
 				id := openLegionPause(t, r.pool, time.Now())
 				flag.id.Store(id)
@@ -458,35 +545,37 @@ func TestANewsTaskWhoseTurnEndsBeforeItsSendIsAcknowledgedIsToldOnce(t *testing.
 					t.Fatalf("pause stop during the news task's turn = %v, want it held", err)
 				}
 			}
-			if err := reviewer.Handle(r.ctx, supervise.StreamTurnEnd{Claim: token}); err != nil {
-				t.Fatalf("the news task's turn ends: %v", err)
-			}
-			if tc.pause && reviewer.Claim().State != supervise.StateIdle {
-				t.Fatalf("reviewer state after turn end = %s, want idle until the result decides the task", reviewer.Claim().State)
-			}
-			acknowledge := func() {
-				gated.release <- struct{}{}
-				reviewer.Wait()
-			}
-			result := func() {
-				if err := reviewer.Handle(r.ctx, supervise.StreamPromptResult{Claim: token, DeliveryID: news, AgentInvoked: true}); err != nil {
-					t.Fatalf("the news task's prompt reports that its turn ran: %v", err)
+			end := func() {
+				if err := reviewer.Handle(r.ctx, supervise.StreamTurnEnd{Claim: token}); err != nil {
+					t.Fatalf("the news task's turn ends: %v", err)
 				}
 			}
-			if tc.resultFirst {
-				result()
-				acknowledge()
+			report := func() {
+				if err := reviewer.Handle(r.ctx, supervise.RequestTurnOutcome{Claim: token, Generation: reviewer.Claim().Generation,
+					Sequence: turnSequence.Add(1), Task: news.Number}); err != nil {
+					t.Fatalf("the report of the news task's turn: %v", err)
+				}
+			}
+			if tc.reportFirst {
+				report()
+				end()
 			} else {
-				acknowledge()
-				result()
+				end()
+				if held := reviewer.Claim().Pending; held == nil || held.Number != news.Number || held.ConfirmedAt.IsZero() {
+					t.Fatalf("the reviewer holds %+v after the turn's end, want the news task %d still taken for its report", held, news.Number)
+				}
+				if tc.pause && reviewer.Claim().State != supervise.StateIdle {
+					t.Fatalf("reviewer state after turn end = %s, want idle until the report decides the task", reviewer.Claim().State)
+				}
+				report()
 			}
 			reviewer.Wait()
 			if held := reviewer.Claim().Pending; held != nil {
-				t.Fatalf("the reviewer holds %+v after its news task's result and acknowledgement, want nothing", held)
+				t.Fatalf("the reviewer holds %+v after its news task's turn and report, want nothing", held)
 			}
 			if tc.pause {
 				if state := reviewer.Claim().State; state != supervise.StateSuspended {
-					t.Fatalf("reviewer state after the result = %s, want suspended by the held pause stop", state)
+					t.Fatalf("reviewer state after the report = %s, want suspended by the held pause stop", state)
 				}
 				var pending bool
 				if err := r.pool.QueryRow(r.ctx, `select exists (select 1 from pending_task_deliveries where claim_token = $1)`, token).Scan(&pending); err != nil {
@@ -498,7 +587,7 @@ func TestANewsTaskWhoseTurnEndsBeforeItsSendIsAcknowledgedIsToldOnce(t *testing.
 				endLegionPause(t, r.pool, flag.id.Load(), time.Now())
 				flag.id.Store(0)
 			}
-			r.wantTold("after the news task's result and acknowledgement", pathRoot, record.AudienceHolder, 4, false)
+			r.wantTold("after the news task's turn and report", pathRoot, record.AudienceHolder, 4, false)
 			r.sweepNews()
 			if rows := r.held(ofKind(record.OutboxKindDesignChanges)); len(rows) != 0 {
 				t.Fatalf("the sweep queued %d reconciles of the tree's news, want none: the reviewer took version 4 once", len(rows))
@@ -613,13 +702,17 @@ func TestAnOpenedMessageAndACloseSettleTheOpeningSoADecisionOnlyVersionSendsNoth
 }
 
 // A restart and a close and reopening together. The reviewer's news task carries the opening, and
-// Oh My Pi acknowledges it; before its turn starts, the gate closes and opens again, and the daemon
-// is restarted. The booted daemon's send renders the task again with the new opening, and asks the
-// agent, which is in the earlier prompt's turn: that turn's confirmation raises what that prompt
-// carried and leaves the new opening owed. The turn ends with no result the booted daemon was
-// waiting on, so its retirement gives that news back, told twice rather than lost, and the next
-// task, which the sweep's reconcile queues, carries the version and the reopening both; its
-// confirmation raises the one and clears the other.
+// the reviewer's take of it is accepted; before its turn starts, the gate closes and opens again,
+// and the daemon is restarted. The take's copy is no standing credit until its turn starts, so the
+// reopening finds the reviewer owed and its row owes the new opening. The booted daemon restores
+// the take, and the agent's answer to its hello's ask says it is streaming, which over a take
+// awaiting its turn is that take's turn start (supervise's answerView): its start makes the
+// credit stand, version 4 taken, and the earlier opening it carried clears nothing of the new one.
+// The turn ends and the worker's report naming the take's number finishes the task, which makes
+// that credit final (main's push path ended this turn with no result the booted daemon waited on,
+// so its retirement gave the version back; under the take every turn's report reaches the daemon,
+// and a clean one is the proof the turn ran). The sweep's reconcile then queues a task that tells
+// the reopening alone, and the finish of its take's turn clears it.
 func TestARestartBetweenAReopeningAndTheTurnOfATaskThatCarriedTheEarlierOpening(t *testing.T) {
 	t.Parallel()
 	r := newNewsPathRig(t, 4, pathMember{key: pathRoot, at: phase.Testing})
@@ -639,25 +732,30 @@ func TestARestartBetweenAReopeningAndTheTurnOfATaskThatCarriedTheEarlierOpening(
 	r.restartDaemon()
 	restored, conn := r.reconnect(pathRoot, claim.RoleReviewer, true)
 	r.hello(restored)
-	if held := restored.Claim().Pending; held == nil || held.ConfirmedAt.IsZero() {
-		t.Fatalf("the booted daemon's reviewer holds %+v, want the task the earlier daemon sent confirmed", held)
+	if held := restored.Claim().Pending; held == nil || held.ConfirmedAt.IsZero() || !held.TurnStarted {
+		t.Fatalf("the booted daemon's reviewer holds %+v, want the take the earlier daemon accepted, its turn the one the agent is in", held)
 	}
 	r.wantTold("after the restart's confirmation of the task that carried the earlier opening", pathRoot, record.AudienceHolder, 4, true)
 
 	conn.SetStreaming(false)
+	// Under the take, endTurn sends the end frame and then the worker's report naming the take's
+	// number, which finishes the task and folds its copy into what the holder was told: without
+	// that report nothing folds.
 	endTurn(r.ctx, t, restored, token)
-	r.wantTold("after the turn ended with no result the booted daemon waited on", pathRoot, record.AudienceHolder, 3, true)
+	r.wantTold("after the take's turn and its clean report", pathRoot, record.AudienceHolder, 4, true)
 
 	r.sweepNews()
 	r.run(ofKind(record.OutboxKindDesignChanges))
 	if got := r.run(startOf(pathRoot, claim.RoleReviewer, true)); len(got) != 1 {
 		t.Fatalf("the reviewer's news-only starts after the sweep = %d, want one", len(got))
 	}
+	prompted := conn.Prompts()
 	told := r.delivered(restored)
-	if prompted := conn.Prompts(); len(prompted) != 1 || prompted[0].DeliveryID != told.ID ||
-		strings.Count(prompted[0].Message, carriedOpened) != 1 || !strings.Contains(prompted[0].Message, "version 4, since version 3") {
-		t.Fatalf("the booted daemon's prompts = %+v, want one task telling the reopening and version 4", prompted)
+	if len(prompted) != 1 || prompted[0].DeliveryID != told.ID ||
+		strings.Count(prompted[0].Message, carriedOpened) != 1 || strings.Contains(prompted[0].Message, "version 4, since version 3") {
+		t.Fatalf("the booted daemon's worker took %+v, want one task telling the reopening alone: version 4 was taken", prompted)
 	}
 	r.startTurn(restored)
-	r.wantTold("after the confirmation of the task that told the reopening", pathRoot, record.AudienceHolder, 4, false)
+	endTurn(r.ctx, t, restored, token)
+	r.wantTold("after the finish of the task that told the reopening", pathRoot, record.AudienceHolder, 4, false)
 }

@@ -36,9 +36,10 @@
 // merger's launch carries. Facts enter only as production's do: GitHub envelopes on the
 // ENVOY_NOTIFICATIONS stream for the push onto the base, the merger's push and its synchronize,
 // CI's settlement and the merge; the daemon's own HTTP routes for each role's registration,
-// readiness, grants, the architect's sign-off and the implementer's completion of retro; and the
-// daemon's worker stream for each role's turns, which this driver speaks as `legion worker-shim`
-// does (shimwire frames). Every assertion is a read of GET /legion/v1/state, of the operator's
+// readiness, task takes, grants, the architect's sign-off and the implementer's completion of
+// retro; and the daemon's worker stream for each role's turns, which this driver speaks as
+// `legion worker-shim` does (shimwire frames), each role's plugin taking its task as the package's
+// takeDriver does. Every assertion is a read of GET /legion/v1/state, of the operator's
 // claim listing, of what the daemon published to the Envoy listener stand-in, of what it sent — or
 // did not send — to a role's own connection, of the launch the fake runtime recorded, of the
 // writes it made to the Dispatch stand-in, or of the lines the daemon logged for its decisions
@@ -251,7 +252,7 @@ func (r *conflictMergerLive) acceptingRecordsTheConflict() {
 // the merger. The merger registers and takes its merging task. Nothing repeats.
 func (r *conflictMergerLive) mergingAsksTheMerger() {
 	t := r.t
-	r.arch.startTurn("")
+	r.arch.startTurn()
 	status, body := r.d.request(http.MethodPost, "/legion/v1/signoff", map[string]any{"grantId": r.arch.grant(), "issue": r.key}, false)
 	if status != http.StatusOK {
 		t.Fatalf("the architect's sign-off of %s = %d %s, want 200", r.key, status, body)
@@ -262,8 +263,8 @@ func (r *conflictMergerLive) mergingAsksTheMerger() {
 	r.note("read back: %s is in %s, status %s", r.key, retro.Phase, retro.Status)
 
 	r.imp = r.claimant(claim.RoleImplementer, "ses_implementer")
-	prompt := r.imp.takeTask("Phase: retro")
-	r.note("read back: the implementer was launched, registered and prompted its retro task (%s)", firstLine(prompt.Message))
+	retroTask := r.imp.takeTask("Phase: retro")
+	r.note("read back: the implementer was launched, registered and took its retro task (%s)", firstLine(retroTask.Text))
 	r.published(r.key)
 	if asked := r.loggedFor(conflictAskedLine, r.key); len(asked) != 0 {
 		t.Fatalf("the daemon logged %q for %s with %v, want no merge forward asked in retro", asked[0].Message, r.key, asked[0].Attrs)
@@ -297,10 +298,23 @@ func (r *conflictMergerLive) mergingAsksTheMerger() {
 			asked.Message, r.key, asked.Attrs, mergerAcceptedHead, record.ConflictMergeNext)
 	}
 	r.note("read back: the daemon logged %q for %s: head %v, phase %v, why %v", asked.Message, r.key, asked.Attrs["head"], asked.Attrs["phase"], asked.Attrs["why"])
+	// The ask names the read of GitHub it rests on (dispatch://INFRA-2833 R3): the newest read the
+	// record held of the head when the move asked, step 1's second read, whose time the daemon logs
+	// with its ask, after the first read was logged and before the second read's own line, and
+	// whose merge state is GitHub's answer as that read logged it.
+	first, second := r.loggedFor(conflictFirstReadLine, r.key)[0], r.loggedFor(conflictSecondReadLine, r.key)[0]
+	// A time attribute reaches the recording log as time.Time's String (decodeAttr).
+	readAt, err := time.Parse("2006-01-02 15:04:05.999999999 -0700 MST", fmt.Sprint(asked.Attrs["stateReadAt"]))
+	if err != nil || readAt.Before(first.at) || readAt.After(second.at) {
+		t.Fatalf("the daemon logged %q for %s with the read time %v (%v), want step 1's second read's: after the first read's line at %s and before the second read's at %s",
+			asked.Message, r.key, asked.Attrs["stateReadAt"], err, first.at.UTC().Format(time.RFC3339Nano), second.at.UTC().Format(time.RFC3339Nano))
+	}
+	answered := record.MergeState(fmt.Sprint(second.Attrs["mergeState"]))
+	r.note("read back: the ask rests on GitHub's answer %q for %s, read at %s", answered, mergerAcceptedHead, readAt.UTC().Format(time.RFC3339Nano))
 	launch := r.awaitLaunch(r.token(claim.RoleMerger))
 	r.note("read back: the merger was launched, generation %d", launch.Generation)
 	ask := record.MergeForwardMessage{Role: claim.RoleMerger, Step: record.MergeForwardAsk, Head: mergerAcceptedHead,
-		Base: conflictBase, Phase: phase.Merging, PullRequest: r.number, Why: record.ConflictMergeNext}
+		Base: conflictBase, Phase: phase.Merging, PullRequest: r.number, Why: record.ConflictMergeNext, MergeState: answered, StateReadAt: readAt}
 	told := r.awaitHeard(claim.RoleMerger, 1, bound)
 	if told[0].Message != ask.Message(r.key, record.PullRequest{Repo: liveRepo}) || !strings.Contains(told[0].Message, "The merge and its conflict are yours to resolve") {
 		t.Fatalf("the merger was told %q, want the merge forward's ask to the merger %q", told[0].Message, ask.Message(r.key, record.PullRequest{Repo: liveRepo}))
@@ -322,14 +336,17 @@ func (r *conflictMergerLive) mergingAsksTheMerger() {
 		red, other = checksRed()
 		return len(red) > 0
 	})
-	if len(red) != 1 || red[0].Phase != phase.Merging || !strings.Contains(red[0].Reason, "the merger is asked to merge "+conflictBase+" forward") {
-		t.Fatalf("the architect was told the checks-red notices %+v on the move into merging, want one naming merging and the merger", red)
+	named := "; " + record.AnsweredMergeState(answered, readAt, mergerAcceptedHead)
+	if len(red) != 1 || red[0].Phase != phase.Merging || !strings.Contains(red[0].Reason, "the merger is asked to merge "+conflictBase+" forward") ||
+		!strings.HasSuffix(red[0].Reason, named) {
+		t.Fatalf("the architect was told the checks-red notices %+v on the move into merging, want one naming merging and the merger whose reason ends naming the read it rests on, %q",
+			red, named)
 	}
 	r.note("read back: one checks-red notice on the architect's role topic, naming %s — %s", red[0].Phase, red[0].Reason)
 
 	r.merger = r.claimant(claim.RoleMerger, "ses_merger")
 	task := r.merger.takeTask("Phase: merging")
-	r.note("read back: the merger registered and was prompted its merging task — %s", task.Message)
+	r.note("read back: the merger registered and took its merging task — %s", firstLine(task.Text))
 	r.published(r.key)
 	time.Sleep(liveSettle)
 	red, other = checksRed()

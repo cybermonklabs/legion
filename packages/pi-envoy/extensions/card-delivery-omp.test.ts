@@ -3,7 +3,8 @@ import { createHash, randomUUID } from "node:crypto";
 import { writeFile } from "node:fs/promises";
 import * as path from "node:path";
 import { LISTENER_CALL_ATTEMPTS, LISTENER_CALL_TIMEOUT_MS } from "@legion/contracts";
-import { deliverSubject, RelayHeader } from "@legion/envoy-client/consumer-delivery";
+import { deliverSubject } from "@legion/envoy-client/consumer-delivery";
+import { RelayHeader } from "@legion/envoy-client/relay-frame";
 import {
   type Block,
   type Cleanup,

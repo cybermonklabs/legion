@@ -3,13 +3,14 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import {
   type Cleanup,
+  messageStream,
   ompRoot,
   serveStandin,
   spawnRpc,
   writeStandinProfile,
 } from "@legion/pi-shared/test/omp-harness";
 import { until } from "@legion/test-fixtures/wait";
-import { CAPABILITY_PROBE_OUT } from "../test/capability-host-probe";
+import { CAPABILITY_PROBE_OUT, COST_CAP_PROBE_OUT } from "../test/capability-host-probe";
 
 // What pi-legion reads of Oh My Pi's own modules, on the real Oh My Pi. Those modules resolve
 // only inside the binary's bundle, so the unit tests fake them and the typecheck reads only
@@ -109,5 +110,63 @@ test.skipIf(omp === undefined && !onActions)(
     const report = await probeReport(async () => undefined);
 
     expect(report).toMatchObject({ cyberPolicyRefusal: { refusal: true, other: false } });
+  }
+);
+
+test.skipIf(omp === undefined && !onActions)(
+  "the pinned host exposes a cost-cap drop before any turn starts",
+  async () => {
+    if (omp === undefined) throw new Error("LEGION_TEST_OMP is unset on GitHub Actions");
+    const { root, home, workspace, sessions } = await ompRoot(omp, "cost-cap-host-omp-", cleanup);
+    const { base, requests } = serveStandin(cleanup, (url) => {
+      if (url.pathname !== "/anthropic/v1/messages") return Response.json({ data: [] });
+      return new Response(messageStream([{ type: "text", text: "Done." }], "msg_cost_cap"), {
+        headers: { "content-type": "text/event-stream" },
+      });
+    });
+    await writeStandinProfile(home, base, ["session:", "  maxCost: 1"]);
+    // The one reply uses five input tokens. Use $1 per input token so it reaches the cap.
+    const models = path.join(home, ".omp", "agent", "models.yml");
+    const profile = await readFile(models, "utf8");
+    await writeFile(models, profile.replace("cost: {input: 0,", "cost: {input: 1000000,"));
+
+    const out = path.join(root, "cost-cap-probe.json");
+    let starts = 0;
+    const warmup = Promise.withResolvers<void>();
+    const rpc = spawnRpc(
+      omp,
+      {
+        extensions: [path.join(import.meta.dir, "..", "test", "capability-host-probe.ts")],
+        home,
+        workspace,
+        sessions,
+        env: { [COST_CAP_PROBE_OUT]: out },
+        onFrame: (frame) => {
+          if (!("type" in frame)) return;
+          if (frame.type === "agent_start") starts += 1;
+          if (frame.type === "prompt_result" && "sessionSettled" in frame && frame.sessionSettled) {
+            warmup.resolve();
+          }
+          if (frame.type === "session_settled") warmup.resolve();
+        },
+      },
+      cleanup
+    );
+    rpc.send({ type: "prompt", message: "Spend five dollars in the stand-in session." });
+    await Promise.race([warmup.promise, rpc.closed]);
+    rpc.send({ type: "prompt", message: "/probe-cost-cap" });
+    const written = await Promise.race([
+      until("the probe's dropped-send report", () => readFile(out, "utf8").catch(() => undefined)),
+      rpc.closed,
+    ]);
+    await rpc.end();
+
+    expect(JSON.parse(written)).toEqual({
+      dropped: true,
+      message:
+        "Cost cap reached: this session spent $5.00 of its $1.00 cap (--max-cost / session.maxCost), so the next model request was not sent.",
+    });
+    expect(starts).toBe(1);
+    expect(requests.filter(({ path }) => path === "/anthropic/v1/messages")).toHaveLength(1);
   }
 );

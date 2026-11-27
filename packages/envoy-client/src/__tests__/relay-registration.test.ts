@@ -369,6 +369,7 @@ describe("one registration", () => {
         },
         gap: () => undefined,
         log: () => undefined,
+        onTaskValue: () => undefined,
       },
       publish: (_reply, body) => {
         receipts.push(body);
@@ -699,6 +700,7 @@ describe("a relay socket", () => {
         },
         gap: () => undefined,
         log: () => undefined,
+        onTaskValue: () => undefined,
       },
       publish: (reply, body) => relay.publish(reply, encoder.encode(body)),
       ledger: { delivered: () => false, liveFailed: async () => true },

@@ -441,7 +441,9 @@ func stateCarryingEveryDeclaredValue(t *testing.T) State {
 			PendingCause: causeWords[(cause+1)%len(causeWords)],
 			PendingTask: &PendingTaskView{
 				Phase: taskPhase, QueuedAt: at,
-				SendFailures: 1, LastSendError: "post the prompt: dial tcp 10.42.0.17:13371: connect: connection refused",
+				SendFailures: 1, LastSendError: "worker-stream: legion-values-VALUES-1-implementer refused adopt-working-copy: " +
+					"Command failed (exit 1): jj metaedit: the git lock /legion/workspaces/acme/widgets/VALUES-1/.git/index.lock " +
+					"was last written 31m ago",
 			},
 		}
 	}
@@ -612,9 +614,10 @@ func answerFixtures(t *testing.T) map[AnswerID]answerFixture {
 		// paths read as one set.
 		AnswerIssueRecord: {roots: typesOf(Issue{}), bodies: issues},
 		AnswerHealth:      {roots: typesOf(Health{}), bodies: []any{Health{Status: "ok", Project: "legion"}}},
-		// The register golden's own value (TestRegisterResponseGolden), and richer than it: the
-		// golden is the registration of a claim that replaces no session, and this body carries
-		// the session it replaces (replacesContract), so the records describe that key too.
+		// The register golden's own value (TestRegisterResponseGolden), less the two keys the
+		// task-take entry added, whose test rows carry a body with them, and richer than it in
+		// one: the golden is the registration of a claim that replaces no session, and this body
+		// carries the session it replaces (replacesContract), so the records describe that key too.
 		AnswerRegister: {roots: typesOf(claim.RegisterResponse{}), bodies: []any{claim.RegisterResponse{
 			ClaimToken:   "legion-legion-legion-208-architect",
 			Tree:         "LEGION-208",
@@ -635,10 +638,10 @@ func answerFixtures(t *testing.T) map[AnswerID]answerFixture {
 			Secret:     "Q29udHJvbGxlZEJ5TGVnaW9u",
 			Replaces:   "ses_controller_before",
 		}}},
-		// 204 and nothing after the headers. The four routes write the status themselves
-		// (claims.go's ready, exit and activity, update.go's ready-for-update), and this
-		// package's claim tests hold each to a 204 with an empty body, so the fixture holds no
-		// body for them and the record says there is none.
+		// 204 and nothing after the headers. The five routes write the status themselves
+		// (claims.go's ready, exit and activity, update.go's ready-for-update and take.go's
+		// task-seen), and this package's claim tests hold each to a 204 with an empty body, so the
+		// fixture holds no body for them and the record says there is none.
 		AnswerNoContent: {},
 		// The release-records golden's own value (TestReleaseRecordsResponseGolden), built
 		// through releaseRecordsBody from the store's rows as the route builds it. Its third

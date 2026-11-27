@@ -169,8 +169,8 @@ func TestPodUpdateAskThatFoundNoHolderIsAskedAgainAndTheRoundEndsLongBeforeItsBo
 		t.Fatalf("the tester's ask was delivered, and its claim records no ask; want it marked")
 	}
 
-	// The implementer's session now holds its topic, as a ready session does inside its first
-	// turn or at the first-turn bound (supervise.SaidReady).
+	// The implementer's session now holds its topic, as a ready session does right after its ready
+	// and the read of its task value have answered (supervise.SaidReady).
 	rig.listener.setAbsent()
 	rig.clock.advance(time.Minute)
 	rig.awaitAsked(claim.RoleImplementer, podUpdateRound)

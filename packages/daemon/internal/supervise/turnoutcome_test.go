@@ -1,6 +1,8 @@
 package supervise
 
 import (
+	"errors"
+	"slices"
 	"strings"
 	"testing"
 
@@ -8,9 +10,10 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
-// report is one turn's outcome as its producer reports it, at the claim's current generation, for
-// a turn the daemon's prompt ran: the report is not marked unprompted, so that prompt's result,
-// and never the report, judges the turn (turnOutcome).
+// report is one turn's outcome as its producer reports it, at the claim's current generation,
+// naming no task and marked as nothing: a report of a turn that was not the take's, which a
+// refusal of is judged by its status alone and no status here gives (turnOutcome,
+// unpromptedTurnEnded), so it fails nothing.
 func (h *harness) report(sequence uint64, refused bool, message string) {
 	h.t.Helper()
 	h.must(RequestTurnOutcome{
@@ -52,19 +55,27 @@ func TestTheRefusedRunIsTheSameWhateverOrderTheReportsArriveIn(t *testing.T) {
 	}
 }
 
-// refusedTurn ends the turn the claim is working as an Oh My Pi worker's refused turn ends: its
-// producer reports the turn refused (turnOutcome), and the result of the prompt the turn ran names
-// the status the provider answered, which alone decides what the error does (providerErrored).
+// refusedTurn ends the turn of the take the claim is working as a current Oh My Pi worker's
+// refused turn ends: the end frame, and then its producer's end report, which names the take's
+// task and carries the provider's failure with the status the provider answered, which alone
+// decides what the error does (reportedTask, providerErrored). The report goes under sequence, so
+// a case that interleaves it with reports of other turns keeps one order of the producer's turns.
 func (h *harness) refusedTurn(sequence uint64, status int, message string) {
 	h.t.Helper()
-	h.report(sequence, true, message)
-	h.errorTurn(StreamPromptResult{Error: message, HTTPStatus: status})
+	number := h.pending().Number
+	h.mustQuiet(StreamTurnEnd{Claim: h.token})
+	if err := h.m.Handle(h.ctx, RequestTurnOutcome{Claim: h.token, Generation: h.generation(), Sequence: sequence,
+		Task: number, Refused: true, Message: message, ProviderError: &ProviderError{Status: status, Message: message}}); err != nil {
+		h.t.Fatalf("report the refused turn of task %d: %v", number, err)
+	}
+	h.m.Wait()
+	h.workerAsks()
 }
 
 // refusedUntilA400 is a working claim whose provider refused launch_failure_limit turns in a row:
-// each but the last with a 529, which can clear, so the ladder sends the task again after it, and
-// the last with a 400, which cannot clear and fails the claim. It answers the claim's harness and
-// that limit.
+// each but the last with a 529, which can clear, so the ladder writes the task's value again after
+// it for the worker to take, and the last with a 400, which cannot clear and fails the claim. It
+// answers the claim's harness and that limit.
 func refusedUntilA400(t *testing.T) (*harness, int) {
 	t.Helper()
 	h := workingClaim(t)
@@ -78,8 +89,8 @@ func refusedUntilA400(t *testing.T) (*harness, int) {
 }
 
 // A run of refused turns fails no claim, however long it is (dispatch://INFRA-4508). Each turn
-// here ends as an Oh My Pi worker's turn ends when its provider is overloaded: the producer
-// reports it refused, and the prompt's result names a 529, an error that can clear. Twenty-five
+// here ends as a current Oh My Pi worker's take's turn ends when its provider is overloaded: the
+// producer's end report names the task and carries a 529, an error that can clear. Twenty-five
 // such turns in a row, far past the launch failure limit at which the run used to fail the claim,
 // leave the claim working in the session it had: the task goes to that session again after every
 // turn, on the ladder's waits and with no attempt limit, and the run is handed on once
@@ -129,8 +140,8 @@ func TestARunOfRefusedTurnsThatCanClearHasNoAttemptLimit(t *testing.T) {
 
 // One refused turn whose provider error cannot clear fails the claim at once. The turns before it
 // here are refused with a 529, which can clear, so the 400's turn is the launch_failure_limit-th
-// refusal in a row: the claim's failure names the status the prompt's result gave, not a run of
-// refused turns, the claim keeps the task it owes for its architect, and nothing is sent again.
+// refusal in a row: the claim's failure names the status the take's end report gave, not a run
+// of refused turns, the claim keeps the task it owes for its architect, and nothing is given again.
 func TestARefusedTurnWhoseErrorCannotClearFailsTheClaimAtOnce(t *testing.T) {
 	h, limit := refusedUntilA400(t)
 
@@ -177,8 +188,8 @@ func TestALateReportLandsInItsOwnPlaceInTheRun(t *testing.T) {
 
 // The reports alone fail nothing either: a run of refused reports past the launch failure limit
 // is recorded and persisted, counted up to that limit, and leaves the claim where it was, with
-// its process and its session. These are reports of turns the daemon's prompts ran, which those
-// prompts' results judge, so the reports decide neither (turnOutcome).
+// its process and its session. These reports name no task and their refusals no status, so each
+// is judged as a turn that was not the take's, by a status that can clear (unpromptedTurnEnded).
 func TestARunOfRefusedReportsPastTheLimitLeavesTheClaimWhereItWas(t *testing.T) {
 	h := newHarness(t)
 	h.reach(StateIdle)
@@ -199,6 +210,72 @@ func TestARunOfRefusedReportsPastTheLimitLeavesTheClaimWhereItWas(t *testing.T) 
 	}
 }
 
+// A report whose write failed (TurnOutcome.Unapplied) stays in the window until it is sent again,
+// held beside the window's bound rather than in it, so the run of refused turns that follows it is
+// read whole: at the limit it reads the limit, as a run with no such report before it does. In the
+// bound, that report would take the place of the run's oldest turn, and the run would stop one
+// short of the limit for as long as the report stayed unsent.
+//
+// The negative control is the commit under this change, whose bound counted the report never
+// applied: the third refused turn after it left a run of two.
+func TestARefusedRunAfterAReportWhoseWriteFailedIsTakenWhole(t *testing.T) {
+	h := newHarness(t)
+	h.reach(StateIdle)
+	limit := testLimits().LaunchFailures
+	unapplied := h.worker.sequence + 1
+	h.store.fail("PutClaim", errBoom)
+	if err := h.m.Handle(h.ctx, RequestTurnOutcome{Claim: h.token, Generation: h.generation(), Sequence: unapplied}); !errors.Is(err, errBoom) {
+		t.Fatalf("the report whose write failed = %v, want %v", err, errBoom)
+	}
+	h.m.Wait()
+	h.store.fail("PutClaim", nil)
+	for turn := 1; turn < limit; turn++ {
+		h.report(unapplied+uint64(turn), true, "stopReason: error")
+		h.wantState(StateIdle)
+	}
+
+	h.report(unapplied+uint64(limit), true, "the provider refused the turn")
+
+	h.wantState(StateIdle)
+	h.wantRefusedRun(limit)
+	if kept := h.claim().TurnOutcomes; len(kept) != limit+1 || !kept[0].Unapplied {
+		t.Fatalf("the window keeps %+v, want the report whose write failed beside the %d newest", kept, limit)
+	}
+}
+
+// A report never applied of a generation earlier than the claim's is dropped by the window's trim
+// as an applied one is: no process sends it again, and it reaches no take (reportOfTake), so a
+// producer that died before its report was sent again leaves no entry stored for good. The newer
+// generation's reports fill the window to its bound, and the report the dead process never got
+// applied goes. The negative control is the commit under this change, whose trim kept every report
+// never applied, whatever its generation.
+func TestAReportNeverAppliedOfAnEarlierGenerationIsTakenOutOfTheWindow(t *testing.T) {
+	h := newHarness(t)
+	h.reach(StateIdle)
+	lost := h.generation()
+	h.store.fail("PutClaim", errBoom)
+	if err := h.m.Handle(h.ctx, RequestTurnOutcome{Claim: h.token, Generation: lost, Sequence: h.worker.sequence + 1}); !errors.Is(err, errBoom) {
+		t.Fatalf("the report whose write failed = %v, want %v", err, errBoom)
+	}
+	h.m.Wait()
+	h.store.fail("PutClaim", nil)
+	h.observe(runtime.Gone)
+	h.relaunched()
+	if h.generation() == lost {
+		t.Fatalf("the relaunch left the claim at generation %d, want a later one", lost)
+	}
+	limit := testLimits().LaunchFailures
+
+	for sequence := 1; sequence <= limit; sequence++ {
+		h.report(uint64(sequence), false, "")
+	}
+
+	kept := h.claim().TurnOutcomes
+	if len(kept) != limit || slices.ContainsFunc(kept, func(o TurnOutcome) bool { return o.Generation == lost }) {
+		t.Fatalf("the window keeps %+v, want the %d reports of the generation after %d alone", kept, limit, lost)
+	}
+}
+
 // A turn the provider took ends the run: the count is of refusals in a row, so an agent that is
 // refused, works, and is refused again starts its run again from that turn.
 func TestACleanTurnBetweenRefusalsStartsTheRunAgain(t *testing.T) {
@@ -216,6 +293,109 @@ func TestACleanTurnBetweenRefusalsStartsTheRunAgain(t *testing.T) {
 	h.report(5, true, "refused again")
 	h.wantState(StateIdle)
 	h.wantRefusedRun(2)
+}
+
+// Both producers report a turn a provider failed as refused, with the failure beside it
+// (pi-legion's turn-outcome, the Claude bridge's turnEnded). Such a turn of the take's task is the
+// provider-error ladder's, which has no attempt limit (dispatch://INFRA-956 R2): a run of them
+// longer than the launch failure limit never fails the claim, the window's run of refused turns
+// counts each up to that limit and decides nothing, and every one of them takes the task back and
+// writes it again after the ladder's wait, until the run reaches the turn the project's controller
+// is told at (providerErrorRunTold). A refused turn that names no task and carries no status fails
+// nothing either (dispatch://INFRA-4508): it is judged as a turn that was not the take's, by a
+// status that can clear, and counts in the same run of provider-error turns.
+func TestTurnOutcomeAProviderErrorTurnIsNoLaunchFailure(t *testing.T) {
+	h := workingClaim(t)
+	limit := testLimits().LaunchFailures
+	if providerErrorRunTold <= limit {
+		t.Fatalf("the controller is told at a run of %d, which the launch failure limit of %d reaches first: this case proves nothing",
+			providerErrorRunTold, limit)
+	}
+	sent := 1
+	for turn := 1; turn <= providerErrorRunTold; turn++ {
+		pe := ProviderError{Message: "overloaded_error", Status: 529}
+		number := h.pending().Number
+		h.mustQuiet(StreamTurnEnd{Claim: h.token})
+		h.worker.sequence++
+		if err := h.m.Handle(h.ctx, RequestTurnOutcome{Claim: h.token, Generation: h.generation(), Sequence: h.worker.sequence,
+			Task: number, Refused: true, Message: pe.Message, ProviderError: &pe}); err != nil {
+			t.Fatalf("turn %d: report the turn refused with its provider error: %v", turn, err)
+		}
+		h.m.Wait()
+		h.workerAsks()
+		if state := h.state(); state == StateFailed {
+			t.Fatalf("turn %d: the claim failed with %q, want it on the ladder: a provider error is no launch failure", turn, h.claim().Failure)
+		}
+		h.wantRefusedRun(min(turn, limit))
+		if got := h.claim().ProviderErrorRun; got != turn {
+			t.Fatalf("turn %d: the run of provider errors is %d, want %d", turn, got, turn)
+		}
+		if message := h.climbs(sent, promptRetryDelay(turn)); !strings.HasSuffix(message, providerErrorTaskText) {
+			t.Fatalf("turn %d: the ladder sent %q, want the task again", turn, message)
+		}
+		sent++
+	}
+
+	h.mustQuiet(StreamTurnEnd{Claim: h.token})
+	for turn := 1; turn <= limit; turn++ {
+		h.report(h.worker.sequence+uint64(turn), true, "the provider ended the turn with an error")
+		h.wantState(StateIdle)
+	}
+	h.wantRefusedRun(limit)
+	if c := h.claim(); c.Failure != "" || c.ProviderErrorRun != providerErrorRunTold+limit {
+		t.Fatalf("the claim records failure %q and a run of %d provider errors, want no failure and a run of %d: a refused turn of no task fails nothing and counts in the one run",
+			c.Failure, c.ProviderErrorRun, providerErrorRunTold+limit)
+	}
+}
+
+// A refused turn that carries a provider error and reaches no provider-error ladder — its report
+// names no task, or a number no take of the claim holds, as a reminder's, a card's or a background
+// result's turn does — is judged from its report alone (unpromptedTurnEnded): it counts toward the
+// refused run and in the claim's run of provider-error turns, and a status that can clear fails
+// nothing, however long the run (dispatch://INFRA-4508). A provider error on the turn of the task
+// the claim's take holds stays the ladder's (TestTurnOutcomeAProviderErrorTurnIsNoLaunchFailure).
+//
+// The negative control is every provider error left uncounted (turnOutcome's refused before this
+// change): the run stays at zero.
+func TestTurnOutcomeAProviderErrorRefusalThatReachesNoLadderCountsTowardTheRefusedRun(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		task func(h *harness) uint64
+	}{
+		{"naming no task", func(*harness) uint64 { return 0 }},
+		{"naming a task no take holds", func(h *harness) uint64 {
+			finished := h.claim().TaskFinished
+			if finished == 0 {
+				h.t.Fatal("the claim has finished no task, so this row would name none, as the row before it does")
+			}
+			return finished
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t)
+			h.reach(StateIdle)
+			limit := testLimits().LaunchFailures
+			pe := ProviderError{Message: "overloaded_error", Status: 529}
+
+			for turn := 1; turn <= limit; turn++ {
+				h.worker.sequence++
+				if err := h.m.Handle(h.ctx, RequestTurnOutcome{Claim: h.token, Generation: h.generation(), Sequence: h.worker.sequence,
+					Task: tc.task(h), Refused: true, Message: "a card's turn the provider refused", ProviderError: &pe}); err != nil {
+					t.Fatalf("turn %d: report the refused turn: %v", turn, err)
+				}
+				h.m.Wait()
+				if turn < limit {
+					h.wantRefusedRun(turn)
+				}
+				h.wantState(StateIdle)
+			}
+
+			h.wantRefusedRun(limit)
+			if c := h.claim(); c.Failure != "" || c.ProviderErrorRun != limit {
+				t.Fatalf("the claim records failure %q and a run of %d provider errors, want no failure and a run of %d", c.Failure, c.ProviderErrorRun, limit)
+			}
+		})
+	}
 }
 
 // A turn no report arrived for — the process died before it could send one — counts neither way:
@@ -264,12 +444,12 @@ func TestTheRefusedRunCarriesAcrossAGenerationThatResumesTheSameSession(t *testi
 // 429 refuses every session of the team alike — and no sign that its session is bad. Two runs here
 // are of twenty refused turns, each a plugin turn's report, one with a 429 and one with no status;
 // neither fails the claim, so it fails the way such a claim does, its process dying until its
-// launch budget runs out. A claim a prompt result's 400 failed resumes too, and so do claims that
-// failed on deaths, retried by the workflow or by an operator. Only the retry that asks for a new
-// session (`--fresh-session`, the controller's fresh_session) leaves the recorded session behind,
-// whatever failed the claim. Each row states which it wants. With freshSession as at 9e30e970,
-// which started a new session for a run that reached launch_failure_limit, the 429 and no-status
-// rows that ask for nothing start a new session and fail.
+// launch budget runs out. A claim the 400 of its take's end report failed resumes too, and so do
+// claims that failed on deaths, retried by the workflow or by an operator. Only the retry that asks
+// for a new session (`--fresh-session`, the controller's fresh_session) leaves the recorded session
+// behind, whatever failed the claim. Each row states which it wants. With freshSession as at
+// 9e30e970, which started a new session for a run that reached launch_failure_limit, the 429 and
+// no-status rows that ask for nothing start a new session and fail.
 func TestARetryResumesTheRecordedSessionUnlessItAsksForANewOne(t *testing.T) {
 	const run = 20
 	const newSessionLine = "supervise: retrying in a new session"
@@ -326,7 +506,7 @@ func TestARetryResumesTheRecordedSessionUnlessItAsksForANewOne(t *testing.T) {
 	}{
 		{"a run of 20 refused turns that ends in a 429 resumes its session", refusedRun(429), byWorkflow(false), false},
 		{"a run of 20 refused turns that ends in a report with no status resumes its session", refusedRun(0), byWorkflow(false), false},
-		{"a claim a prompt result's 400 failed resumes its session", failedByA400, byWorkflow(false), false},
+		{"a claim the 400 of its take's end report failed resumes its session", failedByA400, byWorkflow(false), false},
 		{"a claim that died out, retried by the workflow, resumes its session", diedOut(queuedClaim()), byWorkflow(false), false},
 		{"a claim that died out, retried by an operator, resumes its session", diedOut(rootClaim()), byOperator(false), false},
 		{"a run of 20 refused turns that ends in a 429, retried with --fresh-session, starts a new session", refusedRun(429), byWorkflow(true), true},
@@ -433,4 +613,204 @@ func TestTheReportsSurviveARestartAndTheRunGoesOnFromThem(t *testing.T) {
 	h.report(3, true, "refused after the restart")
 	h.wantRefusedRun(3)
 	h.wantState(StateIdle)
+}
+
+// repeatReport sends the turn-outcome report r again, as the worker's plugin sends a report whose
+// first attempt had no answer, and fails the test on an error.
+func (h *harness) repeatReport(r RequestTurnOutcome) {
+	h.t.Helper()
+	if err := h.m.Handle(h.ctx, r); err != nil {
+		h.t.Fatalf("send the report of task %d again: %v", r.Task, err)
+	}
+	h.m.Wait()
+}
+
+// A report the worker's plugin sends again, because a daemon restart cut off the answer to its
+// first attempt, is applied once. The first attempt took the task back after a provider error.
+// The restart dropped the ladder's wait, so the restarted daemon gives the task again at the
+// shim's hello, and the worker takes it. The repeat must not take that take back: the run of
+// provider errors and the ladder stay at one, and the take's own turn finishes the task.
+func TestTurnOutcomeRepeatedAfterARestartIsAppliedOnce(t *testing.T) {
+	h := workingClaim(t)
+	number := h.pending().Number
+	pe := ProviderError{Message: "overloaded_error", Status: 529}
+	h.errorTurn(pe)
+	first := RequestTurnOutcome{Claim: h.token, Generation: h.generation(), Sequence: h.worker.sequence,
+		Task: number, ProviderError: &pe}
+
+	h.restart()
+	h.connect()
+	h.wantPrompts(2)
+	if p := h.pending(); !p.awaitsStart() || p.Number != number {
+		t.Fatalf("after the restart the task is %+v, want task %d taken again and its turn not started", p, number)
+	}
+
+	h.repeatReport(first)
+	if p := h.pending(); !p.awaitsStart() || p.ProviderErrorRetries != 1 || h.claim().ProviderErrorRun != 1 {
+		t.Fatalf("after the repeated report the task is %+v with a run of %d provider errors, want the take standing, one retry and a run of one",
+			p, h.claim().ProviderErrorRun)
+	}
+	if lines := h.logs.lines("a turn's report repeats one already applied", "task="); len(lines) != 1 {
+		t.Errorf("the lines that say the report was a repeat are %q, want one", lines)
+	}
+
+	h.must(StreamTurnStart{Claim: h.token})
+	h.must(StreamTurnEnd{Claim: h.token})
+	if p := h.claim().Pending; p != nil {
+		t.Fatalf("pending %+v after the take's own turn was reported, want task %d finished", p, number)
+	}
+	if run := h.claim().ProviderErrorRun; run != 0 {
+		t.Fatalf("the run of provider errors is %d after a turn with none, want 0", run)
+	}
+}
+
+// A report the worker's plugin sends again after newer reports pushed it out of the window is a
+// repeat all the same (the window's watermark, recordTurnOutcome). Report k took its task back
+// for a provider error; reports k+1 to k+3, clean reports of turns no take started, leave the
+// window holding them alone and end the run of provider errors, since a clean report ends it
+// whoever ran the turn (providerErrorRunOver, dispatch://INFRA-4508); the ladder's wait gives the
+// task again and the worker takes it. Report k sent again then changes nothing: its provider
+// error is not counted again, the run stays ended, the take stands, and the window is as it was.
+// So in the daemon that applied k, and in one restarted over what the store holds.
+//
+// The negative control is a repeat found by the window's entries alone (recordTurnOutcome with no
+// watermark): k is no repeat once it has left the window, and its provider error takes the new
+// take back and counts a second step of the ladder.
+func TestTurnOutcomeSentAgainAfterItLeftTheWindowIsARepeat(t *testing.T) {
+	for _, restart := range []bool{false, true} {
+		t.Run(map[bool]string{false: "in the same daemon", true: "after a restart"}[restart], func(t *testing.T) {
+			h := workingClaim(t)
+			number := h.pending().Number
+			pe := ProviderError{Message: "overloaded_error", Status: 529}
+			h.errorTurn(pe)
+			first := RequestTurnOutcome{Claim: h.token, Generation: h.generation(), Sequence: h.worker.sequence,
+				Task: number, ProviderError: &pe}
+			for range testLimits().LaunchFailures {
+				h.must(StreamTurnStart{Claim: h.token})
+				h.mustQuiet(StreamTurnEnd{Claim: h.token})
+				if err := h.reportTurn(0, nil); err != nil {
+					t.Fatalf("report a turn no take started: %v", err)
+				}
+			}
+			if kept := h.claim().TurnOutcomes; slices.ContainsFunc(kept, func(o TurnOutcome) bool { return o.Sequence == first.Sequence }) {
+				t.Fatalf("the window keeps %+v, want report %d out of it", kept, first.Sequence)
+			}
+			h.advance(promptRetryDelay(1))
+			if p := h.pending(); !p.awaitsStart() || p.Number != number {
+				t.Fatalf("after the ladder's wait the task is %+v, want task %d taken again and its turn not started", p, number)
+			}
+			if restart {
+				h.restart()
+				h.connect()
+			}
+			window := h.claim().TurnOutcomes
+
+			h.repeatReport(first)
+
+			if p := h.pending(); !p.awaitsStart() || p.ProviderErrorRetries != 1 || h.claim().ProviderErrorRun != 0 {
+				t.Fatalf("after report %d was sent again the task is %+v with a run of %d provider errors, want the take standing, one retry and the run the clean turns ended still at zero",
+					first.Sequence, p, h.claim().ProviderErrorRun)
+			}
+			if kept := h.claim().TurnOutcomes; !slices.Equal(kept, window) {
+				t.Fatalf("after report %d was sent again the window keeps %+v, want it as it was, %+v", first.Sequence, kept, window)
+			}
+			if lines := h.logs.lines("a turn's report repeats one already applied", "task="); len(lines) != 1 {
+				t.Errorf("the lines that say the report was a repeat are %q, want one", lines)
+			}
+		})
+	}
+}
+
+// A report never applied — its first attempt lost on the way, so no daemon saw it — that the
+// worker's plugin sends again only after newer reports of the same generation pushed the window
+// past its key is applied all the same: the window's watermark covers only keys below which every
+// report of the generation was applied (recordTurnOutcome), and the window keeps each applied
+// report above it. The take's turn k ends with its report lost; reports k+1 to k+4, of turns no
+// take started, land; report k, naming the take's number, then finishes the task once, in the
+// daemon that saw the others and in one restarted over what the store holds. The window is back
+// at its bound once the gap is filled.
+//
+// The negative control is the watermark raised to every key the bound drops (recordTurnOutcome
+// before this change): report k reads as a repeat of a report already applied, the task stays
+// unfinished, and a relaunch would give it again to a worker that ran it whole.
+func TestTurnOutcomeSentAgainAfterNewerOnesFilledTheWindowIsAppliedWhenItWasNever(t *testing.T) {
+	for _, restart := range []bool{false, true} {
+		t.Run(map[bool]string{false: "in the same daemon", true: "after a restart"}[restart], func(t *testing.T) {
+			h := newHarnessOf(t, queuedClaim(), currentPlugin)
+			h.reach(StateReady)
+			h.takesTurnEndsWithItsReportToCome()
+			number := h.pending().Number
+			h.worker.sequence++
+			lost := RequestTurnOutcome{Claim: h.token, Generation: h.generation(), Sequence: h.worker.sequence, Task: number}
+			for range testLimits().LaunchFailures + 1 {
+				h.must(StreamTurnStart{Claim: h.token})
+				h.mustQuiet(StreamTurnEnd{Claim: h.token})
+				if err := h.reportTurn(0, nil); err != nil {
+					t.Fatalf("report a turn no take started: %v", err)
+				}
+			}
+			if p := h.pending(); p.Number != number || !p.startRecorded() {
+				t.Fatalf("after the newer reports the claim holds %+v, want task %d's turn still waiting for its report", p, number)
+			}
+			if restart {
+				h.restart()
+				h.connect()
+			}
+
+			h.repeatReport(lost)
+
+			if p := h.claim().Pending; p != nil {
+				t.Fatalf("pending %+v after report %d came, want task %d finished", p, lost.Sequence, number)
+			}
+			h.wantFinishedOnce(finishedByReport)
+			if kept := h.claim().TurnOutcomes; len(kept) != testLimits().LaunchFailures {
+				t.Errorf("the window keeps %+v once the gap is filled, want %d reports", kept, testLimits().LaunchFailures)
+			}
+		})
+	}
+}
+
+// A report whose first attempt the store did not write is applied in full when the worker's
+// plugin sends it again: the failed write ended the decision before it reached the task, so the
+// report sent again is its first application, not a repeat. That holds in the daemon whose write
+// failed and in a daemon restarted after the write owed was made, which reads the mark back from
+// the window.
+func TestTurnOutcomeRepeatedAfterItsWriteFailedIsApplied(t *testing.T) {
+	for _, restart := range []bool{false, true} {
+		t.Run(map[bool]string{false: "in the same daemon", true: "after a restart"}[restart], func(t *testing.T) {
+			h := workingClaim(t)
+			number := h.pending().Number
+			h.mustQuiet(StreamTurnEnd{Claim: h.token})
+			h.worker.sequence++
+			report := RequestTurnOutcome{Claim: h.token, Generation: h.generation(), Sequence: h.worker.sequence,
+				Task: number, ProviderError: &ProviderError{Message: "overloaded_error", Status: 529}}
+
+			h.store.fail("PutClaim", errBoom)
+			if err := h.m.Handle(h.ctx, report); !errors.Is(err, errBoom) {
+				t.Fatalf("the report whose write failed = %v, want %v", err, errBoom)
+			}
+			h.m.Wait()
+			h.store.fail("PutClaim", nil)
+			if p := h.pending(); !p.startRecorded() || h.claim().ProviderErrorRun != 0 {
+				t.Fatalf("after the failed write the task is %+v with a run of %d, want it still taken and no provider error counted",
+					p, h.claim().ProviderErrorRun)
+			}
+			if restart {
+				h.seen()
+				if kept := h.store.load(h.token).TurnOutcomes; len(kept) != 1 || !kept[0].Unapplied {
+					t.Fatalf("the store keeps %+v once the owed write was made, want the report marked unapplied", kept)
+				}
+				h.restart()
+			}
+
+			h.repeatReport(report)
+			if p := h.pending(); p.taken() || p.ProviderErrorRetries != 1 || h.claim().ProviderErrorRun != 1 {
+				t.Fatalf("after the report was sent again the task is %+v with a run of %d, want it taken back once and a run of one",
+					p, h.claim().ProviderErrorRun)
+			}
+			if kept := h.store.load(h.token).TurnOutcomes; len(kept) != 1 || kept[0].Unapplied {
+				t.Fatalf("the store keeps %+v, want the report applied", kept)
+			}
+		})
+	}
 }

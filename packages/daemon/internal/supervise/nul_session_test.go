@@ -33,6 +33,11 @@ type stopped struct{}
 
 func (stopped) Stop() bool { return true }
 
+// testTakeContract is the take contract this package's machines are handed: any number above 275,
+// internal/api's LastNumberedContract, will do, since only api's registry knows the number a
+// build gives the task-take entry, and every build gives it one above 275.
+const testTakeContract = 276
+
 // fixedSpecs is a launch the fake runtime accepts: the machine fills in who it is for.
 type fixedSpecs struct{}
 
@@ -70,8 +75,9 @@ func TestARequestFromASessionWhoseIDHoldsNULIsTheClaimsOwnAfterARestart(t *testi
 		Limits: supervise.Limits{LaunchFailures: 3, PromptFailures: 3, PromptRetires: 2},
 		Timeouts: supervise.Timeouts{Boot: time.Minute, RegistrationIntervals: 3, RPC: 5 * time.Second, Probe: 30 * time.Second,
 			Stop: 10 * time.Second, LaunchBackoff: time.Millisecond},
-		PluginContract: 1,
-		RefreshGate:    supervise.NewRefreshGate(0),
+		PluginContract:   1,
+		TaskTakeContract: testTakeContract,
+		RefreshGate:      supervise.NewRefreshGate(0),
 	}
 	handle := func(m *supervise.Machine, ev supervise.Event) error {
 		t.Helper()

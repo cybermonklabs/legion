@@ -1,174 +1,126 @@
 package daemon
 
 import (
-	"context"
-	"errors"
-	"fmt"
 	"strings"
-	"sync/atomic"
 	"testing"
 
+	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
-	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
-	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
-// The cases here put the shim's own delivery dedupe (shimwire.Dedupe) between the daemon and the
-// agent, as every real worker connection has it: a send under a delivery id the shim already
-// carried is answered from the shim's record and never reaches Oh My Pi. So what a turn's
-// confirmation records as told must be the news of the send under that id that reached the agent,
-// never a rendering the daemon made later and sent under the same id. The daemon gives every new
-// rendering of a task's news a new id (supervise's currentNews), so the shim forwards it, and Oh My
-// Pi takes it or answers it busy.
+// The shim's delivery dedupe, which answered a prompt under a delivery id it already carried from
+// its own record, no longer exists: the daemon pushes no prompt, and a worker takes its task. These
+// cases hold the take's own rule in its place. A take of a number the record holds as its accepted,
+// unfinished take is a take sent again after its answer was lost, and the record answers it the
+// text it kept (supervise's answeredFromRecord), across a daemon restart too. So the text the
+// worker runs is the text of the accepted take, never a rendering the daemon made later. The copy
+// that take carried is written at the accept and counts as a credit once the take's turn starts
+// (20261122160000_design_news_credit_at_turn_start). Each case asserts three things: at the
+// reopening, before X's turn, the record says version 3 with the opening owed, and the repeated
+// take's answer carries no opening; after X's turn and its clean report it says version 4 with the
+// opening still owed; and the next take, queued once X's turn has run, leads with the opening, and
+// its finish leaves version 4 with nothing owed.
 
-// shimConn is a worker connection through the shim's delivery dedupe: a send reaches the agent —
-// the embedded fake connection, which stands for Oh My Pi — only where the dedupe forwards it, and
-// the agent's answer to it advances the dedupe's record, as the shim's pump does
-// (shimwire.Dedupe.AgentFrame). A send the dedupe answers itself returns that answer and reaches
-// nobody. The dedupe is the shim's and outlives a daemon restart, as the shim process does. Where
-// lose is set, the agent takes the prompt and its answer is lost on the way back to the daemon.
-type shimConn struct {
-	*fake.Conn
-	dedupe   shimwire.Dedupe
-	requests atomic.Int64
-	lose     atomic.Bool
-}
-
-func (s *shimConn) Prompt(ctx context.Context, deliveryID, message string) error {
-	request := fmt.Sprintf("request-%d", s.requests.Add(1))
-	forward, replies := s.dedupe.DaemonFrame(shimwire.Prompt{ID: request, DeliveryID: deliveryID, Message: message})
-	if !forward {
-		for _, reply := range replies {
-			if answer, ok := reply.(shimwire.Response); ok && answer.Success {
-				return nil
-			}
-		}
-		return errors.New("the shim holds the send until the agent answers the first one")
-	}
-	err := s.Conn.Prompt(ctx, deliveryID, message)
-	s.dedupe.AgentFrame(shimwire.Response{ID: request, Command: shimwire.TypePrompt, Success: err == nil})
-	if err == nil && s.lose.Load() {
-		return errors.New("the connection closed before the agent's answer came back")
-	}
-	return err
-}
-
-// sentToTheAgent is each prompt the shim forwarded to the agent, in order.
-func (s *shimConn) sentToTheAgent() []fake.Prompt { return s.Prompts() }
-
-// The earlier prompt's turn, which Oh My Pi starts with no delivery id, and that prompt's result,
-// which says the turn ran: what each of the two paths below ends on.
-func earlierPromptsTurn(t *testing.T, r *newsPathRig, machine *supervise.Machine, earlier string) {
+// repeatTake is the worker of machine's claim sending its take of the pending task again, as its
+// plugin does after the answer was lost: the take of the same number, answered from the record.
+func repeatTake(t *testing.T, r *newsPathRig, machine *supervise.Machine, taken supervise.Delivery) {
 	t.Helper()
-	token := machine.Claim().Token
-	if err := machine.Handle(r.ctx, supervise.StreamTurnStart{Claim: token}); err != nil {
-		t.Fatalf("the earlier prompt's turn starts: %v", err)
+	held := machine.Claim()
+	answer, err := machine.Take(r.ctx, supervise.RequestTake{Claim: held.Token, Generation: held.Generation, Session: held.Session,
+		Number: taken.Number})
+	if err != nil || answer.Outcome != supervise.TakeOutcomeAccepted || answer.Text != taken.TakenText {
+		t.Fatalf("the take of task %d sent again = %+v, %v; want it answered the text its accepted take was, %q", taken.Number, answer, err, taken.TakenText)
 	}
-	if err := machine.Handle(r.ctx, supervise.StreamPromptResult{Claim: token, DeliveryID: earlier, AgentInvoked: true}); err != nil {
-		t.Fatalf("the earlier prompt's result: %v", err)
+	if strings.Contains(answer.Text, carriedOpened) {
+		t.Fatalf("the take of task %d sent again was answered %q, want no opening: the take's text carried none", taken.Number, answer.Text)
 	}
 	machine.Wait()
 }
 
-// theReopeningIsToldByTheTaskSentAgain ends the earlier prompt's turn, sends the task again at its
-// end, where the agent takes it, and has its turn confirm it: that task leads with the opening the
-// reopening owes, and its confirmation raises the version and clears the opening.
-func theReopeningIsToldByTheTaskSentAgain(t *testing.T, r *newsPathRig, machine *supervise.Machine, shim *shimConn) {
+// theReopeningIsToldByTheNextTake runs the accepted take's turn and its clean report, which
+// finishes the task and makes its credit final, so the record says version 4 taken and the opening
+// that take's text did not carry still owed. The sweep then queues the reconcile of what is owed,
+// which queues the reviewer's news-only start; the reviewer's take of that task leads with the
+// opening, and the finish of that take's turn leaves nothing owed.
+func theReopeningIsToldByTheNextTake(t *testing.T, r *newsPathRig, machine *supervise.Machine, conn *newsConn, token claim.Token) {
 	t.Helper()
-	shim.FailPrompt(nil)
-	before := len(shim.sentToTheAgent())
-	endTurn(r.ctx, t, machine, machine.Claim().Token)
-	// The task can hold an earlier prompt's read mark, so the send's own outcome is waited for
-	// rather than the mark.
-	machine.Wait()
-	sent := machine.Claim().Pending
-	if sent == nil || sent.MarkedBy != sent.ID {
-		t.Fatalf("the reviewer holds %+v after its turn's end, want the task sent again and acknowledged under its id", sent)
+	r.startTurn(machine)
+	endTurn(r.ctx, t, machine, token)
+	if held := machine.Claim().Pending; held != nil {
+		t.Fatalf("the reviewer holds %+v after its take's report, want the news task finished", held)
 	}
-	reached := shim.sentToTheAgent()[before:]
-	if len(reached) != 1 || reached[0].DeliveryID != sent.ID || !strings.Contains(reached[0].Message, carriedOpened) {
-		t.Fatalf("the prompts that reached the agent at the turn's end = %+v, want the task under %s leading with the opening", reached, sent.ID)
+	r.wantTold("after X's turn and its clean report", pathRoot, record.AudienceHolder, 4, true)
+
+	before := len(conn.Prompts())
+	r.sweepNews()
+	r.queueNewsTask(pathRoot)
+	told := r.delivered(machine)
+	taken := promptsAfter(conn, before)
+	if len(taken) != 1 || taken[0].DeliveryID != told.ID || !strings.Contains(taken[0].Message, carriedOpened) {
+		t.Fatalf("the takes after the sweep = %+v, want the news task %s leading with the opening", taken, told.ID)
 	}
 	r.startTurn(machine)
-	r.wantTold("after the confirmation of the task the agent took with the opening", pathRoot, record.AudienceHolder, 4, false)
+	endTurn(r.ctx, t, machine, token)
+	if held := machine.Claim().Pending; held != nil {
+		t.Fatalf("the reviewer holds %+v after the opening task's report, want it finished", held)
+	}
+	r.wantTold("after the finish of the take that told the opening", pathRoot, record.AudienceHolder, 4, false)
 }
 
-// Path A: a restart. An earlier daemon's prompt X of the reviewer's news task, the change list of
-// version 4 and no opening, reached the agent and was acknowledged, and Oh My Pi has admitted it and
-// not started its turn when that daemon stops. The gate closes and opens again while the reviewer is
-// still owed that news, so its row owes a new opening. The booted daemon renders the task again with
-// the opening, asks the agent, which answers that it is not streaming, and sends the task. Under X
-// the shim answers that send from its record and the agent never reads it, so the turn that starts
-// is X's, with no opening; the daemon then records nothing of the opening for it. X's turn and its
-// result leave the reviewer owed the opening, and the task the agent does take is told it.
+// Path A: a restart. The reviewer's take of its news task X, the change list of version 4 and no
+// opening, was accepted, and the daemon stops before X's turn starts. The take's copy is no credit
+// yet, so when the gate closes and opens again the reviewer is still owed that news and its row
+// owes the opening. The booted daemon restores the take with the text it kept, and the worker's
+// take of X sent again is answered that same text, with no opening. X's turn and its report make
+// X's credit final, version 4 taken and the opening owed, and the next take tells the opening.
 func TestARestartsResendTheShimAnswersFromItsRecordRecordsNoNewsTheAgentNeverRead(t *testing.T) {
 	t.Parallel()
 	r := newNewsPathRig(t, 4, pathMember{key: pathRoot, at: phase.Testing})
 	r.told(pathRoot, record.AudienceHolder, 3)
 	r.told(pathRoot, record.AudienceArchitect, 4)
-	reviewer, _, token := r.reviewerBetweenTurns(pathRoot)
-	shim := &shimConn{Conn: fake.NewConn()}
-	r.conns.Register(token, shim)
+	reviewer, conn, token := r.reviewerBetweenTurns(pathRoot)
+	before := len(conn.Prompts())
 	r.queueNewsTask(pathRoot)
 	first := r.delivered(reviewer)
-	if reached := shim.sentToTheAgent(); len(reached) != 1 || reached[0].DeliveryID != first.ID || strings.Contains(reached[0].Message, carriedOpened) {
-		t.Fatalf("the prompts that reached the agent = %+v, want the news task %s, without an opening", reached, first.ID)
+	if taken := promptsAfter(conn, before); len(taken) != 1 || taken[0].DeliveryID != first.ID || strings.Contains(taken[0].Message, carriedOpened) {
+		t.Fatalf("the takes = %+v, want the news task %s, without an opening", taken, first.ID)
 	}
 
 	r.closeAndReopen()
-	r.wantTold("at the reopening", pathRoot, record.AudienceHolder, 3, true)
+	r.wantTold("at the reopening, before X's turn", pathRoot, record.AudienceHolder, 3, true)
 	r.restartDaemon()
-	restored, found := r.sup.Machine(token)
-	if !found {
-		t.Fatalf("the booted daemon restored no claim of %s", token)
-	}
-	// Oh My Pi is preparing X's turn: it answers the question that it is not streaming, and answers
-	// any prompt that reaches it now busy.
-	shim.FailPrompt(keptBusy)
-	r.conns.Register(token, shim)
+	restored, restoredConn := r.reconnect(pathRoot, claim.RoleReviewer, false)
 	r.hello(restored)
 
-	earlierPromptsTurn(t, r, restored, first.ID)
-	r.wantTold("after the turn and the result of the prompt the earlier daemon sent", pathRoot, record.AudienceHolder, 3, true)
-	theReopeningIsToldByTheTaskSentAgain(t, r, restored, shim)
+	repeatTake(t, r, restored, first)
+	r.wantTold("after the take sent again across the restart", pathRoot, record.AudienceHolder, 3, true)
+	theReopeningIsToldByTheNextTake(t, r, restored, restoredConn, token)
 }
 
-// Path B: one daemon. The reviewer's news task X, the change list of version 4 and no opening,
-// reaches the agent, and the agent's answer is lost on the way back, so the task keeps its id for
-// the next send (supervise's refused). The gate closes and opens again, so the reviewer's row owes a
-// new opening. The reconnect's hello renders the task again with the opening and sends it. Under X
-// the shim answers that send from its record, so the turn that starts is X's, with no opening; the
-// daemon then records nothing of the opening for it. X's turn and its result leave the reviewer owed
-// the opening, and the task the agent does take is told it.
+// Path B: one daemon. The reviewer's take of its news task X, the change list of version 4 and no
+// opening, is accepted, and its answer is lost on the way back to the worker. The take's copy is
+// no credit yet, so when the gate closes and opens again the reviewer is still owed that news and
+// its row owes the opening. The worker sends its take of X again, and the record answers it the
+// text it kept, with no opening. X's turn and its report make X's credit final, version 4 taken and
+// the opening owed, and the next take tells the opening.
 func TestAResendAfterALostAnswerTheShimAnswersFromItsRecordRecordsNoNewsTheAgentNeverRead(t *testing.T) {
 	t.Parallel()
 	r := newNewsPathRig(t, 4, pathMember{key: pathRoot, at: phase.Testing})
 	r.told(pathRoot, record.AudienceHolder, 3)
 	r.told(pathRoot, record.AudienceArchitect, 4)
-	reviewer, _, token := r.reviewerBetweenTurns(pathRoot)
-	shim := &shimConn{Conn: fake.NewConn()}
-	shim.lose.Store(true)
-	r.conns.Register(token, shim)
+	reviewer, conn, token := r.reviewerBetweenTurns(pathRoot)
 	r.queueNewsTask(pathRoot)
-	reviewer.Wait()
-	first := reviewer.Claim().Pending
-	if first == nil || !first.ConfirmedAt.IsZero() || !first.DeliveredAt.IsZero() {
-		t.Fatalf("the reviewer holds %+v after the lost answer, want its news task waiting, unread", first)
-	}
-	if reached := shim.sentToTheAgent(); len(reached) != 1 || reached[0].DeliveryID != first.ID || strings.Contains(reached[0].Message, carriedOpened) {
-		t.Fatalf("the prompts that reached the agent = %+v, want the news task %s, without an opening", reached, first.ID)
+	first := r.delivered(reviewer)
+	if strings.Contains(first.TakenText, carriedOpened) {
+		t.Fatalf("the reviewer's take of %s was answered %q, want no opening: the case's premise", first.ID, first.TakenText)
 	}
 
 	r.closeAndReopen()
-	r.wantTold("at the reopening", pathRoot, record.AudienceHolder, 3, true)
-	// Oh My Pi is preparing X's turn, and answers any prompt that reaches it now busy.
-	shim.lose.Store(false)
-	shim.FailPrompt(keptBusy)
-	r.hello(reviewer)
+	r.wantTold("at the reopening, before X's turn", pathRoot, record.AudienceHolder, 3, true)
 
-	earlierPromptsTurn(t, r, reviewer, first.ID)
-	r.wantTold("after the turn and the result of the prompt whose answer was lost", pathRoot, record.AudienceHolder, 3, true)
-	theReopeningIsToldByTheTaskSentAgain(t, r, reviewer, shim)
+	repeatTake(t, r, reviewer, first)
+	r.wantTold("after the take sent again after the lost answer", pathRoot, record.AudienceHolder, 3, true)
+	theReopeningIsToldByTheNextTake(t, r, reviewer, conn, token)
 }

@@ -23,8 +23,9 @@ const (
 	stateRun     = "0b9f5c2e-4f1d-4c8a-9d57-2f3a6e8b1c40"
 )
 
-// stateTask is the task a claim of these tests is confirmed with and retires.
-var stateTask = supervise.Delivery{ID: "delivery-1", Task: "test it", QueuedAt: at(1), DeliveredAt: at(2), ConfirmedAt: at(3), Generation: 1}
+// stateTask is the task a claim of these tests is confirmed with and retires: a taken task, whose
+// accepted take is its confirmation (supervise's accept).
+var stateTask = supervise.Delivery{ID: "delivery-1", Task: "test it", QueuedAt: at(1), ConfirmedAt: at(3), Generation: 1}
 
 // stateClaim is the claim of role on issue, in the tree issue roots, in state.
 func stateClaim(t *testing.T, issue string, role claim.Role, state supervise.ClaimState) supervise.Claim {
@@ -395,4 +396,76 @@ func TestAClaimWriteThatChangesItsStateQueuesOneStateEvent(t *testing.T) {
 			}
 		}
 	})
+}
+
+// The take model's claim writes (dispatch://INFRA-2811) queue the state event of each move of the
+// claim they make, in their own transaction, as every claim write does, and none where the claim's
+// state stands. Each step writes the claim and its delivery as the claim's machine writes them,
+// through the write it makes them with. The value's write (supervise's queue) and the accepted
+// take (accept) write the claim at the state it stands at, ready, the take with the delivery taken
+// (its number, ConfirmedAt and TakenText), so neither queues one. The start of the take's turn
+// (turnStarted, startTakesTurn) writes the claim working with the delivery's TurnStarted, which
+// queues the claim's move from ready. The turn-outcome report naming the number, ahead of its
+// turn's end, finishes the task (finishTask) in a RetireDelivery of the claim still working, and
+// queues none; the end of the turn writes the claim idle, which queues that move. A take given
+// back before its turn started (giveBackTake) writes the delivery untaken over the claim at its
+// state, and queues none. A take that reaches a claim a restart restored working with its task
+// owed (takeInTurn) writes the claim idle in its own decision before the take is accepted over
+// it: that write queues the claim's move from working, and the accept none.
+func TestTheTakeModelsClaimWritesQueueTheStateEventOfEachMoveTheyMake(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	const issue, session = "LEGION-306", "ses-implementer"
+	s := migratedStore(t)
+	wakes := publishStates(t, s)
+	recordIssue(t, s, issue, stateProject)
+	openTree(t, s, issue)
+	implementer := func(state supervise.ClaimState, written, taken, finished uint64) supervise.Claim {
+		c := stateClaim(t, issue, claim.RoleImplementer, state)
+		c.Session = session
+		c.TaskWritten, c.TaskTaken, c.TaskFinished = written, taken, finished
+		if finished > 0 {
+			c.TaskFinishedSession = session
+		}
+		return c
+	}
+	queued := func(number uint64) supervise.Delivery {
+		return supervise.Delivery{ID: fmt.Sprintf("outbox:%d", number), Task: "implement it", Number: number, QueuedAt: at(1), Generation: 1}
+	}
+	taken := func(number uint64, started bool) supervise.Delivery {
+		d := queued(number)
+		d.ConfirmedAt, d.TakenText, d.TurnStarted = at(2), "implement it", started
+		return d
+	}
+	put := func(c supervise.Claim) func() error { return func() error { return s.PutClaim(ctx, c) } }
+	withTask := func(c supervise.Claim, d supervise.Delivery) func() error {
+		return func() error { return s.PutClaimAndDelivery(ctx, c, d) }
+	}
+	finish := func(c supervise.Claim, id string) func() error {
+		return func() error { return s.RetireDelivery(ctx, c, id) }
+	}
+	role := claim.RoleImplementer
+
+	queues(t, s, wakes, "the admission", func() error { _, err := s.AdmitClaim(ctx, implementer(supervise.StateLaunching, 0, 0, 0)); return err },
+		issue, claimMoved(role, "", supervise.StateLaunching))
+	queues(t, s, wakes, "the ready", put(implementer(supervise.StateReady, 0, 0, 0)), issue,
+		claimMoved(role, supervise.StateLaunching, supervise.StateReady))
+	queues(t, s, wakes, "the write of task 1's value", withTask(implementer(supervise.StateReady, 1, 0, 0), queued(1)), issue)
+	queues(t, s, wakes, "the accepted take of task 1", withTask(implementer(supervise.StateReady, 1, 1, 0), taken(1, false)), issue)
+	queues(t, s, wakes, "the start of the take's turn", withTask(implementer(supervise.StateWorking, 1, 1, 0), taken(1, true)), issue,
+		claimMoved(role, supervise.StateReady, supervise.StateWorking))
+	queues(t, s, wakes, "the report that finishes task 1 ahead of its turn's end", finish(implementer(supervise.StateWorking, 1, 1, 1), "outbox:1"), issue)
+	queues(t, s, wakes, "the end of the turn", put(implementer(supervise.StateIdle, 1, 1, 1)), issue,
+		claimMoved(role, supervise.StateWorking, supervise.StateIdle))
+
+	queues(t, s, wakes, "the write of task 2's value", withTask(implementer(supervise.StateIdle, 2, 1, 1), queued(2)), issue)
+	queues(t, s, wakes, "the accepted take of task 2", withTask(implementer(supervise.StateIdle, 2, 2, 1), taken(2, false)), issue)
+	queues(t, s, wakes, "the take-back of task 2 before its turn", withTask(implementer(supervise.StateIdle, 2, 2, 1), queued(2)), issue)
+	// A compaction moves the claim working over the task owed and untaken, and a restart that cut
+	// it off restores the claim working; the take is the worker's word that its host is idle.
+	queues(t, s, wakes, "the compaction", put(implementer(supervise.StateWorking, 2, 2, 1)), issue,
+		claimMoved(role, supervise.StateIdle, supervise.StateWorking))
+	queues(t, s, wakes, "the take that reaches the claim restored working", put(implementer(supervise.StateIdle, 2, 2, 1)), issue,
+		claimMoved(role, supervise.StateWorking, supervise.StateIdle))
+	queues(t, s, wakes, "the accepted take over it", withTask(implementer(supervise.StateIdle, 2, 2, 1), taken(2, false)), issue)
 }

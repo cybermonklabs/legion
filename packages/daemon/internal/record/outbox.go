@@ -1194,7 +1194,7 @@ const (
 // reads two wakes of one root reads two different facts:
 //
 //   - ArchitectTookNothing: the task of the entry the architect's phases row names stands queued
-//     to its claim, no turn of that claim confirmed it, and more than
+//     to its claim, no take of it by that claim's worker stands accepted, and more than
 //     workflow.StrandedReleaseWake has passed since the later of the first queueing of that entry,
 //     which the claim's handshake keeps (supervise.Claim.Handshake) however many times the daemon
 //     queued that entry's task again, and the last ready of the claim's agent. The task is counted
@@ -1215,10 +1215,10 @@ const (
 //   - ArchitectSlowBeforeGate: the root stands at phase.Admitted with no design-gate step
 //     registered 90 minutes after it was admitted, or after its architect's entry was last
 //     raised, whichever is later, counted from no earlier than the moment the wake pacing let
-//     out the launch of the architect that the latest pause held, and, once a turn of the
-//     architect has confirmed a task of that entry, than the moment it first did. While no turn
-//     has confirmed one, the pacing's queue counts against the bound, and a healthy architect
-//     confirms its entry's task long before the bound.
+//     out the launch of the architect that the latest pause held, and, once a take of a task of
+//     that entry by the architect has been accepted, than the moment the first was. While none
+//     has been, the pacing's queue counts against the bound, and a healthy architect takes its
+//     entry's task long before the bound.
 type ArchitectStallArm string
 
 const (
@@ -1313,6 +1313,11 @@ type SuperviseRequest struct {
 	Tree string      `json:"tree"`
 	Role claim.Role  `json:"role"`
 	Task string      `json:"task,omitempty"`
+	// Origin is the source that queued Task, one of supervise's Origin constants, carried onto the
+	// claim's delivery (supervise.RequestDeliver.Origin), so a task's origin comes from the row
+	// that wrote it and never from its text. A row that names none is read as a phase start where
+	// it names a phase and an operator's task otherwise (supervise's originOf).
+	Origin string `json:"origin,omitempty"`
 	// Kept is what an architect start's Task named of the decisions its root keeps
 	// (workflow.Engine.ParkedDecisionTask). The start settles them once it has run (the outbox's
 	// settleKept): a task the root architect's claim queued forgets them
@@ -1438,7 +1443,7 @@ type SuperviseRequest struct {
 	// release boots.
 	RoundNamed bool `json:"roundNamed,omitempty"`
 	// RuleResume marks the boot's resume-by-rule start, and the boot's one-time start of a merger
-	// the `awaiting_merge` cutover left released (workflow's cutoverMergerRepair). If its resumed
+	// the `awaiting_merge` cutover left released or live (workflow's cutoverMergerRepair). If its
 	// claim spends its launch budget, the runner finishes this row rather than retrying it as
 	// RequestRetry with fresh budgets: the failed claim stays failed for the boot report to name.
 	RuleResume bool `json:"ruleResume,omitempty"`
@@ -2551,12 +2556,27 @@ func MergeForwardWorker(step MergeForwardStep, at phase.Phase) (claim.Role, bool
 // to). Head is the head that conflicted, Landed the head the merge left ("" before it lands), Base
 // the base branch, Phase the phase the issue stays in, PullRequest the pull request's number, and
 // Why the first of R0's reasons that held (MergeForward.Why), which the ask and the hold state.
+// MergeState and StateReadAt are the read of GitHub the ask and the hold rest on
+// (dispatch://INFRA-2833 R3): GitHub's merge state for Head and the moment the daemon read it, the
+// newest read the record held of Head when the act wrote them (PullRequest.MergeState and
+// StateReadAt), which both state (AnsweredMergeState). A landed and a review carry neither. A row
+// that carries no read time - one the release before this one queued, which knows neither key, or
+// one written from a record that holds no dated read of Head - says both are unknown. The release
+// before this one decodes a merge-forward row strictly and knows neither key, so the way back to it
+// takes both out of every queued merge-forward row (the rollback block of migration
+// 20261113175649_task_numbers, which docs/kubernetes.md carries too).
 //
 // SentLaunch is carried by an ask the workflow sent again at a launch of the asked role's claim
-// (workflow's askAgain): that launch. A delivered row of it records the launch on the record's ask
-// (MergeForward.SentLaunch) where that ask is still the row's own, which a delivery the listener
-// named no holder of needs, since it names no launch told (workflow's MergeForwardAskEnded). Every
-// other row carries none. A release before the key refuses a row that carries it
+// (workflow's askAgain): that launch. The ask a reopen of the pull request queues (workflow's
+// askAtReopen), where the workflow knows no launch of the claim, is sent at the launch after the one
+// the record's ask was last delivered to (MergeForward.SentLaunch): the first launch it may tell.
+// The delivery of a row that carries it tells no launch below it (the daemon's mergeForwardMessage),
+// which holds back no re-send, since a launch's claim only moves on to later launches, and keeps
+// the reopen's row from a live launch told before the close while it tells a launch the close kept
+// the ask from. A delivered row of it records the launch on the record's ask where that ask is
+// still the row's own, which a delivered end that names no launch told needs (workflow's
+// MergeForwardAskEnded). No other row carries it, the act's ask (workflow's mergeForward) among
+// them. A release before the key refuses a row that carries it
 // (DecodeOutboxPayload, DisallowUnknownFields), so its rollback takes the key off such rows first,
 // leaving a plain ask (docs/kubernetes.md, "Rolling back the release that holds every worker while
 // a merge forward is owed").
@@ -2573,6 +2593,8 @@ type MergeForwardMessage struct {
 	Phase       phase.Phase      `json:"phase"`
 	PullRequest int              `json:"pullRequest"`
 	Why         ConflictWhy      `json:"why,omitempty"`
+	MergeState  MergeState       `json:"mergeState,omitempty"`
+	StateReadAt time.Time        `json:"stateReadAt,omitzero"`
 	SentLaunch  uint64           `json:"sentLaunch,omitempty"`
 }
 
@@ -2596,6 +2618,25 @@ func mergeForwardReason(why ConflictWhy, base string) string {
 	return ""
 }
 
+// AnsweredMergeState is the sentence, with no full stop, in which the ask and the hold of a merge
+// forward (Message) and the architect's checks-red notice of it (workflow's mergeForward) name the
+// read of GitHub the act rests on (dispatch://INFRA-2833 R3), so the worker can hold the ask to a
+// read of GitHub of its own: GitHub's merge state for head as GitHub spells it (state,
+// PullRequest.MergeState) and the moment the daemon read it (readAt, PullRequest.StateReadAt), in
+// RFC 3339 UTC. An answer that carried no merge state is "with no mergeState", never an empty one.
+// A zero readAt is a read the record cannot date, so both are unknown, and a state is never named
+// without the time it was read.
+func AnsweredMergeState(state MergeState, readAt time.Time, head string) string {
+	if readAt.IsZero() {
+		return fmt.Sprintf("GitHub's merge state for head %s and the time the daemon read it are unknown", head)
+	}
+	answer := "with no mergeState"
+	if state != MergeStateUnread {
+		answer = "mergeState=" + string(state)
+	}
+	return fmt.Sprintf("GitHub answered %s for head %s at %s", answer, head, readAt.UTC().Format(time.RFC3339))
+}
+
 // Message is what the runner publishes for issue to Role, where pr is the pull request as the
 // record holds it when the row is delivered: the repository it is held under (PullRequest.Repo),
 // and its merge forward (PullRequest.MergeForward), whose ReviewAsked says whether the landing
@@ -2603,23 +2644,24 @@ func mergeForwardReason(why ConflictWhy, base string) string {
 // lane does, and names the pull request as `owner/name#n`. The sentences are short and plain, one
 // instruction to a sentence, because an agent reads them (ASD-STE100).
 //
-// The ask names the pull request, the head, the base and the phase the issue stays in, gives why
-// the daemon acted, and tells the role asked (the implementer, or in merging the merger) to merge
-// the base forward in the issue workspace, the one workspace every role of the issue shares, as
-// the worker skill's conflicts reference says, and to push the issue branch, with no handoff and
-// no completion for the merge. In implementing it also says that the implementer's own
-// assignment and its completion stand: the act starts no phase entry there. To the merger it also
-// says that the merge is its own to resolve and that, where its task has a reviewer step, the
-// reviewer is asked to approve the head it pushes (cybermonklabs/legion#4979); the ask is written
-// before the landing reads the task, so it names the condition, and the landed, which comes when
-// that matters, is what holds its merge to that approval (MergeForward.ReviewAsked).
+// The ask names the pull request, the head, the base and the phase the issue stays in, names the
+// read of GitHub the daemon acted on (AnsweredMergeState), gives why the daemon acted, and tells
+// the role asked (the implementer, or in merging the merger) to merge the base forward in the
+// issue workspace, the one workspace every role of the issue shares, as the worker skill's
+// conflicts reference says, and to push the issue branch, with no handoff and no completion for
+// the merge. In implementing it also says that the implementer's own assignment and its
+// completion stand: the act starts no phase entry there. To the merger it also says that the merge
+// is its own to resolve and that, where its task has a reviewer step, the reviewer is asked to
+// approve the head it pushes (cybermonklabs/legion#4979); the ask is written before the landing
+// reads the task, so it names the condition, and the landed, which comes when that matters, is
+// what holds its merge to that approval (MergeForward.ReviewAsked).
 //
-// The hold gives why the daemon acted, and tells the worker that the implementer is asked to merge
-// the head forward in the workspace they share and that the issue stays in its phase, to stop
-// writing the workspace now (the merger also: not to merge the pull request or put it in the merge
-// queue), not to complete its phase at the old head but at the new head the daemon names, to keep
-// its session and its turn's jobs, that it is told the new head when it lands, and that a result
-// it recorded at the old head stays a result of the old head.
+// The hold names the same read and gives why the daemon acted, and tells the worker that the
+// implementer is asked to merge the head forward in the workspace they share and that the issue
+// stays in its phase, to stop writing the workspace now (the merger also: not to merge the pull
+// request or put it in the merge queue), not to complete its phase at the old head but at the new
+// head the daemon names, to keep its session and its turn's jobs, that it is told the new head
+// when it lands, and that a result it recorded at the old head stays a result of the old head.
 //
 // The landed names both heads and how to read what changed (readMerge): for a merge of the base,
 // `git show --remerge-diff` for how the merge resolved the conflict and `git diff --stat` against
@@ -2654,24 +2696,25 @@ func (p MergeForwardMessage) Message(issue string, pr PullRequest) string {
 			own = " The merge and its conflict are yours to resolve, as your role says." +
 				" When your merge lands, the daemon asks the reviewer to read it and approve the new head, where your task has a reviewer step."
 		}
-		return fmt.Sprintf("%s: %s at head %s conflicts with its base branch %s, and a second read of GitHub confirmed it."+
+		return fmt.Sprintf("%s: %s at head %s conflicts with its base branch %s, and a second read of GitHub confirmed it. %s."+
 			" The issue stays in %s. %s"+
 			" Merge %s forward in the issue workspace, $LEGION_WORKSPACE. Every role of the issue shares that one workspace."+
 			" Merge as skill://legion-worker/references/conflicts-and-rewrites.md says, and push the issue branch."+
 			" Write no handoff and make no completion for this forward merge.%s",
-			issue, pull, p.Head, p.Base, p.Phase, mergeForwardReason(p.Why, p.Base), p.Base, own)
+			issue, pull, p.Head, p.Base, AnsweredMergeState(p.MergeState, p.StateReadAt, p.Head), p.Phase, mergeForwardReason(p.Why, p.Base), p.Base, own)
 	case MergeForwardHold:
 		merger := ""
 		if p.Role == claim.RoleMerger {
 			merger = " Do not merge the pull request, and do not put it in the merge queue."
 		}
-		return fmt.Sprintf("%s: %s at head %s conflicts with its base branch %s. %s"+
+		return fmt.Sprintf("%s: %s at head %s conflicts with its base branch %s. %s. %s"+
 			" The implementer is asked to merge %s forward in the issue workspace, $LEGION_WORKSPACE, which you share with it."+
 			" The issue stays in %s. Stop writing the workspace now.%s"+
 			" Do not complete your phase at head %s. Complete it at the new head that the daemon names."+
 			" Keep your session and the jobs of your turn. The daemon tells you the new head when it lands."+
 			" A result you recorded at head %s stays a result of head %s.",
-			issue, pull, p.Head, p.Base, mergeForwardReason(p.Why, p.Base), p.Base, p.Phase, merger, p.Head, p.Head, p.Head)
+			issue, pull, p.Head, p.Base, AnsweredMergeState(p.MergeState, p.StateReadAt, p.Head), mergeForwardReason(p.Why, p.Base),
+			p.Base, p.Phase, merger, p.Head, p.Head, p.Head)
 	case MergeForwardLanded:
 		merge := ""
 		if p.Role == claim.RoleMerger && p.Phase == phase.Merging && pr.MergeForward != nil && pr.MergeForward.ReviewAsked {

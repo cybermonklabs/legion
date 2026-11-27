@@ -11,7 +11,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
-	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
@@ -28,7 +27,7 @@ import (
 
 // generationRig is a tree of a root in implementing and a child whose reviewer holds its phase
 // between turns, every audience having taken version 4 of the spec, which stands approved.
-func generationRig(t *testing.T) (*newsPathRig, *supervise.Machine, *fake.Conn, claim.Token) {
+func generationRig(t *testing.T) (*newsPathRig, *supervise.Machine, *newsConn, claim.Token) {
 	t.Helper()
 	r := newNewsPathRig(t, 4, pathMember{key: pathRoot, at: phase.Implementing},
 		pathMember{key: pathChild, parent: pathRoot, at: phase.Testing})
@@ -306,7 +305,7 @@ func TestACreditOfTheTreeAnIssueLeftCountsNothingInTheTreeThatTakesIt(t *testing
 		`"artifact":"artifact-900","from":null,"to":7,"generation":1,"tree_generation":3}]}`)
 	at := time.Now().UTC()
 	confirmed := supervise.Delivery{ID: "outbox:900", Task: "Read the design.\n\nThe approved design changed.", QueuedAt: at,
-		News: copied, Carried: copied, ConfirmedAt: at}
+		News: copied, Carried: copied, ConfirmedAt: at, TurnStarted: true}
 	if err := st.PutClaimAndDelivery(r.ctx, holder, confirmed); err != nil {
 		t.Fatalf("write the confirmed task of the tree the issue left: %v", err)
 	}

@@ -1,7 +1,8 @@
 package supervise
 
 // The project's pause (dispatch://INFRA-3759): what a machine does while the daemon's project is
-// paused, as the plan's decisions say it. Four things, each written once, here:
+// paused, as the plan's decisions say it. Four things, each written once, here, and the one rule
+// it keeps of the take's:
 //
 //   - The gate (decision 7): a launch of a claim that is not the controller's runs nothing while
 //     the project is paused: at the wake gate (reserveWake), at a parked wake's turn (wakeNow), at
@@ -10,8 +11,9 @@ package supervise
 //     pauseGate. It is held on the machine with no timer, keeping the turn the pacing let it out
 //     on before the gate held it, if any (wake.paid), and the machine stops the claim for the
 //     pause in its next decision (TimerPause, pauseStopDue), with a launch owed.
-//   - The task gate (decision 8): no task is sent to such a claim while the project is paused
-//     (sendPending, pauseHolds).
+//   - The task gate (decision 8): no take of a task is accepted from such a claim while the
+//     project is paused (claimHold's HoldProjectPaused, pauseHolds), and the resume's event
+//     writes the value of a task whose take it refused again (resumePause, offerPending).
 //   - The stop transaction (decision 6): a suspension a pause asked for (RequestSuspend.Pause)
 //     ends in a claim write through Deps.PauseStopped, which writes the pause's records with the
 //     claim (persistStop). One that fails is owed on the owed mark (owedClaimWrite.stops), and
@@ -20,6 +22,14 @@ package supervise
 //     (StartedBy), a later pause's request takes it over (holdSuspension), and once its pause has
 //     ended it is dropped at the start of the claim's next decision, before anything of that
 //     decision reads it (dropEndedPauseHold); the resume's event (ResumePause) is such a decision.
+//
+// A project pause's held suspension waits past the end of its take's turn for the report that
+// settles the task, as every held suspension does (reportwait.go, takePhase): only
+// that report says whether the turn finished its task or a provider refused it, and a stop made
+// first would leave a refused task taken and the role owed nothing at the resume (check k1 of
+// dispatch://INFRA-3759: a role whose turn a provider refuses keeps its task). The report's
+// finish, or its provider error's take-back, runs the hold (settleThenAfterTurn), and the stop
+// then reads the task the report left (holdsTask).
 
 import (
 	"context"
@@ -108,16 +118,16 @@ func (m *Machine) startCutShort() bool {
 // (decision 5), and is the one place such a hold goes. It runs at the start of every decision,
 // once the lock is taken and before settle and the fence (Handle), and at the start of a start
 // run against the claim (StartedBy), the one decision that does not go through Handle. So every
-// row, timer, event and send of a decision reads a held suspension only while it still stands: a
-// compaction is not refused for an ended pause's hold, a task is not held back behind one, and
-// where a held suspension fires — the end of a turn or of a compaction, the agent's ready, the
-// hold's own timer, a prompt retirement, a death, a stale address, a stall, a wake's turn and a
-// waiting relaunch — a role in a turn runs on and a launch held until ready goes ahead. The
-// resume's event (ResumePause) is one such decision, and a resume whose event never reaches this
-// machine — one another daemon made — is met by the claim's next decision. Its pause has ended
-// when it is not the open pause, a later pause's included: a later pause's own request writes its
-// id on the hold (holdSuspension), so a hold that still names an earlier one was taken over by no
-// pause.
+// row, timer, event and take of a decision reads a held suspension only while it still stands: a
+// compaction is not refused for an ended pause's hold, a take is not refused behind one, and
+// where a held suspension fires — the end of a turn or of a compaction, the report that settles a
+// take's turn, the agent's ready, the hold's own timer, a death, a stale address, a stall, a
+// wake's turn and a waiting relaunch — a role in a turn runs on and a launch held until ready
+// goes ahead. The resume's event (ResumePause) is one such decision, and a resume whose event
+// never reaches this machine — one another daemon made — is met by the claim's next decision. Its
+// pause has ended when it is not the open pause, a later pause's included: a later pause's own
+// request writes its id on the hold (holdSuspension), so a hold that still names an earlier one
+// was taken over by no pause.
 func (m *Machine) dropEndedPauseHold() {
 	if m.held == nil || m.held.Pause == 0 || m.pauseOpen(m.held.Pause) {
 		return
@@ -134,12 +144,14 @@ func (m *Machine) dropEndedPauseHold() {
 // (letGo).
 func (m *Machine) launchMet() bool { return m.wake != nil || m.relaunch != nil }
 
-// holdsTask is whether the claim holds a task no turn has taken: its pending delivery, while it
-// is unconfirmed. A confirmed one is the task of a turn that ran, which settle retires once the
-// claim is no longer working, so it owes the role no launch.
+// holdsTask is whether the claim holds a task no take holds: its pending delivery, while no take
+// of it is accepted (Delivery.ConfirmedAt). A take whose turn had not started is taken back by
+// the stop itself (suspended, takeBackUnstarted), so it is such a task by the time the stop is
+// written. An accepted take whose turn ran is finished by the report that names its number, or
+// taken back where that report never came (interrupted), so it owes the role no launch.
 func (m *Machine) holdsTask() bool {
 	p := m.claim.Pending
-	return p != nil && p.ConfirmedAt.IsZero()
+	return p != nil && !p.taken()
 }
 
 // pauseGate is the gate's hold of a launch while the project is paused (decision 7), reached from
@@ -178,17 +190,39 @@ func (m *Machine) pauseHeldTry(ctx context.Context, l launchTry, pause int64) er
 }
 
 // pauseStopDue is the gate's own stop (TimerPause): the machine posting itself the suspension of
-// the claim whose launch the pause's gate held (decision 7) — By released, the pause's id, and a
-// deadline of now. It meets the claim as the pause's own stop meets a parked wake: a claim that
-// records no process is stopped at once (holdSuspendUntilReady), and so is one whose process is
-// registered, ready or idle (suspend) or still booting, since the launch the gate holds was to
-// replace that process and a hold until ready would protect a process nothing wants; a claim in a
-// turn — the stall backstop's case — is held to the deadline of now and stopped mid-turn, its
-// task taken back interrupted (holdSuspension, suspendAtTimeout). Each ends in the pause's stop
-// transaction with a launch owed, since the held launch waits on the machine until the stop
-// lets it go (suspendedFor, launchMet). A stop that fails with the launch still held is posted
-// again at the probe interval; one that stopped the process and whose write failed owes the
-// write instead (persistStop).
+// the claim whose launch the pause's gate held (decision 7) — By released, the pause's id, and the
+// deadline pauseStopDeadline gives. It meets the claim as the pause's own stop meets a parked
+// wake, in one of three ways:
+//
+//   - A claim in a turn — the stall backstop's case — is held to the deadline of now and stopped
+//     mid-turn, its task taken back interrupted (holdSuspension, suspendAtTimeout). A claim being
+//     compacted with no turn under the compaction is held to now and stopped mid-compaction too,
+//     unless its take's turn ended with its report still to come (below).
+//   - A claim no turn runs in whose take's turn ended with its report still to come
+//     (reportWaitNow, waitReport) is held for that report (row 39j of dispatch://INFRA-2811's
+//     plan), bounded by R5's second wait (Timeouts.TurnStart) from now rather than by a deadline
+//     of now, and by nothing where that bound is not set, as the pause's own stop is. An idle
+//     claim's stop is held as the pause's own stop held over a turn is at that turn's end
+//     (suspend, holdForReport). A compaction with no turn under it is no turn (inTurn), so the
+//     stop of a claim being compacted after its take's turn is held too, with the same bound
+//     (holdSuspension). The report finishes the task once, and the suspension runs once the
+//     report and any compaction are over: at the report's finish (settleThenAfterTurn), or at
+//     the compaction's end where the report came while the compaction ran. That end
+//     (runHeldAtEnd) runs the stop once the report has settled the take, and otherwise gives the
+//     claim back in the state the compaction took it from, the suspension still held for the
+//     report. With no report by the bound the task is taken back with the note of a cut turn and
+//     the suspension runs (suspendAtTimeout, reportBoundOver, reportMissed). Stopped at once, the
+//     process would take with it the report the wait is for, the task would be taken back as a
+//     cut turn though its turn ran whole, and the resume would run it again.
+//   - Any other claim is stopped at once: one that records no process (holdSuspendUntilReady),
+//     and one whose process is registered, ready or idle (suspend) or still booting, since the
+//     launch the gate holds was to replace that process and a hold until ready would protect a
+//     process nothing wants.
+//
+// Each ends in the pause's stop transaction with a launch owed, since the held launch waits on the
+// machine until the stop lets it go (suspendedFor, launchMet). A stop that fails with the launch
+// still held is posted again at the probe interval; one that stopped the process and whose write
+// failed owes the write instead (persistStop).
 //
 // The pause it stops for is the open one when it runs. A launch held for a pause that has ended
 // by then, with no pause open, goes to the wake pacing rather than stopping the claim
@@ -209,11 +243,11 @@ func pauseStopDue(m *Machine, ctx context.Context, _ Event) error {
 		return m.letOutHeldLaunch(ctx)
 	}
 	waiting.pause = pause
-	request := RequestSuspend{Claim: m.claim.Token, By: SuspendedByReleased, Pause: pause, Deadline: m.deps.Clock.Now(),
+	request := RequestSuspend{Claim: m.claim.Token, By: SuspendedByReleased, Pause: pause, Deadline: m.pauseStopDeadline(),
 		Reason: fmt.Sprintf("the project is paused (pause %d) and its gate held this claim's launch", pause)}
 	var err error
 	switch {
-	case m.claim.State == StateWorking:
+	case m.busy():
 		err = holdSuspension(m, ctx, request)
 	case m.claim.Locator == nil:
 		err = holdSuspendUntilReady(m, ctx, request)
@@ -231,6 +265,26 @@ func pauseStopDue(m *Machine, ctx context.Context, _ Event) error {
 		m.arm(TimerPause, m.deps.Timeouts.Probe, "")
 	}
 	return err
+}
+
+// pauseStopDeadline is the deadline of the gate's own stop (pauseStopDue). Over a claim no turn
+// runs in whose take's turn ended with its report still to come (reportWaitNow, waitReport), it
+// is R5's second bound (Timeouts.TurnStart) from now, as the wait for that report is bounded
+// (reportBounded), and none where that bound is not set, so the report can finish the task before
+// the suspension runs. That stop is held for the report. An idle claim's is held by suspend
+// (holdForReport). A compaction with no turn under it is no turn (inTurn), so the stop of a claim
+// being compacted is held by holdSuspension, and at the compaction's end it stays held while the
+// report is still to come (runHeldAtEnd). Over any other claim it is now, so a claim in a turn is
+// stopped mid-turn at once, and every other claim is stopped at once as well.
+func (m *Machine) pauseStopDeadline() time.Time {
+	now := m.deps.Clock.Now()
+	if m.reportWaitNow() != waitReport {
+		return now
+	}
+	if m.deps.Timeouts.TurnStart <= 0 {
+		return time.Time{}
+	}
+	return now.Add(m.deps.Timeouts.TurnStart)
 }
 
 // letOutHeldLaunch takes the launch the pause's gate holds into the wake pacing once the pause it
@@ -272,9 +326,11 @@ func (m *Machine) letOutHeldLaunch(ctx context.Context) error {
 // goes, and nothing of any other pause. A suspension held for that pause has gone already, at the
 // start of this decision (dropEndedPauseHold), so a role in a turn runs on and a launch held until
 // ready goes ahead; a launch the gate held for it goes to the wake pacing, or is stopped for a
-// later pause that holds the project by now (pauseStopDue); and the task the claim holds is sent
-// where it may now go, which is the daemon's step of handing each role its held task at the
-// resume (decision 22).
+// later pause that holds the project by now (pauseStopDue); and the value of the task the claim
+// holds is written again where the worker's take of it was refused and it may now be taken
+// (offerPending), which is the daemon's step of handing each role its held task at the resume
+// (decision 22). A role the pause stopped takes its task from its value once its relaunch is
+// ready, as every relaunched role does.
 func resumePause(m *Machine, ctx context.Context, ev Event) error {
 	pause := ev.(ResumePause).Pause
 	if pause <= 0 {
@@ -287,7 +343,7 @@ func resumePause(m *Machine, ctx context.Context, ev Event) error {
 			return err
 		}
 	}
-	return m.sendPending(ctx)
+	return m.offerPending(ctx)
 }
 
 // persistStop is persist for the claim write a project pause's suspension ends in (suspended,
@@ -297,26 +353,34 @@ func resumePause(m *Machine, ctx context.Context, ev Event) error {
 // settles the mark to make (putStops). Where a write is already owed, the stop joins it and the
 // write is made as an owed one, the reports and any earlier stop with it. A daemon that hands no
 // stop transaction writes the claim through the plain write.
-func (m *Machine) persistStop(ctx context.Context, stop PauseStop) error {
+//
+// withPending is whether the suspension took back the accepted take of the pending task whose
+// turn had not started (suspended, takeBackUnstarted): the delivery changed with the claim, so
+// the stop transaction carries it beside the claim (c.Pending), and a write that fails leaves it
+// unsaved for settle to write again (saved), as putClaimAndPendingOwed would.
+func (m *Machine) persistStop(ctx context.Context, stop PauseStop, withPending bool) error {
+	write := m.persist
+	if withPending {
+		write = m.putClaimAndPendingOwed
+	}
 	if m.deps.PauseStopped == nil {
-		return m.persist(ctx)
+		return write(ctx)
 	}
 	if m.owedWrite != nil {
 		m.owedWrite.stops = oweStop(m.owedWrite.stops, stop)
-		return m.persist(ctx)
+		return write(ctx)
 	}
 	// Published before the write, so View shows the stopped claim while the stop's transaction
-	// runs. The pending delivery goes on the claim the stop writes, in the one transaction, where
-	// putClaim would carry it (carriesPending), and the obligation ends only once that write lands.
+	// runs.
 	m.publish()
-	c, carried := m.stored(), m.carriesPending()
-	if carried {
+	c := m.stored()
+	if withPending {
 		pending := *m.claim.Pending
 		c.Pending = &pending
 	}
 	err := m.owes("PauseStopped", m.putStop(ctx, c, stop))
-	if err == nil && carried {
-		m.wroteCarried()
+	if withPending {
+		err = m.saved(err)
 	}
 	if m.owedWrite != nil {
 		m.owedWrite.stops = []PauseStop{stop}
@@ -371,44 +435,6 @@ func (m *Machine) putStops(ctx context.Context, c Claim) error {
 	}
 	m.settleOwedWrite("PauseStopped")
 	return nil
-}
-
-// stopWaitsForResult is whether the end of the claim's turn leaves a project pause's held
-// suspension waiting for the result of the turn's prompt (turnEnded): the hold is a pause's, and
-// Oh My Pi has not said yet how that prompt's work ended (resultPending: the send of the prompt
-// is in flight and no answer has made it moot, or the prompt was acknowledged or held
-// (awaitedPrompt) and its result is still to come). The result is what decides the task — a turn
-// that finished it retires it, and a provider's refusal of it takes it back for another prompt
-// (providerErrored) — so a stop made at the turn's end would retire a refused task and leave the
-// role owed nothing at the resume (check k1 of dispatch://INFRA-3759: a role whose turn a provider
-// refuses keeps its task). Oh My Pi
-// writes the result right behind the turn's end, and a result that says the turn ran runs the
-// stop once it has decided the task, in a claim still idle (promptResulted, pauseHoldAtResult);
-// a process that dies before it does ends the hold through its death (died). Neither a send
-// refused or lost, which brings no result, nor a result or a refusal that says the prompt ran no
-// turn runs the stop (refused, promptResulted, lateRefused), unless the prompt failure it charges
-// reaches the limit, where chargePrompt runs the held stop. Short of that the hold stands until
-// something else ends it, at the latest the pause's stop asked again (pauseStopWait in
-// internal/daemon), which stops an idle claim at once (suspend).
-func (m *Machine) stopWaitsForResult() bool {
-	return m.held != nil && m.held.Pause != 0 && m.resultPending()
-}
-
-// pauseHoldAtResult is whether a project pause's held suspension waited for the result that has
-// just come in (stopWaitsForResult): the turn it was held for is over, and the hold still stands,
-// so its pause is still the open one (dropEndedPauseHold dropped it at the start of this decision
-// had that pause ended).
-func (m *Machine) pauseHoldAtResult() bool {
-	return m.claim.State == StateIdle && m.held != nil && m.held.Pause != 0
-}
-
-// stopAtResult runs the project pause's held suspension that waited for this result
-// (pauseHoldAtResult), once the result has decided the task, and does nothing otherwise.
-func (m *Machine) stopAtResult(ctx context.Context) error {
-	if !m.pauseHoldAtResult() {
-		return nil
-	}
-	return m.suspendHeld(ctx)
 }
 
 // wakeLetOut tells the daemon the moment a launch of this claim stops waiting for the wake pacing

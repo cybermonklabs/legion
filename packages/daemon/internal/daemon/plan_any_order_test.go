@@ -79,7 +79,7 @@ func (r *ownerStepsRig) implementAfterTheTestersFail() {
 			r.key, tested.HandoffRecord, tested.Verdict)
 	}
 	implementer := r.worker(claim.RoleImplementer)
-	told := implementer.take().Message
+	told := implementer.take().Text
 	for _, want := range []string{
 		fmt.Sprintf("Handoff: test version %d (dispatch handoff-read --issue %s --phase test --version %d);", tested.HandoffVersion, r.key, tested.HandoffVersion),
 		fmt.Sprintf("the newest version of that record: dispatch handoff-read --issue %s --phase test.", r.key),

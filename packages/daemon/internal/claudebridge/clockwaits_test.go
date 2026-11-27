@@ -38,9 +38,10 @@ import (
 // package's own source, in memory, and the wait must be found by name. They are a read deadline
 // set 6 s ahead in the inbox's stop path, which holds the bridge's exit for a connected client;
 // time imported under another name, with a Sleep in the inbox's close; time.Sleep taken as a
-// value and called; the report's http.Client given back a Timeout; the read deadline set through
-// a method value; a second method of the wall clock's that sleeps, called from the inbox's close;
-// syscall.Nanosleep in the inbox's close; and the report's client given a Transport with a
+// value and called; the daemon link's http.Client, which sends the turn report, the seen report
+// and the take (daemonlink.go), given back a Timeout; the read deadline set through a method
+// value; a second method of the wall clock's that sleeps, called from the inbox's close;
+// syscall.Nanosleep in the inbox's close; and that client's Transport given a
 // ResponseHeaderTimeout.
 func TestTheBridgeWaitsOnlyOnItsClock(t *testing.T) {
 	sources := bridgeSources(t)
@@ -62,8 +63,8 @@ func TestTheBridgeWaitsOnlyOnItsClock(t *testing.T) {
 			}},
 		{name: "time.Sleep taken as a value", want: "time.Sleep",
 			replaces: []replace{{"inbox.go", "func (in *inbox) close() {\n", "func (in *inbox) close() {\n\tsleep := time.Sleep\n\tsleep(6 * time.Second)\n"}}},
-		{name: "the report's http.Client given a Timeout", want: "net/http.Client's Timeout",
-			replaces: []replace{{"turnoutcome.go", "client:     &http.Client{},", "client:     &http.Client{Timeout: reportTimeout},"}}},
+		{name: "the daemon link's http.Client given a Timeout", want: "net/http.Client's Timeout",
+			replaces: []replace{{"daemonlink.go", "client:     &http.Client{Transport: transport},", "client:     &http.Client{Transport: transport, Timeout: taskAnswerTimeout},"}}},
 		{name: "a read deadline set through a method value", want: "SetReadDeadline",
 			replaces: []replace{{"inbox.go", "_ = conn.SetReadDeadline(time.Now())", "setDeadline := conn.SetReadDeadline\n\t\t_ = setDeadline(time.Now().Add(6 * time.Second))"}}},
 		{name: "a second method of the wall clock's that sleeps", want: "time.Sleep",
@@ -76,8 +77,8 @@ func TestTheBridgeWaitsOnlyOnItsClock(t *testing.T) {
 				{"inbox.go", "import (\n", "import (\n\tsleepsys \"syscall\"\n"},
 				{"inbox.go", "func (in *inbox) close() {\n", "func (in *inbox) close() {\n\t_ = sleepsys.Nanosleep(&sleepsys.Timespec{Sec: 6}, nil)\n"},
 			}},
-		{name: "the report's client given a Transport with a ResponseHeaderTimeout", want: "net/http.Transport's ResponseHeaderTimeout",
-			replaces: []replace{{"turnoutcome.go", "client:     &http.Client{},", "client:     &http.Client{Transport: &http.Transport{ResponseHeaderTimeout: reportTimeout}},"}}},
+		{name: "the daemon link's Transport given a ResponseHeaderTimeout", want: "net/http.Transport's ResponseHeaderTimeout",
+			replaces: []replace{{"daemonlink.go", "transport.DisableKeepAlives = true\n", "transport.DisableKeepAlives = true\n\ttransport.ResponseHeaderTimeout = taskAnswerTimeout\n"}}},
 	} {
 		t.Run(plant.name, func(t *testing.T) {
 			planted := maps.Clone(sources)

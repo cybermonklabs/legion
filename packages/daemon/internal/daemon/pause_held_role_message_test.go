@@ -148,9 +148,9 @@ func TestARoleMessageThePauseHeldForARoleReleasedBeforeThePauseKeepsMainsRule(t 
 }
 
 // The gap between a woken role's ready and its role claim (R4 of dispatch://INFRA-3759). An agent
-// says it is ready before its plugin claims the role's Envoy topic, which it does at the session's
-// first turn or at the first-turn bound (supervise.SaidReady), and until then the listener answers
-// a publish to the role as it answers the stopped session: 404 holder_lapsed gone
+// says it is ready before its plugin claims the role's Envoy topic, which it does right after its
+// ready and the read of its task value have answered (supervise.SaidReady), and until then the
+// listener answers a publish to the role as it answers the stopped session: 404 holder_lapsed gone
 // (notify.ErrNoHolder). A role message the pause held for the role it stopped, whose row runs in
 // that gap, still reaches the role once its session holds the topic. The test lets the row run once
 // in the gap: the role ready, its topic not yet held.

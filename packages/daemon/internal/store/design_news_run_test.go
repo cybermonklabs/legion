@@ -63,7 +63,7 @@ func TestACopyCountsAndFoldsOnlyWhileTheRecordHoldsTheRunItWasRenderedIn(t *test
 				}
 				confirmed.News, confirmed.Carried = encoded, encoded
 			}
-			confirmed.ConfirmedAt = r.at.Add(time.Minute)
+			confirmed.ConfirmedAt, confirmed.TurnStarted = r.at.Add(time.Minute), true
 			if err := r.store.PutClaimAndDelivery(r.ctx, r.reviewer, confirmed); err != nil {
 				t.Fatalf("confirm the task: %v", err)
 			}

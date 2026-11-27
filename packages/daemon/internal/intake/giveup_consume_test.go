@@ -174,7 +174,7 @@ func TestAMessageTheStreamWouldDeleteBeforeItsNextDeliveryIsGivenUpAtOnce(t *tes
 		t.Run(row.name, func(t *testing.T) {
 			pool := migratedPool(t)
 			js := testnats.JetStream(t)
-			stream := testnats.CreateStream(t, js, jetstream.StreamConfig{Name: notificationStream, Subjects: []string{"notifications.>"}, MaxAge: 3 * time.Second})
+			stream := testnats.CreateStream(t, js, jetstream.StreamConfig{Name: NotificationStream, Subjects: []string{"notifications.>"}, MaxAge: 3 * time.Second})
 			spec := consumerSpec(&lockedBuffer{})
 			spec.NakDelay, spec.RetentionMargin = 2*time.Second, time.Second
 			var calls atomic.Int32
@@ -346,7 +346,7 @@ func TestTheCountAndTheFirstFailureSurviveARestartOfTheConsumers(t *testing.T) {
 			paused := make(chan error, 1)
 			handler := handlerFunc(func(ctx context.Context, _ pgx.Tx, _ Fact) (Result, error) {
 				if calls.Add(1) == 2 {
-					_, err := js.PauseConsumer(ctx, notificationStream, dispatch, time.Now().Add(time.Hour))
+					_, err := js.PauseConsumer(ctx, NotificationStream, dispatch, time.Now().Add(time.Hour))
 					paused <- err
 				}
 				return Result{}, errAlwaysFails
@@ -372,7 +372,7 @@ func TestTheCountAndTheFirstFailureSurviveARestartOfTheConsumers(t *testing.T) {
 			if err := js.Conn().FlushWithContext(ctx); err != nil {
 				t.Fatalf("flush the stopped consumers' unsubscribe: %v", err)
 			}
-			if _, err := js.ResumeConsumer(ctx, notificationStream, dispatch); err != nil {
+			if _, err := js.ResumeConsumer(ctx, NotificationStream, dispatch); err != nil {
 				t.Fatalf("resume the Dispatch durable: %v", err)
 			}
 			consumer, err := stream.Consumer(ctx, dispatch)

@@ -90,7 +90,7 @@ func TestThePhaseEntryAwaitingMigrationKeepsAResumesEntryAndItsWayBackPutsTheMar
 		read[record.PhaseRole{Issue: "LEGION-209", Role: claim.RoleArchitect}].Resumed {
 		t.Fatalf("the phase entries after the migration = %+v, want the resumed architect's alone read as a resume's", read)
 	}
-	if columnStands(t, store, "entry_verbatim") {
+	if columnStands(t, store, "phases", "entry_verbatim") {
 		t.Fatal("phases.entry_verbatim stands after the migration, want it dropped: nothing reads it, and the wait replaced it")
 	}
 
@@ -121,9 +121,9 @@ func TestThePhaseEntryAwaitingMigrationKeepsAResumesEntryAndItsWayBackPutsTheMar
 		if _, err := store.Pool().Exec(ctx, wayBack, pgx.QueryExecModeSimpleProtocol); err != nil {
 			t.Fatalf("run the way back the header carries, run %d: %v", run, err)
 		}
-		if columnStands(t, store, "entry_awaiting") || !columnStands(t, store, "entry_verbatim") {
+		if columnStands(t, store, "phases", "entry_awaiting") || !columnStands(t, store, "phases", "entry_verbatim") {
 			t.Fatalf("after run %d of the way back entry_awaiting stands: %t, entry_verbatim stands: %t; want the release before's column alone",
-				run, columnStands(t, store, "entry_awaiting"), columnStands(t, store, "entry_verbatim"))
+				run, columnStands(t, store, "phases", "entry_awaiting"), columnStands(t, store, "phases", "entry_verbatim"))
 		}
 		// The release before reads its rows with this column named (record's Phases at that release).
 		marked := map[string]bool{}
@@ -167,17 +167,6 @@ func TestThePhaseEntryAwaitingMigrationKeepsAResumesEntryAndItsWayBackPutsTheMar
 	if row := phaseRowOf(t, store, "LEGION-208", claim.RolePlanner); row.EntryAwaiting != nil {
 		t.Fatalf("the planner's row after the roll-forward holds the wait %+v, want none", row.EntryAwaiting)
 	}
-}
-
-// columnStands is whether the phases table holds column.
-func columnStands(t *testing.T, store *Store, column string) bool {
-	t.Helper()
-	var stands bool
-	if err := store.Pool().QueryRow(context.Background(), `select exists (select 1 from information_schema.columns
-		where table_schema = current_schema() and table_name = 'phases' and column_name = $1)`, column).Scan(&stands); err != nil {
-		t.Fatalf("read whether phases.%s stands: %v", column, err)
-	}
-	return stands
 }
 
 // sameWait is whether got is want, each moment of it read as an instant: a wait read back from

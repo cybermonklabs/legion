@@ -52,7 +52,7 @@ func TestAnIssuePodGetsOneRepositoryLive(t *testing.T) {
 	defer cancel()
 
 	path := writeBurstableLiveConfig(t, filepath.Join(env["LEGION_E2E_WORK"], "shared-clone"), "CLONE", env["LEGION_E2E_STREAM_HOST"],
-		env["LEGION_E2E_IMAGE"], env["LEGION_E2E_KUBECONFIG"], env["LEGION_E2E_KUBE_CONTEXT"], sharedCloneLiveResources)
+		env["LEGION_E2E_IMAGE"], env["LEGION_E2E_KUBECONFIG"], env["LEGION_E2E_KUBE_CONTEXT"], burstableLiveNoNATS, sharedCloneLiveResources)
 	cfg, err := config.LoadForValidation(path, nil)
 	if err != nil {
 		t.Fatalf("load %s: %v", path, err)

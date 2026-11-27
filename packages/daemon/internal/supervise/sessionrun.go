@@ -43,20 +43,24 @@ const (
 //
 // Three ends are counted (countEnd), and nothing else: a process that died, before or after its
 // agent said ready, where the machine charges the death a launch failure or a death (died); a
-// process whose agent never registered or never said ready, retired at its deadline and charged a
-// launch failure (registrationDeadline); and a controller turn the daemon ended because it stayed
-// open past its bound (endTurnPastBound), which charges no budget. Not counted: an operator's
-// suspension, a held suspension, the stale-plugin relaunch, a process found at a stale address or
-// displaced, a death or a deadline the roll edge or a resume by Oh My Pi's own lookup leaves
-// uncharged (endOutcome, Charges), and a start the runtime refused, which is retried inside its
-// own launch (launchTries) and says nothing of the session — a pod the cluster cannot place is
-// not the session's fault.
+// process retired at a deadline and charged a launch failure (retireNeverReady): one whose agent
+// never registered or never said ready (registrationDeadline), and one whose shim never said
+// hello to the daemon that restored it, or never again after its connection closed
+// (reconnectDeadline); and a controller turn the daemon ended because it stayed open past its
+// bound (endTurnPastBound), which charges no budget. Not counted: an operator's suspension, a held
+// suspension, the stale-plugin relaunch, a process found at a stale address or displaced, a death
+// or a deadline the roll edge or a resume by Oh My Pi's own lookup leaves uncharged (endOutcome,
+// Charges), and a start the runtime refused, which is retried inside its own launch (launchTries)
+// and says nothing of the session — a pod the cluster cannot place is not the session's fault.
 //
-// A finished turn starts the run again (turnEnded), and ready alone does not: a session killed
-// seconds after its agent came up would never reach two ends if its ready reset them. A forgotten
-// session takes its run with it (forgetSession), so the session after it starts with no end and no
-// finished turn. The run is persisted with the claim, so a daemon restart between two ends reads
-// the count the daemon before it kept.
+// A finished turn starts the run again, and ready alone does not: a session killed seconds after
+// its agent came up would never reach two ends if its ready reset them. A turn is finished where
+// its task is: a take's turn by the finish of the take's task (finishTask), which for a plugin
+// that names its task's number only the report of that turn makes, and a turn that ran no take by
+// its end (turnEnded). A turn whose report carries a provider error finishes nothing
+// (providerErrored). A forgotten session takes its run with it (forgetSession), so the session
+// after it starts with no end and no finished turn. The run is persisted with the claim, so a
+// daemon restart between two ends reads the count the daemon before it kept.
 //
 // It decides one thing, for the project's controller alone: a session that has finished a turn and
 // then ended controllerSessionEnds launches in a row is forgotten by the next launch, which spawns
@@ -247,11 +251,12 @@ func turnPastBound(m *Machine, ctx context.Context, ev Event) error {
 // it (gatePaces, pauseHolding, gated).
 //
 // Otherwise it ends the launch as the stall backstop ends a stalled turn, whether or not steps still
-// arrive in the turn (replaceProcess): the task the turn served goes back to waiting and is sent to
-// the relaunched agent again, a held suspension ends in a suspension, and the recorded session is
-// resumed on a new process — unless this end is the session's second in a row, when the relaunch
-// starts a fresh one (countEnd, replaceEndedSession). The end itself charges no budget, as the
-// backstop's does not, so a controller ended past its bound does not spend its launch budget.
+// arrive in the turn (replaceProcess, heldAtItsTurn as the backstop's): the task whose take's turn
+// it was goes back as a turn cut off and is taken again by the relaunched agent under its number
+// (interrupted), a held suspension ends in a suspension, and the recorded session is resumed on a
+// new process — unless this end is the session's second in a row, when the relaunch starts a
+// fresh one (countEnd, replaceEndedSession). The end itself charges no budget, as the backstop's
+// does not, so a controller ended past its bound does not spend its launch budget.
 func (m *Machine) endTurnPastBound(ctx context.Context, ev TurnPastBound) error {
 	start, open := m.claim.OpenTurn()
 	now := m.deps.Clock.Now()
@@ -277,7 +282,8 @@ func (m *Machine) endTurnPastBound(ctx context.Context, ev TurnPastBound) error 
 	// relaunched agent is then judged on the turn it finds rather than charged against this one
 	// (turnOpen).
 	m.claim.LastTurnEnd = now
-	end, err := m.replaceProcess(ctx, "the daemon ended a controller turn that stayed open past its bound", ordinaryEnd, endedPastBound(ev.Bound))
+	end, err := m.replaceProcess(ctx, "the daemon ended a controller turn that stayed open past its bound", ordinaryEnd,
+		endedPastBound(ev.Bound), heldAtItsTurn)
 	switch {
 	case end == EndNotMade:
 		// The take-back can have written the claim with the end counted and the turn closed before

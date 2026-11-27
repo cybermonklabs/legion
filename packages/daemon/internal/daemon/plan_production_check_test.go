@@ -17,7 +17,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/phase"
-	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
@@ -80,10 +79,10 @@ func (r *ownerStepsRig) checkOpened() bool {
 }
 
 // lookOpens waits for the merge of the walk's issue to open its production check, the first look
-// open for the tester while the issue is done, and for c, the tester's claimant, to be told that
+// open for the tester while the issue is done, and for c, the tester's claimant, to take that
 // look, which its turn then takes up. A launch of c's claim after the one its pane came up in is the
 // look's start resuming the claim, which the close had suspended: that launch must resume c's own
-// session, and its pane comes up in it (reattach).
+// session, and its pane comes up in it (reattach) before its plugin takes the look.
 func (r *ownerStepsRig) lookOpens(c *stepClaimant) time.Time {
 	t := r.t
 	t.Helper()
@@ -94,30 +93,34 @@ func (r *ownerStepsRig) lookOpens(c *stepClaimant) time.Time {
 	if got := string(r.d.state().Issues[r.key].Phase); got != string(phase.Done) {
 		t.Fatalf("%s stands in %s while its production check is open, want done", r.key, got)
 	}
-	var prompt shimwire.Prompt
-	for deadline := time.After(stepRecordsWait); prompt.ID == ""; {
-		select {
-		case prompt = <-c.prompts:
-		case <-time.After(100 * time.Millisecond):
-			if lastLaunch(t, r.rt, c.token).BootToken != c.bootToken {
-				r.reattach(c)
-			}
-		case <-deadline:
+	var taken takenTask
+	deadline := time.Now().Add(stepRecordsWait)
+	for {
+		got, err := c.driver.takeWithin(100 * time.Millisecond)
+		if err == nil {
+			taken = got
+			break
+		}
+		if lastLaunch(t, r.rt, c.token).BootToken != c.bootToken {
+			r.reattach(c)
+			continue
+		}
+		if time.Now().After(deadline) {
 			held := r.d.claim(c.token)
-			t.Fatalf("%s's tester was told nothing within %s: its claim is %s, and the daemon launched it %v",
-				r.key, stepRecordsWait, held.State, r.launchesOfRole(claim.RoleTester))
+			t.Fatalf("%s's tester took nothing within %s: its claim is %s, the daemon launched it %v, and its last take: %v",
+				r.key, stepRecordsWait, held.State, r.launchesOfRole(claim.RoleTester), err)
 		}
 	}
 	// A resumed session is first told why its process ended, and the check's task follows.
-	if lead := "Production check of " + r.key + ":"; !strings.HasPrefix(prompt.Message, lead) && !strings.Contains(prompt.Message, "\n\n"+lead) {
-		t.Fatalf("%s's tester was told %q, want the first look of the production check", r.key, prompt.Message)
+	if lead := "Production check of " + r.key + ":"; !strings.HasPrefix(taken.Text, lead) && !strings.Contains(taken.Text, "\n\n"+lead) {
+		t.Fatalf("%s's tester took %q, want the first look of the production check", r.key, taken.Text)
 	}
 	c.answer()
-	c.send(shimwire.AgentStart{DeliveryID: prompt.DeliveryID})
+	c.driver.mustStartTurn(t)
 	c.waitState(supervise.StateWorking)
-	_, value, ok := strings.Cut(prompt.Message, "check_opened_at `")
+	_, value, ok := strings.Cut(taken.Text, "check_opened_at `")
 	if !ok {
-		t.Fatalf("the production check task gives no check identity: %s", prompt.Message)
+		t.Fatalf("the production check task gives no check identity: %s", taken.Text)
 	}
 	value, _, ok = strings.Cut(value, "`")
 	if !ok {
@@ -151,7 +154,7 @@ func (r *ownerStepsRig) reattach(c *stepClaimant) {
 	c.mu.Unlock()
 	sh := dialShimUntilAcked(t, address, launch.BootToken)
 	c.mu.Lock()
-	c.sh, c.bootToken, c.open, c.inTurn = sh, launch.BootToken, nil, false
+	c.sh, c.bootToken = sh, launch.BootToken
 	c.mu.Unlock()
 	status, body := r.d.request(http.MethodPost, "/legion/v1/claims/register", claim.RegisterRequest{
 		BootToken: launch.BootToken, SessionID: c.session, OmpSessionFile: file, AgentID: c.session, PluginContract: api.DaemonAPIVersion(),
@@ -164,6 +167,10 @@ func (r *ownerStepsRig) reattach(c *stepClaimant) {
 		t.Fatalf("decode the registration of %s: %v", c.token, err)
 	}
 	c.secret = registered.Secret
+	// The new pane's plugin takes the claim's tasks under the registration it just made.
+	c.driver = newTakeDriver(func(path string, body, answer any) error { return c.r.d.post(path, body, answer) }, c.write,
+		claim.AgentCaller{ClaimToken: c.token, SessionID: c.session, Secret: c.secret}, launch.Generation)
+	c.driver.started = func() (bool, error) { return c.r.d.turnRead(c.token)() }
 	d := r.d
 	sh.serve(func() { c.serve(sh, d) })
 	if status, body := r.d.request(http.MethodPost, "/legion/v1/claims/ready", claim.ReadyRequest{

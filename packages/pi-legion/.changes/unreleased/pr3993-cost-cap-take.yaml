@@ -1,0 +1,14 @@
+kind: Fixed
+body: |-
+  If Oh My Pi drops a take at the session's cost cap, the plugin reports `cost_cap` and the task
+  number without waiting for a turn. The plugin waits for the report's answer before it asks
+  for another take. The daemon keeps the task on the provider-error ladder.
+
+  At the Oh My Pi pin in `34021711`, an extension gets no signal when the gate stops a run.
+  The gate emits an aborted message only if the turn is open (`agent-loop.ts:1541`).
+  The preceding step closed the turn (`agent-loop.ts:1904`). The plugin reports the run as it ends.
+  Main's #5505 uses the RPC prompt result to report this stop. When Oh My Pi exposes the stop
+  to extensions, only the plugin needs to change. The daemon already accepts `cost_cap`.
+time: 2026-11-26T21:00:00Z
+custom:
+  Issue: pr3993

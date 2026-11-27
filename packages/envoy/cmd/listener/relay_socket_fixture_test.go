@@ -190,6 +190,18 @@ func newRelaySocketRig(t *testing.T, options ...relaySocketRigOption) *relaySock
 		proxy = testnats.StartProxy(t, url)
 		url = proxy.URL()
 	}
+	rig := newRelaySocketReplica(t, url, config)
+	rig.owner, rig.proxy = owner, proxy
+	return rig
+}
+
+// newRelaySocketReplica is the socket's replica of an edge deployment alone, over the server url
+// names, built as config says: its /v1 behind apiAuth with broker tokens on, on a NATS connection
+// of its own, the broker the stub that answers what each row says each token is. The rig it
+// answers holds no owner: whatever publishes on a session's relay subject on that server is what
+// the session's socket is offered.
+func newRelaySocketReplica(t *testing.T, url string, config relaySocketRigConfig) *relaySocketRig {
+	t.Helper()
 	client, err := bus.Connect([]string{url})
 	if err != nil {
 		t.Fatalf("connect the socket's replica: %v", err)
@@ -254,8 +266,8 @@ func newRelaySocketRig(t *testing.T, options ...relaySocketRigOption) *relaySock
 	t.Cleanup(server.Close)
 	t.Cleanup(sockets.stop)
 	return &relaySocketRig{
-		owner: owner, client: client, sockets: sockets, server: server,
-		broker: broker, caller: ciphertokentest.NewCaller(t), clock: clock, logs: logs, proxy: proxy,
+		client: client, sockets: sockets, server: server,
+		broker: broker, caller: ciphertokentest.NewCaller(t), clock: clock, logs: logs,
 	}
 }
 

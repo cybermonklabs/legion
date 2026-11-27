@@ -1,7 +1,7 @@
 kind: Fixed
 body: |-
     The Legion claim reads a 408 and a 429 from the Legion daemon as it reads a 5xx: `claims/ready`
-    is sent again, at boot and after a role regain, and a `claims/register` answered either is
+    is sent again at boot, and a `claims/register` answered either is
     logged and rejects without stopping the pane, which the daemon's registration deadline then
     covers. The daemon writes neither, so only a proxy between the session and the daemon sends
     one. Between its three attempts the ready waits what the answer's `Retry-After` asks for, at

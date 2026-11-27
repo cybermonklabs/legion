@@ -10,7 +10,9 @@ import (
 
 // ErrSuspendHeld answers a suspension that arrived while the claim's agent is in a turn: the
 // machine holds it and suspends the claim itself (holdSuspension). It is not a refusal. A caller
-// that keeps the request durably asks again, and the claim answers nil once it is suspended.
+// that keeps the request durably asks again, and the claim answers nil once it is suspended. It
+// answers the operator's stop held for the report of the claim's take's turn too (holdStop), which
+// the stop route answers 202 as it answers a held suspension.
 var ErrSuspendHeld = wait.New("the suspension is held for the agent's turn to end")
 
 // ErrPauseEnded answers a project pause's stop (RequestSuspend.Pause) that reaches its claim once
@@ -23,13 +25,30 @@ var ErrPauseEnded = errors.New("the pause this stop names has ended, so nothing 
 
 // suspend stops the process and keeps the session. The daemon's own suspension ends the claim's
 // phase (the workflow suspends a worker only when its issue closes or its run is over), so a task
-// queued for a phase and still pending unconfirmed (acknowledged and then refused, or lost to the
-// transport) is retired with it (settle): the next resume is started with its new phase's task,
-// never handed the finished one's. A task of no phase — an operator's own, an architect's — is
-// not the workflow's to end, and neither is the phase task of a claim whose idle pod was released:
-// that suspension ends no phase, and the wake that brings the pod back resumes the claim with the
-// task it kept (SuspendSource.RetiresPhaseTask).
+// queued for a phase and still pending is dropped with it, its value deleted (settle): the next
+// resume is started with its new phase's task, never handed the finished one's. A task of no
+// phase — an operator's own, an architect's — is not the workflow's to end, and neither is the
+// phase task of a claim whose idle pod was released: that suspension ends no phase, and the wake
+// that brings the pod back resumes the claim with the task it kept
+// (SuspendSource.RetiresPhaseTask).
+//
+// A claim idle while work waits for the report of its take's turn (reportwait.go, reportHolds) is
+// that wait's: the first suspension to reach it — an operator's, a daemon row's, a pause's stop,
+// or the one its row asks again after a restart forgot the hold the first ask made — is held for
+// the report as one that met the turn's end is (holdForReport), and one asked again while that
+// hold stands — the daemon's row or stopElsewhere asking again, a pause's stop row asking again,
+// an operator's second suspend — joins it as one asked during the turn does (holdSuspension); each
+// is answered ErrSuspendHeld. Stopped here, the process would take with it the report the wait is
+// for, and settle would take back as a cut turn a task whose turn ran whole; or, over a take a
+// report put back with work already waiting behind it, the stop would cut off the take's own turn
+// whose start may be on its way. The report's finish runs the hold (settleThenAfterTurn), or the
+// wait's bound, or its own deadline (reportBoundOver, turnStartBoundOver, suspendAtTimeout). A
+// pause's stop then reads the task the report left, and owes the role a launch only for a task it
+// holds (putStop, holdsTask).
 func suspend(m *Machine, ctx context.Context, ev Event) error {
+	if m.reportHolds() {
+		return m.holdForReport(ctx, ev)
+	}
 	request, err := suspendRequest(m, ev)
 	if err != nil {
 		return err
@@ -37,8 +56,24 @@ func suspend(m *Machine, ctx context.Context, ev Event) error {
 	return m.suspendNow(ctx, request, false)
 }
 
-// holdSuspension is a suspension that arrives while the agent is in a turn, and this is the one
-// statement of what a held suspension (Machine.held) does.
+// holdForReport holds a suspension that reaches an idle claim whose work waits for its take's
+// report (suspend, reportHolds), as turnEnded holds one asked during the take's turn: the hold is
+// made, or the request joins the hold already made (holdSuspension), and it waits behind the wait
+// for that report (reportwait.go). A suspension holdSuspension decides where it arrives, or
+// refuses, holds nothing.
+func (m *Machine) holdForReport(ctx context.Context, ev Event) error {
+	joined := m.held != nil
+	err := holdSuspension(m, ctx, ev)
+	if !joined && m.held != nil && errors.Is(err, ErrSuspendHeld) {
+		m.logSuspensionWaits()
+	}
+	return err
+}
+
+// holdSuspension is a suspension that arrives while the agent is in a turn, or while work waits
+// for the report of the claim's take's turn, a held suspension or none yet (suspend,
+// holdForReport, reportwait.go), and this is the one statement of what a held suspension
+// (Machine.held) does.
 //
 // A worker's issue can close, or an operator suspend it, while it is in a turn: the production
 // check's sign-off, say, arriving while the implementer's report of the check is still a tool call
@@ -47,18 +82,25 @@ func suspend(m *Machine, ctx context.Context, ev Event) error {
 // from that transcript holds a report with no answer. So the suspension is held:
 //
 //   - It runs when the turn ends (turnEnded), or at its deadline if the turn has not ended by then
-//     (TimerSuspend, suspendAtTimeout). The operator's suspension and the controller's each have
-//     one at the stop timeout from its arrival: an operator stopping the process — to drain the
-//     daemon, say — needs the stop bounded. The daemon's own suspension has none unless it names
-//     one (RequestSuspend.Deadline), and waits for the turn however long it takes: the tree's
-//     linger close or the child's close as done ends the process otherwise. Asked again
-//     meanwhile, it is the same hold, under one rule: a request can only move the deadline
-//     earlier, and one that holds (SuspendSource.Holds: an operator's or the controller's) also
-//     takes over a hold it outranks (suspensionRank), from then on its own. Until the deadline the
-//     agent keeps its process and its capability.
+//     (TimerSuspend, suspendAtTimeout). The turn of a task whose plugin names its number is over
+//     for the hold once its report settles the task, so the hold waits behind the wait for that
+//     report (reportwait.go) past the end frame and runs at its finish (reportedTask,
+//     settleThenAfterTurn), the claim idle meanwhile, and the earlier of that wait's bound and the
+//     hold's deadline bounding it: stopped at the end frame, the process would take with it the
+//     report that finishes the task, and settle would take back as a cut turn a task whose turn ran
+//     whole.
+//     The operator's suspension and the controller's each have one at the stop timeout from its
+//     arrival: an operator stopping the process — to drain the daemon, say — needs the stop
+//     bounded. The daemon's own suspension has none unless it names one
+//     (RequestSuspend.Deadline), and waits for the turn however long it takes: the tree's linger
+//     close or the child's close as done ends the process otherwise. Asked again meanwhile, it is
+//     the same hold, under one rule: a request can only move the deadline earlier, and one that
+//     holds (SuspendSource.Holds: an operator's or the controller's) also takes over a hold it
+//     outranks (suspensionRank), from then on its own. Until the deadline the agent keeps its
+//     process and its capability.
 //   - A stop the runtime refuses keeps it held and tries again every probe interval (suspendHeld),
 //     so the deadline bounds the wait only while the runtime can stop the process. A claim
-//     whose turn ended stays idle meanwhile and is handed nothing (sendPending); a turn it starts
+//     whose turn ended stays idle meanwhile and a take of it is refused (claimHold); a turn it starts
 //     anyway is cut off at the next try.
 //   - A process that dies first, or is found at a stale address (repoint), leaves the claim
 //     suspended, charged nothing (endHeld). A prompt retirement meanwhile is the held stop itself
@@ -114,10 +156,32 @@ func holdSuspension(m *Machine, ctx context.Context, ev Event) error {
 	// The flag and the deadline are the asker's own: suspendRequest hands a request weaker than a
 	// held operator's or controller's suspension that hold's own source, which must not give the
 	// request the stop timeout too, nor hold a request whose asker reports a refusal as nothing
-	// having happened.
+	// having happened. The reason names what the hold would have waited for: the turn running, the
+	// compaction, or the phase of the wait for the take's report that holdForReport met
+	// (reportWaitNow), the phase first, and then the work that waits in it. Behind a put-back take
+	// and behind a refused finish that work is a held suspension or else the stale-plugin relaunch,
+	// since only work already waiting goes on waiting there (reportHolds).
 	if ev.(RequestSuspend).NeverHold {
-		return &RefusedError{State: m.claim.State, Request: "suspend",
-			Reason: "the claim's agent is in a turn, and this suspension is not one that is held for the turn's end"}
+		waiting := "a relaunch"
+		if m.held != nil {
+			waiting = "a held suspension"
+		}
+		var reason string
+		switch phase := m.reportWaitNow(); {
+		case phase == waitTurn:
+			reason = "the claim's agent is in a turn, and this suspension is not one that is held for the turn's end"
+		case m.busy():
+			reason = "the claim's session is being compacted, and this suspension is not one that is held for the compaction's end"
+		case phase == waitTake:
+			reason = "the claim's take awaits its turn again with " + waiting + " waiting behind it, and this suspension is not one that is held for that turn"
+		case phase == waitFinish:
+			reason = waiting + " waits for the finish of the report of the claim's last turn, which the store refused, and this suspension is not one that is held for that finish"
+		case m.held != nil:
+			reason = "a held suspension waits for the report of the claim's last turn, and this suspension is not one that is held for it"
+		default:
+			reason = "the turn of the claim's task ended with its report still to come, and this suspension is not one that is held for that report"
+		}
+		return &RefusedError{State: m.claim.State, Request: "suspend", Reason: reason}
 	}
 	deadline := ev.(RequestSuspend).Deadline
 	if ev.(RequestSuspend).By.Holds() {
@@ -136,6 +200,7 @@ func holdSuspension(m *Machine, ctx context.Context, ev Event) error {
 			"heldPause", m.held.Pause, "held", m.held.Reason)
 		m.held.Pause, m.held.Reason = request.Pause, request.Reason
 	}
+	m.dropOutrankedStop()
 	// The held deadline only moves earlier, and the timer is re-armed only when that deadline comes
 	// before the one already armed: a stop the runtime refused is retried at the probe interval
 	// (suspendHeld), and a deadline later than that retry must not push it back.
@@ -315,18 +380,59 @@ func suspensionRank(source SuspendSource) int {
 // the workspace, the issue's branch and the session are kept either way. The stop records the turn
 // it cuts off, and the task it took back from that turn, as ended by the suspension (suspendNow,
 // Machine.cutTurnOf, recordEnd).
+//
+// A claim the deadline finds with no turn running, the hold waiting for the report of its take's
+// turn (reportwait.go, reportWaitNow), has its task taken back the same way before the stop, by
+// that wait's one take-back (reportMissed), with the note of a cut turn: no report came, the stop
+// leaves no process to send one, and only that report finishes such a task, as for a process that
+// dies before its report. Over a take a report put back, which awaits its turn, nothing is taken
+// back before the stop: the stop's let-go takes the take back (suspended, takeBackUnstarted), with
+// no note where the claim's connection showed every frame of its turns, since no turn of it ran,
+// and as a cut turn where it did not, since that turn may have run unseen (turnMayHaveRunUnseen).
+// That holds for a claim whose session is being compacted with no turn started under the
+// compaction too: the compaction is no turn to cut off (inTurn), and the take is where the wait's
+// phase says. Any other take of such a claim is settled before the stop as a let-go settles it
+// (interrupted): finished, where its turn ran whole and its end frame, or a report whose finish the
+// store refused, finishes it.
+//
+// Over a report whose finish the store refused (waitFinish) with no compaction running, nothing is
+// settled before the stop either: the stop runs, and the task is finished by that report after it,
+// in the suspension's own write for a take still awaiting its turn (suspended, takeBackUnstarted)
+// and by the settle of the suspended claim for one whose turn ran (settle, overTurnFinish). With
+// neither a turn, a compaction nor a take the wait is on, the stop just runs: an earlier one the
+// runtime refused, tried again at the probe interval (suspendHeld), or a hold nothing is left to
+// wait for.
 func suspendAtTimeout(m *Machine, ctx context.Context, _ Event) error {
 	if m.held == nil {
 		return nil
 	}
-	if m.claim.State == StateWorking {
+	var err error
+	switch phase := m.reportWaitNow(); {
+	case phase == waitTurn:
 		m.log.Warn("supervise: the agent's turn has not ended; suspending it mid-turn", "by", m.held.By, "deadline", m.held.Deadline)
-		if err := m.interrupted(ctx, "the held suspension's deadline ended the task's turn", ordinaryEnd); err != nil {
-			m.arm(TimerSuspend, m.deps.Timeouts.Probe, "")
-			return fmt.Errorf("take back the task of %s before its forced stop: %w", m.claim.Token, err)
+		if err = m.interrupted(ctx, "the held suspension's deadline ended the task's turn", ordinaryEnd); err != nil {
+			err = fmt.Errorf("take back the task of %s before its forced stop: %w", m.claim.Token, err)
 		}
-	} else {
-		m.log.Info("supervise: trying the held suspension's stop again")
+	case phase == waitReport:
+		err = m.reportMissed(ctx, "the held suspension's deadline")
+	case phase == waitTake:
+		m.log.Info("supervise: the held suspension's deadline came while the take a report put back awaits its turn; the agent is stopped",
+			"task", pendingNumber(m.claim.Pending), "by", m.held.By, "deadline", m.held.Deadline)
+	case m.busy():
+		m.log.Warn("supervise: the claim's compaction has not ended; suspending it mid-compaction", "by", m.held.By, "deadline", m.held.Deadline)
+		if err = m.interrupted(ctx, "the held suspension's deadline came during the compaction", ordinaryEnd); err != nil {
+			err = fmt.Errorf("settle the task of %s before its forced stop: %w", m.claim.Token, err)
+		}
+	case phase == waitFinish:
+		m.log.Info("supervise: the held suspension's stop runs over a take whose report came and whose finish the store refused; that report finishes the task once the agent is stopped",
+			"task", pendingNumber(m.claim.Pending), "by", m.held.By, "deadline", m.held.Deadline)
+	default:
+		m.log.Info("supervise: the held suspension's stop runs, with no turn, compaction or report of a take left for it to wait for",
+			"by", m.held.By, "deadline", m.held.Deadline)
+	}
+	if err != nil {
+		m.arm(TimerSuspend, m.deps.Timeouts.Probe, "")
+		return err
 	}
 	return m.suspendHeld(ctx)
 }
@@ -455,16 +561,30 @@ func (m *Machine) suspendedFor(ctx context.Context, request RequestSuspend, laun
 // all the same (endHeld, exit): what it ended is recorded as a suspension by by, as the stop that
 // did land records it (endSuspended, letGo), and the record goes to the store with this write.
 //
+// A take of the claim's task whose turn has not started is taken back in this same write
+// (takeBackUnstarted), under its own number, as a retirement takes one back: no turn the daemon
+// saw ran its text, and one whose turn may have run unseen goes back as a cut turn
+// (turnMayHaveRunUnseen). So the resumed process's take of the number is decided afresh, behind the
+// records that tell then — the one this let-go wrote, joined with whatever the take had told
+// (recordEnd, joined) — and tells them once, rather than being answered with the text the stopped
+// process was given, which carries none of what this let-go recorded and marks nothing told. A
+// project pause's stop carries the delivery so taken back in its stop transaction, beside the
+// claim (persistStop).
+//
 // A launch its issue pod's gate holds leaves the gate as this suspension's at the end of the
 // decision, so the start the gate grants next names a suspension as what ended its wait
 // (endPodPark, podSuspension).
 func (m *Machine) suspended(ctx context.Context, by SuspendSource, stop *PauseStop) error {
 	m.letGo(ctx, endSuspended(by))
 	m.claim.State, m.claim.SuspendedBy = StateSuspended, by
-	if stop != nil {
-		return m.persistStop(ctx, *stop)
+	tookBack, err := m.takeBackUnstarted(ctx, takenBackSuspended)
+	switch {
+	case stop != nil:
+		return errors.Join(err, m.persistStop(ctx, *stop, tookBack))
+	case tookBack:
+		return m.putClaimAndPendingOwed(ctx)
 	}
-	return m.persist(ctx)
+	return errors.Join(err, m.persist(ctx))
 }
 
 // suspendHeld runs the held suspension's stop. One the runtime refuses stays held and is tried
@@ -487,17 +607,55 @@ func (m *Machine) suspendHeld(ctx context.Context) error {
 }
 
 // suspendHeldAtEnd is suspendHeld at the end of the turn, or of the compaction, the claim is
-// still stored working for (turnEnded, compactEnded): nothing runs any more, so the stop cuts
-// off no turn, and the let-go it makes reads the claim in back, the state that end gives the
-// claim back in, for its record (Machine.heldStopBack, endState, recordEnd). Read as the working it
-// is still stored in, the record would tell the next process that the turn it was in was
-// interrupted, of a turn that had ended or a compaction that ran none. The claim's own state is
-// left alone, as is everything else the stop decides: the end sets it once the hold's outcome is
-// known, and the mark goes when the stop returns, landed or refused.
+// still stored working for (runHeldAtEnd, for turnEnded and compactEnded): nothing runs any more,
+// so the stop cuts off no turn, and the let-go it makes reads the claim in back, the state that
+// end gives the claim back in, for its record (Machine.heldStopBack, endState, recordEnd). Read as
+// the working it is still stored in, the record would tell the next process that the turn it was
+// in was interrupted, of a turn that had ended or a compaction that ran none. The claim's own
+// state is left alone, as is everything else the stop decides: the end sets it once the hold's
+// outcome is known, and the mark goes when the stop returns, landed or refused.
 func (m *Machine) suspendHeldAtEnd(ctx context.Context, back ClaimState) error {
 	m.heldStopBack = back
 	defer func() { m.heldStopBack = "" }()
 	return m.suspendHeld(ctx)
+}
+
+// runHeldAtEnd is the suspension held over the claim at the end of the turn, or of the compaction,
+// the claim is still stored working for (turnEnded, compactEnded); back is the state that end gives
+// the claim back in.
+//
+// Over a take whose report is still to come — its turn over, or the take put back by a report while
+// the turn ran — the hold waits behind the wait for that report (reportwait.go), whose finish runs
+// it (reportedTask, settleThenAfterTurn), or behind that wait's bound or its own deadline: the
+// claim goes back in back, holding it. The end reads the take's phase (takePhase, reportToCome),
+// since the claim it ends is still stored working.
+//
+// Otherwise the stop runs now (suspendHeldAtEnd). Where the turn was a task's, the settle that
+// follows the stop finishes the task, by its end frame or by the report whose finish the store
+// refused (overTurnFinish): the claim is suspended by then, where no end-frame bound watches a
+// task (settle). A stop that landed let the process go, and only its write can have failed, the
+// claim suspended in memory (suspended). A stop the runtime refused keeps the process and the hold,
+// which is tried again at the probe interval (suspendHeld), and the claim goes back in back over a
+// task whose turn is over: its report finishes it, or the end-frame bound where that bound does — a
+// plugin that names no number, or a report's finish the store refused (armEndFrameBound). armFinish
+// arms that bound as the same end arms it with nothing held (endNothingHeld, through backAtEnd):
+// whole at a turn's end (turnEnded passes armEndFrameBound), and at a compaction's only where none
+// stands (compactEnded passes armEndFrameBoundUnlessArmed). A refused stop changes nothing of the
+// take, so whether its turn ran is read after it as before it.
+func (m *Machine) runHeldAtEnd(ctx context.Context, back ClaimState, armFinish func(id string)) error {
+	if m.takePhase().reportToCome() {
+		m.claim.State = back
+		m.logSuspensionWaits()
+		return m.persist(ctx)
+	}
+	err := m.suspendHeldAtEnd(ctx, back)
+	if err == nil || m.held == nil {
+		return err
+	}
+	if id, ran := m.backAtEnd(back); ran {
+		armFinish(id)
+	}
+	return errors.Join(err, m.persist(ctx))
 }
 
 // dropHeld ends the held suspension without running it.
@@ -543,16 +701,16 @@ const (
 // what a death with a suspension already held does (died, endHeld), for a suspension that
 // arrives after the death rather than before it.
 //
-// The task of the dead turn goes back to waiting first, unconfirmed and under a new id, exactly
-// as a death in a turn takes it back (interrupted): the turn ran, the agent read the task, and
-// no process finished it. It carries the note of a pod that ran out of memory where the report
-// that found the process gone said so (goneOutOfMemory), and the claim keeps that report's
-// account of the death for the operator's listing and a failed claim's notices (goneCause,
-// Claim.LastDeathCause), as died keeps the death it judges. A take-back the store will not write
-// stops everything — nothing is stopped, nothing is sent and the claim is left as it stands, its
-// last death's cause put back, as died leaves it — so the caller's next request takes it back
-// then, rather than this leaving a suspended claim holding a task settle would retire as a
-// finished turn.
+// The task of the dead turn goes back to waiting first, unconfirmed and under its own number,
+// exactly as a death in a turn takes it back (interrupted): the turn ran, the worker took the
+// task, and no process finished it. Its next accepted take carries the note of a pod that ran out
+// of memory where the report that found the process gone said so (goneOutOfMemory), and the
+// claim keeps that report's account of the death for the operator's listing and a failed claim's
+// notices (goneCause, Claim.LastDeathCause), as died keeps the death it judges. A take-back the
+// store will not write stops everything — nothing is stopped, nothing is sent and the claim is
+// left as it stands, its last death's cause put back, as died leaves it — so the caller's next
+// request takes it back then, rather than this leaving a suspended claim holding a task settle
+// would retire as a finished turn.
 //
 // The clean stop of the dead process's Envoy session is sent once that write has landed, and
 // before the process is let go (sessionGone), so it goes whether or not the runtime's stop of a
@@ -568,11 +726,11 @@ const (
 // What the dead process ended is recorded as its death once the take-back has landed (recordEnd,
 // endDied, under the same goneCause): the take-back's own mark is what tells the record that the
 // task was taken from the dead turn (Machine.cutTurnOf), and the stop's let-go that follows finds
-// this launch's record standing and records no suspension in its place. So the task is sent again
-// saying the process died, which is what the sentence in front of it reads from that record
-// (interruptedTask, relaunchSentence), rather than saying a suspension ended it. Where died judged
-// the death, its record stands and this adds none. A take-back that fails records nothing, as it
-// changes nothing else.
+// this launch's record standing and records no suspension in its place. So the task's next
+// accepted take says the process died, which is what the sentence in front of it reads from that
+// record (interruptedTask, relaunchSentence), rather than saying a suspension ended it. Where died
+// judged the death, its record stands and this adds none. A take-back that fails records nothing,
+// as it changes nothing else.
 //
 // Nothing is charged, as endHeld charges nothing. Where died judged the death it was charged
 // there, or found to have nothing to charge (Claim.DeathCharged). Where the read is the first to

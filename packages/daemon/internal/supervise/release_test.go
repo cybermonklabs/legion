@@ -32,7 +32,7 @@ func TestAStopBetweenAReleasedLaunchsAdmissionAndItsLaunchLeavesItQueuedAtItsGen
 		pending *Delivery
 	}{
 		{name: "a claim holding no task"},
-		{name: "a claim holding a task whose turn is over", pending: &Delivery{ID: "the-task", Task: "the task", Generation: 3, ConfirmedAt: epoch}},
+		{name: "a claim holding a task whose turn is over", pending: &Delivery{ID: "the-task", Task: "the task", Generation: 3, ConfirmedAt: epoch, TurnStarted: true}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newBareHarness(t)

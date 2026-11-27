@@ -189,8 +189,8 @@ func TestAnUpdateRoundKeepsAPodWhoseDiskHoldsUnpushedWork(t *testing.T) {
 		rig.handle(claim.RoleArchitect, supervise.RequestDeliver{Claim: rig.tokens[claim.RoleArchitect], ID: roundHeldTask,
 			Task: "Carry the design on.", Generation: 1})
 		rig.settle(claim.RoleArchitect)
-		if sent := promptsOf(rig.workers[claim.RoleArchitect], roundHeldTask); len(sent) != 0 {
-			t.Fatalf("the architect was sent %+v while it stood answered in the round, want the task held", sent)
+		if answer := rig.take(claim.RoleArchitect); answer.Outcome != supervise.TakeOutcomeRefused || answer.Hold != supervise.HoldUpdateRound {
+			t.Fatalf("the architect's take while it stood answered in the round = %+v, want it refused by %q: the round holds the task", answer, supervise.HoldUpdateRound)
 		}
 
 		rig.roundEndsKept("over a workspace that holds an unpushed commit", live...)
@@ -198,8 +198,8 @@ func TestAnUpdateRoundKeepsAPodWhoseDiskHoldsUnpushedWork(t *testing.T) {
 			t.Fatalf("the round read the workspace %d times, want once before its replacement", reads)
 		}
 		rig.settle(claim.RoleArchitect)
-		if sent := promptsOf(rig.workers[claim.RoleArchitect], roundHeldTask); len(sent) == 0 {
-			t.Fatalf("the architect was sent %+v once the round ended, want the task the round held", rig.workers[claim.RoleArchitect].Prompts())
+		if answer := rig.take(claim.RoleArchitect); answer.Outcome != supervise.TakeOutcomeAccepted || !strings.HasSuffix(answer.Text, "Carry the design on.") {
+			t.Fatalf("the architect's take once the round ended = %+v, want the task the round held accepted", answer)
 		}
 		if reason, pod := rig.keptReason(); reason != pods.DeclineUnpushedWork || pod != podUpdatePod {
 			t.Fatalf("the decline row reads %q of pod %q, want unpushed_work of the round's pod %s", reason, pod, podUpdatePod)

@@ -1,0 +1,7 @@
+kind: Fixed
+body: |-
+  A timeout now counts wherever it sits in a failure's error chain, in either shape net/http
+  gives a read that timed out. So the delivery reconcile asks GitHub again for a list or search
+  page whose read timed out, a send to the Envoy listener that timed out after its request was
+  written is reported as a receipt timeout, and the agent-secrets client, the broker's mint calls
+  and the redacted URL errors name such a failure as a timeout.

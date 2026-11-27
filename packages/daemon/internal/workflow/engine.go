@@ -144,9 +144,20 @@ type Config struct {
 	// line, or a review round waiting on GitHub), named
 	// all at once, so that one push makes one batch of reads of its base rather than one read of
 	// each pull request (workflowRuntime.queueBaseMergeStates, GraphQL queries of a few pull
-	// requests each, asked for by number). issues is
-	// never empty. Nil asks for none, as ReadMergeState's nil does.
-	ReadBaseMergeStates func(repo, base string, issues []string)
+	// requests each, asked for by number). reads is never empty, one entry for each issue in the
+	// order the push's walk met them, each saying whether its issue is owed one read rather than a
+	// ladder of reads (BaseRead.Once). Nil asks for none, as ReadMergeState's nil does.
+	ReadBaseMergeStates func(repo, base string, reads []BaseRead)
+	// MergeForwardEnded is told, on the commit of a fact that may leave the merge of issue's head
+	// owed to no role any more - the merge forward landed, a move left its open ask owed to nobody,
+	// or the ask was cleared (mergeForwardEnds) - that the take hold the owed merge put on every
+	// take of the issue that would adopt the working copy may have ended (MergeForwardOwed). The
+	// daemon posts each claim of the issue the event a turn's end posts (supervise.IssueTurnEnded,
+	// which carries no fact), so a take that hold refused is offered again at once
+	// (workflowRuntime.mergeForwardEnded). Nil tells none, which leaves the supervision sweep's
+	// offer of a take refused at its latest revision as the hold's only end: the API-only daemon,
+	// and a test that supervises nothing.
+	MergeForwardEnded func(issue string)
 	// HoldCatchUp is told the outbox row of a catch-up the engine wrote held, once the fact that
 	// wrote it has committed (claimReady, for an intake.ClaimReady the outbox's start row marked
 	// paced): the daemon joins that row to its wake pacing's queue, where it waits its turn with
@@ -2014,12 +2025,12 @@ const (
 // of the role with it, and the launcher reports that generation's exit. The daemon reads that as
 // the role's process gone, as it reads every exit a role's process makes on its own: it takes
 // back the task the turn was running, charges one launch failure, and relaunches the same
-// session, which is sent that task again, or fails the claim where the launch failures have
+// session, which takes that task again, or fails the claim where the launch failures have
 // reached their limit (supervise's died, interrupted, relaunchAfterFailure). A helper of the
 // agent's may end alone, which is why the note says what follows only of the agent.
 const kernelProtectedKillEnd = "It was one of the processes that run your session, not a command you ran. " +
 	"If it was your agent, your turn ended with it, and so did every other process of your role. " +
-	"The daemon then starts the same session again and sends again any task that the turn was running. " +
+	"The daemon then starts the same session again, and the session takes again any task that the turn was running. " +
 	"It counts each such exit of a role's process as a failed launch, and at the limit of failed launches it fails your claim instead. "
 
 // memoryGuardNote is what a role reads when the memory guard ended one of its processes: which

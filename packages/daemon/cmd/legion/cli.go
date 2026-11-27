@@ -50,6 +50,7 @@ func newRoot(stdout, stderr io.Writer, ws workspaceProcess) *cobra.Command {
 		newStartCommand(own),
 		newStopCommand(stdout, own),
 		newStateCommand(stdout, own),
+		newTaskCostCommand(stdout, own),
 		newLegionsCommand(stdout, own),
 		newStatusCommand(stdout, own),
 		group(&cobra.Command{Use: "issue", Short: "the operator's hand on an issue's Dispatch status"},

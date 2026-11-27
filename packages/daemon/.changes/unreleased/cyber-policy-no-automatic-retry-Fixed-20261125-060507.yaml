@@ -1,12 +1,13 @@
 kind: Fixed
 body: |-
     The agent of a claim failed on OpenAI's cyber-policy refusal is launched again only by a
-    decision, and always in a new session. The plugin's report of a turn that ran no prompt of the
-    daemon's (a phase reminder, an Envoy message, a background job's result) now carries
-    `code: "cyber_policy"` where Oh My Pi's own classifier marks the refusal, and the daemon fails
-    the claim on it whatever the status, as it does a prompt's `cyber_policy` result; before, such
-    a turn failed nothing, and the claim's next prompt ended Oh My Pi's hold and sent the refused
-    content to OpenAI again. The controller keeper no longer retries a controller failed so, and no
+    decision, and always in a new session. The plugin's report of every refused turn — a take's
+    turn, and a turn that was not the take's (a phase reminder, an Envoy message, a background
+    job's result) alike — now carries `code: "cyber_policy"` where Oh My Pi's own classifier marks
+    the refusal, and the daemon fails the claim on it whatever the status, taking the take's task
+    back first; before, such a turn failed nothing unless its status could not clear, and the
+    claim's next take ended Oh My Pi's hold and sent the refused content to OpenAI again. The
+    controller keeper no longer retries a controller failed so, and no
     start of the daemon's own (a role's next phase start, a child architect's next phase start, the
     starts a re-admission gives the tree's members, a production check's look) launches such an
     agent again: each finishes without acting and logs an error naming `legion claims retry
@@ -20,8 +21,8 @@ body: |-
     session, with or without `--fresh-session`, and never resumes the refused one, since the new
     launch's first task is input from outside the session too. A start row a daemon before this
     release queued records no decision, so a held claim's start from it is refused as the daemon's
-    own are. One send can still go before the plugin's report lands, since the report and the
-    turn's end reach the daemon in no fixed order; that prompt's own result then fails the claim.
+    own are. One take can still start a turn before the plugin's report lands, since the plugin's
+    take hears the turn's end before that report goes; that take's own report then fails the claim.
     Daemon API contract entry 20261125174608 (cyber-policy). After a rollback, a held claim reads
     as `provider_error` and the older daemon does not hold it; the hold resumes on roll-forward
     (store migration 20261125223008_claim_held_for). Before a rollback, with every daemon of the

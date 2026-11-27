@@ -2,7 +2,6 @@ package supervise
 
 import (
 	gobuild "go/build"
-	"go/constant"
 	gotoken "go/token"
 	"go/types"
 	"os"
@@ -15,19 +14,16 @@ import (
 // chokepoint: no type keeps a site from reading an agent's words. It finds no match in the four
 // packages it reads today, and that shows nothing of whether it would find one. So this test
 // plants each shape the negative control of c-the-outcome-is-not-a-string names, one per row, in a
-// copy of one of the four packages, and runs the same analysis over the copy (refusalMatches and
-// busyHeld): a row passes only where the analysis names the planted file, so a source or a matcher
-// taken out of the analysis fails the row that plants it, and so does a package taken out of the
-// ones the source test reads (outcomePaths). Each clean row plants the reads of the words the
-// analysis lets pass — asking whether there are any, logging them, comparing an outcome or an
-// error by identity, comparing the outcome a call minted from them, reading another field of a
-// struct whose one field holds them — and must report nothing anywhere in the copy, so no row
-// passes on a copy the analysis would report anyway.
+// copy of one of the four packages, and runs the same analysis over the copy (refusalMatches): a
+// row passes only where the analysis names the planted file, so a source or a matcher taken out of
+// the analysis fails the row that plants it, and so does a package taken out of the ones the
+// source test reads (outcomePaths). Each clean row plants the reads of the words the analysis lets
+// pass — asking whether there are any, logging them, comparing an outcome or an error by
+// identity, reading another field of a struct whose one field holds them — and must report
+// nothing anywhere in the copy, so no row passes on a copy the analysis would report anyway.
 func TestOutcomeSourceFindsEachPlantedShape(t *testing.T) {
 	fileset := gotoken.NewFileSet()
 	imports := outcomeImporter(t, fileset)
-	bridge := checkOutcomeSource(t, fileset, imports, claudebridgePath, outcomeDirs[claudebridgePath])
-	words := constant.StringVal(bridge.bridgeBusyWords(t).Val())
 	copies := copyOutcomeSources(t)
 	planted := func(match wordMatch) bool {
 		return filepath.Base(fileset.Position(match.at.Pos()).Filename) == plantedFile
@@ -39,19 +35,13 @@ func TestOutcomeSourceFindsEachPlantedShape(t *testing.T) {
 			}
 			pkg := plantShape(t, fileset, imports, row.path, copies[row.path], row.source)
 			if row.clean {
-				for _, match := range append(pkg.refusalMatches(t), pkg.busyHeld(t, words)...) {
+				for _, match := range pkg.refusalMatches(t) {
 					t.Errorf("%s, in %s: the analysis reports %s, where it should let the read pass", pkg.pos(match.at), match.in, match.what)
 				}
 				return
 			}
-			// One match in the planted file passes the row, so the busy words are looked for only
-			// where no match of a refusal's words is there.
 			found := pkg.refusalMatches(t)
 			at := slices.IndexFunc(found, planted)
-			if at < 0 {
-				found = pkg.busyHeld(t, words)
-				at = slices.IndexFunc(found, planted)
-			}
 			if at < 0 {
 				t.Errorf("the analysis reports nothing in %s of %s: the source test no longer finds %s", plantedFile, row.path, row.name)
 				return
@@ -105,20 +95,19 @@ func plantShape(t *testing.T, fileset *gotoken.FileSet, imports types.Importer, 
 
 // plantedShapes is each shape the negative control of c-the-outcome-is-not-a-string names, one per
 // row: a match of a refusal's text by a matcher of each of strings, bytes, slices, maps and
-// regexp; by ==, !=, each ordered comparison, a switch case and a map key; a match of a constant
-// holding the busy words; a match of a variable that ranges over a list or a map of the texts; a
-// match of a struct field the text is written into in the same function, by a literal, its
-// address, a positional literal or an assignment; a match of the result of LastRefusal(); and a
-// match of err.Error() where err is a prompt send's answer. The matchers of cmp, path,
-// path/filepath, fmt and sort follow, then a match of a text compared through a pointer to it; a
-// prompt send's err.Error() in the stream, through its call and its Prompt, and in the runtime; a
-// turn outcome's Message and its report's, which hold what LastRefusal returns; a conversion of
-// the text to a type whose underlying type is string — runtime.Outcome or a package's own —
-// compared by ==, as a map key, by a switch and by slices.Contains, and through a variable given
-// it; a package-level string written in one function and compared in another; and a clean row
-// for each of the four packages. The analysis finds each shape by one route alone — its source,
-// the range, the field, the pointer, the conversion or the package's variable it passes through,
-// if any, and its matcher, or the busy words its constant holds — so taking any of those out of
+// regexp; by ==, !=, each ordered comparison, a switch case and a map key; a match of a variable
+// that ranges over a list or a map of the texts; a match of a struct field the text is written
+// into in the same function, by a literal, its address, a positional literal or an assignment; a
+// match of the result of LastRefusal(); and a match of err.Error() where err is a send's answer
+// over the agent's connection. The matchers of cmp, path, path/filepath, fmt and sort follow, then
+// a match of a text compared through a pointer to it; a send's err.Error() in the stream, through
+// its call and its Compact, and in the runtime; a turn outcome's Message and its report's, which
+// hold what LastRefusal returns; a conversion of the text to a type whose underlying type is
+// string — runtime.Outcome or a package's own — compared by ==, as a map key, by a switch and by
+// slices.Contains, and through a variable given it; a package-level string written in one function
+// and compared in another; and a clean row for each of the four packages. The analysis finds each
+// shape by one route alone — its source, the range, the field, the pointer, the conversion or the
+// package's variable it passes through, if any, and its matcher — so taking any of those out of
 // the analysis fails that row.
 var plantedShapes = []struct {
 	name, path, source string
@@ -169,16 +158,16 @@ func plantedShape(refusal *RefusedError) bool {
 	return regexp.MustCompile("^Agent is").MatchString(refusal.RefusalReason())
 }
 `},
-	{name: "== of a late refusal's Error in supervise", path: supervisePath, source: `package supervise
+	{name: "== of a delivery's LastSendError in supervise", path: supervisePath, source: `package supervise
 
-func plantedShape(refusal StreamLateRefusal) bool {
-	return refusal.Error == "Agent is busy"
+func plantedShape(d Delivery) bool {
+	return d.LastSendError == "Agent is busy"
 }
 `},
-	{name: "!= of a prompt result's Error in stream", path: streamPath, source: `package stream
+	{name: "!= of a refusal's Reason in stream", path: streamPath, source: `package stream
 
-func plantedShape(result PromptResult) bool {
-	return result.Error != "Agent is busy"
+func plantedShape(refusal *RefusedError) bool {
+	return refusal.Reason != "Agent is busy"
 }
 `},
 	{name: "< of RefusalReason in runtime", path: runtimePath, source: `package runtime
@@ -223,16 +212,6 @@ func plantedShape(d Delivery, busy map[string]bool) bool {
 	return busy[d.LastSendError]
 }
 `},
-	{name: "a constant holding the busy words in runtime", path: runtimePath, source: `package runtime
-
-import "strings"
-
-const plantedBusy = "Agent is already processing"
-
-func plantedShape(answer string) bool {
-	return strings.HasPrefix(answer, plantedBusy)
-}
-`},
 	{name: "a variable that ranges over a list of RefusalReason in runtime", path: runtimePath, source: `package runtime
 
 func plantedShape(err error) bool {
@@ -259,8 +238,8 @@ func plantedShape(err error) bool {
 
 type plantedNote struct{ words, kind string }
 
-func plantedShape(refusal StreamLateRefusal) bool {
-	note := plantedNote{words: refusal.Error, kind: "late"}
+func plantedShape(d Delivery) bool {
+	note := plantedNote{words: d.LastSendError, kind: "adoption"}
 	return note.words == "Agent is busy"
 }
 `},
@@ -302,17 +281,18 @@ func plantedShape(c Claim) bool {
 	return strings.Contains(c.LastRefusal(), "Agent is")
 }
 `},
-	{name: "strings.HasPrefix of a prompt send's err.Error() in supervise", path: supervisePath, source: `package supervise
+	{name: "strings.HasPrefix of a send's err.Error() over a runtime.Conn in supervise", path: supervisePath, source: `package supervise
 
 import (
 	"context"
 	"strings"
+	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
 func plantedShape(ctx context.Context, conn runtime.Conn) bool {
-	err := conn.Prompt(ctx, "delivery", "task")
+	err := conn.AdoptWorkingCopy(ctx, runtime.GitIdentity{}, time.Second)
 	return err != nil && strings.HasPrefix(err.Error(), "Agent is")
 }
 `},
@@ -393,7 +373,7 @@ func plantedShape(err error) bool {
 	return *p == "Agent is busy"
 }
 `},
-	{name: "strings.HasPrefix of a prompt send's err.Error() through the stream's call in stream", path: streamPath, source: `package stream
+	{name: "strings.HasPrefix of a send's err.Error() through the stream's call in stream", path: streamPath, source: `package stream
 
 import (
 	"context"
@@ -403,28 +383,32 @@ import (
 )
 
 func (c *Conn) plantedShape(ctx context.Context) bool {
-	_, err := c.call(ctx, shimwire.Prompt{ID: "planted", DeliveryID: "delivery", Message: "task"}, "planted", "delivery")
+	_, err := c.call(ctx, shimwire.GetState{ID: "planted"}, "planted")
 	return err != nil && strings.HasPrefix(err.Error(), "Agent is")
 }
 `},
-	{name: "== of a prompt send's err.Error() through the stream's Prompt in stream", path: streamPath, source: `package stream
+	{name: "== of a send's err.Error() through the stream's Compact in stream", path: streamPath, source: `package stream
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 func plantedShape(ctx context.Context, c *Conn) bool {
-	err := c.Prompt(ctx, "delivery", "task")
+	err := c.Compact(ctx, "focus", time.Second)
 	return err != nil && err.Error() == "Agent is busy"
 }
 `},
-	{name: "strings.Contains of a runtime.Conn's Prompt err.Error() in runtime", path: runtimePath, source: `package runtime
+	{name: "strings.Contains of a runtime.Conn's Compact err.Error() in runtime", path: runtimePath, source: `package runtime
 
 import (
 	"context"
 	"strings"
+	"time"
 )
 
 func plantedShape(ctx context.Context, conn Conn) bool {
-	err := conn.Prompt(ctx, "delivery", "task")
+	err := conn.Compact(ctx, "focus", time.Second)
 	return err != nil && strings.Contains(err.Error(), "Agent is")
 }
 `},
@@ -442,18 +426,18 @@ func plantedShape(r RequestTurnOutcome) bool {
 	return strings.Contains(r.Message, "credit balance")
 }
 `},
-	{name: "== of runtime.Outcome of a late refusal's Error in supervise", path: supervisePath, source: `package supervise
+	{name: "== of runtime.Outcome of a delivery's LastSendError in supervise", path: supervisePath, source: `package supervise
 
 import "github.com/sjawhar/legion/daemon/internal/runtime"
 
-func plantedShape(refusal StreamLateRefusal) bool {
-	return runtime.Outcome(refusal.Error) == runtime.OutcomeAgentBusy
+func plantedShape(d Delivery) bool {
+	return runtime.Outcome(d.LastSendError) == runtime.OutcomeAdoptionRefused
 }
 `},
 	{name: "== of Outcome of RefusalReason in runtime", path: runtimePath, source: `package runtime
 
 func plantedShape(err error) bool {
-	return Outcome(RefusalReason(err)) == OutcomeAgentBusy
+	return Outcome(RefusalReason(err)) == OutcomeAdoptionRefused
 }
 `},
 	{name: "a map key of Outcome of RefusalReason in runtime", path: runtimePath, source: `package runtime
@@ -462,13 +446,13 @@ func plantedShape(err error, busy map[Outcome]bool) bool {
 	return busy[Outcome(RefusalReason(err))]
 }
 `},
-	{name: "a switch on runtime.Outcome of a prompt result's Error in stream", path: streamPath, source: `package stream
+	{name: "a switch on runtime.Outcome of a refusal's Reason in stream", path: streamPath, source: `package stream
 
 import "github.com/sjawhar/legion/daemon/internal/runtime"
 
-func plantedShape(result PromptResult) bool {
-	switch runtime.Outcome(result.Error) {
-	case runtime.OutcomeAgentBusy:
+func plantedShape(refusal *RefusedError) bool {
+	switch runtime.Outcome(refusal.Reason) {
+	case runtime.OutcomeAdoptionRefused:
 		return true
 	}
 	return false
@@ -496,13 +480,13 @@ func plantedShape(answer shimwire.Response) bool {
 	return slices.Contains([]plantedKind{"Agent is busy"}, plantedKind(answer.Error))
 }
 `},
-	{name: "a variable given runtime.Outcome of a late refusal's Error and compared in supervise", path: supervisePath, source: `package supervise
+	{name: "a variable given runtime.Outcome of a delivery's LastSendError and compared in supervise", path: supervisePath, source: `package supervise
 
 import "github.com/sjawhar/legion/daemon/internal/runtime"
 
-func plantedShape(refusal StreamLateRefusal) bool {
-	outcome := runtime.Outcome(refusal.Error)
-	return outcome == runtime.OutcomeAgentBusy
+func plantedShape(d Delivery) bool {
+	outcome := runtime.Outcome(d.LastSendError)
+	return outcome == runtime.OutcomeAdoptionRefused
 }
 `},
 	{name: "a package-level string written in one function and compared in another in runtime", path: runtimePath, source: `package runtime
@@ -522,17 +506,18 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
-func plantedShape(ctx context.Context, conn runtime.Conn, c Claim, refusal StreamLateRefusal) string {
-	err := conn.Prompt(ctx, "delivery", "task")
-	if err == nil || !errors.Is(err, runtime.ErrPromptRefused) || c.LastRefusal() == "" {
+func plantedShape(ctx context.Context, conn runtime.Conn, c Claim, d Delivery) string {
+	err := conn.AdoptWorkingCopy(ctx, runtime.GitIdentity{}, time.Second)
+	if err == nil || !errors.Is(err, runtime.ErrAdoptRefused) || c.LastRefusal() == "" {
 		return ""
 	}
-	if refusal.Error > "" && runtime.RefusalOutcome(err) == runtime.OutcomeAgentBusy && refusal.Outcome == runtime.OutcomeAgentBusy {
-		return "busy"
+	if d.LastSendError > "" && Charges(runtime.OutcomeAdoptionRefused) {
+		return "refused"
 	}
 	return fmt.Sprintf("refused: %s (%s)", err.Error(), c.LastRefusal())
 }
@@ -547,10 +532,6 @@ func plantedEnd(c Claim) bool {
 	}
 	return slices.Contains(ended.Kinds, "task")
 }
-
-func plantedMinted(refused PromptRefused) bool {
-	return sendOutcome(refused.Err) == runtime.OutcomeAgentBusy || runtime.RefusalOutcome(refused.Err) != runtime.OutcomePromptRefused
-}
 `},
 	{name: "clean reads in runtime", path: runtimePath, clean: true, source: `package runtime
 
@@ -561,24 +542,28 @@ import (
 
 func plantedShape(err error) string {
 	reason := RefusalReason(err)
-	if reason == "" || !errors.Is(err, ErrPromptRefused) || RefusalOutcome(err) != OutcomeAgentBusy {
+	if reason == "" || !errors.Is(err, ErrAdoptRefused) {
 		return ""
 	}
-	return fmt.Sprintf("busy (%d bytes): %s", len(reason), reason)
+	return fmt.Sprintf("refused (%d bytes): %s", len(reason), reason)
 }
 `},
 	{name: "clean reads in stream", path: streamPath, clean: true, source: `package stream
 
-import "github.com/sjawhar/legion/daemon/internal/runtime"
+import (
+	"errors"
 
-func plantedShape(c *Conn, refusal *RefusedError, result PromptResult, code string) string {
-	if refusal.Reason == "" && result.Error == "" {
+	"github.com/sjawhar/legion/daemon/internal/runtime"
+)
+
+func plantedShape(refusal *RefusedError) string {
+	if refusal.Reason == "" {
 		return ""
 	}
-	if c.promptRefusal(refusal.Reason, code) == runtime.OutcomeAgentBusy && result.Outcome == runtime.OutcomeAgentBusy {
-		return "busy"
+	if errors.Is(refusal, runtime.ErrAdoptRefused) {
+		return "adoption refused: " + refusal.RefusalReason()
 	}
-	return "refused: " + refusal.RefusalReason() + "; " + result.Error
+	return "refused: " + refusal.RefusalReason()
 }
 `},
 	{name: "clean reads in claudebridge", path: claudebridgePath, clean: true, source: `package claudebridge
@@ -586,7 +571,7 @@ func plantedShape(c *Conn, refusal *RefusedError, result PromptResult, code stri
 import "github.com/sjawhar/legion/daemon/internal/shimwire"
 
 func plantedShape(answer shimwire.Response) bool {
-	return !answer.Success && answer.Error != "" && answer.Code == shimwire.CodeSessionBusy
+	return !answer.Success && answer.Error != "" && answer.Code != ""
 }
 `},
 }

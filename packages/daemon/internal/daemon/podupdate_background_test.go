@@ -50,8 +50,8 @@ const (
 // claims/ready-for-update posts it, with no activity report sent. The rig's own answer
 // (podUpdateRig.signal) is this answer plus the report that an answering turn's end sends. Each
 // test here writes every report itself, so a claim with no report at all is a case it can hold.
-// The answer waits for the machine to have handled each acknowledgement it is owed
-// (supervise.PromptAcked) before it is sent.
+// The answer waits for the machine to have made every decision it is owed before it is sent
+// (podUpdateRig.signal).
 func (r *podUpdateRig) answersWithoutReport(role claim.Role, head string) {
 	r.t.Helper()
 	m, ok := r.sup.Machine(r.tokens[role])

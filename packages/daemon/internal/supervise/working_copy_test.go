@@ -63,15 +63,15 @@ const (
 	movedDirectory = "/workspace/zeta/tools/LEGION-209"
 )
 
-// A phase worker's task is composed when its start is written and held until a send, and the
-// workspace the process it goes to works can differ from the one it was composed for. startSend,
-// the one place a prompt goes out, writes the task's working copy line from the answer first
-// (currentWorkingCopy, Deps.WorkingCopy), so every send names the directory the answer gives at
-// that send: the first send of a task composed for another directory, and a resend after a send
-// the transport lost, which went out before the answer moved. The task it writes is persisted
-// before it goes, under a new id, so a restart reads what was sent and the shim forwards the new
-// text. An answer that fails sends nothing and drops nothing: the task waits, charged nothing, and
-// the next trigger sends it naming the answer's directory. A task of no phase, an operator's own,
+// A phase worker's task is composed when its start is written and held until a take, and the
+// workspace the process that takes it works can differ from the one it was composed for. takeable,
+// where every take of the task is decided, writes the task's working copy line from the answer
+// once no hold stands (currentWorkingCopy, Deps.WorkingCopy), so every accepted take names the
+// directory the answer gives at that take: the first take of a task composed for another
+// directory, and a take after a take-back of one accepted before the answer moved. The task it
+// writes is persisted before the take is answered, under its own id and number, so a restart reads
+// what was taken. An answer that fails accepts no take and drops nothing: the task waits, charged
+// nothing, and the next take names the answer's directory. A task of no phase, an operator's own,
 // is never asked about.
 func TestEverySendOfAPhaseTaskNamesTheWorkingCopyTheAnswerGivesAtThatSend(t *testing.T) {
 	ready := func(t *testing.T, answer *workingCopyAnswer) *harness {
@@ -87,45 +87,46 @@ func TestEverySendOfAPhaseTaskNamesTheWorkingCopyTheAnswerGivesAtThatSend(t *tes
 	task := RequestDeliver{Claim: testToken, ID: "outbox:30", Task: workingCopyTask(leftDirectory), Phase: phase.Implementing, Generation: 1}
 	wantSentMoved := func(t *testing.T, h *harness, sent string) {
 		t.Helper()
-		if want := workingCopyTask(movedDirectory); sent != want {
-			t.Fatalf("the worker was sent %q, naming the directory the task was composed for; want %q", sent, want)
+		if want := workingCopyTask(movedDirectory); !strings.HasSuffix(sent, want) || strings.Contains(sent, leftDirectory) {
+			t.Fatalf("the worker's take was answered %q, naming the directory the task was composed for; want %q", sent, want)
 		}
 		p := h.pending()
 		stored, ok := h.store.delivery(testToken)
-		if p.Task != workingCopyTask(movedDirectory) || !ok || stored.Task != p.Task || stored.ID != p.ID || p.ID == task.ID {
-			t.Fatalf("the delivery after the send = %+v, stored %+v (%v); want the task naming %s, persisted, under a new id",
+		if p.Task != workingCopyTask(movedDirectory) || !ok || stored.Task != p.Task || stored.ID != p.ID || p.ID != task.ID {
+			t.Fatalf("the delivery after the take = %+v, stored %+v (%v); want the task naming %s, persisted, under its own id",
 				p, stored, ok, movedDirectory)
 		}
 	}
 
-	t.Run("a task composed for another directory is sent naming the directory the answer names at its send", func(t *testing.T) {
+	t.Run("a task composed for another directory is taken naming the directory the answer names at its take", func(t *testing.T) {
 		answer := &workingCopyAnswer{dir: movedDirectory}
 		h := ready(t, answer)
 		h.must(task)
 		wantSentMoved(t, h, h.wantPrompts(1)[0].Message)
 	})
 
-	t.Run("a task sent before the answer moved is sent again naming the directory it names then", func(t *testing.T) {
+	t.Run("a task taken before the answer moved and taken back is taken again naming the directory it names then", func(t *testing.T) {
 		answer := &workingCopyAnswer{dir: leftDirectory}
 		h := ready(t, answer)
-		h.conn.FailPrompt(errors.New("the stream to the shim closed"))
 		h.must(task)
-		if sent := h.wantPrompts(1)[0]; sent.Message != task.Task || sent.DeliveryID != task.ID {
-			t.Fatalf("the send before the move = %+v, want the task as it was queued: the case's own premise", sent)
+		if took := h.wantPrompts(1)[0]; took.Message != task.Task {
+			t.Fatalf("the take before the move = %+v, want the task as it was queued: the case's own premise", took)
 		}
-		h.wantBudgets(Budgets{})
-
+		h.must(StreamTurnStart{Claim: h.token})
 		answer.moves(movedDirectory, nil)
-		h.conn.FailPrompt(nil)
-		h.observe(runtime.Alive)
-		wantSentMoved(t, h, h.wantPrompts(2)[1].Message)
+		h.errorTurn(ProviderError{Message: "overloaded_error", Status: 529})
+		h.wantBudgets(Budgets{})
+		wantSentMoved(t, h, h.climbs(1, promptRetryFirst))
 	})
 
-	t.Run("an answer that fails sends nothing and drops nothing", func(t *testing.T) {
+	t.Run("an answer that fails accepts no take and drops nothing", func(t *testing.T) {
 		answer := &workingCopyAnswer{err: errors.New("the news the task held does not decode")}
 		h := ready(t, answer)
-		if err := h.handle(task); err == nil || !strings.Contains(err.Error(), "the news the task held does not decode") {
-			t.Fatalf("the send whose answer failed answered %v, want the answer's error", err)
+		if err := h.handle(task); err != nil && !strings.Contains(err.Error(), "the news the task held does not decode") {
+			t.Fatalf("the queue of the task answered %v, want nil or the answer's error", err)
+		}
+		if asked := answer.askedAbout(); len(asked) == 0 {
+			t.Fatal("no take asked the answer about the task: the case's own premise")
 		}
 		h.wantPrompts(0)
 		if p := h.pending(); p.ID != task.ID || p.Task != task.Task {

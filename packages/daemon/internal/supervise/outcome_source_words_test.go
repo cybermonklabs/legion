@@ -185,24 +185,24 @@ type refusalTaint struct {
 }
 
 // refusalWords is the taint of the words a refusal carries in the package. In each of the four
-// packages they are the error a prompt send answers (sendAnswer), whose Error method returns them.
-// In this package they are also the Error of a late refusal and of a prompt result, the Err of a
-// refused send, the send error a delivery records, the Message of a turn's outcome and of the
-// report that carried it (RequestTurnOutcome), which hold the provider's words a claim's
+// packages they are the error a send over the agent's connection answers (sendAnswer), whose Error
+// method returns them. In this package they are also the send error a delivery records of a take's
+// failed adoption, the Message of a turn's outcome, of the report that carried it
+// (RequestTurnOutcome) and of its provider error, which hold the provider's words a claim's
 // LastRefusal returns, and whatever LastRefusal, runtime.RefusalReason or a RefusalReason method
 // returns. In the runtime, which reads the words from a send's error, and in the stream and the
 // bridge, which handle the frames themselves, they are also every string field named Error,
-// Reason or Message — the words of Oh My Pi's response and of its prompt_result's error, of a
-// shim's own answer, and of the stream's events — and whatever a Reason or RefusalReason method or
-// runtime.RefusalReason returns.
+// Reason or Message — the words of Oh My Pi's response, of a shim's own answer, and of the
+// stream's events — and whatever a Reason or RefusalReason method or runtime.RefusalReason
+// returns.
 func (s *goSource) refusalWords(t *testing.T) *refusalTaint {
 	t.Helper()
 	taint := &refusalTaint{src: s, answered: map[types.Object]bool{}, tainted: map[types.Object]bool{}, taintedFields: map[fieldOf]bool{}}
 	if s.pkg.Path() == supervisePath {
 		fields := map[types.Object]bool{}
 		for _, field := range []struct{ typ, field string }{
-			{"StreamLateRefusal", "Error"}, {"StreamPromptResult", "Error"}, {"PromptRefused", "Err"}, {"Delivery", "LastSendError"},
-			{"TurnOutcome", "Message"}, {"RequestTurnOutcome", "Message"},
+			{"Delivery", "LastSendError"}, {"TurnOutcome", "Message"}, {"RequestTurnOutcome", "Message"},
+			{"ProviderError", "Message"},
 		} {
 			named, _ := s.pkg.Scope().Lookup(field.typ).(*types.TypeName)
 			if named == nil {
@@ -284,20 +284,18 @@ func carriesText(typ types.Type) bool {
 // errorType is the predeclared error interface.
 var errorType = types.Universe.Lookup("error").Type()
 
-// sendAnswer is whether expr gives target the error a prompt send answers, from the call itself
-// or from another variable that holds it. A prompt send is a call of a method of runtime.Conn,
-// the connection the supervisor sends a prompt or a compaction through, or of the stream's Conn,
-// which implements it (sends): the stream's Prompt sends its frame through call, and call and
-// callWithin, which Compact sends through, answer the far side's refusal as a
-// stream.RefusedError. The test counts every method of either type, not Prompt alone: a
-// compaction's refusal carries Oh My Pi's words too, and an error that carries none has none to
-// match. In the supervisor it is the variable the send goroutine also gives its adoption's error
-// (Machine.startSend). A refusal carries the agent's words in that error (runtime.RefusalReason),
-// and its Error method returns them (reaches). Only a target of type error holds it: of a call
-// with several results, the others, such as get_state's answer beside its error, carry no
-// refusal; and a value built around the error, such as the PromptRefused the send goroutine
-// hands on, holds it in a field, which the test follows where refusalWords names the field and
-// nowhere else.
+// sendAnswer is whether expr gives target the error a send over the agent's connection answers,
+// from the call itself or from another variable that holds it. Such a send is a call of a method
+// of runtime.Conn, the connection the supervisor adopts a take's working copy and asks a compaction
+// through, or of the stream's Conn, which implements it (sends): call and callWithin, which
+// Compact and AdoptWorkingCopy send through, answer the far side's refusal as a
+// stream.RefusedError. The test counts every method of either type: a compaction's refusal carries
+// Oh My Pi's words, an adoption's the shim's, and an error that carries none has none to match. A
+// refusal carries the far side's words in that error (runtime.RefusalReason), and its Error
+// method returns them (reaches). Only a target of type error holds it: of a call with several
+// results, the others, such as get_state's answer beside its error, carry no refusal; and a value
+// built around the error holds it in a field, which the test follows where refusalWords names the
+// field and nowhere else.
 func (r *refusalTaint) sendAnswer(target types.Object, expr ast.Expr) bool {
 	if !types.Identical(target.Type(), errorType) {
 		return false
@@ -366,11 +364,10 @@ func (r *refusalTaint) reaches(expr ast.Expr) bool {
 }
 
 // mints is whether call mints a member: it calls a function, not a conversion or a builtin, whose
-// result is of a named type whose underlying type is string, such as runtime.RefusalOutcome or
-// stream.PromptRefusalOutcome. The member is the function's answer, which the stream mints from
-// the frame's code and the supervisor reads from a send's error (sendOutcome), so a site compares
-// it by design (matches), whatever words the call's arguments carry. A function that returns the
-// words converted to such a type is a helper, whose result the test does not follow.
+// result is of a named type whose underlying type is string, such as one returning runtime.Outcome.
+// The member is the function's answer, so a site compares it by design (matches), whatever words
+// the call's arguments carry. A function that returns the words converted to such a type is a
+// helper, whose result the test does not follow.
 func (s *goSource) mints(call *ast.CallExpr) bool {
 	if fun := s.info.Types[call.Fun]; fun.IsType() || fun.IsBuiltin() {
 		return false
@@ -387,8 +384,8 @@ func stringKind(typ types.Type) bool {
 	return ok && basic.Info()&types.IsString != 0
 }
 
-// wordMatch is one place the source matches a refusal's words or holds the busy words: at, in the
-// declaration in, and what the match is.
+// wordMatch is one place the source matches a refusal's words: at, in the declaration in, and what
+// the match is.
 type wordMatch struct {
 	at       ast.Node
 	in, what string

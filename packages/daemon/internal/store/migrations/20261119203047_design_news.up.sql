@@ -81,17 +81,20 @@
 -- renders it again from the record before each prompt. It is null for a delivery that carries no
 -- news, which is every delivery the release before this one queued.
 --
--- pending_task_deliveries.carried_news is the copy of design_news that the prompt whose turn the
--- delivery's confirmation takes carried: written when Oh My Pi acknowledges a prompt of the task,
--- which is after the working-copy adoption and the identity mint succeeded, and fixed by the
--- confirmation, never design_news, which a later send may have rendered again with more in it.
--- While the row holds a confirmation and carried_ran is false, it is the delivery's credit: each
--- item and each opening it carries counts in what its audience took (design_news_told_in), and
--- nothing else is written. So the write that takes the confirmation back, or the retirement of the
--- delivery, ends that credit and no other, and the news goes back to owed for a later task to
--- carry. carried_ran says the turn's result said the turn ran with no provider error: the write
--- that sets it folds the copy into design_news_told (design_news_folded, design_news_opening_told),
--- so the credit is final and outlives the row. Both are null and false wherever no prompt's credit
+-- pending_task_deliveries.carried_news is the copy of design_news that the delivery's accepted take
+-- carried: written by the accept, in the one write that records the take and the text it was
+-- answered with, after the working-copy adoption and the identity mint succeeded, and never
+-- design_news, which a later take after a take-back may render again with more in it
+-- (20261113175649_task_numbers, which the take came in with). While the row is a taken delivery
+-- whose take's turn has started (turn_started, the rule since
+-- 20261122160000_design_news_credit_at_turn_start) and carried_ran is false, it is the delivery's
+-- credit: each item and each opening it carries counts in what its audience took
+-- (design_news_told_in), and nothing else is written.
+-- So the write that takes the take back, or the retirement of the delivery, ends that credit and no
+-- other, and the news goes back to owed for a later task to carry. carried_ran says the finish of
+-- the take's turn said the turn ran with no provider error: the write that sets it folds the copy
+-- into design_news_told (design_news_folded, design_news_opening_told), so the credit is final and
+-- outlives the row. Both are null and false wherever no take's credit
 -- is held. A clear of a generation leaves the copy as it stands, and the copy's items and openings
 -- of each issue it covers then count for nothing and fold nothing (design_news_current): they were
 -- rendered for a run that is over.

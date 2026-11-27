@@ -10,7 +10,8 @@
 // (`../test/extension-harness`).
 import { describe, expect, test } from "bun:test";
 import { legacyDispatchIssueSubject } from "@legion/contracts";
-import { deliverSubject, RelayHeader } from "@legion/envoy-client/consumer-delivery";
+import { deliverSubject } from "@legion/envoy-client/consumer-delivery";
+import { RelayHeader } from "@legion/envoy-client/relay-frame";
 import { logger } from "@oh-my-pi/pi-utils";
 import { REPLAY_STATE_ENTRY } from "../src/missed-messages";
 import {

@@ -264,13 +264,15 @@ func TestAControllerTurnOpenPastItsBoundIsEnded(t *testing.T) {
 		h.advance(time.Minute)
 		h.must(StreamTurnStart{Claim: h.token})
 		began := h.claim().LastTurnStart
-		// The daemon restarts with the compaction and the turn under it running: the compaction's
-		// record is memory only, so the new machine reads the turn from the store alone.
-		h.restart()
+		// The daemon stops with the compaction and the turn under it running, and is down past
+		// the bound: the compaction's record is memory only, so the new machine reads the turn from
+		// the store alone. The keeper asks at the new machine's start, since a restored claim whose
+		// shim says no hello by its reconnect deadline is retired under a bound of its own
+		// (reconnectDeadline).
+		h.outage(turnBound + time.Minute)
 		if c := h.claim(); c.State != StateWorking || !c.LastTurnStart.Equal(began) {
 			t.Fatalf("the restarted machine reads the claim %s with its turn started %s, want working in the turn begun at %s", c.State, c.LastTurnStart, began)
 		}
-		h.advance(turnBound + time.Minute)
 		resumes, spawns := h.startsSoFar()
 		h.must(TurnPastBound{Claim: h.token, Bound: turnBound, TurnStart: h.claim().LastTurnStart})
 
@@ -288,14 +290,15 @@ func TestAControllerTurnOpenPastItsBoundIsEnded(t *testing.T) {
 		h.must(StreamTurnEnd{Claim: h.token})
 		h.wantState(StateIdle)
 		release, compacted := h.compactHeld()
-		h.restart()
+		// The daemon stops with the compaction running, and is down past the bound, so the keeper
+		// asks at the new machine's start, as above.
+		h.outage(turnBound + time.Minute)
 		// The restarted machine knows no compaction: it reads a working claim whose start is that
 		// of the turn which had ended before the compaction.
 		if c := h.claim(); c.State != StateWorking || !c.LastTurnStart.Before(c.LastTurnEnd) {
 			t.Fatalf("the restarted machine reads the claim %s, its turn started %s and the last ended %s; want working with a start before the end",
 				c.State, c.LastTurnStart, c.LastTurnEnd)
 		}
-		h.advance(turnBound + time.Minute)
 		resumes, spawns := h.startsSoFar()
 		h.must(TurnPastBound{Claim: h.token, Bound: turnBound, TurnStart: h.claim().LastTurnStart})
 

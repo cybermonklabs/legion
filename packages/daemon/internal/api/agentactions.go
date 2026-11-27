@@ -120,13 +120,15 @@ func callerName(by supervise.SuspendSource) string {
 }
 
 // stopAgent is the agent door's `legion claims stop` (stopEvent): the agent is stopped and
-// retired, a turn it is in cut off with it. The one difference is a hold the controller may not
-// get past, which its stop does not end (agentDoor, supervise.RequestStop.By,
-// supervise.Claim.HeldAgainst): the operator's (SUSPENDED_BY_OPERATOR). A stop would retire the
-// agent, and a retry would then relaunch it past that hold.
+// retired, a turn it is in cut off with it. As the operator's stop of one agent does, it waits
+// for the report of the take's turn where it reaches the agent after that turn ended and before
+// the report came, and answers 202 (supervise.RequestStop.WaitForReport, holdStop). The one
+// difference is a hold the controller may not get past, which its stop does not end (agentDoor,
+// supervise.RequestStop.By, supervise.Claim.HeldAgainst): the operator's (SUSPENDED_BY_OPERATOR).
+// A stop would retire the agent, and a retry would then relaunch it past that hold.
 func (s *server) stopAgent(w http.ResponseWriter, r *http.Request) {
 	s.agentEventAction(w, r, stopOp, func(_ http.ResponseWriter, _ *http.Request, target claimTarget) (supervise.Event, bool) {
-		return supervise.RequestStop{Claim: target.token, By: target.by}, true
+		return supervise.RequestStop{Claim: target.token, By: target.by, WaitForReport: true}, true
 	})
 }
 

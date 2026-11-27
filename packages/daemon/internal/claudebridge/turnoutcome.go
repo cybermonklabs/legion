@@ -1,211 +1,138 @@
 package claudebridge
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"net/http"
-	"os"
-	"strings"
 	"sync/atomic"
-	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
-	"github.com/sjawhar/legion/daemon/internal/redact"
 )
 
-// reportTimeout bounds one report's call. A turn's outcome is a few hundred bytes to a daemon on
-// the cluster network, and the report is made from a goroutine of its own, so the bound is there
-// for a daemon that accepts the connection and never answers rather than for a slow one.
-const reportTimeout = 15 * time.Second
-
-// errReportTimeout is the cause a report's context ends with when reportTimeout passes on the
-// bridge's clock, so the pane's line says the bound rather than the cancel that carried it.
-var errReportTimeout = fmt.Errorf("the daemon gave no answer within the report's bound of %s", reportTimeout)
+// turnOutcomePath is the route each turn's outcome is reported on.
+const turnOutcomePath = "/legion/v1/claims/turn-outcome"
 
 // turnReports is the bridge as the Claude Code backend's producer of turn outcomes: every turn the
 // bridge ends is reported to the daemon, clean or refused, with the bridge's own sequence within
 // its launch generation (POST /legion/v1/claims/turn-outcome). The daemon derives the claim's run
 // of refused turns from those reports and answers each report with it; the run fails no claim
-// (dispatch://INFRA-4508) and decides nothing. A turn that ran no prompt of the daemon's — one an
-// inbox delivery started, the phase hook's reminder among them, or one Claude Code started itself
-// when a background task finished — is judged by the daemon from its report alone, since no
-// prompt result comes for it (supervise's turnOutcome), so its report says so and carries the
-// status the provider refused it with.
+// (dispatch://INFRA-4508) and decides nothing. A report also names the task whose turn it was,
+// which is what finishes that task, and how the provider failed the turn, which keeps the task
+// under its number for the provider-error ladder instead (supervise's reportedTask). A turn that
+// was not the take's — one an inbox delivery started, the phase hook's reminder among them, or
+// one Claude Code started itself when a background task finished — names no task, which the
+// daemon reads as dispatch://INFRA-4508's unprompted mark says, so the bridge never sends that
+// mark: the daemon judges such a turn's refusal from its report alone (supervise's
+// unpromptedTurnEnded), by the status its provider error names. A provider error carries the
+// status Claude Code named in api_error_status (bridge.providerError), so the report sends no
+// httpStatus of its own either.
 //
 // The bridge is the producer because it is what sees the refusal: a step Claude Code ends with an
 // error is the assistant message it writes with stopReason "error" (result), and the pane's own
 // Claude Code hook for a stopped turn is not measured to fire in a pod
-// (packages/claude-envoy/src/legion-phase-hook.ts). The bridge holds no registration secret — the
-// claim's registration is claude-envoy's, inside Claude Code — so it names itself with the
-// launch's boot token, the file its pane is told, which the daemon resolves to this claim.
+// (packages/claude-envoy/src/legion-phase-hook.ts). It names the claim with the launch's boot
+// token (daemonLink).
 //
-// Each report is made from a goroutine of its own and nothing waits for it: the bridge's loop must
-// stay answerable to the shim, to Claude Code and to its own end at every moment. A report the
-// bridge's exit cuts short is a turn the daemon never hears of, which counts neither way, and the
-// bridge is torn down only when its pane is ending.
+// For a worker on the current contract only this report finishes a task, so it is sent until the
+// daemon answers it (daemonLink.untilAnswered), as Oh My Pi's reporter sends its own
+// (packages/pi-legion/src/turn-outcome.ts): every failure daemonLink.unanswered names, any failure
+// of an attempt that got no status among them, whatever the transport names it, and also any 500
+// the route answers, which is the daemon's failure to record the report (recordFailed). No list of
+// the transport's failures decides it: a report a failure stopped would leave its task's turn
+// started on the daemon, which arms no bound over it, while the loop holds the number finished
+// from the turn's end, so nothing would finish the task or take it again until a newer task or the
+// process's end. The daemon stores one outcome per (generation, sequence) and applies a repeat
+// once, so a report sent again whose first attempt landed changes nothing, and one whose write
+// failed is applied. A 2xx ends the sending, and so does a refusal; a 4xx applied nothing, so the
+// task a clean report named is still owed, and the loop is told (refused) to hold that number
+// finished no longer (take.go's reportRefused).
+//
+// Each report is sent from a goroutine of its own and nothing waits for it: the bridge's loop must
+// stay answerable to the shim, to Claude Code and to its own end at every moment. The sending
+// stops once Run returns (ctx): a report the bridge's end cuts short is a turn the daemon hears of
+// through the process's death instead, which takes its task back, and the bridge is torn down only
+// when its pane is ending.
 type turnReports struct {
-	url        string
-	bootToken  string
-	generation uint64
-	client     *http.Client
-	// clock is the bridge's (Config.Clock), which the report's bound runs on.
-	clock Clock
-	log   *log.Logger
+	daemon *daemonLink
+	ctx    context.Context
+	// refused tells the loop the number of the task whose clean report the daemon refused with a
+	// 4xx.
+	refused func(task uint64)
 	// sequence is the bridge's own count of the turns it has ended at generation, from 1. It is
 	// atomic because the posts run off the loop, though only the loop ever takes a number.
 	sequence atomic.Uint64
 }
 
-// startTurnReports is the reporter for cfg, or nil when the environment the bridge was given names
-// no daemon, no boot token file or no generation: a bridge run by hand reports to nobody. A boot
-// token file it cannot read is the same, said once, since nothing it could report would
-// authenticate.
-func startTurnReports(cfg Config, logger *log.Logger) *turnReports {
-	if cfg.DaemonURL == "" || cfg.BootTokenFile == "" || cfg.Generation == 0 {
-		logger.Printf("reporting no turn outcomes: this pane names %s", missingReportInputs(cfg))
+// newTurnReports is the reporter for the daemon d, sending until ctx ends and telling refused of
+// a clean task report the daemon refused, or nil for a pane that names no daemon.
+func newTurnReports(ctx context.Context, d *daemonLink, refused func(task uint64)) *turnReports {
+	if d == nil {
 		return nil
 	}
-	token, err := os.ReadFile(cfg.BootTokenFile)
-	if err != nil {
-		logger.Printf("reporting no turn outcomes: the boot token the daemon would recognise this claim by could not be read: %v", err)
-		return nil
-	}
-	return &turnReports{
-		url:        strings.TrimSuffix(cfg.DaemonURL, "/") + "/legion/v1/claims/turn-outcome",
-		bootToken:  strings.TrimSpace(string(token)),
-		generation: cfg.Generation,
-		client:     &http.Client{},
-		clock:      cfg.clock(),
-		log:        logger,
-	}
+	return &turnReports{daemon: d, ctx: ctx, refused: refused}
 }
 
-// missingReportInputs names what a pane that reports nothing is missing, so the one log line says
-// which value to look for rather than that something is absent.
-func missingReportInputs(cfg Config) string {
-	var missing []string
-	if cfg.DaemonURL == "" {
-		missing = append(missing, "no LEGION_DAEMON_URL")
-	}
-	if cfg.BootTokenFile == "" {
-		missing = append(missing, "no LEGION_BOOT_TOKEN_FILE")
-	}
-	if cfg.Generation == 0 {
-		missing = append(missing, "no LEGION_GENERATION")
-	}
-	return strings.Join(missing, ", ")
-}
-
-// turnEnded reports the turn the bridge has just ended: refused, with what the provider said and
-// the HTTP status it answered (0 where Claude Code named none), when a step of it failed, and clean
-// otherwise. prompted is whether the turn ran the daemon's prompt, whose prompt_result then judges
-// it: the report of a turn that ran none is marked unprompted, which is what has the daemon judge
-// it. It takes the next sequence and returns at once.
-func (r *turnReports) turnEnded(refusal string, status int, prompted bool) {
+// turnEnded reports the turn the bridge has just ended: the task whose turn it was, 0 for a turn of
+// no task; held, the number of the take whose text did not run in that turn — one the daemon
+// accepted during it, whose text the bridge holds for a turn of its own (bridge.held), or the task
+// whose text the turn began with and Claude Code never took (result) — 0 for none, which tells the
+// daemon for certain that this turn was not that take's (claim.TurnOutcomeRequest.Held); and
+// refused, with how the provider failed it, when a step of it failed, and clean otherwise. It
+// takes the next sequence and returns at once.
+func (r *turnReports) turnEnded(task, held uint64, refusal *claim.ProviderError) {
 	if r == nil {
 		return
 	}
 	request := claim.TurnOutcomeRequest{
-		BootToken:  r.bootToken,
-		Generation: r.generation,
+		BootCaller: claim.BootCaller{BootToken: r.daemon.bootToken},
+		Generation: r.daemon.generation,
 		Sequence:   r.sequence.Add(1),
 		Outcome:    claim.TurnClean,
-		Unprompted: !prompted,
+		Task:       task,
+		Held:       held,
 	}
-	if refusal != "" {
-		request.Outcome, request.Message = claim.TurnRefused, refusal
-		// A number outside the HTTP range is no status the provider answered, and the daemon
-		// takes such a number as no status, with a warning that names it, so the bridge sends the
-		// refusal as one whose status cannot be read and leaves the daemon nothing to warn about.
-		if status >= 100 && status <= 599 {
-			request.HTTPStatus = status
-		}
+	if refusal != nil {
+		request.Outcome, request.Message, request.ProviderError = claim.TurnRefused, refusal.Message, refusal
 	}
 	go r.post(request)
 }
 
-// post makes one report and logs what the daemon made of it: the run of refused turns the claim's
-// reports now end with, which is the one place the pane shows the count being made. A report the
-// daemon refuses is logged and nothing else: the turn is over, and the bridge has nothing to do
-// about it.
+// recordFailed is the turn-outcome route's own failure to record a report (api's claimFailure:
+// 500 `turn outcome failed: the daemon could not record it`, with no code), which is sent again as
+// the failures daemonLink.unanswered names are (the plan's decision 8).
+func recordFailed(status int) string {
+	if status != http.StatusInternalServerError {
+		return ""
+	}
+	return "was answered 500, the daemon's failure to record it"
+}
+
+// post sends one report until the daemon answers it, and logs what the daemon made of it: the run
+// of refused turns the claim's reports now end with, and whether this one failed the claim, which
+// is the one place the pane shows the count being made. A report the daemon refuses is logged, and
+// a 4xx refusal of a clean report naming a task is told to the loop (refused): that report applied
+// nothing, so the claim still owes the task.
 func (r *turnReports) post(request claim.TurnOutcomeRequest) {
-	body, err := json.Marshal(request)
-	if err != nil {
-		r.log.Printf("could not encode the outcome of turn %d: %v", request.Sequence, err)
-		return
-	}
-	// The call's bound, reportTimeout, runs on the bridge's clock; ending the request's context
-	// ends its dial, its wait for an answer and its read of the body alike, and the cause it ends
-	// with, errReportTimeout, is what the line says.
-	ctx, cancel := context.WithCancelCause(context.Background())
-	defer cancel(nil)
-	go func() {
-		select {
-		case <-r.clock.After(reportTimeout):
-			cancel(errReportTimeout)
-		case <-ctx.Done():
-		}
-	}()
-	post, err := http.NewRequestWithContext(ctx, http.MethodPost, r.url, bytes.NewReader(body))
-	if err != nil {
-		r.log.Printf("could not report the outcome of turn %d: %v", request.Sequence, redact.RequestError("the daemon", r.url, err))
-		return
-	}
-	post.Header.Set("Content-Type", "application/json")
-	// LEGION_DAEMON_URL is the daemon's daemon_url, which can carry a user name and a password: a
-	// report that got no answer is named through redact.RequestError, so neither the URL's
-	// credential nor the host a dial's error names (a password's tail, when it holds an unencoded
-	// "@") is logged.
-	response, err := r.client.Do(post)
-	if err != nil {
-		shown := redact.RequestError("the daemon", r.url, err)
-		if cause := context.Cause(ctx); cause != nil {
-			shown = fmt.Errorf("%w (%v)", cause, shown)
-		}
-		r.log.Printf("could not report the outcome of turn %d (%s): %v", request.Sequence, request.Outcome, shown)
-		return
-	}
-	defer func() { _ = response.Body.Close() }()
-	answer, decoded := decodeTurnOutcome(ctx, response)
+	logger := r.daemon.log
+	status, body, err := r.daemon.untilAnswered(r.ctx, fmt.Sprintf("claims/turn-outcome of turn %d", request.Sequence),
+		turnOutcomePath, request, recordFailed)
+	var decoded claim.TurnOutcomeResponse
 	switch {
-	case response.StatusCode/100 != 2:
-		r.log.Printf("the daemon refused the outcome of turn %d (%s): %s", request.Sequence, request.Outcome, answer)
+	case r.ctx.Err() != nil:
+	case err != nil:
+		logger.Printf("could not report the outcome of turn %d (%s): %v", request.Sequence, request.Outcome, err)
+	case status/100 != 2:
+		logger.Printf("the daemon refused the outcome of turn %d (%s): %s", request.Sequence, request.Outcome, refusalText(status, body))
+		if status/100 == 4 && request.Task != 0 && request.ProviderError == nil {
+			r.refused(request.Task)
+		}
+	case json.Unmarshal(body, &decoded) != nil:
+		logger.Printf("reported turn %d as %s; the daemon's answer could not be read: %s", request.Sequence, request.Outcome, refusalText(status, body))
 	case decoded.Failed:
 		// claim.TurnOutcomeResponse says which report sets Failed.
-		r.log.Printf("the daemon failed this claim: turn %d ran no prompt of the daemon's and the provider refused it with an error that cannot clear (%s)", request.Sequence, request.Message)
+		logger.Printf("the daemon failed this claim: the provider refused turn %d with an error that cannot clear (%s)", request.Sequence, request.Message)
 	case decoded.RefusedRun > 0:
-		r.log.Printf("reported turn %d as %s; the daemon counts %d refused turns in a row", request.Sequence, request.Outcome, decoded.RefusedRun)
+		logger.Printf("reported turn %d as %s; the daemon counts %d refused turns in a row", request.Sequence, request.Outcome, decoded.RefusedRun)
 	}
 }
-
-// decodeTurnOutcome is what the daemon answered: the outcome it derived, and the text to log for
-// an answer that is not one — a refusal's sentence, or the status alone when the body says
-// nothing.
-func decodeTurnOutcome(ctx context.Context, response *http.Response) (string, claim.TurnOutcomeResponse) {
-	var decoded claim.TurnOutcomeResponse
-	body, err := readAnswer(response)
-	if err != nil {
-		if cause := context.Cause(ctx); cause != nil {
-			err = fmt.Errorf("%w (%v)", cause, err)
-		}
-		return fmt.Sprintf("%s (its answer could not be read: %v)", response.Status, err), decoded
-	}
-	if json.Unmarshal(body, &decoded) != nil || len(body) == 0 {
-		return fmt.Sprintf("%s %s", response.Status, strings.TrimSpace(string(body))), decoded
-	}
-	return response.Status, decoded
-}
-
-// readAnswer reads at most maxAnswerBytes of the daemon's answer: a refusal is a sentence, and
-// nothing the bridge logs needs more.
-func readAnswer(response *http.Response) ([]byte, error) {
-	var buffer bytes.Buffer
-	_, err := buffer.ReadFrom(http.MaxBytesReader(nil, response.Body, maxAnswerBytes))
-	return buffer.Bytes(), err
-}
-
-// maxAnswerBytes bounds what the bridge reads of the daemon's answer.
-const maxAnswerBytes = 8 << 10

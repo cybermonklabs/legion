@@ -560,6 +560,10 @@ func (r *versionNewsLive) connect(member *versionNewsIssue, role claim.Role, bef
 		r.fail("decode the registration of %s: %v", token, err)
 	}
 	c.secret = registered.Secret
+	c.driver = newTakeDriver(r.d.post, func(frame shimwire.Frame) error { c.send(frame); return nil },
+		claim.AgentCaller{ClaimToken: token, SessionID: session, Secret: registered.Secret}, launch.Generation)
+	c.driver.started = r.d.turnRead(token)
+	c.closed = make(chan struct{})
 	go c.serve()
 	if status, body := r.d.request(http.MethodPost, "/legion/v1/claims/ready", claim.ReadyRequest{
 		ClaimToken: token, SessionID: session, Secret: registered.Secret, Generation: launch.Generation,
@@ -567,14 +571,17 @@ func (r *versionNewsLive) connect(member *versionNewsIssue, role claim.Role, bef
 		r.fail("ready %s = %d %s, want 204", token, status, body)
 	}
 	r.claimants[token] = c
+	go c.takes()
 	return c
 }
 
 // versionNewsClaimant is one role's claim as its pane reaches the daemon: the shim on the worker
-// stream, the registered session, and a reader that answers what the daemon asks of the shim and
-// keeps every prompt with the moment it arrived. A prompt that reaches it between turns is worked
-// at once, its turn started and ended as Oh My Pi starts and ends one, so it never holds the next
-// task back; the driver opens a turn of the agent's own (startTurn) where a step needs one running.
+// stream, the registered session, a reader that answers what the daemon asks of the shim, and the
+// plugin's take of each task value the daemon writes (takes), which keeps every take the daemon
+// accepted with the moment it was accepted. A take accepted between turns is worked at once, its
+// turn started and ended and its report sent as a worker does, so it never holds the next task
+// back; while a turn of the agent's own runs (startTurn) nothing is taken, since a worker asks
+// only once its host is idle.
 type versionNewsClaimant struct {
 	r       *versionNewsLive
 	token   claim.Token
@@ -584,6 +591,9 @@ type versionNewsClaimant struct {
 	session string
 	secret  string
 	sh      *shim
+	driver  *takeDriver
+	// closed is closed once the reader's connection is gone, which ends the takes too.
+	closed chan struct{}
 	// wmu orders the frames the reader and the step write; mu guards turn and prompts.
 	wmu     sync.Mutex
 	mu      sync.Mutex
@@ -601,9 +611,10 @@ type versionNewsPrompt struct {
 }
 
 // serve reads every frame the daemon sends the shim until the connection closes: it answers the
-// protocol negotiation and the state probe (streaming while the agent's own turn runs), and keeps
-// each prompt, answering it and, between turns, working it as one turn.
+// protocol negotiation and the state probe (streaming while a turn runs, the agent's own or a
+// take's).
 func (c *versionNewsClaimant) serve() {
+	defer close(c.closed)
 	reader := c.sh.lines
 	_ = c.sh.conn.SetReadDeadline(time.Time{})
 	for {
@@ -620,27 +631,49 @@ func (c *versionNewsClaimant) serve() {
 			c.send(shimwire.Response{ID: f.ID, Command: shimwire.TypeNegotiateProtocol, Success: true})
 		case shimwire.GetState:
 			c.mu.Lock()
-			streaming := c.turn
+			streaming := c.turn || c.driver.inATurn()
 			c.mu.Unlock()
 			data, _ := json.Marshal(shimwire.StateData{IsStreaming: &streaming})
 			c.send(shimwire.Response{ID: f.ID, Command: shimwire.TypeGetState, Success: true, Data: data})
-		case shimwire.Prompt:
-			c.send(shimwire.Response{ID: f.ID, Command: shimwire.TypePrompt, Success: true})
-			c.mu.Lock()
-			running := c.turn
-			c.prompts = append(c.prompts, versionNewsPrompt{at: time.Now(), delivery: f.DeliveryID, message: f.Message})
-			c.mu.Unlock()
-			select {
-			case c.arrived <- struct{}{}:
-			default:
-			}
-			// A prompt into a running turn is kept and left unworked: the step watching that turn
-			// fails on it, since the daemon sends nothing into a turn.
-			if !running {
-				c.send(shimwire.AgentStart{DeliveryID: f.DeliveryID})
-				c.send(shimwire.AgentEnd{})
-				c.send(shimwire.PromptResult{ID: f.ID, AgentInvoked: true})
-			}
+		}
+	}
+}
+
+// takes is the plugin taking each task value the daemon writes the claim, every 50 ms until the
+// connection is gone: a value it has not reported is reported seen, and one it has not asked at is
+// taken while no turn of the agent's own runs (takeDriver.poll). Each take the daemon accepts is
+// kept, named by the delivery the claim held when it was accepted, and its turn is run and
+// reported at once, as Oh My Pi runs the text it took. A read the daemon did not answer — it is
+// restarting, or it has stopped — is tried again.
+func (c *versionNewsClaimant) takes() {
+	tick := time.NewTicker(50 * time.Millisecond)
+	defer tick.Stop()
+	for {
+		select {
+		case <-c.closed:
+			return
+		case <-tick.C:
+		}
+		c.mu.Lock()
+		own := c.turn
+		c.mu.Unlock()
+		if own {
+			continue
+		}
+		_, answer, asked, err := c.driver.poll()
+		if err != nil || !asked || answer.Outcome != string(supervise.TakeOutcomeAccepted) {
+			continue
+		}
+		delivery, _ := c.r.d.pendingID(c.token)
+		c.mu.Lock()
+		c.prompts = append(c.prompts, versionNewsPrompt{at: time.Now(), delivery: delivery, message: answer.Text})
+		c.mu.Unlock()
+		select {
+		case c.arrived <- struct{}{}:
+		default:
+		}
+		if err := c.driver.startTurn(); err == nil {
+			_ = c.driver.endTurn()
 		}
 	}
 }

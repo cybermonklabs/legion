@@ -4096,15 +4096,17 @@ Each of its refusals is a `core.InputError` naming the input it refuses: `author
 `core` also hands out the grants Envoy's own clients need, so no consumer spells Envoy's subjects.
 Each is a `core.Permissions`, a publish and a subscribe `Rules` that a user takes as its `Publish`
 and `Subscribe`, each an allow list and a deny list. The grants themselves are `natsgrant`'s
-(`packages/envoy/natsgrant`), built from Envoy's own names (`packages/envoy/internal/bus` and
-`packages/envoy/internal/contracts`), and `core` wraps each. The NATS auth service answers each
-connection it admits with a grant of the same table ([The auth service](docs/nats-hub.md#the-auth-service)),
+(`packages/envoy/natsgrant`), built from Envoy's own names (`packages/envoy/internal/bus`,
+`packages/envoy/internal/contracts` and `packages/envoy/legiontasks`), and `core` wraps each. The
+NATS auth service answers each connection it admits with a grant of the same table
+([The auth service](docs/nats-hub.md#the-auth-service)),
 so a hub's static user and an admitted connection of the same kind hold the same lists, deny
 lists included. Below, `<m>` is the machine id as `bus.ListenerDurable` spells it: each space as
 `-`, and each character NATS refuses in a consumer name as `%` and two hex digits.
 
 `ListenerPermissions(machineID)` is what `envoy-listener` needs as that machine. Every entry below
-but the session consumers' is the base `HostPermissions` and `DispatchPermissions` are built from.
+but the session consumers' and the task bucket's is the base `HostPermissions` and
+`DispatchPermissions` are built from.
 It publishes to:
 
 - every notification topic, `notifications.>`: the subjects of the `ENVOY_NOTIFICATIONS` stream,
@@ -4208,7 +4210,8 @@ listener takes it, and in the machine's own group, `notifications.role.> envoy-l
 a listener of an earlier release subscribes in and a listener refused the shared group falls back
 to.
 
-After those entries, and in `ListenerPermissions` and `ListenerHostPermissions` alone, come the
+After those entries, and in `ListenerPermissions`, `ListenerHostPermissions` and
+`WebhookListenerHostPermissions` alone, come the
 calls of the session consumers, one durable pull consumer per session named `s-<session id>`
 (`bus.SessionConsumers`), on any consumer of the stream: `$JS.API.CONSUMER.CREATE` (with and
 without a filter subject in its subject), `INFO`, `DELETE` and `MSG.NEXT` on
@@ -4224,6 +4227,22 @@ own durable alone; the server refuses its consumer calls, so it refuses every re
 asks for consumer delivery `503 no_grant` (one probe and one refusal per ten-minute
 episode), writing nothing, and a session registering through it is not registered at all and
 receives nothing until that user's grant carries the session consumers.
+
+After the session consumers' calls, and in `ListenerPermissions`, `ListenerHostPermissions` and
+`WebhookListenerHostPermissions` alone, come the reads of the Legion daemons' task bucket
+`legion_tasks`, which holds each Legion
+claim's current task number as the delivered copy of the daemon's record, with the daemon as its
+one writer: the info of its stream `$JS.API.STREAM.INFO.KV_legion_tasks` (the open, and the
+bucket's epoch, the stream's creation time), its direct and stored-message gets
+`$JS.API.DIRECT.GET.KV_legion_tasks.>` and `$JS.API.STREAM.MSG.GET.KV_legion_tasks`, its watch's
+consumer create and delete `$JS.API.CONSUMER.CREATE.KV_legion_tasks.>` and
+`$JS.API.CONSUMER.DELETE.KV_legion_tasks.>`, and their flow-control replies
+`$JS.FC.KV_legion_tasks.>`. With them the listener that gives a session consumer delivery watches
+the bucket and relays each claim's value to the session holding the claim's role. They hold no
+create or update of the bucket's stream and no publish to its keys, so the server refuses the
+listener every write of a value. The bucket is not one of the listener's buckets above, so
+`HostPermissions`, `DispatchPermissions` and `SessionPermissions` hold nothing of it: a session
+reads its value from the relay frame its listener publishes, never from the bucket.
 
 `SessionPermissions()` is what any agent session needs, with `*` for the session id. It publishes
 to `_INBOX.>`, for the replies to a session consumer's
@@ -4252,8 +4271,9 @@ A host's user, holding `HostPermissions`, subscribes to `_INBOX.>` for its liste
 
 `HostPermissions(machineID)` is the grant of a host's one NATS user, which its listener and every
 session on the host share: in each direction the listener's base entries, the session consumers'
-left out, then each of the session's the base lacks, and `notifications.>` itself, which keeps a
-shared host user's sessions at today's reach until the auth service's per-session credentials;
+and the task bucket's left out, then each of the session's the base lacks, and `notifications.>`
+itself, which keeps a shared host user's sessions at today's reach until the auth service's
+per-session credentials;
 a listener connecting as this user can give its sessions no consumer, so it refuses their
 registrations `no_grant`. Its publish direction keeps the base entries' deny of Dispatch's lane
 and GitHub's lane, so no session on the host publishes directly on either. A session on the host
@@ -4275,8 +4295,9 @@ lane queue groups, and the session user's refusal of a consumer create, in
 command that runs it.
 
 `ListenerHostPermissions(machineID)` is the grant of a listener's own NATS user, one no session
-shares: `ListenerPermissions(machineID)`, the session consumers' calls included, then a plain
-`notifications.>` subscribe that no Envoy program uses any more. A `gcp:NatsHub` user with
+shares: `ListenerPermissions(machineID)`, the session consumers' calls and the task bucket's reads
+included, then a plain `notifications.>` subscribe that no Envoy program uses any more. A
+`gcp:NatsHub` user with
 `listenerMachineId` holds it, for a listener whose process is the only thing holding that seed: a
 session connecting as it could create, pull and delete any session's consumer. A host whose
 sessions share the listener's user takes `machineId` and `HostPermissions` instead, whose
@@ -4342,6 +4363,9 @@ bucket, so it can change no stream's subjects, limits or republish:
   client, so one aimed at `$JS.API.STREAM.DELETE.<s>` deletes stream `<s>` on the hub's nats-server
   (2.15.1). That reach is availability only - no message of any project crosses it - accepted for
   day one until the hub's nats-server is raised to 2.15.3, which refuses a reply into `$JS.API.`.
+
+It holds none of the task bucket's reads that `ListenerPermissions` adds, and an edge listener runs no task relay: one bucket holds every project's claims, under keys no subject can hold to the edge's projects, and those reads carry the bucket's direct get, which the edge holds of no bucket.
+So a session at the edge that holds a claim's role is relayed no task value.
 
 An edge listener reads the stream and its start ends, naming the stream, on a server that has
 none. It finds each bucket it opens: the interest, role, session and DPoP-proof buckets end its
@@ -4484,13 +4508,31 @@ so its seed can read, recreate and drain every consumer of the stream, each host
 consumer included, and create a push consumer that delivers the stream's messages to any subject,
 one it may not publish to included. Its `_INBOX.>` subscription receives every reply any client
 on the server gets, key-value reads and watch updates included, such as the listener's
-`envoy_roles` and `envoy_sessions` watchers. A `gcp:NatsHub` user with `daemon: true` receives
-this set; its seed belongs to the daemon, not to a host or session.
+`envoy_roles` and `envoy_sessions` watchers.
+
+The daemon is also the one writer of the task bucket `legion_tasks` (`packages/envoy/legiontasks`),
+whose key for each Legion claim, the claim's token, holds the number of the claim's current task,
+the delivered copy of the daemon's record that the listeners relay to each claim's session. For it
+the set publishes JetStream's account info `$JS.API.INFO`, which nats.go asks before it creates a
+bucket; the info, create and update of the bucket's stream `KV_legion_tasks` (a daemon creates
+the bucket when it is missing, reads its epoch from the stream's creation time, and, when another
+daemon created it first, nats.go updates the stream with the configuration it already holds); its
+direct and stored-message gets; every write and delete of a value, `$KV.legion_tasks.>`; the purge
+of its stream, `$JS.API.STREAM.PURGE.KV_legion_tasks`, which drops a key's old delete markers one
+subject at a time; and its watch's consumer create and delete and their flow-control replies. The
+watch delivers on a reply inbox, which the `_INBOX.>` subscription already admits, so the bucket
+adds no subscribe. One bucket serves every project and the grant reaches every project's keys and
+the stream's whole purge; a daemon writes, deletes and purges only its own project's, the keys
+that start `legion-<project>-`. A daemon whose user lacks the stream's info, or, for a bucket not
+created yet, the account info or the create, cannot open the bucket and refuses to boot; one that
+lacks only the gets, the key writes, the purge or the watch's entries boots, and fails each call
+that needs them. A `gcp:NatsHub` user with `daemon: true` receives this set; its seed belongs to
+the daemon, not to a host or session.
 
 `DispatchPermissions(machineID)` is the grant of Dispatch's one NATS user, shared by
 `envoy-dispatch` and the listener beside it. It adds to the base entries of
-`ListenerPermissions(machineID)`, the session consumers' left out, the info, filtered create,
-delete and acknowledgements of Dispatch's `delivery-events`, `delivery-jobs` and
+`ListenerPermissions(machineID)`, the session consumers' and the task bucket's left out, the info,
+filtered create, delete and acknowledgements of Dispatch's `delivery-events`, `delivery-jobs` and
 `legion-state-events` durables (`core.DispatchDurables()`; the last is the Legion state intake's,
 on every Legion daemon's state lane); the key-value calls for `envoy_webhook_redelivery`;
 publication of every session's agent-stream control subject; and subscription to every session's

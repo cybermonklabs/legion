@@ -87,15 +87,17 @@ func contractServed(t *testing.T, body []byte) (mark map[string]any, carried boo
 	return mark, true
 }
 
-// narrowingState is the state golden with two more issues and its record's pause: LEGION-213, a
+// narrowingState is the state golden with three more issues and its record's pause: LEGION-213, a
 // member of the waiting line that is a started issue that gave its slot back to wait on another
 // issue (waitingOnIssueContract), LEGION-230, an issue held because its owner stopped its task
-// (OwnerPlanContract's `task-stopped`), with its row of `admission.held` under `task_stopped`, and
-// `paused` as the same record serves it ten seconds into a pause (pausedState). The golden itself
-// stands none of these values, so without them the strips of the waiting line's `kind`, of
-// `holdReason`, of the held words and of the pause would find nothing to take and write no line,
-// and the rows below could not say that every strip writes its own. Each entry's band finds its
-// keys there too, written by the entry's own test rows (entryTestRows.carry).
+// (OwnerPlanContract's `task-stopped`), with its row of `admission.held` under `task_stopped`,
+// LEGION-214, whose claims carry the failure cause never_reconnected, the word of the task-take
+// entry (`contract_20261125171504_task-take.go`), and `paused` as the same record serves it ten
+// seconds into a pause (pausedState). The golden itself stands none of these values, so without
+// them the strips of the waiting line's `kind`, of `holdReason`, of the held words, of the failure
+// cause and of the pause would find nothing to take and write no line, and the rows below could
+// not say that every strip writes its own. Each entry's band finds its keys there too, written by
+// the entry's own test rows (entryTestRows.carry).
 func narrowingState(t *testing.T) State {
 	t.Helper()
 	state := carriedState(t)
@@ -103,6 +105,7 @@ func narrowingState(t *testing.T) State {
 	maps.Copy(issues, state.Issues)
 	issues["LEGION-213"] = waitingOnIssueMember()
 	issues[taskStoppedIssue] = heldFor(taskStoppedIssue, phase.Testing, record.HoldTaskStopped)
+	issues["LEGION-214"] = neverReconnectedIssue()
 	state.Issues = issues
 	state.Admission.Held = append(slices.Clone(state.Admission.Held),
 		HeldIssue{Issue: taskStoppedIssue, Reason: record.HeldTaskStopped})
@@ -338,6 +341,36 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 			t.Errorf("the line names contract %d and follows %q, want the pod's lowest %d and %q",
 				written[0].PluginContract, written[0].Follows, behind, followsRestore)
 		}
+	})
+
+	// The newest narrowing is a row of the table like every other, so the caller below it is
+	// told what it lost: a caller one contract below the highest row, which states that contract
+	// in its header as every plugin from shapedAnswersContract on does, is served at the recorded
+	// contract at or below it (recordedContractAtOrBelow), so it stands below that row alone and
+	// the log holds the lines of the rows at that contract and nothing else: one row's, or each of
+	// an entry's bands where the entry registers more than one (the P0 start's registers two). It
+	// reads carriedState, so the highest row finds its keys whether it is a frozen row or an
+	// entry's band, and it holds no entry to be the newest (R4 of dispatch://INFRA-1569). This
+	// subtest does not catch a strip applied beside the loop, because it reads both its
+	// expectation and its answer from stateNarrowings; the subtests below, which name their lines
+	// as literals, are what catch that.
+	t.Run("the highest narrowing writes its own line", func(t *testing.T) {
+		state := carriedState(t)
+		bands := stateNarrowings()
+		highest := bands[len(bands)-1].contract
+		var atHighest []string
+		for _, band := range bands {
+			if band.contract == highest {
+				atHighest = append(atHighest, band.dropped)
+			}
+		}
+		_, narrowings := stateNarrowedStating(t, state, statePodAddr+":41000", podClaims(0), highest-1)
+
+		want := narrowingsExpected(state, highest-1)
+		if !slices.Equal(want, atHighest) {
+			t.Fatalf("a caller at %d expects the lines %v, want the highest rows' alone, %v", highest-1, want, atHighest)
+		}
+		wantNarrowings(t, narrowings, highest-1, want)
 	})
 
 	// Every unrecorded contract between the cause times and the Dispatch credential is served at

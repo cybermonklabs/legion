@@ -120,7 +120,7 @@ func TestClaimsWaitDefaultsToOneMinute(t *testing.T) {
 // The bound covers the whole call, not each request of it: a suspend the daemon answers 202 and
 // then holds is refused once the command's own minute-or-less is gone, counted from its first
 // request rather than restarted by each list it makes. The lists it made say so without a clock:
-// one every suspendPoll, so a call held to its 400 ms makes at most 400 ms / suspendPoll of them
+// one every heldPoll, so a call held to its 400 ms makes at most 400 ms / heldPoll of them
 // and the two at its ends, and a slow machine makes fewer, never more; a call held to a later
 // bound, such as the one-minute default, makes more.
 func TestTheWaitBoundsTheWholeSuspendCall(t *testing.T) {
@@ -136,7 +136,7 @@ func TestTheWaitBoundsTheWholeSuspendCall(t *testing.T) {
 	if !strings.Contains(answer.errb, "--wait bound of 400ms") {
 		t.Fatalf("stderr is %q, want a refusal naming the --wait bound", answer.errb)
 	}
-	if got, most := lists(), int(400*time.Millisecond/suspendPoll)+2; got < 1 || got > most {
+	if got, most := lists(), int(400*time.Millisecond/heldPoll)+2; got < 1 || got > most {
 		t.Fatalf("the command listed the claims %d times, want at least once and at most %d, the lists a call held to its 400 ms makes", got, most)
 	}
 }

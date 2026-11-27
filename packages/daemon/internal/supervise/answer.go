@@ -22,7 +22,7 @@ type sessionAnswer struct {
 // nothing to the store and leaves the claim exactly where it found it.
 func answered(m *Machine, _ context.Context, ev Event) error {
 	a := ev.(StreamAnswered)
-	m.answer.Store(&sessionAnswer{Answer: Answer{Model: a.Model}, session: m.claim.Session})
+	m.lastAnswer.Store(&sessionAnswer{Answer: Answer{Model: a.Model}, session: m.claim.Session})
 	return nil
 }
 
@@ -32,7 +32,7 @@ func answered(m *Machine, _ context.Context, ev Event) error {
 // View with this model never names a model that did not serve that session. It never waits on
 // the decision in flight, so a transaction may call it while the machine is deciding.
 func (m *Machine) LastAnswer() Answer {
-	last := m.answer.Load()
+	last := m.lastAnswer.Load()
 	if last == nil || last.session != m.view.Load().Session {
 		return Answer{}
 	}

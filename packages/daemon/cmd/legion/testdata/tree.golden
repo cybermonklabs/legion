@@ -53,6 +53,7 @@ legion start	--config string
 legion state	--config string	--json bool	--operator-token-file string	--port int
 legion status
 legion stop	--config string
+legion task-cost	--claim string	--from string	--take-timeout int	--to string
 legion version	--contracts bool
 legion worker-shim	hidden	--agent-secrets-bin string	--agent-secrets-key-dir string	--boot-token-file string	--connect string	--pod-safety bool	--pod-token-file string	--provider-env-dir string	--reap-orphans bool	--stop-grace duration	--warm-codegraph bool
 legion workspace-init	hidden

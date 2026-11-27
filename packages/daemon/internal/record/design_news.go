@@ -23,18 +23,18 @@ const (
 // DesignTold is what one audience took of its tree's approved design: the approved version of each
 // gated step's document it took, and whether the gate's opening is owed to it.
 //
-// A holder row rises only by a credit: a confirmed delivery's, the copy of news its prompt carried,
-// counted while the delivery holds that confirmation and folded in once its turn's result says the
-// turn ran, or a raise where what it would be told changes nothing of the work
-// (DesignChanges.WorkUnchanged: decision blocks alone, or nothing at all), which tells nobody
-// anything. A credit reaches only a row that took the version it counts from, and its give-back
-// ends it alone (Postgres.TreeTold reads the row as its credits make it). So it says what the
-// session holding the issue's phase was given, never what the daemon meant to give it. Its first
-// value is the baseline: the approved versions the issue's first working phase of its generation
-// started from (workflow's Engine.enter), and for a tree root's architect row those its tree's
-// first opening released (workflow's putGateTold), or the gate a hand-over carried to it (admit's
-// readmit). The rows go with the issue's generation (Postgres.ClearGeneration), so the next
-// generation takes its own baseline.
+// A holder row rises only by a credit: a taken delivery's, the copy of news its accepted take's
+// text carried, counted once that take's turn has started (turn_started) and folded in once the
+// finish of the take's turn says the turn ran, or a raise where what it would be told changes
+// nothing of the work (DesignChanges.WorkUnchanged: decision blocks alone, or nothing at all),
+// which tells nobody anything. A credit reaches only a row that took the version it counts from,
+// and its give-back ends it alone (Postgres.TreeTold reads the row as its credits make it). So it
+// says what the session holding the issue's phase was given, never what the daemon meant to give
+// it. Its first value is the baseline: the approved versions the issue's first working phase of
+// its generation started from (workflow's Engine.enter), and for a tree root's architect row those
+// its tree's first opening released (workflow's putGateTold), or the gate a hand-over carried to it
+// (admit's readmit). The rows go with the issue's generation (Postgres.ClearGeneration), so the
+// next generation takes its own baseline.
 type DesignTold struct {
 	Issue    string
 	Audience DesignAudience
@@ -350,10 +350,10 @@ func stepConcerns(step DesignStep, issue, tree string) bool {
 // A member whose holder row owes the opening (DesignTold.OpeningOwed) while the standing gate is
 // open and the tree does not linger is owed that opening, with no item where it is owed none, on
 // the same rule of its own record. The opening became owed because the holder was owed news when
-// the gate opened, and the task that carried that news can be confirmed without it. Either the
-// prompt whose turn confirms the task was rendered before the opening became owed (the turn after
-// a restart, or the late turn of a prompt whose resend Oh My Pi answered busy), or that prompt
-// carried an earlier opening, which a close and a reopening before its turn replaced. So no role
+// the gate opened, and the task that carried that news can be taken without it. Either the take
+// of the task was accepted before the opening became owed, and a take of its number sent again is
+// answered the text the record kept, or its text carried an earlier opening, which a close and a
+// reopening before its turn replaced. So no role
 // message told this opening, and a task of its own does (MemberNews with no Items).
 //
 // Every member owed nothing is named in Untold with the reason, the first that holds of those

@@ -27,7 +27,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
-	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/store/migrations"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -435,7 +434,7 @@ func (r *inFlightRig) resume(issue *inFlightIssue, role claim.Role) *stepClaiman
 	r.built.mu.Unlock()
 	// Each issue the release before left is a root, its own tree (seedInFlight).
 	c := &stepClaimant{r: r.stepRecordsRig, token: token, issue: issue.key, tree: issue.key, role: role, session: kept.id, model: stepRecordsModel,
-		bootToken: launch.BootToken, sh: dialShim(t, address, launch.BootToken), prompts: make(chan shimwire.Prompt, 8)}
+		bootToken: launch.BootToken, sh: dialShim(t, address, launch.BootToken)}
 	status, body := r.d.request(http.MethodPost, "/legion/v1/claims/register", claim.RegisterRequest{
 		BootToken: launch.BootToken, SessionID: kept.id, OmpSessionFile: kept.file, AgentID: kept.id, PluginContract: api.DaemonAPIVersion(),
 	}, false)
@@ -447,6 +446,10 @@ func (r *inFlightRig) resume(issue *inFlightIssue, role claim.Role) *stepClaiman
 		t.Fatalf("decode the registration of %s: %v", token, err)
 	}
 	c.secret = registered.Secret
+	// The pane's plugin takes the claim's tasks from the daemon that runs now, as workerOf's does.
+	c.driver = newTakeDriver(func(path string, body, answer any) error { return c.r.d.post(path, body, answer) }, c.write,
+		claim.AgentCaller{ClaimToken: token, SessionID: c.session, Secret: c.secret}, launch.Generation)
+	c.driver.started = func() (bool, error) { return c.r.d.turnRead(token)() }
 	sh, d := c.sh, r.d
 	sh.serve(func() { c.serve(sh, d) })
 	if status, body := r.d.request(http.MethodPost, "/legion/v1/claims/ready", claim.ReadyRequest{

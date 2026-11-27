@@ -1,0 +1,234 @@
+{
+  "answers": [
+    {
+      "answer": "issue-record",
+      "addValues": {
+        "architect.failure.cause": [
+          "never_reconnected"
+        ],
+        "architect.pendingCause": [
+          "never_reconnected"
+        ],
+        "workers.*.claim.failure.cause": [
+          "never_reconnected"
+        ],
+        "workers.*.claim.pendingCause": [
+          "never_reconnected"
+        ]
+      }
+    },
+    {
+      "answer": "register",
+      "addKeyPaths": [
+        "finished",
+        "task",
+        "task.epoch",
+        "task.number",
+        "task.revision"
+      ]
+    },
+    {
+      "answer": "state",
+      "addKeyPaths": [
+        "unseenTaskValues",
+        "unseenTaskValues.*",
+        "unseenTaskValues.*.claim",
+        "unseenTaskValues.*.issue",
+        "unseenTaskValues.*.role",
+        "unseenTaskValues.*.task",
+        "unseenTaskValues.*.writtenAt"
+      ],
+      "addValues": {
+        "issues.*.architect.failure.cause": [
+          "never_reconnected"
+        ],
+        "issues.*.architect.pendingCause": [
+          "never_reconnected"
+        ],
+        "issues.*.workers.*.claim.failure.cause": [
+          "never_reconnected"
+        ],
+        "issues.*.workers.*.claim.pendingCause": [
+          "never_reconnected"
+        ],
+        "unseenTaskValues.*.role": [
+          "architect",
+          "implementer",
+          "merger",
+          "planner",
+          "reviewer",
+          "tester"
+        ]
+      }
+    },
+    {
+      "answer": "take",
+      "change": "add",
+      "noBody": false,
+      "addKeyPaths": [
+        "hold",
+        "outcome",
+        "text"
+      ]
+    },
+    {
+      "answer": "task",
+      "change": "add",
+      "noBody": false,
+      "addKeyPaths": [
+        "finished",
+        "task",
+        "task.epoch",
+        "task.number",
+        "task.revision"
+      ]
+    }
+  ],
+  "routes": [
+    {
+      "route": "POST /legion/v1/claims/take",
+      "change": "add",
+      "addFieldPaths": [
+        "bootToken",
+        "claimToken",
+        "epoch",
+        "generation",
+        "number",
+        "revision",
+        "secret",
+        "sessionId"
+      ]
+    },
+    {
+      "route": "POST /legion/v1/claims/task",
+      "change": "add",
+      "addFieldPaths": [
+        "bootToken",
+        "claimToken",
+        "generation",
+        "secret",
+        "sessionId"
+      ]
+    },
+    {
+      "route": "POST /legion/v1/claims/task-seen",
+      "change": "add",
+      "addFieldPaths": [
+        "bootToken",
+        "claimToken",
+        "epoch",
+        "generation",
+        "number",
+        "revision",
+        "secret",
+        "sessionId"
+      ]
+    },
+    {
+      "route": "POST /legion/v1/claims/turn-outcome",
+      "addFieldPaths": [
+        "held",
+        "providerError",
+        "providerError.message",
+        "providerError.model",
+        "providerError.provider",
+        "providerError.retryable",
+        "providerError.status",
+        "task"
+      ]
+    }
+  ],
+  "answerRows": [
+    {
+      "id": "no-content",
+      "routes": [
+        "POST /legion/v1/claims/task-seen"
+      ],
+      "noBody": true
+    },
+    {
+      "id": "task",
+      "routes": [
+        "POST /legion/v1/claims/task"
+      ],
+      "noBody": false
+    },
+    {
+      "id": "take",
+      "routes": [
+        "POST /legion/v1/claims/take"
+      ],
+      "noBody": false
+    }
+  ],
+  "enumeratedRows": [
+    {
+      "answer": "state",
+      "keyPath": "issues.*.architect.failure.cause",
+      "values": [
+        "never_reconnected"
+      ]
+    },
+    {
+      "answer": "state",
+      "keyPath": "issues.*.workers.*.claim.failure.cause",
+      "values": [
+        "never_reconnected"
+      ]
+    },
+    {
+      "answer": "state",
+      "keyPath": "issues.*.architect.pendingCause",
+      "values": [
+        "never_reconnected"
+      ]
+    },
+    {
+      "answer": "state",
+      "keyPath": "issues.*.workers.*.claim.pendingCause",
+      "values": [
+        "never_reconnected"
+      ]
+    },
+    {
+      "answer": "issue-record",
+      "keyPath": "architect.failure.cause",
+      "values": [
+        "never_reconnected"
+      ]
+    },
+    {
+      "answer": "issue-record",
+      "keyPath": "workers.*.claim.failure.cause",
+      "values": [
+        "never_reconnected"
+      ]
+    },
+    {
+      "answer": "issue-record",
+      "keyPath": "architect.pendingCause",
+      "values": [
+        "never_reconnected"
+      ]
+    },
+    {
+      "answer": "issue-record",
+      "keyPath": "workers.*.claim.pendingCause",
+      "values": [
+        "never_reconnected"
+      ]
+    },
+    {
+      "answer": "state",
+      "keyPath": "unseenTaskValues.*.role",
+      "values": [
+        "architect",
+        "implementer",
+        "merger",
+        "planner",
+        "reviewer",
+        "tester"
+      ]
+    }
+  ]
+}

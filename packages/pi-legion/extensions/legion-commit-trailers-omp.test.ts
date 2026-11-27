@@ -18,6 +18,7 @@ import {
   toolResultsIn,
   writeStandinProfile,
 } from "@legion/pi-shared/test/omp-harness";
+import { taskStandIn } from "@legion/pi-shared/test/task-stand-in";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 
 // On the real Oh My Pi: the `task` subagent of a Legion role pane makes a jj commit, and the
@@ -54,7 +55,8 @@ const REGISTRATION_SECRET = fixtureSecret("reg");
 const BOOT_TOKEN = fixtureSecret("boot");
 
 /**
- * The text that marks the assignment of the daemon, which the case sends as the RPC prompt. Each
+ * The text that marks the assignment of the daemon, which the pane takes as its claim's task
+ * (`@legion/pi-shared/test/task-stand-in`), as a worker takes every task the daemon owes it. Each
  * turn of the role's own conversation carries it, and no other request that the pane sends to the
  * gateway does. So it tells a turn of the role from a turn of the subagent and from a side request.
  */
@@ -167,6 +169,10 @@ async function startRolePane(role: Role): Promise<RolePane> {
   if (jj === null) throw new Error("jj is not on PATH");
   await symlink(jj, path.join(bin, "jj"));
 
+  // The daemon's assignment, the claim's value at registration, which the pane takes once its
+  // host is idle and runs as the role's first turn.
+  const tasks = taskStandIn();
+  tasks.give(`Work ${ISSUE} as the ${role}. ${ASSIGNMENT_MARK}.`);
   const held: Held[] = [];
   let sides = 0;
   let roleTurns = 0;
@@ -199,6 +205,8 @@ async function startRolePane(role: Role): Promise<RolePane> {
       });
     }
     if (url.pathname.startsWith("/anthropic/")) return Response.json({ data: [] });
+    const taskAnswer = tasks.answer(url.pathname, body);
+    if (taskAnswer !== undefined) return taskAnswer;
     if (url.pathname === "/legion/v1/claims/register") {
       return Response.json({
         ...registered,
@@ -208,6 +216,7 @@ async function startRolePane(role: Role): Promise<RolePane> {
         role,
         generation: 1,
         secret: REGISTRATION_SECRET,
+        ...tasks.registered(),
       });
     }
     if (url.pathname === "/legion/v1/claims/ready") return new Response(null, { status: 204 });
@@ -279,7 +288,6 @@ async function startRolePane(role: Role): Promise<RolePane> {
   rpc.closed.catch((error: unknown) => {
     closed.error = error;
   });
-  rpc.send({ type: "prompt", message: `Work ${ISSUE} as the ${role}. ${ASSIGNMENT_MARK}.` });
 
   let taken = 0;
   return {

@@ -31,7 +31,13 @@ const (
 
 func newToldRig(t *testing.T) *toldRig {
 	t.Helper()
-	r := &toldRig{keptRig: newKeptRig(t)}
+	return toldRigOn(t, migratedStore(t))
+}
+
+// toldRigOn is newToldRig over store, which the caller has migrated.
+func toldRigOn(t *testing.T, store *Store) *toldRig {
+	t.Helper()
+	r := &toldRig{keptRig: &keptRig{t: t, ctx: context.Background(), store: store, at: time.Date(2026, 10, 24, 9, 0, 0, 0, time.UTC)}}
 	r.issue(toldRoot, toldRoot)
 	r.issue(toldChild, toldRoot)
 	token, err := claim.NewToken("legion", toldChild, claim.RoleReviewer)
@@ -123,12 +129,13 @@ func (r *toldRig) seedTold() {
 }
 
 // A turn that starts carrying news is what makes its audience have taken it, so the write that
-// records the delivery's confirmation is the write that makes its credit: each item's told version
-// and each opening it carried read as taken, in that write's own transaction, so a confirmation
-// rolled back credits nothing, and one that commits cannot have left the told rows behind. Writing
-// the task before then — the queue, and every write while it waits — credits nothing. The delivery
-// is read back carrying the news it was written with. The write that records that the turn ran
-// makes the credit final, and folds it into the told rows at the confirmation's moment.
+// records that the take's turn started — here the same write as the delivery's confirmation — is
+// the write that makes its credit: each item's told version and each opening it carried read as
+// taken, in that write's own transaction, so such a write rolled back credits nothing, and one
+// that commits cannot have left the told rows behind. Writing the task before then — the queue,
+// and every write while it waits — credits nothing. The delivery is read back carrying the news it
+// was written with. The write that records that the turn ran makes the credit final, and folds it
+// into the told rows at the confirmation's moment.
 func TestAConfirmationRaisesWhatItsNewsToldInItsOwnTransaction(t *testing.T) {
 	t.Parallel()
 	r := newToldRig(t)
@@ -160,7 +167,7 @@ func TestAConfirmationRaisesWhatItsNewsToldInItsOwnTransaction(t *testing.T) {
 	}
 
 	confirmed := task
-	confirmed.ConfirmedAt = r.at.Add(time.Minute)
+	confirmed.ConfirmedAt, confirmed.TurnStarted = r.at.Add(time.Minute), true
 	refused := errors.New("the transaction that confirms fails after the delivery's write")
 	if err := Transact(r.ctx, r.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		if err := putDelivery(ctx, tx, r.reviewer.Token, confirmed); err != nil {
@@ -201,7 +208,7 @@ func TestAConfirmationNeverLowersAToldVersion(t *testing.T) {
 	r.seedTold()
 	r.tell(toldChild, record.AudienceHolder, map[record.DesignStep]int{record.DesignStepSpec: 6}, true)
 	confirmed := r.newsTask("outbox:7")
-	confirmed.ConfirmedAt = r.at.Add(time.Minute)
+	confirmed.ConfirmedAt, confirmed.TurnStarted = r.at.Add(time.Minute), true
 	if err := r.store.PutClaimAndDelivery(r.ctx, r.reviewer, confirmed); err != nil {
 		t.Fatalf("confirm the task: %v", err)
 	}
@@ -220,7 +227,7 @@ func TestATakenBackConfirmationPutsBackWhatItRaised(t *testing.T) {
 	r.seedTold()
 	task := r.newsTask("outbox:7")
 	confirmed := task
-	confirmed.ConfirmedAt = r.at.Add(time.Minute)
+	confirmed.ConfirmedAt, confirmed.TurnStarted = r.at.Add(time.Minute), true
 	for _, write := range []supervise.Delivery{task, confirmed} {
 		if err := r.store.PutClaimAndDelivery(r.ctx, r.reviewer, write); err != nil {
 			t.Fatalf("write the task: %v", err)
@@ -257,7 +264,7 @@ func TestATakenBackConfirmationKeepsAVersionRaisedPastWhatItTold(t *testing.T) {
 	r.seedTold()
 	task := r.newsTask("outbox:7")
 	confirmed := task
-	confirmed.ConfirmedAt = r.at.Add(time.Minute)
+	confirmed.ConfirmedAt, confirmed.TurnStarted = r.at.Add(time.Minute), true
 	for _, write := range []supervise.Delivery{task, confirmed} {
 		if err := r.store.PutClaimAndDelivery(r.ctx, r.reviewer, write); err != nil {
 			t.Fatalf("write the task: %v", err)
@@ -286,7 +293,7 @@ func TestAFoldKeepsAWriteOfTheSameRowThatCommitsWhileItWaits(t *testing.T) {
 	r.seedTold()
 	task := r.newsTask("outbox:7")
 	confirmed := task
-	confirmed.ConfirmedAt = r.at.Add(time.Minute)
+	confirmed.ConfirmedAt, confirmed.TurnStarted = r.at.Add(time.Minute), true
 	for _, write := range []supervise.Delivery{task, confirmed} {
 		if err := r.store.PutClaimAndDelivery(r.ctx, r.reviewer, write); err != nil {
 			t.Fatalf("write the task: %v", err)
@@ -371,7 +378,7 @@ func TestASecondConfirmedWriteRaisesNothingAgain(t *testing.T) {
 	r := newToldRig(t)
 	r.seedTold()
 	confirmed := r.newsTask("outbox:7")
-	confirmed.ConfirmedAt = r.at.Add(time.Minute)
+	confirmed.ConfirmedAt, confirmed.TurnStarted = r.at.Add(time.Minute), true
 	if err := r.store.PutClaimAndDelivery(r.ctx, r.reviewer, confirmed); err != nil {
 		t.Fatalf("confirm the task: %v", err)
 	}
@@ -412,7 +419,7 @@ func TestAConfirmationRaisesWhatItsPromptCarriedAndNotWhatTheTaskSaysNow(t *test
 		t.Fatalf("queue the task: %v", err)
 	}
 	confirmed := task
-	confirmed.ConfirmedAt = r.at.Add(time.Minute)
+	confirmed.ConfirmedAt, confirmed.TurnStarted = r.at.Add(time.Minute), true
 	if err := r.store.PutClaimAndDelivery(r.ctx, r.reviewer, confirmed); err != nil {
 		t.Fatalf("confirm the task: %v", err)
 	}
@@ -426,7 +433,7 @@ func TestAConfirmationRaisesWhatItsPromptCarriedAndNotWhatTheTaskSaysNow(t *test
 		t.Fatalf("retire the first task: %v", err)
 	}
 	r.seedTold()
-	unacknowledged.ConfirmedAt = r.at.Add(2 * time.Minute)
+	unacknowledged.ConfirmedAt, unacknowledged.TurnStarted = r.at.Add(2*time.Minute), true
 	if err := r.store.PutClaimAndDelivery(r.ctx, r.reviewer, unacknowledged); err != nil {
 		t.Fatalf("confirm a task no acknowledged prompt carried: %v", err)
 	}
@@ -453,7 +460,7 @@ func TestAConfirmationClearsOnlyTheOpeningItsPromptCarried(t *testing.T) {
 	r.exec(`select design_news_opening_settled($1, 'holder', false)`, toldChild)
 	r.exec(`select design_news_opening_settled($1, 'holder', true)`, toldChild)
 	confirmed := task
-	confirmed.ConfirmedAt = r.at.Add(time.Minute)
+	confirmed.ConfirmedAt, confirmed.TurnStarted = r.at.Add(time.Minute), true
 	if err := r.store.PutClaimAndDelivery(r.ctx, r.reviewer, confirmed); err != nil {
 		t.Fatalf("confirm the task: %v", err)
 	}
@@ -492,7 +499,7 @@ func TestAConfirmationClearsOnlyTheOpeningItsPromptCarried(t *testing.T) {
 		t.Fatalf("write the task acknowledged under the current opening: %v", err)
 	}
 	reconfirmed := retaken
-	reconfirmed.ConfirmedAt = r.at.Add(2 * time.Minute)
+	reconfirmed.ConfirmedAt, reconfirmed.TurnStarted = r.at.Add(2*time.Minute), true
 	if err := r.store.PutDelivery(r.ctx, r.reviewer.Token, reconfirmed); err != nil {
 		t.Fatalf("confirm the task again: %v", err)
 	}
@@ -516,7 +523,7 @@ func TestARetirementOfAConfirmedTaskGivesBackWhatItsTurnHasNotMadeFinal(t *testi
 	r := newToldRig(t)
 	r.seedTold()
 	confirmed := r.newsTask("outbox:7")
-	confirmed.ConfirmedAt = r.at.Add(time.Minute)
+	confirmed.ConfirmedAt, confirmed.TurnStarted = r.at.Add(time.Minute), true
 	if err := r.store.PutClaimAndDelivery(r.ctx, r.reviewer, confirmed); err != nil {
 		t.Fatalf("confirm the task: %v", err)
 	}
@@ -530,7 +537,7 @@ func TestARetirementOfAConfirmedTaskGivesBackWhatItsTurnHasNotMadeFinal(t *testi
 		map[record.DesignStep]int{record.DesignStepSpec: 5}, false)
 
 	final := r.newsTask("outbox:8")
-	final.ConfirmedAt = r.at.Add(2 * time.Minute)
+	final.ConfirmedAt, final.TurnStarted = r.at.Add(2*time.Minute), true
 	if err := r.store.PutClaimAndDelivery(r.ctx, r.reviewer, final); err != nil {
 		t.Fatalf("confirm the second task: %v", err)
 	}

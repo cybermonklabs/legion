@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/store/storetext"
+	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -566,7 +567,12 @@ func (r *outbox) settleNews(ctx context.Context, row record.OutboxRow, tree stri
 			if newsStartQueued(start.run) || holdsUntakenTask(start.run.Claim) || !recordedClaimTakesNews(start.run.Claim, start.entry) {
 				continue
 			}
-			request := record.SuperviseRequest{Op: "start", Tree: start.issue.Tree, Role: start.role, Generation: start.issue.Generation, News: true}
+			// A news-only start's task is the news alone, which tells the worker what changed and
+			// gives it no work of its phase, so it is recorded under an origin of its own
+			// (supervise.OriginNews), counted apart in the task-cost reading, never a phase start's
+			// or the operator's that originOf would read from a request that names none.
+			request := record.SuperviseRequest{Op: "start", Tree: start.issue.Tree, Role: start.role, Generation: start.issue.Generation, News: true,
+				Origin: supervise.OriginNews}
 			if start.role != claim.RoleArchitect {
 				request.Phase = start.issue.Phase
 			}

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -60,6 +61,27 @@ func TestTheClaimsSecretReportsEveryTurnAndARunOfRefusalsFailsNoClaim(t *testing
 	}
 	if got := stored.LastRefusal(); got != "the provider refused the request" {
 		t.Fatalf("the claim keeps %q as the newest refusal, want the provider's words", got)
+	}
+}
+
+// A report may say the accepted take whose text its producer still held unrun at the turn's end
+// (claim.TurnOutcomeRequest.Held): the route decodes it, strict as it is about every other key,
+// and records the report as any other. Every report above lacks it, and none is refused for that.
+func TestATurnOutcomeNamingAHeldTakeIsDecodedAndRecorded(t *testing.T) {
+	h := newHarness(t)
+	token, boot := h.launch("LEGION-208", claim.RoleArchitect)
+	registered := h.registered(boot, "ses_architect")
+
+	recorder, answer := h.turnOutcome(claim.TurnOutcomeRequest{
+		ClaimToken: token, SessionID: "ses_architect", Secret: registered.Secret,
+		Generation: 1, Sequence: 1, Outcome: claim.TurnClean, Held: 4,
+	})
+
+	if recorder.Code != http.StatusOK || answer != (claim.TurnOutcomeResponse{}) {
+		t.Fatalf("the report naming a held take = %d %+v (body %s), want 200 with no run", recorder.Code, answer, recorder.Body)
+	}
+	if outcomes := h.stored(token).TurnOutcomes; len(outcomes) != 1 || outcomes[0].Sequence != 1 {
+		t.Fatalf("the claim keeps %+v, want the report recorded", outcomes)
 	}
 }
 
@@ -182,9 +204,9 @@ func TestATurnOutcomeTheRouteCannotActOnIsRefusedAndRecordsNothing(t *testing.T)
 
 // A status outside the HTTP range is no status a provider answered, and the rollout of the field
 // is warn-first: the report is taken, as one whose status cannot be read, and the daemon warns
-// naming the number rather than refusing it. So a turn that ran no prompt of the daemon's, refused
-// with 1400, counts in the claim's run of provider-error turns and fails nothing, as a refusal
-// with no status does, where a 400 would fail the claim.
+// naming the number rather than refusing it. So a turn that ran none of the daemon's tasks,
+// refused with 1400, counts in the claim's run of provider-error turns and fails nothing, as a
+// refusal with no status does, where a 400 would fail the claim.
 func TestATurnOutcomeWithAStatusOutsideTheHTTPRangeIsTakenAsNoStatusWithAWarning(t *testing.T) {
 	h := newHarness(t)
 	token, boot := h.launch("LEGION-208", claim.RoleArchitect)
@@ -229,7 +251,7 @@ func TestAReportOfAnEarlierGenerationIsRecordedInItsOwnPlace(t *testing.T) {
 	}
 }
 
-// The report of a turn that ran no prompt of the daemon's is that turn's one record, so the daemon
+// The report of a turn that ran none of the daemon's tasks is that turn's one record, so the daemon
 // judges the turn from it (supervise's turnOutcome): refused with a status that can clear, it
 // fails nothing, and refused with one that cannot, a 400, it fails the claim, and the answer's
 // `failed` says so (claim.TurnOutcomeResponse).
@@ -292,9 +314,9 @@ func TestAnUnpromptedTurnsCyberPolicyCodeFailsTheClaimUnderItsOwnCause(t *testin
 	}
 }
 
-// The daemon reads one class off a report, `cyber_policy`; a report naming another is taken as one
-// that names none, as a status outside the HTTP range is, and the route warns naming it rather
-// than refusing the report, so the turn is still counted.
+// The daemon reads `cyber_policy` and `cost_cap` off a report; a report naming another word is
+// taken as one that names none, as a status outside the HTTP range is, and the route warns naming
+// it rather than refusing the report, so the turn is still counted.
 func TestATurnOutcomeWithAnUnknownCodeIsTakenAsNoCodeWithAWarning(t *testing.T) {
 	h := newHarness(t)
 	token, boot := h.launch("LEGION-208", claim.RoleArchitect)
@@ -303,7 +325,7 @@ func TestATurnOutcomeWithAnUnknownCodeIsTakenAsNoCodeWithAWarning(t *testing.T) 
 	recorder, answer := h.turnOutcome(claim.TurnOutcomeRequest{
 		ClaimToken: token, SessionID: "ses_architect", Secret: registered.Secret,
 		Generation: 1, Sequence: 1, Outcome: claim.TurnRefused, Message: "the provider refused the reminder's turn",
-		Unprompted: true, Code: "cost_cap",
+		Unprompted: true, Code: "session_busy",
 	})
 
 	if recorder.Code != http.StatusOK || answer != (claim.TurnOutcomeResponse{RefusedRun: 1}) {
@@ -312,7 +334,52 @@ func TestATurnOutcomeWithAnUnknownCodeIsTakenAsNoCodeWithAWarning(t *testing.T) 
 	if stored := h.stored(token); stored.State == supervise.StateFailed {
 		t.Fatalf("the claim failed (%q) on a code the daemon reads none of", stored.FailureCause)
 	}
-	if lines := h.serverLog.lines("level=WARN", "taken as no code", "code=cost_cap"); len(lines) != 1 {
+	if lines := h.serverLog.lines("level=WARN", "taken as no code", "code=session_busy"); len(lines) != 1 {
 		t.Fatalf("the route warned %q, want one line naming the code it took as none", h.serverLog.lines("code="))
+	}
+}
+
+// The route hands the cost cap and task number to the machine at the task-take contract.
+// Below that contract, it records the report but warns and drops the code.
+func TestATurnOutcomeCostCapCodeAtTaskTakeContractIsHandedToTheMachine(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		contract int
+		code     string
+		warnings int
+	}{
+		{"at task-take", TaskTakeContract(), "cost_cap", 0},
+		{"below task-take", TaskTakeContract() - 1, "", 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarnessUnrelaunchable(t)
+			token, boot := h.launch("LEGION-208", claim.RoleImplementer)
+			registered := h.registerContract(boot, "ses_implementer", tc.contract, false)
+			refusal := "Cost cap reached: this session spent $5.01 of its $5.00 cap (--max-cost / session.maxCost), so the next model request was not sent."
+
+			recorder := h.request(http.MethodPost, "/legion/v1/claims/turn-outcome", claim.TurnOutcomeRequest{
+				ClaimToken: token, SessionID: "ses_implementer", Secret: registered.Secret,
+				Generation: 1, Sequence: 1, Outcome: claim.TurnRefused, Message: refusal,
+				Task:          1,
+				ProviderError: &claim.ProviderError{Message: refusal},
+				Code:          "cost_cap",
+			}, http.Header{pluginContractHeader: {strconv.Itoa(tc.contract)}})
+
+			if recorder.Code != http.StatusOK {
+				t.Fatalf("the cost_cap report = %d (body %s), want 200", recorder.Code, recorder.Body)
+			}
+			var answer claim.TurnOutcomeResponse
+			decodeInto(t, recorder, &answer)
+			if answer != (claim.TurnOutcomeResponse{RefusedRun: 1}) {
+				t.Fatalf("the cost_cap answer = %+v, want a run of 1 and no failure", answer)
+			}
+			stored := h.stored(token)
+			if outcomes := stored.TurnOutcomes; len(outcomes) != 1 || outcomes[0].Task != 1 || outcomes[0].ProviderErrorCode != tc.code {
+				t.Errorf("stored turn outcomes = %+v, want one outcome for task 1 with code %q", outcomes, tc.code)
+			}
+			if lines := h.serverLog.lines("level=WARN", "taken as no code", "code=cost_cap"); len(lines) != tc.warnings {
+				t.Errorf("the route warned %q, want %d warnings about taking cost_cap as no code", lines, tc.warnings)
+			}
+		})
 	}
 }

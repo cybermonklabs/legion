@@ -592,6 +592,48 @@ func TestARateLimitedBatchReadWaitsWhatGitHubAsks(t *testing.T) {
 	}
 }
 
+// A pull request owed one read (baseOwed.once, a base push's for an issue in merging, or a failed
+// start read's) leaves the batch after a read of it, whatever GitHub answered, but a query that
+// read nothing of it - one that fails, a 502 here, or one GitHub's rate limit refuses - made no read
+// of it, so it keeps its one read until a query answers (missed, readStopped): the next query
+// answers `unknown`, which ends it, and no query after that is made. The negative control is
+// missed dropping a one-read place on every read that answered nothing, as it did before: the
+// record then stands at the state it held, GitHub is queried once, and no read of the head was
+// made.
+func TestAOneReadWhoseQueryReadNothingIsMadeByTheNextQuery(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name  string
+		first func(header http.Header) (int, string)
+	}{
+		{name: "a failed query", first: func(http.Header) (int, string) { return http.StatusBadGateway, `{"message":"Server Error"}` }},
+		{name: "a rate limit", first: func(header http.Header) (int, string) {
+			header.Set("Retry-After", "1")
+			return http.StatusForbidden, `{"message":"You have exceeded a secondary rate limit. Please wait a few minutes before you try again."}`
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := isolatedOutboxPool(t)
+			seedOnMain(t, pool, "CAPTURE-1", 86, phase.Merging, "retro", "U")
+			rig := newBatchRig(t, pool, func(query int32, asked []int, header http.Header) (int, string) {
+				if query == 1 {
+					return tc.first(header)
+				}
+				return http.StatusOK, batchAnswer(t, asked, batchNode(86, "head-86", "UNKNOWN", "UNKNOWN"))
+			})
+
+			pushOntoMain(t, pool, rig.w, "main-2")
+			testwait.Eventually(t, "the second query to answer the one read and the batch to end", func() bool {
+				return recordedPull(t, pool, "CAPTURE-1").MergeState == record.MergeStateUnknown && rig.ended()
+			})
+			time.Sleep(2 * mergeStateFollowWaits * rig.w.mergeStateWait())
+			if got := rig.queries.Load(); got != 2 {
+				t.Fatalf("GitHub was queried %d times, want twice: the first read nothing of the pull request, the second was its one read", got)
+			}
+		})
+	}
+}
+
 // A pull request can move to another base with its head unchanged, which the record learns of from
 // no event it reads. The query asks GitHub for each pull request's base by number, so the answer
 // names the base GitHub holds it on: the record takes it, and GitHub's `unknown` there is followed

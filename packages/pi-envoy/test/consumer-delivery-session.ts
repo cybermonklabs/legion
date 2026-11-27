@@ -6,7 +6,7 @@
 // and `done` once the frame is in the transcript (`@legion/envoy-client/consumer-delivery`). This
 // module registers no hook: each file that boots the session calls `useExtensionHarness()`.
 import { createHash } from "node:crypto";
-import { RelayHeader } from "@legion/envoy-client/consumer-delivery";
+import { RelayHeader } from "@legion/envoy-client/relay-frame";
 import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer";
 import type { SessionContext as HostSessionContext, PiApi } from "@legion/pi-shared/pi-types";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";

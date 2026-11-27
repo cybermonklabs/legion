@@ -1,0 +1,7 @@
+kind: Fixed
+body: |-
+  A worker stream that begins inside a chunked frame loses only that frame, and the daemon logs one
+  `dropped an rpc_chunk sequence` line for it, not one for each chunk left of it, and reads the next
+  frame as usual. The shim sends a chunked frame, its own or one Oh My Pi wrote, as one whole
+  sequence: a connection that breaks inside it, and a backlog trimmed at its limit, keep or drop the
+  whole sequence, so the next connection gets it from its first chunk.

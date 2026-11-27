@@ -53,7 +53,7 @@ var _ jetstream.Msg = (*fakeDelivery)(nil)
 func newDelivery(t testing.TB, consumer, subject string, data []byte, seq uint64, stored time.Time) *fakeDelivery {
 	return &fakeDelivery{unexpectedMessage: unexpectedMessage{t: t}, subject: subject, data: data, metadata: jetstream.MsgMetadata{
 		Sequence: jetstream.SequencePair{Stream: seq, Consumer: seq}, NumDelivered: 1, Consumer: consumer,
-		Stream: notificationStream, Timestamp: stored,
+		Stream: NotificationStream, Timestamp: stored,
 	}}
 }
 

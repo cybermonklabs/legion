@@ -3,6 +3,7 @@
     "launch_refused",
     "died",
     "never_registered",
+    "never_reconnected",
     "stale_plugin",
     "prompt_retires_exhausted",
     "provider_error",

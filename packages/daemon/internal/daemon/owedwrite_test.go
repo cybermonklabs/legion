@@ -430,9 +430,10 @@ func (r *owedWriteRig) boot() {
 			Probe: time.Second, Stop: time.Second, LaunchBackoff: time.Millisecond, ClaimWrite: r.write},
 		// The daemon's own write bound (daemon.go's Deps), so INFRA-1132's rows read the
 		// production path: the write bound counted from the connection, the queue's apart.
-		BoundWrite:     store.BoundAfterAcquire,
-		PluginContract: api.DaemonAPIVersion(),
-		RefreshGate:    supervise.NewRefreshGate(0),
+		BoundWrite:       store.BoundAfterAcquire,
+		PluginContract:   api.DaemonAPIVersion(),
+		TaskTakeContract: api.TaskTakeContract(),
+		RefreshGate:      supervise.NewRefreshGate(0),
 	}
 	r.t.Cleanup(sup.stop)
 	stored, err := sup.Claims(r.ctx)
@@ -477,12 +478,12 @@ func (r *owedWriteRig) turnStart(role claim.Role) supervise.Event {
 	return supervise.StreamTurnStart{Claim: r.token(role)}
 }
 
-// nudge is an event that drives a decision and writes nothing of its own: a prompt result naming
-// a delivery the claim does not hold, which the fence drops before the table. The repair at the
-// head of Handle still runs, so what a test measures around it is the owed write alone.
+// nudge is an event that drives a decision and writes nothing of its own: a timer the claim
+// never armed, which the fence drops before the table. The repair at the head of Handle still
+// runs, so what a test measures around it is the owed write alone.
 func (r *owedWriteRig) nudge(role claim.Role) supervise.Event {
 	r.t.Helper()
-	return supervise.StreamPromptResult{Claim: r.token(role), DeliveryID: "no delivery of this claim", AgentInvoked: true}
+	return supervise.Timer{Claim: r.token(role), Kind: supervise.TimerFinish, Generation: r.machine(role).Claim().Generation, Seq: 1 << 62}
 }
 
 // held is the claim as its machine holds it.

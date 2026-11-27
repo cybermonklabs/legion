@@ -77,17 +77,12 @@ package api
 // #5813 moved the pin to while this change was open, after #5183's, #5473's, #5577's, #5702's,
 // #5769's and #5776's pins.
 // It carries all of v18.18.6-sami.20261118-035823, the first fork release whose `prompt` refusal
-// and `prompt_result` carry `code: "session_busy"` when the agent is busy (dispatch://INFRA-3538;
-// shimwire.CodeSessionBusy names the refusals that code covers). The daemon reads that code and
-// no words. A pod of the release before this one, whichever release of main precedes this entry,
-// runs the same Oh My Pi and sends the code already. A pod still on an image before
-// v18.18.6-sami.20261118-035823, until its update round, sends its busy refusal with no code, and
-// the daemon reads it as busy from its own record of the claim working or from the agent's
-// get_state (supervise's agentRefusalOutcome). While the record does not hold the claim working,
-// an agent on such an image is still charged in two cases: it does not answer get_state within
-// the RPC bound, or its turn ended between its refusal and the ask, as a notice's turn can when the
-// refusal came during its pre-turn work. Its refusal is then charged as unrecognised, and its
-// prompt's result as a prompt that ran no turn. Nothing of the daemon API changes with the pin.
+// and `prompt_result` carry `code: "session_busy"` when the agent is busy (dispatch://INFRA-3538).
+// Under the task-take entry (20261125171504) the daemon sends a worker no prompt: the worker takes
+// its task when its session is idle and reports each turn's outcome, so the daemon reads neither
+// that refusal nor that result, and no busy refusal is charged. A pod on an image of an earlier
+// release runs a plugin below the task-take entry, which the stale-plugin lane refreshes onto this
+// release's plugin. Nothing of the daemon API changes with the pin.
 //
 // This entry was numbered 294 before the cutover (d41b74eb), and
 // scripts/daemon-contract-convert.sh converted it at the merge of main at 7102278681e2.

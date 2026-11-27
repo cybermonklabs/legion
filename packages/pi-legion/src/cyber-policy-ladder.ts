@@ -31,16 +31,17 @@ import { integerSetting, type StallLimitsLog } from "@legion/pi-shared/stall-lim
  *    `retry.fallbackChains` whose family is the session model's own. No rung changes family.
  *
  * Only when the last rung is refused too does the turn settle, so the refusal reaches the daemon
- * with its `cyber_policy` code, as the prompt's result and as the turn's outcome, and the daemon
- * holds the agent as before.
+ * with its `cyber_policy` code, as the turn's outcome report, and the daemon holds the agent as
+ * before.
  *
- * Why this runs inside the turn. The daemon reads a prompt's outcome from Oh My Pi's
- * `prompt_result`, which the host writes at the first `agent_end` it marks `yielded`
- * (`modes/rpc/rpc-prompt-results.ts:159-170` at v18.18.6-sami.20261127-055727). A `session_stop`
- * handler that answers a continuation makes the host end the run with `willContinue`, which it
- * marks as not yielded (`session/agent-session.ts:6481-6482, 7084-7090`), so the prompt stays open
- * across every rung and its result is the last rung's. The host stops waiting for a
- * `session_stop` handler at 30 s without aborting it (`extensibility/extensions/runner.ts:152,
+ * Why this runs inside the turn. The daemon reads how a take's turn ended from the turn-outcome
+ * report this plugin sends at the `agent_end` that settles the turn, naming the take's number
+ * (`turnOutcomes` in extensions/legion.ts). A `session_stop` handler that answers a continuation
+ * makes the host end the run with `willContinue` (`session/agent-session.ts:6481-6482,
+ * 7084-7090` at v18.18.6-sami.20261127-055727), which ends no turn (`turnGoesOn`,
+ * src/turn-end.ts): the take keeps its number and nothing is reported across every rung, and the
+ * one report is the last rung's. The host stops waiting for a `session_stop` handler at 30 s
+ * without aborting it (`extensibility/extensions/runner.ts:152,
  * 1983-1988, 2030`), so each wait is at most `LONGEST_RUNG_WAIT_MS`, and once `SETTLE_BUDGET_MS`
  * from the handler's start has passed a rung starts no model switch and sends nothing; a switch
  * already under way runs to its end, and the model fallback's return brings the model back. The

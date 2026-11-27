@@ -1487,7 +1487,9 @@ func FirstConflictReadWaits(pr record.PullRequest) bool {
 // MergeStateFact is the kind of fact that asks whether GitHub's merge state is read for a pull
 // request (MergeStateReadOwed). Workflow's askMergeState names it from the fact it applied, and
 // workflow's basePush names MergeStateFactBasePush for each pull request its walk recorded the
-// push on.
+// push on. The daemon's start read names MergeStateFactStartRead, which is no fact the workflow
+// applies, to ask whether the issue is owed one read: its own, or, where it failed, one read by its
+// base's batch (MergeStateReadOnce).
 type MergeStateFact int
 
 const (
@@ -1500,6 +1502,12 @@ const (
 	MergeStateFactHeadMove
 	// MergeStateFactBasePush is a push to the base branch the pull request sits on.
 	MergeStateFactBasePush
+	// MergeStateFactStartRead is the daemon's start read of the pull request (daemon's
+	// readIssuesAtStart), which reads GitHub itself, so the gate owes it no read; GitHub still
+	// computing the merge there (`unknown`, or an answer MergeAnswerIncomplete reads again) asks
+	// for a ladder of reads, and a start read that failed for a follow by its base's reads, unless
+	// MergeStateReadOnce says the issue is owed one read.
+	MergeStateFactStartRead
 )
 
 // MergeForwardStands says whether a merge forward is asked, and stands, where issue stands, on
@@ -1533,7 +1541,8 @@ func MergeForwardStands(issue record.Issue, line []phase.Phase) bool {
 // MergeStateReadOwed is the gate of the read of GitHub's merge state for an issue's open pull
 // request (workflow's mergeStateOwed, which both a fact of one pull request reads by, to queue the
 // ladder behind daemon's readMergeState, and a base push reads by for each pull request on the
-// base, to queue that base's batch of reads, daemon's queueBaseMergeStates): whether a fact of
+// base, to queue that base's batch of reads, daemon's queueBaseMergeStates, in which a pull
+// request is owed a climb of reads or the one read MergeStateReadOnce names): whether a fact of
 // kind fact asks for it, for an issue whose task walks line. Each of two reasons asks, and one is
 // enough:
 //
@@ -1550,8 +1559,9 @@ func MergeForwardStands(issue record.Issue, line []phase.Phase) bool {
 //     is recorded for the move into merging (cybermonklabs/legion#4979). Elsewhere, without a
 //     read, the record would keep the state the read before the push left: a record read
 //     `blocked` while GitHub answered DIRTY, because no read followed the base push (INFRA-4315,
-//     dispatch://INFRA-4374/spec#b-r4). A base push reads nothing for an issue in implementing or
-//     before it: there the head the implementer pushes next is read, by the reason above.
+//     dispatch://INFRA-4374/spec#b-r4). In merging the read is one read rather than a ladder
+//     (MergeStateReadOnce). A base push reads nothing for an issue in implementing or before it:
+//     there the head the implementer pushes next is read, by the reason above.
 //
 // Every other fact asks nothing here, and so does a head move or a base push of an issue outside
 // those phases. The third reason a read is owed is not the gate's: the issue's review round
@@ -1568,6 +1578,35 @@ func MergeStateReadOwed(issue record.Issue, line []phase.Phase, fact MergeStateF
 		return phase.MovesBackOn(line, record.StandsAt(issue), phase.Implementing)
 	}
 	return false
+}
+
+// MergeStateReadOnce says whether a read of GitHub's merge state for issue's pull request asked for
+// by kind fact is one read rather than a ladder of them (daemon's mergeStateLadder, which climbs
+// and then follows the head while GitHub answers `unknown` or another answer MergeAnswerIncomplete
+// reads again). It is one read for an issue that stands in merging, or is held from it, on two
+// kinds: a push to the base, which the gate owes a read (MergeStateReadOwed) and the daemon then
+// reads once; and the daemon's start read, where the one read is the start read itself, so that
+// whatever it answers queues no ladder after it, or, where that read failed, one read by its base's
+// batch (daemon's readIssuesAtStart, startReadFailed).
+//
+// The pull request of an issue in merging sits in GitHub's merge queue, and GitHub answers
+// `unknown` for a head in the merge queue (workflow's mergeability). A ladder there would read the
+// head five times and then again at one, two, four, eight and every ten minutes, for each push to
+// the base and each start of the daemon, and on the App's rate limit, for an answer GitHub does
+// not give while the head is queued. One read still answers where GitHub has computed the state,
+// such as a head the push left conflicting, which past the review is merged forward at once
+// (ConflictNeedsMerge, record.ConflictMergeNext). Its answer is applied as every read's is, and an
+// `unknown` one is no conflict (dispatch://INFRA-2833 R2): it asks for no further read and moves
+// nothing.
+//
+// It is decided here, beside the gate, because the rule is one for both kinds, and the gate
+// already reads the fact and the phase: the engine passes the answer with its request (workflow's
+// Config.ReadMergeState), the start read asks it of the record, and the daemon tests no phase of
+// its own. Every other read the daemon is asked for is a ladder: a base push or a start read of an
+// issue in any other phase, a head move, a review round that waits on the merge state
+// (RoundWaitsOnMergeState, which holds only in reviewing), and the second read of a conflict.
+func MergeStateReadOnce(issue record.Issue, fact MergeStateFact) bool {
+	return (fact == MergeStateFactBasePush || fact == MergeStateFactStartRead) && record.StandsIn(issue, phase.Merging)
 }
 
 // ConflictNeedsMerge is R0's decision on a confirmed conflict (dispatch://INFRA-4374 R0): why the

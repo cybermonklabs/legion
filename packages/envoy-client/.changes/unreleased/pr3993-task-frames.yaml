@@ -1,0 +1,8 @@
+kind: Added
+body: |-
+  The consumer delivery hands a relayed task frame to its `onTaskValue` handler. A task frame is
+  never answered, counted in the ledger or ordered with messages, and changes no resume point.
+  `answered` says whether an answer is the first of the current epoch, after which a host reads its
+  claim's task value again. Both hold on the listener's relay socket as on NATS: a task frame is a
+  `msg` of the session's relay subject whose headers are the frame's, and each reopen of the socket
+  begins a new epoch.

@@ -4,9 +4,9 @@
 //
 // The boundary carries process facts only: a runtime spawns, stops, and observes processes, and
 // says `Alive`, `Gone`, `NotRecordedProcess`, or `Uncertain` about them. What the agent inside
-// the process is doing — that it connected, acknowledged a prompt, started or ended a turn — is
-// the worker stream's to report, a peer source beside this one. Both reach the supervisor, which
-// is the only place the two kinds of fact meet.
+// the process is doing — that it connected, took its task, started or ended a turn — is the
+// worker stream's and the claim routes' to report, peer sources beside this one. They all reach
+// the supervisor, which is the only place the two kinds of fact meet.
 //
 // The connection contract (`Conn`, `Conns`) lives here rather than in the stream package so that
 // this package and its fake depend on methods rather than on the stream's structs; the stream's
@@ -127,10 +127,10 @@ type Runtime interface {
 	// which has no issue workspace and nothing to push. The daemon opens an update round on a
 	// non-empty answer: the round asks each role of that place to do the steps of its update
 	// message (supervise.UpdateTask) and answer (api's claims/ready-for-update), and replaces the
-	// place (ReplacePod) once every asked role has answered, no turn runs and no claim's activity
-	// report holds it (internal/daemon's roundEnd.holding), or at the round's bound
-	// (pod_update_grace_minutes) whatever the roles answered and whatever runs, a holding
-	// suspension excepted.
+	// place (ReplacePod) once every asked role has answered, no turn runs, no take whose turn ended
+	// still owes its report and no claim's activity report holds it (internal/daemon's
+	// roundEnd.holding), or at the round's bound (pod_update_grace_minutes) whatever the roles
+	// answered and whatever runs, a holding suspension excepted.
 	//
 	// ErrPodGone is the place the locator records not being there, or being ended for something
 	// other than this round's own replacement, which is neither drift nor a failure to ask:
@@ -1021,6 +1021,14 @@ type Observation struct {
 	// pod is the only thing the kubelet ends this way. It is a field rather than a shape of Detail
 	// for the reason Displaced is: Detail is prose for an operator and nothing else.
 	OutOfMemory bool
+	// DaemonAPIMoved is a StaleAddress whose moved addresses include the daemon's own API
+	// (LEGION_DAEMON_URL): the process holds an address of the daemon a process launched now is
+	// not handed, so nothing it sends the daemon over HTTP — a take, or the report of a turn —
+	// reaches it any more. The supervisor holds no relaunch of such a process for the report of
+	// its take's turn, which can never come (supervise's repoint). Only the Sandbox runtime
+	// reports it, as it alone reports StaleAddress. It is a field rather than a shape of Detail
+	// for the reason Displaced is: Detail is prose for an operator and nothing else.
+	DaemonAPIMoved bool
 	// PodEnd is the pod's own reason for the end and the kubelet's message with it, as
 	// `<reason>: <message>`, the reason alone where there is no message, and empty where the pod
 	// carries no reason: `Evicted: The node was low on resource: ephemeral-storage. ...` is the

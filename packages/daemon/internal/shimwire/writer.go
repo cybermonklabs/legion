@@ -37,8 +37,8 @@ func NewWriter(dst io.Writer) *Writer {
 }
 
 // newFrameEncoder is the encoder every frame line is encoded with, the Writer's and FrameLen's:
-// JSON.stringify does not escape <, > or &, and a prompt message is arbitrary task text, so a Go
-// peer writes the same bytes the shipped one does.
+// JSON.stringify does not escape <, > or &, and a compaction's instructions are arbitrary text,
+// so a Go peer writes the same bytes the shipped one does.
 func newFrameEncoder(dst io.Writer) *json.Encoder {
 	encoder := json.NewEncoder(dst)
 	encoder.SetEscapeHTML(false)

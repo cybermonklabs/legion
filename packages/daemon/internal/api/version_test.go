@@ -53,10 +53,10 @@ func TestReleasedContractsGolden(t *testing.T) {
 // fixture written again (`go test ./internal/api/ -update`) then fails the contracts case until
 // the enum names the word too.
 //
-// The eight words are written out here beside it, so a constant renamed on the Go side — which
+// The nine words are written out here beside it, so a constant renamed on the Go side — which
 // would otherwise rewrite the fixture with nobody reading the diff — fails here by its own name.
 func TestFailureCausesGolden(t *testing.T) {
-	want := []supervise.FailureCause{"launch_refused", "died", "never_registered", "stale_plugin",
+	want := []supervise.FailureCause{"launch_refused", "died", "never_registered", "never_reconnected", "stale_plugin",
 		"prompt_retires_exhausted", "provider_error", "cyber_policy", "unrecorded"}
 	if !slices.Equal(supervise.FailureCauses, want) {
 		t.Fatalf("supervise.FailureCauses = %q, want the wire words %q", supervise.FailureCauses, want)
@@ -131,6 +131,31 @@ func TestTheOwnerPlanContractIsTheContractThatAddedThePlan(t *testing.T) {
 	if OwnerPlanContract > DaemonAPIVersion() {
 		t.Fatalf("OwnerPlanContract = %d, above DaemonAPIVersion %d: no caller could be served the two new hold reasons",
 			OwnerPlanContract, DaemonAPIVersion())
+	}
+}
+
+// TaskTakeContract is the contract that brought the take (the task, task-seen and take routes,
+// the register answer's `task` and `finished`, `never_reconnected` and `unseenTaskValues` on the
+// state): the number this build gives the task-take entry. No source line holds that number, so
+// the test holds the export to the entry rather than to a literal (R4 of dispatch://INFRA-1569):
+// it is the entry's own number, one this build registers, above every numbered entry and at or
+// below this daemon's own contract, and the two answers the entry adds arrive at it. A later
+// entry moves DaemonAPIVersion() and none of these.
+func TestTaskTakeContractIsTheContractThatIntroducedTheTake(t *testing.T) {
+	take := TaskTakeContract()
+	if !slices.ContainsFunc(NumberedEntries(), func(entry NumberedEntry) bool {
+		return entry.ID == taskTakeContract && entry.Number == take
+	}) {
+		t.Fatalf("this build numbers no entry %d at %d: %+v", taskTakeContract, take, NumberedEntries())
+	}
+	if take <= LastNumberedContract || take > DaemonAPIVersion() {
+		t.Fatalf("TaskTakeContract() = %d, want above LastNumberedContract %d and at or below DaemonAPIVersion %d: no worker could take a task",
+			take, LastNumberedContract, DaemonAPIVersion())
+	}
+	for _, id := range []AnswerID{AnswerTask, AnswerTake} {
+		if answer, held := answerAt(Answers(), id); !held || answer.Since != take {
+			t.Errorf("the %s answer arrives at %d (held %v), want the take's contract %d", id, answer.Since, held, take)
+		}
 	}
 }
 

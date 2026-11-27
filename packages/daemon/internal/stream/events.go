@@ -4,17 +4,13 @@ import (
 	"sync"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
-	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
 // Event is one agent fact the stream observed. The set is sealed: a connection arriving
-// (Hello), OMP starting and ending a turn (TurnStart, TurnEnd), one tool call of a turn
-// starting or ending (ToolStep), OMP saying how one prompt's work ended (PromptResult), OMP
-// taking back a prompt it had acknowledged (LateRefusal), the model that answered (Answered), and
-// the connection going away (Closed); and one mark that is no agent fact, the place in the queue
-// a consumer asked for (Drained). The acknowledgement of a prompt is not one of them — it is
-// Conn.Prompt's return, so the one goroutine that sent the prompt is the one that learns it was
-// taken (B4).
+// (Hello), OMP starting and ending a turn (TurnStart, TurnEnd), OMP's answer to whether a turn is
+// running (TurnAnswered), one tool call of a turn starting or ending (ToolStep), the model that
+// answered (Answered), and the connection going away (Closed); and one mark that is no agent
+// fact, the place in the queue a consumer asked for (Drained).
 type Event interface{ isEvent() }
 
 // AgentSecretsIdentity is the pod's session identity a hello2 carried (shimwire.AgentSecretsHello):
@@ -27,24 +23,41 @@ type AgentSecretsIdentity struct {
 // Hello is a shim's hello accepted: the claim's connection is registered, at the generation its
 // boot token was minted for, with the identity the hello carried, if any. Under always-dial the
 // shim says hello before it spawns Oh My Pi, so a Hello says the pane's bridge is up, not that the
-// agent is.
+// agent is. BacklogWhole is the hello's word that the connection is handed every frame the shim
+// held for a daemon since its last connection, false where the hello does not say so
+// (shimwire.Hello2.BacklogWhole).
 type Hello struct {
 	Claim        claim.Token
 	Generation   uint64
 	AgentSecrets *AgentSecretsIdentity
+	BacklogWhole bool
 }
 
-// TurnStart is OMP's agent_start. DeliveryID is set only when the frame carried one — the shim's
-// replay of a start it already observed for that delivery (worker-shim.ts:365); OMP's own start
-// never names the prompt that caused it, and matching it to one is the supervisor's rule.
+// TurnStart is OMP's agent_start. It never names what caused the turn; which task a turn is the
+// turn of is the supervisor's rule (a turn that starts after an accepted take, supervise's
+// take.go).
 type TurnStart struct {
-	Claim      claim.Token
-	DeliveryID string
+	Claim claim.Token
 }
 
 // TurnEnd is OMP's agent_end: the turn is over.
 type TurnEnd struct {
 	Claim claim.Token
+}
+
+// TurnAnswered is OMP's answer to a get_state the daemon asked (Conn.GetState): whether a turn is
+// running. The reader pushes it as it reads that answer (Conn.dispatch), so it follows every event
+// of a frame the connection read before the answer — a shim's replay of the frames it held while
+// no daemon was attached among them, which the shim writes before any later frame — and the
+// supervisor reads it with those frames already applied. It is pushed only for a get_state the
+// connection it arrives on wrote and still waits on: an answer to an earlier connection's ask,
+// which the shim replays from its backlog, is none (Conn.stateAnswered). Ask is the id of the
+// get_state it answers, which the asker's own answer names too (runtime.ConnState.Ask), so the
+// asker can tell this event from any other answer's.
+type TurnAnswered struct {
+	Claim     claim.Token
+	Streaming bool
+	Ask       string
 }
 
 // ToolStep is one tool call of the agent's turn beginning or ending
@@ -69,67 +82,9 @@ type ToolStep struct {
 	ArgsHash  string
 	End       bool
 	// ConnSequence is the registration sequence of the connection the frame arrived on
-	// (Conn.Sequence), as LateRefusal carries it: the supervisor compares it with the claim's
-	// live connection, and a frame of a connection that has since been replaced says what the
-	// agent was doing, not what it is doing now.
-	ConnSequence uint64
-}
-
-// PromptResult is OMP's prompt_result: the work of one prompt is over. It is the only frame that
-// names the prompt a turn belonged to, since agent_end carries no prompt identity
-// (omp://rpc.md), and it arrives right after the agent_end of the turn the prompt ran. A turn
-// another wake started — a background job's result, with background work on for every role — ends
-// with no prompt_result behind it, which is how the supervisor tells that turn from the delivery's
-// own.
-//
-// DeliveryID is the delivery the prompt's request id names (promptDelivery), so a result read on
-// a connection that did not send the prompt still names its delivery. AgentInvoked is false for a
-// prompt that ran no turn at all. Error is OMP's reason when the work ended in one: the message
-// of the frame's error object (shimwire.PromptError), which is what the daemon's own log records.
-//
-// The other members of that error object come with it. Retryable is Oh My Pi's own word for a
-// failure that may succeed on a later try, HTTPStatus the status of the provider request that
-// failed (zero when the failure had none, as a content-filter refusal does), Provider and Model
-// the provider and the model that request went to, and Code Oh My Pi's class of the failure
-// (shimwire.PromptError.Code; empty when it gives none). Whether such a failure can clear is read
-// from HTTPStatus and Code (supervise's providerErrored); the message is never parsed, since it is
-// a provider's own prose and changes without notice.
-//
-// Outcome is minted here for a prompt that ran no turn, from the result's machine-readable code
-// (PromptRefusalOutcome), never its words: runtime.OutcomeAgentBusy where the code says the agent
-// was busy, else runtime.OutcomeNoTurnRun. A result whose prompt ran a turn carries none.
-type PromptResult struct {
-	Claim        claim.Token
-	DeliveryID   string
-	AgentInvoked bool
-	Error        string
-	Retryable    bool
-	HTTPStatus   int
-	Provider     string
-	Model        string
-	Code         string
-	Outcome      runtime.Outcome
-}
-
-// LateRefusal is OMP answering `{success:false}` for a prompt it had already answered
-// `{success:true}` — its busy answer once it finds a turn it did not start, and whatever a prompt
-// that failed before any turn began says (worker-rpc.ts:359-368). DeliveryID is the delivery that
-// prompt carried, so a delivery the supervisor counted as started by a turn that was never its own
-// can be taken back. A refusal OMP gave while no daemon was connected reaches the next connection
-// from the shim's backlog; the prompt's request id names its delivery, so it is a LateRefusal
-// there too. Error is OMP's reason, verbatim, for the log, and Outcome the member minted here from
-// the code beside it (PromptRefusalOutcome), which is what the supervisor decides on.
-type LateRefusal struct {
-	Claim      claim.Token
-	DeliveryID string
-	Error      string
-	Outcome    runtime.Outcome
-	// Replayed is a refusal for a prompt this connection did not send, read from the shim's
-	// backlog: it answers a prompt an earlier connection sent.
-	Replayed bool
-	// ConnSequence is the registration sequence of the connection the refusal arrived on
-	// (Conn.Sequence): the supervisor compares it with the newest connection it sent the delivery
-	// through.
+	// (Conn.Sequence): the supervisor compares it with the claim's live connection, and a frame
+	// of a connection that has since been replaced says what the agent was doing, not what it is
+	// doing now.
 	ConnSequence uint64
 }
 
@@ -169,9 +124,8 @@ type Drained struct {
 func (Hello) isEvent()        {}
 func (TurnStart) isEvent()    {}
 func (TurnEnd) isEvent()      {}
+func (TurnAnswered) isEvent() {}
 func (ToolStep) isEvent()     {}
-func (PromptResult) isEvent() {}
-func (LateRefusal) isEvent()  {}
 func (Answered) isEvent()     {}
 func (Closed) isEvent()       {}
 func (Drained) isEvent()      {}

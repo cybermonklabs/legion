@@ -42,8 +42,8 @@ import { PROCESS_WAIT_MS, ROW_TIMEOUT_MS, startReopenServer } from "./reopen-ser
 
 // A session whose stop has begun registers, unsubscribes and claims nothing, and writes no role
 // record (R24 of dispatch://INFRA-3589), whichever path is still running when the stop begins:
-// the Legion claim's first-turn bound, `unfollow`, a role restore whose removal of the old record
-// the stop overtakes, and the rest of a start the stop overtakes.
+// the Legion claim's boot, `unfollow`, a role restore whose removal of the old record the stop
+// overtakes, and the rest of a start the stop overtakes.
 
 isolatePaneEnvironment()
 
@@ -54,31 +54,26 @@ function held(): { readonly promise: Promise<void>; readonly resolve: () => void
   return Promise.withResolvers<void>()
 }
 
-/** The Legion claim's first-turn bound in the row below (`LEGION_CLAIM_FIRST_TURN_BOUND_MS`). */
-const BOUND_MS = 300
-
 /**
- * A Legion pane's claim boot, which registers and says ready, then waits for the first turn or its
- * bound (`BOUND_MS`). No turn starts: only the bound can claim here. The session's client records
- * each call on `calls`, and holds the shutdown's DELETE on the wire until `deleting` resolves.
- * `booting` is the server's stop reading, and `claimToken` is the role the daemon registered.
+ * A Legion pane's claim boot, which registers, says ready, reads the claim's value and claims its
+ * role right after that read (`bootLegionClaim`). Where `stopAtReady` is set, the server's stop
+ * begins while the boot's `claims/ready` is on the wire: it aborts the boot's signal, `booting`,
+ * which is the server's stop reading, and starts the shutdown (`stopping`). The session's client
+ * records each call on `calls`, and holds the shutdown's DELETE on the wire until `deleting`
+ * resolves. `claimToken` is the role the daemon registered.
  */
-async function boundClaim() {
+async function readyClaim(stopAtReady: boolean) {
   const session = "0b9c2f4e-2d3a-4c55-9a1e-6f7d8e9a0b1c"
   const stateDirectory = scratchState()
   const configDir = scratchState()
   await mkdir(join(configDir, "projects", "p"), { recursive: true })
   await writeFile(join(configDir, "projects", "p", `${session}.jsonl`), "{}\n")
-  const registered: Record<string, unknown> = JSON.parse(
-    await readFile(
-      resolve(import.meta.dir, "../../contracts/fixtures/daemon-api", "register.json"),
-      "utf8",
-    ),
-  )
-  const daemonFetch = (async (input: string | URL | Request) =>
-    new URL(input.toString()).pathname.endsWith("/claims/register")
-      ? Response.json(registered)
-      : new Response(null, { status: 204 })) as typeof fetch
+  const fixture = async (name: string): Promise<Record<string, unknown>> =>
+    JSON.parse(
+      await readFile(resolve(import.meta.dir, "../../contracts/fixtures/daemon-api", name), "utf8"),
+    )
+  const registered = await fixture("register.json")
+  const current = await fixture("task.json")
   const booting = new AbortController()
   const deleting = held()
   const calls: string[] = []
@@ -94,6 +89,18 @@ async function boundClaim() {
       startSignal: booting.signal,
     }),
   )
+  let stopping: Promise<void> | undefined
+  const daemonFetch = (async (input: string | URL | Request) => {
+    const route = new URL(input.toString()).pathname
+    if (route.endsWith("/claims/register")) return Response.json(registered)
+    if (route.endsWith("/claims/task")) return Response.json(current)
+    if (route.endsWith("/claims/ready") && stopAtReady) {
+      // The server's stop: the abort first, then the shutdown, whose DELETE is held.
+      booting.abort()
+      stopping = channel.shutdown()
+    }
+    return new Response(null, { status: 204 })
+  }) as typeof fetch
   const claim = startLegionClaim({
     pane: { daemonUrl: "http://daemon.test", bootToken: "boot-1", configDir, launcherSaves: false },
     sessionID: session,
@@ -104,11 +111,12 @@ async function boundClaim() {
     clientInstanceID: "a1b2c3d4e5f60718293a4b5c6d7e8f90",
     client,
     session: channel,
+    task: () => undefined,
+    ready: () => undefined,
+    finished: () => undefined,
     signal: booting.signal,
     log: () => undefined,
     stop: () => undefined,
-    onFirstTurn: () => undefined,
-    env: { LEGION_CLAIM_FIRST_TURN_BOUND_MS: String(BOUND_MS) },
     pollMs: 5,
   })
   return {
@@ -119,64 +127,49 @@ async function boundClaim() {
     calls,
     channel,
     claim,
+    stopping: () => stopping,
     claimToken: String(registered["claimToken"]),
   }
 }
 
-// A Legion pane's claim boot registers and says ready, and the claim waits for the first turn or
-// its bound. The server's stop begins before either: it aborts the boot's signal, and its
-// shutdown's DELETE is still on the wire when the bound would have come. The bound does not fire:
-// the claim sends no role claim and writes no role record. The control row after it is the same
-// claim with no stop begun.
-test("the Legion claim's bound firing during shutdown() sends no claim and writes no role record", async () => {
-  const { session, stateDirectory, booting, deleting, calls, channel, claim } = await boundClaim()
-  let stopping: Promise<void> | undefined
+// A Legion pane's claim boot registers and says ready, reads the claim's value, and claims its
+// role right after that read. The server's stop begins while the boot's ready is on the wire: it
+// aborts the boot's signal, and its shutdown's DELETE is still on the wire when the boot comes to
+// the claim. The boot sends no role claim and writes no role record. The control row after it is
+// the same claim with no stop begun.
+test("the Legion claim's boot that the server's stop overtakes at claims/ready sends no claim and writes no role record", async () => {
+  const run = await readyClaim(true)
   try {
-    await claim.booted
-    // The boot armed the bound before it settled, so this timer, armed after it with the same
-    // delay, runs after the bound would have. The bound is a real timer of the claim core, which
-    // the row does not fake.
-    const pastBound = Promise.withResolvers<void>()
-    setTimeout(pastBound.resolve, BOUND_MS)
-    // The server's stop: the abort first, then the shutdown, whose DELETE is held.
-    booting.abort()
-    stopping = channel.shutdown()
-    await waitFor(async () => calls.includes(`unregister ${session}`), "the stop's DELETE")
-    // The claim step answers once it ran, or once the stop took it off.
-    await claim.claimed
-    // The DELETE is still on the wire when the bound's time comes.
-    await pastBound.promise
+    await run.claim.booted
+    await waitFor(async () => run.calls.includes(`unregister ${run.session}`), "the stop's DELETE")
     await settled()
 
-    expect(calls.filter((call) => call.startsWith("setRole"))).toEqual([])
-    expect(await readPersistedRole(roleStateFile(stateDirectory, session))).toBeUndefined()
+    expect(run.calls.filter((call) => call.startsWith("setRole"))).toEqual([])
+    expect(await readPersistedRole(roleStateFile(run.stateDirectory, run.session))).toBeUndefined()
   } finally {
-    booting.abort()
-    deleting.resolve()
-    await stopping
-    await channel.shutdown()
+    run.booting.abort()
+    run.deleting.resolve()
+    await run.stopping()
+    await run.channel.shutdown()
   }
 })
 
-test("control: the Legion claim's bound firing with no stop begun sends the claim and writes the role record", async () => {
-  const { session, stateDirectory, booting, deleting, calls, channel, claim, claimToken } =
-    await boundClaim()
+test("control: the Legion claim's boot with no stop begun sends the claim and writes the role record", async () => {
+  const run = await readyClaim(false)
   try {
-    await claim.booted
-    // The claim step answers once the bound fired and the claim ran.
-    await claim.claimed
+    await run.claim.booted
 
-    expect(calls.filter((call) => call.startsWith("setRole"))).toEqual([
-      `setRole ${session} ${claimToken} soft`,
+    expect(run.calls.filter((call) => call.startsWith("setRole"))).toEqual([
+      `setRole ${run.session} ${run.claimToken} soft`,
     ])
-    expect(await readPersistedRole(roleStateFile(stateDirectory, session))).toMatchObject({
-      session_id: session,
-      role: claimToken,
+    expect(await readPersistedRole(roleStateFile(run.stateDirectory, run.session))).toMatchObject({
+      session_id: run.session,
+      role: run.claimToken,
     })
   } finally {
-    booting.abort()
-    deleting.resolve()
-    await channel.shutdown()
+    run.booting.abort()
+    run.deleting.resolve()
+    await run.channel.shutdown()
   }
 })
 

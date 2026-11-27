@@ -31,7 +31,8 @@ func TestANewsOnlyStartIsQueuedForALiveReviewer(t *testing.T) {
 		t.Fatalf("reconcile the tree's news: %v", err)
 	}
 	starts := r.newsStarts()
-	want := record.SuperviseRequest{Op: "start", Tree: reconcileRoot, Role: claim.RoleReviewer, Generation: 1, Phase: phase.Reviewing, News: true}
+	want := record.SuperviseRequest{Op: "start", Tree: reconcileRoot, Role: claim.RoleReviewer, Generation: 1, Phase: phase.Reviewing, News: true,
+		Origin: supervise.OriginNews}
 	if len(starts) != 1 || starts[0].row.Issue != reconcileRoot || !reflect.DeepEqual(starts[0].request, want) {
 		t.Fatalf("the news-only starts = %+v, want one %+v on %s", starts, want, reconcileRoot)
 	}

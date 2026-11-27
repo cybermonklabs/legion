@@ -218,6 +218,7 @@ func newOlderLauncherRig(t *testing.T, failures int) *olderLauncherRig {
 		Limits:             supervise.Limits{LaunchFailures: 2, PromptFailures: 2, PromptRetires: 2},
 		Timeouts:           supervise.Timeouts{Boot: time.Second, RegistrationIntervals: 2, RPC: time.Second, Probe: time.Second, Stop: time.Second, LaunchBackoff: time.Millisecond},
 		PluginContract:     api.DaemonAPIVersion(),
+		TaskTakeContract:   api.TaskTakeContract(),
 		PluginRelaunchable: true,
 		RefreshGate:        supervise.NewRefreshGate(0),
 		Worker:             store.ForConcurrentWorker,

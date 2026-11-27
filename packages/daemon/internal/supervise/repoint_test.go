@@ -91,22 +91,22 @@ func TestAStaleAddressWhoseRelaunchIsRefusedChargesThatLaunchFailure(t *testing.
 }
 
 // A process found at a stale address mid-turn is replaced mid-turn: that turn used the addresses
-// the process holds, and the relaunch ends it. The task goes back to waiting first (interrupted),
-// but unlike a death nothing is charged. A turn in flight is lost; the agent resumes from its last
-// saved turn once the relaunch registers.
+// the process holds, and the relaunch ends it. The task is taken back first under its number
+// (interrupted), but unlike a death nothing is charged. A turn in flight is lost; the agent resumes
+// from its last saved turn once the relaunch registers, and takes the task again.
 func TestAStaleAddressMidTurnInterruptsTheTaskChargingNothing(t *testing.T) {
 	h := newHarness(t)
 	h.reach(StateReady)
 	h.must(RequestDeliver{Claim: testToken, Task: "implement the plan"})
 	h.must(StreamTurnStart{Claim: testToken})
-	sent := h.wantPrompts(1)[0].DeliveryID
+	sent := h.wantPrompts(1)[0]
 
 	h.observe(runtime.StaleAddress)
 
 	h.wantState(StateLaunching)
 	h.wantBudgets(Budgets{})
-	if p := h.pending(); !p.Interrupted || p.ID == sent || !p.ConfirmedAt.IsZero() {
-		t.Fatalf("pending after the stale observation = %+v, want the task taken back, unconfirmed and interrupted", p)
+	if p := h.pending(); !p.Interrupted || p.Number != sent.Number || p.taken() {
+		t.Fatalf("pending after the stale observation = %+v, want task %d taken back and interrupted", p, sent.Number)
 	}
 	stored := h.store.load(testToken)
 	if stored.Pending == nil || stored.ServingGeneration != 0 {
@@ -114,8 +114,8 @@ func TestAStaleAddressMidTurnInterruptsTheTaskChargingNothing(t *testing.T) {
 	}
 
 	h.relaunched()
-	if resent := h.wantPrompts(2)[1]; resent.DeliveryID == sent {
-		t.Fatalf("re-sent %+v under the id the stale process's turn ran under", resent)
+	if again := h.wantPrompts(2)[1]; again.Number != sent.Number {
+		t.Fatalf("took %+v after the relaunch, want task %d again", again, sent.Number)
 	}
 }
 

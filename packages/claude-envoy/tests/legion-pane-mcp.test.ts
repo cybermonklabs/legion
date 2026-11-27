@@ -105,7 +105,12 @@ test("a Legion pane's server registers on its transcript, claims its role, serve
     },
   })
   const broker = new FakeNatsServer()
+  // The inbox's deliveries, and the claim's task lines (`kind: "task"`) and ready line (`kind:
+  // "ready"`), which the bridge takes and writes nothing of into the conversation: each is
+  // answered, and they are kept apart.
   const inboxLines: { id: string; content: string }[] = []
+  const taskLines: unknown[] = []
+  const readyLines: unknown[] = []
   const inboxPath = join(root, "inbox.sock")
   const inbox = createServer((socket: Socket) => {
     let buffered = ""
@@ -113,9 +118,15 @@ test("a Legion pane's server registers on its transcript, claims its role, serve
     socket.on("data", (chunk: string) => {
       buffered += chunk
       for (let end = buffered.indexOf("\n"); end >= 0; end = buffered.indexOf("\n")) {
-        const line = JSON.parse(buffered.slice(0, end)) as { id: string; content: string }
+        const line = JSON.parse(buffered.slice(0, end)) as {
+          id: string
+          content: string
+          kind?: string
+        }
         buffered = buffered.slice(end + 1)
-        inboxLines.push(line)
+        if (line.kind === "task") taskLines.push(line)
+        else if (line.kind === "ready") readyLines.push(line)
+        else inboxLines.push(line)
         socket.write(`${JSON.stringify({ id: line.id, ok: true })}\n`)
       }
     })
@@ -142,9 +153,6 @@ test("a Legion pane's server registers on its transcript, claims its role, serve
       LEGION_BOOT_TOKEN_FILE: tokenFile,
       LEGION_DAEMON_URL: `http://127.0.0.1:${daemon.port}`,
       LEGION_CLAUDE_INBOX: inboxPath,
-      // Ten minutes, so the role below can only have been claimed by the turn this case
-      // submits and never by the claim's own bound (INFRA-1573).
-      LEGION_CLAIM_FIRST_TURN_BOUND_MS: "600000",
       ...NO_TRANSPILER_CACHE,
     },
     stderr: "pipe",
@@ -171,8 +179,7 @@ test("a Legion pane's server registers on its transcript, claims its role, serve
     ).rejects.toThrow("this session has no Legion claim yet")
 
     // The bridge's /rename seed, as a fresh pane's Claude Code submits it: a prompt before any
-    // claim exists, since the seed is what writes the transcript the pane registers with. It
-    // says a turn started, and the server has no step to run for it yet (INFRA-1573).
+    // claim exists, since the seed is what writes the transcript the pane registers with.
     const seed = await client.callTool(
       {
         name: PHASE_HOOK_TOOL_NAME,
@@ -186,8 +193,8 @@ test("a Legion pane's server registers on its transcript, claims its role, serve
     await mkdir(join(configDir, "projects", "-work"), { recursive: true })
     await writeFile(transcript, "{}\n")
     await waitFor(
-      async () => daemonCalls.some(({ path }) => path === "/legion/v1/claims/ready"),
-      "the pane to say it is ready",
+      async () => daemonCalls.some(({ path }) => path === "/legion/v1/claims/task"),
+      "the pane to say it is ready and read its task value",
       () => stderr,
       untilTheGuard(),
     )
@@ -211,24 +218,21 @@ test("a Legion pane's server registers on its transcript, claims its role, serve
           generation: registered["generation"],
         },
       },
-    ])
-    // The seed is behind the pane and it holds no name: the registration and its ready have
-    // run, and only a turn after them takes the Envoy name, so a message the listener kept for
-    // the role is handed over inside a running turn rather than ahead of the daemon's task
-    // (INFRA-1573).
-    expect(roles).toEqual([])
-    const turn = await client.callTool(
       {
-        name: PHASE_HOOK_TOOL_NAME,
-        arguments: { event: "UserPromptSubmit", prompt: "Start implementing" },
+        path: "/legion/v1/claims/task",
+        body: {
+          claimToken,
+          sessionId: SESSION,
+          secret: registered["secret"],
+          generation: registered["generation"],
+        },
       },
-      undefined,
-      { timeout: untilTheGuard() },
-    )
-    expect(turn.content).toEqual([{ type: "text", text: "{}" }])
+    ])
+    // The name is taken right after the ready, with no turn of the session needed: the task is a
+    // value the session takes, so nothing the listener kept for the role can take the task's turn.
     await waitFor(
       async () => roles.length > 0,
-      "the pane to claim its role at its first turn",
+      "the pane to claim its role right after its ready",
       () => stderr,
       untilTheGuard(),
     )
@@ -240,6 +244,26 @@ test("a Legion pane's server registers on its transcript, claims its role, serve
     expect(roles).toEqual([
       { session_id: SESSION, role: claimToken, soft: true, client_instance_id: instance },
     ])
+    // The registration's task value is the bridge's to take: one task line, naming the value and
+    // the finished number as the registration answered them. The read after the ready fails here
+    // (this daemon serves no `claims/task`), and the ready line is written all the same; that it
+    // comes before the role claim is the claim boot's order, which
+    // `packages/pi-shared/src/legion-claim-core.test.ts` holds.
+    await waitFor(
+      async () => taskLines.length > 0 && readyLines.length > 0,
+      "the registration's task value and the ready line to reach the inbox",
+      () => stderr,
+      untilTheGuard(),
+    )
+    expect(taskLines).toEqual([
+      {
+        id: expect.any(String),
+        kind: "task",
+        ...(registered["task"] as object),
+        finished: registered["finished"],
+      },
+    ])
+    expect(readyLines).toEqual([{ id: expect.any(String), kind: "ready" }])
     // Dispatch refuses a mode the session does not advertise, and sends a Send by default: every
     // registration of the session carries both modes the bridge serves.
     expect(advertised.length).toBeGreaterThan(0)

@@ -17,23 +17,17 @@ import (
 // The policy that decides whether a claim's failure charges a budget (Charges) has a chokepoint:
 // the charge functions (chargeFunctions, below) each ask it, so no site that reaches one can
 // charge what the policy waives. But the Go type system cannot require that a failing path call
-// one of them at all, and a busy path that decides the busy answer itself, from the agent's words,
-// never reaches a charge function. Nor can a type keep a site from reading those words: they reach
-// the daemon as an error and as strings, which it must hold to log a failure and to keep a
-// delivery's last send error, and the text of either is open to any function that holds it. Of
-// the Claude Code bridge's busy refusal, whose words the bridge keeps for a daemon rolled back to
-// the release before this one, the compiler holds one part: the words are a constant the bridge
-// does not export (claudebridge's busyWords), so no other package can name them. It cannot keep a
-// package from writing them out, nor the bridge from using its constant for anything but that
-// refusal. So this test reads the source and holds the five things the compiler cannot: every
-// member of the set (runtime.Outcome, declared in internal/runtime) has a row in the policy; no
-// site matches a refusal's words — not in this package, nor in internal/runtime, which reads them
-// from a send's error (RefusalReason), internal/stream, which mints the outcome where the frame is
-// read, or internal/claudebridge, which writes the busy refusal; no site holds the busy refusal's
-// words but the refusal itself — none in this package, the stream or the runtime, and none in the
-// bridge but its constant and the refusal it writes; every charge names a declared member; and no
-// function but a charge function writes a budget counter except to set it back, to zero or to one
-// attempt short of its limit (budgetResets names each that may). Delete a check here when the
+// one of them at all, and a path that decides a failure itself, from the far side's words, never
+// reaches a charge function. Nor can a type keep a site from reading those words: they reach the
+// daemon as an error and as strings, which it must hold to log a failure and to keep a delivery's
+// last send error, and the text of either is open to any function that holds it. So this test
+// reads the source and holds the four things the compiler cannot: every member of the set
+// (runtime.Outcome, declared in internal/runtime) has a row in the policy; no site matches a
+// refusal's words — not in this package, nor in internal/runtime, which reads them from a send's
+// error (RefusalReason), internal/stream, which reads the far side's frames, or
+// internal/claudebridge, which writes its own refusals; every charge names a declared member; and
+// no function but a charge function writes a budget counter except to set it back, to zero or to
+// one attempt short of its limit (budgetResets names each that may). Delete a check here when the
 // compiler comes to hold it.
 //
 // The negative control of the check c-the-outcome-is-not-a-string, in dispatch://INFRA-3136's
@@ -143,17 +137,6 @@ func TestOutcomeSourceHoldsThePolicyAtItsSites(t *testing.T) {
 		}
 	})
 
-	t.Run("no site holds the Claude Code bridge's busy words but its busy refusal", func(t *testing.T) {
-		words := constant.StringVal(sources[claudebridgePath].bridgeBusyWords(t).Val())
-		for _, path := range outcomePaths {
-			pkg := sources[path]
-			for _, held := range pkg.busyHeld(t, words) {
-				t.Errorf("%s, in %s, holds the Claude Code bridge's busy words (claudebridge's busyWords) or a piece of them: only the bridge's busy refusal carries them, for a daemon rolled back to the release before this one, and this one reads a busy agent from the refusal's code (shimwire.CodeSessionBusy), never from its words",
-					pkg.pos(held.at), held.in)
-			}
-		}
-	})
-
 	t.Run("every charge names a declared outcome", func(t *testing.T) {
 		members := map[string]bool{}
 		for _, member := range set.declaredOutcomes(t) {
@@ -236,11 +219,11 @@ var chargeFunctions = []string{"chargePrompt", "chargeDeath", "relaunchAfterFail
 // takes each spent counter to one short of its limit and keeps every other. A reset is the end of
 // what a budget measures, which is no event the policy is asked about.
 var budgetResets = map[string]string{
-	"confirmCarrying": "a started turn of the task resets the prompt failures and the prompt retirements (Budgets, PromptFailures and PromptRetires)",
-	"ready":           "the agent's ready resets the launch failures, since the launch it measured came up (Budgets, LaunchFailures)",
-	"turnEnded":       "a turn that ends normally resets the deaths, since the agent got through the work they were charged against (Budgets, Deaths)",
-	"retirePending":   "the task's retirement resets the deaths charged against it, in the same write (Budgets, Deaths)",
-	"retry":           "an operator's retry of a failed claim starts every budget again from nothing, or with one attempt left of each budget the failure spent (RequestRetry, Budgets.OneAttemptLeft)",
+	"resetPromptBudgets": "a turn's start or end resets the prompt failures and the prompt retirements, and a take does not (R5; Budgets, PromptFailures and PromptRetires)",
+	"ready":              "the agent's ready resets the launch failures, since the launch it measured came up (Budgets, LaunchFailures)",
+	"turnEnded":          "a turn that ends normally resets the deaths, since the agent got through the work they were charged against (Budgets, Deaths)",
+	"retireTask":         "the task's retirement resets the deaths charged against it, in the same write (Budgets, Deaths)",
+	"retry":              "an operator's retry of a failed claim starts every budget again from nothing, or with one attempt left of each budget the failure spent (RequestRetry, Budgets.OneAttemptLeft)",
 }
 
 // The packages this test reads, by import path.
@@ -410,9 +393,8 @@ type goSource struct {
 	files   []*ast.File
 	pkg     *types.Package
 	info    *types.Info
-	// given is what assignments answers, read once on its first call: the refusal taint (spread),
-	// the bridge's busy refusal (busyRefusal) and the judge read it, and it walks every file of the
-	// package.
+	// given is what assignments answers, read once on its first call: the refusal taint (spread)
+	// and the judge read it, and it walks every file of the package.
 	given map[types.Object][]ast.Expr
 }
 
@@ -536,139 +518,10 @@ func (s *goSource) params(decl *ast.FuncDecl) []types.Object {
 	return objects
 }
 
-// busyHeld is every constant in the package's source that holds the Claude Code bridge's busy
-// words (busyHolders), in the order of its files, each with the declaration it stands in. The
-// bridge may hold them in its busy refusal (busyRefusal); no other package may hold them at all.
-func (s *goSource) busyHeld(t *testing.T, words string) []wordMatch {
-	t.Helper()
-	var allowed map[ast.Expr]bool
-	if s.pkg.Path() == claudebridgePath {
-		allowed = s.busyRefusal(s.bridgeBusyWords(t))
-	}
-	var found []wordMatch
-	for _, file := range s.files {
-		for _, decl := range file.Decls {
-			for _, held := range s.busyHolders(decl, words, allowed) {
-				found = append(found, wordMatch{at: held, in: s.declName(decl), what: "a constant holding the busy words"})
-			}
-		}
-	}
-	return found
-}
-
-// bridgeBusyWords is the constant the Claude Code bridge's source declares as its busy words
-// (claudebridge's busyWords).
-func (s *goSource) bridgeBusyWords(t *testing.T) *types.Const {
-	t.Helper()
-	busy, _ := s.pkg.Scope().Lookup("busyWords").(*types.Const)
-	if busy == nil || busy.Val().Kind() != constant.String || constant.StringVal(busy.Val()) == "" {
-		t.Fatal("internal/claudebridge declares no string constant busyWords, whose words this test holds every other site from holding")
-	}
-	return busy
-}
-
-// busyHolders is every constant expression in decl that holds the Claude Code bridge's busy words
-// (holdsBusyWords), however it is spelled — the sentence or a piece of it written out, alone, in
-// a longer text or in a pattern, a constant of the package's own, the bridge's constant — and
-// wherever it stands: an argument, a key or an element of a literal, a list a loop ranges over, a
-// variable's value. It reads no flow: nothing in the daemon but the bridge's busy refusal has a
-// reason to hold the words, so holding them is the fault, whatever is done with them. Of words
-// spelled out in pieces it reports the outermost constant, once. allowed is what may hold them
-// (busyRefusal).
-func (s *goSource) busyHolders(decl ast.Decl, words string, allowed map[ast.Expr]bool) []ast.Expr {
-	var found []ast.Expr
-	ast.Inspect(decl, func(node ast.Node) bool {
-		expr, ok := node.(ast.Expr)
-		if !ok {
-			return true
-		}
-		if allowed[expr] {
-			return false
-		}
-		if value := s.info.Types[expr].Value; value != nil && value.Kind() == constant.String && holdsBusyWords(constant.StringVal(value), words) {
-			found = append(found, expr)
-			return false
-		}
-		return true
-	})
-	return found
-}
-
-// busyRefusal is where the bridge may hold its busy words: the value its declaration gives
-// busyWords (assignments), and busyWords as the Error of a shimwire.Response the bridge hands to
-// its respond method, which is the busy refusal it writes.
-func (s *goSource) busyRefusal(busy *types.Const) map[ast.Expr]bool {
-	allowed := map[ast.Expr]bool{}
-	for _, value := range s.assignments()[busy] {
-		allowed[value] = true
-	}
-	for _, file := range s.files {
-		ast.Inspect(file, func(node ast.Node) bool {
-			call, ok := node.(*ast.CallExpr)
-			if !ok {
-				return true
-			}
-			fn := s.callee(call)
-			if fn == nil || fn.Pkg() != s.pkg || fn.Name() != "respond" || fn.Signature().Recv() == nil {
-				return true
-			}
-			for _, arg := range call.Args {
-				literal, ok := ast.Unparen(arg).(*ast.CompositeLit)
-				if !ok || !isNamed(s.info.Types[literal].Type, internalPath+"shimwire", "Response") {
-					continue
-				}
-				for _, elt := range literal.Elts {
-					field, ok := elt.(*ast.KeyValueExpr)
-					if !ok {
-						continue
-					}
-					key, isKey := field.Key.(*ast.Ident)
-					value, isValue := ast.Unparen(field.Value).(*ast.Ident)
-					if isKey && key.Name == "Error" && isValue && s.info.Uses[value] == busy {
-						allowed[field.Value] = true
-					}
-				}
-			}
-			return true
-		})
-	}
-	return allowed
-}
-
-// busyRun is the fewest bytes a constant must share with the busy words, in one run, to hold
-// them: "Agent is already", the opening Oh My Pi's own busy sentence shares, is sixteen. A shorter
-// run is a phrase other texts share with the words, such as " a turn; the " or " is already ",
-// and tells nothing of the refusal.
-const busyRun = 16
-
-// bridgeName is the bridge's name as the busy words carry it. Each of the bridge's own messages
-// carries it too, so a run of the words that is a piece of it tells nothing of the refusal.
-const bridgeName = " the Claude Code bridge "
-
-// holdsBusyWords is whether value shares with words a run of at least busyRun bytes that is no
-// piece of the bridge's name (bridgeName): the words whole, a prefix or any other piece of them,
-// either alone or inside a longer text.
-func holdsBusyWords(value, words string) bool {
-	for i := range len(value) - busyRun + 1 {
-		for j := range len(words) - busyRun + 1 {
-			n := 0
-			for i+n < len(value) && j+n < len(words) && value[i+n] == words[j+n] {
-				n++
-			}
-			if n >= busyRun && !strings.Contains(bridgeName, words[j:j+n]) {
-				return true
-			}
-		}
-	}
-	return false
-}
-
 // outcomeJudge says whether an expression of type Outcome is a member the set declares: a
-// constant whose value a declared member holds; a field of type Outcome, which the stream filled
-// with the member it minted where it read the frame (StreamLateRefusal.Outcome); the member a
-// refusal carries, which is the minter's (runtime.RefusalOutcome, read by sendOutcome); a variable
-// every expression given it is one of these; or a call of the package's own function every return
-// of which is. A conversion to Outcome of anything but a member's constant is none of them.
+// constant whose value a declared member holds; a field of type Outcome; a variable every
+// expression given it is one of these; or a call of the package's own function every return of
+// which is. A conversion to Outcome of anything but a member's constant is none of them.
 type outcomeJudge struct {
 	src     *goSource
 	members map[string]bool
@@ -716,9 +569,6 @@ func (j *outcomeJudge) expr(expr ast.Expr) string {
 		fn := j.src.callee(expr)
 		if fn == nil {
 			return fmt.Sprintf("%s calls a function value whose answer this test cannot read", j.src.pos(expr))
-		}
-		if fn.Pkg() != nil && fn.Pkg().Path() == runtimePath && fn.Name() == "RefusalOutcome" {
-			return ""
 		}
 		decl, declared := j.decls[fn]
 		if !declared {

@@ -17,11 +17,11 @@ These are the actions on an agent (stop, retry, suspend, resume_agent, compact a
 
 | `op` | What it does |
 | --- | --- |
-| `suspend` | Stops the agent and keeps its session and owed task; a turn runs to its end or the stop timeout. Only your `resume_agent` or the operator's starts it again. |
+| `suspend` | Stops the agent and keeps its session and owed task; a turn runs to its end or the stop timeout, and an ended turn's report comes first. Only your `resume_agent` or the operator's starts it again. |
 | `resume_agent` | Starts a suspended agent again in its recorded session with the task it owes. |
-| `stop` | Ends the agent at once, also in a turn, and retires it; only `retry` or its phase's start runs it again. Refused for a tree's root architect: suspend that agent. |
+| `stop` | Ends the agent at once, also in a turn, and retires it; an ended turn's report comes first (202 until then). Only `retry` or its phase's start runs it again. Refused for a tree's root architect: suspend that agent. |
 | `retry` | Starts a failed or stopped agent again in its recorded session, with new launch budgets. A suspended agent takes `resume_agent`. |
-| `compact` | Shortens the session to a summary and sends the task again in the same session and workspace. Use it first for a session a provider keeps refusing; an agent with no process behind its claim (`CLAIM_NOT_RUNNING`) takes `fresh_session`. |
+| `compact` | Shortens the session to a summary; the agent then takes its task again in the same session and workspace. Use it first for a session a provider keeps refusing; an agent with no process behind its claim (`CLAIM_NOT_RUNNING`) takes `fresh_session`. |
 | `fresh_session` | Starts the agent in a new session, leaving the old one and all it knew. Use it for an agent whose claim no process stands behind, or one still refused after `compact`. |
 
 1. Run the operation, read its answer, then read the claim in `read_state`.

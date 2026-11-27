@@ -81,11 +81,11 @@ func (e *Engine) treeRoot(ctx context.Context, tx pgx.Tx, key string) (*record.I
 // grandchild handed over beside its parent and a queued root adopted each bring what was decided
 // on them to this task with nothing moved, in whatever order their admissions run.
 //
-// The text names no generation: a start's task waits on its claim and is prompted whenever that
-// claim is next ready, which can be generations later, and the one architect session of the root
-// reads it then as what a person decided on its tree. It deletes only the rows that are no longer
-// the person's word (ForgetSuperseded): the caller enqueues the task with the record of what it
-// named (record.KeptDecisions) and claims those rows for it in the same transaction
+// The text names no generation: a start's task waits on its claim, and its worker takes it
+// whenever that claim is next ready, which can be generations later, and the one architect session
+// of the root reads it then as what a person decided on its tree. It deletes only the rows that are
+// no longer the person's word (ForgetSuperseded): the caller enqueues the task with the record of
+// what it named (record.KeptDecisions) and claims those rows for it in the same transaction
 // (EnqueueNaming). A catch-up that published tells what it named (Store.ForgetKeptDecisions) and
 // a start's task tells it at the confirmation of the delivery the claim queued it as; one that
 // reached no architect hands it over (HandOverKept). Both results are zero when there is nothing
@@ -134,7 +134,7 @@ func ReadKeptGates(ctx context.Context, tx pgx.Tx, store record.Store, tree stri
 // every decision of owed that is no longer the person's word (keptSuperseded, SupersedingApproval),
 // and returns the gates it read, for the caller to render the task from (KeptDecisionsTask). It is
 // the write half of a kept-decisions task, and every caller that renders one at a start, a ready or
-// a send calls it first; the delivery of a catch-up, whose read is read-only, renders from
+// a take calls it first; the delivery of a catch-up, whose read is read-only, renders from
 // ReadKeptGates and deletes nothing.
 //
 // A decision that is no longer the person's word is forgotten: a changes request that a later
@@ -172,10 +172,10 @@ func ForgetSuperseded(ctx context.Context, tx pgx.Tx, store record.Store, steps 
 // KeptDecisionsTask is the text that names owed to the architect of tree, and the part of owed it
 // names (kept), rendered from gates (ReadKeptGates) and writing nothing. It is the one wording a
 // start task and a catch-up both use (ParkedDecisionTask), the one a held task is written back to
-// when the task waits to be sent (supervise's Deps.RootTask, the daemon's rootTask, NarrowRootTask),
+// when the task waits to be taken (supervise's Deps.RootTask, the daemon's rootTask, NarrowRootTask),
 // beside the roots that rest on the root's approval (ArchitectStart.Resting), and the one a
 // catch-up is written again in when it is delivered (the daemon's readNoticeTree): a task that
-// names nothing is "", which is retired rather than sent.
+// names nothing is "", which is dropped rather than taken.
 //
 // Each decision is asked in the loop that writes it whether it is still the person's word
 // (SupersedingApproval), so no task can name a kept decision that nobody asked about. A kept
@@ -349,8 +349,8 @@ func HandOverKept(ctx context.Context, tx pgx.Tx, store record.Store, steps []re
 // queued for nobody would only be dropped by the ready that follows. No catch-up of a hand-over
 // is paced: it answers a person who is waiting, and it reaches an architect the daemon did not
 // wake, so it is due at once (the zero moment QueueCatchUp reads as now). Nor does one carry the
-// sentence of what a relaunch ended, which only a launch's ready knows: the prompt the claim's
-// own machine sends carries that sentence whatever becomes of a catch-up.
+// sentence of what a relaunch ended, which only a launch's ready knows: the claim's own machine
+// puts that sentence in the text of the worker's next accepted take whatever becomes of a catch-up.
 func CatchUpTheTreesOwed(ctx context.Context, tx pgx.Tx, store record.Store, steps []record.DesignStep, trees []string, now time.Time) error {
 	launches, err := store.ArchitectLaunches(ctx, tx, trees)
 	if err != nil {

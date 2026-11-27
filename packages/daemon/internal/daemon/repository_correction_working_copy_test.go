@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime/tmux"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/supervise/supervisetest"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
@@ -48,6 +49,7 @@ type workingCopyRig struct {
 	rt       *fake.Runtime
 	runner   *outbox
 	conn     *fake.Conn
+	values   *supervisetest.TaskValues
 	token    claim.Token
 	runtime  string
 	stateDir string
@@ -83,10 +85,12 @@ func newWorkingCopyRig(t *testing.T, runtimeName string) *workingCopyRig {
 	sup, rt := newOutboxSupervisor(t, "legion", t.TempDir())
 	sup.deps.WorkingCopy = w.workingCopy
 	sup.deps.Specs = recordSpecs{read: w.recordedIssue}
+	values := supervisetest.NewTaskValues()
+	sup.deps.TaskValues = values
 	token := mustClaimToken(t, issue.Key, claim.RoleImplementer)
 	conn := fake.NewConn()
 	sup.deps.Conns.(*fake.Conns).Register(token, conn)
-	return &workingCopyRig{t: t, ctx: ctx, pool: pool, records: records, workflow: w, sup: sup, rt: rt, conn: conn,
+	return &workingCopyRig{t: t, ctx: ctx, pool: pool, records: records, workflow: w, sup: sup, rt: rt, conn: conn, values: values,
 		token: token, runtime: runtimeName, stateDir: stateDir,
 		runner: &outbox{log: quietLogger(), pool: pool, dispatchProject: "LEGION", records: records, supervisor: sup,
 			tokens: outboxTokens{}, project: "legion", stateDir: t.TempDir(),
@@ -209,36 +213,47 @@ func (r *workingCopyRig) corrects() {
 	correctRecord(r.t, r.pool, r.records, workingCopyIssue, "zeta/tools", "release/v9", time.Now())
 }
 
-// prompt is the nth prompt the implementer was sent, failing unless it was sent exactly n.
-func (r *workingCopyRig) prompt(n int) string {
+// take is the implementer's worker taking the task its claim holds now, at the value the bucket
+// holds for it, as its plugin asks; the answer's text is what the worker reads. It fails unless
+// the take is accepted. A take after a relaunch that the claim answered again from the take
+// before it would carry the earlier process's line, which wantSent refuses.
+func (r *workingCopyRig) take() string {
 	r.t.Helper()
-	prompts := r.conn.Prompts()
-	if len(prompts) != n {
-		r.t.Fatalf("the implementer was prompted %+v, want %d prompts", prompts, n)
+	machine := r.machine()
+	value, held := r.values.Value(r.token)
+	if !held {
+		r.t.Fatal("the implementer's bucket holds no task to take")
 	}
-	return prompts[n-1].Message
+	c := machine.Claim()
+	answer, err := machine.Take(r.ctx, supervise.RequestTake{Claim: r.token, Generation: c.Generation, Session: c.Session,
+		Number: value.Number, Revision: supervise.TaskRevision{Epoch: value.Epoch, Revision: value.Revision}})
+	machine.Wait()
+	if err != nil || answer.Outcome != supervise.TakeOutcomeAccepted {
+		r.t.Fatalf("the implementer's take of task %d = %+v, %v; want it accepted", value.Number, answer, err)
+	}
+	return answer.Text
 }
 
-// wantSent fails unless sent, a prompt of the implementer's task, and the task the claim holds
-// after it name the workspace of works in their working copy line and never the workspace of
-// other, with the owner's line inside the owner's text as the owner wrote it. The held task opens
-// with that line, then a line break and its continue line, and the prompt holds the same: notes
-// can stand before the task in a prompt, so the prompt is read for that text anywhere. A send that
-// left part of the composed directory after the line would hold text between the line and its
-// line break, and fails here.
+// wantSent fails unless sent, the text the implementer's take was answered with, and the task the
+// claim holds after it name the workspace of works in their working copy line and never the
+// workspace of other, with the owner's line inside the owner's text as the owner wrote it. Both
+// open with that line, then a line break and its continue line, and sent is read for that text
+// anywhere, as a take's text may carry notes before it. A take answered with part of the composed
+// directory left after the line would hold text between the line and its line break, and fails
+// here.
 func (r *workingCopyRig) wantSent(sent, works, other string) {
 	r.t.Helper()
 	want, wrong := r.line(works), r.line(other)
 	opening := want + "\n" + "Continue "
 	held := r.machine().Claim().Pending
 	if held == nil {
-		r.t.Fatal("the implementer holds no task after its send")
+		r.t.Fatal("the implementer holds no task after its take")
 	}
 	if !strings.HasPrefix(held.Task, opening) {
-		r.t.Fatalf("the task the claim holds after its send does not open with %q, its working copy line on a line of its own and then its continue line:\n%s", opening, held.Task)
+		r.t.Fatalf("the task the claim holds after its take does not open with %q, its working copy line on a line of its own and then its continue line:\n%s", opening, held.Task)
 	}
 	for _, read := range []struct{ what, text string }{
-		{"the prompt", sent},
+		{"the take's text", sent},
 		{"the task the claim holds after it", held.Task},
 	} {
 		if strings.Contains(read.text, wrong) || !strings.Contains(read.text, opening) {
@@ -252,21 +267,22 @@ func (r *workingCopyRig) wantSent(sent, works, other string) {
 }
 
 // A worker's task is composed from the issue's record when its start is written and held until a
-// send, and its working copy line tells the worker the directory its work is in. A correction of
-// the issue's repository moves the record at once, and the process that receives the task only at
-// its next launch: a tmux pane goes on in the workspace it was started in, the only one there is
-// until that launch provisions the new repository's, and a pod's roles go on in its clone until the
-// update round replaces the pod. So every send writes the line from the repository the receiving
-// process was launched on, which its launch recorded (supervise.Claim.WorkingRepository; supervise's
-// startSend, Deps.WorkingCopy, the daemon's workingCopy), under each runtime's own directory: a task
-// sent before the claim's next launch names the workspace of the repository the issue left, and one
-// sent after it names the workspace of the repository the issue moved to. A role launched into a
-// live pod after the correction works that pod's clone whatever repository its spec names, so it
-// is sent that clone's directory. A claim no launch of this release recorded a repository for is
-// sent the line its task was composed with, and a launch that named no repository the directory
+// take, and its working copy line tells the worker the directory its work is in. A correction of
+// the issue's repository moves the record at once, and the process that takes the task only at its
+// next launch: a tmux pane goes on in the workspace it was started in, the only one there is until
+// that launch provisions the new repository's, and a pod's roles go on in its clone until the
+// update round replaces the pod. So every take is answered with the line written from the
+// repository the taking process was launched on, which its launch recorded
+// (supervise.Claim.WorkingRepository; supervise's currentWorkingCopy, Deps.WorkingCopy, the
+// daemon's workingCopy), under each runtime's own directory: a task taken before the claim's next
+// launch names the workspace of the repository the issue left, and one taken after it names the
+// workspace of the repository the issue moved to. A role launched into a live pod after the
+// correction works that pod's clone whatever repository its spec names, so its take names that
+// clone's directory. A claim no launch of this release recorded a repository for is answered with
+// the line its task was composed with, and a launch that named no repository with the directory
 // the runtime gives the zero Repository: a tmux pane's `<state_dir>/workspaces/<issue>`. The
 // task's owner's text holds a line that reads like the daemon's working copy line, inside its
-// fence, and every send leaves it as the owner wrote it.
+// fence, and every take leaves it as the owner wrote it.
 func TestAWorkerTaskNamesTheWorkspaceOfTheProcessItIsSentTo(t *testing.T) {
 	t.Parallel()
 	const left, moved = "acme/widgets", "zeta/tools"
@@ -278,10 +294,10 @@ func TestAWorkerTaskNamesTheWorkspaceOfTheProcessItIsSentTo(t *testing.T) {
 		r.corrects()
 
 		r.run(start)
-		r.wantSent(r.prompt(1), left, moved)
+		r.wantSent(r.take(), left, moved)
 
 		r.relaunch()
-		r.wantSent(r.prompt(2), moved, left)
+		r.wantSent(r.take(), moved, left)
 	})
 
 	t.Run("kubernetes: a process of the pod built from the old repository is sent that pod's workspace until it is relaunched in a new pod", func(t *testing.T) {
@@ -291,12 +307,12 @@ func TestAWorkerTaskNamesTheWorkspaceOfTheProcessItIsSentTo(t *testing.T) {
 		r.corrects()
 
 		r.run(r.start(moved))
-		r.wantSent(r.prompt(1), left, moved)
+		r.wantSent(r.take(), left, moved)
 
 		// The pod the update round builds in the old one's stead is built from the record.
 		r.rt.ScriptPodRepository(r.token, moved)
 		r.relaunch()
-		r.wantSent(r.prompt(2), moved, left)
+		r.wantSent(r.take(), moved, left)
 	})
 
 	t.Run("kubernetes: a role launched into the live pod after the correction is sent that pod's workspace", func(t *testing.T) {
@@ -309,7 +325,7 @@ func TestAWorkerTaskNamesTheWorkspaceOfTheProcessItIsSentTo(t *testing.T) {
 		}
 
 		r.run(r.start(moved))
-		r.wantSent(r.prompt(1), left, moved)
+		r.wantSent(r.take(), left, moved)
 	})
 
 	t.Run("a claim that records no working repository is sent the line as composed", func(t *testing.T) {

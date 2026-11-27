@@ -10,16 +10,17 @@ body: |-
   off while a response is in progress`, `Nothing to hand off (already compacted)`), `Oh My Pi
   made no handoff document. The session did not change.` for a success with `data: null`, and
   `Oh My Pi gave a handoff result that is not an object. The daemon cannot say if the session
-  changed.` for a success whose data is no object. A task whose prompt Oh My Pi has accepted when
-  the compaction is asked for is now sent once: the handoff aborts no turn, so the daemon no
-  longer takes the task back and sends it again after the compaction. A prompt that reaches Oh My
-  Pi while the handoff runs is sent once too: Oh My Pi parks it until the handoff ends, so the
-  daemon keeps a send whose prompt it wrote and whose wait ran out under the handoff as the task's
-  prompt, and that prompt's turn confirms the task whether it starts before or after the
-  compaction's end. A send that runs out before its prompt is written, such as an adoption of the
-  working copy that times out, sent nothing: the task stays owed, no other turn confirms it, and it
-  goes at the next send. No prompt goes out under an id whose result already came, even where the
-  write of the task's new id failed.
+  changed.` for a success whose data is no object. A task whose take the daemon accepted before
+  the compaction is asked for now runs once: the handoff aborts no turn, so the daemon keeps the
+  accepted take, with its number and its text, and does not offer the task again after the
+  compaction. Oh My Pi refuses a handoff while the take's text runs, and parks a text that reaches
+  it while the handoff runs until the handoff ends. Either way the take's own turn runs the task,
+  and that turn's report finishes it, whether the turn starts before or after the compaction's
+  end. A task the claim owes and has not taken is offered once, when the compaction ends. While a
+  take awaits its turn under a handoff, the reconnect deadline and the wait for its turn to start
+  are never earlier than the handoff's own ten-minute bound, since Oh My Pi answers nothing behind
+  a handoff. A daemon that stops while Oh My Pi runs the handoff leaves the claim stored working,
+  and the next daemon start protects the take the same way, until that start plus ten minutes.
   A claim in a turn is still refused `CLAIM_IN_A_TURN`, now with the reason that Oh My Pi refuses
   a compaction's handoff in that turn. A pod of an older release needs nothing new: its shim
   forwards the `handoff` line to Oh My Pi as it forwarded `compact`.

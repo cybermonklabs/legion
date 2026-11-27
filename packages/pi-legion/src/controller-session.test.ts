@@ -59,14 +59,21 @@ class ListenerAskedToClaimAgain extends Error {
  * controller asks for, in order. */
 type EnvoyStep = () => Promise<void>;
 
+/** The value of the start task the daemon writes at the controller's ready, as its read after the
+ * ready answers it (`claims/task`): the take holds it, and asks for it only once the controller
+ * holds its role and topics (`claims/take`). */
+const START_TASK = { number: 4, epoch: "2026-11-13T16:21:44.123456789Z", revision: 12 };
+
 /**
  * The controller the daemon launched (`LEGION_CONTROLLER=1` and a boot token), against a daemon
- * that answers its health, its registration and its ready, the last with `answers.ready` (a 204
- * by default). Envoy's one bound instance answers each role claim with the next of `claims` and
- * each notice subscription with the next of `subscriptions` (both default to landing), recording
- * each. The host's stop is `answers.hostStop`; by default none has begun. Every exit is recorded,
- * in `exits` and as `exit <code>` on `answers.steps`, and `exited` settles at the first. Every
- * line the Oh My Pi log takes is recorded too.
+ * that answers its health, its registration, its ready, the last with `answers.ready` (a 204 by
+ * default), its read of the start task's value with `START_TASK`, and its take with the daemon's
+ * own accepted answer (`take-accepted.json`). Envoy's one bound instance
+ * answers each role claim with the next of `claims` and each notice subscription with the next of
+ * `subscriptions` (both default to landing), recording each. The host's stop is
+ * `answers.hostStop`; by default none has begun. Every exit is recorded, in `exits` and as
+ * `exit <code>` on `answers.steps`, and `exited` settles at the first. Every line the Oh My Pi
+ * log takes is recorded too.
  */
 function daemonLaunchedController(answers: {
   readonly claims?: readonly EnvoyStep[];
@@ -103,6 +110,13 @@ function daemonLaunchedController(answers: {
       }
       if (route === "/legion/v1/claims/ready" && answers.ready !== undefined)
         return answers.ready();
+      if (route === "/legion/v1/claims/task")
+        return Response.json({ task: START_TASK, finished: 3 });
+      if (route === "/legion/v1/claims/take") {
+        return new Response(daemonFixture("take-accepted.json"), {
+          headers: { "content-type": "application/json" },
+        });
+      }
       return new Response(null, { status: 204 });
     }) as typeof fetch,
   });
@@ -125,6 +139,8 @@ function daemonLaunchedController(answers: {
     daemon: () => daemon,
     persistedTranscript: async () => ({ sessionFile: TRANSCRIPT, agentId: CONTROLLER_SESSION }),
     pi: {} as PiApi,
+    runTask: () => undefined,
+    reportDrop: async () => undefined,
     exitProcess: (code) => {
       exits.push(code);
       answers.steps?.push(`exit ${code}`);
@@ -205,8 +221,11 @@ test("a daemon-launched controller whose claim, answered 503, is refused naming 
     expect(run.lines.map(({ message }) => message)).toEqual([
       expect.stringContaining("was answered 503 at attempt 1"),
     ]);
-    // The row "… ready the daemon refuses with no stop begun exits at once" shows it posted.
-    expect(run.posted).not.toContain("/legion/v1/claims/ready");
+    // The controller reported ready and read its start task's value before its role claim; the
+    // stop leaves its take unreadied, so the start task is never asked for. The row "… whose role
+    // and topics land with no stop begun asks for its start task" shows it asked.
+    expect(run.posted).toContain("/legion/v1/claims/ready");
+    expect(run.posted).not.toContain("/legion/v1/claims/take");
   } finally {
     run.stopSink();
   }
@@ -236,8 +255,8 @@ test("a daemon-launched controller whose session stops while its claim waits aft
 
 // The role claim landed, and the stop begins before the controller topic's subscription: Envoy
 // refuses that subscription naming the stop. The controller exits nothing, writes no line, and
-// reports no ready.
-test("a daemon-launched controller whose controller-topic subscription is refused naming the stop exits nothing, writes no line and reports no ready", async () => {
+// asks for no start task.
+test("a daemon-launched controller whose controller-topic subscription is refused naming the stop exits nothing, writes no line and asks for no start task", async () => {
   const run = daemonLaunchedController({ subscriptions: [refusedForStop] });
   try {
     await run.controller.handleSessionStart(run.context);
@@ -247,8 +266,26 @@ test("a daemon-launched controller whose controller-topic subscription is refuse
     expect(run.subscriptions).toEqual(["notifications.legion.legion.controller"]);
     expect(run.exits).toEqual([]);
     expect(run.lines).toEqual([]);
-    // The row "… ready the daemon refuses with no stop begun exits at once" shows it posted.
-    expect(run.posted).not.toContain("/legion/v1/claims/ready");
+    // The row "… whose role and topics land with no stop begun asks for its start task" shows it
+    // asked.
+    expect(run.posted).not.toContain("/legion/v1/claims/take");
+  } finally {
+    run.stopSink();
+  }
+});
+
+// The control of the take's absence in the stop rows above: a controller whose role claim and
+// topics land, with no stop begun, asks for its start task once its take is ready.
+test("a daemon-launched controller whose role and topics land with no stop begun asks for its start task", async () => {
+  const run = daemonLaunchedController({});
+  try {
+    await run.controller.handleSessionStart(run.context);
+    while (!run.posted.includes("/legion/v1/claims/take")) await settled();
+
+    expect(run.posted.indexOf("/legion/v1/claims/ready")).toBeLessThan(
+      run.posted.indexOf("/legion/v1/claims/take")
+    );
+    expect(run.exits).toEqual([]);
   } finally {
     run.stopSink();
   }
@@ -424,6 +461,8 @@ function operatorLaunchedController(answers: {
     daemon: () => daemon,
     persistedTranscript: async () => ({ sessionFile: TRANSCRIPT, agentId: CONTROLLER_SESSION }),
     pi: {} as PiApi,
+    runTask: () => undefined,
+    reportDrop: async () => undefined,
     exitProcess: () => undefined as never,
     hostStop: () => undefined,
   });

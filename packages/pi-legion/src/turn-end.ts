@@ -9,10 +9,11 @@ import type { AgentEndEvent } from "@legion/pi-shared/pi-types";
  * and the job's result starts the next turn. A steered run's non-terminal end sets neither flag
  * (`AgentEndEvent`), so it reads as settled here.
  *
- * Both readers of a settled turn ask this one question, so they never disagree about what a turn
+ * Every reader of a settled turn asks this one question, so they never disagree about what a turn
  * is: the model fallback, which would step the session down twice (`./model-fallback`), and the
- * turn-outcome report, which would count each refused step of a fallback walk as one more refused
- * turn (`./turn-outcome`).
+ * `agent_end` entry of `extensions/legion.ts`, which hears no refusal the host goes on from, so
+ * the claim's take does not give up its task's number at a refused step of a fallback walk and the
+ * turn-outcome report (`./turn-outcome`) does not count each such step as one more refused turn.
  */
 export function turnGoesOn(event: AgentEndEvent): boolean {
   return event.willContinue === true && event.awaitingAsyncWork !== true;

@@ -51,7 +51,7 @@ func (e *Engine) basePush(ctx context.Context, tx pgx.Tx, fact intake.BasePush) 
 	if err != nil {
 		return intake.Result{}, err
 	}
-	var owed []string
+	var owed []BaseRead
 	for _, pr := range open {
 		if pr.BaseMoved == fact.After {
 			// The same push redelivered, or a push that returned the base to the commit the
@@ -77,19 +77,22 @@ func (e *Engine) basePush(ctx context.Context, tx pgx.Tx, fact intake.BasePush) 
 		// reading a state GitHub no longer answers (R4). So every pull request this push moved is
 		// read for where the push owes a read (mergeStateOwed): an issue in testing through
 		// merging, by the gate (classify.MergeStateReadOwed), or a round that waits on the merge
-		// state. The read is decided here rather than from Apply's askMergeState because the line
-		// above has just overwritten what tells a redelivery from a first delivery: a second walk
-		// after the handler would find every pull request on the base recorded at this push's
-		// commit and ask for all of their reads again, however many times the push was delivered.
+		// state. An issue in merging is read once rather than by a ladder of reads
+		// (classify.MergeStateReadOnce, mergeStateOwed's once): its head sits in the merge queue,
+		// where GitHub answers `unknown`, and that answer asks for no more. The read is decided
+		// here rather than from Apply's askMergeState because the line above has just overwritten
+		// what tells a redelivery from a first delivery: a second walk after the handler would find
+		// every pull request on the base recorded at this push's commit and ask for all of their
+		// reads again, however many times the push was delivered.
 		if e.cfg.ReadBaseMergeStates == nil {
 			continue
 		}
-		read, err := e.mergeStateOwed(ctx, tx, own, classify.MergeStateFactBasePush)
+		read, once, err := e.mergeStateOwed(ctx, tx, own, classify.MergeStateFactBasePush)
 		if err != nil {
 			return intake.Result{}, err
 		}
 		if read {
-			owed = append(owed, own.Issue)
+			owed = append(owed, BaseRead{Issue: own.Issue, Once: once})
 		}
 	}
 	if len(owed) > 0 {
@@ -97,4 +100,13 @@ func (e *Engine) basePush(ctx context.Context, tx pgx.Tx, fact intake.BasePush) 
 		store.OnCommit(ctx, func() { e.cfg.ReadBaseMergeStates(repo, base, owed) })
 	}
 	return intake.Result{}, nil
+}
+
+// BaseRead is one pull request a push to its base owes a read of GitHub's merge state
+// (Config.ReadBaseMergeStates), by its issue: Once is whether it is owed one read rather than a
+// ladder of reads (classify.MergeStateReadOnce): an issue in merging, whose head sits in the merge
+// queue, where GitHub answers `unknown`, and an `unknown` answer then asks for no more.
+type BaseRead struct {
+	Issue string
+	Once  bool
 }

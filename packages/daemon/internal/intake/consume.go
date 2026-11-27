@@ -22,7 +22,9 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
-const notificationStream = "ENVOY_NOTIFICATIONS"
+// NotificationStream is Envoy's notification stream, which intake's durable consumers read and
+// whose replica count the daemon's task bucket is created at (internal/daemon's task bucket).
+const NotificationStream = "ENVOY_NOTIFICATIONS"
 
 const (
 	defaultAckWait  = 30 * time.Second
@@ -322,9 +324,9 @@ func OpenConsumers(ctx context.Context, js jetstream.JetStream, pool store.TxPoo
 	if err != nil {
 		return nil, err
 	}
-	stream, err := js.Stream(ctx, notificationStream)
+	stream, err := js.Stream(ctx, NotificationStream)
 	if err != nil {
-		return nil, fmt.Errorf("open %s: %w", notificationStream, err)
+		return nil, fmt.Errorf("open %s: %w", NotificationStream, err)
 	}
 
 	remade := &remadeFailures{}
@@ -451,9 +453,9 @@ func createConsumer(ctx context.Context, js jetstream.JetStream, stream jetstrea
 	if err := readRemadeFailures(ctx, pool, spec.Project, config.Durable, remade); err != nil {
 		return nil, err
 	}
-	fresh, err := js.Stream(ctx, notificationStream)
+	fresh, err := js.Stream(ctx, NotificationStream)
 	if err != nil {
-		return nil, fmt.Errorf("read %s info: %w", notificationStream, err)
+		return nil, fmt.Errorf("read %s info: %w", NotificationStream, err)
 	}
 	info := fresh.CachedInfo()
 	config.DeliverPolicy, config.OptStartTime = jetstream.DeliverByStartTimePolicy, &start
@@ -485,7 +487,7 @@ func createConsumer(ctx context.Context, js jetstream.JetStream, stream jetstrea
 // raced (the race detector's find in the daemon's boot-listing test). A fresh handle shares
 // nothing with another read.
 func (c *Consumers) DispatchTarget(ctx context.Context) (int64, error) {
-	stream, err := c.js.Stream(ctx, notificationStream)
+	stream, err := c.js.Stream(ctx, NotificationStream)
 	if err != nil {
 		return 0, fmt.Errorf("read notification stream info: %w", err)
 	}
@@ -527,7 +529,7 @@ func (c *Consumers) DispatchPosition(ctx context.Context) (DispatchConsumerPosit
 		return DispatchConsumerPosition{}, err
 	}
 	if unconfirmed != nil {
-		c.spec.Logger.Warn("intake: the Dispatch consumer's next stored message could not be read, so its idle is its own count alone, which can miss a message the server stored and has not counted yet; the read's bound passed, on a loaded NATS server or because the daemon's NATS user lacks $JS.API.STREAM.MSG.GET."+notificationStream,
+		c.spec.Logger.Warn("intake: the Dispatch consumer's next stored message could not be read, so its idle is its own count alone, which can miss a message the server stored and has not counted yet; the read's bound passed, on a loaded NATS server or because the daemon's NATS user lacks $JS.API.STREAM.MSG.GET."+NotificationStream,
 			"consumer", dispatchConsumerName(c.spec.Project), "error", unconfirmed)
 	}
 	return position, nil
@@ -542,7 +544,7 @@ func (c *Consumers) ReconcilePosition(ctx context.Context) (DispatchConsumerPosi
 	}
 	if unconfirmed != nil {
 		position.Idle = false
-		c.spec.Logger.Warn("intake: the Dispatch consumer's next stored message could not be read, so a reconcile reads the consumer as not idle and holds the keys its listing shows behind their log; the read's bound passed, on a loaded NATS server or because the daemon's NATS user lacks $JS.API.STREAM.MSG.GET."+notificationStream,
+		c.spec.Logger.Warn("intake: the Dispatch consumer's next stored message could not be read, so a reconcile reads the consumer as not idle and holds the keys its listing shows behind their log; the read's bound passed, on a loaded NATS server or because the daemon's NATS user lacks $JS.API.STREAM.MSG.GET."+NotificationStream,
 			"consumer", dispatchConsumerName(c.spec.Project), "error", unconfirmed)
 	}
 	return position, nil

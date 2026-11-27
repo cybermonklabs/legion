@@ -13,14 +13,15 @@ import "time"
 // the text sent is always Task, a blank line, then the news as the record stands at that send, and
 // the news the delivery carries is exactly what that text names, each item and opening marked with
 // the run it was rendered in (DeliveryNewsItem.Generation and TreeGeneration). The claim store
-// reads it in SQL, by these JSON names, from the copy the prompt a confirmed turn answers carried
-// (supervise.Delivery.Carried, persisted as pending_task_deliveries.carried_news): while the
-// delivery holds that confirmation, the copy is the delivery's credit, which every read of what an
-// audience took counts (the SQL function design_news_told_in, Postgres.TreeTold), and once the
-// turn's result says the turn ran, the write that records it folds the copy into the told rows
-// (store's settleDesignNews). A take-back or a retirement of the delivery ends its credit with its
-// row and writes nothing else. So the prompt that carried an item is the one thing that says the
-// audience took it, and a delivery retired unconfirmed tells nothing.
+// reads it in SQL, by these JSON names, from the copy the delivery's accepted take carried
+// (supervise.Delivery.Carried, persisted as pending_task_deliveries.carried_news): on a taken
+// delivery whose take's turn has started (turn_started), the copy is the delivery's credit, which
+// every read of what an audience took counts (the SQL function design_news_told_in,
+// Postgres.TreeTold), and once the finish of the take's turn says the turn ran, the write that
+// records it folds the copy into the told rows (store's settleDesignNews). A take-back or a
+// retirement of the delivery ends its credit with its row and writes nothing else. So the accepted
+// take whose text carried an item, once its turn has started, is the one thing that says the
+// audience took it, and a delivery retired untaken tells nothing.
 type DeliveryNews struct {
 	// Task is the start's own text, before any news: the task the start would carry had nothing
 	// been owed. The send renders the news after it, so a phase start whose every item stopped

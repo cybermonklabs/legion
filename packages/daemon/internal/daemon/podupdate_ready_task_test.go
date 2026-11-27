@@ -1,29 +1,36 @@
 package daemon
 
-// An update round's replacement carries a phase worker's unfinished assignment to the worker's new
-// process. The worker holds its phase's task, answers the round from inside the turn that took it,
-// and that turn's end retires the task, though the phase is not complete: a confirmed delivery lives
-// as long as its turn (supervise's settle). The round's end sends only work still pending, so it
-// sends nothing. What gives the worker its work back is its relaunch's ready, which is a workflow
-// fact (claimDurableState, intake.ClaimReady): a phase worker that holds its phase and nothing
-// pending is given its phase's task again when its new process is ready (workflow's
-// readyWorkerTask), once, without waiting for the silence sweep, and the sweep then finds a worker
-// that holds its task and sends nothing more. A worker whose phase is over, as where the issue has
-// moved on to a phase its role does not work, is given nothing at that ready. An update that keeps
-// its pod relaunches nothing, and so prompts nobody.
+// An update round's replacement relaunches a phase worker that finished, in its session, the
+// last task written to it. The worker takes its phase's task, answers the round from inside the
+// turn of that take, and the turn's end with its report finishes the task (supervise's take),
+// though the phase is not complete. The round's end sends only work still pending, so it sends
+// nothing. The relaunched worker's ready is a workflow fact (claimDurableState,
+// intake.ClaimReady), and that ready gives nothing to a phase worker that finished its last task
+// in the session it runs (workflow's readyWorkerTask and finishedInItsSession,
+// dispatch://INFRA-2811 R4): its session goes on, and the session's own resume reminder wakes it
+// while its phase is open. Main's #5285 gave such a worker its phase's task again at this ready;
+// R4 changes that rule, since that task is the re-send the issue removes. A worker whose phase is
+// over is given nothing at that ready either. An update that keeps its pod relaunches nothing, and
+// so gives nobody a task.
 //
 // The rig's ready is a workflow fact here as the boot makes it one (readiesAsTheBootBinds).
 
 import (
+	"strings"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
-	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
+
+// readyGivesNothingLine is the line the workflow logs for a ready worker that finished its last
+// task in the session it runs, and that the ready gives nothing (readyWorkerTask).
+const readyGivesNothingLine = "workflow: a ready worker that finished its last task in this session is given nothing; its own reminder wakes it"
+
+// readyTaskDelivery is the delivery of the phase's task the worker holds when the round opens.
+const readyTaskDelivery = "outbox:47"
 
 // readiesAsTheBootBinds binds the daemon's one durable-state callback to every machine of the rig,
 // as the boot binds it (workflowRuntime.attach): a claim's ready and its failure are workflow
@@ -34,30 +41,28 @@ func (r *podUpdateRig) readiesAsTheBootBinds() {
 
 // aWorkerWithItsPhasesTask is the implementer of aSilentPhaseWorker's fixture on a rig whose ready
 // is a workflow fact, sent its phase's resume task, as the start that put it back to work sends
-// it, which reaches its connection: the assignment it holds when the round opens. It answers the
-// task.
-func aWorkerWithItsPhasesTask(t *testing.T) (*podUpdateRig, string) {
+// it, and taking it: the assignment it holds when the round opens. It answers the task's number.
+func aWorkerWithItsPhasesTask(t *testing.T) (*podUpdateRig, uint64) {
 	t.Helper()
 	rig := aSilentPhaseWorker(t)
 	rig.readiesAsTheBootBinds()
 	worker := claim.RoleImplementer
 	task := resumeTaskOf(t, rig.pool, rig.engine, podUpdateIssue)
-	rig.handle(worker, supervise.RequestDeliver{Claim: rig.tokens[worker], Task: task, Phase: phase.Implementing, Generation: 1})
-	conn := rig.workers[worker]
-	testwait.Eventually(t, "the worker's phase task to reach its connection", func() bool { return len(conn.Prompts()) == 1 })
-	rig.awaitClaim(worker, "the task to be acknowledged", func(c supervise.Claim) bool {
-		return c.Pending != nil && !c.Pending.DeliveredAt.IsZero()
-	})
-	return rig, task
+	rig.handle(worker, supervise.RequestDeliver{Claim: rig.tokens[worker], ID: readyTaskDelivery, Task: task,
+		Phase: phase.Implementing, Generation: 1})
+	if answer := rig.take(worker); answer.Outcome != supervise.TakeOutcomeAccepted || !strings.HasSuffix(answer.Text, task) {
+		t.Fatalf("the worker's take of its phase task = %+v, want it accepted with %q", answer, task)
+	}
+	return rig, rig.claimOf(worker).Pending.Number
 }
 
-// answersInsideItsTask is role's turn taking the task it holds, the round opening over its pod, the
-// worker answering the round from inside that turn, and the turn's end, which retires the task
-// though the phase is not complete.
+// answersInsideItsTask is role's turn of the take of the task it holds, the round opening over its
+// pod, the worker answering the round from inside that turn, and the turn's end with its report,
+// which finishes the task though the phase is not complete.
 func (r *podUpdateRig) answersInsideItsTask(role claim.Role) {
 	r.t.Helper()
 	token := r.tokens[role]
-	delivery := r.workers[role].Prompts()[0].DeliveryID
+	delivery := r.claimOf(role).Pending.ID
 	r.handle(role, supervise.StreamTurnStart{Claim: token})
 	r.awaitClaim(role, "the turn to take the task", func(c supervise.Claim) bool {
 		return c.Pending != nil && !c.Pending.ConfirmedAt.IsZero()
@@ -66,7 +71,7 @@ func (r *podUpdateRig) answersInsideItsTask(role claim.Role) {
 	r.awaitRound(role, podUpdateRound)
 	r.signal(role, "a1b2c3d")
 	r.endTurn(role, delivery)
-	r.awaitClaim(role, "the turn's end to retire the task", func(c supervise.Claim) bool {
+	r.awaitClaim(role, "the turn's end and its report to finish the task", func(c supervise.Claim) bool {
 		return c.Pending == nil && c.State != supervise.StateWorking
 	})
 }
@@ -81,52 +86,48 @@ func (r *podUpdateRig) replacedAndBack(role claim.Role) {
 	r.displacedInto(role, podUpdateReplacementPod)
 }
 
-// silenceNoticesOf is every notice of the silence repair the outbox holds (workflow's
-// workerSilentNotice).
-func (r *podUpdateRig) silenceNoticesOf() []record.Notice {
+// holdsNothingPast fails the test unless role's claim holds no task and the record has written it
+// no task past number, the one it took before the round.
+func (r *podUpdateRig) holdsNothingPast(role claim.Role, number uint64, why string) {
 	r.t.Helper()
-	var silent []record.Notice
-	for _, notice := range r.silenceNotices() {
-		if notice.Kind == "worker-silent" {
-			silent = append(silent, notice)
-		}
+	if c := r.settledClaim(role); c.Pending != nil || c.TaskWritten != number {
+		r.t.Fatalf("the %s holds %+v with task %d written, want nothing held and no task written past %d: %s",
+			role, c.Pending, c.TaskWritten, number, why)
 	}
-	return silent
 }
 
-func TestAReplacedPhaseWorkerGetsItsUnfinishedTaskOnceWhenItsNewProcessIsReady(t *testing.T) {
+func TestAReplacedPhaseWorkerThatFinishedItsTaskInItsSessionIsGivenNothingWhenItsNewProcessIsReady(t *testing.T) {
 	t.Parallel()
-	rig, task := aWorkerWithItsPhasesTask(t)
+	rig, number := aWorkerWithItsPhasesTask(t)
 	worker := claim.RoleImplementer
 	rig.drifts(podUpdateDrift)
 	rig.answersInsideItsTask(worker)
+	finished := rig.settledClaim(worker)
+	if finished.TaskFinished != number || finished.TaskWritten != number || finished.TaskFinishedSession != finished.Session {
+		t.Fatalf("the worker records task %d of %d finished in session %q while it runs %q, want task %d finished in the session it runs",
+			finished.TaskFinished, finished.TaskWritten, finished.TaskFinishedSession, finished.Session, number)
+	}
 	rig.replacedAndBack(worker)
-	conn := rig.workers[worker]
 
-	// The clock has not moved: what reaches the new process is the ready's, not the silence sweep's.
-	testwait.Eventually(t, "the ready to queue the worker's task", func() bool { return len(rig.starts()) > 0 })
+	// The clock has not moved: the relaunched worker's ready is decided, and gives it nothing.
+	testwait.Eventually(t, "the relaunched worker's ready to be decided", func() bool {
+		return len(loggedLines(t, rig.logs.String(), readyGivesNothingLine)) > 0
+	})
+	for _, line := range loggedLines(t, rig.logs.String(), readyGivesNothingLine) {
+		if line["issue"] != podUpdateIssue || line["role"] != string(worker) {
+			t.Errorf("the ready's line is %+v, want it of issue %s and role %s", line, podUpdateIssue, worker)
+		}
+	}
 	rig.drain()
-	testwait.Eventually(t, "the worker's task to reach its new process", func() bool { return len(conn.Prompts()) > 0 })
-	if sent := conn.Prompts(); len(sent) != 1 || sent[0].Message != task {
-		t.Fatalf("the new process was sent %+v, want the one prompt of the task the worker held, %q", sent, task)
+	if got := rig.starts(); len(got) != 0 {
+		t.Fatalf("the supervise rows of %s = %+v, want none: the worker finished its last task in the session it runs", podUpdateIssue, got)
 	}
-
-	// The silence sweep a bound later finds a worker that holds its task, and sends nothing more.
-	rig.clock.advance(podUpdateSilence + time.Minute)
-	rig.sweepForSilence()
-	rig.drain()
-	rig.settle(worker)
-	if sent := conn.Prompts(); len(sent) != 1 {
-		t.Fatalf("the new process was sent %d prompts once the silence sweep ran, want the one task: %+v", len(sent), sent)
-	}
-	if silent := rig.silenceNoticesOf(); len(silent) != 0 {
-		t.Fatalf("the architect was told %+v, want no silence notice: the worker was given its task when it was ready", silent)
-	}
+	rig.holdsNothingPast(worker, number, "its session goes on, and its own reminder wakes it")
 }
 
 func TestAReplacedPhaseWorkerWhosePhaseIsOverIsSentNothing(t *testing.T) {
 	t.Parallel()
-	rig, _ := aWorkerWithItsPhasesTask(t)
+	rig, number := aWorkerWithItsPhasesTask(t)
 	worker := claim.RoleImplementer
 	rig.drifts(podUpdateDrift)
 	rig.answersInsideItsTask(worker)
@@ -134,23 +135,19 @@ func TestAReplacedPhaseWorkerWhosePhaseIsOverIsSentNothing(t *testing.T) {
 	// works, while the round replaces the pod.
 	rig.movesTo(phase.Testing)
 	rig.replacedAndBack(worker)
-	conn := rig.workers[worker]
 
 	rig.drain()
 	rig.settle(worker)
 	if got := rig.starts(); len(got) != 0 {
 		t.Fatalf("the supervise rows of %s = %+v, want none: the implementer's phase is over", podUpdateIssue, got)
 	}
-	if sent := conn.Prompts(); len(sent) != 0 {
-		t.Fatalf("the new process was sent %+v, want nothing: its phase is over", sent)
-	}
+	rig.holdsNothingPast(worker, number, "its phase is over")
 }
 
 func TestAnUpdateThatKeepsItsPodSendsItsWorkerNothing(t *testing.T) {
 	t.Parallel()
-	rig, _ := aWorkerWithItsPhasesTask(t)
+	rig, number := aWorkerWithItsPhasesTask(t)
 	worker := claim.RoleImplementer
-	conn := rig.workers[worker]
 	// The read before the replacement finds a commit that no branch or tag on origin holds, over a
 	// drift the pod's roles can keep working under: the round keeps the pod (roundKeeps).
 	rig.rt.ScriptWorkspaceWork(podUpdateIssue, roundUnpushed)
@@ -163,7 +160,5 @@ func TestAnUpdateThatKeepsItsPodSendsItsWorkerNothing(t *testing.T) {
 	if got := rig.starts(); len(got) != 0 {
 		t.Fatalf("the supervise rows of %s = %+v, want none: the pod and its worker's process are kept", podUpdateIssue, got)
 	}
-	if sent := conn.Prompts(); len(sent) != 1 {
-		t.Fatalf("the worker was sent %d prompts, want only the task it took before the round: %+v", len(sent), sent)
-	}
+	rig.holdsNothingPast(worker, number, "only the task it took before the round was written to it")
 }

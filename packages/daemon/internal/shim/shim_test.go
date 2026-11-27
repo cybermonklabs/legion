@@ -5,7 +5,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"os/exec"
@@ -109,9 +111,10 @@ func TestACopyStartedAsTheFakeOMPRunsAsTheFake(t *testing.T) {
 	}
 }
 
-// fakeOMP answers a prompt with OMP's own sequence — the ack, then the turn — records every line
-// it reads, and reports on its stdout what the tests need to see from inside the child: that it
-// started, that a SIGTERM reached it, and a burst of frames on SIGUSR1.
+// fakeOMP runs a turn when the daemon's side asks for one (a `fake_turn` frame, which the shim
+// forwards as it forwards everything it does not act on itself), records every line it reads, and
+// reports on its stdout what the tests need to see from inside the child: that it started, that a
+// SIGTERM reached it, and a burst of frames on SIGUSR1.
 func fakeOMP() int {
 	var mu sync.Mutex
 	emit := func(line string) {
@@ -180,13 +183,8 @@ func fakeOMP() int {
 		var frame struct{ Type, ID, Message string }
 		_ = json.Unmarshal(line, &frame)
 		switch frame.Type {
-		case "prompt":
-			emit(fmt.Sprintf(`{"type":"response","id":%q,"command":"prompt","success":true}`, frame.ID))
+		case "fake_turn":
 			emit(`{"type":"agent_start"}`)
-			if frame.Message != "hold" {
-				emit(`{"type":"agent_end"}`)
-			}
-		case "fake_end_turn":
 			emit(`{"type":"agent_end"}`)
 		case "get_state":
 			emit(fmt.Sprintf(`{"type":"response","id":%q,"command":"get_state","success":true,"data":{"isStreaming":false}}`, frame.ID))
@@ -567,6 +565,31 @@ func (p *peer) expectHello(t *testing.T) {
 	}
 }
 
+// expectHelloSaying is expectHello for a hello that says, as whole, whether the backlog dropped a
+// frame since the last connection took it (shimwire.Hello2.BacklogWhole); which names the hello.
+func (p *peer) expectHelloSaying(t *testing.T, whole bool, which string) {
+	t.Helper()
+	frame := p.next(t)
+	hello, ok := frame.(shimwire.Hello2)
+	if !ok || hello.BootToken != bootToken || hello.BacklogWhole != whole {
+		t.Fatalf("%s was %#v, want hello2 with boot token %q and backlogWhole %t", which, frame, bootToken, whole)
+	}
+}
+
+// expectClosed holds that the shim closes the connection with nothing more on it; which names
+// the connection.
+func (p *peer) expectClosed(t *testing.T, which string) {
+	t.Helper()
+	// The read's deadline is the one every wait has, as next's is.
+	deadline, _ := testwait.Context(t).Deadline()
+	if err := p.conn.SetReadDeadline(deadline); err != nil {
+		t.Fatalf("set a read deadline: %v", err)
+	}
+	if line, err := p.r.ReadLine(); !errors.Is(err, io.EOF) {
+		t.Fatalf("%s carried %.80q (%v), want it closed with nothing on it", which, line, err)
+	}
+}
+
 // open is the daemon's side of a successful connect: the hello read and acked, and the child's
 // first frame — proof it was spawned and bridged — read back. It returns the child's pid.
 func (p *peer) open(t *testing.T) int {
@@ -615,7 +638,7 @@ func TestOMPIsSpawnedOnlyAfterTheHelloAck(t *testing.T) {
 
 	p := daemon.accept(t)
 	p.expectHello(t)
-	p.send(t, shimwire.Prompt{ID: "early", DeliveryID: "d0", Message: "not yet"})
+	p.sendLine(t, `{"type":"fake_turn"}`)
 	sh.log.await(t, "ignoring a frame received before hello_ack", 1)
 	if child.started() || sh.log.count("[worker-shim] spawned ") != 0 {
 		t.Fatalf("OMP was spawned before the daemon acked the hello; log:\n%s", sh.log)
@@ -628,7 +651,7 @@ func TestOMPIsSpawnedOnlyAfterTheHelloAck(t *testing.T) {
 		t.Fatalf("the probe was answered as %#v", raw)
 	}
 	if got := frameTypes(child.received(t)); !reflect.DeepEqual(got, []string{shimwire.TypeGetState}) {
-		t.Fatalf("OMP read %v; the pre-ack prompt must never reach it", got)
+		t.Fatalf("OMP read %v; the pre-ack frame must never reach it", got)
 	}
 }
 
@@ -838,8 +861,7 @@ func TestTheCodegraphWarmUpStartsOnTheChildsFirstFrameOnce(t *testing.T) {
 		t.Fatalf("the warm-up was started with %v, want once with %q", got, workspace)
 	}
 
-	p.send(t, shimwire.Prompt{ID: "p1", DeliveryID: "d1", Message: "go"})
-	p.expect(t, shimwire.Response{ID: "p1", Command: "prompt", Success: true})
+	p.sendLine(t, `{"type":"fake_turn"}`)
 	p.expect(t, shimwire.AgentStart{})
 	p.expect(t, shimwire.AgentEnd{})
 	_ = p.conn.Close()
@@ -1013,10 +1035,13 @@ func TestAnAckedConnectionResetsTheBackoff(t *testing.T) {
 	clock.next(t, 200*time.Millisecond)
 }
 
-// What OMP writes while the daemon is away waits in a backlog of the newest 1000 frames and is
-// replayed in order, ahead of anything newer, once the next connection's hello is acked. The
-// hello is re-sent on that connection; a stream that dropped after its ack is redialled at once,
-// with no backoff; and overflowing the backlog is logged once for the shim's life.
+// What OMP writes while no daemon takes it waits in a backlog of the newest 1000 lines and is
+// replayed in order, ahead of anything newer, once a connection's hello that says what the backlog
+// dropped is acked. Here OMP writes past the bound while the redialled connection's hello waits
+// for its ack, so that connection, whose hello said the backlog dropped nothing, is closed behind
+// its ack with nothing on it, and the next one carries the replay. The hello is re-sent on every
+// connection; a stream that dropped after its ack is redialled at once, with no backoff; and
+// overflowing the backlog is logged once for the shim's life.
 func TestFramesFromADroppedConnectionReplayInOrderAfterTheNextAck(t *testing.T) {
 	path := socketPath(t)
 	daemon := listen(t, path)
@@ -1028,13 +1053,16 @@ func TestFramesFromADroppedConnectionReplayInOrderAfterTheNextAck(t *testing.T) 
 
 	for round := 1; round <= 2; round++ {
 		_ = p.conn.Close()
-		sh.log.await(t, "reconnecting", round)
-		// 1200 frames and the end of a turn, all while no daemon is connected: the oldest 201
+		p = daemon.accept(t)
+		p.expectHello(t)
+		// 1200 frames and the end of a turn, all while that hello waits for its ack: the oldest 201
 		// cannot be kept.
 		if err := syscall.Kill(pid, syscall.SIGUSR1); err != nil {
 			t.Fatalf("signal the fake OMP: %v", err)
 		}
 		sh.log.awaitLine(t, "agent_end", round)
+		p.send(t, shimwire.HelloAck{})
+		p.expectClosed(t, "the connection whose hello said the backlog dropped nothing, acked after it dropped frames")
 
 		p = daemon.accept(t)
 		p.expectHello(t)
@@ -1050,9 +1078,75 @@ func TestFramesFromADroppedConnectionReplayInOrderAfterTheNextAck(t *testing.T) 
 		}
 		p.expect(t, shimwire.AgentEnd{})
 	}
-	if got := sh.log.count("dropping oldest frames beyond the last 1000"); got != 1 {
+	if got := sh.log.count("dropping oldest frames beyond the last 1000 lines"); got != 1 {
 		t.Fatalf("the backlog overflow was logged %d times, want once for the shim's life; log:\n%s", got, sh.log)
 	}
+	clock.idle(t)
+}
+
+// The hello says whether the backlog dropped a frame since the last connection took it
+// (shimwire.Hello2.BacklogWhole): the first hello, with nothing yet bound for a daemon, says it
+// dropped none; the one after the backlog overflowed while no daemon was connected says it dropped
+// some; and the one after a connection took that backlog whole says it dropped none again. A
+// backlog that overflows while a hello that said it dropped none waits for its ack goes to no
+// connection on that word: the shim closes the connection behind its ack with nothing replayed on
+// it, and the next hello says the backlog dropped frames and carries the replay.
+func TestTheHelloSaysWhetherTheBacklogDroppedAFrameSinceTheLastConnection(t *testing.T) {
+	path := socketPath(t)
+	daemon := listen(t, path)
+	child := newOMP(t)
+	clock := newClock()
+	sh := run(t, config(t, path, child), clock)
+	// overflow is 1200 frames and the end of a turn from the fake OMP, the round-th: the oldest
+	// 201 cannot be kept.
+	overflow := func(pid, round int) {
+		t.Helper()
+		if err := syscall.Kill(pid, syscall.SIGUSR1); err != nil {
+			t.Fatalf("signal the fake OMP: %v", err)
+		}
+		sh.log.awaitLine(t, "agent_end", round)
+	}
+	replayed := func(p *peer) {
+		t.Helper()
+		for want := 201; want < 1200; want++ {
+			var frame struct{ N int }
+			if err := json.Unmarshal(p.expectRaw(t, "fake_frame").JSON, &frame); err != nil || frame.N != want {
+				t.Fatalf("replayed frame %d (%v) where frame %d was due", frame.N, err, want)
+			}
+		}
+		p.expect(t, shimwire.AgentEnd{})
+	}
+
+	p := daemon.accept(t)
+	p.expectHelloSaying(t, true, "the first hello")
+	p.send(t, shimwire.HelloAck{})
+	pid := readyPID(t, p.expectRaw(t, "fake_ready"))
+
+	// The daemon goes away, its listener with it, so the redial is refused and waits out its
+	// backoff while OMP writes past the bound.
+	_ = daemon.ln.Close()
+	_ = p.conn.Close()
+	retry := clock.next(t, 200*time.Millisecond)
+	overflow(pid, 1)
+	daemon = listen(t, path)
+	retry.elapse()
+	p = daemon.accept(t)
+	p.expectHelloSaying(t, false, "the hello after the backlog overflowed with no daemon connected")
+	p.send(t, shimwire.HelloAck{})
+	replayed(p)
+
+	_ = p.conn.Close()
+	sh.log.await(t, "reconnecting", 2)
+	p = daemon.accept(t)
+	p.expectHelloSaying(t, true, "the hello after a connection took the backlog whole")
+	overflow(pid, 2)
+	p.send(t, shimwire.HelloAck{})
+	p.expectClosed(t, "the connection whose hello said the backlog dropped nothing, acked after it dropped frames")
+	sh.log.await(t, "closing that connection, and the next hello says so", 1)
+	p = daemon.accept(t)
+	p.expectHelloSaying(t, false, "the hello after that connection")
+	p.send(t, shimwire.HelloAck{})
+	replayed(p)
 	clock.idle(t)
 }
 
@@ -1758,55 +1852,6 @@ func TestThePinnedJJCarriesTheChunkedPackPatch(t *testing.T) {
 	}
 	if !strings.Contains(stderr, head) || !strings.Contains(stderr, "not found") {
 		t.Fatalf("under JJ_PACK_MAPPED_LIMIT=not-a-number, jj --ignore-working-copy file list -r @- ended %v and printed %q, on stderr %q; want the commit %s not found, which is how the patched gix-pack's refusal of the value reaches the user (gix-odb takes the pack as absent), where an unpatched jj lists %s", err, stdout, stderr, head, file)
-	}
-}
-
-// The delivery dedupe end to end: the daemon retrying a prompt with the same deliveryId reaches
-// OMP once, and every repeat is answered by the shim with the replay rules of internal/shimwire
-// — the ack, a start carrying the deliveryId once the turn began, and its end once it is over.
-func TestARepeatedDeliveryReachesOMPOnceAndIsAnsweredLocally(t *testing.T) {
-	path := socketPath(t)
-	daemon := listen(t, path)
-	child := newOMP(t)
-	run(t, config(t, path, child), newClock())
-	p := daemon.accept(t)
-	p.open(t)
-	ack := func(id string) shimwire.Response {
-		return shimwire.Response{ID: id, Command: shimwire.TypePrompt, Success: true}
-	}
-
-	p.send(t, shimwire.Prompt{ID: "r1", DeliveryID: "d1", Message: "hold"})
-	p.expect(t, ack("r1"))
-	p.expect(t, shimwire.AgentStart{})
-
-	// Mid-turn: the ack and the start, which the daemon can fence on by its deliveryId.
-	p.send(t, shimwire.Prompt{ID: "r2", DeliveryID: "d1", Message: "hold"})
-	p.expect(t, ack("r2"))
-	p.expect(t, shimwire.AgentStart{DeliveryID: "d1"})
-
-	p.sendLine(t, `{"type":"fake_end_turn"}`)
-	p.expect(t, shimwire.AgentEnd{})
-
-	// After the turn: the end is replayed too, or the daemon would wait for one already sent.
-	p.send(t, shimwire.Prompt{ID: "r3", DeliveryID: "d1", Message: "hold"})
-	p.expect(t, ack("r3"))
-	p.expect(t, shimwire.AgentStart{DeliveryID: "d1"})
-	p.expect(t, shimwire.AgentEnd{})
-
-	// A new delivery is OMP's again.
-	p.send(t, shimwire.Prompt{ID: "r4", DeliveryID: "d2", Message: "the next task"})
-	p.expect(t, ack("r4"))
-	p.expect(t, shimwire.AgentStart{})
-	p.expect(t, shimwire.AgentEnd{})
-
-	var prompts []string
-	for _, frame := range child.received(t) {
-		if prompt, ok := frame.(shimwire.Prompt); ok {
-			prompts = append(prompts, prompt.ID)
-		}
-	}
-	if !reflect.DeepEqual(prompts, []string{"r1", "r4"}) {
-		t.Fatalf("OMP was prompted with %v, want [r1 r4]: d1 once, d2 once", prompts)
 	}
 }
 

@@ -683,20 +683,33 @@ func valueStripCases() map[string]valueStripCase {
 			undeclaredState: State{Admission: Admission{Held: []HeldIssue{{Issue: "SHAPES-4", Reason: record.HeldReason(undeclaredValue)}}}},
 		},
 		// A pod recording the contract before shapedAnswersContract and the cyber-policy entry's
-		// number is served every claim view whose failure cause or pending cause is `cyber_policy`
-		// with `provider_error` in its place: the word arrived at that entry, after the field, and
-		// the pod's older process reads both with a `z.enum` of the seven words before it. The
-		// failure record's other keys stay, its `detail` naming cyber_policy among them, and so
-		// does every view naming another word. The pod's claim at the entry's number states its
-		// own contract and is in no pod's reckoning (podContracts), so the pod alone at it is
-		// served this daemon's own body. The field is older than the floor's records of it only
-		// through recordFieldsContract's band, which the low contract is above, so the case names
-		// no value that arrived with it.
+		// number is served every claim view whose failure cause or pending cause the pod's older
+		// process does not admit with the word it knows for the same event, by the one strip of the
+		// failure cause (withoutNeverReconnected): LEGION-214's `never_reconnected` as
+		// `never_registered`, in its architect's `failure.cause` and its implementer's
+		// `pendingCause`, since the word arrived at TaskTakeContract; and every `cyber_policy` as
+		// `provider_error`, since that word arrived at the cyber-policy entry. Both arrived after the
+		// field, and the pod's older process reads both fields with a `z.enum` of the words before
+		// them. The failure record's other keys stay, LEGION-214's sentence and every `detail`
+		// naming cyber_policy among them, and so does every view naming another word. The pod's
+		// claim at the entry's number states its own contract and is in no pod's reckoning
+		// (podContracts counts none from shapedAnswersContract up, since every such build states
+		// its contract in the header), so the mixed pod reads as one at the older contract and a pod
+		// alone at the entry's number is served this daemon's own body. The field is older than the
+		// floor's records of it only through recordFieldsContract's band, which the low contract is
+		// above, so the case names no value that arrived with it.
 		droppedFailureCause: {
-			state: stateCarryingEveryDeclaredValue, low: shapedAnswersContract - 1, high: entryNumber(cyberPolicyContract),
+			state: func(t *testing.T) State {
+				state := stateCarryingEveryDeclaredValue(t)
+				issues := maps.Clone(state.Issues)
+				issues["LEGION-214"] = neverReconnectedIssue()
+				state.Issues = issues
+				return state
+			},
+			low: shapedAnswersContract - 1, high: entryNumber(cyberPolicyContract),
 			carries: func(t *testing.T, body []byte) bool {
 				for _, cause := range failureCausesServed(t, body) {
-					if cause == string(supervise.CauseCyberPolicy) {
+					if cause == string(supervise.CauseCyberPolicy) || cause == string(supervise.CauseNeverReconnected) {
 						return true
 					}
 				}
@@ -706,13 +719,25 @@ func valueStripCases() map[string]valueStripCase {
 				served := failureCausesServed(t, mixed)
 				for at, cause := range failureCausesServed(t, whole) {
 					want := cause
-					if cause == string(supervise.CauseCyberPolicy) {
+					switch cause {
+					case string(supervise.CauseCyberPolicy):
 						want = string(supervise.CauseProviderError)
+					case string(supervise.CauseNeverReconnected):
+						want = string(supervise.CauseNeverRegistered)
 					}
 					if served[at] != want {
 						t.Errorf("the {%d, %d} pod is served %s as %q, want %q: the strip rewrites the word the pod's %d process refuses and nothing else",
 							shapedAnswersContract-1, entryNumber(cyberPolicyContract), at, served[at], want, shapedAnswersContract-1)
 					}
+				}
+				failure, pending := neverReconnectedCauses(t, mixed)
+				if failure != string(supervise.CauseNeverRegistered) || pending != string(supervise.CauseNeverRegistered) {
+					t.Errorf("the {%d, %d} pod is served LEGION-214's failure.cause %q and pendingCause %q, want %q in both: the pod's %d process reads the word it knows for a process that never said hello",
+						shapedAnswersContract-1, entryNumber(cyberPolicyContract), failure, pending, supervise.CauseNeverRegistered, shapedAnswersContract-1)
+				}
+				if !bytes.Contains(mixed, []byte(`"launch failures ran out"`)) {
+					t.Errorf("the {%d, %d} pod is served LEGION-214's failure without its sentence, want the record whole but its cause: %s",
+						shapedAnswersContract-1, entryNumber(cyberPolicyContract), mixed)
 				}
 			},
 			// A failed architect whose failure cause and pending cause are a word no row declares.
@@ -1361,13 +1386,40 @@ func TestShapeAnswerShapesEveryAnswer(t *testing.T) {
 					t.Errorf("a PauseFailure was shaped to %+v at the floor, want its Failure alone", shaped)
 				}
 			case AnswerRegister:
-				registration := claim.RegisterResponse{ClaimToken: "legion-legion-legion-208-architect", PromptAgents: []string{"oracle"}, Replaces: "ses_before"}
-				older := claim.RegisterResponse{ClaimToken: registration.ClaimToken, PromptAgents: registration.PromptAgents}
-				if shaped, _ := shapeAnswer(AnswerRegister, registration, ServingFloor, ServingFloor); !reflect.DeepEqual(shaped, any(older)) {
-					t.Errorf("a registration was shaped to %+v at the floor, want it without `replaces`, which replacesContract added", shaped)
+				// The replaces entry sorts before the task-take entry, so a caller at the one and
+				// below the other is served `replaces` and neither key of the take.
+				if entryNumber(replacesContract) >= entryNumber(taskTakeContract) {
+					t.Fatalf("the replaces entry is numbered %d, at or above the task-take entry's %d: this case proves nothing",
+						entryNumber(replacesContract), entryNumber(taskTakeContract))
 				}
-				if shaped, _ := shapeAnswer(AnswerRegister, registration, entryNumber(replacesContract), entryNumber(replacesContract)); !reflect.DeepEqual(shaped, any(registration)) {
-					t.Errorf("a registration was shaped to %+v at the replaces entry's number, want the body it was given", shaped)
+				registration := claim.RegisterResponse{ClaimToken: "legion-legion-legion-208-architect", PromptAgents: []string{"oracle"},
+					Task: &claim.TaskValue{Number: 4, Epoch: "2026-11-13T16:21:44Z", Revision: 12}, Finished: 3, Replaces: "ses_before"}
+				older := registration
+				older.Replaces = ""
+				below, _ := shapeAnswer(AnswerRegister, registration, ServingFloor, ServingFloor)
+				if !reflect.DeepEqual(below, any(withoutTaskReading(older))) {
+					t.Errorf("a registration was shaped to %+v at the floor, want it without `replaces`, which replacesContract added, and without `task` and `finished`, which the task-take entry added", below)
+				}
+				encoded, err := json.Marshal(below)
+				if err != nil {
+					t.Fatalf("marshal the registration served at the floor: %v", err)
+				}
+				if bytes.Contains(encoded, []byte(`"task"`)) || bytes.Contains(encoded, []byte(`"finished"`)) || bytes.Contains(encoded, []byte(`"replaces"`)) {
+					t.Errorf("the registration served at the floor carries `task`, `finished` or `replaces`, which the floor's reader does not know: %s", encoded)
+				}
+				between, _ := shapeAnswer(AnswerRegister, registration, entryNumber(replacesContract), entryNumber(replacesContract))
+				if !reflect.DeepEqual(between, any(withoutTaskReading(registration))) {
+					t.Errorf("a registration was shaped to %+v at the replaces entry's number, want the body it was given without `task` and `finished`", between)
+				}
+				encoded, err = json.Marshal(between)
+				if err != nil {
+					t.Fatalf("marshal the registration served at the replaces entry's number: %v", err)
+				}
+				if !bytes.Contains(encoded, []byte(`"replaces":"ses_before"`)) || bytes.Contains(encoded, []byte(`"task"`)) || bytes.Contains(encoded, []byte(`"finished"`)) {
+					t.Errorf("the registration served at the replaces entry's number is %s, want `replaces` and neither `task` nor `finished`", encoded)
+				}
+				if at, _ := shapeAnswer(AnswerRegister, registration, DaemonAPIVersion(), DaemonAPIVersion()); !reflect.DeepEqual(at, any(registration)) {
+					t.Errorf("the registration served at %d is %+v, want the body it was given", DaemonAPIVersion(), at)
 				}
 			case AnswerRegisterController:
 				registration := ControllerRegisterResponse{ClaimToken: "legion-legion-controller", Replaces: "ses_before"}
@@ -1445,6 +1497,13 @@ func TestTheHeaderRefusesNoCallerAndMovesNoStaleRefusal(t *testing.T) {
 // caller that states a contract is exempt by none of them the less: a claim whose launch installs
 // no plugin, a claim whose update round is open, a claim stored working, and every claim of a
 // daemon that can relaunch nothing is served on the contract its registration recorded.
+//
+// The open round serves a stale claim whose plugin takes tasks, and no other: a claim whose plugin
+// takes no task is refused inside its round as outside one (supervise.StaleRefusesCalls,
+// TestAClaimWhosePluginTakesNoTaskIsRefusedInsideItsOpenRound below). While this daemon's own
+// contract is the take contract, no contract below it takes tasks, so the round's case records
+// the contract after this daemon's, which is stale and takes tasks, as
+// TestTurnOutcomeOfAStaleClaimNamingItsTakeFinishesTheTask stands it in.
 func TestTheExemptionsFromTheStaleRefusalStandWithAHeader(t *testing.T) {
 	recorded := DaemonAPIVersion() - 1
 	stated := http.Header{pluginContractHeader: []string{strconv.Itoa(ServingFloor)}}
@@ -1453,6 +1512,8 @@ func TestTheExemptionsFromTheStaleRefusalStandWithAHeader(t *testing.T) {
 		name    string
 		harness func(t *testing.T) *harness
 		seed    func(t *testing.T, h *harness, token claim.Token)
+		// contract is the contract the claim records where it is not recorded's.
+		contract int
 	}{
 		{
 			name: "a claim whose launch installs no plugin",
@@ -1461,8 +1522,9 @@ func TestTheExemptionsFromTheStaleRefusalStandWithAHeader(t *testing.T) {
 			},
 		},
 		{
-			name:    "a claim whose update round is open",
-			harness: newHarness,
+			name:     "a claim whose update round is open",
+			harness:  newHarness,
+			contract: DaemonAPIVersion() + 1,
 			seed: func(t *testing.T, h *harness, token claim.Token) {
 				staleWith(t, h, token, func(c *supervise.Claim) { c.UpdateRound = "round-1" })
 			},
@@ -1482,10 +1544,17 @@ func TestTheExemptionsFromTheStaleRefusalStandWithAHeader(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			h := tc.harness(t)
 			relaunchable := tc.name != "a daemon that can relaunch nothing"
+			contract := recorded
+			if tc.contract != 0 {
+				contract = tc.contract
+				if supervise.TakesNoTask(contract, TaskTakeContract()) {
+					t.Fatalf("contract %d takes no task: an open round refuses such a claim, so this case proves nothing", contract)
+				}
+			}
 			token, boot := h.launch("LEGION-208", claim.RoleImplementer)
 			session := "ses_implementer"
 			current := h.registerContract(boot, session, DaemonAPIVersion(), relaunchable)
-			h.makeStale(t, token, session, current.Secret, recorded)
+			h.makeStale(t, token, session, current.Secret, contract)
 			if tc.seed != nil {
 				tc.seed(t, h, token)
 			}
@@ -1505,6 +1574,38 @@ func TestTheExemptionsFromTheStaleRefusalStandWithAHeader(t *testing.T) {
 			}
 		})
 	}
+}
+
+// A claim whose plugin takes no task is refused inside its open update round as outside one,
+// however the caller states its contract: on its old contract it takes none of its tasks, so the
+// stale-plugin lane relaunches it inside the round (supervise.StaleRefusesCalls,
+// internal/daemon's TestStalePluginBelowTheTakeContractIsRelaunchedInsideAPodRound), and the
+// refusal names the contract its registration recorded. The control is the round's own case
+// above, a claim whose plugin takes tasks, which the open round serves.
+func TestAClaimWhosePluginTakesNoTaskIsRefusedInsideItsOpenRound(t *testing.T) {
+	h := newHarness(t)
+	token, boot := h.launch("LEGION-208", claim.RoleImplementer)
+	session := "ses_implementer"
+	current := h.registerContract(boot, session, DaemonAPIVersion(), true)
+	recorded := TaskTakeContract() - 1
+	if !supervise.TakesNoTask(recorded, TaskTakeContract()) {
+		t.Fatalf("contract %d takes tasks: this case proves nothing", recorded)
+	}
+	h.makeStale(t, token, session, current.Secret, recorded)
+	staleWith(t, h, token, func(c *supervise.Claim) { c.UpdateRound = "round-1" })
+	if c := h.stored(token); c.UpdateRound != "round-1" {
+		t.Fatalf("the claim is in round %q, want round-1: this case proves nothing", c.UpdateRound)
+	}
+	stated := http.Header{pluginContractHeader: []string{strconv.Itoa(ServingFloor)}}
+
+	wantRefusal(t,
+		h.request(http.MethodPost, "/legion/v1/claims/ready", claim.ReadyRequest{
+			ClaimToken: token, SessionID: session, Secret: current.Secret, Generation: current.Generation,
+		}, stated),
+		http.StatusConflict, claim.StalePluginContract(recorded, DaemonAPIVersion()).Message)
+	refused(t, h.request(http.MethodPost, "/legion/v1/grants", GrantRequest{
+		SessionID: session, Secret: current.Secret, Tree: "LEGION-208", Issue: "LEGION-208",
+	}, stated), http.StatusConflict, "STALE_PLUGIN_CONTRACT")
 }
 
 // staleWith is the claim as makeStale left it, with one more field of the stale window set on it

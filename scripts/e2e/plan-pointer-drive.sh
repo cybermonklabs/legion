@@ -135,7 +135,7 @@
 # each Dispatch server, each watcher, each session - is stopped by the same teardown.
 #
 # What it does not cover: no daemon runs, so nothing here proves the task line this drive writes
-# is the line the daemon sends, which the daemon's own tests own; the session holds no `legion`
+# is the line the daemon answers a take with, which the daemon's own tests own; the session holds no `legion`
 # tool, no jj workspace and no GitHub, so it completes no phase and opens no pull request; Envoy
 # is an address nothing listens on, so no role topic and no message reach the session; and
 # `skills/legion-worker/SKILL.md` is the one this box has installed for a session's `skill://`

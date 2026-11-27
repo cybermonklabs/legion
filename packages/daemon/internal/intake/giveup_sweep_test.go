@@ -158,7 +158,7 @@ func TestASweepGivesUpAFailingMessageTheStreamDeleted(t *testing.T) {
 	// Not parallel: it stops the consumers between the first failure and the 500 ms nak delay, so its one delivery holds only inside a margin the load of tests beside it can eat.
 	pool := migratedPool(t)
 	js := testnats.JetStream(t)
-	stream := testnats.CreateStream(t, js, jetstream.StreamConfig{Name: notificationStream, Subjects: []string{"notifications.>"}, MaxAge: 3 * time.Second})
+	stream := testnats.CreateStream(t, js, jetstream.StreamConfig{Name: NotificationStream, Subjects: []string{"notifications.>"}, MaxAge: 3 * time.Second})
 	spec := consumerSpec(&lockedBuffer{})
 	spec.NakDelay, spec.NakDelayCap, spec.RetentionMargin = 500*time.Millisecond, 500*time.Millisecond, time.Nanosecond
 	alwaysFails := handlerFunc(func(context.Context, pgx.Tx, Fact) (Result, error) { return Result{}, errAlwaysFails })

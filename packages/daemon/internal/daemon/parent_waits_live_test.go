@@ -269,7 +269,7 @@ func (r *parentWaitsLive) rootHoldsASlot() {
 	r.arch.ready()
 	r.note("the architect is registered and ready on the launch this boot made for the claim the fixture left mid-launch")
 	r.imp = r.claimant(claim.RoleImplementer, "ses_implementer")
-	r.imp.startTurn("")
+	r.imp.startTurn()
 	r.note("the implementer is registered and ready on the launch this boot made, and began a turn of its own on its implementing phase")
 	state := r.waitForState(r.key+" implementing in its slot with its implementer registered", func(state api.State) bool {
 		root := state.Issues[r.key]
@@ -431,13 +431,13 @@ func (r *parentWaitsLive) rootComesBack() {
 	r.note("read back: %s done; %s in %s holding slot %s, out of admission.blocked, its implementer given entry %d",
 		r.child, r.key, root.Phase, slotOf(root), root.GivenEntry)
 	merged := fmt.Sprintf("These Dispatch children of %s merged during the wait: %s (pull request #%d).", r.key, r.child, r.childPR)
-	prompt := r.imp.takeTask(merged)
+	taken := r.imp.takeTask(merged)
 	for _, unsaid := range []string{"merge the default branch", "full test round"} {
-		if strings.Contains(prompt.Message, unsaid) {
-			t.Fatalf("the implementer was prompted %q, want no %q in it: the return asks for no forward merge", prompt.Message, unsaid)
+		if strings.Contains(taken.Text, unsaid) {
+			t.Fatalf("the implementer took %q, want no %q in it: the return asks for no forward merge", taken.Text, unsaid)
 		}
 	}
-	r.note("read back: the implementer's connection was sent its start, which it took — %s", prompt.Message)
+	r.note("read back: the implementer took its start from its value and began the turn that works it — %s", taken.Text)
 }
 
 // publishChildPullRequest publishes GitHub's event of action on the child's pull request, from its

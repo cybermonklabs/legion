@@ -53,8 +53,10 @@ func TestTheSharedCloneKindProofBuildsItsRuntimeFromItsConfiguration(t *testing.
 	server := httptest.NewServer(newIssueSandboxAPI())
 	t.Cleanup(func() { cancel(); server.Close() })
 	dir := t.TempDir()
+	// The shared-clone proof dials no NATS, so its nats_urls entry is a host nothing answers on, as
+	// every other case of these files that dials none names (burstableLiveNoNATS).
 	path := writeBurstableLiveConfig(t, filepath.Join(dir, "shared-clone"), "CLONE", "192.0.2.10",
-		"ghcr.io/cybermonklabs/legion-worker@sha256:"+strings.Repeat("a", 64), writeKubeconfig(t, server.URL, ""), "test", sharedCloneLiveResources)
+		"ghcr.io/cybermonklabs/legion-worker@sha256:"+strings.Repeat("a", 64), writeKubeconfig(t, server.URL, ""), "test", burstableLiveNoNATS, sharedCloneLiveResources)
 	cfg, err := config.LoadForValidation(path, nil)
 	if err != nil {
 		t.Fatalf("load %s: %v", path, err)

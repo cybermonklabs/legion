@@ -726,9 +726,9 @@ func (d ParkedDecision) Mark() DecisionMark {
 }
 
 // DeliveryHold is the claim token and delivery id of a start's task queued on an architect's
-// claim, which holds what that task names until that delivery is confirmed (the rows are told),
-// retired (the hold is cleared and the rows are KEPT again) or taken back under a new id (the
-// hold moves to it). The zero value is no hold.
+// claim, which holds what that task names until that delivery is confirmed (the rows are told) or
+// retired (the hold is cleared and the rows are KEPT again). A task taken back keeps its delivery
+// id, and with it the hold. The zero value is no hold.
 type DeliveryHold struct {
 	Claim    string
 	Delivery string
@@ -1467,7 +1467,9 @@ type PullRequest struct {
 	// MergeForward.Head and ReviewAsked when that landing asks the reviewer to read the merge. An
 	// ask that replaces the one the record holds - of a new head whose conflict was confirmed, or
 	// of the same head asked again on a phase entry - carries that ask's Earlier, and the ask
-	// itself, its head and the head that landed, once it landed.
+	// itself, its head and the head that landed, once it landed. A reopen of the pull request
+	// (pullRequestOpened) keeps it whole, and at a head pushed while the pull request was closed
+	// records the landing as that synchronize would; a close keeps it too.
 	// What clears it: any transition into implementing, a move into awaiting_children, the issue
 	// leaving the workflow, and a new generation (Store.ClearGeneration), since it is an ask of the
 	// run before. That ends the stretch of work, Earlier with it.
@@ -1519,18 +1521,30 @@ type ConflictRead struct {
 // head the first merge replaced (PullRequest.MergeForward says how long the stretch lasts).
 // Withdrawn is whether the implementer was told that the ask is no longer its work (workflow's
 // MergeForwardWithdrawn): the merge of the head is owed to nobody then until a role is asked
-// again. SentLaunch is the latest launch of the asked role's claim (intake.ClaimReady.Launch) a
-// row of the ask was delivered to, 0 while none was; it is recorded only at a delivered end
-// (workflow's MergeForwardAskEnded), and a delivery where the listener names no holder is credited
-// to the launch the row was sent at. The ask is sent again to a later launch of that role while
-// the merge of the head is still owed to it and no row of the ask is queued for it: at that
-// launch's ready (workflow's askAgainAtLaunch), and at the end of a row of the ask that did not
-// reach it (workflow's MergeForwardAskEnded), since a claim that failed, that an operator stopped
-// or whose agent reported its own exit takes no row of the ask queued after it ended. It is
-// stored as the jsonb of pull_requests.merge_forward (migration
-// 20261119003157), null for nil;
-// the jsonb takes Earlier, Role, Withdrawn and SentLaunch with no migration of their own, and
-// leaves each out while it is empty, and a release before them reads the jsonb without them.
+// again (workflow's owedTo), and the ask is sent to no later launch (workflow's askAgain); the
+// write that withdraws it ends the take hold the ask put on the issue (workflow's putPullRequest).
+// SentLaunch is the latest launch of the asked role's claim (intake.ClaimReady.Launch) a row of
+// the ask was delivered to, 0 while none was; it is recorded only at a delivered end (workflow's
+// MergeForwardAskEnded), and a delivery where the listener names no holder is credited to the
+// launch the daemon published it to (the daemon's deliverHeld), and to the launch the row was sent
+// at. The ask is sent again to a later launch of that role while the merge of the head is still
+// owed to it and no row of the ask is queued for it: at that launch's ready (workflow's
+// askAgainAtLaunch), and at the end of a row of the ask that did not reach it
+// (workflow's MergeForwardAskEnded), since a claim that failed, that an operator stopped or whose
+// agent reported its own exit takes no row of the ask queued after it ended. A row that ends
+// undelivered records nothing, a row a close of the pull request refused among them, so the ask
+// still names the launch last told. A reopen keeps the ask and queues it once, sent at the launch
+// after the one the ask names (workflow's askAtReopen, MergeForwardMessage.SentLaunch), and the
+// row's delivery tells no launch below that one (the daemon's mergeForwardMessage): a live launch
+// told before a close is not told twice, and a launch the close kept the ask from is told. A
+// process relaunched after the delivery and before the landing - a death, a provider error's
+// retry - holds no ask; while the merge is
+// owed, every take of the issue that would adopt the working copy is held, the asked role's own
+// phase task included (supervise's Deps.MergeForwardOwed), so a launch never told the ask would
+// hold that work with no turn to land the merge. It is stored as the jsonb of
+// pull_requests.merge_forward (migration 20261119003157), null for nil; the jsonb takes Earlier,
+// Role, Withdrawn and SentLaunch with no migration of their own, and leaves each out while it is
+// empty, and a release before them reads the jsonb without them.
 type MergeForward struct {
 	Head        string               `json:"head"`
 	Base        string               `json:"base"`
@@ -2721,7 +2735,7 @@ type Store interface {
 	// it (the claim store's RetireDelivery).
 	ReleaseHeldDecisions(ctx context.Context, tx pgx.Tx, token claim.Token, delivery string, marks []DecisionMark) ([]string, error)
 	// HeldKeptRefs is the reference of every decision the delivery of claim token still holds: what
-	// a held task may still name when it is about to be sent (workflow's RootTask). A reference it
+	// a held task may still name when a take of it is decided (workflow's RootTask). A reference it
 	// named that is gone from here was told by something else, or replaced by a newer decision on
 	// the same reference, and this task names it no longer.
 	HeldKeptRefs(ctx context.Context, tx pgx.Tx, token claim.Token, delivery string) ([]string, error)
@@ -2939,8 +2953,8 @@ type Store interface {
 	// one its request, or the write is refused.
 	PutGate(ctx context.Context, tx pgx.Tx, gate DesignGate) error
 	// TreeTold is every told row of the issues of tree (DesignTold), by issue and then audience,
-	// as each audience took it, the credit of every confirmed delivery not yet final counted in
-	// (Postgres.TreeTold).
+	// as each audience took it, the credit of every confirmed delivery whose take's turn has
+	// started and that is not yet final counted in (Postgres.TreeTold).
 	TreeTold(ctx context.Context, tx pgx.Tx, tree string) ([]DesignTold, error)
 	// BaselineTold writes issue's audience row at the approved versions root's gate rows hold in
 	// this transaction, when issue holds no such row: the version work starts from
@@ -3384,17 +3398,19 @@ type QueuedSupervise struct {
 // RoleClaim is a claim as RoleRun reads it: its state, the word for what last failed it
 // (failure_cause), the tree it is in, who suspended it while it is suspended, the newest start
 // the outbox ran against it (last_start_row), the update round it is in (update_round), the write
-// mark its retirement took (retired_at_write_mark), the phase entry
-// it was last given work of (given_entry), the moment its agent last said it was ready
-// (last_ready), its handshake of the last entry it was queued a task of (handshake_entry,
+// mark its retirement took (retired_at_write_mark), the phase entry it was last given work of
+// (given_entry), its session and its task numbers (session, task_written, task_finished,
+// task_finished_session), the moment its agent last said it was ready (last_ready), its handshake
+// of the last entry it was queued a task of (handshake_entry,
 // handshake_generation, handshake_queued_at, handshake_confirmed_at), the moment its agent last
 // stepped (step_at, turn_started_at), what its own session last reported it was doing
 // (activity_at, activity_background, activity_next_reminder_at), and the task it holds, nil for
 // none, with the task's delivery id, generation, phase, entry, the moments it was queued and
-// confirmed, and whether a let-go took it back from a turn (interrupted). The id is what says the
-// task is the daemon's own delivery of a relaunch's record (supervise.Delivery.Relaunch), which a
-// reader of a run reads as no work of the claim's (supervise.HoldsTask: workflow's owed and
-// readyWorkerTask).
+// confirmed, whether a let-go took it back from a turn (interrupted) and whether that take's turn
+// started (turn_started), and not the text the take was answered with. The id is what says the
+// task is the daemon's own delivery of a relaunch's record
+// (supervise.Delivery.Relaunch), which a reader of a run reads as no work of the claim's
+// (supervise.HoldsTask: workflow's owed and readyWorkerTask).
 type RoleClaim struct {
 	State supervise.ClaimState
 	// FailureCause is the word for what failed the claim as its machine holds it
@@ -3460,6 +3476,17 @@ type RoleClaim struct {
 	// Its reader is the admission pass, which tells a claim behind the entry its role's phases
 	// row names — one owed that entry's work — from one already holding it.
 	GivenEntry int64
+	// Session is the session the claim's agent registered (supervise.Claim.Session), "" for one
+	// none has. TaskWritten is the highest task number the claim's record has queued, and
+	// TaskFinished and TaskFinishedSession the number of the last task whose turn finished and
+	// the session the claim had when it did (supervise.Claim's fields of those names), each zero
+	// for a claim that has been queued or has finished no numbered task. Together they are what
+	// tells a ready worker that has finished its task, in the session it still runs, from one
+	// that has not or whose session is a fresh one, which has read nothing of that task.
+	Session             string
+	TaskWritten         uint64
+	TaskFinished        uint64
+	TaskFinishedSession string
 	// LastReady is when the claim's agent last said it could be prompted (supervise.Claim.LastReady,
 	// last_ready), and the zero time for a claim whose agent never has. The ready of every launch
 	// writes it, a relaunch's included (supervise's ready). Its readers are the first stall arm
@@ -3471,15 +3498,15 @@ type RoleClaim struct {
 	LastReady time.Time
 	// Handshake is the claim's handshake of the last entry it was queued a task of
 	// (supervise.Claim.Handshake): that entry, the run its task was of, when a task of it was
-	// first queued to the claim and when a turn first confirmed one, the zero value where the
-	// claim was queued no task carrying an entry. The claim's machine writes the queued moment
+	// first queued to the claim and when a take of one was first accepted, the zero value where
+	// the claim was queued no task carrying an entry. The claim's machine writes the queued moment
 	// at the first queue of an entry and keeps it through every later task of the same entry and
-	// run, a re-send after an unconfirmed retirement among them (supervise's EntryHandshake
-	// queued), where the task's own QueuedAt is that later task's, and it keeps the first
-	// confirmation through every later relaunch, but for one a refusal or a let-go says no turn
-	// of the worker made (supervise's EntryHandshake unconfirmed). Its readers are the first
-	// stall arm (admit's architectTookNothing), which counts the task of an entry from when that
-	// entry was first queued, as R7 says (dispatch://INFRA-2614), and the third (admit's
+	// run, a task queued again after an unconfirmed retirement among them (supervise's
+	// EntryHandshake queued), where the task's own QueuedAt is that later task's, and it keeps the
+	// first confirmation through every later relaunch, but for one a take-back says no turn of the
+	// worker ran (supervise's EntryHandshake unconfirmed). Its readers are the first stall arm
+	// (admit's architectTookNothing), which counts the task of an entry from when that entry was
+	// first queued, as R7 says (dispatch://INFRA-2614), and the third (admit's
 	// architectSlowBeforeGate), which counts its bound from no earlier than that first
 	// confirmation where there is one.
 	Handshake supervise.EntryHandshake

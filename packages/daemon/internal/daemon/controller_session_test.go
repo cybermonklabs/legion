@@ -460,11 +460,11 @@ func TestAControllerSessionReplacementIsLoggedAndTold(t *testing.T) {
 	}
 
 	// The fresh agent comes up: its shim connects, it registers a session of its own and says
-	// ready, and the keeper hands it the start message.
+	// ready, and the keeper hands it the start message, which its worker takes
+	// (dispatch://INFRA-2811: newsConn.Prompts is every take the daemon accepted).
 	m, _ := sup.Machine(claim.ControllerToken("legion"))
 	token := m.Claim().Token
-	conn := fake.NewConn()
-	sup.deps.Conns.(*fake.Conns).Register(token, conn)
+	conn := newNewsConn(t, context.Background(), sup.deps.Conns.(*fake.Conns), m)
 	fresh := sessionAged(now, 0)
 	generation := m.Claim().Generation
 	handleAll(t, m,
@@ -480,7 +480,7 @@ func TestAControllerSessionReplacementIsLoggedAndTold(t *testing.T) {
 	m.Wait()
 	prompts := conn.Prompts()
 	if len(prompts) != 1 {
-		t.Fatalf("the fresh controller was prompted %d times, want the start message once", len(prompts))
+		t.Fatalf("the fresh controller took %d tasks, want the start message once", len(prompts))
 	}
 	first := prompts[0].Message
 	for _, want := range []string{strconv.Quote(old), "was replaced", "older than controller_session_max_age_hours", "Envoy messages sent to that session may be lost"} {

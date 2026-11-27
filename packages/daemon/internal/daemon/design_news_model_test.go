@@ -23,7 +23,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/reviewround"
-	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
@@ -64,9 +63,9 @@ import (
 // its agent was given, read from each prompt's own text, and which of those prompts it read; and what
 // the claim store credits each row with, read from the writes the store let through
 // (newsModelStore): a confirmed copy whose turn's result landed is final, the copy a confirmed
-// delivery holds stands until then, and the reconcile raises past a pair that changed nothing of the
-// work exactly where the record says it does (newsModel.settled). After every step each told row is
-// held to it:
+// delivery holds stands from the start of its take's turn until then, and the reconcile raises
+// past a pair that changed nothing of the work exactly where the record says it does
+// (newsModel.settled). After every step each told row is held to it:
 //
 //   - exactly: the version the row says its holder took is the one the run's baseline, the raises
 //     and the credits the claim store holds reach (the SQL function design_news_known), counting
@@ -371,7 +370,7 @@ type newsModelAgent struct {
 	// machine and conn are the claim and the connection its prompts reach, nil until a start
 	// creates the claim.
 	machine *supervise.Machine
-	conn    *fake.Conn
+	conn    *newsConn
 	// seen is how many of conn's prompts the model has read, next the prompt the agent holds and
 	// has not started a turn on, turn the prompt whose turn runs, and messages how many role
 	// messages its topic had carried when the model last looked.
@@ -418,6 +417,9 @@ func (r *newsModelRow) agent(t *testing.T, name string, role claim.Role) *newsMo
 
 // readPrompts is every prompt of the row's run its agents read, or read in the turn that runs, that
 // keep keeps: a prompt sent before a clear told the run that clear ended, whenever its turn ran.
+// Under the take a prompt is the text of an accepted take, and it counts as read once that take's
+// turn has started (a.turn), as the claim store counts its credit
+// (20261122160000_design_news_credit_at_turn_start); a take awaiting its turn (a.next) is not.
 func (r *newsModelRow) readPrompts(keep func(a *newsModelAgent, id string) bool) []*newsModelPrompt {
 	var read []*newsModelPrompt
 	for _, a := range r.agents {
@@ -581,14 +583,21 @@ type newsModel struct {
 }
 
 // newsModelStored is a delivery as the claim store holds it, as far as its credit goes: whether it
-// holds one, under which id, confirmed or not, with which copy, final or not. The copy is its JSON
-// with its keys in order: the store reads it back from a jsonb column, which writes it its own way.
+// holds one, under which id, confirmed or not, whether the take's turn started, with which copy,
+// final or not. Under the take the stored credit's standing reads turn_started beside main's three
+// fields (confirmed, carried, ran): the copy is a standing credit only once the turn of the take
+// that carried it has started (20261122160000_design_news_credit_at_turn_start), so a refused write
+// of that start leaves the store behind the machine, lag, as a refused confirmation did on the push
+// path.
+// The copy is its JSON with its keys in order: the store reads it back from a jsonb column, which
+// writes it its own way.
 type newsModelStored struct {
-	held      bool
-	id        string
-	confirmed bool
-	carried   string
-	ran       bool
+	held        bool
+	id          string
+	confirmed   bool
+	turnStarted bool
+	carried     string
+	ran         bool
 }
 
 // storedFrom is the delivery d as far as its credit goes (newsModelStored), the zero value for nil.
@@ -603,7 +612,7 @@ func storedFrom(d *supervise.Delivery) newsModelStored {
 			carried = string(ordered)
 		}
 	}
-	return newsModelStored{held: true, id: d.ID, confirmed: !d.ConfirmedAt.IsZero(), carried: carried, ran: d.Ran}
+	return newsModelStored{held: true, id: d.ID, confirmed: !d.ConfirmedAt.IsZero(), turnStarted: d.TurnStarted, carried: carried, ran: d.Ran}
 }
 
 // storedClaims is every claim the claim store holds now, and the delivery each holds by its token,
@@ -770,7 +779,7 @@ func (m *newsModel) state() string {
 		}
 		pending := "none"
 		if p := a.machine.Claim().Pending; p != nil {
-			pending = fmt.Sprintf("%s confirmed=%t carried=%t ran=%t", p.ID, !p.ConfirmedAt.IsZero(), len(p.Carried) > 0, p.Ran)
+			pending = fmt.Sprintf("%s confirmed=%t started=%t carried=%t ran=%t", p.ID, !p.ConfirmedAt.IsZero(), p.TurnStarted, len(p.Carried) > 0, p.Ran)
 		}
 		parts = append(parts, fmt.Sprintf("%s holds %s (the claim store %+v), its agent next %q turn %q",
 			a.name, pending, storedFrom(stored[a.token]), a.next, a.turn))

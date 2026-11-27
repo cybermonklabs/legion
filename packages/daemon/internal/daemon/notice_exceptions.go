@@ -522,18 +522,19 @@ func (r *outbox) exceptionNotice(exception roleLaneException) (reportedNotice, b
 // releaseWaiting makes due at once every notice waiting for a later attempt that goes to one of
 // architects now (noticeArchitect), once their claims are ready: each agent said it can be
 // prompted (supervise.SaidReady), having booted or taken its Envoy role back. A boot's ready comes
-// before the name — the session claims its role at its first turn — so a notice this releases, and
-// the catch-up that same ready writes, can still be refused no_holder and wait the outbox's own
-// backoff (record.RetryBackoff, one second doubling to a cap of 64) until the name is taken. What
-// the release ends is the wait for the architect, not the wait for the role. That covers a copy
-// waiting out its re-send delay, whichever session it failed on (a Go relaunch resumes the
-// claim's session file, so the relaunched agent registers the very session id the stopped one
-// had), and a notice held on the outbox's backoff while nobody held the role. A copy waiting
-// minutes for a stopped session's registration to lapse would otherwise hold back every later
-// notice to that architect behind the fence, after the architect is back. Released, the notices
-// go in the order they were written, ahead of the ones behind them. The waiting notices and their
-// trees are one repeatable read, each tree read once; the fence is not read, since a release only
-// makes a notice due and its send still passes the fence.
+// before the name — the session claims its role right after its ready and the read of its task
+// value have answered — so a notice this releases, and the catch-up that same ready writes, can
+// still be refused no_holder and wait the outbox's own backoff (record.RetryBackoff, one second
+// doubling to a cap of 64) until the name is taken. What the release ends is the wait for the
+// architect, not the wait for the role. That covers a copy waiting out its re-send delay,
+// whichever session it failed on (a Go relaunch resumes the claim's session file, so the
+// relaunched agent registers the very session id the stopped one had), and a notice held on the
+// outbox's backoff while nobody held the role. A copy waiting minutes for a stopped session's
+// registration to lapse would otherwise hold back every later notice to that architect behind the
+// fence, after the architect is back. Released, the notices go in the order they were written,
+// ahead of the ones behind them. The waiting notices and their trees are one repeatable read, each
+// tree read once; the fence is not read, since a release only makes a notice due and its send
+// still passes the fence.
 //
 // A catch-up the wake pacing still holds to its turn is left where it stands: its wait is not the
 // architect being away — the architect is running, which is why a start wrote a catch-up instead

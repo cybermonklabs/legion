@@ -9,6 +9,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
 // ArchitectAtWork says whether a root's own architect is the role at work where that root stands.
@@ -287,6 +288,7 @@ func (e *Engine) SendArchitectStart(ctx context.Context, tx pgx.Tx, root record.
 	if row.EntryAwaiting != nil {
 		return e.enqueue(ctx, tx, root.Key, record.SuperviseRequest{
 			Op: "start", Tree: root.Tree, Role: claim.RoleArchitect, Generation: root.Generation, Awaiting: row.EntryAwaiting, Entry: row.Entry,
+			Origin: supervise.OriginNotice,
 		})
 	}
 	task, kept, err := e.architectStartWork(ctx, tx, root)
@@ -373,10 +375,18 @@ func (e *Engine) architectStartWork(ctx context.Context, tx pgx.Tx, root record.
 
 // enqueueArchitectStart writes the start row of root's architect for entry, carrying task and
 // claiming the kept decisions that task names in this same transaction, marked decided where a
-// person or the controller asked for it (StartPromotedArchitect).
+// person or the controller asked for it (StartPromotedArchitect). The task, when the start
+// carries one, is the architect's start task (ArchitectStartTask, with what its tree is owed of the
+// decisions a person made while nobody in it could hear them, ParkedDecisionTask), which is
+// recorded under the origin of a notice (supervise.OriginNotice). An origin describes a task, so a
+// start that carries none names none.
 func (e *Engine) enqueueArchitectStart(ctx context.Context, tx pgx.Tx, root record.Issue, task string,
 	kept *record.KeptDecisions, entry int64, decided bool,
 ) error {
-	return e.EnqueueNaming(ctx, tx, root.Key, root.Tree, record.SuperviseRequest{Op: "start", Tree: root.Tree,
-		Role: claim.RoleArchitect, Generation: root.Generation, Task: task, Entry: entry, Kept: kept, Decided: decided}, kept, e.now())
+	start := record.SuperviseRequest{Op: "start", Tree: root.Tree, Role: claim.RoleArchitect, Generation: root.Generation,
+		Task: task, Entry: entry, Kept: kept, Decided: decided}
+	if task != "" {
+		start.Origin = supervise.OriginNotice
+	}
+	return e.EnqueueNaming(ctx, tx, root.Key, root.Tree, start, kept, e.now())
 }

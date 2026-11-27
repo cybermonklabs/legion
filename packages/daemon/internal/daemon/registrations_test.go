@@ -147,12 +147,13 @@ func TestRegistrationsAreRenewedBeforeTheyLapse(t *testing.T) {
 	sup := newSupervisor(ctx, nil, "legion", t.TempDir(), quietLogger())
 	sup.deps = supervise.Deps{
 		Runtime: rt, Conns: conns, Store: &outboxClaimStore{}, Specs: outboxSpecs{}, Clock: clock, Log: quietLogger(),
-		Limits:         supervise.Limits{LaunchFailures: 2, PromptFailures: 2, PromptRetires: 2},
-		Timeouts:       supervise.Timeouts{Boot: time.Minute, RegistrationIntervals: 2, RPC: 5 * time.Second, Probe: time.Hour, Stop: time.Second, LaunchBackoff: time.Millisecond},
-		PluginContract: api.DaemonAPIVersion(),
-		Secrets:        enrollsEveryPod{},
-		Registrar:      registrar,
-		RefreshGate:    supervise.NewRefreshGate(0),
+		Limits:           supervise.Limits{LaunchFailures: 2, PromptFailures: 2, PromptRetires: 2},
+		Timeouts:         supervise.Timeouts{Boot: time.Minute, RegistrationIntervals: 2, RPC: 5 * time.Second, Probe: time.Hour, Stop: time.Second, LaunchBackoff: time.Millisecond},
+		PluginContract:   api.DaemonAPIVersion(),
+		TaskTakeContract: api.TaskTakeContract(),
+		Secrets:          enrollsEveryPod{},
+		Registrar:        registrar,
+		RefreshGate:      supervise.NewRefreshGate(0),
 	}
 	t.Cleanup(sup.stop)
 	machine, _, err := sup.Create(ctx, supervise.Claim{Token: token, Project: project, Tree: "LEGION-840", Issue: "LEGION-840",
@@ -271,12 +272,13 @@ func TestTheDaemonLogsARegistrationItNeverMadeAsForeign(t *testing.T) {
 	sup := newSupervisor(ctx, nil, "legion", t.TempDir(), quietLogger())
 	sup.deps = supervise.Deps{
 		Runtime: rt, Conns: conns, Store: &outboxClaimStore{}, Specs: outboxSpecs{}, Clock: clock, Log: quietLogger(),
-		Limits:         supervise.Limits{LaunchFailures: 2, PromptFailures: 2, PromptRetires: 2},
-		Timeouts:       supervise.Timeouts{Boot: time.Minute, RegistrationIntervals: 2, RPC: 5 * time.Second, Probe: time.Hour, Stop: time.Second, LaunchBackoff: time.Millisecond},
-		PluginContract: api.DaemonAPIVersion(),
-		Secrets:        enrollsEveryPod{},
-		Registrar:      registrar,
-		RefreshGate:    supervise.NewRefreshGate(0),
+		Limits:           supervise.Limits{LaunchFailures: 2, PromptFailures: 2, PromptRetires: 2},
+		Timeouts:         supervise.Timeouts{Boot: time.Minute, RegistrationIntervals: 2, RPC: 5 * time.Second, Probe: time.Hour, Stop: time.Second, LaunchBackoff: time.Millisecond},
+		PluginContract:   api.DaemonAPIVersion(),
+		TaskTakeContract: api.TaskTakeContract(),
+		Secrets:          enrollsEveryPod{},
+		Registrar:        registrar,
+		RefreshGate:      supervise.NewRefreshGate(0),
 	}
 	t.Cleanup(sup.stop)
 	machine, _, err := sup.Create(ctx, supervise.Claim{Token: token, Project: project, Tree: "LEGION-840", Issue: "LEGION-840",

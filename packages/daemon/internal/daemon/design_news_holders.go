@@ -307,12 +307,12 @@ func newsStartQueued(run record.RoleRun) bool {
 //
 // The daemon's own delivery of a relaunch's record is no task (supervise.HoldsTask), as
 // workflow's owed reads it for the same question: it carries only the sentence of what the
-// relaunch ended, a newer task takes its place while no prompt of it waits on a result (the
-// machine's queue), and that task carries the sentence in front of its own text. So a claim that
-// holds it alone is queued its news-only start, and the summary says a task tells the member now.
-// Should the start meet a prompt of it still waiting on its result, the machine refuses the start
-// as it refuses one behind any untaken task, and the start retries on its backoff until that
-// prompt's turn has taken the delivery.
+// relaunch ended, a newer task takes its place while no take of it is accepted (the machine's
+// queue), and that task carries the sentence in front of its own text. So a claim that holds it
+// alone is queued its news-only start, and the summary says a task tells the member now. Should
+// the start meet a take of it already accepted, the machine refuses the start as it refuses one
+// behind any task its worker has taken, and the start retries on its backoff until that take's
+// turn has run.
 //
 // A claim whose turn is working a task it took (a confirmed delivery) is queued its news-only
 // start, which does not take that task's place: the machine refuses a task of news alone behind

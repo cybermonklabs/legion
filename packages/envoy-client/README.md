@@ -396,8 +396,12 @@ host's, shared with its registrations, so only a registration the listener accep
 one follows every open. A repeated
 failure is logged once until its words change. Each reopen takes every live subscription again and
 reports `reconnect`, so the host registers a new epoch and the listener redelivers what it never
-acknowledged. `follow()` opens the socket again for the session the name reads now, which a host
-runs when it moves to another session.
+acknowledged. A claim's task value rides the same relay subject as a task frame (`TaskHeader`,
+`@legion/envoy-client/relay-frame`), which `receive` hands the host's `onTaskValue` over the
+socket as over NATS, and the first answer of each new epoch (`answered`) tells the host to read
+that value again, since a task frame relayed while the socket was closed is lost. `follow()` opens
+the socket again for the session the name reads now, which a host runs when it moves to another
+session.
 
 ## HTTP transport
 

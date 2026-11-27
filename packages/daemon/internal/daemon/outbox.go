@@ -219,9 +219,9 @@ type outbox struct {
 	controllerLaunched bool
 	// beforeUndeliveredEnd, where a test sets it, runs on a held message's row between the read
 	// that ends the row undelivered - the workflow's rule of a merge-forward message
-	// (mergeForwardMessage), or a claim that failed or retired (deliverHeld) - and the end
-	// (endUndelivered), so the test can make something come in between. nil runs nothing, and no
-	// production path sets it.
+	// (mergeForwardMessage), a claim that failed or retired, or a launch the message was told
+	// already (deliverHeld) - and the end (endUndelivered), so the test can make something come in
+	// between. nil runs nothing, and no production path sets it.
 	beforeUndeliveredEnd func(record.OutboxRow)
 	// The lane registry (outbox_lanes.go). mu guards running, laneCtx and lanes; running is true
 	// between Run's start and its stop, laneCtx is Run's context, which every lane runs under, and
@@ -2420,20 +2420,20 @@ func (r *outbox) phaseEnded(ctx context.Context, row record.OutboxRow, payload r
 
 // retireStoppedTask runs a `retire_task` row (record.SuperviseRequest): the admission pass's move
 // of a parent into awaiting_children stopped the phase its worker was in (workflow's
-// StopForChildren), and the task that worker's claim holds for that phase goes
+// StopForChildren), and the task that worker's claim holds for that phase goes, its value deleted
 // (supervise.Machine.RetireStoppedTask), so no relaunch, fresh session or wake during the wait,
-// and no send after the return to that same phase, carries the stopped phase's work. It stops
-// nothing and starts no phase. The one prompt it can lead to is the claim's untold record of what
-// its last let-go ended, sent alone in place of the retired task that would have carried it
-// (supervise's relaunchAfterDrop).
+// and no take after the return to that same phase, carries the stopped phase's work. It stops
+// nothing and starts no phase. The one task it can lead to is the claim's untold record of what
+// its last let-go ended, queued alone in place of the retired task that would have carried it
+// (supervise's queueRelaunch).
 //
 // A row of an earlier run finishes without acting, as every supervise row of one does, at the
 // generation check supervise makes before it hands the row here. The phase is not fenced: the
 // row names the phase the issue has left, and the machine retires only a task of that phase, that
 // run and an entry no later than the row's, so the task of the return's own start is never one it
-// takes. A claim this daemon does not supervise holds no task to retire. A task on its way to the
-// agent keeps the row (supervise.ErrTaskSending, a wait), which runs again once the send has
-// settled.
+// takes. A claim this daemon does not supervise holds no task to retire. A task a take holds goes
+// as an untaken one does, whatever became of the take's turn: the turn runs on, and its report
+// finishes nothing.
 func (r *outbox) retireStoppedTask(ctx context.Context, row record.OutboxRow, payload record.SuperviseRequest, issue record.Issue) error {
 	token, err := claim.NewToken(r.project, row.Issue, payload.Role)
 	if err != nil {
@@ -3195,26 +3195,28 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		// tells them (the claim store's putDelivery, 20261101163106_parked_decisions). So does the
 		// fact that a reviewer's task ends with the daemon's two sentences of its review round
 		// (record.SuperviseRequest.RoundNamed, or the round newsForStart names on a reviewer's start
-		// queued for news alone: startNews.roundNamed): the one place each prompt is composed reads
-		// it there, and gives a reviewer's task of a row that lacks it, which only a row of the
-		// release before this one can be, those sentences naming no commit and no entry
+		// queued for news alone: startNews.roundNamed): the one place the text of each accepted take
+		// is composed reads it there, and gives a reviewer's task of a row that lacks it, which only
+		// a row of the release before this one can be, those sentences naming no commit and no entry
 		// (supervise's Delivery.message). A resume task of an answered root carries no text of its
 		// own, and the wait it answers instead (supervise.Delivery.Resume): it is queued with the
-		// news its start carries as its whole text, empty where it carries none, and at each send
-		// its text is written from the record as it stands then (the daemon's rootTask), with that
-		// news rendered after it (narrowedNews). The news the task carries travels the
-		// same way (supervise.Delivery.News): the task is the start's own text and the news after
-		// it, the round's two sentences after the news where the task names them (renderNews), the
-		// send renders that news again from the record (the daemon's designNews), and the write
-		// recording the turn's confirmation makes what the prompt of that turn carried the
-		// delivery's credit, which the write recording the turn's result folds into the told rows
-		// (supervise.Delivery.Carried, the claim store's settleDesignNews). A start queued for news
-		// alone travels marked so (supervise.RequestDeliver.NewsOnly, stored as
+		// news its start carries as its whole text, empty where it carries none, and each take of it
+		// that is answered writes its text from the record as it stands then (the daemon's
+		// rootTask), with that news rendered after it (narrowedNews). The news the task carries
+		// travels the same way (supervise.Delivery.News): the task is the start's own text and the
+		// news after it, the round's two sentences after the news where the task names them
+		// (renderNews), the take renders that news again from the record (the daemon's designNews),
+		// and the write recording the accepted take makes what that take's text carried the
+		// delivery's copy, its credit once the take's turn has started, which the write recording
+		// the turn's finish folds into the told rows (supervise.Delivery.Carried, the claim store's
+		// settleDesignNews). A start queued for news alone travels marked so
+		// (supervise.RequestDeliver.NewsOnly, stored as
 		// pending_task_deliveries.news_only): its task holds no work, so the machine refuses it
-		// behind any task that does, the one a running turn works among them, and the row waits on
-		// its backoff until that turn has ended. A task of news alone the worker has not taken
-		// gives way to a start of an entry, whose own task carries that same news (supervise's
-		// Machine.supersedes), so the start that StartedBy is told of below reads it too.
+		// behind any task that does, a taken one whose turn is still to finish among them, and the
+		// row waits on its backoff until that task is finished. A task of news alone the worker has
+		// not taken gives way to a start of an entry, whose own task carries that same news
+		// (supervise's Machine.supersedes), so the start that StartedBy is told of below reads it
+		// too.
 		var task *supervise.RequestDeliver
 		if payload.Task != "" || payload.Awaiting != nil || payload.News {
 			kept, err := keptJSON(payload.Kept)
@@ -3229,7 +3231,7 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 				Entry: payload.Entry, ResendEntry: payload.ResendEntry, RoundNamed: news.roundNamed,
 				CheckLook: supervise.CheckLook{Look: payload.CheckLook, OpenedAt: payload.CheckOpenedAt},
 				ID:        fmt.Sprintf("%s%d", outboxDeliveryPrefix, row.ID), Row: row.ID, Kept: kept, Resume: resume,
-				News: news.news, NewsOnly: payload.News}
+				Origin: payload.Origin, News: news.news, NewsOnly: payload.News}
 		}
 		// The claim remembers the newest start run against it, so a stop written before this one
 		// is finished rather than acted on however late it arrives (see "suspend" below). A claim
@@ -3369,8 +3371,8 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 			// claim finishes the turn it is in; its completion of the earlier entry is refused
 			// 409 with nothing recorded, which is right, since the phase was entered again. A
 			// failed claim is in no turn at all: the state switch above relaunched it
-			// (supervise.RequestRetry), and the relaunch hands it the earlier entry's task,
-			// which it still holds unconfirmed (supervise's sendPending), so its first
+			// (supervise.RequestRetry), and the relaunch's worker takes the earlier entry's
+			// task, which it still holds untaken (supervise's Take), so its first
 			// completion is the one refused instead. Either way the admission pass sends the
 			// row's own entry's task on the first pass after that task is retired, since it
 			// passes over a claim whose pending delivery is still worked (admit's
@@ -3514,6 +3516,19 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		if err := machine.Handle(ctx, supervise.RequestSuspend{Claim: token, Reason: payload.Reason, By: supervise.SuspendedByReleased}); err != nil {
 			return fmt.Errorf("release claim %s: %w", token, err)
 		}
+		// A claim stopped inside its pod's update round leaves that round with the stop. The
+		// release's workspace check ran before any stop and found no work that origin does not
+		// hold, and this pod goes with the release, so the round has nothing left to ask of the
+		// claim. The idle rule makes its release over an open round
+		// for a Claude Code role whose plugin takes no task (workflow.IdleRelease's old plugin),
+		// which could never answer it. Left in the round, the claim would come back in
+		// the new pod as a member that never answered, and the sweep would tell the issue that
+		// its work went with the pod (podWentWithoutItsRound).
+		if round := machine.Claim().UpdateRound; supervise.IsPodRound(round) {
+			if err := machine.Handle(ctx, supervise.PodUpdateEnded{Claim: token, Round: round}); err != nil {
+				return fmt.Errorf("end the update round of released claim %s: %w", token, err)
+			}
+		}
 		// The claim is suspended as `released`, so the release's mark records it: it is that set
 		// the cancel resumes, the teardown records as the release's roles, and a later row reads
 		// to tell a claim this release suspended that something resumed since from one still in
@@ -3593,15 +3608,17 @@ func claimToStop(machine *supervise.Machine) (supervise.Claim, bool) {
 }
 
 // keepsStartTask says whether held still holds a task of this start's phase and run that it will
-// work: one not yet confirmed — a failed claim keeps the task it held, and a death in a turn takes
-// the task back unconfirmed — or one confirmed in the turn the claim is working
-// (supervise.Delivery.StillWorked). A confirmed task on a claim not working is over: the claim's
-// next decision retires it. A start naming no phase holds none, which is what a production check's
-// look is: each look's task is delivered whatever the claim holds. Nor is a task of news alone
-// (supervise.Delivery.NewsOnly) the phase's task: a retry of a failed claim that holds only that is
-// given its own task, which takes the news task's place where the retry carries an entry, and so
-// the news with it (supervise's Machine.supersedes), and otherwise waits behind the news task until
-// a turn has taken it.
+// work: one whose turn is still to come — untaken, taken back, or taken and awaiting its turn; a
+// failed claim keeps the task it held, and a death in a turn takes the task back — or one whose
+// turn the claim is working (supervise.Delivery.StillWorked). A task whose turn started on a claim
+// not working is over: its report finishes it, or the end of its turn for a plugin below
+// api.TaskTakeContract(), and a take whose report never comes goes back as a cut turn. A start
+// naming no phase holds none, which is what a production check's look is: each look's task is
+// delivered whatever the claim holds. Nor is a task of news alone (supervise.Delivery.NewsOnly)
+// the phase's task: a retry of a failed claim that holds only that is given its own task, which
+// takes the news task's place where the retry carries an entry, and so the news with it
+// (supervise's Machine.supersedes), and otherwise waits behind the news task until the turn of
+// its take has run.
 func keepsStartTask(held supervise.Claim, payload record.SuperviseRequest) bool {
 	pending := held.Pending
 	return pending != nil && payload.Phase != "" && pending.StillWorked(payload.Generation, payload.Phase, held.State)

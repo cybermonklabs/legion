@@ -246,12 +246,19 @@ func recordedContractAtOrBelow(n int) int {
 // for a PlanRefusal, which loses its `reasons`. These follow strip, as every band of
 // stateNarrowings does, and placedByPod places the caller of each by its pod, so a band here
 // reaches the caller of a pod as the state's do. A plain refusal, a claim.Refusal or a Failure,
-// carries no key of either contract and is the identity at every contract.
+// carries no key of either contract and is the identity at every contract. One row more takes keys
+// off below the contract of the task-take entry (`contract_20261125171504_task-take.go`), which
+// added `task` and `finished` to the registration's answer: the registration's row serves a caller
+// below it the answer without both (withoutTaskReading). It follows strip as well, and placedByPod
+// places its caller by its pod too.
 //
 // The two registration rows take off `replaces`, the one key the replaces entry
 // (contract_20261125170509_replaces.go) added to a role's registration answer and to the
 // controller's, below that entry's number (entryNumber(replacesContract)). They follow strip too,
-// and placedByPod places the caller of a registration that carries the key by its pod.
+// and placedByPod places the caller of a registration that carries the key by its pod. A role's
+// registration row applies both of its strips, and the replaces entry sorts before the task-take
+// entry, so a caller at or above the one and below the other is served `replaces` and neither
+// `task` nor `finished`.
 //
 // On the other side, a caller below fixAttemptsContract is served the two keys that contract
 // removed, each as a stand-in, the one row of the numbered entries' stand-ins (standIns). A
@@ -319,6 +326,9 @@ func shapeAnswer(id AnswerID, body any, restore, strip int) (any, tookOff) {
 		if strip < entryNumber(replacesContract) {
 			registration.Replaces = ""
 		}
+		if strip < entryNumber(taskTakeContract) {
+			return withoutTaskReading(registration), took
+		}
 		return registration, took
 	case AnswerRegisterController:
 		registration, isRegistration := body.(ControllerRegisterResponse)
@@ -356,7 +366,9 @@ func identityAnswer(id AnswerID) bool { return registry().identityAnswers[id] }
 // AnswerIntakeDiscard arrived whole at intakeGiveUpsContract, so no older contract records any of
 // the six at all. The two registration answers, a role's and the controller's, were identity
 // answers of the numbered entries too, until the replaces entry added `replaces` to both: they
-// have rows of their own in shapeAnswer now.
+// have rows of their own in shapeAnswer now. The task-take entry added `task` and `finished` to a
+// role's registration as well, and its row serves a caller below that entry the answer without
+// them.
 var frozenIdentityAnswers = []AnswerID{AnswerHealth, AnswerNoContent,
 	AnswerGrant, AnswerHandoffComplete, AnswerEmptyObject, AnswerFreshSession,
 	AnswerCompact, AnswerTurnOutcome, AnswerWaveRelease, AnswerProjectPause, AnswerProjectResume,
@@ -774,9 +786,9 @@ func (s *server) recordShaping(r *http.Request, id AnswerID, at placement, took 
 const followsRestore = "the contract the caller states, else its pod's lowest, which a value follows where a key follows the stated contract, else the pod's highest"
 
 // droppedStrandedState, droppedWaitAnswer, droppedLineKind, droppedCapabilitySource,
-// droppedStepStatus, droppedPhase, droppedHoldReason and droppedHeldWord are
-// what the rows of valueStrips name as dropped. They are named rather than written in the rows
-// because the tests that read the daemon's log and the mixed pod's body name a row by them
+// droppedStepStatus, droppedPhase, droppedHoldReason, droppedHeldWord and droppedFailureCause
+// are what the rows of valueStrips name as dropped. They are named rather than written in the
+// rows because the tests that read the daemon's log and the mixed pod's body name a row by them
 // (narrowing_test.go, shaped_answers_test.go). Each names what its row takes by the table's rule
 // rather than by today's value, so the line stays true of a value the table declares later.
 const (
@@ -788,6 +800,7 @@ const (
 	droppedPhase            = "every phase this caller does not admit: an issue's phase served as admitted, and its heldFrom and its claim views' pendingTask phase left off"
 	droppedHoldReason       = "the holdReason of every issue held for a reason this caller does not admit"
 	droppedHeldWord         = "the word of every row of admission.held whose word this caller does not admit, served as the older word that stands in for it with its heldBy, else as unclassified with no heldBy"
+	droppedFailureCause     = "each claim view's failure cause and pendingCause this caller does not admit, served as a cause it does"
 )
 
 // memoryContract is the daemon contract that added the issues' memory group to the state
@@ -1898,6 +1911,71 @@ func withoutUnadmittedHeldWords(state State, restore int) (State, bool) {
 	return state, true
 }
 
+// withoutNeverReconnected is the issue whose claim views name no failure cause restore's reader
+// does not admit, in `failure.cause` or in `pendingCause`: each such word is served as the cause
+// that reader names for the same event (olderCause). It follows the declared table (answers.go's
+// failureCauses, with the words entries add) and takes any word the table holds back from restore
+// (fieldArrivals.heldBack says which words and why): today the `never_reconnected` of the
+// task-take entry, a claim whose shim never said hello again within the reconnect deadline, after
+// a daemon start restored it or after its connection closed over a pending task, and the
+// `cyber_policy` of the cyber-policy entry, a claim OpenAI refused for cyber policy; and tomorrow
+// any word the table gives a later arrival. It is the one strip of the failure cause, registered
+// by the first entry that added a word to it (task-take), and named for that entry's word: a
+// second row would find nothing this one left. The architect's view and each worker's carry each
+// of the two fields at a key path of its own, every one of them holding the one list, so the
+// architect's two rows answer for the workers' too.
+//
+// The word is rewritten where every other strip drops what it takes. A plugin from
+// recordFieldsContract up to the word's arrival reads both fields through a strict enum
+// (`LEGION_FAILURE_CAUSES` in `packages/contracts/src/legion-api.ts`), so one word it does not
+// name refuses the whole state body, every claim of the project included; and a key dropped would
+// say the claim's failure has no cause or that nothing failed its relaunching process, where the
+// nearest word such a reader knows says what happened.
+//
+// The views are copied (withEachClaimView), and the failure record too where it is written, so
+// the state the source answered is left as it was. It reports whether it rewrote a word, which is
+// what the log line of this strip is written from (tookOff). A caller whose strip is below
+// recordFieldsContract has lost both keys before this runs (shapeIssue), so it finds nothing to
+// take there and writes no line.
+func withoutNeverReconnected(issue Issue, restore int) (Issue, bool) {
+	causes := arrivalsAt(issueKeyPath + "architect.failure.cause")
+	pending := arrivalsAt(issueKeyPath + "architect.pendingCause")
+	served := func(arrivals fieldArrivals, cause supervise.FailureCause) supervise.FailureCause {
+		if cause == "" || !arrivals.heldBack(string(cause), restore) {
+			return cause
+		}
+		return olderCause(cause)
+	}
+	return withEachClaimView(issue, func(view ClaimView) ClaimView {
+		view.PendingCause = served(pending, view.PendingCause)
+		if failure := view.Failure; failure != nil {
+			if cause := served(causes, failure.Cause); cause != failure.Cause {
+				older := *failure
+				older.Cause = cause
+				view.Failure = &older
+			}
+		}
+		return view
+	})
+}
+
+// olderCause is the cause a reader that does not admit cause is served in its place.
+// `never_reconnected` is served as `never_registered`, a process that never said hello before
+// its deadline, the nearest cause such a reader knows. `cyber_policy` is served as
+// `provider_error`, since a cyber-policy refusal is a provider error that cannot clear and that
+// reader was told it under that word. A word the table names no older cause for is served as
+// `unrecorded`, which every reader since the field's arrival reads as a failure whose cause it is
+// not told.
+func olderCause(cause supervise.FailureCause) supervise.FailureCause {
+	switch cause {
+	case supervise.CauseNeverReconnected:
+		return supervise.CauseNeverRegistered
+	case supervise.CauseCyberPolicy:
+		return supervise.CauseProviderError
+	}
+	return supervise.CauseUnrecorded
+}
+
 // fieldArrivals is one enumerated field of the declared table as a value strip reads it: the
 // contract the field itself arrived at, and the contract each of its values did (arrivalsOf).
 type fieldArrivals struct {
@@ -2169,6 +2247,42 @@ func withoutClaimRoundReport(issue Issue) (Issue, bool) {
 	})
 }
 
+// withoutUnseenTaskValues is state with no `unseenTaskValues`, the one key the task-take entry
+// added to the state (its band): every running claim whose task value nobody
+// reported seeing for a whole first bound. The key is left off rather than emptied, because a
+// strict reader before the contract refuses it as surely when it is empty as when it names a
+// claim, which is why State.MarshalJSON writes the key on every body but this one
+// (State.unseenTaskValuesHidden), as withoutWakesWaiting leaves off `wakesWaiting`. The flag is
+// set on a value of the state's own, so the state the source answered is left as it was. The band
+// reports a move on every body it serves, as withoutWakesWaiting does.
+func withoutUnseenTaskValues(state State) (State, bool) {
+	state.UnseenTaskValues, state.unseenTaskValuesHidden = nil, true
+	return state, true
+}
+
+// registrationBeforeTheTake is a registration's answer as a reader below the task-take entry's
+// contract reads it: the answer with no `task` and no `finished`, the two keys that entry added to
+// it (withoutTaskReading). Its two fields shadow the embedded answer's of
+// the same names: a field of the outer struct is shallower than the embedded one's, so
+// encoding/json writes the outer one, and a nil pointer under `omitempty` writes no key at all.
+type registrationBeforeTheTake struct {
+	claim.RegisterResponse
+	Task     *struct{} `json:"task,omitempty"`
+	Finished *struct{} `json:"finished,omitempty"`
+}
+
+// withoutTaskReading is a registration's answer with no `task` and no `finished`, the claim's
+// task value and the number of the last task it finished, which the task-take entry added so a
+// worker holds its value before its ready. A plugin before that entry waits for a task the
+// daemon pushes, reads neither key, and one built before sjawhar/legion#2788 refuses the whole
+// answer for a key it does not name, which would cost its launch; the claim's value reaches no
+// such worker anyway, since it takes no task (supervise.TakesNoTask). Both keys are written on
+// every answer of this contract, `task` null where the bucket holds no value, so the band leaves
+// both off every answer it serves.
+func withoutTaskReading(registration claim.RegisterResponse) registrationBeforeTheTake {
+	return registrationBeforeTheTake{RegisterResponse: registration}
+}
+
 // withoutLeakCheckCause is the issue with no claim view carrying `leakCheckCause`, the one key
 // leakCheckCauseContract added to this route; nothing else of that contract is on it.
 func withoutLeakCheckCause(issue Issue) (Issue, bool) {
@@ -2325,19 +2439,21 @@ func (s *server) writeAnswer(w http.ResponseWriter, r *http.Request, id AnswerID
 
 // placedByPod is whether the answer id, written as body, places a caller that states no contract
 // by the claims of its pod: true for the release records, for a refusal whose body is a
-// PauseFailure or a PlanRefusal, and for a registration, a role's or the controller's, that
-// carries `replaces`, and false for every other answer. Those answers' shapes moved at
-// pauseContract, at OwnerPlanContract and at the replaces entry, and their writers answer from no
-// snapshot of their own, so writeAnswer reads the claims for them (placingClaims). A registration
-// that replaces no session is the same body at every contract, so it reads none. Every other
-// answer writeAnswer writes is the identity at every contract, and so is a plain refusal (a
+// PauseFailure or a PlanRefusal, for a role's registration, and for a controller's registration
+// that carries `replaces`, and false for every other answer. Those answers' shapes moved at
+// pauseContract, at OwnerPlanContract, at the replaces entry and, a role's registration's, at the
+// task-take entry too, and their writers answer from no snapshot of their own, so writeAnswer
+// reads the claims for them (placingClaims). A role's registration carries `task` and `finished`
+// on every answer, so it is placed whatever it replaces; a controller's registration that
+// replaces no session is the same body at every contract, so it reads none. Every other answer
+// writeAnswer writes is the identity at every contract, and so is a plain refusal (a
 // claim.Refusal or a Failure), so a read of the claims for one of them would decide nothing. A
 // serving-down added to one of them reaches the caller of a pod only once this answers true for
 // it. The state and the record are no question for it: their routes hand in their own snapshot's
 // claims (writeAnswerFrom).
 func placedByPod(id AnswerID, body any) bool {
 	switch id {
-	case AnswerReleaseRecords:
+	case AnswerReleaseRecords, AnswerRegister:
 		return true
 	case AnswerRefusal:
 		switch body.(type) {
@@ -2346,9 +2462,6 @@ func placedByPod(id AnswerID, body any) bool {
 		default:
 			return false
 		}
-	case AnswerRegister:
-		registration, isRegistration := body.(claim.RegisterResponse)
-		return isRegistration && registration.Replaces != ""
 	case AnswerRegisterController:
 		registration, isRegistration := body.(ControllerRegisterResponse)
 		return isRegistration && registration.Replaces != ""

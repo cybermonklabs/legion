@@ -364,12 +364,15 @@ export interface AgentEndMessage {
    * (`./provider-refusal`) reads it to tell a content filter from any other provider failure. */
   readonly errorMessage?: string;
   /** The HTTP status of the provider request an `error` stop failed on, where the provider gave
-   * one (`AssistantMessage.errorStatus`, `packages/ai/src/types.ts:1524-1525` of
-   * cybermonklabs/oh-my-pi at the pinned tag `v18.18.6-sami.20261127-055727`). The host copies this
-   * field into its `prompt_result`'s `httpStatus`
-   * (`packages/coding-agent/src/modes/rpc/rpc-prompt-results.ts:236` at that tag), and the
-   * turn-outcome report carries it as its own `httpStatus` (`packages/pi-legion/src/turn-outcome.ts`). */
+   * one, and the provider and model the request went to (`AssistantMessage`,
+   * `packages/ai/src/types.ts:1524-1525` of cybermonklabs/oh-my-pi at the pinned tag
+   * `v18.18.6-sami.20261127-055727`): the fields Oh My Pi's own `prompt_result` error carries as
+   * `httpStatus`, `provider` and `model` (the host copies `errorStatus` there,
+   * `packages/coding-agent/src/modes/rpc/rpc-prompt-results.ts:236` at that tag). The turn-outcome
+   * report carries them in its `providerError` (`packages/pi-legion/src/turn-outcome.ts`). */
   readonly errorStatus?: number;
+  readonly provider?: string;
+  readonly model?: string;
 }
 
 /**
@@ -790,7 +793,11 @@ export interface PiApi {
    * Sends a user prompt, exactly as Enter at the terminal does: idle, it starts a turn; streaming,
    * it steers. `deliverAs: "aside"` lands it at the next step without interrupting the running
    * tool batch; `deliverAs: "followUp"` queues it behind the running turn without starting one.
-   * The host queues the send, so the prompt's `message_start` comes after this returns.
+   * The host queues the send, so the prompt's `message_start` comes after this returns. Oh My Pi
+   * answers a promise that rejects when it drops the message before a turn begins (its 18.18.2
+   * changelog; `PromptDroppedError`, "Prompt dropped before provider dispatch."): an abort while
+   * it sets the prompt up, the one a compaction makes first among them. A follow-up's settles once
+   * the host has queued it. A stand-in host answers nothing.
    */
   readonly sendUserMessage: (
     content: string | readonly ContentBlock[],
@@ -804,7 +811,7 @@ export interface PiApi {
        *  ignores it. */
       readonly origin?: "outside" | "inside";
     }
-  ) => void;
+  ) => void | Promise<void>;
   /**
    * Runs text as if typed at the session's own terminal: a built-in its host can run headless, an
    * extension or custom command, a file command or prompt template, and `/skill:<name>`; any other

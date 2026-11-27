@@ -170,7 +170,7 @@ func TestTheComposedPromptsAnswerAnApprovedNewVersion(t *testing.T) {
 	t.Run("merger", func(t *testing.T) {
 		const (
 			opening = "The opening can also come as a news task"
-			waiting = "sends a task only between turns"
+			waiting = "writes a task, and you take it only between turns"
 		)
 		for _, part := range []string{"roles/merger.md", "go/merger.md"} {
 			ruleIn(t, part, opening, "before you merge", "`request_backward_move`")
@@ -178,7 +178,7 @@ func TestTheComposedPromptsAnswerAnApprovedNewVersion(t *testing.T) {
 		}
 		composedSays(t, composer, claim.RoleMerger, false, opening,
 			"`The design gate of <tree> opened: a person approved version <n> of its <step> document (<id>), and every step the deployment gates now stands open`",
-			"end each turn with a line that starts `WAITING`", "The daemon sends a task only between turns")
+			"end each turn with a line that starts `WAITING`", "The daemon writes a task, and you take it only between turns")
 	})
 	t.Run("architects", func(t *testing.T) {
 		const (

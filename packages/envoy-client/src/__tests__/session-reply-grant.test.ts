@@ -9,8 +9,9 @@ import {
   sessionReplySubject,
   useNatsServerDirectory,
 } from "../../test/nats-server";
-import { createConsumerDelivery, deliverSubject, RelayHeader } from "../consumer-delivery";
+import { createConsumerDelivery, deliverSubject } from "../consumer-delivery";
 import { natsAuthOptions } from "../nats-auth";
+import { RelayHeader } from "../relay-frame";
 
 /** nats.js types its `nkeys` export `any`. */
 const testKeys: { createUser(): { getSeed(): Uint8Array; getPublicKey(): string } } = nkeys;
@@ -146,6 +147,7 @@ describe.skipIf(process.env.LEGION_E2E !== "1")("a session's replies under its o
           deliver: (frame) => frame.done(),
           gap: () => undefined,
           log: () => undefined,
+          onTaskValue: () => undefined,
         },
         publish: (reply, body) => session.publish(reply, new TextEncoder().encode(body)),
         persist: () => true,

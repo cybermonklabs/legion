@@ -43,7 +43,12 @@ describe("a relay socket", () => {
     const relay = await opened(server, "ses_a");
     const delivery = createConsumerDelivery({
       sessionID: "ses_a",
-      host: { deliver: (handed) => handed.done(), gap: () => undefined, log: () => undefined },
+      host: {
+        deliver: (handed) => handed.done(),
+        gap: () => undefined,
+        log: () => undefined,
+        onTaskValue: () => undefined,
+      },
       publish: (reply, body) => relay.publish(reply, encoder.encode(body)),
       ledger: { delivered: () => false, liveFailed: async () => true },
       persist: () => true,

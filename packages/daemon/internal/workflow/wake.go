@@ -22,16 +22,17 @@ import (
 )
 
 // A wake brings a released pod back. The release read the pod's workspace first and went on only
-// where it held nothing that no branch or tag on origin holds; it suspended every claim of the pod
-// with the source `released` and deleted the pod, its disk and its Sandbox, or, where the Sandbox
-// owns a kept volume, kept that Sandbox Suspended with its volume. A wake resumes one of those
-// claims, which relaunches its session in a fresh pod that provisions the workspace from the
-// issue's pushed branch (WorkspaceAfterRelease), or mounts the kept volume as the roles left it.
-// Five things wake a pod, and this file holds four of them: the CI settlement, the role message
-// and the agent message the Envoy listener reports, and the stored backstop. The fifth — a
-// delivery the daemon already had for a role of the pod — needs nothing here, because a delivery
-// to a suspended claim already resumes it (supervise's deliverResuming) and the delivery is its
-// own account of why the pod came back.
+// where it held nothing that no branch or tag on origin holds (IdleHoldUnpushedWork), so it saved
+// nothing of the workspace; it suspended every claim of the pod with the source `released` and
+// deleted the pod, its disk and its Sandbox, or, where the Sandbox owns a kept volume, kept that
+// Sandbox Suspended with its volume. A wake resumes one of those claims, which relaunches its
+// session in a fresh pod that provisions the workspace from the issue's pushed branch
+// (WorkspaceAfterRelease), or mounts the kept volume as the roles left it. Five things wake a pod,
+// and this file holds four of them: the CI settlement, the role message and the agent message the
+// Envoy listener reports, and the stored backstop. The fifth — a delivery the daemon already had
+// for a role of the pod — needs nothing here, because a delivery to a suspended claim already
+// resumes it (supervise's deliverResuming) and the delivery is its own account of why the pod came
+// back.
 //
 // Every wake acts only on a claim that is still `released`, of an issue still in the workflow
 // whose tree is live, and a role comes back once while its pod is on its way: the role's one open
@@ -130,16 +131,17 @@ type Pods interface {
 }
 
 // wakeRow is the outbox row a wake writes: a `start` of the woken role at the issue's current
-// generation, naming no phase, carrying the task that says why the pod came back. It is the same
-// row a phase start writes, which is the point — the outbox's start executor already resumes a
-// suspended claim by rule (RequestRuleResume) and already delivers the row's task once the
-// relaunched agent is ready. A wake taken while a release of the pod still runs, after that
-// release recorded the role's claim as `released`, does not cancel the release: its row waits for
-// the release's teardown (record's outboxInOrder), so the role starts once, in the pod that comes
-// back (store.IssueRelease). Naming no phase keeps the row out of every phase
-// fence: the issue's phase may move between the wake and the relaunch, and the wake's task is
-// never the phase's work. It is queued as every worker's task is (queuedRow), so a woken reviewer
-// of an issue in reviewing is told the entry of its round too (WakeTask says why).
+// generation, naming no phase, carrying the task that says why the pod came back, under a
+// wake's origin. It is the same row a phase start writes, which is the point — the outbox's
+// start executor already resumes a suspended claim by rule (RequestRuleResume) and already
+// queues the row's task, whose value the relaunched agent takes once it is ready. A wake taken
+// while a release of the pod still runs, after that release recorded the role's claim as
+// `released`, does not cancel the release: its row waits for the release's teardown (record's
+// outboxInOrder), so the role starts once, in the pod that comes back (store.IssueRelease).
+// Naming no phase keeps the row out of every phase fence: the issue's phase may move between the
+// wake and the relaunch, and the wake's task is never the phase's work. Every wake writes it, the
+// backstop's among them (wakeReleased). It is queued as every worker's task is (queuedRow), so a
+// woken reviewer of an issue in reviewing is told the entry of its round too (WakeTask says why).
 //
 // The row is marked with the wake's kind, so the start finishes without acting once a park, a
 // close or a moved phase has taken the role over while the row waited (decision 10 of
@@ -151,7 +153,7 @@ type Pods interface {
 // (retellWakeTask).
 func wakeRow(issue record.Issue, role claim.Role, kind, detail string, pause int64, task string) record.SuperviseRequest {
 	return record.SuperviseRequest{Op: "start", Tree: issue.Tree, Role: role, Generation: issue.Generation, Task: task,
-		WakeKind: kind, WakeDetail: detail, Pause: pause}
+		Origin: supervise.OriginWake, WakeKind: kind, WakeDetail: detail, Pause: pause}
 }
 
 // PauseWakeRow is the start a project's pause owes a role it stopped with a launch owed: the row
@@ -159,8 +161,8 @@ func wakeRow(issue record.Issue, role claim.Role, kind, detail string, pause int
 // dispatch://INFRA-3759), in wakeRow's shape, marked with the wake's kind and the pause, so it
 // finishes without acting once a park, a close or a moved phase has taken the role over (decision
 // 10). The outbox holds it while a pause stands, as it holds every start of a paused project. It
-// carries no task and no detail: the task the role holds pending, if any, is what its launch
-// delivers.
+// carries no task and no detail: the task the role holds pending, if any, keeps its number, and
+// the relaunched worker takes it from its value once it is ready (supervise's take).
 func PauseWakeRow(issue record.Issue, role claim.Role, pause int64) record.SuperviseRequest {
 	return wakeRow(issue, role, pods.WakePause, "", pause, "")
 }

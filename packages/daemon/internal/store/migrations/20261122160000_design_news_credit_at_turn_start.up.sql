@@ -1,0 +1,236 @@
+-- 20261122160000_design_news_credit_at_turn_start.up.sql — a delivery's copy of the news of the
+-- approved design counts as its audience's credit only while the turn of the take that carried it
+-- has started (dispatch://INFRA-2811 meeting dispatch://INFRA-175).
+--
+-- 20261119203047_design_news reads every confirmed delivery holding a copy whose turn's result has
+-- not said the turn ran as a standing credit (design_news_told_in's standing). Under the take
+-- (20261113175649_task_numbers), confirmed_at is the accepted take, and the accept writes the copy
+-- (pending_task_deliveries.carried_news) in its own write, before the take's turn starts. A credit
+-- read from the accept would let a gate that closes and opens again before that turn find the
+-- holder owed nothing, so the opening it owes would go by the gate's role message while the task's
+-- text, already handed to the worker, tells none of it; the push path read the confirmation at the
+-- turn's start, which is where a holder is first known to read the text. So this file writes
+-- design_news_told_in again with one condition more: a standing credit is a confirmed delivery whose
+-- take's turn has started (pending_task_deliveries.turn_started, which the task numbers added),
+-- holding a copy no finish has made final (not carried_ran). The copy is still written at the
+-- accept and kept with the take. A no-number report that puts the take back sets turn_started false
+-- again (supervise's putBack), so the credit stops counting until the take's own turn starts; a
+-- take-back ends the copy; a finish by a clean report naming the take's number, or by the end frame
+-- below api.TaskTakeContract(), marks carried_ran, whose write folds the copy into
+-- design_news_told (the claim store's settleDesignNews), unchanged. Every other part of the function
+-- is 20261119203047's, so record.Postgres.TreeTold and every reader of what an audience took weigh
+-- the same answer as before, less the credit of a take whose turn has not started.
+--
+-- Its version stands above 20261119203047, which created the function, and above every migration
+-- main had numbered when this one was written; it adds no table, column or kind, and rewrites no
+-- kind list.
+--
+-- A migration that writes design_news_told_in again must be versioned after this one and keep the
+-- standing clause on turn_started. The store applies every migration it has not recorded, in
+-- version order, whatever it recorded above it (Store.Migrate), so a migration versioned between
+-- 20261119203047 and this one and merged after it would run last on a store that recorded this one,
+-- put back the credit at confirmed_at, and fail no test. The comment this file sets on the function
+-- says the same to whoever reads the schema. 20261122154643_outbox_kinds_with_the_basis_seeds
+-- (dispatch://INFRA-3320) is versioned between 20261119203047 and this one, and a store that
+-- recorded this one before it applies it after this one; it writes outbox_kind_check and not
+-- design_news_told_in, so it puts back no credit. 20261120210000_issue_release_committed
+-- (dispatch://INFRA-3589) is versioned between 20261119203047 and this one too, and a store that
+-- recorded this one before it applies it after this one; it writes neither outbox_kind_check nor
+-- design_news_told_in, so it puts back no credit either.
+--
+-- The way back is the block below, run with the daemon stopped before the earlier image is pinned,
+-- and before the way back of 20261113175649_task_numbers, which drops turn_started (at a rollback
+-- to contract 217 or to any release before it, the way back in the header of
+-- 20261117034837_issue_plans runs between the two, with the way back in the header of #5310's
+-- 20261124033010_plan_earlier_givers before or after it, and at a rollback to a release before
+-- cybermonklabs/legion#4903, the way back in the header of
+-- 20261121170714_dispatch_issue_applied_seq runs between the two as well, before that one): it
+-- writes design_news_told_in back as 20261119203047 wrote it, drops the comment this file set
+-- (that migration set none), and deletes this migration's version row, so the roll forward runs
+-- this file again. The release before this one, main's build that carries contract entries
+-- 20261125161152 (#4592's gate-basis), 20261125161436 (#4580's role-identities), 20261125170509
+-- (#5482's replaces), 20261125170906 (#5332's drop-unserved-state-keys), 20261125174131 (#4432's
+-- state-seq), 20261125174608 (#5505's cyber-policy), 20261125180842 (#5285's
+-- launcher-workspace-read), 20261125181047 (#5488's p-0-bound), 20261125181104 (#3712's
+-- repository-correction), 20261125181543 (#5463's look-names-its-check), 20261125182642 (#4065's
+-- agent-actions), 20261125211005 (#5566's wake-due-earliest-moment) and 20261126071719 (#5646's
+-- workspace-init-direct-clone) after contract 275 (the one whose
+-- internal/api/version.go carries the entry for dispatch://INFRA-4425, cybermonklabs/legion#4392's
+-- daemon that writes to Dispatch as itself under dispatch_token_broker), as main releases it after
+-- #3712, whose newest migration is #4432's 20261126163320_state_events, carries
+-- 20261119203047 and
+-- not the task numbers, and then reads the function it wrote; a rollback to a release before #3712
+-- crosses contract entry 20261125181104 and takes that release's steps (docs/kubernetes.md, "An
+-- issue's repository follows the one Dispatch resolves it to, and the reminder asks the daemon what
+-- a claim owes (daemon API contract entry 20261125181104)"): its four reads, run until none returns
+-- a row, come before this block, since their loop starts this release's daemon again, and then its
+-- block, which puts phases.entry_verbatim back, drops phases.entry_awaiting and deletes the version
+-- row of 20261118073048 alone, and its three updates run, and this block reads nothing they touch
+-- and nothing that release's 20261112012123_issue_repository_correction,
+-- 20261112215432_delivery_resume, 20261118073048_phase_entry_awaiting and
+-- 20261122212816_readmitted_approval_artifact add; one to a release before #4432 crosses contract
+-- entry 20261125174131 and takes that release's steps (docs/kubernetes.md,
+-- "Rolling out and rolling back the release that publishes the daemon's state events"), which roll
+-- Dispatch back first, to the release before that one, and then the daemon, and this block reads
+-- nothing of that release's 20261126163320_state_events, which carries no way back; one to a
+-- release before #4194 runs that release's one statement, which changes no schema version, after
+-- the daemon stops and
+-- before the earlier image starts (docs/kubernetes.md, "Rolling back idle release"): it strips the
+-- wakeDetail key the earlier release refuses from each queued start, and this block reads nothing
+-- of that key or of that release's 20261120210000_issue_release_committed and
+-- 20261126001514_pod_release_give_ups, which carry no way back; one to a release before #5312,
+-- which adds no migration, takes that release's step with the daemon stopped, before the earlier
+-- image is pinned (docs/kubernetes.md, "Rolling back the release that holds every worker while a
+-- merge forward is owed"): it deletes each queued merge-forward row of the project rolled back that
+-- is a withdrawn step or a hold or landed row to the planner, and takes the key sentLaunch off each
+-- queued ask, since the earlier release refuses all three, and this block reads none of those rows;
+-- one to a release before #5332 crosses contract entry 20261125170906, one to a release before
+-- #5646 contract entry 20261126071719, and one to a release before #5482 contract entry
+-- 20261125170509, none of which adds a migration or takes a step of its own beyond pinning the
+-- worker image with the daemon; a rollback to a release before #5487
+-- takes controller_turn_bound_minutes and controller_session_max_age_hours out of legion.yaml where
+-- the file sets them, and this block reads nothing of that release's
+-- 20261125021636_claim_session_run, which carries no way back; one to a release before #5488 takes
+-- admission_p0_bound out of legion.yaml where the file sets it, and this block reads nothing of
+-- that release's 20261125181828_p0_bound, which carries no way back; one to a release before #4065
+-- takes that release's steps with the daemon stopped (docs/kubernetes.md, "Rolling back the release
+-- whose controller acts on agents and whose daemon tells a held role of a merge hold"), and this
+-- block reads nothing of its 20261115060739_claim_suspended_by_controller,
+-- 20261115121838_drop_controller_wakes_for_nothing and 20261126110259_merge_holds_changed, which
+-- carry no way back; one to a release before #4592 takes that release's steps with every daemon of
+-- the database stopped (docs/kubernetes.md, "Rolling back the release that holds a parent's start
+-- while a child of it is open"), and this block reads nothing of its
+-- 20261114064234_design_gate_basis, 20261114232555_awaiting_children and
+-- 20261122154643_outbox_kinds_with_the_basis_seeds, which carry no way back; a rollback to a
+-- release before #5505
+-- first takes the outbox key decided off each supervise row, with every daemon of the database
+-- stopped (docs/kubernetes.md), and this block reads nothing of that release's
+-- 20261125223008_claim_held_for, which carries no way back; a rollback to a release before #5566
+-- runs the way back in the header of 20261125163328_message_wake_pacing first of all, before this
+-- block, with every daemon of the database stopped; one to a release before #5285 runs the way back
+-- in the header of 20261125023100_pod_replacements before this block, with every daemon of the
+-- database stopped, once that release's launcher's workspace checks and the rows that name podUid
+-- have left the outbox, its unsent workspace-kept and workspace-taken notices are deleted and each
+-- issue's architect is told what each row of pod_replacements read (docs/kubernetes.md, "Rolling
+-- back the release that keeps no saved workspace"), and the way back of its
+-- 20261125023041_idle_release_declines_told_pod runs only in a rollback past 20261123050533, before
+-- that migration's own; a rollback to a release before #5463 also runs
+-- that release's step (docs/kubernetes.md,
+-- "Rolling back the release whose check report names its check"), one to a release before #4472
+-- takes private_name_rules_file out of legion.yaml where the file sets it, one to a release before
+-- #4580 deletes <state_dir>/bin/jj under a tmux daemon, and one to a release before #5385 runs the
+-- way back in the header of 20261125000600_production_check_failed_looks first, before this block,
+-- with every daemon of the database stopped; #5575's 20261125212800_claims_tree and #5398's
+-- 20261124130001_pull_request_reviews_requested carry no way back, and this block reads nothing of
+-- them; #5310's 20261124033010_plan_earlier_givers needs no statement where the earlier release has
+-- the plan tables, and this block reads nothing of it; a rollback to contract 256 or before crosses
+-- 275, which takes no step of its own beyond
+-- pinning the worker
+-- image with the daemon, since its migration, 20261124182040_issue_pod_disks, carries no way back
+-- and this block reads nothing of it, except where legion.yaml sets dispatch_token_broker or
+-- dispatch_token_transition_file, which an earlier release refuses as keys it does not know: take
+-- both out and name dispatch_token_file again before the earlier image is pinned; a rollback to
+-- contract 246 or before also crosses 256 and #5365's 250, which take no step of their own beyond
+-- pinning the worker image with the daemon, since they add no legion.yaml key and their
+-- migrations, 20261124073512_claim_cause_times and 20261124060500_issue_priority, carry no way
+-- back, as #5372's 20261124143026_issue_release_teardown carries none: an earlier release names
+-- none of the columns they add, and this block reads none of them (crossing 20261124073512 costs
+-- the claims' two cause times, as its header says); a rollback to contract 232 or before crosses
+-- 246, which takes no
+-- step of its own beyond pinning the worker image with the daemon, since it adds no migration and
+-- no legion.yaml key, and it, like any rollback to a release before #4869, crosses 20261123050533,
+-- which needs a step of its own: the way back in its own header, its last paragraph
+-- (docs/kubernetes.md, "Rolling back the release that keeps no saved workspace"), run before this
+-- block, with every daemon of the database stopped, which makes workspace_bundles again, empty,
+-- drops idle_release_declines and issue_releases.turn_start, which this block does not read, and
+-- deletes its version row; a rollback to a release before #5303 also crosses 20261123224717,
+-- which needs a step of its own: the way back in its own header, its last paragraph, run first,
+-- before this block, with every daemon of the database stopped, which drops issues.members_owed,
+-- a column this block does not read, and deletes its version row; a rollback to contract 228 or
+-- before crosses 232, which takes no step of its own beyond pinning the worker image with the
+-- daemon: it adds no migration and no legion.yaml key; a
+-- rollback to contract 220 or before crosses 228 and takes that release's steps, which delete
+-- the project's unsent intake-gave-up controller notices and its open failures and touch nothing
+-- this block reads (docs/kubernetes.md, "Rolling back the release that gives up on intake
+-- messages"); a rollback to a release before #5278 also crosses 20261123212127, which needs
+-- nothing: it carries no way back, since an earlier release reads the start failures it emptied
+-- as none recorded; a
+-- rollback to contract 219 or before crosses 220 and first
+-- takes that release's one step, before this block, which takes `plan` out of legion.yaml and runs
+-- no statement (docs/kubernetes.md, "Rolling back the release whose experiment sets how each issue
+-- is done"), a rollback to contract 217 or before also crosses 219 and takes that release's own
+-- steps (docs/kubernetes.md, "Rolling back the release that runs a task's steps in any order", and
+-- the way back of 20261117034837_issue_plans), and a rollback to contract 213 or before also
+-- crosses 217 and takes that release's own steps (docs/kubernetes.md, "Rolling back below the
+-- release that guards the controller's pod's memory"). Nothing else is
+-- reversed: no row changes here, and a copy on a confirmed row that the earlier function counts
+-- at once, its take's turn not yet started, is the credit that release would have written at the
+-- confirmation of the same turn. docs/kubernetes.md gives this block under "Rolling back the
+-- release that credits a holder's news at its take's turn".
+--
+-- begin;
+-- create or replace function design_news_told_in(tree text)
+--   returns table (issue text, audience text, versions jsonb, opening_owed boolean, opening_seq integer, told_at timestamptz)
+--   language sql stable as $$
+--   with member as (select owner.key from issues owner where owner.tree = $1),
+--   standing as (
+--     select delivery.carried_news from pending_task_deliveries delivery
+--     where delivery.confirmed_at is not null and not delivery.carried_ran and delivery.carried_news is not null),
+--   credit as (
+--     select credited.issue, credited.audience, credited.link
+--     from standing cross join design_news_credits(standing.carried_news) credited
+--     where credited.issue in (select member.key from member)),
+--   cleared as (
+--     select opened.issue, opened.audience, opened.seq
+--     from standing cross join design_news_openings(standing.carried_news) opened
+--     where opened.issue in (select member.key from member)),
+--   pair as (
+--     select told.issue, told.audience from design_news_told told where told.issue in (select member.key from member)
+--     union
+--     select credit.issue, credit.audience from credit)
+--   select pair.issue, pair.audience,
+--     design_news_known(coalesce(told.versions, '{}'::jsonb), coalesce(told.unreached, '[]'::jsonb)
+--       || coalesce((select jsonb_agg(credit.link) from credit
+--         where credit.issue = pair.issue and credit.audience = pair.audience), '[]'::jsonb)),
+--     coalesce(told.opening_owed, false) and not exists (select 1 from cleared
+--       where cleared.issue = pair.issue and cleared.audience = pair.audience and cleared.seq = told.opening_seq),
+--     coalesce(told.opening_seq, 0), told.told_at
+--   from pair left join design_news_told told on told.issue = pair.issue and told.audience = pair.audience
+--   order by pair.issue, pair.audience
+-- $$;
+-- comment on function design_news_told_in(text) is null;
+-- delete from schema_version where version = 20261122160000;
+-- commit;
+create or replace function design_news_told_in(tree text)
+  returns table (issue text, audience text, versions jsonb, opening_owed boolean, opening_seq integer, told_at timestamptz)
+  language sql stable as $$
+  with member as (select owner.key from issues owner where owner.tree = $1),
+  standing as (
+    select delivery.carried_news from pending_task_deliveries delivery
+    where delivery.confirmed_at is not null and delivery.turn_started and not delivery.carried_ran
+      and delivery.carried_news is not null),
+  credit as (
+    select credited.issue, credited.audience, credited.link
+    from standing cross join design_news_credits(standing.carried_news) credited
+    where credited.issue in (select member.key from member)),
+  cleared as (
+    select opened.issue, opened.audience, opened.seq
+    from standing cross join design_news_openings(standing.carried_news) opened
+    where opened.issue in (select member.key from member)),
+  pair as (
+    select told.issue, told.audience from design_news_told told where told.issue in (select member.key from member)
+    union
+    select credit.issue, credit.audience from credit)
+  select pair.issue, pair.audience,
+    design_news_known(coalesce(told.versions, '{}'::jsonb), coalesce(told.unreached, '[]'::jsonb)
+      || coalesce((select jsonb_agg(credit.link) from credit
+        where credit.issue = pair.issue and credit.audience = pair.audience), '[]'::jsonb)),
+    coalesce(told.opening_owed, false) and not exists (select 1 from cleared
+      where cleared.issue = pair.issue and cleared.audience = pair.audience and cleared.seq = told.opening_seq),
+    coalesce(told.opening_seq, 0), told.told_at
+  from pair left join design_news_told told on told.issue = pair.issue and told.audience = pair.audience
+  order by pair.issue, pair.audience
+$$;
+
+comment on function design_news_told_in(text) is
+  'A standing credit is a confirmed delivery whose take''s turn has started (turn_started), holding a copy no finish has made final (not carried_ran); 20261122160000_design_news_credit_at_turn_start wrote this. A migration that writes this function again must be versioned after 20261122160000 and keep the standing clause on turn_started: one versioned below it runs last on a store that recorded 20261122160000 and would put back a credit at the accept (confirmed_at).';

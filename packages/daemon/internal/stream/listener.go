@@ -481,7 +481,7 @@ func (l *Listener) hello(nc net.Conn, src *bufio.Reader) (*Conn, LauncherHandler
 	if hello.AgentSecrets != nil {
 		identity = &AgentSecretsIdentity{Thumbprint: hello.AgentSecrets.Thumbprint, PodToken: hello.AgentSecrets.PodToken}
 	}
-	conn, reason := l.register(nc, token, generation, identity)
+	conn, reason := l.register(nc, Hello{Claim: token, Generation: generation, AgentSecrets: identity, BacklogWhole: hello.BacklogWhole})
 	return conn, nil, reason
 }
 
@@ -534,9 +534,11 @@ func (l *Listener) awaitLauncherResolver(deadline time.Time) (LauncherResolver, 
 }
 
 // register binds the claim to this connection, unless a live connection already holds it — the
-// shim of a pane that has not died is not displaced by a second dial. A claim whose connection
-// has closed is free again, which is the reconnect case.
-func (l *Listener) register(nc net.Conn, token claim.Token, generation uint64, identity *AgentSecretsIdentity) (*Conn, string) {
+// shim of a pane that has not died is not displaced by a second dial — and queues hello, the
+// event of the hello it accepts. A claim whose connection has closed is free again, which is the
+// reconnect case.
+func (l *Listener) register(nc net.Conn, hello Hello) (*Conn, string) {
+	token, generation := hello.Claim, hello.Generation
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if l.closed || l.narrowed {
@@ -560,7 +562,7 @@ func (l *Listener) register(nc net.Conn, token claim.Token, generation uint64, i
 		return nil, "connection closed before hello_ack"
 	}
 	l.conns[token] = conn
-	l.events.push(Hello{Claim: token, Generation: generation, AgentSecrets: identity})
+	l.events.push(hello)
 	close(l.registered)
 	l.registered = make(chan struct{})
 	return conn, ""

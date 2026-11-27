@@ -19,6 +19,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/sjawhar/legion/daemon/internal/admit"
+	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
@@ -673,8 +674,8 @@ func newFenceRig(t *testing.T, setup fenceSetup) *fenceRig {
 	if _, err := st.OpenTreeLifecycle(ctx, "legion", root.Key, treelifecycle.AuthorityWorkflow); err != nil {
 		t.Fatal(err)
 	}
-	api := newIssueSandboxAPI(sandboxes...)
-	server := httptest.NewServer(api)
+	sandboxAPI := newIssueSandboxAPI(sandboxes...)
+	server := httptest.NewServer(sandboxAPI)
 	t.Cleanup(func() { cancel(); server.Close() })
 	logs := &syncBuffer{}
 	logger := slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
@@ -693,10 +694,11 @@ func newFenceRig(t *testing.T, setup fenceSetup) *fenceRig {
 	sup := newSupervisor(runtimeCtx, st, "legion", t.TempDir(), logger)
 	sup.deps = supervise.Deps{
 		Runtime: rt, Conns: fake.NewConns(), Store: st, Specs: issueLaunchSpecs{prompt: prompt}, Clock: stillClock{}, Log: logger,
-		Limits:         supervise.Limits{LaunchFailures: 1, PromptFailures: 2, PromptRetires: 2},
-		Timeouts:       supervise.Timeouts{Boot: time.Second, RegistrationIntervals: 2, RPC: time.Second, Probe: time.Second, Stop: time.Second, LaunchBackoff: time.Millisecond},
-		PluginContract: 24,
-		RefreshGate:    supervise.NewRefreshGate(0),
+		Limits:           supervise.Limits{LaunchFailures: 1, PromptFailures: 2, PromptRetires: 2},
+		Timeouts:         supervise.Timeouts{Boot: time.Second, RegistrationIntervals: 2, RPC: time.Second, Probe: time.Second, Stop: time.Second, LaunchBackoff: time.Millisecond},
+		PluginContract:   24,
+		TaskTakeContract: api.TaskTakeContract(),
+		RefreshGate:      supervise.NewRefreshGate(0),
 	}
 	t.Cleanup(sup.stop)
 	// The root's architect works on, with its session, so the tree runs and never lingers. Each
@@ -708,7 +710,7 @@ func newFenceRig(t *testing.T, setup fenceSetup) *fenceRig {
 		seeded = append(seeded, supervise.Claim{Token: "legion-legion-legion-208-implementer", Project: "legion", Tree: root.Key, TreeEpoch: 1, Issue: root.Key, Role: claim.RoleImplementer,
 			State: supervise.StateWorking, Generation: 1, Session: "saved-implementer", SessionFile: "/legion/sessions/implementer.jsonl",
 			Pending: &supervise.Delivery{ID: "outbox:1", Task: "Continue root. Issue: LEGION-208. Phase: implementing.", Generation: 1,
-				Phase: phase.Implementing, QueuedAt: time.Now(), DeliveredAt: time.Now(), ConfirmedAt: time.Now()}})
+				Phase: phase.Implementing, QueuedAt: time.Now(), ConfirmedAt: time.Now(), TurnStarted: true}})
 	}
 	stopped := make([]supervise.Claim, 0, len(setup.children))
 	for i, spec := range setup.children {
@@ -734,7 +736,7 @@ func newFenceRig(t *testing.T, setup fenceSetup) *fenceRig {
 		dispatch: &outboxDispatch{issue: dispatch.Issue{Key: children[0].Key, Status: "todo"}}, notices: &outboxPublisher{},
 		handlers: []intake.Handler{engine, admission}, log: logger, now: func() time.Time { return clock },
 	}
-	rig := &fenceRig{ctx: ctx, pool: pool, st: st, api: api, engine: engine, admission: admission, logs: logs,
+	rig := &fenceRig{ctx: ctx, pool: pool, st: st, api: sandboxAPI, engine: engine, admission: admission, logs: logs,
 		root: root, rootSandbox: rootSandbox, architect: architect, children: children, base: base}
 	rig.run = func(what string) {
 		t.Helper()

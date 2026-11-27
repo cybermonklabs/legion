@@ -26,12 +26,12 @@ const (
 	UpdateStateAsked UpdateState = "asked"
 	// UpdateStateAnswered is a claim whose worker answered the round that is open over it. The
 	// daemon holds the claim's next task from this moment. The round ends when every claim of
-	// the round has answered, no turn runs and no claim's activity report holds it
-	// (internal/daemon's roundEnd.holding), or at its bound, whichever comes first. Then the
-	// daemon reads the pod's workspace and replaces the pod. Where that read finds work that no
-	// branch or tag on origin holds, or cannot be made, over a drift the pod's roles can keep
-	// working under, the round ends with no replacement instead: the daemon releases the held
-	// task, and the process works on in the kept pod (R7 of #5285,
+	// the round has answered, no turn runs, no take whose turn ended still owes its report and no
+	// claim's activity report holds it (internal/daemon's roundEnd.holding), or at its bound,
+	// whichever comes first. Then the daemon reads the pod's workspace and replaces the pod. Where
+	// that read finds work that no branch or tag on origin holds, or cannot be made, over a drift
+	// the pod's roles can keep working under, the round ends with no replacement instead: the
+	// daemon releases the held task, and the process works on in the kept pod (R7 of #5285,
 	// internal/daemon's roundKeeps).
 	UpdateStateAnswered UpdateState = "answered"
 )

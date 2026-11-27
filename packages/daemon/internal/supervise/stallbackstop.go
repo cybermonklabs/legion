@@ -137,7 +137,9 @@ type StallBackstopStop struct {
 // bound, or whose claim did where this decision finds the claim working for a compaction with no
 // turn under it (endStalled, endState), and records what it ended there: in this decision, or at
 // the turn of the wake the pacing parks it on (launchNow, letGo). The cause is what this stop
-// found, so a parked launch carries it to that turn as the decision named it (launchAfter).
+// found, so a parked launch carries it to that turn as the decision named it (launchAfter). A
+// turn that ended in that wait with its take's report still to come was no hung turn: that wake's
+// turn holds the relaunch for the report, as a held repoint is held (heldAtItsTurn, runWake).
 func (m *Machine) backstopStalledTurn(ctx context.Context, ev StallBackstop) error {
 	last := m.claim.Step.LastStep()
 	if m.steppedAt.After(last) {
@@ -181,7 +183,7 @@ func (m *Machine) backstopStalledTurn(ctx context.Context, ev StallBackstop) err
 	// replacement took out of it (StallBackstopStop.LaunchFailures).
 	charged := m.claim.Budgets.LaunchFailures
 	end, err := m.replaceProcess(ctx, "the daemon's stall backstop ended a turn whose agent stopped stepping", ordinaryEnd,
-		endStalled(ev.Bound, m.endState() == StateWorking))
+		endStalled(ev.Bound, m.cutsTurn()), heldAtItsTurn)
 	charged = m.claim.Budgets.LaunchFailures - charged
 	if end.TellsOwner() && m.deps.StallBackstopped != nil {
 		stop := StallBackstopStop{Step: ev.Step, LastStep: last, Bound: ev.Bound, End: end,

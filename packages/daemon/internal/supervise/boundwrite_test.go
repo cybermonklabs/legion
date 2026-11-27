@@ -5,6 +5,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/claim"
 )
 
 // boundWriteKey marks a context Deps.BoundWrite made, so a store can tell it from one the
@@ -32,14 +34,47 @@ func (s *boundSeeingStore) PutClaim(ctx context.Context, c Claim) error {
 	return s.Store.PutClaim(ctx, c)
 }
 
+// boundSeeingValues records, for each write and delete of the task bucket a decision makes, whether
+// its context came from Deps.BoundWrite and how long its deadline had left when the call began.
+type boundSeeingValues struct {
+	TaskValues
+	mu   sync.Mutex
+	from []bool
+	left []time.Duration
+}
+
+func (v *boundSeeingValues) saw(ctx context.Context) {
+	_, from := ctx.Value(boundWriteKey{}).(bool)
+	left := time.Duration(-1)
+	if deadline, ok := ctx.Deadline(); ok {
+		left = time.Until(deadline)
+	}
+	v.mu.Lock()
+	v.from, v.left = append(v.from, from), append(v.left, left)
+	v.mu.Unlock()
+}
+
+func (v *boundSeeingValues) Write(ctx context.Context, token claim.Token, number uint64) (string, uint64, error) {
+	v.saw(ctx)
+	return v.TaskValues.Write(ctx, token, number)
+}
+
+func (v *boundSeeingValues) Delete(ctx context.Context, token claim.Token) error {
+	v.saw(ctx)
+	return v.TaskValues.Delete(ctx, token)
+}
+
 // A decision's claim write takes its bound from Deps.BoundWrite, with both of the machine's
 // bounds: the wait in the store's pool queue (defaultClaimAcquire) and the write once the pool has
 // handed it a connection (Timeouts.ClaimWrite). The daemon's BoundWrite (store.BoundAfterAcquire)
 // counts the write from its connection, so a wave of claim writes on a pool of a few connections no
 // longer cuts the last of them for the queue ahead (defaultClaimWrite). With no BoundWrite the
 // machine bounds the whole write by the claim-write bound, as it always did. Here a spawn writes
-// the claim launching. Every other bounded call of a decision goes through the same helper
-// (Machine.bounded), the one place either bound is read.
+// the claim launching. Every other bounded store call of a decision goes through the same helper
+// (Machine.bounded), the one place both bounds are read. A write of the task bucket is no call of
+// the store: it waits for no connection of the pool, so it takes the claim-write bound alone,
+// whatever BoundWrite is (Machine.writeBucket, the one other call that bound bounds); here the
+// queue of a task writes its value.
 func TestADecisionsClaimWriteTakesItsBoundFromDepsBoundWrite(t *testing.T) {
 	const acquire, write = defaultClaimAcquire, 3 * time.Second
 	spawned := func(t *testing.T, bound func(context.Context, time.Duration, time.Duration) (context.Context, context.CancelFunc)) *boundSeeingStore {
@@ -92,6 +127,34 @@ func TestADecisionsClaimWriteTakesItsBoundFromDepsBoundWrite(t *testing.T) {
 		for i, left := range seeing.left {
 			if seeing.from[i] || left <= 0 || left > write {
 				t.Fatalf("claim write %d of the spawn had %s left on its deadline (BoundWrite's: %v), want at most the %s claim-write bound", i+1, left, seeing.from[i], write)
+			}
+		}
+	})
+
+	t.Run("BoundWrite set: a task bucket write takes the claim-write bound alone", func(t *testing.T) {
+		h := newBareHarness(t)
+		c := queuedClaim()
+		h.token = c.Token
+		if err := h.store.PutClaim(h.ctx, c); err != nil {
+			t.Fatal(err)
+		}
+		h.deps.Timeouts.ClaimWrite = write
+		h.deps.BoundWrite = func(ctx context.Context, _, _ time.Duration) (context.Context, context.CancelFunc) {
+			return context.WithCancel(context.WithValue(ctx, boundWriteKey{}, true))
+		}
+		seeing := &boundSeeingValues{TaskValues: h.values}
+		h.deps.TaskValues = seeing
+		h.start(c)
+		h.launch()
+		h.must(RequestDeliver{Claim: h.token, Task: "the task"})
+		seeing.mu.Lock()
+		defer seeing.mu.Unlock()
+		if len(seeing.from) == 0 {
+			t.Fatal("the queued task wrote no value, so this proves nothing")
+		}
+		for i, left := range seeing.left {
+			if seeing.from[i] || left <= 0 || left > write {
+				t.Fatalf("task bucket call %d had %s left on its deadline (BoundWrite's: %v), want at most the %s claim-write bound", i+1, left, seeing.from[i], write)
 			}
 		}
 	})

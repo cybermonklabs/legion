@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/api"
+	legionclaim "github.com/sjawhar/legion/daemon/internal/claim"
 )
 
 // seenClaim is one answer the list gives about architectClaim: its state, and whether the daemon
@@ -28,22 +29,20 @@ var (
 	suspended   = seenClaim{"suspended", false}
 )
 
-// heldSuspendDaemon answers the suspend of architectClaim 202 with the claim working and its
-// suspension held, and each later list with the next of answers, the last repeated.
-func heldSuspendDaemon(t *testing.T, answers ...seenClaim) (port string, lists func() int) {
+// heldDaemon is a daemon that holds request of token: it answers the request 202 with the claim
+// claimAs makes of held, and each later list with the claim it makes of the next of answers, the
+// last repeated. It answers the port it serves on and how many lists it has served.
+func heldDaemon[S any](t *testing.T, token legionclaim.Token, request string, claimAs func(S) api.OperatorClaim, held S,
+	answers ...S) (port string, lists func() int) {
 	t.Helper()
 	var mu sync.Mutex
 	served := 0
-	claimAs := func(seen seenClaim) api.OperatorClaim {
-		return api.OperatorClaim{Token: architectClaim, Tree: "LEGION-208", Issue: "LEGION-208", Role: "architect",
-			State: seen.state, Generation: 1, SuspensionHeld: seen.held}
-	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
-		case r.Method == http.MethodPost && r.URL.Path == claimsRoute+"/"+string(architectClaim)+"/suspend":
+		case r.Method == http.MethodPost && r.URL.Path == claimsRoute+"/"+string(token)+"/"+request:
 			w.WriteHeader(http.StatusAccepted)
-			_ = json.NewEncoder(w).Encode(claimAs(heldWorking))
+			_ = json.NewEncoder(w).Encode(claimAs(held))
 		case r.Method == http.MethodGet && r.URL.Path == claimsRoute:
 			mu.Lock()
 			seen := answers[min(served, len(answers)-1)]
@@ -62,6 +61,16 @@ func heldSuspendDaemon(t *testing.T, answers ...seenClaim) (port string, lists f
 	return parsed.Port(), func() int { mu.Lock(); defer mu.Unlock(); return served }
 }
 
+// heldSuspendDaemon answers the suspend of architectClaim 202 with the claim working and its
+// suspension held, and each later list with the next of answers, the last repeated (heldDaemon).
+func heldSuspendDaemon(t *testing.T, answers ...seenClaim) (port string, lists func() int) {
+	t.Helper()
+	return heldDaemon(t, architectClaim, "suspend", func(seen seenClaim) api.OperatorClaim {
+		return api.OperatorClaim{Token: architectClaim, Tree: "LEGION-208", Issue: "LEGION-208", Role: "architect",
+			State: seen.state, Generation: 1, SuspensionHeld: seen.held}
+	}, heldWorking, answers...)
+}
+
 func operatorTokenFile(t *testing.T) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "operator-token")
@@ -71,15 +80,22 @@ func operatorTokenFile(t *testing.T) string {
 	return path
 }
 
-// suspendAgainst runs `legion claims suspend` of architectClaim against port, waiting up to wait,
-// with any extra flags.
-func suspendAgainst(t *testing.T, port, wait string, extra ...string) (int, string, string) {
+// claimsAgainst runs `legion claims <request>` of token against port, waiting up to wait, with any
+// extra flags.
+func claimsAgainst(t *testing.T, request string, token legionclaim.Token, port, wait string, extra ...string) (int, string, string) {
 	t.Helper()
 	var out, errb bytes.Buffer
-	args := append([]string{"legion", "claims", "suspend", "--port", port,
-		"--operator-token-file", operatorTokenFile(t), "--claim", string(architectClaim), "--wait", wait}, extra...)
+	args := append([]string{"legion", "claims", request, "--port", port,
+		"--operator-token-file", operatorTokenFile(t), "--claim", string(token), "--wait", wait}, extra...)
 	code := run(context.Background(), args, &out, &errb)
 	return code, out.String(), errb.String()
+}
+
+// suspendAgainst runs `legion claims suspend` of architectClaim against port, waiting up to wait,
+// with any extra flags (claimsAgainst).
+func suspendAgainst(t *testing.T, port, wait string, extra ...string) (int, string, string) {
+	t.Helper()
+	return claimsAgainst(t, "suspend", architectClaim, port, wait, extra...)
 }
 
 // A suspend the daemon holds for the agent's turn (202) is waited out: the command polls the

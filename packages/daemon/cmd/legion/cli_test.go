@@ -63,7 +63,7 @@ func buildLegion(t *testing.T) string {
 var legionCommands = [][]string{
 	{"version"},
 	{"config"}, {"config", "check"}, {"config", "reference"},
-	{"start"}, {"stop"}, {"state"}, {"legions"}, {"status"},
+	{"start"}, {"stop"}, {"state"}, {"task-cost"}, {"legions"}, {"status"},
 	{"issue"}, {"issue", "status"},
 	{"restart"},
 	{"claims"}, {"claims", "spawn"}, {"claims", "deliver"}, {"claims", "suspend"}, {"claims", "resume"},

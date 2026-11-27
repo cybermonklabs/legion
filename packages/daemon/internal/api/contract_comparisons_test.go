@@ -171,8 +171,19 @@ var contractComparisonRows = []contractComparisonRow{
 		comparedIn("internal/api/controller.go", "server.registerController", "req.PluginContract != DaemonAPIVersion()"),
 		comparedIn("internal/api/controller.go", "server.refuseIfStaleController", "stored.PluginContract == DaemonAPIVersion()"),
 	}},
+	// tellOldPluginOnImage logs an old plugin's claim once for each contract it is found on, which
+	// compares the contract it last logged with the claim's.
 	{row: "The idle rule", compares: []comparisonSite{
-		comparedIn("internal/workflow/idle.go", "IdleRelease", "c.PluginContract != contract"),
+		comparedIn("internal/workflow/idle.go", "behindHold", "c.PluginContract != contract"),
+		comparedIn("internal/daemon/idle.go", "workflowRuntime.tellOldPluginOnImage", "told == old.PluginContract"),
+	}},
+	// The task-take entry's contract (contract_20261125171504_task-take.go): a plugin below it takes
+	// no task, which the stale-plugin rule, its lane and the idle release read through TakesNoTask,
+	// and the registration's row of shapeAnswer serves a caller below it the answer without the two
+	// keys the entry added.
+	{row: "The task take", compares: []comparisonSite{
+		comparedIn("internal/supervise/take.go", "TakesNoTask", "contract < takeContract"),
+		comparedIn("internal/api/shaping.go", "shapeAnswer", "strip < entryNumber(taskTakeContract)"),
 	}},
 }
 

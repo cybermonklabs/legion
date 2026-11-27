@@ -7,13 +7,14 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/reviewround"
 )
 
-// The one place each prompt of a delivery is composed (Delivery.message) ends each task of the
-// reviewer with the daemon's two sentences of its review round. A task that says it holds them
-// (RoundNamed), as each the workflow queues for the reviewer does, is sent as it stands; a task of
-// the reviewer that does not say so is given them naming no commit and no entry, though its own
-// text ends with words of the same shape: a task the release before queued, or an operator's. A
-// task of another role, and the relaunch's record, which is no task, are sent as they are.
-func TestEachTaskOfTheReviewerIsSentEndingWithTheDaemonsSentences(t *testing.T) {
+// The one place the text of each accepted take of a delivery is composed (Delivery.message) ends
+// each task of the reviewer with the daemon's two sentences of its review round. A task that says
+// it holds them (RoundNamed), as each the workflow queues for the reviewer does, is taken as it
+// stands; a task of the reviewer that does not say so is given them naming no commit and no entry,
+// though its own text ends with words of the same shape: a task the release before queued, or an
+// operator's. A task of another role, and the relaunch's record, which is no task, are taken as
+// they are.
+func TestEachTaskOfTheReviewerIsTakenEndingWithTheDaemonsSentences(t *testing.T) {
 	const task = "Continue. Phase: reviewing. Reason: as requested. Last reviewed commit: 5ab0c1d2e3f405162738495a6b7c8d9e0f1a2b3c. Review entry: 2."
 	for _, tc := range []struct {
 		name     string
@@ -34,7 +35,7 @@ func TestEachTaskOfTheReviewerIsSentEndingWithTheDaemonsSentences(t *testing.T) 
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got, _ := tc.delivery.message(Claim{Role: tc.role}); got != tc.want {
-				t.Fatalf("the %s is sent %q, want %q", tc.role, got, tc.want)
+				t.Fatalf("the %s's take is answered %q, want %q", tc.role, got, tc.want)
 			}
 		})
 	}

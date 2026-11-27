@@ -287,8 +287,9 @@ func TestAnApprovalOfAConflictingHeadLeavesTheMergeToTheMerger(t *testing.T) {
 			if got := issuePhase(t, pool); got != phase.Merging {
 				t.Fatalf("after retro's completion the issue is in %s, want merging", got)
 			}
+			// The ask names GitHub's merge state of the read it rests on (dispatch://INFRA-2833 R3).
 			want := []record.MergeForwardMessage{{Role: claim.RoleMerger, Step: record.MergeForwardAsk, Head: conflictHead,
-				Base: "main", Phase: phase.Merging, PullRequest: 42, Why: record.ConflictMergeNext}}
+				Base: "main", Phase: phase.Merging, PullRequest: 42, Why: record.ConflictMergeNext, MergeState: record.MergeStateDirty}}
 			if got := mergeForwardMessages(t, pool); !reflect.DeepEqual(got, want) {
 				t.Fatalf("merge-forward messages %+v after the move into merging, want %+v", got, want)
 			}
@@ -304,10 +305,11 @@ func completesImplementingAt(t *testing.T, pool *pgxpool.Pool) {
 		Role: claim.RoleImplementer, Claim: "implement-claim", Summary: "implemented", Commit: conflictHead, HandoffRecord: "implement-1", HandoffVersion: 1})
 }
 
-// implementerAsked is the implementer's ask of the merge forward of conflictHead in at, for why.
+// implementerAsked is the implementer's ask of the merge forward of conflictHead in at, for why,
+// naming GitHub's merge state of the read it rests on (dispatch://INFRA-2833 R3).
 func implementerAsked(at phase.Phase, why record.ConflictWhy) record.MergeForwardMessage {
 	return record.MergeForwardMessage{Role: claim.RoleImplementer, Step: record.MergeForwardAsk, Head: conflictHead, Base: "main",
-		Phase: at, PullRequest: 42, Why: why}
+		Phase: at, PullRequest: 42, Why: why, MergeState: record.MergeStateDirty}
 }
 
 // sentAgain is ask as askAgain queues it at launch: it carries launch
@@ -477,7 +479,8 @@ func TestAnAskOfImplementingIsAskedAgainOnlyWhereAStepStillRuns(t *testing.T) {
 	t.Parallel()
 	requiresCI := &record.BaseRules{Required: []string{"ci"}}
 	ask := func(role claim.Role, step record.MergeForwardStep, at phase.Phase, why record.ConflictWhy) record.MergeForwardMessage {
-		return record.MergeForwardMessage{Role: role, Step: step, Head: conflictHead, Base: "main", Phase: at, PullRequest: 42, Why: why}
+		return record.MergeForwardMessage{Role: role, Step: step, Head: conflictHead, Base: "main", Phase: at, PullRequest: 42, Why: why,
+			MergeState: record.MergeStateDirty}
 	}
 	inImplementing := ask(claim.RoleImplementer, record.MergeForwardAsk, phase.Implementing, record.ConflictCheckNotGreen)
 	// completes is LEGION-208 on the plan steps, asked in implementing to merge the base forward

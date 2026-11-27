@@ -915,6 +915,21 @@ pane is its recorded process only while its root process's command line, `sh -c`
 command, holds a configured harness's marker: `omp` for Oh My Pi, ` claude-bridge -- ` for Claude
 Code. A daemon with no `worker_backends` has Oh My Pi's launcher alone and checks for `omp` alone.
 
+### How a worker takes its task
+
+Neither harness is sent its task over the worker stream.
+`legion worker-shim` carries the daemon's frames to the harness and the harness's events back, and no frame of the daemon's carries a task: a worker takes its task as its claim's value, which the daemon writes in the task bucket `legion_tasks` on Envoy's NATS and the Envoy listener relays to the session that holds the claim's role.
+A daemon whose `nats_urls` names no NATS has no bucket to write a value in, so it boots and serves and launches no worker; it logs a line saying so, which `legion config check` prints after its OK line.
+
+Both harnesses' plugins boot a claim the same way (`bootLegionClaim`, `packages/pi-shared/src/legion-claim-core.ts`).
+The session registers, reports ready (`POST /legion/v1/claims/ready`), and reads its claim's value again (`POST /legion/v1/claims/task`), since the ready can write a value the registration's answer did not carry.
+Only then does it claim the issue's Envoy role, so no message the listener kept for the role starts a turn ahead of a task the ready wrote.
+It reports each value it is handed seen (`POST /legion/v1/claims/task-seen`), asks to take the task once its host is idle (`POST /legion/v1/claims/take`), and runs the text the take is answered with as a turn of its own; nothing is sent into a turn that is running.
+
+Under Claude Code the take is `legion claude-bridge`'s, since the bridge is what knows whether Claude Code is in a turn.
+The plugin claude-envoy keeps none of the claim's values: it writes each one it is handed into the bridge's inbox as a `task` line, a reading that holds no value as a `finished` line, and, once the ready and the read after it have answered, the `ready` line, behind that read's own line and after a read that failed too.
+The bridge holds back every Envoy delivery until the ready line, and from it on every one that would start a turn while it holds a value the claim is owed and has not asked about, while that take waits for its answer, and while an accepted take's text waits for its turn, so the task's turn starts ahead of them; a text the daemon accepts while Claude Code is in a turn waits for that turn's end.
+
 ## The `runtime.tmux` block
 
 `runtime: tmux` (or no `runtime` key) runs every pane with what the runtime tells it and the
@@ -1171,21 +1186,22 @@ provider_keys:
 - **The daemon replaces its own controller's session** under `controller: daemon`, under either
   runtime. After two launches of one session in a row end before the session finishes a turn — a
   death the daemon charges, before or after ready, or a turn the daemon ended — the next launch
-  starts a fresh session. `controller_turn_bound_minutes` (90 by default, `0` off) is how long a
-  controller turn may stay open, steps or none, before the daemon ends that launch and counts the
-  end. `controller_session_max_age_hours` (72 by default, `0` off) is how old the session, read
-  from its id, may grow before a launch the daemon makes of it starts a fresh session instead of
-  resuming it: every launch of the controller that no operator's request raised, a death's, a
-  launch failure's, a pod update's or displacement's, a stale-plugin refresh's, a turn ended past
-  its bound, the keeper's retry or resume, and the boot relaunch of an unfinished launch among
-  them. The daemon stops no live controller for its age, and an operator's own resume, or a task
-  an operator delivers to a suspended controller, keeps the session. Each replacement writes one
-  Warn line naming the claim, the old session and the reason, and the fresh session's ready one
-  line naming both sessions; the fresh session's first
-  prompt names the old session and the reason and says that messages sent to the old session may
-  be lost. The old session's transcript stays in the session store. A session that never finished
-  a turn, the controller's first or a fresh one, is not replaced: the keeper retries it with its
-  waits, and one Error line says so and names, as `oldSession`, the session a fresh one replaced.
+  starts a fresh session. A turn of a task the session took is finished by the turn's report that
+  finishes the task, and a turn that ran no task by its end. `controller_turn_bound_minutes` (90 by
+  default, `0` off) is how long a controller turn may stay open, steps or none, before the daemon
+  ends that launch and counts the end. `controller_session_max_age_hours` (72 by default, `0` off)
+  is how old the session, read from its id, may grow before a launch the daemon makes of it starts
+  a fresh session instead of resuming it: every launch of the controller that no operator's request
+  raised, a death's, a launch failure's, a pod update's or displacement's, a stale-plugin refresh's,
+  a turn ended past its bound, the keeper's retry or resume, and the boot relaunch of an unfinished
+  launch among them. The daemon stops no live controller for its age, and an operator's own resume,
+  or a task an operator delivers to a suspended controller, keeps the session. Each replacement
+  writes one Warn line naming the claim, the old session and the reason, and the fresh session's
+  ready one line naming both sessions; the first task the fresh session takes names the old session
+  and the reason and says that messages sent to the old session may be lost. The old session's
+  transcript stays in the session store. A session that never finished a turn, the controller's
+  first or a fresh one, is not replaced: the keeper retries it with its waits, and one Error line
+  says so and names, as `oldSession`, the session a fresh one replaced.
 
 ## How workspaces are provisioned on the host
 

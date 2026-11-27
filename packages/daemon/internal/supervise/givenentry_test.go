@@ -76,7 +76,7 @@ func TestARestartReadsTheGivenEntryAndTheServedEntryBack(t *testing.T) {
 	}
 }
 
-// A task of an entry no turn confirmed never reached the worker, so its retirement puts
+// A task of an entry no accepted take confirmed never reached the worker, so its retirement puts
 // GivenEntry back to ServedEntry: the role is owed that entry's work again, which is what the
 // admission pass reads off the difference between the entry its phases row names
 // (record.PhaseRow.Entry) and the entry its claim was given. The start that carries that entry's

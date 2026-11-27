@@ -92,8 +92,8 @@ func (repair *roleClaimRepair) delivered(role, before string, held bool, after s
 	}
 }
 
-// swept is the role claim copy's Rows.Removed (newRoleHolderCopy): it counts role's entry, which
-// the copy removed, as taken out when the sweep at a repairing read's completion removed it
+// swept is handed every entry the role claim copy removes (its Rows.Removed, newRoleHolderCopy): it
+// counts role's entry as taken out when the sweep at a repairing read's completion removed it
 // (sweeping), since that read found no evidence the bucket still holds the claim.
 func (repair *roleClaimRepair) swept(role, _ string) {
 	if repair.sweeping && repair.repairing {

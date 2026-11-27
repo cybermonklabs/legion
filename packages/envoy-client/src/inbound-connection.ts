@@ -6,7 +6,7 @@
 // read one contract (claude-envoy names it `ChannelConnection`, `../../claude-envoy/src/channel-topics.ts`).
 
 import type { DebugEvents, Events } from "nats";
-import type { RelayHeaders } from "./consumer-delivery";
+import type { RelayHeaders } from "./relay-frame";
 
 /** A message on an inbound subscription: a nats.js `Msg` is one, and so is a relay socket's. */
 export interface InboundMessage {

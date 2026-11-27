@@ -24,10 +24,12 @@ const (
 // architectHandshakeState is a state of three roots standing at admitted, the phase a root's own
 // architect works, which the handshake answers differently:
 //
-//   - LEGION-20's architect claim recorded the handshake of the entry its row names and a turn of
-//     its worker confirmed a task of that entry, so the root carries both numbers and both times;
-//   - LEGION-30's architect claim recorded that entry queued and no turn has confirmed it, so the
-//     root carries the queued time alone, which is the root whose architect may have taken nothing;
+//   - LEGION-20's architect claim recorded the handshake of the entry its row names and the daemon
+//     accepted a take of a task of that entry by its worker, so the root carries both numbers and
+//     both times;
+//   - LEGION-30's architect claim recorded that entry queued and no take of it stands accepted, so
+//     the root carries the queued time alone, which is the root whose architect may have taken
+//     nothing;
 //   - LEGION-40's claim recorded no handshake, so the root carries the two numbers and neither
 //     time, which is what a root of the release before this one reads as: its migration gives the
 //     claim the two numbers and no handshake.
@@ -82,9 +84,9 @@ func entryTimesServed(t *testing.T, body []byte) map[string]struct {
 
 // The state route serves a root the handshake between the daemon and its architect: the entry its
 // architect's work stands at, the entry its claim was queued, the time a task of that entry was
-// first queued and the time a turn of its worker first confirmed one. A root whose claim recorded
-// no handshake is served the two numbers and neither time, which is what a root of the release
-// before this one reads as.
+// first queued and the time the daemon first accepted a take of one by its worker. A root whose
+// claim recorded no handshake is served the two numbers and neither time, which is what a root of
+// the release before this one reads as.
 func TestTheStateRouteServesARootsArchitectHandshake(t *testing.T) {
 	queued := time.Date(2026, 11, 12, 9, 15, 0, 0, time.UTC)
 	confirmed := queued.Add(41 * time.Second)

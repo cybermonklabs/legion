@@ -79,11 +79,12 @@ func newBootRigEdited(t *testing.T, n int, store supervise.Store, edit func([]su
 	r.sup = newSupervisor(context.Background(), nil, "legion", t.TempDir(), quietLogger())
 	r.sup.deps = supervise.Deps{
 		Runtime: r.rt, Conns: fake.NewConns(), Store: store, Specs: outboxSpecs{}, Clock: clock, Log: quietLogger(),
-		Limits:         supervise.Limits{LaunchFailures: 2, PromptFailures: 2, PromptRetires: 2},
-		Timeouts:       supervise.Timeouts{Boot: time.Hour, RegistrationIntervals: 2, RPC: time.Second, Probe: time.Hour, Stop: time.Second, LaunchBackoff: time.Millisecond},
-		PluginContract: api.DaemonAPIVersion(),
-		RefreshGate:    supervise.NewRefreshGate(0),
-		WakePace:       wakePaceOf(wakepace.New(testWakeRate, testWakeBurst, nil), clock),
+		Limits:           supervise.Limits{LaunchFailures: 2, PromptFailures: 2, PromptRetires: 2},
+		Timeouts:         supervise.Timeouts{Boot: time.Hour, RegistrationIntervals: 2, RPC: time.Second, Probe: time.Hour, Stop: time.Second, LaunchBackoff: time.Millisecond},
+		PluginContract:   api.DaemonAPIVersion(),
+		TaskTakeContract: api.TaskTakeContract(),
+		RefreshGate:      supervise.NewRefreshGate(0),
+		WakePace:         wakePaceOf(wakepace.New(testWakeRate, testWakeBurst, nil), clock),
 	}
 	r.pacer = r.sup.deps.WakePace.Pacer
 	t.Cleanup(r.sup.stop)

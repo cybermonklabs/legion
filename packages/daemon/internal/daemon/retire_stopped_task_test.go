@@ -11,7 +11,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
-	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
@@ -88,23 +87,28 @@ func TestTheMovesRetirementLeavesNoTaskOfTheStoppedPhase(t *testing.T) {
 			t.Fatalf("handle %T: %v", ev, err)
 		}
 	}
-	// A send the ready made would run on the machine's send goroutine: wait for it.
+	// The worker that came up finds nothing to take: the claim holds no task of the stopped phase.
 	machine.Wait()
-	if pending, prompts := machine.Claim().Pending, conn.Prompts(); pending != nil || len(prompts) != 0 {
-		t.Fatalf("once the worker came up: pending %+v, prompts %+v; want neither: the stopped phase's task was retired", pending, prompts)
+	if pending := machine.Claim().Pending; pending != nil {
+		t.Fatalf("once the worker came up the claim holds %+v, want nothing: the stopped phase's task was retired", pending)
 	}
 
-	// The return's own start, on an entry of its own, is what reaches the worker.
+	// The return's own start, on an entry of its own, is what the worker takes.
 	const back = "Continue Parent. Issue: LEGION-208. Phase: implementing. LEGION-208 waited on its children: merge forward."
 	if err := runner.execute(ctx, mustOutboxRow(t, issue.Key, record.SuperviseRequest{
 		Op: "start", Tree: issue.Tree, Role: claim.RoleImplementer, Generation: 1, Phase: phase.Implementing, Entry: 2, Task: back,
 	}, time.Now())); err != nil {
 		t.Fatalf("run the return's start: %v", err)
 	}
-	testwait.Eventually(t, "the return's task to reach the worker", func() bool { return len(conn.Prompts()) > 0 })
-	for _, prompt := range conn.Prompts() {
-		if !strings.Contains(prompt.Message, "merge forward") || strings.Contains(prompt.Message, "a review asked for changes") {
-			t.Fatalf("prompts = %+v, want the return's task alone", conn.Prompts())
-		}
+	held := machine.Claim()
+	if held.Pending == nil {
+		t.Fatal("the return's start queued no task")
+	}
+	answer, err := machine.Take(ctx, supervise.RequestTake{Claim: token, Generation: held.Generation, Session: held.Session, Number: held.Pending.Number})
+	if err != nil || answer.Outcome != supervise.TakeOutcomeAccepted {
+		t.Fatalf("the worker's take of the return's task = %+v, %v; want it accepted", answer, err)
+	}
+	if !strings.Contains(answer.Text, "merge forward") || strings.Contains(answer.Text, "a review asked for changes") {
+		t.Fatalf("the worker took %q, want the return's task alone", answer.Text)
 	}
 }

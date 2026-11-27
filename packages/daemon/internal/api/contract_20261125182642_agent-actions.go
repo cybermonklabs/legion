@@ -18,8 +18,9 @@ import (
 // claim's `state` after the request and, where a suspension is over the agent, `suspendedBy`,
 // `suspensionHeld` and `suspensionHeldBy`, which these routes alone of the session-facing ones
 // carry, since no plugin below this contract calls them (the state still names no suspender,
-// StrandedClaim); a suspension held for the agent's turn, and a retry whose start the issue's phase
-// queued, answer 202. The actions are the controller's alone. The controller's suspension is
+// StrandedClaim); a suspension held for the agent's turn, a stop held for the report of the
+// agent's take's turn (the held stop of the task-take entry, 20261125171504), and a retry whose
+// start the issue's phase queued, answer 202. The actions are the controller's alone. The controller's suspension is
 // recorded as its own, `controller`, a new supervise.SuspendSource that `claims.suspended_by`
 // admits from migration 20261115060739: it holds against the daemon's rules as the operator's does,
 // its own resume lifts it, and the operator's suspension outranks it. So the operator claim routes'

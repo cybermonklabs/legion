@@ -284,8 +284,10 @@ type memStore struct {
 	claims     map[claim.Token]Claim
 	deliveries map[claim.Token]Delivery
 	puts       []Claim
-	// writes is each write and retirement of a pending delivery, in order (deliveryLog).
+	// writes is each write and retirement of a pending delivery, in order (deliveryLog), and
+	// written each delivery as each of those writes put it (lastWritten).
 	writes   []string
+	written  []Delivery
 	failures map[string]error
 	// onPut, when set, runs on every PutClaim before it is recorded.
 	onPut func(Claim)
@@ -469,6 +471,7 @@ func (s *memStore) PutDelivery(_ context.Context, token claim.Token, d Delivery)
 	}
 	s.deliveries[token] = d
 	s.writes = append(s.writes, "put "+d.ID)
+	s.written = append(s.written, d)
 	return nil
 }
 
@@ -499,7 +502,7 @@ func (s *memStore) RetireDelivery(ctx context.Context, c Claim, deliveryID strin
 	switch {
 	// The real store tells the two refusals of a delete that removed no row apart, because its
 	// table is keyed on the claim: nothing stored under the claim is the retirement it has
-	// already made, and a delivery stored under another id is a write that rotated the id and
+	// already made, and a delivery stored under another id is a write of another delivery that
 	// committed after its answer was lost.
 	case !ok:
 		s.mu.Unlock()
@@ -635,6 +638,19 @@ func (s *memStore) deliveryLog() []string {
 	return append([]string(nil), s.writes...)
 }
 
+// lastWritten is the delivery id as the last write of it put it, whether or not it has been
+// retired since, so a test reads what a write just before a retirement held.
+func (s *memStore) lastWritten(id string) (Delivery, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := len(s.written) - 1; i >= 0; i-- {
+		if s.written[i].ID == id {
+			return s.written[i], true
+		}
+	}
+	return Delivery{}, false
+}
+
 func (s *memStore) history() []Claim {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -750,6 +766,20 @@ func (l *logRecords) of(message string) []loggedRecord {
 	return matched
 }
 
+// ofAny is every record whose message is exactly one of messages, in the order they were
+// written.
+func (l *logRecords) ofAny(messages ...string) []loggedRecord {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	var matched []loggedRecord
+	for _, r := range l.kept {
+		if slices.Contains(messages, r.message) {
+			matched = append(matched, r)
+		}
+	}
+	return matched
+}
+
 func (l *logRecords) add(r loggedRecord) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -819,6 +849,8 @@ type harness struct {
 	specs   *testSpecs
 	logs    *logBuffer
 	records *logRecords
+	values  *memTaskValues
+	worker  *harnessWorker
 	deps    Deps
 	m       *Machine
 	// pace is the wake pacing the harness's machines are built with (pacedHarness), which a
@@ -870,11 +902,15 @@ func newHarness(t *testing.T) *harness {
 	return newHarnessOf(t, queuedClaim())
 }
 
-// newHarnessOf is newHarness over the queued claim c; the walks drive c's token.
-func newHarnessOf(t *testing.T, c Claim) *harness {
+// newHarnessOf is newHarness over the queued claim c; the walks drive c's token. set, when it is
+// given, changes the machine's deps before it is built.
+func newHarnessOf(t *testing.T, c Claim, set ...func(*Deps)) *harness {
 	t.Helper()
 	h := newBareHarness(t)
 	h.token = c.Token
+	for _, change := range set {
+		change(&h.deps)
+	}
 	if err := h.store.PutClaim(h.ctx, c); err != nil {
 		t.Fatal(err)
 	}
@@ -899,6 +935,8 @@ func newBareHarness(t *testing.T) *harness {
 		specs:   &testSpecs{},
 		logs:    &logBuffer{},
 		records: &logRecords{},
+		values:  newMemTaskValues(),
+		worker:  &harnessWorker{},
 	}
 	h.rt.Now = h.clock.Now
 	h.deps = Deps{
@@ -922,10 +960,15 @@ func newBareHarness(t *testing.T) *harness {
 		// helper below records for every claim it brings up: a test exercising plugin staleness
 		// overrides it (or posts a RequestRegister naming a different one) itself.
 		PluginContract: 24,
+		// The contract at which a worker takes its task, which the daemon reads off api's registry
+		// (api.TaskTakeContract); the harness's own plugin (24) is below it, so a harness claim takes
+		// no task until a test moves its contract (currentPlugin).
+		TaskTakeContract: testTakeContract,
 		// The gate of a daemon that paces nothing, which grants every refresh: every Deps carries
 		// one and none is nil, and a test that wants the lane bounded builds its own
 		// (NewRefreshGate, gatedHarness).
 		RefreshGate: NewRefreshGate(0),
+		TaskValues:  h.values,
 	}
 	return h
 }
@@ -953,78 +996,72 @@ func (h *harness) start(c Claim) {
 // and no place a dropped machine held is ever let out to it.
 func (h *harness) restart() {
 	h.t.Helper()
+	h.outage(0)
+}
+
+// outage is the daemon stopped for d and started again: the machine goes with everything it
+// held in memory, its timers with it, the time passes with no daemon to see any of it, and a new
+// machine is built from what the store holds.
+func (h *harness) outage(d time.Duration) {
+	h.t.Helper()
 	h.m.Wait()
 	h.clock.dropAll()
+	h.clock.Advance(d)
 	if h.pace != nil {
 		h.pace(&h.deps)
 	}
 	h.start(h.store.load(h.token))
 }
 
-// handle posts one event and waits for the decision it starts, with the agent answering a turn's
-// end as Oh My Pi does: the prompt_result of the prompt whose turn it was, written right behind
-// that agent_end (resultAfterTurn).
+// restore builds the machine over restored, which the store holds with its pending delivery and
+// the bucket with its value, as a restart finds them.
+func (h *harness) restore(restored Claim) {
+	h.t.Helper()
+	h.token = restored.Token
+	h.seedValue(&restored)
+	if err := h.store.PutClaimAndDelivery(h.ctx, restored, *restored.Pending); err != nil {
+		h.t.Fatalf("seed the restored claim: %v", err)
+	}
+	h.start(restored)
+}
+
+// handle posts one event and waits for the decision it starts, with the worker answering a turn's
+// end as its plugin does: the turn-outcome report naming the task whose take's turn it was,
+// right behind the end (report). The worker then takes a value it has not asked at, if its host
+// is idle (workerAsks).
 func (h *harness) handle(ev Event) error {
 	return h.post(ev, true)
 }
 
-// handleQuiet is handle for a turn that was not the pending prompt's — a role's own background
-// result waking a settled session — whose end no prompt_result follows.
+// handleQuiet is handle for a turn that was not the pending task's — a role's own background
+// result waking a settled session — whose end no report follows, so only the end frame's bound
+// finishes a task (finishAtTurnsEnd).
 func (h *harness) handleQuiet(ev Event) error {
 	return h.post(ev, false)
 }
 
-func (h *harness) post(ev Event, result bool) error {
-	ran := ""
-	if _, ending := ev.(StreamTurnEnd); ending && result {
-		ran = h.promptInTurn()
+func (h *harness) post(ev Event, report bool) error {
+	var ran uint64
+	if _, ending := ev.(StreamTurnEnd); ending && report {
+		if p := h.m.Claim().Pending; p != nil && p.startRecorded() {
+			ran = p.Number
+		}
 	}
 	err := h.m.Handle(h.ctx, ev)
 	h.m.Wait()
-	if ran != "" {
-		// Oh My Pi writes the prompt's result right behind the agent_end of the turn that ran it.
-		err = errors.Join(err, h.m.Handle(h.ctx, StreamPromptResult{Claim: h.token, DeliveryID: ran, AgentInvoked: true}))
-		h.m.Wait()
+	if ran == 0 {
+		h.workerAsks()
+		return err
+	}
+	// The worker reports the turn whatever became of the claim at its end, and then takes as it
+	// does after every event (reportTurn). A report the claim's state refuses — the turn's end ran
+	// a held suspension — is the daemon's answer to the worker, as a 409 is to its plugin, and no
+	// failure of the event posted.
+	var refused *RefusedError
+	if rerr := h.reportTurn(ran, nil); rerr != nil && !errors.As(rerr, &refused) {
+		err = errors.Join(err, rerr)
 	}
 	return err
-}
-
-// promptInTurn is the delivery of the prompt the agent took and has not reported the end of: the
-// one whose work the turn now ending did. It is read before the end reaches the machine, so a
-// task that end re-sends is the next turn's prompt rather than this one's. A prompt the
-// connection refused reports nothing, and neither does one the agent has already answered with
-// no turn, a busy answer or a late refusal: Oh My Pi answers a prompt once, a failure or a result,
-// and the machine stops waiting for that prompt's result at exactly the moment it takes that
-// answer (Machine.outstanding). A prompt whose wait for its turn ran out is still outstanding, and
-// its turn, starting late, reports it only while it is the last prompt the connection accepted:
-// the fake connection keeps that one alone (fake.Conn's TakePromptResult), so a test whose task
-// was sent again since posts the first prompt's result itself.
-func (h *harness) promptInTurn() string {
-	conn, ok := h.conns.Conn(h.token)
-	if !ok {
-		return ""
-	}
-	reporter, ok := conn.(interface{ TakePromptResult() (string, bool) })
-	if !ok {
-		return ""
-	}
-	delivery, _ := reporter.TakePromptResult()
-	h.m.mu.Lock()
-	held := h.m.outstandingPrompt(delivery)
-	h.m.mu.Unlock()
-	if !held {
-		return ""
-	}
-	return delivery
-}
-
-// outstanding is every prompt of the pending task the machine waits on a result for
-// (Machine.outstanding), read under the machine's lock, since a send's goroutine may be handling
-// its acknowledgement.
-func (h *harness) outstanding() []string {
-	h.m.mu.Lock()
-	defer h.m.mu.Unlock()
-	return h.m.outstanding.ids()
 }
 
 func (h *harness) must(ev Event) {
@@ -1034,7 +1071,7 @@ func (h *harness) must(ev Event) {
 	}
 }
 
-// mustQuiet is must for a turn whose end no prompt_result follows (handleQuiet).
+// mustQuiet is must for a turn whose end no turn-outcome report follows (handleQuiet).
 func (h *harness) mustQuiet(ev Event) {
 	h.t.Helper()
 	if err := h.handleQuiet(ev); err != nil {
@@ -1057,6 +1094,7 @@ func (h *harness) handleWithoutPanic(ev Event) error {
 func (h *harness) advance(d time.Duration) {
 	h.clock.Advance(d)
 	h.m.Wait()
+	h.workerAsks()
 }
 
 func (h *harness) claim() Claim { return h.m.Claim() }
@@ -1086,13 +1124,15 @@ func (h *harness) observe(kind runtime.ObservationKind) {
 	h.must(RuntimeObservation{Observation: runtime.Observation{Locator: h.locator(), Kind: kind, At: h.clock.Now()}})
 }
 
-func (h *harness) prompts() []fake.Prompt { return h.conn.Prompts() }
+// prompts is every take of the worker's the daemon accepted, in order: what reached the worker.
+func (h *harness) prompts() []taken { return slices.Clone(h.worker.taken) }
 
-func (h *harness) wantPrompts(n int) []fake.Prompt {
+// wantPrompts is prompts, failing the test unless n takes were accepted.
+func (h *harness) wantPrompts(n int) []taken {
 	h.t.Helper()
 	prompts := h.prompts()
 	if len(prompts) != n {
-		h.t.Fatalf("prompts sent = %d (%+v), want %d", len(prompts), prompts, n)
+		h.t.Fatalf("takes accepted = %d (%+v), want %d", len(prompts), prompts, n)
 	}
 	return prompts
 }
@@ -1160,11 +1200,12 @@ func (h *harness) launch() {
 	h.wantState(StateLaunching)
 }
 
-// connect is the shim's hello, with its connection in the directory.
+// connect is the shim's hello, with its connection in the directory: a shim of this release
+// whose backlog dropped nothing since its last connection (StreamHello.BacklogWhole).
 func (h *harness) connect() {
 	h.t.Helper()
 	h.conns.Register(h.token, h.conn)
-	h.must(StreamHello{Claim: h.token, Generation: h.generation()})
+	h.must(StreamHello{Claim: h.token, Generation: h.generation(), BacklogWhole: true})
 }
 
 // register posts a registration naming the harness's own plugin contract, so every claim it brings
@@ -1197,8 +1238,9 @@ func (h *harness) relaunched() {
 }
 
 // reach walks the claim from where it is to state through the events that lead there. Working
-// and idle are reached through a delivered task, so they carry one: working holds it confirmed,
-// idle has retired it.
+// and idle are reached through a delivered task, so they carry one: working holds it taken with
+// its turn running — delivered, seen, taken by the worker, its turn started — and idle has
+// finished it, by the turn's end and the worker's report of it.
 func (h *harness) reach(state ClaimState) {
 	h.t.Helper()
 	steps := []ClaimState{StateQueued, StateLaunching, StateShimConnected, StateRegistered, StateReady, StateWorking, StateIdle}
@@ -1224,6 +1266,12 @@ func (h *harness) reach(state ClaimState) {
 			h.ready()
 		case StateWorking:
 			h.must(RequestDeliver{Claim: h.token, Task: "implement the plan"})
+			if h.worker.manual {
+				h.mustTake()
+			}
+			if p := h.claim().Pending; p == nil || !p.awaitsStart() {
+				h.t.Fatalf("reach working: the task's take was not accepted: %+v", h.worker.answers)
+			}
 			h.must(StreamTurnStart{Claim: h.token})
 		case StateIdle:
 			h.must(StreamTurnEnd{Claim: h.token})
@@ -1232,26 +1280,26 @@ func (h *harness) reach(state ClaimState) {
 	}
 }
 
-// gatedConn holds every prompt at the door until the test lets it through, so a test can land a
-// stream event while a send is still in flight.
-type gatedConn struct {
-	*fake.Conn
-	entered chan string
+// gatedAdopt holds every adoption of the working copy at the door until the test lets it through,
+// so a test can land an event, or a second take, while a take's adoption is still running.
+type gatedAdopt struct {
+	*fake.Runtime
+	entered chan struct{}
 	release chan struct{}
 }
 
-func newGatedConn() *gatedConn {
-	return &gatedConn{Conn: fake.NewConn(), entered: make(chan string, 8), release: make(chan struct{}, 8)}
+func newGatedAdopt(rt *fake.Runtime) *gatedAdopt {
+	return &gatedAdopt{Runtime: rt, entered: make(chan struct{}, 8), release: make(chan struct{}, 8)}
 }
 
-func (g *gatedConn) Prompt(ctx context.Context, deliveryID, message string) error {
-	g.entered <- deliveryID
+func (g *gatedAdopt) AdoptWorkingCopy(ctx context.Context, loc runtime.Locator, id runtime.GitIdentity) error {
+	g.entered <- struct{}{}
 	select {
 	case <-g.release:
 	case <-ctx.Done():
 		return ctx.Err()
 	}
-	return g.Conn.Prompt(ctx, deliveryID, message)
+	return g.Runtime.AdoptWorkingCopy(ctx, loc, id)
 }
 
 // gatedRuntime holds Suspend until the test lets it through.
@@ -1298,17 +1346,6 @@ func (g *gatedSpawn) Spawn(ctx context.Context, spec runtime.SpawnSpec) (runtime
 		return runtime.Locator{}, ctx.Err()
 	}
 	return g.Runtime.Spawn(ctx, spec)
-}
-
-func waitFor(t *testing.T, what string, ch <-chan string) string {
-	t.Helper()
-	select {
-	case v := <-ch:
-		return v
-	case <-time.After(5 * time.Second):
-		t.Fatalf("timed out waiting for %s", what)
-		return ""
-	}
 }
 
 var errBoom = errors.New("boom")

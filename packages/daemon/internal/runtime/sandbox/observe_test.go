@@ -177,6 +177,9 @@ func TestTheMappingRowByRowInPrecedence(t *testing.T) {
 		initFailed bool
 		displaced  bool
 		podEnd     string
+		// daemonAPIMoved is what the observation says of the daemon's own API: moved only where
+		// LEGION_DAEMON_URL is among the moved addresses (runtime.Observation.DaemonAPIMoved).
+		daemonAPIMoved bool
 	}{
 		{row: "2 sandbox absent", want: runtime.Gone, detail: []string{"sandbox legion/" + name + " is absent"}},
 		{
@@ -468,20 +471,32 @@ func TestTheMappingRowByRowInPrecedence(t *testing.T) {
 			want:     runtime.Alive,
 		},
 		{
-			row:      "9 a generation started with a moved daemon URL",
-			objects:  withRecord(withPod(modeRunning, nil, recorded, sandboxUID, running, launchedUnder(unmoved)), recordUnder(movedDaemon, 1)),
+			row:            "9 a generation started with a moved daemon URL",
+			objects:        withRecord(withPod(modeRunning, nil, recorded, sandboxUID, running, launchedUnder(unmoved)), recordUnder(movedDaemon, 1)),
+			launcher:       alive,
+			want:           runtime.StaleAddress,
+			daemonAPIMoved: true,
+			detail:         []string{"role tester runs generation 1", movedAddress{"LEGION_DAEMON_URL", movedDaemonURL, testOptions().DaemonURL}.String()},
+			absent:         []string{connectFlag, "ENVOY_URL"},
+		},
+		{
+			row: "9 a generation started with a moved Envoy URL, its daemon URL held",
+			objects: withRecord(withPod(modeRunning, nil, recorded, sandboxUID, running, launchedUnder(unmoved)), recordUnder(func(o *Options) {
+				o.EnvoyURL = "http://192.0.2.9:9020"
+			}, 1)),
 			launcher: alive,
 			want:     runtime.StaleAddress,
-			detail:   []string{"role tester runs generation 1", movedAddress{"LEGION_DAEMON_URL", movedDaemonURL, testOptions().DaemonURL}.String()},
-			absent:   []string{connectFlag, "ENVOY_URL"},
+			detail:   []string{movedAddress{"ENVOY_URL", "http://192.0.2.9:9020", testOptions().EnvoyURL}.String()},
+			absent:   []string{"LEGION_DAEMON_URL"},
 		},
 		{
 			row: "9 every moved address of a generation is named",
 			objects: withRecord(withPod(modeRunning, nil, recorded, sandboxUID, running, launchedUnder(unmoved)), recordUnder(func(o *Options) {
 				o.DaemonURL, o.EnvoyURL = movedDaemonURL, "http://192.0.2.9:9020"
 			}, 1)),
-			launcher: alive,
-			want:     runtime.StaleAddress,
+			launcher:       alive,
+			want:           runtime.StaleAddress,
+			daemonAPIMoved: true,
 			detail: []string{
 				movedAddress{"LEGION_DAEMON_URL", movedDaemonURL, testOptions().DaemonURL}.String(),
 				movedAddress{"ENVOY_URL", "http://192.0.2.9:9020", testOptions().EnvoyURL}.String(),
@@ -528,6 +543,9 @@ func TestTheMappingRowByRowInPrecedence(t *testing.T) {
 			}
 			if obs.Displaced != tc.displaced {
 				t.Errorf("Displaced = %t, want %t (detail: %s)", obs.Displaced, tc.displaced, obs.Detail)
+			}
+			if obs.DaemonAPIMoved != tc.daemonAPIMoved {
+				t.Errorf("DaemonAPIMoved = %t, want %t (detail: %s)", obs.DaemonAPIMoved, tc.daemonAPIMoved, obs.Detail)
 			}
 			if obs.PodEnd != tc.podEnd {
 				t.Errorf("PodEnd = %q, want %q (detail: %s)", obs.PodEnd, tc.podEnd, obs.Detail)

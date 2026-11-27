@@ -91,8 +91,6 @@ interface Harness {
   readonly answersOwed: (answer: () => Response) => void
   /** Settles the claim's boot, as `startLegionClaim`'s `booted` does. */
   readonly boot: () => void
-  /** How often the endpoint has said a turn of this session started (`firstTurnStarted`). */
-  readonly turnsStarted: () => number
   readonly lines: readonly string[]
   readonly close: () => Promise<void>
 }
@@ -148,15 +146,11 @@ async function harness(
   const inbox: string[] = []
   const published: PublishInput[] = []
   const reports: ActivityInput[] = []
-  let turnsStarted = 0
   const booted = Promise.withResolvers<void>()
   const endpoint = createPhaseHookEndpoint({
     stateFile: file,
     claim: () => options.claim,
     booted: booted.promise,
-    firstTurnStarted: () => {
-      turnsStarted += 1
-    },
     readOwed: (question, signal) => daemon.owed(question, { signal }),
     reportActivity: async (input) => {
       reports.push(input)
@@ -190,7 +184,6 @@ async function harness(
       owed = answer
     },
     boot: booted.resolve,
-    turnsStarted: () => turnsStarted,
     lines,
     close: async () => {
       // As the server's own `stop` does: no armed timer outlives the case that armed it.
@@ -243,7 +236,7 @@ test("a turn settling while the daemon says the claim owes work is blocked once,
     expect(daemonPaths).toEqual(["/legion/v1/claims/owed"])
 
     // The second settle of the run lets the turn end and carries its reminder from the timer, so
-    // the daemon sees the turn end and can deliver a queued task.
+    // the daemon sees the turn end and the idle worker can take a task the daemon wrote for it.
     expect(
       await endpoint.handle({
         event: "Stop",
@@ -564,42 +557,6 @@ test("the prompt that carries this endpoint's own reminder does not reset its co
   }
 })
 
-test("every prompt submitted says a turn of this session has started, before the phase gate", async () => {
-  // The claim's first-turn signal, which the channel server answers by taking this session's
-  // Envoy name when its claim boot has registered the step by then, and by nothing when it has
-  // not (`onFirstTurn`, `src/envoy-channel-server.ts`). This endpoint draws no such line: it
-  // fires the signal before the gate below, for the bridge's seeding `/rename` turn — which
-  // runs before any claim exists, since it writes the transcript the boot waits for — as for
-  // an architect's turn, and the server decides what each comes to.
-  const seeding = await harness()
-  expect(await seeding.endpoint.handle({ event: "UserPromptSubmit", prompt: "/rename" })).toEqual(
-    {},
-  )
-  expect(seeding.turnsStarted()).toBe(1)
-  await seeding.close()
-
-  const architect = await harness({ claim: { ...implementer, role: "architect" } })
-  await architect.endpoint.handle({ event: "UserPromptSubmit", prompt: "plan it" })
-  expect(architect.turnsStarted()).toBe(1)
-  await architect.close()
-
-  const worker = await harness({ record: recorded("active", 0), claim: implementer })
-  await worker.endpoint.handle({ event: "PostToolUse", toolName: "Bash" })
-  await worker.endpoint.handle({ event: "Stop" })
-  expect(worker.turnsStarted()).toBe(0)
-  await worker.endpoint.handle({ event: "UserPromptSubmit", prompt: "implement it" })
-  await worker.endpoint.handle({ event: "UserPromptSubmit", prompt: "and again" })
-  // Once per prompt: the step behind the signal claims once however often it is run
-  // (`claimRoleAtFirstTurn`, `@legion/pi-shared/legion-claim-core`).
-  expect(worker.turnsStarted()).toBe(2)
-  // A call the model made itself is refused before anything moves, this signal included.
-  expect(await worker.endpoint.handle({ event: "WhateverIsThis" })).toEqual({
-    error: PHASE_HOOK_REFUSAL,
-  })
-  expect(worker.turnsStarted()).toBe(2)
-  await worker.close()
-})
-
 // Every prompt but this endpoint's own reminder is an inbound message — the daemon's task, an
 // Envoy delivery this server wrote, a person's message — and moves the rhythm's count and
 // nothing else.
@@ -654,6 +611,51 @@ test("an update message sent to a role whose phase is closed produces no reminde
     // Each settle asked the daemon, and each answer was that nothing is owed.
     expect(asked).toHaveLength(3)
     // A case asserting that nothing happens has no condition to wait for.
+    await Bun.sleep(60)
+    expect(inbox).toEqual([])
+  } finally {
+    await close()
+  }
+})
+
+// A task's turn starts with the text its accepted take answered, which the bridge writes to Claude
+// Code itself (`packages/daemon/internal/claudebridge/take.go`): it is no reminder of this
+// endpoint's, so its prompt is an inbound message, a note the daemon put in front of the text
+// included, and starts the count again; its turn is reminded of the work the daemon says is owed.
+// A card this server wrote while the take was pending is an inbound message too when its own
+// prompt arrives behind the task's, and once the worker has finished, the daemon's answer that the
+// claim owes nothing keeps that card's turn unreminded.
+test("a taken task's prompt is an inbound message, with a card waiting behind it and a note in front of it", async () => {
+  const card = "Envoy delivery from the architect: the architect asks for a status"
+  const taken =
+    "Your previous turn on this task stopped because of a provider error (HTTP 529). Your work did not cause it.\n\nImplement INFRA-220."
+  const { endpoint, record, inbox, asked, answersOwed, close } = await harness({
+    record: recorded("closed", 2),
+    claim: implementer,
+  })
+  try {
+    expect(await endpoint.handle({ event: "UserPromptSubmit", prompt: taken })).toEqual({})
+    expect(await record()).toEqual({ state: "active", count: 0, reported: false })
+    expect(await endpoint.handle({ event: "Stop", lastAssistantMessage: "Started." })).toEqual({
+      decision: "block",
+      reason: REMINDER,
+    })
+    // The worker finished its phase: the daemon's record owes nothing from here on.
+    answersOwed(owesNothing)
+    expect(await endpoint.handle({ event: "UserPromptSubmit", prompt: card })).toEqual({})
+    expect(await record()).toEqual({
+      state: "active",
+      count: 0,
+      reported: false,
+      lastMessage: "Started.",
+    })
+    expect(
+      await endpoint.handle({ event: "Stop", lastAssistantMessage: "Answered the architect." }),
+    ).toEqual({})
+    await waitFor(async () => asked.length === 2, "the card's turn's timer to ask the daemon")
+    // A case asserting that nothing happens has no condition to wait for, so this is one of the
+    // file's fixed waits (its header says why a fake clock settles nothing here), three times the
+    // reminder interval.
     await Bun.sleep(60)
     expect(inbox).toEqual([])
   } finally {

@@ -7,7 +7,8 @@
 // each row (`startRow`, `resetNatsStandIn`).
 import { AsyncLocalStorage } from "node:async_hooks";
 import { BUS_UNANSWERED_PREFIX } from "@legion/contracts";
-import { deliverSubject, RelayHeader } from "@legion/envoy-client/consumer-delivery";
+import { deliverSubject } from "@legion/envoy-client/consumer-delivery";
+import { RelayHeader } from "@legion/envoy-client/relay-frame";
 import { subjectsOverlap } from "@legion/envoy-client/stream-topics";
 import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer";
 import { ErrorCode, NatsError, connect as realConnect } from "nats";

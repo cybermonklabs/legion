@@ -10,6 +10,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -62,11 +63,12 @@ func (r *priorityWakeRig) open() {
 	sup := newSupervisor(r.t.Context(), r.st, "legion", r.t.TempDir(), log)
 	sup.deps = supervise.Deps{
 		Runtime: r.rt, Conns: fake.NewConns(), Store: r.st, Specs: outboxSpecs{}, Clock: r.clock, Log: log,
-		Limits:         supervise.Limits{LaunchFailures: 3, PromptFailures: 3, PromptRetires: 3},
-		PluginContract: 24,
-		RefreshGate:    supervise.NewRefreshGate(0),
-		Timeouts:       supervise.Timeouts{Boot: time.Hour, RegistrationIntervals: 2, RPC: time.Second, Probe: time.Hour, Stop: time.Second, LaunchBackoff: time.Millisecond},
-		WakePace:       wakePaceOf(wakepace.New(testWakeRate, testWakeBurst, nil), r.clock),
+		Limits:           supervise.Limits{LaunchFailures: 3, PromptFailures: 3, PromptRetires: 3},
+		PluginContract:   24,
+		TaskTakeContract: api.TaskTakeContract(),
+		RefreshGate:      supervise.NewRefreshGate(0),
+		Timeouts:         supervise.Timeouts{Boot: time.Hour, RegistrationIntervals: 2, RPC: time.Second, Probe: time.Hour, Stop: time.Second, LaunchBackoff: time.Millisecond},
+		WakePace:         wakePaceOf(wakepace.New(testWakeRate, testWakeBurst, nil), r.clock),
 	}
 	r.sup = sup
 	r.t.Cleanup(sup.stop)

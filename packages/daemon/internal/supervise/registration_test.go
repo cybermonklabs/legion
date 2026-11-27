@@ -414,7 +414,7 @@ func TestARegisteredAgentThatNeverSaysReadyIsRelaunchedAtTheDeadline(t *testing.
 
 			h.relaunched()
 			if prompts := h.wantPrompts(1); prompts[0].Message != "implement the plan" {
-				t.Errorf("the relaunched agent was prompted %q, want the task the claim held", prompts[0].Message)
+				t.Errorf("the relaunched agent took %q, want the task the claim held", prompts[0].Message)
 			}
 			h.wantBudgets(Budgets{})
 		})
@@ -487,7 +487,7 @@ func TestAgentsThatNeverSayReadyFailTheClaimAtTheLaunchFailureLimit(t *testing.T
 	h.wantCalls("Suspend", testLimits().LaunchFailures)
 }
 
-// Ready ends the boot watch: from it the claim is prompted, and no deadline remains.
+// Ready ends the boot watch: from it the worker takes the claim's task, and no deadline remains.
 func TestReadyEndsTheBootWatch(t *testing.T) {
 	h := newHarness(t)
 	h.reach(StateReady)
@@ -502,7 +502,9 @@ func TestReadyEndsTheBootWatch(t *testing.T) {
 
 // A ready whose first claim write fails stays ready in memory. Its retry must persist that ready
 // state before it returns, so a restart restores ready rather than registered and never charges a
-// launch failure for an agent that was ready.
+// launch failure for an agent that was ready. The restored claim's shim reconnects, as a live
+// process's does at a daemon's start: a shim that never did would meet its reconnect deadline
+// (TestSilentRestoredClaimWithNoHelloIsRetiredAtTheReconnectDeadline).
 func TestARetriedReadyAfterAClaimWriteFailureStaysReadyAcrossARestart(t *testing.T) {
 	h := newHarness(t)
 	h.reach(StateRegistered)
@@ -521,6 +523,7 @@ func TestARetriedReadyAfterAClaimWriteFailureStaysReadyAcrossARestart(t *testing
 	h.ready()
 	h.restart()
 	h.wantState(StateReady)
+	h.connect()
 	h.advance(2 * deadline)
 	h.wantCalls("Suspend", 0)
 	h.wantBudgets(Budgets{})

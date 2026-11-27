@@ -373,6 +373,12 @@ func (m *newsModel) handle(a *newsModelAgent, ev supervise.Event) {
 		m.fail("handle %T for the %s: %v", ev, a.name, err)
 	}
 	a.machine.Wait()
+	// The agent's turn is over, so its host is idle and the worker takes what its claim holds, as a
+	// real worker takes the value it sees once idle: a connection a restart brought up streaming
+	// (newsPathRig.reconnect) would otherwise stay busy past that turn's end.
+	if _, ended := ev.(supervise.StreamTurnEnd); ended && a.conn != nil {
+		a.conn.SetStreaming(false)
+	}
 }
 
 // result is the end of the turn a's agent is in, and that turn's result, which says it ran. The
@@ -384,7 +390,7 @@ func (m *newsModel) result(a *newsModelAgent) {
 	m.t.Helper()
 	spent := m.claims.spentCount()
 	m.handle(a, supervise.StreamTurnEnd{Claim: a.token})
-	m.handle(a, supervise.StreamPromptResult{Claim: a.token, DeliveryID: a.turn, AgentInvoked: true})
+	m.handle(a, m.report(a, nil))
 	a.took = append(a.took, a.turn)
 	if p := a.row.prompts[a.turn]; p != nil && !a.superseded[a.turn] && p.tells() {
 		a.ranAt[a.turn] = spent
@@ -401,10 +407,23 @@ func (m *newsModel) result(a *newsModelAgent) {
 func (m *newsModel) providerError(a *newsModelAgent) {
 	m.t.Helper()
 	m.handle(a, supervise.StreamTurnEnd{Claim: a.token})
-	m.handle(a, supervise.StreamPromptResult{Claim: a.token, DeliveryID: a.turn, AgentInvoked: true,
-		Error: "overloaded_error", HTTPStatus: 529})
+	m.handle(a, m.report(a, &supervise.ProviderError{Message: "overloaded_error", Status: 529}))
 	a.errored[a.turn] = true
 	a.turn = ""
+}
+
+// report is the worker's turn-outcome report of the turn a's agent ran: it names the number of the
+// task whose take that turn was, where the claim still holds that delivery (a.turn), and no task
+// where a newer one took its place, and the provider error it ended in, nil for none. It is the
+// take's counterpart of the prompt's result the push path read.
+func (m *newsModel) report(a *newsModelAgent, providerError *supervise.ProviderError) supervise.RequestTurnOutcome {
+	held := a.machine.Claim()
+	var number uint64
+	if p := held.Pending; p != nil && p.ID == a.turn {
+		number = p.Number
+	}
+	return supervise.RequestTurnOutcome{Claim: a.token, Generation: held.Generation, Sequence: turnSequence.Add(1),
+		Task: number, ProviderError: providerError}
 }
 
 // newsModelClears is how many re-entries and re-admissions one seed makes at most beside the one
@@ -747,5 +766,8 @@ func (m *newsModel) restart() {
 		a.machine, a.conn = m.r.reconnect(a.row.issue, a.role, a.turn != "")
 		a.seen, a.next = 0, ""
 		m.handle(a, supervise.StreamHello{Claim: a.token, Generation: a.machine.Claim().Generation})
+		// The shim answers the hello's ask of whether the agent is in a turn on its stream, which the
+		// daemon's pump reads as a turn answer (newsPathRig.hello); one no ask waits on changes nothing.
+		m.handle(a, supervise.StreamTurnAnswered{Claim: a.token, Streaming: a.turn != ""})
 	}
 }

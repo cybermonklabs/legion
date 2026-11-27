@@ -89,8 +89,8 @@ func populatedPodLocator(token claim.Token, issue string, generation uint64) *ru
 //     pull request it opened before the correction is open on acme/widgets still.
 //   - LEGION-211, a P1 root another tree (LEGION-200) handed over whose own tree has not been
 //     opened, waiting in the line's starting part of its band; its implementer is released in
-//     LEGION-200's tree with two failed sends. It carries a run, so no Dispatch link holds it
-//     (blockers.Exempt).
+//     LEGION-200's tree with two failed working-copy adoptions. It carries a run, so no Dispatch
+//     link holds it (blockers.Exempt).
 //   - LEGION-212, a P0 root a person answered, holding its slot and waiting in the line's returned
 //     part of its band, its spec sent back with changes, a tester retired in its tree. Dispatch
 //     named acme/gadgets for it, a change the daemon has not applied.
@@ -456,10 +456,14 @@ func populatedClaims(s *seeding, rows populatedRows) {
 		// process was last found gone under and a start failure of a launch since that ready, each
 		// with the time the daemon recorded it (the claim store's causeTime): the death before the
 		// ready, so the running agent survived it. Its handshake is that of the entry it was last
-		// queued, which a turn confirmed.
+		// queued, which an accepted take confirmed.
 		{Token: architect208, Project: "legion", Tree: "LEGION-208", Issue: "LEGION-208", Role: claim.RoleArchitect, Generation: 3,
 			State: supervise.StateReady, Session: "ses_architect_208", Locator: populatedPodLocator(architect208, "LEGION-208", 4), PluginContract: api.ServingFloor,
 			GivenEntry: 2, Handshake: supervise.EntryHandshake{Entry: 2, Generation: 3, QueuedAt: at(22, 8, 58, 14), ConfirmedAt: at(22, 8, 58, 51)},
+			TaskWritten: 2, TaskTaken: 2, TaskFinished: 2, TaskFinishedSession: "ses_architect_208",
+			TaskWrittenRevision: supervise.TaskRevision{Epoch: populatedTaskEpoch, Revision: 6},
+			TaskSeenRevision:    supervise.TaskRevision{Epoch: populatedTaskEpoch, Revision: 6},
+			TaskTakeState:       supervise.TakeAccepted,
 			Step: supervise.StepRecord{
 				At: at(22, 9, 16, 58), TurnStartedAt: at(22, 9, 16, 40), Tool: "read", CallID: "toolu_arch_3",
 				ArgsBytes: 74, ArgsHash: "3f7c1a9d62b40e58", StartedAt: at(22, 9, 16, 55), EndedAt: at(22, 9, 16, 58),
@@ -478,8 +482,13 @@ func populatedClaims(s *seeding, rows populatedRows) {
 		{Token: implementer208, Project: "legion", Tree: "LEGION-208", Issue: "LEGION-208", Role: claim.RoleImplementer, Generation: 3,
 			State: supervise.StateWorking, Session: "ses_implementer_208", Locator: implementerLocator, PluginContract: api.ServingFloor,
 			ServingGeneration: 3, GivenEntry: 4, UpdateRound: round, UpdateReasons: podUpdateReasons, UpdateTaskedAt: &tasked,
-			ProviderErrorRun: 2, Pending: &supervise.Delivery{ID: "outbox:" + strconv.FormatInt(rows.running208, 10), Task: populatedTask, Phase: phase.Implementing,
-				QueuedAt: at(22, 9, 16, 58), Generation: 3, Entry: 4},
+			TaskWritten: 4, TaskTaken: 4, TaskFinished: 3, TaskFinishedSession: "ses_implementer_208",
+			TaskWrittenRevision: supervise.TaskRevision{Epoch: populatedTaskEpoch, Revision: 12},
+			TaskSeenRevision:    supervise.TaskRevision{Epoch: populatedTaskEpoch, Revision: 12},
+			TaskTakeState:       supervise.TakeAccepted,
+			ProviderErrorRun:    2, Pending: &supervise.Delivery{ID: "outbox:" + strconv.FormatInt(rows.running208, 10), Task: populatedTask, Phase: phase.Implementing,
+				QueuedAt: at(22, 9, 16, 58), Generation: 3, Entry: 4, Number: 4, Origin: supervise.OriginPhaseStart,
+				ConfirmedAt: at(22, 9, 16, 59), TakenText: populatedTask, TurnStarted: true},
 			Step: supervise.StepRecord{
 				At: at(22, 9, 17, 12), TurnStartedAt: at(22, 9, 16, 30), Tool: "bash", CallID: "toolu_impl_11",
 				ArgsBytes: 128, ArgsHash: "9b2e45c0d1f8a673", StartedAt: at(22, 9, 17, 12),
@@ -495,12 +504,18 @@ func populatedClaims(s *seeding, rows populatedRows) {
 			Budgets: supervise.Budgets{LaunchFailures: 4, Deaths: 1}, PendingCause: supervise.CauseDied,
 			LeakCheckCause: "the shared public leak check could not be installed: GitHub answered the read of example-org/deployment at leak-check-v3 with HTTP 404: Not Found"},
 		// The daemon released its idle pod in LEGION-200's tree, which handed it over, and it keeps
-		// the task it held through the release, with the two sends that never reached a turn. Its
-		// issue's own tree has not been opened, so the rule names it nowhere.
+		// the task it held through the release, with the two takes whose adoption of the working
+		// copy the shim refused. Its issue's own tree has not been opened, so the rule names it
+		// nowhere.
 		{Token: token("LEGION-211", claim.RoleImplementer), Project: "legion", Tree: "LEGION-200", Issue: "LEGION-211", Role: claim.RoleImplementer,
 			Generation: 2, State: supervise.StateSuspended, SuspendedBy: supervise.SuspendedByReleased, Session: "ses_implementer_211", GivenEntry: 1,
+			TaskWritten: 1, TaskWrittenRevision: supervise.TaskRevision{Epoch: populatedTaskEpoch, Revision: 3},
+			TaskSeenRevision: supervise.TaskRevision{Epoch: populatedTaskEpoch, Revision: 3}, TaskTakeState: supervise.TakeRefused,
 			Pending: &supervise.Delivery{ID: "outbox:" + strconv.FormatInt(rows.started211, 10), Task: populatedTask, Phase: phase.Implementing, QueuedAt: at(22, 8, 54, 20),
-				Generation: 2, Entry: 1, SendFailures: 2, LastSendError: "post the prompt: dial tcp 10.42.0.17:13371: connect: connection refused"}},
+				Generation: 2, Entry: 1, Number: 1, Origin: supervise.OriginPhaseStart, SendFailures: 2,
+				LastSendError: "worker-stream: legion-legion-legion-211-implementer refused adopt-working-copy: " +
+					"Command failed (exit 1): jj metaedit: the git lock /legion/workspaces/acme/widgets/legion-211/.git/index.lock " +
+					"was last written 31m ago"}},
 		// LEGION-220's own architect failed and nothing has launched it since; the daemon starts it
 		// again at the child's next phase start, so the rule names it nowhere (workflow.Stranded's
 		// default case). Its implementer works on in the child's own pod.
@@ -566,6 +581,10 @@ func populatedClaims(s *seeding, rows populatedRows) {
 // which the pending deliveries that name those rows hold (populatedClaims). No writer checks that
 // a delivery's task is its row's, so the rows and the deliveries read this one text.
 const populatedTask = "Implement the plan's default task."
+
+// populatedTaskEpoch is the task bucket epoch the populated seed's claims record on their written
+// and seen revisions (supervise.TaskRevision).
+const populatedTaskEpoch = "2126-09-22T08:00:00.000000000Z"
 
 // populatedRows is the outbox rows whose tasks the populated claims hold (the delivery's id names
 // the row, the outbox's `outbox:<id>`).
@@ -656,6 +675,12 @@ func populatedDeployment(s *seeding) composition {
 		wakes: []supervise.WaitingWake{
 			{Claim: s.token("LEGION", "LEGION-207", claim.RoleImplementer), Issue: "LEGION-207", Role: claim.RoleImplementer, Kind: supervise.WakePluginRefresh, At: at(22, 9, 17, 56)},
 			{Claim: s.token("LEGION", "LEGION-208", claim.RolePlanner), Issue: "LEGION-208", Role: claim.RolePlanner, Kind: supervise.WakeLaunch, At: at(22, 9, 18, 11)},
+		},
+		// One claim whose task value went a first bound with nobody reporting it seen: the relay to
+		// LEGION-209's tester failed, so the daemon wrote task 2 again at the bound and charged
+		// nobody (R5 of dispatch://INFRA-2811).
+		unseen: []supervise.UnseenTaskValue{
+			{Claim: s.token("LEGION", "LEGION-209", claim.RoleTester), Issue: "LEGION-209", Role: claim.RoleTester, Task: 2, WrittenAt: at(22, 9, 15, 30)},
 		},
 		// Two launches since this boot kept pods built before dispatch_token_broker and carried the
 		// transition token, the latest two minutes after the boot, and three live generations still

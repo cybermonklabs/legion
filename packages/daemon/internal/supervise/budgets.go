@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/wakepace"
@@ -24,14 +25,15 @@ import (
 //     through what it was doing. A death with no turn open and nothing pending is not counted: a
 //     parked agent — idle, holding no task — that the environment kills now and then is relaunched
 //     however often it happens. Bounded by the launch failure limit.
-//   - PromptFailures: prompts the agent refused, acknowledged prompts that started no turn, and
-//     prompts refused after their acknowledgement. A prompt lost to the transport, not sent for
-//     want of a connection, or refused because the agent is in a turn of its own (Oh My Pi's busy
-//     answer or the Claude Code bridge's, before or after its acknowledgement, or as a result that
-//     ran no turn), is re-queued at no charge. Which events charge this budget, and the other two,
-//     is one policy's (Charges, outcome.go). Reset by a started turn.
-//   - PromptRetires: processes retired because PromptFailures ran out. Reset by a started turn,
-//     never by the relaunch itself — a claim that keeps acknowledging and never turning runs out.
+//   - PromptFailures: the charges a worker earns where it is the one that did not act (chargePrompt):
+//     a value it reported seeing and asked no take of within R5's first bound, an accepted take
+//     whose turn did not start within the second (waits.go), and a take whose adoption of the
+//     working copy the shim refused (refusedAdoption). An adoption lost to the transport or an
+//     identity the daemon could not mint charges nothing, and neither does a value nobody reported
+//     seeing. Which events charge this budget, and the other two, is one policy's (Charges,
+//     outcome.go). Reset by a turn's start or end, never by a take.
+//   - PromptRetires: processes retired because PromptFailures ran out. Reset where PromptFailures
+//     is, never by the relaunch itself — a claim that keeps taking and never turning runs out.
 type Budgets struct {
 	LaunchFailures int
 	Deaths         int
@@ -107,28 +109,39 @@ const (
 	// never said it was ready, until the launch budget ran out (registrationDeadline). The one
 	// word covers both, which is what the deadline itself does.
 	CauseNeverRegistered FailureCause = "never_registered"
+	// CauseNeverReconnected: a live process whose agent had said it was ready, and whose shim
+	// then said no hello within the reconnect deadline (reconnectDeadline) — after a daemon start
+	// restored its claim, or after its connection closed with a pending task held or given to it
+	// since — and the relaunches that followed ran the launch budget out. It is the eighth
+	// word of the set, which TaskTakeContract added. The held and worker-died notices carry it
+	// raw, as the claim holds it, whatever plugin reads them (workflow's noticeFailure); only the
+	// state body serves it as never_registered to a plugin below that contract (api's
+	// withoutNeverReconnected). Beside never_registered, it is a cause the relaunch a release
+	// makes does not meet again: the relaunched process is a new one, whose shim says hello to
+	// the daemon that launched it, as a new agent registers afresh.
+	CauseNeverReconnected FailureCause = "never_reconnected"
 	// CauseStalePlugin: a relaunch onto the daemon's own plugin contract that ran out
 	// (staleRegistration).
 	CauseStalePlugin FailureCause = "stale_plugin"
 	// CausePromptRetiresExhausted: the prompt retirements ran out (chargePrompt).
 	CausePromptRetiresExhausted FailureCause = "prompt_retires_exhausted"
-	// CauseProviderError: a provider error that cannot clear ended the claim's turn, as the
-	// result of the prompt that turn ran says (providerErrored), or as the report of a turn that
-	// ran no prompt of the daemon's says (unpromptedTurnEnded), which is the provider refusing to
-	// run this session's turns: the one thing a reader of the word has to act on. A claim an
-	// earlier daemon failed can carry it for a run of refused turns that reached the launch failure
-	// limit, which fails no claim now (turnOutcome); the sentence beside the word says which it was.
+	// CauseProviderError: a provider error that cannot clear ended the claim's turn, as the end
+	// report of the take's turn, the one that names the take's number, says (reportedTask,
+	// providerErrored), or as the report of a turn that ran none of the daemon's tasks says
+	// (unpromptedTurnEnded), which is the provider refusing to run this session's turns: the one
+	// thing a reader of the word has to act on. A claim an earlier daemon failed can carry it for a
+	// run of refused turns that reached the launch failure limit, which fails no claim now
+	// (turnOutcome); the sentence beside the word says which it was.
 	CauseProviderError FailureCause = "provider_error"
 	// CauseCyberPolicy: OpenAI refused the session's content for cyber policy, or Oh My Pi held a
-	// request after such a refusal, as the result of the prompt the turn ran says, or as the
-	// report of a turn that ran no prompt of the daemon's says (providerErrorTurnEnded, Oh My Pi's
-	// class `cyber_policy`). It is a provider error that cannot clear, and a word of its own because
-	// it is the one failure after which no retry of the daemon's own may launch the claim's agent
-	// again (Claim.HeldForCyberPolicy): every prompt the daemon sends is input from outside the
-	// session, which ends Oh My Pi's hold, so the refused content would go to OpenAI again and add
-	// a refusal to the organization's record. The architect's retry of the held phase and the
-	// operator's retry launch the agent again, each in a new session (freshSession), which holds
-	// none of that content.
+	// request after such a refusal, as the report of the turn says, the take's turn and any other
+	// alike (providerErrorTurnEnded, Oh My Pi's class `cyber_policy`). It is a provider error that
+	// cannot clear, and a word of its own because it is the one failure after which no retry of
+	// the daemon's own may launch the claim's agent again (Claim.HeldForCyberPolicy): every task
+	// the worker takes starts a turn from input outside the session, which ends Oh My Pi's hold, so
+	// the refused content would go to OpenAI again and add a refusal to the organization's record.
+	// The architect's retry of the held phase and the operator's retry launch the agent again, each
+	// in a new session (freshSession), which holds none of that content.
 	CauseCyberPolicy FailureCause = "cyber_policy"
 	// CauseUnrecorded: the claim failed before the daemon recorded a cause. No live path writes
 	// it; the migration that adds the column writes it for every stored failure whose sentence
@@ -150,6 +163,7 @@ var FailureCauses = []FailureCause{
 	CauseLaunchRefused,
 	CauseDied,
 	CauseNeverRegistered,
+	CauseNeverReconnected,
 	CauseStalePlugin,
 	CausePromptRetiresExhausted,
 	CauseProviderError,
@@ -183,8 +197,8 @@ var FailureCauses = []FailureCause{
 //
 // ending is why the process the claim still records is let go, in the daemon's words, which the
 // launch records with what that process ended (launch, letGo); noEnd where the caller let it go
-// already (registrationDeadline). It is the record's words and no outcome: what the policy reads
-// is o alone.
+// already (registrationDeadline, reconnectDeadline). It is the record's words and no outcome: what
+// the policy reads is o alone.
 //
 // place is the place the caller already took for this relaunch in the wake pacing, as launchAfter
 // takes it, and nil for every caller but the boot's replay of a recorded death
@@ -300,6 +314,15 @@ func (m *Machine) turnOpen() bool {
 	return m.claim.State == StateWorking || open
 }
 
+// The two lines a charge is logged under, at Warn: a prompt failure short of the limit, and the
+// retirement the charge at the limit makes. They are pinned as constants for the reason the turn
+// lines are (turnStartedLine): the daemon's cost reading counts them by wait (ReadTaskCost), and
+// R9's first verdict reads the bound beside each.
+const (
+	promptFailureLine = "supervise: prompt failure"
+	promptRetiredLine = "supervise: retired after prompt failures"
+)
+
 // chargePrompt counts one prompt failure where the policy charges o (Charges), and charges
 // nothing where it does not. At the limit the process is retired — suspended, the session kept —
 // and the same session relaunched, or, once retirements run out too, the claim fails with its
@@ -314,19 +337,29 @@ func (m *Machine) turnOpen() bool {
 // rather than relaunching it, which is the budget running out, not an event's charge. A suspension
 // that fails charges nothing: the next failure reaches the limit again and retries the retirement.
 //
+// o is the outcome the site names: an accepted take whose turn did not start, or a value the
+// worker saw and took no take of (runtime.OutcomeNoTurnStarted, waits.go), a take whose adoption
+// the shim refused (runtime.OutcomeAdoptionRefused, refusedAdoption), and a turn its report says
+// ended in a provider error (runtime.OutcomeProviderError, providerErrorTurnEnded), which the
+// policy charges nothing.
+//
+// wait names what the charge is for (WaitTake, WaitTurnStart, WaitAdoption), and both lines carry
+// it, with the bound that wait waited where it has one (chargeBound), so a reading of the log
+// counts charges by wait and can tell a charge made inside its bound from one made at it.
+//
 // The retirement's stop is where the process is let go, so that is where what it ended is
 // recorded, under the retirement's own cause (endRetired, letGo): the last retirement as well,
 // whose failure then finds no process left to record. The launch that follows lets nothing go.
-func (m *Machine) chargePrompt(ctx context.Context, o runtime.Outcome) error {
+func (m *Machine) chargePrompt(ctx context.Context, o runtime.Outcome, wait, why string) error {
 	if !Charges(o) {
-		m.log.Info("supervise: the turn's outcome charges nothing", "outcome", string(o))
+		m.log.Info("supervise: the turn's outcome charges nothing", "outcome", string(o), "wait", wait, "why", why)
 		return nil
 	}
 	failures := m.claim.Budgets.PromptFailures + 1
 	if failures < m.deps.Limits.PromptFailures {
 		m.claim.Budgets.PromptFailures = failures
-		m.log.Warn("supervise: prompt failure", "outcome", string(o), "promptFailures", failures,
-			"limit", m.deps.Limits.PromptFailures)
+		m.log.Warn(promptFailureLine, "outcome", string(o), "wait", wait, "bound", m.chargeBound(wait), "why", why,
+			"promptFailures", failures, "limit", m.deps.Limits.PromptFailures)
 		return m.persist(ctx)
 	}
 	if m.held != nil {
@@ -344,12 +377,25 @@ func (m *Machine) chargePrompt(ctx context.Context, o runtime.Outcome) error {
 		return fmt.Errorf("retire %s after %d prompt failures: suspend: %w", m.claim.Token, failures, err)
 	}
 	m.claim.Budgets.PromptRetires = retires
-	m.log.Warn("supervise: retired after prompt failures", "outcome", string(o), "promptFailures", failures,
-		"relaunchCycle", retires, "limit", m.deps.Limits.PromptRetires)
+	m.log.Warn(promptRetiredLine, "outcome", string(o), "wait", wait, "bound", m.chargeBound(wait), "why", why,
+		"promptFailures", failures, "relaunchCycle", retires, "limit", m.deps.Limits.PromptRetires)
 	if last {
 		m.claim.Budgets.PromptFailures = failures
 		return m.fail(ctx, CausePromptRetiresExhausted, "prompt retirements ran out")
 	}
 	m.claim.Budgets.PromptFailures = 0
 	return m.launch(ctx, noEnd)
+}
+
+// chargeBound is the bound the wait a charge names waited (R5's two bounds, Timeouts.Take and
+// Timeouts.TurnStart), and 0 for a charge that waited none: a refused adoption is charged at the
+// shim's answer.
+func (m *Machine) chargeBound(wait string) time.Duration {
+	switch wait {
+	case WaitTake:
+		return m.deps.Timeouts.Take
+	case WaitTurnStart:
+		return m.deps.Timeouts.TurnStart
+	}
+	return 0
 }

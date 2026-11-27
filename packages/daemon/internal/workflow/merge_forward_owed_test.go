@@ -25,7 +25,8 @@ import (
 // The plan `implementer reviewer tester`: the implementer is asked in reviewing, and a later read
 // finds the head mergeable, which clears the record's confirmed conflict and leaves the ask, which
 // the implementer can still act on. The approval then starts the tester, which is held, as the
-// fence reads it.
+// fence reads it. The tester's hold names the newest read of GitHub the record holds of the head,
+// the mergeable one (dispatch://INFRA-2833 R3, the plan's row for it).
 func TestATesterStartedAfterAMergeableReadIsHeldWhileTheAskIsOwed(t *testing.T) {
 	t.Parallel()
 	pool := plannedConflictIssue(t, phase.Reviewing, settledGreen("lint"), "implementer", "reviewer", "tester")
@@ -43,7 +44,7 @@ func TestATesterStartedAfterAMergeableReadIsHeldWhileTheAskIsOwed(t *testing.T) 
 	}
 	why := record.ConflictCheckNotGreen
 	want := []record.MergeForwardMessage{implementerAsked(phase.Reviewing, why), heldIn(claim.RoleReviewer, phase.Reviewing, why),
-		heldIn(claim.RoleTester, phase.Testing, why)}
+		afterRead(heldIn(claim.RoleTester, phase.Testing, why), record.MergeStateClean)}
 	if got := mergeForwardMessages(t, pool); !reflect.DeepEqual(got, want) {
 		t.Errorf("the merge-forward messages are %+v, want %+v: the tester starts while the implementer's ask is owed", got, want)
 	}
@@ -359,8 +360,10 @@ func TestAPlannerBeforeTheImplementerIsToldAndFencedWhileTheMergeIsOwed(t *testi
 // has landed, and its confirmed conflict is of the head the pull request stands at again. A landed
 // ask is owed to nobody (openAsk), so the tester's completion and the reviewer's approval at that
 // head move the issue on with nobody held, and the move into merging asks the merger to merge the
-// base forward onto that head, once, and holds it for no ask. A later read that finds the head
-// still conflicting asks nothing more: the merger owes the merge.
+// base forward onto that head, once, and holds it for no ask. The record holds no read of GitHub
+// since the branch moved back, so the ask names none (dispatch://INFRA-2833 R3: it says GitHub's
+// merge state is unknown). A later read that finds the head still conflicting asks nothing more:
+// the merger owes the merge.
 func TestABranchBackAtTheHeadALandedMergeReplacedIsTheMergersToMergeForward(t *testing.T) {
 	t.Parallel()
 	requiresCI := &record.BaseRules{Required: []string{"ci"}}
@@ -408,7 +411,7 @@ func TestABranchBackAtTheHeadALandedMergeReplacedIsTheMergersToMergeForward(t *t
 	if got := issuePhase(t, pool); got != phase.Merging {
 		t.Fatalf("after the retro's completion the issue is in %s, want merging", got)
 	}
-	want := append(slices.Clip(before), mergerAsked())
+	want := append(slices.Clip(before), afterRead(mergerAsked(), ""))
 	if got := mergeForwardMessages(t, pool); !reflect.DeepEqual(got, want) {
 		t.Errorf("after the move into merging the merge-forward messages are %+v, want %+v: the merger asked once, and held for nothing", got, want)
 	}

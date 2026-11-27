@@ -149,21 +149,22 @@ import type {
  * and `sentAt` once the start was sent, undefined while it is due and unsent. The operator's
  * controller is marked unsent at its `session_start`, and `/legion-controller-start`, which Oh My
  * Pi runs after its startup, sends the start and marks it sent; the daemon's controller in RPC
- * mode is marked sent right before it reports ready, which is when the daemon writes the start
- * prompt, read only once the drain has returned. That start must be the session's first turn,
- * and every startup card still gets a turn after it. Without the mark, a terminal's idle card
- * starts a turn that runs ahead of the start command, and an RPC card's wake fires once the host is
- * idle after the drain, which can be before the daemon's prompt arrives. So while the mark holds —
- * it names this session (the instance's own and the host's live one), and its start is unsent
- * and this module first read that unsent mark less than `STARTUP_TURN_CAP_MS` ago, or was sent
- * less than `STARTUP_TURN_CAP_MS` ago — the phase holds whatever `ctx.mode` is: an idle card in
- * any mode goes as a startup card. An idle check while it holds keeps the phase and the seen
- * startup cards, sends no wake and checks again when the hold may end: at the sent mark's cap, or
- * every `STARTUP_TURN_POLL_MS` while the start is unsent, up to that mark's cap (a poll, since no
- * event tells this module of the send, nor of a start claim refused before the send, which clears
- * the mark). The unsent mark's cap counts from this module's first read of it, never again from a
- * later check, so a start that never comes (a claim that never answers, a session given no start
- * command) holds the cards back once, for that long. A busy check is as before. The start turn's
+ * mode is marked sent right before it reports ready, after which the daemon writes the value of
+ * its start task, which that controller takes only once the drain has returned. That start must
+ * be the session's first turn, and every startup card still gets a turn after it. Without the
+ * mark, a terminal's idle card starts a turn that runs ahead of the start command, and an RPC
+ * card's wake fires once the host is idle after the drain, which can be before the controller has
+ * taken its start task. So while the mark holds — it names this session (the instance's own and
+ * the host's live one), and its start is unsent and this module first read that unsent mark less
+ * than `STARTUP_TURN_CAP_MS` ago, or was sent less than `STARTUP_TURN_CAP_MS` ago — the phase
+ * holds whatever `ctx.mode` is: an idle card in any mode goes as a startup card. An idle check
+ * while it holds keeps the phase and the seen startup cards, sends no wake and checks again when
+ * the hold may end: at the sent mark's cap, or every `STARTUP_TURN_POLL_MS` while the start is
+ * unsent, up to that mark's cap (a poll, since no event tells this module of the send, nor of a
+ * start claim refused before the send, which clears the mark). The unsent mark's cap counts from
+ * this module's first read of it, never again from a later check, so a start that never comes (a
+ * claim that never answers, a session given no start command) holds the cards back once, for that
+ * long. A busy check is as before. The start turn's
  * run clears the mark at its `agent_start`, and its `agent_end` checks again: that check ends the
  * phase and sends one wake. A startup card seen while the mark held, at its `message_end` or at a
  * check, is owed that wake unless a turn after the start turn read it, since the start turn's
@@ -174,6 +175,26 @@ import type {
  * for the person's next turn, as a fold card does, and the check that ends the phase drops it. A
  * sent mark past its cap is a start the host failed and holds nothing back, and a mark naming
  * another session (a `task` subagent's, or a session switched away from) changes nothing.
+ *
+ * The task turn. A Legion worker's task is a value it takes from the daemon once its host is idle,
+ * and the turn the take's text starts must come before any card's, the lane the listener kept for
+ * the role and handed over at the role's claim included. The Legion entry names the session in the
+ * plugin interface's task-turn mark (`EnvoyPluginInterface.taskTurnPending`) from the moment it
+ * holds a value it will ask about until that task's turn starts or the take is refused or dropped,
+ * and from the claim's registration until the read of its value after `claims/ready` has answered,
+ * whatever value it holds, since the ready decision can write one and a card sent to the session
+ * itself can arrive in that window (the daemon-launched controller from right before its ready).
+ * While the mark names this session, whatever the startup phase and `ctx.mode`, a card that finds
+ * the host idle goes as the startup phase's cards go, a follow-up with no `triggerTurn`, and is
+ * owed its wake as a startup card seen while the start-turn mark holds is: a check that finds the
+ * host idle sends no wake and reads the mark again every `TASK_TURN_POLL_MS`, since no event tells
+ * this module that the mark was cleared with no turn. The task's turn clears the mark at its
+ * `agent_start`, and its `agent_end` checks again, which wakes for every held card the task's
+ * turn did not read; a take refused or dropped clears it with no turn, and so does the read after
+ * `claims/ready` when it answers with no task owed, and the next poll wakes for them then. The
+ * mark has no cap: a take the Legion entry sends again while the daemon is unreachable holds the
+ * cards back for as long as it is, since a card's turn started meanwhile would be the turn the
+ * task's take, once answered, is refused for.
  */
 
 /** How long a card sent in the startup phase may go without its `message_end` before the wake's
@@ -189,6 +210,11 @@ export const STARTUP_TURN_CAP_MS = 30_000;
  *  module that the start was sent, or that a claim refused before the send cleared the mark. */
 export const STARTUP_TURN_POLL_MS = 1_000;
 
+/** How often a check reads the task-turn mark again while it holds: no event tells this module
+ *  that a take was refused or dropped, or that the read after `claims/ready` answered with no task
+ *  owed, each of which clears the mark with no turn. */
+export const TASK_TURN_POLL_MS = 1_000;
+
 /** The `errorMessage` of the assistant message an interrupt ends a run with: the host's
  *  `USER_INTERRUPT_LABEL` (`@oh-my-pi/pi-tui`), which RPC `abort`, Esc and `ctx.abort` all pass. */
 const USER_INTERRUPT_LABEL = "Interrupted by user";
@@ -198,8 +224,9 @@ const RETRY_CANCELLED = "Retry cancelled";
 
 /** What every card carries in its `details`, which the host keeps on the record and its persisted
  *  entry: an id no other card in the process shares, and what the card's `message_end` arms, decided
- *  when it is sent: `startup` for a card sent in the startup phase, `fold` for one the wake covers
- *  if the host folds it, and nothing for one it never covers. The session's own notices carry
+ *  when it is sent: `startup` for a card sent in the startup phase or while a task's turn is
+ *  pending, `fold` for one the wake covers if the host folds it, and nothing for one it never
+ *  covers. The session's own notices carry
  *  `LOCAL_ENVOY_NOTICE` instead. This is what a record written before the hand-over state below
  *  was added carries too, so it is all the entry parser reads. A type rather than an interface, so
  *  it is the host's `Record<string, unknown>` `details`. */
@@ -213,6 +240,8 @@ type EnvoyCardEntryMarker = {
  *  waiting card:
  *  - `startup`: the host was idle in the startup phase, so the card goes as a follow-up that
  *    starts no turn and waits for the wake;
+ *  - `task-pending`: the host was idle while a task's turn was pending, so the card goes as a
+ *    follow-up that starts no turn and waits for the wake after that turn;
  *  - `run-active`: a run was going as this module sees it, so the run reads the card;
  *  - `prompt-setup`: the host was busy with no run, setting a prompt up or settling after one, so
  *    the card is never woken;
@@ -220,7 +249,14 @@ type EnvoyCardEntryMarker = {
  *  - `inert`: an inert card (a replayed BTW, or a failure notice naming one), which the extension
  *    hands a settled host as a steer rather than through this module;
  *  - `unknown`: the host's context reports no idle state, so no state of it can be read. */
-export type CardHandOver = "startup" | "run-active" | "prompt-setup" | "idle" | "inert" | "unknown";
+export type CardHandOver =
+  | "startup"
+  | "task-pending"
+  | "run-active"
+  | "prompt-setup"
+  | "idle"
+  | "inert"
+  | "unknown";
 
 /** What a card this module hands over carries in its `details`: the marker above, and the host
  *  state at the hand-over, which every card handed over since that state was added has. */
@@ -264,13 +300,16 @@ export interface CardWakeDeps {
   /** The start-turn mark (`EnvoyPluginInterface.startupTurn`) as it stands now; undefined where
    *  there is none, or no interface at this build's version was published. */
   readonly startupTurn: () => EnvoyPluginInterface["startupTurn"];
+  /** The task-turn mark (`EnvoyPluginInterface.taskTurnPending`) as it stands now; undefined where
+   *  there is none, or no interface at this build's version was published. */
+  readonly taskTurnPending: () => EnvoyPluginInterface["taskTurnPending"];
   /** Whether `session` is the session the cards go into: this instance's own, and the host's
    *  live one. */
   readonly isOwnSession: (session: string) => boolean;
 }
 
 /** A card whose `message_end` was seen and that waits for the check: the run it came in, and
- *  whether it was sent in the startup phase. */
+ *  whether it was sent in the startup phase or while a task's turn was pending. */
 interface SeenCard {
   readonly id: string;
   readonly run: number;
@@ -343,8 +382,9 @@ export class CardWake {
   /** Startup cards sent and not yet seen, with when each was sent. */
   readonly #unseenStartup = new Map<string, number>();
   #seen: SeenCard[] = [];
-  /** Startup cards seen while the start-turn mark held, which only a reply after the start turn
-   *  reads: the start turn's replies after them ran the start procedure (`unreadCards`). */
+  /** Startup cards seen while the start-turn mark or the task-turn mark held, which only a reply
+   *  after that turn reads: the start turn's replies after them ran the start procedure, and the
+   *  task turn's ran the task (`unreadCards`). */
   readonly #owed = new Set<string>();
   /** The unsent start-turn mark this module last read, and when it first read it, which its cap
    *  counts from. Each marking writes a new object to the interface, so a mark set again is a new
@@ -376,25 +416,16 @@ export class CardWake {
     const idle = context?.isIdle?.();
     // An idle host has no run, whatever end of it no extension was told of.
     if (idle === true) this.#runActive = false;
-    const startup =
-      this.#startupPhase &&
-      idle === true &&
-      (context?.mode === "rpc" || this.#startTurnHold() !== undefined);
-    // The host state at this hand-over, read in the order the delivery itself is decided, so the
-    // record says what this module acted on: a context with no idle state says nothing, a startup
-    // card is the startup phase's whatever else holds, and the clear above means an idle host has
-    // no active run, so `idle` wins over `run-active`. What is left is a busy host with no run,
-    // which is setting a prompt up or settling after one, the `setup` the wake reads below.
-    const handOver: CardHandOver =
-      typeof idle !== "boolean"
-        ? "unknown"
-        : startup
-          ? "startup"
-          : idle
-            ? "idle"
-            : this.#runActive
-              ? "run-active"
-              : "prompt-setup";
+    // While a task's turn is pending, an idle card waits for it in any phase, so the turn the
+    // take's text starts is not a card's; in the startup phase, an idle card waits for the start
+    // turn. A held card goes as a follow-up with no turn, owed a wake.
+    const taskHeld = idle === true && this.#taskTurnHolds();
+    const held =
+      taskHeld ||
+      (this.#startupPhase &&
+        idle === true &&
+        (context?.mode === "rpc" || this.#startTurnHold() !== undefined));
+    const handOver = this.#handOverOf(idle, taskHeld, held);
     // A card sent while the host sets a prompt up is never woken. Under main every targeted Aside
     // went as an aside, which the host folds with no turn under the latch or in plan mode, so a
     // wake for one would start a turn main never started. A startup targeted Aside does get one:
@@ -402,17 +433,33 @@ export class CardWake {
     // aside started a turn outside the latch and plan mode, and a fresh process has no latch. Plan
     // mode at startup is the one case where that wake starts a turn main did not.
     const setup = handOver === "prompt-setup";
-    const wake = startup ? "startup" : setup || targetedAside ? undefined : "fold";
+    const wake = held ? "startup" : setup || targetedAside ? undefined : "fold";
     const details: EnvoyCardMarker = {
       envoyCard: randomUUID(),
       handOver,
       ...(wake !== undefined && { wake }),
     };
-    if (startup) {
+    if (held) {
       this.#unseenStartup.set(details.envoyCard, this.#deps.now());
       return { deliverAs: "followUp", triggerTurn: false, details };
     }
     return { deliverAs: "aside", triggerTurn: true, details };
+  }
+
+  /**
+   * The host state at a hand-over, read in the order the delivery itself is decided, so the
+   * record says what this module acted on: a context with no idle state says nothing, a held card
+   * is the task turn's or the startup phase's whatever else holds, and `deliveryFor`'s clear of
+   * the run means an idle host has no active run, so `idle` wins over `run-active`. What is left
+   * is a busy host with no run, which is setting a prompt up or settling after one, the `setup`
+   * the wake reads.
+   */
+  #handOverOf(idle: boolean | undefined, taskHeld: boolean, held: boolean): CardHandOver {
+    if (typeof idle !== "boolean") return "unknown";
+    if (taskHeld) return "task-pending";
+    if (held) return "startup";
+    if (idle) return "idle";
+    return this.#runActive ? "run-active" : "prompt-setup";
   }
 
   /** A host `message_end`: an interrupt holds the wake back, and a card the host appended arms
@@ -442,7 +489,7 @@ export class CardWake {
     if (marker?.wake === undefined) return;
     if (marker.wake === "startup") {
       this.#unseenStartup.delete(marker.envoyCard);
-      if (this.#startTurnHold() !== undefined) this.#owed.add(marker.envoyCard);
+      if (this.#hold() !== undefined) this.#owed.add(marker.envoyCard);
     }
     this.#seen.push({ id: marker.envoyCard, run: this.#run, startup: marker.wake === "startup" });
     this.#arm(context);
@@ -511,6 +558,23 @@ export class CardWake {
     return left > 0 ? Math.min(left, STARTUP_TURN_POLL_MS) : undefined;
   }
 
+  /** Whether the task-turn mark holds: it names the session the cards go into. */
+  #taskTurnHolds(): boolean {
+    const mark = this.#deps.taskTurnPending();
+    return mark !== undefined && this.#deps.isOwnSession(mark.session);
+  }
+
+  /**
+   * How long from now the next check reads the marks again while either holds the wake back:
+   * the start-turn mark's own time (`#startTurnHold`), and `TASK_TURN_POLL_MS` while the task-turn
+   * mark holds, whichever is sooner; undefined when neither holds.
+   */
+  #hold(): number | undefined {
+    const start = this.#startTurnHold();
+    if (!this.#taskTurnHolds()) return start;
+    return start === undefined ? TASK_TURN_POLL_MS : Math.min(start, TASK_TURN_POLL_MS);
+  }
+
   #arm(context: CardWakeContext, delayMs = 0): void {
     const due = this.#deps.now() + delayMs;
     if (this.#checkDue !== undefined && this.#checkDue <= due) return;
@@ -546,9 +610,9 @@ export class CardWake {
     }
     // An idle host has no run, whatever end of it no extension was told of.
     this.#runActive = false;
-    // The start turn is still to come: the seen startup cards wait for it, owed their wake after
-    // it, and the phase goes on.
-    const holdMs = this.#startTurnHold();
+    // The start turn or the task's turn is still to come: the seen startup cards wait for it,
+    // owed their wake after it, and the phase goes on.
+    const holdMs = this.#hold();
     if (holdMs !== undefined) {
       for (const card of this.#seen) {
         if (card.startup) this.#owed.add(card.id);

@@ -5,32 +5,54 @@ import (
 	"testing"
 )
 
-// The copy of the news a prompt carried is written where Oh My Pi acknowledges that prompt (acked,
-// Delivery.Carried), and it is the one record of that prompt that outlasts the daemon: a daemon
-// restarted before the prompt's turn starts holds no prompt outstanding (Machine.outstanding is
-// memory only), so the copy is what tells it that a prompt of the task reached the agent, and what
-// that prompt carried. The booted daemon's question (askFirst) then asks the agent, takes the turn
-// the agent is in for the task's, and confirms the task with that copy, and nothing is sent into
-// that turn. No send fails on this path, so no refusal takes anything back here. Without the copy
-// the task would read as one no acknowledged prompt carried (unsentNews): the booted daemon would
-// send it again into the turn of the prompt the agent is already running, and that turn's
-// confirmation would raise nothing of the news the agent read.
+// The copy of the news an accepted take carried is written by the accept itself (accept,
+// Delivery.Carried), in the one write that records the take, and it is the one record of that
+// take's credit that outlasts the daemon: a daemon restarted before the take's turn starts reads
+// the take, its text and its copy from the store. A take of the number the worker sends again
+// after the restart is answered the text the record kept (answeredFromRecord), so nothing renders
+// the news again and nothing is credited anew; the take's turn is the restored take's, and the
+// report that names its number finishes the task, which makes the restored copy final
+// (Delivery.Ran) before the retirement. Without the copy kept with the take, the restored take
+// would credit nothing of the news the worker read, and a take after it would credit news its text
+// never carried.
 func TestARestartTakesTheTurnOfAnAcknowledgedNewsPromptForItsTask(t *testing.T) {
 	answer := &designNewsAnswer{task: queuedTask, news: []byte(queuedNews)}
 	h := newsHarness(t, answer)
 	h.reach(StateReady)
 	h.must(newsStart("outbox:46", 46))
-	sent := h.wantPrompts(1)[0]
+	taken := h.wantPrompts(1)[0]
 
 	h.restart()
-	h.conn.SetStreaming(true)
-	h.must(RequestReady{Claim: testToken, Generation: h.generation(), Session: session})
 
-	h.wantPrompts(1)
-	h.wantState(StateWorking)
 	stored, ok := h.store.delivery(testToken)
-	if !ok || stored.ID != sent.DeliveryID || stored.ConfirmedAt.IsZero() || !bytes.Equal(stored.Carried, []byte(queuedNews)) {
-		t.Fatalf("stored delivery after the booted daemon's question = %+v (held %t), want %s confirmed by the turn the agent is in, "+
-			"carrying the news its acknowledged prompt carried", stored, ok, sent.DeliveryID)
+	if !ok || stored.ID != taken.DeliveryID || stored.ConfirmedAt.IsZero() || stored.TakenText != taken.Message ||
+		!bytes.Equal(stored.Carried, []byte(queuedNews)) {
+		t.Fatalf("stored delivery after the restart = %+v (held %t), want %s taken, its text kept, "+
+			"crediting the news its accepted take carried", stored, ok, taken.DeliveryID)
+	}
+	if p := h.pending(); !bytes.Equal(p.Carried, []byte(queuedNews)) {
+		t.Fatalf("the restored delivery = %+v, want it crediting the news its accepted take carried", p)
+	}
+	value, held := h.values.value(testToken)
+	if !held {
+		t.Fatal("the bucket holds no value of the taken task")
+	}
+	again, err := h.takeValue(value)
+	if err != nil || again.Outcome != TakeOutcomeAccepted || again.Text != taken.Message {
+		t.Fatalf("the take sent again after the restart = %+v, %v; want it answered the text the record kept", again, err)
+	}
+	if len(answer.asked) != 1 {
+		t.Fatalf("DesignNews was asked %d times, want once: the restored take is answered from the record", len(answer.asked))
+	}
+
+	h.must(StreamTurnStart{Claim: testToken})
+	h.must(StreamTurnEnd{Claim: testToken})
+
+	if p := h.claim().Pending; p != nil {
+		t.Fatalf("pending after the restored take's report = %+v, want the task finished", p)
+	}
+	final, ok := h.store.lastWritten(taken.DeliveryID)
+	if !ok || !final.Ran || !bytes.Equal(final.Carried, []byte(queuedNews)) {
+		t.Fatalf("the last write of %s = %+v (held %t), want the restored credit marked final", taken.DeliveryID, final, ok)
 	}
 }

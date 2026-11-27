@@ -2,16 +2,18 @@
  * A Claude Code or Codex session whose inbound is the listener's relay socket
  * (`ENVOY_INBOUND=listener`): the channel server dials the socket rather than NATS
  * (`dialChannelInbound`), and neither live view takes its control subject on it, since the socket
- * carries no agent stream and refuses that subject (`subject_not_granted`); and a session whose own
- * relay subject the listener refuses is told why and takes it again at the heartbeat. The socket
- * is a stand-in that serves the socket's wire and the broker's token exchange on one origin
- * (`@legion/envoy-client/test/relay-socket-stand-in`).
+ * carries no agent stream and refuses that subject (`subject_not_granted`); a session whose own
+ * relay subject the listener refuses is told why and takes it again at the heartbeat; and a
+ * claim's task frame on the socket, and each reopen of it, reach the session's task values as they
+ * do over NATS. The socket is a stand-in that serves the socket's wire and the broker's token
+ * exchange on one origin (`@legion/envoy-client/test/relay-socket-stand-in`).
  */
 import { afterEach, expect, setDefaultTimeout, spyOn, test } from "bun:test"
 import { writeFileSync } from "node:fs"
 import * as path from "node:path"
 import { readEnvoyConfig } from "@legion/envoy-client/envoy-config"
 import { type EnvoyEnvironment, envoySettings } from "@legion/envoy-client/envoy-settings"
+import { type RelayTaskValue, TaskHeader } from "@legion/envoy-client/relay-frame"
 import {
   type RelaySocketStandIn,
   standInDeliverSubject,
@@ -342,6 +344,93 @@ test("a relay subject the listener refuses is told as an outage naming why, and 
     )
     expect(server.subs.at(-1)).toEqual({ session: SESSION, subject: relaySubject })
     expect(notices(notifier, "Envoy inbound unavailable")).toHaveLength(1)
+  } finally {
+    await session.shutdown()
+  }
+}, 30_000)
+
+// A claim's task value rides the session's relay subject as a task frame, which the socket carries
+// as it carries every message on that subject (a `msg` whose headers are the frame's): the frame
+// reaches the session's task values, which a Legion pane's claim hands the bridge, and is answered
+// nothing, since it is no message of the session's consumer. A reopen of the socket takes the
+// subject again on the new socket and begins a new epoch, whose first registration answer tells
+// the task values to read the value again, as a NATS reconnect does: a task frame relayed while
+// the socket was closed is lost.
+test("a task frame on the relay socket reaches the session's task values unanswered, and a reopen of the socket tells them a new epoch", async () => {
+  const server = startRelaySocketStandIn()
+  started.push(() => server.stop())
+  const settings = await relaySettings(server)
+  const { inbound } = settings
+  if ("off" in inbound) throw new Error(`inbound is off: ${inbound.off}`)
+  const dialled = await dialChannelInbound(
+    inbound,
+    settings.url,
+    () => SESSION,
+    "claude-envoy-channel-test",
+    () => undefined,
+    undefined,
+    AbortSignal.timeout(10_000),
+  )
+  started.push(() => dialled.connection.close())
+  const relayed: RelayTaskValue[] = []
+  let epochs = 0
+  const session = await startChannelSession(
+    sessionOptions(new SessionIdentity(SESSION, "/tmp"), scratchState(), {
+      connection: dialled.connection,
+      ...(dialled.reportOutagesTo === undefined
+        ? {}
+        : { reportOutagesTo: dialled.reportOutagesTo }),
+      client: recordingClient([], { subscribe: async (input) => noInterest(input.sessionID) }),
+      taskValues: {
+        relayed: (value) => relayed.push(value),
+        epoch: () => {
+          epochs += 1
+        },
+      },
+    }),
+  )
+  try {
+    const relaySubject = standInDeliverSubject(SESSION)
+    await waitFor(async () => epochs === 1, "the first epoch's answer")
+    expect(server.subs).toEqual([{ session: SESSION, subject: relaySubject }])
+
+    const claim = "legion-legion-legion-208-implementer"
+    const bucketEpoch = "2026-11-13T16:21:44.123456789Z"
+    const reply = server.deliver(SESSION, {
+      headers: {
+        [TaskHeader.claim]: [claim],
+        [TaskHeader.epoch]: [bucketEpoch],
+        [TaskHeader.revision]: ["12"],
+        [TaskHeader.op]: ["put"],
+      },
+      data: JSON.stringify({ task: 4 }),
+    })
+    if (reply === undefined) {
+      throw new Error("the stand-in holds no relay subscription of the session")
+    }
+    await waitFor(async () => relayed.length === 1, "the task frame")
+    expect(relayed).toEqual([{ claim, epoch: bucketEpoch, revision: 12, op: "put", task: 4 }])
+    // A round trip after the frame: the listener has read every frame the session sent before it,
+    // and none of them answered the task frame.
+    await dialled.connection.flush()
+    expect(server.receipts.filter((receipt) => receipt.reply === reply)).toEqual([])
+    expect(server.refusedPublishes).toEqual([])
+    expect(epochs).toBe(1)
+
+    // The listener is stopping: the socket opens again at once and takes the subject again. The
+    // new epoch can be told from the registration's answer before the stand-in has read the
+    // socket's second sub, so the test waits for both.
+    server.close(1012, "listener_stopping")
+    await waitFor(
+      async () => epochs === 2 && server.subs.length === 2,
+      "the reopen's epoch and subscription",
+    )
+    expect(server.upgrades.filter((upgrade) => upgrade.status === 101)).toHaveLength(2)
+    expect(server.subs).toEqual([
+      { session: SESSION, subject: relaySubject },
+      { session: SESSION, subject: relaySubject },
+    ])
+    expect(relayed).toHaveLength(1)
   } finally {
     await session.shutdown()
   }

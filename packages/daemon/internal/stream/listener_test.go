@@ -466,6 +466,18 @@ func TestAHello2WithoutAnIdentityRegistersWithNone(t *testing.T) {
 	}
 }
 
+// A hello2's word that its shim's backlog is whole reaches the hello's event, and a hello2 that
+// says nothing of it — TestAHello2WithoutAnIdentityRegistersWithNone's — reaches it as false.
+func TestAHello2SayingItsBacklogIsWholeReportsIt(t *testing.T) {
+	h := startListener(t, harnessOptions{})
+	p := dial(t, h.listener.Addr())
+	p.send(shimwire.Hello2{BootToken: testToken, BacklogWhole: true})
+	p.expect(shimwire.TypeHelloAck)
+	if event := h.next(); event != (Hello{Claim: testClaim, Generation: testGeneration, BacklogWhole: true}) {
+		t.Fatalf("event = %#v, want Hello{%s, %d} saying the backlog is whole", event, testClaim, testGeneration)
+	}
+}
+
 func TestAV1HelloIsRefusedByName(t *testing.T) {
 	h := startListener(t, harnessOptions{})
 	p := dial(t, h.listener.Addr())

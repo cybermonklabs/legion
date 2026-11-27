@@ -31,9 +31,10 @@ import { configuredValue } from "./claude-session"
  *
  * The record lives in a file rather than a transcript entry, `<CLAUDE_CONFIG_DIR>/
  * legion-phase-stall-<session id>.json`. Nothing else writes that file: the Go bridge, which
- * wrote it until this change made it pure transport, is now only what carries a line into the
- * session. The path and the atomic rename are kept as the bridge left them, so a session carried
- * across the cutover from the build now in the pods still reads its record.
+ * wrote it until this change moved the phase-stall machine here, holds no phase rule now, and of a
+ * reminder it only carries the line into the session. The path and the atomic rename are kept as
+ * the bridge left them, so a session carried across the cutover from the build now in the pods
+ * still reads its record.
  *
  * The first reminder of a run is the `Stop` hook's `block`, which Claude Code turns into one more
  * turn of the same session. Every one after it is written into the session over the bridge's
@@ -45,15 +46,17 @@ import { configuredValue } from "./claude-session"
  * A turn Claude Code ended on an API error fires `StopFailure` rather than `Stop`, and that is
  * the provider refusing the turn: it earns no continuation, since the host would turn one into
  * another turn at once and the provider would refuse that one the same way. It does arm one
- * timer, because the task that refused turn carried ended with it and nothing else would wake
- * this worker, so a single transient refusal would otherwise leave the issue idle. What stops
- * the reminding for good is the runner's owed check: once the daemon has failed this role's
- * claim it answers that the claim owes nothing, and every reminder is dropped. The bridge reports
- * each turn's outcome to the daemon, with the status Claude Code named, and marks a turn no prompt
- * of the daemon's ran — a reminder written over the inbox — so the daemon judges that turn from
- * the report (dispatch://INFRA-4508): a refusal whose status cannot clear fails the claim at once
- * and holds the issue, and a refusal that can clear fails nothing, so the reminders keep their
- * pace. At six such turns in a row the daemon sends the `provider-errors` notice once
+ * timer, because a refused turn that carried no task leaves nothing else to wake this worker; a
+ * task's refused turn is woken by the daemon too, whose provider-error wait writes the task's value
+ * again once it is over, from the outcome the bridge reports with the provider's failure beside it
+ * (INFRA-714, dispatch://INFRA-956). What stops the reminding for good is the runner's owed
+ * check: once the daemon has failed this role's claim it answers that the claim owes nothing, and
+ * every reminder is dropped. The bridge reports each turn's outcome to the daemon with the
+ * provider's failure and the status Claude Code named, and names no task for a turn that was not
+ * its take's — a reminder written over the inbox — so the daemon judges that turn from the report
+ * (dispatch://INFRA-4508): a refusal whose status cannot clear fails the claim at once and holds
+ * the issue, and a refusal that can clear fails nothing, so the reminders keep their pace. At six
+ * such turns in a row the daemon sends the `provider-errors` notice once
  * (`providerErrorRunReached` in the daemon's `workflow.go` says to whom).
  */
 
@@ -160,14 +163,6 @@ export interface PhaseHookDeps {
    * reminder and the recreated-workspace notice both need the claim, and neither is sent before
    * one exists. Never rejects. */
   readonly booted: Promise<void>
-  /** A turn of this session has started, whatever started it: the daemon's task, an Envoy
-   * delivery, a reminder, a person. The channel server answers it by firing the claim boot's
-   * deferred role claim (`startLegionClaim`'s `onFirstTurn`), so the session takes its Envoy
-   * name inside a turn that is already running (INFRA-1573). It is called for every
-   * `UserPromptSubmit`, and the server decides which of them counts: one before the boot
-   * registered its step — the bridge's seeding `/rename` — signals nothing, and one after the
-   * name is taken costs nothing. */
-  readonly firstTurnStarted: () => void
   /** What this session's claim owes now (`LegionDaemonClient.owed`), the one answer that decides
    * whether a reminder goes out, aborted with `signal` once the check's bound passes
    * (`PhaseReminderDeps.readOwed`). An answer that does not arrive is the shared reminder's to
@@ -459,8 +454,9 @@ export function createPhaseHookEndpoint(deps: PhaseHookDeps): PhaseHookEndpoint 
     sendRecreatedNotice(claim.issue)
     // D10: a worker the daemon relaunched is reminded from a timer, since nothing else would wake
     // it, and the daemon's answer when it is due says whether anything is owed. The guard drops
-    // that timer when a turn started meanwhile, which is exactly the case to drop — the daemon
-    // re-sending an interrupted task arrives as a `UserPromptSubmit`.
+    // that timer when a turn started meanwhile, which is exactly the case to drop — a task the
+    // claim still owes, which the bridge takes once the ready has answered, arrives as a
+    // `UserPromptSubmit`.
     if (claim.role !== "architect") reminder.armResumeReminder()
   })
 
@@ -473,13 +469,6 @@ export function createPhaseHookEndpoint(deps: PhaseHookDeps): PhaseHookEndpoint 
       // itself: it is refused, and no state moves, so it cannot zero its own count.
       if (!parsed.success) return { error: PHASE_HOOK_REFUSAL }
       const event = parsed.data
-      // Before the gate below, and before anything else this endpoint does: the claim's own
-      // first-turn signal is not the reminder's business, and a turn is a turn whether or not a
-      // claim has registered yet (the bridge's seeding `/rename` turn runs before one has) and
-      // whatever role this pane holds, an architect's included. What a prompt before the boot
-      // registered its step comes to is the server's to decide, not this endpoint's: it holds
-      // the step the signal runs (`src/envoy-channel-server.ts`).
-      if (event.event === "UserPromptSubmit") deps.firstTurnStarted()
       // The same gate as `phaseWorkerSession` in `packages/pi-legion/extensions/legion.ts`: the
       // machine runs for a phase worker whose claim has booted, and for nobody else. The bridge's
       // seeding `/rename` turn is what writes the transcript the claim boot waits for
@@ -516,14 +505,15 @@ export function createPhaseHookEndpoint(deps: PhaseHookDeps): PhaseHookEndpoint 
           // `${last_assistant_message}` is then the error text itself rather than anything the
           // worker said ("Hooks reference", code.claude.com/docs/en/hooks). So this is the provider
           // refusing the turn, and the machine takes it as one: it earns no continuation, because
-          // the next turn would be refused the same way, and one timer, because nothing else would
-          // wake this worker once the task that turn carried ended with it. What ends the reminding
-          // is the daemon failing the claim, after which the timer's own owed check is answered
-          // that the claim owes nothing: it fails one at once for a refusal whose status cannot
-          // clear, the status the bridge reports beside the turn's outcome, a reminder's own turn
-          // included, and never for a refusal that can clear, of which the daemon sends the
-          // `provider-errors` notice at six in a row (dispatch://INFRA-4508;
-          // `providerErrorRunReached` in the daemon says to whom).
+          // the next turn would be refused the same way, and one timer, because a refused turn of
+          // no task leaves nothing else to wake this worker; a task's refused turn the daemon's
+          // provider-error wait gives again. What ends the reminding is the daemon failing the
+          // claim, after which the timer's own owed check is answered that the claim owes
+          // nothing: it fails one at once for a refusal whose status cannot clear, the status the
+          // bridge reports beside the turn's outcome, a reminder's own turn included, and never
+          // for a refusal that can clear, of which the daemon sends the `provider-errors` notice
+          // at six in a row (dispatch://INFRA-4508; `providerErrorRunReached` in the daemon says
+          // to whom).
           // Claude Code ignores whatever this hook returns, which costs nothing now that there
           // is nothing to return.
           await reminder.settle({ kind: "refused", message: event.lastAssistantMessage ?? "" })

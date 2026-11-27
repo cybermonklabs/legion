@@ -104,6 +104,9 @@ const host = {
     exitAsked.resolve();
     return ompHostStop();
   },
+  // The ready is refused before any take: no task's text runs and no drop is reported.
+  runTask: (): undefined => undefined,
+  reportDrop: async (): Promise<void> => undefined,
 };
 const context = {
   sessionManager: { getSessionId: () => SESSION },

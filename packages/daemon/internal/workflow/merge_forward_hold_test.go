@@ -23,24 +23,36 @@ import (
 )
 
 // heldIn is the hold of the merge forward of conflictHead onto main to role, the worker of at, for
-// why: the message that tells role to stop writing the workspace while another role merges.
+// why: the message that tells role to stop writing the workspace while another role merges. It
+// names GitHub's merge state of the read it rests on (dispatch://INFRA-2833 R3).
 func heldIn(role claim.Role, at phase.Phase, why record.ConflictWhy) record.MergeForwardMessage {
 	return record.MergeForwardMessage{Role: role, Step: record.MergeForwardHold, Head: conflictHead, Base: "main", Phase: at,
-		PullRequest: 42, Why: why}
+		PullRequest: 42, Why: why, MergeState: record.MergeStateDirty}
+}
+
+// afterRead is message, an ask or a hold, as the workflow sends it when the newest read of GitHub
+// the record holds of the head is not the one that confirmed the conflict: an ask and a hold name
+// that newest read (dispatch://INFRA-2833 R3), here GitHub's merge state state with no read time,
+// "" where the record holds no read of the head.
+func afterRead(message record.MergeForwardMessage, state record.MergeState) record.MergeForwardMessage {
+	message.MergeState = state
+	return message
 }
 
 // withdrawnIn is the implementer's withdrawal of the merge forward of conflictHead onto main, told
-// while the issue stands at at, for why: the message that the merge is no longer its work.
+// while the issue stands at at, for why: the message that the merge is no longer its work. It asks
+// for no merge, so it names no read of GitHub.
 func withdrawnIn(at phase.Phase, why record.ConflictWhy) record.MergeForwardMessage {
 	return record.MergeForwardMessage{Role: claim.RoleImplementer, Step: record.MergeForwardWithdrawn, Head: conflictHead, Base: "main",
 		Phase: at, PullRequest: 42, Why: why}
 }
 
 // mergerAsked is the merger's ask of the merge forward of conflictHead onto main in merging, where
-// the merge comes next.
+// the merge comes next, naming GitHub's merge state of the read it rests on (dispatch://INFRA-2833
+// R3).
 func mergerAsked() record.MergeForwardMessage {
 	return record.MergeForwardMessage{Role: claim.RoleMerger, Step: record.MergeForwardAsk, Head: conflictHead, Base: "main",
-		Phase: phase.Merging, PullRequest: 42, Why: record.ConflictMergeNext}
+		Phase: phase.Merging, PullRequest: 42, Why: record.ConflictMergeNext, MergeState: record.MergeStateDirty}
 }
 
 // approvesConflictHead is the reviewer's approval of conflictHead, a minute before the first read

@@ -25,9 +25,9 @@ import (
 // deadline, so only the bridge or the test's cleanup (startClaudeBridge kills the bridge's group)
 // ends it: one that ended on its own would end the bridge as if the bridge had stopped it.
 
-// The bridge blocked writing Claude Code a prompt it never reads, with no shim reading its frames:
-// SIGHUP still ends Claude Code, and the bridge exits and removes its inbox, whether its input has
-// ended first or is still open.
+// The bridge blocked writing Claude Code a user message it never reads, with no shim reading its
+// frames: SIGHUP still ends Claude Code, and the bridge exits and removes its inbox, whether its
+// input has ended first or is still open.
 func TestClaudeBridgeEndsAClaudeCodeItIsBlockedWritingTo(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -36,7 +36,7 @@ func TestClaudeBridgeEndsAClaudeCodeItIsBlockedWritingTo(t *testing.T) {
 	}{{"input ended", true}, {"input open", false}} {
 		t.Run(tc.name, func(t *testing.T) {
 			p := startClaudeBridge(t, "touch \"$CLAUDE_STANDIN_READY\"\nexec sleep 86400\n", goneShim(t))
-			p.blockOnAPrompt()
+			p.blockOnADelivery()
 			if tc.inputEnds {
 				_ = p.stdin.Close()
 			}
@@ -52,13 +52,13 @@ func TestClaudeBridgeEndsAClaudeCodeItIsBlockedWritingTo(t *testing.T) {
 	}
 }
 
-// The shim goes, both its pipes closed, while the bridge is blocked writing Claude Code a prompt it
-// never reads and a daemon frame follows the prompt: the end of the bridge's input alone, with no
+// The shim goes, both its pipes closed, while the bridge is blocked writing Claude Code a user
+// message it never reads and a daemon frame follows: the end of the bridge's input alone, with no
 // signal, ends Claude Code, and the bridge exits and removes its inbox.
 func TestClaudeBridgeEndsWithItsInputWhileBlockedWritingToClaudeCode(t *testing.T) {
 	t.Parallel()
 	p := startClaudeBridge(t, "touch \"$CLAUDE_STANDIN_READY\"\nexec sleep 86400\n", goneShim(t))
-	p.blockOnAPrompt()
+	p.blockOnADelivery()
 	p.send(shimwire.GetState{ID: "s1"})
 	_ = p.stdin.Close()
 	state, left := p.exit("its input ending")
@@ -178,11 +178,12 @@ func TestClaudeBridgeHoldsClaudeCodeWhileTheShimPauses(t *testing.T) {
 	}
 }
 
-// blockOnAPrompt sends the bridge a prompt larger than a pipe holds, for a Claude Code that reads
-// none of its stdin, and waits until the bridge's write of it into Claude Code's stdin is blocked.
-func (p *claudeBridgeProcess) blockOnAPrompt() {
+// blockOnADelivery sends the bridge an Envoy delivery larger than a pipe holds, for a Claude Code
+// that reads none of its stdin, and waits until the bridge's write of it into Claude Code's stdin
+// is blocked.
+func (p *claudeBridgeProcess) blockOnADelivery() {
 	p.t.Helper()
-	p.send(shimwire.Prompt{ID: "p1", DeliveryID: "d-p1", Message: strings.Repeat("x", 256<<10)})
+	p.deliver("ev1", strings.Repeat("x", 256<<10))
 	stdin, err := os.OpenFile(fmt.Sprintf("/proc/%d/fd/0", p.claudePID()), os.O_RDONLY|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		p.t.Fatalf("open Claude Code's stdin: %v", err)

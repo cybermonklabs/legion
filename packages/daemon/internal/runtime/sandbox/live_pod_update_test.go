@@ -10,10 +10,10 @@
 // drives them. The harness plays the sweep here as it plays the daemon's machine for boot tokens,
 // enrollments and sessions: it reads the drift, asks every worker of the pod, holds the pod while
 // one of them has not answered, and replaces it once both have. That is the round's early end as
-// far as the answers go: the daemon's own early end also waits while a turn runs or a claim's
-// activity report holds the round (internal/daemon's roundEnd.holding), and the bound that ends a
-// round whatever its workers answer (pod_update_grace_minutes) is the daemon's alone; that
-// package's tests pin both.
+// far as the answers go: the daemon's own early end also waits while a turn runs, a take whose
+// turn ended still owes its report or a claim's activity report holds the round (internal/daemon's
+// roundEnd.holding), and the bound that ends a round whatever its workers answer
+// (pod_update_grace_minutes) is the daemon's alone; that package's tests pin both.
 //
 // Every pod of the run runs a stub agent (live_test.go's header), which reads no task and answers
 // nothing, so each worker's own side of the round is carried out as that role's agent in the pod

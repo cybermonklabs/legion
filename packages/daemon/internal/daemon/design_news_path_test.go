@@ -32,7 +32,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
-	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
@@ -421,30 +420,92 @@ func (r *newsPathRig) seenSince(mark int64, match func(pathRow) bool) []pathRow 
 
 // connect is the worker of role on issue coming up on the process its start launched: its shim's
 // connection registers, it says hello, registers its session and says it is ready, as a launched
-// worker does. It answers the claim's machine and the connection the worker's prompts reach.
-func (r *newsPathRig) connect(issue string, role claim.Role) (*supervise.Machine, *fake.Conn) {
+// worker does. It answers the claim's machine and the worker's connection, through which the test
+// reads the takes the daemon accepted (newsConn.Prompts).
+func (r *newsPathRig) connect(issue string, role claim.Role) (*supervise.Machine, *newsConn) {
 	r.t.Helper()
 	return connectWorker(r.t, r.ctx, r.sup, issue, role)
 }
 
+// newsConn is the connection of a worker these cases bring up and the worker behind it, as the
+// worker takes its tasks (dispatch://INFRA-2811): it embeds the shim's fake connection, which
+// answers the daemon's asks (get_state), and Prompts is every take of the worker's the daemon
+// accepted, in order. The worker takes the task its claim holds where its plugin would — a task
+// pending and untaken, on a claim that is ready or idle, its host idle — whenever the test reads
+// what reached it. busy is the worker's host in a turn of its own, as the agent answers that it
+// streams (SetStreaming): it takes nothing until the host is idle again.
+type newsConn struct {
+	*fake.Conn
+	t       *testing.T
+	ctx     context.Context
+	machine *supervise.Machine
+	busy    bool
+	taken   []acceptedTake
+}
+
+// newNewsConn is the connection of machine's claim, registered on conns.
+func newNewsConn(t *testing.T, ctx context.Context, conns *fake.Conns, machine *supervise.Machine) *newsConn {
+	conn := &newsConn{Conn: fake.NewConn(), t: t, ctx: ctx, machine: machine}
+	conns.Register(machine.Claim().Token, conn.Conn)
+	newsConns.Store(machine, conn)
+	return conn
+}
+
+// newsConns is the worker connection of each machine a case brought up (newNewsConn), so a take
+// made through the rig's helpers (deliveredTask) is the worker's own and is listed by Prompts.
+var newsConns sync.Map
+
+// takeThrough has the worker of machine's claim take what its claim holds: through its connection
+// where the case brought one up, which records the take, else directly.
+func takeThrough(t *testing.T, machine *supervise.Machine) {
+	t.Helper()
+	if conn, ok := newsConns.Load(machine); ok {
+		conn.(*newsConn).Prompts()
+		return
+	}
+	takeOffered(context.Background(), t, machine)
+}
+
+// Prompts is every take of the worker's the daemon accepted, the worker first taking what its
+// claim holds now, if its host is idle (takeOffered). A take the design-news model's claim store
+// refused to record (errModelWrite) is the take the daemon refuses at its revision when it cannot
+// record it: the worker holds no text, and takes again once the value is written again.
+func (c *newsConn) Prompts() []acceptedTake {
+	c.t.Helper()
+	if !c.busy {
+		if taken, ok := takeOfferedUnless(c.ctx, c.t, c.machine, errModelWrite); ok {
+			c.taken = append(c.taken, taken)
+		}
+	}
+	return slices.Clone(c.taken)
+}
+
+// SetStreaming is the agent in a turn, or out of one, as it answers the daemon's get_state; while
+// it streams its host is busy, so the worker takes nothing.
+func (c *newsConn) SetStreaming(streaming bool) {
+	c.Conn.SetStreaming(streaming)
+	c.busy = streaming
+}
+
 // connectWorker is the worker of role on issue, under sup, coming up on the process its start
-// launched (newsPathRig.connect), its connection registered on sup's fake connections.
-func connectWorker(t *testing.T, ctx context.Context, sup *supervisor, issue string, role claim.Role) (*supervise.Machine, *fake.Conn) {
+// launched (newsPathRig.connect), its connection registered on sup's fake connections. Its plugin
+// declares the contract sup's dependencies state (Deps.PluginContract), which is none unless a
+// case sets one, as a worker whose plugin names its task's number does.
+func connectWorker(t *testing.T, ctx context.Context, sup *supervisor, issue string, role claim.Role) (*supervise.Machine, *newsConn) {
 	t.Helper()
 	token := mustClaimToken(t, issue, role)
 	machine, found := sup.Machine(token)
 	if !found {
 		t.Fatalf("no claim of %s's %s to connect: its start created none", issue, role)
 	}
-	conn := fake.NewConn()
-	sup.deps.Conns.(*fake.Conns).Register(token, conn)
+	conn := newNewsConn(t, ctx, sup.deps.Conns.(*fake.Conns), machine)
 	machine.Wait()
 	generation := machine.Claim().Generation
 	session := fmt.Sprintf("ses-%s-%s", strings.ToLower(issue), role)
 	for _, ev := range []supervise.Event{
 		supervise.StreamHello{Claim: token, Generation: generation},
 		supervise.RequestRegister{Claim: token, Generation: generation, Session: session, SessionFile: "/tmp/" + session + ".jsonl",
-			CapabilityHash: []byte("capability-of-" + session)},
+			CapabilityHash: []byte("capability-of-" + session), PluginContract: sup.deps.PluginContract},
 		supervise.RequestReady{Claim: token, Generation: generation, Session: session},
 	} {
 		if err := machine.Handle(ctx, ev); err != nil {
@@ -454,37 +515,41 @@ func connectWorker(t *testing.T, ctx context.Context, sup *supervisor, issue str
 	return machine, conn
 }
 
-// delivered waits for the task machine holds to reach the agent, and answers it.
+// delivered has the worker of machine's claim take the task its claim holds, and answers it.
 func (r *newsPathRig) delivered(machine *supervise.Machine) supervise.Delivery {
 	r.t.Helper()
 	return deliveredTask(r.t, machine)
 }
 
-// deliveredTask waits for the task machine holds to reach the agent, and answers it.
+// deliveredTask has the worker of machine's claim take the task its claim holds, where its plugin
+// would, and answers it taken: the take's counterpart of the push path's wait for the prompt to
+// reach the agent. A task taken already is answered as it is.
 func deliveredTask(t *testing.T, machine *supervise.Machine) supervise.Delivery {
 	t.Helper()
-	testwait.Eventually(t, "the task of "+string(machine.Claim().Token)+" to reach its agent", func() bool {
-		p := machine.Claim().Pending
-		return p != nil && !p.DeliveredAt.IsZero()
-	})
-	return *machine.Claim().Pending
+	takeThrough(t, machine)
+	p := machine.Claim().Pending
+	if p == nil || p.ConfirmedAt.IsZero() {
+		t.Fatalf("the task of %s = %+v, want it taken", machine.Claim().Token, p)
+	}
+	return *p
 }
 
-// startTurn is the agent beginning the turn that works the task it was sent, which confirms it.
+// startTurn is the agent beginning the turn of the take it was answered: the take's turn, which
+// starts the work of the task the take confirmed.
 func (r *newsPathRig) startTurn(machine *supervise.Machine) {
 	r.t.Helper()
 	held := machine.Claim()
-	if err := machine.Handle(r.ctx, supervise.StreamTurnStart{Claim: held.Token, DeliveryID: held.Pending.ID}); err != nil {
+	if err := machine.Handle(r.ctx, supervise.StreamTurnStart{Claim: held.Token}); err != nil {
 		r.t.Fatalf("start the turn of %s on %s: %v", held.Token, held.Pending.ID, err)
 	}
-	if confirmed := machine.Claim().Pending; confirmed == nil || confirmed.ConfirmedAt.IsZero() {
-		r.t.Fatalf("the turn's start left %s holding %+v, want its task confirmed", held.Token, confirmed)
+	if confirmed := machine.Claim().Pending; confirmed == nil || confirmed.ConfirmedAt.IsZero() || !confirmed.TurnStarted {
+		r.t.Fatalf("the turn's start left %s holding %+v, want its take's turn started", held.Token, confirmed)
 	}
 }
 
 // ownTurn is the agent of machine, holding no task, beginning a turn of its own — an Envoy
-// message's, a person's steer — which no prompt of the daemon's started: the claim is put in
-// working, and a task queued meanwhile waits for that turn's end.
+// message's, a person's steer — which no take started: the claim is put in working, and a task
+// queued meanwhile waits for that turn's end.
 func ownTurn(ctx context.Context, t *testing.T, machine *supervise.Machine, token claim.Token) {
 	t.Helper()
 	if held := machine.Claim(); held.Pending != nil {
@@ -498,8 +563,8 @@ func ownTurn(ctx context.Context, t *testing.T, machine *supervise.Machine, toke
 	}
 }
 
-// promptsAfter is each prompt conn carried after its first skip, in order.
-func promptsAfter(conn *fake.Conn, skip int) []fake.Prompt {
+// promptsAfter is each take conn's worker had accepted after its first skip, in order.
+func promptsAfter(conn *newsConn, skip int) []acceptedTake {
 	return conn.Prompts()[skip:]
 }
 
@@ -625,7 +690,7 @@ func TestATesterThatCompletesInTheTurnItsNewsWaitsBehindLeavesThatNewsToTheRevie
 			t.Fatalf("the reviewer's prompt = %q, want it to say %q", prompted[0].Message, want)
 		}
 	}
-	r.wantTold("after the reviewer's task was sent, before its turn took it", pathRoot, record.AudienceHolder, 4, true)
+	r.wantTold("after the reviewer's task was taken, before its turn started", pathRoot, record.AudienceHolder, 4, true)
 	r.startTurn(reviewer)
 	r.wantTold("after the reviewer's turn confirmed its task", pathRoot, record.AudienceHolder, 5, false)
 }
@@ -634,10 +699,10 @@ func TestATesterThatCompletesInTheTurnItsNewsWaitsBehindLeavesThatNewsToTheRevie
 // of its own, an Envoy message's, when a person approves version 5, so the news task the reconcile
 // queues for it is composed while the gate stands open, and says opened; it holds no task, so the
 // task waits for that turn's end. A writer then saves version 6, which closes the gate again,
-// before the turn ends. The turn's end is when the task is sent, and the send renders it again
+// before the turn ends. The turn's end is when the task is offered, and the take renders it again
 // from the record: the sentence says the gate closed and names version 6, with its reviewer, and
 // says nothing of an opening that no longer stands. The approval of version 5 still stands below
-// version 6, so its item is still told, and the confirmation raises it.
+// version 6, so its item is still told, and the start of the take's turn raises it.
 func TestANewsTaskComposedWhileTheGateStoodOpenAndSentAfterALaterVersionClosedItSaysClosed(t *testing.T) {
 	t.Parallel()
 	r := newNewsPathRig(t, 4, pathMember{key: pathRoot, at: phase.Testing})
@@ -660,7 +725,7 @@ func TestANewsTaskComposedWhileTheGateStoodOpenAndSentAfterALaterVersionClosedIt
 		t.Fatalf("the reviewer's news-only starts = %d, want the one the reconcile queued", len(got))
 	}
 	composed := reviewer.Claim().Pending
-	if composed == nil || !composed.DeliveredAt.IsZero() || !strings.Contains(composed.Task, "The design gate of LEGION-800 opened: a person approved version 5") {
+	if composed == nil || !composed.ConfirmedAt.IsZero() || !strings.Contains(composed.Task, "The design gate of LEGION-800 opened: a person approved version 5") {
 		t.Fatalf("the reviewer's news task as composed = %+v, want it held behind the turn, saying the gate opened at version 5", composed)
 	}
 
@@ -681,7 +746,7 @@ func TestANewsTaskComposedWhileTheGateStoodOpenAndSentAfterALaterVersionClosedIt
 	}
 	r.startTurn(reviewer)
 	if took, _ := r.toldOf(pathRoot, record.AudienceHolder).Took(record.DesignStepSpec); took != 5 {
-		t.Fatalf("the reviewer's holder took %d after the confirmation, want 5: the approval it told stands", took)
+		t.Fatalf("the reviewer's holder took %d after its take's turn started, want 5: the approval it told stands", took)
 	}
 }
 
@@ -718,7 +783,7 @@ func TestAnOwedMemberMovedIntoAcceptingIsToldByATaskToItsOwningArchitect(t *test
 			r.told(tc.accepting, record.AudienceHolder, 4)
 			r.told(pathRoot, record.AudienceArchitect, 5)
 			// The architects run: the root's, and the sub-architect's where the case has one.
-			architects := map[string]*fake.Conn{}
+			architects := map[string]*newsConn{}
 			for _, key := range []string{pathRoot, tc.owner} {
 				if _, started := architects[key]; started {
 					continue
@@ -860,7 +925,7 @@ func TestTheMergersStartIsHeldUntilTheChangeSetOfItsNewsIsRecorded(t *testing.T)
 					t.Fatalf("the merger's task = %q, want it to say %q", prompted[0].Message, want)
 				}
 			}
-			r.wantTold("before the merger's turn took its task", pathRoot, record.AudienceHolder, 4, false)
+			r.wantTold("after the merger's task was taken, before its turn started", pathRoot, record.AudienceHolder, 4, false)
 			r.startTurn(merger)
 			r.wantTold("after the merger's turn confirmed its task", pathRoot, record.AudienceHolder, 5, false)
 		})

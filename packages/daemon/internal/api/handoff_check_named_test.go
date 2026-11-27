@@ -85,7 +85,7 @@ func assertNoNamedFact(t *testing.T, h *harness, facts *factRecorder) {
 }
 
 func TestOneClaimsStepAndLookAreEachTheCallThatSaysSo(t *testing.T) {
-	for _, order := range []string{"step then look", "look then step", "step queued during look", "unconfirmed look"} {
+	for _, order := range []string{"step then look", "look then step", "step queued during look", "untaken look"} {
 		t.Run(order, func(t *testing.T) {
 			h, facts := newHandoffHarness(t, newHandoffGitHub(t), nil, nil)
 			seedIssueAt(t, h, "LEGION-208", phase.Testing)
@@ -133,16 +133,15 @@ func TestOneClaimsStepAndLookAreEachTheCallThatSaysSo(t *testing.T) {
 					t.Fatalf("pending = %+v, want testing", p)
 				}
 				look()
-			case "unconfirmed look":
+			case "untaken look":
 				if err := m.Handle(t.Context(), supervise.StreamTurnEnd{Claim: c.token}); err != nil {
 					t.Fatal(err)
 				}
-				id := "outbox:look:2"
-				if err := m.Handle(t.Context(), supervise.RequestDeliver{Claim: c.token, ID: id, Task: "check production", Generation: 1, CheckLook: supervise.CheckLook{Look: 2, OpenedAt: checkOpenedAt}}); err != nil {
+				if err := m.Handle(t.Context(), supervise.RequestDeliver{Claim: c.token, ID: "outbox:look:2", Task: "check production", Generation: 1, CheckLook: supervise.CheckLook{Look: 2, OpenedAt: checkOpenedAt}}); err != nil {
 					t.Fatal(err)
 				}
-				if err := m.Handle(t.Context(), supervise.PromptAcked{Claim: c.token, Generation: m.Claim().Generation, DeliveryID: id}); err != nil {
-					t.Fatal(err)
+				if p := m.Claim().Pending; p == nil || !p.ConfirmedAt.IsZero() || p.CheckLook.Look != 2 {
+					t.Fatalf("pending = %+v, want look 2's task queued and no take of it", p)
 				}
 				refused(t, completeCheck(h, HandoffCompleteRequest{GrantID: c.grant(t), Summary: "passes", Verdict: "pass"}, checkOpenedAt), http.StatusConflict, "CHECK_LOOK_NOT_SERVED")
 				assertNoNamedFact(t, h, facts)

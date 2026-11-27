@@ -222,7 +222,7 @@ func newClaimCompactionLive(t *testing.T) *claimCompactionLive {
 	r.overlays = r.writeOverlays(work)
 
 	r.rt = newLocalRuntime(t, r.cfg.StateDir, r.legion, omp, r.home, r.profile)
-	r.rt.daemonURL, r.rt.envoyURL, r.rt.natsURLs = r.cfg.DaemonURL, newPaneListener(t), r.cfg.NatsURLs
+	r.rt.daemonURL, r.rt.envoyURL, r.rt.natsURLs = r.cfg.DaemonURL, newPaneListener(t, r.cfg.NatsURLs), r.cfg.NatsURLs
 	r.rt.overlays = func(token claim.Token) []string { return r.overlays[token] }
 
 	r.seed()
@@ -375,21 +375,23 @@ func (r *claimCompactionLive) seed() {
 		if _, err := r.st.OpenTreeLifecycle(ctx, r.project, seeded.issue, treelifecycle.AuthorityWorkflow); err != nil {
 			t.Fatalf("open the lifecycle of %s: %v", seeded.issue, err)
 		}
-		r.seedClaim(ctx, seeded.issue, seeded.role, supervise.StateLaunching, "")
 		if seeded.role == claim.RoleArchitect {
+			r.seedClaim(ctx, seeded.issue, seeded.role, supervise.StateLaunching, "", 0)
 			continue
 		}
-		// Unconfirmed and unread: the launch this seed interrupts never put the task in front of
-		// an agent, so the relaunched pane is sent it once it reports ready.
+		// Untaken: the launch this seed interrupts never had the task taken, so the relaunched
+		// pane takes it once it reports ready. It is numbered as a claim's first task is queued
+		// (Claim.TaskWritten, Delivery.Number), so the boot writes its value to the task bucket.
+		r.seedClaim(ctx, seeded.issue, seeded.role, supervise.StateLaunching, "", 1)
 		token := r.token(seeded.issue, seeded.role)
 		if err := r.st.PutDelivery(ctx, token, supervise.Delivery{
 			ID: "seeded-start-" + randomSuffix(t), Task: startTask(seeded.role), Generation: 1,
-			Phase: seeded.at, QueuedAt: time.Now(),
+			Phase: seeded.at, QueuedAt: time.Now(), Number: 1, Origin: supervise.OriginPhaseStart,
 		}); err != nil {
 			t.Fatalf("record the task %s's start left pending: %v", token, err)
 		}
 	}
-	r.seedClaim(ctx, r.ladder, r.onClaude, supervise.StateRetired, "")
+	r.seedClaim(ctx, r.ladder, r.onClaude, supervise.StateRetired, "", 0)
 	r.note("seeded %s (%s, %s), %s (%s, %s), %s (%s, %s) and %s (%s, %s), each with its worker mid-launch — every phase "+
 		"worker holding the task its start left pending, which is what admission's repair of a slotted worker passes "+
 		"over — and %s's %s stopped",
@@ -404,14 +406,17 @@ func startTask(role claim.Role) string {
 	return "Say the word START-" + strings.ToUpper(string(role)) + " and nothing else."
 }
 
-// seedClaim records one claim of issue in state, with the prompt file every launch reads.
-func (r *claimCompactionLive) seedClaim(ctx context.Context, issue string, role claim.Role, state supervise.ClaimState, by supervise.SuspendSource) {
+// seedClaim records one claim of issue in state, with the prompt file every launch reads, its
+// record's task number at written (Claim.TaskWritten), the number of the task the seed leaves
+// pending on it, or 0 for none.
+func (r *claimCompactionLive) seedClaim(ctx context.Context, issue string, role claim.Role, state supervise.ClaimState,
+	by supervise.SuspendSource, written uint64) {
 	t := r.t
 	t.Helper()
 	token := r.token(issue, role)
 	if _, err := r.st.AdmitClaim(ctx, supervise.Claim{
 		Token: token, Project: r.project, Tree: issue, Issue: issue, Role: role,
-		Generation: 1, State: state, SuspendedBy: by,
+		Generation: 1, State: state, SuspendedBy: by, TaskWritten: written,
 		BootTokenHash: supervise.HashBootToken("seeded-" + randomSuffix(t)), ServingGeneration: 1,
 	}); err != nil {
 		t.Fatalf("record the claim %s: %v", token, err)
@@ -457,8 +462,9 @@ func (r *claimCompactionLive) overlaysAreTheDeployments() {
 // operatorCompactsAPhaseWorker drives `legion claims compact` — the built binary against the
 // booted daemon — at an idle phase worker the provider-error ladder holds, and reads back what
 // the operation promises: the worker keeps its session, that session holds a compaction entry
-// Oh My Pi's handoff wrote, and the task the claim owes is sent once and only after the
-// compaction, inside the ladder's own first rung and so by the compaction and not the wait.
+// Oh My Pi's handoff wrote, and the task the claim owes untaken is offered once — its value
+// written once and its take accepted once — and only after the compaction, inside the ladder's
+// own first rung and so by the compaction and not the wait.
 func (r *claimCompactionLive) operatorCompactsAPhaseWorker() {
 	t := r.t
 	token := r.token(r.ladder, claim.RolePlanner)
@@ -524,27 +530,29 @@ func (r *claimCompactionLive) operatorCompactsAPhaseWorker() {
 		t.Fatalf("the owed task ran a turn at %s, before the compaction ended at %s", again.at, ended.at)
 	}
 	// Only after the compaction, and only once: the ladder's wait is what would otherwise have
-	// sent this task, and it sent nothing between the turn that armed it and this one. That is
-	// read from the daemon's own record of every such send rather than from the clock, so a
-	// compaction slower than the rung does not fail the proof for the wrong reason.
-	if sends := r.logs(func(record loggedRecord) bool {
-		return record.Message == "supervise: the wait after a provider error is over; the task goes again" &&
+	// offered this task again, and it offered nothing between the turn that armed it and this one.
+	// That is read from the daemon's own record of every such offer rather than from the clock, so
+	// a compaction slower than the rung does not fail the proof for the wrong reason.
+	if offers := r.logs(func(record loggedRecord) bool {
+		return record.Message == providerWaitOverMessage &&
 			record.Attrs["claim"] == string(token) && record.at.After(errored.at) && record.at.Before(again.at)
-	}); len(sends) != 0 {
-		t.Fatalf("the ladder's wait sent the task %d times before the compaction's own send did", len(sends))
+	}); len(offers) != 0 {
+		t.Fatalf("the ladder's wait offered the task %d times before the compaction's own offer did", len(offers))
 	}
 	if again.Attrs["providerErrorRun"] != float64(1) {
 		t.Fatalf("the turn after the compaction counts providerErrorRun %v, want 1: the compaction put the run back to zero",
 			again.Attrs["providerErrorRun"])
 	}
-	// Once: the daemon's own record of every turn this task's prompt ran. The stand-in's request
+	// Once: the daemon's own record of every turn this task's text ran. The stand-in's request
 	// count is the host's behaviour — a turn carries side requests of Oh My Pi's own, and a later
-	// release can carry others — where the send is the daemon's act and the daemon writes it down.
+	// release can carry others — where the offer and the take are the daemon's acts and the
+	// daemon writes them down (offeredOnce).
 	if turns := r.erroredTurns(token); len(turns) != 2 {
-		t.Fatalf("the daemon ran %d turns of the owed task, want 2: the first send and the compaction's own", len(turns))
+		t.Fatalf("the daemon ran %d turns of the owed task, want 2: the first take's and the one after the compaction", len(turns))
 	}
-	r.note("the owed task went again %s after the turn that armed the ladder's %s rung and %s after the compaction ended, "+
-		"once by the daemon's own count of the turns it ran, with the ladder's own wait having sent nothing in between; "+
+	r.offeredOnce(token, ended, again)
+	r.note("the owed task ran again %s after the turn that armed the ladder's %s rung and %s after the compaction ended, "+
+		"once by the daemon's own count of the turns it ran, with the ladder's own wait having offered nothing in between; "+
 		"the stand-in answered %d requests carrying the task across those two turns",
 		again.at.Sub(errored.at).Round(time.Millisecond), ladderDelays[0], again.at.Sub(ended.at).Round(time.Millisecond),
 		r.pane(token).stand.turnsHolding(marker))
@@ -590,10 +598,11 @@ func (r *claimCompactionLive) controllerCompactsAndIsToldTwice() {
 	if ended.Attrs["providerErrorRun"] != float64(0) {
 		t.Fatalf("the compaction left providerErrorRun %v, want it back to zero", ended.Attrs["providerErrorRun"])
 	}
-	// The owed task the compaction sent again is the first of the six turns that earn the second
-	// notice: it ends in the same 529, so the run starts over at one.
-	r.awaitErroredTurnFrom(token, 1, from, ladderDelays[0]+time.Minute)
-	r.note("the compaction put the run back to zero and sent the owed task again, whose turn starts the next run at 1")
+	// The owed task the compaction offered again is the first of the six turns that earn the
+	// second notice: it ends in the same 529, so the run starts over at one.
+	again := r.awaitErroredTurnFrom(token, 1, from, ladderDelays[0]+time.Minute)
+	r.offeredOnce(token, ended, again)
+	r.note("the compaction put the run back to zero and offered the owed task again, whose turn starts the next run at 1")
 	for run := 2; run <= 6; run++ {
 		r.erroredTurn(token, run)
 	}
@@ -686,7 +695,9 @@ func (r *claimCompactionLive) heldSummaryOutlastsTheTimeout() {
 	go func() {
 		// --wait past the held handoff: `legion claims compact` waits one minute by default, and
 		// Oh My Pi writes the handoff document in one request, held for compactHeldSummary, so
-		// the compaction answers after about 35 s.
+		// the compaction answers after about 35 s. The command's --wait is a client bound apart
+		// from the daemon's own CompactTimeout, so it is given room past that or it would give up
+		// on a compaction that is still running as the step intends.
 		out, err := r.legionClaimsTry("compact", "--claim", string(token), "--wait", (4 * compactHeldSummary).String())
 		answered <- compactRun{out: out, err: err}
 	}()
@@ -722,23 +733,27 @@ func (r *claimCompactionLive) heldSummaryOutlastsTheTimeout() {
 		run.out, waited.Round(time.Second), r.cfg.WorkerRPCTimeout)
 	stand.answerSummary()
 
+	ended := r.awaitLogFrom("the compaction to end", from, time.Minute, func(record loggedRecord) bool {
+		return record.Message == "supervise: the compaction of the claim's session is over" && record.Attrs["claim"] == string(token)
+	})
 	again := r.awaitLogFrom("the owed task's next turn", from, 2*time.Minute, func(record loggedRecord) bool {
 		return record.Message == providerErroredMessage && record.Attrs["claim"] == string(token) && record.at.After(started)
 	})
 	// Once, and by the daemon's own count of the turns it ran: the ladder's own first rung came
-	// due while the compaction held the claim, and a claim being compacted is handed nothing.
+	// due while the compaction held the claim, and a claim being compacted takes nothing.
 	if turns := r.erroredTurns(token); len(turns) != 2 {
-		t.Fatalf("the daemon ran %d turns of the owed task, want 2: the first send and the compaction's own", len(turns))
+		t.Fatalf("the daemon ran %d turns of the owed task, want 2: the first take's and the one after the compaction", len(turns))
 	}
 	if sends := r.logs(func(record loggedRecord) bool {
-		return record.Message == "supervise: the wait after a provider error is over; the task goes again" &&
+		return record.Message == providerWaitOverMessage &&
 			record.Attrs["claim"] == string(token) && record.at.After(errored.at) && record.at.Before(again.at)
 	}); len(sends) == 0 {
 		t.Fatalf("the ladder's %s rung never came due inside the %s the summary was held for", ladderDelays[0], compactHeldSummary)
 	}
-	r.note("the ladder's own %s rung came due while the compaction held the claim and sent nothing; the owed task went at the "+
-		"compaction's end, %s after the turn that armed the ladder, once by the daemon's own count of the turns it ran",
-		ladderDelays[0], again.at.Sub(errored.at).Round(time.Second))
+	r.offeredOnce(token, ended, again)
+	r.note("the ladder's own %s rung came due while the compaction held the claim, and no take of the task was accepted under "+
+		"the compaction; the owed task was offered at the compaction's end, %s after the turn that armed the ladder, and ran once "+
+		"by the daemon's own count of the turns it ran", ladderDelays[0], again.at.Sub(errored.at).Round(time.Second))
 }
 
 // everyRefusalGetsItsMessage drives, through both doors, every case the compaction refuses before
@@ -750,7 +765,7 @@ func (r *claimCompactionLive) everyRefusalGetsItsMessage() {
 	tester := r.token(r.refusing, claim.RoleTester)
 	stand := r.pane(tester).stand
 
-	// A handoff the endpoint refuses every time: reported to the caller, with the owed task sent
+	// A handoff the endpoint refuses every time: reported to the caller, with the owed task offered
 	// again all the same, which is the operation's whole promise.
 	stand.refuseSummary()
 	from := r.daemon.count()
@@ -774,19 +789,30 @@ func (r *claimCompactionLive) everyRefusalGetsItsMessage() {
 		ended.Attrs["providerErrorRun"])
 	stand.answerSummary()
 
-	// A worker in a turn of its own: the stand-in holds the turn open, so the claim is working
-	// when the request arrives.
+	// A take accepted when the compaction is asked for, as the real host makes one: the plugin
+	// takes the task and hands its text to Oh My Pi at once, and the stand-in holds the turn open,
+	// so the claim is working, in the take's turn, when the request arrives. Through both doors it
+	// is refused CLAIM_IN_A_TURN, and the task has one accepted take, one turn of its number and
+	// one report that finishes it, in the same session. A take accepted before Oh My Pi admitted
+	// its text, under a handoff held past the take, is no state this rig can make (the script's
+	// header says why): internal/daemon's handoff rows drive it over the wire (H6, H7).
 	stand.holdTurn()
+	session, since := r.claim(tester).Session, time.Now()
+	taken := r.daemon.count()
 	r.deliver(tester, "Say the word HELD-"+randomSuffix(t)+" and nothing else.")
 	r.await(string(tester)+" to be in a turn", 2*time.Minute, func() bool {
 		return r.claim(tester).State == string(supervise.StateWorking)
 	})
-	r.refusedThroughBothDoors("a worker in a turn of its own", compactDoors, tester, r.refusing, claim.RoleTester,
+	r.refusedThroughBothDoors("a worker in the turn of a take it was answered", compactDoors, tester, r.refusing, claim.RoleTester,
 		http.StatusConflict, "CLAIM_IN_A_TURN", "is stored working: if a turn of it is running, Oh My Pi refuses a compaction's handoff in that turn")
 	stand.releaseTurn()
+	finished := r.awaitLogFrom("the take's report to finish its task", taken, 2*time.Minute, func(record loggedRecord) bool {
+		return record.Message == "supervise: a task was finished" && record.Attrs["claim"] == string(tester)
+	})
 	r.await(string(tester)+"'s turn to end", 2*time.Minute, func() bool {
 		return r.claim(tester).State != string(supervise.StateWorking)
 	})
+	r.heldOnceAndFinished(tester, since, finished, session)
 
 	// A role the configuration runs on Claude Code, which keeps no Oh My Pi session at all. The
 	// claim runs nothing and never has: the refusal comes before the backend is used for anything.
@@ -819,10 +845,11 @@ func (r *claimCompactionLive) everyRefusalGetsItsMessage() {
 	// A suspended, a stopped and a failed claim: each runs no Oh My Pi session, so each is told
 	// what starts it again instead. For the stopped and the failed claim that is the fresh session,
 	// through both doors. The suspended claim is the operator's own suspension (`legion claims
-	// suspend`), which the controller may not get past: the controller's door names the operator's
-	// resume and no fresh session, since its fresh_session of that agent is refused
-	// SUSPENDED_BY_OPERATOR (api's holdSentences; TestTheControllersCompactionIsNotRefusedTheOperatorsSuspension),
-	// while the operator's door names the fresh session.
+	// suspend`, cybermonklabs/legion#4065), which the controller may not get past: the controller's
+	// door names the operator's resume and no fresh session, since its fresh_session of that agent
+	// is refused SUSPENDED_BY_OPERATOR (api's holdSentences;
+	// TestTheControllersCompactionIsNotRefusedTheOperatorsSuspension), while the operator's door
+	// names the fresh session.
 	implementer := r.token(r.notice, claim.RoleImplementer)
 	r.note("%s", r.legionClaims("suspend", "--claim", string(implementer)))
 	r.await(string(implementer)+" to be suspended", 2*time.Minute, func() bool {
@@ -831,7 +858,8 @@ func (r *claimCompactionLive) everyRefusalGetsItsMessage() {
 	r.refusedThroughEachDoor("a worker the operator suspended", compactDoors, implementer, r.notice, claim.RoleImplementer,
 		http.StatusConflict, "CLAIM_NOT_RUNNING",
 		[]string{string(supervise.StateSuspended), compactNamesFreshSession},
-		[]string{string(supervise.StateSuspended), "`legion claims resume --claim " + string(implementer) + "`"},
+		[]string{string(supervise.StateSuspended), "held by the operator's own suspension, which only the operator lifts",
+			"`legion claims resume --claim " + string(implementer) + "`"},
 		"fresh_session")
 
 	// The ladder's planner is finished with: its kept task is answered first, so step 7 can read
@@ -1186,9 +1214,60 @@ func (r *claimCompactionLive) erroredTurn(token claim.Token, run int) (string, *
 	return marker, r.awaitErroredTurnFrom(token, run, from, 4*time.Minute)
 }
 
+// offeredOnce holds that the task the claim owed untaken went to it once after the compaction that
+// ended at ended and before the turn that ran it (ran): the daemon wrote its value once and
+// accepted one take of it in that window, by its own lines. The worker takes its task
+// (dispatch://INFRA-2811), so the offer and the take are the daemon's acts this counts, where
+// erroredTurns counts the turns the text ran.
+func (r *claimCompactionLive) offeredOnce(token claim.Token, ended, ran *loggedRecord) {
+	r.t.Helper()
+	within := func(record loggedRecord) bool {
+		return record.Attrs["claim"] == string(token) && !record.at.Before(ended.at) && !record.at.After(ran.at)
+	}
+	writes := r.logs(func(record loggedRecord) bool {
+		return record.Message == "supervise: a task value was written" && within(record)
+	})
+	takes := r.logs(func(record loggedRecord) bool {
+		return record.Message == "supervise: a take was answered" && record.Attrs["outcome"] == string(supervise.TakeOutcomeAccepted) && within(record)
+	})
+	if len(writes) != 1 || len(takes) != 1 {
+		r.t.Fatalf("between the compaction's end and the owed task's turn the daemon wrote its value %d times and accepted %d takes of it, want one of each",
+			len(writes), len(takes))
+	}
+	r.note("%s's owed task was offered once after the compaction (value written for %v) and taken once (task %v)",
+		token, writes[0].Attrs["cause"], takes[0].Attrs["task"])
+}
+
+// heldOnceAndFinished holds that the task whose finish is finished, the one the claim took since,
+// had one accepted take, one turn of its number and one finish, and that the claim holds nothing
+// and kept session.
+func (r *claimCompactionLive) heldOnceAndFinished(token claim.Token, since time.Time, finished *loggedRecord, session string) {
+	r.t.Helper()
+	number := finished.Attrs["task"]
+	count := func(message string, also func(loggedRecord) bool) int {
+		return len(r.logs(func(record loggedRecord) bool {
+			return record.Message == message && record.Attrs["claim"] == string(token) && record.at.After(since) &&
+				record.Attrs["task"] == number && also(record)
+		}))
+	}
+	every := func(loggedRecord) bool { return true }
+	takes := count("supervise: a take was answered", func(record loggedRecord) bool {
+		return record.Attrs["outcome"] == string(supervise.TakeOutcomeAccepted)
+	})
+	turns, finishes := count("supervise: a turn started", every), count("supervise: a task was finished", every)
+	if takes != 1 || turns != 1 || finishes != 1 {
+		r.t.Fatalf("task %v of %s had %d accepted takes, %d turns and %d finishes, want one of each", number, token, takes, turns, finishes)
+	}
+	if held := r.claim(token); held.Session != session || held.Pending != nil {
+		r.t.Fatalf("%s is on session %s holding %+v after its take's turn, want session %s holding nothing", token, held.Session, held.Pending, session)
+	}
+	r.note("task %v of %s had one accepted take, one turn and one finish (by %v), in session %s, with both compactions refused in that turn",
+		number, token, finished.Attrs["by"], session)
+}
+
 // erroredTurns is every turn of the claim the daemon has read a provider error from, oldest
 // first: the daemon's own count of the times it put this claim's task in front of its agent and
-// the provider refused, which is what "the task was sent once" is a statement about.
+// the provider refused, which is what "the task ran once" is a statement about.
 func (r *claimCompactionLive) erroredTurns(token claim.Token) []loggedRecord {
 	return r.logs(func(record loggedRecord) bool {
 		return record.Message == providerErroredMessage && record.Attrs["claim"] == string(token)

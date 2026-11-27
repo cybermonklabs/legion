@@ -25,6 +25,7 @@ import (
 	"k8s.io/client-go/rest"
 	k8stesting "k8s.io/client-go/testing"
 
+	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/clock/clocktest"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
@@ -2237,8 +2238,9 @@ func loggedSandboxMachine(
 		Timeouts: supervise.Timeouts{
 			Boot: time.Hour, RegistrationIntervals: 1, RPC: time.Hour, Probe: time.Hour, Stop: time.Hour, LaunchBackoff: time.Millisecond,
 		},
-		PluginContract: 24,
-		RefreshGate:    supervise.NewRefreshGate(0),
+		PluginContract:   24,
+		TaskTakeContract: api.TaskTakeContract(),
+		RefreshGate:      supervise.NewRefreshGate(0),
 	}, c)
 	if err != nil {
 		t.Fatalf("new Machine: %v", err)

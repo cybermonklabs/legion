@@ -1,0 +1,7 @@
+kind: Changed
+body: |-
+  `LegionTurnOutcomeRequest.code` accepts `cost_cap` at the task-take contract entry
+  (20261125171504). A cost-cap report can name a take that did not start a turn.
+time: 2026-11-26T21:00:00Z
+custom:
+  Issue: pr3993

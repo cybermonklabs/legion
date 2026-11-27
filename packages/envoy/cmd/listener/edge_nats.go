@@ -3,7 +3,8 @@ package main
 // edge_nats.go is what an edge listener does differently on NATS, so that it runs under the edge's
 // grant (natsgrant.Edge) and asks the server for nothing that grant leaves out: every connection
 // names its inboxes under its machine's prefix, the main client reads the stream and never
-// creates or changes it, and the start opens no role lane and publishes no Legion wake report. Its
+// creates or changes it, and the start opens no role lane, publishes no Legion wake report and
+// runs no task relay (startTaskRelay). Its
 // delivery handlers keep no role message and hand no kept lane over, and publish a delivery
 // exception only on a lane the grant holds (edgeGrant). main builds the edgeGrant once, when
 // ENVOY_EDGE_PROJECTS names a project, and every part of the listener that differs at the edge

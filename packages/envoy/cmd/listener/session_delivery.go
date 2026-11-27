@@ -312,6 +312,11 @@ type sessionDelivery struct {
 	// grantProbeMu holds one probe of the grant at a time (holdsConsumerGrant), so callers that ask
 	// together, a sweep and the handovers of claims granted at once, send one read between them.
 	grantProbeMu sync.Mutex
+	// grantHeld is closed, once (grantHeldOnce), when a session consumer call of this listener has
+	// succeeded: its NATS user holds the session consumers' calls, so this listener gives its
+	// sessions consumer delivery (consumerGrantHeld).
+	grantHeld     chan struct{}
+	grantHeldOnce sync.Once
 }
 
 // admitHeld records the projects of r's broker token as sessionID's latest admission at the edge
@@ -402,7 +407,7 @@ func connectSessionDelivery(urls []string, inactiveThreshold time.Duration, stre
 	// it and one whose connection failed logs no threshold at all.
 	logger.Info("session consumer inactive threshold resolved; the server removes a session consumer this long after its last pull, which stands above the sweep's own bound",
 		slog.String("inactive_threshold", inactiveThreshold.String()))
-	return &sessionDelivery{consumers: consumers, stream: stream, logger: logger, now: time.Now}, nil
+	return &sessionDelivery{consumers: consumers, stream: stream, logger: logger, now: time.Now, grantHeld: make(chan struct{})}, nil
 }
 
 // close closes the session-consumer connection, if one is open.
@@ -1085,13 +1090,35 @@ func (m *sessionDelivery) refusingAt(now time.Time) bool {
 }
 
 // granted ends a refusal episode once a consumer call succeeds: the grant now carries session
-// consumers, and a later refusal is logged again.
+// consumers, and a later refusal is logged again. It also says this listener gives consumer
+// delivery (markConsumerGrantHeld).
 func (m *sessionDelivery) granted() {
 	m.grantMu.Lock()
-	defer m.grantMu.Unlock()
 	m.noGrantUntil = time.Time{}
 	m.noGrantLogged = false
 	m.grantedAt = m.now()
+	m.grantMu.Unlock()
+	m.markConsumerGrantHeld()
+}
+
+// markConsumerGrantHeld records that a session consumer call of this listener succeeded: granted's
+// record of a registration's, a delete's or a grant probe's call (holdsConsumerGrant), and the list
+// of the session consumers that gaining the durable binding reads (sessionRelays.listConsumers),
+// which ends no refusal episode of the creates, since a grant may allow the list and refuse them.
+// Any of them says the NATS user holds the session consumers' calls, which only the grant of a
+// listener that gives its sessions consumer delivery holds (natsgrant.Listener and
+// natsgrant.ListenerHost). The server's answer is how this listener learns it gives consumer
+// delivery: nothing in its configuration says so, and a listener connecting as a host or Dispatch
+// user is refused every one of those calls. consumerGrantHeld is closed from here on.
+func (m *sessionDelivery) markConsumerGrantHeld() {
+	m.grantHeldOnce.Do(func() { close(m.grantHeld) })
+}
+
+// consumerGrantHeld is closed once a session consumer call of this listener has succeeded
+// (markConsumerGrantHeld): from then on the listener gives its sessions consumer delivery, and the
+// task relay, which relays only to such sessions, opens the task bucket (taskRelay.run).
+func (m *sessionDelivery) consumerGrantHeld() <-chan struct{} {
+	return m.grantHeld
 }
 
 // grantKnown is the grant's answer while one stands, under one hold of grantMu: no while a refusal

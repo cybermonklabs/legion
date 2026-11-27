@@ -520,8 +520,11 @@ machine turns Envoy off as a whole, its tools included, a NATS server named or n
 would cross the network unencrypted; a conflict with a NATS server is named first; this machine's
 own listener may be plain http, and a session not set to `listener` keeps plain http); the
 socket carries no live view, so the session opens none and the start notice says so (the
-`@legion/envoy-client` README, "The listener's relay socket"). `DISPATCH_TOKEN_FILE` (a path whose trimmed contents are the token — how the
-Legion daemon delivers it to a pane) never falls back when unreadable. Omitting
+`@legion/envoy-client` README, "The listener's relay socket"). A Legion claim's task value rides
+the same relay subject, so the Legion entry takes it over the socket as over NATS, and reads it
+again from the daemon after each reopen (`@legion/pi-shared/task-values`). `DISPATCH_TOKEN_FILE`
+(a path whose trimmed contents are the token — how the Legion daemon delivers it to a pane) never
+falls back when unreadable. Omitting
 `dispatch.serverUrl` while `dispatch.enabled` is true targets `http://localhost:8766`, the Go
 server's listen address. With Envoy off the session has no Envoy tools and takes no inbound
 messages; with Envoy on and no NATS server, or with its NATS seed refused (a seed that pairs with

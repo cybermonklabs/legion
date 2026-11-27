@@ -97,6 +97,9 @@ func claimWithEveryFieldSet(t *testing.T) supervise.Claim {
 		Generation: 3, TreeEpoch: 2,
 		Session: "ses_implementer_500", SessionFile: "/var/lib/legion/sessions/ses_implementer_500.jsonl",
 		ServingGeneration: 2, GivenEntry: 7, ServedEntry: 6,
+		TaskWritten: 5, TaskTaken: 5, TaskFinished: 4, TaskFinishedSession: "ses_implementer_500",
+		TaskSeenRevision: supervise.TaskRevision{Epoch: "2026-11-02T08:00:00.123456789Z", Revision: 41},
+		TaskTakeState:    supervise.TakeAccepted, TaskWrittenRevision: supervise.TaskRevision{Epoch: "2026-11-02T08:00:00.123456789Z", Revision: 41},
 		Handshake:        supervise.EntryHandshake{Entry: 7, Generation: 3, QueuedAt: queuedAt, ConfirmedAt: openedAt},
 		ServingCheckLook: supervise.CheckLook{Look: 2, OpenedAt: openedAt},
 		LastStartRow:     811, DeliveredRows: []int64{809, 811},
@@ -119,7 +122,9 @@ func claimWithEveryFieldSet(t *testing.T) supervise.Claim {
 			ID: "dlv-9", Task: "implement the change, which no agent surface carries",
 			Generation: 3, Entry: 8, Phase: phase.Implementing, QueuedAt: queuedAt,
 			SendFailures: 2, LastSendFailureAt: at.Add(-5 * time.Minute),
-			LastSendError: "post to the worker stream: connection refused",
+			LastSendError: "worker-stream: legion-legion-legion-500-implementer refused adopt-working-copy: " +
+				"Command failed (exit 1): jj metaedit: the git lock /legion/workspaces/acme/widgets/legion-500/.git/index.lock " +
+				"was last written 31m ago",
 		},
 		BootTokenHash: []byte{0xb0, 0x07}, CapabilityHash: []byte{0xca, 0xfe},
 		UncertainStreak: 1,
@@ -134,6 +139,7 @@ func claimWithEveryFieldSet(t *testing.T) supervise.Claim {
 			},
 		},
 		RegisteredPods: supervise.RegisteredPods{Pods: []string{podUID}, Unknown: true},
+		ReportOwed:     true,
 		PluginContract: DaemonAPIVersion(), PluginRelaunchFor: DaemonAPIVersion() - 1, AgentResumeGeneration: 3,
 		UpdateRound: "pod:" + podUID, UpdateReasons: "the pod template changed: the image moved",
 		UpdateRepository: ghrepo.MustParse("acme/widgets"),
@@ -152,7 +158,8 @@ func claimWithEveryFieldSet(t *testing.T) supervise.Claim {
 		TurnOutcomes: []supervise.TurnOutcome{{
 			Generation: 3, Sequence: 2, Refused: true, Message: "the provider refused this turn",
 		}},
-		Abandoned: supervise.AbandonedSession{Session: "ses_implementer_499", Why: "the provider refused every turn of it", At: at.Add(-time.Hour)},
+		TurnOutcomeMark: supervise.TurnOutcomeKey{Generation: 3, Sequence: 1},
+		Abandoned:       supervise.AbandonedSession{Session: "ses_implementer_499", Why: "the provider refused every turn of it", At: at.Add(-time.Hour)},
 		SessionRun: supervise.SessionRun{Ends: 1, Endings: []string{"its process died after the controller was ready: gone: OOMKilled"},
 			TurnFinished: true},
 		EndedWork: supervise.EndedWork{At: at.Add(-40 * time.Minute), Cause: "the process died: gone: OOMKilled",

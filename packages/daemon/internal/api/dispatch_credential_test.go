@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"slices"
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -94,19 +95,25 @@ func TestTheDispatchCredentialIsStrippedBelowItsContract(t *testing.T) {
 	}
 
 	// A caller at the contract stands below no frozen row, so no line says it dropped
-	// dispatchCredential: the lines it is written are the bands' above it (narrowingsExpected). It
-	// reads carriedState, as TestAnOlderPluginContractGetsTheStateWithoutIntakeGiveUps does.
+	// dispatchCredential: the lines it is written are the bands' above it (narrowingsExpected),
+	// gateBasisContract's and the P0 bound's among them, each of which writes its own line
+	// (narrowing_test.go reads gateBasisContract's), whatever their number. It reads carriedState,
+	// as TestAnOlderPluginContractGetsTheStateWithoutIntakeGiveUps does.
 	carried := carriedState(t)
 	at, narrowings := stateNarrowedStating(t, carried, "192.0.2.1:4100", podClaims(memoryContract-1), dispatchCredentialContract)
 	if _, served := dispatchCredentialServed(t, at); !served {
 		t.Errorf("a caller stating %d is served no dispatchCredential: %s", dispatchCredentialContract, at)
+	}
+	want := narrowingsExpected(carried, dispatchCredentialContract)
+	if slices.Contains(want, "dispatchCredential") {
+		t.Fatalf("a caller stating %d expects the lines %v, want none of the Dispatch credential's", dispatchCredentialContract, want)
 	}
 	for _, line := range narrowings {
 		if line.Dropped == "dispatchCredential" {
 			t.Errorf("a caller stating %d is told it lost dispatchCredential: %+v", dispatchCredentialContract, narrowings)
 		}
 	}
-	wantNarrowings(t, narrowings, dispatchCredentialContract, narrowingsExpected(carried, dispatchCredentialContract))
+	wantNarrowings(t, narrowings, dispatchCredentialContract, want)
 
 	operator, _ := stateNarrowed(t, state, "192.0.2.1:4100", podClaims(memoryContract-1))
 	if _, carried := dispatchCredentialServed(t, operator); !carried {

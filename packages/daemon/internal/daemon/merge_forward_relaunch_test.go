@@ -203,6 +203,44 @@ func TestTheReadyOfTheLaunchAnAskWasDeliveredToSendsNothing(t *testing.T) {
 	askToldOnce(t, pool, publisher, owedAsk, launch)
 }
 
+// A listener that answers a publish 200 and names no holder - an older listener, or the stand-in
+// of the live proofs (scripts/e2e/conflict-merger.sh, conflict-no-takeover.sh) - gives no word of
+// which session took the ask. The daemon publishes only once the launch it reads has registered
+// its session, so the delivery is credited to that launch: the act's own ask carries no launch it
+// was sent at, and a delivery credited to no launch had the end send the ask to the same launch
+// again, and the ready of that launch after the delivery send it a second time too. Each way, the
+// implementer is told the ask once, and the record's ask names the launch told.
+func TestAnAskDeliveredWhileTheListenerNamesNoHolderIsToldItsLaunchOnce(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name       string
+		readyFirst bool
+	}{
+		{"the launch is ready before the delivery", true},
+		{"the launch comes ready after the delivery", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			runner, pool, publisher, machine := wokenByTheAsk(t)
+			publisher.holdBy(func() string { return "" })
+			comesUp(t, machine, tc.readyFirst)
+			publisher.setAbsent()
+			drainAt(t, runner, 10*time.Minute, "the attempt once the woken session holds the role")
+			launch := machine.Claim().Generation
+			if !tc.readyFirst {
+				if err := machine.Handle(context.Background(), supervise.RequestReady{Claim: machine.Claim().Token, Generation: launch,
+					Session: machine.Claim().Session}); err != nil {
+					t.Fatalf("the implementer's ready: %v", err)
+				}
+				machine.Wait()
+			}
+			drainAt(t, runner, 20*time.Minute, "a later attempt")
+			drainAt(t, runner, 30*time.Minute, "the attempt after it")
+			askToldOnce(t, pool, publisher, owedAsk, launch)
+		})
+	}
+}
+
 // A launch that resumes the session an earlier launch was told the ask in can be told the ask a
 // second time. The second ask names the same head, and its delivery changes nothing the daemon
 // holds: after the second row of the ask reaches the launch the first reached, the record's ask is

@@ -284,15 +284,16 @@ type EnumeratedValue struct {
 // field of an answer of Answers that `packages/contracts/src/legion-api.ts` reads with a
 // `z.enum`, at every key path it is reachable at. The whole-project body's `issues.*.…` and the
 // record's bare `…` are two rows of one field, as the two `answeredBy` rows are. A field read
-// with a `z.literal` is no row — `controllerLocator.external` and the discriminators of the three
-// discriminated unions, `locator.runtime`, `waitingOn.kind` and a pause actor's `kind`
-// (`paused.by`, `lastPause.by`, `lastPause.endedBy`) — because a literal admits the one value its
-// own shape carries and a daemon that widened it would be changing the field's type rather than
-// its domain. `issues.*.holdReason` is the one field whose type did change so: every reader below
-// OwnerPlanContract reads it with `z.literal("escalated")`, which admits that one value as an
-// enumeration of one would, and the reader of that contract reads it with a `z.enum` of three. So
-// it is a row: `escalated` is recorded at the floor, which is the one value every record below
-// that contract admits, and the two words that contract added are recorded at it (holdReasons).
+// with a `z.literal` is no row — `controllerLocator.external` and the discriminators of the four
+// discriminated unions, `locator.runtime`, `waitingOn.kind`, a pause actor's `kind` (`paused.by`,
+// `lastPause.by`, `lastPause.endedBy`) and the take answer's `outcome` — because a literal admits
+// the one value its own shape carries and a daemon that widened it would be changing the field's
+// type rather than its domain. `issues.*.holdReason` is the one field whose type did change so:
+// every reader below OwnerPlanContract reads it with `z.literal("escalated")`, which admits that
+// one value as an enumeration of one would, and the reader of that contract reads it with a
+// `z.enum` of three. So it is a row: `escalated` is recorded at the floor, which is the one value
+// every record below that contract admits, and the two words that contract added are recorded at
+// it (holdReasons).
 //
 // Each value's arrival is the later of two readings, and each row says which of them decided
 // it: the contract the value first appears in the plugin's own list at, and the contract the
@@ -310,9 +311,10 @@ type EnumeratedValue struct {
 // at its own field's arrival. An entry writes each value it adds to an older field in its own
 // file (contracts.go's enumeratedValues): the gate-basis entry adds `awaiting_children` to a held
 // row's `reason` and to an issue's `phase`, `heldFrom` and `pendingTask.phase`, and
-// `open_on_basis` and `pending_on_basis` to `gatedSteps[].status`. (`suspendedBy` gained
-// `released` at 48 and is no row here: the operator claim answers carry it and no plugin parses
-// them.)
+// `open_on_basis` and `pending_on_basis` to `gatedSteps[].status`; the task-take entry
+// (`contract_20261125171504_task-take.go`) adds `never_reconnected` to the four rows of a claim's
+// failure cause. (`suspendedBy` gained `released` at 48 and is no row here: the operator claim
+// answers carry it and no plugin parses them.)
 func EnumeratedFields() []EnumeratedField { return registry().enumeratedFields }
 
 // enumeratedFields is every row the numbered entries wrote: the state's own, the record's taken
@@ -682,9 +684,10 @@ var floorRoles = []claim.Role{
 	claim.RoleReviewer, claim.RoleMerger,
 }
 
-// claimRoles is every role a claim can hold, which four rows share: the stranded report's, the
-// registration's, the wake's and the pause stop's, those last two at their own arrivals
-// (wakeRoles, pauseStopRoles). The list has not moved since the floor.
+// claimRoles is every role a claim can hold, which five rows share: the stranded report's, the
+// registration's, the wake's, the pause stop's and the unseen task value's, those last three at
+// their own arrivals (wakeRoles, pauseStopRoles, and the task-take entry's unseenTaskRoles). The
+// list has not moved since the floor.
 var claimRoles = valuesFrom(ServingFloor, floorRoles...)
 
 // wakeRoles is the same list of roles at the contract `wakesWaiting` arrived at: no wake of that

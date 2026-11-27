@@ -60,8 +60,8 @@ func (r *versionNewsLive) awaitQueued(c *versionNewsClaimant, mark time.Time) ap
 			return false, "its claim holds no task"
 		case !pending.QueuedAt.After(mark):
 			return false, fmt.Sprintf("its claim holds task %s, queued %s, before the approval", pending.ID, pending.QueuedAt.UTC().Format(time.RFC3339Nano))
-		case pending.DeliveredAt != nil:
-			r.fail("the daemon sent task %s into %s's open turn", pending.ID, c.name())
+		case pending.ConfirmedAt != nil:
+			r.fail("the daemon accepted a take of task %s in %s's open turn", pending.ID, c.name())
 		}
 		queued = *pending
 		return true, ""

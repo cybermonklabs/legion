@@ -22,9 +22,10 @@ import (
 // phase's task, or the linger closes the tree and retires the claim, which keeps what it held
 // (supervise's retire). The person reopens the root — inside the linger, or after the close — and
 // re-admission starts the member again (admit's startMidPhaseMembers). Bringing such a claim
-// back sends the task it kept as soon as its agent is ready (supervise's sendPending), so the
-// one thing that may do it is the row the cap holds: the member works its phase exactly when the
-// cap says it may, and there is no second row behind this one to prompt the same phase again.
+// back writes the value of the task it kept for its worker to take as soon as its agent is ready
+// (supervise's offerPending), so the one thing that may do it is the row the cap holds: the
+// member works its phase exactly when the cap says it may, and there is no second row behind this
+// one to give it the same phase's task again.
 //
 // Which of the two tasks the worker then gets is the machine's own rule, and either way it is one
 // task and it arrives with the slot: a daemon suspension ends the claim's phase, so the task

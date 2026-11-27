@@ -1522,7 +1522,7 @@ func (e *Engine) askMergeState(ctx context.Context, tx pgx.Tx, fact intake.Fact)
 	if err != nil || pr == nil {
 		return err
 	}
-	owed, err := e.mergeStateOwed(ctx, tx, pr, kind)
+	owed, _, err := e.mergeStateOwed(ctx, tx, pr, kind)
 	if err != nil || !owed {
 		return err
 	}
@@ -1541,20 +1541,25 @@ func (e *Engine) askMergeState(ctx context.Context, tx pgx.Tx, fact intake.Fact)
 // request that is not open is owed nothing: it merges nothing until a reopen, which asks again,
 // and its round waits on no answer (classify.RoundWaitsOnMergeState holds only for an open one),
 // so the test of its state here saves the store reads below.
-func (e *Engine) mergeStateOwed(ctx context.Context, tx pgx.Tx, pr *record.PullRequest, fact classify.MergeStateFact) (bool, error) {
+//
+// It answers too whether the read owed is one read rather than a ladder of them, where
+// classify.MergeStateReadOnce says so: a base push of an issue in merging, which the gate always
+// owes, so its round is never worked out here. A read the round owes - one waiting on the head,
+// which only a round in reviewing does, or one an approval ended - is a ladder.
+func (e *Engine) mergeStateOwed(ctx context.Context, tx pgx.Tx, pr *record.PullRequest, fact classify.MergeStateFact) (owed, once bool, err error) {
 	if pr.State != record.PullRequestOpen {
-		return false, nil
+		return false, false, nil
 	}
 	issue, err := e.store.Issue(ctx, tx, pr.Issue)
 	if err != nil || issue == nil {
-		return false, err
+		return false, false, err
 	}
 	w, err := e.walk(ctx, tx, *issue)
 	if err != nil {
-		return false, err
+		return false, false, err
 	}
 	if classify.MergeStateReadOwed(*issue, w.Line, fact) {
-		return true, nil
+		return true, classify.MergeStateReadOnce(*issue, fact), nil
 	}
 	// The round's own answer matters only where the fact and the phase owe no read: every phase
 	// a round can wait on GitHub in already owes one on a head move or a base push. A round the
@@ -1564,10 +1569,10 @@ func (e *Engine) mergeStateOwed(ctx context.Context, tx pgx.Tx, pr *record.PullR
 	// checks concluded, is the fact that ends it (mergeability, then settleRound).
 	reviewer, err := e.phaseRow(ctx, tx, issue.Key, claim.RoleReviewer)
 	if err != nil {
-		return false, err
+		return false, false, err
 	}
 	r := e.reviewRound(*issue, reviewer, pr)
-	return r.waitsOnMergeState || r.outcome == roundApproved, nil
+	return r.waitsOnMergeState || r.outcome == roundApproved, false, nil
 }
 
 // recordPass counts task one more pass through its steps from the one a move back goes to, which

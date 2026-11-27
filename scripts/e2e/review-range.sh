@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # The live proof that a later review round is told the commit the review before it read: the task
-# the daemon prompts the reviewer with in its second review round holds ` Last reviewed commit:
+# the reviewer takes in its second review round holds ` Last reviewed commit:
 # <sha>.`, the head the reviewer's own deciding review of the first round named, a review whose
 # Legion footer names the entry of that round, and the first round's task holds none. The driver
 # (packages/daemon/internal/daemon/review_range_live_test.go, which this script builds with
@@ -9,8 +9,8 @@
 # it, writes each role's handoff with the real `dispatch` CLI (packages/envoy-client/bin/dispatch.ts
 # under bun, as each claim's registered session), completes each phase through the daemon's POST
 # /legion/v1/handoff/complete, and publishes the review App's review, the implementer's push and
-# GitHub's synchronize as Envoy relays GitHub's webhooks. Each check reads the task the daemon
-# prompted the reviewer's shim with, and first holds that it is the reviewing task of its round:
+# GitHub's synchronize as Envoy relays GitHub's webhooks. Each check reads the task the reviewer's
+# driver took from the daemon, and first holds that it is the reviewing task of its round:
 # it says `Phase: reviewing.` and names the tester's handoff of that round by its version. Each
 # check prints `== <name>`, what it observed and `ok <name>`; the first that fails ends the run
 # non-zero, naming it:

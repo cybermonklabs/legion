@@ -1,6 +1,6 @@
 // Package shimwire is the wire between a phase worker's `legion worker-shim` and the daemon:
-// the NDJSON framing both ends read and write, the frames they exchange, the rpc_chunk transport
-// for a frame too large for one line, and the shim-side delivery dedupe.
+// the NDJSON framing both ends read and write, the frames they exchange, and the rpc_chunk
+// transport for a frame too large for one line.
 //
 // It is shared by `cmd/legion worker-shim` and `internal/stream`, and it is where the protocol's
 // behaviour is kept rather than re-derived at each end. Every rule here was ported from the
@@ -30,7 +30,6 @@ const (
 	TypeHello                  = "hello"
 	TypeHelloAck               = "hello_ack"
 	TypeNegotiateProtocol      = "negotiate_protocol"
-	TypePrompt                 = "prompt"
 	TypeResponse               = "response"
 	TypeGetState               = "get_state"
 	TypeHandoff                = "handoff"
@@ -38,7 +37,6 @@ const (
 	TypeAgentEnd               = "agent_end"
 	TypeToolExecutionStart     = "tool_execution_start"
 	TypeToolExecutionEnd       = "tool_execution_end"
-	TypePromptResult           = "prompt_result"
 	TypeShutdown               = "shutdown"
 	TypeAdoptWorkingCopy       = "adopt-working-copy"
 	TypeAdoptWorkingCopyResult = "adopt-working-copy-result"
@@ -136,9 +134,30 @@ type AgentSecretsHello struct {
 // Hello2 authenticates a reverse-dialed shim: its first line, carrying the boot token the daemon
 // minted for the pane or pod, and the pod's identity when the shim was started with
 // --agent-secrets-key-dir (a tmux pane never is, and sends none).
+//
+// BacklogWhole is the shim's word that the connection this hello opens is handed every frame the
+// shim had bound for the daemon since the last connection took its backlog: the backlog it holds
+// for a daemon that is not connected keeps only its newest lines and drops the oldest frames past
+// them (internal/shim's outbox), and a shim says true only where it dropped none since then. A
+// shim that drops one after this hello said true, while the hello waits for its ack, replays
+// nothing on the connection and closes it, so no connection whose hello said true carries a
+// replay with a frame missing, and the next hello says false. So does the hello after a replay
+// that broke partway: the frames it wrote before it broke left the backlog, and the connection
+// that broke may never have carried them to a daemon. What the word does not cover are frames the
+// shim wrote live to a connection that then broke, which may never have been read.
+//
+// The member is left out when false, and a hello without it is read as a shim that cannot say it
+// dropped nothing: one that dropped frames, and one built before the member, which tells no one.
+// That is the reading that costs nothing where it is wrong. A daemon reads the starts and ends of
+// the agent's turns off the replay, and nothing that needs every one of them is read off such a
+// connection; what the supervisor does with such a hello is listed once, at supervise's
+// readBacklog. Read as whole instead, a replay that lost a turn's start would have that turn read
+// as one still to come while it runs, or as one that never ran.
+// A daemon built before the member ignores it, as it ignores every member it does not name.
 type Hello2 struct {
 	BootToken    string             `json:"bootToken"`
 	AgentSecrets *AgentSecretsHello `json:"agentSecrets,omitempty"`
+	BacklogWhole bool               `json:"backlogWhole,omitempty"`
 }
 
 // AgentSecretsEnrollment hands the shim the broker's enrollment id for this pod generation; the
@@ -736,23 +755,15 @@ type NegotiateProtocol struct {
 	ProtocolVersion int    `json:"protocolVersion"`
 }
 
-// Prompt delivers one task to OMP. DeliveryID names the logical delivery the daemon is retrying
-// — the id the dedupe keys on — while ID is this attempt's request (worker-rpc.ts:452).
-type Prompt struct {
-	ID         string `json:"id"`
-	DeliveryID string `json:"deliveryId"`
-	Message    string `json:"message"`
-}
-
 // Response is OMP's answer to a request, carrying the request's own id. Data is the answer's
 // payload, left raw because its shape belongs to the command (worker-rpc.ts:369-377).
 //
 // Code is Oh My Pi's class of a refusal, where it gives one, and "" where it gives none: a refused
 // request's error response carries it at the top level, right after Error (`RpcResponse` in
-// packages/coding-agent/src/modes/rpc/rpc-types.ts of cybermonklabs/oh-my-pi at the pinned tag).
-// For a `prompt` or `abort_and_prompt` its one value is `session_busy`: the prompt was refused, or
-// failed, because the agent was busy (docs/rpc.md there). It is what the daemon decides on; Error
-// is words for a person (CodeSessionBusy).
+// packages/coding-agent/src/modes/rpc/rpc-types.ts of cybermonklabs/oh-my-pi at the pinned tag);
+// for a `prompt` or `abort_and_prompt`, which the daemon sends none of, its one value is
+// `session_busy` (docs/rpc.md there). Nothing in the daemon reads it; it is modelled so the frame
+// survives this package whole, as every other member is.
 type Response struct {
 	ID      string          `json:"id"`
 	Command string          `json:"command"`
@@ -761,15 +772,6 @@ type Response struct {
 	Code    string          `json:"code,omitempty"`
 	Data    json.RawMessage `json:"data,omitempty"`
 }
-
-// CodeSessionBusy is the code of a refusal or a failure the agent gives because it is busy: Oh My
-// Pi's word for it on every RPC command that can meet it, and the code the Claude Code bridge
-// gives its own. At the pinned tag one code covers three refusals (rpc-busy-code.ts there): a
-// prompt sent while a turn streams, a session busy with maintenance or user work, and a prompt
-// that waited 30 s while another run held the agent. The daemon reads each as the agent's busy
-// answer, and it is the only way the daemon reads a busy agent; a refusal that says so in words
-// alone is not one (internal/stream's PromptRefusalOutcome).
-const CodeSessionBusy = "session_busy"
 
 // StateData is the get_state answer's payload. IsStreaming is absent rather than false when the
 // worker does not report it, which is the difference between "idle" and "unknown"
@@ -789,10 +791,10 @@ type GetState struct {
 // Oh My Pi has the session's own model write a handoff document over the live system prompt,
 // tools and turns, with no tool to call, and commits that document as the session's compaction
 // entry, method `handoff`, on the same session. The shim answers none of it — it forwards it to
-// Oh My Pi as it forwards a prompt — and Oh My Pi answers a `response` of the same command:
-// `success: true` with the handoff's result in `data` for a session shortened, `success: true`
-// with `data: null` for a handoff that made no document, and `success: false` with the reason
-// for one it refused, a turn in progress among them.
+// Oh My Pi as it forwards every frame it does not act on itself — and Oh My Pi answers a
+// `response` of the same command: `success: true` with the handoff's result in `data` for a
+// session shortened, `success: true` with `data: null` for a handoff that made no document, and
+// `success: false` with the reason for one it refused, a turn in progress among them.
 //
 // The daemon sends it where it sent `compact` before dispatch://INFRA-5798, and never `compact`:
 // `compact` writes its summary from the history quoted as text in one message, which
@@ -807,76 +809,12 @@ type Handoff struct {
 	CustomInstructions string `json:"customInstructions"`
 }
 
-// AgentStart is OMP beginning a turn. DeliveryID is set only on the shim's own synthetic replay
-// of a start it already observed (worker-shim.ts:365); OMP never sets it.
-type AgentStart struct {
-	DeliveryID string `json:"deliveryId,omitempty"`
-}
+// AgentStart is OMP beginning a turn.
+type AgentStart struct{}
 
 // AgentEnd is OMP finishing a turn. Its real form carries the whole transcript, which is why it
 // is the frame that arrives chunked.
 type AgentEnd struct{}
-
-// PromptResult is Oh My Pi reporting how one prompt's work ended, and the only frame that names
-// the prompt a turn belonged to: ID is the `prompt` command's own request id, where AgentEnd
-// carries no prompt identity at all ("that frame carries no prompt identity, so correlate
-// prompts through `prompt_result`", omp://rpc.md). An accepted prompt completes exactly once,
-// either as `data.agentInvoked: false` on its response — it finished locally and started no turn
-// — or as this frame, always written after that response.
-//
-// AgentInvoked is false for a prompt that ran no turn of its own, and Error is Oh My Pi's reason
-// when the work ended in one — an object, never a string (PromptError). Oh My Pi's own
-// prompt_result carries more than these three members — `status`, its word for how the work
-// ended, and `sessionSettled` among them — which nothing in the daemon reads; the decode drops
-// them.
-type PromptResult struct {
-	ID           string       `json:"id"`
-	AgentInvoked bool         `json:"agentInvoked"`
-	Error        *PromptError `json:"error,omitempty"`
-}
-
-// PromptError is how a prompt's work failed, as the pinned Oh My Pi declares it: `{message,
-// provider?, model?, httpStatus?, retryable, code?}`, the "Failure detail for a `prompt_result`
-// with `status: \"error\"`" (`RpcPromptError` in packages/coding-agent/src/modes/rpc/rpc-types.ts
-// of cybermonklabs/oh-my-pi at the pinned tag). Oh My Pi writes it for a prompt
-// whose last assistant message ended with stopReason "error" — a provider request its own retries
-// could not get through, where Retryable says it may still succeed later — and for one it failed
-// outright before any turn.
-//
-// Code is Oh My Pi's class of the failure, when it gives one, and it declares three values there:
-// `cost_cap`, the session reached `session.maxCost` and Oh My Pi sent no request; `session_busy`,
-// the agent was busy: the prompt was refused, or it waited at least 30 s and another run still
-// held the agent; and `cyber_policy`, OpenAI refused the session's content for cybersecurity risk,
-// or Oh My Pi held the request after such a refusal. A `cyber_policy` failure always has Retryable
-// false, and the status it carries is whatever a gateway relayed the refusal under, a 503 among
-// them (`promptError` in packages/coding-agent/src/modes/rpc/rpc-prompt-results.ts there).
-//
-// Message is the reason a failed prompt is recorded with (PromptResult.Reason), for a person to
-// read, and internal/stream carries Retryable, HTTPStatus, Provider, Model and Code onto its own
-// PromptResult event. The daemon distinguishes failures by Code, not Message:
-// CodeSessionBusy is the agent's busy answer, and supervise's providerErrored decides on
-// HTTPStatus and Code: a `cyber_policy` failure holds the issue whatever its status, and a
-// `cost_cap` one is named as the cause. Every member is modelled, read or not, so the frame
-// survives this package whole, the way every other frame does. A decode that kept only what
-// today's reader wants would quietly drop the class, the provider, the model and the status
-// behind a failure from anything that re-encodes it.
-type PromptError struct {
-	Message    string `json:"message"`
-	Provider   string `json:"provider,omitempty"`
-	Model      string `json:"model,omitempty"`
-	HTTPStatus int    `json:"httpStatus,omitempty"`
-	Retryable  bool   `json:"retryable"`
-	Code       string `json:"code,omitempty"`
-}
-
-// Reason is Oh My Pi's message for work that ended in an error, and the empty string for work
-// that did not: the reason a failed prompt is recorded with.
-func (f PromptResult) Reason() string {
-	if f.Error == nil {
-		return ""
-	}
-	return f.Error.Message
-}
 
 // ToolExecutionStart is Oh My Pi beginning one tool call of a turn, and ToolExecutionEnd that
 // same call finishing. They are the only frames that say an agent mid-turn is still moving: the
@@ -893,9 +831,8 @@ func (f PromptResult) Reason() string {
 // the tool and the call id and nothing else of the call — no Args, no Intent — so whatever is
 // recorded of the arguments beside an end is what the start left (supervise's openCall). Oh My
 // Pi's own end carries a `result` object too, which nothing in the daemon reads; the decode
-// drops it, as it drops the members of a prompt_result nothing reads. The Claude Code bridge
-// writes a start with no call id at all (internal/claudebridge), which is a step with no call to
-// name rather than a frame to refuse.
+// drops it. The Claude Code bridge writes a start with no call id at all
+// (internal/claudebridge), which is a step with no call to name rather than a frame to refuse.
 type ToolExecutionStart struct {
 	ToolCallID string          `json:"toolCallId"`
 	ToolName   string          `json:"toolName"`
@@ -1035,7 +972,6 @@ type Raw struct {
 func (Hello) FrameType() string                        { return TypeHello }
 func (HelloAck) FrameType() string                     { return TypeHelloAck }
 func (NegotiateProtocol) FrameType() string            { return TypeNegotiateProtocol }
-func (Prompt) FrameType() string                       { return TypePrompt }
 func (Response) FrameType() string                     { return TypeResponse }
 func (GetState) FrameType() string                     { return TypeGetState }
 func (Handoff) FrameType() string                      { return TypeHandoff }
@@ -1043,7 +979,6 @@ func (AgentStart) FrameType() string                   { return TypeAgentStart }
 func (AgentEnd) FrameType() string                     { return TypeAgentEnd }
 func (ToolExecutionStart) FrameType() string           { return TypeToolExecutionStart }
 func (ToolExecutionEnd) FrameType() string             { return TypeToolExecutionEnd }
-func (PromptResult) FrameType() string                 { return TypePromptResult }
 func (Shutdown) FrameType() string                     { return TypeShutdown }
 func (AdoptWorkingCopy) FrameType() string             { return TypeAdoptWorkingCopy }
 func (AdoptWorkingCopyResult) FrameType() string       { return TypeAdoptWorkingCopyResult }
@@ -1081,11 +1016,6 @@ func (f NegotiateProtocol) MarshalJSON() ([]byte, error) {
 	return marshalFrame(TypeNegotiateProtocol, plain(f))
 }
 
-func (f Prompt) MarshalJSON() ([]byte, error) {
-	type plain Prompt
-	return marshalFrame(TypePrompt, plain(f))
-}
-
 func (f Response) MarshalJSON() ([]byte, error) {
 	type plain Response
 	return marshalFrame(TypeResponse, plain(f))
@@ -1101,10 +1031,7 @@ func (f Handoff) MarshalJSON() ([]byte, error) {
 	return marshalFrame(TypeHandoff, plain(f))
 }
 
-func (f AgentStart) MarshalJSON() ([]byte, error) {
-	type plain AgentStart
-	return marshalFrame(TypeAgentStart, plain(f))
-}
+func (AgentStart) MarshalJSON() ([]byte, error) { return marshalFrame(TypeAgentStart, struct{}{}) }
 
 func (AgentEnd) MarshalJSON() ([]byte, error) { return marshalFrame(TypeAgentEnd, struct{}{}) }
 
@@ -1116,11 +1043,6 @@ func (f ToolExecutionStart) MarshalJSON() ([]byte, error) {
 func (f ToolExecutionEnd) MarshalJSON() ([]byte, error) {
 	type plain ToolExecutionEnd
 	return marshalFrame(TypeToolExecutionEnd, plain(f))
-}
-
-func (f PromptResult) MarshalJSON() ([]byte, error) {
-	type plain PromptResult
-	return marshalFrame(TypePromptResult, plain(f))
 }
 
 func (Shutdown) MarshalJSON() ([]byte, error) { return marshalFrame(TypeShutdown, struct{}{}) }
@@ -1674,8 +1596,6 @@ func Decode(line []byte) (Frame, error) {
 		return HelloAck{}, nil
 	case TypeNegotiateProtocol:
 		return decodeInto[NegotiateProtocol](trimmed)
-	case TypePrompt:
-		return decodeInto[Prompt](trimmed)
 	case TypeResponse:
 		return decodeInto[Response](trimmed)
 	case TypeGetState:
@@ -1683,15 +1603,13 @@ func Decode(line []byte) (Frame, error) {
 	case TypeHandoff:
 		return decodeInto[Handoff](trimmed)
 	case TypeAgentStart:
-		return decodeInto[AgentStart](trimmed)
+		return AgentStart{}, nil
 	case TypeAgentEnd:
 		return AgentEnd{}, nil
 	case TypeToolExecutionStart:
 		return decodeInto[ToolExecutionStart](trimmed)
 	case TypeToolExecutionEnd:
 		return decodeInto[ToolExecutionEnd](trimmed)
-	case TypePromptResult:
-		return decodeInto[PromptResult](trimmed)
 	case TypeShutdown:
 		return Shutdown{}, nil
 	case TypeAdoptWorkingCopy:

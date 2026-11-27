@@ -255,10 +255,11 @@ func displaced(v view, loc runtime.Locator, obs observation) bool {
 // reads so, so each is relaunched uncharged and they move into one new pod together, rather than
 // the first relaunch for some other reason replacing the pod under the rest. A pod that has merely
 // drifted from the configuration is never StaleAddress (PodDrift): its roles keep running until
-// its update round replaces it, once every worker of the pod has answered, no turn runs and no
-// claim's activity report holds it (internal/daemon's roundEnd.holding), or at the round's
-// bound, which is the whole point of the round — repointing one of them would end the pod's turns
-// mid-flight, which this verdict must never do.
+// its update round replaces it, once every worker of the pod has answered, no turn runs, no take
+// whose turn ended still owes its report and no claim's activity report holds it
+// (internal/daemon's roundEnd.holding), or at the round's bound, which is the whole point of the
+// round — repointing one of them would end the pod's turns mid-flight, which this verdict must
+// never do.
 // In a pod no update round covers (roundCovers, today the project controller's) movedInPod holds
 // every facet, so each of those reads StaleAddress there and its launch replaces the pod, which is
 // what keeps such a pod from being left behind by a configuration it cannot carry.
@@ -314,7 +315,9 @@ func (r *Runtime) verdict(ctx context.Context, loc runtime.Locator, v view) obse
 		return observe(runtime.Uncertain, "pod %s (uid %s) phase %s", name, pod.UID, pod.Status.Phase)
 	}
 	if moved := r.movedInPod(pod, role); len(moved) > 0 {
-		return observe(runtime.StaleAddress, "pod %s (uid %s) holds addresses a pod launched now is not handed: %s", name, pod.UID, describeMoved(moved))
+		stale := observe(runtime.StaleAddress, "pod %s (uid %s) holds addresses a pod launched now is not handed: %s", name, pod.UID, describeMoved(moved))
+		stale.DaemonAPIMoved = movesDaemonAPI(moved)
+		return stale
 	}
 	if pod.Status.Phase != corev1.PodRunning {
 		return observe(runtime.Alive, "pod %s (uid %s) %s", name, pod.UID, phaseOf(pod))
@@ -337,6 +340,7 @@ func (r *Runtime) verdict(ctx context.Context, loc runtime.Locator, v view) obse
 		case len(moved) > 0:
 			obs = observe(runtime.StaleAddress, "pod %s (uid %s) role %s runs generation %d, started with addresses a generation started now is not handed: %s",
 				name, pod.UID, role, state.Child.Generation, describeMoved(moved))
+			obs.DaemonAPIMoved = movesDaemonAPI(moved)
 		default:
 			obs = observe(runtime.Alive, "pod %s (uid %s) role %s runs generation %d", name, pod.UID, role, state.Child.Generation)
 		}
@@ -813,4 +817,11 @@ func phaseOf(pod *corev1.Pod) corev1.PodPhase {
 		return corev1.PodPending
 	}
 	return pod.Status.Phase
+}
+
+// movesDaemonAPI is whether moved holds the daemon's own API, LEGION_DAEMON_URL, which a
+// StaleAddress verdict says as runtime.Observation.DaemonAPIMoved: the process can no longer reach
+// the daemon over HTTP, so no report of its turn lands.
+func movesDaemonAPI(moved []movedAddress) bool {
+	return slices.ContainsFunc(moved, func(m movedAddress) bool { return m.where == "LEGION_DAEMON_URL" })
 }

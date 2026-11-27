@@ -200,13 +200,17 @@ type composition struct {
 	startedAt time.Time
 	// wakes are the launches the pacing holds in the machines (supervision.waitingWakes). A
 	// machine holds one only inside a wave, and none restored from the store does, so this is one
-	// of the two inputs of the source served gives by hand.
+	// of the inputs of the source served gives by hand.
 	wakes []supervise.WaitingWake
+	// unseen are the claims whose task value went a first bound with nobody reporting it seen
+	// (supervision.unseenTaskValues). A machine lists one only after a first bound passes in
+	// memory, and none restored from the store does, so served gives it by hand beside wakes.
+	unseen []supervise.UnseenTaskValue
 	// dispatchTokens are the Sandbox runtime's counts of the Dispatch tokens its launches handed
 	// out (sandbox.Runtime.DispatchTokens), which the source reads under dispatch_token_broker
 	// alone (dispatchTokensOf); nil is a deployment without the setting, whose state carries no
 	// `dispatchCredential`. The runtime counts them in memory as it launches, and the composition
-	// runs no runtime, so this is the other input served gives by hand.
+	// runs no runtime, so served gives this by hand too.
 	dispatchTokens *sandbox.DispatchTokens
 	// secretsIssued is whether the daemon's broker login holds a credential (plan.secretsLogin,
 	// issuedSecretsLogin); false is a deployment that enrolls no pod, whose daemon holds no login.
@@ -279,6 +283,7 @@ func (s *seeding) served(c composition) []byte {
 	}
 	view := stateSource(cfg, s.st, records, c.startedAt, supervising, p, admission.ArchitectStallArms, nil, stateRun)
 	view.wakes = func() []supervise.WaitingWake { return c.wakes }
+	view.unseen = func() []supervise.UnseenTaskValue { return c.unseen }
 	if c.dispatchTokens != nil {
 		if !cfg.DispatchTokenBroker {
 			s.t.Fatal("the seed gives Dispatch token counts to a daemon without dispatch_token_broker, which reads none (dispatchTokensOf)")

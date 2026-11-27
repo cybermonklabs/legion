@@ -418,15 +418,17 @@ Claude Code when `legion.yaml` sets `worker_backends: {<role>: claude}` (tmux ru
 `legion claude-bridge -- claude -p …` with two plugin directories, this package and its generated
 `legion/`, and a per-claim `CLAUDE_CONFIG_DIR`. In that pane the MCP server:
 
-- registers the session with the daemon once its transcript exists, claims the issue's Envoy role
-  and reports ready (`src/legion-claim.ts`, over the claim boot `@sjawhar/pi-legion` shares);
+- registers the session with the daemon once its transcript exists, reports ready, reads its
+  claim's task, and then claims the issue's Envoy role (`src/legion-claim.ts`, over the claim boot
+  `@sjawhar/pi-legion` shares);
 - serves the `legion` tool: `read_record`, `handoff_complete` and `request_backward_move`, the
   phase ops `@sjawhar/pi-legion`'s tool serves, on the same schema and executor
   (`src/legion-tool.ts`);
 - hands each Envoy delivery to the bridge's socket (`LEGION_CLAUDE_INBOX`), which sends it to
-  Claude Code as a user turn (`src/legion-inbox.ts`): the bridge
-  starts a turn with it when Claude Code is idle, and sends it as the next user message of the
-  running turn otherwise. So the session advertises `steer` (Dispatch's Send) beside `aside`, and
+  Claude Code as a user turn (`src/legion-inbox.ts`): from the claim's ready on, the bridge
+  starts a turn with it when Claude Code is idle and no take of the claim's task is pending, and
+  sends it as the next user message of the running turn otherwise; while a take is pending, the
+  task's turn goes first. So the session advertises `steer` (Dispatch's Send) beside `aside`, and
   the bridge handles both alike. The bridge runs Claude Code with `--replay-user-messages` and
   answers a delivery only once Claude Code re-emits it as the user message it took, or with an
   error once Claude Code ended a step without taking it or exited; a relayed frame is `done` on
@@ -619,7 +621,9 @@ with a NATS server is named first; this machine's own listener may be plain http
 not set to `listener` keeps plain http). The
 socket carries no agent stream, so neither live view
 takes its control subject and the Agents page shows nothing of the session's turns, which the
-start notice says. The `open-asks` hook
+start notice says. A Legion pane's claim takes its task value on the same relay subject, over the
+socket as over NATS, and reads it again from the daemon after each reopen, since a task frame the
+listener relayed while the socket was closed is lost (`ChannelTaskValues`). The `open-asks` hook
 hands the file on to the session's Bash as `ENVOY_CONFIG_FILE` beside `DISPATCH_HOST=claude`, and
 the `dispatch` command reads the file `ENVOY_CONFIG_FILE` names whenever `DISPATCH_HOST` is set
 (but for `dispatch login`, and for `dispatch proxy` without `DISPATCH_TOKEN_BROKER=1`); a

@@ -11,7 +11,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"net"
 	"net/http"
 	"net/http/httptrace"
 	"net/url"
@@ -21,6 +20,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/nettimeout"
 	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/sjawhar/envoy/listenerwire"
 	"github.com/sjawhar/envoy/roleholder"
@@ -1072,8 +1072,7 @@ func keptSend(response *http.Response) (SendResult, error) {
 // requestWritten can. The cause is wrapped, not formatted, so a caller can ask the same question
 // again. Either way no listener answered, so both are ErrUnreachable.
 func sendTransportError(err error, requestWritten bool) error {
-	var timeout net.Error
-	timedOut := errors.Is(err, context.DeadlineExceeded) || (errors.As(err, &timeout) && timeout.Timeout())
+	timedOut := nettimeout.InChain(err)
 	if requestWritten && timedOut {
 		return unreachable(fmt.Errorf("%w: %w: POST /v1/messages/send: %w", ErrUnavailable, ErrReceiptTimeout, err))
 	}

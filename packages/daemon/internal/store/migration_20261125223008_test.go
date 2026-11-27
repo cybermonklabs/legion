@@ -16,7 +16,11 @@ const heldForVersion = 20261125223008
 // releaseBeforeClaimSelect is the claim store's claimSelect at 04887f0de34a, origin/main when
 // migration 20261125223008_claim_held_for was written: the claim read of the release before this
 // one, the one a rollback runs, word for word. It names every column of claims that release
-// reads, and held_for is none of them.
+// reads, and held_for is none of them. It is run here on the head of this branch's schema, where
+// migration 20261113175649_task_numbers has dropped three columns of pending_task_deliveries
+// (delivered_at, marked_by and prompted) that its way back, which a rollback runs first, puts
+// back; the select names those three no more, and every column of claims it names is as that
+// release reads it, which is all the cases below read.
 const releaseBeforeClaimSelect = `select c.token, c.project, c.tree, c.issue, c.role, c.generation, c.tree_epoch, c.session,
 	c.session_file, c.locator, c.state, c.failure, c.pod_end, c.failure_cause, c.failed_at, c.pending_cause, c.leak_check_cause,
 	c.launch_failures, c.deaths, c.prompt_failures, c.prompt_retires,
@@ -36,7 +40,7 @@ const releaseBeforeClaimSelect = `select c.token, c.project, c.tree, c.issue, c.
 	c.step_args_hash, c.step_started_at, c.step_ended_at,
 	c.activity_at, c.activity_background, c.activity_kinds, c.activity_next_reminder_at,
 	d.delivery_id, d.task, d.phase, d.generation, d.entry, d.check_look, d.check_opened_at,
-	d.queued_at, d.delivered_at, d.marked_by, d.confirmed_at, d.interrupted, d.prompted, d.out_of_memory,
+	d.queued_at, d.confirmed_at, d.interrupted, d.out_of_memory,
 	d.send_failures, d.last_send_failure_at, d.last_send_error,
 	d.kept_decisions, d.provider_error_retries, d.provider_error_note, d.design_news, d.carried_news,
 	coalesce(d.carried_ran, false), coalesce(d.news_only, false), d.round_named

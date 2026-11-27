@@ -20,18 +20,20 @@ import (
 // transport that failed, cut to reasonBound.
 //
 // A compaction that did not run is this answer and not a failure status, because the operation
-// still did the whole of what it promises: it asked Oh My Pi, and it gave the claim back and
-// sent it the task it owes again, or nothing when it owes none (supervise's compactEnded). So
-// this answer always carries the claim back, whatever it says of the compaction, and the CLI
-// prints both halves of it in one line (cmd/legion's printCompaction). What it promises of the
-// owed task is that nothing of the daemon's is left holding it: either the send ran, or the
-// claim came back into something whose own end sends it, and none of those ends leaves the
-// worker stopped. There are two shapes of that. A turn Oh My Pi started under the compaction
-// leaves the claim working for it and the end sends nothing at all: that turn's end gives the
-// claim back and sends the task (supervise's compactEnded, turnEnded). Where the end does
-// reach the send, the send itself can hold the task back — the paced turn of a launch parked
-// over the process, an open update round the worker has answered — and each of those ends of
-// the daemon's own accord with the task sent (supervise's sendPending).
+// still did the whole of what it promises: it asked Oh My Pi, and it gave the claim back and wrote
+// again the task it owes, for it to take, or nothing when it owes none or its take was accepted
+// before the compaction (supervise's compactEnded). So this answer always carries the claim back,
+// whatever it says of the compaction, and the CLI prints both halves of it in one line
+// (cmd/legion's printCompaction). What it promises of the owed task is that nothing of the
+// daemon's is left holding it: either its value was written again, or its take is accepted and
+// that take's own turn runs it, since a handoff aborts no turn, or the claim came back into
+// something whose own end writes it, and none of those ends leaves the worker stopped. There are
+// two shapes of that last one. A turn Oh My Pi started under the compaction leaves the claim
+// working for it and the end writes nothing at all: that turn's end gives the claim back and
+// writes the task's value (supervise's compactEnded, turnEnded). Where the end does reach the
+// write, a hold can still refuse the take — the paced turn of a launch parked over the process, an
+// open update round the worker has answered — and each of those ends of the daemon's own accord
+// with the value written again (supervise's offerPending).
 //
 // Every other outcome is a failure status and gives the claim back nothing here: a refusal made
 // before anything was asked — a claim in no state to be compacted, a Claude Code claim, a role
@@ -164,7 +166,8 @@ func (s *server) compactClaim(w http.ResponseWriter, r *http.Request) {
 
 // compact is the one compaction effect, which `legion claims compact` (compactClaim) and the
 // controller's compact (claimCompact) both run: the claim's Oh My Pi session is compacted, and
-// then the task the claim owes is sent to it again.
+// then the value of the task the claim owes is written again, unless a take of it was accepted
+// before the compaction, whose own turn runs it.
 //
 // It is what a claim whose provider keeps refusing its session reaches for first. The session,
 // its workspace and everything the worker knows of its issue stay where they are, and what goes
@@ -242,11 +245,11 @@ func (s *server) compactClaim(w http.ResponseWriter, r *http.Request) {
 // counted against the transcript the compaction shortened (supervise's compactEnded).
 //
 // A handoff Oh My Pi refused, or answered with no document, is no refusal of this route: the
-// answer says so, the claim is back, and whatever task it owes has gone again (CompactResponse).
-// A compaction that ran and did not end is a failure of its own: the store would not write the
-// end (supervise.ErrCompactNotEnded), or the claim lost its process under the compaction
-// (supervise.ErrCompactProcessGone). Neither gave the claim back, so neither is answered as a
-// compaction that did not run.
+// answer says so, the claim is back, and whatever task it owes is written again, unless its take
+// was accepted already (CompactResponse). A compaction that ran and did not end is a failure of
+// its own: the store would not write the end (supervise.ErrCompactNotEnded), or the claim lost its
+// process under the compaction (supervise.ErrCompactProcessGone). Neither gave the claim back, so
+// neither is answered as a compaction that did not run.
 //
 // While the project is paused, a claim that is not the project's controller is refused
 // PROJECT_PAUSED at both doors before anything is asked of it, and nothing of it changes
@@ -265,8 +268,8 @@ func (s *server) compact(w http.ResponseWriter, r *http.Request, m *supervise.Ma
 	if s.stopped(w, r, "compact") {
 		return CompactResponse{}, false
 	}
-	// A compaction sends the claim's task again once it ends, which is a turn the pause holds
-	// for every claim but the controller's.
+	// A compaction writes the value of the claim's task again once it ends, for the worker to take
+	// at its next idle point, and the pause holds that take for every claim but the controller's.
 	if s.refusedWhilePaused(w, r, "compact", m.View().Claim) {
 		return CompactResponse{}, false
 	}
@@ -307,19 +310,21 @@ func (s *server) compact(w http.ResponseWriter, r *http.Request, m *supervise.Ma
 		// where no model's words reach the caller's next prompt (reasonBound).
 		s.log.Warn("api: the claim lost its process while its session was being compacted", "claim", token)
 		s.writeFailure(w, r, http.StatusConflict, compactionFailed, fmt.Sprintf(
-			"%s lost its process while its session was being compacted: it was not given back, and the task it owes was not sent. %s", token, askAgainLater))
+			"%s lost its process while its session was being compacted: it was not given back, and the task it owes was not offered. %s", token, askAgainLater))
 		return CompactResponse{}, false
 	case errors.Is(err, supervise.ErrCompactSuspended):
 		// The compaction ran, and the end of it found a suspension held over the claim: the
 		// hold ran there and left the claim suspended, or the claim is working for a turn Oh
-		// My Pi started under the compaction and the hold waits for that turn's end. The claim
-		// was given back to neither its agent nor its task, so the caller is told that rather
-		// than a recovery that landed. What becomes of the owed task is the hold's own, written
-		// once on supervise.ErrCompactSuspended, and the answer carries none of it: what the
-		// caller asked for did not happen, and the claim's own state says what it is now.
+		// My Pi started under the compaction and the hold waits for that turn's end, or the
+		// claim is idle and the hold waits for the report of a take's turn that ended before the
+		// compaction. The claim was given back to neither its agent nor its task, so the caller
+		// is told that rather than a recovery that landed. What becomes of the owed task is the
+		// hold's own, written once on supervise.ErrCompactSuspended, and the answer carries none
+		// of it: what the caller asked for did not happen, and the claim's own state says what it
+		// is now.
 		s.log.Warn("api: a suspension held over the claim ended its compaction", "claim", token)
 		s.writeFailure(w, r, http.StatusConflict, compactionFailed, fmt.Sprintf(
-			"%s's session was compacted, and a suspension held over the claim ended that compaction rather than the claim coming back: it was not given back, and the task it owes was not sent. %s", token, askAgainLater))
+			"%s's session was compacted, and a suspension held over the claim ended that compaction rather than the claim coming back: it was not given back, and the task it owes was not offered. %s", token, askAgainLater))
 		return CompactResponse{}, false
 	default:
 		var refused *supervise.RefusedError
@@ -333,13 +338,13 @@ func (s *server) compact(w http.ResponseWriter, r *http.Request, m *supervise.Ma
 			return CompactResponse{}, s.refuseState(w, r, m, token, refused.State, m.View(), by)
 		}
 		// Oh My Pi refused the handoff or made no document, the wait for it ran out, or the transport
-		// failed. The claim is back and whatever task it owes has gone again, so the caller is
-		// told why rather than told the request failed.
+		// failed. The claim is back and whatever task it owes is written again, unless its take was
+		// accepted already, so the caller is told why rather than told the request failed.
 		reason := boundReason(runtime.RefusalReason(err))
 		if reason == "" {
 			reason = boundReason(err.Error())
 		}
-		s.log.Warn("api: the claim's session was not compacted; the claim is back and whatever task it owes was sent again",
+		s.log.Warn("api: the claim's session was not compacted; the claim is back and whatever task it owes was written again",
 			"claim", token, "reason", reason)
 		return CompactResponse{Reason: reason}, true
 	}

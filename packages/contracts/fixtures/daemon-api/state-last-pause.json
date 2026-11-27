@@ -28,6 +28,7 @@
   "strandedClaims": [],
   "wakesWaiting": [],
   "claimsToRefresh": 0,
+  "unseenTaskValues": [],
   "lastPause": {
     "id": 1,
     "since": "2026-11-15T09:00:00Z",
@@ -293,6 +294,8 @@
     "worker_boot_timeout_seconds": 180,
     "worker_rpc_timeout_seconds": 8,
     "worker_stop_timeout_seconds": 30,
+    "worker_take_timeout_seconds": 240,
+    "worker_turn_start_timeout_seconds": 1800,
     "tree_stop_timeout_seconds": 90,
     "slow_command_timeout_seconds": 600,
     "probe_interval_seconds": 20,

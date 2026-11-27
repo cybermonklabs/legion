@@ -10,6 +10,7 @@ import { hostAgentRegistryMock } from "@legion/pi-shared/test/host-registry";
 import { restoreEnvironment } from "@legion/test-fixtures/environment";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import type { ClaimSession } from "./claim-session";
 import { HOST_STOP_GRACE_MS } from "./host-stop";
 
 // The module reaches the Oh My Pi host through `@legion/pi-shared/subagent-session`, which only
@@ -21,7 +22,7 @@ mock.module("@oh-my-pi/pi-coding-agent", () => ({
 
 const { attributionInputs, createClaimSession } = await import("./claim-session");
 
-restoreEnvironment(["LEGION_BOOT_TOKEN", "LEGION_STATE_DIR", "LEGION_CLAIM_FIRST_TURN_BOUND_MS"]);
+restoreEnvironment(["LEGION_BOOT_TOKEN", "LEGION_STATE_DIR"]);
 afterEach(() => resetEnvoyPluginInterfaceForTests());
 
 const ROOT_TRANSCRIPT =
@@ -116,16 +117,18 @@ function settled(): Promise<void> {
   return promise;
 }
 
-/** The pane's claim, booted against a daemon that registers it and answers its ready with
- * `options.ready` (a 204 by default), with a first-turn bound of 0. Envoy's one bound instance
- * refuses each claim with `options.claimError`, by default naming the session's stop
- * (`RoleClaimStoppingError`), as pi-envoy's instance does once its stop began; `reached` settles
- * once a claim reached it. The host's stop is `options.hostStop`; by default none has begun.
- * Every exit the claim makes is recorded, in `exits` and as `exit <code>` on `options.steps`, and
- * `exited` settles at the first. */
+/** The pane's claim, booted against a daemon that registers it, answers its ready with
+ * `options.ready` (a 204 by default) and its read of the claim's value with the daemon's own
+ * golden answer. `options.ready` is handed the claim session, so a row can begin the session's
+ * stop while the ready is on the wire. Envoy's one bound instance refuses each claim with
+ * `options.claimError`, by default naming the session's stop (`RoleClaimStoppingError`), as
+ * pi-envoy's instance does once its stop began; `reached` settles once a claim reached it. The
+ * host's stop is `options.hostStop`; by default none has begun. Every exit the claim makes is
+ * recorded, in `exits` and as `exit <code>` on `options.steps`, and `exited` settles at the
+ * first. */
 function pane(
   options: {
-    readonly ready?: () => Response;
+    readonly ready?: (session: ClaimSession) => Response;
     readonly hostStop?: () => Promise<void> | undefined;
     readonly steps?: string[];
     readonly claimError?: (role: string) => Error;
@@ -133,19 +136,21 @@ function pane(
 ) {
   process.env.LEGION_BOOT_TOKEN = fixtureSecret("boot");
   process.env.LEGION_STATE_DIR = STATE_DIR;
-  process.env.LEGION_CLAIM_FIRST_TURN_BOUND_MS = "0";
-  const registered = readFileSync(
-    path.resolve(import.meta.dir, "../../contracts/fixtures/daemon-api/register.json"),
-    "utf8"
-  );
+  const fixture = (name: string) =>
+    readFileSync(
+      path.resolve(import.meta.dir, "../../contracts/fixtures/daemon-api", name),
+      "utf8"
+    );
+  const json = { headers: { "content-type": "application/json" } };
   const daemon = createLegionDaemonClient("http://daemon.test", {
     pluginContract: 60,
     fetch: (async (input) => {
       const route = new URL(input.toString()).pathname;
-      if (route.endsWith("/claims/register")) {
-        return new Response(registered, { headers: { "content-type": "application/json" } });
+      if (route.endsWith("/claims/register")) return new Response(fixture("register.json"), json);
+      if (route.endsWith("/claims/task")) return new Response(fixture("task.json"), json);
+      if (route.endsWith("/claims/ready") && options.ready !== undefined) {
+        return options.ready(claim);
       }
-      if (route.endsWith("/claims/ready") && options.ready !== undefined) return options.ready();
       return new Response(null, { status: 204 });
     }) as typeof fetch,
   });
@@ -165,6 +170,8 @@ function pane(
   const claim = createClaimSession({
     daemon: () => daemon,
     persistedTranscript: async () => ({ sessionFile: SUBAGENT_TRANSCRIPT, agentId: PANE_SESSION }),
+    runTask: () => undefined,
+    reportDrop: async () => undefined,
     exitProcess: (code) => {
       exits.push(code);
       options.steps?.push(`exit ${code}`);
@@ -179,24 +186,23 @@ function pane(
   return { claim, context, claims, exits, exited: exited.promise, reached: reached.promise };
 }
 
-// The pane's stop has begun when its first-turn bound comes (R24 of dispatch://INFRA-3589): the
-// claim it would make exits nothing and writes nothing, so the stop's role release and DELETE
+// The pane's stop has begun when its boot comes to the role claim (R24 of dispatch://INFRA-3589):
+// the claim it would make exits nothing and writes nothing, so the stop's role release and DELETE
 // run to their end. Either the session's `session_shutdown` told the claim session so, or, in
 // RPC mode where a SIGTERM emits none, Envoy refused the claim naming the stop. The control is
 // the row after these.
 describe("a claim whose session's stop has begun", () => {
   it("is not made once the session's shutdown stopped the claim session, and exits nothing", async () => {
-    const { claim, context, claims, exits } = pane();
+    // The stop begins while the boot's ready is on the wire, before the claim it comes to next.
+    const { claim, context, claims, exits } = pane({
+      ready: (session) => {
+        session.stop();
+        return new Response(null, { status: 204 });
+      },
+    });
     const lines = spyOn(console, "error").mockImplementation(() => undefined);
     try {
       await claim.bootstrap(context);
-      // The bound is armed and has not run: the stop begins first.
-      claim.stop();
-      // A timer armed after the bound, with the same delay of 0 ms, runs after the bound's: had the
-      // stop left the bound armed, its claim would have started by then. It costs no wait.
-      const afterBound = Promise.withResolvers<void>();
-      setTimeout(afterBound.resolve, 0);
-      await afterBound.promise;
       await settled();
 
       expect(claims).toEqual([]);
@@ -207,7 +213,7 @@ describe("a claim whose session's stop has begun", () => {
     }
   });
 
-  it("that Envoy refuses naming the stop, at the bound, says nothing and exits nothing", async () => {
+  it("that Envoy refuses naming the stop says nothing and exits nothing", async () => {
     const { claim, context, claims, exits, reached } = pane();
     const lines = spyOn(console, "error").mockImplementation(() => undefined);
     try {
@@ -224,10 +230,10 @@ describe("a claim whose session's stop has begun", () => {
   });
 });
 
-// The control of the rows above: the same claim, made at the bound with no stop begun, which
+// The control of the rows above: the same claim, made by the boot with no stop begun, which
 // Envoy refuses for another reason. The pane says why on its log line and exits 1.
 describe("a claim with no stop begun", () => {
-  it("control: that Envoy refuses for another reason at the bound says why and exits 1", async () => {
+  it("control: that Envoy refuses for another reason says why and exits 1", async () => {
     const { claim, context, claims, exits, exited } = pane({
       claimError: (role) => new Error(`Envoy role ${role} is held by live session ses_other`),
     });

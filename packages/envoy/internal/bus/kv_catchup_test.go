@@ -387,7 +387,7 @@ func TestAMemberThatNeverAppliesACreateEndsAtTheCallersContext(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 200*time.Millisecond)
 	defer cancel()
 	reads := 0
-	_, err := awaitBucketApplied(ctx, slog.Default(), catchupBucket, bucketMissing, func() (struct{}, error) {
+	_, err := awaitBucketApplied(ctx, slog.Default(), catchupBucket, BucketMissing, func() (struct{}, error) {
 		reads++
 		return struct{}{}, nats.ErrBucketNotFound
 	})

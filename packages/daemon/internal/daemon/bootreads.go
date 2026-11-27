@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 
+	"github.com/sjawhar/envoy/legiontasks"
 	"github.com/sjawhar/envoy/pgdsn"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -283,26 +284,40 @@ func checkRoleConfigFiles(cfg config.Config) error {
 // anything (readBoot), over the daemon's environment (lookup, and the process's for the OMP
 // invocation), then of postgres_dsn as the store reads it before it opens a connection
 // (store.PoolConfig, which parses the DSN and opens nothing): nil when boot would get past every
-// such refusal, and the public keys of the pane seed's user and the daemon seed's user, each ""
-// when the daemon has no such seed, never a seed. The store refuses a postgres_dsn pgx cannot
-// parse, such as a malformed URL, a bad pool_* key or an sslrootcert, sslcert or sslkey file it
-// cannot read, and one whose default_query_exec_mode the store's text rule cannot run in. pgx
-// fills what the DSN leaves unset from the process's own PG* environment variables, whatever
-// lookup holds, as it does at boot. Each such refusal is pgdsn.ConnectError, as store.Open wraps
-// it: a DSN pgx cannot parse is named by its setting alone, with none of pgx's text, since that
-// text quotes the DSN (a keyword DSN's password among it, which pgx masks only when written
-// `password=<value>`); any other refusal names the DSN's address and the driver's detail, never
-// the DSN's password.
-func CheckStart(cfg config.Config, lookup func(string) (string, bool)) (paneNatsUser, daemonNatsUser string, err error) {
+// such refusal, the public keys of the pane seed's user and the daemon seed's user, each "" when
+// the daemon has no such seed, never a seed, and the line for a daemon that would connect to NATS
+// as the pane seed's user (paneSeedLine), "" for one that would not. The store refuses a
+// postgres_dsn pgx cannot parse, such as a malformed URL, a bad pool_* key or an sslrootcert,
+// sslcert or sslkey file it cannot read, and one whose default_query_exec_mode the store's text
+// rule cannot run in. pgx fills what the DSN leaves unset from the process's own PG* environment
+// variables, whatever lookup holds, as it does at boot. Each such refusal is pgdsn.ConnectError, as
+// store.Open wraps it: a DSN pgx cannot parse is named by its setting alone, with none of pgx's
+// text, since that text quotes the DSN (a keyword DSN's password among it, which pgx masks only
+// when written `password=<value>`); any other refusal names the DSN's address and the driver's
+// detail, never the DSN's password.
+func CheckStart(cfg config.Config, lookup func(string) (string, bool)) (paneNatsUser, daemonNatsUser, paneSeedNote string, err error) {
 	r, err := readBoot(cfg, lookup, os.Getenv, true, slog.New(slog.DiscardHandler))
 	if err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
 	if _, err := store.PoolConfig(cfg.PostgresDSN); err != nil {
-		return "", "", pgdsn.ConnectError(store.DSNSetting, cfg.PostgresDSN, err)
+		return "", "", "", pgdsn.ConnectError(store.DSNSetting, cfg.PostgresDSN, err)
 	}
 	if r.nats.source == natsSeedDaemon {
 		daemonNatsUser = r.nats.user
 	}
-	return r.paneNatsUser, daemonNatsUser, nil
+	return r.paneNatsUser, daemonNatsUser, paneSeedLine(cfg, r.nats), nil
+}
+
+// paneSeedLine is `legion config check`'s line for a daemon of cfg whose NATS connection
+// nats authenticates as the pane seed's user — the pane seed alone, or a daemon seed that is the
+// pane seed — and "" for one that does not or that names no NATS, which NoNATSLine speaks for. It
+// is the boot's own refusal (paneSeedRefusal), known offline: such a daemon's boot is refused at
+// its first open of the task bucket, since that user holds no grant on it, and the check exits 0
+// on it as on every other line it prints after its OK line.
+func paneSeedLine(cfg config.Config, nats natsConnection) string {
+	if len(cfg.NatsURLs) == 0 || !nats.paneUser {
+		return ""
+	}
+	return "nats: " + paneSeedRefusal + "; until it has one, its boot is refused at its open of the task bucket (" + legiontasks.Bucket + ")"
 }

@@ -9,18 +9,20 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
-// The cases of this file are dispatch://INFRA-4508's R4: a turn that ran no prompt of the
-// daemon's — the phase reminder's, which the plugin starts itself with pi.sendMessage — has no
-// prompt result, so the daemon judges it from its producer's report, which is marked unprompted
-// and carries the status the provider refused it with where the provider library gave one
-// (turnOutcome, unpromptedTurnEnded).
+// The cases of this file are dispatch://INFRA-4508's R4: a turn that ran none of the daemon's
+// tasks — the phase reminder's, which the plugin starts itself with pi.sendMessage — is no take's
+// turn, so no take's end report judges it: the daemon judges it from its producer's own report,
+// which is marked unprompted and carries the status the provider refused it with where the
+// provider library gave one (turnOutcome, unpromptedTurnEnded).
 
 // pluginTurn is one such turn as its producer reports it, at the claim's current generation:
-// refused with status, 0 where the library gave none, or clean. No prompt result follows it.
+// refused with status, 0 where the library gave none, or clean. No take names it. sequence counts
+// from the last turn the harness's worker reported, since an idle claim reached its idleness by
+// its task's own end report (harness.reach).
 func (h *harness) pluginTurn(sequence uint64, refused bool, status int) {
 	h.t.Helper()
 	r := RequestTurnOutcome{
-		Claim: h.token, Generation: h.generation(), Sequence: sequence, Refused: refused, HTTPStatus: status, Unprompted: true,
+		Claim: h.token, Generation: h.generation(), Sequence: h.worker.sequence + sequence, Refused: refused, HTTPStatus: status, Unprompted: true,
 	}
 	if refused {
 		r.Message = "the provider refused the reminder's turn"
@@ -80,7 +82,7 @@ func TestAPluginTurnRefusedWithA400FailsTheClaimAtOnce(t *testing.T) {
 	if c.FailureCause != CauseProviderError {
 		t.Errorf("the failure's cause is %q, want %q", c.FailureCause, CauseProviderError)
 	}
-	for _, want := range []string{"cannot clear", "no prompt of the daemon's", "HTTP 400"} {
+	for _, want := range []string{"cannot clear", "none of the daemon's tasks", "HTTP 400"} {
 		if !strings.Contains(c.Failure, want) {
 			t.Errorf("the failure is %q, want it to say %q", c.Failure, want)
 		}
@@ -149,12 +151,12 @@ func TestPluginTurnsRefusedWithNoStatusFailNothingAndHandTheRunOnOnce(t *testing
 	}
 }
 
-// Refused prompts and refused plugin turns make one run: a worker whose task's prompts are refused
-// with a 529 and whose reminders in between are refused too has its run handed on exactly once,
-// at the sixth turn of the run, whichever kind that turn is. A clean plugin turn ends the run, as a
-// clean prompt does, so six more refusals after it hand a run on a second time. The prompts'
-// own reports are not marked unprompted, so only their results count them. Without R4 only the
-// prompts count, and the run reaches six at the eleventh turn.
+// Refused takes' turns and refused plugin turns make one run: a worker whose task's turns are
+// refused with a 529 and whose reminders in between are refused too has its run handed on exactly
+// once, at the sixth turn of the run, whichever kind that turn is. A clean plugin turn ends the
+// run, as a clean report of the take's turn does, so six more refusals after it hand a run on a
+// second time. Without R4 only the takes' turns count, and the run reaches six at the eleventh
+// turn.
 func TestARunOfRefusedPromptsAndPluginTurnsIsHandedOnOnceAtItsSixth(t *testing.T) {
 	told := 0
 	h := workingClaim(t, countNotices(&told))
@@ -208,16 +210,14 @@ func TestACleanPluginTurnEndsTheRunOfRefusedPrompts(t *testing.T) {
 	}
 }
 
-// A clean report the plugin marked prompted ends the run too, though no prompt result of its own
-// comes for it: the run after one that started in the window between Oh My Pi's acceptance of a
-// prompt and its `input` (that run itself is reported unprompted), or a run after a prompt the host
-// refused as busy, is read as the prompt's. The provider took that turn, so five refusals, that
-// clean turn and one more refusal make a run of one, and nothing is handed on; counted across the
-// clean turn, the run would reach six and be handed to Deps.ProviderErrorRunReached.
+// A clean report that names no task and is not marked unprompted ends the run too: the provider
+// took that turn, whoever ran it. So five refusals, that clean turn and one more refusal make a
+// run of one, and nothing is handed on; counted across the clean turn, the run would reach six and
+// be handed to Deps.ProviderErrorRunReached.
 //
 // A clean report ends the run only when no later turn has reported before it: a clean report that
 // reaches the daemon after a later turn's refused report is of a turn before that refusal, so the
-// run the refusal began stays, whether the late report is marked prompted or not.
+// run the refusal began stays, whether the late report is marked unprompted or not.
 func TestACleanReportMarkedPromptedEndsTheRunWithNoPromptResultOfItsOwn(t *testing.T) {
 	told := 0
 	h := workingClaim(t, countNotices(&told))
@@ -253,27 +253,25 @@ func TestACleanReportMarkedPromptedEndsTheRunWithNoPromptResultOfItsOwn(t *testi
 	}
 }
 
-// The report of a turn the daemon's prompt ran is never judged, whether it reaches the daemon
-// before that prompt's result or after it: the two travel on two channels, and the result alone
-// judges the turn, so the turn counts once in the run either way. This case passes without R4 as
-// well, since then no report is judged at all: it guards R4's own count.
-func TestAPromptedTurnsReportCountsOnceWhicheverSideOfItsResultItArrives(t *testing.T) {
-	for name, reportFirst := range map[string]bool{
-		"its report before its result": true,
-		"its report after its result":  false,
+// The take's end report is the one record of the take's turn, so a refused turn of it counts once
+// in the claim's run of provider-error turns and in its run of refused turns, and the same report
+// sent again — the producer sends it until the daemon answers — is the same turn, and counts
+// nothing more (recordTurnOutcome's repeat).
+func TestAProviderErrorTakesEndReportCountsOnceHoweverOftenItIsSent(t *testing.T) {
+	for name, sends := range map[string]int{
+		"sent once":  1,
+		"sent twice": 2,
 	} {
 		t.Run(name, func(t *testing.T) {
 			h := workingClaim(t)
+			number := h.pending().Number
 			report := RequestTurnOutcome{
-				Claim: h.token, Generation: h.generation(), Sequence: 1, Refused: true,
-				Message: "529 overloaded_error: Overloaded", HTTPStatus: 529,
+				Claim: h.token, Generation: h.generation(), Sequence: 1, Refused: true, Task: number,
+				Message: "529 overloaded_error: Overloaded", ProviderError: &ProviderError{Status: 529, Message: "overloaded_error"},
 			}
+			h.mustQuiet(StreamTurnEnd{Claim: h.token})
 
-			if reportFirst {
-				h.must(report)
-				h.errorTurn(StreamPromptResult{Error: "overloaded_error", HTTPStatus: 529})
-			} else {
-				h.errorTurn(StreamPromptResult{Error: "overloaded_error", HTTPStatus: 529})
+			for range sends {
 				h.must(report)
 			}
 
@@ -322,8 +320,8 @@ func TestAPluginTurnReportOfAGenerationTheClaimLeftIsNotJudged(t *testing.T) {
 
 // The notice at providerErrorRunTold says what the daemon does about the turn that reached the
 // count. A run of refused reminders on an idle claim owes no task, so nothing is sent again, and
-// the notice says that; a run that a refused prompt reaches six at keeps that prompt's task and
-// sends it again, and its notice says that (TestTheSixthProviderErrorTurnInARowHandsTheRunOnOnce
+// the notice says that; a run that a refused take's turn reaches six at keeps that take's task and
+// writes it again, and its notice says that (TestTheSixthProviderErrorTurnInARowHandsTheRunOnOnce
 // holds the model it names).
 func TestTheNoticeOfARunEndedByAPluginTurnSendsNoTaskAgain(t *testing.T) {
 	var reasons []string
@@ -338,7 +336,7 @@ func TestTheNoticeOfARunEndedByAPluginTurnSendsNoTaskAgain(t *testing.T) {
 	if len(reasons) != 1 {
 		t.Fatalf("the run was handed on %d times, want once", len(reasons))
 	}
-	for _, want := range []string{"6 turns in a row", "HTTP 529", "no prompt of the daemon's", "sends no task again"} {
+	for _, want := range []string{"6 turns in a row", "HTTP 529", "none of the daemon's tasks", "writes no task again"} {
 		if !strings.Contains(reasons[0], want) {
 			t.Errorf("the notice is %q, want it to say %q", reasons[0], want)
 		}
@@ -353,32 +351,38 @@ func TestTheNoticeOfARunEndedByAPluginTurnSendsNoTaskAgain(t *testing.T) {
 		p.pluginTurn(uint64(turn), true, 529)
 	}
 	p.refusedTurn(providerErrorRunTold, 529, "529 overloaded_error: Overloaded")
-	if len(reasons) != 1 || !strings.Contains(reasons[0], "keeps the task and sends it again") {
-		t.Fatalf("the notices are %q, want one that says the prompt's task is kept and sent again", reasons)
+	if len(reasons) != 1 || !strings.Contains(reasons[0], "keeps the task and writes it again") {
+		t.Fatalf("the notices are %q, want one that says the take's task is kept and written again", reasons)
 	}
 }
 
 // The turn-outcome answer says whether this report failed the claim, read under the report's own
 // decision (HandleTurnOutcome): true for the report of a plugin turn refused with a 400, and false
-// for a clean report, a refused report of a turn a prompt ran, and one that can clear. The answer
-// is this report's even when another event's decision fails the claim the moment this report's
-// decision lets its lock go (Machine.turnOutcomeDecided): a prompt result's 400 there leaves the
-// clean report answering that it failed nothing, where a read of the claim made after the
-// decision returned would find it failed and answer true.
+// for a clean report, a refused end report of the take's turn whose status can clear, and a plugin
+// turn's that can clear. The answer is this report's even when another event's decision fails the
+// claim the moment this report's decision lets its lock go (Machine.turnOutcomeDecided): the take's
+// refused end report with a 400 there leaves the clean report answering that it failed nothing,
+// where a read of the claim made after the decision returned would find it failed and answer true.
 func TestTheTurnOutcomeAnswerSaysWhetherThisReportFailedTheClaim(t *testing.T) {
 	h := workingClaim(t)
+	number := h.pending().Number
 	for i, tc := range []struct {
 		refused, unprompted bool
 		status              int
+		task                uint64
 	}{
-		{false, true, 0},
-		{true, false, 400},
-		{true, true, 529},
+		{false, true, 0, 0},
+		{true, false, 529, number},
+		{true, true, 529, 0},
 	} {
-		answer, err := h.m.HandleTurnOutcome(h.ctx, RequestTurnOutcome{
+		r := RequestTurnOutcome{
 			Claim: h.token, Generation: h.generation(), Sequence: uint64(i + 1), Refused: tc.refused,
-			HTTPStatus: tc.status, Unprompted: tc.unprompted,
-		})
+			HTTPStatus: tc.status, Unprompted: tc.unprompted, Task: tc.task,
+		}
+		if tc.task != 0 {
+			r.HTTPStatus, r.ProviderError = 0, &ProviderError{Status: tc.status}
+		}
+		answer, err := h.m.HandleTurnOutcome(h.ctx, r)
 		if err != nil || answer.Failed {
 			t.Fatalf("report %d (%+v) answered %+v, %v; want it not failed", i+1, tc, answer, err)
 		}
@@ -394,12 +398,16 @@ func TestTheTurnOutcomeAnswerSaysWhetherThisReportFailedTheClaim(t *testing.T) {
 	}
 	h.wantState(StateFailed)
 
-	// A clean report whose decision another event's follows at once: the prompt result's 400
-	// fails the claim between this report's decision and the return of HandleTurnOutcome.
+	// A clean report whose decision another event's follows at once: the take's refused end
+	// report with a 400 fails the claim between this report's decision and the return of
+	// HandleTurnOutcome.
 	p := workingClaim(t)
+	taken := p.pending().Number
 	p.m.turnOutcomeDecided = func() {
 		p.m.turnOutcomeDecided = nil
-		p.errorTurn(StreamPromptResult{Error: "invalid_request_error", HTTPStatus: 400})
+		p.mustQuiet(StreamTurnEnd{Claim: p.token})
+		p.must(RequestTurnOutcome{Claim: p.token, Generation: p.generation(), Sequence: 2, Refused: true, Task: taken,
+			ProviderError: &ProviderError{Status: 400, Message: "invalid_request_error"}})
 	}
 
 	answer, err = p.m.HandleTurnOutcome(p.ctx, RequestTurnOutcome{
@@ -408,7 +416,7 @@ func TestTheTurnOutcomeAnswerSaysWhetherThisReportFailedTheClaim(t *testing.T) {
 
 	p.wantState(StateFailed)
 	if err != nil || answer != (TurnOutcomeAnswer{}) {
-		t.Fatalf("the clean report answered %+v, %v; want no run and not failed: the prompt result's 400 failed the claim after this report's decision",
+		t.Fatalf("the clean report answered %+v, %v; want no run and not failed: the take's end report's 400 failed the claim after this report's decision",
 			answer, err)
 	}
 }

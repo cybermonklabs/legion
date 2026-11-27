@@ -33,11 +33,11 @@ func scanTold(row scanner) (DesignTold, error) {
 // TreeTold is every told row of the issues of tree, by issue and then audience, as each audience
 // took it: what OwedNews weighs the tree's gate against, in one read. It reads the rows through
 // the SQL function design_news_told_in, which counts beside each row's own versions the credit of
-// every confirmed delivery whose turn's result has not yet made it final (the claim store's
-// carried_news), each item and opening of it only while the record still holds the run it was
-// rendered in (DeliveryNewsItem.Generation and TreeGeneration), so every reader of a told row —
-// OwedNews, the reconcile's settlement and raise, a start and a send — weighs the same answer, and
-// the give-back of a credit needs no write here.
+// every confirmed delivery whose take's turn has started (turn_started) and whose turn's result
+// has not yet made it final (the claim store's carried_news), each item and opening of it only
+// while the record still holds the run it was rendered in (DeliveryNewsItem.Generation and
+// TreeGeneration), so every reader of a told row — OwedNews, the reconcile's settlement and raise,
+// a start and a send — weighs the same answer, and the give-back of a credit needs no write here.
 func (s *Postgres) TreeTold(ctx context.Context, tx pgx.Tx, tree string) ([]DesignTold, error) {
 	rows, err := tx.Query(ctx, `select `+toldColumns+` from design_news_told_in($1)`, tree)
 	if err != nil {

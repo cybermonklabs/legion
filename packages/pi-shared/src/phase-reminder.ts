@@ -36,13 +36,14 @@ import type { StallLimits } from "./stall-limits";
  *
  * The first reminder of a run is the `session_stop` continuation, which the host turns into one
  * more turn of the same session, and it is the only one of that run: every one after it is a
- * timer, so the run settles and the daemon sees the turn end, can deliver a queued task and can
- * land a held suspension. A turn the provider refused earns no continuation, since the worker
- * never read the last reminder and the next turn would be refused the same way; it earns one
- * timer instead, so a single transient refusal cannot leave the worker idle. The host's timer
- * cannot be cancelled (`SessionContext.setTimeout` returns void and there is no clearTimeout), so
- * a monotonic generation, bumped by everything that makes an armed timer stale, is the whole
- * defence against two timers sending two reminders.
+ * timer, so the run settles, the host is idle again and its take can ask for a task the daemon
+ * queued (`./task-take`), and the daemon sees the turn end and can land a held suspension. A turn
+ * the provider refused earns no continuation, since the worker never read the last reminder and
+ * the next turn would be refused the same way; it earns one timer instead, so a single transient
+ * refusal cannot leave the worker idle. The host's timer cannot be cancelled
+ * (`SessionContext.setTimeout` returns void and there is no clearTimeout), so a monotonic
+ * generation, bumped by everything that makes an armed timer stale, is the whole defence against
+ * two timers sending two reminders.
  */
 
 /**
@@ -555,20 +556,22 @@ export function createPhaseReminder(deps: PhaseReminderDeps): PhaseReminder {
         // The provider refused this turn, so the worker read nothing and said nothing: the state
         // stands, and this settle returns no continuation, because the host would turn it into
         // one more turn at once and the provider would refuse that one too. One timer is armed
-        // all the same: the task the refused turn carried ended with it, and nothing else would
-        // wake this worker, so a single transient refusal would leave its issue idle. What ends
-        // the reminders is the daemon failing the claim, after which the owed check the timer
-        // runs reads that the claim owes nothing and drops the reminder: the daemon judges a
-        // reminder's own turn, which no prompt of its ran, from its turn-outcome report, as it
-        // judges a prompt's turn from that prompt's result (dispatch://INFRA-4508), so a refusal
-        // whose status cannot clear (a 4xx other than 401, 403, 408 and 429), or whose report
-        // carries `code: "cyber_policy"` (Oh My Pi's own class for OpenAI's cyber-policy refusal,
+        // all the same: a refused turn that carried no task leaves nothing else to wake this
+        // worker, so a single transient refusal would leave its issue idle. A task's refused turn
+        // is woken by the daemon as well: its provider-error wait keeps the task and writes its
+        // value again once the wait is over. What ends the reminders is the daemon failing the
+        // claim, after which the owed check the timer runs reads that the claim owes nothing and
+        // drops the reminder: the daemon judges a turn that ran no task of its from that turn's
+        // turn-outcome report, a reminder's own among them, as it judges a task's turn from the
+        // report that names the task (dispatch://INFRA-4508), so a refusal whose status cannot
+        // clear (a 4xx other than 401, 403, 408 and 429), or whose report carries
+        // `code: "cyber_policy"` (Oh My Pi's own class for OpenAI's cyber-policy refusal,
         // whatever the status), fails the claim at once and holds the issue for its architect,
         // and the next reminder is dropped. Any other refusal, or one whose report carries no
         // status and no code, fails nothing, so the reminders keep this pace for as long as the
         // provider refuses — the whole of dispatch://INFRA-264 — and the daemon sends the
         // `provider-errors` notice once when the worker's turns that ended in a provider error,
-        // reminders' and prompts' alike, reach six in a row (`providerErrorRunReached` in the
+        // reminders' and tasks' alike, reach six in a row (`providerErrorRunReached` in the
         // daemon says to whom).
         advance(turn);
         continued = false;

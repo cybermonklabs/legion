@@ -1238,8 +1238,8 @@ func runListener(credentialWait time.Duration) {
 	// An edge listener (ENVOY_EDGE_PROJECTS) holds itself to its own NATS grant from its first
 	// connection on (edgeGrant): every connection names its inboxes under its machine's prefix, the
 	// main client reads the stream and owns none, no role lane opens, no wake report is published,
-	// and its delivery handlers keep no role message and publish no exception on a lane the grant
-	// leaves out. Every other listener has none (edge nil).
+	// no task relay runs, and its delivery handlers keep no role message and publish no exception
+	// on a lane the grant leaves out. Every other listener has none (edge nil).
 	var edge *edgeGrant
 	if len(cfg.EdgeProjects) > 0 {
 		grant, err := newEdgeGrant(cfg.MachineID, cfg.EdgeProjects, met)
@@ -1799,6 +1799,12 @@ func runListener(credentialWait time.Duration) {
 		// sends it again.
 		repositories.refresh(context.Background())
 	}
+	// The task relay relays each claim's task value from the Legion daemons' task bucket to the
+	// session holding the claim's role, on that session's relay subject, from the listener that
+	// relays the session's consumer. It opens the bucket only once this listener gives consumer
+	// delivery, and nothing it meets ends the start or reaches the self-health monitor (taskRelay).
+	// An edge listener, whose grant holds none of the bucket's reads, runs none (tasks nil).
+	tasks := startTaskRelay(client, relays, registry, logger, taskRelayInterval, taskRelayReadInterval, bus.RequestTimeout)
 	// The parts a shutdown ends, gathered once: every end of a start that serves /v1 passes them
 	// to shutdownListener.
 	parts := listenerParts{
@@ -1807,6 +1813,7 @@ func runListener(credentialWait time.Duration) {
 		lane:      lane,
 		delivery:  delivery,
 		relays:    relays,
+		tasks:     tasks,
 		sockets:   sockets,
 		caches:    caches,
 		known:     known,
@@ -2170,7 +2177,8 @@ type listenerLoops struct {
 
 // listenerParts are the parts of a started listener that shut down: server is the /v1 HTTP server,
 // client the main bus connection, lane the role lane, delivery the session-consumer connection,
-// relays the relay of its consumers (nil when it does not run), sockets an edge listener's relay
+// relays the relay of its consumers (nil when it does not run), tasks the task relay, which
+// publishes on that connection too (nil when it does not run), sockets an edge listener's relay
 // sockets (nil on every other listener), and caches the KV caches whose watchers are retired last.
 type listenerParts struct {
 	server   *http.Server
@@ -2178,6 +2186,7 @@ type listenerParts struct {
 	lane     roleLane
 	delivery *sessionDelivery
 	relays   *sessionRelays
+	tasks    *taskRelay
 	sockets  *relaySockets
 	caches   []listenerCache
 	// known is the known-session store, whose watcher is retired with the caches' but which is
@@ -2243,17 +2252,20 @@ func shutdownListener(logger *logging.Logger, parts listenerParts, loops listene
 	// 1. Relay sockets — an edge listener closes each with 1012, on which its client opens it
 	//    again at once on another replica, and refuses every upgrade after it. The HTTP server's
 	//    shutdown below does not wait for a hijacked connection, so nothing else would close them.
-	// 2. Session relays — stop relaying: each run is cancelled and, if it was pulling, returns the
-	//    messages it holds to the server with a nak (sessionRelays.release), so they are
-	//    delivered again at once rather than after their ack wait, and the stop waits for the
-	//    relay loop and every run within shutdownCtx. When shutdownCtx ends first, the stop warns
-	//    and the shutdown goes on, and a run still going may publish a frame, have one acked on
-	//    the session's done reply (onReply) or nak what it holds (sessionRelays.stop).
+	// 2. Session relays and the task relay — stop relaying: each session relay run is cancelled
+	//    and, if it was pulling, returns the messages it holds to the server with a nak
+	//    (sessionRelays.release), so they are delivered again at once rather than after their ack
+	//    wait, and the stop waits for the relay loop and every run within shutdownCtx. When
+	//    shutdownCtx ends first, the stop warns and the shutdown goes on, and a run still going may
+	//    publish a frame, have one acked on the session's done reply (onReply) or nak what it holds
+	//    (sessionRelays.stop). The task relay retires its watcher, which the drain below ends
+	//    (taskRelay.end).
 	// 3. HTTP server — stop accepting new requests, drain in-flight.
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), stopHTTPGrace)
 	defer cancel()
 	parts.sockets.stop()
 	parts.relays.stop(shutdownCtx)
+	parts.tasks.stop()
 	if err := parts.server.Shutdown(shutdownCtx); err != nil {
 		logger.Warn("http shutdown error", slog.String("error", err.Error()))
 	}

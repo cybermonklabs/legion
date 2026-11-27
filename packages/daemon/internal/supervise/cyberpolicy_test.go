@@ -12,19 +12,41 @@ import (
 )
 
 // The cases of this file hold the daemon to one rule: after OpenAI refuses a session's content
-// for cyber policy, the daemon sends that session nothing again until a person or the issue's
-// architect decides it. Each prompt the daemon sends is input from outside the session, which
-// ends Oh My Pi's own hold, so the refused content would go to OpenAI again and add one more
+// for cyber policy, the daemon gives that session nothing again until a person or the issue's
+// architect decides it. Each task the worker takes starts a turn from input outside the session,
+// which ends Oh My Pi's own hold, so the refused content would go to OpenAI again and add one more
 // refusal to the organization's record.
 
-// cyberPluginTurn is a turn that ran no prompt of the daemon's — a phase reminder, an Envoy
-// message, a background job's result — that OpenAI refused for cyber policy, as pi-legion
-// reports it: unprompted, with the class the host gave the refusal and whatever status a
-// gateway relayed it under.
-func (h *harness) cyberPluginTurn(sequence uint64, status int) {
+// cyberRefusal is OpenAI's cyber-policy refusal as a current pi-legion names it beside a refused
+// turn: the provider's failure, with whatever status a gateway relayed it under.
+func cyberRefusal(status int) *ProviderError {
+	return &ProviderError{Status: status, Provider: "openai", Model: "gpt-5.5", Message: "cyber_policy: synthetic refusal text"}
+}
+
+// cyberPluginTurn is a turn that was not the take's — a phase reminder, an Envoy message, a
+// background job's result — that OpenAI refused for cyber policy, as a current pi-legion reports
+// it: naming no task, with the provider's failure and the class the host gave the refusal.
+func (h *harness) cyberPluginTurn(status int) {
 	h.t.Helper()
-	h.must(RequestTurnOutcome{Claim: h.token, Generation: h.generation(), Sequence: sequence, Refused: true,
-		Message: "cyber_policy: synthetic refusal text", HTTPStatus: status, Unprompted: true, Code: codeCyberPolicy})
+	h.worker.sequence++
+	h.must(RequestTurnOutcome{Claim: h.token, Generation: h.generation(), Sequence: h.worker.sequence, Refused: true,
+		Message: "cyber_policy: synthetic refusal text", ProviderError: cyberRefusal(status), Code: codeCyberPolicy})
+}
+
+// cyberTakeTurn ends the turn of the take of the pending task and reports it refused for cyber
+// policy, as a current pi-legion does: the end frame, and then the report naming the task's
+// number with the provider's failure and the class.
+func (h *harness) cyberTakeTurn(status int) error {
+	h.t.Helper()
+	number := h.pending().Number
+	h.mustQuiet(StreamTurnEnd{Claim: h.token})
+	h.worker.sequence++
+	err := h.m.Handle(h.ctx, RequestTurnOutcome{Claim: h.token, Generation: h.generation(), Sequence: h.worker.sequence,
+		Refused: true, Message: "cyber_policy: synthetic refusal text", Task: number, ProviderError: cyberRefusal(status),
+		Code: codeCyberPolicy})
+	h.m.Wait()
+	h.workerAsks()
+	return err
 }
 
 // wantHeldForCyberPolicy fails the case unless the claim failed under CauseCyberPolicy, with a
@@ -49,24 +71,23 @@ func (h *harness) wantHeldForCyberPolicy() {
 	}
 }
 
-// A turn that ran no prompt of the daemon's and that OpenAI refused for cyber policy fails the
-// claim under CauseCyberPolicy, whatever status the report carries, and nothing is sent to the
-// session again, however long the claim waits: not the task the daemon queued while that turn
-// ran, which the end of the turn would otherwise send (turnEnded, afterTurn, sendPending), and
-// not a task delivered after it. The report is the daemon's one record of such a turn, since no
-// prompt result comes for it. Without the class on the report, a statusless or 503 refusal fails
-// nothing, and the queued task goes at the turn's end.
-func TestAPluginTurnRefusedForCyberPolicyFailsTheClaimAndNothingIsSentAgain(t *testing.T) {
+// A turn that was not the take's and that OpenAI refused for cyber policy fails the claim under
+// CauseCyberPolicy, whatever status the report carries, and nothing is given to the session again,
+// however long the claim waits: not the task the daemon queued while that turn ran, which the
+// worker would otherwise take at the turn's end (offerPending), and not a task delivered after it.
+// The report is the daemon's one record of such a turn. Without the class on the report, a
+// statusless or 503 refusal fails nothing, and the queued task is taken at the turn's end.
+func TestAPluginTurnRefusedForCyberPolicyFailsTheClaimAndNothingIsTakenAgain(t *testing.T) {
 	for _, status := range []int{0, 400, 503} {
 		t.Run(fmt.Sprintf("HTTP %d", status), func(t *testing.T) {
 			h := idleClaim(t)
-			sent := len(h.prompts())
+			taken := len(h.prompts())
 			// The plugin's own turn starts (a phase reminder), and the daemon queues a task while it
 			// runs.
 			h.must(StreamTurnStart{Claim: h.token})
 			h.must(RequestDeliver{Claim: h.token, Task: providerErrorTaskText, Phase: phase.Implementing, Generation: 7, Entry: 1})
 
-			h.cyberPluginTurn(1, status)
+			h.cyberPluginTurn(status)
 			h.mustQuiet(StreamTurnEnd{Claim: h.token})
 
 			h.wantHeldForCyberPolicy()
@@ -76,44 +97,109 @@ func TestAPluginTurnRefusedForCyberPolicyFailsTheClaimAndNothingIsSentAgain(t *t
 			}
 			_ = h.handle(RequestDeliver{Claim: h.token, Task: "a later task", Phase: phase.Implementing, Generation: 7, Entry: 2})
 			h.advance(2 * promptRetryMax)
-			h.wantPrompts(sent)
+			h.wantPrompts(taken)
+		})
+	}
+}
+
+// A take's report refused for cyber policy that the store took while it refused every write after
+// it — the take-back and the claim's failure written nowhere — is decided again by a daemon
+// restarted over what the store holds, from the class the report's entry in the window keeps
+// (TurnOutcome.ProviderErrorCode, Machine.ladderOwed, takeToLadder): the take goes back and the
+// claim fails under CauseCyberPolicy, once, and nothing is taken again. The control is the same
+// report with no class, whose 503 the restart takes to the ladder.
+func TestACyberPolicyReportWhoseTakeBackTheStoreRefusedFailsTheClaimAfterADaemonRestart(t *testing.T) {
+	for _, coded := range []bool{true, false} {
+		t.Run(map[bool]string{true: "with the class", false: "with no class, the control"}[coded], func(t *testing.T) {
+			cut := &cutOffStore{takes: -1}
+			h := workingClaim(t, currentPlugin, func(d *Deps) { cut.Store, d.Store = d.Store, cut })
+			h.mustQuiet(StreamTurnEnd{Claim: h.token})
+			number := h.pending().Number
+			h.worker.sequence++
+			report := RequestTurnOutcome{Claim: h.token, Generation: h.generation(), Sequence: h.worker.sequence, Refused: true,
+				Message: "cyber_policy: synthetic refusal text", Task: number, ProviderError: cyberRefusal(503)}
+			if coded {
+				report.Code = codeCyberPolicy
+			}
+			cut.set(1)
+			err := h.m.Handle(h.ctx, report)
+			h.m.Wait()
+			cut.set(-1)
+			if !errors.Is(err, errBoom) {
+				t.Fatalf("the report whose take-back the store refused = %v, want %v", err, errBoom)
+			}
+			stored := h.store.load(h.token)
+			if kept := stored.TurnOutcomes; len(kept) != 1 || kept[0].Unapplied || kept[0].Task != number ||
+				kept[0].ProviderErrorStatus != 503 || kept[0].ProviderErrorCode != report.Code {
+				t.Fatalf("the store keeps %+v, want the report of task %d applied with its status and class %q", kept, number, report.Code)
+			}
+			if p := stored.Pending; p == nil || !p.taken() || stored.State == StateFailed {
+				t.Fatalf("the store holds %s and %+v, want the take standing and the claim unfailed", stored.State, p)
+			}
+
+			h.restart()
+			h.connect()
+			h.wantLadderOwedLine(true)
+			p := h.claim().Pending
+			if !coded {
+				if p == nil || p.taken() || p.ProviderErrorRetries != 1 || h.state() == StateFailed {
+					t.Fatalf("the restarted claim is %s holding %+v, want the task on the ladder's first step", h.state(), p)
+				}
+				return
+			}
+			h.wantHeldForCyberPolicy()
+			if p == nil || p.Number != number || p.taken() || p.ProviderErrorRetries != 0 {
+				t.Fatalf("the restarted claim holds %+v, want task %d taken back with no ladder step", p, number)
+			}
+			h.advance(2 * promptRetryMax)
+			h.wantPrompts(1)
 		})
 	}
 }
 
 // The plugin's report and the worker stream's turn end come from one agent_end on two channels,
-// in no fixed order. Where the turn's end reaches the daemon first and a task waits, that task is
-// sent before the report arrives: one prompt, which ends Oh My Pi's hold. That send is the bound.
-// The prompt's own result names cyber_policy, which fails the claim under CauseCyberPolicy, and
-// the report that arrives after it changes nothing; nothing is sent a second time.
-func TestARaceBetweenTheTurnsEndAndItsReportCostsOneSendAtMost(t *testing.T) {
+// in no fixed order, and pi-legion's take hears the end before the report goes (its agent_end
+// entry). Where the end reaches the daemon first and a task waits, the worker takes that task
+// before the report arrives: one take, whose turn ends Oh My Pi's hold. That take is the bound.
+// The report of its own turn names its number and cyber_policy, which takes the task back and
+// fails the claim under CauseCyberPolicy, and the report of the first turn, arriving after it,
+// changes nothing; nothing is taken a second time.
+func TestARaceBetweenTheTurnsEndAndItsReportCostsOneTakeAtMost(t *testing.T) {
 	h := idleClaim(t)
-	sent := len(h.prompts())
+	taken := len(h.prompts())
 	h.must(StreamTurnStart{Claim: h.token})
 	h.must(RequestDeliver{Claim: h.token, Task: providerErrorTaskText, Phase: phase.Implementing, Generation: 7, Entry: 1})
+	// The plugin's turn is the worker's next to report; its report is sent last, below.
+	h.worker.sequence++
+	late := h.worker.sequence
 
-	// The stream's end of the refused plugin turn wins the race: the queued task goes.
+	// The stream's end of the refused plugin turn wins the race: the worker takes the queued task.
 	h.mustQuiet(StreamTurnEnd{Claim: h.token})
-	h.wantPrompts(sent + 1)
+	h.wantPrompts(taken + 1)
 	h.must(StreamTurnStart{Claim: h.token})
-	// The racing prompt ended Oh My Pi's hold, and OpenAI refused it again.
-	h.errorTurn(StreamPromptResult{Error: "cyber_policy: synthetic refusal text", Provider: "openai", Model: "gpt-5.5", Code: codeCyberPolicy})
+	// The racing take ended Oh My Pi's hold, and OpenAI refused its turn again.
+	if err := h.cyberTakeTurn(503); err != nil {
+		t.Fatalf("report the take's turn: %v", err)
+	}
 	h.wantHeldForCyberPolicy()
+	if p := h.claim().Pending; p == nil || p.taken() {
+		t.Fatalf("the failed claim holds %+v, want the racing take's task kept with its take given back", p)
+	}
 
 	// The plugin's report of the first turn arrives late.
-	_ = h.handle(RequestTurnOutcome{Claim: h.token, Generation: h.generation(), Sequence: 1, Refused: true,
-		Message: "cyber_policy: synthetic refusal text", Unprompted: true, Code: codeCyberPolicy})
+	_ = h.handle(RequestTurnOutcome{Claim: h.token, Generation: h.generation(), Sequence: late, Refused: true,
+		Message: "cyber_policy: synthetic refusal text", ProviderError: cyberRefusal(0), Code: codeCyberPolicy})
 	h.advance(2 * promptRetryMax)
-	h.wantPrompts(sent + 1)
+	h.wantPrompts(taken + 1)
 	h.wantHeldForCyberPolicy()
 }
 
 // failedForCyberPolicy is a phase worker failed for OpenAI's cyber-policy refusal of a turn that
-// ran no prompt of the daemon's.
+// was not a take's.
 func failedForCyberPolicy(t *testing.T) *harness {
 	t.Helper()
 	h := idleClaim(t)
-	h.cyberPluginTurn(1, 0)
+	h.cyberPluginTurn(0)
 	h.wantHeldForCyberPolicy()
 	return h
 }
@@ -233,7 +319,7 @@ func TestTheOperatorsRetryStartsAHeldControllerInANewSession(t *testing.T) {
 		t.Run(fmt.Sprintf("--fresh-session %t", fresh), func(t *testing.T) {
 			h := newHarnessOf(t, controllerClaim())
 			h.reach(StateIdle)
-			h.cyberPluginTurn(1, 0)
+			h.cyberPluginTurn(0)
 			h.wantHeldForCyberPolicy()
 			if h.claim().KeeperRetries() {
 				t.Fatal("the held controller reads as one its keeper retries")
@@ -351,8 +437,8 @@ func TestOneClassificationNamesAProviderErrorAndDecidesItsFailure(t *testing.T) 
 	}{
 		{0, codeCyberPolicy, "OpenAI's cyber_policy refusal of this session's content", CauseCyberPolicy},
 		{503, codeCyberPolicy, "OpenAI's cyber_policy refusal of this session's content (HTTP 503)", CauseCyberPolicy},
-		{0, codeCostCap, "the session's cost cap (Oh My Pi's session.maxCost, cost_cap)", ""},
-		{400, codeCostCap, "the session's cost cap (Oh My Pi's session.maxCost, cost_cap)", CauseProviderError},
+		{0, "cost_cap", "the session's cost cap (Oh My Pi's session.maxCost, cost_cap)", ""},
+		{400, "cost_cap", "the session's cost cap (Oh My Pi's session.maxCost, cost_cap)", CauseProviderError},
 		{400, "", "a provider error (HTTP 400)", CauseProviderError},
 		{429, "", "a provider error (HTTP 429)", ""},
 		{401, "", "a provider error (HTTP 401)", ""},

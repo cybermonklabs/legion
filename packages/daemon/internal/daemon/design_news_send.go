@@ -80,13 +80,13 @@ import (
 // rendered by the one render every task of news goes through (renderNews). A phase start whose
 // news is all dropped is sent as its own text alone, carrying no news; a task queued for its news
 // alone (supervise.Delivery.NewsOnly) with nothing left to say — no item standing, and no opening
-// owed while the gate stands open — answers "", which the machine retires rather than sends. A task
-// whose news all stands as it is carried is answered with the bytes it carries, so a send of a task
-// the record has not moved under writes nothing; one whose items the send dropped, re-keyed or told
-// by another state than they carry, or whose openings it dropped, took on, numbered anew or said
-// closed, is answered with its news encoded again, so any later send reads what this send told, and
-// so does the copy this prompt's acknowledgement records (supervise.Delivery.Carried), which is
-// what the confirmation of this prompt's turn credits.
+// owed while the gate stands open — answers "", which the machine drops rather than lets be taken.
+// A task whose news all stands as it is carried is answered with the bytes it carries, so a take of
+// a task the record has not moved under writes nothing; one whose items the render dropped,
+// re-keyed or told by another state than they carry, or whose openings it dropped, took on,
+// numbered anew or said closed, is answered with its news encoded again, so any later take reads
+// what this render told, and so does the copy the accept of that take records
+// (supervise.Delivery.Carried), which is that accepted take's credit once its turn has started.
 //
 // An item dropped from the text and the delivery queues one design_changes row for its tree
 // (record.QueueDesignNews) where a reconcile has something to send it: the item no longer stands,

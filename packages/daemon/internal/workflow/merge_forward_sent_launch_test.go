@@ -25,8 +25,7 @@ import (
 // askRowEnds is the daemon's executor ending the implementer's queued ask row: under the fact lock
 // (intake.SerializeFacts) the row leaves the outbox, and the workflow settles its end
 // (MergeForwardAskEnded) with delivered and told, the launch the delivery reached (0 for an
-// undelivered row, and for a delivery the listener named no holder of), and launch, the claim's
-// launch as the executor reads it at the end.
+// undelivered row), and launch, the claim's launch as the executor reads it at the end.
 func askRowEnds(t *testing.T, pool *pgxpool.Pool, engine *Engine, delivered bool, told, launch uint64) {
 	t.Helper()
 	applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
@@ -86,11 +85,11 @@ func TestAnAskRowEndedUndeliveredLeavesItsLaunchToBeToldAgain(t *testing.T) {
 	}
 }
 
-// The row sent again at launch 2 is delivered while the listener names no holder, so the delivery
-// names no launch told. It is still taken as told to the launch it was sent at: the record's ask
-// names launch 2, and the end sends launch 2 nothing more. Recording nothing for it would send the
-// ask to launch 2 again at this end, and at the end of every such row after it.
-func TestASentAgainRowDeliveredWithNoHolderIsToldItsLaunch(t *testing.T) {
+// The row sent again at launch 2 is delivered and its end names no launch told. It is still taken
+// as told to the launch it was sent at: the record's ask names launch 2, and the end sends launch 2
+// nothing more. Recording nothing for it would send the ask to launch 2 again at this end, and at
+// the end of every such row after it.
+func TestASentAgainRowDeliveredWithNoLaunchToldIsToldItsLaunch(t *testing.T) {
 	t.Parallel()
 	pool := sentAgainAtLaunch2(t)
 	askRowEnds(t, pool, readsAfter(3*time.Minute), true, 0, 2)
@@ -127,12 +126,12 @@ func TestAnOlderAskRowDeliveredRecordsNothingOnANewerAsk(t *testing.T) {
 	}
 }
 
-// A newer ask of the same head and role was made after the row was queued for launch 2 - the pull
-// request was reopened at that head, which drops the record's ask, and the conflict two reads
-// confirm asked the implementer again - and the newer ask's own row told launch 2. The older row
-// then ends undelivered while the claim is still at launch 2: launch 2 was told, by the newer
-// ask's row, so the end sends it nothing and the record keeps launch 2. An end that read the
-// newer ask as the row's own and took its launch back would send launch 2 the ask a second time.
+// A newer ask of the same head and role was made after the row was queued for launch 2 - a move
+// into a phase where the ask the record held is owed to nobody asks the implementer again for that
+// head - and the newer ask's own row told launch 2. The older row then ends undelivered while the
+// claim is still at launch 2: launch 2 was told, by the newer ask's row, so the end sends it
+// nothing and the record keeps launch 2. An end that read the newer ask as the row's own and took
+// its launch back would send launch 2 the ask a second time.
 func TestAnOlderAskRowEndedUndeliveredLeavesANewerAskOfItsHeadAsItIs(t *testing.T) {
 	t.Parallel()
 	pool := sentAgainAtLaunch2(t)
@@ -151,30 +150,34 @@ func TestAnOlderAskRowEndedUndeliveredLeavesANewerAskOfItsHeadAsItIs(t *testing.
 }
 
 // The pull request closes while the row sent again at launch 2 is queued, and the row ends
-// undelivered on the closed pull request. A reopen drops the record's ask (the reopened record
-// carries none), and the conflict two reads confirm on the reopened head asks again afresh: the
-// implementer is asked once more, with the tester held, and the ask reaches the launch through its
-// own row.
+// undelivered on the closed pull request, so it records nothing: the record's ask still names
+// launch 1, the last told. A reopen keeps the record's ask and asks the implementer once more,
+// with the tester held (askAtReopen): the ask reaches launch 2 through its own row, whose delivery
+// tells no launch at or below launch 1. The conflict two reads confirm on the reopened head then
+// asks nothing more, since the merge of that head is still owed to the implementer.
 func TestAnAskRowEndedOnAClosedPullRequestIsAskedAgainAfterTheReopen(t *testing.T) {
 	t.Parallel()
 	pool := sentAgainAtLaunch2(t)
 	closed := firstConflictRead.Add(4 * time.Minute)
 	applyRefusingNothing(t, pool, readsAfter(4*time.Minute), closedAt(conflictHead, closed))
 	askRowEnds(t, pool, readsAfter(5*time.Minute), false, 0, 2)
+	before := len(mergeForwardMessages(t, pool))
 	applyRefusingNothing(t, pool, readsAfter(6*time.Minute), intake.PullRequestOpened{Repo: "sjawhar/legion", Number: 42,
 		Branch: "legion/LEGION-208", HeadSHA: conflictHead, UpdatedAt: closed.Add(2 * time.Minute), Reopened: true})
-	if mf := recordedPR(t, pool, "LEGION-208").MergeForward; mf != nil {
-		t.Fatalf("after the reopen the record's ask is %+v, want none: the reopen drops it", mf)
+	if mf := recordedPR(t, pool, "LEGION-208").MergeForward; mf == nil || mf.Asked() != claim.RoleImplementer || mf.SentLaunch != 1 {
+		t.Fatalf("after the reopen the record's ask is %+v, want the implementer's ask kept, still told launch 1", mf)
 	}
-	before := len(mergeForwardMessages(t, pool))
+	if got := toldWho(mergeForwardMessages(t, pool)[before:]); !reflect.DeepEqual(got, []string{"implementer ask", "tester hold"}) {
+		t.Errorf("after the reopen the merge-forward messages queued are %v, want [implementer ask tester hold]", got)
+	}
+	after := len(mergeForwardMessages(t, pool))
 	rules := &record.BaseRules{Required: []string{"ci"}}
 	applyRefusingNothing(t, pool, readsAfter(10*time.Minute), conflictingRead(rules))
 	applyRefusingNothing(t, pool, readsAfter(10*time.Minute+conflictConfirmWait), conflictingRead(rules))
-	got := toldWho(mergeForwardMessages(t, pool)[before:])
-	if !reflect.DeepEqual(got, []string{"implementer ask", "tester hold"}) {
-		t.Errorf("after the reopened head's conflict was confirmed the merge-forward messages queued are %v, want [implementer ask tester hold]", got)
+	if got := toldWho(mergeForwardMessages(t, pool)[after:]); len(got) != 0 {
+		t.Errorf("after the reopened head's conflict was confirmed the merge-forward messages queued are %v, want none: the merge is still owed to the implementer", got)
 	}
-	if mf := recordedPR(t, pool, "LEGION-208").MergeForward; mf == nil || mf.Asked() != claim.RoleImplementer || mf.SentLaunch != 0 {
-		t.Errorf("after the reopened head's conflict the record's ask is %+v, want the implementer's fresh ask, told no launch yet", mf)
+	if mf := recordedPR(t, pool, "LEGION-208").MergeForward; mf == nil || mf.Asked() != claim.RoleImplementer || mf.SentLaunch != 1 {
+		t.Errorf("after the reopened head's conflict the record's ask is %+v, want the implementer's ask kept, told launch 1", mf)
 	}
 }

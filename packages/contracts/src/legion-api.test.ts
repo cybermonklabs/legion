@@ -73,7 +73,13 @@ import {
   LegionSessionActivity,
   LegionSignOffRequest,
   LegionStateResponse,
+  LegionTakeRequest,
+  LegionTakeResponse,
+  LegionTaskRequest,
+  LegionTaskResponse,
+  LegionTaskSeenRequest,
   LegionTaskStopRequest,
+  LegionTurnOutcomeRequest,
   LegionTurnOutcomeResponse,
   LegionWaveReleaseRequest,
   LegionWaveReleaseResponse,
@@ -212,6 +218,13 @@ const schemas: Record<string, z.ZodType> = {
   // `claim.TurnOutcomeResponse`: what a producer's report of one turn comes back as, the run of
   // refused turns the claim now ends with (`LegionTurnOutcomeResponse` says what `failed` holds).
   "turn-outcome.json": LegionTurnOutcomeResponse,
+  // `claim.TaskResponse`: what `claims/task` answers a claim whose bucket holds no value (`task`
+  // null), and `claim.TakeResponse`, one fixture for each outcome of a take (the task-take entry,
+  // `contract_20261125171504_task-take.go`).
+  "task.json": LegionTaskResponse,
+  "take-accepted.json": LegionTakeResponse,
+  "take-refused.json": LegionTakeResponse,
+  "take-dropped.json": LegionTakeResponse,
   // What a pod reads of its deployment's idle release: every release, resume and hold of the
   // window it named (`api.ReleaseRecordsResponse`).
   "release-records.json": LegionReleaseRecordsResponse,
@@ -613,6 +626,8 @@ const RECORD_SCHEMAS: Record<string, readonly z.ZodType[]> = {
   "project-resume": [LegionProjectResumeResponse],
   "plan-register": [LegionPlanRegisterResponse],
   "intake-discard": [LegionIntakeDiscardResponse],
+  task: [LegionTaskResponse],
+  take: [LegionTakeResponse],
   "p0-bound": [LegionP0BoundResponse],
   "pod-update": [LegionPodUpdateResponse],
   owed: [LegionOwedResponse],
@@ -1987,7 +2002,7 @@ test("an operator's claim carries what the daemon last saw its agent do", () => 
 // and a held issue says which phase its hold stopped, beside the reason the hold may have. The
 // state golden carries LEGION-210, held from implementing after its implementer failed, and the
 // forget-session golden carries the operator's shape of the same record. A claim that never
-// failed carries no `failure`, a backfilled one carries no `at`, and a word the seven do not
+// failed carries no `failure`, a backfilled one carries no `at`, and a word the eight do not
 // name is refused rather than read.
 test("a failed claim carries its cause", () => {
   const state = fixture("state.json") as {
@@ -2024,7 +2039,7 @@ test("a failed claim carries its cause", () => {
   expect(parsed?.workers?.implementer?.claim?.failure).toEqual(record);
 
   // A failure the migration backfilled carries no moment, and the record outlives the claim's
-  // retirement; a cause outside the seven words, or a held phase outside the workflow's, is
+  // retirement; a cause outside the eight words, or a held phase outside the workflow's, is
   // refused.
   failed.failure = {
     cause: "unrecorded",
@@ -2111,12 +2126,14 @@ test("a claim and an issue carry the fields the record decides they serve", () =
     updateReasons: "the pod template changed: image ghcr.io/cybermonklabs/legion-worker moved",
     pendingTask: { phase: "implementing", queuedAt: "2126-09-22T09:16:58Z" },
   });
-  // The sends that never reached a turn ride the task a released claim still holds.
+  // The takes whose adoption of the working copy the shim refused ride the task a released claim
+  // still holds.
   expect(released.pendingTask).toEqual({
     phase: "implementing",
     queuedAt: "2126-09-22T08:54:20Z",
     sendFailures: 2,
-    lastSendError: "post the prompt: dial tcp 10.42.0.17:13371: connect: connection refused",
+    lastSendError:
+      "worker-stream: legion-legion-legion-211-implementer refused adopt-working-copy: Command failed (exit 1): jj metaedit: the git lock /legion/workspaces/acme/widgets/legion-211/.git/index.lock was last written 31m ago",
   });
   // The cause of the death whose relaunch the runtime refused, which stands beside `failure`.
   expect(failed.pendingCause).toBe("died");
@@ -2141,11 +2158,15 @@ test("a claim and an issue carry the fields the record decides they serve", () =
   expect(parsed.issues["LEGION-207"]?.lingerUntil).toBe("2126-09-22T10:10:12Z");
   expect(parsed.issues["LEGION-215"]?.ancestry).toEqual(["LEGION-217", "LEGION-208"]);
   // The pending task is the five facts and the text is not one of them, here or anywhere in the
-  // body: the operator routes are the only surface that serves it.
+  // body: the operator routes are the only surface that serves it. The one `task` key the body
+  // carries is `unseenTaskValues[].task`, a task's number and never its text, which its schema
+  // holds to an integer: the whole body carries that key, and the rest of it none at all.
   expect(Object.keys(parsedWorking?.pendingTask ?? {}).sort()).toEqual(["phase", "queuedAt"]);
-  expect(JSON.stringify(parsed)).not.toContain('"task"');
+  const { unseenTaskValues: _numbers, ...withoutUnseen } = parsed;
+  expect(JSON.stringify(parsed)).toContain('"task"');
+  expect(JSON.stringify(withoutUnseen)).not.toContain('"task"');
 
-  // A cause outside the seven words, a linger that is no instant and an empty key in the chain
+  // A cause outside the eight words, a linger that is no instant and an empty key in the chain
   // are each refused rather than read.
   failed.pendingCause = "exploded";
   expect(LegionStateResponse.safeParse(state).success).toBeFalse();
@@ -2462,6 +2483,84 @@ test("every request the plugin sends parses and names its required fields", () =
         since: "2026-11-01T12:00:00Z",
       },
     ],
+    // The task routes (the task-take entry), each under the agent's secret form and the bridge's boot
+    // token form, and the turn outcome that names the task and the provider error it ended in.
+    [
+      "task read",
+      LegionTaskRequest,
+      {
+        claimToken: "legion-legion-legion-208-implementer",
+        sessionId: "ses_implementer_208",
+        secret: CLAIM_SECRET,
+        generation: 5,
+      },
+    ],
+    ["task read by boot token", LegionTaskRequest, { bootToken: "boot-208", generation: 5 }],
+    [
+      "task seen",
+      LegionTaskSeenRequest,
+      {
+        bootToken: "boot-208",
+        generation: 5,
+        number: 4,
+        epoch: "2026-11-13T16:21:44Z",
+        revision: 12,
+      },
+    ],
+    [
+      "take",
+      LegionTakeRequest,
+      {
+        claimToken: "legion-legion-legion-208-implementer",
+        sessionId: "ses_implementer_208",
+        secret: CLAIM_SECRET,
+        generation: 5,
+        number: 4,
+        epoch: "2026-11-13T16:21:44Z",
+        revision: 12,
+      },
+    ],
+    [
+      "take by boot token",
+      LegionTakeRequest,
+      {
+        bootToken: "boot-208",
+        generation: 5,
+        number: 4,
+        epoch: "2026-11-13T16:21:44Z",
+        revision: 12,
+      },
+    ],
+    [
+      "turn outcome of a task",
+      LegionTurnOutcomeRequest,
+      {
+        bootToken: "boot-208",
+        generation: 5,
+        sequence: 3,
+        outcome: "refused",
+        message: "overloaded",
+        task: 4,
+        providerError: {
+          status: 529,
+          provider: "anthropic",
+          model: "claude-opus",
+          message: "overloaded",
+          retryable: true,
+        },
+      },
+    ],
+    [
+      "turn outcome of no task, a take's text held through it",
+      LegionTurnOutcomeRequest,
+      {
+        bootToken: "boot-208",
+        generation: 5,
+        sequence: 3,
+        outcome: "clean",
+        held: 4,
+      },
+    ],
   ];
 
   for (const [name, schema, request] of requests) {
@@ -2474,6 +2573,55 @@ test("every request the plugin sends parses and names its required fields", () =
       `${name} refuses a missing required field`
     ).toBeFalse();
   }
+});
+
+// `held` names a take by its number, which counts from 1, and is optional: a report without it is
+// the report every producer sent before it, and one naming no number held is refused.
+test("a turn outcome's held names a task number, and a report may leave it out", () => {
+  const report = {
+    claimToken: "legion-omp-LEGION-208-tester",
+    sessionId: "ses_tester_208",
+    secret: "sec-2",
+    generation: 5,
+    sequence: 3,
+    outcome: "clean",
+  } as const;
+  expect(LegionTurnOutcomeRequest.safeParse(report).success).toBeTrue();
+  expect(LegionTurnOutcomeRequest.safeParse({ ...report, held: 4 }).success).toBeTrue();
+  expect(LegionTurnOutcomeRequest.safeParse({ ...report, held: 0 }).success).toBeFalse();
+  expect(LegionTurnOutcomeRequest.safeParse({ ...report, held: "4" }).success).toBeFalse();
+});
+
+// `code` carries the producer's class for a refused turn: `cyber_policy` (contract entry
+// 20261125174608) and `cost_cap` (this branch's task-take entry, 20261125171504). Any other word
+// is refused by the strict client contract.
+test("a turn outcome's code admits cost_cap beside cyber_policy and refuses unknown words", () => {
+  const report = {
+    claimToken: "legion-omp-LEGION-208-implementer",
+    sessionId: "ses_implementer_208",
+    secret: "sec-2",
+    generation: 5,
+    sequence: 3,
+    outcome: "refused",
+    message:
+      "Cost cap reached: this session spent $5.01 of its $5.00 cap (--max-cost / session.maxCost), so the next model request was not sent.",
+    task: 4,
+    providerError: {
+      status: 0,
+      provider: "",
+      model: "",
+      message:
+        "Cost cap reached: this session spent $5.01 of its $5.00 cap (--max-cost / session.maxCost), so the next model request was not sent.",
+      retryable: false,
+    },
+  } as const;
+  expect(LegionTurnOutcomeRequest.safeParse({ ...report, code: "cost_cap" }).success).toBeTrue();
+  expect(
+    LegionTurnOutcomeRequest.safeParse({ ...report, code: "cyber_policy" }).success
+  ).toBeTrue();
+  expect(
+    LegionTurnOutcomeRequest.safeParse({ ...report, code: "session_busy" }).success
+  ).toBeFalse();
 });
 
 test("an escalation rejects empty required fields", () => {
@@ -2927,6 +3075,60 @@ test("the register golden names the task agents the role's prompts dispatch", ()
   const mutated = fixture("register.json") as Record<string, unknown>;
   delete mutated.promptAgents;
   expect(LegionRegisterResponse.safeParse(mutated).success).toBeFalse();
+});
+
+// A worker holds its claim's value from its registration and from `claims/task` (the task-take entry):
+// the value, or null where the bucket holds none, beside the number of the last task the claim
+// finished. Both keys are always written, so neither may be left out, and a value always names a
+// task and a revision.
+test("the register golden and the task read carry the claim's value and its finished number", () => {
+  const registration = LegionRegisterResponse.parse(fixture("register.json"));
+  expect(registration.task).toEqual({
+    number: 4,
+    epoch: "2026-11-13T16:21:44.123456789Z",
+    revision: 12,
+  });
+  expect(registration.finished).toBe(3);
+
+  const read = LegionTaskResponse.parse(fixture("task.json"));
+  expect(read).toEqual({ task: null, finished: 4 });
+
+  for (const key of ["task", "finished"]) {
+    const withoutKey = fixtureBody("register.json");
+    delete withoutKey[key];
+    expect(
+      LegionRegisterResponse.safeParse(withoutKey).success,
+      `register without ${key}`
+    ).toBeFalse();
+    const readWithoutKey = fixtureBody("task.json");
+    delete readWithoutKey[key];
+    expect(
+      LegionTaskResponse.safeParse(readWithoutKey).success,
+      `task read without ${key}`
+    ).toBeFalse();
+  }
+  const noTask = { ...fixtureBody("task.json"), task: { number: 0, epoch: "e", revision: 1 } };
+  expect(LegionTaskResponse.safeParse(noTask).success).toBeFalse();
+});
+
+// A take is answered one of three ways (the task-take entry), each written by the Go side: accepted with
+// the text the worker runs, refused naming the hold, or dropped. An accepted answer without its
+// text and a refused one without its hold are refused; a hold a later daemon names is read.
+test("the take goldens are its three answers", () => {
+  expect(LegionTakeResponse.parse(fixture("take-accepted.json")).outcome).toBe("accepted");
+  expect(LegionTakeResponse.parse(fixture("take-refused.json"))).toEqual({
+    outcome: "refused",
+    hold: "stale-plugin",
+  });
+  expect(LegionTakeResponse.parse(fixture("take-dropped.json"))).toEqual({ outcome: "dropped" });
+
+  expect(LegionTakeResponse.safeParse({ outcome: "accepted" }).success).toBeFalse();
+  expect(LegionTakeResponse.safeParse({ outcome: "refused" }).success).toBeFalse();
+  expect(LegionTakeResponse.safeParse({ outcome: "queued" }).success).toBeFalse();
+  expect(
+    LegionTakeResponse.safeParse({ outcome: "refused", hold: "a-hold-a-later-daemon-names" })
+      .success
+  ).toBeTrue();
 });
 
 test("the ready golden carries the session's capability report", () => {
@@ -3447,24 +3649,28 @@ test("a reader at contract 152 parses the repositories block served below 202", 
   // (`withoutPodHold`); contract 250's, which takes `priority` off each issue and off its
   // `waitingLine`; contract 256's, which takes `lastDeathAt` and `lastStartFailureAt` off each
   // claim view; and contract 275's, which takes `dispatchCredential` off the state. Above them
-  // stand four entries' bands: the gate-basis entry's, which takes every root's `treeRuns` and
+  // stand five entries' bands: the gate-basis entry's, which takes every root's `treeRuns` and
   // the `gatedSteps` of each issue with a step on an ancestor's basis (`api`'s `withoutGateBasis`);
-  // the state-seq entry's, entry 20261125174131's (dispatch://INFRA-3931), which takes `stateSeq`,
-  // `stateId` and `stateRun` off the daemon block; the P0 start's, entry 20261125181047's, which
-  // serves each issue without its `resolvedPriority` and `priorityFrom` and the admission without
-  // its `p0Holders` and `p0Bound`; and the repository correction's (dispatch://INFRA-3136), entry
-  // 20261125181104's, which serves each issue without its `repoBefore`, `repoCorrectedAt`,
-  // `repoChangePending` and `repoChangeReason`.
-  // So the golden's issues, rows, claim views and daemon block are compared without them. One
-  // value strip stands above 199 as well: `caches`, the source of the repository-cache-room row,
-  // arrived at contract 213, so that row is served here without its `source`, every other field of
-  // it and every other row as the state golden holds them. The gate-basis entry's value strips take
-  // nothing more here: the strip of its two step statuses takes the `gatedSteps` its band has taken
-  // already, and the golden holds no issue in `awaiting_children` and no held row of it.
+  // the task-take entry's (`contract_20261125171504_task-take.go`, `withoutUnseenTaskValues`),
+  // which no caller below that entry is served; the state-seq entry's, entry 20261125174131's
+  // (dispatch://INFRA-3931), which takes `stateSeq`, `stateId` and `stateRun` off the daemon
+  // block; the P0 start's, entry 20261125181047's, which serves each issue without its
+  // `resolvedPriority` and `priorityFrom` and the admission without its `p0Holders` and
+  // `p0Bound`; and the repository correction's (dispatch://INFRA-3136), entry 20261125181104's,
+  // which serves each issue without its `repoBefore`, `repoCorrectedAt`, `repoChangePending` and
+  // `repoChangeReason`.
+  // So the golden's issues, rows, claim views and daemon block are compared without them, and the
+  // narrowing drops `intakeGiveUps` and `unseenTaskValues`. One value strip stands above 199 as
+  // well: `caches`, the source of the repository-cache-room row, arrived at contract 213, so that
+  // row is served here without its `source`, every other field of it and every other row as the
+  // state golden holds them. The gate-basis entry's value strips take nothing more here: the strip
+  // of its two step statuses takes the `gatedSteps` its band has taken already, and the golden
+  // holds no issue in `awaiting_children` and no held row of it.
   const recordedBelow = daemonApiRecords(fixtureDir)
     .records.map((record) => record.contract)
     .filter((contract) => contract < repositoriesLiveContract);
   expect(served.contract).toEqual({ caller: Math.max(...recordedBelow) });
+  expect(served).not.toHaveProperty("unseenTaskValues");
   expect("intakeGiveUps" in served).toBeFalse();
   const {
     repositories: _narrowedBlock,
@@ -3476,6 +3682,7 @@ test("a reader at contract 152 parses the repositories block served below 202", 
     repositories: _block,
     contract: _mark,
     lowestPluginContract: _lowest,
+    unseenTaskValues: _unseen,
     dispatchCredential: _credential,
     intakeGiveUps: _giveUps,
     ...rest
@@ -3835,7 +4042,7 @@ test("the state golden names the wakes the pacing holds, and the key may be abse
 // refused is a count that is not a whole number of claims.
 test("the state golden counts the claims the stale-plugin lane has left, and the key may be absent", () => {
   const state = fixture("state.json") as Record<string, unknown>;
-  expect(LegionStateResponse.parse(state).claimsToRefresh).toBe(6);
+  expect(LegionStateResponse.parse(state).claimsToRefresh).toBe(8);
   expect(LegionStateResponse.parse(fixture("state-stage3.json")).claimsToRefresh).toBe(0);
 
   const { claimsToRefresh: _withoutTheCount, ...stripped } = state;
@@ -3846,6 +4053,50 @@ test("the state golden counts the claims the stale-plugin lane has left, and the
   for (const refused of [-1, 1.5, "4", null]) {
     expect(
       LegionStateResponse.safeParse({ ...state, claimsToRefresh: refused }).success
+    ).toBeFalse();
+  }
+});
+
+// The claims whose task value nobody reported seeing for a whole first bound (R5 of
+// dispatch://INFRA-2811): the golden names the one claim the relay failed, with the number its
+// value names and when the daemon last wrote it, and a state where every value was seen carries
+// an empty list rather than no key. The key is not required for the reason `wakesWaiting` is not:
+// the daemon leaves it off the state it serves a caller whose pod's plugin is older than the
+// contract that added it (`api.stateFor`, `withoutUnseenTaskValues`). So a body without it
+// parses, and what is refused is an entry that names no task number or no moment.
+test("the state golden names the claims whose task value is unseen, and the key may be absent", () => {
+  const state = fixture("state.json") as Record<string, unknown>;
+  expect(LegionStateResponse.parse(state).unseenTaskValues).toEqual([
+    {
+      claim: "legion-legion-legion-209-tester",
+      issue: "LEGION-209",
+      role: "tester",
+      task: 2,
+      writtenAt: "2126-09-22T09:15:30Z",
+    },
+  ]);
+  expect(LegionStateResponse.parse(fixture("state-stage3.json")).unseenTaskValues).toEqual([]);
+
+  const { unseenTaskValues: _withoutTheList, ...stripped } = state;
+  const served = LegionStateResponse.safeParse(stripped);
+  expect(served.success).toBeTrue();
+  expect(served.data?.unseenTaskValues).toBeUndefined();
+
+  const entry = {
+    claim: "legion-legion-legion-209-tester",
+    issue: "LEGION-209",
+    role: "tester",
+    task: 2,
+    writtenAt: "2026-09-22T09:15:30Z",
+  };
+  for (const refused of [
+    { ...entry, task: 0 },
+    { ...entry, task: "2" },
+    { ...entry, writtenAt: "yesterday" },
+    { ...entry, role: "intern" },
+  ]) {
+    expect(
+      LegionStateResponse.safeParse({ ...state, unseenTaskValues: [refused] }).success
     ).toBeFalse();
   }
 });

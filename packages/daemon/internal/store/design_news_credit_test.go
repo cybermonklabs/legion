@@ -21,7 +21,7 @@ func TestASecondConfirmationOverAConfirmationWhoseTakeBackWasLostCreditsOnlyItsO
 	r := newToldRig(t)
 	r.seedTold()
 	first := r.newsTask("outbox:7")
-	first.ConfirmedAt = r.at.Add(time.Minute)
+	first.ConfirmedAt, first.TurnStarted = r.at.Add(time.Minute), true
 	if err := r.store.PutClaimAndDelivery(r.ctx, r.reviewer, first); err != nil {
 		t.Fatalf("confirm the task with its first copy: %v", err)
 	}
@@ -42,7 +42,7 @@ func TestASecondConfirmationOverAConfirmationWhoseTakeBackWasLostCreditsOnlyItsO
 		t.Fatal(err)
 	}
 	second := first
-	second.News, second.Carried, second.ConfirmedAt = encoded, encoded, r.at.Add(2*time.Minute)
+	second.News, second.Carried, second.ConfirmedAt, second.TurnStarted = encoded, encoded, r.at.Add(2*time.Minute), true
 	if err := r.store.PutClaimAndDelivery(r.ctx, r.reviewer, second); err != nil {
 		t.Fatalf("confirm the task again with its second copy: %v", err)
 	}
@@ -58,7 +58,7 @@ func TestASecondConfirmationOverAConfirmationWhoseTakeBackWasLostCreditsOnlyItsO
 		map[record.DesignStep]int{record.DesignStepSpec: 6}, true)
 
 	takenBack := second
-	takenBack.ConfirmedAt, takenBack.Carried = time.Time{}, nil
+	takenBack.ConfirmedAt, takenBack.TurnStarted, takenBack.Carried = time.Time{}, false, nil
 	if err := r.store.PutDelivery(r.ctx, r.reviewer.Token, takenBack); err != nil {
 		t.Fatalf("take the second confirmation back: %v", err)
 	}

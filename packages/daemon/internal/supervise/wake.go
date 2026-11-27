@@ -80,7 +80,7 @@ const (
 // stale-plugin refresh's relaunch, and not the outbox's catch-up, which wakes a session that is
 // already running. It is the question every decision about a waiting wake really asks, and each
 // of them asks it here rather than naming a kind — the delivery held back from a process a wake
-// is about to let go (sendPending), the observations and the probe that wake stands in for
+// is about to let go (claimHold), the observations and the probe that wake stands in for
 // (judge, probe), the compaction refused for it (compactStart), the held suspension it ends
 // (wakeNow), the lifecycle recheck and the turn take-back its run makes (runWake), the parked
 // launch an operator's own delivery runs at once (runParkedLaunchNow), the second relaunch a
@@ -188,11 +188,47 @@ type wake struct {
 	// and nothing of the relaunch it held is written, which is right — that relaunch never
 	// replaced anything.
 	pluginMark *pluginIntent
+	// takeBack is the take-back of the task the process this wake replaces holds, which the
+	// wake's turn makes where it lets that process go (runWake): the replacement's own, with the
+	// sentence it was raised with and whether its end was the pod running out of memory
+	// (launchReplacing, replaceNow), so a displacement the pacing parked keeps its out-of-memory
+	// note. It is nil for a wake no replacement parked, whose turn makes the take-back of its own.
+	takeBack func(context.Context) error
+	// replaceAgain is the replacement this wake's launch is, raised anew from the top, for a
+	// replacement of a live process whose report can reach the daemon (replaceNow, heldAtItsTurn):
+	// a repoint whose observation does not say the daemon's API moved, the stall backstop's, the
+	// relaunch of a hello no answer followed. A turn of such a wake that comes after the take's
+	// turn ended with its report still to come holds it for that report rather than let the
+	// process go (runWake, holdReplacement), as the held repoint is held. It is nil for every other
+	// wake, whose turn lets the process go as it stands.
+	replaceAgain func(context.Context) (ProcessEnd, error)
 	// pause is the project pause whose gate holds this launch (pauseGate), 0 for a wake the
-	// pacing holds. A held launch has no moment to run: it waits on the machine with no timer, is
-	// published as no waiting wake (publish), and leaves only by the claim's stop for the pause
-	// (pauseStopDue) or by its let-out once that pause has ended (letOutHeldLaunch). Its let-out
-	// takes a place in the pacing for it unless it paid.
+	// pacing holds. A held launch has no moment to run: it waits on the machine with no timer and
+	// is published as no waiting wake (publish). It keeps the turn the pacing let it out on before
+	// the gate held it, if any (paid), and holds no place in the pacing's queues while it is held.
+	// It leaves the machine by one of these:
+	//
+	//   - The claim's stop for the pause (pauseStopDue), which drops it with the claim's process
+	//     (suspended, letGo) and owes the role a launch at the resume (PauseStop.LaunchOwed),
+	//     which meets the gates as a launch of its own.
+	//   - Its let-out once that pause has ended (letOutHeldLaunch), by that stop finding no pause
+	//     open or by the resume's event (resumePause): a launch that paid runs now and takes no
+	//     place, one on a daemon whose pacing is off runs now unpaced, and any other takes a place
+	//     in the queue its claim's class names and runs when the pacer lets that place out, at
+	//     once or after a wait (WakeQueue, bindWake, waitOnMachine).
+	//   - An operator's retry once that pause has ended, before either of those has let it out, over
+	//     a claim the gate found in a state no retry row acts on (runDroppedLaunchForRetry): it runs
+	//     now, unpaced, and takes no place.
+	//   - Any other request the pacing never makes wait over a claim that records no process
+	//     (dropWakeFor), a retry while a pause holds the claim or over a state a retry row acts on
+	//     among them. A decision that launches makes its own launch through the wake gate, which
+	//     holds it at the pause's gate again while a pause holds the claim (reserveWake); one that
+	//     launches nothing gives this launch back to the pause's gate, its stop posted again
+	//     (reparkWake, pauseGate).
+	//   - Whatever else lets the claim's process go — another source's suspension, a retirement,
+	//     a failure — which drops it with that process (letGo).
+	//
+	// A restart loses it with the machine, as it loses any wake (pauseGate).
 	pause int64
 	// paid is whether this launch's let-out, once a pause's gate holds it, runs it with no place
 	// of its own (letOutHeldLaunch): the launch has had its turn from the pacing already. The
@@ -231,9 +267,9 @@ type wake struct {
 // is not cosmetic: the outbox's start row delivers its task after the launch call, and a task
 // delivered to a claim left failed is a named ignore, while one delivered to a claim left
 // suspended launches it a second time (deliverResuming). At launching the task is queued
-// (deliverLater) and goes at the next ready. A claim that still records its process is left
-// exactly as it is, so a restart never finds it launching with a live process; the launch lets
-// that process go when its turn comes (launchNow).
+// (deliver), and the next process's worker takes it once it is ready. A claim that still records
+// its process is left exactly as it is, so a restart never finds it launching with a live
+// process; the launch lets that process go when its turn comes (launchNow).
 //
 // Exempt is the request saying so (exemptWake) or the claim being the project controller's: a
 // death, a stale address or a displaced pod reaches a launch through displaced and repoint with
@@ -341,26 +377,26 @@ func PacedLaunch(deps *Deps, c *Claim) bool {
 // machine (Machine.wake), and a claim that records no process is written launching and persisted.
 // A claim that still records its process is left exactly as it stands.
 //
-// What that claim does not keep is the four timers that watch the process this wake replaces: its
-// boot interval and its registration deadline (armBoot, armRegistration), the probe interval an
-// uncertain answer armed (judge), and the wait for the turn of an outstanding prompt (acked,
-// keepHeldPrompt). The process is kept until the turn, so every one of those timers would
-// otherwise fire into the wait — the boot interval of a process that died while it booted
-// charging a launch failure of its own at each one, which is a claim failing before
-// launch_failure_limit real failures (judge's own guard answers what they report, and this keeps
-// them from reporting, as probe's own guard keeps the probe interval from being armed again inside
-// the wait). The turn replaces the process and arms the new one's timers (launchTries, armBoot), a
-// turn whose own lifecycle recheck refuses keeps the process and arms these again for it (runWake,
-// watchAgain), and the runtime's sweep observes the process throughout. TimerSuspend is kept: a
-// suspension held over this claim is still bounded by the deadline its arrival set
-// (holdSuspension), which the wake's turn does not run.
+// What that claim does not keep is the three timers that watch the process this wake replaces:
+// its boot interval and its registration deadline (armBoot, armRegistration), and the probe
+// interval an uncertain answer armed (judge).
+// The process is kept until the turn, so every one of those timers would otherwise fire into the
+// wait — the boot interval of a process that died while it booted charging a launch failure of
+// its own at each one, which is a claim failing before launch_failure_limit real failures
+// (judge's own guard answers what they report, and this keeps them from reporting, as probe's
+// own guard keeps the probe interval from being armed again inside the wait). The turn replaces
+// the process and arms the new one's timers (launchTries, armBoot), a turn whose own lifecycle
+// recheck refuses keeps the process and arms these again for it (runWake, watchAgain),
+// and the runtime's sweep observes the process throughout. TimerSuspend is kept: a suspension
+// held over this claim is still bounded by the deadline its arrival set (holdSuspension), which
+// the wake's turn does not run.
 //
 // A launch this wake replaces that waits at its issue pod's gate leaves the gate at the end of the
 // decision, as a failed launch: its start never ran (endPodPark).
 func (m *Machine) waitOnMachine(ctx context.Context, waiting *wake) error {
 	m.wake = waiting
 	if m.claim.Locator != nil {
-		for _, kind := range []TimerKind{TimerBoot, TimerRegistration, TimerProbe, TimerTurn} {
+		for _, kind := range []TimerKind{TimerBoot, TimerRegistration, TimerProbe} {
 			m.disarm(kind)
 		}
 		return nil
@@ -396,7 +432,9 @@ func (m *Machine) waitOnMachine(ctx context.Context, waiting *wake) error {
 //
 // Two things a launch does before it launches, which together close the window over a process
 // the gate left running (reserveWake), and which runWake below takes for this turn and for an
-// operator's delivery alike:
+// operator's delivery alike, though that delivery makes the first of them itself, before the wake
+// leaves the machine, answers its refusal itself, and takes the second from launchWake
+// (runParkedLaunchNow):
 //
 //   - The tree lifecycle is rechecked (checkLaunch), because the turn can be tens of minutes after
 //     the check launchAfter made: an operator's close reserves its tree's cleanup before it stops
@@ -412,11 +450,13 @@ func (m *Machine) waitOnMachine(ctx context.Context, waiting *wake) error {
 //     that starts a process writes the mark (wake.pluginMark, launchNow).
 //   - A turn the process it replaces may have started is taken back first (interrupted), exactly
 //     as replaceProcess takes one back before it relaunches. The gate let this wake park over a
-//     live process, and that process can have confirmed a task since: letting it go without the
-//     take-back would leave a confirmed task in a launching claim, which settle retires as served
-//     though no turn of it ever finished (retirePending). The other half of that race is a
-//     delivery sent inside the wait, which sendPending holds back for as long as a launch waits
-//     over the process it would reach (launchWaits, delivery.go).
+//     live process, and that process can have taken a task since: letting it go without the
+//     take-back would leave the task taken in a launching claim, which settle settles in its
+//     place: for a plugin below TaskTakeContract it finishes a task whose turn started by its end
+//     frame though the turn never finished (finishTask), and for a plugin that names its number
+//     it takes the task back as a cut turn. The other half of that race is a take accepted inside
+//     the wait, which claimHold refuses for as long as a launch waits over the process it would
+//     reach (launchWaits, take.go).
 //
 // A turn that comes while the project is paused launches nothing (decision 7 of
 // dispatch://INFRA-3759's plan): the wake is held by the pause's gate instead, and the claim is
@@ -445,6 +485,22 @@ func wakeNow(m *Machine, ctx context.Context, _ Event) error {
 			// decision (endRefreshLane).
 			return nil
 		}
+		if m.reportHolds() {
+			// The hold waits for the report of its take's turn (reportwait.go): ended here, its
+			// stop would come before that report, and settle would take back as a cut turn a task
+			// whose turn ran whole; or, over a take a report put back, it would cut off the take's
+			// own turn, whose start may be on its way. So the wake is spent into the hold, whose
+			// stop, at that report's finish or at the wait's bound or the hold's deadline, owes a
+			// pause's role the launch this wake was, as endHeld would here (heldLaunch,
+			// suspendedFor). A hold dropped unrun meanwhile leaves the launch to whoever raised
+			// it: the stale-plugin pass, or the runtime's next report of the process. A hold over
+			// a turn that runs is no such hold: the wake ends it (endHeld), as it ends every hold
+			// over a running turn. The line says what the hold waits for, by the take's phase
+			// (waitsLine).
+			m.log.Info(m.takePhase().waitsLine(), "task", pendingNumber(m.claim.Pending), "held", "wake", "kind", waiting.kind, "by", m.held.By)
+			m.heldLaunch = true
+			return nil
+		}
 		return m.endHeld(ctx, true, stopOwed)
 	}
 	if pause, holds := m.pauseHolds(); holds {
@@ -455,12 +511,14 @@ func wakeNow(m *Machine, ctx context.Context, _ Event) error {
 
 // runWake is everything a wake does once it is off the machine: the lifecycle recheck and the
 // take-back a launch makes first, the one line the wake writes (none for a launch that wrote it at
-// the wake gate already, wake.ran), and the work itself. Its three callers are the turn the pacing
+// the wake gate already, wake.ran), and the work itself. Its four callers are the turn the pacing
 // gave (wakeNow), an operator's delivery, which runs a parked launch where it arrives rather than
-// let a person wait for that turn (runParkedLaunchNow), and the let-out of a launch the pause's
-// gate held once its pause is over (letOutHeldLaunch); all go through here so that the launch an
-// operator's task or a resume starts is the same launch in every step it takes, timers, charges
-// and take-backs included.
+// let a person wait for that turn (runParkedLaunchNow), an operator's retry of a claim whose
+// launch waits over no process in a state no retry row acts on (runDroppedLaunchForRetry), and the
+// let-out of a launch the pause's gate held once its pause is over (letOutHeldLaunch); all go
+// through here, or through launchWake past the recheck, so that the launch an operator's task, a
+// retry or a resume starts is the same launch in every step it takes, timers, charges and
+// take-backs included.
 //
 // paced is whether the pacing decided when this wake ran, which is what the line says of it
 // (wakeRan): true of the turn and of a let-out the pacing held, false of the launch a request
@@ -470,6 +528,14 @@ func wakeNow(m *Machine, ctx context.Context, _ Event) error {
 // — for the turn, the hold the pacing gave it; for a launch a request pulled forward, how long it
 // had been held when that request arrived; for a wake the pacing parked and the pause met at its
 // turn, the hold from its join to its let-out.
+//
+// It is split at the first step, the lifecycle recheck: what follows it is launchWake, which an
+// operator's task calls itself, since it makes that recheck in its own decision before it changes
+// anything a refusal must leave as it was — it drops, retires or replaces the claim's pending task
+// only once that recheck has passed, and answers a refusal with the pending task and the wake as
+// they were (runParkedLaunchNow). Every other caller leaves the recheck to this function, and so
+// does an operator's task over a plugin-refresh wake whose fact is gone: that wake launches
+// nothing, so there is no launch to recheck, and the re-read below spends it before either step.
 //
 // Both steps can end the wake's work with the process the claim records kept and the wake
 // spent, and each gives back exactly what it left standing. The watch is the first step's
@@ -483,15 +549,16 @@ func wakeNow(m *Machine, ctx context.Context, _ Event) error {
 // lane's kind is what it must not lose on the way.
 //
 // Neither step gives the credit of the refresh gate back; the end of the decision does: the wake
-// is off the machine before either runs (wakeNow, runParkedLaunchNow), so a decision that ends at
-// the lifecycle refusal or at a take-back the store would not take holds a credit no wake of this
-// lane waits for, and gives it back there (endRefreshLane, relaunchRefused,
-// dispatch://INFRA-2712 R1). Neither step gives a plugin mark back, because a wake that is
-// abandoned writes none: the intent is written by the launch that starts the process replacing
-// the stale one, and by nothing else (wake.pluginMark, holdPluginRelaunch, launchNow). A
-// relaunch abandoned at either step started nothing, so the claim keeps the mark of whatever
-// relaunch last did run, and the next registration of this same process is read against that
-// one (staleRegistration).
+// is off the machine before either runs here (wakeNow, runParkedLaunchNow), so a decision that
+// ends at the lifecycle refusal or at a take-back the store would not take holds a credit no wake
+// of this lane waits for, and gives it back there (endRefreshLane, relaunchRefused,
+// dispatch://INFRA-2712 R1). An operator's task whose own recheck is refused leaves the wake
+// waiting, and the credit with it (runParkedLaunchNow). Neither step gives a plugin mark back,
+// because a wake that is abandoned writes none: the intent is written by the launch that starts
+// the process replacing the stale one, and by nothing else (wake.pluginMark, holdPluginRelaunch,
+// launchNow). A relaunch abandoned at either step started nothing, so the claim keeps the mark of
+// whatever relaunch last did run, and the next registration of this same process is read against
+// that one (staleRegistration).
 //
 // What giving that credit back means for the retry the refusal may arm is where the gate states
 // it: that retry asks this gate nothing, so the wake it parks waits in the pacing with no
@@ -509,20 +576,22 @@ func wakeNow(m *Machine, ctx context.Context, _ Event) error {
 // and is left watched exactly as the lifecycle refusal below leaves one (watchAgain), its probe
 // left to the sweep's next observation. The wake is spent and the relaunch is owed again, which
 // the sweep's own stale-plugin pass raises for a claim that is still stale when it next reads
-// it.
+// it. An operator's task that meets such a wake spends it here as well, with no lifecycle
+// recheck made, and is queued over the claim as it stands (runParkedLaunchNow).
 //
-// The difference between the two steps is what the store is reached for: only a delivery a turn
-// has confirmed is taken back (interrupted), a turn is confirmed in a ready or idle claim
-// alone, and the confirmation itself leaves that claim working — the table ignores a turn start
-// in every state a process is still coming up in (turnStarted, unready), and no live claim goes
-// back to one of them (helloed). So the claim at the second step's return is working or idle,
-// which calls for neither the boot interval nor the registration deadline a park takes from a
-// claim still coming up; its confirmed task waits on no turn bound, because the confirmation
-// disarms that bound where it sets ConfirmedAt (confirmCarrying); and the probe interval an
-// uncertain answer may have armed is one the sweep's next observation arms again (observe, judge).
-// What such a claim is left without is the relaunch this wake held, which is what the lifecycle
-// refusal leaves owing too: the next report of the process, or the sweep's own stale-plugin
-// pass, raises one again.
+// The difference between the two steps is what the store is reached for: only a task a take
+// holds is taken back (interrupted, Delivery.taken), and a take is accepted in a ready or idle
+// claim alone, whose turn's start then moves it to working — the table refuses a take and ignores
+// a turn start in every state a process is still coming up in (takeNotReady, turnStarted,
+// unready), and no live claim goes back to one of them (helloed). So the claim at the second
+// step's return is ready, idle or working, which calls for neither the boot interval nor the
+// registration deadline a park takes from a claim still coming up. What a take of its task waits
+// on is not the park's either: the second wait is armed again for the claim this decision leaves
+// (armWaits, TimerTurnStart), and the end-frame bound is one the park never disarms
+// (TimerFinish). The probe interval an uncertain answer may have armed is one the sweep's next
+// observation arms again (observe, judge). What such a claim is left without is the relaunch
+// this wake held, which is what the lifecycle refusal leaves owing too: the next report of the
+// process, or the sweep's own stale-plugin pass, raises one again.
 //
 // This turn is where a launch the gate parked over a running process lets that process go, so it
 // is where what the process ended is recorded: the launch carries the cause the decision that
@@ -536,19 +605,56 @@ func (m *Machine) runWake(ctx context.Context, waiting *wake, paced bool) error 
 		m.watchAgain()
 		return nil
 	}
+	// A take's turn that ran in the wait and ended with its report still to come is the turn the
+	// refresh's own relaunch waits for the report of, as a relaunch decided now would
+	// (refreshPlugin, reportHolds, relaunchWaitsForReport): let go now, the process would take that
+	// report with it, and the take-back below would mark the task a cut turn. The wake is spent and
+	// the relaunch waits on the machine behind the wait for the report (reportwait.go), which runs
+	// it through refreshPlugin.
+	if waiting.kind == WakePluginRefresh && m.reportHolds() {
+		m.watchAgain()
+		m.relaunchWaitsForReport("wake")
+		return nil
+	}
+	// The same holds for every other replacement of a live process the pacing parked whose report
+	// can reach the daemon (wake.replaceAgain): a repoint, a stall backstop, the relaunch of a hello
+	// no answer followed. Its wake is spent and the replacement waits for the report as the held
+	// repoint does (holdReplacement, boundedReportHolds): run at the task's finish, or at the wait's
+	// bound once the task is taken back with the note of a cut turn, raised anew from the top, so it
+	// is paced again there. A turn that comes while a turn runs holds nothing, and cuts that turn
+	// off below, as rule one of T3 says.
+	if waiting.replaceAgain != nil && m.boundedReportHolds() {
+		m.watchAgain()
+		m.holdReplacement("wake", waiting.replaceAgain, "kind", waiting.kind)
+		return nil
+	}
 	// Every kind a machine parks today starts a process (StartsProcess), so both steps are taken
 	// for every wake that reaches here. The branch is what keeps a kind added later that starts
 	// no process out of a launch's own steps: it replaces nothing, so it has no tree to recheck
-	// the lifecycle of and no process whose turn is owed a take-back.
+	// the lifecycle of and no process whose turn is owed a take-back (launchWake).
 	if StartsProcess(waiting.kind) {
 		if err := m.checkLaunch(ctx); err != nil {
 			m.watchAgain()
 			return m.relaunchRefused(ctx, m.retryHolding(waiting.pluginMark, waiting.again), err)
 		}
-		if m.claim.Locator != nil {
-			if err := m.interrupted(ctx, "the process this launch replaces is let go now that its turn has come", ordinaryEnd); err != nil {
-				return err
+	}
+	return m.launchWake(ctx, waiting, paced)
+}
+
+// launchWake is runWake past its lifecycle recheck, for a wake that recheck passed: the take-back
+// a launch makes first, the one line the wake writes, and the work itself (runWake states each
+// step). An operator's task that made the recheck itself comes here directly
+// (runParkedLaunchNow).
+func (m *Machine) launchWake(ctx context.Context, waiting *wake, paced bool) error {
+	if StartsProcess(waiting.kind) && m.claim.Locator != nil {
+		takeBack := waiting.takeBack
+		if takeBack == nil {
+			takeBack = func(ctx context.Context) error {
+				return m.interrupted(ctx, "the process this launch replaces is let go now that its turn has come", ordinaryEnd)
 			}
+		}
+		if err := takeBack(ctx); err != nil {
+			return err
 		}
 	}
 	// Past both steps the launch runs, so the intent this wake carried goes back to the machine
@@ -666,301 +772,4 @@ func WakeRanFields(kind WakeKind, paced bool, waitedFor time.Duration, let wakep
 		fields = append(fields, "lateForMessage", true)
 	}
 	return append(fields, "rate", rate, "burst", burst)
-}
-
-// dropWakeFor is an operator's wake never waiting over a claim the gate parked with no process
-// of its own: that park wrote the claim launching (waitOnMachine), so the row the request reaches
-// would decide a claim that is only waiting its turn. An operator's resume is answered "the
-// claim is not suspended" and an operator's forget-session "the claim has a live process or
-// launch", neither of which is true of such a claim, and an operator's own task is queued behind
-// a turn that is tens of minutes away in a wave, where the claim the gate found would have
-// launched for it at once (dropsWaitingWake, deliverResuming). So the wake is taken off the
-// machine and the state the gate found is put back in memory, and the decision that follows
-// writes the claim — a resume, a retry, a spawn and an operator's delivery launch, and a
-// forget-session persists.
-//
-// A claim parked over a process it still records is dropped for nothing, whatever the request.
-// That park changed neither the claim nor the process, so every row already decides it as it
-// stands, and the wake still holds the only thing that retires that process: a launch whose turn
-// lets it go and arms the next process's timers (wakeNow, waitOnMachine). The one request that may
-// not wait for the turn — an operator's task, which the send holds back while a launch waits
-// (sendPending's launchWaits) — runs that launch where it arrives rather than dropping it
-// (runParkedLaunchNow).
-//
-// The dropped wake keeps its place in the pacing's queue: its TimerWake is taken off the place
-// rather than disarmed (detachWake), so the place waits on with no release to call, and the wakes
-// around it keep their order. A let-out that comes while the wake is off the machine is read when
-// the wake is taken up again (reparkWake), and a wake the decision does not take up gives the
-// place up there.
-//
-// The wake is returned so that a decision which launched nothing can take it up again
-// (reparkWake): a wake that waits must lose nothing, and a refusal, a named ignore or a
-// forget-session leaves the claim exactly where the gate found it, with the launch this wake
-// holds still owed to it.
-//
-// A paced request drops nothing: a second wake request takes no second place, and the claim's
-// own wake is the launch it is asking for.
-//
-// Nor does a launch that waits at its issue pod's gate (wake.park) drop for any request. It is no
-// turn of the pacing's: the launch has started, letting its process go and writing its claim
-// launching, and waits only for another role's session load, which an operator's start waits for
-// too (dispatch://INFRA-5297). So every request decides that claim as the launch under way it is,
-// and the launch keeps its place in the pod's order.
-func (m *Machine) dropWakeFor(ev Event) *wake {
-	if m.wake == nil || m.wake.park != nil || m.claim.Locator != nil || !dropsWaitingWake(ev) {
-		return nil
-	}
-	dropped := m.wake
-	request, _ := requestName(ev)
-	m.log.Info("supervise: a request that does not wait reached a claim the wake pacing holds over no process; dropping the wake",
-		"request", request, "kind", dropped.kind, "due", dropped.due(), "state", dropped.state)
-	m.claim.State = dropped.state
-	m.detachWake()
-	m.wake = nil
-	return dropped
-}
-
-// runParkedLaunchNow is an operator's task meeting a launch the pacing parked over the process
-// the claim still records: that launch runs here, unpaced, before the row that queues the task
-// (Handle). Both halves of what the operator is owed hold only this way. A person is waiting on
-// the task they have just given the claim, so it may not wait out a paced turn that is tens of
-// minutes away in a wave; and the task may not reach the process that launch is about to let go,
-// since the launch would kill the turn it had just begun and settle would retire the task as
-// served (sendPending's launchWaits, retirePending). Running the launch here leaves the claim
-// exactly where an unpaced daemon's would have left it — launching, over a process let go, with
-// the next one's timers armed — so the row the task then reaches queues it for the process this
-// launch starts (deliverLater), and it goes at that process's ready.
-//
-// Dropping the wake instead would leave the claim recording a process nothing retires: the park
-// disarmed that process's boot interval, registration deadline, probe interval and turn wait
-// (waitOnMachine), the launch that was to replace it would be gone, and every report of it decides
-// nothing while no launch waits only because one does (judge). The next report of that process
-// would charge another launch failure, the death it already charged excepted (died).
-//
-// Three things it does not touch. A request the table refuses or ignores decides nothing, so it
-// starts no launch either: the row is read here, before anything runs, exactly as Handle reads
-// it after. A task the row acts on but queue refuses decides nothing either, and for an
-// operator's task that refusal is exactly a claim holding a delivery no provider error took
-// back: the deliver route sends the task with no id of its own and no outbox row
-// (operatorDelivery, RequestDeliver.ID, Claim.DeliveredRows), so neither of the two repeats
-// queue accepts over a pending delivery — the repeat of that very delivery under its id, and a
-// row whose task the claim has already taken — can be what arrived, and what is left is "a
-// delivery is already pending" (queue, ErrDeliveryPending). Running the launch for such a task
-// would replace a live process for a request the claim answers with nothing. And a claim
-// holding a suspension is left to its hold: the turn of such a claim ends the suspension rather
-// than launching (wakeNow, endHeld), which is not what a task asks for, and the task is queued
-// and kept until the hold lifts whichever process the claim is running (sendPending).
-//
-// The one pending delivery that is not that refusal is one a newer task replaces (replaceable):
-// the task a provider error took back while the ladder's wait stands for it and nothing works it,
-// or the daemon's own delivery of a relaunch's record while no prompt of it waits on a result. A
-// newer task takes its place rather than waiting out a wait the next error only makes longer
-// (queue, dispatch://INFRA-956 R2), or behind a sentence it carries itself (Delivery.message).
-// The claim takes an operator's task over such a one, so a person is waiting on a task this claim
-// will work, and the launch runs for it. The replacement is made here, before that launch, and
-// not left to the row (replaceOwedTask, the one path both places a task replaces an owed one
-// take). For the task a provider error took back it must be: the launch takes the ladder's wait
-// with the claim's timers (letGo), and that wait is the whole of what makes that task
-// replaceable, so queue — reading the claim the launch leaves — would refuse the very task the
-// launch had just replaced a live process for. The relaunch's delivery would stay replaceable,
-// since the let-go also ends the wait for its prompts' results (Machine.outstanding), which is
-// all that holds it; it is replaced here with the other, on the one path. Nothing is lost if the
-// launch's own lifecycle recheck refuses (runWake): the row that follows queues the operator's
-// task into a claim holding none, which is where R2 leaves it either way.
-//
-// The launch takes no turn of the pacing: disarming its timer gives its place up (placeTimer), and
-// the turn that place would have taken goes to the wake behind it. The daemon is told the launch is
-// let out now (wakeLetOut), and the line it writes says the pacing did not decide when it ran
-// (wakeRan, runWake).
-//
-// A launch the project pause's gate holds (wake.pause) is not run for the operator's task either:
-// nothing but the controller launches while the project is paused (pauseGate), so the task is
-// queued and kept, and goes where every task held for a launch goes once the claim runs again.
-func (m *Machine) runParkedLaunchNow(ctx context.Context, ev Event) error {
-	if !operatorDelivery(ev) || !m.launchWaits() || m.wake.pause != 0 || m.claim.Locator == nil || m.held != nil {
-		return nil
-	}
-	if r, ok := table[key{m.claim.State, kindOf(ev)}]; !ok || r.act == nil {
-		return nil
-	}
-	if pending := m.claim.Pending; pending != nil {
-		owed, attempt := pending.ID, pending.ProviderErrorRetries
-		replaced, err := m.replaceOwedTask(ctx)
-		if err != nil || !replaced {
-			return err
-		}
-		if relaunchTask(owed) {
-			m.log.Info("supervise: the operator's task replaces the daemon's delivery of the relaunch's record, and the launch parked over the claim's process runs for it",
-				"replaced", owed)
-		} else {
-			m.log.Info("supervise: the operator's task replaces the one a provider error took back, and the launch parked over the claim's process runs for it",
-				"owed", owed, "attempt", attempt)
-		}
-	}
-	waiting := m.wake
-	// The estimate is read before the disarm gives the place up (placeTimer): a place that left
-	// estimates the zero time.
-	due := waiting.due()
-	m.wake = nil
-	m.disarm(TimerWake)
-	m.log.Info("supervise: an operator's task reached a claim whose paced launch waits over the process it replaces; that launch runs now and the task goes to the process it starts",
-		"kind", waiting.kind, "due", due, "state", m.claim.State)
-	m.wakeLetOut(m.deps.Clock.Now())
-	return m.runWake(ctx, waiting, false)
-}
-
-// runDroppedLaunchForRetry is the operator's retry (RequestAskedRetry naming the operator, the line
-// exemptWake draws: the controller's retries, which it asks of as many agents at once as it decides
-// to, keep the turn the pacing gave them and launch at it) of a claim whose launch the pacing or
-// the pause's gate parked over no process, where the state the gate found is one no retry row acts
-// on: queued, which every spawn and the boot's relaunch of an unfinished launch park from;
-// suspended, which a rule's resume parks from; and launching, which a try the pause met after its
-// write (pauseHeldTry) and a start whose pod grant the pause met (podStartDue) are held in, their
-// wake already past the pacing (wake.ran), whose run is a fresh try. The claim reads launching for
-// the whole wait, so a person who sees it stuck reaches for `legion claims retry`; refusing that
-// retry as "a queued claim is spawned, not retried" left the claim behind a restart's whole queue,
-// an hour of it on 2026-11-23 (dispatch://INFRA-5482). The person is asking for the claim to run,
-// and the launch the dropped wake holds is the one that runs it, so that launch runs here, unpaced,
-// exactly as its turn would have run it: the claim is put back launching, where the park wrote it
-// (waitOnMachine), and the wake goes through runWake, lifecycle recheck and all. ran is false, and
-// nothing is done, for every other request, for a claim whose gate-found state a retry row decides
-// (failed, retired), and for any launch while a project pause holds the claim (pauseHolds): the API
-// refuses the operator's retry while the project is paused (refusedWhilePaused), and a pause that
-// opened after that refusal was read holds this launch as it holds every other, so the retry is
-// refused and the wake parked again, for its turn, or the pause's gate, to take it (wakeNow,
-// pauseGate). A launch the pause's gate held whose pause has ended, before the gate's own stop or
-// the resume's event let it out (pauseStopDue, resumePause), is let out here as those let it out
-// (letOutHeldLaunch), unpaced.
-//
-// The launch takes no turn of the pacing, as an operator's task over a parked launch takes none
-// (runParkedLaunchNow): its place is given up, the turn it would have taken going to the wake
-// behind it, and the daemon is told the launch is let out now (wakeLetOut).
-func (m *Machine) runDroppedLaunchForRetry(ctx context.Context, ev Event, dropped *wake) (ran bool, err error) {
-	if asked, retry := ev.(RequestAskedRetry); !retry || asked.By != SuspendedByOperator || dropped == nil || m.held != nil {
-		return false, nil
-	}
-	if _, paused := m.pauseHolds(); paused {
-		return false, nil
-	}
-	if dropped.pause != 0 {
-		dropped.pause = 0
-		m.disarm(TimerPause)
-	}
-	m.log.Info("supervise: an operator's retry reached a claim whose paced launch waits over no process; that launch runs now",
-		"kind", dropped.kind, "due", dropped.due(), "state", dropped.state)
-	dropped.leave()
-	m.claim.State = StateLaunching
-	m.wakeLetOut(m.deps.Clock.Now())
-	return true, m.runWake(ctx, dropped, false)
-}
-
-// reparkWake takes a dropped wake up again when the decision it was dropped for launched nothing
-// (Handle, after both the named ignore's refusal and the row that acted): the claim is in the
-// state the gate found, with no process and no wake of its own, which is where a refusal, an
-// ignore and a forget-session each leave it — and the launch the wake holds is still owed. Its
-// TimerWake is bound to the same place again (bindWake) and the wake is parked by the park the
-// gate itself makes (waitOnMachine): the place kept its spot in its queue while the wake was off
-// the machine (dropWakeFor), so this costs nothing and moves no other wake. A place the pacer let
-// out meanwhile arms TimerWake at its let-out moment, which fires at once, so the wake runs
-// through its own timer as its let-out would have run it.
-//
-// A claim that records a process takes no wake back, which is what the locator in the guard
-// below says: every wake dropped here was parked over no process, so a claim recording one is a
-// claim the decision launched (dropWakeFor). A dropped wake that is not taken back — that launch,
-// a claim the decision moved on, or a wake the decision raised in its place — gives its place up,
-// the turn it would have taken going to the wake behind it.
-//
-// A write that fails is logged and changes no verdict: the request is answered as the table
-// answered it, and the claim stands as that answer left it, which is what a refusal leaves today.
-// The wake still waits in memory, and a restart loses it as it loses any other.
-//
-// A launch the project pause's gate held goes back to that gate, as it was held, rather than to a
-// place in the pacing it never had (pauseGate): the gate's own stop is posted again, and it reads
-// then whether that pause still holds the claim (pauseStopDue).
-func (m *Machine) reparkWake(ctx context.Context, dropped *wake) {
-	if dropped == nil {
-		return
-	}
-	if m.wake != nil || m.claim.Locator != nil || m.claim.State != dropped.state {
-		dropped.leave()
-		return
-	}
-	m.log.Info("supervise: the request launched nothing; the wake the pacing holds keeps its place",
-		"kind", dropped.kind, "due", dropped.due(), "state", dropped.state, "pause", dropped.pause)
-	var err error
-	if dropped.pause != 0 {
-		err = m.pauseGate(ctx, dropped, dropped.pause)
-	} else {
-		m.rebindWake(dropped.place)
-		err = m.waitOnMachine(ctx, dropped)
-	}
-	if err != nil {
-		m.log.Warn("supervise: the wake that keeps its place could not be written; it waits in memory alone",
-			"kind", dropped.kind, "due", dropped.due(), "error", err)
-	}
-}
-
-// dropsWaitingWake is whether ev is a request the wake pacing never makes wait over a claim it
-// parked with no process: every request exemptWake lets through, every forget-session whoever
-// asks it (the operator's own, and the one a fresh session of the operator or the controller
-// sends: RequestForgetSession.By) — which launches nothing, but which a claim parked launching
-// would refuse "the claim has a live process or launch", and it has neither — and an operator's
-// own delivery (operatorDelivery), which a suspended claim parked by the rule's own resume would
-// queue behind that paced turn where the state the gate found launches for it at once
-// (deliverResuming, revive). An operator's delivery over a launch parked above a process the
-// claim still records is none of this: that launch runs where the task arrives instead
-// (runParkedLaunchNow).
-//
-// The daemon's resume by rule is none of them: it meets a parked claim with "the claim runs:
-// nothing to resume" (nothingToDo), which is the truth — the wake the claim waits for is the
-// launch that rule would make. Nor is the controller's resume_agent or retry, which the pacing makes
-// wait (exemptWake): dropping the wake for it would park a wake of its own behind every turn the
-// queue holds, for the launch this claim already waits its turn for, so it reaches the agent while
-// its claim is parked launching, is refused because that claim is neither suspended nor failed,
-// and the claim keeps the turn it holds.
-func dropsWaitingWake(ev Event) bool {
-	if _, ok := ev.(RequestForgetSession); ok {
-		return true
-	}
-	return operatorDelivery(ev) || exemptWake(ev)
-}
-
-// operatorDelivery is a task a person gave a claim through the daemon's API: that route sends it
-// with no id of an outbox row (api.operator's deliver, RequestDeliver.ID), where every task the
-// workflow queues names the row it came from. The daemon's own task of no row, the controller
-// keeper's start message, says it is no operator's (RequestDeliver.ResumesNothing). The pacing
-// makes no operator's task wait (dropsWaitingWake).
-func operatorDelivery(ev Event) bool {
-	deliver, ok := ev.(RequestDeliver)
-	return ok && deliver.ID == "" && !deliver.ResumesNothing
-}
-
-// exemptWake is whether the launch a request raises is one the wake pacing lets through: the
-// operator's own resume and retry (RequestResume.By, RequestAskedRetry.By naming the operator),
-// which a person is waiting on, and a spawn whose caller marked it exempt, which is the
-// operator's spawn route and nothing else — the project controller is exempt by identity, in the
-// gate itself, which covers the launches no request raises as well (reserveWake,
-// claim.IsController). The same two events from the agent door are paced: the controller's
-// resume, retry and fresh session (api's resumeAgent, retryAgent, claimFreshSession) are launches
-// an agent raises, as many at once as it asks for — a controller lifting its own holds after a
-// deploy asks one for every agent it held — and let through, they would start them all at once,
-// past `worker_wakes_per_minute`, the bound that keeps a wave under the provider's per-minute cap.
-// Every other path into a launch is paced, so every other event is too: an operator's delivery
-// carries no launch of its own, and revive reads the exemption from the delivery itself
-// (deliverResuming).
-//
-// The same flag keeps the project controller's session older than its age at the launch it raises
-// (replaceAgedSession, dispatch://INFRA-2045 R3): the gate lets every launch of the controller
-// through by identity, so for the controller this is the flag's one effect, and a daemon request
-// marked exempt here would turn R3 off for that request.
-func exemptWake(ev Event) bool {
-	switch ev := ev.(type) {
-	case RequestSpawn:
-		return ev.Exempt
-	case RequestResume:
-		return ev.By == SuspendedByOperator
-	case RequestAskedRetry:
-		return ev.By == SuspendedByOperator
-	}
-	return false
 }
