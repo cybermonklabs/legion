@@ -2,6 +2,8 @@ package pgmigrate
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"testing"
 	"time"
 )
@@ -73,5 +75,43 @@ func TestAttemptsField(t *testing.T) {
 	}
 	if got := attemptsField(0); got != "until the context's deadline" {
 		t.Errorf("attemptsField(0) = %v, want the deadline note", got)
+	}
+}
+
+// Finding A (reviewer, #5806): a public policy can set Pause to -LockTimeout, which would make
+// maxAttempts divide by zero. pause() clamps a negative Pause to 0, so the helper survives it.
+func TestMaxAttemptsSurvivesANegativePause(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Hour)
+	defer cancel()
+	p := RetryPolicy{Attempts: 0, Pause: -LockTimeout} // without the clamp, cycle == 0 and maxAttempts panics
+	if p.pause() != 0 {
+		t.Errorf("pause() with Pause=-LockTimeout = %s, want 0", p.pause())
+	}
+	if got := p.maxAttempts(ctx); got <= 0 {
+		t.Errorf("maxAttempts with Pause=-LockTimeout = %d, want a positive count and no panic", got)
+	}
+}
+
+// Finding B (reviewer, #5806): an attempt the context cuts short must come back in the runner's
+// named "after N attempts" form, not as a bare context error, so a deadline-bounded run keeps the
+// named-error promise while errors.Is still finds the context error.
+func TestRetryWrapsAContextErrorInTheNamedForm(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // the context is done, as a caller's deadline firing mid-attempt leaves it
+	ctx = WithRetryPolicy(ctx, DeadlineRetryPolicy())
+	notALockTimeout := func(error) bool { return false }
+	err := retryLockTimeouts(ctx, "a migration", "migration", "0001_x.up.sql", notALockTimeout, func(context.Context) error {
+		return context.DeadlineExceeded
+	})
+	if err == nil {
+		t.Fatal("retryLockTimeouts returned nil, want a wrapped context error")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("err = %v, want errors.Is(context.DeadlineExceeded) to hold", err)
+	}
+	if !strings.Contains(err.Error(), "after 1 attempts") {
+		t.Errorf("err = %q, want the named \"after N attempts\" form, not a bare context error", err)
 	}
 }

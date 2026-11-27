@@ -235,12 +235,24 @@ func (p RetryPolicy) maxAttempts(ctx context.Context) int {
 	}
 	// As many whole attempt-and-pause cycles as fit before the deadline, and at least one, so the
 	// last attempt's lock_timeout ends — and its named give-up returns — at least Pause before the
-	// deadline, rather than being cut short into a bare context error.
-	cycle := LockTimeout + p.Pause
+	// deadline. cycle uses pause(), never negative, so no caller can set Pause to -LockTimeout and
+	// divide this by zero.
+	cycle := LockTimeout + p.pause()
 	if remaining := time.Until(deadline); remaining > cycle {
 		return int(remaining / cycle)
 	}
 	return 1
+}
+
+// pause is the policy's wait between attempts, never negative: a negative Pause has no meaning — a
+// runner cannot wait less than no time — and at Pause == -LockTimeout would divide maxAttempts by
+// zero, so it is clamped to 0. The public Pause field keeps the caller's value; only its use is
+// clamped, so a mis-set policy degrades to no pause rather than panicking the helper.
+func (p RetryPolicy) pause() time.Duration {
+	if p.Pause < 0 {
+		return 0
+	}
+	return p.Pause
 }
 
 // attemptsField is the value the retry logs under "attempts": the cap, or that it retries until the
@@ -292,18 +304,29 @@ func retryLockTimeouts(ctx context.Context, what, key, name string, timedOut fun
 	maxAttempts := policy.maxAttempts(ctx)
 	for n := 1; ; n++ {
 		err := attempt(ctx)
-		if err == nil || !timedOut(err) {
+		if err == nil {
+			return nil
+		}
+		if !timedOut(err) {
+			// A non-timeout error while the context is done is the caller's deadline or
+			// cancellation cutting the attempt short, not the migration's own failure; return it in
+			// the named form, wrapped with the attempt count, so a deadline-bounded run ends with
+			// the runner's give-up (and errors.Is(err, context.DeadlineExceeded) still holds), not a
+			// bare context error. Any other non-timeout error is the migration's and comes back as is.
+			if ctx.Err() != nil {
+				return fmt.Errorf("after %d attempts: %w", n, err)
+			}
 			return err
 		}
 		if maxAttempts != 0 && n == maxAttempts {
 			slog.Warn("pgmigrate: "+what+" gave up waiting for a lock on its last attempt; the runner fails", key, name, "attempt", n, "attempts", maxAttempts, "reason", err.Error())
 			return fmt.Errorf("after %d attempts: %w", n, err)
 		}
-		slog.Warn("pgmigrate: "+what+" gave up waiting for a lock; the runner tries it again", key, name, "attempt", n, "attempts", attemptsField(maxAttempts), "pause", policy.Pause, "reason", err.Error())
+		slog.Warn("pgmigrate: "+what+" gave up waiting for a lock; the runner tries it again", key, name, "attempt", n, "attempts", attemptsField(maxAttempts), "pause", policy.pause(), "reason", err.Error())
 		select {
 		case <-ctx.Done():
 			return fmt.Errorf("after %d attempts: %w", n, err)
-		case <-time.After(policy.Pause):
+		case <-time.After(policy.pause()):
 		}
 	}
 }
