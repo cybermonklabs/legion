@@ -282,11 +282,12 @@
 #                                 notice row sets it for its control, which publishes a notice of
 #                                 its own to another role
 #   SKILL_SCENARIOS_LAUNCHES      `batch-scored`: the most launches a cell makes, a whole number
-#                                 above 0, in place of three times its count (batch_scored_cell). A
-#                                 run that ends at its bound with no turn is a rig error, so a cell
-#                                 whose every run ends so launches until this cap. Production never
-#                                 sets this: rig.test.ts's notice row sets 1 for its control, whose
-#                                 one run ending at its bound is the result the control needs
+#                                 from 1 to 999999999, in place of three times its count
+#                                 (batch_scored_cell). A run that ends at its bound with no turn is
+#                                 a rig error, so a cell whose every run ends so launches until this
+#                                 cap. Production never sets this: rig.test.ts's notice row sets 1
+#                                 for its control, whose one run ending at its bound is the result
+#                                 the control needs
 # For spec-writing and spec-rewrite:
 #   SKILL_SCENARIOS_SOURCE      `batch`: a directory name under $SKILL_SCENARIOS_WORK/sources
 #   SKILL_SCENARIOS_SUPERPOWERS `profile`: the superpowers plugin's directory; its writing-plans
@@ -2853,9 +2854,13 @@ cmd_batch_scored() {
   [ $# -ge 3 ] || fail "usage: rig.sh batch-scored owner-walk <count> <label>..."
   local scenario=$1 count=$2 label case
   [ "$scenario" = owner-walk ] || fail "batch-scored runs owner-walk, the one scored scenario, not '$scenario'"
-  [[ $count =~ ^[1-9][0-9]*$ ]] || fail "the count '$count' is not a whole number above 0"
-  [[ ${SKILL_SCENARIOS_LAUNCHES-1} =~ ^[1-9][0-9]*$ ]] ||
-    fail "SKILL_SCENARIOS_LAUNCHES '${SKILL_SCENARIOS_LAUNCHES}' is not a whole number above 0"
+  # Both at most 999999999: bash compares whole numbers up to 2^63-1, and a longer run of digits
+  # passes a digits-only pattern and then fails every comparison the cell makes with it, so a
+  # cap of 9223372036854775808 launched without end.
+  [[ $count =~ ^[1-9][0-9]{0,8}$ ]] ||
+    fail "the count '$count' is not a whole number from 1 to 999999999"
+  [[ ${SKILL_SCENARIOS_LAUNCHES-1} =~ ^[1-9][0-9]{0,8}$ ]] ||
+    fail "SKILL_SCENARIOS_LAUNCHES '${SKILL_SCENARIOS_LAUNCHES}' is not a whole number from 1 to 999999999"
   case=$(owner_walk_case) || exit 1
   shift 2
   for label in "$@"; do

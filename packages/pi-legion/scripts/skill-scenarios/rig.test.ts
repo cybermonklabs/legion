@@ -2942,8 +2942,10 @@ describe("owner_walk_case", () => {
 
 describe("batch_scored", () => {
   // Catches: a cell that launches without end while its label cannot boot, one that reads a cell
-  // short of its count as anything but UNKNOWN, a SKILL_SCENARIOS_LAUNCHES the cell ignores, and
-  // one batch-scored takes when it is no whole number above 0.
+  // short of its count as anything but UNKNOWN, a SKILL_SCENARIOS_LAUNCHES the cell ignores, and a
+  // cap or a count batch-scored takes when it is no whole number from 1 to 999999999: a longer
+  // run of digits fails every comparison bash makes with it, so 9223372036854775808 as a cap
+  // launched without end.
   test("batch_scored stops a cell at three times its count of launches, and prints UNKNOWN for it", () => {
     // A launch that writes its run's row: a rig error, or scored from the launch SCORED_FROM on.
     const attempt = [
@@ -2981,25 +2983,48 @@ describe("batch_scored", () => {
       stderr: "",
     });
     expect(readFileSync(path.join(capped, "launches"), "utf8")).toBe("1\n");
-    for (const value of ["0", "", "one", "-1"]) {
+    const batchScored = (count: string, launches?: string) => {
       const work = freshDir("cell-capped-refused");
       const batch = childSpawn(
-        ["bash", path.join(scenarios, "rig.sh"), "batch-scored", "owner-walk", "1", "head"],
+        ["bash", path.join(scenarios, "rig.sh"), "batch-scored", "owner-walk", count, "head"],
         {
           SKILL_SCENARIOS_WORK: work,
           SKILL_SCENARIOS_OWNER_WALK_CASE: "root-B-claude",
-          SKILL_SCENARIOS_LAUNCHES: value,
+          ...(launches === undefined ? {} : { SKILL_SCENARIOS_LAUNCHES: launches }),
         }
       );
-      expect({ value, code: batch.exitCode, stderr: batch.stderr.toString() }).toEqual({
+      return {
+        code: batch.exitCode,
+        stderr: batch.stderr.toString(),
+        services: existsSync(path.join(work, "services")),
+      };
+    };
+    for (const value of ["0", "", "one", "-1", "1000000000", "9223372036854775808"]) {
+      expect({ value, ...batchScored("1", value) }).toEqual({
         value,
         code: 1,
         stderr: expect.stringContaining(
-          `SKILL_SCENARIOS_LAUNCHES '${value}' is not a whole number above 0`
+          `SKILL_SCENARIOS_LAUNCHES '${value}' is not a whole number from 1 to 999999999`
         ),
+        services: false,
       });
-      expect(existsSync(path.join(work, "services"))).toBe(false);
     }
+    for (const count of ["0", "1000000000", "9223372036854775808"]) {
+      expect({ count, ...batchScored(count) }).toEqual({
+        count,
+        code: 1,
+        stderr: expect.stringContaining(
+          `the count '${count}' is not a whole number from 1 to 999999999`
+        ),
+        services: false,
+      });
+    }
+    // The bound refuses nothing it should take: the largest cap and count go on past both checks,
+    // to the label this work directory does not hold.
+    const largest = batchScored("999999999", "999999999");
+    expect(largest.code).toBe(1);
+    expect(largest.stderr).not.toContain("is not a whole number");
+    expect(largest.services).toBe(false);
   });
 });
 
