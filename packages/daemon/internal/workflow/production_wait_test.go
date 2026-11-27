@@ -290,6 +290,8 @@ func TestTheDailyTurnNamesEachTermThatStands(t *testing.T) {
 		{"the production check", claim.RoleTester, func(t *testing.T, rig *waitRig) {
 			rig.read(waitRoot, answerOf(waitRoot, nil, passing("c-after", waitRootMerge)))
 		}, "Its production check of generation 3 at merge commit " + waitRootMerge},
+		// The merger's completion of the merged generation has not landed, so the reason waits
+		// rather than starting the next change (changeDue), and the daily notice names it.
 		{"a reason", "", func(t *testing.T, rig *waitRig) {
 			rig.seedDefect(waitRoot, "the retro found the cache key unchecked")
 			rig.read(waitRoot, answerOf(waitRoot, nil, passing("c-after", waitRootMerge)))
@@ -308,6 +310,9 @@ func TestTheDailyTurnNamesEachTermThatStands(t *testing.T) {
 			rig.seedRoot(phase.Merging, "retro")
 			if tc.name == "beneath" {
 				rig.seedChild(waitChild, phase.Implementing, "in_progress")
+			}
+			if strings.HasPrefix(tc.name, "a reason") {
+				owedMerger(t, rig)
 			}
 			rig.mergeRoot()
 			tc.setUp(t, rig)
