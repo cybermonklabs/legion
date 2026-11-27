@@ -594,7 +594,7 @@ func (r *sessionsRun) boot() {
 	r.daemon = newRecordingLog(r.log())
 	o := r.rt.daemonOverrides(&sessionsRuntime{localRuntime: r.rt, launchable: r.launchable})
 	o.workflowTokens = &workflowTokenRecorder{}
-	r.d = startDaemonWithin(t, r.cfg, o, slog.New(r.daemon), 2*time.Minute)
+	r.d = startDaemonLogging(t, r.cfg, o, slog.New(r.daemon))
 	r.deadline = time.Now().Add(sessionsRunBound)
 	for _, member := range r.members {
 		for _, role := range member.roles {

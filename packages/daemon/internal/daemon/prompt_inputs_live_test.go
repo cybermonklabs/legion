@@ -578,7 +578,7 @@ func (r *promptInputsRun) runWave(t *testing.T, name string, backend runtime.Bac
 		rt := &promptInputsRuntime{localRuntime: a.rt, run: r, panes: panes}
 		o := a.rt.daemonOverrides(rt)
 		o.workflowTokens = &workflowTokenRecorder{}
-		a.d = startDaemonWithin(t, a.cfg, o, a.log(), 2*time.Minute)
+		a.d = startDaemonLogging(t, a.cfg, o, a.log())
 		if a.cfg.ControllerLaunch == config.ControllerLaunchDaemon {
 			// The keeper creates the controller independently of HTTP startup.
 			a.await("the daemon controller launch", paneReady, func() bool { return len(a.rt.LaunchesOf(claim.ControllerToken(a.project))) != 0 })

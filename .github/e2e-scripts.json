@@ -338,7 +338,7 @@
     },
     {
       "script": "repository-cache-burst-probe.sh",
-      "needs": "the worker image and the Job repository-cache-burst-job.sh creates: it is that measurement's probe, not a proof of its own, and the harness writes it and the double's sources into the Job's command because a Job holds no checkout to read them from; it runs the image's own cache and fetch against that double in three containers of one pod and judges nothing a runner could give it, bar its self-test, which runs on any Linux host with bash 4 or later, GNU coreutils, jq and awk"
+      "needs": "the worker image and the Job repository-cache-burst-job.sh creates: it is that measurement's probe, not a proof of its own, and the harness writes it and the double's sources into the Job's command because a Job holds no checkout to read them from; it runs the image's own cache and provision against that double in three containers of one pod and judges nothing a runner could give it, bar its self-test, which runs on any Linux host with bash 4 or later, GNU coreutils, jq and awk"
     },
     {
       "script": "multi-repo-acceptance.sh",

@@ -337,7 +337,7 @@ func (h teardownEffectsHarness) start(t *testing.T, world teardownEffectsWorld, 
 	r.seed(world, task)
 	o := r.rt.daemonOverrides(r.rt)
 	o.clock, o.githubAPI, o.workflowTokens = r.clock, githubURL, &workflowTokenRecorder{}
-	r.d = startDaemonWithin(t, cfg, o, r.log(), 2*time.Minute)
+	r.d = startDaemonLogging(t, cfg, o, r.log())
 	if got := r.issue(key).Phase; got != world.Daemon.Phase {
 		r.fail(fmt.Errorf("boot changed %s from %s to %s", key, world.Daemon.Phase, got))
 	}
