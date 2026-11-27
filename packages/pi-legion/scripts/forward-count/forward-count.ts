@@ -193,7 +193,10 @@ export function classifyMergeBlocked(read: MergeBlockedRead): { state: RecordSta
       ? { state: "established", step: 4 }
       : { state: "undetermined", step: 4 };
   }
-  if (read.timeline.state === "unread") return { state: "unread", step: 5 };
+  // THE UNORDERED VARIANT, for the ordering control of plan Task 5 and nothing else: the steps
+  // are read as unordered tests, so "each timeline item that counts is before L, or none counts"
+  // answers before "L is clear and the timeline is unread". The case of L clear with an unread
+  // timeline and no item obtained then gives `absent`, where the ordered steps give `unread`.
   const lastAt = timeOf(last.at);
   const after = counted.filter((item) => {
     const at = timeOf(item.at);
@@ -205,6 +208,7 @@ export function classifyMergeBlocked(read: MergeBlockedRead): { state: RecordSta
     return lastAt === null || at === null || at === lastAt;
   });
   if (unordered.length === 0) return { state: "absent", step: 7 };
+  if (read.timeline.state === "unread") return { state: "unread", step: 5 };
   return { state: "undetermined", step: 8 };
 }
 
