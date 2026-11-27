@@ -170,7 +170,7 @@ func TestARealGitStoppedAtItsBudgetLeavesNoLock(t *testing.T) {
 		}
 	}
 
-	timeout := startBound + lockBound
+	timeout := 300 * time.Millisecond // EXPERIMENT ONLY (never for merge): does the SIGKILL path follow the 2 s wait?
 	run := NewRunner(timeout, map[string]string{"git": git})
 
 	var ended atomic.Pointer[os.ProcessState]
