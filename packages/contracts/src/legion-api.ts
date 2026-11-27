@@ -416,10 +416,10 @@ const legionPhaseView = z.object({
    * a worker whose issue has had no move back, and absent from the whole state for a caller in a
    * pod whose plugin declares a contract below 62 (the daemon's `withoutBackwardMoves`), so every
    * reader takes it as optional. `rounds` beside it counts review rounds alone, a conflict round
-   * included, and `pass` counts every move back, so these counts add up to no more than `pass`.
-   * They add up to less where a move was made at a conflicting head, which raises `pass` and no
-   * pair, since nobody sent the work back, or where the issue was already in flight when the
-   * daemon began to count the pairs. */
+   * included. `pass` counts every move back, so these counts add up to no more than `pass`. They
+   * can add up to less, for example where a move was made at a conflicting head, which raises
+   * `pass` and no pair, since nobody sent the work back, or where the issue was already in flight
+   * when the daemon began to count the pairs. */
   backwardMoves: z.record(z.string(), z.number().int().positive()).optional(),
 });
 
