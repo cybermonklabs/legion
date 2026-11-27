@@ -5576,6 +5576,8 @@ test("what references the focused row names a task whose block opens with long a
           `no row names its task by the task's first line "${line}"`
         ).toHaveCount(1);
       }
+      // The rows are drawn and settled: each link was found by its task's first line above, so
+      // one read of their text is the state the row means to check.
       for (const text of await rows.allTextContents()) {
         for (const markup of [":::", "{#", "serves=", "dispatch://"]) {
           expect(text, `a row of what references the statement draws "${markup}"`).not.toContain(
