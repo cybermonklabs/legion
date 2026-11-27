@@ -4277,3 +4277,20 @@ test("a claim's registration and the controller's are told apart by their schema
   expect(LegionRegisterResponse.safeParse(controller).success).toBeFalse();
   expect(LegionControllerRegisterResponse.safeParse(claim).success).toBeFalse();
 });
+
+// Contract entry 20261125170509: a registration names the session it replaces, the claim's session the daemon
+// forgot, which the session sends as `previous_session_id` in its Envoy role claim. The goldens
+// replace no session, so the key is absent there; an empty one is refused, since an empty id
+// names no session.
+test("a claim's registration and the controller's name the session they replace, and only a non-empty one", () => {
+  for (const [name, schema] of [
+    ["register.json", LegionRegisterResponse],
+    ["register-controller.json", LegionControllerRegisterResponse],
+  ] as const) {
+    const golden = fixture(name) as Record<string, unknown>;
+    expect(golden).not.toHaveProperty("replaces");
+    expect(schema.parse(golden).replaces).toBeUndefined();
+    expect(schema.parse({ ...golden, replaces: "ses_replaced" }).replaces).toBe("ses_replaced");
+    expect(schema.safeParse({ ...golden, replaces: "" }).success).toBeFalse();
+  }
+});

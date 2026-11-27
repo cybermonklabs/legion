@@ -69,6 +69,12 @@ func MustParse(repository string) Repository {
 	return parsed
 }
 
+// IsName says whether name has the grammar of a GitHub repository's own name (repositoryName), the
+// rule Parse holds a name to before its `.`, `..` and `.git` checks. A caller that reads a name as
+// gh reads it trims a `.git` suffix first, as gh and ghconfig.RepositoryName do: GitHub's
+// 100-character limit counts the name without it, which `gh repo clone` writes into a remote.
+func IsName(name string) bool { return repositoryName.MatchString(name) }
+
 // Parse is repository's owner and name, or a refusal that begins with what, the input's name: it
 // must be exactly `<owner>/<name>`, both names non-empty and neither holding whitespace; neither
 // may be `.` or `..`, which joined under a state directory would name another directory than the

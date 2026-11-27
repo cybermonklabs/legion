@@ -1,0 +1,5 @@
+kind: Changed
+body: 'An after-merge result counts only at a commit that holds the merge, and the newest decides.'
+time: 2026-11-24T18:15:47Z
+custom:
+    Issue: pr5416
