@@ -532,7 +532,7 @@ func TestAMergeReadStopsAfterThreeStageFailures(t *testing.T) {
 		r.exec(fmt.Sprintf(`update outbox set payload = jsonb_set(payload, '{progress,refresh}', 'true'), next_at = '%s' where kind = 'merge_read'`,
 			r.clock().Format(time.RFC3339Nano)))
 	}
-	twoDays := func(r *mergeReadRig) {
+	twoDays := func(t *testing.T, r *mergeReadRig) {
 		t.Helper()
 		before := r.gets()
 		for hour := 1; hour <= 50; hour++ {
@@ -565,7 +565,7 @@ func TestAMergeReadStopsAfterThreeStageFailures(t *testing.T) {
 		if progress.State != "stopped" || progress.Failures != 3 || progress.Attempts != 3 {
 			t.Fatalf("the progress after three failures = %+v, want it stopped after three attempts", progress)
 		}
-		twoDays(r)
+		twoDays(t, r)
 		r.board.mu.Lock()
 		r.board.failErr = nil
 		r.board.links = []dispatch.IssueLink{{URL: "https://github.com/acme/widgets/pull/70", Kind: "github_pr"}}
@@ -588,7 +588,7 @@ func TestAMergeReadStopsAfterThreeStageFailures(t *testing.T) {
 		if progress, _, _ := r.pending(); progress.State != "unread" {
 			t.Fatalf("the search ended %+v, want it unread", progress)
 		}
-		twoDays(r)
+		twoDays(t, r)
 		before, results := r.github.count(""), r.board.counted("results")
 		refresh(r)
 		r.drain(5)

@@ -40,8 +40,8 @@ const (
 	// mergeReadStageBound is each request's deadline, the Dispatch client's own bound.
 	mergeReadStageBound = 10 * time.Second
 	// mergeReadAttempts is how many times a stage is tried: a third failure stays unread, with no
-	// automatic fourth attempt.
-	mergeReadAttempts = 3
+	// automatic fourth attempt (record.MergeReadMaxFailures, which the row's validate holds too).
+	mergeReadAttempts = record.MergeReadMaxFailures
 	// mergeReadParked is when an unread or stopped read looks at its row again. The look sends
 	// nothing unless a door asked a links refresh (record.MergeReadProgress.Refresh), and a door
 	// that asks makes the row due at once.
@@ -52,22 +52,22 @@ const (
 var mergeReadRetryWaits = [mergeReadAttempts - 1]time.Duration{time.Minute, 5 * time.Minute}
 
 // The stages, states and sources of a merge read, as its progress stores them
-// (record.MergeReadProgress).
+// (record.MergeReadProgress): the record's own spellings, which its validate holds a row to.
 const (
-	mergeStageLinks      = "links"
-	mergeStageResults    = "results"
-	mergeStageBases      = "bases"
-	mergeStageCandidates = "candidates"
-	mergeStageMetadata   = "metadata"
+	mergeStageLinks      = record.MergeReadStageLinks
+	mergeStageResults    = record.MergeReadStageResults
+	mergeStageBases      = record.MergeReadStageBases
+	mergeStageCandidates = record.MergeReadStageCandidates
+	mergeStageMetadata   = record.MergeReadStageMetadata
 
-	mergeStateUnread  = "unread"
-	mergeStateStopped = "stopped"
+	mergeStateUnread  = record.MergeReadStateUnread
+	mergeStateStopped = record.MergeReadStateStopped
 
-	mergeSourceLink       = "link"
-	mergeSourceCleared    = "cleared"
-	mergeSourceRetained   = "retained"
-	mergeSourceProduction = "production"
-	mergeSourceResults    = "results"
+	mergeSourceLink       = record.MergeReadSourceLink
+	mergeSourceCleared    = record.MergeReadSourceCleared
+	mergeSourceRetained   = record.MergeReadSourceRetained
+	mergeSourceProduction = record.MergeReadSourceProduction
+	mergeSourceResults    = record.MergeReadSourceResults
 )
 
 // mergeReadPassCount is the pass every merge read of one daemon spends its GETs from: when the
@@ -141,90 +141,7 @@ type mergeReader struct {
 // answer is applied. A failed request is tried at most three times, a minute and then five
 // minutes apart, or later where GitHub's rate limit asks.
 func (r *outbox) mergeRead(ctx context.Context, row record.OutboxRow, payload record.MergeRead) error {
-	if r.dispatch == nil {
-		return errors.New("merge read executor has no Dispatch client")
-	}
-	now := r.now().UTC()
-	var issue *record.Issue
-	var history record.MergeHistoryRow
-	if err := store.TransactWith(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
-		var err error
-		if issue, err = r.records.Issue(ctx, tx, row.Issue); err != nil || issue == nil {
-			return err
-		}
-		history, err = r.records.MergeHistoryOf(ctx, tx, row.Issue)
-		return err
-	}); err != nil {
-		return fmt.Errorf("read the record of %s for its merge read: %w", row.Issue, err)
-	}
-	if issue == nil || issue.Generation != payload.Generation {
-		r.log.Info("outbox merge read finished without reading: its issue's generation moved", "row", row.ID, "issue", row.Issue,
-			"generation", payload.Generation)
-		return nil
-	}
-	recorded, err := issue.Repository()
-	if err != nil {
-		return fmt.Errorf("read the repository of %s for its merge read: %w", row.Issue, err)
-	}
-	reader := mergeReader{dispatch: r.dispatch, github: func(ctx context.Context, repository ghrepo.Repository) (githubrest.Client, error) {
-		return implementClient(ctx, r.tokens, r.githubAPI, r.repositories.serving(repository))
-	}}
-	progress := payload.Progress
-	if progress.Reserved {
-		// An attempt whose answer no turn saved: it was sent, or may have been. It stays spent.
-		progress = mergeReadFailed(progress, errors.New("a request whose answer was never saved: the daemon stopped after it was reserved"), now, true)
-		return r.saveMergeRead(ctx, row, progress, false, now)
-	}
-	request, merge, done := nextMergeRequest(payload.Issue, recorded, history.Evidence, &progress)
-	if done {
-		if merge.Merged() {
-			return r.answerMergeRead(ctx, row, payload, merge, progress, now)
-		}
-		return r.saveMergeRead(ctx, row, progress, false, now)
-	}
-	if !progress.RetryAt.IsZero() && progress.RetryAt.After(now) {
-		return wait.Until(progress.RetryAt, fmt.Sprintf("the merge read of %s tries its stage again at %s", row.Issue, progress.RetryAt.Format(time.RFC3339)))
-	}
-	slot, taken, err := r.pool.TakeMergeReadSlot(ctx)
-	if err != nil {
-		return err
-	}
-	if !taken {
-		return wait.Until(now.Add(mergeReadSlotWait), fmt.Sprintf("the merge read of %s waits for the database's one merge read slot", row.Issue))
-	}
-	// The pass is read and spent under the slot, which every request of this daemon takes, so two
-	// lanes never both spend its last attempt.
-	if next, ok := r.mergeReads.peek(now); !ok {
-		slot.Release(ctx)
-		return wait.Until(next, fmt.Sprintf("the merge read of %s waits for the next pass: this one spent its %d GETs", row.Issue, mergeReadPassGETs))
-	}
-	consumed := progress.Refresh && request.stage == mergeStageLinks
-	progress.Attempts++
-	progress.Reserved = true
-	reserved, err := checkpointMergeRead(ctx, slot.Transact, row, progress, false)
-	if err != nil || !reserved {
-		slot.Release(ctx)
-		if err == nil {
-			err = fmt.Errorf("reserve an attempt of the merge read of %s: %w", row.Issue, record.ErrOutboxLeaseLost)
-		}
-		return err
-	}
-	r.mergeReads.spend(now)
-	sending, cancel := context.WithTimeout(ctx, mergeReadStageBound)
-	answer, sendErr := reader.send(sending, payload.Issue, progress, request)
-	cancel()
-	slot.Release(ctx)
-	progress.Reserved = false
-	if sendErr != nil {
-		progress = mergeReadFailed(progress, sendErr, now, false)
-		// A refresh whose read failed stays asked, and is tried again as its stage is.
-		return errors.Join(r.saveMergeRead(ctx, row, progress, false, now), mergeReadLimit(sendErr))
-	}
-	progress = applyMergeAnswer(payload.Issue, recorded, progress, request, answer)
-	if _, merge, done := nextMergeRequest(payload.Issue, recorded, history.Evidence, &progress); done && merge.Merged() {
-		return r.answerMergeRead(ctx, row, payload, merge, progress, now)
-	}
-	return r.saveMergeRead(ctx, row, progress, consumed, now)
+	return nil
 }
 
 // peek says whether the pass has an attempt left at now, without spending it, and else when the
@@ -316,14 +233,19 @@ func checkpointMergeRead(ctx context.Context, transact func(context.Context, fun
 // mergeReadFailed is progress after a failed attempt of its stage: the failure counted and its
 // cause kept as the daemon stores a far side's error, the third failure stopping the read, and
 // else the next attempt due a minute and then five minutes on, or later where GitHub's rate limit
-// asks. An uncertain attempt, one reserved and never answered, is counted apart too.
+// asks. An uncertain attempt, one reserved and never answered, is counted apart too. A failed
+// refresh of a read that ended (unread or stopped) keeps it as it ended, its failures as they
+// were and the refresh still asked, which the read's next look sends again.
 func mergeReadFailed(progress record.MergeReadProgress, cause error, now time.Time, uncertain bool) record.MergeReadProgress {
 	progress.Reserved = false
 	if uncertain {
 		progress.Uncertain++
 	}
-	progress.Failures++
 	progress.Cause = storetext.FarSideError(cause.Error())
+	if progress.State != "" {
+		return progress
+	}
+	progress.Failures++
 	if progress.Failures >= mergeReadAttempts {
 		progress.State, progress.RetryAt = mergeStateStopped, time.Time{}
 		return progress
@@ -372,6 +294,7 @@ func nextMergeRequest(issue string, recorded ghrepo.Repository, evidence record.
 			}
 			return mergeRequest{stage: mergeStageMetadata, candidate: i}, record.Merge{}, false
 		}
+		return mergeRequest{}, known, true
 	}
 	seedMergeCandidates(recorded, evidence, progress)
 	if progress.State != "" {
@@ -402,7 +325,8 @@ func nextMergeRequest(issue string, recorded ghrepo.Repository, evidence record.
 	if merge, ok := newestMerge(issue, *progress); ok {
 		return mergeRequest{}, merge, true
 	}
-	progress.State, progress.Cursor, progress.Failures, progress.Cause, progress.RetryAt = mergeStateUnread, "", 0, "", time.Time{}
+	// The search ended at its candidates: a later new link reads only what it adds.
+	progress.State, progress.Stage, progress.Cursor, progress.Failures, progress.Cause, progress.RetryAt = mergeStateUnread, mergeStageCandidates, "", 0, "", time.Time{}
 	return mergeRequest{}, record.Merge{}, true
 }
 
@@ -460,8 +384,7 @@ func seedMergeCandidates(recorded ghrepo.Repository, evidence record.MergeEviden
 }
 
 // addMergeCandidate adds the pull request repo#number to progress's candidates unless it holds it
-// already, by repository without case and number. A candidate added to a search that ended unread
-// is new input, so the search goes on.
+// already, by repository without case and number, and answers whether it added it.
 func addMergeCandidate(progress *record.MergeReadProgress, repo string, number int, source string) bool {
 	if number <= 0 || repo == "" {
 		return false
@@ -570,11 +493,19 @@ func (m mergeReader) send(ctx context.Context, issue string, progress record.Mer
 // the results add each merge commit a check is compared with as a base, and each merged pull
 // request basis as a candidate; a page adds each pull request it lists and saves where the next
 // page is; a pull request's read is that candidate's answer.
+//
+// A links read a door's refresh asked of a read that ended (unread or stopped) is new input only
+// where it adds a candidate, or where the stage that stopped was the links read itself, which it
+// now answered. Then the read goes on at the stage it ended at, its failures counted from zero.
+// Otherwise the read stays as it ended: unchanged links reset no failed stage and replay no
+// completed read.
 func applyMergeAnswer(issue string, recorded ghrepo.Repository, progress record.MergeReadProgress, request mergeRequest, answer mergeReadAnswer) record.MergeReadProgress {
-	progress.Failures, progress.Cause, progress.RetryAt = 0, "", time.Time{}
+	ended := progress.State != ""
+	if !ended {
+		progress.Failures, progress.Cause, progress.RetryAt = 0, "", time.Time{}
+	}
 	switch request.stage {
 	case mergeStageLinks:
-		refresh := progress.State != ""
 		progress.Refresh = false
 		progress.Links = nil
 		added := false
@@ -584,11 +515,14 @@ func applyMergeAnswer(issue string, recorded ghrepo.Repository, progress record.
 				added = true
 			}
 		}
-		switch {
-		case refresh && added:
-			// A new link is new input: the search goes on to read it.
-			progress.State, progress.Stage = "", mergeStageCandidates
-		case !refresh:
+		linksStage := progress.Stage == "" || progress.Stage == mergeStageLinks
+		if ended && !added && !linksStage {
+			return progress
+		}
+		if ended {
+			progress.State, progress.Failures, progress.Cause, progress.RetryAt = "", 0, "", time.Time{}
+		}
+		if linksStage {
 			progress.Stage = mergeStageResults
 		}
 	case mergeStageResults:
