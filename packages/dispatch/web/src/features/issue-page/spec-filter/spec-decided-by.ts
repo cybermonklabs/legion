@@ -3,9 +3,11 @@ import type {
   CheckBlock,
   DecisionEntry,
   DisplayTree,
+  IssueAskThreadRow,
   IssueDecisions,
 } from "../../../api/types";
 import { isDecisionEntry, personDecisionAsk } from "../../issue/decision-entries";
+import { buildDispatchReference } from "../../refs/routes";
 import type { TextSource } from "../../refs/text-references";
 import { askIdOf } from "../decisions-filter/decisions-parts";
 import { drawnLine, firstLineOf, firstSentenceLength } from "../first-line";
@@ -14,9 +16,9 @@ import { chipWords } from "../node-row-chip";
 import { type LineNames, referenceStandIns } from "../one-line";
 import { isReader, type NodeState, type NodeType, type StatementState } from "../page-words";
 import { storedReading } from "../stored-reading";
+import { answerOf } from "../tree-drafts";
 import { nodesInOrder } from "../tree-keys";
 import { statementStandings } from "../verification-filter/statement-state";
-
 /**
  * What decided each statement of the Spec filter, and the mark each statement carries (R5, R17,
  * R22, R35).
@@ -145,6 +147,9 @@ export interface SpecDecision {
 export interface SpecStatement {
   /** Every other decision that shaped it, beyond the one its run is headed by (R5). */
   readonly alsoShapedBy: readonly SpecDecision[];
+  /** Whether the reads already held show this statement gets a `because` line once the asks read
+   *  answers (places held, row 7): holds the line's room without `data-spec-because`. */
+  readonly becauseHeld?: boolean;
   /** Whether its words changed after the tie that names the decision its run is headed by,
    *  which its line under the words says (R5, the tie's `changed_since_tie`): false where that
    *  decision is the answered question it hangs under, which has no tie, and where no decision is
@@ -221,15 +226,22 @@ export interface SpecReading {
  * statement's mark is read from as the Verification filter reads it (`statement-state.ts`).
  */
 export function specDecidedBy({
+  asks: heldAsks,
   asksHeld,
   checks,
   decisions,
+  issueKey,
   lineNames,
   nodeIdOf,
   reader,
   root,
   view,
 }: {
+  /** The asks read's rows, given only while Conversation's outline read is still out or building
+   *  `root` (`SpecFilterBody.tsx`), so a statement under an answered ask draws its heading,
+   *  decision cell and `because` line from the first drawing rather than growing once `root`
+   *  arrives (dispatch://INFRA-5939/comment/90452577-dd0c-419a-b7cb-cc29a65016a8, item 1). */
+  readonly asks?: readonly IssueAskThreadRow[];
   /** Whether the asks read holds an answer. A person's decision is drawn by the answer they
    *  gave, whose question the tree holds once that read is in; until it is, the decision is
    *  drawn as nothing, rather than as an agent's record of it, which is how a person's decision
@@ -237,6 +249,8 @@ export function specDecidedBy({
   readonly asksHeld: boolean;
   readonly checks: readonly CheckBlock[];
   readonly decisions: IssueDecisions | undefined;
+  /** The issue's key, used to build an ask's reference when reading from `asks` before `root`. */
+  readonly issueKey?: string;
   readonly lineNames: LineNames;
   readonly nodeIdOf: (reference: string) => string | undefined;
   /** Who is reading, so a decision of theirs reads as their own words (R34). */
@@ -246,7 +260,7 @@ export function specDecidedBy({
   /** The tree as the Spec filter leaves it. */
   readonly view: TreeNode;
 }): SpecReading {
-  const nodes = nodesById(root);
+  const nodes = nodesById(root, heldAsks, issueKey);
   const asks = asksById(nodes);
   const shaped = shapedBy({ asks, asksHeld, decisions, lineNames, nodeIdOf, nodes, reader });
   const standings = statementStandings(root, checks);
@@ -279,6 +293,7 @@ export function specDecidedBy({
       alsoShapedBy: ties
         .slice(1)
         .flatMap((tie) => (tie.decision === undefined ? [] : [tie.decision])),
+      ...(head !== undefined && head.decision === undefined ? { becauseHeld: true } : {}),
       // Only the tie of the decision the run is headed by, which the line under the statement
       // names; the answered question it hangs under carries no `changed`, having no tie.
       changedSince: head?.decision !== undefined && head.changed === true,
@@ -325,13 +340,37 @@ export function firstSentenceOf(text: string): string {
  *  `decisions-filter/decisions-parts.ts`'s `placements`, which reads each node's parent line as
  *  well (`issue-tree.ts`'s `parentLineOf`): the Spec view reads a parent's line by its own rule
  *  (`parentOf`), so this walks the nodes alone. */
-function nodesById(root: TreeNode): ReadonlyMap<string, TreeNode> {
+function nodesById(
+  root: TreeNode,
+  heldAsks?: readonly IssueAskThreadRow[],
+  issueKey?: string
+): ReadonlyMap<string, TreeNode> {
   const nodes = new Map<string, TreeNode>();
   const walk = (node: TreeNode): void => {
     if (!nodes.has(node.id)) nodes.set(node.id, node);
     for (const child of node.children) walk(child);
   };
   walk(root);
+  if (heldAsks !== undefined) {
+    for (const ask of heldAsks) {
+      if (ask.kind !== "question" || nodes.has(ask.id)) continue;
+      nodes.set(ask.id, {
+        ...(ask.answer === null ? {} : { answer: answerOf(ask.answer) }),
+        at: ask.created_at,
+        author: ask.author,
+        children: [],
+        chips: [],
+        gaps: [],
+        id: ask.id,
+        ...(issueKey === undefined
+          ? {}
+          : { reference: buildDispatchReference({ id: ask.id, key: issueKey, kind: "ask" }) }),
+        text: ask.question,
+        ...(ask.question_tree === undefined ? {} : { tree: ask.question_tree }),
+        type: "ask",
+      });
+    }
+  }
   return nodes;
 }
 

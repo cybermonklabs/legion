@@ -560,6 +560,41 @@ export function PublishedReferenceNames({
   return <ReferenceNamesContext.Provider value={own}>{children}</ReferenceNamesContext.Provider>;
 }
 
+/**
+ * Hands its subtree the store's references with each of `held` named by the name it holds there,
+ * until the store names it: names a page holds before its batched read answers, such as the new
+ * issue page's titles of its issue and its children (`issue-page/IssueOutlinePage.tsx`). A
+ * reference the read answered ambiguous, gone or with no words keeps the store's answer. So a
+ * row that names a child issue is drawn in the words the read will name it by from its first
+ * drawing, and does not grow a line as that read answers (R3).
+ */
+export function HeldReferenceNames({
+  children,
+  held,
+}: {
+  children: ReactNode;
+  held: ReadonlyMap<string, string>;
+}): ReactNode {
+  const known = useContext(ReferenceNamesContext);
+  const own = useMemo<KnownReferences>(() => {
+    let names: Map<string, string> | undefined;
+    for (const [reference, name] of held) {
+      if (
+        known.names.has(reference) ||
+        known.ambiguous.has(reference) ||
+        known.gone.has(reference) ||
+        known.unnamed.has(reference)
+      ) {
+        continue;
+      }
+      names ??= new Map(known.names);
+      names.set(reference, name);
+    }
+    return names === undefined ? known : { ...known, names };
+  }, [held, known]);
+  return <ReferenceNamesContext.Provider value={own}>{children}</ReferenceNamesContext.Provider>;
+}
+
 /** Everything the page published, with the names its readings projected to: what the
  *  plain-text projection reads before it mounts a read of its own (`plain-text.tsx`), and what a
  *  row of the new issue page draws its references by (`issue-page/RowText.tsx`). */

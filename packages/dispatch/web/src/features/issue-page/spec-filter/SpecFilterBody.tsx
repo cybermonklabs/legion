@@ -83,7 +83,12 @@ import { specSummary } from "../spec-summary";
 import { treeContext } from "../tree-drafts";
 import { nodeRowSelectorOf, TAB_STOP_ROW } from "../tree-focus";
 import { nodesInOrder, rowKeyOf } from "../tree-keys";
-import { issueTreeQuery, useBlocksRunning, useTreeRead } from "../tree-read/tree-read";
+import {
+  issueTreeQuery,
+  outlineQuery,
+  useBlocksRunning,
+  useTreeRead,
+} from "../tree-read/tree-read";
 import { type LineRead, useLineRefusals } from "../useLineRefusals";
 import { abortOnReaderAct, nodeEditable, type OnEditing, useNodeEditing } from "../useNodeEditing";
 import { moveToRow, useTreeKeymap } from "../useTreeKeymap";
@@ -250,6 +255,7 @@ export function SpecFilterBody({
   };
   const decisionsRead = useQuery(treeRead(decisionsQuery));
   const asksRead = useQuery(treeRead(asksQuery));
+  const outlineRead = useQuery(treeRead(outlineQuery(issue.key, "conversation")));
   // One predicate per read: whether it holds an answer. Every part of the body that says what
   // decided a statement or how it stands - the decision cell and its line saying none did, the
   // line under a statement, the runs, the mark, and what `w` and `q` report - reads the
@@ -331,19 +337,36 @@ export function SpecFilterBody({
   // (`tree-drafts.ts`'s `treeContext`).
   const lineNames = useIssueNames(issue.key);
   const nodeIdOf = useMemo(() => treeContext({ issue }).nodeIdOf, [issue]);
+  const heldAsks =
+    root.children.length === 0 && (outlineRead.isFetching || outlineRead.data !== undefined)
+      ? asksRead.data
+      : undefined;
   const { groups, others } = useMemo(
     () =>
       specDecidedBy({
+        asks: heldAsks,
         asksHeld,
         checks: resultsRead.data?.checks ?? [],
         decisions: decisionsRead.data,
+        issueKey: issue.key,
         lineNames,
         nodeIdOf,
         reader,
         root,
         view,
       }),
-    [asksHeld, decisionsRead.data, lineNames, nodeIdOf, reader, resultsRead.data, root, view]
+    [
+      asksHeld,
+      decisionsRead.data,
+      heldAsks,
+      issue.key,
+      lineNames,
+      nodeIdOf,
+      reader,
+      resultsRead.data,
+      root,
+      view,
+    ]
   );
   const specSlug = spec?.slug ?? "";
   const summary = useMemo(() => specSummary(root, specSlug), [root, specSlug]);
@@ -1759,7 +1782,18 @@ function Because({
   decision: SpecDecision | undefined;
   statement: SpecStatement;
 }): ReactNode {
-  if (decision === undefined && statement.alsoShapedBy.length === 0) return null;
+  if (decision === undefined && statement.alsoShapedBy.length === 0) {
+    if (!statement.becauseHeld) return null;
+    return (
+      <p
+        aria-hidden="true"
+        className="mb-0.5 min-h-[18px] text-xs leading-[18px]"
+        data-spec-because-held=""
+      >
+        {"\u00a0"}
+      </p>
+    );
+  }
   const route = routeOf(decision);
   const quoted = decision === undefined ? null : <Quote decision={decision} />;
   // What the line says after the quote: who decided, when, and that the statement changed since.

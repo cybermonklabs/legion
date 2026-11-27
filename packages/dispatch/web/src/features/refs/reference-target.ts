@@ -40,6 +40,7 @@ import {
   useRegistryPolling,
 } from "./agent-registry";
 import { itemOfBlock } from "./block-reference";
+import { HeldIssueTitles } from "./held-issue-titles";
 import { knownSessionQuery } from "./known-sessions";
 import { type ReferenceNaming, useMarkdownHeadline } from "./markdown-engine";
 import { deletedLineText, editedName, type PostDeletion, postDeletion } from "./post-marks";
@@ -959,6 +960,9 @@ export function useReferenceTarget(
     sessionKnown,
     sessionTitle,
   } = useReferenceData(route, options);
+  // The titles of the issues the page already holds (`HeldIssueTitles`), which the new issue page
+  // alone gives.
+  const heldTitles = useContext(HeldIssueTitles);
   const kind = route === undefined ? undefined : referenceTargetKind(route);
   let authored: string | undefined;
   let authoredTree: DisplayTree | undefined;
@@ -1057,6 +1061,12 @@ export function useReferenceTarget(
       descriptionTree: text === undefined ? undefined : markdownTree,
       picture: named === undefined ? undefined : picturePath(named, artifact),
     };
+  }
+  // An issue the page holds the title of reads as that title until its summary answers, so the
+  // reference is drawn as its summary will draw it from the first drawing (`HeldIssueTitles`).
+  if (route?.kind === "issue" && issue === undefined && shown.title === undefined) {
+    const held = heldTitles?.get(route.key);
+    if (held !== undefined) shown = { ...shown, title: held };
   }
   // Only a session can exist with no title of its own: every other target's title says it does.
   return {
