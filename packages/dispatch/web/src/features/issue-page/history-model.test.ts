@@ -1157,10 +1157,10 @@ test("two threads at one instant are two places when created events are left out
   expect(both.left, "no thread is left under both").toBe(0);
 });
 
-// A thread whose created event the log read does not hold carries sequence 0, and is new where
-// it began at or after the first event past the read mark, as the Conversation tab says a post is
-// new; threads whose created event is held keep the sequence rule.
-test("a thread whose created event is left out of the log is new where it began at or after the first unread event", () => {
+// A thread carries sequence 0, as the log read never holds the event of its first turn, and is
+// new where it began at or after the first event past the read mark, as the Conversation tab says
+// a post is new.
+test("a thread is new where it began at or after the first unread event", () => {
   seq = 0;
   const before = comment("before", "2026-11-15T09:00:00Z", AGENT);
   const after = comment("after", "2026-11-15T11:00:00Z", REVIEWER);

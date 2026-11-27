@@ -518,7 +518,7 @@ test("each task names the tasks of the plan it needs above its runs, and says wh
     ).toBe(true);
     expect(
       needs.hasAttribute(AUTHOR_TEXT_ATTRIBUTE),
-      "the line of needs is not the tab's words"
+      "the line of needs is not marked as text the page did not author"
     ).toBe(true);
     expect(
       textsIn("cleanup", "[data-step-needs]"),

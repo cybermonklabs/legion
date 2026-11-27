@@ -98,7 +98,7 @@ import { asUser } from "./users";
  * marks on one row (`r-current-point` of the spec). Row (11) is R13's half of c-outline-focus that
  * the reader causes, beside the row of `issue-page-i.e2e.ts` for the other half. A reading that a
  * check owes on a part not yet under this part's head is a row of its own beside its check's
- * rows, skipped with an annotation naming that part and tagged `@owed`: three of c-replies, one
+ * rows, skipped with an annotation naming that part and tagged `@owed`: two of c-replies, one
  * of c-box, one of c-mark, two of c-statement-reply, (9) among them, and one of the current point.
  *
  * The rows are on the real stack, each through `phase` (a reset database, alice signed in,

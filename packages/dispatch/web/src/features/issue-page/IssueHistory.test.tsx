@@ -300,9 +300,9 @@ function agentMessage(id: string, ago: number): MessageRead {
   };
 }
 
-// A thread whose created event the filtered log leaves out carries seq 0, as every other such
-// thread does, so two of them share one `data-event-seq`: the anchor follows each entry's own id
-// instead, or it holds the first of them while the reader is on the second.
+// Every thread carries seq 0, since the filtered log leaves out the events that write a post, so
+// two threads share one `data-event-seq`: the anchor follows each entry's own id instead, or it
+// holds the first of them while the reader is on the second.
 test("a reader on one of two threads whose events are unread keeps their entry when an event arrives", async () => {
   const scrollY = Object.getOwnPropertyDescriptor(window, "scrollY");
   const restoreReads = stubHistoryReads(
@@ -549,19 +549,26 @@ test("a repaired block's words are a link to its question's address, and its id 
  *  (`AddressedTurn`). */
 const FOLLOWING = "default /issues/CORE-1/messages";
 
-/** The history of `KEY` with nothing above it but a query client that never retries, drawn in
- *  `container` where one is given, at the address of the turn `item` where one is given, under
- *  the names a page published of its batched read (`published`) where those are given, with
- *  the read mark `visitMark` of the visit (99,999 unless a case gives one), and under the page's
- *  writer where `writer` is given, which holds that writer for the case. The issue's newest event
- *  is past the read mark, so the history reads the first event past it, which `stubHistoryReads`
- *  answers with its `boundary`. */
+/** The history of `KEY` with nothing above it but a query client that never retries, at the
+ *  address of the turn `item` where one is given, and as its options say: drawn in `container`
+ *  where one is given, under the names a page published of its batched read (`published`) where
+ *  those are given, with the read mark `visitMark` of the visit (99,999 unless a case gives one),
+ *  and under the page's writer where `writer` is given, which holds that writer for the case. The
+ *  issue's newest event is past the read mark, so the history reads the first event past it,
+ *  which `stubHistoryReads` answers with its `boundary`. */
 function drawHistory(
   item: string | undefined,
-  container?: HTMLElement,
-  published?: PublishedReferences,
-  visitMark = 99999,
-  writer?: HeldWriter
+  {
+    container,
+    published,
+    visitMark = 99999,
+    writer,
+  }: {
+    container?: HTMLElement;
+    published?: PublishedReferences;
+    visitMark?: number;
+    writer?: HeldWriter;
+  } = {}
 ): {
   queryClient: QueryClient;
   unmount: () => void;
@@ -1928,7 +1935,7 @@ test("the entry Show more hands the focus to keeps its place in Details' view as
   let unmount: (() => void) | undefined;
 
   try {
-    unmount = drawHistory(undefined, box).unmount;
+    unmount = drawHistory(undefined, { container: box }).unmount;
     const more = await screen.findByRole("button", { name: SHOW_MORE });
     await waitFor(() => expect(rows()).toHaveLength(PAGE_SIZE));
     // Details scrolled down to Show more: the first entry the press draws, the first page's
@@ -2002,7 +2009,7 @@ test("Show more keeps the place of the entry above it from the press, as its pag
   let unmount: (() => void) | undefined;
 
   try {
-    unmount = drawHistory(undefined, box).unmount;
+    unmount = drawHistory(undefined, { container: box }).unmount;
     const more = await screen.findByRole("button", { name: SHOW_MORE });
     await waitFor(() => expect(rows()).toHaveLength(PAGE_SIZE));
     const last = box.querySelector<HTMLElement>('[data-history-entry="event:381"]');
@@ -2061,7 +2068,7 @@ async function drawFortyFiveIn(
   const box = document.body.appendChild(document.createElement("div"));
   box.style.overflowY = "auto";
   const restoreLayout = installDetailsLayout(box, heightOf);
-  const { unmount } = drawHistory(undefined, box);
+  const { unmount } = drawHistory(undefined, { container: box });
   const restore = () => {
     unmount();
     restoreLayout();
@@ -2425,7 +2432,7 @@ test("a press of Show more moves the focus to the first entry it drew though a c
   let unmount: (() => void) | undefined;
 
   try {
-    const drawn = drawHistory(undefined, box);
+    const drawn = drawHistory(undefined, { container: box });
     unmount = drawn.unmount;
     const more = await screen.findByRole("button", { name: SHOW_MORE });
     await waitFor(() => expect(drawnEntries()).toHaveLength(PAGE_SIZE));
@@ -2511,7 +2518,7 @@ test("the address of a short reply under a long root turn keeps the reply where 
   let unmount: (() => void) | undefined;
 
   try {
-    unmount = drawHistory("m-reply", box).unmount;
+    unmount = drawHistory("m-reply", { container: box }).unmount;
     const marked = await waitFor(() => {
       const turn = box.querySelector<HTMLElement>('[data-history-item="m-reply"]');
       expect(turn?.getAttribute("aria-current"), "the reply's address marked no turn").toBe("true");
@@ -2677,7 +2684,7 @@ async function drawLandingHistory(): Promise<{
   );
   const field = document.body.appendChild(document.createElement("textarea"));
   const held: HeldWriter = {};
-  const { queryClient, unmount } = drawHistory(undefined, box, undefined, undefined, held);
+  const { queryClient, unmount } = drawHistory(undefined, { container: box, writer: held });
   // alice signs in before any landing waits on her, which the history's read of who is signed
   // in (`IssueHistory.tsx`'s `signedIn`) draws again.
   act(() => {
@@ -3719,11 +3726,9 @@ test("a block's line in the history reads a reference as its target's name", asy
   let unmount: (() => void) | undefined;
 
   try {
-    unmount = drawHistory(
-      undefined,
-      undefined,
-      publishedNames(new Map([[address, "Ship the release"]]))
-    ).unmount;
+    unmount = drawHistory(undefined, {
+      published: publishedNames(new Map([[address, "Ship the release"]])),
+    }).unmount;
     const path = buildIssuePath({ id: askId, key: KEY, kind: "ask" });
     const line = await waitFor(() => {
       const found = document.querySelector<HTMLElement>("[data-event-seq]");
@@ -3794,12 +3799,12 @@ test("the history reads the log without the events that write a post, under its 
   }
 });
 
-// A thread whose created event the filtered log leaves out carries no place in the log, so
-// whether it is new is told from when it began against the first event past the read mark, which
-// one read of the log's own answers, as the Conversation tab tells it. The thread that began
-// after the mark is new and the one before it is not, with the line that says what is new
+// A thread carries no place in the log, since the filtered log leaves out the event of its first
+// turn, so whether it is new is told from when it began against the first event past the read
+// mark, which one read of the log's own answers, as the Conversation tab tells it. The thread that
+// began after the mark is new and the one before it is not, with the line that says what is new
 // between them.
-test("a thread whose created event the filtered log leaves out is new where it began after the read mark, with the line that says what is new between the threads", async () => {
+test("a thread is new where it began after the read mark, with the line that says what is new between the threads", async () => {
   // The first event past the read mark, a comment, which the history's read leaves out.
   const boundary = {
     ...claimAgo(6, 120),
@@ -3814,7 +3819,7 @@ test("a thread whose created event the filtered log leaves out is new where it b
   let unmount: (() => void) | undefined;
 
   try {
-    unmount = drawHistory(undefined, undefined, undefined, 5).unmount;
+    unmount = drawHistory(undefined, { visitMark: 5 }).unmount;
     await waitFor(() => expect(drawnEntries()).toHaveLength(3));
 
     expect(api.getIssueEvents).toHaveBeenCalledWith(KEY, { after: 5, limit: 1 });

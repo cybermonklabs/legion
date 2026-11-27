@@ -159,9 +159,9 @@ export interface HistoryInput {
    *  left out until its page is read: its place among events not read yet is not known. */
   readonly loadedFrom?: string;
   /** When the first event of the whole log past the read mark was made, where the log holds
-   *  one; undefined where it holds none, or while that is not known. A thread whose first turn's
-   *  event the log read does not hold is new where it began at that time or later, as the
-   *  Conversation tab says a post is new (`conversation-model.ts`). */
+   *  one; undefined where it holds none, or while that is not known. A thread, whose first turn's
+   *  event the log read never holds (`HISTORY_EXCLUDED_TYPES`), is new where that turn was made at
+   *  that time or later, as the Conversation tab says a post is new (`conversation-model.ts`). */
   readonly unreadFrom?: string;
   readonly messages: readonly MessageRead[] | undefined;
   /** Local YYYY-MM-DD. */
@@ -324,13 +324,17 @@ export function buildHistory(input: HistoryInput): HistoryDay[] {
 
   // Newest first, by when each happened; one instant by the log's own order, then by id.
   entries.sort((one, other) => comparePlaces(other, one));
-  // Whether an entry is new to the reader: by its place in the log where the log read holds it,
-  // past the read mark or not; else - a thread whose first turn's event the log read does not
-  // hold, `seq` 0 - by when it began (`unreadFrom`), and neither while that is not known.
+  // Whether an entry is new to the reader: an event or a run of uploads by its place in the log,
+  // past the read mark or not; a thread, whose first turn's event the log read never holds
+  // (`seq` 0) and which is dated by that turn, by when the turn was made (`unreadFrom`), and
+  // neither while that is not known.
   const isNew = (entry: Dated): boolean | undefined => {
-    if (entry.seq > 0) return entry.seq > input.lastReadSeq;
-    if (input.unreadFrom === undefined) return undefined;
-    return compareTimestamps(entry.at, input.unreadFrom) >= 0;
+    if (entry.kind === "thread") {
+      return input.unreadFrom === undefined
+        ? undefined
+        : compareTimestamps(entry.at, input.unreadFrom) >= 0;
+    }
+    return entry.seq > input.lastReadSeq;
   };
   const read = entries.some((entry) => isNew(entry) === false);
   const unread = entries.some((entry) => isNew(entry) === true);
@@ -375,10 +379,10 @@ export function buildHistory(input: HistoryInput): HistoryDay[] {
 export const HISTORY_PAGE = 20;
 
 /** Where an entry stands in the history, newest first: when it happened, for one instant its
- *  place in the log (`buildHistory`), and for one place its id - two threads whose first turns'
- *  events the log read does not hold share place 0. The panel draws the history down to the
- *  place of the last entry it draws, so an entry that arrives above that place is drawn and
- *  takes none of the entries drawn out. */
+ *  place in the log (`buildHistory`), and for one place its id - every thread stands at place 0,
+ *  as the log read holds no thread's first turn. The panel draws the history down to the place of
+ *  the last entry it draws, so an entry that arrives above that place is drawn and takes none of
+ *  the entries drawn out. */
 export interface HistoryPlace {
   readonly at: string;
   readonly id: string;

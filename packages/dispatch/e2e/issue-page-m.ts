@@ -31,13 +31,14 @@ import { settledState } from "./settled";
  * - **The history** `[data-testid="issue-history"]`, a `section` named "History"
  *   (`IssueHistory.tsx`). Each day is `[data-history-day="<YYYY-MM-DD>"]`, drawn open under its
  *   line, a `p` that names the day; each entry carries `data-history-entry` and `data-event-seq`
- *   (0 for a thread whose first turn's event is on a page not read yet); a turn of an agents'
- *   thread is `[data-history-item="<id>"]`, its Reply `[data-history-reply]` and its time the link
- *   `[data-history-time]`; an upload run is `[data-history-uploads="<n>"]`. Under the last entry
- *   drawn stands one control, Show more, "Show more (<n> left)" while entries read are left to
- *   draw, its count `[data-history-left]` and "<n>+" while an older page of the log is unread; a
- *   press that would leave no entry read and not drawn reads that page first, the control reading
- *   "Loading older" meanwhile, and the control goes once the whole log is drawn.
+ *   (0 for every thread, whose first turn's event the history's read of the log leaves out); a
+ *   turn of an agents' thread is `[data-history-item="<id>"]`, its Reply `[data-history-reply]`
+ *   and its time the link `[data-history-time]`; an upload run is `[data-history-uploads="<n>"]`.
+ *   Under the last entry drawn stands one control, Show more, "Show more (<n> left)" while entries
+ *   read are left to draw, its count `[data-history-left]` and "<n>+" while an older page of the
+ *   log is unread; a press that would leave no entry read and not drawn reads that page first,
+ *   the control reading `loading_older`, "Loading…", meanwhile, and the control goes once the
+ *   whole log is drawn.
  * - **The facts** `[data-testid="focused-node-facts"]`, carrying `data-focused-node` with the
  *   focused node's id, or the issue's key with no node focused (`FocusedNodeFacts.tsx`); its
  *   deliveries are `[data-deliveries] li`, its controls `[data-focused-controls]`, and what
@@ -83,7 +84,7 @@ export function historyShowMore(page: Page): Locator {
 }
 
 /** Show more's name where its press reads the log's next page before it draws: "Show more
- *  (<n>+ left)" with `n` from 1 to `PAGE_SIZE`, so fewer entries are read and not drawn than a
+ *  (<n>+ left)" with `n` from 1 to `PAGE_SIZE`, so no more entries are read and not drawn than a
  *  press draws. */
 const READS_FIRST = new RegExp(
   `^${literally(CONTROL_LABELS.show_more)} \\((?:${Array.from({ length: PAGE_SIZE }, (_, index) => index + 1).join("|")})\\+ ${literally(CONTROL_LABELS.show_more_left)}\\)$`,

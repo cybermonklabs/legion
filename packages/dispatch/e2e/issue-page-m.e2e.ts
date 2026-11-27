@@ -1530,7 +1530,8 @@ const OVER_ENTRIES = 205;
 // more that said no number, the older pages unread. The history now reads the log without the
 // events that write a post (`exclude_types`), so a log of thousands of comments is read in one
 // request. Here the log read whole holds the person's comments in its first page of 200 and the
-// history's entries in its second: the first view is one read of the log that answers every entry,
+// events of the history's entries in its second: the first view is one read of the log, which
+// answers the issue's creation alone, while the daemon's threads come from the messages read; it
 // draws 20, says how many are left, and the reader presses down to the log's start with no read
 // of another page.
 // SLOW(>=2s): 30 messages and 205 comments written, a sign-in, one load of the history and its

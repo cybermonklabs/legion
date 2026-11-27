@@ -156,8 +156,9 @@ export function IssueHistory({
       ),
   });
   // The first event of the whole log past the reader's read mark, shared with the Conversation
-  // tab under its key: a thread whose created event the filtered log left out carries `seq` 0,
-  // so its `created_at` against this moment tells whether the thread is new (`history-model.ts`).
+  // tab under its key: every thread carries `seq` 0, since the filtered log leaves out the events
+  // that write a post, so its first turn's `created_at` against this moment tells whether the
+  // thread is new (`history-model.ts`).
   const unreadBoundary = useQuery({
     ...issueUnreadBoundaryQuery(issueKey, visitMark),
     enabled: visitMark > 0 && issue.last_seq > visitMark,
@@ -277,13 +278,16 @@ export function IssueHistory({
     [days, itemId]
   );
   const drawn = useMemo(() => historyDownTo(days, shownEnd), [days, shownEnd]);
+  // Whether a press of Show more reads the log's next page before it draws the next entries:
+  // while an older page is unread and `HISTORY_PAGE` or fewer entries are read and not drawn.
+  const pressReads = older && drawn.left <= HISTORY_PAGE;
   // Whether the history reads the log's next page before it draws on. Its first entries wait
   // until it holds more than `HISTORY_PAGE`, and the next ones a press asks for until more than
-  // `HISTORY_PAGE` are read and not drawn, or in either case until the log has ended: so every
-  // draw leaves an entry read and not drawn while an older page is unread, and Show more says
-  // how many. A history drawn down to every entry read, as to the turn an address names, reads
-  // on as well.
-  const short = older && (asked ? drawn.left <= HISTORY_PAGE : drawn.left === 0);
+  // `HISTORY_PAGE` are read and not drawn (`pressReads`), or in either case until the log has
+  // ended: so every draw leaves an entry read and not drawn while an older page is unread, and
+  // Show more says how many. A history drawn down to every entry read, as to the turn an address
+  // names, reads on as well.
+  const short = asked ? pressReads : older && drawn.left === 0;
   // A failed read of the log stops the reading on: the history draws what it holds, and the next
   // page's Retry reads on from there (`failed` below).
   const stopped = log.isError && !log.isFetching;
@@ -419,9 +423,8 @@ export function IssueHistory({
   // The history is newest first, so every event the feed prepends lands above a reader who is
   // down in it: the anchor holds the entry they are on where it was, in the box it scrolls in -
   // Details' own, or the document outside the shell. It follows each entry's own id
-  // (`data-history-entry`), not its `data-event-seq`: a thread whose created event the filtered
-  // log leaves out carries seq 0, beside every other such thread, so its seq names neither one
-  // entry nor the same entry before and after that page.
+  // (`data-history-entry`), not its `data-event-seq`: every thread carries seq 0, since the
+  // filtered log leaves out the events that write a post, so a thread's seq names no one entry.
   // That box is found once the list is drawn; moving the panel to another host remounts it.
   const anchorRoot = useRef<HTMLElement | null>(null);
   const scroller = useRef<HTMLElement | null>(null);
@@ -728,14 +731,13 @@ export function IssueHistory({
             // button that turns disabled to the page: a press then joins the read of the page
             // that is out (`readOlderPage`), and keeps the first press's hold. It draws the next
             // entries at once where more than `HISTORY_PAGE` are read and not drawn, or the log
-            // has ended, and else reads older pages first until it can (`short`).
+            // has ended, and else reads older pages first until it can (`pressReads`, `short`).
             const control = event.currentTarget;
-            const reads = log.hasNextPage && drawn.left <= HISTORY_PAGE;
             if (document.activeElement === control && pressed.current?.control !== control) {
-              pressed.current = { before: heldParts(), control, kind: "more", reads };
+              pressed.current = { before: heldParts(), control, kind: "more", reads: pressReads };
             }
             keepEntryBeside("under");
-            if (reads) {
+            if (pressReads) {
               setAsked(true);
               readOlderPage();
             } else {

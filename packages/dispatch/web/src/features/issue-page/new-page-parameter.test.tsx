@@ -321,6 +321,11 @@ for (const { click, href = ACTIVITY, link, what } of LEFT_TO_THE_BROWSER) {
 }
 
 // A link inside an SVG is no HTML link: the rule leaves it to the browser, whatever it points to.
+// This case cannot fail on the rule's `HTMLAnchorElement` guard: happy-dom draws an SVG `<a>` as a
+// plain `SVGElement` with no `href` property, so with the guard taken out the rule reads no address
+// from this link, which names the kept issue, and still leaves the click alone. The typecheck holds
+// the guard: without it the link read from the press's path is an `EventTarget`, which has no
+// `href`.
 test("a plain click on a link inside an SVG is left to the browser, and the router stays where it is", () => {
   const view = drawAt(
     OPENED,
