@@ -100,6 +100,11 @@ type Attempt struct {
 	// TurnBy belongs to this request, not to the task: an earlier prompt's
 	// turn cannot suppress a separately forwarded resend's wait.
 	TurnBy uint16
+	// Credited is whether the daemon itself read a turn start that confirmed
+	// the task through this request (table.go's ConfirmedAt). The shim's
+	// record that the agent started (World.Requests.Started) is not it: that
+	// frame may still wait in the backlog, unread by any daemon.
+	Credited bool
 }
 
 func (a Attempt) open() bool { return a.Stage >= AtReg && a.Stage <= AtLost }
@@ -116,7 +121,6 @@ func (r Row) othersOpen(k int) bool {
 
 type Hold struct {
 	By               Src
-	Request          Src
 	Pause            uint8
 	Deadline, Answer uint16
 	// Watch bounds a stalled turn/registration with neither a source deadline
@@ -180,23 +184,23 @@ func (r Row) compact() bool { return r.Work == WkCompact || r.Work == WkCompactT
 func (r Row) unresolved() bool { return r.waiting() || r.Task.Conf != 0 || r.Task.Unknown }
 
 type WireRequest struct {
-	L, Under, Conn, Inc, Root uint8
-	Written, Ack, Answered    bool
-	Answer                    uint8
-	Started                   bool
-	Returned                  bool // send callback already posted; a later frame is not another callback
+	L, Under, Inc, Root    uint8
+	Written, Ack, Answered bool
+	Answer                 uint8
+	Started                bool
+	Returned               bool // send callback already posted; a later frame is not another callback
 }
 
 // The FIFO belongs to the shim, not to a machine. A result names a root;
 // negative responses are fanned out as exact-request refusals, not results.
 type World struct {
-	Proc, Attached, Down, Refuses, LoseReply          bool
-	Inc, Conn, Pause, LastPause, Alloc, Dedupe, Agent uint8
-	Requests                                          [NA]WireRequest
-	Backlog                                           [3]Event
-	N                                                 uint8
-	FatalStuck                                        bool  // test-only plant: source redelivers but the machine never applies
-	Fatal                                             Event // redelivered until its durable acknowledgement (M6)
+	Proc, Attached, Down, Refuses, LoseReply    bool
+	Inc, Pause, LastPause, Alloc, Dedupe, Agent uint8
+	Requests                                    [NA]WireRequest
+	Backlog                                     [3]Event
+	N                                           uint8
+	FatalStuck                                  bool  // test-only plant: source redelivers but the machine never applies
+	Fatal                                       Event // redelivered until its durable acknowledgement (M6)
 }
 type Write uint8
 
@@ -219,49 +223,42 @@ type Pending struct {
 	Uncertain bool
 	Cause     Event
 }
-type History struct {
-	OK                   [3]uint8 // bit set by observation of an eligible incoming success, not retirement
-	Requests, Admissions [3]uint8
-	LastRoot             [3]uint8
-	Twice                [3]Reason
-	// Lost is why the answer of one forwarded request cannot reach the daemon,
-	// per request: a loss of one forward never explains a retry of another.
-	Lost [NA]Reason
-	// Per forwarded request, not just the latest reason per logical task.
-	// Certified records the decision that actually committed the retry.
-	Certified  [NA]Reason
-	Recovering uint8 // bit per logical task, from boot until an authoritative decision
-	// Turned is a bit per request whose attempt a turn start confirmed the
-	// logical task through. The replacement oracle reads it, not Task.Conf.
-	Turned        [3]uint8
-	Need          [3]uint8 // independent pre-runtime launch snapshots
-	FatalPending  bool     // fatal evidence received, until the failure commits (M6)
-	FatalOpen     bool     // driver's receipt ledger: this source had an open attempt
-	FatalReceived uint8    // driver's receipt ledger, never a transition's conclusion
-	FatalClosed   uint8    // receipt sequence the committed failure closed
-	FatalL        uint8    // logical task the received fatal named
-	FatalID       uint8    // delivery identity it named; fatal failure never takes it back
-	// ReceiptL and ReceiptID are the driver's own reading of the task a
-	// receipt named (execute): the deciding row's task when the item arrived,
-	// or the rebuilt row's at the restart that judges it again. The close is
-	// judged against them, never against the FatalL and FatalID it restores.
-	ReceiptL, ReceiptID uint8
-	// TopID is the driver's highest committed id of each logical task: a
-	// take-back moves a task to a new id, never back to one it held.
-	TopID [3]uint8
-	Bad   uint16
+
+// Receipt is the task the fatal item named when the daemon received it, and
+// whether it named an open attempt of that task. The daemon restores it when
+// the failure commits (M6, O3). It is the daemon's own memory of the item,
+// not the driver's ledger: the driver reads the same question itself.
+type Receipt struct {
+	L, ID uint8
+	Open  bool
 }
-type State struct {
+
+// Machine is everything a transition may read or write: the daemon's memory
+// (M), the committed store (S), the world and its events (W), the pending
+// write (P), and the daemon's own scalars. It deliberately leaves out
+// History. A decision carries a Machine, so the Go compiler forbids every
+// transition from reading or writing the driver's ledger (rule 6).
+type Machine struct {
 	M, S                                        Row
 	W                                           World
-	H                                           History
 	P                                           Pending
 	Now                                         uint16
 	Root, Restored, StopRetry, StopOwed, Resend bool
 	Prepared, Sending                           uint8 // slot+1; zero means none
 	Deferred                                    Event // M8: one unconsumed input, then backpressure
 	Booted                                      bool  // Check the immediate state rebuilt by restart
-	IgnoreHoldTimer                             bool  // test-only scheduler plant
+	// FatalSeen is fatal evidence this daemon received and has not yet made
+	// durable (M6); Receipt is the task that item named.
+	FatalSeen       bool
+	Receipt         Receipt
+	IgnoreHoldTimer bool // test-only scheduler plant
+}
+
+// State is a Machine with the driver's ledger beside it. Only the driver and
+// the oracles read H.
+type State struct {
+	Machine
+	H History
 }
 
 // Start is a reachable ready, launching or working claim with a live process.
@@ -270,7 +267,7 @@ func Start(p Phase, root bool) State {
 	if p == PhWork {
 		r.Work = WkTurn
 	}
-	return State{M: r, S: r, Root: root, Now: 1, W: World{Proc: true, Attached: true, Inc: 1, Conn: 1}}
+	return State{Machine: Machine{M: r, S: r, Root: root, Now: 1, W: World{Proc: true, Attached: true, Inc: 1}}}
 }
 
 // Positive times use ordinal units: now, probe/turn, stop, answer. Only their
@@ -288,11 +285,28 @@ func earlier(x, y uint16) uint16 {
 	return x
 }
 
+// requestDue is the deadline a suspension request carries (S1-S5): the gate's
+// stop is due at once, the operator's at Timeouts.Stop, the daemon's own
+// deadline request at its own, and every other request carries none. The
+// transition that records it on the hold and the driver that remembers the
+// deadline the source named both read this.
+func requestDue(request uint8, now uint16) uint16 {
+	switch request {
+	case RqGate:
+		return now
+	case RqOperator:
+		return after(now, 3)
+	case RqDaemonDL:
+		return after(now, 2)
+	}
+	return 0
+}
+
 // armed is the time of the earliest timed timer of s (the hold's bound, the
 // recovery bound, the wait for a turn, which recovery disarms), zero when none
 // is armed. A timer fires only at the earliest armed time, so no timer passes
 // an earlier deadline (O1, D2).
-func (s State) armed() uint16 {
+func (s Machine) armed() uint16 {
 	r := s.M
 	t := r.RecoverBy
 	if t == 0 {
@@ -303,18 +317,7 @@ func (s State) armed() uint16 {
 	}
 	return t
 }
-
-// recordedDeadline is the driver's direct reading of every timer the model
-// recorded. Unlike armed it cannot be changed by a scheduler-selection plant.
-func (s State) recordedDeadline() uint16 {
-	r := s.M
-	t := earlier(r.RecoverBy, r.TurnBy)
-	if r.Hold.By != 0 && !s.StopRetry {
-		t = earlier(t, r.Hold.due())
-	}
-	return t
-}
-func (s State) Class() string {
+func (s Machine) Class() string {
 	switch {
 	case s.StopOwed:
 		return "H4o"

@@ -24,7 +24,9 @@ func counterSeeds() []seed {
 	// High 2: after a clean restart a stale-plugin refresh waits for the
 	// answer or the bound; it neither replaces the process nor takes the task.
 	add("H2/stale-waits-for-recovery", wire+"start end boot reconnect stale :doubt :kept :relaunch rec :launch :unread")
-	add("H2/replay-decides-before-refresh", wire+"start stale end boot ok reconnect replay :served :single :launch")
+	// The boot forgets the stale mark it had (it is memory only), and the
+	// boot's own stale-plugin pass posts it again for a claim still stale.
+	add("H2/replay-decides-before-refresh", wire+"start stale end boot stale ok reconnect replay :served :single :launch")
 	add("H2/held-stale-waits-for-recovery", wire+"start end open row boot reconnect row stale :doubt :H2 :relaunch bound :H4 :owed")
 	// Medium 3: the operator's earlier bound fires before the recovery bound.
 	add("M3/operator-bound-before-recovery", ack+"boot open row op :op :doubt bound :H4 :unread")
@@ -46,7 +48,9 @@ func counterSeeds() []seed {
 	// Second-read restart, recovery and receipt orders. A boot forgets the
 	// transient hold; the pause row or operator asks again explicitly.
 	add("second/restart-forgets-operator-hold", work+"end op boot :H0 :doubt op :op bound :H4")
-	add("second/parked-wake-waits-for-recovery-answer", work+"end park boot ok reconnect wake :doubt replay :served")
+	// The boot forgets the park (Machine.wake is memory only) and its own
+	// refresh pass parks the wake again over the live process.
+	add("second/parked-wake-waits-for-recovery-answer", work+"end park boot park ok reconnect wake :doubt replay :served")
 	add("second/old-socket-fatal-redelivers", waiting+"crashTakingFrame(r0,fatal) reconnect :failed :kept")
 	// Post-receipt orders: receipt fixes fatal eligibility before a repair can
 	// invalidate it, and a resend owns its own turn deadline.
@@ -80,7 +84,7 @@ func counterSeeds() []seed {
 	legacy := ready
 	legacy.S.Task = Task{L: 1, ID: 1, Unknown: true}
 	legacy.M = legacy.S
-	legacy.W.Requests[0] = WireRequest{L: 1, Under: 1, Conn: 1, Inc: 1, Written: true, Returned: true}
+	legacy.W.Requests[0] = WireRequest{L: 1, Under: 1, Inc: 1, Written: true, Returned: true}
 	legacy.W.Alloc, legacy.W.Dedupe = 1, 1
 	legacy.H.Requests[1], legacy.H.Admissions[1], legacy.H.LastRoot[1] = 1, 1, 1
 	cs = append(cs,

@@ -15,7 +15,9 @@ func allSeeds() []seed {
 	return append(append(append(append(proofSeeds(), restartSeeds()...), orderSeeds()...), counterSeeds()...), xSeeds()...)
 }
 
-// seedRoots replays every seed and returns each prefix it reached.
+// seedRoots replays every seed and returns each prefix it reached. A seed that
+// fails contributes the prefixes it did reach, so the search below still runs
+// over everything the model can still replay.
 func seedRoots(t *testing.T) []Prefix {
 	t.Helper()
 	var roots []Prefix
@@ -30,13 +32,17 @@ func seedRoots(t *testing.T) []Prefix {
 	return roots
 }
 
+// TestTheHoldStateMachine replays the seeds and then searches every
+// continuation of each prefix they reached. The search runs whatever the
+// seeds did: a failing seed verdict is its own report and must never stand in
+// for the oracle that should have named the defect.
 func TestTheHoldStateMachine(t *testing.T) {
 	if *depth < 1 {
 		t.Fatal("depth must be positive")
 	}
 	roots := seedRoots(t)
-	if t.Failed() {
-		return
+	if len(roots) == 0 {
+		t.Fatal("UNKNOWN: no seed prefix replayed, so the search measured nothing")
 	}
 	out := Explore(roots, *depth)
 	fmt.Printf("depth=%d prefixes=%d roots=%d states=%d edges=%d sequences=%d seeds=%d violations=%d\n", *depth, len(roots), out.Roots, out.States, out.Edges, out.Sequences, len(allSeeds()), len(out.Violations))
@@ -53,9 +59,6 @@ func TestTheHoldStateMachine(t *testing.T) {
 func TestPlants(t *testing.T) {
 	var roots []Prefix
 	t.Run("seeds", func(t *testing.T) { roots = seedRoots(t) })
-	if t.Failed() {
-		t.Fatal("the seeds do not replay")
-	}
 	for _, c := range []struct {
 		name    string
 		bit     uint16
@@ -64,7 +67,7 @@ func TestPlants(t *testing.T) {
 		variant func(*decision)
 	}{
 		{"I1-serve-on-turn-end", I1, "", 1, func(d *decision) {
-			d.store = func(_ State, k Write, r Row) Row {
+			d.store = func(_ Machine, k Write, r Row) Row {
 				if k == ClaimWrite && r.Phase == PhIdle && r.Task.Conf != 0 {
 					retire(&r, RServed, 0)
 				}
@@ -72,7 +75,7 @@ func TestPlants(t *testing.T) {
 			}
 		}},
 		{"I2-forget-answer-bound", I2, "", 1, func(d *decision) {
-			d.store = func(_ State, _ Write, r Row) Row {
+			d.store = func(_ Machine, _ Write, r Row) Row {
 				if r.Hold.By != 0 {
 					r.Hold.Answer = 0
 				}
@@ -81,7 +84,7 @@ func TestPlants(t *testing.T) {
 		}},
 		// I2's other half: the answer bound outlives the wait it bounded.
 		{"I2-answer-bound-outlives-wait", I2, "", 1, func(d *decision) {
-			d.store = func(s State, _ Write, r Row) Row {
+			d.store = func(s Machine, _ Write, r Row) Row {
 				if r.Hold.By != 0 && !r.waiting() && s.M.Hold.Answer != 0 {
 					r.Hold.Answer = s.M.Hold.Answer
 				}
@@ -89,7 +92,7 @@ func TestPlants(t *testing.T) {
 			}
 		}},
 		{"I3-claim-only-stop", I3, "", 1, func(d *decision) {
-			d.store = func(_ State, k Write, r Row) Row {
+			d.store = func(_ Machine, k Write, r Row) Row {
 				if k == StopWrite {
 					r.Task = Task{}
 				}
@@ -99,7 +102,7 @@ func TestPlants(t *testing.T) {
 		// I1's id ledger: a take-back moves the task back to its first id,
 		// where an older prompt's answer would read as the current one's.
 		{"I1-take-back-reuses-id", I1, "", 1, func(d *decision) {
-			d.store = func(s State, _ Write, r Row) Row {
+			d.store = func(s Machine, _ Write, r Row) Row {
 				if r.Task.L != 0 && r.Task.L == s.M.Task.L && r.Task.ID > s.M.Task.ID && s.M.Task.ID > 1 {
 					r.Task.ID = 1
 				}
@@ -109,7 +112,7 @@ func TestPlants(t *testing.T) {
 		// The independent read's boot plant: a stop over a restored
 		// confirmation serves the task instead of taking it back (O2).
 		{"I1-boot-stop-serves-restored", I1, "", 1, func(d *decision) {
-			d.store = func(s State, k Write, r Row) Row {
+			d.store = func(s Machine, k Write, r Row) Row {
 				if k == IntentWrite && s.Restored && s.M.Task.Conf != 0 {
 					retire(&r, RServed, 0)
 				}
@@ -120,7 +123,7 @@ func TestPlants(t *testing.T) {
 		// recovery serves the task (A2: an invoked turn with an error is
 		// never served).
 		{"I1-provider-error-serves-in-recovery", I1, "", 1, func(d *decision) {
-			d.store = func(s State, k Write, r Row) Row {
+			d.store = func(s Machine, k Write, r Row) Row {
 				if c := s.P.Cause; k == EvidenceWrite && s.Restored && c.K == KResult && c.A == AProvErr {
 					retire(&r, RServed, c.R)
 				}
@@ -131,7 +134,7 @@ func TestPlants(t *testing.T) {
 		// older acknowledged prompt still holds, and a newer task replaces it.
 		{"I1-loss-unconfirms-older-prompt", I1, ack + "wait " + next + "start :confirmed", 2, func(d *decision) {
 			d.queueDropsCredit = true
-			d.store = func(s State, k Write, r Row) Row {
+			d.store = func(s Machine, k Write, r Row) Row {
 				if c := s.P.Cause; k == DeliveryWrite && c.K == KOutcome && c.A == OcLost {
 					r.Task.Conf = 0
 				}
@@ -150,7 +153,7 @@ func TestPlants(t *testing.T) {
 		// I3's launch snapshot: after a refused displacement's runtime stop
 		// and a restore, a takeover's write loses the stored intent's causes.
 		{"I3-takeover-loses-launch", I3, waiting + "refuses stalePlugin!5.1 :H3r", 1, func(d *decision) {
-			d.store = func(_ State, k Write, r Row) Row {
+			d.store = func(_ Machine, k Write, r Row) Row {
 				if k == ClaimWrite && r.Intent.By != 0 {
 					r.Intent.Causes = 0
 				}
@@ -160,12 +163,22 @@ func TestPlants(t *testing.T) {
 		// Oracle 1: the reader incorrectly restores an in-memory operator hold.
 		{"boot-memory-restores-hold", BootMemory, work + "end op :op", 1, func(d *decision) {
 			d.load = func(r Row) Row {
-				r.Hold = Hold{By: SrcOperator, Request: SrcOperator, Deadline: 4}
+				r.Hold = Hold{By: SrcOperator, Deadline: 4}
 				return r
 			}
 		}},
-		// Oracle 2: a parked wake replaces the process during recovery.
-		{"recovery-wake-replaces", RecoveryFence, work + "end park boot ok reconnect :doubt", 1, func(d *decision) {
+		// Boot memory, the other half: the product keeps a parked wake in
+		// memory only (machine.go's Machine.wake), so a boot that restores it
+		// restores a launch no source asked for again.
+		{"boot-memory-restores-wake", BootMemory, work + "end park :H0", 1, func(d *decision) {
+			d.load = func(r Row) Row {
+				r.Wake = true
+				return r
+			}
+		}},
+		// Oracle 2: a parked wake replaces the process during recovery. The
+		// boot forgets the park, so the boot's own refresh pass parks again.
+		{"recovery-wake-replaces", RecoveryFence, work + "end park boot park ok reconnect :doubt", 1, func(d *decision) {
 			d.wakeBreaksRecovery = true
 		}},
 		// Oracle 3: receipt is remembered but the source's redeliverable item is lost.
@@ -178,7 +191,7 @@ func TestPlants(t *testing.T) {
 		}},
 		// Oracle 5: an earlier prompt's confirmation erases a resend's own timer.
 		{"resend-loses-own-turn-bound", AttemptBound, ack + "wait " + next + "start end error :kept", 1, func(d *decision) {
-			d.store = func(_ State, k Write, r Row) Row {
+			d.store = func(_ Machine, k Write, r Row) Row {
 				if k == DeliveryWrite && r.Att[1].Stage == AtAcked {
 					r.Att[1].TurnBy = 0
 				}
@@ -188,16 +201,28 @@ func TestPlants(t *testing.T) {
 		// Attempt bound: the row's turn bound outlives the attempts an
 		// intent invalidated, so a turn timer would still take the task back.
 		{"turn-bound-outlives-attempts", AttemptBound, "", 1, func(d *decision) {
-			d.store = func(s State, k Write, r Row) Row {
+			d.store = func(s Machine, k Write, r Row) Row {
 				if k == IntentWrite && !r.outstanding() {
 					r.TurnBy = s.M.TurnBy
 				}
 				return r
 			}
 		}},
+		// Attempt bound, the unreceived start: the daemon arms no wait for a
+		// turn because the shim says the agent started, though that frame
+		// still waits in the backlog and no daemon has read it.
+		{"attempt-bound-trusts-unread-start", AttemptBound, "q prepare register w detach start :unread", 1, func(d *decision) {
+			d.store = func(s Machine, k Write, r Row) Row {
+				if c := s.P.Cause; k == DeliveryWrite && c.K == KOutcome && c.A == OcAck && s.W.Requests[c.R].Started {
+					r.Att[c.R].TurnBy = 0
+					refreshTurnBy(&r)
+				}
+				return r
+			}
+		}},
 		// I1 reads the credited prompt ledger, not confirmation or stage.
 		{"I1-credit-survives-lost-alias", I1, wire + "lost " + next + "start :confirmed", 1, func(d *decision) {
-			d.store = func(s State, k Write, r Row) Row {
+			d.store = func(s Machine, k Write, r Row) Row {
 				if c := s.P.Cause; k == DeliveryWrite && c.K == KOutcome && c.A == OcLost {
 					r.Task.Conf = 0
 				}
@@ -210,7 +235,7 @@ func TestPlants(t *testing.T) {
 		}},
 		// I3 requires every snapshot cause, not merely one non-zero cause.
 		{"I3-intent-loses-one-launch-cause", I3, waiting + "park refuses stalePlugin!5.1 :H3r", 1, func(d *decision) {
-			d.store = func(_ State, k Write, r Row) Row {
+			d.store = func(_ Machine, k Write, r Row) Row {
 				if k == ClaimWrite && r.Intent.By != 0 {
 					r.Intent.Causes &^= WakeLaunch
 				}
@@ -233,9 +258,7 @@ func TestPlants(t *testing.T) {
 				from = ps[len(ps)-1:]
 			}
 			out := explore(from, c.depth, func(s State, e Event) (State, Effects) {
-				d := decision{State: s, input: e}
-				c.variant(&d)
-				return execute(d)
+				return stepWith(s, e, c.variant)
 			})
 			w, ok := out.Violations[c.bit]
 			if !ok {
@@ -244,6 +267,20 @@ func TestPlants(t *testing.T) {
 			t.Logf("caught %s: %s + %v", c.name, w.Origin, w.Steps)
 		})
 	}
+	// RT1's control: the shim forgets that the old daemon's socket took r0's
+	// result (step.go's KCrashFrame record, mutant M161 of the third read),
+	// so the same result can be given to the rebuilt daemon again.
+	t.Run("rt1-old-socket-result-given-again", func(t *testing.T) {
+		ps := replaySeed(t, seed{"rt1-old-socket-result-given-again", ready, work + "end taken reconnect :doubt"})
+		s := ps[len(ps)-1].State
+		s.W.Requests[0].Answered, s.W.Requests[0].Answer = false, 0
+		out := Explore([]Prefix{{State: s, Origin: "rt1-old-socket-result-given-again", Length: ps[len(ps)-1].Length}}, 1)
+		w, ok := out.Violations[RT1]
+		if !ok {
+			t.Fatal("missed plant", "rt1-old-socket-result-given-again")
+		}
+		t.Logf("caught rt1-old-socket-result-given-again: %s + %v", w.Origin, w.Steps)
+	})
 	t.Run("deadline-scheduler-skips-hold", func(t *testing.T) {
 		ps := replaySeed(t, seed{"deadline-scheduler-skips-hold", ready, ack + "boot open row op :op"})
 		s := ps[len(ps)-1].State
@@ -262,6 +299,7 @@ func invariantName(bit uint16) string {
 		Late: "deadline", Ended: "ended-pause-stop", BootMemory: "boot-memory",
 		RecoveryFence: "recovery-fence", FatalReceipt: "fatal-receipt",
 		Settled: "settle", AttemptBound: "attempt-bound", FatalClose: "fatal-close",
+		RT1: "old-socket-answer",
 	}[bit]
 }
 
@@ -280,7 +318,7 @@ func TestCleanRestartSendPlant(t *testing.T) {
 		return r
 	}
 	step := func(s State, e Event) (State, Effects) {
-		return execute(decision{State: s, input: e, load: forget})
+		return stepWith(s, e, func(d *decision) { d.load = forget })
 	}
 	s := ready
 	for _, w := range strings.Fields(ack + "boot reconnect") {

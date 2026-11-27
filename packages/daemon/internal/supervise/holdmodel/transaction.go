@@ -20,36 +20,107 @@ const (
 	Forward
 	Deduplicate
 	Notify
+	// EligibleOK: the daemon read a success that is the exact answer of an
+	// open attempt of its pending task (matches). Lose: the answer of one
+	// forwarded request cannot reach this daemon, for the named reason.
+	// Judged: the daemon received fatal evidence. Rebuild: a restart rebuilt
+	// the machine from the store, naming the task its doubt covers.
+	EligibleOK
+	Lose
+	Judged
+	Rebuild
 )
 
+// Effect is one observable act of a decision. The driver reads these, and
+// only these, to keep its ledger: a transition reports what it did, and never
+// writes the ledger itself.
 type Effect struct {
 	Action  Action
 	Write   Write
-	Request uint8
+	Request uint8 // the request slot a send, an answer or a loss names
+	Task    uint8 // EligibleOK, Rebuild: the logical task
+	Why     Reason
+	Pause   uint8 // RuntimeStop: the pause the stop's snapshot belongs to
+	Open    uint8 // RuntimeStop: the pause open in the world when it ran
+	Causes  uint8 // RuntimeStop: the launch causes that snapshot owes
 }
 type Effects struct {
-	List      [24]Effect
+	List      [28]Effect
 	N, Writes uint8
 	Cut       bool
 }
 
-func (x *Effects) add(a Action, w Write, k uint8) { x.List[x.N] = Effect{a, w, k}; x.N++ }
+func (x *Effects) put(e Effect) {
+	if int(x.N) == len(x.List) {
+		panic("holdmodel: one decision had more effects than the list holds")
+	}
+	x.List[x.N] = e
+	x.N++
+}
+func (x *Effects) add(a Action, w Write, k uint8) { x.put(Effect{Action: a, Write: w, Request: k}) }
+
+// cuts exposes only operations that actually happened. In particular a
+// persistently failing write cannot lose a *commit* reply.
+func (x *Effects) cuts(yield func(uint8, uint8) bool) {
+	var at uint8
+	for _, f := range x.List[:x.N] {
+		switch f.Action {
+		case WriteAttempt:
+			at++
+			if !yield(FailWrite, at) || !yield(CrashBeforeWrite, at) {
+				return
+			}
+		case Commit:
+			if !yield(LostReply, at) || !yield(CrashAfterCommit, at) {
+				return
+			}
+		case RuntimeStop:
+			if !yield(CrashAfterRuntime, at) {
+				return
+			}
+		}
+	}
+}
+
+// Written is one committed write as the driver observes it: the store row
+// before and after it, the row the decision wanted, its cause, and the world
+// it landed in. commitLog is per step and is never part of a State, so the
+// exploration's memory does not carry it.
+type Written struct {
+	Kind            Write
+	Cause           Event
+	Prev, Row, Want Row
+	Proc            bool
+	Pause           uint8
+	Now             uint16
+}
+type commitLog struct {
+	List [6]Written
+	N    uint8
+}
 
 type decision struct {
-	State
+	Machine
 	Effects
+	// log is the step's write trace, which the driver reads afterwards. It is
+	// not the ledger: no History is reachable from a decision.
+	log                                                                                                  commitLog
 	input                                                                                                Event
 	crash, keepEnded                                                                                     bool
 	wakeBreaksRecovery, dropFatal, skipFatalApply, queueDropsCredit, intentDropsPause, forceFatalFailure bool
 	badFatalClose                                                                                        bool
 	// Test variants substitute one door; nil is the specified one. store sees
-	// the deciding state and one write; load sees the row a restart reads;
+	// the deciding machine and one write; load sees the row a restart reads;
 	// the booleans are the named plant defects.
-	store func(State, Write, Row) Row
+	store func(Machine, Write, Row) Row
 	load  func(Row) Row
 }
 
 func (d *decision) fault(f uint8) bool { return d.input.Fault == f && d.input.At == d.Writes }
+
+// lose reports, as an effect, why the answer of one forwarded request cannot
+// reach this daemon. The driver's ledger reads it; no transition does.
+func (d *decision) lose(k uint8, why Reason) { d.put(Effect{Action: Lose, Request: k, Why: why}) }
 
 // write is the only store door. Commit is observable even when the caller
 // crashes or receives an error. The reply carries the full locked row (M9).
@@ -78,14 +149,24 @@ func fatalCause(e Event) bool {
 	return e.K == KReport && e.A == RpFatal || e.K == KResult && e.A == AFatal
 }
 
-// closeFatal records the close at the durable commit, not on the reply. A
-// crash after that commit cannot make the recovery fence mistake it for an
-// ordinary recovery mutation.
+// closeFatal forgets the received item at the durable commit, not on the
+// reply. The driver records the close from the same commit.
 func (d *decision) closeFatal(p Pending) {
-	if d.H.FatalPending && p.Kind == EvidenceWrite && p.Want.Phase == PhFailed && fatalCause(p.Cause) {
-		d.H.FatalClosed = d.H.FatalReceived
-		d.H.FatalPending = false
+	if d.FatalSeen && p.Kind == EvidenceWrite && p.Want.Phase == PhFailed && fatalCause(p.Cause) {
+		d.FatalSeen = false
 	}
+}
+
+// record keeps the committed write for the driver, which reads its rows, its
+// cause and the world it landed in to keep the ledger and judge the commit.
+func (d *decision) record(prev Row, p Pending) {
+	l := &d.log
+	if int(l.N) == len(l.List) {
+		panic("holdmodel: one decision committed more writes than the log holds")
+	}
+	l.List[l.N] = Written{Kind: p.Kind, Cause: p.Cause, Prev: prev, Row: d.S, Want: p.Want,
+		Proc: d.W.Proc, Pause: d.W.Pause, Now: d.Now}
+	l.N++
 }
 
 func (d *decision) flush() bool {
@@ -116,12 +197,10 @@ func (d *decision) flush() bool {
 		d.S.Stops[q] = 2
 	}
 	if d.store != nil {
-		d.S = d.store(d.State, p.Kind, d.S)
+		d.S = d.store(d.Machine, p.Kind, d.S)
 	}
 	d.add(Commit, p.Kind, 0)
-	// The oracles read the history as it stood before this commit.
-	d.H.Bad |= checkCommit(d.State, prev, p)
-	d.observeCommit(prev, p)
+	d.record(prev, p)
 	d.closeFatal(p)
 	if d.fault(CrashAfterCommit) {
 		d.crash = true
@@ -163,490 +242,6 @@ func (d *decision) install() {
 		// by that failure and closes nothing (the read-back commits nothing).
 		d.W.Fatal = Event{}
 		d.W.FatalStuck = false
-		d.H.FatalPending = false
+		d.FatalSeen = false
 	}
-}
-
-// Observe the durable event authorizing a new admission, independently of
-// the send decision. A negative answer cannot license a retry of another root.
-func (d *decision) observeCommit(prev Row, p Pending) {
-	r := d.S
-	// The driver's ledger records a credit only once the turn-start write
-	// commits. A failed transition cannot manufacture a credit for its oracle.
-	if p.Kind == ClaimWrite && (p.Cause.K == KTurnStart || p.Cause.K == KNamedStart) &&
-		p.Cause.R < NA && r.Task.L != 0 && r.Task.Conf != 0 {
-		d.H.Turned[r.Task.L] |= 1 << p.Cause.R
-	}
-	l := prev.Task.L
-	if l == 0 {
-		return
-	}
-	if r.Task.L != l || !r.live() {
-		d.H.Recovering &^= 1 << l
-	}
-	if prev.Task.ID == r.Task.ID || r.Task.L != l {
-		return
-	}
-	last := d.H.LastRoot[l]
-	if last == 0 {
-		// A legacy row or a registered-but-never-written request has no
-		// admission to classify, and nothing to tell twice: the take-back
-		// that leaves no answer to come ends the doubt, whatever caused it.
-		if !r.waiting() {
-			d.H.Recovering &^= 1 << l
-		}
-		return
-	}
-	k := last - 1
-	q := d.W.Requests[k]
-	var why Reason
-	switch {
-	case !d.W.Proc || p.Cause.K == KDeath || p.Cause.K == KRestart && r.Phase == PhLaunch:
-		why = NoProcess
-	case p.Cause.K == KTimerRecov || p.Kind == IntentWrite && prev.Hold.due() != 0 && prev.Hold.due() <= d.Now:
-		// The last forward's own answer decides why it never came: a loss of
-		// another forward's answer never certifies this one.
-		why = Expired
-		if d.H.Lost[k] != Original {
-			why = d.H.Lost[k]
-		} else if q.Written && prev.Att[k].Stage == AtLost {
-			why = LostSend
-		}
-	case q.Answered && q.Answer != AOK && (p.Kind == EvidenceWrite || p.Kind == RetirementWrite):
-		why = Negative
-	case p.Cause.K == KTimerTurn || p.Cause.K == KCompact || p.Cause.K == KStale || p.Cause.K == KWake || p.Cause.K == KExit || p.Cause.K == KRegDeadline || p.Cause.K == KRelaunchAgain:
-		// A written prompt was cut off before its outcome was known.
-		why = LostSend
-	}
-	if why != Original {
-		d.H.Certified[k] = why
-		d.H.Recovering &^= 1 << l
-	}
-}
-
-const (
-	I1 uint16 = 1 << iota
-	I2
-	I3
-	Twice
-	Late          // a timer fired past an earlier armed deadline (O1, D2)
-	Ended         // a runtime stop ran for a pause that had ended (E, D1)
-	BootMemory    // restart restored a memory-only field without a new request
-	RecoveryFence // recovery replaced, let go, or invalidated before an allowed cause
-	FatalReceipt  // fatal evidence taken from the shim was lost before failure committed
-	Settled       // drain, repair or an armed timer left work no own step can make
-	AttemptBound  // an open attempt waits without its own turn or answer bound
-	FatalClose    // committed fatal failure did not preserve its required outcome
-)
-
-// creditedOpen is whether an attempt the oracle saw a turn credited through
-// still waits for its answer. A lost attempt's own credit went with its loss
-// (D3); another prompt's loss leaves it standing.
-func creditedOpen(r Row, turned uint8) bool {
-	for k, a := range r.Att {
-		if a.open() && a.Stage != AtLost && turned&(1<<k) != 0 {
-			return true
-		}
-	}
-	return false
-}
-
-// creditPromptOpen is the driver's turn-credit ledger applied to the shim's
-// prompt roots. A loss of the alias that reported the turn does not erase that
-// credit while another alias of the forwarded prompt is still open.
-func creditPromptOpen(s State, l uint8) bool {
-	for k := uint8(0); k < NA; k++ {
-		if s.H.Turned[l]&(1<<k) == 0 {
-			continue
-		}
-		root := s.W.Requests[k].Root
-		for j, a := range s.M.Att {
-			if j != int(k) && a.open() && a.L == l && s.W.Requests[j].Written && s.W.Requests[j].Root == root {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-// bootMemoryBad is the restart projection rule. A boot starts from the
-// committed delivery and the world; every field the product keeps only in
-// memory is zero until a source asks again. An intent is persisted separately,
-// so its stop progress is derived from the world.
-func bootMemoryBad(s State) bool {
-	if !s.Booted {
-		return false
-	}
-	r := s.M
-	if r.Hold != (Hold{}) || r.TurnBy != 0 ||
-		s.Prepared != 0 || s.Sending != 0 || s.Resend || s.Deferred != (Event{}) {
-		return true
-	}
-	if s.W.Fatal.K != 0 {
-		return false // fatal evidence decides before a stored intent is reconciled
-	}
-	return s.StopRetry != (s.S.Intent.By != 0 && s.W.Proc) ||
-		s.StopOwed != (s.S.Intent.By != 0 && !s.W.Proc)
-}
-
-func recoveryMutation(before, after State, fx Effects) bool {
-	// Recovery is open in the committed row. Memory lags it only behind a
-	// lost reply, and the step that committed that write was judged then.
-	if before.S.RecoverBy == 0 || !before.W.Proc || before.S.Task.L == 0 {
-		return false
-	}
-	for _, f := range fx.List[:fx.N] {
-		if f.Action == RuntimeReplace {
-			return true
-		}
-	}
-	if !after.W.Proc {
-		return true
-	}
-	for k, a := range before.S.Att {
-		// The fence judges the commit that invalidates an open attempt: not a
-		// failed write's Want, and not a later read-back that installs a
-		// commit an earlier step made (that step was judged when it committed).
-		if a.open() && after.S.Att[k].Stage == AtInvalid {
-			return true
-		}
-	}
-	return false
-}
-
-// appliedInput is the event a step decides on: the driver's input, or, for a
-// drain or a backlog replay, the item the driver delivered earlier and the
-// step now consumes.
-func appliedInput(before State, e Event) Event {
-	switch e.K {
-	case KDrain:
-		if before.W.Fatal.K != 0 {
-			return before.W.Fatal
-		}
-		return before.Deferred
-	case KReplay:
-		if before.W.N != 0 {
-			return before.W.Backlog[0]
-		}
-	}
-	return e
-}
-
-// recoveryAuthorized names D10's causes: its deciding answer, its answer
-// bound, no live process, or a stop that cannot wait (which records an intent
-// or calls the runtime rather than replacing it). A drain or a replay is
-// judged by the item it applies, never by its own kind.
-func recoveryAuthorized(before State, input Event, after State, fx Effects) bool {
-	if !before.W.Proc || after.M.Phase == PhEnded || after.S.Phase == PhEnded {
-		return true // D10: no live process remains
-	}
-	e := appliedInput(before, input)
-	switch e.K {
-	case KResult, KRefusal:
-		return true // D10: the restored prompt's deciding answer
-	case KTimerRecov:
-		return true // D10: the answer bound
-	case KDeath, KExit:
-		return true // D10: the process ended
-	case KRestart:
-		return e.A != 0 // D10: process-ended restart
-	}
-	if before.P.Cause.K == KResult || before.P.Cause.K == KRefusal || before.P.Cause.K == KTimerRecov || before.P.Cause.K == KDeath || before.P.Cause.K == KExit {
-		return true // a repair is installing one of those three D10 causes
-	}
-	if after.M.Intent.By != 0 || after.P.Kind == IntentWrite && after.P.Want.Intent.By != 0 {
-		return true // D10: a stop that cannot wait is durably recorded
-	}
-	for _, f := range fx.List[:fx.N] {
-		if f.Action == RuntimeStop {
-			return true // D10: that non-waitable stop reached the runtime
-		}
-		if f.Action == Commit && f.Write == IntentWrite {
-			// D10: this step committed a stop that cannot wait, which took
-			// the restored task back, even if a later decision in the same
-			// step (a StartedBy release) then cleared the intent.
-			return true
-		}
-	}
-	return false
-}
-
-// attemptBoundBad checks the deadline an acknowledgement arms for its own
-// prompt. A task may keep an earlier prompt's confirmation while a separate
-// resend waits for a turn, so this is intentionally per request. An open
-// attempt under a hold shares that hold's answer bound. The row's turn bound
-// is the earliest bound of an open attempt: one left armed after its attempts
-// closed or were invalidated takes the task back for a prompt nobody awaits.
-func attemptBoundBad(s State) bool {
-	r := s.M
-	if s.P.Kind != 0 {
-		r = s.P.Want // a failed repair already computed and armed its bounds
-	}
-	var bound uint16
-	for _, a := range r.Att {
-		if a.open() {
-			bound = earlier(bound, a.TurnBy)
-		}
-	}
-	if r.TurnBy != bound {
-		return true
-	}
-	if s.H.FatalPending || s.W.Fatal.K != 0 {
-		return false // fatal evidence decides before an attempt can wait again
-	}
-	for k, a := range r.Att {
-		if !a.open() || a.L != r.Task.L {
-			continue
-		}
-		if a.Stage == AtAcked && a.Under == r.Task.ID && r.RecoverBy == 0 &&
-			s.W.Requests[k].Root == uint8(k) && !s.W.Requests[k].Started {
-			if a.TurnBy == 0 || r.TurnBy == 0 || r.TurnBy > a.TurnBy {
-				return true
-			}
-		}
-		if r.Hold.By != 0 && r.waiting() && r.Hold.Answer == 0 {
-			return true
-		}
-	}
-	return false
-}
-
-// settleOne is the model's own immediate maintenance loop: repair first, then
-// a fatal redelivery, an owed stop write, a refused runtime retry, and a timer
-// already due at Now. It deliberately does not invent an external frame.
-func settleOne(s State) (State, bool) {
-	var e Event
-	switch {
-	case s.W.Fatal.K != 0 || s.Deferred.K != 0:
-		e.K = KDrain
-	case s.StopOwed:
-		e.K = KTimerStopWrite
-	case s.P.Kind != 0:
-		e.K = KTimerWrite
-	case s.StopRetry:
-		e.K = KTimerStopRetry
-	case s.M.Hold.By != 0 && !s.StopRetry && s.M.Hold.due() != 0 && s.M.Hold.due() <= s.Now:
-		e.K = KTimerHold
-	case s.M.RecoverBy != 0 && s.M.RecoverBy <= s.Now:
-		e.K = KTimerRecov
-	case s.M.TurnBy != 0 && s.M.TurnBy <= s.Now:
-		e.K = KTimerTurn
-	default:
-		return s, false
-	}
-	if !Enabled(s, e) {
-		return s, false
-	}
-	t, _ := Step(s, e)
-	return t, t != s
-}
-
-// settleBad reaches the fixed point of the model's own maintenance steps.
-// A no-progress store or runtime is explicit in World; otherwise a received
-// fatal, an owed write or a due hold has no excuse to remain.
-func settleBad(s State) bool {
-	t := s
-	for range 16 {
-		next, changed := settleOne(t)
-		if !changed {
-			break
-		}
-		t = next
-	}
-	if t.W.Down {
-		return false
-	}
-	if t.H.FatalPending || t.W.Fatal.K != 0 {
-		return true
-	}
-	if !t.W.Down && (t.P.Kind != 0 || t.StopOwed) {
-		return true
-	}
-	if !t.W.Refuses && t.StopRetry {
-		return true
-	}
-	return !t.W.Down && t.M.Hold.By != 0 && !t.StopRetry && t.M.Hold.due() != 0 && t.M.Hold.due() <= t.Now
-}
-
-// fatalClose is the receipt-ledger classifier. The normal close and a bad
-// close both decide recovery before the recovery fence observes its delta.
-func fatalClose(before, after State) bool {
-	return after.H.FatalClosed > before.H.FatalClosed && after.H.FatalOpen && after.H.FatalL != 0
-}
-
-// fatalCloseBad checks a classified close's result. Its task and pause-stop
-// checks read the close step's delta: an older committed pause stop is not a
-// violation of this close.
-func fatalCloseBad(before, after State, fx Effects) bool {
-	if !fatalClose(before, after) {
-		return false
-	}
-	l, id := after.H.ReceiptL, after.H.ReceiptID
-	if after.S.Phase != PhFailed || after.S.RecoverBy != 0 {
-		return true
-	}
-	if after.S.Task.L != l || after.S.Task.ID != id || after.S.Task.Conf != 0 || after.S.Ret[l] != 0 {
-		return true
-	}
-	for pause, stops := range after.S.Stops {
-		if stops != before.S.Stops[pause] {
-			return true
-		}
-	}
-	for _, f := range fx.List[:fx.N] {
-		if f.Action == RuntimeReplace || f.Action == Send || f.Action == Forward {
-			return true
-		}
-	}
-	return false
-}
-
-func checkServed(r Row, h History) uint16 {
-	for l, reason := range r.Ret {
-		if reason == RServed {
-			k := r.ServedBy[l]
-			if k == 0 || k > NA || h.OK[l]&(1<<(k-1)) == 0 {
-				return I1
-			}
-		}
-	}
-	return 0
-}
-
-// launchCauses is the oracles' own reading of a row's launch causes (the
-// snapshot a pause's runtime stop takes, and the causes an intent must carry),
-// kept apart from the transitions' reasons so a defect there cannot hide.
-func launchCauses(r Row) uint8 {
-	var causes uint8
-	if r.Wake {
-		causes |= WakeLaunch
-	}
-	if r.Hold.Launch {
-		causes |= HeldLaunch
-	}
-	if r.DeathCharged {
-		causes |= DeathLaunch
-	}
-	if r.Relaunch {
-		causes |= RelaunchLaunch
-	}
-	if r.Task.L != 0 {
-		causes |= TaskLaunch
-	}
-	return causes
-}
-func checkCommit(s State, prev Row, p Pending) uint16 {
-	bad := checkServed(s.S, s.H)
-	if r := s.S; r.Hold.By != 0 && r.Intent.By == 0 && (r.Hold.due() == 0 || r.waiting() && r.Hold.Answer == 0) {
-		bad |= I2
-	}
-	// The answer bound lasts only while an answer is awaited: a stale one
-	// stops a claim whose wait has ended at a bound it no longer has.
-	if r := s.S; !r.waiting() && r.Hold.Answer != 0 {
-		bad |= I2
-	}
-	if l := prev.Task.L; l != 0 && s.S.Task.L != l {
-		switch s.S.Ret[l] {
-		case RServed: // checked against independent result history above
-		case RReplaced:
-			// D5 against the oracle's own history: neither recovery doubt nor
-			// a confirmed task with an answer to come is replaced.
-			if prev.RecoverBy != 0 || s.H.Recovering&(1<<l) != 0 || prev.Task.Conf != 0 && prev.waiting() || creditedOpen(prev, s.H.Turned[l]) {
-				bad |= I1
-			}
-		case RPhaseEnd:
-			if s.S.SuspendedBy != SrcDaemon || !prev.Task.PhaseTask {
-				bad |= I1
-			}
-		case RClaimEnd:
-			if s.Root || s.S.Phase != PhEnded {
-				bad |= I1
-			}
-		default:
-			bad |= I1 // deleted without any authorized retirement
-		}
-	}
-	if p.Kind == IntentWrite && s.S.Intent.Pause != 0 {
-		want := prev.Intent.Causes | launchCauses(prev)
-		if p.Cause.K == KDeath {
-			want |= DeathLaunch
-		}
-		if s.S.Intent.Causes != want {
-			bad |= I3
-		}
-	}
-	if s.S.Phase == PhSusp && prev.Phase != PhSusp && p.Kind != StopWrite {
-		bad |= I3
-	}
-	if p.Kind == StopWrite {
-		r := s.S
-		i := prev.Intent
-		if i.By == 0 || r.LastStop.By != i.By || r.LastStop.Pause != i.Pause || r.Phase != PhSusp || r.Task != p.Want.Task || r.Att != p.Want.Att || r.Meta != p.Want.Meta || r.StartRow != p.Want.StartRow || r.Task.Conf != 0 {
-			bad |= I3
-		}
-		if prev.Task != r.Task && !(prev.Task.PhaseTask && i.By == SrcDaemon && r.Ret[prev.Task.L] == RPhaseEnd) || prev.Att != r.Att || prev.Meta != r.Meta {
-			bad |= I3
-		}
-		owed := i.Causes != 0 || r.Task.L != 0 || s.W.Pause == 0 || prev.Stops[i.Pause] == 2
-		if i.Pause != 0 && (r.Stops[i.Pause] == 0 || (r.Stops[i.Pause] == 2) != owed || r.LastStop.Causes != i.Causes) {
-			bad |= I3
-		}
-	}
-	return bad
-}
-
-// Check compares control state with the timers that can actually run. Transient
-// due states inside a decision are checked at its return, not mid-transaction.
-func Check(s State) uint16 {
-	bad := s.H.Bad | checkServed(s.M, s.H) | checkServed(s.S, s.H)
-	if l := s.M.Task.L; l != 0 && s.M.Task.Conf == 0 &&
-		s.S.Task.L == l && s.S.Task.Conf == 0 && creditPromptOpen(s, l) {
-		bad |= I1
-	}
-	if bootMemoryBad(s) {
-		bad |= BootMemory
-	}
-	if s.S.Intent.By != 0 && s.S.Hold.Pause != 0 && s.S.Intent.Pause != s.S.Hold.Pause {
-		bad |= Ended
-	}
-	if s.H.FatalPending && s.W.Fatal.K == 0 && s.M.Phase != PhFailed && s.S.Phase != PhFailed {
-		bad |= FatalReceipt
-	}
-	if attemptBoundBad(s) {
-		bad |= AttemptBound
-	}
-	if settleBad(s) {
-		bad |= Settled
-	}
-	r := s.M
-	repair := s.P.Kind != 0 || s.StopRetry || s.StopOwed || s.W.Fatal.K != 0
-	if r.Hold.By != 0 && !repair {
-		if r.Phase == PhIdle && !r.waiting() || r.Hold.due() <= s.Now || r.waiting() && r.Hold.Answer == 0 || !r.waiting() && r.Hold.Answer != 0 || !r.live() {
-			bad |= I2
-		}
-	}
-	if s.Restored && r.Task.L != 0 && (r.waiting() || r.Task.Unknown || r.Task.Conf != 0) && r.RecoverBy == 0 && !repair {
-		bad |= I2
-	}
-	if s.StopOwed && s.S.Intent.By == 0 && s.S.Phase != PhSusp || s.StopRetry && s.M.Intent.By == 0 {
-		bad |= I3
-	}
-	// The launch a pause's runtime stop snapshot owes survives until it is
-	// recorded: as that pause's owed stop, in a stored intent that carries the
-	// snapshot's causes, or, after a holder's takeover (D13), in the stop the
-	// new holder recorded with those causes. A claim that has ended or failed
-	// is never relaunched, and a live claim that no intent is stopping and that
-	// has a process or is launching one (a pause that ended before the stop,
-	// then a relaunch) has had its launch.
-	for id, n := range s.H.Need {
-		r := s.S
-		carried := n == 0 || r.Stops[id] == 2 ||
-			r.Intent.By != 0 && r.Intent.Causes&n == n ||
-			r.Phase == PhSusp && r.LastStop.Pause != uint8(id) && r.LastStop.Causes&n == n ||
-			r.Phase == PhEnded || r.Phase == PhFailed || r.Intent.By == 0 && r.live() && (s.W.Proc || r.Phase == PhLaunch)
-		if !carried {
-			bad |= I3
-		}
-	}
-	return bad
 }

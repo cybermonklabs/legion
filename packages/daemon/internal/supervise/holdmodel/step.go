@@ -1,99 +1,5 @@
 package holdmodel
 
-// Enabled rejects unknown shapes and faults at nonexistent operations. Disabled
-// inputs are stutters. The driver uses the same base decision's effect list to
-// enumerate precisely these cuts without executing the base decision twice.
-func Enabled(s State, e Event) bool {
-	if !shapes[plain(e)] || !s.base(e) {
-		return false
-	}
-	if e.Fault == 0 {
-		return e.At == 0
-	}
-	_, fx := run(s, plain(e))
-	return hasCut(fx, e)
-}
-func hasCut(x Effects, e Event) bool {
-	for f, at := range x.cuts {
-		if e.Fault == f && e.At == at {
-			return true
-		}
-	}
-	return false
-}
-
-// cuts exposes only operations that actually happened. In particular a
-// persistently failing write cannot lose a *commit* reply.
-func (x *Effects) cuts(yield func(uint8, uint8) bool) {
-	var at uint8
-	for _, f := range x.List[:x.N] {
-		switch f.Action {
-		case WriteAttempt:
-			at++
-			if !yield(FailWrite, at) || !yield(CrashBeforeWrite, at) {
-				return
-			}
-		case Commit:
-			if !yield(LostReply, at) || !yield(CrashAfterCommit, at) {
-				return
-			}
-		case RuntimeStop:
-			if !yield(CrashAfterRuntime, at) {
-				return
-			}
-		}
-	}
-}
-func Step(s State, e Event) (State, Effects) {
-	if !Enabled(s, e) {
-		return s, Effects{}
-	}
-	return run(s, e)
-}
-func run(s State, e Event) (State, Effects) {
-	return execute(decision{State: s, input: e})
-}
-func execute(d decision) (State, Effects) {
-	before := d.State
-	input := plain(d.input)
-	d.dispatch(input)
-	if d.crash {
-		d.Cut = true
-		d.input = Event{}
-		d.crash = false
-		d.restart(false)
-	}
-	// The deadline oracle reads each timer the driver recorded, rather than
-	// the scheduler's own selection, so a selection defect cannot hide itself.
-	if a := before.recordedDeadline(); a != 0 && d.Now > before.Now && d.Now > a {
-		d.H.Bad |= Late
-	}
-	// The driver's own reading of the task a receipt names. A receipt arrives
-	// before the step changes the deciding row; a restart that judges the
-	// redelivered item again reads the rebuilt row.
-	switch {
-	case d.Booted && d.H.FatalPending && d.W.Fatal.K != 0:
-		d.H.ReceiptL, d.H.ReceiptID = d.M.Task.L, d.M.Task.ID
-	case d.H.FatalReceived != before.H.FatalReceived:
-		d.H.ReceiptL, d.H.ReceiptID = before.M.Task.L, before.M.Task.ID
-	}
-	// Ids only grow, so no older prompt's answer reads as the current one's.
-	// A failure keeps the id its receipt named (fatalCloseBad judges that).
-	if l := d.S.Task.L; l != 0 && d.S.Phase != PhFailed {
-		if d.S.Task.ID < d.H.TopID[l] {
-			d.H.Bad |= I1
-		}
-		d.H.TopID[l] = max(d.H.TopID[l], d.S.Task.ID)
-	}
-	if fatalClose(before, d.State) {
-		if fatalCloseBad(before, d.State, d.Effects) {
-			d.H.Bad |= FatalClose
-		}
-	} else if recoveryMutation(before, d.State, d.Effects) && !recoveryAuthorized(before, input, d.State, d.Effects) {
-		d.H.Bad |= RecoveryFence
-	}
-	return d.State, d.Effects
-}
 func (d *decision) pop() Event {
 	w := &d.W
 	e := w.Backlog[0]
@@ -105,7 +11,7 @@ func (d *decision) pop() Event {
 func (d *decision) evict() {
 	e := d.pop()
 	if e.K == KResult || e.K == KRefusal {
-		d.H.Lost[d.W.Requests[e.R].Root] = Overflow
+		d.lose(d.W.Requests[e.R].Root, Overflow)
 	}
 }
 
@@ -126,12 +32,12 @@ func (d *decision) receiveFatal(e Event) {
 	default:
 		return
 	}
-	if d.H.FatalPending {
+	if d.FatalSeen {
 		return // the source's replay is the same item until this one commits
 	}
-	d.H.FatalPending = true
-	d.H.FatalReceived++
+	d.FatalSeen = true
 	d.judgeReceipt()
+	d.put(Effect{Action: Judged})
 	if d.skipFatalApply {
 		d.W.FatalStuck = true
 	}
@@ -140,19 +46,19 @@ func (d *decision) receiveFatal(e Event) {
 	}
 }
 
-// judgeReceipt records, in the receipt ledger, the task the received fatal
-// item names and whether it names an open attempt of that task. It does not
-// when the store has already retired the task, or when this daemon's pending
-// write retires it (served, replaced, phase or claim end): a pending write is
-// retried before the fatal item is applied, so that earlier decision closes
-// the task first. A pending take-back retires nothing, so the fatal close
-// still keeps the task. A restart rebuilds memory and drops the pending
+// judgeReceipt records, in the daemon's own memory, the task the received
+// fatal item names and whether it names an open attempt of that task. It does
+// not when the store has already retired the task, or when this daemon's
+// pending write retires it (served, replaced, phase or claim end): a pending
+// write is retried before the fatal item is applied, so that earlier decision
+// closes the task first. A pending take-back retires nothing, so the fatal
+// close still keeps the task. A restart rebuilds memory and drops the pending
 // write, and the source delivers the item again, so restart judges it again.
 func (d *decision) judgeReceipt() {
 	r := d.M
-	d.H.FatalL, d.H.FatalID = r.Task.L, r.Task.ID
 	retiring := d.P.Kind != 0 && r.Task.L != 0 && d.P.Want.Ret[r.Task.L] != 0
-	d.H.FatalOpen = r.Task.L != 0 && r.outstanding() && d.S.Ret[r.Task.L] == 0 && !retiring
+	d.Receipt = Receipt{L: r.Task.L, ID: r.Task.ID,
+		Open: r.Task.L != 0 && r.outstanding() && d.S.Ret[r.Task.L] == 0 && !retiring}
 }
 
 // deferInput keeps the one input a failed repair left unconsumed (M8). Retries
@@ -193,7 +99,6 @@ func (d *decision) dispatch(e Event) {
 		return
 	case KReconnect:
 		w.Attached = true
-		w.Conn++
 		e = Event{K: KHello}
 	case KRestart:
 		d.restart(e.A != 0)
@@ -211,7 +116,7 @@ func (d *decision) dispatch(e Event) {
 		d.receiveFatal(e)
 		q := &w.Requests[e.R]
 		q.Answered, q.Answer = true, e.A
-		d.H.Lost[e.R] = OldSocket
+		d.lose(e.R, OldSocket)
 		d.restart(false)
 		return
 	case KOutcome:
@@ -338,7 +243,7 @@ func (d *decision) dispatch(e Event) {
 }
 func (d *decision) row(e Event) {
 	r := d.M
-	if d.W.FatalStuck && d.H.FatalPending {
+	if d.W.FatalStuck && d.FatalSeen {
 		return
 	}
 	// Receipt made this fatal eligible. It has priority over a held or already
@@ -350,11 +255,11 @@ func (d *decision) row(e Event) {
 		// Receipt preceded a repair that may have taken the task back. A fatal
 		// close from an open attempt keeps the source's task, whether the
 		// receipt was the prompted result or an unprompted fatal report.
-		if d.H.FatalL != 0 {
+		if d.Receipt.L != 0 {
 			r.Task.Conf = 0
 		}
-		if d.H.FatalOpen && d.H.FatalL != 0 {
-			r.Task.L, r.Task.ID = d.H.FatalL, d.H.FatalID
+		if d.Receipt.Open && d.Receipt.L != 0 {
+			r.Task.L, r.Task.ID = d.Receipt.L, d.Receipt.ID
 		}
 		d.fail(&r)
 		if d.badFatalClose {
@@ -387,12 +292,12 @@ func (d *decision) row(e Event) {
 		d.outcome(e)
 	case KResult, KRefusal:
 		if e.K == KResult && e.A == AOK && d.matches(e) {
-			d.H.OK[r.Task.L] |= 1 << e.R
+			d.put(Effect{Action: EligibleOK, Request: e.R, Task: r.Task.L})
 		}
 		if e.K == KResult && r.Task.Unknown && r.Att[e.R].Stage == AtNone && d.W.Requests[e.R].L == r.Task.L {
 			// D12 condition 2: a legacy row records no attempt to match this
 			// answer against, so it decides nothing and cannot reach the task.
-			d.H.Lost[e.R] = Unmatched
+			d.lose(e.R, Unmatched)
 		}
 		d.answer(e)
 	case KReport:
@@ -405,7 +310,7 @@ func (d *decision) row(e Event) {
 	case KFailEffects:
 		if r.Notify {
 			if d.W.Proc {
-				d.add(RuntimeStop, 0, 0)
+				d.put(Effect{Action: RuntimeStop})
 				if d.W.Refuses {
 					d.crash = d.fault(CrashAfterRuntime)
 					return

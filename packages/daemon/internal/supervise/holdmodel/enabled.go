@@ -10,7 +10,7 @@ var shapes = func() map[Event]bool {
 }()
 
 func plain(e Event) Event { e.At, e.Fault = 0, 0; return e }
-func (s *State) canPrepare() bool {
+func (s *Machine) canPrepare() bool {
 	r := s.M
 	if s.W.Fatal.K != 0 || s.StopRetry || s.StopOwed {
 		return false
@@ -25,7 +25,7 @@ func (s *State) canPrepare() bool {
 	}
 	return true
 }
-func (s *State) base(e Event) bool {
+func (s *Machine) base(e Event) bool {
 	r, w := &s.M, &s.W
 	k := e.R
 	switch e.K {
@@ -149,7 +149,7 @@ func (s *State) base(e Event) bool {
 
 // frame is whether the agent can send one of its frames now, wherever the
 // shim then holds it.
-func (s *State) frame(e Event) bool {
+func (s *Machine) frame(e Event) bool {
 	r, w := &s.M, &s.W
 	k := e.R
 	switch e.K {

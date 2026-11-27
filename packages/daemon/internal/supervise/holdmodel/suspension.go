@@ -45,20 +45,13 @@ func (d *decision) suspend(e Event) {
 		return
 	}
 	var pause uint8
-	var due uint16
 	switch e.A {
 	case RqGate:
 		pause = d.W.Pause
-		due = d.Now
 	case RqPauseRow:
 		pause = d.W.Pause
-	case RqOperator:
-		due = after(d.Now, 3)
-	case RqDaemon, RqDaemonDL:
-		if e.A == RqDaemonDL {
-			due = after(d.Now, 2)
-		}
 	}
+	due := requestDue(e.A, d.Now)
 	replace := h.By == 0 || by == SrcOperator || h.By == SrcReleased && h.Pause == 0 && pause != 0
 	if r.Phase == PhLaunch && h.By != SrcOperator {
 		replace = by != SrcReleased || h.By == 0 || h.By == SrcReleased && (pause != 0 || h.Pause == 0)
@@ -66,7 +59,6 @@ func (d *decision) suspend(e Event) {
 	if replace {
 		h.By, h.Pause = by, pause
 	}
-	h.Request = by
 	h.Launch = r.Phase == PhLaunch || h.Launch
 	h.Deadline = earlier(h.Deadline, due)
 	r.Hold = h
@@ -100,11 +92,15 @@ func (d *decision) stop() {
 	r := d.M
 	i := r.Intent
 	if !d.StopOwed && d.W.Proc {
-		d.add(RuntimeStop, 0, 0)
-		if i.Pause != 0 && i.Pause != d.W.Pause {
-			d.H.Bad |= Ended // the oracle: no runtime stop runs for a pause that has ended
+		// A refused stop of a process this claim still owns did not land, so
+		// its pause owes no launch yet: the retry's own stop records that.
+		landed := !d.W.Refuses || i.Displaced
+		var causes uint8
+		if landed && i.Pause != 0 {
+			causes = launchCauses(&r)
 		}
-		if d.W.Refuses && !i.Displaced {
+		d.put(Effect{Action: RuntimeStop, Pause: i.Pause, Open: d.W.Pause, Causes: causes})
+		if !landed {
 			d.StopRetry = true
 			d.crash = d.fault(CrashAfterRuntime)
 			return
@@ -114,9 +110,6 @@ func (d *decision) stop() {
 		}
 		d.W.Attached = false
 		d.W.Agent, d.W.Dedupe = 0, 0
-		if i.Pause != 0 {
-			d.H.Need[i.Pause] |= launchCauses(r)
-		}
 		if d.input.Fault == CrashAfterRuntime && d.fault(CrashAfterRuntime) {
 			d.crash = true
 			return
@@ -239,16 +232,19 @@ func carriesRequest(e Event) bool {
 	return e.K == KResult || e.K == KRefusal || e.K == KOutcome
 }
 
-// forgetMemory projects the stored row into a new daemon's memory. Holds and
-// their timers are in-memory only (supervise/suspend.go): a caller must ask
-// again after boot. Wake and relaunch are durable work the model's row carries;
-// committed intent is a separate durable stop fact.
+// forgetMemory projects the stored row into a new daemon's memory. Every mark
+// the product keeps in memory only goes: holds and their timers
+// (supervise/suspend.go), the parked wake (machine.go's Machine.wake), the
+// stale-plugin relaunch (Machine.staleRelaunch) and relaunchLater's retry
+// (Machine.relaunch). A caller, or the boot's own pass, must ask again; that
+// ask is its own event (KParkWake, KStale), not a field that survives.
 func forgetMemory(r *Row) {
 	r.Hold = Hold{}
 	r.TurnBy = 0
 	for k := range r.Att {
 		r.Att[k].TurnBy = 0
 	}
+	r.Wake, r.Relaunch = false, false
 }
 func (d *decision) restart(dead bool) {
 	defer func() {
@@ -257,7 +253,7 @@ func (d *decision) restart(dead bool) {
 		}
 	}()
 	if c := d.P.Cause; d.S != d.P.Want && d.S.Task.L != 0 && (d.P.Kind == EvidenceWrite || d.P.Kind == RetirementWrite) && carriesRequest(c) {
-		d.H.Lost[d.W.Requests[c.R].Root] = Unapplied
+		d.lose(d.W.Requests[c.R].Root, Unapplied)
 	}
 	d.W.Attached = false
 	d.Prepared, d.Sending = 0, 0
@@ -282,22 +278,24 @@ func (d *decision) restart(dead bool) {
 	if d.S.Phase == PhFailed {
 		d.W.Fatal = Event{}
 		d.W.FatalStuck = false
-		d.H.FatalPending = false
+		d.FatalSeen = false
 	}
 	if dead {
 		d.W.Proc = false
 		d.W.Agent, d.W.Dedupe, d.W.N = 0, 0, 0
 		d.W.Backlog = [3]Event{}
 	}
-	// The oracle's own reading of D10's doubt, from the stored row alone.
+	// The rebuilt row's own doubt (D10), reported for the driver's ledger.
+	var doubted uint8
 	if s, l := d.S, d.S.Task.L; l != 0 && d.W.Proc && s.live() && (s.Task.Conf != 0 || s.outstanding() || s.Task.Unknown) {
-		d.H.Recovering |= 1 << l
+		doubted = l
 	}
+	d.put(Effect{Action: Rebuild, Task: doubted})
 	if d.W.Fatal.K != 0 {
 		// Redeliver on the first decision (including KDrain). This also
 		// permits store-down and a second restart before the retry. The
 		// rebuilt daemon receives the item again, with no pending write.
-		if d.H.FatalPending {
+		if d.FatalSeen {
 			d.judgeReceipt()
 		}
 		return

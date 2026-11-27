@@ -38,12 +38,24 @@ func retire(r *Row, why, k uint8) {
 	}
 }
 
+// creditedOpen is whether an attempt the daemon itself saw a turn credited
+// through still waits for its answer. A lost attempt's own credit went with
+// its loss (D3); another prompt's loss leaves it standing.
+func creditedOpen(r Row) bool {
+	for _, a := range r.Att {
+		if a.open() && a.Stage != AtLost && a.Credited {
+			return true
+		}
+	}
+	return false
+}
+
 // queue is D5: a newer task waits behind recovery doubt, a legacy row's task
 // whose attempts are unknown (D12 condition 2), and a confirmed task with an
 // answer to come.
 func (d *decision) queue(e Event) {
 	r := d.M
-	if r.Task.L == e.A || r.Ret[e.A] != 0 || r.Task.L != 0 && (r.RecoverBy != 0 || r.Task.Unknown || r.Task.Conf != 0 && r.waiting() || !d.queueDropsCredit && creditedOpen(r, d.H.Turned[r.Task.L]) || e.K == KSupersede && r.outstanding()) {
+	if r.Task.L == e.A || r.Ret[e.A] != 0 || r.Task.L != 0 && (r.RecoverBy != 0 || r.Task.Unknown || r.Task.Conf != 0 && r.waiting() || !d.queueDropsCredit && creditedOpen(r) || e.K == KSupersede && r.outstanding()) {
 		return
 	}
 	retire(&r, RReplaced, 0)
@@ -58,16 +70,16 @@ func (d *decision) register(e Event) {
 	r.Att[d.Prepared-1] = Attempt{Stage: AtReg, L: r.Task.L, Under: r.Task.ID, News: r.Meta}
 	d.write(RegisterWrite, r, e)
 }
+
+// wire is the shim's own record of a forwarded or deduplicated request. The
+// driver counts the admission it reports (Send, Forward, Deduplicate); the
+// told-twice ledger is no business of this transition.
 func (d *decision) wire(k uint8) {
 	w := &d.W
 	r := d.M
 	a := r.Att[k]
-	q := WireRequest{L: a.L, Under: a.Under, Conn: w.Conn, Inc: w.Inc, Root: k, Written: true}
+	q := WireRequest{L: a.L, Under: a.Under, Inc: w.Inc, Root: k, Written: true}
 	d.add(Send, 0, k)
-	d.H.Requests[q.L]++
-	if d.H.Recovering&(1<<q.L) != 0 {
-		d.H.Bad |= Twice // D10 forbids even a deduplicated second request here
-	}
 	if w.Dedupe != 0 {
 		prev := w.Requests[w.Dedupe-1]
 		if prev.L == q.L && prev.Under == q.Under && prev.Inc == q.Inc {
@@ -80,18 +92,6 @@ func (d *decision) wire(k uint8) {
 	w.Dedupe = k + 1
 	w.Requests[k] = q
 	d.add(Forward, 0, k)
-	h := &d.H
-	if h.Admissions[q.L] != 0 {
-		prev := h.LastRoot[q.L] - 1
-		reason := h.Certified[prev]
-		last := w.Requests[prev]
-		if reason == Negative && (!last.Answered || last.Answer == AOK) || reason == Original {
-			h.Bad |= Twice
-		}
-		h.Twice[q.L] = reason
-	}
-	h.LastRoot[q.L] = k + 1
-	h.Admissions[q.L]++
 }
 
 // T2 reads an unnamed start through the send/outstanding windows. Neither a
@@ -123,6 +123,9 @@ func (d *decision) turn(e Event) {
 			}
 			r.Task.Conf = 1
 			r.News = a.News
+			// The daemon read this start itself: this request's own wait for
+			// a turn is over, and no later acknowledgement arms it again.
+			r.Att[k].Credited = true
 			r.Att[k].TurnBy = 0
 			refreshTurnBy(&r)
 			break
@@ -159,10 +162,11 @@ func (d *decision) outcome(e Event) {
 	case OcAck:
 		r.Att[k].Stage = AtAcked
 		d.W.Requests[k].Ack = true
-		// Only this prompt's turn suppresses its timer. An earlier prompt's
-		// confirmation can remain while a separately forwarded resend still
-		// waits for its own turn (M3, D6).
-		if d.W.Requests[k].Root == k && !d.W.Requests[k].Started {
+		// Only this prompt's turn suppresses its timer, and only a turn this
+		// daemon read (Credited): a start the shim still holds is not one the
+		// daemon confirmed. An earlier prompt's confirmation can remain while
+		// a separately forwarded resend still waits for its own turn (M3, D6).
+		if d.W.Requests[k].Root == k && !r.Att[k].Credited {
 			r.Att[k].TurnBy = after(d.Now, 1)
 			refreshTurnBy(&r)
 		}

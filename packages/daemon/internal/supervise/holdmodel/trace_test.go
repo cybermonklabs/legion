@@ -143,6 +143,10 @@ func verdict(s State, v string) bool {
 		return r.Phase == PhLaunch
 	case "turnBound":
 		return r.TurnBy != 0 && r.Att[1].TurnBy == r.TurnBy
+	case "ownBound": // the first prompt waits for its own turn
+		return r.TurnBy != 0 && r.Att[0].open() && r.Att[0].TurnBy == r.TurnBy
+	case "credited": // the daemon itself read the first prompt's turn start
+		return r.Att[0].Credited
 	case "relaunch":
 		return r.Relaunch
 	case "noError":
@@ -193,6 +197,11 @@ func verdict(s State, v string) bool {
 		return s.Class() == v
 	}
 }
+
+// replaySeed runs one named trace and returns every prefix it reached. A
+// failed verdict, a disabled event or an invariant is reported and the replay
+// stops there: it never aborts the test, so the search over the prefixes the
+// seeds did reach always runs.
 func replaySeed(t *testing.T, c seed) []Prefix {
 	t.Helper()
 	s := c.start
@@ -203,23 +212,25 @@ func replaySeed(t *testing.T, c seed) []Prefix {
 		if v, ok := strings.CutPrefix(w, ":"); ok {
 			checks++
 			if !verdict(s, v) {
-				t.Fatalf("%s[%d] want %s, got %s %+v", c.name, count, v, s.Class(), s)
+				t.Errorf("%s[%d] want %s, got %s %+v", c.name, count, v, s.Class(), s)
 			}
 			continue
 		}
 		e := parse(t, w)
 		if !Enabled(s, e) {
-			t.Fatalf("%s[%d] disabled %s: %+v", c.name, count, w, s)
+			t.Errorf("%s[%d] disabled %s: %+v", c.name, count, w, s)
+			return ps
 		}
 		s, _ = Step(s, e)
 		count++
 		if bad := Check(s); bad != 0 {
-			t.Fatalf("%s[%d] after %s invariant mask %d: %+v", c.name, count, w, bad, s)
+			t.Errorf("%s[%d] after %s invariant mask %d: %+v", c.name, count, w, bad, s)
+			return ps
 		}
 		ps = append(ps, Prefix{s, fmt.Sprintf("%s[%d]", c.name, count), count})
 	}
 	if checks == 0 || count == 0 {
-		t.Fatal("empty seed/verdict", c.name)
+		t.Error("empty seed/verdict", c.name)
 	}
 	return ps
 }

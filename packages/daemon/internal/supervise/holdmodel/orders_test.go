@@ -113,6 +113,25 @@ func orderSeeds() []seed {
 	// A second fatal report in a failure's lost-reply window is settled by
 	// that failure, across a restart too.
 	add("second-fatal-in-lost-reply-window", "q prepare register!4.1 fatalReport!2.1 down fatalReport boot up :failed")
+	// The third model read's orders (dispatch://INFRA-3904/comment/
+	// 7c0e8a9f-9b03-4099-a906-cbd4e94e6da0), each with the verdict the
+	// architect's decision on that read requires.
+	//
+	// Rule 5: the agent's start waits in the shim's backlog, so no daemon has
+	// read it, and the acknowledgement arms this prompt's own wait. The
+	// replayed start then confirms the turn and ends that wait.
+	add("third/ack-before-the-daemon-read-the-start", "q prepare register w detach start ack :unread :ownBound reconnect replay :confirmed :credited")
+	// Rule 1: a parked wake and a stale-plugin relaunch are memory only
+	// (machine.go:1823-1835, 1641-1648, 1775-1778). A boot forgets both, and
+	// the boot's own refresh pass is what asks again.
+	add("third/boot-forgets-a-parked-wake", work+"end park boot :noRelaunch :doubt park wake :doubt")
+	add("third/boot-forgets-a-stale-relaunch", work+"stale :relaunch boot :noRelaunch :doubt")
+	// Rule 3 (RT1): the result the old daemon's socket took is lost to this
+	// daemon; only the recovery bound decides the task.
+	add("third/old-socket-result-is-not-given-again", work+"end taken reconnect :doubt :kept rec :unread")
+	// Rule 7 (M445): a turn credited through the first prompt holds the task
+	// while that prompt is still open, so no newer task replaces it.
+	add("third/credited-prompt-is-not-replaced", ack+"wait "+next+"ack1 start end wait new :kept :unread")
 	cs = append(cs,
 		seed{"launch-without-ready-bound", launch, "open row :HL bound :H4 :owed"},
 		// A takeover's intent keeps the launch causes the stored intent
