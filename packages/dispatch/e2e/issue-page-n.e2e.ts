@@ -5994,6 +5994,7 @@ async function pointPastInlineHtml(page: Page, words: Locator): Promise<{ x: num
     return (line.top + line.bottom) / 2;
   });
   await wheelToMiddle(page, lineY);
+  // The wheel waited for the scroll to stop, so one reading of the boxes is the page as it stays.
   const point = await words.evaluate((column, selector) => {
     const atom = column.querySelector(selector);
     const line = atom === null ? undefined : [...atom.getClientRects()].at(-1);
