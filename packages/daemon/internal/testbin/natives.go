@@ -164,7 +164,7 @@ func fillNativesCache(root, omp string) (string, error) {
 
 // embeddedNative is one native file omp embeds, as pi-natives' scripts/embed-native.ts writes each
 // into the compiled binary: `{ variant: "modern", filename: "pi_natives.linux-x64-modern.node",
-// size: 130851832, sha256: "6060d702…", zstdPath: g0 }` at the pin. The scan finds each by its
+// size: 130923384, sha256: "521acfab…", zstdPath: g0 }` at the pin. The scan finds each by its
 // marker with bytes.Index, since a regexp over the whole binary takes seconds, and reads no member
 // after `size`.
 var (
