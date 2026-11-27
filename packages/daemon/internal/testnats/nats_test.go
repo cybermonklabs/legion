@@ -228,6 +228,110 @@ func TestEachTestGetsTheServerEmpty(t *testing.T) {
 	})
 }
 
+// A test leaves the server as URL handed it over: the stream, consumer and message one test makes
+// are gone once it ends, before any other test takes the server, so a program that runs on an
+// external server after the test binary — a pod's Bun tests after its Go tests — finds none of
+// them. The stream is the one the daemon's tests make, ENVOY_NOTIFICATIONS on all of
+// `notifications.>`, whose publish ack answered a relay frame of pi-legion's relay row when one was
+// left on such a server. The parent reads the server's own count from its monitoring endpoint
+// while it holds the server (take), so no other test of the binary is on it, and not through URL,
+// whose reset would empty the server first. The pool hands the parent the server freed last, the
+// subtest's, and the parent fails by name when it is handed another. The same read inside the
+// subtest, with the stream still there, is the reader's positive control: it sees what it counts.
+func TestATestLeavesTheServerEmpty(t *testing.T) {
+	var made *server
+	t.Run("makes the notification stream, a consumer and a message", func(t *testing.T) {
+		js := JetStream(t)
+		made = heldServer(t)
+		stream := CreateStream(t, js, jetstream.StreamConfig{Name: "ENVOY_NOTIFICATIONS", Subjects: []string{"notifications.>"}})
+		if _, err := stream.CreateConsumer(t.Context(), jetstream.ConsumerConfig{Durable: "left-behind"}); err != nil {
+			t.Fatalf("create consumer: %v", err)
+		}
+		if _, err := js.Publish(t.Context(), "notifications.agent.left", []byte("x")); err != nil {
+			t.Fatalf("publish: %v", err)
+		}
+		if held := jetStreamHeld(t, made); held != (jetStreamCounts{Streams: 1, Consumers: 1, Messages: 1}) {
+			t.Fatalf("the server's monitoring endpoint reports %+v while the test holds its stream, want 1 stream, 1 consumer and 1 message: a reader that cannot see them proves nothing when it reads none", held)
+		}
+	})
+	if made == nil {
+		t.Fatal("the subtest that makes the stream held no server, so there is nothing to read")
+	}
+	if s := take(t); s != made {
+		t.Fatal("the pool handed this test another NATS server than the one its subtest made the stream on, so its count would prove nothing")
+	}
+	if held := jetStreamHeld(t, made); held != (jetStreamCounts{}) {
+		t.Errorf("the server holds %+v after the test that made them ended, want none: the next program on an external server is handed them", held)
+	}
+}
+
+// The reset at the start of each test empties a server that something other than a test of this
+// package left streams on: a Bun suite on the same external server, a binary killed before its
+// cleanups ran, or a leaveEmpty that failed. The second subtest stands in for any of them: it
+// holds a server as a test does (take) and makes a stream on a client of its own (dialReady), with
+// no URL, so no leaveEmpty runs at its end. The first subtest only starts the server, for a run of
+// this test alone. The count inside the second subtest is the reader's positive control, and the
+// third fails by name when the pool hands it another server than the second's.
+func TestAStreamLeftOutsideTheFixtureIsGoneAtTheNextTake(t *testing.T) {
+	var left *server
+	t.Run("starts the server", func(t *testing.T) { URL(t) })
+	t.Run("leaves a stream that no test's end empties", func(t *testing.T) {
+		left = take(t)
+		ctx, cancel := context.WithTimeout(t.Context(), readinessTimeout)
+		defer cancel()
+		conn, js, err := dialReady(ctx, left.url, t.Name())
+		if err != nil {
+			t.Fatalf("connect to the NATS server: %v", err)
+		}
+		defer conn.Close()
+		if _, err := js.CreateStream(ctx, jetstream.StreamConfig{Name: "LEFT_OUTSIDE", Subjects: []string{"outside.>"}}); err != nil {
+			t.Fatalf("create stream: %v", err)
+		}
+		if held := jetStreamHeld(t, left); held.Streams != 1 {
+			t.Fatalf("the server's monitoring endpoint reports %+v with the stream made, want 1 stream: a reader that cannot see it proves nothing when it reads none", held)
+		}
+	})
+	t.Run("finds none of it", func(t *testing.T) {
+		js := JetStream(t)
+		if left == nil || heldServer(t) != left {
+			t.Fatal("this subtest holds another NATS server of the pool than the one the earlier subtest left its stream on, so it would prove nothing")
+		}
+		names := js.StreamNames(t.Context())
+		for name := range names.Name() {
+			t.Errorf("stream %s, which no fixture's end emptied, is still on the server the next test is handed", name)
+		}
+		if err := names.Err(); err != nil {
+			t.Fatalf("list streams: %v", err)
+		}
+	})
+}
+
+// jetStreamCounts is what a server's monitoring endpoint reports it holds across its accounts.
+type jetStreamCounts struct {
+	Streams   int    `json:"streams"`
+	Consumers int    `json:"consumers"`
+	Messages  uint64 `json:"messages"`
+}
+
+// jetStreamHeld reads s's own count of its streams, consumers and messages from its monitoring
+// endpoint's /jsz, which no client connection, and so no reset, is needed for.
+func jetStreamHeld(t *testing.T, s *server) jetStreamCounts {
+	t.Helper()
+	response, err := monitorClient.Get(s.monitor + "/jsz")
+	if err != nil {
+		t.Fatalf("read the NATS server's JetStream counts: %v", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s/jsz answered %s", s.monitor, response.Status)
+	}
+	var counts jetStreamCounts
+	if err := json.NewDecoder(response.Body).Decode(&counts); err != nil {
+		t.Fatalf("decode %s/jsz: %v", s.monitor, err)
+	}
+	return counts
+}
+
 // A test that publishes a burst without waiting for acks leaves messages the server routes after
 // the test ends. The next test, recreating a stream on the same subjects, finds none of them: the
 // reset waits for the previous test's connections to be gone first.
@@ -260,7 +364,7 @@ func TestABurstLeftInFlightDoesNotReachTheNextTest(t *testing.T) {
 
 // A durable an earlier test created does not reach the next test, even when a stream delete whose
 // rename failed leaves the earlier test's stream directory in place with every consumer's state
-// file (the consumer deletes in URL say how, and name the lines). The first subtest stands in for
+// file (the consumer deletes in empty say how, and name the lines). The first subtest stands in for
 // an earlier delete's removal still running: it makes the .<name> directory the next delete
 // renames onto. The second checks the delete did leave the stream's directory, so the row cannot
 // pass on a delete that moved it aside, and then asks for durables that start at the next
@@ -313,6 +417,16 @@ func TestADurableOfAnEarlierTestDoesNotReachTheNextTest(t *testing.T) {
 		if heldBy(t) != held {
 			t.Fatal("this subtest holds another NATS server of the pool than the one the earlier subtest left its durables on, so it would prove nothing")
 		}
+		// Registered after JetStream(t), so that it runs before the fixture's own end (leaveEmpty):
+		// with the held removal gone, that end's delete of the stream can move its directory aside and
+		// remove it, and the server's store keeps no directory of this test. Left in place, the delete
+		// removes the stream's meta.inf and cannot move the directory onto the held one, which stays
+		// in the store for good (nats-server v2.15.1 filestore.go:12231-12237). It empties plant, so
+		// the parent's own removal, for a run that never reaches this subtest, has nothing to do.
+		t.Cleanup(func() {
+			onTheServersHost(t, "rm", "-rf", plant)
+			plant = ""
+		})
 		onTheServersHost(t, "test", "-d", filepath.Join(streams, config.Name))
 		stream := CreateStream(t, js, config)
 		published, err := js.Publish(t.Context(), "left.one", []byte("x"))
@@ -413,7 +527,7 @@ func onServersHost(t *testing.T, s *server, name string, args ...string) {
 }
 
 // The stream a test is handed must be empty. A create that comes back holding an earlier test's
-// work, which URL's purge says how a create can do, fails the test there, naming each message by
+// work, which the purge in empty says how a create can do, fails the test there, naming each message by
 // subject, stream sequence and stored time and each consumer by name, rather than reaching the
 // test as a count it reads later and reads as its own. A stream holding a consumer and no message
 // names the consumer alone: there is no message to name, and a sequence nothing stored is not

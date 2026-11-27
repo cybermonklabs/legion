@@ -22,8 +22,10 @@
 // LEGION_TEST_NATS_MONITOR_URL (the monitoring endpoint's base URL). With both set, the pool is that
 // one server, emptied for each test exactly as a container is, it starts no container, and Main
 // removes nothing; one set without the other fails the test, since a half-named server is a
-// mistake rather than a reason to fall back to Docker. The reset holds that server for one test of
-// one test binary at a time, waits for every client connection to it to end, and deletes each
+// mistake rather than a reason to fall back to Docker. On either kind of server each test also
+// empties it again when it ends (leaveEmpty), so an external server, which outlives the test
+// binary, holds no stream of it for what runs there next. The reset holds that server for one test
+// of one test binary at a time, waits for every client connection to it to end, and deletes each
 // stream's consumers and empties the stream before it deletes it, so the server is the tests' alone
 // and the packages using it run one after another (go test -p 1). The leak check at the end of each
 // test depends on that rule too: with one binary on a server and one test holding it, every
@@ -151,10 +153,12 @@ func Main(m *testing.M) int {
 // own there and finds it empty with CreateStream, and a durable it creates there starts where its
 // own configuration says. A deleted stream's store can outlive the delete that answered; a purged
 // one carries no message into the next test, though it does carry its sequence, and one whose
-// consumers were deleted first carries no consumer's position. The purge and the consumer deletes,
-// below, state the mechanism and name the source lines; the comments elsewhere in this package
-// point to them rather than stating it again. Last, the reset arms the leak check (leakcheck.go),
-// which fails t at its end for a client connection t left open on the server.
+// consumers were deleted first carries no consumer's position. The purge and the consumer deletes
+// in empty, the reset's one implementation, state the mechanism and name the source lines; the
+// comments elsewhere in this package point to them rather than stating it again. Last, the reset
+// arms the leak check (leakcheck.go), which fails t at its end for a client connection t left open
+// on the server, and after that check leaveEmpty empties the server once more, so t leaves it as it
+// was handed over.
 func URL(t testing.TB) string {
 	t.Helper()
 	return reset(t).url
@@ -171,13 +175,28 @@ func reset(t testing.TB) *server {
 	fixtureOpenedNone(s)
 	conn, js := connect(t, s)
 	defer conn.Close()
-	names := js.StreamNames(t.Context())
+	if err := empty(t.Context(), js); err != nil {
+		t.Fatalf("%v", err)
+	}
+	// Registered before the leak check so that it runs after it, cleanups running last first: the
+	// test's own cleanups, the leak check, this, and then take's release of the server.
+	t.Cleanup(func() { leaveEmpty(t, s) })
+	armLeakCheck(t, s)
+	return s
+}
+
+// empty deletes every stream on the server js reaches, each one's consumers first, then its
+// messages, then the stream, and reads the server's account afterwards, so a stream it could not
+// delete is an error rather than a server handed on as empty. URL runs it before each test and
+// leaveEmpty after it.
+func empty(ctx context.Context, js jetstream.JetStream) error {
+	names := js.StreamNames(ctx)
 	var streams []string
 	for name := range names.Name() {
 		streams = append(streams, name)
 	}
 	if err := names.Err(); err != nil {
-		t.Fatalf("list the NATS server's streams: %v", err)
+		return fmt.Errorf("list the NATS server's streams: %w", err)
 	}
 	for _, name := range streams {
 		// Purge before the delete, so the store this delete leaves behind holds no message.
@@ -212,9 +231,9 @@ func reset(t testing.TB) *server {
 		// rounds that recovered anything were among those 28. The purge is a lookup of the stream
 		// and one purge request per stream, and the server answers the purge when the store is
 		// empty.
-		stream, err := js.Stream(t.Context(), name)
+		stream, err := js.Stream(ctx, name)
 		if err != nil {
-			t.Fatalf("take the NATS server's stream %s to empty it: %v", name, err)
+			return fmt.Errorf("take the NATS server's stream %s to empty it: %w", name, err)
 		}
 		// Delete the stream's consumers before the purge and the delete, so the store the delete
 		// can leave behind (the purge, above, says how) holds no consumer's state either.
@@ -245,34 +264,57 @@ func reset(t testing.TB) *server {
 		// inactivity threshold, is gone or going already, and its generated name is not one a
 		// later test's durable takes.
 		var consumers []string
-		listed := stream.ConsumerNames(t.Context())
+		listed := stream.ConsumerNames(ctx)
 		for consumer := range listed.Name() {
 			consumers = append(consumers, consumer)
 		}
 		if err := listed.Err(); err != nil {
-			t.Fatalf("list the consumers of the NATS server's stream %s: %v", name, err)
+			return fmt.Errorf("list the consumers of the NATS server's stream %s: %w", name, err)
 		}
 		for _, consumer := range consumers {
-			if err := stream.DeleteConsumer(t.Context(), consumer); err != nil && !errors.Is(err, jetstream.ErrConsumerNotFound) {
-				t.Fatalf("delete consumer %s of the NATS server's stream %s: %v", consumer, name, err)
+			if err := stream.DeleteConsumer(ctx, consumer); err != nil && !errors.Is(err, jetstream.ErrConsumerNotFound) {
+				return fmt.Errorf("delete consumer %s of the NATS server's stream %s: %w", consumer, name, err)
 			}
 		}
-		if err := stream.Purge(t.Context()); err != nil {
-			t.Fatalf("purge the NATS server's stream %s: %v", name, err)
+		if err := stream.Purge(ctx); err != nil {
+			return fmt.Errorf("purge the NATS server's stream %s: %w", name, err)
 		}
-		if err := js.DeleteStream(t.Context(), name); err != nil {
-			t.Fatalf("empty the NATS server of stream %s: %v", name, err)
+		if err := js.DeleteStream(ctx, name); err != nil {
+			return fmt.Errorf("empty the NATS server of stream %s: %w", name, err)
 		}
 	}
-	info, err := js.AccountInfo(t.Context())
+	info, err := js.AccountInfo(ctx)
 	if err != nil {
-		t.Fatalf("read the NATS server's account after emptying it: %v", err)
+		return fmt.Errorf("read the NATS server's account after emptying it: %w", err)
 	}
 	if info.Streams != 0 {
-		t.Fatalf("the NATS server still holds %d streams after emptying it", info.Streams)
+		return fmt.Errorf("the NATS server still holds %d streams after emptying it", info.Streams)
 	}
-	armLeakCheck(t, s)
-	return s
+	return nil
+}
+
+// leaveEmpty empties s, the server t holds, again once t's own cleanups and its leak check have
+// run, so t leaves the server as URL handed it over: with no stream, consumer or message on it.
+// On the package's containers no other program sees what a test leaves, since URL empties a
+// server before each test and Main removes the containers. An external server outlives the test
+// binary, and whatever runs on it next is handed what the last test left: in a pod whose Bun tests
+// run after the Go tests on one server, a stream ENVOY_NOTIFICATIONS on `notifications.>` that a
+// daemon test made answered each relay frame of pi-legion's relay row with its publish ack, and
+// the row failed in 12 ms. t.Context is cancelled before cleanups run, so this one dials and
+// empties on a context of its own, bounded by readinessTimeout, and reports a failure with
+// t.Errorf, the other cleanups still to run.
+func leaveEmpty(t testing.TB, s *server) {
+	ctx, cancel := context.WithTimeout(context.Background(), readinessTimeout)
+	defer cancel()
+	conn, js, err := dialReady(ctx, s.url, t.Name())
+	if err != nil {
+		t.Errorf("connect to the NATS server to empty it at the end of %s: %v", t.Name(), err)
+		return
+	}
+	defer conn.Close()
+	if err := empty(ctx, js); err != nil {
+		t.Errorf("empty the NATS server at the end of %s, so that it leaves no stream behind: %v", t.Name(), err)
+	}
 }
 
 // external is the running server LEGION_TEST_NATS_URL and LEGION_TEST_NATS_MONITOR_URL name: its
@@ -568,15 +610,16 @@ const (
 // nats-server answers a stream delete before it is done with the account's directories: a
 // goroutine of its own then removes the account's streams directory, which it can only do once
 // that directory is empty, so only when the deleted stream was the account's last (stream.go,
-// stop, v2.10 through v2.15). URL's reset deletes every stream, so its last delete always empties
-// the account, and the test's first create can arrive before that goroutine has run. Such a create
+// stop, v2.10 through v2.15). The reset (empty) deletes every stream, at the end of the test
+// before and at the start of this one, so its last delete always empties the account, and the
+// test's first create can arrive before that goroutine has run. Such a create
 // can lose the directory between making it and making its stream's own inside it: the server logs
 // "could not create storage directory - mkdir .../streams/<stream>: no such file or directory" and
 // answers the create "error creating store for stream". No API says when the goroutine has run, so
 // the create is retried on exactly that answer, every 50 ms; any other error fails the test at
 // once.
 //
-// The stream the create answers is read once and must be empty; the purge in URL says how a
+// The stream the create answers is read once and must be empty; the purge in empty says how a
 // create can come back holding an earlier stream's store. A stream handed to a test holding an
 // earlier test's messages makes that test count them as its own, so the failure names them here,
 // instead of surfacing as a count the test reads later: in the failure this guard was written
@@ -642,7 +685,7 @@ func assertCreatedEmpty(t testing.TB, stream jetstream.Stream, name string) {
 	if err := consumers.Err(); err != nil {
 		held = append(held, fmt.Sprintf("list its consumers: %v", err))
 	}
-	t.Fatalf("stream %s is not empty at its create, holding %s (most probably the store of a stream of this name that a delete left in place; the purge in URL says how that happens)",
+	t.Fatalf("stream %s is not empty at its create, holding %s (most probably the store of a stream of this name that a delete left in place; the purge in empty says how that happens)",
 		name, strings.Join(held, "; "))
 }
 
@@ -866,15 +909,25 @@ func connect(t testing.TB, s *server) (*nats.Conn, jetstream.JetStream) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(t.Context(), readinessTimeout)
 	defer cancel()
+	conn, js, err := dialReady(ctx, s.url, t.Name())
+	if err != nil {
+		t.Fatalf("wait for NATS JetStream readiness: %v", err)
+	}
+	fixtureOpened(s, conn)
+	return conn, js
+}
+
+// dialReady dials the server at url as name until its JetStream API answers, every 50 ms, and
+// answers the last error once ctx ends.
+func dialReady(ctx context.Context, url, name string) (*nats.Conn, jetstream.JetStream, error) {
 	for {
-		conn, js, err := ready(ctx, s.url, t.Name())
+		conn, js, err := ready(ctx, url, name)
 		if err == nil {
-			fixtureOpened(s, conn)
-			return conn, js
+			return conn, js, nil
 		}
 		select {
 		case <-ctx.Done():
-			t.Fatalf("wait for NATS JetStream readiness: %v", err)
+			return nil, nil, err
 		case <-time.After(50 * time.Millisecond):
 		}
 	}
