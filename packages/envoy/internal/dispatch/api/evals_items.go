@@ -86,7 +86,10 @@ type evalItemRow struct {
 }
 
 // evalItemsResponse carries a page of rows or the readings kept by a bounded read, with the
-// window and compare range. For a bounded read, Limit and Offset are zero.
+// window and compare range. For a bounded read, Limit and Offset are zero. MinN is the floor a
+// read sorted by median ranked pr-ci's jobs by: the fewest timed results a job needs over the range
+// to be ranked (slowestJobsFloor), so a page names the floor its list was ranked by; null for every
+// other read, and for an eval with no job series, which ranks no job.
 type evalItemsResponse struct {
 	Items   []evalItemRow `json:"items"`
 	Total   int           `json:"total"`
@@ -94,6 +97,7 @@ type evalItemsResponse struct {
 	Offset  int           `json:"offset"`
 	Window  evalRange     `json:"window"`
 	Compare *evalRange    `json:"compare"`
+	MinN    *int          `json:"min_n"`
 }
 
 // The row kinds the items route answers beside a reading's own (its row_kind, the caller's).
@@ -380,6 +384,10 @@ func (s *server) readEvalItems(ctx context.Context, project, slug string, reques
 	} else {
 		if err := s.pageEvalItems(ctx, tx, project, entry, request, window, &answer); err != nil {
 			return evalItemsAnswer{}, err
+		}
+		if index := slices.IndexFunc(entry.Series, isJobSeries); index >= 0 && request.sort == evalSortMedian {
+			floor := slowestJobsFloor(entry.Series[index])
+			answer.MinN = &floor
 		}
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -1374,13 +1382,14 @@ func outcomeOf(parts []measures.DayPart) string {
 // figures, its unlisted `job:<name>` day rows of the range folded by measures.FoldTiming, by name,
 // or with sort median the one ranking the Pipeline's slowest-jobs table shows the first
 // measures.SlowestJobs of (measures.FoldSlowestJobs): every job with the job series' min_n timed
-// results over the range's days (eval_series `job:*`, evals.SlowestJobsMinN), slowest first. A
-// series filter names one job's series. An eval with no job series answers none. Each job links
-// to its `job:<name>` day rows over the range as it was asked for (read.rng.start and end), which
-// the items route reads as the same days: the range's whole days are a day longer where it starts
-// inside one, and past the 84 days the route takes where it was 84 days long.
+// results over the range's days, and one at least (eval_series `job:*`, slowestJobsFloor, which
+// the answer names in min_n), slowest first. A series filter names one job's series. An eval with
+// no job series answers none. Each job links to its `job:<name>` day rows over the range as it was
+// asked for (read.rng.start and end), which the items route reads as the same days: the range's
+// whole days are a day longer where it starts inside one, and past the 84 days the route takes
+// where it was 84 days long.
 func (s *server) jobItemRows(ctx context.Context, read evalItemsRead) ([]evalItemRow, error) {
-	index := slices.IndexFunc(read.entry.Series, func(series evals.Series) bool { return series.Series == evals.SeriesJobs })
+	index := slices.IndexFunc(read.entry.Series, isJobSeries)
 	if index < 0 {
 		return nil, nil
 	}
@@ -1411,7 +1420,7 @@ func (s *server) jobItemRows(ctx context.Context, read evalItemsRead) ([]evalIte
 	if read.request.sort == evalSortMedian {
 		// The range's own days: its day rows are of no other.
 		shown := evalRangeDays(read.rng.days)
-		for _, job := range measures.FoldSlowestJobs(parts, shown, evals.SlowestJobsMinN(read.entry.Series[index].MinN)) {
+		for _, job := range measures.FoldSlowestJobs(parts, shown, slowestJobsFloor(read.entry.Series[index])) {
 			cells = append(cells, jobCell{job.Name, job.Total})
 		}
 	} else {
@@ -1451,6 +1460,20 @@ func (s *server) jobItemRows(ctx context.Context, read evalItemsRead) ([]evalIte
 		}
 	}
 	return rows, nil
+}
+
+// isJobSeries is whether series is pr-ci's job series (evals.SeriesJobs), whose min_n is the floor
+// of its slowest jobs.
+func isJobSeries(series evals.Series) bool {
+	return series.Series == evals.SeriesJobs
+}
+
+// slowestJobsFloor is the fewest timed results a job needs over a range to be ranked among pr-ci's
+// slowest (measures.FoldSlowestJobs), from jobs, the eval's job series: its min_n
+// (evals.SlowestJobsMinN), and 1 where that is none, since a job with no timed result has no median
+// to rank by. The Pipeline states its own floor so (deliveryPipelinePRChecks.SlowestMinResults).
+func slowestJobsFloor(jobs evals.Series) int {
+	return max(evals.SlowestJobsMinN(jobs.MinN), 1)
 }
 
 // failingJobRows is pr-ci's jobs that failed in the measures.FailingWindow before the range's end:

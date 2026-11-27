@@ -186,6 +186,7 @@ function itemsPage(keys: string[], total = keys.length, offset = 0) {
       source: "delivery.ListUnownedP0",
     })),
     limit: 200,
+    min_n: null,
     offset,
     total,
     window: WINDOW,

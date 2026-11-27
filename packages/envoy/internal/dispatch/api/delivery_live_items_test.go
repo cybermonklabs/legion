@@ -131,7 +131,7 @@ func TestTheItemsViewAnswersTheItemsRoutesBody(t *testing.T) {
 			t.Errorf("%s: the snapshot's revisions hold items %v, maps %v and counts %v, want its fields alone", sub,
 				snapshot.Revs.Items, snapshot.Revs.Maps, snapshot.Revs.Counts)
 		}
-		if fields := slices.Sorted(maps.Keys(snapshot.Revs.Fields)); !slices.Equal(fields, []string{"compare", "items", "limit", "offset", "total", "window"}) {
+		if fields := slices.Sorted(maps.Keys(snapshot.Revs.Fields)); !slices.Equal(fields, []string{"compare", "items", "limit", "min_n", "offset", "total", "window"}) {
 			t.Errorf("%s: the snapshot's revisions hold the fields %v, want every field of the body", sub, fields)
 		}
 		if len(itemsRowKeys(t, snapshot.Body)) == 0 {

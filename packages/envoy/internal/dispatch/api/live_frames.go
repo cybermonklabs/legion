@@ -552,7 +552,7 @@ var deliveryLiveKinds = map[string]deliveryLiveClasses{
 	evalItemsView: {
 		body: reflect.TypeFor[evalItemsResponse](),
 		whole: map[string][]string{
-			"items": nil, "total": nil, "limit": nil, "offset": nil, "window": nil, "compare": nil,
+			"items": nil, "total": nil, "limit": nil, "offset": nil, "window": nil, "compare": nil, "min_n": nil,
 		},
 		reads: viewReadsEvalItems,
 		parse: parseEvalItemsLiveView,

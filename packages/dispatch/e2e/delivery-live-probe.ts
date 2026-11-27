@@ -262,6 +262,7 @@ const ITEMS_FIELDS: Readonly<Record<keyof EvalItemsResponse, true>> = {
   compare: true,
   items: true,
   limit: true,
+  min_n: true,
   offset: true,
   total: true,
   window: true,

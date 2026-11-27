@@ -52,7 +52,8 @@
       "from": "2026-09-03T00:00:00Z",
       "to": "2026-10-01T00:00:00Z",
       "days": 28
-    }
+    },
+    "min_n": null
   },
   "revs": {
     "items": {},
@@ -62,6 +63,7 @@
       "compare": "ae7a4d6dcdc7266b",
       "items": "a7e0d88fd43b6278",
       "limit": "603ec818278d901d",
+      "min_n": "5b9bc4ba528108e4",
       "offset": "af63ad4c86019caf",
       "total": "af63af4c8601a015",
       "window": "04ae088b7addef8d"

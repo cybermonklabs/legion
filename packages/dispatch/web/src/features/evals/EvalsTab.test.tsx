@@ -201,7 +201,7 @@ function renderTab(
       </QueryClientProvider>
     </MemoryRouter>
   );
-  return { getEval, getLegionDaemon, getProjectDeliverySettings, listIssues };
+  return { getEval, getLegionDaemon, getProjectDeliverySettings, listIssues, queryClient };
 }
 
 /** The page's live socket, once it has opened one, as Dispatch accepts it. */
@@ -965,6 +965,7 @@ const stateRows: [string, () => Promise<void>][] = [
           compare: COMPARE,
           items: rows,
           limit: 200,
+          min_n: null,
           offset: 0,
           total: rows.length,
           window: WINDOW,
@@ -1093,8 +1094,11 @@ bunTest.each(stateRows)("%s", async (_row, run) => {
   }
 });
 
-// Spec R5: with no daemon, every source is missing whether the project has no settings row, has
-// delivery off, or has saved no deploy source (Dispatch saves delivery on only with one).
+// Spec R5, R19: with no daemon, every source is missing whether the project has no settings row,
+// has delivery off, or has saved no deploy source (Dispatch saves delivery on only with one). The
+// tab names both settings on one line and keeps the Logged section's view of the experiments open,
+// and the section draws under that line once its view holds an eval (ledger 61). A logged eval of
+// kind `legion` is the Legion view's, which the tab does not open, so it shows nowhere (ledger 23).
 const everySourceMissingRows: [string, ProjectDeliverySettings | null][] = [
   ["no settings row", null],
   ["delivery off", deliverySettings("ACME", { delivery: false })],
@@ -1102,10 +1106,10 @@ const everySourceMissingRows: [string, ProjectDeliverySettings | null][] = [
 ];
 
 bunTest.each(everySourceMissingRows)(
-  "with no daemon and %s, one line names both settings with links, and no section shows",
+  "with no daemon and %s, one line names both settings with links; an experiment draws in Logged under it, a legion eval nowhere",
   async (_row, settings) => {
     try {
-      renderTab(null, "?window=28d", settings);
+      const { queryClient } = renderTab(null, "?window=28d", settings);
       const socket = await openSocket();
       const line = await waitFor(() => {
         const found = document.querySelector<HTMLElement>("[data-missing-sources]");
@@ -1124,13 +1128,69 @@ bunTest.each(everySourceMissingRows)(
         "/projects/ACME/settings"
       );
       expect(screen.queryByRole("link", { name: "Delivery: not set up" })).toBeNull();
+      // The Logged section's view of the experiments stays open, and no other evals view: a
+      // logged eval of kind legion, which only the Legion view answers, shows nowhere.
+      await waitFor(() => expect(heldKinds(socket)).toEqual(["experiment"]));
       expect(sectionsDrawn()).toEqual([]);
-      await waitFor(() => expect(heldKinds(socket)).toEqual([]));
+
+      // The view answers no eval: still no section.
+      const sub = await answerView(socket, "experiment", answer([]));
+      // The first load ends with the snapshot, as a page's does before any later frame lands.
+      await waitFor(() => expect(queryClient.isFetching()).toBe(0));
+      expect(sectionsDrawn()).toEqual([]);
+
+      // An experiment is logged: the Logged section draws it, under the line.
+      serve(socket, deltaFrame(sub, [evalItem("widget-size", "experiment")]));
+      await waitFor(() => expect(sectionsDrawn()).toEqual(["logged"]));
+      expect(listed("Logged")).toEqual(["widget-size"]);
+      expect(
+        line.compareDocumentPosition(region("Logged")) & Node.DOCUMENT_POSITION_FOLLOWING
+      ).toBeTruthy();
+      expect(heldKinds(socket)).toEqual(["experiment"]);
     } finally {
       cleanup();
     }
   }
 );
+
+// Ledger 55: a page of this tree that a server of the release before serves, whose live hub
+// knows no view kind of the tab's, is refused each of the tab's views as a frame the server
+// cannot read (the hub's INVALID_FRAME for an unknown `view.kind`). The page closes its socket at
+// the first refusal, so the refusals after it never reach it. Each section then says that the
+// server does not serve the tab's views yet, in place of its loading line or its error, the merge
+// timeline too once opened, and the rest of the tab works.
+test("a server that refuses the tab's view kinds: each section says it does not serve the tab's views yet", async () => {
+  const user = userEvent.setup();
+  renderTab();
+  const socket = await openSocket();
+  await waitFor(() =>
+    expect(heldKinds(socket)).toEqual(["ci", "delivery", "experiment", "legion"])
+  );
+  const refusal = "view.kind must be timeline, measures, pipeline, legion or legion_issue";
+  for (const frame of socket.subscribes()) {
+    serve(socket, errorFrame(frame.sub, "INVALID_FRAME", refusal));
+  }
+  const unserved = (name: string) => region(name).querySelector("[data-unserved]")?.textContent;
+  const sectionNames = ["Target cards", "Legion measures", "CI health", "Deploys and lead time"];
+  await waitFor(() => {
+    for (const name of [...sectionNames, "Logged"]) {
+      expect(unserved(name)).toBe(`${name}: the server does not serve the Evals tab's views yet.`);
+    }
+  });
+  for (const name of [...sectionNames, "Logged"]) {
+    expect(within(region(name)).queryByRole("alert")).toBeNull();
+    expect(within(region(name)).queryByText(`${name}: loading…`)).toBeNull();
+  }
+  expect(sectionsDrawn()).toEqual(["cards", "legion", "ci", "deploys", "timeline", "logged"]);
+
+  // The rest of the tab works: the merge timeline opens, and says so too.
+  await user.click(screen.getByRole("button", { name: "Show the merge timeline" }));
+  await waitFor(() =>
+    expect(unserved("Merge timeline")).toBe(
+      "Merge timeline: the server does not serve the Evals tab's views yet."
+    )
+  );
+});
 
 test('a live section with no data reads "no data", not 0', async () => {
   renderTab();

@@ -8,7 +8,14 @@
 // under the lane, and each row column's compare value beside its own. Each value it draws names
 // itself as the chart's table names it (`data-chart`, `data-series`, `data-statistic`, `data-x`,
 // `data-range`, `data-value`), so the table holds every number the chart draws.
-import type { ReactNode } from "react";
+//
+// Each lane is as high as the model's `pitch` (24 px down to 18 px as the lanes grow from 26 to
+// 35), and the chart takes the platform's narrow form where its wide form would not fit
+// (`useNarrowForm`): no header over the groups' names, the lanes' names and the end texts, each
+// group's label over its first lane's name in the one column of names, no rule between groups,
+// and each lane's end text under its line, ending where its newest reading stands. So the chart
+// never scrolls sideways.
+import { type ReactNode, type RefObject, useLayoutEffect, useRef, useState } from "react";
 
 import {
   borderDefault,
@@ -26,17 +33,28 @@ import type { Lane, LaneRange, LaneSpan, LanesModel } from "./lanes";
 
 const DAY = 24 * 60 * 60 * 1000;
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-/** A lane's height, its line's place in it, and the compare range's line under it. */
-const LANE = 24;
-const MIDDLE = 12;
-const UNDER = 20;
 /** A tier of the rules' labels: a label and its detail. */
 const TIER = 24;
 /** About how much of the plot's width a character of a rule's label takes, in percent. */
 const CHAR_PERCENT = 1.1;
+/** A lane chart narrower than this takes its narrow form, and so does one whose wide form leaves
+ *  its plot less than PLOT_MIN px beside its columns: room for five dates 55 px apart (the
+ *  platform's lane chart). */
+const NARROW_WIDTH = 560;
+const PLOT_MIN = 300;
 
 function isLanesModel(model: ChartModel): model is LanesModel {
   return "lanes" in model;
+}
+
+/** A lane's geometry at its height (`LanesPlot.pitch`): its line's place in it, the compare
+ *  range's line under that, and its newest state's bar, half its height, as the platform draws
+ *  it. */
+interface LaneBox {
+  readonly height: number;
+  readonly middle: number;
+  readonly under: number;
+  readonly bar: number;
 }
 
 /** The DOM names of a value of `point`, as the chart's table names it. */
@@ -86,15 +104,52 @@ interface Place {
   readonly width: (from: number, to: number) => string;
 }
 
+/**
+ * Whether the chart drawn in `chart` takes its narrow form: where it is narrower than
+ * NARROW_WIDTH, or its wide form leaves its plot less than PLOT_MIN px. The wide form's columns
+ * are measured whenever it is drawn, and held while the narrow form is, whose columns are not
+ * the wide form's, so a chart that has room again takes the wide form back. A chart that is not
+ * laid out (0 px wide, as in a test's DOM) takes the wide form.
+ */
+function useNarrowForm(chart: RefObject<HTMLDivElement | null>): boolean {
+  const [width, setWidth] = useState(0);
+  const [columns, setColumns] = useState(0);
+  const narrow = width > 0 && (width < NARROW_WIDTH || width - columns < PLOT_MIN);
+  useLayoutEffect(() => {
+    const element = chart.current;
+    if (element === null) return;
+    const read = () => setWidth(element.getBoundingClientRect().width);
+    read();
+    if (typeof ResizeObserver === "undefined") return;
+    const sizes = new ResizeObserver(read);
+    sizes.observe(element);
+    return () => sizes.disconnect();
+  }, [chart]);
+  // The room the wide form's columns take beside its plot, read after each paint of that form.
+  useLayoutEffect(() => {
+    const element = chart.current;
+    if (narrow || element === null) return;
+    const plot = element.querySelector("[data-lane-axis]");
+    if (plot === null) return;
+    const drawnAt = element.getBoundingClientRect().width;
+    if (drawnAt === 0) return;
+    const room = drawnAt - plot.getBoundingClientRect().width;
+    setColumns((held) => (Math.abs(held - room) < 1 ? held : room));
+  });
+  return narrow;
+}
+
 /** One range's states and marks of a lane: the window's in their colours, the compare range's
  *  muted under the lane. */
 function LaneMarks({
+  box,
   lane,
   model,
   place,
   point,
   range,
 }: {
+  box: LaneBox;
   lane: LaneRange;
   model: LanesModel;
   place: Place;
@@ -122,8 +177,8 @@ function LaneMarks({
             strokeWidth={2}
             x1={at(span.from)}
             x2={at(span.to)}
-            y1={UNDER}
-            y2={UNDER}
+            y1={box.under}
+            y2={box.under}
           >
             {title}
           </line>
@@ -133,7 +188,7 @@ function LaneMarks({
         <circle
           className={chartLine.comparePoint}
           cx={at(span.from)}
-          cy={UNDER}
+          cy={box.under}
           data-lane-span={span.state}
           key={key}
           r={3}
@@ -149,7 +204,7 @@ function LaneMarks({
           key={key}
           width={width(span.from, span.to)}
           x={at(span.from)}
-          y={UNDER - 2}
+          y={box.under - 2}
           {...names}
         >
           {title}
@@ -161,7 +216,7 @@ function LaneMarks({
         <circle
           className={`${classes.fill} ${classes.stroke}`}
           cx={at(span.from)}
-          cy={MIDDLE}
+          cy={box.middle}
           data-lane-span={span.state}
           data-lane-shape="dot"
           key={key}
@@ -184,8 +239,8 @@ function LaneMarks({
           strokeWidth={span.state === "partial" ? 2 : 1.5}
           x1={at(span.from)}
           x2={at(span.to)}
-          y1={MIDDLE}
-          y2={MIDDLE}
+          y1={box.middle}
+          y2={box.middle}
           {...names}
         >
           {title}
@@ -197,12 +252,12 @@ function LaneMarks({
         className={`${classes.fill} ${classes.stroke}`}
         data-lane-shape="bar"
         data-lane-span={span.state}
-        height={LANE / 2}
+        height={box.bar}
         key={key}
         strokeWidth={1}
         width={width(span.from, span.to)}
         x={at(span.from)}
-        y={MIDDLE - LANE / 4}
+        y={box.middle - box.bar / 2}
         {...names}
       >
         {title}
@@ -220,7 +275,7 @@ function LaneMarks({
           <circle
             className={chartLine.comparePoint}
             cx={at(mark.at)}
-            cy={UNDER}
+            cy={box.under}
             data-lane-mark={mark.id}
             key={mark.id}
             r={3}
@@ -229,11 +284,17 @@ function LaneMarks({
           </circle>
         ) : (
           <g data-lane-mark={mark.id} key={mark.id}>
-            <circle className={overall.fill} cx={at(mark.at)} cy={MIDDLE} r={4.5}>
+            <circle className={overall.fill} cx={at(mark.at)} cy={box.middle} r={4.5}>
               <title>{`${mark.note === "" ? "mark" : mark.note}: ${timeLabel(mark.at)}`}</title>
             </circle>
             {mark.note === "" ? null : (
-              <text className={chartPlot.text} dx={7} fontSize={9} x={at(mark.at)} y={8}>
+              <text
+                className={chartPlot.text}
+                dx={7}
+                fontSize={9}
+                x={at(mark.at)}
+                y={box.middle - 4}
+              >
                 {mark.note}
               </text>
             )}
@@ -248,12 +309,14 @@ function LaneMarks({
 /** One lane's plot: its line (none where groups part the lanes), the dated rules across it, and
  *  its states and marks. */
 function LanePlot({
+  box,
   compare,
   index,
   lane,
   model,
   place,
 }: {
+  box: LaneBox;
   compare: boolean;
   index: number;
   lane: Lane;
@@ -269,11 +332,11 @@ function LanePlot({
       aria-label={`${lane.row}${lane.end === null ? "" : `: ${lane.end.text}`}`}
       className="block w-full overflow-visible"
       data-lane={lane.row}
-      height={LANE}
+      height={box.height}
       role="img"
     >
       {model.lanes.grouped ? null : (
-        <line className={chartPlot.grid} x1="0%" x2="100%" y1={MIDDLE} y2={MIDDLE} />
+        <line className={chartPlot.grid} x1="0%" x2="100%" y1={box.middle} y2={box.middle} />
       )}
       {model.lanes.rules.map((rule) => (
         <line
@@ -283,24 +346,47 @@ function LanePlot({
           x1={at(rule.at)}
           x2={at(rule.at)}
           y1={0}
-          y2={LANE}
+          y2={box.height}
         />
       ))}
       {compare ? (
-        <LaneMarks lane={lane.compare} model={model} place={place} point={point} range="compare" />
+        <LaneMarks
+          box={box}
+          lane={lane.compare}
+          model={model}
+          place={place}
+          point={point}
+          range="compare"
+        />
       ) : null}
-      <LaneMarks lane={lane.window} model={model} place={place} point={point} range="window" />
+      <LaneMarks
+        box={box}
+        lane={lane.window}
+        model={model}
+        place={place}
+        point={point}
+        range="window"
+      />
     </svg>
   );
 }
 
 /**
  * Draws a `lanes` model (`lanesModel`): its mock-up line, its headers and the labels of its dated
- * rules, each lane it draws, its time axis, and the lines under it.
+ * rules, each lane it draws, its time axis, and the lines under it, in the wide form, or in the
+ * narrow form where the wide one does not fit (`useNarrowForm`).
  */
 export function LanesRenderer({ compare, model }: ChartRendererProps): ReactNode {
+  const chart = useRef<HTMLDivElement>(null);
+  const narrow = useNarrowForm(chart);
   if (!isLanesModel(model)) return null;
   const { lanes: plot } = model;
+  const box: LaneBox = {
+    bar: plot.pitch / 2,
+    height: plot.pitch,
+    middle: plot.pitch / 2,
+    under: plot.pitch - 4,
+  };
   const span = plot.to - plot.from;
   const share = (ms: number) => Math.min(1, Math.max(0, (ms - plot.from) / span)) * 100;
   const place: Place = {
@@ -313,12 +399,15 @@ export function LanesRenderer({ compare, model }: ChartRendererProps): ReactNode
     ...column,
     series: model.series[index + 1],
   }));
+  // The narrow form stands each group's label in the column of names and each end text under its
+  // lane, so it has no column of either.
+  const grouped = plot.grouped && !narrow;
   const template = [
-    ...(plot.grouped ? ["minmax(0, max-content)"] : []),
+    ...(grouped ? ["minmax(0, max-content)"] : []),
     "minmax(0, max-content)",
     ...columns.map(() => "max-content"),
-    "minmax(10rem, 1fr)",
-    "minmax(0, max-content)",
+    narrow ? "minmax(9.375rem, 1fr)" : "minmax(10rem, 1fr)",
+    ...(narrow ? [] : ["minmax(0, max-content)"]),
   ].join(" ");
   // The rules' labels in tiers, a label in the first tier where it meets no label before it.
   const tiers: number[] = [];
@@ -332,18 +421,20 @@ export function LanesRenderer({ compare, model }: ChartRendererProps): ReactNode
       tiers[tier] = left + width;
       return { ...rule, tier };
     });
-  const headed =
-    plot.groupTitle !== null ||
-    plot.namesTitle !== null ||
-    plot.endTitle !== null ||
-    columns.length > 0 ||
-    rules.length > 0;
+  // The narrow form heads only its row columns and its dated rules.
+  const titled =
+    !narrow && (plot.groupTitle !== null || plot.namesTitle !== null || plot.endTitle !== null);
+  const headed = titled || columns.length > 0 || rules.length > 0;
   const head = `text-xs font-medium ${textSecondaryOnCanvas}`;
   const drawn = plot.lanes.slice(0, plot.drawn);
-  const cell = (index: number, group: string | null) =>
-    `flex min-h-6 items-center px-1 ${group !== null && index > 0 ? `border-t ${borderDefault}` : ""}`;
+  const lineHeight = { minHeight: box.height };
   return (
-    <div className="flex min-w-0 flex-col gap-1" data-lanes>
+    <div
+      className="flex min-w-0 flex-col gap-1"
+      data-lane-form={narrow ? "narrow" : "wide"}
+      data-lanes
+      ref={chart}
+    >
       {plot.mockup === null ? null : (
         <p className={`text-xs font-medium ${textMutedOnSurface}`} data-mockup-line>
           {plot.mockup}
@@ -356,14 +447,14 @@ export function LanesRenderer({ compare, model }: ChartRendererProps): ReactNode
           </p>
         )
       ) : (
-        <div className="relative overflow-x-auto">
+        <div className="relative min-w-0">
           <div className="grid text-xs" style={{ gridTemplateColumns: template }}>
             {headed ? (
               <>
-                {plot.grouped ? (
-                  <span className={`${head} px-1`}>{plot.groupTitle ?? ""}</span>
-                ) : null}
-                <span className={`${head} self-end px-1`}>{plot.namesTitle ?? ""}</span>
+                {grouped ? <span className={`${head} px-1`}>{plot.groupTitle ?? ""}</span> : null}
+                <span className={`${head} self-end px-1`}>
+                  {narrow ? "" : (plot.namesTitle ?? "")}
+                </span>
                 {columns.map((column) => (
                   <span
                     className={`${head} self-end px-1 ${column.field === "value" ? "text-right" : ""}`}
@@ -405,23 +496,67 @@ export function LanesRenderer({ compare, model }: ChartRendererProps): ReactNode
                     </g>
                   ))}
                 </svg>
-                <span className={`${head} self-end px-1`}>{plot.endTitle ?? ""}</span>
+                {narrow ? null : (
+                  <span className={`${head} self-end px-1`}>{plot.endTitle ?? ""}</span>
+                )}
               </>
             ) : null}
             {drawn.map((lane, index) => {
-              const row = cell(index, lane.group);
+              const row = `flex items-center px-1 ${
+                !narrow && lane.group !== null && index > 0 ? `border-t ${borderDefault}` : ""
+              }`;
+              const end = (
+                <span
+                  className={`${narrow ? "block text-right text-[11px]" : "flex items-center gap-1 px-1"} ${
+                    lane.end === null ? textPrimaryOnSurface : STATE_TEXT[lane.end.state]
+                  }`}
+                  data-lane-end
+                  data-state={lane.end?.state}
+                  style={
+                    narrow
+                      ? // Under its lane's line, ending where its newest reading stands.
+                        {
+                          paddingRight: `${(100 - share(lane.window.spans.at(-1)?.to ?? plot.to)).toFixed(3)}%`,
+                        }
+                      : lineHeight
+                  }
+                >
+                  {/* Its newest reading's own words, as plain text: `eval-reading-note` */}
+                  {lane.end?.text}
+                </span>
+              );
               return (
                 <div className="contents" data-lane-row={lane.row} key={lane.row}>
-                  {plot.grouped ? (
+                  {grouped ? (
                     <span
                       className={`${row} max-w-[17.5rem] font-semibold ${textPrimaryOnSurface}`}
+                      data-lane-group
+                      style={lineHeight}
                     >
                       {lane.group ?? ""}
                     </span>
                   ) : null}
-                  <span className={`${row} max-w-[17.5rem] ${textPrimaryOnSurface}`} data-lane-name>
-                    {lane.row}
-                  </span>
+                  {narrow ? (
+                    <span
+                      className={`flex max-w-[17.5rem] flex-col justify-center px-1 ${textPrimaryOnSurface}`}
+                      style={lineHeight}
+                    >
+                      {lane.group === null ? null : (
+                        <span className="font-semibold" data-lane-group>
+                          {lane.group}
+                        </span>
+                      )}
+                      <span data-lane-name>{lane.row}</span>
+                    </span>
+                  ) : (
+                    <span
+                      className={`${row} max-w-[17.5rem] ${textPrimaryOnSurface}`}
+                      data-lane-name
+                      style={lineHeight}
+                    >
+                      {lane.row}
+                    </span>
+                  )}
                   {columns.map((column) => {
                     const point = column.series?.points[index];
                     const statistic = column.field;
@@ -433,6 +568,7 @@ export function LanesRenderer({ compare, model }: ChartRendererProps): ReactNode
                           column.field === "value" ? "justify-end" : ""
                         }`}
                         key={column.label}
+                        style={lineHeight}
                       >
                         {point === undefined || own === undefined ? null : (
                           <span
@@ -469,27 +605,26 @@ export function LanesRenderer({ compare, model }: ChartRendererProps): ReactNode
                       </span>
                     );
                   })}
-                  <span className={row}>
+                  <span
+                    className={narrow ? "flex flex-col justify-center px-1" : row}
+                    data-lane-plot
+                    style={lineHeight}
+                  >
                     <LanePlot
+                      box={box}
                       compare={compare}
                       index={index}
                       lane={lane}
                       model={model}
                       place={place}
                     />
+                    {narrow ? end : null}
                   </span>
-                  <span
-                    className={`${row} gap-1 ${lane.end === null ? textPrimaryOnSurface : STATE_TEXT[lane.end.state]}`}
-                    data-lane-end
-                    data-state={lane.end?.state}
-                  >
-                    {/* Its newest reading's own words, as plain text: `eval-reading-note` */}
-                    {lane.end?.text}
-                  </span>
+                  {narrow ? null : end}
                 </div>
               );
             })}
-            {plot.grouped ? <span /> : null}
+            {grouped ? <span /> : null}
             <span />
             {columns.map((column) => (
               <span key={column.label} />
@@ -516,7 +651,7 @@ export function LanesRenderer({ compare, model }: ChartRendererProps): ReactNode
                 </g>
               ))}
             </svg>
-            <span />
+            {narrow ? null : <span />}
             {plot.xTitle === null ? null : (
               <p
                 className={`text-center text-[10px] ${textMutedOnSurface}`}

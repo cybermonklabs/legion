@@ -206,7 +206,7 @@ func TestEveryLiveKindDeclaresItsBehaviourOnItsEntry(t *testing.T) {
 	// no P0 write nor any version of another eval marks it.
 	items := deliveryLiveKinds[evalItemsView]
 	if items.body != reflect.TypeFor[evalItemsResponse]() || len(items.lists)+len(items.maps)+len(items.counts) != 0 ||
-		!slices.Equal(slices.Sorted(maps.Keys(items.whole)), []string{"compare", "items", "limit", "offset", "total", "window"}) {
+		!slices.Equal(slices.Sorted(maps.Keys(items.whole)), []string{"compare", "items", "limit", "min_n", "offset", "total", "window"}) {
 		t.Errorf("the items view sends %v of %v whole, lists %v, maps %v, counts %v; want every field of the items route's body whole",
 			slices.Sorted(maps.Keys(items.whole)), items.body, items.lists, items.maps, items.counts)
 	}

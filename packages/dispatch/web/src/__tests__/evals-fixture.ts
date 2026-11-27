@@ -141,12 +141,13 @@ export function itemRow(key: string, kind: string, cols: Record<string, unknown>
   };
 }
 
-/** One page of an eval's rows, `rows` of `total` from `offset` on, over `WINDOW`. */
+/** One page of an eval's rows, `rows` of `total` from `offset` on, over `WINDOW`, ranked by no
+ *  floor (`min_n`, which only pr-ci's slowest jobs name). */
 export function itemsPage(
   rows: EvalItemRow[],
   total = rows.length,
   offset = 0,
   limit = 200
 ): EvalItemsResponse {
-  return { compare: null, items: rows, limit, offset, total, window: WINDOW };
+  return { compare: null, items: rows, limit, min_n: null, offset, total, window: WINDOW };
 }

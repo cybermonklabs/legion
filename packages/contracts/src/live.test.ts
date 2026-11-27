@@ -226,6 +226,7 @@ const ITEMS_KEYS = allOf<keyof EvalItemsResponse>()([
   "offset",
   "window",
   "compare",
+  "min_n",
 ]);
 /** An items row's keys. Only a before-window reading or a bucketed reading carries its mark. */
 const ITEM_ROW_KEYS = allOf<keyof EvalItemRow>()([

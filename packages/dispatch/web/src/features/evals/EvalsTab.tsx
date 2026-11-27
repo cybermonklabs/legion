@@ -21,6 +21,7 @@ import { LegionSection } from "./LegionSection";
 import { TargetCards } from "./TargetCards";
 import { TimelineSection } from "./TimelineSection";
 import { narrowingQuery, useSettledSearch, useTimelineUrlState } from "./timeline-url";
+import { useUnservedViews } from "./unserved";
 import { brushDays, useTabScopes } from "./useEvalsScope";
 import type { EvalsScope, EvalsViewSelect, EvalsViewState } from "./useEvalsViews";
 
@@ -68,6 +69,14 @@ function sectionsOf(legion: boolean, delivery: boolean): Section[] {
     return section.id === "timeline" || kinds.length > 0 ? [{ ...section, kinds }] : [];
   });
 }
+
+/** The one section of a project with every source missing (spec R19; ledger item 61): the Logged
+ *  section, its view of the experiment evals open, since an experiment is no source's. It draws
+ *  under the line naming the settings once it holds an eval; a logged eval of another kind is in
+ *  that kind's view, which the tab does not open, so it shows nowhere (ledger item 23). */
+const LOGGED_ALONE: readonly Section[] = sectionsOf(false, false).filter(
+  (section) => section.id === "logged"
+);
 
 /** The line the header shows for a project with no delivery settings (spec R5, plan D3):
  *  "Delivery: not set up", linking to the project's settings, where its delivery is set up
@@ -214,7 +223,8 @@ function drawSection(
  * settings, which decide whether the delivery and CI sections, cards and targets show: with no
  * settings row or delivery off they do not, though Dispatch's eval reads still hold those evals,
  * and with no row the header says delivery is not set up; with no daemon either, every source is
- * missing, and the tab shows one line naming both settings and no section.
+ * missing, and the tab shows one line naming both settings, under which the Logged section draws
+ * the project's experiments once its view holds one (`LOGGED_ALONE`).
  * Until each read answers its sections show, so their views are opened with the others rather
  * than after them. The merge timeline opens no view until the reader opens it (spec R13); its
  * brush sets the target cards' days and its Repository facet the repository every number reads
@@ -222,7 +232,8 @@ function drawSection(
  * narrow the delivery view the cards and the Deploys and lead time section read (D7a); the first
  * paint is never narrowed, so a tab opened with one set paints from the unnarrowed delivery view
  * and draws the narrowed one once it lands (`useTabScopes`). A card's or a chart's title opens the
- * number's panel (plan D12).
+ * number's panel (plan D12). Where the server does not serve the tab's views, a server of the
+ * release before (`useUnservedViews`), each section says so, and the rest of the app works.
  *
  * The compare range a preset's default names moves at each UTC midnight the tab stays open past,
  * with the window the server moves (`useEvalsScope`).
@@ -244,8 +255,9 @@ export function EvalsTab({ project }: { project: string }): ReactNode {
     narrowingQuery(timeline.filters, search)
   );
   const days = useMemo(() => brushDays(state.brush), [state.brush]);
-  const sections = everySourceMissing ? [] : sectionsOf(legion, delivery);
+  const sections = everySourceMissing ? LOGGED_ALONE : sectionsOf(legion, delivery);
   const kinds = [...new Set(sections.flatMap((section) => section.kinds))];
+  const unserved = useUnservedViews(scope, kinds, legion);
   return (
     <div className="flex flex-col gap-6">
       <div className="flex flex-col gap-2">
@@ -263,6 +275,7 @@ export function EvalsTab({ project }: { project: string }): ReactNode {
               onBrush={(brush) => setState({ ...state, brush })}
               project={project}
               scope={scope}
+              unserved={unserved}
             />
           ) : (
             <EvalsSection
@@ -272,6 +285,8 @@ export function EvalsTab({ project }: { project: string }): ReactNode {
               scope={section.id === "cards" ? cardsScope : scope}
               select={section.select}
               title={section.title}
+              unserved={unserved}
+              untilHeld={everySourceMissing}
               windowOnly={section.windowOnly}
             >
               {drawSection(section.id, project, scope, delivery, days)}

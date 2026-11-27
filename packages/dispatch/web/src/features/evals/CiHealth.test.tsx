@@ -149,19 +149,18 @@ test("the slowest-jobs table respects the floor", async () => {
     new URLSearchParams(slowest.view.kind === "items" ? slowest.view.query : "").toString()
   ).toBe("repo=acme%2Fwidgets&sort=median&limit=5");
   const list = screen.getByRole("region", { name: "PR CI: slowest jobs" });
-  expect(list.textContent).toContain("a job needs 50 timed results in the window to be ranked");
 
-  serve(socket, slowest, itemsPage([]));
+  // The route ranked by pr-ci's job series' min_n as the catalogue seeds it, and names it.
+  serve(socket, slowest, { ...itemsPage([]), min_n: 50 });
   await waitFor(() =>
     expect(
       within(list).getByText("No job has 50 timed results in the window yet.")
     ).toBeInTheDocument()
   );
+  expect(list.textContent).toContain("a job needs 50 timed results in the window to be ranked");
 
-  serve(
-    socket,
-    slowest,
-    itemsPage(
+  serve(socket, slowest, {
+    ...itemsPage(
       [
         itemRow("build / e2e", "job", {
           median_minutes: 42,
@@ -179,14 +178,42 @@ test("the slowest-jobs table respects the floor", async () => {
       7,
       0,
       5
-    )
-  );
+    ),
+    min_n: 50,
+  });
   await waitFor(() =>
     expect(cells("PR CI: slowest jobs")).toEqual([
       ["build / e2e", "42m", "55m", "60", "90%"],
       ["build / unit", "9.5m", "12m", "50", "100%"],
     ])
   );
+});
+
+test("the slowest jobs name the floor their answer ranked by: a floor of 30 draws as 30", async () => {
+  const socket = await renderSection([timed("pr-ci", PR_CI)]);
+  const slowest = await jobsView(socket, "median");
+  const list = screen.getByRole("region", { name: "PR CI: slowest jobs" });
+  // Until the answer lands the list names no floor: the page holds none of its own.
+  expect(list.textContent).toContain("The 5 slowest by their median over the window.");
+  expect(list.textContent).not.toContain("timed result");
+
+  serve(socket, slowest, { ...itemsPage([]), min_n: 30 });
+  await waitFor(() =>
+    expect(
+      within(list).getByText("No job has 30 timed results in the window yet.")
+    ).toBeInTheDocument()
+  );
+  expect(list.textContent).toContain("a job needs 30 timed results in the window to be ranked");
+  expect(list.textContent).not.toContain("50");
+
+  // A min_n a person cleared ranks by one timed result, which the answer names.
+  serve(socket, slowest, { ...itemsPage([]), min_n: 1 });
+  await waitFor(() =>
+    expect(
+      within(list).getByText("No job has 1 timed result in the window yet.")
+    ).toBeInTheDocument()
+  );
+  expect(list.textContent).toContain("a job needs 1 timed result in the window to be ranked");
 });
 
 test("the failing table lists failures and results", async () => {

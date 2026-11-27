@@ -1,4 +1,4 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, spyOn, test } from "bun:test";
 import { cleanup, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { createElement } from "react";
@@ -8,7 +8,7 @@ import type { EvalRange } from "../chart-model";
 import { EvalChart } from "../EvalChart";
 import fixture from "./__fixtures__/lanes-readings.json";
 import { type DeclaredInput, type DeclaredSpec, type MarkState, STATE_TEXT } from "./kind";
-import { type LanesModel, lanesKind } from "./lanes";
+import { type LanesModel, lanePitch, lanesKind } from "./lanes";
 import { readingsOf } from "./readings";
 
 // The lanes kind (dispatch://INFRA-2918/artifact/plan-md, D10, T20): its model's lanes, states,
@@ -570,4 +570,139 @@ test("the chart draws each lane's states, marks, end and cells, the dated rules,
   await user.click(within(figure).getByRole("checkbox", { name: "Compare" }));
   expect(figure.querySelector('[data-lane-range="compare"]')).toBeNull();
   expect(figure.querySelector("[data-ghost]")).toBeNull();
+});
+
+/** `count` lanes, each one reading of the fixture's first. */
+function lanesOf(count: number): typeof fixture.items {
+  return Array.from({ length: count }, (_, index) => ({
+    ...fixture.items[0],
+    cols: { ...fixture.items[0]?.cols, id: `many-${index}` },
+    row_key: `project-${String(index).padStart(2, "0")}`,
+  })) as typeof fixture.items;
+}
+
+/** Lays every lane chart out `chart` px wide and its plot, the time axis, `plot` px wide, as a
+ *  browser would; happy-dom lays nothing out. */
+function layOut(chart: number, plot = 0): { mockRestore: () => void } {
+  return spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
+    this: Element
+  ) {
+    const width = this.matches("[data-lanes]")
+      ? chart
+      : this.matches("[data-lane-axis]")
+        ? plot
+        : 0;
+    return new DOMRect(0, 0, width, 0);
+  });
+}
+
+test("a lane is 24 px high for 26 lanes or fewer, and 23 down to 18 px for 27 to 35, as the platform draws them", () => {
+  expect([1, 26, 27, 28, 30, 34, 35].map(lanePitch)).toEqual([24, 24, 23, 22, 21, 18, 18]);
+  expect(model(ENROLMENTS).lanes.pitch).toBe(24);
+  const many = model({ ...ENROLMENTS, row_columns: undefined }, input(COMPARE, lanesOf(40)));
+  expect([many.lanes.drawn, many.lanes.pitch]).toEqual([35, 18]);
+});
+
+test("30 lanes draw 21 px high, each lane's line, dot, rule and row at that height", () => {
+  const drawn = model({ ...ENROLMENTS, row_columns: undefined }, input(COMPARE, lanesOf(30)));
+  expect(drawn.lanes.pitch).toBe(21);
+  render(createElement(EvalChart, { model: drawn, renderer: lanesKind.renderer }));
+  const figure = screen.getByRole("figure", { name: "Each enrolment" });
+  const lanes = [...figure.querySelectorAll("svg[data-lane]")];
+  expect(lanes).toHaveLength(30);
+  const each = (read: (lane: Element) => string | null | undefined) => [
+    ...new Set(lanes.map(read)),
+  ];
+  expect(each((lane) => lane.getAttribute("height"))).toEqual(["21"]);
+  // The newest state's dot stands on the lane's line, half the lane down; the dated rule crosses
+  // the whole lane.
+  expect(
+    each((lane) =>
+      lane.querySelector('[data-lane-range="window"] [data-lane-shape="dot"]')?.getAttribute("cy")
+    )
+  ).toEqual(["10.5"]);
+  expect(
+    each((lane) => lane.querySelector('line[stroke-dasharray="3 3"]')?.getAttribute("y2"))
+  ).toEqual(["21"]);
+  expect([
+    ...new Set(
+      [...figure.querySelectorAll<HTMLElement>("[data-lane-name], [data-lane-plot]")].map(
+        (cell) => cell.style.minHeight
+      )
+    ),
+  ]).toEqual(["21px"]);
+});
+
+test("a chart under 560 px, or whose plot would keep under 300 px, takes the narrow form: no header but its columns', each end text under its lane", () => {
+  const narrowAt = (chart: number, plot: number) => {
+    const layout = layOut(chart, plot);
+    try {
+      render(createElement(EvalChart, { model: model(ENROLMENTS), renderer: lanesKind.renderer }));
+      return screen
+        .getByRole("figure", { name: "Each enrolment" })
+        .querySelector("[data-lanes]")
+        ?.getAttribute("data-lane-form");
+    } finally {
+      layout.mockRestore();
+      cleanup();
+    }
+  };
+  // 390 px: narrow, whatever its columns; 700 px whose columns leave the plot 250 px: narrow; 1,140
+  // px whose plot keeps 800 px: wide; and laid out nowhere (happy-dom): wide.
+  expect([narrowAt(390, 250), narrowAt(700, 250), narrowAt(1140, 800), narrowAt(0, 0)]).toEqual([
+    "narrow",
+    "narrow",
+    "wide",
+    "wide",
+  ]);
+
+  const layout = layOut(390);
+  try {
+    render(createElement(EvalChart, { model: model(ENROLMENTS), renderer: lanesKind.renderer }));
+    const figure = screen.getByRole("figure", { name: "Each enrolment" });
+    // No header over the lanes' names or their end texts; the row columns keep theirs, and the
+    // dated rules their labels.
+    expect(within(figure).queryByText("Project")).toBeNull();
+    expect(within(figure).queryByText("Where it stands")).toBeNull();
+    expect(within(figure).getByText("First reply, hours")).toBeTruthy();
+    expect(figure.querySelector("[data-lane-rules]")?.textContent).toBe("Launchfirst wave");
+    // Each lane's end text stands under its line, in its lane's cell, ending where its newest
+    // reading stands, and in its state's colour.
+    expect(
+      [...figure.querySelectorAll("[data-lane-plot] [data-lane-end]")].map((end) => end.textContent)
+    ).toEqual(["proved in CI", "Waits on its maintainer", "Merged, no proof", "Waits on us", ""]);
+    expect(figure.querySelectorAll("[data-lane-end]")).toHaveLength(5);
+    const end = figure.querySelector<HTMLElement>('[data-lane-row="sqlpage"] [data-lane-end]');
+    expect(end?.style.paddingRight).toMatch(/^\d+(\.\d+)?%$/);
+    expect(end?.getAttribute("class")).toContain(STATE_TEXT.proved);
+    // Nothing scrolls sideways.
+    expect(figure.querySelector(".overflow-x-auto")).toBeNull();
+    cleanup();
+
+    // With groups, each group's label stands over its first lane's name, in the one column of
+    // names, with no rule between the groups and no header over the labels.
+    render(
+      createElement(EvalChart, {
+        model: model({
+          ...ENROLMENTS,
+          group_label: "Maintainer",
+          groups: [
+            { label: "Invited", rows: ["mod-host", "sqlpage"] },
+            { label: "Listed", rows: ["libreac", "curl"] },
+          ],
+        }),
+        renderer: lanesKind.renderer,
+      })
+    );
+    const grouped = screen.getByRole("figure", { name: "Each enrolment" });
+    const names = (row: string) =>
+      grouped.querySelector(`[data-lane-row="${row}"] [data-lane-name]`)?.parentElement;
+    expect(names("mod-host")?.textContent).toBe("Invitedmod-host");
+    expect(names("sqlpage")?.textContent).toBe("sqlpage");
+    expect(names("libreac")?.querySelector("[data-lane-group]")?.textContent).toBe("Listed");
+    expect(within(grouped).queryByText("Maintainer")).toBeNull();
+    expect(grouped.querySelector("[data-lane-row] .border-t")).toBeNull();
+  } finally {
+    layout.mockRestore();
+  }
 });

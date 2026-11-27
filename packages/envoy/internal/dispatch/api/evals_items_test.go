@@ -283,6 +283,61 @@ func TestTheSlowestJobsItemsAreThePipelinesSlowestJobs(t *testing.T) {
 	}
 }
 
+// TestTheSlowestJobsAnswerNamesItsFloor: pr-ci's items sorted by median name the floor they ranked
+// its jobs by (min_n), so a page names it rather than the catalogue's constant: the job series'
+// min_n as the catalogue seeds it (measures.SlowestMinResults), then as a register write sets it,
+// and 1 where a write sets 0, since a job needs a timed result to have a median, as the Pipeline
+// states its own floor. Every other read of the items answers min_n null, and so does a read sorted
+// by median of an eval with no job series, which ranks no job.
+func TestTheSlowestJobsAnswerNamesItsFloor(t *testing.T) {
+	t.Parallel()
+	handler, _ := newTestHandlerWithStore(t)
+	createTestProject(t, handler, "EVL")
+	floor := func(slug, query string) string {
+		t.Helper()
+		body := evalGet[map[string]json.RawMessage](t, handler, evalItemsPath("EVL", slug)+"?"+query)
+		named, held := body["min_n"]
+		if !held {
+			return "no min_n"
+		}
+		return string(named)
+	}
+	requireFloors := func(when string, want map[string]string) {
+		t.Helper()
+		for _, query := range slices.Sorted(maps.Keys(want)) {
+			if got := floor(evals.SlugPRCI, query); got != want[query] {
+				t.Errorf("%s: pr-ci's items ?%s answer min_n %s, want %s", when, query, got, want[query])
+			}
+		}
+	}
+	setMinN := func(minN int) {
+		t.Helper()
+		registered := evalRequest(t, handler, http.MethodPost, "/api/v1/projects/EVL/evals", map[string]any{
+			"slug": evals.SlugPRCI, "series": []any{map[string]any{"series": evals.SeriesJobs, "min_n": minN}},
+		}, "pr-ci-min-n-"+strconv.Itoa(minN))
+		if registered.Code != http.StatusCreated && registered.Code != http.StatusOK {
+			t.Fatalf("set pr-ci's job min_n to %d: status %d, body %s", minN, registered.Code, registered.Body.String())
+		}
+	}
+
+	requireFloors("as the catalogue seeds pr-ci", map[string]string{
+		"sort=median": strconv.Itoa(measures.SlowestMinResults), "sort=failures": "null", "row_kind=job": "null", "": "null",
+	})
+	setMinN(30)
+	requireFloors("at a min_n of 30", map[string]string{"sort=median": "30", "sort=failures": "null"})
+	setMinN(0)
+	requireFloors("at a min_n of 0", map[string]string{"sort=median": "1"})
+
+	logged := evalRequest(t, handler, http.MethodPost, "/api/v1/projects/EVL/evals/review-time/readings",
+		map[string]any{"readings": []any{reading("minutes", 10, time.Now().Add(-time.Hour))}}, "review-time-reading")
+	if logged.Code != http.StatusCreated {
+		t.Fatalf("log review-time's reading: status %d, body %s", logged.Code, logged.Body.String())
+	}
+	if got := floor("review-time", "sort=median"); got != "null" {
+		t.Errorf("review-time, which has no job series, answers min_n %s sorted by median, want null", got)
+	}
+}
+
 // TestEveryCatalogueSourceAnswersItsRows: every computed eval a project is seeded with answers,
 // through the items route, rows its numbers count beside its day rows, so no computed eval's items
 // are its readings and day rows alone by an omission (evalComputedItems): over the histories the

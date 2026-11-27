@@ -81,7 +81,8 @@
       "to": "2026-10-29T00:00:00Z",
       "days": 28
     },
-    "compare": null
+    "compare": null,
+    "min_n": null
   },
   "revs": {
     "items": {},
@@ -91,6 +92,7 @@
       "compare": "5b9bc4ba528108e4",
       "items": "b6bc605c9413e39b",
       "limit": "af63ad4c86019caf",
+      "min_n": "5b9bc4ba528108e4",
       "offset": "af63ad4c86019caf",
       "total": "af63ac4c86019afc",
       "window": "04ae088b7addef8d"
