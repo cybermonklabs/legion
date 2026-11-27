@@ -854,6 +854,7 @@ func TestTheSweepsReadOfTheHoldsCarriesTheLatestLetOutOfTheirPause(t *testing.T)
 // queue it has no let-out yet (dispatch://INFRA-5682 R1), so the read answers the reader's own
 // now for it, however long ago the project resumed, and the let-out's moment once it has one.
 func TestALaunchWaitingInThePacingReadsAsLetOutAtTheReadersNow(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	st := migratedStore(t)
 	pause, _ := pauseLegion(t, st, pausedAt)

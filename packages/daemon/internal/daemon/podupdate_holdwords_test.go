@@ -23,6 +23,7 @@ import (
 // The negative control is holdWords without its controller row: the controller's source then
 // holds with no row.
 func TestEverySuspendSourceThatHoldsHasOneHoldWordsRow(t *testing.T) {
+	t.Parallel()
 	declared := declaredSuspendSources(t)
 	holding := 0
 	for _, by := range declared {

@@ -323,6 +323,7 @@ func (r *observedRig) readOnly(t *testing.T, read func(ctx context.Context, tx p
 // own read gives. The seed is held to its own claim first, so the comparison runs over what it
 // says.
 func TestTheBulkReadsAnswerEachIssueWhatItsOwnReadAnswers(t *testing.T) {
+	t.Parallel()
 	r := newObservedRig(t)
 	r.readOnly(t, func(ctx context.Context, tx pgx.Tx) {
 		issues, err := r.scoped.Issues(ctx, tx)
@@ -455,6 +456,7 @@ func listedPhases(rows []record.PhaseRow) []record.PhaseRow {
 // issue's place in the line from its index in `admission.waiting`. Both reads answer the same
 // claims beside their view, which the route places its caller by.
 func TestTheObservedViewIsTheFullStatesObservedPart(t *testing.T) {
+	t.Parallel()
 	r := newObservedRig(t)
 	var full api.State
 	var observed api.State
@@ -542,6 +544,7 @@ func TestTheObservedViewIsTheFullStatesObservedPart(t *testing.T) {
 // issue's phase nor stateSeq of a view built on that snapshot, and in both of a view built on a
 // snapshot taken after it.
 func TestTheObservedViewIsOneSnapshot(t *testing.T) {
+	t.Parallel()
 	r := newObservedRig(t)
 	ctx := context.Background()
 	move := func(to phase.Phase) int64 {
