@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -18,6 +19,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/dispatch/testlimits"
 )
@@ -66,13 +68,14 @@ const budgetTakeOverWithin = 15 * time.Second
 //   - The outbox. Whichever process holds it publishes the renames' events to the stream, every
 //     one of them by the row's end.
 //   - The intake take-over. Process 0 boots first, with the GitHub App, and binds both delivery
-//     durables; process 1 has the App too and stands by for both; the other processes have none, so
-//     their intakes are idle. Process 0 is killed, and while its holds lapse the row holds both
-//     hold rows locked, so process 1's two takings of them (duty.TryHold) queue and are let go at
-//     one moment, and its two take-overs run at once: each holds its consumer lease's connection
-//     while its SetToken takes another, which is what the lease pool's minimum of three is argued
-//     from (minimumPoolSizes, internal/dispatch/store/pool.go). Both must bind within
-//     budgetTakeOverWithin of the release.
+//     durables and the Legion state intake's, which runs with or without the App; process 1 has
+//     the App too and stands by for both delivery durables; the other processes have none, so
+//     their delivery intakes are idle. Process 0 is killed, and while its holds lapse the row holds
+//     both delivery hold rows locked, so process 1's two takings of them (duty.TryHold) queue and
+//     are let go at one moment, and its two take-overs run at once: each holds its consumer lease's
+//     connection while its SetToken takes another, which is what the lease pool's minimum of four
+//     is argued from for all three intakes (minimumPoolSizes, internal/dispatch/store/pool.go).
+//     Both must bind within budgetTakeOverWithin of the release.
 //
 // None of the processes' logs may show the server out of connections (53300).
 func TestEveryProcessOnTheSmallestServerASuiteRunsOnStaysWithinItsBudget(t *testing.T) {
@@ -118,7 +121,7 @@ func TestEveryProcessOnTheSmallestServerASuiteRunsOnStaysWithinItsBudget(t *test
 	processes := make([]*dispatchProcess, testlimits.MaxProcessesAtOnce)
 	processes[0] = start(0, app)
 	processes[0].waitHealthy(t)
-	for _, durable := range deliveryDurables {
+	for _, durable := range append(slices.Clone(deliveryDurables), bus.DispatchLegionStateDurable) {
 		processes[0].waitForLog(t, 30*time.Second, bound, "name="+durable)
 	}
 	processes[1] = start(1, app)

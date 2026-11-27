@@ -673,16 +673,17 @@ var productionPoolSizes = PoolSizes{
 //   - Rooms, 1: a load takes no lock and always finishes (RoomsPoolSize).
 //   - RoomAppends, 1: a batch takes no other connection, and no holder of a document's lock waits
 //     for one of these (roomAppendsPoolSize).
-//   - Leases, 3: a delivery intake's take-over holds its lease's connection while its SetToken
-//     takes a second (LeasePoolSize), and the two intakes take their durables over independently,
-//     so two connections can be held while both take-overs wait for a third. Every other caller
-//     holds one at a time.
+//   - Leases, 4: an intake's take-over holds its consumer lease's connection while its SetToken
+//     takes a second (LeasePoolSize), and the three intakes - the two delivery intakes and the
+//     Legion state intake, which runs with or without the GitHub App - take their durables over
+//     independently, so three connections can be held while all three take-overs wait for a
+//     fourth. Every other caller holds one at a time.
 //   - Outbox, 1: the scan and the hold's renewal take turns. Production's second connection is
 //     what keeps a renewal from waiting behind a batch's statement (outboxPoolSize).
 //   - Compaction, 1: one serves one compaction (compactionPoolSize).
 //   - TextTrees, 1: the fill never asks for a second connection while it holds one (Pool.TextTrees).
 //   - Horizon, 1: one connection serves every observation (horizonPoolSize).
-var minimumPoolSizes = PoolSizes{Shared: 1, Rooms: 1, RoomAppends: 1, Leases: 3, Outbox: 1, Compaction: 1, TextTrees: 1, Horizon: 1}
+var minimumPoolSizes = PoolSizes{Shared: 1, Rooms: 1, RoomAppends: 1, Leases: 4, Outbox: 1, Compaction: 1, TextTrees: 1, Horizon: 1}
 
 // testHooksListenerConnections is the listener connection a process holds beyond
 // listenerConnections under DISPATCH_TEST_HOOKS: the test hooks' fan-out

@@ -18,7 +18,7 @@ func TestPoolSizesHoldEveryPoolConnectionsPerProcessCounts(t *testing.T) {
 
 // A budget scales every pool between its minimum and its production size and uses the whole
 // budget, the test hooks' listener counted; a budget that holds production's sizes gets exactly
-// them; and one below the minimums is refused. A budget of 19 holds every pool at its minimum, and
+// them; and one below the minimums is refused. A budget of 20 holds every pool at its minimum, and
 // gives the one connection left over to the shared pool, which gives up the most of production's
 // size.
 func TestScaledPoolSizesUseTheBudgetAndKeepEveryMinimum(t *testing.T) {
@@ -42,8 +42,8 @@ func TestScaledPoolSizesUseTheBudgetAndKeepEveryMinimum(t *testing.T) {
 		}
 	}
 
-	if sizes, err := ScaledPoolSizes(19); err != nil || sizes != (PoolSizes{Shared: 2, Rooms: 1, RoomAppends: 1, Leases: 3, Outbox: 1, Compaction: 1, TextTrees: 1, Horizon: 1}) {
-		t.Errorf("budget 19: %+v, %v; want every pool at its minimum and the shared pool at 2", sizes, err)
+	if sizes, err := ScaledPoolSizes(20); err != nil || sizes != (PoolSizes{Shared: 2, Rooms: 1, RoomAppends: 1, Leases: 4, Outbox: 1, Compaction: 1, TextTrees: 1, Horizon: 1}) {
+		t.Errorf("budget 20: %+v, %v; want every pool at its minimum and the shared pool at 2", sizes, err)
 	}
 	if _, err := ScaledPoolSizes(MinBudget() - 1); err == nil || !strings.Contains(err.Error(), "store.MinBudget") {
 		t.Errorf("budget %d, one below MinBudget: err = %v, want the refusal naming store.MinBudget", MinBudget()-1, err)
@@ -54,7 +54,7 @@ func TestScaledPoolSizesUseTheBudgetAndKeepEveryMinimum(t *testing.T) {
 // lease pool's callers are still held to LeasePoolSize, the wiring a deployment runs, whatever
 // connections the budget left them.
 func TestOpenWithinSizesEveryPoolToItsBudget(t *testing.T) {
-	const budget = 19
+	const budget = 20
 	want, err := ScaledPoolSizes(budget)
 	if err != nil {
 		t.Fatal(err)
