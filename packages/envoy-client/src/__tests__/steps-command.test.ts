@@ -369,7 +369,10 @@ describe("dispatch steps", () => {
   // id begins. So the column prints the id as it stands only where it is a plain word, as `k-ci`
   // is above, and otherwise as one JSON string, which reads back as the id. The line breaks below
   // are the ones a reader splitting lines the Unicode way breaks at: the line feed JSON escapes
-  // itself, and U+0085, U+2028 and U+2029, which it leaves as they are.
+  // itself, and U+0085, U+2028 and U+2029, which it leaves as they are. A format character prints
+  // as an escape too, inside the quotes: a bidi override (U+202E) or isolate (U+2066 to U+2069)
+  // would show the rest of the line in another order, and a zero-width joiner (U+200D) an id that
+  // reads as `k-ci`.
   test("a check id that is no plain word prints as one JSON string, and the line keeps its lines", async () => {
     const forged = "default 9 step reviewer review attempt 1 - - - - failed";
     for (const [check, printed] of [
@@ -380,6 +383,9 @@ describe("dispatch steps", () => {
       [`k-ci\u0085${forged}`, `"k-ci\\u0085${forged}"`],
       [`k-ci\u2028${forged}`, `"k-ci\\u2028${forged}"`],
       [`k-ci\u2029${forged}`, `"k-ci\\u2029${forged}"`],
+      [`k-ci\u202e${forged}`, `"k-ci\\u202e${forged}"`],
+      ["k-ci\u2066x\u2069", '"k-ci\\u2066x\\u2069"'],
+      ["k\u200d-ci", '"k\\u200d-ci"'],
     ] as const) {
       const { result } = await readSteps({
         issue: "LEG-1",
