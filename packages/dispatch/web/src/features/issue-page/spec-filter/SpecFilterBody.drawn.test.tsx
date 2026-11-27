@@ -2589,6 +2589,52 @@ test("a press after an image lands in the word pressed", async () => {
   }
 });
 
+/** The issue summary every rendered body's link to CORE-2 reads its title from: "The other
+ *  issue". */
+function readsOtherIssue() {
+  return spyOn(api, "getIssueSummary").mockResolvedValue({
+    documents: [],
+    key: "CORE-2",
+    project: "CORE",
+    status: "in_progress",
+    title: "The other issue",
+  });
+}
+
+// An autolink to a reference, `<dispatch://CORE-2>`, is a link whose words are its address: the
+// editor holds those words as the link's editable text, while the view draws the target's key
+// and title in their place (`refs/RefLink.tsx`), so a press after it counts it as its address.
+// Counted as drawn, the press on "first," would put the caret 8 characters into the words after
+// the link rather than 3.
+test("a press after an autolink drawn by its target's name lands in the word pressed", async () => {
+  const cited = "dispatch://CORE-2";
+  const after = " first, then the rest.";
+  const text = `Read <${cited}>${after}`;
+  const summary = readsOtherIssue();
+  try {
+    await pressAfterKind({
+      drawn: (words) => {
+        const link = words.querySelector(`[data-dispatch-ref="${cited}"]`);
+        expect(link?.textContent).toBe("CORE-2 The other issue");
+        expect(link?.nextSibling?.textContent).toBe(after);
+      },
+      held: (
+        <>
+          {"Read "}
+          <a href={cited}>{cited}</a>
+          {after}
+        </>
+      ),
+      into: 3,
+      pressed: after,
+      text,
+      tree: displayTree(text),
+    });
+  } finally {
+    summary.mockRestore();
+  }
+});
+
 /** Statement r1's words for `pressAfterKind` with a hard break between two lines, drawn from the
  *  server's reading and held by the editor as a line break. */
 function withHardBreak() {
@@ -2784,7 +2830,9 @@ test("a press past an atom that ends a statement's block puts the caret after it
  * the server's reading with `names` as the page's batched read named its references, and the
  * stage's editable holds `held`, a plain paragraph standing in for the editor's drawing. The
  * browser answers the point with the end of the element's last text, as Chromium answers a point
- * past the end of the line a marked element ends; happy-dom lays nothing out, so the element is
+ * past the end of the line a marked element ends, or, where the element holds no text - a
+ * picture, a link drawn with no words - with the place right after it in its parent, as Chromium
+ * answers a point past a picture that ends a line; happy-dom lays nothing out, so the element is
  * given one box, on the press's line, that the press stands right of.
  */
 async function pressPastLineEnd({
@@ -2843,18 +2891,20 @@ async function pressPastLineEnd({
       return mark;
     });
     element = found;
+    const parent = found.parentElement;
+    if (parent === null) throw new Error("the element the line ends with stands in no element");
     const walker = document.createTreeWalker(found, NodeFilter.SHOW_TEXT);
     let last: Node | null = null;
     for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) last = node;
-    const end = last;
-    if (end === null || found.parentElement === null) {
-      throw new Error("the element the line ends with draws no text");
-    }
-    const point = mock(() => ({ offsetNode: end, offset: end.textContent?.length ?? 0 }));
+    const answer =
+      last === null
+        ? { offsetNode: parent, offset: [...parent.childNodes].indexOf(found) + 1 }
+        : { offsetNode: last, offset: last.textContent?.length ?? 0 };
+    const point = mock(() => answer);
     Object.defineProperty(document, "caretPositionFromPoint", { configurable: true, value: point });
     await user.pointer({
       keys: "[MouseLeft]",
-      target: found.parentElement,
+      target: parent,
       coords: { x: 260, y: 150 },
     });
     await waitFor(() => {
@@ -2997,6 +3047,87 @@ test("a press past an atom that ends the last line, after a hard break, puts the
     },
     text: "Kept by <name>\\\n<role>",
   });
+});
+
+// A press past the end of the words, which an image from another website ends, says it fell past
+// an atom: the view draws the picture itself (`refs/markdown-serializer.ts`), and the editor holds
+// it as an atom the caret cannot enter, so the caret goes after it, where the block ends, before
+// only the separator and the break ProseMirror draws after an atom that ends a paragraph. Read as
+// no atom, the press counts the text before the picture alone and puts the caret before it.
+test("a press past an image from another website that ends the words puts the caret after it", async () => {
+  const source = "https://example.com/chart.png";
+  await pressPastLineEnd({
+    caret: (paragraph, between) => {
+      const image = paragraph.querySelector('img[alt="chart"]');
+      const separator = paragraph.querySelector(".ProseMirror-separator");
+      if (image === null || separator === null) {
+        throw new Error("the editor holds no picture and no separator after it");
+      }
+      between.setStartAfter(image);
+      between.setEndBefore(separator);
+    },
+    held: (
+      <>
+        {"See "}
+        <img alt="chart" contentEditable={false} />
+        <img alt="" className="ProseMirror-separator" />
+        <br className="ProseMirror-trailingBreak" />
+      </>
+    ),
+    marked: (words) => {
+      const image = words.querySelector(`img[src="${source}"]`);
+      expect(image?.getAttribute("alt")).toBe("chart");
+      expect(image?.parentElement?.lastChild).toBe(image);
+      expect(image?.parentElement?.textContent).toBe("See ");
+      return image;
+    },
+    text: `See ![chart](${source})`,
+  });
+});
+
+// The same press past a picture whose reference names no artifact, `![shot](dispatch://CORE-2)`:
+// the view draws it as a link with no words (`refs/markdown-serializer.ts`'s `pictureSerializer`),
+// which the link pass hands to `RefLink`, and a link whose words are its author's own - here none -
+// draws those words, so the link holds none once its target is named. The editor holds the
+// picture as an atom the caret cannot enter, its fallback link inside it, so the caret goes after
+// it, where the block ends.
+test("a press past a picture that names no artifact, which ends the words, puts the caret after it", async () => {
+  const cited = "dispatch://CORE-2";
+  const summary = readsOtherIssue();
+  try {
+    await pressPastLineEnd({
+      caret: (paragraph, between) => {
+        const picture = paragraph.querySelector("[data-dispatch-doc-picture]");
+        const separator = paragraph.querySelector(".ProseMirror-separator");
+        if (picture === null || separator === null) {
+          throw new Error("the editor holds no picture and no separator after it");
+        }
+        between.setStartAfter(picture);
+        between.setEndBefore(separator);
+      },
+      held: (
+        <>
+          {"See "}
+          <span contentEditable={false} data-dispatch-doc-picture="">
+            <a href="/CORE-2">CORE-2</a>
+          </span>
+          <img alt="" className="ProseMirror-separator" />
+          <br className="ProseMirror-trailingBreak" />
+        </>
+      ),
+      marked: (words) => {
+        expect(summary).toHaveBeenCalledWith("CORE-2");
+        const link = words.querySelector(`[data-dispatch-ref="${cited}"]`);
+        expect(link?.textContent).toBe("");
+        expect(link?.parentElement?.lastChild).toBe(link);
+        expect(link?.parentElement?.textContent).toBe("See ");
+        return link;
+      },
+      text: `See ![shot](${cited})`,
+    });
+  } finally {
+    summary.mockRestore();
+  }
 });
 
 // The caret after an atom that ends a statement's last line stands at a place between two
