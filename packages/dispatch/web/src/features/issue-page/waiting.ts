@@ -6,6 +6,7 @@ import {
   inReviewList,
   treeComments,
 } from "./decision-review";
+import { changeUnread } from "./tree-drafts";
 import type { TreeAnswer } from "./tree-read/tree-read";
 
 /**
@@ -34,6 +35,12 @@ import type { TreeAnswer } from "./tree-read/tree-read";
  * of a document and no comment list of its own. A person's decision - the
  * answered ask, or a `decision` block whose `decided_by` names a person - waits for no review
  * (the server's `waiting_review` is false for it) and is never counted here.
+ *
+ * A decision the outline marks as one whose Change may stand on a comment page the tree read has
+ * not loaded (`changeUnread`, its state's "+") is not counted either, until that page is read
+ * (decision 563 (4)): the header reads the older pages for it once the page has drawn
+ * (`tree-read/tree-read.ts`' `useReadOlderComments`), as `unread` says, and counts what the
+ * Change it finds, or finds none of, makes it.
  */
 export interface WaitingOnReader {
   /** The open asks other than an approval request whose turn is the reader's. */
@@ -46,6 +53,10 @@ export interface WaitingOnReader {
   readonly approvals: readonly string[];
   /** All three, which is the number the count draws. */
   readonly total: number;
+  /** How many decisions carry the mark of a Change on a comment page not read yet
+   *  (`changeUnread`), waiting for review or kept, none of them counted: while any does, the
+   *  header reads the older comment pages (`useReadOlderComments`). */
+  readonly unread: number;
 }
 
 export function waitingOnReader(
@@ -80,14 +91,31 @@ export function waitingOnReader(
       .filter(([comment]) => !deleted.has(comment))
       .map(([, decision]) => decision)
   );
+  // Each decision whose Change may stand on a comment page not read yet, which waits on no reader
+  // until that page is read, as in the outline (`changeUnread`).
+  const unread = new Set(
+    (decisions?.entries ?? []).flatMap((decision) =>
+      changeUnread(decision, changed.has(decision.ref), tree) ? [decision.ref] : []
+    )
+  );
   // A person's decision never waits for review (`waiting_review`), so only an agent's counts.
   const reviewing =
     viewer === undefined
       ? 0
       : (decisions?.entries ?? []).filter((decision) =>
-          inReviewList(decision, isCoverageStatement, changed.has(decision.ref))
+          inReviewList(
+            decision,
+            isCoverageStatement,
+            changed.has(decision.ref) || unread.has(decision.ref)
+          )
         ).length;
-  return { approvals, asks, decisions: reviewing, total: asks + reviewing + approvals.length };
+  return {
+    approvals,
+    asks,
+    decisions: reviewing,
+    total: asks + reviewing + approvals.length,
+    unread: unread.size,
+  };
 }
 
 /** What the count leaves in the address's history entry, which the Decisions filter reads to put

@@ -63,10 +63,11 @@ import type { TreeAnswer, TreeAnswerNode } from "./tree-read/tree-read";
  * (`decisionNodeChanges`), and no quote is matched for it. A decision the read holds no node
  * for is found by the decision's block that holds the anchor's block where its document's blocks
  * are given, and by its words alone where they are not. The Decisions filter
- * (`decisions-entries.ts`) reads the blocks of the documents its decisions stand in, so it finds
- * such a decision by its block once they answer; the outline and the header's count read no
- * document's blocks, so they find it by its words alone: the change is then the first decision's
- * whose words hold the quote.
+ * (`decisions-entries.ts`) reads the blocks of the spec, the plan and the Verification document,
+ * each where its decisions stand in it, so it finds such a decision there by its block once they
+ * answer, and one of any other document by its words alone; the outline and the header's count
+ * read no document's blocks, so they find it by its words alone: the change is then the first
+ * decision's whose words hold the quote.
  */
 
 /** The fields of a comment this module reads, and when its author last edited it, which the
@@ -260,9 +261,11 @@ function changeableByDocument(
 
 /**
  * The documents a Change of one of the issue's decisions can be anchored in
- * (`changeableByDocument`). A caller reads the blocks of those of them the tree reads, which name
- * the decision whose block holds a Change's anchor (`decisionChangeComments`): until part U only
- * the Decisions filter reads them so (part Q's seam, `decisions-filter/decisions-entries.ts`).
+ * (`changeableByDocument`). Until part U only the Decisions filter reads the blocks of any of
+ * them (part Q's seam, `decisions-filter/decisions-entries.ts`): those of the spec, the plan and
+ * the Verification document, where they are among them, which name the decision whose block
+ * holds a Change's anchor (`decisionChangeComments`); a Change in any other is matched by its
+ * quote alone.
  * The outline and the header's count read no block of a document to match a Change (R3): each
  * takes it from the comment the tree read hangs under a decision node, and for a decision the
  * tree holds no node of, by the quote alone.

@@ -671,7 +671,7 @@ function draftResult(
  * (`decisionNodeChanges`), and it waits on the reader by the outline's review list rule
  * (`inReviewList`), where a link ties it to a statement the coverage read holds. Where the
  * answer names an older comment page that may hold its Change, its state says so
- * (`markChangeUnread`).
+ * (`markChangeUnread`), and it waits on no reader until that page is read (`changeUnread`).
  *
  * An agent's decision of the decisions read that is no node of the answer - a section of
  * `decisions.md` a server of the release before answers - is drawn as the outline draws it, by
@@ -704,14 +704,15 @@ function draftDecision(
   draft.state = decisionState(decision, changed);
   markKeptAndUnsure(draft, decision);
   draft.replaced = decision.replaced === true;
-  // A decision the read hangs no Change under may have one on a comment page not read yet.
-  markChangeUnread(draft, decision, answer);
+  // A decision the read hangs no Change under may have one on a comment page not read yet, and
+  // waits on no reader until it is read.
+  markChangeUnread(draft, decision, changed, answer);
   draft.waiting =
     context.viewer !== undefined &&
     inReviewList(
       { shaped: links, waiting_review: decision.waiting_review === true },
       (reference) => context.kept.requirements.has(context.nodeIdOf(reference) ?? ""),
-      changed
+      changed || draft.changeUnread === true
     );
   return draft;
 }

@@ -37,7 +37,7 @@ import { authorText, PROPERTY_LABELS, pageChrome } from "./page-structure";
 import { CONTROL_LABELS } from "./page-words";
 import { StatusGlyph } from "./StatusGlyph";
 import { nodeIdOf as issueNodeIdOf } from "./tree-drafts";
-import { useTreeRead } from "./tree-read/tree-read";
+import { useReadOlderComments, useTreeRead } from "./tree-read/tree-read";
 import type { IssueHeaderWrites } from "./useIssueHeaderWrites";
 import { type WaitingPress, waitingOnReader } from "./waiting";
 
@@ -111,6 +111,11 @@ export function IssuePropertiesRow({
       ),
     [issue, viewer, decisions.data, statements, nodeIdOf, tree]
   );
+  // A decision whose Change may stand on a comment page the tree read has not loaded is left out
+  // of the count until that page is read (`waiting.ts`): the header reads the older pages once
+  // the page has drawn, until each such Change is held or no older page is left (decision 563
+  // (4)), so the count is right on every view that holds an outline read.
+  useReadOlderComments(issue, () => waiting.unread > 0);
   // The detail carries waiting_on on every open ask; a response without it cannot say whose
   // turn it is, so the indicator stays off rather than shown wrong.
   const knowsWhoseTurn = openAsks.every((ask) => ask.waiting_on !== undefined);

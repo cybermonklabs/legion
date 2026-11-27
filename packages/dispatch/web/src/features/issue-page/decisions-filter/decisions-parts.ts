@@ -28,7 +28,10 @@ import { deciderOf } from "../tree-drafts";
  *    and that a `shaped` tie names a statement of this issue for, newest first. The list is
  *    read from the ties alone (`decision-review.ts`'s `inReviewList`): a decision that waits and
  *    is tied to nothing, or to a node that is no statement, is no entry of it, and neither is
- *    one the reader sent a Change on, which waits on its agent.
+ *    one the reader sent a Change on, which waits on its agent. One the outline marks as one
+ *    whose Change may stand on a comment page not read yet (`TreeNode.changeUnread`) stands in
+ *    it, drawn with that mark, and moves at most once, when its Change is held; until that page
+ *    is read it waits on no reader, so the list's count leaves it out (`reviewWaiting`).
  * 3. **The reader's own decisions**, newest first: each ask the reader answered or declined,
  *    each `decision` block the reader decided, by the time it was made, and each agent decision
  *    a statement rests on that the reader kept or asked to change, by the time they did. An
@@ -222,14 +225,26 @@ export function conversationPath(node: Pick<TreeNode, "reference">): string | un
 
 /**
  * Every entry that waits on the reader, in the filter's order: each open question whose turn
- * is the reader's, then each decision of the review list. It is what the header's count of
- * what waits walks: each press goes to the next of them (R13, the tester's F12).
+ * is the reader's, then each decision of the review list that waits on them (`reviewWaiting`).
+ * It is what the header's count of what waits walks: each press goes to the next of them (R13,
+ * the tester's F12).
  */
 export function waitingOrder(parts: DecisionsParts): readonly string[] {
   return [
     ...parts.open_questions.filter((entry) => entry.node.waiting).map((entry) => entry.node.id),
-    ...parts.review.map((entry) => entry.node.id),
+    ...reviewWaiting(parts).map((entry) => entry.node.id),
   ];
+}
+
+/**
+ * The decisions of the review list that wait on the reader: each but those the outline marks as
+ * one whose Change may stand on a comment page not read yet (`TreeNode.changeUnread`), which
+ * stand in the list drawn with that mark and wait on no reader until that page is read
+ * (decision 563 (4)), as the header's count leaves them out (`waiting.ts`). What the list's
+ * heading counts, and what the header's count walks (`waitingOrder`).
+ */
+export function reviewWaiting(parts: Pick<DecisionsParts, "review">): readonly DecisionEntry[] {
+  return parts.review.filter((entry) => entry.node.changeUnread !== true);
 }
 
 /**

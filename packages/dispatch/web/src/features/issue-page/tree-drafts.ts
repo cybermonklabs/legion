@@ -147,8 +147,9 @@ export interface Draft {
   type: NodeType;
   /** Whether the model marks this decision unsure: its `uncertainty` is `high`. */
   unsure?: true;
-  /** Whether this node waits on the reader: a decision in their review list (`inReviewList`),
-   *  or an open question whose turn is the reader's own (`waiting_on_person`). */
+  /** Whether this node waits on the reader: a decision in their review list (`inReviewList`)
+   *  that carries no mark of a Change on a comment page not read yet (`changeUnread`), or an open
+   *  question whose turn is the reader's own (`waiting_on_person`). */
   waiting: boolean;
 }
 
@@ -768,17 +769,20 @@ export function addDecisions(
     const changed = changes.has(decision.ref);
     draft.state = decisionState(decision, changed);
     // A Change of it may stand on a comment page the read has not loaded yet.
-    markChangeUnread(draft, decision, reads.tree);
+    markChangeUnread(draft, decision, changed, reads.tree);
     markKeptAndUnsure(draft, {
       kept: decision.kept,
       unsure: decision.uncertainty === "high",
       waiting_review: decision.waiting_review,
     });
     // The tie to a statement decides whether it waits on the reader, and a decision the reader
-    // asked to change waits on its agent, not on the reader (`decision-review.ts`). Nothing
-    // waits on a reader whose login has not resolved, as `waiting.ts` counts it.
+    // asked to change waits on its agent, not on the reader (`decision-review.ts`), as does one
+    // whose Change may stand on a comment page not read yet, until that page is read
+    // (`changeUnread`). Nothing waits on a reader whose login has not resolved, as `waiting.ts`
+    // counts it.
     draft.waiting =
-      context.viewer !== undefined && inReviewList(decision, isCoverageStatement, changed);
+      context.viewer !== undefined &&
+      inReviewList(decision, isCoverageStatement, changed || draft.changeUnread === true);
     made.set(id, draft);
   });
   addDocumentChips(made, reads, context);
@@ -854,20 +858,36 @@ export function markKeptAndUnsure(
 
 /** Marks `draft`, a decision, where it is drawn as waiting for review or kept with no Change while
  *  a Change of it may stand on a comment page the tree read's `answer` does not hold yet
- *  (`changeMayBeOlder`): its state then carries "+", the page's mark of a count with more to read
+ *  (`changeUnread`): its state then carries "+", the page's mark of a count with more to read
  *  (R15), so a decision whose Change the page has not read does not read as unchanged. One rule
  *  for a decision of the decisions read and a decision node, as `decisionState` is. */
 export function markChangeUnread(
   draft: Draft,
-  decision: Partial<Pick<DecisionEntry, "changed_at" | "kept">>,
+  decision: Partial<Pick<DecisionEntry, "changed_at" | "kept" | "replaced" | "waiting_review">>,
+  changed: boolean,
   answer: TreeAnswer | undefined
 ): void {
-  if (
-    (draft.state === "waiting_review" || draft.state === "kept") &&
-    changeMayBeOlder(decision, answer)
-  ) {
-    draft.changeUnread = true;
-  }
+  if (changeUnread(decision, changed, answer)) draft.changeUnread = true;
+}
+
+/**
+ * Whether `decision` carries the mark of a Change on a comment page the tree read's `answer` does
+ * not hold yet (`markChangeUnread`), where `changed` says whether a Change of it is held: by its
+ * state (`decisionState`), it waits for review or stands kept, and a Change of it may stand on an
+ * older page (`changeMayBeOlder`). Such a decision waits on no reader until that page is read
+ * (decision 563 (4)): the outline's `waiting`, the header's count (`waiting.ts`) and the count of
+ * the Decisions view's review list, where it stands drawn with the mark
+ * (`decisions-filter/decisions-parts.ts`' `reviewWaiting`), leave it out of what waits, and the
+ * page reads the older pages for it once it has drawn (`tree-read/tree-read.ts`'
+ * `useReadOlderComments`).
+ */
+export function changeUnread(
+  decision: Partial<Pick<DecisionEntry, "changed_at" | "kept" | "replaced" | "waiting_review">>,
+  changed: boolean,
+  answer: TreeAnswer | undefined
+): boolean {
+  const state = decisionState(decision, changed);
+  return (state === "waiting_review" || state === "kept") && changeMayBeOlder(decision, answer);
 }
 
 /**

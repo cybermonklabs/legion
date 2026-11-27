@@ -1,3 +1,4 @@
+import { isIdPrefix } from "@legion/contracts";
 import { useQuery } from "@tanstack/react-query";
 import {
   type ReactNode,
@@ -24,6 +25,7 @@ import {
   type AddressFallback,
   landingPath,
   namedBy,
+  outlineItemRoute,
   useAddressFallback,
   useAddressTarget,
 } from "../address-target";
@@ -47,6 +49,7 @@ import {
   type TreeAnswer,
   useNextTreePage,
   useOlderComments,
+  useReadOlderComments,
   useReadUntilHeld,
 } from "../tree-read/tree-read";
 import { TreeReadFailed } from "../tree-read/view-read";
@@ -98,11 +101,25 @@ export function BodySlot({ acts: given, issue, route }: BodySlotProps): ReactNod
       (address.zoom !== undefined && zoomed === undefined));
   const pages = useReadUntilHeld(issue, unloaded);
   const pagesHeld = !pages.reading && !pages.refused;
+  // An address that names a comment no page of the outline read holds - one older than its 200
+  // newest (R15) - reads the older comment pages once the next pages are read to their end and the
+  // page has drawn, until the answer holds the comment or none is left, and is decided then as on
+  // any other address (decision 563 (4)): until that reading ends, the landing and the outline's
+  // first focus wait on it as on the next pages, and a page refused holds the landing as a next
+  // page refused does. An id written short is no node's id, so it reads none.
+  const item = outlineItemRoute(route, search, address);
+  const comment = item?.kind === "comment" && !isIdPrefix(item.id) ? item.id : undefined;
+  const olderComment = useReadOlderComments(
+    issue,
+    (answer) =>
+      comment !== undefined && pagesHeld && !(answer.nodes ?? []).some(({ id }) => id === comment)
+  );
+  const commentHeld = !olderComment.reading && !olderComment.refused;
   const fallback = useAddressFallback({
     address,
     issue,
     reads,
-    readsHeld: readsHeld && pagesHeld,
+    readsHeld: readsHeld && pagesHeld && commentHeld,
     reveal: addressed.reveal,
     root,
     route,
@@ -154,12 +171,37 @@ export function BodySlot({ acts: given, issue, route }: BodySlotProps): ReactNod
     unheldNode && graph.data !== undefined && !graphHolds,
     "graph"
   );
+  // A node address (`?node=`) is held where either read holds its node, so it reads the older
+  // comment pages only once both are read to their end without it: the outline read's next pages,
+  // and on Conversation's address Graph's read and its next pages, which open Graph where they
+  // hold it. So a plan task's or a check's `?node=` opens Graph with no older page read, and the
+  // node address of a comment older than the 200 newest lands on its row as `?comment=` does
+  // (decision 563 (4), as INFRA-1196's architect ruled it at 11:23Z). Until that reading ends the
+  // address is decided no further, and a page refused holds it as a next page refused does.
+  const nodeId = address.target?.kind === "node" ? address.target.id : undefined;
+  const graphEnded =
+    address.preset === "graph" ||
+    (unheldNode &&
+      graph.data !== undefined &&
+      !graphHolds &&
+      !graphPages.reading &&
+      !graphPages.refused);
+  const olderNode = useReadOlderComments(
+    issue,
+    (answer) =>
+      nodeId !== undefined &&
+      pagesHeld &&
+      graphEnded &&
+      !(answer.nodes ?? []).some(({ id }) => id === nodeId)
+  );
+  const nodeOut = olderNode.reading || olderNode.refused;
   const graphOut = unheldNode && (graph.status === "pending" || graphPages.reading);
   const zoomUnheld = address.zoom !== undefined && readsHeld && pagesHeld && zoomed === undefined;
-  const undrawn: AddressView | undefined = graphOut
-    ? undefined
-    : (addressView(address, addressed.reveal, root, fallback, graph.data) ??
-      (zoomUnheld ? { keepsNode: true, preset: "graph" } : undefined));
+  const undrawn: AddressView | undefined =
+    graphOut || nodeOut
+      ? undefined
+      : (addressView(address, addressed.reveal, root, fallback, graph.data) ??
+        (zoomUnheld ? { keepsNode: true, preset: "graph" } : undefined));
   const keptZoom = zoomed === undefined ? undefined : address.zoom;
   // Whether the address `undrawn` opens in this one's place names none of the ids this one
   // named - its node, or the node Graph's address zooms to - so the page opens it with the focus
@@ -258,7 +300,13 @@ export function BodySlot({ acts: given, issue, route }: BodySlotProps): ReactNod
             onEditing={onEditing}
             published={published}
             readsHeld={readsHeld}
-            readsSettled={readsSettled && !pages.reading && !graphOut}
+            readsSettled={
+              readsSettled &&
+              !pages.reading &&
+              !olderComment.reading &&
+              !olderNode.reading &&
+              !graphOut
+            }
             {...(request === undefined ? {} : { request })}
             // The children's own address lands on their section above the outline
             // (`children-section.tsx`), and on no row of the outline (R14).

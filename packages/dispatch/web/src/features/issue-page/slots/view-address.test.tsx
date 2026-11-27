@@ -14,7 +14,7 @@ import {
 import { nextFrame } from "../../../__tests__/frames";
 import { api } from "../../../api/client";
 import type { TreeFilter } from "../../../api/queries";
-import type { Ask, IssueDetails, MessageRead } from "../../../api/types";
+import type { Ask, Comment, IssueDetails, MessageRead } from "../../../api/types";
 import { buildIssuePath, parseIssuePath } from "../../refs/routes";
 import {
   artifact,
@@ -25,11 +25,17 @@ import {
   specRef,
 } from "../decisions-filter/decisions-fixtures";
 import { presetPath } from "../issue-address";
-import { TWO_THREADS, waitInAct } from "../outline-fixtures";
+import { readComment, TWO_THREADS, waitInAct } from "../outline-fixtures";
 import { STATE_LINES } from "../page-words";
 import { blockNodeId } from "../tree-drafts";
 import { nodeRowSelectorOf } from "../tree-focus";
-import { pagedAnswer, treeNode, treeTuple } from "../tree-read/tree-fixtures";
+import {
+  commentNode,
+  pagedAnswer,
+  treeAnswer,
+  treeNode,
+  treeTuple,
+} from "../tree-read/tree-fixtures";
 import {
   outlineQuery,
   type TreeAnswer,
@@ -42,6 +48,7 @@ import { ProvidersSlot } from "./providers";
 import { StageSlot } from "./stage";
 import {
   AppProviders,
+  answerCommentReads,
   answerTree,
   commentGone,
   commentNodes,
@@ -855,6 +862,156 @@ test("an address naming an id no read holds, or a message the outline draws no r
     expect(focusedRow(), `${from} put the focus on a row the address did not name`).toBe(opensOn);
     cleanup();
   }
+});
+
+/** What `answerOlderComment` answers with: the comment, how many older pages were asked for since
+ *  `clear`, and what puts the comments' own read back. */
+interface OlderComment {
+  readonly clear: () => void;
+  readonly oldest: Comment;
+  readonly pagesSent: () => number;
+  readonly restore: () => void;
+}
+
+/** A comment older than the 200 newest: the outline reads' first page - Conversation's and
+ *  Graph's alike - holds the two threads and names the older page, which holds the comment and
+ *  names no older one. Answers those reads, each view never, and each comment's own read, which
+ *  decides an address where no older page is read, as it does today. */
+function answerOlderComment(): OlderComment {
+  const oldest = readComment("head-old", 0);
+  const first: TreeAnswer = {
+    ...treeOf(commentNodes(TWO_THREADS)),
+    comments_before: `${TWO_THREADS[0]?.created_at},${TWO_THREADS[0]?.id}`,
+  };
+  const older: TreeAnswer = { ...treeAnswer([commentNode(oldest)]), comments_before: null };
+  const tree = spyOn(api, "getIssueTree").mockImplementation(async (_key, query = {}) => {
+    const asked = query as { readonly comments_before?: string; readonly view?: string };
+    if (asked.view !== undefined) return Promise.withResolvers<never>().promise;
+    return asked.comments_before === undefined ? first : older;
+  });
+  const reads = answerCommentReads([...TWO_THREADS, oldest]);
+  return {
+    clear: () => tree.mockClear(),
+    oldest,
+    pagesSent: () =>
+      tree.mock.calls.filter(([, query]) => query?.comments_before !== undefined).length,
+    restore: () => reads.mockRestore(),
+  };
+}
+
+/** Draws the page's stage at each of `addresses` in turn, as a load does, and waits for each to
+ *  land on the row of `comment`, the focus on it, at that same address, having read the older
+ *  comment page once. */
+async function landsOnOlderComment(
+  comment: string,
+  addresses: readonly string[],
+  { clear, pagesSent }: Pick<OlderComment, "clear" | "pagesSent">
+): Promise<void> {
+  const row = `[data-issue-body] [data-node-row][data-node-id="${comment}"]`;
+  for (const from of addresses) {
+    clear();
+    const view = render(
+      <MemoryRouter initialEntries={[from]}>
+        <AppProviders client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+          <SeenStage issue={issueDetails()} />
+        </AppProviders>
+      </MemoryRouter>
+    );
+    await rowTakesFocus(view, row, `${from}, a comment older than the first page`);
+    expect(seen.address, `${from} opened at another address`).toBe(from);
+    expect(pagesSent(), `${from} read the older page other than once`).toBe(1);
+    cleanup();
+  }
+}
+
+// R15 and decision 563 (4): an address that names a comment older than the 200 newest - which the
+// outline read's first page does not hold, and whose `comments_before` names the page that does -
+// reads that older page once the page has drawn, and lands on the comment's row with the focus on
+// it, as on a comment the first page holds: `?comment=` beside Conversation's address, and the
+// comment's own address, which the page writes for a comment (`/comments/<id>`). The older page
+// is read once.
+test("an address naming a comment older than the outline read's first page reads the older page and lands on the comment's row, with the focus on it", async () => {
+  const answered = answerOlderComment();
+  const { oldest } = answered;
+  try {
+    await landsOnOlderComment(
+      oldest.id,
+      [
+        `${presetPath(KEY, "conversation")}?comment=${oldest.id}`,
+        buildIssuePath({ id: oldest.id, key: KEY, kind: "comment" }),
+      ],
+      answered
+    );
+  } finally {
+    answered.restore();
+  }
+});
+
+// R15 and decision 563 (4), as INFRA-1196's architect ruled it at 11:23Z: an address that names a
+// node by its id in the read (`?node=`) reaches it however old it is. Where the next pages are
+// read to their end, and on Conversation's address Graph's read too, and no read holds it, the
+// older comment pages are read until one does, so the node address of a comment older than the
+// 200 newest lands on its row as `?comment=` does, on Conversation's address and on Graph's.
+test("a ?node= address naming a comment older than the outline read's first page reads the older page and lands on its row, with the focus on it", async () => {
+  const answered = answerOlderComment();
+  const { oldest } = answered;
+  try {
+    await landsOnOlderComment(
+      oldest.id,
+      [
+        `${presetPath(KEY, "conversation")}?node=${oldest.id}`,
+        `${presetPath(KEY, "graph")}?node=${oldest.id}`,
+      ],
+      answered
+    );
+  } finally {
+    answered.restore();
+  }
+});
+
+// R15 and decision 563 (4): a node Graph's read holds is held, so a `?node=` that only Graph's
+// read holds - a plan task, which Conversation's read leaves out - opens Graph at it with no older
+// comment page read, though both reads name an older page (`comments_before`): the older pages
+// are read only once neither read holds the node.
+test("a ?node= address only Graph's read holds opens Graph at it and reads no older comment page", async () => {
+  const readId = `${KEY}/${PLAN_DOCUMENT.slug}#${PLAN_TASK}`;
+  answerVerificationReads();
+  const before = `${TWO_THREADS[0]?.created_at},${TWO_THREADS[0]?.id}`;
+  const whole: TreeAnswer = { ...treeOf(verifiedTree(), SERVES), comments_before: before };
+  const held: TreeAnswer = {
+    ...treeOf(
+      verifiedTree().filter((each) => each.id !== readId),
+      SERVES
+    ),
+    comments_before: before,
+  };
+  const older: TreeAnswer = { ...treeAnswer([]), comments_before: null };
+  const tree = spyOn(api, "getIssueTree").mockImplementation(async (_key, query = {}) => {
+    const asked = query as {
+      readonly comments_before?: string;
+      readonly kind?: unknown;
+      readonly view?: string;
+    };
+    if (asked.view !== undefined) return Promise.withResolvers<never>().promise;
+    if (asked.comments_before !== undefined) return older;
+    return asked.kind === undefined ? whole : held;
+  });
+  const from = `${presetPath(KEY, "conversation")}?node=${encodeURIComponent(readId)}`;
+  const to = `${presetPath(KEY, "graph")}?node=${encodeURIComponent(readId)}`;
+  const view = render(
+    <MemoryRouter initialEntries={[from]}>
+      <AppProviders client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <SeenStage issue={verifiedIssue()} />
+      </AppProviders>
+    </MemoryRouter>
+  );
+  await waitFor(() => expect(seen.address, from).toBe(to));
+  await rowTakesFocus(view, TASK_ROW, `${from} in Graph`);
+  await waitInAct(50);
+  expect(
+    tree.mock.calls.filter(([, query]) => query?.comments_before !== undefined).length,
+    `${from} read an older comment page`
+  ).toBe(0);
 });
 
 // R9, R20 and decision 553 (1): an address of the issue names a block of the issue
