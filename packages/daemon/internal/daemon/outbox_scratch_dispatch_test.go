@@ -576,27 +576,27 @@ func (d *scratchDispatch) start() {
 	}
 }
 
-// ownPort is a loopback port the kernel chooses, owned until t ends by a TCP socket bound to that
+// ownPort is a loopback port the kernel chooses, held until t ends by a TCP socket bound to that
 // port by number and listening only while a Dispatch serves it. A socket bound by number keeps its
 // port when it stops listening (Linux's SOCK_BINDPORT_LOCK), where one bound to port 0 gives the
 // port back, and a restart's listen then comes up on another port, so the port's number comes from
-// a probe: the probe binds port 0, which the kernel answers with a port no socket holds, and
-// closes; the socket then binds that port by number. Neither sets SO_REUSEADDR, so the socket's
-// bind either makes the port its own, which no other socket of any user binds while it holds it,
-// or fails, because another socket took the port in the moment between the probe's close and the
-// bind; then the next probe chooses again.
+// a probe: the probe binds port 0, which the kernel answers with a port no socket holds on an
+// address overlapping this one, and closes; the socket then binds that port by number. Neither
+// sets SO_REUSEADDR, so the socket's bind either takes the port, or fails because another socket
+// holds it at that bind: one that bound it after the probe closed, or the probe itself, whose
+// descriptor a child forked before the close holds until its exec. A child holds a copy of every
+// descriptor from its fork to its exec, close-on-exec or not, and this package forks children of
+// its own while its tests run in parallel. A bind that fails takes no port and the next probe
+// chooses again.
 //
-// A probe whose socket outlives its close is one such other socket: a child the process forks
-// holds a copy of every descriptor from its fork to its exec, close-on-exec or not, and this
-// package forks children of its own (scratch Dispatch among them) while its tests run in parallel. Before,
-// the socket bound beside the probe with SO_REUSEADDR and claimed the port with its first listen,
-// which failed with "address already in use" whenever such a copy, or any socket that took the
-// port in the moment, still held it (TestAStepThatReadsAPullRequestWaitsForAnImplementer, in a
-// merge group's daemon-go-race leg).
-//
-// While the socket does not listen every dial is refused. stop takes it out of listening with
-// shutdown(SHUT_RD), SO_REUSEADDR dropped first: a listening socket shares its port with no bind,
-// and a socket that is neither listening nor sets SO_REUSEADDR shares it with none either.
+// The port the bind took is this socket's while it neither listens nor sets SO_REUSEADDR: no bind
+// of any user is given it. start sets SO_REUSEADDR on the socket before each listen (see its
+// comment on the connections a closed Dispatch leaves in TIME_WAIT), and in that moment the port
+// is shareable: another socket that sets SO_REUSEADDR may bind the number beside it, and if it
+// listens first this socket's listen fails with "address already in use". stop drops SO_REUSEADDR
+// before it takes the socket out of listening, so that moment is the only one, and a socket that
+// bound the number inside it can never listen there while this one listens or holds the port
+// unshared. While this socket does not listen every dial is refused.
 func ownPort(t *testing.T) (*os.File, int) {
 	t.Helper()
 	taken := make([]int, 0, ownPortAttempts)
@@ -630,9 +630,12 @@ func ownPort(t *testing.T) (*os.File, int) {
 }
 
 // ownPortAttempts is how many ports ownPort's probes choose before it fails. An attempt is lost
-// only to a socket that still holds the probed port at the owner's bind, and the next probe is
-// answered with a port no socket holds, so a port once lost is not offered again while it is held;
-// the count bounds attempts, not time, so a machine's load can never spend it.
+// only to a socket that holds the probed port at the owner's bind, and while a socket on 127.0.0.1
+// or the wildcard holds a port the next probe is not given it, so 32 losses take 32 separate
+// collisions. Load raises the odds of one: the gap between the probe's close and the owner's bind
+// holds ownPortSocket's syscall.ForkLock.RLock, which waits out every fork in flight, in a package
+// whose tests run in parallel. A run that loses all 32 fails the test naming every port it lost,
+// which is the report to read rather than a number to raise.
 const ownPortAttempts = 32
 
 // ownPortSocket is a close-on-exec TCP socket, closed when t ends if it is still open.
