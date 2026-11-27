@@ -1,5 +1,8 @@
 package supervise
 
+//ci:reads packages/daemon/internal/stream/*.go !packages/daemon/internal/stream/*_test.go the outcome tests type-check the stream package's source, which mints the outcome set's members, from ../stream
+//ci:reads packages/daemon/internal/claudebridge/*.go !packages/daemon/internal/claudebridge/*_test.go the outcome tests type-check the Claude Code bridge's source, which reports outcomes, from ../claudebridge
+
 import (
 	"fmt"
 	"go/ast"
