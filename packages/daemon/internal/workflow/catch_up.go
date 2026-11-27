@@ -126,13 +126,13 @@ func (e *Engine) claimReady(ctx context.Context, tx pgx.Tx, fact intake.ClaimRea
 // machine sends that tells the same record (supervise's confirm, Delivery.message), which the
 // outbox's publish of this notice does not see.
 //
-// A catch-up an earlier launch never had delivered is dropped first (DropCatchUps, at the caller's
-// now, which is the clock a lane's lease is written from), so the agent is given one catch-up,
-// computed now. A root's names again the decisions the dropped one named — the drop releases them
-// in this transaction — with any kept since. A catch-up that carries kept decisions is not dropped
-// while any row of its telling — itself, the row it copies, or a re-held copy of either — is under
-// a live lease: that row may be publishing now, and the decisions the catch-up claims are that
-// telling's to settle, so this one names only what nobody claims. A child's names no decision: what
+// A catch-up an earlier launch never had delivered is dropped first (DropCatchUps), so the agent is
+// given one catch-up, computed now. A root's names again the decisions the dropped one named — the
+// drop releases them in this transaction — with any kept since. A catch-up that carries kept
+// decisions is not dropped while any row of its telling — itself, the row it copies, or a re-held
+// copy of either — holds a claim (a lease token), whatever its lease_until says: that row may still
+// be running or publishing past its lease, and the decisions the catch-up claims are that telling's
+// to settle, so this one names only what nobody claims. A child's names no decision: what
 // a person decided while nobody could hear it is kept for the tree (ParkedDecisionTask keys it by
 // tree) and stays the root architect's, so a child's catch-up carries no Decided and no Kept. The
 // notice goes through the outbox like any other, so it is held and re-held as they are.
@@ -160,7 +160,7 @@ func queueCatchUp(ctx context.Context, tx pgx.Tx, records record.Store, steps []
 		return err
 	}
 	catchUp := record.CatchUp{Generation: issue.Generation, Launch: launch, Relaunch: relaunch, CatchUpTree: tree}
-	if _, err := records.DropCatchUps(ctx, tx, issue.Key, now); err != nil {
+	if _, err := records.DropCatchUps(ctx, tx, issue.Key); err != nil {
 		return err
 	}
 	var kept *record.KeptDecisions

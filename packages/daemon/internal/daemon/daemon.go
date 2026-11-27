@@ -3841,11 +3841,11 @@ func (s projectRecords) EnqueueGatedSteps(ctx context.Context, tx pgx.Tx, publis
 	return s.Store.EnqueueGatedSteps(ctx, tx, publish, nextAt)
 }
 
-func (s projectRecords) DropCatchUps(ctx context.Context, tx pgx.Tx, issue string, now time.Time) ([]int64, error) {
+func (s projectRecords) DropCatchUps(ctx context.Context, tx pgx.Tx, issue string) ([]int64, error) {
 	if !s.ownsKey(record.OutboxKindNotice, issue) {
 		return nil, nil
 	}
-	ids, err := s.Store.DropCatchUps(ctx, tx, issue, now)
+	ids, err := s.Store.DropCatchUps(ctx, tx, issue)
 	if err == nil && len(ids) != 0 && s.catchUps != nil {
 		store.OnCommit(ctx, func() { s.catchUps.drop(ids) })
 	}

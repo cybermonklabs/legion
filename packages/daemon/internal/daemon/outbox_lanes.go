@@ -104,8 +104,9 @@ func (r *outbox) Run(ctx context.Context) {
 
 // sweepInterval is how often Run sweeps: the outbox's own sweepEvery, or outboxLease where it sets
 // none, which is every daemon's. An interval at most outboxLease finds a lapsed lease within one
-// interval of its lapse. A shorter one never finds a live row lapsed: a running row renews its
-// lease every third of outboxLease, whatever the sweep's interval.
+// interval of its lapse. A running row renews its lease every third of outboxLease, whatever the
+// sweep's interval, so while the database answers its lease stays live; if renewals are held back
+// past the lease, the sweep wakes the row's own lane, which is still running it.
 func (r *outbox) sweepInterval() time.Duration {
 	if r.sweepEvery > 0 {
 		return r.sweepEvery
@@ -350,17 +351,24 @@ func (r *outbox) runRow(ctx context.Context, listed record.OutboxRow) error {
 	// The renewal's ticks run on timer goroutines of their own (renewLease), beside the row's
 	// effect, so they are a second caller of the pool and take a hold mark of their own
 	// (store.ForConcurrentWorker). On the lane's mark a tick that came while the effect was inside
-	// a transaction would be refused its connection (store.ErrNestedAcquire), three refusals in a
-	// row would lapse the lease while the database answers, and the sweep would run the row a
-	// second time beside this one; a tick that held its connection would have the row's own call
-	// refused. One mark serves every tick of the row, because a tick arms the next only as it ends
-	// (renewLease's tick, leaseRenewal.arm), so no two ticks of one renewal ever run together. The
-	// mark is fresh for each row, so a tick still in flight when its row stops (renewOnce) shares
-	// none with the next row's ticks, and it is taken here, where the lane holds no connection: the
-	// claim's transaction has committed.
+	// a transaction would be refused its connection (store.ErrNestedAcquire), and three refusals in
+	// a row would lapse the lease while the database answers: the row would then read as free to a
+	// claim and as not running to its issue's lifecycle lane while it still runs here, and only a
+	// catch-up naming kept decisions is kept from a drop of its issue's catch-ups while its claim
+	// stands (record.Store.DropCatchUps). A tick that held its connection would have the row's own
+	// call refused. One mark serves every tick of the row, because a tick arms the next only as it
+	// ends (renewLease's tick, leaseRenewal.arm), so no two ticks of one renewal ever run together.
+	// The mark is fresh for each row, so a tick still in flight when its row stops (renewOnce)
+	// shares none with the next row's ticks, and it is taken here, where the lane holds no
+	// connection: the claim's transaction has committed. A run that ends after the last lease its
+	// renewal committed is logged once at Warn before its settle.
 	renewal := r.renewLease(store.ForConcurrentWorker(ctx), row, now)
 	err := r.execute(ctx, row)
-	renewal.stop()
+	ended := r.now().UTC()
+	if leaseUntil := renewal.stop(); ended.After(leaseUntil) {
+		r.log.Warn("outbox row ran past its lease; a drop of its issue's catch-ups keeps it while its claim stands, and its finish or retry fences on the token",
+			"row", row.ID, "kind", row.Kind, "issue", row.Issue, "lease_until", leaseUntil, "ended", ended)
+	}
 	settleCtx, cancel := settleContext(ctx)
 	defer cancel()
 	r.settle(settleCtx, row, err)
@@ -378,16 +386,27 @@ func settleContext(ctx context.Context) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.WithoutCancel(ctx), outboxSettleTimeout)
 }
 
-// leaseRenewal keeps a running row's lease live (renewLease): when the run began, the tick armed
-// next, whether the run has ended, and what the ticks have already said, so each is said once per
-// run. began is set once, before the first tick, and read without the lock.
+// leaseRenewal keeps a running row's lease live (renewLease): when the run began, the last
+// lease_until committed (starting at the claim's own), the tick armed next, whether the run has
+// ended, and what the ticks have already said, so each is said once per run. began is set once,
+// before the first tick, and read without the lock.
 type leaseRenewal struct {
-	began     time.Time
-	mu        sync.Mutex
-	stopped   bool
-	tick      supervise.Cancel
-	unrenewed bool
-	warned    map[int64]bool
+	began      time.Time
+	mu         sync.Mutex
+	leaseUntil time.Time
+	stopped    bool
+	tick       supervise.Cancel
+	unrenewed  bool
+	warned     map[int64]bool
+}
+
+// renewed records the lease_until a renewal tick committed.
+func (l *leaseRenewal) renewed(until time.Time) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if until.After(l.leaseUntil) {
+		l.leaseUntil = until
+	}
 }
 
 // arm schedules the next tick unless the run has ended, so a tick in flight when stop is called
@@ -401,14 +420,16 @@ func (l *leaseRenewal) arm(schedule func() supervise.Cancel) {
 	l.tick = schedule()
 }
 
-// stop ends the chain: the tick armed is cancelled, and one running re-arms nothing.
-func (l *leaseRenewal) stop() {
+// stop ends the chain: the tick armed is cancelled, and one running re-arms nothing. It returns
+// the last lease_until committed for this run (the claim's own if no renewal committed).
+func (l *leaseRenewal) stop() time.Time {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.stopped = true
 	if l.tick != nil {
 		l.tick.Stop()
 	}
+	return l.leaseUntil
 }
 
 func (l *leaseRenewal) ended() bool {
@@ -448,7 +469,7 @@ func (l *leaseRenewal) warnOnce(held int64) bool {
 // row that runs long is what an operator looks at when a stop or a start of the issue does not
 // happen. began is when the row's run began, the moment of its claim (runRow).
 func (r *outbox) renewLease(ctx context.Context, row record.OutboxRow, began time.Time) *leaseRenewal {
-	renewal := &leaseRenewal{began: began, warned: map[int64]bool{}}
+	renewal := &leaseRenewal{began: began, leaseUntil: began.Add(outboxLease), warned: map[int64]bool{}}
 	clock := r.timers()
 	lifecycle := record.LaneOf(row.Kind) == record.LaneLifecycle
 	var tick func()
@@ -475,16 +496,18 @@ func (r *outbox) renewLease(ctx context.Context, row record.OutboxRow, began tim
 //   - a row another lane leases now is a lost lease, at Warn;
 //   - a row whose own effect finishes it inside its run (finishesItsOwnRow: a left pod's close
 //     check) found gone is that finish, at Info;
-//   - a status write or a notice found gone may have been deleted under its live lease by a newer
-//     write of its issue (record's DropStatusWrites, DropCatchUps), as well as finished by another
-//     lane after this lease lapsed, at Warn, and the line names both;
+//   - a status write or a notice found gone may have been deleted under its claim by a newer write
+//     of its issue (record's DropStatusWrites, DropQueuedChanges, or DropCatchUps for a catch-up
+//     naming no kept decisions — a catch-up naming kept decisions is kept while its claim stands),
+//     as well as finished by another lane after this lease lapsed, at Warn, and the line names both;
 //   - any other row found gone, the idle release's check included, which never finishes its own
 //     row, was finished by another lane after this lease lapsed, at Warn.
 func (r *outbox) renewOnce(ctx context.Context, row record.OutboxRow, renewal *leaseRenewal, now time.Time) {
 	var held, gone bool
+	until := now.Add(outboxLease)
 	if err := store.Transact(ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
-		held, gone, err = r.records.RenewOutboxLease(ctx, tx, row.ID, row.LeaseToken, now.Add(outboxLease))
+		held, gone, err = r.records.RenewOutboxLease(ctx, tx, row.ID, row.LeaseToken, until)
 		return err
 	}); err != nil {
 		if ctx.Err() == nil {
@@ -492,7 +515,11 @@ func (r *outbox) renewOnce(ctx context.Context, row record.OutboxRow, renewal *l
 		}
 		return
 	}
-	if held || renewal.ended() || !renewal.unrenewedOnce() {
+	if held {
+		renewal.renewed(until)
+		return
+	}
+	if renewal.ended() || !renewal.unrenewedOnce() {
 		return
 	}
 	attrs := []any{"row", row.ID, "kind", row.Kind, "issue", row.Issue}
@@ -502,7 +529,7 @@ func (r *outbox) renewOnce(ctx context.Context, row record.OutboxRow, renewal *l
 	case finishesItsOwnRow(row):
 		r.log.Info("outbox row finished while its run goes on: a left pod's close check finishes its own row; the lane's finish then deletes nothing", attrs...)
 	case row.Kind == record.OutboxKindDispatchStatus || row.Kind == record.OutboxKindNotice:
-		r.log.Warn("outbox row gone while its run goes on: a newer write of its issue may have dropped it (DropStatusWrites, DropCatchUps), or another lane finished it after this lease lapsed; the run's finish or retry fences on the token", attrs...)
+		r.log.Warn("outbox row gone while its run goes on: a newer write of its issue may have dropped it (DropStatusWrites, DropQueuedChanges, or DropCatchUps for a catch-up naming no kept decisions; a catch-up naming kept decisions is kept while its claim stands), or another lane finished it after this lease lapsed; the run's finish or retry fences on the token", attrs...)
 	default:
 		r.log.Warn("outbox row gone while its run goes on: another lane finished it after this lease lapsed; the run's finish or retry fences on the token", attrs...)
 	}

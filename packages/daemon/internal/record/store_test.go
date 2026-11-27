@@ -2026,17 +2026,16 @@ func TestABoardRowClaimedWhileItsIssuesLifecycleClaimIsUncommittedIsLeasedAtOnce
 	}
 }
 
-// A lane's lease of a catch-up and a ready's drop of the root's queued catch-ups (DropCatchUps)
+// A lane's claim of a catch-up and a ready's drop of the root's queued catch-ups (DropCatchUps)
 // meet on the row. The drop keeps a catch-up that carries kept decisions while a row of its telling
-// is under a live lease, but that check is a subquery over the outbox: Postgres rechecks a
-// concurrently updated row's new version against the where clause, never a subquery over other
-// rows, so a drop whose delete read the row before the lease committed would delete it after. The
-// lane then publishes the row from memory, its re-hold copies the text naming the decisions the
-// drop released, and the fresh catch-up the drop's transaction wrote names them too: told twice
-// (the kept-decision model's seed 262). So a claim of one of the issue's catch-ups and the drop
-// take one advisory lock, keyed by the issue: a lease a moment from committing is waited for and
-// seen, and a claim taken after the lock waits for the drop and claims nothing when its row is
-// gone.
+// holds a claim, but that check is a subquery over the outbox: Postgres rechecks a concurrently
+// updated row's new version against the where clause, never a subquery over other rows, so a drop
+// whose delete read the row before the claim committed would delete it after. The lane then
+// publishes the row from memory, its re-hold copies the text naming the decisions the drop
+// released, and the fresh catch-up the drop's transaction wrote names them too: told twice (the
+// kept-decision model's seed 262). So a claim of one of the issue's catch-ups and the drop take
+// one advisory lock, keyed by the issue: a claim a moment from committing is waited for and seen,
+// and a claim taken after the lock waits for the drop and claims nothing when its row is gone.
 func TestDroppingCatchUpsLeavesTheRowALaneIsLeasing(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(t)
@@ -2071,7 +2070,7 @@ func TestDroppingCatchUpsLeavesTheRowALaneIsLeasing(t *testing.T) {
 	dropped := make(chan error, 1)
 	go func() {
 		dropped <- store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
-			_, err := records.DropCatchUps(ctx, tx, "LEGION-1", now)
+			_, err := records.DropCatchUps(ctx, tx, "LEGION-1")
 			return err
 		})
 	}()
@@ -2171,7 +2170,7 @@ func TestDroppingCatchUpsWaitsOnNoRowAFinishIsDeleting(t *testing.T) {
 	}
 
 	// The adoption then drops the root's catch-ups, and both commit.
-	if _, err := records.DropCatchUps(ctx, txAdopt, "LEGION-1", now); err != nil {
+	if _, err := records.DropCatchUps(ctx, txAdopt, "LEGION-1"); err != nil {
 		t.Fatalf("drop the catch-ups of LEGION-1 while a lane finishes one: %v; want no wait on the finishing row", err)
 	}
 	must(t, txAdopt.Commit(ctx))
@@ -2234,7 +2233,7 @@ func TestDroppingCatchUpsWaitsForTheClaimOfACopyAReholdQueued(t *testing.T) {
 	txDrop, err := st.Pool().BeginTx(ctx, pgx.TxOptions{})
 	must(t, err)
 	defer func() { _ = txDrop.Rollback(ctx) }()
-	_, err = records.DropCatchUps(ctx, txDrop, "LEGION-1", now)
+	_, err = records.DropCatchUps(ctx, txDrop, "LEGION-1")
 	must(t, err)
 
 	// The lane's claim of the copy, which must wait for the drop and take nothing.
@@ -2423,7 +2422,7 @@ func TestDroppingCatchUpsKeepsATellingWhileARowOfItHoldsAClaim(t *testing.T) {
 
 			dropAt := r.claimedAt.Add(r.lease + time.Second)
 			inTx(t, st, func(tx pgx.Tx) {
-				_, err := records.DropCatchUps(ctx, tx, "LEGION-1", dropAt)
+				_, err := records.DropCatchUps(ctx, tx, "LEGION-1")
 				must(t, err)
 			})
 

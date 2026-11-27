@@ -16,8 +16,8 @@ import (
 // nothing told that architect what the root had kept while it waited (workflow's Adopt now writes
 // it a catch-up); 69 told one decision twice to its architect in the same sweep; 427 dropped a
 // re-held copy of a catch-up while the row it copies was publishing, so the decisions the copy
-// claimed were named again (DropCatchUps now keeps every row of a telling one of whose rows is
-// leased); 262 named one decision in two catch-ups of one launch, so a composer named what another
+// claimed were named again (DropCatchUps now keeps every row of a telling one of whose rows holds
+// a claim); 262 named one decision in two catch-ups of one launch, so a composer named what another
 // telling owned (UnclaimedKept now locks the rows before it reads them, and ClaimKeptDecisions
 // claims everything a row names or fails), and later told one decision twice on a schedule the
 // model itself made: its runTogether leased a catch-up only once another row of the step had
@@ -27,7 +27,7 @@ import (
 // concurrently committed lease — so the dropped row published, its re-held copy named the decision
 // again beside the fresh catch-up, and the architect was told it twice. That late lease stood for
 // a lane's claim until #2743 put the issue's lock in ClaimRow, which the drop takes too, so no lane
-// makes that schedule while its lease is live (record's
+// makes that schedule while its claim stands (record's
 // TestDroppingCatchUpsLeavesTheRowALaneIsLeasing guards the lock); the model now leases every row
 // of a step before any of them runs (runTogether), so it no longer makes that schedule either
 // (dispatch://INFRA-2836); 701 spent a catch-up's re-holds while

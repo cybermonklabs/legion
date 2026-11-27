@@ -79,8 +79,8 @@ type composedCatchUp struct {
 // composeCatchUp is catchUpNow's composition, answering the whole of it. The composer first drops
 // the catch-ups still queued for the architect that record.Store.DropCatchUps may drop (it keeps
 // one whose telling is recorded as told under record.KeptToldSource, and one carrying kept
-// decisions while a row of its telling is under a live lease), so the rows queued before it are
-// read in the same transaction, under the advisory lock that drop takes and every composition of a
+// decisions while a row of its telling holds a claim), so the rows queued before it are read in
+// the same transaction, under the advisory lock that drop takes and every composition of a
 // catch-up of key waits on (record.LockCatchUps): no catch-up the daemon queues lands between that
 // read and the drop, and none lands beside the row this composition queued, which is then the
 // newest catch-up of key that copies no other.

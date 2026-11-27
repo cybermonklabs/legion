@@ -805,7 +805,7 @@ func TestHeldCatchUpsRejoinInIDOrderAndADeletedRowGivesUpItsPlace(t *testing.T) 
 		}
 	}
 	if err := store.Transact(t.Context(), pool, func(ctx context.Context, tx pgx.Tx) error {
-		_, err := records.DropCatchUps(ctx, tx, keys[1], clock.Now())
+		_, err := records.DropCatchUps(ctx, tx, keys[1])
 		return err
 	}); err != nil {
 		t.Fatal(err)

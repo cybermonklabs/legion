@@ -199,9 +199,9 @@ func keepDecision(t *testing.T, pool *store.Pool, records record.Store, issue, r
 // A ready's drop of the root's queued catch-ups (Store.DropCatchUps) leaves the one catch-up that
 // is publishing what it named: the drop would release its decisions and the fresh catch-up, written
 // in the same transaction, would name them again, telling the architect that already has the
-// publish in its hands a person's decision twice. A catch-up under a live lease that carries kept
-// decisions is left for its own ending to settle — here the publish, which forgets exactly what it
-// named — and the fresh catch-up names only what nobody claims.
+// publish in its hands a person's decision twice. A catch-up carrying kept decisions while a row of
+// its telling holds a claim is left for its own ending to settle — here the publish, which forgets
+// exactly what it named — and the fresh catch-up names only what nobody claims.
 func TestAReadyLeavesTheCatchUpThatIsPublishingWhatItNamed(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
