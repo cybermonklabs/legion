@@ -26,10 +26,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
-// idleRigProjectReleaseWait is how long a rig test waits for a project release to finish: its
-// bound, then the stops, the deletes and the pods going in the rig's Kubernetes API.
-const idleRigProjectReleaseWait = 3 * time.Minute
-
 // startRelease starts the project release with bound over the operator's route, once every role
 // whose report the release reads has reported since its last turn (awaitReportsSinceLastTurn),
 // and answers the record the daemon answered it with, 202.
@@ -74,7 +70,7 @@ func (r *idleWakeRig) awaitReportsSinceLastTurn() {
 			r.t.Logf("the claims a project release reads that have sent no activity report since their last turn started: %v", unreported)
 		}
 	}()
-	idleRigEventually(r.t, idleRigRecordWait, "an activity report since its last turn started from each role of a pod a project release reads", func() bool {
+	idleRigEventually(r.t, "an activity report since its last turn started from each role of a pod a project release reads", func() bool {
 		claims := r.api.claims()
 		read := map[string]bool{}
 		for _, c := range claims {
@@ -174,7 +170,7 @@ func (r *idleWakeRig) awaitReleaseFinished() (api.ProjectReleaseResponse, []byte
 	r.t.Helper()
 	var release api.ProjectReleaseResponse
 	var raw []byte
-	idleRigEventually(r.t, idleRigProjectReleaseWait, "the project release finished", func() bool {
+	idleRigEventually(r.t, "the project release finished", func() bool {
 		release, raw = r.readRelease()
 		return release.FinishedAt != nil
 	})
@@ -241,7 +237,7 @@ func TestProjectReleaseTakesEachPodOfTheProject(t *testing.T) {
 	if status, body := rig.api.request(http.MethodPost, "/legion/v1/operator/claims/"+string(rig.token(held))+"/suspend", nil, true); status/100 != 2 {
 		t.Fatalf("suspend %s = %d; body %s", rig.token(held), status, body)
 	}
-	idleRigEventually(t, idleRigPodWait, "the stopped claim retired and the operator's suspension stored", func() bool {
+	idleRigEventually(t, "the stopped claim retired and the operator's suspension stored", func() bool {
 		return rig.api.claim(rig.token(unread)).State == string(supervise.StateRetired) &&
 			rig.api.claim(rig.token(held)).State == string(supervise.StateSuspended)
 	})
@@ -455,13 +451,13 @@ func TestProjectReleaseWaitsForTheControllersTurnToTheBound(t *testing.T) {
 	clean := rig.issue("clean")
 	rig.launchAll()
 	controller := claim.ControllerToken(rig.project)
-	idleRigEventually(t, idleRigPodWait, "the daemon's controller in the turn its start message began", func() bool {
+	idleRigEventually(t, "the daemon's controller in the turn its start message began", func() bool {
 		c, ok := rig.claimsByToken()[controller]
 		return ok && c.State == string(supervise.StateWorking)
 	})
 
 	rig.startRelease("2m")
-	idleRigEventually(t, idleRigProjectReleaseWait, "the clean pod ended", func() bool {
+	idleRigEventually(t, "the clean pod ended", func() bool {
 		release, _ := rig.readRelease()
 		line, listed := releaseLineNow(release, clean.pod)
 		return listed && line.Outcome != api.ReleaseWaiting
@@ -572,14 +568,14 @@ func heldPodInUpdateRound(t *testing.T) (rig *idleWakeRig, held idleRigIssue, im
 	if !rig.kube.madeByAnOlderDaemon(held.pod, moveOlderImage) {
 		t.Fatalf("the pod of %s is not in the cluster to stand for an older daemon's", held.key)
 	}
-	idleRigEventually(t, idleRigPodWait, "the update round open over both claims of the older daemon's pod", func() bool {
+	idleRigEventually(t, "the update round open over both claims of the older daemon's pod", func() bool {
 		claims := rig.claimsByToken()
 		return claims[implementer].UpdateRound != "" && claims[planner].UpdateRound != ""
 	})
 	if status, body := rig.api.request(http.MethodPost, "/legion/v1/operator/claims/"+string(planner)+"/suspend", nil, true); status/100 != 2 {
 		t.Fatalf("suspend %s = %d; body %s", planner, status, body)
 	}
-	idleRigEventually(t, idleRigPodWait, "the operator's suspension of the planner stored, in its round", func() bool {
+	idleRigEventually(t, "the operator's suspension of the planner stored, in its round", func() bool {
 		c := rig.claimsByToken()[planner]
 		return c.State == string(supervise.StateSuspended) && c.SuspendedBy == string(supervise.SuspendedByOperator) && c.UpdateRound != ""
 	})
@@ -673,7 +669,7 @@ func TestProjectReleaseTakesTheSandboxesItsFirstListDidNotHold(t *testing.T) {
 	late, cache, stray := sandbox.SandboxName(lateToken), "legion-"+project+"-cache-late", "legion-"+project+"-stray"
 
 	rig.startRelease("20s")
-	idleRigEventually(t, idleRigRecordWait, "the release's first list of the project", func() bool {
+	idleRigEventually(t, "the release's first list of the project", func() bool {
 		release, _ := rig.readRelease()
 		_, listed := releaseLineNow(release, waiting.pod)
 		return listed
@@ -718,7 +714,7 @@ func TestProjectReleaseKeepsTheCountOfAPodWhoseRoleEndedBeforeItsLastRead(t *tes
 	ended := rig.issue("ended")
 
 	rig.startRelease("15s")
-	idleRigEventually(t, idleRigRecordWait, "the release's ask to the pod's role", func() bool {
+	idleRigEventually(t, "the release's ask to the pod's role", func() bool {
 		return len(rig.releaseAsks(ended.key, ended.role)) == 1
 	})
 	rig.stopRole(ended)
@@ -914,7 +910,7 @@ func TestProjectReleaseAsksARoleWhoseSessionTakesItsTopicLate(t *testing.T) {
 	slow := rig.issue("slow")
 
 	rig.startRelease("60s")
-	idleRigEventually(t, idleRigRecordWait, "the release's ask finding no session on the role's topic", func() bool {
+	idleRigEventually(t, "the release's ask finding no session on the role's topic", func() bool {
 		return rig.logged(releaseAskWaitsLine, map[string]string{"issue": slow.key}) > 0
 	})
 	plan.WithholdRole = false

@@ -132,8 +132,9 @@ func (s *SessionConsumers) recordResumeFloorAt(ctx context.Context, sessionID st
 // it fails rather than create a consumer that could skip every message stored since the floor:
 // both creates that read the record, one at start 0 and one at a caller's start (a pending start
 // reads none), fail when the read fails (SessionConsumers.create). A registration is then refused
-// 503 (cmd/listener sessionDelivery.refused), consumer_error unless the server refused the read
-// for want of a grant (no_grant), and its next heartbeat tries again; a repair logs the failure
+// 503 (cmd/listener sessionDelivery.refused): consumer_error, no_grant where the server refused
+// the read for want of a grant, or the bus-unavailable 503 naming the reconnect where the read
+// failed as ErrReconnecting. Its next heartbeat tries again; a repair logs the failure
 // (cmd/listener repairRegistered).
 func (s *SessionConsumers) resumeFloor(ctx context.Context, sessionID, streamID string) (uint64, bool, error) {
 	stored, err := s.client.LastStoredMessage(ctx, SessionResumeSubject(sessionID))

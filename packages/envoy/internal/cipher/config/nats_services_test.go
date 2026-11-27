@@ -2,6 +2,7 @@ package config
 
 import (
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -11,11 +12,12 @@ import (
 )
 
 const (
-	listenerAccount  = "system:serviceaccount:example-ns:example-listener"
-	daemonAccount    = "system:serviceaccount:example-ns:example-daemon"
-	measureAccount   = "envoy-measure@example-project.iam.gserviceaccount.com"
-	edgeAccount      = "system:serviceaccount:example-ns:example-edge-listener"
-	otherEdgeAccount = "system:serviceaccount:example-ns:example-other-edge-listener"
+	listenerAccount        = "system:serviceaccount:example-ns:example-listener"
+	webhookListenerAccount = "system:serviceaccount:example-ns:example-webhook-listener"
+	daemonAccount          = "system:serviceaccount:example-ns:example-daemon"
+	measureAccount         = "envoy-measure@example-project.iam.gserviceaccount.com"
+	edgeAccount            = "system:serviceaccount:example-ns:example-edge-listener"
+	otherEdgeAccount       = "system:serviceaccount:example-ns:example-other-edge-listener"
 )
 
 // oneIssuer is BROKER_K8S_OIDC_ISSUER as one bare URL, the one issuer every deployment had before
@@ -31,13 +33,15 @@ var (
 func TestParseNATSServicesReadsEachEntry(t *testing.T) {
 	listener, daemon := "listener/dev-stack/*="+listenerAccount, "daemon/-/-="+daemonAccount
 	measure, dispatch := "measure/-/*=google:"+measureAccount, "dispatch/example-dispatch/*=system:serviceaccount:dispatch:dispatch"
-	services, err := ParseNATSServices(listener+"\n "+daemon+" "+measure+" "+dispatch, oneIssuer)
+	webhook := "webhook-listener/example-webhook/*=" + webhookListenerAccount
+	services, err := ParseNATSServices(listener+"\n "+daemon+" "+measure+" "+dispatch+" "+webhook, oneIssuer)
 	require.NoError(t, err)
 	require.Equal(t, []NATSService{
 		{Kind: NATSListener, MachineID: "dev-stack", Account: listenerAccount, Issuers: []string{""}, AllProjects: true, Text: listener},
 		{Kind: NATSDaemon, Account: daemonAccount, Issuers: []string{""}, Text: daemon},
 		{Kind: NATSMeasure, Account: measureAccount, Google: true, AllProjects: true, Text: measure},
 		{Kind: NATSDispatch, MachineID: "example-dispatch", Account: "system:serviceaccount:dispatch:dispatch", Issuers: []string{""}, AllProjects: true, Text: dispatch},
+		{Kind: NATSWebhookListener, MachineID: "example-webhook", Account: webhookListenerAccount, Issuers: []string{""}, AllProjects: true, Text: webhook},
 	}, services)
 	none, err := ParseNATSServices("  ", oneIssuer)
 	require.NoError(t, err)
@@ -135,31 +139,38 @@ func TestParseNATSServicesRefusals(t *testing.T) {
 		issuers []oidc.NamedIssuer
 		want    []string
 	}{
-		"an unknown kind":                            {"relay/-/*=" + daemonAccount, oneIssuer, nil},
-		"a dispatch entry with no machine id":        {"dispatch/-/*=" + daemonAccount, oneIssuer, nil},
-		"a listener entry with no machine id":        {"listener/-/*=" + listenerAccount, oneIssuer, nil},
-		"a daemon entry with a machine id":           {"daemon/host-a/-=" + daemonAccount, oneIssuer, nil},
-		"a machine id that is no subject token":      {"listener/a.b/*=" + listenerAccount, oneIssuer, nil},
-		"a scope that is neither":                    {"daemon/-/PROJ=" + daemonAccount, oneIssuer, nil},
-		"no account":                                 {"daemon/-/-", oneIssuer, nil},
-		"too few parts":                              {"daemon/-=" + daemonAccount, oneIssuer, nil},
-		"an account of neither form":                 {"daemon/-/-=example-daemon", oneIssuer, nil},
-		"a namespace's default account":              {"daemon/-/-=system:serviceaccount:example-ns:default", oneIssuer, nil},
-		"a Google default account":                   {"measure/-/*=google:123-compute@developer.gserviceaccount.com", oneIssuer, nil},
-		"a Google service agent":                     {"measure/-/*=google:service-123@gcp-sa-pubsub.iam.gserviceaccount.com", oneIssuer, nil},
-		"an account given twice":                     {"daemon/-/-=" + daemonAccount + " listener/host-a/*=" + daemonAccount, oneIssuer, nil},
-		"an edge listener with no machine id":        {"edge-listener/-/PRIV=" + edgeAccount, oneIssuer, nil},
-		"an edge listener naming no project key":     {"edge-listener/edge-a/priv=" + edgeAccount, oneIssuer, nil},
-		"an edge listener naming a project twice":    {"edge-listener/edge-a/PRIV,PRIV=" + edgeAccount, oneIssuer, nil},
-		"an edge listener naming an empty project":   {"edge-listener/edge-a/PRIV,=" + edgeAccount, oneIssuer, nil},
-		"an edge listener naming seventeen projects": {"edge-listener/edge-a/AA,AB,AC,AD,AE,AF,AG,AH,AI,AJ,AK,AL,AM,AN,AO,AP,AQ=" + edgeAccount, oneIssuer, nil},
-		"projects for a listener":                    {"listener/host-a/PRIV=" + listenerAccount, oneIssuer, nil},
-		"an issuer the list does not hold":           {unheld, twoIssuers, []string{`"` + unheld + `"`, `"third"`, "first, second"}},
-		"one issuer named twice":                     {twice, twoIssuers, []string{`"` + twice + `"`, `"first"`, "twice"}},
-		"an issuer name on a google: entry":          {onGoogle, twoIssuers, []string{`"` + onGoogle + `"`, "Google"}},
-		"an issuer name beside one bare URL":         {besideBare, oneIssuer, []string{`"` + besideBare + `"`, "BROKER_K8S_OIDC_ISSUER", "bare"}},
-		"an edge listener naming an unheld issuer":   {edgeUnheld, twoIssuers, []string{`"` + edgeUnheld + `"`, `"third"`, "first, second"}},
-		"an issuer name on a google: edge listener":  {edgeGoogle, twoIssuers, []string{`"` + edgeGoogle + `"`, "Google"}},
+		"an unknown kind":                             {"relay/-/*=" + daemonAccount, oneIssuer, nil},
+		"a dispatch entry with no machine id":         {"dispatch/-/*=" + daemonAccount, oneIssuer, nil},
+		"a listener entry with no machine id":         {"listener/-/*=" + listenerAccount, oneIssuer, nil},
+		"a webhook-listener entry with no machine id": {"webhook-listener/-/*=" + webhookListenerAccount, oneIssuer, nil},
+		"a daemon entry with a machine id":            {"daemon/host-a/-=" + daemonAccount, oneIssuer, nil},
+		"an empty machine id":                         {"listener//*=" + listenerAccount, oneIssuer, nil},
+		"a machine id holding a control character":    {"listener/a\x01b/*=" + listenerAccount, oneIssuer, nil},
+		"a machine id holding a wildcard":             {"listener/a*b/*=" + listenerAccount, oneIssuer, nil},
+		"a machine id holding a space":                {"listener/a\u00a0b/*=" + listenerAccount, oneIssuer, nil},
+		"a machine id holding the escape character":   {"listener/a%2Eb/*=" + listenerAccount, oneIssuer, nil},
+		"a machine id whose durable name is too long": {"listener/" + strings.Repeat("a", 250) + "/*=" + listenerAccount, oneIssuer, nil},
+		"an edge machine id holding the escape":       {"edge-listener/a%2Eb/PRIV=" + edgeAccount, oneIssuer, nil},
+		"a scope that is neither":                     {"daemon/-/PROJ=" + daemonAccount, oneIssuer, nil},
+		"no account":                                  {"daemon/-/-", oneIssuer, nil},
+		"too few parts":                               {"daemon/-=" + daemonAccount, oneIssuer, nil},
+		"an account of neither form":                  {"daemon/-/-=example-daemon", oneIssuer, nil},
+		"a namespace's default account":               {"daemon/-/-=system:serviceaccount:example-ns:default", oneIssuer, nil},
+		"a Google default account":                    {"measure/-/*=google:123-compute@developer.gserviceaccount.com", oneIssuer, nil},
+		"a Google service agent":                      {"measure/-/*=google:service-123@gcp-sa-pubsub.iam.gserviceaccount.com", oneIssuer, nil},
+		"an account given twice":                      {"daemon/-/-=" + daemonAccount + " listener/host-a/*=" + daemonAccount, oneIssuer, nil},
+		"an edge listener with no machine id":         {"edge-listener/-/PRIV=" + edgeAccount, oneIssuer, nil},
+		"an edge listener naming no project key":      {"edge-listener/edge-a/priv=" + edgeAccount, oneIssuer, nil},
+		"an edge listener naming a project twice":     {"edge-listener/edge-a/PRIV,PRIV=" + edgeAccount, oneIssuer, nil},
+		"an edge listener naming an empty project":    {"edge-listener/edge-a/PRIV,=" + edgeAccount, oneIssuer, nil},
+		"an edge listener naming seventeen projects":  {"edge-listener/edge-a/AA,AB,AC,AD,AE,AF,AG,AH,AI,AJ,AK,AL,AM,AN,AO,AP,AQ=" + edgeAccount, oneIssuer, nil},
+		"projects for a listener":                     {"listener/host-a/PRIV=" + listenerAccount, oneIssuer, nil},
+		"an issuer the list does not hold":            {unheld, twoIssuers, []string{`"` + unheld + `"`, `"third"`, "first, second"}},
+		"one issuer named twice":                      {twice, twoIssuers, []string{`"` + twice + `"`, `"first"`, "twice"}},
+		"an issuer name on a google: entry":           {onGoogle, twoIssuers, []string{`"` + onGoogle + `"`, "Google"}},
+		"an issuer name beside one bare URL":          {besideBare, oneIssuer, []string{`"` + besideBare + `"`, "BROKER_K8S_OIDC_ISSUER", "bare"}},
+		"an edge listener naming an unheld issuer":    {edgeUnheld, twoIssuers, []string{`"` + edgeUnheld + `"`, `"third"`, "first, second"}},
+		"an issuer name on a google: edge listener":   {edgeGoogle, twoIssuers, []string{`"` + edgeGoogle + `"`, "Google"}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := ParseNATSServices(row.raw, row.issuers)
@@ -168,6 +179,24 @@ func TestParseNATSServicesRefusals(t *testing.T) {
 			for _, want := range row.want {
 				require.Contains(t, err.Error(), want)
 			}
+		})
+	}
+}
+
+// Check l16 of dispatch://INFRA-3589 (R18) at the setting: each kind of entry that names a machine
+// takes a dotted machine id, as the listener starts with one (bus.CheckListenerMachineID), and
+// keeps that id whole. natscallout's TestADottedMachineIDStartsAndDelivers checks the grant the auth
+// service answers such an entry with, and its TestADottedEdgeMachineIDIsGrantedItsSpelledPrefix
+// the edge listener's.
+func TestParseNATSServicesTakesADottedMachineID(t *testing.T) {
+	const machineID = "host.example.internal"
+	for kind, scope := range map[NATSServiceKind]string{NATSListener: "*", NATSWebhookListener: "*", NATSDispatch: "*", NATSEdgeListener: "PRIV"} {
+		t.Run(string(kind), func(t *testing.T) {
+			services, err := ParseNATSServices(string(kind)+"/"+machineID+"/"+scope+"="+listenerAccount, oneIssuer)
+			require.NoError(t, err)
+			require.Len(t, services, 1)
+			require.Equal(t, machineID, services[0].MachineID)
+			require.Equal(t, string(kind)+"/"+machineID, services[0].Name())
 		})
 	}
 }

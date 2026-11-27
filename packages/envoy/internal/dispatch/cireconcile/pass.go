@@ -142,7 +142,9 @@ func (w *walk) stopped(at *stop) *ending {
 // the pass notes each part of its read it gives up on an answer the client takes as data -- a
 // repository it skips, a head it does not read, a head's commit statuses it does not read, and a
 // rate limit that ends the pass. A read the pass's own ending killed is none of those (cutShort),
-// and a pass its caller cancelled, which is this process shutting down, records nothing.
+// and a pass its caller cancelled, which is this process shutting down, records nothing. Begin
+// also names the read as the caller kind its calls to GitHub are counted under, for the rate
+// reading.
 func (r *Reconciler) Pass(ctx context.Context) {
 	started := time.Now()
 	var c counts
@@ -152,8 +154,8 @@ func (r *Reconciler) Pass(ctx context.Context) {
 	// (passOutcome). It is what the attempt is recorded on, so a pass cut by its own bound is
 	// recorded and one cut by the shutdown is not.
 	caller := ctx
-	ctx, attempt := githubreads.Begin(ctx)
-	defer githubreads.Finish(caller, githubreads.CIReconcile, attempt, r.GitHubReads, r.Logger)
+	ctx, attempt := githubreads.Begin(ctx, githubreads.CIReconcile)
+	defer githubreads.Finish(caller, attempt, r.GitHubReads, r.Logger)
 	if r.PassTimeout > 0 {
 		// Every read of the pass is made within this, and so is every gap it leaves between two
 		// of them, so the pass ends whatever it is waiting for. Zero is unbounded, which is what

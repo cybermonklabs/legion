@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
@@ -69,10 +70,38 @@ import (
 // role_holders_publish row per issue, and a lane runs its issue's rows one at a time
 // (packages/daemon's internal/daemon/outbox_lanes.go, the lanes' comment).
 //
-// The write appends no issue event and publishes nothing, whether the set changed or not, for the
-// reasons a design-gate publication gives (issue_design_gates.go): the record is the daemon's own
-// fact, and an event would feed the daemon's intake with facts that it caused. The write takes a
-// closed issue, because the tester's production check runs after the close.
+// Each write that changes the set appends one issue event, issue.role_holders_changed
+// (issueRoleHoldersChange), in the transaction that stores the set: the set before the write and
+// the set it stored, each in the order the routes answer, as the daemon's session and at the time
+// of the write, which is the event's own time. So the issue's event log says which session held
+// each role at a past time, which the set alone cannot: a reader that judges a comment by the role
+// its author held when it wrote it, such as a review gate that counts an approval of a parent's
+// architect, reads the newest such event at or before that comment. The log starts at the release
+// that writes the event: a change made before it has no event. A write that stores the set already
+// stored, as the daemon's publication at each boot does, appends nothing, so a republished set
+// moves no issue's sequence or activity feed. The event is quiet (events.Quiet), since it is the
+// daemon's own record of what it did: it wakes nobody, and the daemon's intake reads no fact from
+// it (packages/daemon's intake.decodeDispatchEvent passes over a type it does not act on). It
+// moves the issue's sequence, as every issue event does, so a fenced daemon write that read the
+// issue before it is refused ISSUE_CHANGED and read again (packages/daemon's
+// dispatch.HTTPClient.SetStatusAt). The write takes a closed issue, because the tester's production
+// check runs after the close.
+
+// issueRoleHoldersChange is the payload of issue.role_holders_changed: the issue, the set this
+// write stored and the set it replaced, each pair with the time Dispatch first stored it.
+type issueRoleHoldersChange struct {
+	Key             string                  `json:"key"`
+	Holders         []issueRoleHolderRecord `json:"holders"`
+	PreviousHolders []issueRoleHolderRecord `json:"previous_holders"`
+}
+
+// sameRoleHolders reports whether two stored sets, each in workflow order, name the same pairs.
+// A pair that did not change keeps its recorded time, so the pairs alone decide.
+func sameRoleHolders(a, b []issueRoleHolderRecord) bool {
+	return slices.EqualFunc(a, b, func(x, y issueRoleHolderRecord) bool {
+		return x.Role == y.Role && x.Session == y.Session
+	})
+}
 
 // issueRoleHolder is one pair of a publication: a Legion role and the session that holds it. Both
 // are required: the route refuses a pair that leaves either out.
@@ -113,6 +142,10 @@ func legionProjectOf(key string) string {
 	project, _, _ := strings.Cut(key, "-")
 	return project
 }
+
+// legionDaemonSessionPrefix is the broker's spelling, so the session a daemon's token proves and
+// the one putIssueRoleHolders compares are one string.
+const legionDaemonSessionPrefix = ciphertoken.LegionDaemonSessionPrefix
 
 // legionDaemonSessionOf is the session of the Legion daemon of the issue key's project:
 // legion-daemon:<legionProjectOf(key)>, the daemon's own rule (packages/daemon's
@@ -344,6 +377,14 @@ func (s *server) putIssueRoleHolders(w http.ResponseWriter, r *http.Request) {
 			project, key, daemon, daemon))
 		return
 	}
+	// The set before this write, read under the owner lock that every writer of the set takes, so
+	// the event names the set this write really replaced. The read is a plain select before the
+	// transaction's first write, so it holds no transaction id.
+	previous, _, err := readIssueRoleHolders(r.Context(), tx, issue)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
 	// Mark the project even if the body lists no holders. Update the provenance of each
 	// retained pair only when it changes. Delete the omitted pairs, which are separate rows.
 	// Keep all three operations in one statement so no statement is added to the transaction ID window.
@@ -380,10 +421,21 @@ func (s *server) putIssueRoleHolders(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
+	var changed []model.Event
+	if !sameRoleHolders(previous.Holders, stored.Holders) {
+		event, err := s.appendEvent(r.Context(), tx, issueOwner(issue).event("issue.role_holders_changed", writer.actor,
+			issueRoleHoldersChange{Key: issue, Holders: stored.Holders, PreviousHolders: previous.Holders}))
+		if err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		changed = append(changed, event)
+	}
 	if err := tx.Commit(r.Context()); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
+	s.publish(r.Context(), changed...)
 	WriteJSON(w, http.StatusOK, stored)
 }
 

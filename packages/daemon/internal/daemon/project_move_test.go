@@ -29,6 +29,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -154,13 +155,13 @@ func newProjectMove(t *testing.T) *projectMove {
 	if !rig.kube.builtForAnotherDisk(m.held.pod, moveOtherDisk) {
 		t.Fatalf("the pod of %s is not in the first cluster to stand for one built for another disk", m.held.key)
 	}
-	idleRigEventually(t, idleRigPodWait, "the update rounds open over the older daemon's pod and over the operator's pod", func() bool {
+	idleRigEventually(t, "the update rounds open over the older daemon's pod and over the operator's pod", func() bool {
 		claims := rig.claimsByToken()
 		return claims[rig.token(m.old)].UpdateRound != "" && claims[rig.token(m.held)].UpdateRound != ""
 	})
 	m.operator(t, "stop", m.stopped, m.stopped.role)
 	m.operator(t, "suspend", m.held, m.held.role)
-	idleRigEventually(t, idleRigPodWait, "the stopped claim retired, the operator's suspension stored in its update round and the update round open over the older daemon's pod", func() bool {
+	idleRigEventually(t, "the stopped claim retired, the operator's suspension stored in its update round and the update round open over the older daemon's pod", func() bool {
 		claims := rig.claimsByToken()
 		return claims[rig.token(m.stopped)].State == string(supervise.StateRetired) &&
 			claims[rig.token(m.held)].State == string(supervise.StateSuspended) && claims[rig.token(m.held)].UpdateRound != "" &&
@@ -170,7 +171,7 @@ func newProjectMove(t *testing.T) *projectMove {
 	// stopped, as when the pod's one container ends and has not started again. The operator's
 	// resume of it then waits for a launcher, as the resume of the pod the rig holds back does.
 	m.operator(t, "suspend", m.restarting, m.restarting.role)
-	idleRigEventually(t, idleRigPodWait, "the operator's suspension of the role that starts again stored", func() bool {
+	idleRigEventually(t, "the operator's suspension of the role that starts again stored", func() bool {
 		c := rig.claimsByToken()[rig.token(m.restarting)]
 		return c.State == string(supervise.StateSuspended) && c.SuspendedBy == string(supervise.SuspendedByOperator)
 	})
@@ -191,11 +192,11 @@ func (m *projectMove) resumeInFlight(t *testing.T, issue idleRigIssue) {
 	t.Helper()
 	r := m.rig
 	token := r.token(issue)
-	args := append([]string{"claims", "resume", "--claim", string(token), "--wait", idleRigProjectReleaseWait.String()}, r.operatorFlags()...)
+	args := append([]string{"claims", "resume", "--claim", string(token), "--wait", testwait.Remaining(t).Round(time.Second).String()}, r.operatorFlags()...)
 	answered := make(chan idleRigCommand, 1)
 	m.resumes[issue.name] = answered
 	go func() { answered <- legionRun(m.legion, args...) }()
-	idleRigEventually(t, idleRigPodWait, "the pod of "+issue.name+" standing with its claim's launch in flight", func() bool {
+	idleRigEventually(t, "the pod of "+issue.name+" standing with its claim's launch in flight", func() bool {
 		return r.kube.pod(issue.pod) && r.claimsByToken()[token].State == string(supervise.StateLaunching)
 	})
 }
@@ -264,7 +265,7 @@ func (m *projectMove) resumeTask(t *testing.T, issue string) string {
 func (m *projectMove) awaitController(t *testing.T) {
 	t.Helper()
 	r := m.rig
-	idleRigEventually(t, idleRigPodWait, "the daemon's controller running, registered and ready", func() bool {
+	idleRigEventually(t, "the daemon's controller running, registered and ready", func() bool {
 		c, ok := r.claimsByToken()[m.controllerToken()]
 		return ok && idleRigWorking(c.State) && r.agents.role(idleRigControllerPod, string(claim.RoleController)).Registered > 0
 	})
@@ -449,12 +450,8 @@ func (m *projectMove) release(t *testing.T, name string, during func(rd *moveRel
 		m.awaitLine(t, m.clean.pod, api.ReleaseDeletedClean)
 		during(rd)
 	}
-	select {
-	case ran := <-done:
-		rd.command, rd.release = ran.command, ran.release
-	case <-time.After(idleRigProjectReleaseWait):
-		t.Fatalf("legion project release did not end within %s", idleRigProjectReleaseWait)
-	}
+	ran := testwait.Receive(t, "the end of the "+name+" run of legion project release", done)
+	rd.command, rd.release = ran.command, ran.release
 	t.Logf("the %s release exited %d; stdout %s; stderr %q", name, rd.command.code, rd.command.stdout, rd.command.stderr)
 	rd.asksAfter = m.askCounts()
 	if got := len(r.aimed().createdNames()); got != rd.created {
@@ -490,7 +487,7 @@ func (m *projectMove) runRelease(bound time.Duration) <-chan moveCommand {
 func (m *projectMove) awaitLine(t *testing.T, name string, outcome api.ReleaseOutcome) {
 	t.Helper()
 	r := m.rig
-	idleRigEventually(t, idleRigProjectReleaseWait, "the running release's line of "+name+" reading "+string(outcome), func() bool {
+	idleRigEventually(t, "the running release's line of "+name+" reading "+string(outcome), func() bool {
 		status, body := r.api.request(http.MethodGet, api.ProjectReleaseRoute, nil, true)
 		if status != http.StatusOK {
 			return false
@@ -722,7 +719,7 @@ func (m *projectMove) restartOn(t *testing.T, cluster *issueSandboxAPI, rd *move
 	r.aimAt(cluster)
 	rd.restarted = time.Now()
 	r.restart()
-	idleRigEventually(t, idleRigReleaseWait, "each claim the "+rd.name+" release stopped running again in the cluster "+cluster.prefix, func() bool {
+	idleRigEventually(t, "each claim the "+rd.name+" release stopped running again in the cluster "+cluster.prefix, func() bool {
 		if waiting := len(r.api.state().WakesWaiting); waiting > wakesHeld {
 			wakesHeld = waiting
 		}
@@ -806,7 +803,7 @@ func (m *projectMove) checkStarts(t *testing.T, cluster *issueSandboxAPI, rd *mo
 	}
 	if rd.entryTask != "" {
 		token := r.token(m.silent)
-		idleRigEventually(t, idleRigRecordWait, "the claim behind its entry given that entry's work", func() bool {
+		idleRigEventually(t, "the claim behind its entry given that entry's work", func() bool {
 			return idleRigCount(r.agents.prompts(m.silent.key, string(m.silent.role))[rd.before[token].prompts:], rd.entryTask) > 0
 		})
 		if given := idleRigCount(r.agents.prompts(m.silent.key, string(m.silent.role)), rd.entryTask); given != 1 {
@@ -819,7 +816,7 @@ func (m *projectMove) checkStarts(t *testing.T, cluster *issueSandboxAPI, rd *mo
 	} else {
 		// The task is sent again on the claim's resume, which may deliver it under a delivery of
 		// its own, so it is read by its words.
-		idleRigEventually(t, idleRigRecordWait, "the claim whose turn the release cut given that turn's task again", func() bool {
+		idleRigEventually(t, "the claim whose turn the release cut given that turn's task again", func() bool {
 			return idleRigCount(r.agents.prompts(m.turn.key, string(m.turn.role))[turn.prompts:], turn.pendingTask) > 0
 		})
 	}
@@ -1030,7 +1027,7 @@ func TestAProjectMovesToAnotherClusterAndBack(t *testing.T) {
 func (m *projectMove) awaitHeldStart(t *testing.T, rd *moveRelease) {
 	t.Helper()
 	key := idleRigKey(m.silent.key, string(m.silent.role))
-	idleRigEventually(t, idleRigRecordWait, "the outbox holding the start the claim behind its entry is owed", func() bool {
+	idleRigEventually(t, "the outbox holding the start the claim behind its entry is owed", func() bool {
 		starts, _ := rd.starts.seen()
 		return len(starts[key]) > 0
 	})
@@ -1044,7 +1041,7 @@ func (m *projectMove) awaitHeldMessage(t *testing.T) {
 	t.Helper()
 	r := m.rig
 	var rows []idleRigOutboxRow
-	idleRigEventually(t, idleRigRecordWait, "the outbox holding the role message for the release", func() bool {
+	idleRigEventually(t, "the outbox holding the role message for the release", func() bool {
 		rows = r.outboxRowsOf(m.clean.key, record.OutboxKindRoleMessage)
 		return len(rows) != 1 || strings.Contains(rows[0].lastError, api.ProjectReleaseHeldSentence)
 	})
@@ -1095,7 +1092,7 @@ func (m *projectMove) checkDelivery(t *testing.T, rd *moveRelease) {
 	// so its first run after the boot comes up to that long after the daemon stopped, and while
 	// its architect is still coming back the row waits on its backoff, whose steps climb to 64
 	// seconds (retryBackoff).
-	idleRigEventually(t, idleRigRecordWait+2*time.Minute, "the delivery reaching "+m.clean.name+"'s architect", func() bool {
+	idleRigEventually(t, "the delivery reaching "+m.clean.name+"'s architect", func() bool {
 		return idleRigCount(r.agents.messages(m.clean.key, role), moveDeliveryText) > 0
 	})
 	seen := r.agents.role(m.clean.key, role)
@@ -1123,7 +1120,7 @@ func (m *projectMove) checkRoleMessage(t *testing.T, rd *moveRelease) {
 	role := string(m.clean.role)
 	// The row waits on its backoff while its claim comes back, whose steps climb to 64 seconds
 	// (retryBackoff), so its last run comes up to that long after the claims run again.
-	idleRigEventually(t, idleRigRecordWait+time.Minute, "the role message's row leaving the outbox", func() bool {
+	idleRigEventually(t, "the role message's row leaving the outbox", func() bool {
 		return len(r.outboxRowsOf(m.clean.key, record.OutboxKindRoleMessage)) == 0
 	})
 	// Each line roleMessage logs as it ends a row undelivered (outbox.go's roleMessage).
@@ -1146,7 +1143,7 @@ func (m *projectMove) checkRoleMessage(t *testing.T, rd *moveRelease) {
 	}
 	// The row leaves the outbox once the listener has answered the publish, and the role process
 	// records the message as its session's consumer relays it, so that record is waited for.
-	idleRigEventually(t, idleRigRecordWait, "the role message reaching "+m.clean.name+"'s "+role, func() bool {
+	idleRigEventually(t, "the role message reaching "+m.clean.name+"'s "+role, func() bool {
 		return idleRigCount(r.agents.messages(m.clean.key, role), moveRoleMessageBody) > 0
 	})
 	seen := r.agents.role(m.clean.key, role)
@@ -1189,8 +1186,8 @@ func (m *projectMove) checkCutShort(t *testing.T, rd *moveRelease, issue idleRig
 	select {
 	case answer := <-m.resumes[issue.name]:
 		t.Logf("the operator's resume of %s, whose launch the %s release cut short, exited %d; stdout %q; stderr %q", token, rd.name, answer.code, answer.stdout, answer.stderr)
-	case <-time.After(idleRigRecordWait):
-		t.Errorf("the operator's resume of %s was not answered within %s of the %s release, which stopped its claim", token, idleRigRecordWait, rd.name)
+	case <-time.After(testwait.Remaining(t)):
+		t.Errorf("the operator's resume of %s was not answered by the test binary's deadline after the %s release, which stopped its claim", token, rd.name)
 	}
 }
 
@@ -1305,7 +1302,7 @@ func (m *projectMove) recover(t *testing.T) {
 	if resumed.code != 0 {
 		t.Fatalf("legion claims resume %s exited %d: %s %s", token, resumed.code, resumed.stdout, resumed.stderr)
 	}
-	idleRigEventually(t, idleRigPodWait, "the left pod's claim running again in its pod", func() bool {
+	idleRigEventually(t, "the left pod's claim running again in its pod", func() bool {
 		return idleRigWorking(r.api.claim(token).State)
 	})
 	rd := m.release(t, "recovery", nil)
@@ -1336,7 +1333,7 @@ func (m *projectMove) restartDuringRelease(t *testing.T) {
 	previous, _ := r.readRelease()
 	done := m.runRelease(10 * time.Minute)
 	// The GET answers the newest release, which is the last one until this one is recorded.
-	idleRigEventually(t, idleRigRecordWait, "the unfinished release recorded", func() bool {
+	idleRigEventually(t, "the unfinished release recorded", func() bool {
 		release, _ := r.readRelease()
 		return release.ID > previous.ID
 	})
@@ -1392,7 +1389,7 @@ func (m *projectMove) restartDuringRelease(t *testing.T) {
 			}
 		}
 	}()
-	idleRigEventually(t, idleRigReleaseWait, "the claims the unfinished release stopped running again, and the pods it had not reached adopted", func() bool {
+	idleRigEventually(t, "the claims the unfinished release stopped running again, and the pods it had not reached adopted", func() bool {
 		now := m.claimsNow()
 		for token, was := range unreached {
 			if c := now[token]; !idleRigWorking(c.state) || c.pod != was.pod {
@@ -1447,7 +1444,7 @@ func (m *projectMove) handDeletion(t *testing.T) {
 	r.restart()
 	if !copies {
 		charged := ""
-		idleRigEventually(t, idleRigReleaseWait, "a launch failure or a death charged for a pod deleted by hand", func() bool {
+		idleRigEventually(t, "a launch failure or a death charged for a pod deleted by hand", func() bool {
 			for token, now := range m.claimsNow() {
 				if was, ok := before[token]; ok && (now.launchFailures > was.launchFailures || now.deaths > was.deaths) {
 					charged = fmt.Sprintf("%s: launch failures %d → %d, deaths %d → %d", token, was.launchFailures, now.launchFailures, was.deaths, now.deaths)
@@ -1459,7 +1456,7 @@ func (m *projectMove) handDeletion(t *testing.T) {
 		t.Logf("the hand deletion was charged: %s", charged)
 	}
 	token := r.token(m.silent)
-	idleRigEventually(t, idleRigReleaseWait, "the claim of the pod with an unpushed commit running again in the second cluster", func() bool {
+	idleRigEventually(t, "the claim of the pod with an unpushed commit running again in the second cluster", func() bool {
 		live, ok := r.work.running(m.silent.pod)
 		c := m.claimsNow()[token]
 		return ok && live.cluster == r.second.prefix && idleRigWorking(c.state) && strings.HasPrefix(c.pod, r.second.prefix)
@@ -1517,7 +1514,7 @@ func TestAProjectMovesBackToTheFirstCluster(t *testing.T) {
 	rig.stopDaemon()
 	rig.aimAt(rig.kube)
 	rig.restart()
-	idleRigEventually(t, idleRigReleaseWait, "each claim the release printed running again in the first cluster", func() bool {
+	idleRigEventually(t, "each claim the release printed running again in the first cluster", func() bool {
 		now := m.claimsNow()
 		for _, line := range printed {
 			c := now[line.Token]

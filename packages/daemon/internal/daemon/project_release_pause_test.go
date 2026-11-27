@@ -136,7 +136,7 @@ func TestAReleaseIsRefusedWhileItsProjectIsPaused(t *testing.T) {
 	rig.launchAll()
 	issues := []idleRigIssue{rig.issue("alpha"), rig.issue("beta"), rig.issue("gamma")}
 	keys := []string{issues[0].key, issues[1].key, issues[2].key}
-	idleRigEventually(t, idleRigPodWait, "each role up with no task it has not taken", func() bool {
+	idleRigEventually(t, "each role up with no task it has not taken", func() bool {
 		claims := rig.claimsByToken()
 		for _, issue := range issues {
 			if c := claims[rig.token(issue)]; !idleRigWorking(c.State) || c.Pending != nil {
@@ -151,7 +151,7 @@ func TestAReleaseIsRefusedWhileItsProjectIsPaused(t *testing.T) {
 	if paused := rig.operatorCommand(check, legion, "project", "pause", "--reason", "E17: the project is paused before its release"); paused.code != 0 {
 		t.Fatalf("legion project pause exited %d, want 0", paused.code)
 	}
-	idleRigEventually(t, idleRigPodWait, "each role stopped by the pause and each pod held", func() bool {
+	idleRigEventually(t, "each role stopped by the pause and each pod held", func() bool {
 		states := rig.roleStates()
 		for _, issue := range issues {
 			if states[rig.token(issue)] != stoppedByAPause {
@@ -212,7 +212,7 @@ func TestAReleaseIsRefusedWhileItsProjectIsPaused(t *testing.T) {
 			t.Fatalf("legion claims resume of %s exited %d, want 0", issue.key, resumed.code)
 		}
 	}
-	idleRigEventually(t, idleRigPodWait, "the holds of the resumed roles' pods ended", func() bool {
+	idleRigEventually(t, "the holds of the resumed roles' pods ended", func() bool {
 		return slices.Equal(rig.heldPods(), keys[2:])
 	})
 	t.Logf("%s: each role's state with one pod still held: %v; the pods a pause holds: %v", check, rig.roleStates(), rig.heldPods())
@@ -243,7 +243,7 @@ func TestAReleaseIsRefusedWhileItsProjectIsPaused(t *testing.T) {
 	if resumed := rig.operatorCommand(check, legion, "claims", "resume", "--claim", string(gamma)); resumed.code != 0 {
 		t.Fatalf("legion claims resume of %s exited %d, want 0", keys[2], resumed.code)
 	}
-	idleRigEventually(t, idleRigPodWait, "the last hold ended", func() bool { return len(rig.heldPods()) == 0 })
+	idleRigEventually(t, "the last hold ended", func() bool { return len(rig.heldPods()) == 0 })
 	released, release := rig.projectRelease(legion, "--bound", "20s")
 	t.Logf("%s: legion project release once the last hold ended exited %d; stdout %s; stderr %q", check, released.code, released.stdout, released.stderr)
 	t.Logf("%s: the project's Sandboxes after it: %v", check, rig.kube.sandboxNames())
@@ -278,7 +278,7 @@ func TestAPauseIsRefusedWhileAReleaseRuns(t *testing.T) {
 	args := rig.releaseArgs("--bound", "40s")
 	done := make(chan idleRigCommand, 1)
 	go func() { done <- legionRun(legion, args...) }()
-	idleRigEventually(t, idleRigProjectReleaseWait, "the release holding "+waiting.pod+" in its push wait", func() bool {
+	idleRigEventually(t, "the release holding "+waiting.pod+" in its push wait", func() bool {
 		running, ok := rig.releaseNow()
 		if !ok || running.FinishedAt != nil {
 			return false
@@ -361,7 +361,7 @@ func TestAFinishedReleaseIsAnsweredWhileItsProjectIsPaused(t *testing.T) {
 	legion := buildLegion(t)
 	rig.launchAll()
 	alpha := rig.issue("alpha")
-	idleRigEventually(t, idleRigPodWait, "the role up with no task it has not taken", func() bool {
+	idleRigEventually(t, "the role up with no task it has not taken", func() bool {
 		c := rig.claimsByToken()[rig.token(alpha)]
 		return idleRigWorking(c.State) && c.Pending == nil
 	})

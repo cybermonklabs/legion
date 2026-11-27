@@ -1327,8 +1327,12 @@ The broker evaluates every name
   ([manage a secret](/legion/broker/guides/manage-a-secret/#change-its-owner-tier-type-requesters-or-max-grant)).
   A change reverted before any release finds
   it leaves the grant as it was: it was approved for that secret, type and source, and its next
-  release mints a token of that same type from that same frozen source, never the stored value. To
-  end a grant, revoke it. A type secret the broker stops serving, such as one whose
+  release mints a token of that same type from that same source, never the stored value. A release
+  reads the source the policy serves the name from: the source the request froze, or, while a
+  deployment moves its store to another prefix, the policy's source when the frozen one counts as
+  it under `BROKER_SECRETS_SECOND_PREFIX`, and never that frozen one
+  ([Moving the store to another prefix](/legion/broker/operate/#moving-the-store-to-another-prefix)).
+  To end a grant, revoke it. A type secret the broker stops serving, such as one whose
   `github-owners` is removed or malformed, stops releasing until the secret is served again.
 - A secret with `max-grant` needs a lifetime no longer than that duration. A request whose `--ttl`
   (or, with none, the default of 15 minutes for a human-tier secret and 12 hours otherwise, or session length under `default-grant=session`) is longer is refused `GRANT_REQUIRES_LIFETIME` before the broker writes a request. A

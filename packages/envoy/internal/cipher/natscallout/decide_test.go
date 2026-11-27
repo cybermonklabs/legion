@@ -18,6 +18,7 @@ import (
 	"github.com/nats-io/nkeys"
 	"github.com/stretchr/testify/require"
 
+	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/cipher/config"
 	"github.com/sjawhar/envoy/internal/cipher/dispatchread"
 	"github.com/sjawhar/envoy/internal/cipher/hold"
@@ -134,10 +135,11 @@ func serviceRequest(raw string) Request {
 
 // The platform accounts this package's tests list in BROKER_NATS_SERVICES.
 const (
-	listenerAccount = "system:serviceaccount:example-ns:example-listener"
-	daemonAccount   = "system:serviceaccount:example-ns:example-daemon"
-	measureAccount  = "envoy-measure@example-project.iam.gserviceaccount.com"
-	edgeAccount     = "system:serviceaccount:example-ns:example-edge-listener"
+	listenerAccount        = "system:serviceaccount:example-ns:example-listener"
+	webhookListenerAccount = "system:serviceaccount:example-ns:example-webhook-listener"
+	daemonAccount          = "system:serviceaccount:example-ns:example-daemon"
+	measureAccount         = "envoy-measure@example-project.iam.gserviceaccount.com"
+	edgeAccount            = "system:serviceaccount:example-ns:example-edge-listener"
 )
 
 // oneIssuer is BROKER_K8S_OIDC_ISSUER as one bare URL, the one issuer every deployment had before
@@ -152,6 +154,7 @@ var (
 var exampleServices = []config.NATSService{
 	{Kind: config.NATSDispatch, MachineID: "example-dispatch", Account: "system:serviceaccount:dispatch:dispatch", Issuers: []string{""}, AllProjects: true},
 	{Kind: config.NATSListener, MachineID: "example-hub", Account: listenerAccount, Issuers: []string{""}, AllProjects: true},
+	{Kind: config.NATSWebhookListener, MachineID: "example-webhook", Account: webhookListenerAccount, Issuers: []string{""}, AllProjects: true},
 	{Kind: config.NATSDaemon, Account: daemonAccount, Issuers: []string{""}, AllProjects: true},
 	{Kind: config.NATSMeasure, Account: measureAccount, Google: true, AllProjects: true},
 	{Kind: config.NATSDaemon, Account: "system:serviceaccount:example-ns:held-daemon", Issuers: []string{""}},
@@ -203,17 +206,19 @@ func TestAJobsSessionTokenGetsItsOwnChannel(t *testing.T) {
 func TestAServiceTokenGetsItsKindsGrant(t *testing.T) {
 	now := time.Now()
 	tokens := map[string]platformToken{
-		"dispatch-token": {account: "system:serviceaccount:dispatch:dispatch", issued: now, expiry: now.Add(time.Hour)},
-		"listener-token": {account: listenerAccount, issued: now, expiry: now.Add(time.Hour)},
-		"daemon-token":   {account: daemonAccount, issued: now, expiry: now.Add(30 * time.Minute)},
-		"measure-token":  {account: measureAccount, google: true, issued: now, expiry: now.Add(time.Hour)},
+		"dispatch-token":         {account: "system:serviceaccount:dispatch:dispatch", issued: now, expiry: now.Add(time.Hour)},
+		"listener-token":         {account: listenerAccount, issued: now, expiry: now.Add(time.Hour)},
+		"webhook-listener-token": {account: webhookListenerAccount, issued: now, expiry: now.Add(time.Hour)},
+		"daemon-token":           {account: daemonAccount, issued: now, expiry: now.Add(30 * time.Minute)},
+		"measure-token":          {account: measureAccount, google: true, issued: now, expiry: now.Add(time.Hour)},
 	}
 	deps := Deps{ServiceToken: serviceTokens(tokens)}
 	for raw, want := range map[string]Decision{
-		"dispatch-token": {Name: "dispatch/example-dispatch", Grant: natsgrant.Dispatch("example-dispatch"), Expires: now.Add(time.Hour)},
-		"listener-token": {Name: "listener/example-hub", Grant: natsgrant.Listener("example-hub"), Expires: now.Add(time.Hour)},
-		"daemon-token":   {Name: "daemon/" + daemonAccount, Grant: natsgrant.Daemon(), Expires: now.Add(30 * time.Minute)},
-		"measure-token":  {Name: "measure/" + measureAccount, Grant: natsgrant.Measure(), Expires: now.Add(time.Hour)},
+		"dispatch-token":         {Name: "dispatch/example-dispatch", Grant: natsgrant.Dispatch("example-dispatch"), Expires: now.Add(time.Hour)},
+		"listener-token":         {Name: "listener/example-hub", Grant: natsgrant.Listener("example-hub"), Expires: now.Add(time.Hour)},
+		"webhook-listener-token": {Name: "webhook-listener/example-webhook", Grant: natsgrant.WebhookListener("example-webhook"), Expires: now.Add(time.Hour)},
+		"daemon-token":           {Name: "daemon/" + daemonAccount, Grant: natsgrant.Daemon(), Expires: now.Add(30 * time.Minute)},
+		"measure-token":          {Name: "measure/" + measureAccount, Grant: natsgrant.Measure(), Expires: now.Add(time.Hour)},
 	} {
 		t.Run(raw, func(t *testing.T) {
 			decision, err := Decide(t.Context(), deps, exampleServices, serviceRequest(raw))
@@ -291,12 +296,67 @@ func TestAnEdgeListenersTokenIsTakenFromTheIssuersItsEntryNames(t *testing.T) {
 	require.Equal(t, "service not listed: "+edgeAccount, refused.Reason)
 }
 
+// The lane deny reaches the services the auth service admits (check l5 of dispatch://INFRA-3589):
+// a listener's grant denies a publish on Dispatch's lane and on GitHub's lane, the webhook
+// listener's, the listener that receives GitHub's webhook, denies Dispatch's lane alone, and
+// Dispatch's denies GitHub's lane and the listener's resume lane. The deny is in the grant's
+// PublishDeny, which the answer's user carries (TestADenyEntryIsEncodedAndEnforced). An edge
+// listener's grant denies both lanes, as a listener's does
+// (TestTheAuthServiceAnswersTheEdgeItsGrant).
+func TestAServiceKindsGrantDeniesTheLanesItDoesNotPublish(t *testing.T) {
+	now := time.Now()
+	deps := Deps{ServiceToken: serviceTokens(map[string]platformToken{
+		"dispatch-token":         {account: "system:serviceaccount:dispatch:dispatch", issued: now, expiry: now.Add(time.Hour)},
+		"listener-token":         {account: listenerAccount, issued: now, expiry: now.Add(time.Hour)},
+		"webhook-listener-token": {account: webhookListenerAccount, issued: now, expiry: now.Add(time.Hour)},
+	})}
+	for raw, deny := range map[string][]string{
+		"listener-token":         {"notifications.dispatch.>", "notifications.github.>"},
+		"webhook-listener-token": {"notifications.dispatch.>"},
+		"dispatch-token":         {"notifications.github.>", "notifications.envoy.resume.>"},
+	} {
+		t.Run(raw, func(t *testing.T) {
+			decision, err := Decide(t.Context(), deps, exampleServices, serviceRequest(raw))
+			require.NoError(t, err)
+			require.Equal(t, deny, decision.Grant.PublishDeny)
+			require.Contains(t, decision.Grant.Publish, "notifications.>")
+		})
+	}
+}
+
+// Check l16 of dispatch://INFRA-3589 (R18) at the auth service: a listener whose machine id is a
+// fully qualified host name is listed under that id, as the listener starts with it
+// (bus.CheckListenerMachineID), and the grant the service answers it with names the durable and
+// the queue group the listener creates, each with its dots escaped into one subject token
+// (bus.ListenerDurable, bus.ListenerQueue). cmd/listener's test of this name runs that listener.
+func TestADottedMachineIDStartsAndDelivers(t *testing.T) {
+	const machineID = "host.example.internal"
+	for _, kind := range []config.NATSServiceKind{config.NATSListener, config.NATSWebhookListener, config.NATSDispatch} {
+		t.Run(string(kind), func(t *testing.T) {
+			text := string(kind) + "/" + machineID + "/*=" + listenerAccount
+			services, err := config.ParseNATSServices(text, oneIssuer)
+			require.NoError(t, err)
+			require.Equal(t, []config.NATSService{{Kind: kind, MachineID: machineID, Account: listenerAccount, Issuers: []string{""}, AllProjects: true, Text: text}}, services)
+			require.Equal(t, string(kind)+"/"+machineID, services[0].Name())
+			grant := serviceGrant(services[0])
+			durable, queue := bus.ListenerDurable(machineID), bus.ListenerQueue(machineID)
+			require.False(t, strings.ContainsAny(durable, ".*> "), "the durable %q is not one token", durable)
+			require.Contains(t, grant.Publish, "$JS.API.CONSUMER.CREATE.ENVOY_NOTIFICATIONS."+durable)
+			require.Contains(t, grant.Publish, "$JS.ACK.ENVOY_NOTIFICATIONS."+durable+".>")
+			require.Contains(t, grant.Subscribe, "notifications.role.> "+queue)
+			_, found := natsgrant.NamesSystemSubject(grant)
+			require.False(t, found)
+		})
+	}
+}
+
 // An edge listener's entry, read as BROKER_NATS_SERVICES writes it, is answered with the edge's
 // grant for its machine id and the projects the entry lists (natsgrant.Edge), named for its
 // machine id and expiring with its token, and that grant passes the guard every answer passes. The
 // grant publishes the role subjects of those projects and no other project's: an entry of two
 // projects publishes both, an entry of one the one. It is not the listener's grant, which
-// publishes every notification topic.
+// publishes every notification topic. It denies Dispatch's lane and GitHub's lane, as the
+// listener's grant does (check l5 of dispatch://INFRA-3589).
 func TestTheAuthServiceAnswersTheEdgeItsGrant(t *testing.T) {
 	now := time.Now()
 	deps := Deps{ServiceToken: serviceTokens(map[string]platformToken{
@@ -323,9 +383,38 @@ func TestTheAuthServiceAnswersTheEdgeItsGrant(t *testing.T) {
 			}
 			require.NotContains(t, decision.Grant.Publish, "notifications.role.INFRA.>")
 			require.NotEqual(t, natsgrant.Listener("edge-a"), decision.Grant)
+			require.Equal(t, []string{"notifications.dispatch.>", "notifications.github.>"}, decision.Grant.PublishDeny)
 			require.Nil(t, guard(decision.Grant))
 		})
 	}
+}
+
+// Check l16 of dispatch://INFRA-3589 (R18) at the auth service, for an edge listener: an edge
+// listener whose machine id is a fully qualified host name is listed under that id, and the grant
+// the service answers it with spells the id as the listener does (bus.ListenerSpelling), each dot
+// as %2E: in its inbox prefix and its receipt family (natsgrant.EdgeInboxPrefix,
+// natsgrant.EdgeRelayReplyPrefix) and in its durable (bus.ListenerDurable). So each is one subject
+// token. cmd/listener's TestADottedEdgeMachineIDStartsUnderItsSpelledPrefix checks that the edge
+// start names its inboxes under the same prefix.
+func TestADottedEdgeMachineIDIsGrantedItsSpelledPrefix(t *testing.T) {
+	const machineID = "host.example.internal"
+	text := "edge-listener/" + machineID + "/PRIV=" + edgeAccount
+	services, err := config.ParseNATSServices(text, oneIssuer)
+	require.NoError(t, err)
+	require.Equal(t, []config.NATSService{{Kind: config.NATSEdgeListener, MachineID: machineID, Account: edgeAccount, Issuers: []string{""}, Projects: []string{"PRIV"}, Text: text}}, services)
+	require.Equal(t, "edge-listener/"+machineID, services[0].Name())
+	grant := serviceGrant(services[0])
+	require.Equal(t, []string{
+		"_INBOX_envoy_edge_host%2Eexample%2Einternal.>",
+		"notifications.envoy.deliver.*",
+		"notifications.envoy.relayreply.host%2Eexample%2Einternal.>",
+	}, grant.Subscribe)
+	durable := bus.ListenerDurable(machineID)
+	require.Equal(t, "listener-host%2Eexample%2Einternal", durable)
+	require.Contains(t, grant.Publish, "$JS.API.CONSUMER.CREATE.ENVOY_NOTIFICATIONS."+durable)
+	require.Contains(t, grant.Publish, "$JS.ACK.ENVOY_NOTIFICATIONS."+durable+".>")
+	require.Equal(t, []string{"notifications.dispatch.>", "notifications.github.>"}, grant.PublishDeny)
+	require.Nil(t, guard(grant))
 }
 
 // An edge listener's entry whose projects natsgrant.Edge refuses - one config.ParseNATSServices would not

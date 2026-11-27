@@ -43,7 +43,7 @@ func TestProjectReleaseAsksARoleThatReportsBackgroundWork(t *testing.T) {
 	// started, as a report sent between turns is.
 	for _, issue := range []idleRigIssue{background, ended} {
 		token := rig.token(issue)
-		idleRigEventually(t, idleRigRecordWait, "the end of the start task's turn of "+issue.key+"'s role", func() bool {
+		idleRigEventually(t, "the end of the start task's turn of "+issue.key+"'s role", func() bool {
 			return rig.api.claim(token).LastTurnEnd != nil
 		})
 	}
@@ -116,7 +116,7 @@ func TestProjectReleaseAsksARoleThatReportsBackgroundWork(t *testing.T) {
 		}
 
 		var answered time.Time
-		idleRigEventually(t, idleRigRecordWait, "the answer of "+background.pod+"'s role to the release's ask", func() bool {
+		idleRigEventually(t, "the answer of "+background.pod+"'s role to the release's ask", func() bool {
 			noteEndedGone()
 			release, ok := rig.releaseNow()
 			if !ok {
@@ -150,7 +150,7 @@ func TestProjectReleaseAsksARoleThatReportsBackgroundWork(t *testing.T) {
 		// must stand past the pod's next reread (projectReleaseReread) as well as the read the
 		// answer itself makes.
 		holdUntil := time.Now().Add(projectReleaseReread + 2*time.Second)
-		idleRigEventually(t, idleRigRecordWait, background.pod+" held past a reread after its role answered", func() bool {
+		idleRigEventually(t, background.pod+" held past a reread after its role answered", func() bool {
 			noteEndedGone()
 			if rig.kube.sandbox(background.pod) == nil {
 				t.Fatalf("%s's Sandbox is gone %s after its role answered, while its role reports a running subagent", background.pod,
@@ -172,7 +172,7 @@ func TestProjectReleaseAsksARoleThatReportsBackgroundWork(t *testing.T) {
 		rig.awaitReported(rig.token(background), "")
 		reported := time.Now()
 		var deleted time.Time
-		idleRigEventually(t, idleRigProjectReleaseWait, background.pod+"'s Sandbox deleted once its role reports nothing running", func() bool {
+		idleRigEventually(t, background.pod+"'s Sandbox deleted once its role reports nothing running", func() bool {
 			if rig.kube.sandbox(background.pod) != nil {
 				return false
 			}

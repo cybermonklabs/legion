@@ -29,6 +29,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/testbuild"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // goHomeKeys are the homes `go` derives its caches and its configuration from where GOPATH,
@@ -183,17 +184,13 @@ func (r *idleWakeRig) projectRelease(binary string, flags ...string) (idleRigCom
 	return ran, release
 }
 
-// awaitReleaseCommand waits up to idleRigProjectReleaseWait for the run of `legion project
-// release` that a goroutine sends on done, and answers that run and the release it printed. A run
-// that does not end in that time, or that prints no release, fails t.
+// awaitReleaseCommand waits for the run of `legion project release` that a goroutine sends on done,
+// until the test binary's deadline as every wait of the rig does (testwait.Receive), and answers
+// that run and the release it printed. A run that does not end by then, or that prints no
+// release, fails t.
 func awaitReleaseCommand(t *testing.T, done <-chan idleRigCommand) (idleRigCommand, api.ProjectReleaseResponse) {
 	t.Helper()
-	var ran idleRigCommand
-	select {
-	case ran = <-done:
-	case <-time.After(idleRigProjectReleaseWait):
-		t.Fatalf("legion project release did not end within %s", idleRigProjectReleaseWait)
-	}
+	ran := testwait.Receive(t, "the end of the run of legion project release", done)
 	var release api.ProjectReleaseResponse
 	if err := json.Unmarshal([]byte(ran.stdout), &release); err != nil {
 		t.Fatalf("legion project release exited %d printing %q (stderr %q), which is no release: %v", ran.code, ran.stdout, ran.stderr, err)

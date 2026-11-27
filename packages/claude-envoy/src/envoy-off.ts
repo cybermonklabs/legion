@@ -9,13 +9,20 @@ import { roleStateFile, type SessionIdentity, writePersistedRole } from "./sessi
  * consumer, nothing registered with the listener (which would route a delivery to a deaf process),
  * an empty inbox, and following a topic refused naming `why`. A role an explicit `envoy_role_set`
  * claimed through the listener is still persisted, so a later server with NATS takes it back.
+ *
+ * `stopping` is the server's stop reading (R24 of dispatch://INFRA-3589). The session reads as
+ * stopping from then on, and from `shutdown()` on: the role tool claims nothing, and a claim the
+ * listener answers after that leaves no record (the write gate).
  */
 export function inboundOffChannelSession(options: {
   readonly identity: SessionIdentity
   readonly stateDirectory: string
   readonly why: string
+  readonly stopping: () => boolean
 }): ChannelSession {
   const { identity, stateDirectory, why } = options
+  let shutDown = false
+  const stopping = (): boolean => shutDown || options.stopping()
   return {
     delivery: { enqueue: async () => false, inbox: () => [] },
     topics: () => [],
@@ -31,12 +38,20 @@ export function inboundOffChannelSession(options: {
     observe: () => undefined,
     messageOf: () => undefined,
     async rememberRole(role) {
+      // A stopping session keeps no role: a claim the listener granted after the stop began is
+      // not held here and leaves no record.
+      if (stopping()) return
       await writePersistedRole(roleStateFile(stateDirectory, identity.id), {
         session_id: identity.id,
         role,
       })
     },
-    shutdown: async () => undefined,
+    // It registers nothing and deletes no record. Once the stop has begun, the role tool refuses
+    // a claim (`refuseClaimWhileStopping`), and so does the client's stop gate.
+    stopping,
+    shutdown: async () => {
+      shutDown = true
+    },
   }
 }
 

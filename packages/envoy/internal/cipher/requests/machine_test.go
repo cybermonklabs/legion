@@ -1417,10 +1417,10 @@ func TestAGrantFrozenOnAnotherSourceIsNotLive(t *testing.T) {
 	set := policytest.Current(t, store).Get()
 	live := set.Secrets["DEEL_API_KEY"].Source
 	requester := policy.Requester{Operator: "ada@example.com"}
-	if err := stillAllowed(set, "DEEL_API_KEY", live, policy.Automatic, "", nil, requester); err != nil {
+	if err := stillAllowed(set, sourceRule{}, "DEEL_API_KEY", live, policy.Automatic, "", nil, requester); err != nil {
 		t.Fatalf("stillAllowed on the live source = %v, want nil", err)
 	}
-	if err := stillAllowed(set, "DEEL_API_KEY", "projects/000000000000/secrets/agent-secrets-deel-api-key", policy.Automatic, "", nil, requester); !errors.Is(err, ErrGrantNotLive) {
+	if err := stillAllowed(set, sourceRule{}, "DEEL_API_KEY", "projects/000000000000/secrets/agent-secrets-deel-api-key", policy.Automatic, "", nil, requester); !errors.Is(err, ErrGrantNotLive) {
 		t.Fatalf("stillAllowed on a source the policy no longer serves = %v, want ErrGrantNotLive", err)
 	}
 }
