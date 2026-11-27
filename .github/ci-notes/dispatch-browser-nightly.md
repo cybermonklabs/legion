@@ -45,6 +45,7 @@ runs and their annotations, read through GraphQL, and `contents: read` the check
 writes nothing to GitHub. For a row flaky in two runs it reads the row's own lines from listings
 of this checkout as the jobs run the row, in one server process and in two-process mode
 (DISPATCH_E2E_PROCESSES=2, and with DISPATCH_E2E_SIGNIN=oidc for `signin.multiprocess.e2e.ts`),
+and, for a row a loop makes from a table, the lines of its one table cell (`rowLines`),
 and their last change from the file's blame at this commit (one GraphQL request per file, which
 the tool sends itself with the job's token); and it reads the files the quarantine cannot take
 from listings of the embedder job's command and of two-process mode. So it needs the install

@@ -1,8 +1,10 @@
 /** The nightly's half of the quarantine, `e2e/tools/quarantine-check.ts`, driven through its pure
  *  part with the planted history of `fixtures/quarantine-history.fixture.ts`: what `decide`
  *  names, the lines `report` gives for each, and how whether a run's head holds a row's own last
- *  change and its fix moves what counts, and the refusal `blame` gives an answer that holds no
- *  blame, read from a stand-in for GitHub. The moment of each of those readings is the fixture's.
+ *  change and its fix moves what counts, the row's own lines `rowLines` reads - for a row a loop
+ *  makes from a table, its cell's among them, which planted specs give - and the refusal `blame`
+ *  gives an answer that holds no blame, read from a stand-in for GitHub. The moment of each of
+ *  those readings is the fixture's.
  *
  *  Its reads are driven against `gitHubStandIn` below, a stand-in for GitHub's REST and GraphQL
  *  API on a local port: what `readHistory` reads of the answers GitHub gave for eleven runs
@@ -17,6 +19,7 @@ import { expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { SourceFile } from "typescript";
 
 import { rowsOfListing } from "../configurations";
 import { entryLines, noUnquarantinableFiles, rowName, twoProcessRuns } from "../quarantine";
@@ -35,6 +38,7 @@ import {
   mergeJobOf,
   ownTitleRows,
   pairKey,
+  parsedSpec,
   type RowChange,
   type RunReading,
   readCheckout,
@@ -44,6 +48,7 @@ import {
   report,
   rowLines,
   suitesPerCall,
+  tableCell,
   windowDays,
 } from "../tools/quarantine-check";
 import { rowLimit } from "./bounded-subprocess";
@@ -73,13 +78,15 @@ function listedAs(changes: ReadonlyMap<string, RowChange>): Map<string, Candidat
 const stillReadings = listedAs(stillRows);
 
 /** The rows of `stillRows` with the pictures row's last change read from `ranges`, as the
- *  adapter reads it: its own lines from the listing, their newest commit from the blame. */
+ *  adapter reads it: its own lines from the listing - in a file of `picturesRow.fileLength` lines
+ *  that makes no row in a loop - and their newest commit from the blame. */
 function withPicturesBlame(ranges: (typeof blames)[string]): Map<string, CandidateReading> {
-  const { end, start } = rowLines(picturesRow.line, picturesRow.fileRows, picturesRow.fileLength);
-  const commit = lastChange(ranges, start, end);
+  const file = parsedSpec("pictures.e2e.ts", "\n".repeat(picturesRow.fileLength - 1));
+  const own = rowLines(picturesRow.line, "a picture uploads @pr", picturesRow.fileRows, file);
+  const commit = lastChange(ranges, own.spans);
   if (commit === undefined) throw new Error("the planted blame holds none of the row's lines");
   return listedAs(
-    new Map([...stillRows, [pictures, { ...commit, lines: `pictures.e2e.ts:${start}-${end}` }]])
+    new Map([...stillRows, [pictures, { ...commit, lines: `pictures.e2e.ts:${own.named}` }]])
   );
 }
 
@@ -464,6 +471,291 @@ const twiceFlaky = (messages: readonly string[]): RunReading[] =>
     unread: 0,
     url: `https://github.com/cybermonklabs/legion/actions/runs/${id}`,
   }));
+
+/** A spec whose loop makes a row of each cell of `cells`, its title from the cell's `field` and
+ *  `name`, as the state table of `priorities.e2e.ts` does: the cells are lines 4-7, 8-12 and
+ *  13-16, the loop's `test(...)` is on line 20, and the file has 21 lines and an end of line. */
+const tableSpec = parsedSpec(
+  "t.e2e.ts",
+  `import { test } from "./test";
+
+const cells = [
+  {
+    field: "description",
+    name: "a write lands",
+  },
+  {
+    field: "description",
+    name: "a write stopped while out lands late",
+    slow: true,
+  },
+  {
+    field: "title",
+    name: "a write lands",
+  },
+];
+
+for (const { field, name } of cells) {
+  test(\`state table, \${field}: \${name}\`, async () => {});
+}
+`
+);
+
+/** The row of `tableSpec`'s second cell, and the commits of its blames: `longAgo` before the
+ *  window, and three of the window. `twiceFlaky`'s runs 201 and 202 are of 2026-11-15 and 16. */
+const tableTitle = "state table, description: a write stopped while out lands late";
+const tableRuns = twiceFlaky([`t.e2e.ts:20 [chromium] ${tableTitle}`]);
+const longAgo = { committedDate: "2026-10-01T00:00:00Z", oid: "1".repeat(40) };
+const ownCellBefore = { committedDate: "2026-11-05T09:00:00Z", oid: "6".repeat(40) };
+const ownCellAfter = { committedDate: "2026-11-17T09:00:00Z", oid: "7".repeat(40) };
+const otherCellAfter = { committedDate: "2026-11-17T09:00:00Z", oid: "8".repeat(40) };
+
+/** What `readCheckout` reads of the row of `source` at `line` whose own title is `title`, against
+ *  the blame `ranges`: its own lines by `rowLines`, every row of the loop at that line in the
+ *  listing, and their newest commit by `lastChange`. */
+function loopReading(
+  source: SourceFile,
+  line: number,
+  title: string,
+  ranges: readonly BlameRange[]
+): Map<string, CandidateReading> {
+  const own = rowLines(line, title, [line], source);
+  const commit = lastChange(ranges, own.spans);
+  if (commit === undefined) throw new Error("the planted blame holds none of the row's lines");
+  return listedAs(
+    new Map([
+      [
+        `${source.fileName} [chromium] ${title}`,
+        { ...commit, lines: `${source.fileName}:${own.named}` },
+      ],
+    ])
+  );
+}
+
+/** Whether the heads of runs 201 and 202 hold each commit of `commits`, by `pairKey`. */
+const heldBy = (commits: Readonly<Record<string, boolean>>): Holds =>
+  new Map(
+    Object.entries(commits).flatMap(([oid, holds]) =>
+      [201, 202].map((id): [string, boolean] => [pairKey(oid, head(id)), holds])
+    )
+  );
+
+// The rows of one loop share its `test(...)` block, lines 20-22, and each runs its own cell: a
+// row's cell is the one whose `field` and `name` both make its title.
+test("a row a loop makes from a table has its block and the one cell that makes its title as its own lines", () => {
+  expect(rowLines(20, tableTitle, [20, 20, 20], tableSpec)).toEqual({
+    named: "20-22 and 8-12, its cell of `cells`",
+    spans: [
+      { end: 22, start: 20 },
+      { end: 12, start: 8 },
+    ],
+  });
+  expect(rowLines(20, "state table, description: a write lands", [20], tableSpec).spans).toEqual([
+    { end: 22, start: 20 },
+    { end: 7, start: 4 },
+  ]);
+  expect(rowLines(20, "state table, title: a write lands", [20], tableSpec).spans).toEqual([
+    { end: 22, start: 20 },
+    { end: 16, start: 13 },
+  ]);
+});
+
+// The nightly at ec252679 (run 46036656894) failed on the state table's late-landing row: main's
+// merge groups 45990383360 and 45889615884 were flaky on it, and their heads held its block's last
+// change and not its cell's, 12366498. Planted: the row's cell, lines 8-12, last changed after
+// both runs, whose heads do not hold that change, and the block is older, which both heads hold.
+// Read by the block alone, both runs count.
+test("a table row flaky in two runs whose heads do not hold its own cell's last change is not named, and the runs left out say why", () => {
+  const blame = [
+    { commit: longAgo, endingLine: 7, startingLine: 1 },
+    { commit: ownCellAfter, endingLine: 12, startingLine: 8 },
+    { commit: longAgo, endingLine: 21, startingLine: 13 },
+  ];
+  const decision = decide(
+    tableRuns,
+    [],
+    [],
+    loopReading(tableSpec, 20, tableTitle, blame),
+    readAt,
+    heldBy({ [longAgo.oid]: true, [ownCellAfter.oid]: false })
+  );
+  expect(decision.toQuarantine).toEqual([]);
+  const because = (id: number) =>
+    `its head ${head(id)} does not hold its own lines' last change, ${ownCellAfter.oid} at ` +
+    ownCellAfter.committedDate;
+  expect(decision.leftOut.map(({ missing, run, why }) => [run.id, missing, why])).toEqual([
+    [201, "change", because(201)],
+    [202, "change", because(202)],
+  ]);
+});
+
+// The same row and blame, and both heads hold the cell's change: the row is named, with its block
+// and its cell as its own lines. Read by the block alone, its last change would be `longAgo`.
+test("the same table row flaky in two runs whose heads hold its own cell's last change is named, with its cell", () => {
+  const blame = [
+    { commit: longAgo, endingLine: 7, startingLine: 1 },
+    { commit: ownCellAfter, endingLine: 12, startingLine: 8 },
+    { commit: longAgo, endingLine: 21, startingLine: 13 },
+  ];
+  const decision = decide(
+    tableRuns,
+    [],
+    [],
+    loopReading(tableSpec, 20, tableTitle, blame),
+    readAt,
+    heldBy({ [longAgo.oid]: true, [ownCellAfter.oid]: true })
+  );
+  const lines = "t.e2e.ts:20-22 and 8-12, its cell of `cells`";
+  expect(
+    decision.toQuarantine.map(({ change, runs }) => [change, runs.map((run) => run.id)])
+  ).toEqual([[{ ...ownCellAfter, lines }, [201, 202]]]);
+  expect(report(decision, readAt, noUnquarantinableFiles).summary).toContain(
+    `- \`t.e2e.ts [chromium] ${tableTitle}\`, flaky in 2 runs whose heads hold the last change ` +
+      `of its own lines (${lines}), ${ownCellAfter.oid} at ${ownCellAfter.committedDate}: ` +
+      "[run 201](https://github.com/cybermonklabs/legion/actions/runs/201) of 2026-11-15 " +
+      "(merge_group), [run 202](https://github.com/cybermonklabs/legion/actions/runs/202) of " +
+      "2026-11-16 (merge_group)."
+  );
+});
+
+// The row's own cell last changed on 2026-11-05, before both runs, and another cell of its table,
+// lines 13-16, on 2026-11-17, after them, a change neither head holds. That cell is another row's
+// code, so both runs count, against the row's own cell's change. Read by the block alone, that
+// change would be `longAgo`; read by the whole table, it would be the other cell's.
+test("a table row flaky in two runs before a change to another cell of its table is named, against its own cell's last change", () => {
+  const blame = [
+    { commit: longAgo, endingLine: 7, startingLine: 1 },
+    { commit: ownCellBefore, endingLine: 12, startingLine: 8 },
+    { commit: otherCellAfter, endingLine: 16, startingLine: 13 },
+    { commit: longAgo, endingLine: 21, startingLine: 17 },
+  ];
+  const decision = decide(
+    tableRuns,
+    [],
+    [],
+    loopReading(tableSpec, 20, tableTitle, blame),
+    readAt,
+    heldBy({ [longAgo.oid]: true, [otherCellAfter.oid]: false, [ownCellBefore.oid]: true })
+  );
+  expect(decision.leftOut).toEqual([]);
+  expect(
+    decision.toQuarantine.map(({ change, runs }) => [change, runs.map((run) => run.id)])
+  ).toEqual([
+    [{ ...ownCellBefore, lines: "t.e2e.ts:20-22 and 8-12, its cell of `cells`" }, [201, 202]],
+  ]);
+});
+
+// A cell that writes its name through a variable cannot be matched, and it may be the row's cell:
+// the row's own lines are its block alone, as every row's were before cells were read, so the
+// change to the cell's line 6 after both runs, which neither head holds, moves nothing. The
+// summary names the row and why its cell was not read.
+test("a table row whose cell cannot be told is read by its block alone, and the summary says why", () => {
+  const source = parsedSpec(
+    "u.e2e.ts",
+    `import { test } from "./test";
+
+const late = "a write stopped while out lands late";
+const cells = [
+  { field: "description", name: "a write lands" },
+  { field: "description", name: late },
+];
+
+for (const { field, name } of cells) {
+  test(\`state table, \${field}: \${name}\`, async () => {});
+}
+`
+  );
+  const lines =
+    "10-12 without its table cell, since the cell of `cells` on line 6 holds no string literal " +
+    "for `name`";
+  expect(rowLines(10, tableTitle, [10, 10], source)).toEqual({
+    named: lines,
+    spans: [{ end: 12, start: 10 }],
+  });
+  const blame = [
+    { commit: longAgo, endingLine: 5, startingLine: 1 },
+    { commit: ownCellAfter, endingLine: 6, startingLine: 6 },
+    { commit: longAgo, endingLine: 11, startingLine: 7 },
+  ];
+  const decision = decide(
+    twiceFlaky([`u.e2e.ts:10 [chromium] ${tableTitle}`]),
+    [],
+    [],
+    loopReading(source, 10, tableTitle, blame),
+    readAt,
+    heldBy({ [longAgo.oid]: true, [ownCellAfter.oid]: false })
+  );
+  expect(decision.toQuarantine.map(({ runs }) => runs.map((run) => run.id))).toEqual([[201, 202]]);
+  expect(report(decision, readAt, noUnquarantinableFiles).summary).toContain(
+    `- \`u.e2e.ts [chromium] ${tableTitle}\`, flaky in 2 runs whose heads hold the last change ` +
+      `of its own lines (u.e2e.ts:${lines}), ${longAgo.oid} at ${longAgo.committedDate}: ` +
+      "[run 201](https://github.com/cybermonklabs/legion/actions/runs/201) of 2026-11-15 " +
+      "(merge_group), [run 202](https://github.com/cybermonklabs/legion/actions/runs/202) of " +
+      "2026-11-16 (merge_group)."
+  );
+});
+
+/** `body` as a spec, after an import and a blank line, so its first line is line 3. */
+const specOf = (body: string) =>
+  parsedSpec("v.e2e.ts", `import { test } from "./test";\n\n${body}`);
+
+// A row no loop makes has no cell to read. A row a loop makes whose cell cannot be told is not
+// matched to one: two cells that make its title, a title that reads what is no field of the
+// loop's binding, or a name the loop's body declares again, and a loop over no array literal. A
+// table of strings, its binding one name, is read as one of objects is.
+test("tableCell finds no cell for a row no loop makes, and says why where a loop's row's cell cannot be told", () => {
+  expect(tableCell(specOf('test("a row", async () => {});\n'), 3, "a row")).toBeUndefined();
+  const twice = specOf(`const cells = [
+  { name: "a" },
+  { name: "a" },
+];
+for (const { name } of cells) {
+  test(\`row \${name}\`, async () => {});
+}
+`);
+  expect(tableCell(twice, 8, "row a")).toEqual({
+    kind: "unread",
+    why: "2 cells of `cells` make its title, on lines 4 and 5",
+  });
+  const unbound = specOf(`const cells = [{ name: "a" }];
+for (const { name } of cells) {
+  test(\`row \${name} \${other}\`, async () => {});
+}
+`);
+  expect(tableCell(unbound, 5, "row a b")).toEqual({
+    kind: "unread",
+    why: "its title reads `other`, which is no field of its loop's binding",
+  });
+  const again = specOf(`const cells = [{ name: "a" }];
+for (const { name } of cells) {
+  test.describe("d", () => {
+    const name = "b";
+    test(\`row \${name}\`, async () => {});
+  });
+}
+`);
+  expect(tableCell(again, 7, "row b")).toEqual({
+    kind: "unread",
+    why: "its loop's body declares `name` again, so its title may not read the loop's binding",
+  });
+  const entries = specOf(`for (const name of Object.keys({ a: 1 })) {
+  test(\`row \${name}\`, async () => {});
+}
+`);
+  expect(tableCell(entries, 4, "row a")).toEqual({
+    kind: "unread",
+    why: "its loop runs over `Object.keys({ a: 1 })`, which is no array literal of its file",
+  });
+  const strings = specOf(`for (const leaving of ["beforeunload", "pagehide"]) {
+  test(\`a page after \${leaving}\`, async () => {});
+}
+`);
+  expect(tableCell(strings, 4, "a page after pagehide")).toEqual({
+    kind: "cell",
+    span: { end: 3, start: 3 },
+    table: "the array on line 3",
+  });
+});
 
 // The embedder job runs `search-tiers.e2e.ts` with no quarantine and the nightly's quarantine leg
 // skips its rows, so the quarantine cannot take one (`quarantineRefusal`): the summary names the

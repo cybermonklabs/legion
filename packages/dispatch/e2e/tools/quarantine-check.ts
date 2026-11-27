@@ -29,12 +29,17 @@
  *  the commit the run tested, its `head_sha` - holds the commit that last changed the row's own
  *  lines, and holds the row's fix too where `fixes` names one. The row's lines run from its line
  *  in the listing of the checkout to the line before the next row of its file there, or to the
- *  file's end, and their last change is the newest commit of the file's blame at the checkout
- *  that overlaps them. A run's time does not say which commits its head holds: a nightly started
- *  by hand at a branch head blames the branch's own commits, and a merge group of main created
- *  after them holds none of them until the branch lands. A run whose head GitHub's compare cannot
- *  place is counted, and the summary names it with the reason. A change elsewhere in the file
- *  moves nothing. The summary names each run it left out, and why, and counts them.
+ *  file's end. For a row a `for (const ... of <table>)` loop makes from a table its file declares,
+ *  they are those and the lines of the one cell of the table whose fields make the row's title:
+ *  the loop's rows share their `test(...)` block, and each runs its own cell (`rowLines`). Where
+ *  such a row's cell cannot be told, its lines are the first alone, and the summary says why.
+ *  Their last change is the newest commit of the file's blame at the checkout that overlaps them.
+ *  A run's time does not say which commits its head holds: a nightly started by hand at a branch
+ *  head blames the branch's own commits, and a merge group of main created after them holds none
+ *  of them until the branch lands. A run whose head GitHub's compare cannot place is counted, and
+ *  the summary names it with the reason. A change elsewhere in the file, another cell of the same
+ *  table among them, moves nothing. The summary names each run it left out, and why, and counts
+ *  them.
  *
  *  The runs it reads are the scheduled runs of the nightly and the merge-group runs of ci.yaml,
  *  and no other: a pull request's head can carry its own defect. What it reads of each is the
@@ -55,13 +60,13 @@
  *  and named. For each fix it reads GitHub's compare of the checkout with the fix's commit.
  *
  *  Those reads are the adapter's, below `report`, and they decide nothing; `flakyRows`,
- *  `rowLines`, `lastChange`, `ownTitleRows`, `pairKey`, `decide` and `report` are pure over what
- *  was read and the moment given them, which is how `e2e/__tests__/quarantine-check.test.ts`
- *  drives them. It drives `blame` against a stand-in for GitHub's answer, `readDeadline` against
- *  a stand-in for `/proc`, `gitHub`, `readHistory` and `readHolds` against a local stand-in for
- *  GitHub's API, and `readCheckout` against that stand-in and listings of the checkout. Only the
- *  command line, `readDeadline` and `gitHub`'s wait for a rate limit read the clock or the
- *  processes.
+ *  `rowLines`, `tableCell`, `lastChange`, `ownTitleRows`, `pairKey`, `decide` and `report` are
+ *  pure over what was read and the moment given them, which is how
+ *  `e2e/__tests__/quarantine-check.test.ts` drives them. It drives `blame` against a stand-in for
+ *  GitHub's answer, `readDeadline` against a stand-in for `/proc`, `gitHub`, `readHistory` and
+ *  `readHolds` against a local stand-in for GitHub's API, and `readCheckout` against that
+ *  stand-in and listings of the checkout. Only the command line, `readDeadline` and `gitHub`'s
+ *  wait for a rate limit read the clock or the processes.
  *
  *  Environment: GITHUB_REPOSITORY (`owner/name`), GH_TOKEN or GITHUB_TOKEN, GITHUB_SHA (the
  *  commit checked out; `main` when unset), GITHUB_API_URL (https://api.github.com when unset),
@@ -82,6 +87,7 @@
  */
 import { appendFileSync, existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import * as ts from "typescript";
 import { listing, listUnquarantinableFiles } from "../__tests__/playwright-listing";
 import {
   entryLines,
@@ -174,7 +180,8 @@ export interface BlameRange {
 export interface RowChange {
   readonly oid: string;
   readonly committedDate: string;
-  /** The lines the change was read over, `<file>:<start>-<end>`. */
+  /** The lines the change was read over, `<file>:<start>-<end>`, and for a row a loop makes from
+   *  a table, its cell's after them, or why its cell was not read (`rowLines`'s `named`). */
   readonly lines: string;
 }
 
@@ -285,28 +292,357 @@ export function flakyRows(runs: readonly RunReading[], now: Date): FlakyRows {
   return { counted, rows, unparsed };
 }
 
-/** A row's own lines: from `line`, its line in the listing, to the line before the next row of
- *  its file there (`fileRows`, every row's line), or to the file's last line, `fileLength`. */
-export function rowLines(
-  line: number,
-  fileRows: readonly number[],
-  fileLength: number
-): { start: number; end: number } {
-  const next = fileRows.filter((other) => other > line).sort((a, b) => a - b)[0];
-  return { end: next === undefined ? fileLength : next - 1, start: line };
+/** A run of lines of a file, `start` to `end`, each counted from 1. */
+export interface LineSpan {
+  readonly start: number;
+  readonly end: number;
 }
 
-/** The newest commit of `ranges` that overlaps lines `start` to `end`, or `undefined` where none
+/** A row's own lines: the `spans` `lastChange` reads, and how the summary names them after the
+ *  file's name and a colon (`named`). */
+export interface OwnLines {
+  readonly spans: readonly LineSpan[];
+  readonly named: string;
+}
+
+/** `text`, the spec `file`, parsed as `rowLines` reads it: with each node's parent set, which
+ *  `tableCell` reads. */
+export function parsedSpec(file: string, text: string): ts.SourceFile {
+  return ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true);
+}
+
+/** A row's own lines, the code whose last change a flake of the row must come after to count.
+ *  The first span runs from `line`, its line in the listing, to the line before the next row of
+ *  its file there (`fileRows`, every row's line), or to the last line of `source`, its file. For a
+ *  row a loop makes from a table, the second is the one cell of the table whose fields make the
+ *  row's own title, `title` (`tableCell`). The loop's rows share its `test(...)` block, and each
+ *  runs its own cell, so the block alone is not the code a row runs: the nightly's check of run
+ *  46036656894, at ec252679, failed on `priorities.e2e.ts [chromium] state table, description: a
+ *  write stopped while out lands late, then she edits again`, flaky in main's merge groups
+ *  45990383360 and 45889615884. Their heads hold the block's last change, c6e67480, and they ran
+ *  main's cell, which this branch rewrote in 12366498. The cell is the row's and the table is
+ *  not: a change to one cell changes none of the other 33 rows that table makes. A row made in a
+ *  loop whose cell cannot be told has the first span alone, as every other row has, and `named`
+ *  says why, which is how the summary names the row with the reason (`report`). */
+export function rowLines(
+  line: number,
+  title: string,
+  fileRows: readonly number[],
+  source: ts.SourceFile
+): OwnLines {
+  const next = fileRows.filter((other) => other > line).sort((a, b) => a - b)[0];
+  const end = next === undefined ? source.text.split("\n").length : next - 1;
+  const block = { end, start: line };
+  const blockLines = `${line}-${end}`;
+  const cell = tableCell(source, line, title);
+  if (cell === undefined) return { named: blockLines, spans: [block] };
+  if (cell.kind === "unread") {
+    return { named: `${blockLines} without its table cell, since ${cell.why}`, spans: [block] };
+  }
+  return {
+    named: `${blockLines} and ${cell.span.start}-${cell.span.end}, its cell of ${cell.table}`,
+    spans: [block, cell.span],
+  };
+}
+
+/** The newest commit of `ranges` that overlaps any span of `spans`, or `undefined` where none
  *  does. */
 export function lastChange(
   ranges: readonly BlameRange[],
-  start: number,
-  end: number
+  spans: readonly LineSpan[]
 ): BlameRange["commit"] | undefined {
   return ranges
-    .filter((range) => range.startingLine <= end && range.endingLine >= start)
+    .filter((range) =>
+      spans.some(({ end, start }) => range.startingLine <= end && range.endingLine >= start)
+    )
     .map((range) => range.commit)
     .sort((a, b) => Date.parse(b.committedDate) - Date.parse(a.committedDate))[0];
+}
+
+/** The cell of a table that makes a row of a loop, by `tableCell`: how the summary names the table
+ *  and the cell's lines (`cell`), or why the row's cell cannot be told (`unread`). */
+export type TableCell =
+  | { readonly kind: "cell"; readonly table: string; readonly span: LineSpan }
+  | { readonly kind: "unread"; readonly why: string };
+
+/** The cell that makes the row whose line in the listing is `line` of `source` and whose own title
+ *  is `title`, read off the file's syntax tree (`parsedSpec`). It is `undefined` where no call
+ *  whose name starts on that line, as a stack frame places a call, is inside a
+ *  `for (const ... of ...)` loop: no loop makes the row. Where one is, the row's cell is the one
+ *  cell of the loop's table - an array literal of `source`, written in the loop or declared once
+ *  as a `const` of the file - whose title is the row's: the call's title, a string or a template
+ *  literal of the fields the loop binds, with the cell's string literals for those fields.
+ *  Playwright refuses two rows of one full title in a file, and a loop's rows share their
+ *  `describe`s, so the one cell whose title is the row's is the cell that row runs. Anything else
+ *  is `unread`, with why: more than one call on the line, a binding that is not one `const`, a
+ *  title that reads what is no field of the binding or a name the loop's body declares again, a
+ *  table that is not such a literal, a cell with no string literal for a field the title reads,
+ *  and no cell or more than one whose title is the row's. A cell that cannot be read may be the
+ *  row's, so it leaves the row's cell untold rather than leaving that cell out of the match. */
+export function tableCell(
+  source: ts.SourceFile,
+  line: number,
+  title: string
+): TableCell | undefined {
+  const lineOf = (position: number) => source.getLineAndCharacterOfPosition(position).line + 1;
+  // Each call on `line` - its callee's name starts there - and the innermost `for ... of` loop
+  // whose body holds it. A node whose lines do not hold `line` holds no such call.
+  const calls: { call: ts.CallExpression; loop: ts.ForOfStatement | undefined }[] = [];
+  const visit = (node: ts.Node, loop: ts.ForOfStatement | undefined): void => {
+    if (lineOf(node.pos) > line || lineOf(node.end) < line) return;
+    if (ts.isCallExpression(node)) {
+      const callee = ts.isPropertyAccessExpression(node.expression)
+        ? node.expression.name
+        : node.expression;
+      if (lineOf(callee.getStart(source)) === line) calls.push({ call: node, loop });
+    }
+    if (ts.isForOfStatement(node)) {
+      visit(node.initializer, loop);
+      visit(node.expression, loop);
+      visit(node.statement, node);
+      return;
+    }
+    ts.forEachChild(node, (child) => visit(child, loop));
+  };
+  visit(source, undefined);
+  if (calls.every(({ loop }) => loop === undefined)) return undefined;
+  const unread = (why: string): TableCell => ({ kind: "unread", why });
+  const [{ call, loop }] = calls;
+  if (calls.length > 1 || loop === undefined) {
+    return unread(
+      `line ${line} starts ${calls.length} calls, and which of them makes the row is not read`
+    );
+  }
+  const binding = loop.initializer;
+  if (
+    !ts.isVariableDeclarationList(binding) ||
+    (binding.flags & ts.NodeFlags.Const) === 0 ||
+    binding.declarations.length !== 1
+  ) {
+    return unread("its loop's binding is not one `const`");
+  }
+  const fields = boundFields(binding.declarations[0].name);
+  const [written] = call.arguments;
+  if (written === undefined) return unread(`its call on line ${line} has no title`);
+  const titled = unwrapped(written);
+  const pieces: (string | ts.Expression)[] = ts.isTemplateExpression(titled)
+    ? [
+        titled.head.text,
+        ...titled.templateSpans.flatMap((span) => [span.expression, span.literal.text]),
+      ]
+    : ts.isStringLiteral(titled) || ts.isNoSubstitutionTemplateLiteral(titled)
+      ? [titled.text]
+      : [titled];
+  const parts: TitlePart[] = [];
+  const locals = new Set<string>();
+  for (const piece of pieces) {
+    if (typeof piece === "string") {
+      parts.push(piece);
+      continue;
+    }
+    const field = boundField(piece, fields);
+    if (field === undefined) {
+      return unread(
+        `its title reads \`${piece.getText(source)}\`, which is no field of its loop's binding`
+      );
+    }
+    locals.add(field.local);
+    parts.push({ path: field.path, text: piece.getText(source) });
+  }
+  const [again] = declaredNames(loop.statement, locals);
+  if (again !== undefined) {
+    return unread(
+      `its loop's body declares \`${again.name}\` again, so its title may not read the loop's ` +
+        "binding"
+    );
+  }
+  const table = loopTable(source, loop.expression);
+  if ("why" in table) return unread(table.why);
+  const made: ts.Expression[] = [];
+  for (const cell of table.cells) {
+    const at = lineOf(cell.getStart(source));
+    if (ts.isSpreadElement(cell) || ts.isOmittedExpression(cell)) {
+      return unread(`${table.name} holds an element on line ${at} that is not written out in it`);
+    }
+    let cellTitle = "";
+    for (const part of parts) {
+      if (typeof part === "string") {
+        cellTitle += part;
+        continue;
+      }
+      const value = cellText(cell, part.path);
+      if (value === undefined) {
+        return unread(
+          `the cell of ${table.name} on line ${at} holds no string literal for \`${part.text}\``
+        );
+      }
+      cellTitle += value;
+    }
+    if (cellTitle === title) made.push(cell);
+  }
+  const [cell] = made;
+  if (made.length !== 1 || cell === undefined) {
+    const lines = made.map((one) => lineOf(one.getStart(source))).join(" and ");
+    return unread(
+      made.length === 0
+        ? `no cell of ${table.name} makes its title`
+        : `${made.length} cells of ${table.name} make its title, on lines ${lines}`
+    );
+  }
+  return {
+    kind: "cell",
+    span: { end: lineOf(cell.getEnd()), start: lineOf(cell.getStart(source)) },
+    table: table.name,
+  };
+}
+
+/** A part of a row's title as a loop's call writes it: text (`string`), or a field of the cell at
+ *  `path`, which the call reads as `text`. */
+type TitlePart = string | { readonly path: readonly string[]; readonly text: string };
+
+/** `expression` inside the parentheses and type assertions around it, which change no value. */
+function unwrapped(expression: ts.Expression): ts.Expression {
+  let inner = expression;
+  while (
+    ts.isParenthesizedExpression(inner) ||
+    ts.isAsExpression(inner) ||
+    ts.isSatisfiesExpression(inner) ||
+    ts.isTypeAssertionExpression(inner) ||
+    ts.isNonNullExpression(inner)
+  ) {
+    inner = inner.expression;
+  }
+  return inner;
+}
+
+/** The key `name` writes, or `undefined` for a computed one, which may be any key. */
+function staticKey(name: ts.PropertyName): string | undefined {
+  return ts.isComputedPropertyName(name) ? undefined : name.text;
+}
+
+/** Each name a loop's `binding` declares that holds a cell or a field of one, with the field's
+ *  path in the cell: the cell itself for a binding of one name, and its property for each name of
+ *  an object pattern. A name of a nested pattern or of a rest is none. */
+function boundFields(binding: ts.BindingName): Map<string, readonly string[]> {
+  const fields = new Map<string, readonly string[]>();
+  if (ts.isIdentifier(binding)) return fields.set(binding.text, []);
+  if (!ts.isObjectBindingPattern(binding)) return fields;
+  for (const element of binding.elements) {
+    if (element.dotDotDotToken !== undefined || !ts.isIdentifier(element.name)) continue;
+    const key =
+      element.propertyName === undefined ? element.name.text : staticKey(element.propertyName);
+    if (key !== undefined) fields.set(element.name.text, [key]);
+  }
+  return fields;
+}
+
+/** The name of a loop's binding that `expression` reads (`local`) and the path in a cell of the
+ *  field it reads, by `fields`: a name the binding declares, then any properties read off it by
+ *  name. `undefined` for any other expression. */
+function boundField(
+  expression: ts.Expression,
+  fields: ReadonlyMap<string, readonly string[]>
+): { readonly local: string; readonly path: readonly string[] } | undefined {
+  const read = unwrapped(expression);
+  if (ts.isIdentifier(read)) {
+    const path = fields.get(read.text);
+    return path === undefined ? undefined : { local: read.text, path };
+  }
+  if (!ts.isPropertyAccessExpression(read) || !ts.isIdentifier(read.name)) return undefined;
+  const owner = boundField(read.expression, fields);
+  return owner === undefined
+    ? undefined
+    : { local: owner.local, path: [...owner.path, read.name.text] };
+}
+
+/** Each declaration under `root`, `root` included, of a name of `names`: a variable, a parameter,
+ *  a binding of a pattern, a function or a class, with the name it declares. */
+function declaredNames(
+  root: ts.Node,
+  names: ReadonlySet<string>
+): { readonly name: string; readonly node: ts.Node }[] {
+  const found: { name: string; node: ts.Node }[] = [];
+  const visit = (node: ts.Node): void => {
+    if (
+      (ts.isVariableDeclaration(node) ||
+        ts.isParameter(node) ||
+        ts.isBindingElement(node) ||
+        ts.isFunctionDeclaration(node) ||
+        ts.isFunctionExpression(node) ||
+        ts.isClassDeclaration(node) ||
+        ts.isClassExpression(node)) &&
+      node.name !== undefined &&
+      ts.isIdentifier(node.name) &&
+      names.has(node.name.text)
+    ) {
+      found.push({ name: node.name.text, node });
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(root);
+  return found;
+}
+
+/** The cells of the table a loop runs over and how the summary names it, or why there is none. */
+type LoopTable =
+  | { readonly cells: readonly ts.Expression[]; readonly name: string }
+  | { readonly why: string };
+
+/** The table a loop runs over, `expression`: an array literal itself, or a name declared once in
+ *  `source`, as a `const` whose value is one. */
+function loopTable(source: ts.SourceFile, expression: ts.Expression): LoopTable {
+  const iterated = unwrapped(expression);
+  if (ts.isArrayLiteralExpression(iterated)) {
+    const line = source.getLineAndCharacterOfPosition(iterated.getStart(source)).line + 1;
+    return { cells: iterated.elements, name: `the array on line ${line}` };
+  }
+  if (!ts.isIdentifier(iterated)) {
+    return {
+      why: `its loop runs over \`${iterated.getText(source)}\`, which is no array literal of its file`,
+    };
+  }
+  const name = `\`${iterated.text}\``;
+  const declared = declaredNames(source, new Set([iterated.text]));
+  const [only] = declared;
+  const list = only?.node.parent;
+  const value =
+    declared.length === 1 &&
+    ts.isVariableDeclaration(only.node) &&
+    list !== undefined &&
+    ts.isVariableDeclarationList(list) &&
+    (list.flags & ts.NodeFlags.Const) !== 0 &&
+    only.node.initializer !== undefined
+      ? unwrapped(only.node.initializer)
+      : undefined;
+  if (value === undefined || !ts.isArrayLiteralExpression(value)) {
+    return { why: `${name} is not declared once in its file, as a \`const\` array literal` };
+  }
+  return { cells: value.elements, name };
+}
+
+/** The text of the string literal at `path` in `cell`, each key a property of an object literal
+ *  in the value before it: `undefined` where the value is no string literal, or a key on the way
+ *  is not written out as a property of its own - a spread, a computed key, a shorthand, a method
+ *  or an accessor may set it. As in JavaScript, the last property of a key is the one that counts.
+ */
+function cellText(cell: ts.Expression, path: readonly string[]): string | undefined {
+  let value = unwrapped(cell);
+  for (const key of path) {
+    if (!ts.isObjectLiteralExpression(value)) return undefined;
+    let found: ts.Expression | undefined;
+    for (const property of value.properties) {
+      const named = ts.isSpreadAssignment(property) ? undefined : staticKey(property.name);
+      if (named === undefined) found = undefined;
+      else if (named === key) {
+        found = ts.isPropertyAssignment(property) ? unwrapped(property.initializer) : undefined;
+      }
+    }
+    if (found === undefined) return undefined;
+    value = found;
+  }
+  return ts.isStringLiteral(value) || ts.isNoSubstitutionTemplateLiteral(value)
+    ? value.text
+    : undefined;
 }
 
 /** The rows of `listed` that a notice naming `row` by its own title alone may mean, by `rowName`:
@@ -1416,14 +1752,14 @@ type ListingNode = {
 /** A listing as this reads it: its files' suites, each walked to its specs. */
 type ListingReport = { readonly suites?: readonly ListingNode[] };
 
-/** Every row of `report` by `rowName` with its file and line, every row line of each file, and
- *  every row. */
+/** Every row of `report` by `rowName` with its file, its line and its own title (`own`, its
+ *  spec's, without its `describe`s'), every row line of each file, and every row. */
 function rowsWithLines(report: ListingReport): {
-  lines: Map<string, { file: string; line: number }>;
+  lines: Map<string, { file: string; line: number; own: string }>;
   fileRows: Map<string, number[]>;
   rows: QuarantineRow[];
 } {
-  const lines = new Map<string, { file: string; line: number }>();
+  const lines = new Map<string, { file: string; line: number; own: string }>();
   const fileRows = new Map<string, number[]>();
   const rows: QuarantineRow[] = [];
   const walk = (node: ListingNode, path: readonly string[]): void => {
@@ -1434,7 +1770,7 @@ function rowsWithLines(report: ListingReport): {
       for (const test of spec.tests ?? []) {
         const title = [...path, spec.title].join(titleSeparator);
         const row = { file: spec.file, project: test.projectName ?? "", title };
-        lines.set(rowName(row), { file: spec.file, line: spec.line });
+        lines.set(rowName(row), { file: spec.file, line: spec.line, own: spec.title });
         rows.push(row);
       }
     }
@@ -1501,7 +1837,8 @@ export interface Checkout {
  *  listings also give the two-process job's rows: one process ignores every
  *  `*.multiprocess.e2e.ts`, so a row of those files is in no other listing. A row is read by
  *  its name in the one-process and two-process listings, and its lines by its own file's rows
- *  there. A candidate they do not name is `gone` where the checkout does not hold its file,
+ *  there and, for a row a loop makes from a table, by its cell in the file (`rowLines`). A
+ *  candidate they do not name is `gone` where the checkout does not hold its file,
  *  `unlisted` where they hold no row of its file, and `ownTitle` or else `unmatched` where they
  *  hold other rows of it. With no candidate it lists nothing, and there is no reading and no
  *  file the quarantine cannot take: no row then reaches what `decide` and `report` read. */
@@ -1526,8 +1863,8 @@ export async function readCheckout(
   const { fileRows, lines, rows } = rowsWithLines({
     suites: reports.flatMap((report) => report.suites ?? []),
   });
-  // Each file's blame and its line count, read once for every candidate of the file.
-  const read = new Map<string, { length: number; ranges: readonly BlameRange[] }>();
+  // Each file's blame and its syntax tree, read once for every candidate of the file.
+  const read = new Map<string, { ranges: readonly BlameRange[]; source: ts.SourceFile }>();
   // Every way out of it is a reading, so no candidate is left out of `readings`.
   const readRow = async (row: QuarantineRow): Promise<CandidateReading> => {
     const at = lines.get(rowName(row));
@@ -1547,18 +1884,16 @@ export async function readCheckout(
         expression,
         `packages/dispatch/e2e/${at.file}`
       );
-      const source = readFileSync(fileURLToPath(new URL(`../${at.file}`, import.meta.url)), "utf8");
-      file = { length: source.split("\n").length, ranges };
+      const text = readFileSync(fileURLToPath(new URL(`../${at.file}`, import.meta.url)), "utf8");
+      file = { ranges, source: parsedSpec(at.file, text) };
       read.set(at.file, file);
     }
-    const { end, start } = rowLines(at.line, fileRows.get(at.file) ?? [], file.length);
-    const commit = lastChange(file.ranges, start, end);
+    const own = rowLines(at.line, at.own, fileRows.get(at.file) ?? [], file.source);
+    const commit = lastChange(file.ranges, own.spans);
     if (commit === undefined) {
-      throw new Error(
-        `the blame of ${at.file} at ${expression} holds none of lines ${start}-${end}`
-      );
+      throw new Error(`the blame of ${at.file} at ${expression} holds none of lines ${own.named}`);
     }
-    return { change: { ...commit, lines: `${at.file}:${start}-${end}` }, kind: "listed" };
+    return { change: { ...commit, lines: `${at.file}:${own.named}` }, kind: "listed" };
   };
   for (const row of candidates) readings.set(rowName(row), await readRow(row));
   return { readings, unquarantinable: unquarantinable.files };
