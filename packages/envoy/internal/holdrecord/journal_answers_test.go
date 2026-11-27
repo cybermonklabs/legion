@@ -90,13 +90,13 @@ func answerRows(t *testing.T) {
 		c := r.client(t)
 		r.once(recordsRead, answer(http.StatusOK, `{"records":[{"key":"hold","value":{},"gen":`+overflow+`,"sig":"x"}]}`))
 		_, err := c.Records(ctx, "h-answers", "done")
-		if err == nil || strings.Contains(err.Error(), overflow) || !strings.Contains(err.Error(), "its field records.0.gen does not fit uint64 (a type error)") {
-			t.Errorf("a list whose gen overflows answered %v, want an error naming records.0.gen and a type error, without the number", err)
+		if err == nil || strings.Contains(err.Error(), overflow) || !strings.Contains(err.Error(), `the answer's "records.(item).gen" is a JSON number where the value holds a uint64`) {
+			t.Errorf("a list whose gen overflows answered %v, want an error naming records.(item).gen and its JSON kind, without the number", err)
 		}
 		r.once(recordsRead, answer(http.StatusOK, canary))
 		_, err = c.Records(ctx, "h-answers", "done")
-		if err == nil || strings.Contains(err.Error(), canary) || !strings.Contains(err.Error(), "(a syntax error)") {
-			t.Errorf("a list that is not JSON answered %v, want an error naming a syntax error, without the body", err)
+		if err == nil || strings.Contains(err.Error(), canary) || !strings.Contains(err.Error(), "the answer is not JSON that the value decodes from (at byte 1)") {
+			t.Errorf("a list that is not JSON answered %v, want an error naming the syntax error's offset, without the body", err)
 		}
 		r.once(rowRead, answer(http.StatusOK, `{"gen":1,"phase":"held","hold_id":"h-answers","signed_at":"`+canary+`","sig":"x"}`))
 		_, err = c.Row(ctx)

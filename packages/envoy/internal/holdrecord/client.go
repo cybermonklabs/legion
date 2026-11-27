@@ -377,24 +377,24 @@ func (c *Client) restore(ctx context.Context, gen uint64, phase natsgrant.Operat
 	}
 	body := map[string]any{"gen": gen, "phase": phase, "hold_id": holdID, "reason": reason,
 		"signed_at": signedAt.Format(time.RFC3339Nano), "sig": sig}
-	status, data, err := c.exchange(ctx, http.MethodPost, restorePath, nil, body)
+	answer, err := c.exchange(ctx, http.MethodPost, restorePath, nil, body)
 	if err != nil {
 		return Row{}, err
 	}
-	if status/100 == 2 {
-		var answer rowWire
-		if err := decodeAnswer(http.MethodPost, restorePath, data, &answer); err != nil {
+	if answer.Status()/100 == 2 {
+		var wire rowWire
+		if err := decodeAnswer(http.MethodPost, restorePath, answer, &wire); err != nil {
 			return Row{}, err
 		}
-		return c.writtenRow(answer, Row{Gen: gen, Phase: phase, HoldID: holdID, SignedAt: signedAt})
+		return c.writtenRow(wire, Row{Gen: gen, Phase: phase, HoldID: holdID, SignedAt: signedAt})
 	}
-	refused := c.refusal(http.MethodPost, restorePath, status, data)
+	refused := c.refusal(http.MethodPost, restorePath, answer)
 	var refusal struct {
 		Error      string  `json:"error"`
 		RestoreGen *uint64 `json:"restore_gen"`
 	}
 	var route *RouteError
-	if json.Unmarshal(data, &refusal) == nil && refusal.Error == codeGenMismatch && refusal.RestoreGen != nil && errors.As(refused, &route) {
+	if answer.Decode(&refusal) == nil && refusal.Error == codeGenMismatch && refusal.RestoreGen != nil && errors.As(refused, &route) {
 		return Row{}, &RestoreGenError{RestoreGen: *refusal.RestoreGen, Route: route}
 	}
 	return Row{}, refused
@@ -632,19 +632,32 @@ func (c *Client) writtenRow(wire rowWire, want Row) (Row, error) {
 
 // recordWire is one hold record as the routes answer it.
 type recordWire struct {
-	HoldID string          `json:"hold_id"`
-	Kind   string          `json:"kind"`
-	Key    string          `json:"key"`
-	Value  json.RawMessage `json:"value"`
-	Gen    uint64          `json:"gen"`
-	Sig    string          `json:"sig"`
+	HoldID string      `json:"hold_id"`
+	Kind   string      `json:"kind"`
+	Key    string      `json:"key"`
+	Value  signedValue `json:"value"`
+	Gen    uint64      `json:"gen"`
+	Sig    string      `json:"sig"`
+}
+
+// signedValue is a record's value as an answer carries it: its JSON text as the answer wrote it,
+// kept whole for verifyRecord, which verifies the record's signature over it before the client
+// hands it on as Record.Value. It decodes itself into an unexported field, so Answer.Decode, which
+// refuses a member it would fill with the answer's text as it came (a json.RawMessage), reads it as
+// a value of its own: nothing prints it, and only a value the operator signed leaves the client.
+type signedValue struct{ raw json.RawMessage }
+
+// UnmarshalJSON keeps data, the value's JSON text, as json.RawMessage keeps it.
+func (v *signedValue) UnmarshalJSON(data []byte) error {
+	v.raw = bytes.Clone(data)
+	return nil
 }
 
 func (c *Client) verifyRecord(wire recordWire) (Record, error) {
-	if err := signedrecord.Verify(c.cfg.VerifyKeys, wire.Sig, signedrecord.Record(wire.HoldID, wire.Kind, wire.Key, wire.Gen, wire.Value)); err != nil {
+	if err := signedrecord.Verify(c.cfg.VerifyKeys, wire.Sig, signedrecord.Record(wire.HoldID, wire.Kind, wire.Key, wire.Gen, wire.Value.raw)); err != nil {
 		return Record{}, wrap(ErrUnknown, fmt.Sprintf("the %s record %s of hold %s at gen %d: %v", wire.Kind, wire.Key, wire.HoldID, wire.Gen, err))
 	}
-	return Record{HoldID: wire.HoldID, Kind: wire.Kind, Key: wire.Key, Gen: wire.Gen, Value: wire.Value}, nil
+	return Record{HoldID: wire.HoldID, Kind: wire.Kind, Key: wire.Key, Gen: wire.Gen, Value: wire.Value.raw}, nil
 }
 
 // cutoverWire is one family's cutover row as the routes answer it.
@@ -663,24 +676,26 @@ func (c *Client) verifyCutover(wire cutoverWire) (CutoverRow, error) {
 	return CutoverRow{Family: wire.Family, State: wire.State, HoldID: wire.HoldID, HoldGen: wire.HoldGen}, nil
 }
 
-// call sends one request and decodes a 2xx answer into answer, or returns the route's refusal.
-func (c *Client) call(ctx context.Context, method, path string, query url.Values, body, answer any) error {
-	status, data, err := c.exchange(ctx, method, path, query, body)
+// call sends one request and decodes a 2xx answer into out, or returns the route's refusal.
+func (c *Client) call(ctx context.Context, method, path string, query url.Values, body, out any) error {
+	answer, err := c.exchange(ctx, method, path, query, body)
 	if err != nil {
 		return err
 	}
-	if status/100 != 2 {
-		return c.refusal(method, path, status, data)
+	if answer.Status()/100 != 2 {
+		return c.refusal(method, path, answer)
 	}
-	if answer == nil {
+	if out == nil {
 		return nil
 	}
-	return decodeAnswer(method, path, data, answer)
+	return decodeAnswer(method, path, answer, out)
 }
 
-func decodeAnswer(method, path string, data []byte, answer any) error {
-	if err := json.Unmarshal(data, answer); err != nil {
-		return fmt.Errorf("holdrecord: %s %s answered a body that does not decode: %s", method, path, jsonFailure(err))
+// decodeAnswer decodes a 2xx answer into out through Answer.Decode, whose error names the member
+// that did not decode and the JSON kind it held, never a value of the body.
+func decodeAnswer(method, path string, answer redact.Answer, out any) error {
+	if err := answer.Decode(out); err != nil {
+		return fmt.Errorf("holdrecord: %s %s answered a body that does not decode: %w", method, path, err)
 	}
 	return nil
 }
@@ -704,41 +719,41 @@ func jsonFailure(err error) string {
 	}
 }
 
-// exchange sends one request with the operator's token and returns the answer's status and body.
-// The route is joined onto the broker URL (urljoin.JoinURL): its path after the URL's path, its
-// query after the URL's own, and the URL's fragment dropped, so a broker URL with a path, a query
-// or a fragment still names the route. No error it answers carries the request's URL: a DELETE's
-// query holds the operator's signature, and net/http's *url.Error quotes the URL whole
-// (withoutURL). net/http's error of a request that got no answer also quotes what the answering
-// party sent (a Location, a status line or a header line that does not parse), which whatever
-// answers at the broker's address can write the operator's token into, so that error prints as
-// redact.Unanswered names it: net/http's operation, the URL without its query, and the failure's
-// class. A redirect is the broker's answer, refused by its status, and its Location is asked
-// nothing (New).
-func (c *Client) exchange(ctx context.Context, method, path string, query url.Values, body any) (int, []byte, error) {
+// exchange sends one request with the operator's token and answers what the broker answered,
+// read through redact.ReadAnswer, with the record of the request. The route is joined onto the
+// broker URL (urljoin.JoinURL): its path after the URL's path, its query after the URL's own, and
+// the URL's fragment dropped, so a broker URL with a path, a query or a fragment still names the
+// route. No error it answers carries the request's URL whole or the broker's words: a DELETE's
+// query holds the operator's signature, and net/http's error of a request that got no answer
+// quotes the URL whole and what the answering party sent (a Location, a status line or a header
+// line that does not parse), which whatever answers at the broker's address can write the
+// operator's token into. So that error prints as redact.Unanswered names it: net/http's operation,
+// the URL without its query, and the failure's class. A redirect is the broker's answer, refused by
+// its status, and its Location is asked nothing (New); a body past maxAnswer is refused, not cut.
+func (c *Client) exchange(ctx context.Context, method, path string, query url.Values, body any) (redact.Answer, error) {
 	ref := path
 	if len(query) > 0 {
 		ref += "?" + query.Encode()
 	}
 	asked, err := urljoin.JoinURL(c.broker, ref)
 	if err != nil {
-		return 0, nil, fmt.Errorf("holdrecord: %s %s: %w", method, path, err)
+		return redact.Answer{}, fmt.Errorf("holdrecord: %s %s: %w", method, path, err)
 	}
 	var payload io.Reader
 	if body != nil {
 		encoded, err := json.Marshal(body)
 		if err != nil {
-			return 0, nil, fmt.Errorf("holdrecord: encode the body of %s %s: %s", method, path, jsonFailure(err))
+			return redact.Answer{}, fmt.Errorf("holdrecord: encode the body of %s %s: %s", method, path, jsonFailure(err))
 		}
 		payload = bytes.NewReader(encoded)
 	}
 	req, err := http.NewRequestWithContext(ctx, method, asked.String(), payload)
 	if err != nil {
-		return 0, nil, fmt.Errorf("holdrecord: %s %s: %w", method, path, redact.Class(err))
+		return redact.Answer{}, fmt.Errorf("holdrecord: %s %s: %w", method, path, redact.Class(err))
 	}
 	token, err := c.cfg.Token(ctx)
 	if err != nil {
-		return 0, nil, fmt.Errorf("holdrecord: the operator's token: %w", err)
+		return redact.Answer{}, fmt.Errorf("holdrecord: the operator's token: %w", err)
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	if body != nil {
@@ -746,31 +761,17 @@ func (c *Client) exchange(ctx context.Context, method, path string, query url.Va
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return 0, nil, fmt.Errorf("holdrecord: %s %s: %w", method, path, redact.Unanswered(err, req, ""))
+		return redact.Answer{}, fmt.Errorf("holdrecord: %s %s: %w", method, path, redact.Unanswered(err, req, ""))
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if redirects.Status(resp.StatusCode) {
-		return 0, nil, fmt.Errorf("holdrecord: %s %s answered %d, a redirect, which this client never follows", method, path, resp.StatusCode)
+		return redact.Answer{}, fmt.Errorf("holdrecord: %s %s answered %d, a redirect, which this client never follows", method, path, resp.StatusCode)
 	}
-	data, err := io.ReadAll(io.LimitReader(resp.Body, maxAnswer))
+	answer, err := redact.ReadAnswer(resp, maxAnswer)
 	if err != nil {
-		return 0, nil, fmt.Errorf("holdrecord: read the answer to %s %s: %w", method, path, withoutURL(err))
+		return redact.Answer{}, fmt.Errorf("holdrecord: read the answer to %s %s: %w", method, path, err)
 	}
-	return resp.StatusCode, data, nil
-}
-
-// withoutURL is err with every *url.Error in its chain replaced by the error it wraps, so the
-// request's URL, its query and the signature in it, reaches no error; the caller names the method
-// and the route instead. An error with no *url.Error is answered as it is.
-func withoutURL(err error) error {
-	var withURL *url.Error
-	for errors.As(err, &withURL) {
-		if withURL.Err == nil {
-			return fmt.Errorf("the request failed: %s", withURL.Op)
-		}
-		err = withURL.Err
-	}
-	return err
+	return answer, nil
 }
 
 // refusal is the error a refused request answers: a *RouteError for an answer coded with one of
@@ -781,31 +782,32 @@ func withoutURL(err error) error {
 // answer's message is kept in RouteError.Message, outside the error's text. A current row that
 // does not verify is ErrUnknown beside the route's code, and so is any `below_floor`, the broker's
 // refusal of a row or record it reads as an older one put back or another at the gen it served.
-func (c *Client) refusal(method, path string, status int, data []byte) error {
-	var answer struct {
+func (c *Client) refusal(method, path string, answer redact.Answer) error {
+	var coded struct {
 		Error   string   `json:"error"`
 		Code    string   `json:"code"`
 		Message string   `json:"message"`
 		Current *rowWire `json:"current"`
 		HoldID  string   `json:"hold_id"`
 	}
+	status := answer.Status()
 	var code string
 	switch {
-	case json.Unmarshal(data, &answer) != nil:
-	case routeCodes.hold[answer.Error]:
-		code = answer.Error
-	case routeCodes.broker[answer.Code]:
-		code = answer.Code
+	case answer.Decode(&coded) != nil:
+	case routeCodes.hold[coded.Error]:
+		code = coded.Error
+	case routeCodes.broker[coded.Code]:
+		code = coded.Code
 	}
 	if code == "" {
 		return fmt.Errorf("holdrecord: %s %s answered %d with an unrecognized body", method, path, status)
 	}
-	refusal := &RouteError{Status: status, Code: code, Message: answer.Message, method: method, path: path}
+	refusal := &RouteError{Status: status, Code: code, Message: coded.Message, method: method, path: path}
 	if code == "hold_mismatch" {
-		refusal.HoldID = answer.HoldID
+		refusal.HoldID = coded.HoldID
 	}
-	if answer.Current != nil {
-		row, err := c.verifyRow(*answer.Current)
+	if coded.Current != nil {
+		row, err := c.verifyRow(*coded.Current)
 		if err != nil {
 			return errors.Join(refusal, err)
 		}
