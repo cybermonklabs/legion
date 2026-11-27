@@ -31,7 +31,7 @@ const PROVIDERS: readonly StandinProvider[] = [
 ];
 
 /** Oh My Pi's own cyber_policy refusal as a gateway relays it: a request error naming the code
- * (`test/rpc-prompt-result.test.ts:205-212` at v18.18.6-sami.20261125-164517). Synthetic text. */
+ * (`test/rpc-prompt-result.test.ts:205-212` at v18.18.6-sami.20261126-222037). Synthetic text. */
 function refuses(): Response {
   return Response.json(
     {

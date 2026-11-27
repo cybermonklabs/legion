@@ -39,6 +39,7 @@ func countExcerptLeaseLines(logs *storetest.LockedLog, message, lease string) in
 // it runs a pass of its own: the first may have read before whatever woke the second, so a woken
 // loop never gives its pass up to another process's.
 func TestTwoExcerptReconciliationRunnersNeverPassAtOnceAndBothPass(t *testing.T) {
+	// Not parallel: it swaps the default logger (logtest.SetDefault in captureLogs).
 	ctx := context.Background()
 	database := storetest.Open(t)
 	second := storetest.SecondProcess(t, database)

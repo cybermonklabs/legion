@@ -395,6 +395,8 @@ func TestARebuildFromAVersionHoldingNewerContentIsRefusedAsNewerContent(t *testi
 // document already stored, so a rebuild from it restores that content: the seed puts back what the
 // version holds and creates nothing.
 func TestARebuildFromAVersionHoldingAnElementThisBuildCannotCreateRestoresIt(t *testing.T) {
+	// Not parallel: it stages a block in pmdoc's schema manifest for the whole process
+	// (pmdoc.UseStagedBlockForTest).
 	restore, err := pmdoc.UseStagedBlockForTest("future", false)
 	if err != nil {
 		t.Fatalf("stage the future block as not creatable: %v", err)
@@ -488,6 +490,7 @@ func TestARebuildFromSuppliedMarkdownIsWeighedAsANewDocument(t *testing.T) {
 // markdown writes no version and an approval of that version still reads approved; markdown that
 // changes the document still writes one.
 func TestARebuildFromMarkdownTheLatestVersionHoldsInAnotherSpellingWritesNoVersion(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	same := createDocument(t, database, looseList)
 	approved := respellLatestVersion(t, database, same, respelledLooseList)

@@ -552,7 +552,7 @@ func TestASendThatLostItsKeyCommitsNothing(t *testing.T) {
 	// The message names no block, so it reads nothing as its writer, and the writer stands as
 	// its own reader.
 	alice := model.Actor{Kind: "user", ID: "alice"}
-	_, _, err := directServer(deps).createStoredMessage(slow, nil,
+	_, _, err := directServer(deps).createStoredMessage(slow, "", nil,
 		createMessageInput{Body: "Status?", Target: &target, Delivery: &delivery}, "btw", false, alice, alice)
 	if err != errRequestKeyTakenOver {
 		t.Fatalf("the slow holder's write = %v, want %v", err, errRequestKeyTakenOver)

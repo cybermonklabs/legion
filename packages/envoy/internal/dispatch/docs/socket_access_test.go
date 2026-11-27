@@ -417,7 +417,15 @@ func TestASocketBurstAtTheCapsWhileAccessIsRecheckedLeavesNoServiceAlive(t *test
 	// until the service is gone, and the collector is the process's, which the package's parallel
 	// tests run on.
 	var built weak.Pointer[Service]
-	t.Run("the burst", func(t *testing.T) { socketBurstDuringAccessRechecks(t, &built) })
+	skipped := false
+	t.Run("the burst", func(t *testing.T) {
+		defer func() { skipped = t.Skipped() }()
+		socketBurstDuringAccessRechecks(t, &built)
+	})
+	if skipped {
+		// The burst needs a database (storetest.Open), and with none it built no service to collect.
+		t.Skip("the burst skipped, so it built no service")
+	}
 	requireServiceCollected(t, built)
 }
 

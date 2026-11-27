@@ -274,10 +274,11 @@ type Options struct {
 	// RoleHoldersChanged is told, before the claim takes a ready that carries no capability report
 	// — a boot's ready, or a role-regain's — of the claim as it stands, when it has an issue and is
 	// not the controller: for an issue of the daemon's own project, the daemon queues the
-	// publication of that issue's role sessions to Dispatch, which reads the live set from the
-	// store when it runs. The ready is what sends the claim its first task, so the publication is
-	// queued before any task goes. An error refuses the ready with 503: the machine has not taken
-	// it, no task goes, and the plugin tries the ready again. Nil queues nothing.
+	// publication of that issue's role sessions to Dispatch, which reads the set of sessions whose
+	// claims hold their roles from the store when it runs. The ready is what sends the claim its
+	// first task, so the publication is queued before any task goes. An error refuses the ready
+	// with 503: the machine has not taken it, no task goes, and the plugin tries the ready again.
+	// Nil queues nothing.
 	RoleHoldersChanged func(ctx context.Context, c supervise.Claim) error
 	// ReleaseRecords is the store's record of what the idle release has done (store.Store), which
 	// the claim route `POST /legion/v1/claims/release-records` serves a pod. Nil answers that route
@@ -297,6 +298,10 @@ type Options struct {
 	// project is paused (refusedWhilePaused). Nil is a daemon with no workflow, which has no pause:
 	// it answers every pause and resume PAUSE_UNAVAILABLE and refuses no turn for one.
 	Pause PauseService
+	// P0BoundConfigured is legion.yaml's P0 bound (config.Config.AdmissionP0Bound), nil where the
+	// file gives none: the bound in force while no value set while the daemon runs stands, which
+	// the P0 bound routes answer beside the bound they leave in force (p0_bound.go).
+	P0BoundConfigured *int
 }
 
 // TreeLifecycles is the store's durable tree barrier (store.Store) as the operator routes use it:
@@ -406,6 +411,8 @@ type server struct {
 	gateRead func(ctx context.Context, issue string)
 	// pause is Options.Pause, nil for a daemon with no workflow.
 	pause PauseService
+	// p0BoundConfigured is Options.P0BoundConfigured.
+	p0BoundConfigured *int
 	// readiness is Options.Ready: the daemon's readiness latch, which /readyz answers from. nil is
 	// a server that is ready, since a caller that sets no latch is serving already.
 	readiness func() bool
@@ -490,6 +497,7 @@ func NewServer(bind string, port int, opts Options) *http.Server {
 		claimActivity:      opts.ClaimActivity,
 		gateRead:           opts.GateRegistrationRead,
 		pause:              opts.Pause,
+		p0BoundConfigured:  opts.P0BoundConfigured,
 		readiness:          opts.Ready,
 		log:                opts.Log,
 		stopping:           opts.Stopping,
@@ -609,6 +617,8 @@ func (s *server) routes() []route {
 		{"POST /legion/v1/intake/discard", s.intakeDiscard},
 		{"POST /legion/v1/project/pause", s.projectPause},
 		{"POST /legion/v1/project/resume", s.projectResume},
+		{"POST /legion/v1/project/p0-bound", s.projectP0Bound},
+		{"POST /legion/v1/project/p0-bound/clear", s.projectP0BoundClear},
 
 		{"POST /legion/v1/operator/claims", s.operator(s.spawn)},
 		{"GET /legion/v1/operator/claims", s.operator(s.list)},
@@ -625,6 +635,8 @@ func (s *server) routes() []route {
 		{"POST /legion/v1/operator/intake/discard", s.operator(s.operatorIntakeDiscard)},
 		{"POST /legion/v1/operator/project/pause", s.operator(s.operatorProjectPause)},
 		{"POST /legion/v1/operator/project/resume", s.operator(s.operatorProjectResume)},
+		{"POST /legion/v1/operator/project/p0-bound", s.operator(s.operatorProjectP0Bound)},
+		{"POST /legion/v1/operator/project/p0-bound/clear", s.operator(s.operatorProjectP0BoundClear)},
 
 		// The catch-all answers every unrouted request, including a known path asked for with the
 		// wrong method: "no route" is the whole story the plugin, the operator's CLI, or a proof
