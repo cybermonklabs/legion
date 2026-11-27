@@ -1130,11 +1130,10 @@ test("an overtaken decision stays in its part and is not in waitingOrder", () =>
 });
 
 /** The reads of a decision `waits` that waits, tied to `s-late`, a statement the coverage read
- *  holds a row of, with its words and the server's reading of them (`tree`): `partsOver` reads
- *  the parts of the tree that holds `children` with them. */
+ *  holds a row of, with its words and the server's reading of them: `partsOver` reads the parts
+ *  of the tree that holds `children` with them. */
 function tiedToCoverage(): {
   readonly partsOver: (children: readonly TreeNode[]) => DecisionsParts;
-  readonly tree: DisplayTree;
 } {
   const made = [decision("waits", { decision: { links: [shaped(specRef("s-late"))] } })];
   const tree = displayTree("The read's words for s-late. And more.");
@@ -1167,7 +1166,6 @@ function tiedToCoverage(): {
         reader: READER,
         root: issueTree(children),
       }),
-    tree,
   };
 }
 
@@ -1180,16 +1178,15 @@ function tiedToCoverage(): {
 // of its words where the read sent one, at the row's own address, named by the reading the body
 // publishes for it.
 test("a waiting decision whose tied statement only the coverage read holds stands in the review list and draws that statement from the coverage row", () => {
-  const { partsOver, tree } = tiedToCoverage();
+  const { partsOver } = tiedToCoverage();
   const parts = partsOver([decisionNode("waits")]);
   expect(idsOf(parts)).toMatchObject({ agents: [], review: [D("waits")] });
   expect(parts.review[0]).toMatchObject({ standing: "waiting_review" });
   expect(
-    parts.review[0]?.shapes.map(({ id, node, path, reading, stale }) => ({
+    parts.review[0]?.shapes.map(({ id, node, path, stale }) => ({
       id,
       line: parentLinkWords(node),
       path,
-      reading,
       reference: node.reference,
       stale,
     }))
@@ -1198,19 +1195,18 @@ test("a waiting decision whose tied statement only the coverage read holds stand
       id: statement("s-late").id,
       line: "The read's words for s-late.",
       path: `/issues/${KEY}#b-s-late`,
-      reading: { fallback: NODE_TYPE_NAMES.requirement, tree },
       reference: specRef("s-late"),
       stale: false,
     },
   ]);
   expect(waitingOrder(parts)).toEqual([D("waits")]);
 
-  // A statement the tree holds is drawn from its node, as before, and named by the page's names
-  // read: the model gives it no reading of its own.
+  // A statement the tree holds is drawn from its node, as before: the body publishes each tied
+  // statement's own reading (`nodeReading`), this node's here.
   const held = partsOver([statement("s-late"), decisionNode("waits")]);
-  expect(
-    held.review[0]?.shapes.map(({ node, reading }) => ({ line: parentLinkWords(node), reading }))
-  ).toEqual([{ line: "The page draws s-late.", reading: undefined }]);
+  expect(held.review[0]?.shapes.map(({ node }) => ({ line: parentLinkWords(node) }))).toEqual([
+    { line: "The page draws s-late." },
+  ]);
 });
 
 // R35, R2: whether a tie names a statement and the words its "informs" line draws are one lookup.
@@ -1219,7 +1215,7 @@ test("a waiting decision whose tied statement only the coverage read holds stand
 // stands in the review list, and its line draws the coverage read's words for it, at that row's
 // own address and named by the reading of those words, never the criterion's words.
 test("a tie whose address the tree holds a node of another kind at, and the coverage read a statement, draws the coverage statement and stands in the review list", () => {
-  const { partsOver, tree } = tiedToCoverage();
+  const { partsOver } = tiedToCoverage();
   const criterion = node({
     id: statement("s-late").id,
     reference: specRef("s-late"),
@@ -1229,9 +1225,8 @@ test("a tie whose address the tree holds a node of another kind at, and the cove
   const parts = partsOver([criterion, decisionNode("waits")]);
   expect(idsOf(parts)).toMatchObject({ agents: [], review: [D("waits")] });
   expect(
-    parts.review[0]?.shapes.map(({ node: words, reading }) => ({
+    parts.review[0]?.shapes.map(({ node: words }) => ({
       line: parentLinkWords(words),
-      reading,
       reference: words.reference,
       type: words.type,
     })),
@@ -1239,7 +1234,6 @@ test("a tie whose address the tree holds a node of another kind at, and the cove
   ).toEqual([
     {
       line: "The read's words for s-late.",
-      reading: { fallback: NODE_TYPE_NAMES.requirement, tree },
       reference: specRef("s-late"),
       type: "requirement",
     },

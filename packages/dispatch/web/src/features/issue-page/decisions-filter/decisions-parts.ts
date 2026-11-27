@@ -7,14 +7,12 @@ import type {
 } from "../../../api/types";
 import { compareTimestamps, isTimestamp } from "../../../lib/timestamps";
 import { blockFragment } from "../../refs/block-reference";
-import type { ReferenceNameReading } from "../../refs/reference-names";
 import { buildIssuePath, parseNodeReference } from "../../refs/routes";
 import type { TextSource } from "../../refs/text-references";
 import type { DecisionNode } from "../decision-nodes/decision-nodes";
 import { type ChangeComment, decidedByPerson, inReviewList, reviewState } from "../decision-review";
 import { type ParentLine, parentLineOf, type TreeAsk, type TreeNode } from "../issue-tree";
 import { type DecisionState, isReader } from "../page-words";
-import { nodeReading } from "../presets";
 
 /**
  * The Decisions filter's parts, read from the tree, its decision nodes, the issue's asks and its
@@ -139,13 +137,6 @@ export interface ShapedStatement {
   readonly node: StatementWords;
   /** Its address in the conversation, where it has one. */
   readonly path?: string;
-  /** How the page names a statement drawn from the coverage read's row of it, which the page's
-   *  names read was never asked for: by the reading of that row's words (`presets.ts`'
-   *  `nodeReading`), as a view names a block only its own tree holds (`PresetView.readings`). The
-   *  body publishes it to the names store, so the row names the statement by the line the store
-   *  projects from it, as it names every other. Absent for a statement drawn from the tree's
-   *  requirement node, which the page's names read names. */
-  readonly reading?: ReferenceNameReading;
   /** Whether the decision changed after it first named the statement and the statement has not
    *  changed since (`DecisionLink.stale`). */
   readonly stale: boolean;
@@ -557,8 +548,10 @@ function pathOf(node: Pick<TreeNode, "reference">): { readonly path?: string } {
  *  the tie is stale (`ShapedStatement`), by the one rule the review list and a decision's
  *  "informs" line read it by: where the node `placed` holds at that address is a requirement,
  *  that node; else, where the coverage read holds a row of it (`coverageStatement`), that row,
- *  read as a requirement of that node id at the row's own address and named by the reading of
- *  its words, though the tree holds a node of another kind there; else none. */
+ *  read as a requirement of that node id at the row's own address, though the tree holds a node
+ *  of another kind there; else none. The body publishes each tied statement's own reading, the
+ *  reading of the words of the `node` this answers (`presets.ts`' `nodeReading`), which names
+ *  it (`DecisionsFilterBody.tsx`). */
 function statementOf(
   reference: string,
   nodeIdOf: (reference: string) => string | undefined,
@@ -578,7 +571,7 @@ function statementOf(
     ...(covered.text_tree === undefined ? {} : { tree: covered.text_tree }),
     type: "requirement",
   };
-  return { id, node: words, ...pathOf(words), reading: nodeReading(words) };
+  return { id, node: words, ...pathOf(words) };
 }
 
 /** The statements of this issue `row`'s ties name, each once, in the ties' own order, each as

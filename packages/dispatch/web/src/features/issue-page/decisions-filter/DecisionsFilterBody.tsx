@@ -267,11 +267,12 @@ export function DecisionsFilterBody({
   // is asked for the addresses the outline's chips and words name (`useIssueTree.ts`), and the
   // decisions this view draws come from the decisions view read, whose ties it never asks for;
   // a statement only the coverage read holds, past the pages of Conversation's read, is not in
-  // the outline at all. So the body publishes the reading of every statement a decision is tied
-  // to to the names store: the coverage read's row of it where the tree holds no node of it
-  // (`ShapedStatement.reading`), else the tree's node of it (`nodeReading`), as a view publishes
-  // the blocks only its own tree holds (`slots/view-readings.ts`), and names it by the same rule,
-  // by its own address, so each line is named from the first drawing ("586 (F), corrected").
+  // the outline at all. So the body publishes each tied statement's own reading to the names
+  // store, the reading of the words a decision's row draws it by (`ShapedStatement.node`,
+  // `nodeReading`): the tree's requirement node of it, else the coverage read's row of it, as a
+  // view publishes the blocks only its own tree holds (`slots/view-readings.ts`), and names it by
+  // the same rule, by its own address, so each line is named from the first drawing ("586 (F),
+  // corrected").
   // Beside its name goes its whole line, the title of the link its line draws, which cuts the
   // name to the line's width (decision 583 (2), amended).
   const { lines } = useKnownReferences();
@@ -279,30 +280,20 @@ export function DecisionsFilterBody({
     const readings = new Map<string, ReferenceNameReading>();
     const references = new Map<string, string>();
     for (const entry of every) {
-      for (const { id, node, reading } of entry.shapes) {
+      for (const { id, node } of entry.shapes) {
         if (node.reference === undefined) continue;
-        readings.set(node.reference, reading ?? nodeReading(node));
+        readings.set(node.reference, nodeReading(node));
         references.set(id, node.reference);
       }
     }
     return { readings, references };
   }, [every]);
   usePublishViewReadings(covered.readings);
-  const treeNames = useMemo<ReadonlyMap<string, StatementName>>(() => {
-    const names = new Map<string, StatementName>();
-    for (const node of nodesInOrder(root)) {
-      if (node.type === "requirement" && node.reference !== undefined) {
-        nameStatement(names, lines, node.id, node.reference);
-      }
-    }
-    return names;
-  }, [lines, root]);
   const statementNames = useMemo<ReadonlyMap<string, StatementName>>(() => {
-    if (covered.references.size === 0) return treeNames;
-    const names = new Map(treeNames);
+    const names = new Map<string, StatementName>();
     for (const [id, reference] of covered.references) nameStatement(names, lines, id, reference);
     return names;
-  }, [covered.references, lines, treeNames]);
+  }, [covered.references, lines]);
   const setFocusedNode = useSetFocusedNode();
   const writer = useOutlineWriter();
   const body = useRef<HTMLElement | null>(null);

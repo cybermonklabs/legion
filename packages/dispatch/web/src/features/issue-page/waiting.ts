@@ -141,21 +141,12 @@ export function waitingOnReader(
       const changed = changes.has(decision.node.id);
       const marked = changeUnread(decision, changed, answer);
       if (marked) unread += 1;
-      if (
-        decision.node.state !== "overtaken" &&
-        inReviewList(decision, isCoverageStatement, changed || marked)
-      ) {
-        reviewing += 1;
-      }
+      const listed =
+        decision.node.state !== "overtaken" && inReviewList(decision, isCoverageStatement, changed);
+      if (listed && !marked) reviewing += 1;
       // One that its mark alone keeps off the count may wait on the reader once its pages are
       // read (decisions 580 and 583 (1)).
-      if (
-        marked &&
-        decision.node.state !== "overtaken" &&
-        inReviewList(decision, isCoverageStatement, changed)
-      ) {
-        mayWait += 1;
-      }
+      if (listed && marked) mayWait += 1;
     }
   }
   const more =
