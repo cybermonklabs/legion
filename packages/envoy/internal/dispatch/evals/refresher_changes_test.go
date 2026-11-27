@@ -1045,7 +1045,7 @@ func TestADayWithNoInputReadsZeroFromItsSeriesFirstInputDayOnAndNoDataBeforeIt(t
 		if err != nil {
 			t.Fatalf("read %s over %s: %v", evalID, day.Format(time.DateOnly), err)
 		}
-		values := SeriesValuesOf(entry, rows, firsts[evalID], window, nil)
+		values := SeriesValuesOf(entry, rows, firsts[evalID], window, nil, AllDays)
 		if len(values) == 0 {
 			t.Fatalf("%s states no listed series", evalID)
 		}

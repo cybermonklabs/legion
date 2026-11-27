@@ -228,6 +228,10 @@ type Series struct {
 	// sets on a computed eval. The seed fills the catalogue's min_n only on a series whose
 	// record holds none (seriesToWrite).
 	SetByPerson []string `json:"-"`
+	// byRole marks a series of the catalogue that a chart draws by role alone, by its window
+	// figures and never a day (perRole; dispatch://INFRA-2918, D25 step 5). No column stores it, so
+	// a series read from the store carries none, and a read asks the catalogue (drawnByRole).
+	byRole bool
 }
 
 // SeriesComputation is every field of a series that says how its eval's number is computed

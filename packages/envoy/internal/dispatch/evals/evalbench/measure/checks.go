@@ -366,11 +366,11 @@ func show(value *float64) string {
 }
 
 // k2Statement is one statement k2 explains: its name, its text and the literals of its
-// parameters, and the index dropped before it, none where empty.
+// parameters, and the indexes dropped before it, none where empty.
 type k2Statement struct {
 	name, text string
 	params     []string
-	drop       string
+	drop       []string
 }
 
 // k2 runs k2's statements over the readings of one logged eval and one row kind in a 28-day
@@ -397,9 +397,9 @@ func (c *headChecks) k2() {
 		  and not exists (select 1 from eval_readings s where s.replaces = r.id)
 		order by r.measured_at desc, r.id`
 	statements := []k2Statement{
-		{"1-registry", `select * from evals_current where project_key = $1 and state = 'active'`, []string{quote(c.o.project)}, ""},
-		{"2-window", windowRead, args(w28), ""},
-		{"3-items", windowRead + ` limit $5 offset $6`, append(args(w28), "200", "0"), ""},
+		{"1-registry", `select * from evals_current where project_key = $1 and state = 'active'`, []string{quote(c.o.project)}, nil},
+		{"2-window", windowRead, args(w28), nil},
+		{"3-items", windowRead + ` limit $5 offset $6`, append(args(w28), "200", "0"), nil},
 	}
 	compare, err := c.compareStatements(ctx, slug, rowKind, w28, c28)
 	if err != nil {
@@ -407,13 +407,13 @@ func (c *headChecks) k2() {
 	}
 	statements = append(statements, compare...)
 	statements = append(statements,
-		k2Statement{"5-window-replaces-dropped", windowRead, args(w28), "eval_readings_replaces"},
-		k2Statement{"6-anti-join-replaces-dropped", antiJoin, args(w28), "eval_readings_replaces"})
+		k2Statement{"5-window-replaces-dropped", windowRead, args(w28), []string{"eval_readings_replaces"}},
+		k2Statement{"6-anti-join-replaces-dropped", antiJoin, args(w28), []string{"eval_readings_replaces"}})
 	plans, medians := map[string]string{}, map[string]float64{}
 	for _, statement := range statements {
 		var times []float64
 		for run := 1; run <= 3; run++ {
-			plan, ms, err := c.explainDropped(ctx, statement.text, statement.params, statement.drop)
+			plan, ms, err := c.explainDropped(ctx, statement.text, statement.params, statement.drop...)
 			if err != nil {
 				c.r.fail("k2 %s: %v", statement.name, err)
 				break
@@ -421,7 +421,7 @@ func (c *headChecks) k2() {
 			times = append(times, ms)
 			if run == 1 {
 				plans[statement.name] = plan
-				c.r.block(fmt.Sprintf("SQL k2 %s dropped=%q params=%s", statement.name, statement.drop, strings.Join(statement.params, ", ")), statement.text)
+				c.r.block(fmt.Sprintf("SQL k2 %s dropped=%q params=%s", statement.name, strings.Join(statement.drop, ","), strings.Join(statement.params, ", ")), statement.text)
 				c.r.block("PLAN k2 "+statement.name, plan)
 			}
 		}
@@ -506,16 +506,20 @@ func (c *headChecks) k2() {
 	}
 
 	// The controls: without the row index the items read scans the table, and without the index
-	// on replaces a second correction is stored.
-	plan, ms, err := c.explainDropped(ctx, windowRead+` limit $5 offset $6`, append(args(w28), "200", "0"), "eval_readings_row")
+	// on replaces a second correction is stored. The items read names an eval and a row kind, so
+	// with eval_readings_row dropped Postgres reads it through eval_readings_series (eval_id,
+	// series, col, measured_at desc, id) by its eval alone (migration 20261127130304, the step
+	// reads' index), and the control drops both, so its plan shows what the read costs with no
+	// index of the readings to serve it.
+	plan, ms, err := c.explainDropped(ctx, windowRead+` limit $5 offset $6`, append(args(w28), "200", "0"), "eval_readings_row", "eval_readings_series")
 	if err != nil {
-		c.r.fail("k2 control items read without eval_readings_row: %v", err)
+		c.r.fail("k2 control items read without eval_readings_row and eval_readings_series: %v", err)
 	} else {
-		c.r.block("PLAN k2 control-items-row-index-dropped", plan)
+		c.r.block("PLAN k2 control-items-row-and-series-indexes-dropped", plan)
 		scan := seqScanned(plan, "eval_readings")
-		c.r.result("k2 control=items-read-without-eval_readings_row execution_ms=%.2f seq_scan_of_eval_readings=%t", ms, scan)
+		c.r.result("k2 control=items-read-without-eval_readings_row-and-eval_readings_series execution_ms=%.2f seq_scan_of_eval_readings=%t", ms, scan)
 		if !scan {
-			c.r.fail("k2 control: with eval_readings_row dropped the items read does not scan eval_readings")
+			c.r.fail("k2 control: with eval_readings_row and eval_readings_series dropped the items read does not scan eval_readings")
 		}
 	}
 	code, _, err := c.insertRolledBack(ctx, "eval_readings_replaces", secondCorrection, evalID, rowKind, replaced)
@@ -579,15 +583,17 @@ func (c *headChecks) compareStatements(ctx context.Context, slug, rowKind string
 	return found, nil
 }
 
-// explainDropped explains text with params, with index dropped first where it names one, in one
-// transaction the explainer rolls back, which restores the index.
-func (c *headChecks) explainDropped(ctx context.Context, text string, params []string, index string) (string, float64, error) {
-	if index == "" {
+// explainDropped explains text with params, with indexes dropped first where it names any, in one
+// transaction the explainer rolls back, which restores them.
+func (c *headChecks) explainDropped(ctx context.Context, text string, params []string, indexes ...string) (string, float64, error) {
+	if len(indexes) == 0 {
 		return c.explain.explain(ctx, text, params)
 	}
 	return c.explain.explainAfter(ctx, func(ctx context.Context, tx pgx.Tx) error {
-		if _, err := tx.Exec(ctx, `drop index `+index); err != nil {
-			return fmt.Errorf("drop %s: %w", index, err)
+		for _, index := range indexes {
+			if _, err := tx.Exec(ctx, `drop index `+index); err != nil {
+				return fmt.Errorf("drop %s: %w", index, err)
+			}
 		}
 		return nil
 	}, text, params)

@@ -230,10 +230,12 @@ function drawSection(
  * brush sets the target cards' days and its Repository facet the repository every number reads
  * (decision 3). Its other facets and its search, which the URL holds whether it is open or not,
  * narrow the delivery view the cards and the Deploys and lead time section read (D7a); the first
- * paint is never narrowed, so a tab opened with one set paints from the unnarrowed delivery view
- * and draws the narrowed one once it lands (`useTabScopes`). A card's or a chart's title opens the
- * number's panel (plan D12). Where the server does not serve the tab's views, a server of the
- * release before (`useUnservedViews`), each section says so, and the rest of the app works.
+ * paint is never narrowed, so a tab opened with one set paints from the unnarrowed delivery view,
+ * subscribes the narrowed one only once that view has landed, so no narrowed read runs beside the
+ * first paint (D25 step 2), and draws it once it lands (`useTabScopes`). A card's or a chart's
+ * title opens the number's panel (plan D12). Where the server does not serve the tab's views, a
+ * server of the release before (`useUnservedViews`), each section says so, and the rest of the
+ * app works.
  *
  * The compare range a preset's default names moves at each UTC midnight the tab stays open past,
  * with the window the server moves (`useEvalsScope`).

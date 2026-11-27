@@ -58,6 +58,7 @@ export function evalItem(
 ): EvalListItem {
   const written = { id: "alice", kind: "user" } as const;
   return {
+    declared_charts: 0,
     definition: {
       answer: "",
       created_at: "2026-10-01T00:00:00Z",

@@ -21,6 +21,7 @@ import (
 
 	"github.com/gorilla/websocket"
 
+	"github.com/sjawhar/envoy/internal/dispatch/evals"
 	"github.com/sjawhar/envoy/internal/dispatch/evals/evalbench"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -299,6 +300,9 @@ func paint(ctx context.Context, r *report, o options) error {
 		measured[index], err = measure(ctx, pool, client, o, one, catalog)
 		if err != nil {
 			return fmt.Errorf("%s: %w", one.name, err)
+		}
+		if one.name == "list-84d-compare" && measured[index].status == http.StatusOK {
+			printListSplit(r, measured[index])
 		}
 	}
 
@@ -1081,4 +1085,87 @@ func failureDayLine(ctx context.Context, r *report, pool *store.Pool, today time
 // holds reports whether w holds the day starting at day.
 func holds(w window, day time.Time) bool {
 	return !day.Before(w.from) && day.Before(w.to)
+}
+
+// byRoleEvals is the evals whose every series a chart draws by role alone (evals' perRole): the
+// 39 series of the two, which answer no days on a list read at this head (evals.ListDays).
+var byRoleEvals = []string{evals.SlugLegionPhaseTime, evals.SlugLegionIdleTime}
+
+// listSplit is one eval list answer's bytes (GET /api/v1/projects/{key}/evals,
+// dispatch://INFRA-2918, D25 step 1): raw and as the server compresses them (gzipSize); by member,
+// the bytes of the values of every series' days, compare_days, window and compare, of every item's
+// definition but its answer, and of every definition's answer, other being the rest (the members'
+// keys and punctuation, every other member and the envelope); and by series group, the series of
+// byRoleEvals and the rest, each its count, the bytes of its series and of their days and
+// compare_days.
+type listSplit struct {
+	raw, gzip, items                                       int
+	days, compareDays, window, compare, definition, answer int
+	other                                                  int
+	byRoleSeries, byRoleBytes, byRoleDayBytes              int
+	restSeries, restBytes, restDayBytes                    int
+}
+
+// splitList splits body, an eval list answer, into its listSplit.
+func splitList(body []byte) (listSplit, error) {
+	var answer struct {
+		Items []struct {
+			Definition json.RawMessage   `json:"definition"`
+			Series     []json.RawMessage `json:"series"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(body, &answer); err != nil {
+		return listSplit{}, fmt.Errorf("decode the list answer: %w", err)
+	}
+	split := listSplit{raw: len(body), gzip: gzipSize(body), items: len(answer.Items)}
+	for _, item := range answer.Items {
+		var definition struct {
+			Slug   string          `json:"slug"`
+			Answer json.RawMessage `json:"answer"`
+		}
+		if err := json.Unmarshal(item.Definition, &definition); err != nil {
+			return listSplit{}, fmt.Errorf("decode an item's definition: %w", err)
+		}
+		split.answer += len(definition.Answer)
+		split.definition += len(item.Definition) - len(definition.Answer)
+		byRole := slices.Contains(byRoleEvals, definition.Slug)
+		for _, raw := range item.Series {
+			var series struct {
+				Days        json.RawMessage `json:"days"`
+				CompareDays json.RawMessage `json:"compare_days"`
+				Window      json.RawMessage `json:"window"`
+				Compare     json.RawMessage `json:"compare"`
+			}
+			if err := json.Unmarshal(raw, &series); err != nil {
+				return listSplit{}, fmt.Errorf("decode a series of %s: %w", definition.Slug, err)
+			}
+			split.days += len(series.Days)
+			split.compareDays += len(series.CompareDays)
+			split.window += len(series.Window)
+			split.compare += len(series.Compare)
+			dayBytes := len(series.Days) + len(series.CompareDays)
+			if byRole {
+				split.byRoleSeries, split.byRoleBytes, split.byRoleDayBytes = split.byRoleSeries+1, split.byRoleBytes+len(raw), split.byRoleDayBytes+dayBytes
+			} else {
+				split.restSeries, split.restBytes, split.restDayBytes = split.restSeries+1, split.restBytes+len(raw), split.restDayBytes+dayBytes
+			}
+		}
+	}
+	split.other = split.raw - split.days - split.compareDays - split.window - split.compare - split.definition - split.answer
+	return split, nil
+}
+
+// printListSplit prints one read's answer split (splitList) on one line, so a bench Job records
+// which members and which series the first payload's bytes are; an answer that does not decode
+// fails.
+func printListSplit(r *report, one measuredCase) {
+	split, err := splitList(one.body)
+	if err != nil {
+		r.fail("split case=%s: %v", one.name, err)
+		return
+	}
+	r.result("split case=%s raw_bytes=%d gzip_bytes=%d items=%d days=%d compare_days=%d window=%d compare=%d definition=%d answer=%d other=%d "+
+		"by_role_series=%d by_role_bytes=%d by_role_day_bytes=%d rest_series=%d rest_bytes=%d rest_day_bytes=%d",
+		one.name, split.raw, split.gzip, split.items, split.days, split.compareDays, split.window, split.compare, split.definition, split.answer,
+		split.other, split.byRoleSeries, split.byRoleBytes, split.byRoleDayBytes, split.restSeries, split.restBytes, split.restDayBytes)
 }

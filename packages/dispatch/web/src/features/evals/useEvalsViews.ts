@@ -14,6 +14,11 @@ export interface EvalsScope extends Omit<EvalsViewParams, "kind" | "offset"> {
    *  plan-md, D3): while it is not `narrowing`, that view is read beside the delivery view of
    *  `narrowing` and drawn in its place until that one answers. Absent: the same as `narrowing`. */
   readonly held?: string;
+  /** The narrowing the timeline's facets and search set, while the tab has not subscribed its
+   *  delivery view yet (plan D25 step 2, `useTabScopes`): `narrowing` is then the held one, whose
+   *  delivery view is drawn under the loading mark, so no view of `wanted` reads beside the first
+   *  paint. Absent: the same as `narrowing`. */
+  readonly wanted?: string;
 }
 
 /** Where one kind's views stand: `subscribed` until its first page lands, `painted` once it has,
@@ -23,7 +28,8 @@ export type EvalsViewStatus = "subscribed" | "painted" | "failed";
 /** How the timeline's facets and search stand for a view (plan D3, D7a): `set`, whether a facet
  *  but the repository, or the search, is set, which narrows the delivery evals counting pull
  *  requests and nothing else; `loading`, for the delivery view, whether the values drawn are the
- *  held view's (`EvalsScope.held`), while the view of the facets set has not answered. */
+ *  held view's (`EvalsScope.held`), while the view of the facets set has not answered or is not
+ *  subscribed yet (`EvalsScope.wanted`). */
 export interface EvalsViewFacets {
   readonly set: boolean;
   readonly loading: boolean;
@@ -71,7 +77,9 @@ export type EvalsViewSelect = (answer: EvalListResponse) => EvalListResponse;
  * and its pages are drawn until the delivery view of `scope.narrowing` answers (plan D3): so the
  * first paint of a tab opened with a facet set draws the unnarrowed view, and a facet change
  * blanks no card. Both first pages are entries of one `useQueries`, so a view that moves from one
- * role to the other keeps its observer, and its subscription, across the move.
+ * role to the other keeps its observer, and its subscription, across the move. While the scope
+ * wants a narrowing it has not subscribed yet (`scope.wanted`), the delivery view drawn is marked
+ * loading too, and the facets it wants are set.
  */
 export function useEvalsViews(
   scope: EvalsScope,
@@ -80,6 +88,7 @@ export function useEvalsViews(
 ): EvalsViewState[] {
   const narrowing = scope.narrowing ?? "";
   const held = scope.held ?? narrowing;
+  const wanted = scope.wanted ?? narrowing;
   const holding = held !== narrowing && kinds.includes("delivery");
   const heldScope: EvalsScope = { ...scope, narrowing: held };
   const firsts = useQueries({
@@ -114,7 +123,7 @@ export function useEvalsViews(
       select,
     })),
   });
-  const set = narrowing !== "";
+  const set = wanted !== "";
   return kinds.map((kind, index) => {
     const view = drawn[index];
     const first = view?.first;
@@ -130,7 +139,10 @@ export function useEvalsViews(
       retry: () => {
         for (const page of refused) void page.refetch();
       },
-      facets: { loading: view?.loading ?? false, set },
+      facets: {
+        loading: (view?.loading ?? false) || (kind === "delivery" && wanted !== narrowing),
+        set,
+      },
     };
   });
 }

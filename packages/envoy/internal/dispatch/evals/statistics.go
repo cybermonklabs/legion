@@ -149,9 +149,10 @@ func writable(folded map[string]Statistics) map[string]Statistics {
 // day row (YYYY-MM-DD, null for a series with none), before which a range reads "no data", every
 // statistic null; via_repository, how many of the rows the window's day rows count reached the
 // project through a repository rather than an issue; days, the window's per-day array of a
-// headline series ([] for a control series): one point per day that holds a part of it, a
-// repository cut's zero part of it among them (cutZeros); compare_days, the compare range's
-// per-day array in the same shape, which a page draws as a second series beside days (null with no
+// headline series ([] for a control series, and in a list read for a series drawn by role alone,
+// ListDays): one point per day that holds a part of it, a repository cut's zero part of it among
+// them (cutZeros); compare_days, the compare range's per-day array in the same shape, which a page
+// draws as a second series beside days ([] where days answers none; null with no
 // compare range); and narrowed, the filters the read narrowed the series by beyond its window and
 // its repositories, by key: the delivery timeline's facets and its search (dispatch://INFRA-2918,
 // R21), a series so narrowed built from the stored single records when it was read
@@ -175,21 +176,56 @@ type DayPoint struct {
 	Statistics Statistics `json:"statistics"`
 }
 
+// Days is which of an eval's headline series a read answers the per-day arrays of (SeriesValues'
+// days and compare_days); a control series answers none in any read.
+type Days uint8
+
+const (
+	// AllDays answers every headline series' per-day arrays: an eval's own read
+	// (GET /api/v1/projects/{key}/evals/{slug}).
+	AllDays Days = iota
+	// ListDays answers every headline series' but those of a series a computed eval's catalogue
+	// entry draws by role alone (drawnByRole: the 39 by-role series of legion-phase-time and
+	// legion-idle-time), which answer days and compare_days empty, as a control series does, and
+	// their window and compare figures as before (dispatch://INFRA-2918, D25 step 5): the list read,
+	// the read across projects and the live evals view, whose answers the tab's first paint reads.
+	// No reader of a list draws those days, and they were about half of its per-day bytes.
+	ListDays
+)
+
+// answersDays reports whether a read of days answers the per-day arrays of series, a listed
+// series of definition's eval: a headline series', and under ListDays none of a series
+// definition's catalogue entry draws by role alone.
+func answersDays(definition Definition, series Series, days Days) bool {
+	return series.Role == RoleHeadline && (days == AllDays || !drawnByRole(definition, series.Series))
+}
+
+// dayArrays is those of headline, an eval's headline series (listedAndHeadline), whose per-day
+// arrays a read of days answers (answersDays): headline itself where every one of them answers.
+func dayArrays(definition Definition, headline []Series, days Days) []Series {
+	silent := func(series Series) bool { return !answersDays(definition, series, days) }
+	if !slices.ContainsFunc(headline, silent) {
+		return headline
+	}
+	return slices.DeleteFunc(slices.Clone(headline), silent)
+}
+
 // SeriesValuesOf is each listed series of entry with its values over rows, the eval's day rows of
 // window and of compare, the compare range, nil for none (DayWindowIn), and firsts, each series'
-// first day (FirstDaysIn). A range that starts before a series' first day, or a series with no first
-// day at all, reads "no data": every statistic of that range null, whatever rows the range holds;
-// each range's per-day array still answers each day that holds a row (R12). In a repository's cut,
-// each day that holds a row of the eval also folds the zero part of each series of it the day
-// holds no row of (cutZeros, withZeros): in the window, in the compare range and in each day's own
-// fold.
+// first day (FirstDaysIn); the per-day arrays of those of its headline series days names
+// (answersDays), which alone it folds day by day. A range that starts before a series' first day,
+// or a series with no first day at all, reads "no data": every statistic of that range null,
+// whatever rows the range holds; each range's per-day array still answers each day that holds a
+// row (R12). In a repository's cut, each day that holds a row of the eval also folds the zero part
+// of each series of it the day holds no row of (cutZeros, withZeros): in the window, in the compare
+// range and in each day's own fold.
 //
 // It folds the rows in the one order every fold of them takes (sortWindowRows), which it sorts rows
 // into in place, as the stored figures are folded (figures.go, newFigureGroup), so a fold whose
 // sums depend on the order of its parts answers the stored figures' bits whatever order the read's
 // plan answered its rows in, and a read of the stored figures (StoredFigures.SeriesValues) answers
 // what this does, bit for bit.
-func SeriesValuesOf(entry Entry, rows []WindowRow, firsts map[string]time.Time, window Range, compare *Range) []SeriesValues {
+func SeriesValuesOf(entry Entry, rows []WindowRow, firsts map[string]time.Time, window Range, compare *Range, days Days) []SeriesValues {
 	listed, headline := listedAndHeadline(entry)
 	sortWindowRows(rows)
 	var windowParts, compareParts []measures.DayPart
@@ -211,15 +247,19 @@ func SeriesValuesOf(entry Entry, rows []WindowRow, firsts map[string]time.Time, 
 	if compare != nil {
 		compared = FoldStatistics(definition, listed, compareParts, *compare)
 	}
-	return valuesOf(listed, windowed, via, compared, dailyFolds(definition, headline, windowParts),
-		dailyFolds(definition, headline, compareParts), firsts, window, compare)
+	drawn := dayArrays(definition, headline, days)
+	return valuesOf(definition, listed, windowed, via, compared, dailyFolds(definition, drawn, windowParts),
+		dailyFolds(definition, drawn, compareParts), firsts, window, compare, days)
 }
 
 // dailyFolds is each day of parts, one range's parts of definition's eval in day order (a
 // repository cut's zero parts among them, withZeros), folded alone by the same fold as the range
-// (foldDay), for its headline series' per-day arrays, in day order: each day's parts are one run
-// of them.
+// (foldDay), for the per-day arrays of headline, the headline series a read answers them of
+// (dayArrays), in day order: each day's parts are one run of them. With no such series it is none.
 func dailyFolds(definition Definition, headline []Series, parts []measures.DayPart) []dayFold {
+	if len(headline) == 0 {
+		return nil
+	}
 	var daily []dayFold
 	for from := 0; from < len(parts); {
 		to := dayEnd(parts, from)
@@ -360,14 +400,15 @@ func dayEnd(parts []measures.DayPart, from int) int {
 	return to
 }
 
-// valuesOf is each of listed, an eval's listed series, with its values: windowed and compared, the
-// folds of the window's rows and the compare range's (nil with no compare range), via, the
-// via-repository counts of the window's rows, and daily and compareDaily, the window's and the
-// compare range's days that hold a row of the eval, each in day order; read against firsts, each
-// series' first day, as SeriesValuesOf says. It is the statement both reads make of their folds,
+// valuesOf is each of listed, definition's eval's listed series, with its values: windowed and
+// compared, the folds of the window's rows and the compare range's (nil with no compare range),
+// via, the via-repository counts of the window's rows, and daily and compareDaily, the window's and
+// the compare range's days that hold a row of the eval, each in day order, which the per-day
+// arrays of each series days answers them of hold (answersDays); read against firsts, each series'
+// first day, as SeriesValuesOf says. It is the statement both reads make of their folds,
 // SeriesValuesOf's of the day rows and StoredFigures.SeriesValues' of the stored figures.
-func valuesOf(listed []Series, windowed map[string]Statistics, via map[string]int, compared map[string]Statistics,
-	daily, compareDaily []dayFold, firsts map[string]time.Time, window Range, compare *Range) []SeriesValues {
+func valuesOf(definition Definition, listed []Series, windowed map[string]Statistics, via map[string]int, compared map[string]Statistics,
+	daily, compareDaily []dayFold, firsts map[string]time.Time, window Range, compare *Range, days Days) []SeriesValues {
 	values := make([]SeriesValues, len(listed))
 	for index, series := range listed {
 		first, held := firsts[series.Series]
@@ -386,7 +427,7 @@ func valuesOf(listed []Series, windowed map[string]Statistics, via map[string]in
 			value.Change = changeOf(value.Window, value.Compare)
 			value.CompareDays = []DayPoint{}
 		}
-		if series.Role == RoleHeadline {
+		if answersDays(definition, series, days) {
 			value.Days = dayPoints(value.Days, series.Series, daily)
 			if compare != nil {
 				value.CompareDays = dayPoints(value.CompareDays, series.Series, compareDaily)

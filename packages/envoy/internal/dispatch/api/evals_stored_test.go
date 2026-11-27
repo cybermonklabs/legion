@@ -6,6 +6,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"slices"
 	"strings"
 	"testing"
@@ -17,6 +20,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/evals"
 	"github.com/sjawhar/envoy/internal/dispatch/legion/legionseed"
 	"github.com/sjawhar/envoy/internal/dispatch/legion/legiontest"
+	"github.com/sjawhar/envoy/internal/dispatch/legion/metrics"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -533,4 +537,155 @@ func TestOneEvalListAnswerReadsItsFiguresAndItsDayRowsFromOneSnapshot(t *testing
 	if window != days {
 		t.Errorf("after the commit deploy-frequency's window holds %v deploys and its days %v", window, days)
 	}
+}
+
+// TestARoleSeriesAnswersNoDays (dispatch://INFRA-2918, D25 step 5; departure 10 and its
+// condition, dispatch://INFRA-2918/comment/b8e878a6-3d65-4fbb-a862-32b8a492e6dd): over a Legion
+// history of trees three weeks apart, whose days fall in the 84 days before today and in the 84
+// before those, each of the 39 series of legion-phase-time and legion-idle-time, which a chart
+// draws by role alone, answers days and compare_days empty on the project's list read, the read
+// across projects and the evals view, over that window and compare range, with the window, compare
+// and change figures the eval's own read answers of it; and the eval's own read
+// (GET /api/v1/projects/{key}/evals/{slug}) answers its days and compare_days. legion-work-time's
+// hours answers its days and compare_days, alike, on every read. The statements each read sent
+// show the stored figures answered the two evals and read no day of them on a list read: each list
+// read's statement of the range figures names both, and its statement of the day figures names
+// work time and neither of them, where each eval's own read's statement of the day figures names
+// it.
+func TestARoleSeriesAnswersNoDays(t *testing.T) {
+	log := &paintStatements{}
+	handler, database, deps, served := newRegisteredTestServer(t, testServerOptions{tracer: log})
+	now := time.Now().UTC()
+	today := measures.Midnight(now)
+	history := legiontest.Seed(t, database.Pool, legionseed.Spec{Project: "ROLE", Trees: 8, Now: now, Spacing: 21 * 24 * time.Hour})
+	project := history.Project
+	storeLegionFacts(t, database, project, now)
+	refreshEvalDays(t, evals.New(database, deps.Docs, deps.Events, deps.Attributor), database, now)
+	window, compare := evalDaysEnding(84, today), evalDaysEnding(84, today.AddDate(0, 0, -84))
+	if built := figuresBuiltOf(t, database.Pool, []string{project}); built[project].Before(window.To) {
+		t.Fatalf("%s's figures stand built through %v, so no read would read them", project, built[project])
+	}
+	if !evals.FiguresOffered(nil, window, &compare) {
+		t.Fatal("the stored figures do not answer a read of 84 days with a compare range of 84")
+	}
+	query := rangesQuery(window, compare)
+	query.Set("limit", "200")
+	// read is target's answer to alice, read under the name what, which the tracer records each of
+	// its statements under.
+	read := func(what, target string, into any) {
+		t.Helper()
+		request := httptest.NewRequestWithContext(context.WithValue(t.Context(), firstPaintRead{}, what), http.MethodGet, target, nil)
+		request.Header.Set("X-Dispatch-User", "alice")
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		if response.Code != http.StatusOK {
+			t.Fatalf("%s: GET %s: status %d, body %s", what, target, response.Code, response.Body.String())
+		}
+		if err := json.Unmarshal(response.Body.Bytes(), into); err != nil {
+			t.Fatalf("%s: decode: %v", what, err)
+		}
+	}
+	const listRead, acrossRead, viewRead = "the list read", "the read across projects", "the evals view"
+	lists := map[string]evalListResponse{}
+	var list, across evalListResponse
+	read(listRead, "/api/v1/projects/"+project+"/evals?"+query.Encode(), &list)
+	read(acrossRead, "/api/v1/evals?project="+project+"&"+query.Encode(), &across)
+	lists[listRead], lists[acrossRead] = list, across
+	hub := newDeliveryHub(served, t.Context(), newStillHubClock())
+	viewed := url.Values{"compare_from": query["compare_from"], "compare_to": query["compare_to"], "limit": {"200"}}
+	spec, refusal := parseDeliveryLiveView(evalsLiveView(project, evalsDays(window.From, window.To), viewed.Encode()))
+	if refusal != nil {
+		t.Fatalf("the hub refuses the evals view: %+v", refusal)
+	}
+	var viewState deliveryViewRead
+	body, err := hub.readEvalsView(context.WithValue(t.Context(), firstPaintRead{}, viewRead), spec, now, &viewState)
+	if err != nil {
+		t.Fatalf("read the evals view: %v", err)
+	}
+	lists[viewRead] = body.(evalListResponse)
+	byRole := []string{evals.SlugLegionPhaseTime, evals.SlugLegionIdleTime}
+	own := map[string]evalItem{}
+	for _, slug := range append(slices.Clone(byRole), evals.SlugLegionWorkTime) {
+		var detail evalDetailResponse
+		read("the own read of "+slug, "/api/v1/projects/"+project+"/evals/"+slug+"?"+rangesQuery(window, compare).Encode(), &detail)
+		if len(detail.Items) == 0 {
+			t.Fatalf("the own read of %s answers no version", slug)
+		}
+		own[slug] = detail.Items[0].evalItem
+	}
+
+	drawnByRole, valued := 0, 0
+	for _, slug := range byRole {
+		for _, series := range own[slug].Series {
+			name := series.Series.Series
+			if series.Series.Role != evals.RoleHeadline {
+				t.Errorf("%s's %s is a %s series, want a headline one: its role keeps the fold key", slug, name, series.Series.Role)
+				continue
+			}
+			drawnByRole++
+			if len(series.Days) == 0 || len(series.CompareDays) == 0 {
+				t.Errorf("the own read of %s answers %s %d days and %d compare_days, want both", slug, name, len(series.Days), len(series.CompareDays))
+			}
+			for _, value := range series.Window {
+				if value != nil {
+					valued++
+				}
+			}
+			figures := mustJSON(t, []evals.Statistics{series.Window, series.Compare, series.Change})
+			for what, answer := range lists {
+				listed := seriesValues(t, findEval(t, answer.Items, project, slug), name)
+				if listed.Days == nil || len(listed.Days) != 0 || listed.CompareDays == nil || len(listed.CompareDays) != 0 {
+					t.Errorf("%s answers %s's %s %d days and %d compare_days (null: %t, %t), want [] for both", what, slug, name,
+						len(listed.Days), len(listed.CompareDays), listed.Days == nil, listed.CompareDays == nil)
+				}
+				if got := mustJSON(t, []evals.Statistics{listed.Window, listed.Compare, listed.Change}); got != figures {
+					t.Errorf("%s answers %s's %s window, compare and change %s, the own read %s", what, slug, name, got, figures)
+				}
+			}
+		}
+	}
+	if drawnByRole != 39 || valued == 0 {
+		t.Fatalf("the own reads answer %d series of the two evals, %d of their window figures with a value; want the 39 by-role series, not all null", drawnByRole, valued)
+	}
+	work := seriesValues(t, own[evals.SlugLegionWorkTime], metrics.SeriesHours)
+	if len(work.Days) == 0 || len(work.CompareDays) == 0 {
+		t.Fatalf("the own read of %s answers %d days and %d compare_days of hours, want both", evals.SlugLegionWorkTime, len(work.Days), len(work.CompareDays))
+	}
+	for what, answer := range lists {
+		if got, want := mustJSON(t, seriesValues(t, findEval(t, answer.Items, project, evals.SlugLegionWorkTime), metrics.SeriesHours)), mustJSON(t, work); got != want {
+			t.Errorf("%s answers %s's hours\n%s\nand its own read\n%s", what, evals.SlugLegionWorkTime, got, want)
+		}
+	}
+
+	// named is the eval ids each statement of read that reads table names ($3 of both statements
+	// of evals.ReadStoredFiguresIn).
+	named := func(read, table string) [][]string {
+		var ids [][]string
+		for _, statement := range log.statements() {
+			if statement.read == read && strings.Contains(statement.sql, "from "+table) && len(statement.args) > 2 {
+				held, _ := statement.args[2].([]string)
+				ids = append(ids, held)
+			}
+		}
+		return ids
+	}
+	phase, idle, workTime := evals.EvalID(project, evals.SlugLegionPhaseTime), evals.EvalID(project, evals.SlugLegionIdleTime), evals.EvalID(project, evals.SlugLegionWorkTime)
+	for _, what := range []string{listRead, acrossRead, viewRead} {
+		ranged, days := named(what, "eval_range_figures"), named(what, "eval_day_figures")
+		if len(ranged) != 1 || !slices.Contains(ranged[0], phase) || !slices.Contains(ranged[0], idle) || !slices.Contains(ranged[0], workTime) {
+			t.Errorf("%s read the range figures of %v, want one statement naming %s, %s and %s", what, ranged, phase, idle, workTime)
+		}
+		if len(days) != 1 || slices.Contains(days[0], phase) || slices.Contains(days[0], idle) || !slices.Contains(days[0], workTime) {
+			t.Errorf("%s read the day figures of %v, want one statement naming %s and neither %s nor %s", what, days, workTime, phase, idle)
+		}
+		t.Logf("%s: the range figures of %d evals, the day figures of %d", what, len(slices.Concat(ranged...)), len(slices.Concat(days...)))
+	}
+	for _, slug := range byRole {
+		id := evals.EvalID(project, slug)
+		if days := named("the own read of "+slug, "eval_day_figures"); len(days) != 1 || !slices.Equal(days[0], []string{id}) {
+			t.Errorf("the own read of %s read the day figures of %v, want one statement naming %s", slug, days, id)
+		}
+	}
+	t.Logf("%d by-role series answer no days on the three list reads and their days on their own reads; %s's hours answers %d days and %d compare_days on every read",
+		drawnByRole, evals.SlugLegionWorkTime, len(work.Days), len(work.CompareDays))
 }

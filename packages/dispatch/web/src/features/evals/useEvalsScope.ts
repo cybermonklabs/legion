@@ -37,15 +37,17 @@ export function useUtcDayClock(): number {
 
 /** What every evals view of the tab shares (plan D2, D3, D7a): the project, the header's window as
  *  the live socket names it, its compare range, read at the present `useUtcDayClock` keeps, the
- *  repositories, the merge timeline's facets but the repository and its search (`narrowing`,
- *  `narrowingQuery`), and the narrowing of the delivery view drawn while that of `narrowing` has not
- *  answered (`held`, `useTabScopes`). It is the same object while none of those changes, so a
- *  render subscribes nothing again. */
+ *  repositories, the merge timeline's facets but the repository and its search the tab subscribes
+ *  (`narrowing`, `narrowingQuery`), the narrowing of the delivery view drawn while that of
+ *  `narrowing` has not answered (`held`), and the one the facets set while the tab has not
+ *  subscribed it yet (`wanted`, `useTabScopes`). It is the same object while none of those changes,
+ *  so a render subscribes nothing again. */
 export function useEvalsScope(
   project: string,
   state: EvalsUrlState,
   narrowing = "",
-  held = narrowing
+  held = narrowing,
+  wanted = narrowing
 ): EvalsScope {
   const now = useUtcDayClock();
   // The brush is the target cards' alone (`useCardsScope`), so it moves no other view's scope.
@@ -58,8 +60,9 @@ export function useEvalsScope(
       repos,
       narrowing,
       held,
+      wanted,
     }),
-    [project, choice, compare, repos, now, narrowing, held]
+    [project, choice, compare, repos, now, narrowing, held, wanted]
   );
 }
 
@@ -101,14 +104,17 @@ const allAnswered = (views: readonly UseQueryResult<true>[]): boolean =>
   views.every((view) => view.data === true);
 
 /**
- * The scopes of the tab's views (plan D3, D7a; Sami's option B, "The tab's first paint is not
- * narrowed"): the header's (`useEvalsScope`) and the target cards' (`useCardsScope`), both read
- * with `narrowing`, and both holding the narrowing of the delivery views the tab drew last until
- * every delivery view of `narrowing` has answered. So a tab opened from an address that sets a
- * facet but the repository, or the search, paints first from the unnarrowed delivery views, which
- * each section reads beside the narrowed ones (`useEvalsViews`), and a facet changed on an open tab
- * leaves the views it drew on screen until those of the facets set land. Then the tab holds
- * `narrowing`, and the views it held, which no section reads any more, are unsubscribed.
+ * The scopes of the tab's views (plan D3, D7a, D25 step 2; Sami's option B, "The tab's first paint
+ * is not narrowed"): the header's (`useEvalsScope`) and the target cards' (`useCardsScope`). Both
+ * subscribe the narrowing the tab drew last (`held`, none on the first paint) until every delivery
+ * view of it has landed or been refused, the facets set (`narrowing`) wanted meanwhile, so a tab
+ * opened from an address that sets a facet but the repository, or the search, paints first from the
+ * unnarrowed delivery views alone, the narrowed cards under their loading mark, and no narrowed
+ * read runs beside that paint. Then both subscribe `narrowing`, holding the narrowing drawn last
+ * until every delivery view of `narrowing` has answered: each section reads the held views beside
+ * the narrowed ones (`useEvalsViews`), so a facet changed on an open tab, whose held views have
+ * landed already, leaves the views it drew on screen until those of the facets set land. Then the
+ * tab holds `narrowing`, and the views it held, which no section reads any more, are unsubscribed.
  */
 export function useTabScopes(
   project: string,
@@ -116,20 +122,35 @@ export function useTabScopes(
   narrowing: string
 ): { scope: EvalsScope; cards: EvalsScope } {
   const [held, setHeld] = useState("");
-  const scope = useEvalsScope(project, state, narrowing, held);
+  const [subscribed, setSubscribed] = useState("");
+  const scope = useEvalsScope(project, state, subscribed, held, narrowing);
   const cards = useCardsScope(scope, state);
+  const scopes = [...new Set([scope, cards])];
+  const heldLanded = useQueries({
+    queries:
+      subscribed === narrowing
+        ? []
+        : scopes.map((each) => ({
+            ...evalsViewQuery({ ...each, narrowing: held, kind: "delivery", offset: 0 }),
+            select: answered,
+          })),
+    combine: (views) => views.every((view) => view.data === true || view.isError),
+  });
   const landed = useQueries({
     queries:
-      held === narrowing
+      held === subscribed
         ? []
-        : [...new Set([scope, cards])].map((each) => ({
+        : scopes.map((each) => ({
             ...evalsViewQuery({ ...each, kind: "delivery", offset: 0 }),
             select: answered,
           })),
     combine: allAnswered,
   });
   useEffect(() => {
-    if (landed) setHeld(narrowing);
-  }, [landed, narrowing]);
+    if (heldLanded) setSubscribed(narrowing);
+  }, [heldLanded, narrowing]);
+  useEffect(() => {
+    if (landed) setHeld(subscribed);
+  }, [landed, subscribed]);
   return { cards, scope };
 }

@@ -1265,7 +1265,7 @@ func (s listState) values(t *testing.T, window Range, compare *Range) (stated, f
 	offered := FiguresOffered(s.repos, window, compare)
 	if offered {
 		var err error
-		if stored, err = ReadStoredFiguresIn(t.Context(), s.q, []string{s.project}, s.entries, s.repos, window, compare); err != nil {
+		if stored, err = ReadStoredFiguresIn(t.Context(), s.q, []string{s.project}, s.entries, s.repos, window, compare, AllDays); err != nil {
 			t.Fatalf("read %s's stored figures: %v", s.project, err)
 		}
 	}
@@ -1290,7 +1290,7 @@ func (s listState) values(t *testing.T, window Range, compare *Range) (stated, f
 				rows = append(rows, row)
 			}
 		}
-		folded[id] = encode(SeriesValuesOf(entry, rows, s.firsts[id], window, compare))
+		folded[id] = encode(SeriesValuesOf(entry, rows, s.firsts[id], window, compare, AllDays))
 		stated[id] = folded[id]
 		if !offered {
 			continue
@@ -1426,7 +1426,7 @@ func (c cutRead) cutValues(t *testing.T, repos []string, window Range, compare *
 	values := map[string]string{}
 	for _, entry := range c.entries {
 		id := entry.Definition.EvalID
-		encoded, err := json.Marshal(SeriesValuesOf(entry, byEval[id], c.firsts[id], window, compare))
+		encoded, err := json.Marshal(SeriesValuesOf(entry, byEval[id], c.firsts[id], window, compare, AllDays))
 		if err != nil {
 			t.Fatalf("encode the values of %s: %v", id, err)
 		}
@@ -2220,8 +2220,8 @@ func TestTheDayRowsAreFoldedInDayOrderWhateverOrderTheReadAnswers(t *testing.T) 
 	}
 	window := Range{From: day, To: day.AddDate(0, 0, 3)}
 	firsts := map[string]time.Time{"dollars": day}
-	inOrder := SeriesValuesOf(entry, rows(0, 1, 2), firsts, window, nil)
-	reversed := SeriesValuesOf(entry, rows(2, 1, 0), firsts, window, nil)
+	inOrder := SeriesValuesOf(entry, rows(0, 1, 2), firsts, window, nil, AllDays)
+	reversed := SeriesValuesOf(entry, rows(2, 1, 0), firsts, window, nil, AllDays)
 	want, got := inOrder[0].Window["sum"], reversed[0].Window["sum"]
 	if want == nil || *want != 1e16 || got == nil || math.Float64bits(*got) != math.Float64bits(*want) {
 		t.Errorf("the sum of rows answered in day order is %s and of rows answered the other way round %s, want 1e16 for both", showValue(want), showValue(got))
@@ -2273,7 +2273,7 @@ func TestADaysRowsAreFoldedInOneOrderWhateverOrderTheReadAnswers(t *testing.T) {
 		}
 		unsorted[math.Float64bits(*FoldStatistics(entry.Definition, entry.Series, parts, window)["dollars"]["sum"])] = true
 
-		values := SeriesValuesOf(entry, rows(order), firsts, window, nil)
+		values := SeriesValuesOf(entry, rows(order), firsts, window, nil, AllDays)
 		encoded, err := json.Marshal(values)
 		if err != nil {
 			t.Fatalf("encode the values of the rows in the order %v: %v", order, err)
@@ -3702,7 +3702,7 @@ func TestAFigureOfADeployEvalReadsTheProjectsOwnDeployRepository(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		folded := SeriesValuesOf(entry, rows, firsts[entry.Definition.EvalID], window, nil)
+		folded := SeriesValuesOf(entry, rows, firsts[entry.Definition.EvalID], window, nil, AllDays)
 		n := 0
 		for _, row := range rows {
 			if row.Part.Series == "deploys" {
@@ -3712,7 +3712,7 @@ func TestAFigureOfADeployEvalReadsTheProjectsOwnDeployRepository(t *testing.T) {
 		if n != want.n {
 			t.Errorf("%s's day rows of deploy-frequency count %d deploys over the week, want %d", project, n, want.n)
 		}
-		stored, err := ReadStoredFiguresIn(ctx, r.database.Pool, []string{project}, []Entry{entry}, nil, window, nil)
+		stored, err := ReadStoredFiguresIn(ctx, r.database.Pool, []string{project}, []Entry{entry}, nil, window, nil, AllDays)
 		if err != nil {
 			t.Fatal(err)
 		}

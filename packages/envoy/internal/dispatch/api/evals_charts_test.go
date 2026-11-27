@@ -216,6 +216,95 @@ func TestTheListReadsAnswerTheAnswerAndNoCharts(t *testing.T) {
 	}
 }
 
+// TestTheListItemCountsItsDeclaredCharts (dispatch://INFRA-2918, D25 step 3): the project's list
+// read, the read across projects and the evals view's snapshot each answer, in every eval's item,
+// declared_charts, how many charts its current definition declares: 2 for an eval registered with
+// two, and 0, spelled in the body, for one registered with none and for each computed eval of the
+// catalogue, which declares none. A register write that declares one chart on the second moves
+// its count to 1 on the next read, while the first keeps its 2.
+func TestTheListItemCountsItsDeclaredCharts(t *testing.T) {
+	rig := newHubRig(t, nil)
+	createTestProject(t, rig.handler, "EVL")
+	register := func(slug, key string, declared json.RawMessage) {
+		t.Helper()
+		body := map[string]any{"slug": slug, "name": slug}
+		if declared != nil {
+			body["charts"] = declared
+		}
+		if registered := evalRequest(t, rig.handler, http.MethodPost, "/api/v1/projects/EVL/evals", body, key); registered.Code != http.StatusCreated {
+			t.Fatalf("register %s: status %d, body %s", key, registered.Code, registered.Body.String())
+		}
+	}
+	register("wait-time", "register-wait-time", chartList(waitChart, countChart))
+	register("plain", "register-plain", nil)
+	// counts is each eval's declared_charts in body, a list answer, by slug, failing where an
+	// item's body holds no declared_charts member.
+	counts := func(what string, body []byte) map[string]int {
+		t.Helper()
+		var list struct {
+			Items []map[string]json.RawMessage `json:"items"`
+		}
+		if err := json.Unmarshal(body, &list); err != nil {
+			t.Fatalf("%s: decode: %v", what, err)
+		}
+		counted := map[string]int{}
+		for _, item := range list.Items {
+			var definition struct {
+				Slug string `json:"slug"`
+			}
+			if err := json.Unmarshal(item["definition"], &definition); err != nil {
+				t.Fatalf("%s: decode an item's definition: %v", what, err)
+			}
+			raw, held := item["declared_charts"]
+			var declared int
+			if !held || json.Unmarshal(raw, &declared) != nil {
+				t.Errorf("%s: %s answers declared_charts %s, want a whole number", what, definition.Slug, raw)
+				continue
+			}
+			counted[definition.Slug] = declared
+		}
+		return counted
+	}
+	lists := func() map[string]json.RawMessage {
+		return map[string]json.RawMessage{
+			"GET /api/v1/projects/EVL/evals": getBody(t, rig.handler, "/api/v1/projects/EVL/evals?limit=200"),
+			"GET /api/v1/evals?project=EVL":  getBody(t, rig.handler, "/api/v1/evals?project=EVL&limit=200"),
+		}
+	}
+	conn := newFakeLiveConn()
+	rig.hub.Subscribe(conn, subscribeFrame("evals", evalsLiveView("EVL", DeliveryLiveWindow{Preset: new(7)}, "limit=200")))
+	bodies := lists()
+	bodies["the evals view's snapshot of EVL"] = conn.snapshot(t, "evals").Body
+	for _, what := range slices.Sorted(maps.Keys(bodies)) {
+		counted := counts(what, bodies[what])
+		computed := 0
+		for slug, declared := range counted {
+			want := 0
+			switch slug {
+			case "wait-time":
+				want = 2
+			case "plain":
+			default:
+				computed++
+			}
+			if declared != want {
+				t.Errorf("%s answers declared_charts %d for %s, want %d", what, declared, slug, want)
+			}
+		}
+		if _, held := counted["plain"]; !held || counted["wait-time"] != 2 {
+			t.Errorf("%s answers the declared charts %v, want wait-time 2 and plain 0", what, counted)
+		}
+		t.Logf("%s: wait-time declares %d charts, plain %d, and %d computed evals 0", what, counted["wait-time"], counted["plain"], computed)
+	}
+
+	register("plain", "declare-plain", chartList(waitChart))
+	for what, body := range lists() {
+		if counted := counts(what, body); counted["plain"] != 1 || counted["wait-time"] != 2 {
+			t.Errorf("after plain declares one chart %s answers plain %d and wait-time %d, want 1 and 2", what, counted["plain"], counted["wait-time"])
+		}
+	}
+}
+
 // memberAt is the path, from at, of the first object member named name in value, depth first in
 // key order, or "" where value holds none.
 func memberAt(value any, name, at string) string {

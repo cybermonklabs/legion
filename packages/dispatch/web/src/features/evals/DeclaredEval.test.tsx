@@ -88,11 +88,13 @@ const CAVEATS: DeclaredSpec = {
   title: "What to keep in mind",
 };
 
-/** The logged eval `convergence` at `version`, whose list read answers `answer`. */
+/** The logged eval `convergence` at `version`, whose list read answers `answer` and counts the
+ *  charts its detail declares (`declared_charts`), so its box reads that detail. */
 function convergence(version: number, answer: string): EvalListItem {
   const item = evalItem("convergence", "experiment", [], version);
   return {
     ...item,
+    declared_charts: 1,
     definition: { ...item.definition, answer, name: "Convergence", source: "logged" },
   };
 }

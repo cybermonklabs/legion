@@ -53,11 +53,15 @@
 # tab is the Evals tab in Chromium (evalbench/tab, through the Playwright packages/dispatch locks),
 # at the run rate its last argument names, which its lines carry: once the consumers have caught
 # up, for each of the paint's three cases (84 days with a compare range, 28 days with none, and 84
-# days from an address that sets the author facet) the server starts again and the tab's first
-# reader is timed (tab/paint.ts); then the server starts once more and INFRA-2916's write drive,
-# phases A to D, runs with the tab open on two pages and the merge timeline open on each
-# (tab/recompute.ts). The server serves the built web app (EVALBENCH_WEB_DIST) and signs its
-# readers in through dev sign-in, with the cookie identity a deployment uses.
+# days from an address that sets the author facet) the server starts, tab/paint.ts opens the tab
+# once in a new browser, which loads the app's JavaScript (the cold-browser time, the bundle's size
+# and its load time), the server starts again, and the tab's first reader is timed in that warm
+# browser (the ruling of dispatch://INFRA-2918's ledger item 62: paint.ts writes --warmed once the
+# cold navigation is done, and this script writes --restarted once the new process serves); then
+# the server starts once more and INFRA-2916's write drive, phases A to D, runs with the tab open
+# on two pages and the merge timeline open on each (tab/recompute.ts). The server serves the built
+# web app (EVALBENCH_WEB_DIST) and signs its readers in through dev sign-in, with the cookie
+# identity a deployment uses.
 #
 # capture-base is k22's capture at the base head (legion/INFRA-978 82380570f8) over the
 # one-project fixture: once the consumers have caught up, GET /api/v1/delivery/timeline for the 84
@@ -328,9 +332,20 @@ fi
 
 if [ "$command" = tab ]; then
   for paint_case in 84d-compare 28d 84d-author; do
-    start_server "$work/server-paint-$paint_case.log"
+    warmed=$work/paint-$paint_case.warmed restarted=$work/paint-$paint_case.restarted
+    rm -f "$warmed" "$restarted"
+    start_server "$work/server-warm-$paint_case.log"
     bun "$EVALBENCH_TAB/paint.ts" --url "$url" --database "$database_url" --project INFRA --case "$paint_case" --rate "$mode" \
-      --quiet "${EVALBENCH_TAB_QUIET:-30}" --catalog "${EVALBENCH_TAB_CATALOG:-65}" || status=1
+      --quiet "${EVALBENCH_TAB_QUIET:-30}" --catalog "${EVALBENCH_TAB_CATALOG:-65}" --warmed "$warmed" --restarted "$restarted" &
+    paint_pid=$!
+    # The cold navigation loads the app into the browser; then the server starts again under it.
+    until [ -e "$warmed" ] || ! kill -0 "$paint_pid" 2>/dev/null; do sleep 0.2; done
+    stop_server
+    if [ -e "$warmed" ]; then
+      start_server "$work/server-paint-$paint_case.log"
+      touch "$restarted"
+    fi
+    wait "$paint_pid" || status=1
     stop_server
   done
   start_server "$work/server-recompute.log"

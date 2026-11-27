@@ -95,7 +95,8 @@ func newNarrowedEvalsRig(t *testing.T, options testServerOptions) *narrowedEvals
 // atRead is each of entries' series over window and compare as the read-time path states them:
 // their rows built in one snapshot (evals.ComputeAtRead, with no narrowing), with the deploy
 // repositories the stored rows stand recorded under and each series' first day read in it, and
-// folded by the fold of the stored rows (evals.SeriesValuesOf), by eval id.
+// folded by the fold of the stored rows (evals.SeriesValuesOf) as the list read folds them
+// (evals.ListDays), by eval id.
 func (r *narrowedEvalsRig) atRead(t *testing.T, entries []evals.Entry, window evals.Range, compare *evals.Range) map[string][]evals.SeriesValues {
 	t.Helper()
 	ctx := t.Context()
@@ -124,7 +125,7 @@ func (r *narrowedEvalsRig) atRead(t *testing.T, entries []evals.Entry, window ev
 	values := make(map[string][]evals.SeriesValues, len(entries))
 	for _, entry := range entries {
 		id := entry.Definition.EvalID
-		values[id] = evals.SeriesValuesOf(entry, byEval[id], firsts[id], window, compare)
+		values[id] = evals.SeriesValuesOf(entry, byEval[id], firsts[id], window, compare, evals.ListDays)
 	}
 	return values
 }

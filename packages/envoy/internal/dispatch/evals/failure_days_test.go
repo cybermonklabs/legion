@@ -124,7 +124,7 @@ func (r *refresherRig) failureValues(t *testing.T, project string, window Range)
 	values := map[string]SeriesValues{}
 	for _, entry := range entries {
 		own := slices.DeleteFunc(slices.Clone(rows), func(row WindowRow) bool { return row.EvalID != entry.Definition.EvalID })
-		values[entry.Definition.Slug] = SeriesValuesOf(entry, own, firsts[entry.Definition.EvalID], window, nil)[0]
+		values[entry.Definition.Slug] = SeriesValuesOf(entry, own, firsts[entry.Definition.EvalID], window, nil, AllDays)[0]
 	}
 	return values
 }

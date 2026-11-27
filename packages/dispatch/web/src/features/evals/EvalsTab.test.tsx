@@ -58,6 +58,7 @@ const COMPARE = { days: 29, from: "2026-09-27T00:00:00Z", to: "2026-10-26T00:00:
 function evalItem(slug: string, kind: EvalKind): EvalListItem {
   const written = { id: "alice", kind: "user" } as const;
   return {
+    declared_charts: 0,
     definition: {
       answer: "",
       created_at: "2026-10-01T00:00:00Z",
@@ -438,7 +439,9 @@ function deliveryViews(socket: FakeLiveSocket, key: string) {
 }
 
 /** A tab opened from an address that sets the author facet, with its unnarrowed views painted,
- *  and the narrowed delivery view it reads beside them, which has not answered. */
+ *  and the narrowed delivery view it subscribes once the unnarrowed one has landed (plan D25
+ *  step 2), which has not answered: until then the tab holds no narrowed view, so no narrowed
+ *  read runs beside the first paint. */
 async function paintedWithAuthor(): Promise<{
   narrowed: LiveSubscribe;
   plain: LiveSubscribe;
@@ -446,19 +449,28 @@ async function paintedWithAuthor(): Promise<{
 }> {
   renderTab(DAEMON, "?window=28d&author=alice");
   const socket = await openSocket();
-  const { narrowed, plain } = await waitFor(() => {
-    const views = deliveryViews(socket, "author");
-    expect([views.plain.length, views.narrowed.length]).toEqual([1, 1]);
-    return { narrowed: views.narrowed[0], plain: views.plain[0] };
-  });
-  expect(queryOf(narrowed).getAll("author")).toEqual(["alice"]);
-  serve(socket, snapshotFrame(plain.sub, deliveryAnswer(12)));
+  const others: { kind: "legion" | "ci" | "experiment"; sub: string }[] = [];
   for (const kind of ["legion", "ci", "experiment"] as const) {
     const { sub, view } = await subscription(socket, kind);
     // No facet narrows a view of another kind: it is the one view the tab opens without one.
     expect(view.kind === "evals" && new URLSearchParams(view.query).has("author")).toBe(false);
-    serve(socket, snapshotFrame(sub, ANSWERS[kind]));
+    others.push({ kind, sub });
   }
+  // Every view of the first paint is subscribed, the unnarrowed delivery view among them, and the
+  // narrowed one is not.
+  const plain = await waitFor(() => {
+    const views = deliveryViews(socket, "author");
+    expect([views.plain.length, views.narrowed.length]).toEqual([1, 0]);
+    return views.plain[0];
+  });
+  serve(socket, snapshotFrame(plain.sub, deliveryAnswer(12)));
+  const narrowed = await waitFor(() => {
+    const views = deliveryViews(socket, "author");
+    expect([views.plain.length, views.narrowed.length]).toEqual([1, 1]);
+    return views.narrowed[0];
+  });
+  expect(queryOf(narrowed).getAll("author")).toEqual(["alice"]);
+  for (const { kind, sub } of others) serve(socket, snapshotFrame(sub, ANSWERS[kind]));
   // Every section paints from the unnarrowed views, and the Logged evals' detail reads settle.
   await waitFor(() =>
     expect(
@@ -933,11 +945,83 @@ const stateRows: [string, () => Promise<void>][] = [
     },
   ],
   [
+    "subscribed (first paint) | the four evals views' snapshots | painted: no detail read and no items view for an eval whose declared_charts is 0; an eval with charts reads its detail after",
+    async () => {
+      const { getEval } = renderTab();
+      const socket = await openSocket();
+      const declared: EvalListItem = {
+        ...evalItem("convergence", "experiment"),
+        declared_charts: 1,
+      };
+      await answerView(
+        socket,
+        "experiment",
+        answer([declared, evalItem("widget-size", "experiment")])
+      );
+      for (const kind of ["delivery", "legion"] as const) await answerView(socket, kind);
+      await waitFor(() => expect(listed("Logged")).toEqual(["convergence", "widget-size"]));
+      // Three of the four views have landed: the first paint is not over, and no detail is read.
+      expect(getEval).not.toHaveBeenCalled();
+      await answerView(socket, "ci");
+      await waitFor(() => expect(getEval).toHaveBeenCalledTimes(1));
+      expect(getEval.mock.calls.map(([, slug]) => slug)).toEqual(["convergence"]);
+      // No items view of either eval of the Logged section: their rows are closed.
+      expect(
+        socket
+          .subscribes()
+          .filter((frame) => frame.view.kind === "items" && frame.view.slug !== "pr-ci")
+      ).toEqual([]);
+    },
+  ],
+  [
+    "painted, a logged eval's box | its rows opened | subscribed: one rows view (source=readings, no repository); closing them unsubscribes it",
+    async () => {
+      const user = userEvent.setup();
+      renderTab();
+      const socket = await openSocket();
+      for (const kind of ["delivery", "legion", "ci", "experiment"] as const) {
+        await answerView(socket, kind);
+      }
+      const box = await waitFor(() =>
+        within(region("Logged")).getByRole("article", { name: "widget-size" })
+      );
+      const held = () => {
+        const dropped = new Set(socket.unsubscribes().map((frame) => frame.sub));
+        return socket
+          .subscribes()
+          .filter(
+            (frame) =>
+              frame.view.kind === "items" &&
+              frame.view.slug === "widget-size" &&
+              !dropped.has(frame.sub)
+          );
+      };
+      expect(held()).toEqual([]);
+      const rows = within(box).getByRole("button", { name: "Rows" });
+      await user.click(rows);
+      const opened = await waitFor(() => {
+        const views = held();
+        expect(views).toHaveLength(1);
+        return views[0];
+      });
+      const query = new URLSearchParams(opened?.view.kind === "items" ? opened.view.query : "");
+      expect(query.getAll("source")).toEqual(["readings"]);
+      expect(query.has("repo")).toBe(false);
+      await user.click(rows);
+      await waitFor(() => expect(held()).toEqual([]));
+      expect(rows).toHaveAttribute("aria-expanded", "false");
+    },
+  ],
+  [
     "painted, a declared eval | the evals view's delta carries a new definition.version | re-reading: the detail read again; then the new charts and answer (D11a)",
     async () => {
       const declared = (version: number, said: string): EvalListItem => {
         const item = evalItem("convergence", "experiment");
-        return { ...item, definition: { ...item.definition, answer: said, version } };
+        return {
+          ...item,
+          declared_charts: 1,
+          definition: { ...item.definition, answer: said, version },
+        };
       };
       const detail = (version: number, chart: object, said: string): EvalDetailResponse => {
         const { definition, owner } = declared(version, said);

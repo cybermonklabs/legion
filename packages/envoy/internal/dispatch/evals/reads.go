@@ -18,10 +18,14 @@ import (
 )
 
 // Entry is one eval as the registry read answers it: its newest definition and the newest
-// version of each of its series, the primary series first, then by name.
+// version of each of its series, the primary series first, then by name; and, of the list read's
+// (CurrentIn), how many charts its newest definition declares (0 for none), read beside the
+// definition so the list read answers it without the charts themselves, which only the eval's own
+// read answers (dispatch://INFRA-2918, D25 step 3). Every other read leaves it 0.
 type Entry struct {
-	Definition Definition `json:"definition"`
-	Series     []Series   `json:"series"`
+	Definition     Definition `json:"definition"`
+	Series         []Series   `json:"series"`
+	DeclaredCharts int        `json:"declared_charts"`
 }
 
 // Page is one page of a read: its items, and how many the read's filter holds in all.
@@ -69,7 +73,9 @@ func (s *Store) Current(ctx context.Context, projects []string, kind string, lim
 // CurrentIn reads in tx one page of the evals of projects through evals_current, ordered by
 // project in projects' order and then by slug byte by byte (`collate "C"`), so the order and each
 // page of it are the same whatever collation the database was made with (en_US or ICU puts
-// production-deploy before pr-open-to-merge), with each eval's current series: every eval of those
+// production-deploy before pr-open-to-merge), with each eval's current series and how many charts
+// its current definition declares (Entry.DeclaredCharts, the length of its charts, which the
+// statement counts and does not send): every eval of those
 // projects, or those of one kind where kind is not "". The page runs across the projects: Total is
 // every project's count, and offset counts from the first project's first eval. The count,
 // page and series all read tx's one snapshot (BeginSnapshot). A concurrent registration could
@@ -88,18 +94,27 @@ func CurrentIn(ctx context.Context, tx pgx.Tx, projects []string, kind string, l
 	}
 	limitAt, offsetAt := strconv.Itoa(len(args)+1), strconv.Itoa(len(args)+2)
 	rows, err := tx.Query(ctx, `
-		select `+definitionColumns+` from evals_current where `+filter+`
+		select `+definitionColumns+`, jsonb_array_length(charts) from evals_current where `+filter+`
 		order by array_position($1::text[], project_key), slug collate "C" limit $`+limitAt+` offset $`+offsetAt, append(args, limit, offset)...)
 	if err != nil {
 		return Page[Entry]{}, fmt.Errorf("read the evals of %v: %w", projects, err)
 	}
-	definitions, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (Definition, error) { return scanDefinition(row) })
+	var declared []int
+	definitions, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (Definition, error) {
+		var charts int
+		definition, err := scanDefinitionOf(row, &charts)
+		declared = append(declared, charts)
+		return definition, err
+	})
 	if err != nil {
 		return Page[Entry]{}, fmt.Errorf("read the evals of %v: %w", projects, err)
 	}
 	entries, err := entriesOf(ctx, tx, definitions, fmt.Sprint(projects))
 	if err != nil {
 		return Page[Entry]{}, err
+	}
+	for index := range entries {
+		entries[index].DeclaredCharts = declared[index]
 	}
 	return Page[Entry]{Items: entries, Total: total}, nil
 }

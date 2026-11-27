@@ -128,6 +128,7 @@ export interface Page {
   evaluate<T>(script: string): Promise<T>;
   waitForFunction(script: string, arg: unknown, options: Record<string, unknown>): Promise<unknown>;
   click(selector: string, options?: Record<string, unknown>): Promise<void>;
+  close(): Promise<void>;
 }
 
 /** The directory of packages/dispatch, whose lock names the Playwright the bench drives. */
@@ -232,8 +233,7 @@ export function readInstrument(page: Page, fromFrame = 0): Promise<Instrumented>
 }
 
 /** A signed-in reader's browser context: the instrument on every page it opens, and the session
- *  cookie of the server's dev sign-in (DISPATCH_DEV_SIGNIN=1), read through the context's own
- *  request client, so no page loads before the tab. */
+ *  cookie of the server's dev sign-in (signIn), so no page loads before the tab. */
 export async function readerContext(
   browser: Browser,
   base: string,
@@ -244,6 +244,14 @@ export async function readerContext(
     viewport: { width: 1440, height: 1000 },
   });
   await context.addInitScript({ content: INSTRUMENT });
+  await signIn(context, base, login);
+  return context;
+}
+
+/** Signs `login` in to the server at `base` in `context`: the session cookie of its dev sign-in
+ *  (DISPATCH_DEV_SIGNIN=1), read through the context's own request client. A restarted server is
+ *  signed in to again, since the cookie its last process signed need not be one it reads. */
+export async function signIn(context: BrowserContext, base: string, login: string): Promise<void> {
   const answer = await context.request.get(
     `${base}/auth/_dev/signin?login=${encodeURIComponent(login)}`,
     {
@@ -255,7 +263,6 @@ export async function readerContext(
       `the dev sign-in answered ${answer.status()}, not a redirect with the session cookie`
     );
   }
-  return context;
 }
 
 // ---------------------------------------------------------------------------------------------

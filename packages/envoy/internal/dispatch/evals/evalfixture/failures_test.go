@@ -261,7 +261,7 @@ func TestTheFailuresModeLoadsTwiceIntoTheSameRows(t *testing.T) {
 		for _, entry := range entries {
 			slug := entry.Definition.Slug
 			own := slices.DeleteFunc(slices.Clone(rows), func(row evals.WindowRow) bool { return row.EvalID != entry.Definition.EvalID })
-			values[slug] = evals.SeriesValuesOf(entry, own, firsts[entry.Definition.EvalID], window, nil)[0].Window
+			values[slug] = evals.SeriesValuesOf(entry, own, firsts[entry.Definition.EvalID], window, nil, evals.AllDays)[0].Window
 			for _, row := range own {
 				if row.Part.Series == series[slug] {
 					got[slug] = tally{n: got[slug].n + row.Part.N, via: got[slug].via + row.Part.ViaRepository}

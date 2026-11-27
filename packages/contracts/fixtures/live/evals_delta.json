@@ -15,6 +15,7 @@
       "upsert": [
         {
           "id": "ACME/lead-time",
+          "declared_charts": 0,
           "definition": {
             "eval_id": "ACME/lead-time",
             "version": 1,
@@ -84,6 +85,7 @@
         },
         {
           "id": "ACME/pr-size",
+          "declared_charts": 0,
           "definition": {
             "eval_id": "ACME/pr-size",
             "version": 1,
@@ -160,8 +162,8 @@
   "revs": {
     "items": {
       "items": {
-        "ACME/lead-time": "b366c574e083ed4a",
-        "ACME/pr-size": "ff2ab37373f46574"
+        "ACME/lead-time": "f61ad230a4372f32",
+        "ACME/pr-size": "e28e4c891f54337c"
       }
     },
     "fields": {

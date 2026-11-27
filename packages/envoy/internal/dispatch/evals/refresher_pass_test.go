@@ -923,7 +923,7 @@ func correctionEmptiesFirstDays(t *testing.T, agg string) {
 		if err != nil {
 			t.Fatalf("read %s over %s: %v", evalID, day.Format(time.DateOnly), err)
 		}
-		for _, values := range SeriesValuesOf(entry, rows, firsts[evalID], window, nil) {
+		for _, values := range SeriesValuesOf(entry, rows, firsts[evalID], window, nil, AllDays) {
 			if values.Series.Series == "minutes" {
 				return values
 			}

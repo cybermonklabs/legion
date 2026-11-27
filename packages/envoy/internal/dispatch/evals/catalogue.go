@@ -120,11 +120,16 @@ func inCuts(series ...Series) []Series {
 	return cut
 }
 
-// perRole is one headline series of hours for each of roles, every one folded as a quantile.
+// perRole is one headline series of hours for each of roles, every one folded as a quantile and
+// drawn by role alone (Series.byRole): a chart draws its window figures, one bar a role, and never
+// a day of it, so the list reads answer its days and compare_days empty (ListDays). It keeps its
+// role, so the eval's fold key (foldKeyOf) and its stored figures do not move, and an eval's own
+// read still answers its days (AllDays).
 func perRole(roles ...string) []Series {
 	series := make([]Series, len(roles))
 	for i, role := range roles {
 		series[i] = headline(role, unitHours, AggQuantile)
+		series[i].byRole = true
 	}
 	return series
 }
@@ -501,6 +506,34 @@ func init() {
 	for i := range catalogue {
 		catalogue[i].body = methodBody(catalogue[i].definition.Slug)
 	}
+}
+
+// catalogueByRole is, by slug, the series of each catalogue eval a chart draws by role alone
+// (Series.byRole), in each cut it is stored in: what a read asks (drawnByRole), since no column
+// stores the mark and a series read from the store carries none.
+var catalogueByRole = byRoleOf(catalogue)
+
+// byRoleOf is the series of entries that a chart draws by role alone, by slug and then by name.
+func byRoleOf(entries []catalogueEntry) map[string]map[string]bool {
+	byRole := map[string]map[string]bool{}
+	for _, entry := range entries {
+		for _, series := range entry.series {
+			if !series.byRole {
+				continue
+			}
+			if byRole[entry.definition.Slug] == nil {
+				byRole[entry.definition.Slug] = map[string]bool{}
+			}
+			byRole[entry.definition.Slug][series.Series] = true
+		}
+	}
+	return byRole
+}
+
+// drawnByRole reports whether series, a series of definition's eval, is one its catalogue entry
+// draws by role alone (catalogueByRole): a computed eval's, since only the catalogue marks one.
+func drawnByRole(definition Definition, series string) bool {
+	return definition.Computed() && catalogueByRole[definition.Slug][series]
 }
 
 // admissionEval is each project's admission eval `<KEY>/admission` (dispatch://INFRA-2918, D18;

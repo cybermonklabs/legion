@@ -206,6 +206,7 @@ const EVALS_KEYS = allOf<keyof EvalListResponse>()([
 const EVALS_WHOLE = EVALS_KEYS.filter((key) => key !== "items");
 const EVAL_ITEM_KEYS = allOf<keyof EvalListItem>()([
   "id",
+  "declared_charts",
   "definition",
   "owner",
   "series",

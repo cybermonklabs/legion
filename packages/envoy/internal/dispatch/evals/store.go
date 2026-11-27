@@ -236,9 +236,10 @@ func scanDefinitionCharts(row pgx.Row) (Definition, error) {
 	return definition, nil
 }
 
-// scanDefinitionOf reads a row of definitionColumns into a definition, and into charts, where it
-// is not nil, the column after them.
-func scanDefinitionOf(row pgx.Row, charts *[]byte) (Definition, error) {
+// scanDefinitionOf reads a row of definitionColumns into a definition, and into after, where it
+// is not nil, the column after them: a version's charts (scanDefinitionCharts), or how many it
+// declares (CurrentIn).
+func scanDefinitionOf(row pgx.Row, after any) (Definition, error) {
 	var definition Definition
 	var failureModes, links, writtenBy []byte
 	columns := []any{
@@ -249,8 +250,8 @@ func scanDefinitionOf(row pgx.Row, charts *[]byte) (Definition, error) {
 		&definition.Kind, &definition.Source, &definition.State, &definition.ReplacedBy, &links,
 		&definition.WrittenVia, &writtenBy, &definition.CreatedAt, &definition.SetByPerson, &definition.Answer,
 	}
-	if charts != nil {
-		columns = append(columns, charts)
+	if after != nil {
+		columns = append(columns, after)
 	}
 	if err := row.Scan(columns...); err != nil {
 		return Definition{}, err
