@@ -155,35 +155,36 @@ func missingCheckGaps(coverage model.IssueCoverage) []string {
 func (s *server) requirementBlocksIn(ctx context.Context, artifactID string, trees *displayTreeReader) ([]model.RequirementCoverage, error) {
 	var requirements []model.RequirementCoverage
 	var sources []blockTreeSource
-	err := s.typedBlocksIn(ctx, artifactID, "requirement", trees != nil, func(node *pmdoc.Node, id, content string) {
+	err := s.typedBlocksIn(ctx, artifactID, "requirement", trees != nil, func(node *pmdoc.Node, id string, source blockTreeSource) {
 		requirements = append(requirements, model.RequirementCoverage{BlockID: id, Text: blockWords(node)})
 		if trees != nil {
-			sources = append(sources, blockTreeSource{markdown: content, labels: pmdoc.CalledFootnoteLabels(node)})
+			sources = append(sources, source)
 		}
 	})
 	if err != nil {
 		return nil, err
 	}
 	for index, source := range sources {
-		requirement := &requirements[index]
-		registerBlockTree(trees, &requirement.TextTree, source, artifactID, requirement.BlockID)
+		registerBlockTree(trees, &requirements[index].TextTree, source)
 	}
 	return requirements, nil
 }
 
 // blockTreeSource is what one block's tree is read from: markdown, the content typedBlocksIn
 // hands over for the block or the one GET /api/v1/reference-targets cuts from the block's stored
-// text (blockTextContent), and labels, the footnotes the block calls that its document defines
+// text (blockTextContent); labels, the footnotes the block calls that its document defines
 // outside it: the ones its node calls (pmdoc.CalledFootnoteLabels), or, for a block the batched
-// reference read finds no node of, the ones its stored text writes as a call (calledFootnotes).
+// reference read finds no node of, the ones its stored text writes as a call (calledFootnotes);
+// and artifactID and blockID, the document that holds the block and the id it holds it under,
+// which registerBlockTree logs a tree it cannot set with. Every source with labels names them.
 type blockTreeSource struct {
-	markdown string
-	labels   []string
+	markdown, artifactID, blockID string
+	labels                        []string
 }
 
-// registerBlockTree registers with trees, as field, the display tree of source, the block
-// artifactID's document holds under blockID. Every read that answers a block's tree registers it
-// here: the coverage read's requirements, the results read's checks and the batched reference
+// registerBlockTree registers with trees, as field, the display tree of source, the block its
+// artifactID's document holds under its blockID. Every read that answers a block's tree registers
+// it here: the coverage read's requirements, the results read's checks and the batched reference
 // read's blocks, so one block answers one tree in all three. The markdown is cut out of the
 // document, so it holds no definition the document writes outside the block, and read alone it
 // reads a call of such a label as text, where the document reads, and the browser editor holds,
@@ -193,7 +194,7 @@ type blockTreeSource struct {
 // (withoutStandInDefinitions); a block with none registers its markdown as it stands. A tree that
 // does not end in the stand-ins is logged and set nowhere, since no other field of the read
 // depends on it.
-func registerBlockTree(trees *displayTreeReader, field *model.DisplayTree, source blockTreeSource, artifactID, blockID string) {
+func registerBlockTree(trees *displayTreeReader, field *model.DisplayTree, source blockTreeSource) {
 	if len(source.labels) == 0 || source.markdown == "" {
 		trees.text(field, source.markdown)
 		return
@@ -202,7 +203,7 @@ func registerBlockTree(trees *displayTreeReader, field *model.DisplayTree, sourc
 		shown, ok := withoutStandInDefinitions(tree, len(source.labels))
 		if !ok {
 			slog.Warn("dispatch: take the stand-in footnote definitions out of a block's tree",
-				"artifact", artifactID, "block", blockID, "labels", source.labels)
+				"artifact", source.artifactID, "block", source.blockID, "labels", source.labels)
 			return
 		}
 		*field = model.DisplayTree(shown)

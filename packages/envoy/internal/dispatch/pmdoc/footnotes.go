@@ -46,9 +46,9 @@ func CalledFootnoteLabels(block *Node) []string {
 	})
 }
 
-// DefinedFootnoteLabels is the label of every footnote definition in doc, each once, in document
-// order and as the definition holds it.
-func DefinedFootnoteLabels(doc *Node) []string {
+// FootnoteDefinitionLabels is the label of every footnote definition in doc, each once, in
+// document order and as the definition holds it.
+func FootnoteDefinitionLabels(doc *Node) []string {
 	var defined []string
 	seen := map[string]struct{}{}
 	Walk(doc, func(node *Node) bool {

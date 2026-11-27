@@ -2830,7 +2830,7 @@ type Wanted =
 test("a press on each inline kind of a Spec statement, at each place, puts the caret where it was pressed", async ({
   browser,
 }) => {
-  test.setTimeout(1_200_000);
+  test.setTimeout(600_000);
   // The image from another website a statement shows, and the bytes answered for it: a grey PNG
   // picture 48 px wide and 24 px tall.
   const foreignPicture = "https://example.com/photo.png";
@@ -2942,7 +2942,7 @@ test("a press on each inline kind of a Spec statement, at each place, puts the c
         },
       ],
     });
-    return { ...seeded, kinds };
+    return { ...seeded, broken, kinds };
   };
   await phase(browser, seed, async (page, seeded) => {
     // The other website is answered here, with the grey picture.
@@ -3188,9 +3188,8 @@ test("a press on each inline kind of a Spec statement, at each place, puts the c
           presses.push({ index: at + 1, kind, place });
       }
     }
-    const broken = seeded.kinds.length + 1;
-    presses.push({ index: broken, kind: undefined, place: "line end" });
-    presses.push({ index: broken, kind: undefined, place: "after" });
+    presses.push({ index: seeded.broken, kind: undefined, place: "line end" });
+    presses.push({ index: seeded.broken, kind: undefined, place: "after" });
     for (const width of [DESKTOP.width, 390]) {
       await page.setViewportSize({ height: DESKTOP.height, width });
       const address = page.url();

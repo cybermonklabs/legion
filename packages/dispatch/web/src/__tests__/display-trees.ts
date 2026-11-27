@@ -22,12 +22,12 @@ export function displayTree(markdown: string): DisplayTree | undefined {
 
 /**
  * The reading the server sends a statement whose words call the footnotes `labels`, each of
- * which its document defines outside it, as `api/coverage.go`'s `requirementBlocksIn` reads it:
- * the statement's markdown read alone reads such a call as text, so it is read with a stand-in
- * definition `[^<label>]: x` of each label after it, a blank line before each, and those
- * definitions, the last blocks of the reading, are taken out of its document. Each call is then
- * a `footnote_reference`, as the document and the editor hold it. `warmMarkdownRenderer` must
- * have resolved before this is called.
+ * which its document defines outside it, as `api/coverage.go`'s `registerBlockTree` reads it for
+ * every read that answers a block's tree: the statement's markdown read alone reads such a call
+ * as text, so it is read with a stand-in definition `[^<label>]: x` of each label after it, a
+ * blank line before each, and those definitions, the last blocks of the reading, are taken out
+ * of its document. Each call is then a `footnote_reference`, as the document and the editor hold
+ * it. `warmMarkdownRenderer` must have resolved before this is called.
  */
 export function displayTreeWithStandIns(markdown: string, labels: readonly string[]): DisplayTree {
   const tree = displayTree(`${markdown}${labels.map((label) => `\n\n[^${label}]: x`).join("")}`);

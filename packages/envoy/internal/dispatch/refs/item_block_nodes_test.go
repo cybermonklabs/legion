@@ -359,7 +359,8 @@ func TestAnAskOptionsLinkJoinsItsIssuesClosure(t *testing.T) {
 // edit reworded one, of an ask whose edit reworded an option, and of a message, one of them past
 // its stored excerpt, it holds an entry for every block, and each is the text the one-item read
 // gives: the reworded blocks' later text, which their first is recorded beside, so a copy that
-// read the oldest text, or a message block's excerpt, fails here.
+// read the oldest text, or a message block's excerpt, fails here. It places each block of the
+// document, and no other, at the document's id and the block's own id.
 func TestBlockTextsReadsEachBlockAsTheOneItemReadsDo(t *testing.T) {
 	t.Parallel()
 	database := storetest.Open(t)
@@ -454,9 +455,16 @@ func TestBlockTextsReadsEachBlockAsTheOneItemReadsDo(t *testing.T) {
 	for i, read := range reads {
 		targets[i] = read.target
 	}
-	texts, err := BlockTexts(ctx, tx, targets)
+	texts, documents, err := BlockTexts(ctx, tx, targets)
 	if err != nil {
 		t.Fatalf("read the blocks' texts in one batch: %v", err)
+	}
+	placed := map[Target]DocumentBlock{
+		reads[0].target: {ArtifactID: artifact, BlockID: "intro"},
+		reads[1].target: {ArtifactID: artifact, BlockID: "plan"},
+	}
+	if !maps.Equal(documents, placed) {
+		t.Errorf("BlockTexts places the document's blocks at %v; want %v", documents, placed)
 	}
 	for _, read := range reads {
 		one, err := read.alone()

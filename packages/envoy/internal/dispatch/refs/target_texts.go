@@ -9,26 +9,35 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 )
 
+// DocumentBlock is where a document's block stands, as document_blocks records it: the id of its
+// document and its own block id.
+type DocumentBlock struct {
+	ArtifactID, BlockID string
+}
+
 // BlockTexts is the whole current text of each block targets names, by target: a document's
 // block (kind block, addressed '<document ref_key>#<block id>') as its latest indexed version
 // holds it (CurrentBlockText), and a block of a comment, of a message or of an ask (the item's
 // block kind, ItemKind.BlockKind) as CurrentItemBlockText reads it. A target of any other kind
 // is passed over, and a block no current version or revision holds has no entry, which is the
-// block TargetNames answers nothing for either.
+// block TargetNames answers nothing for either. Its second answer is, by target, where each
+// document's block it holds a text of stands (DocumentBlock), read by the statement that reads
+// the text; it holds no other kind of block.
 //
 // It is TargetNames' companion for a reader that draws a block whole rather than by its name,
 // which stops at the block's stored excerpt: each kind is read in one statement whatever the
 // number of targets, so a batch costs a statement per kind of block it names and none for a
 // kind it does not.
-func BlockTexts(ctx context.Context, q Queryer, targets []Target) (map[Target]string, error) {
+func BlockTexts(ctx context.Context, q Queryer, targets []Target) (map[Target]string, map[Target]DocumentBlock, error) {
 	ids := map[string][]string{}
 	for _, target := range targets {
 		ids[target.Kind] = append(ids[target.Kind], target.ID)
 	}
 	texts := make(map[Target]string, len(targets))
+	var documents map[Target]DocumentBlock
 	if nodes := ids["block"]; len(nodes) > 0 {
 		rows, err := q.Query(ctx, `
-			select d.node_id, held.text
+			select d.node_id, d.artifact_id::text, d.block_id, held.text
 			from document_blocks d
 			join lateral (
 				select t.text from document_block_texts t
@@ -37,10 +46,11 @@ func BlockTexts(ctx context.Context, q Queryer, targets []Target) (map[Target]st
 			) held on true
 			where d.node_id = any($1) and held.text is not null`, nodes)
 		if err != nil {
-			return nil, fmt.Errorf("read the texts of document blocks: %w", err)
+			return nil, nil, fmt.Errorf("read the texts of document blocks: %w", err)
 		}
-		if err := scanBlockTexts(rows, "block", texts); err != nil {
-			return nil, fmt.Errorf("read the texts of document blocks: %w", err)
+		documents = make(map[Target]DocumentBlock, len(nodes))
+		if err := scanDocumentBlockTexts(rows, texts, documents); err != nil {
+			return nil, nil, fmt.Errorf("read the texts of document blocks: %w", err)
 		}
 	}
 	for _, item := range itemKinds {
@@ -51,11 +61,11 @@ func BlockTexts(ctx context.Context, q Queryer, targets []Target) (map[Target]st
 		}
 		tables, err := item.tables()
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		if !tables.revisions() {
 			if err := messageBlockTexts(ctx, q, kind, nodes, texts); err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 			continue
 		}
@@ -69,13 +79,29 @@ func BlockTexts(ctx context.Context, q Queryer, targets []Target) (map[Target]st
 			) held on true
 			where b.node_id = any($1) and b.position is not null and held.text is not null`, nodes)
 		if err != nil {
-			return nil, fmt.Errorf("read the texts of %s blocks: %w", string(item), err)
+			return nil, nil, fmt.Errorf("read the texts of %s blocks: %w", string(item), err)
 		}
 		if err := scanBlockTexts(rows, kind, texts); err != nil {
-			return nil, fmt.Errorf("read the texts of %s blocks: %w", string(item), err)
+			return nil, nil, fmt.Errorf("read the texts of %s blocks: %w", string(item), err)
 		}
 	}
-	return texts, nil
+	return texts, documents, nil
+}
+
+// scanDocumentBlockTexts reads rows of a document block's node id, its document's id, its block
+// id and its text into texts and documents under kind block, and closes them.
+func scanDocumentBlockTexts(rows pgx.Rows, texts map[Target]string, documents map[Target]DocumentBlock) error {
+	defer rows.Close()
+	for rows.Next() {
+		var nodeID, held string
+		var document DocumentBlock
+		if err := rows.Scan(&nodeID, &document.ArtifactID, &document.BlockID, &held); err != nil {
+			return err
+		}
+		target := Target{Kind: "block", ID: nodeID}
+		texts[target], documents[target] = held, document
+	}
+	return rows.Err()
 }
 
 // scanBlockTexts reads rows of a block's node id and its text into texts under kind, and closes

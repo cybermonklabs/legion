@@ -2256,64 +2256,118 @@ test("a press on a statement's words puts the caret in them, and a press on a li
   }
 });
 
-test("a press on a statement's words passes its point to the outline's editing", async () => {
-  const user = userEvent.setup();
-  // The hold goes on a ProseMirror view; a plain editable on the stage stands in for its drawing.
+/**
+ * Draws the body over statement r1 alone for a press on its words: `text`, drawn from `tree`, the
+ * reading the server sends, where one is given, and as stored where none is, with `names` as the
+ * page's batched read named its references. The stage's editable holds the statement's block,
+ * `block` in it, and the editing a press opens is handed a ProseMirror view: of the editor's own
+ * parse of `parsed` (`editorStateOf`), drawn in the block, where `parsed` is given, and else of an
+ * empty document of `text*`, drawn nowhere. `restore` takes the body off the page, destroys the
+ * view and gives the reads back.
+ */
+function stageStatement({
+  block,
+  names,
+  parsed,
+  text,
+  tree,
+}: {
+  block: ReactNode;
+  names?: ReadonlyMap<string, string>;
+  parsed?: string;
+  text: string;
+  tree?: TreeNode["tree"];
+}): { restore: () => void; view: RenderResult } {
   const editorView = new EditorView(null, {
-    state: EditorState.create({
-      schema: new Schema({ nodes: { doc: { content: "text*" }, text: {} } }),
-    }),
+    state:
+      parsed === undefined
+        ? EditorState.create({
+            schema: new Schema({ nodes: { doc: { content: "text*" }, text: {} } }),
+          })
+        : editorStateOf(parsed),
   });
   const onEditing: OnEditing = (artifactId, onEditor) => {
     if (artifactId !== undefined) onEditor?.({ view: editorView });
   };
+  // The view's own editable, which ProseMirror draws the parsed paragraph in, goes in the block.
+  const mountView = (section: HTMLElement | null) => {
+    if (section !== null && parsed !== undefined) section.append(editorView.dom);
+  };
   const editor = (
     <DocumentStage artifactId="artifact-spec">
       <div contentEditable suppressContentEditableWarning>
-        <section data-block-id="r1">
-          <header contentEditable={false}>Requirement</header>
-          <p>The page draws r1.</p>
+        <section data-block-id="r1" ref={mountView}>
+          {block}
         </section>
       </div>
     </DocumentStage>
   );
-  const { read, view } = drawBody(
-    issueTree([statement("r1", { text: "The page draws r1." })]),
-    [],
-    {
-      editor,
-      onEditing,
-    }
-  );
+  const { read, view } = drawBody(issueTree([statement("r1", { text, tree })]), [], {
+    editor,
+    names,
+    onEditing,
+  });
+  return {
+    restore: () => {
+      view.unmount();
+      editorView.destroy();
+      read.mockRestore();
+    },
+    view,
+  };
+}
+
+/** Answers `document.caretPositionFromPoint` with `point`, as the browser answers the point of a
+ *  press, until the restore it returns, which leaves the document's own property as it was. */
+function stubCaretPositionFromPoint(point: (x: number, y: number) => unknown): () => void {
   const original = Object.getOwnPropertyDescriptor(document, "caretPositionFromPoint");
+  Object.defineProperty(document, "caretPositionFromPoint", { configurable: true, value: point });
+  return () => {
+    if (original === undefined) Reflect.deleteProperty(document, "caretPositionFromPoint");
+    else Object.defineProperty(document, "caretPositionFromPoint", original);
+  };
+}
+
+test("a press on a statement's words passes its point to the outline's editing", async () => {
+  const user = userEvent.setup();
+  // The hold goes on a ProseMirror view; a plain editable on the stage stands in for its drawing.
+  const { restore, view } = stageStatement({
+    block: (
+      <>
+        <header contentEditable={false}>Requirement</header>
+        <p>The page draws r1.</p>
+      </>
+    ),
+    text: "The page draws r1.",
+  });
   try {
     const row = rowOf(view, "spec#b-r1");
     const words = within(row).getByText("The page draws r1.");
     const point = mock(() => ({ offsetNode: words.firstChild, offset: 6 }));
-    Object.defineProperty(document, "caretPositionFromPoint", { configurable: true, value: point });
-    const caretIsAt = (offset: number) =>
-      waitFor(() => {
-        const text = row.querySelector('[data-block-id="r1"] p')?.firstChild;
-        expect(text).toBeDefined();
-        expect(window.getSelection()?.anchorNode).toBe(text);
-        expect(window.getSelection()?.anchorOffset).toBe(offset);
-      });
-    await user.pointer({ keys: "[MouseLeft]", target: words, coords: { x: 72, y: 153 } });
-    await caretIsAt(6);
-    expect(point).toHaveBeenCalledWith(72, 153);
+    const unstub = stubCaretPositionFromPoint(point);
+    try {
+      const caretIsAt = (offset: number) =>
+        waitFor(() => {
+          const text = row.querySelector('[data-block-id="r1"] p')?.firstChild;
+          expect(text).toBeDefined();
+          expect(window.getSelection()?.anchorNode).toBe(text);
+          expect(window.getSelection()?.anchorOffset).toBe(offset);
+        });
+      await user.pointer({ keys: "[MouseLeft]", target: words, coords: { x: 72, y: 153 } });
+      await caretIsAt(6);
+      expect(point).toHaveBeenCalledWith(72, 153);
 
-    await user.keyboard("{Escape}");
-    expect(row).toHaveFocus();
-    point.mockClear();
-    await user.keyboard("{Enter}");
-    await caretIsAt(0);
-    expect(point).not.toHaveBeenCalled();
+      await user.keyboard("{Escape}");
+      expect(row).toHaveFocus();
+      point.mockClear();
+      await user.keyboard("{Enter}");
+      await caretIsAt(0);
+      expect(point).not.toHaveBeenCalled();
+    } finally {
+      unstub();
+    }
   } finally {
-    if (original === undefined) Reflect.deleteProperty(document, "caretPositionFromPoint");
-    else Object.defineProperty(document, "caretPositionFromPoint", original);
-    view.unmount();
-    editorView.destroy();
-    read.mockRestore();
+    restore();
   }
 });
 
@@ -2520,36 +2574,13 @@ async function pressAfterKind({
   | { held?: undefined; parsed: string }
 )): Promise<void> {
   const user = userEvent.setup();
-  const editorView = new EditorView(null, {
-    state:
-      parsed === undefined
-        ? EditorState.create({
-            schema: new Schema({ nodes: { doc: { content: "text*" }, text: {} } }),
-          })
-        : editorStateOf(parsed),
-  });
-  const onEditing: OnEditing = (artifactId, onEditor) => {
-    if (artifactId !== undefined) onEditor?.({ view: editorView });
-  };
-  // The view's own editable, which ProseMirror draws the parsed paragraph in, goes in the block.
-  const mountView = (section: HTMLElement | null) => {
-    if (section !== null && parsed !== undefined) section.append(editorView.dom);
-  };
-  const editor = (
-    <DocumentStage artifactId="artifact-spec">
-      <div contentEditable suppressContentEditableWarning>
-        <section data-block-id="r1" ref={mountView}>
-          {parsed === undefined ? <p>{held}</p> : null}
-        </section>
-      </div>
-    </DocumentStage>
-  );
-  const { read, view } = drawBody(issueTree([statement("r1", { text, tree })]), [], {
-    editor,
+  const { restore, view } = stageStatement({
+    block: parsed === undefined ? <p>{held}</p> : null,
     names,
-    onEditing,
+    parsed,
+    text,
+    tree,
   });
-  const original = Object.getOwnPropertyDescriptor(document, "caretPositionFromPoint");
   try {
     const row = rowOf(view, "spec#b-r1");
     const words = await waitFor(() => {
@@ -2565,20 +2596,20 @@ async function pressAfterKind({
       throw new Error(`the statement draws no text "${pressed}"`);
     }
     const point = mock(() => ({ offsetNode: node, offset: into }));
-    Object.defineProperty(document, "caretPositionFromPoint", { configurable: true, value: point });
-    await user.pointer({ keys: "[MouseLeft]", target: node.parentElement });
-    await waitFor(() => {
-      const last = row.querySelector('[data-block-id="r1"] p')?.lastChild;
-      expect(last?.textContent).toBe(lands ?? pressed);
-      expect(window.getSelection()?.anchorNode).toBe(last);
-      expect(window.getSelection()?.anchorOffset).toBe(at ?? into);
-    });
+    const unstub = stubCaretPositionFromPoint(point);
+    try {
+      await user.pointer({ keys: "[MouseLeft]", target: node.parentElement });
+      await waitFor(() => {
+        const last = row.querySelector('[data-block-id="r1"] p')?.lastChild;
+        expect(last?.textContent).toBe(lands ?? pressed);
+        expect(window.getSelection()?.anchorNode).toBe(last);
+        expect(window.getSelection()?.anchorOffset).toBe(at ?? into);
+      });
+    } finally {
+      unstub();
+    }
   } finally {
-    if (original === undefined) Reflect.deleteProperty(document, "caretPositionFromPoint");
-    else Object.defineProperty(document, "caretPositionFromPoint", original);
-    view.unmount();
-    editorView.destroy();
-    read.mockRestore();
+    restore();
   }
 }
 
@@ -2950,29 +2981,12 @@ async function pressPastLineEnd({
   text: string;
 }): Promise<void> {
   const user = userEvent.setup();
-  const editorView = new EditorView(null, {
-    state: EditorState.create({
-      schema: new Schema({ nodes: { doc: { content: "text*" }, text: {} } }),
-    }),
+  const { restore, view } = stageStatement({
+    block: <p>{held}</p>,
+    names,
+    text,
+    tree: displayTree(text),
   });
-  const onEditing: OnEditing = (artifactId, onEditor) => {
-    if (artifactId !== undefined) onEditor?.({ view: editorView });
-  };
-  const editor = (
-    <DocumentStage artifactId="artifact-spec">
-      <div contentEditable suppressContentEditableWarning>
-        <section data-block-id="r1">
-          <p>{held}</p>
-        </section>
-      </div>
-    </DocumentStage>
-  );
-  const { read, view } = drawBody(
-    issueTree([statement("r1", { text, tree: displayTree(text) })]),
-    [],
-    { editor, names, onEditing }
-  );
-  const original = Object.getOwnPropertyDescriptor(document, "caretPositionFromPoint");
   const ownRects = HTMLElement.prototype.getClientRects;
   // The element's one line, 40 to 200 px across and 140 to 160 px down: the press at (260, 150)
   // stands on it, 60 px past its end.
@@ -3002,33 +3016,33 @@ async function pressPastLineEnd({
         ? { offsetNode: parent, offset: [...parent.childNodes].indexOf(found) + 1 }
         : { offsetNode: last, offset: last.textContent?.length ?? 0 };
     const point = mock(() => answer);
-    Object.defineProperty(document, "caretPositionFromPoint", { configurable: true, value: point });
-    await user.pointer({
-      keys: "[MouseLeft]",
-      target: parent,
-      coords: { x: 260, y: 150 },
-    });
-    await waitFor(() => {
-      const paragraph = row.querySelector<HTMLElement>('[data-block-id="r1"] p');
-      const anchor = window.getSelection()?.anchorNode;
-      if (paragraph == null || anchor == null) {
-        throw new Error("the editor's paragraph holds no caret");
-      }
-      const between = document.createRange();
-      caret(paragraph, between);
-      expect(
-        between.comparePoint(anchor, window.getSelection()?.anchorOffset ?? 0),
-        "the caret stands off the place past the element, on its line"
-      ).toBe(0);
-    });
-    expect(point).toHaveBeenCalledWith(260, 150);
+    const unstub = stubCaretPositionFromPoint(point);
+    try {
+      await user.pointer({
+        keys: "[MouseLeft]",
+        target: parent,
+        coords: { x: 260, y: 150 },
+      });
+      await waitFor(() => {
+        const paragraph = row.querySelector<HTMLElement>('[data-block-id="r1"] p');
+        const anchor = window.getSelection()?.anchorNode;
+        if (paragraph == null || anchor == null) {
+          throw new Error("the editor's paragraph holds no caret");
+        }
+        const between = document.createRange();
+        caret(paragraph, between);
+        expect(
+          between.comparePoint(anchor, window.getSelection()?.anchorOffset ?? 0),
+          "the caret stands off the place past the element, on its line"
+        ).toBe(0);
+      });
+      expect(point).toHaveBeenCalledWith(260, 150);
+    } finally {
+      unstub();
+    }
   } finally {
-    if (original === undefined) Reflect.deleteProperty(document, "caretPositionFromPoint");
-    else Object.defineProperty(document, "caretPositionFromPoint", original);
     rects.mockRestore();
-    view.unmount();
-    editorView.destroy();
-    read.mockRestore();
+    restore();
   }
 }
 

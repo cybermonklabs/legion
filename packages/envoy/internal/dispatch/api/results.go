@@ -892,7 +892,7 @@ func (s *server) checkBlockAttributes(ctx context.Context, artifactID, blockID s
 	// The index holds the block, so the live document has it too unless a write landed between
 	// the two reads; such a block carries the schema's defaults alone, `when` before_merge.
 	attributes := docs.CheckAttributes{When: docs.CheckWhenBeforeMerge}
-	err := s.typedBlocksIn(ctx, artifactID, "check", false, func(node *pmdoc.Node, id, _ string) {
+	err := s.typedBlocksIn(ctx, artifactID, "check", false, func(node *pmdoc.Node, id string, _ blockTreeSource) {
 		if id == blockID {
 			attributes = docs.CheckAttributesOf(node)
 		}
@@ -937,20 +937,21 @@ func refuseCheckProvedByCI(ctx context.Context, q queryer, check resolvedCheck) 
 // come through here: the checks of a Verification document (checkBlocksIn) and the requirements
 // of a spec (requirementBlocksIn).
 //
-// When trees is true, visit is handed as content the markdown the block's text_tree is read
-// from, and "" otherwise. That markdown is blockTextContent of the block's text as the block
-// index stores it: the block's slice of the document's markdown, between the byte range the
-// document read itself gives for the block (docs.Service.TextWithBlocks), as refs.PlanBlocks
-// cuts it. GET /api/v1/reference-targets reads a block's tree from that stored text, so the
-// coverage and the results reads take the same text through the same rule, and each of the three
-// reads registers it with the footnotes the block's node calls that the document defines outside
-// it (pmdoc.CalledFootnoteLabels, registerBlockTree): one block answers one tree in all three
-// reads, the whole stored text of a typed block in a quote included, and a call of such a
-// footnote reads in it as the reference the document holds.
+// When trees is true, visit is handed as source what the block's text_tree is read from
+// (blockTreeSource), and the zero source otherwise. Its markdown is blockTextContent of the
+// block's text as the block index stores it: the block's slice of the document's markdown,
+// between the byte range the document read itself gives for the block
+// (docs.Service.TextWithBlocks), as refs.PlanBlocks cuts it. GET /api/v1/reference-targets reads
+// a block's tree from that stored text, so the coverage and the results reads take the same text
+// through the same rule. Its labels are the footnotes the block's node calls that the document
+// defines outside it (pmdoc.CalledFootnoteLabels), which each of the three reads registers the
+// markdown with (registerBlockTree): one block answers one tree in all three reads, the whole
+// stored text of a typed block in a quote included, and a call of such a footnote reads in it as
+// the reference the document holds. Its artifactID and blockID name the document and the block.
 // The ranges come with the markdown from that one read, which serves both from the read cache
 // without a render where it can (typedBlockMarkdown); a block the read gives no range for answers
 // the block's own content (blockContent).
-func (s *server) typedBlocksIn(ctx context.Context, artifactID, blockType string, trees bool, visit func(node *pmdoc.Node, id, content string)) error {
+func (s *server) typedBlocksIn(ctx context.Context, artifactID, blockType string, trees bool, visit func(node *pmdoc.Node, id string, source blockTreeSource)) error {
 	markdown, texts, err := s.typedBlockMarkdown(ctx, artifactID, blockType, trees)
 	if err != nil {
 		return err
@@ -972,15 +973,16 @@ func (s *server) typedBlocksIn(ctx context.Context, artifactID, blockType string
 			return true
 		}
 		seen[id] = struct{}{}
-		content := ""
+		var source blockTreeSource
 		if trees {
+			source = blockTreeSource{artifactID: artifactID, blockID: id, labels: pmdoc.CalledFootnoteLabels(node)}
 			if whole, held := texts[id]; held {
-				content = blockTextContent(whole, true)
+				source.markdown = blockTextContent(whole, true)
 			} else {
-				content = blockContent(node)
+				source.markdown = blockContent(node)
 			}
 		}
-		visit(node, id, content)
+		visit(node, id, source)
 		return true
 	})
 	return nil
@@ -1026,20 +1028,19 @@ func (s *server) typedBlockMarkdown(ctx context.Context, artifactID, blockType s
 func (s *server) checkBlocksIn(ctx context.Context, artifactID string, trees *displayTreeReader) ([]model.CheckBlock, error) {
 	var checks []model.CheckBlock
 	var sources []blockTreeSource
-	err := s.typedBlocksIn(ctx, artifactID, "check", trees != nil, func(node *pmdoc.Node, _, content string) {
+	err := s.typedBlocksIn(ctx, artifactID, "check", trees != nil, func(node *pmdoc.Node, _ string, source blockTreeSource) {
 		check := docs.CheckBlockOf(node)
 		check.ArtifactID, check.Text, check.Results = artifactID, blockWords(node), []model.CheckResult{}
 		checks = append(checks, check)
 		if trees != nil {
-			sources = append(sources, blockTreeSource{markdown: content, labels: pmdoc.CalledFootnoteLabels(node)})
+			sources = append(sources, source)
 		}
 	})
 	if err != nil {
 		return nil, err
 	}
 	for index, source := range sources {
-		check := &checks[index]
-		registerBlockTree(trees, &check.TextTree, source, artifactID, check.BlockID)
+		registerBlockTree(trees, &checks[index].TextTree, source)
 	}
 	return checks, nil
 }

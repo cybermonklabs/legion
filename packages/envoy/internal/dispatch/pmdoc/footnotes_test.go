@@ -81,9 +81,9 @@ func TestATextWritesTheDefinedLabelsItsCallsHoldUpToCase(t *testing.T) {
 		footnoteDefinition("k1", paragraph("K.")),
 		footnoteDefinition("k10", paragraph("Longer.")),
 	}}
-	defined := DefinedFootnoteLabels(doc)
+	defined := FootnoteDefinitionLabels(doc)
 	if want := []string{"b", "a]b", "esc", "k1", "k10"}; !slices.Equal(defined, want) {
-		t.Fatalf("DefinedFootnoteLabels = %q, want %q", defined, want)
+		t.Fatalf("FootnoteDefinitionLabels = %q, want %q", defined, want)
 	}
 	const written = "See [^K1], [^a\\]b], \\[^esc] and [^k10x]."
 	if got, want := WrittenFootnoteLabels(written, defined), []string{"a]b", "esc", "k1"}; !slices.Equal(got, want) {
