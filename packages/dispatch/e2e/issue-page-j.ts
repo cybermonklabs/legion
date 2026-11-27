@@ -165,18 +165,16 @@ export async function seedTallSpec(): Promise<TallSpecSeed> {
 
 /**
  * `seedTallSpec`'s issue with one block more in its spec, after its third statement: the markdown
- * `block` writes once the issue stands, which is a statement and anything it names, such as the
- * text of a footnote it references. A seed for `phase`.
+ * `block` writes once the issue stands, which is a statement and anything it names. A seed for
+ * `phase`.
  */
 export function seedStatement(
-  block: (seeded: TallSpecSeed) => Promise<string> | string
+  block: (seeded: TallSpecSeed) => string
 ): () => Promise<TallSpecSeed> {
   return async () => {
     const seeded = await seedTallSpec();
     await editArtifact(seeded.specArtifactId, {
-      ops: [
-        { after: `block:${requirementBlockId(3)}`, markdown: await block(seeded), op: "insert" },
-      ],
+      ops: [{ after: `block:${requirementBlockId(3)}`, markdown: block(seeded), op: "insert" }],
     });
     return seeded;
   };

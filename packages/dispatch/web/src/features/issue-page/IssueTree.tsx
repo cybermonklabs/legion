@@ -41,7 +41,9 @@ import { FAILED_READ_RETRY, FailedReadLine } from "./slots/failed-read-line";
 import { useFollowing } from "./slots/following";
 import { CYCLE_STATES, EVERYTHING, TreeRows } from "./TreeRows";
 import {
+  type FocusedRowNote,
   focusedRowIn,
+  focusedRowNote,
   focusIsLoose,
   nearestRowIn,
   nodeRowSelectorOf,
@@ -1128,14 +1130,7 @@ export function IssueTree({
     undefined
   );
   const heldRow = useRef<
-    | {
-        readonly following: string;
-        readonly index: number;
-        readonly key: string;
-        readonly node: string | undefined;
-        readonly root: TreeNode;
-      }
-    | undefined
+    (FocusedRowNote & { readonly following: string; readonly root: TreeNode }) | undefined
   >(undefined);
   const editingRow = editing?.row;
   useEffect(() => {
@@ -1173,18 +1168,8 @@ export function IssueTree({
     // The drop check above has read the note: the tree drawn now decides whether it lasts
     // (`noteAfterDraw`).
     ownAct.current = noteAfterDraw(ownAct.current, root, editingRow);
-    const holder = focusedRowIn(tree);
-    const focusedKey = holder?.dataset.rowKey;
-    heldRow.current =
-      focusedKey === undefined
-        ? undefined
-        : {
-            following,
-            index: order.indexOf(focusedKey),
-            key: focusedKey,
-            node: holder?.dataset.nodeId,
-            root,
-          };
+    const focused = focusedRowNote(tree, order);
+    heldRow.current = focused === undefined ? undefined : { ...focused, following, root };
   }, [editingRow, following, leave, root, rows, setFocusedNode, stopEditing]);
 
   // A write from the line at the foot takes the reader to what they wrote: their newest

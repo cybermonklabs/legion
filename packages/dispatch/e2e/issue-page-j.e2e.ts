@@ -2298,8 +2298,7 @@ test("a key that only scrolls the page keeps the reader's place in the Spec view
 // statement takes the focus once the press is over, as a press does. At cf7e601c that focus
 // places the statement by the page's rule, which puts a statement taller than the screen at its
 // top, so the page jumps up and the selected words leave the screen: on a large issue's copy,
-// 1693 px at 1440 x 900 for a statement 4144 px tall, and 4940 px at 390 x 844. A press on the
-// same words, with no drag, moves no page (the row above).
+// 1693 px at 1440 x 900 for a statement 4144 px tall, and 4940 px at 390 x 844.
 // SLOW(>=2s): a seeded issue of sixty statements and one of 600 words, a load of the Spec view, a
 // turn of the wheel and a drag, each read once the page has stopped moving.
 test("a drag over a Spec statement's words keeps the selection on screen and the reader's place", async ({

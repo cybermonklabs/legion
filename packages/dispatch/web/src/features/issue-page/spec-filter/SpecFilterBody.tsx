@@ -79,7 +79,8 @@ import { FailedReadLine } from "../slots/failed-read-line";
 import { specSummary } from "../spec-summary";
 import { treeContext } from "../target-naming";
 import {
-  focusedRowIn,
+  type FocusedRowNote,
+  focusedRowNote,
   focusIsLoose,
   nearestRowIn,
   nodeRowSelectorOf,
@@ -148,8 +149,8 @@ const NOTHING = (): void => {};
  * its one tab stop, the arrows and `j`/`k` move between them, `w` moves to the decision beside
  * a statement, the arrows and `j`/`k` move on from that decision to the statement after or
  * before its run, `f` steps through a statement's links - its count of checks among them, which
- * opens the Verification view on that statement. Enter puts the caret at the block's start. A
- * press puts it at the pressed text without scrolling the page; Escape returns to the row.
+ * opens the Verification view on that statement. Enter, or a press on a statement's words, puts
+ * the caret at the start of its words through the outline's editor, and Escape returns to the row.
  * `r` replies to a statement once a statement can be a target of the outline's writer, which
  * the body already passes to the keymap. The focus on a statement puts its facts in Details,
  * as a row of the outline does, and the focus on a decision puts that decision's. An address
@@ -417,9 +418,7 @@ export function SpecFilterBody({
   //
   // When the filter or a read removes the edited row, release its document even if the focus
   // was already elsewhere. There is no row for Escape's focus restoration to find.
-  const heldRow = useRef<
-    { readonly index: number; readonly key: string; readonly node: string | undefined } | undefined
-  >(undefined);
+  const heldRow = useRef<FocusedRowNote | undefined>(undefined);
   useEffect(() => {
     const container = tree.current;
     const order = rows.map((row) => rowKeyOf(row));
@@ -438,12 +437,7 @@ export function SpecFilterBody({
       if (nearest !== null) moveToRow(nearest);
     }
     ownEdit.current = noteAfterDraw(ownEdit.current, view, editingRow);
-    const holder = focusedRowIn(container);
-    const focusedKey = holder?.dataset.rowKey;
-    heldRow.current =
-      focusedKey === undefined
-        ? undefined
-        : { index: order.indexOf(focusedKey), key: focusedKey, node: holder?.dataset.nodeId };
+    heldRow.current = focusedRowNote(container, order);
   }, [editingRow, rows, stopEditing, view]);
   const takeFocus = useCallback(
     (node: TreeNode) => {

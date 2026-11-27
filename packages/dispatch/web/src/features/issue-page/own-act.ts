@@ -125,7 +125,7 @@ function sameOwnFields(before: TreeNode, after: TreeNode): boolean {
  * the reader's own letters under an authorship mark (`proofAuthored`) the stored markdown does
  * not write, and an address typed out bare under no mark, which the server's reading links.
  */
-export function editWords(block: DisplayTree): string {
+function editWords(block: DisplayTree): string {
   return flatWords(wordsOf(block));
 }
 
