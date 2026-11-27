@@ -126,8 +126,8 @@ var policyRefusals = []policyRefusal{
 	{"%w: the subject token's workflow_ref %s is not %s/<path>@%s: its repository, the path of its workflow file and its ref", []any{exchange.ErrClaimMissing, "example-org/other/" + corpusWorkflow + "@" + corpusRef, corpusRepository, corpusRef}, policySource},
 	{"%w: no entry lists the workflow %s of %s on %s", []any{exchange.ErrNoEntry, corpusWorkflow, corpusRepository, corpusRef}, policySource},
 	{"%w: the result entries of the workflow %s of %s under the ref patterns %s all match %s; list the workflow under patterns no ref matches two of", []any{exchange.ErrTwoEntries, corpusWorkflow, corpusRepository, "refs/heads/*, refs/heads/main", corpusRef}, policySource},
-	{"%w: the subject token's %s claim is not %s", []any{exchange.ErrClaimMissing, "sha", "40 lowercase hex digits"}, policySource},
-	{"%w: the subject token's %s claim is not %s", []any{exchange.ErrClaimMissing, "run_id", "a positive decimal number a signed 64-bit integer holds"}, policySource},
+	{"%w: the subject token's %w", []any{exchange.ErrClaimMissing, runClaimRefusal("sha")}, policySource},
+	{"%w: the subject token's %w", []any{exchange.ErrClaimMissing, runClaimRefusal("run_id")}, policySource},
 	{"%w: the subject token carries no email claim, so it names no account (ask for it with format=full)", []any{exchange.ErrClaimMissing}, policySource},
 	{"%w: no entry lists the Google account %s", []any{exchange.ErrNoEntry, corpusMachine}, policySource},
 	{"%w: %s presented a token whose email_verified is not true", []any{exchange.ErrEmailNotVerified, corpusMachine}, policySource},
@@ -332,8 +332,10 @@ func TestEachCorpusHintStandsInTheBrokersSource(t *testing.T) {
 // fmt.Errorf("%w: …"), so a refusal the broker sends and the corpus leaves out fails here, rather
 // than reaching cipher-client with no row that shows its pattern takes the broker's text. The one
 // refusal cipher-client withholds is the exception, and it must still stand in the source. One
-// format, the refusal of a run's claim of the wrong form (readCIRun), takes each form a claim is
-// held to, so each such form must fill a row too.
+// format, the refusal of a run's claim of the wrong form (readCIRun), wraps what
+// oauthwire.ParseCIRun answers, "<claim> claim is not <form>": each form ParseCIRun holds a claim
+// readCIRun reads from the token to must fill a row too, and the forms are read off ParseCIRun
+// itself, one claim of a run broken at a time (runClaimRefusal).
 func TestEveryPolicyRefusalIsInTheCorpus(t *testing.T) {
 	withheld := map[string]bool{"%w: the subject token is not a person's Google identity token (%v)": true}
 	listed := map[string]bool{}
@@ -365,25 +367,63 @@ func TestEveryPolicyRefusalIsInTheCorpus(t *testing.T) {
 			t.Errorf("%s no longer writes the withheld refusal %q: take it out of this test's list", policySource, format)
 		}
 	}
+	forms := map[string]string{}
+	for _, claim := range readCIRunClaims {
+		text := runClaimRefusal(claim).Error()
+		_, form, ok := strings.Cut(text, " claim is not ")
+		if !ok {
+			t.Fatalf("oauthwire.ParseCIRun refused a run whose %s claim is broken with %q, which is no \"<claim> claim is not <form>\"", claim, text)
+		}
+		forms[form] = claim
+	}
 	filled := map[string]bool{}
 	for _, refusal := range policyRefusals {
+		if refusal.format != "%w: the subject token's %w" {
+			continue
+		}
 		for _, arg := range refusal.args {
-			if text, ok := arg.(string); ok {
-				filled[text] = true
+			if wrapped, ok := arg.(error); ok && wrapped != exchange.ErrClaimMissing {
+				if _, form, ok := strings.Cut(wrapped.Error(), " claim is not "); ok {
+					filled[form] = true
+				}
 			}
 		}
 	}
-	forms := regexp.MustCompile(`form: ("(?:[^"\\]|\\.)*")`).FindAllStringSubmatch(string(raw), -1)
-	if len(forms) == 0 {
-		t.Fatalf("%s holds no claim form (form: \"…\"): the scan reads nothing", policySource)
-	}
-	for _, match := range forms {
-		form, err := strconv.Unquote(match[1])
-		if err != nil {
-			t.Fatalf("%s: %s does not unquote: %v", policySource, match[1], err)
-		}
+	for form, claim := range forms {
 		if !filled[form] {
-			t.Errorf("%s holds a claim to the form %q, which no row of policyRefusals fills: add a row of the claim refusal with it", policySource, form)
+			t.Errorf("oauthwire.ParseCIRun holds the %s claim to the form %q, which no row of policyRefusals fills: add a row of the claim refusal with it", claim, form)
 		}
 	}
+}
+
+// readCIRunClaims are the claims of a run that exchange's readCIRun reads from the subject token
+// and oauthwire.ParseCIRun then holds to a form; readCIRun refuses an absent or empty one first
+// (claimString), so ParseCIRun's own refusal of those is a form they always meet.
+var readCIRunClaims = []string{"sha", "run_id", "run_attempt", "check_run_id"}
+
+// runClaimRefusal is oauthwire.ParseCIRun's refusal of a run that is whole but for claim, which
+// holds a value of no form ParseCIRun takes. A claim it does not break, or a run it takes, is an
+// error that names it, which no row of the corpus matches.
+func runClaimRefusal(claim string) error {
+	run := oauthwire.CIRun{
+		Repository: corpusRepository, WorkflowRef: corpusRepository + "/" + corpusWorkflow + "@" + corpusRef, Ref: corpusRef,
+		SHA: strings.Repeat("a", 40), EventName: "push", RunnerEnvironment: "github-hosted",
+		RunID: "1", RunAttempt: "1", CheckRunID: "1",
+	}
+	switch claim {
+	case "sha":
+		run.SHA = "not-a-commit"
+	case "run_id":
+		run.RunID = "0"
+	case "run_attempt":
+		run.RunAttempt = "0"
+	case "check_run_id":
+		run.CheckRunID = "0"
+	default:
+		return fmt.Errorf("runClaimRefusal breaks no claim %q", claim)
+	}
+	if _, err := oauthwire.ParseCIRun(run); err != nil {
+		return err
+	}
+	return fmt.Errorf("oauthwire.ParseCIRun took a run whose %s claim is %q", claim, "broken")
 }
