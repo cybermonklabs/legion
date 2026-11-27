@@ -88,9 +88,11 @@ func TestWithNoPacingTheRefreshGateGrantsEveryRefresh(t *testing.T) {
 }
 
 // The sweep's correction sets the count to the refresh wakes it re-read waiting or to the credits
-// out, whichever is more: a re-read misses the refresh posted a moment before it and the one whose
-// turn is running, so it never lowers the count below the credits out, and a re-read above them
-// counts the lane's wakes with no admission behind them.
+// out, whichever is more: a re-read misses the refresh posted a moment before it, the one whose
+// turn is running and a launch of the lane that waits outside the pacing, so it never lowers the
+// count below the credits out, and a re-read above them is the lag of a view: a wake whose credit
+// came back a moment before its machine stored the view without it, which is the one way a
+// reading exceeds the credits out while every refresh wake in the pacing holds a credit.
 func TestTheRefreshGateCorrectsTheHeldCountFromTheWakesWaiting(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -106,7 +108,7 @@ func TestTheRefreshGateCorrectsTheHeldCountFromTheWakesWaiting(t *testing.T) {
 		{name: "a credit given back is no floor", admit: 5, release: 5, waiting: 0, held: 0},
 		{name: "the floor is the credits still out", admit: 5, release: 2, waiting: 0, held: 3},
 		{name: "a reading above the credits out is taken as it stands", admit: 3, waiting: 6, held: 6},
-		{name: "a wake with no admission behind it is counted", admit: 0, waiting: 2, held: 2},
+		{name: "a wake a view still shows after its credit came back is counted", admit: 0, waiting: 2, held: 2},
 		{name: "a lane whose credits are all back is given its whole share again", admit: 0, waiting: 0, held: 0},
 		{name: "a gate whose whole share is out keeps it", admit: gateRate, waiting: 2, held: gateRate},
 	} {

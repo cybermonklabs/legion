@@ -2,13 +2,15 @@ package supervise
 
 // The stale-plugin refresh gate as a machine meets it: one credit for one relaunch, taken before
 // the relaunch was decided and given back at the end of the decision that holds it unless a
-// refresh wake of this claim's is waiting (RefreshGate, admitRefresh, endRefreshLane,
+// launch of that relaunch is still owed on this claim (RefreshGate, admitRefresh, endRefreshLane,
 // dispatch://INFRA-2712 R1). The gate itself is counted in gate_test.go; what these tests hold
 // is the machine's half of it — that every path out of refreshPlugin which raises no relaunch
 // returns its credit at once, that a relaunch the pacing holds keeps its credit for exactly as
 // long as it waits, that a claim whose turn ends with a relaunch held asks the gate for one of
-// its own, and that each door a relaunch can leave by with no wake behind it returns the credit
-// there (the two take-backs a store can refuse, at the end of this file).
+// its own, and that each door a relaunch can leave by with no launch of it owed returns the
+// credit there (the two take-backs a store can refuse, at the end of this file). That the credit
+// is kept through the waits of a launch outside the pacing — a retry, a hold of the pause's gate
+// and a wait at its issue pod's start gate — is held in refresh_bound_test.go.
 //
 // Beside the credit runs the re-read the admitted wake makes when its turn comes (R2): a refresh
 // can wait tens of minutes in a wave, and a claim that has registered on this daemon's contract
@@ -288,8 +290,9 @@ func TestARefreshWhoseClaimRegisteredCurrentInsideTheWaitRelaunchesNothing(t *te
 //
 // A branch that leaves a wake of this claim's waiting is run on to that wake's turn (settle),
 // because the credit that wake holds is half of what such a row says: every row ends with the
-// gate back at the count of wakes this claim has waiting, which is the whole of what a credit
-// may ever be held for (endRefreshLane, dispatch://INFRA-2712 R1).
+// gate back at the count of wakes this claim has waiting, since in these rows that wake is the
+// one launch of the lane a credit may be held for (endRefreshLane, laneLaunchOwed,
+// dispatch://INFRA-2712 R1).
 //
 // The negative control is the credit check removed from the end of a decision (endRefreshLane):
 // each case then ends with a credit out and nothing holding it, which this test reads at the
@@ -534,8 +537,8 @@ func TestAHeldRelaunchTheGateRefusesAtTheTurnsEndWaitsForTheNextSweep(t *testing
 
 // A refresh whose wake is let go with the claim's process gives its credit back there. Every
 // suspension, failure and retirement of a claim ends with that one call (letGo), which drops the
-// wake delayed over the process together with the process itself: nothing of the refresh waits in
-// the pacing after it, so the credit is owed back at once (dispatch://INFRA-2712 R1).
+// wake delayed over the process together with the process itself: no launch of the refresh is
+// owed after it, so the credit goes back at once (dispatch://INFRA-2712 R1).
 //
 // A credit kept here would cost the lane more than a credit. The sweep's own correction takes it
 // back a minute later, but the machine goes on reading it as held until then, so the next post
@@ -568,8 +571,8 @@ func TestARefreshWhoseWakeIsLetGoWithTheClaimsProcessGivesItsCreditBack(t *testi
 
 // A refresh whose turn finds a suspension held over the claim relaunches nothing: the hold ends
 // the process the relaunch would have replaced, and the claim is suspended rather than launched
-// (wakeNow, endHeld). The wake is spent and nothing of this refresh waits in the pacing, so the
-// credit goes back with the process the suspension lets go (suspendedFor, letGo).
+// (wakeNow, endHeld). The wake is spent and no launch of this refresh is owed, so the credit goes
+// back with the process the suspension lets go (suspendedFor, letGo).
 //
 // It is the one of wakeNow's two turns that do not reach runWake which the machine drives: the
 // other is a wake whose kind starts no process, and every kind a machine delays today starts one
@@ -625,14 +628,16 @@ func (s *cleanupReservedAfterFirstCheckStore) CheckLaunch(ctx context.Context, c
 	return s.memStore.CheckLaunch(ctx, c)
 }
 
-// A refused launch gives the credit back wherever the refusal came from, because the one release
-// sits in the refusal of every launch there is (relaunchRefused, dispatch://INFRA-2712 R1). The
-// refusal driven here is the one that reaches that refusal's first branch over a claim which
-// still records its process: the error goes back to whoever asked for it and no retry is armed,
-// so the credit would otherwise be held by a machine with no wake behind it until the sweep's
-// own correction took it back — and, until then, read as held, which makes the machine skip the
-// gate at its next uncredited post and delay a wake the gate never granted (Machine.refreshCredit,
-// refreshPlugin).
+// A refused launch that arms no retry gives the credit back wherever the refusal came from,
+// because every launch there is meets its refusal in one place (relaunchRefused), and the end of
+// the decision that met it gives the credit back (endRefreshLane, dispatch://INFRA-2712 R1); a
+// refusal that arms a retry keeps the credit through that retry, which still owes the launch the
+// credit was admitted on (laneLaunchOwed). The refusal driven here is the one that reaches that
+// refusal's first branch over a claim which still records its process: the error goes back to
+// whoever asked for it and no retry is armed, so the credit would otherwise be held by a machine
+// with no launch of the lane owed until the sweep's own correction took it back — and, until
+// then, read as held, which makes the machine skip the gate at its next uncredited post and delay
+// a wake the gate never granted (Machine.refreshCredit, refreshPlugin).
 //
 // It is driven rather than placed: the relaunch's own lifecycle check passes, as it does for
 // every relaunch the lane raises, and the launch path's second check meets the cleanup an
@@ -760,7 +765,7 @@ func (h *harness) wantTakeBackRefused(gate *fakeAdmitter, kept runtime.Locator, 
 
 // A take-back the store refuses at a refresh wake's turn gives the credit back. The wake is off
 // the machine before the take-back is tried (wakeNow), so a decision that ends there holds a
-// credit no wake of this lane waits for, and the end of it is where that credit goes back
+// credit no launch of this lane is owed for, and the end of it is where that credit goes back
 // (runWake, endRefreshLane, dispatch://INFRA-2712 R1).
 //
 // The window is driven rather than placed. The agent is handed its task and prompted with it

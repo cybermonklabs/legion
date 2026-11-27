@@ -130,16 +130,18 @@ const PodUpdateContract = 46
 //
 // credit is the credit of the refresh gate taken for this claim, or nil, before this decision
 // was asked for (RefreshGate, dispatch://INFRA-2712 R1): the daemon's pass takes one for each
-// claim it posts and hands it over on the event (StalePlugin.Credit). The machine holds it
-// from here until the decision that raises the relaunch ends with no refresh wake of this
-// claim's waiting, which is where every credit of this lane goes back (refreshCredit,
-// endRefreshLane). Every return below that raises no relaunch is such an end, because the lane
-// gave up nothing by it and the next sweep will decide this claim again: the contract already
-// current, a wake already held, no process to replace, and the turn this relaunch waits out,
-// whose own end runs the relaunch back through here.
+// claim it posts and hands it over on the event (StalePlugin.Credit). The machine holds it from
+// here while the launch of the relaunch this raises is owed on the claim — its wake in the
+// pacing, held by the pause's gate or waiting at its issue pod's start gate, or its retry on
+// TimerRelaunch — and the end of the first decision that leaves none owed gives it back, which
+// is where every credit of this lane goes back (refreshCredit, laneLaunchOwed, endRefreshLane).
+// Every return below that raises no relaunch is such an end, because the lane gave up nothing by
+// it and the next sweep will decide this claim again: the contract already current, a wake
+// already held, no process to replace, and the turn this relaunch waits out, whose own end runs
+// the relaunch back through here.
 //
 // A post that arrives carrying a credit over a machine that already holds one gives the new
-// credit straight back to the gate, keeping the one held for the wake it was taken for. The pass
+// credit straight back to the gate, keeping the one held for the launch it was taken for. The pass
 // reads the views the machines last published, so a wake delayed a moment before it counted is
 // one its reading misses (internal/daemon's delayedWakes), and the post that reading raises
 // reaches a machine whose refresh is already waiting. A machine holds one credit, so taking the
@@ -214,8 +216,8 @@ func (m *Machine) refreshPlugin(ctx context.Context, trigger string, credit *Ref
 // this decision can disagree — a decision that lands between them can start the turn of a claim
 // read idle, or end the turn of one read working — so a post that reaches this call carrying a
 // credit is exactly that window, and the end of this decision gives the credit straight back,
-// since it leaves no refresh wake waiting (endRefreshLane). The window costs the claim one sweep,
-// which is what an imperfect skip costs the pass everywhere else it makes one.
+// since it leaves no launch of the lane owed (endRefreshLane). The window costs the claim one
+// sweep, which is what an imperfect skip costs the pass everywhere else it makes one.
 func (m *Machine) holdStaleRelaunch(trigger string) {
 	if m.staleRelaunch == nil {
 		m.log.Info("supervise: the process speaks another plugin contract; its relaunch waits for the agent's turn to end",
@@ -310,7 +312,12 @@ func (m *Machine) relaunchMarked(ctx context.Context, kind WakeKind, interruptio
 // raised it and the launch that runs it: the contract the relaunch is made for, which that
 // launch writes to PluginRelaunchFor as it starts the process replacing the stale one
 // (commitPluginRelaunch), and the wake kind that launch is reserved under, which is the lane
-// that raised it (relaunchStale, reserveWake).
+// that raised it (relaunchStale, reserveWake). That kind is also the one a held try of the launch
+// waits under, and the one the retries relaunchAtProbe and relaunchRefused arm are recorded under,
+// so it is what keeps the refresh credit the launch was admitted on while the launch is owed
+// (waitsUnder, laneLaunchOwed). The retries of a start that waits for the session store or for
+// its pod's update round are the exception: they wait under the launch kind and keep no credit
+// (relaunchLater lists each caller and what it records).
 //
 // The two are one value rather than two fields of the machine because they are one fact — this
 // launch is a stale-plugin relaunch of this lane, for this contract — and because they travel
@@ -321,6 +328,23 @@ func (m *Machine) relaunchMarked(ctx context.Context, kind WakeKind, interruptio
 type pluginIntent struct {
 	contract int
 	kind     WakeKind
+}
+
+// waitsUnder is the wake kind the launch this intent names waits under: the kind of the lane that
+// raised it (relaunchStale), and WakeLaunch for a nil intent, which is every launch no
+// stale-plugin relaunch raised. It is the one read of that kind: by the wake gate (reserveWake),
+// by a try a gate holds (heldTryWake), and where a retry is armed to be recorded under it
+// (launchAfter, relaunchAfterFailure, relaunchAtProbe). A wake's kind is read here off the intent
+// of the launch it holds as the wake is made, but nothing ties the kind a retry is recorded under
+// to the intent its closure restores (retryHolding): the two agree, and with them the kind a
+// launch waits under and the kind its refresh credit is held for (laneLaunchOwed), only because
+// each caller of relaunchLater passes the kind of the intent its retry restores, which
+// relaunchLater states with the list of those callers.
+func (i *pluginIntent) waitsUnder() WakeKind {
+	if i == nil {
+		return WakeLaunch
+	}
+	return i.kind
 }
 
 // markPluginRelaunch records that the launch this decision is raising is a stale-plugin relaunch
@@ -361,8 +385,10 @@ func (m *Machine) holdPluginRelaunch(intent *pluginIntent) {
 // launch, so the mark reaches the store with that write, which comes before the runtime starts
 // the process: a restart between the two, or a start the runtime refuses, can leave a mark whose
 // launch was recorded but whose process never ran. It writes nothing for a launch no stale-plugin
-// relaunch raised. The intent's other half, the kind, was spent at the gate this launch passed
-// and is written nowhere of the claim (reserveWake).
+// relaunch raised. The intent's other half, the kind, is written nowhere of the claim: the gate
+// this launch passed read it (reserveWake), and the launch's own copy of the intent gives it to a
+// try a gate holds and to a retry the launch arms (launchTry.intent, heldTryWake,
+// relaunchAtProbe).
 func (m *Machine) commitPluginRelaunch() {
 	if intent := m.takePluginRelaunch(); intent != nil {
 		m.claim.PluginRelaunchFor = intent.contract

@@ -153,6 +153,11 @@ func (m *Machine) holdsTask() bool {
 // to relaunch, which meets the gate again (relaunchUnfinished in internal/daemon); one whose
 // process runs keeps its state, since the launch held is to replace that process.
 //
+// A launch of the stale-plugin lane keeps the credit of the refresh gate it was admitted on while
+// this gate holds it, since that launch is still owed (laneLaunchOwed): the pause's stop that
+// drops the wake gives the credit back as its decision ends, and the let-out takes the wake into
+// the pacing, or runs it, with that same credit (pauseStopDue, letOutHeldLaunch, endRefreshLane).
+//
 // The decision ends in a state its own row names (Handle). A suspension made inside it would not:
 // no row that launches names suspended, and the hold that would excuse it is read before the row
 // acts. So the claim's stop is posted for its next decision (TimerPause, armed at once), as the
@@ -240,12 +245,17 @@ func pauseStopDue(m *Machine, ctx context.Context, _ Event) error {
 // bindWake, waitOnMachine). A launch the pacer lets out at once runs now, and the daemon is told
 // that let-out (wakeLetOut, decision 14); one that waits is told to the daemon as waiting when
 // this decision ends (tellWakeQueue) and of its let-out at its turn (wakeNow). A daemon whose
-// pacing is off runs it now, unpaced. A
-// launch that had its turn from the pacing before the pause's gate held it (wake.paid) runs now
-// with no place of its own: a wake the pacing let out, whose turn met the pause, writes its one
-// wake line now, reporting the whole of its hold from its join (runWake), and one that passed the
-// wake gate wrote its line there (wake.ran). Its callers are the gate's own stop finding no pause
-// open (pauseStopDue) and the resume's event (resumePause).
+// pacing is off runs it now, unpaced. A launch that had its turn from the pacing before the
+// pause's gate held it (wake.paid) runs now with no place of its own: a wake the pacing let out,
+// whose turn met the pause, writes its one wake line now, reporting the whole of its hold from its
+// join (runWake), and one that passed the wake gate wrote its line there (wake.ran). Its callers
+// are the gate's own stop finding no pause open (pauseStopDue) and the resume's event
+// (resumePause).
+//
+// A launch of the stale-plugin lane goes out with the refresh credit it kept through the hold, so
+// the wake this puts in the pacing is one the refresh gate admitted, and a launch this runs now
+// gives the credit back as its decision ends unless it leaves itself still owed (laneLaunchOwed,
+// endRefreshLane).
 func (m *Machine) letOutHeldLaunch(ctx context.Context) error {
 	waiting := m.wake
 	waiting.pause = 0
