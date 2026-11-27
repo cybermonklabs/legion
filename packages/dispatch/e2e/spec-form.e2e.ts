@@ -500,7 +500,8 @@ test("the person's note survives a refused Approve: the field holds Dispatch's r
       .getByTestId(`ask-${tree.asks.card}`);
     const note = "I read each statement, and I approve it.";
     await card.getByRole("radio", { name: /^Approve / }).check();
-    await card.getByRole("button", { name: "Add a note or answer in your own words" }).click();
+    // The answer box of an ask body always stands in place, so the note goes straight into it: an
+    // approval's box is labelled Reason until a pick needs one, and Reason (required) then.
     await card.getByLabel("Reason", { exact: true }).fill(note);
     await card.getByRole("button", { exact: true, name: "Answer" }).click();
 
