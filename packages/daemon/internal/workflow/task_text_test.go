@@ -193,7 +193,8 @@ func TestAStepOfASecondTaskNamesItsOwnWorkingCopy(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		return engine.StartPromotedWorker(ctx, tx, s, claim.RoleImplementer)
+		_, err = engine.StartPromotedWorker(ctx, tx, s, claim.RoleImplementer, false)
+		return err
 	})
 	hasPrefix(t, "resumed implementer", lastStart(t, pool, root.Key, claim.RoleImplementer),
 		"Continue root. Issue: LEGION-208. Phase: implementing."+working+" Task: a. Step 1 of 2: implementer.")
