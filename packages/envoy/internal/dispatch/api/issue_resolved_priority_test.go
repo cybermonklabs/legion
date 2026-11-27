@@ -1319,55 +1319,6 @@ func priorityOrParentOperations(t *testing.T, name string, document map[string]a
 	return found
 }
 
-// takesAnyProperty is takesPriority's walk for any of names: whether node, a schema of document
-// name, has a property named one of them, its own, a nested object's, an array's items', or one a
-// $ref, allOf, anyOf or oneOf reaches. seen holds the component schemas already walked, so a schema
-// that refers to itself ends.
-func takesAnyProperty(t *testing.T, name string, node any, schemas map[string]any, seen map[string]bool, names ...string) bool {
-	t.Helper()
-	schema, ok := node.(map[string]any)
-	if !ok {
-		return false
-	}
-	if reference, referenced := schema["$ref"].(string); referenced {
-		component, local := strings.CutPrefix(reference, "#/components/schemas/")
-		if !local {
-			t.Fatalf("%s holds the reference %s, which this test does not follow", name, reference)
-		}
-		if seen[component] {
-			return false
-		}
-		seen[component] = true
-		target, declared := schemas[component]
-		if !declared {
-			t.Fatalf("%s holds the reference %s, which names no schema it declares", name, reference)
-		}
-		if takesAnyProperty(t, name, target, schemas, seen, names...) {
-			return true
-		}
-	}
-	for _, combinator := range []string{"allOf", "anyOf", "oneOf"} {
-		branches, _ := schema[combinator].([]any)
-		for _, branch := range branches {
-			if takesAnyProperty(t, name, branch, schemas, seen, names...) {
-				return true
-			}
-		}
-	}
-	properties, _ := schema["properties"].(map[string]any)
-	for _, property := range names {
-		if _, named := properties[property]; named {
-			return true
-		}
-	}
-	for _, property := range properties {
-		if takesAnyProperty(t, name, property, schemas, seen, names...) {
-			return true
-		}
-	}
-	return takesAnyProperty(t, name, schema["items"], schemas, seen, names...)
-}
-
 // TestEveryOperationThatTakesAPriorityOrAParentRunsTheP0Rows is the inventory of J2's last clause
 // (R10), beside INFRA-5637's TestEveryOperationThatTakesAnIssuePriorityNeedsP0ForZero. It reads
 // every committed dispatch-openapi*.json and takes each operation whose request body has a property

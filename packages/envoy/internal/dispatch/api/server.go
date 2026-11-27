@@ -511,6 +511,13 @@ type server struct {
 	// test sets it: it is how a case commits a write between the decision and the list, to read
 	// that the list answers the snapshot the decision read.
 	betweenPersonPageReads func()
+	// afterIssueLoad runs in writeIssue once the write has read the issue it writes (loadIssue),
+	// holding that issue's owner lock and every lock it took before it, with the issue's key; nil,
+	// which every server the deployment builds leaves it, runs nothing. Only a test sets it
+	// (testServerOptions' afterIssueLoad): it is how a case holds one write there, its locks
+	// held, while it sends a second write, to read whether the second waits for the first
+	// (TestTwoPriorityWritesOnOneTreeEndWithRightEvents).
+	afterIssueLoad func(ctx context.Context, key string)
 	// crossProjectWait overrides how long the related-item check waits for its cross-project leg
 	// once its meaning stage has answered (awaitCrossProject); zero, which every server the
 	// deployment builds leaves it, means crossProjectGrace. Only a test sets it, so a grace that

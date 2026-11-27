@@ -433,6 +433,9 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 	if err != nil {
 		return issueWriteResult{}, err
 	}
+	if s.afterIssueLoad != nil {
+		s.afterIssueLoad(ctx, key)
+	}
 	// The p0 check (p0_scope.go) is the first refusal that reads the issue: a write that makes
 	// its own priority 0 without the scope is refused before the sequence, the parent and the
 	// closed issue are, so a credential without p0 meets this refusal and no other. before.Priority

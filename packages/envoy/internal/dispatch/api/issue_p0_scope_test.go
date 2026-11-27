@@ -335,7 +335,7 @@ func priorityOperations(t *testing.T, name string, document map[string]any) []st
 			content, _ := body["content"].(map[string]any)
 			for _, media := range content {
 				schema, _ := media.(map[string]any)
-				if takesPriority(t, name, schema["schema"], schemas, map[string]bool{}) {
+				if takesAnyProperty(t, name, schema["schema"], schemas, map[string]bool{}, "priority") {
 					found = append(found, strings.ToUpper(method)+" "+path)
 					break
 				}
@@ -345,10 +345,12 @@ func priorityOperations(t *testing.T, name string, document map[string]any) []st
 	return found
 }
 
-// takesPriority reports whether node, a schema of document name, has a property named priority:
-// its own, a nested object's, an array's items', or one a $ref, allOf, anyOf or oneOf reaches.
-// seen holds the component schemas already walked, so a schema that refers to itself ends.
-func takesPriority(t *testing.T, name string, node any, schemas map[string]any, seen map[string]bool) bool {
+// takesAnyProperty reports whether node, a schema of document name, has a property named one of
+// names: its own, a nested object's, an array's items', or one a $ref, allOf, anyOf or oneOf
+// reaches. seen holds the component schemas already walked, so a schema that refers to itself
+// ends. It is the one walk of both inventories: G1's for priority (priorityOperations), and
+// INFRA-5793's for priority or parent (priorityOrParentOperations).
+func takesAnyProperty(t *testing.T, name string, node any, schemas map[string]any, seen map[string]bool, names ...string) bool {
 	t.Helper()
 	schema, ok := node.(map[string]any)
 	if !ok {
@@ -367,28 +369,30 @@ func takesPriority(t *testing.T, name string, node any, schemas map[string]any, 
 		if !declared {
 			t.Fatalf("%s holds the reference %s, which names no schema it declares", name, reference)
 		}
-		if takesPriority(t, name, target, schemas, seen) {
+		if takesAnyProperty(t, name, target, schemas, seen, names...) {
 			return true
 		}
 	}
 	for _, combinator := range []string{"allOf", "anyOf", "oneOf"} {
 		branches, _ := schema[combinator].([]any)
 		for _, branch := range branches {
-			if takesPriority(t, name, branch, schemas, seen) {
+			if takesAnyProperty(t, name, branch, schemas, seen, names...) {
 				return true
 			}
 		}
 	}
 	properties, _ := schema["properties"].(map[string]any)
-	if _, named := properties["priority"]; named {
-		return true
-	}
-	for _, property := range properties {
-		if takesPriority(t, name, property, schemas, seen) {
+	for _, property := range names {
+		if _, named := properties[property]; named {
 			return true
 		}
 	}
-	return takesPriority(t, name, schema["items"], schemas, seen)
+	for _, property := range properties {
+		if takesAnyProperty(t, name, property, schemas, seen, names...) {
+			return true
+		}
+	}
+	return takesAnyProperty(t, name, schema["items"], schemas, seen, names...)
 }
 
 // TestEveryOperationThatTakesAnIssuePriorityNeedsP0ForZero is the inventory of G1. It reads every
@@ -540,7 +544,8 @@ func TestARefusedP0WriteWritesNothingElseOfItsRequest(t *testing.T) {
 // TestTheIssuesOwnPriorityDecidesTheP0Check: under a root that a browser made P0, the shared
 // token's write of priority 0 on a child with no own priority is refused 403 naming p0, and so is
 // a create of a child at priority 0: the priority the child inherits is not its own. A create of a
-// child that names no priority is written, with no own priority.
+// child that names no priority is refused too, since the new child would read P0 from the root and
+// the shared token's session is no architect of it (J2 of dispatch://INFRA-5793).
 func TestTheIssuesOwnPriorityDecidesTheP0Check(t *testing.T) {
 	t.Parallel()
 	rig := newLegionStatusRig(t, false)
@@ -568,19 +573,12 @@ func TestTheIssuesOwnPriorityDecidesTheP0Check(t *testing.T) {
 	})
 
 	t.Run("a create of a child with no priority", func(t *testing.T) {
-		made := shared.send(t, http.MethodPost, "/api/v1/issues", map[string]any{
-			"project": brokerTestProject, "title": rig.title(), "parent": root, "force": true,
+		title := rig.title()
+		refused := shared.send(t, http.MethodPost, "/api/v1/issues", map[string]any{
+			"project": brokerTestProject, "title": title, "parent": root, "force": true,
 		})
-		if made.Code != http.StatusCreated {
-			t.Fatalf("status=%d body=%s, want 201: the create names no priority", made.Code, made.Body.String())
-		}
-		child := decodeBody[model.Issue](t, made)
-		if child.Parent == nil || *child.Parent != root {
-			t.Errorf("the child's parent = %v, want %s", child.Parent, root)
-		}
-		if stored := readP0Issue(t, rig.database, child.Key); stored.priority != nil {
-			t.Errorf("%s as the create made it: %s, want no own priority", child.Key, stored)
-		}
+		requireP0Refusal(t, refused)
+		requireNoIssueTitled(t, rig.database, title)
 	})
 }
 

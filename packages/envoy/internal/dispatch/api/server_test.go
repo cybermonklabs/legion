@@ -245,6 +245,10 @@ type testServerOptions struct {
 	// answered gives that lookup a bound no run reaches, so a loaded machine cannot turn the
 	// answer into an unanswered lookup.
 	mentionLookupBound func(target string) time.Duration
+	// afterIssueLoad is the hold writeIssue runs once it has read the issue it writes under that
+	// issue's owner lock (server.afterIssueLoad); nil holds nothing, as every server the
+	// deployment builds does.
+	afterIssueLoad func(ctx context.Context, key string)
 	// relatedBound is the related-item check's meaning allowance and its wait for the
 	// cross-project leg, with the check's own allowance past them (server.withRelatedBound);
 	// zero keeps production's. A case whose verdict is what the check's meaning stage found
@@ -455,6 +459,7 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 	served.duplicateBound = options.duplicateBound
 	served.inboxStatementBound = options.inboxStatementBound
 	served.mentionLookupBound = options.mentionLookupBound
+	served.afterIssueLoad = options.afterIssueLoad
 	served.withRelatedBound(options.relatedBound)
 	// waitBackground, as production's shutdown calls it: every keyed handler and every delivery a
 	// handler detached from its request, then the sockets, the hub, the relay and the test hooks'
@@ -1041,6 +1046,10 @@ func TestEventNotifyRules(t *testing.T) {
 		{name: "user thread state", event: model.Event{Type: "user_thread_state.updated", Actor: user}, want: false},
 		{name: "user decision kept", event: model.Event{Type: "decision.kept", Actor: user}, want: false},
 		{name: "user priority write", event: model.Event{Type: "priority.updated", Actor: user, Payload: model.PriorityEventPayload{ID: "ship-the-daemon", Change: model.PriorityChanged}}, want: false},
+		// J3 of dispatch://INFRA-5793: an issue.updated whose changed names only the resolved
+		// priority fields is what a write to another issue appends on an issue whose resolved
+		// priority it moved. It wakes nobody, whoever wrote, since nobody asked that issue anything.
+		{name: "user resolved priority of another write", event: model.Event{Type: "issue.updated", Actor: user, Payload: model.IssueEventPayload{Changed: []string{"resolved_priority"}}}, want: false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			if got := broker.Notify(test.event); got != test.want {
