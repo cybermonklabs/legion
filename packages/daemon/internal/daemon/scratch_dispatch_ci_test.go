@@ -512,15 +512,21 @@ func scratchCIPoll(within time.Duration, condition func() bool) bool {
 // scratchCIWithin of the publish, and Dispatch's read of the issue's results names the run's page.
 // The results are read after the daemon holds the failure, so no read of them is what moved it.
 //
-// Three controls, each kept. The same order with no settlement, where no failure arrives within
+// Two controls, each kept. The same order with no settlement, where no failure arrives within
 // scratchCIWithin of the run's set, so the settlement is what carried it, while the results read
 // names the page, so Dispatch could read the run. A Dispatch with the settings left out, no App
 // and so no delivery settings, where the daemon holds no first state at the head that says no run
 // concluded there, but the state of a check whose runs GitHub could not be read, so the App is
-// what the fixture's first state needs. And a Dispatch with its App and no delivery settings,
-// where the first state arrives all the same, since the settle reads the head's runs whatever the
-// settings hold, while the settlement carries no failure within scratchCIWithin of its publish,
-// so the delivery settings are what the settlement needs.
+// what the fixture's first state needs.
+//
+// The third case is no control but the road's own reading: a Dispatch with its App and no
+// delivery settings, where the first state and the settlement's failure both arrive all the same.
+// The settle reads the head's runs whatever the settings hold, and Dispatch's delivery intake
+// binds its durable once the settings cache's first read has answered, whatever it found, and
+// hands a CI settlement to its handler with no settings saved, since neither the head row nor the
+// check states' owed mark reads a setting (Envoy's delivery.Intake.Run and route). So the
+// settings are no part of the road the settlement takes, and the control that stands for that
+// road is the one with no settlement.
 func TestTheScratchDispatchPublishesACIStateFromTheSettlement(t *testing.T) {
 	t.Parallel()
 	t.Run("the settlement publishes the failure", func(t *testing.T) {
@@ -594,7 +600,7 @@ func TestTheScratchDispatchPublishesACIStateFromTheSettlement(t *testing.T) {
 		t.Logf("with no App the daemon holds %s at %s only as %v within %s of the head's write", scratchCICheck, head, seen, scratchCIWithin)
 	})
 
-	t.Run("control: with no delivery settings the settlement carries no failure", func(t *testing.T) {
+	t.Run("with no delivery settings the settlement carries the failure all the same", func(t *testing.T) {
 		r := newScratchCIRig(t, true)
 		head := scratchCIHead(r.issue, "x")
 		first := r.awaitFirstState(head, r.stageHead(head))
@@ -604,16 +610,16 @@ func TestTheScratchDispatchPublishesACIStateFromTheSettlement(t *testing.T) {
 		switch {
 		case !found:
 			t.Fatalf("UNKNOWN: the daemon holds no state of %s at %s; %s", scratchCICheck, head, r.readout())
-		case failed:
-			t.Fatalf("with no delivery settings the daemon holds %s at %s %s within %s of the settlement's publish: something other than the delivery intake told Dispatch; %s",
-				scratchCICheck, head, held, scratchCIWithin, r.readout())
+		case !failed:
+			t.Fatalf("with no delivery settings the daemon holds %s at %s %s, not ci_case %s, %s after the settlement's publish: the intake no longer hands a CI settlement to its handler with no settings saved, so the fixture's settings are part of the settlement's road after all; %s",
+				scratchCICheck, head, held, scratchCIFailure, scratchCIWithin, r.readout())
 		}
-		// The control could pass blind if Dispatch could not read the run at all.
+		// The reading could stand on nothing if Dispatch could not read the run at all.
 		if named, body := r.resultsName(run.HTMLURL); !named {
 			t.Fatalf("UNKNOWN: Dispatch's read of %s's results does not name the run's page %s, so it could not read the run the settlement told of: %s",
 				r.issue, run.HTMLURL, body)
 		}
-		t.Logf("with no delivery settings the daemon held %s at %s first as %s, and still holds %s %s after the settlement's publish, while Dispatch's read of the results names %s",
+		t.Logf("with no delivery settings the daemon held %s at %s first as %s, and holds %s within %s of the settlement's publish, while Dispatch's read of the results names %s",
 			scratchCICheck, head, first, held, scratchCIWithin, run.HTMLURL)
 	})
 }

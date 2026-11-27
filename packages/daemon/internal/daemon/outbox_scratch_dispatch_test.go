@@ -641,12 +641,14 @@ func (d *scratchDispatch) stop() {
 
 // writeDeliverySettings writes the server's delivery settings, deploying from repo, "owner/name",
 // and waits until the server's delivery intake has taken its durable on the notification stream.
-// The intake stays idle until a settings row with a well-formed deploy repository exists
-// (Envoy's delivery.Intake.Run), and only then reads the settlement of a pull request's checks
-// the listener publishes, which marks the check states of the issue at that pull request's open
-// head owed. The take-over that binds the durable marks every issue with an open head owed too,
-// so it ends here, before the caller writes a head. The write proves first that the App reads
-// repo (Envoy's putDeliverySettings), so the server must run with an App and with NATS.
+// It is the order a user keeps, and the wait is what the caller needs: the intake binds the
+// durable whether or not a settings row is saved, once the settings cache's first read has
+// answered (Envoy's delivery.Intake.Run), and the take-over that binds it marks every issue with
+// an open head owed, so that marking ends here, before the caller writes a head. The settlement
+// of a pull request's checks, which marks the check states of the issue at that pull request's
+// open head owed, is handed to its handler with no settings saved as well (Envoy's
+// delivery.Intake.route), so the settings are no part of its road. The write proves that the App
+// reads repo (Envoy's putDeliverySettings), so the server must run with an App and with NATS.
 func (d *scratchDispatch) writeDeliverySettings(repo string) {
 	t := d.t
 	t.Helper()
