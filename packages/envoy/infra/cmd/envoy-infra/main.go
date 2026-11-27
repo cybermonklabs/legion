@@ -1,9 +1,10 @@
 // Command envoy-infra is envoy-infra's command line. seed writes a NATS nkey user seed into a
 // secret store and checks and verifies the one stored there (package seed); render prints what the
-// AWS components register, for a program that needs it outside Pulumi (package render); routes
-// records a clustered hub's pods at its route authorization's env stage and checks its routes once
-// authorization is on (package routes); and `envoy-infra --version` prints the release it was built
-// as.
+// AWS components register, for a program that needs it outside Pulumi (package render); buckets
+// creates and recreates the KV buckets a listener copies: its normal runs once no writer of them
+// runs, its break-glass create while they run (package buckets); routes records a clustered hub's
+// pods at its route authorization's env stage and checks its routes once authorization is on
+// (package routes); and `envoy-infra --version` prints the release it was built as.
 package main
 
 import (
@@ -14,6 +15,7 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/sjawhar/envoy/infra/buckets"
 	"github.com/sjawhar/envoy/infra/render"
 	"github.com/sjawhar/envoy/infra/routes"
 	"github.com/sjawhar/envoy/infra/seed"
@@ -43,6 +45,9 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, stores se
 	if len(args) > 0 && args[0] == "render" {
 		return render.Command(args[1:], stdout, stderr)
 	}
+	if len(args) > 0 && args[0] == "buckets" {
+		return buckets.Command(ctx, args[1:], stdout, stderr)
+	}
 	if len(args) > 0 && args[0] == "routes" {
 		return routes.Command(ctx, args[1:], stdout, stderr, open)
 	}
@@ -56,11 +61,12 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, stores se
 	help := len(args) > 0 && (args[0] == "-h" || args[0] == "-help" || args[0] == "--help")
 	if !help {
 		// The words given are not echoed: a seed pasted there must not reach the terminal.
-		fmt.Fprintln(stderr, "envoy-infra: the command is seed, render or routes, or --version alone")
+		fmt.Fprintln(stderr, "envoy-infra: the command is seed, render, buckets or routes, or --version alone")
 	}
 	fmt.Fprintln(stderr, "usage: envoy-infra --version")
 	seed.Command(ctx, []string{"--help"}, stdout, stderr, stores)
 	render.Command([]string{"--help"}, stdout, stderr)
+	buckets.Command(ctx, []string{"--help"}, stdout, stderr)
 	routes.Command(ctx, []string{"--help"}, stdout, stderr, open)
 	if help {
 		return 0

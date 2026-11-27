@@ -25,6 +25,7 @@ import (
 	jose "github.com/go-jose/go-jose/v4"
 	"gopkg.in/yaml.v3"
 
+	"github.com/sjawhar/envoy/internal/bus/bustest"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/testnats"
@@ -330,10 +331,14 @@ const identityProbeBody = `{"message":"identity probe","role":"-identity-probe"}
 
 // startCopysListener starts the listener binary as the copy's manifests/listener.yaml configures
 // it, against the issuer at issuer and a NATS of its own, with ENVOY_OIDC_ACCOUNTS accounts and
-// Dispatch's principal testDispatchSubject; it answers the process and its port.
+// Dispatch's principal testDispatchSubject; it answers the process and its port. The NATS holds
+// the buckets a listener copies before the listener starts (bustest.ProvisionURL), as cluster.sh's
+// nats_provision makes them in the copy: no listener creates one, and a start that finds one
+// missing waits, answering /healthz 503 "waiting".
 func startCopysListener(t *testing.T, binary, issuer, accounts string) (*cmdtest.Process, int) {
 	t.Helper()
 	_, natsURL := testnats.Start(t)
+	bustest.ProvisionURL(t, natsURL, 1)
 	held := cmdtest.HoldPort(t)
 	cmd := exec.Command(binary)
 	cmd.Env = []string{

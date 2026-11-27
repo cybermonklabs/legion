@@ -13,6 +13,7 @@ import (
 
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/bus/bustest"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
@@ -71,11 +72,13 @@ func setupUnboundDurableFixture(t *testing.T, client *bus.Client, consumer strin
 // openHealthzDeps is the listenerDeps /healthz reads, built on client: handler bound to the
 // durable, and both registries open with their caches ready. The client is the caller's, so a test
 // that needs one of its own, with a clock for the bus's reconnect reporting, connects it and hands
-// it over, and the deps are returned for a caller to add what its test reads, such as a role lane.
+// it over; its connection is marked as a fixture's (bustest.Fixture), so the registries create
+// their buckets. The deps are returned for a caller to add what its test reads, such as a role
+// lane.
 func openHealthzDeps(t *testing.T, client *bus.Client, consumer string, handler natsgo.MsgHandler) *listenerDeps {
 	t.Helper()
 	bindBoundDurable(t, client, consumer, handler)
-	registry, err := store.Open(t.Context(), client.Conn, store.WithReplicas(1))
+	registry, err := store.Open(t.Context(), bustest.Fixture(client.Conn), store.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("open interest registry: %v", err)
 	}
@@ -93,7 +96,7 @@ func openHealthzDeps(t *testing.T, client *bus.Client, consumer string, handler 
 	if err := sessions.WaitForCacheReady(readyCtx); err != nil {
 		t.Fatalf("wait for session cache: %v", err)
 	}
-	return &listenerDeps{client: client, registry: registry, sessions: sessions, caches: listenerCaches(registry, sessions, nil), consumer: consumer}
+	return &listenerDeps{client: client, registry: registry, sessions: sessions, caches: listenerCaches(registry, sessions, nil, nil), consumer: consumer}
 }
 
 // serveHealthz returns a get() that serves one /healthz request over deps, as the listener mounts
@@ -103,7 +106,7 @@ func serveHealthz(deps *listenerDeps) func() (int, map[string]any) {
 	state.Store(deps)
 	return func() (int, map[string]any) {
 		recorder := httptest.NewRecorder()
-		healthzHandler(state, nil).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+		healthzHandler(state, nil, nil).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/healthz", nil))
 		var body map[string]any
 		_ = json.Unmarshal(recorder.Body.Bytes(), &body)
 		return recorder.Code, body

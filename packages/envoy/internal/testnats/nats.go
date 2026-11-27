@@ -30,6 +30,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1037,6 +1038,11 @@ func (g *NkeyGrant) Grant(t testing.TB, allow ...string) {
 	}
 }
 
+// Log is the server's log, with the debug and protocol trace: a publish the grant refuses is
+// there as `Permissions Violation for Publish to "<subject>"`, on the line of the connection
+// (`cid:<id>`, nats.Conn.GetClientID) that sent it.
+func (g *NkeyGrant) Log() string { return g.srv.Log() }
+
 func publishGrantConfig(user string, allow []string) string {
 	return grantConfig(user, "publish", allow)
 }
@@ -1140,22 +1146,20 @@ func awaitAuth(t testing.TB, uri string, admit bool) {
 	}
 }
 
-// ConnectSeed connects to uri as the nkey user whose seed is seed, or with no credential when seed
-// is "", with a one-second dial timeout and no reconnect, then opts, and returns the connection or
-// the server's answer: a test that expects a refusal reads it from the error.
+// ConnectSeed connects to uri as the nkey user whose seed is seed (SeedOption), or with no
+// credential when seed is "", with a one-second dial timeout and no reconnect, then opts, and
+// returns the connection or the server's answer: a test that expects a refusal reads it from the
+// error.
 func ConnectSeed(t testing.TB, uri, seed string, opts ...natsgo.Option) (*natsgo.Conn, error) {
 	t.Helper()
 	options := append([]natsgo.Option{natsgo.Timeout(dialTimeout), natsgo.NoReconnect()}, seedOptions(t, seed)...)
 	return dialNATS(uri, append(options, opts...)...)
 }
 
-// seedOptions is the option that signs a connect as the nkey user whose seed is seed, or none when
-// seed is "".
-func seedOptions(t testing.TB, seed string) []natsgo.Option {
+// SeedOption has a connection present the nkey user whose seed is seed, as a server started with
+// StartNkeyAuthorized requires of every client.
+func SeedOption(t testing.TB, seed string) natsgo.Option {
 	t.Helper()
-	if seed == "" {
-		return nil
-	}
 	user, err := nkeys.FromSeed([]byte(seed))
 	if err != nil {
 		t.Fatalf("read the seed: %v", err)
@@ -1164,7 +1168,17 @@ func seedOptions(t testing.TB, seed string) []natsgo.Option {
 	if err != nil {
 		t.Fatalf("read the seed's public key: %v", err)
 	}
-	return []natsgo.Option{natsgo.Nkey(public, user.Sign)}
+	return natsgo.Nkey(public, user.Sign)
+}
+
+// seedOptions is the option that signs a connect as the nkey user whose seed is seed
+// (SeedOption), or none when seed is "".
+func seedOptions(t testing.TB, seed string) []natsgo.Option {
+	t.Helper()
+	if seed == "" {
+		return nil
+	}
+	return []natsgo.Option{SeedOption(t, seed)}
 }
 
 // dialNATS is every dial of this package's helpers: natsgo.Connect, which a row of this package's
@@ -1181,16 +1195,19 @@ const (
 
 // Connect waits, until testDeadline, for a test NATS server to accept a real connection and
 // JetStream to answer an operation before returning it, each dial and request cut to what is left
-// (waitEnd), the dials of each connect together. The relay accepts a connection before the server
-// behind it has finished its protocol handshake, and NATS can complete that handshake while
-// JetStream is still starting; a KV test needs both readiness boundaries.
-func Connect(t testing.TB, uri string) *natsgo.Conn {
+// (waitEnd), the dials of each connect together; opts are the connection's after the wait's dial
+// options, a credential (SeedOption) among them for a server that admits no client without one.
+// The relay accepts a connection before the server behind it has finished its protocol handshake,
+// and NATS can complete that handshake while JetStream is still starting; a KV test needs both
+// readiness boundaries.
+func Connect(t testing.TB, uri string, opts ...natsgo.Option) *natsgo.Conn {
 	t.Helper()
-	return connectAs(t, uri, "")
+	return connectAs(t, uri, "", opts...)
 }
 
-// connectAs is Connect as the nkey user whose seed is seed, or with no credential when seed is "".
-func connectAs(t testing.TB, uri, seed string) *natsgo.Conn {
+// connectAs is Connect as the nkey user whose seed is seed, or with no credential when seed is "",
+// with opts after the wait's dial options and the credential.
+func connectAs(t testing.TB, uri, seed string, opts ...natsgo.Option) *natsgo.Conn {
 	t.Helper()
 	bound := boundOf(t)
 	credential := seedOptions(t, seed)
@@ -1198,7 +1215,7 @@ func connectAs(t testing.TB, uri, seed string) *natsgo.Conn {
 	for {
 		var err error
 		options, retire := bound.dial()
-		conn, err = dialNATS(uri, append(options, credential...)...)
+		conn, err = dialNATS(uri, slices.Concat(options, credential, opts)...)
 		if err == nil {
 			retire()
 			break

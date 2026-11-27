@@ -15,6 +15,7 @@ import (
 
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/bus/bustest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/kvwatch"
 	"github.com/sjawhar/envoy/internal/logging"
@@ -22,10 +23,11 @@ import (
 )
 
 // connectNATS connects to the package's shared NATS server, in the JetStream account
-// testnats.URL hands t, where no earlier test made a CI bucket.
+// testnats.URL hands t, where no earlier test made a CI bucket. The connection is a fixture's
+// (bustest.Connect), so Open creates the bucket it finds missing.
 func connectNATS(t testing.TB) (*natsgo.Conn, func()) {
 	t.Helper()
-	conn := testnats.Connect(t, testnats.URL(t))
+	conn := bustest.Connect(t, testnats.URL(t))
 	return conn, conn.Close
 }
 

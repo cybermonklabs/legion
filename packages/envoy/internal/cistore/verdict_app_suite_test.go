@@ -71,16 +71,7 @@ func verdictListenerOn(t *testing.T, client *bus.Client, verdictAppID string) *v
 	log.SetOutput(&logged)
 	log.SetFlags(0)
 	t.Cleanup(func() { log.SetOutput(previous); log.SetFlags(flags) })
-	store, err := cistore.Open(t.Context(), client.Conn, logging.New("test"),
-		cistore.WithReplicas(1), cistore.WithTTL(time.Hour))
-	if err != nil {
-		t.Fatalf("open cistore: %v", err)
-	}
-	ready, cancel := context.WithTimeout(t.Context(), 10*time.Second)
-	defer cancel()
-	if err := store.WaitForCacheReady(ready); err != nil {
-		t.Fatalf("cache ready: %v", err)
-	}
+	store := openListener(t, client.Conn)
 	loop, endLoop := context.WithCancel(t.Context())
 	t.Cleanup(endLoop)
 	cistore.StartSummaryLoop(loop, store, client, 100*time.Millisecond, 20*time.Millisecond, metrics.New().NewGauge("held", ""), logging.New("e2e"))

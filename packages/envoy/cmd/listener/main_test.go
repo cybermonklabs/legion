@@ -19,6 +19,7 @@ import (
 
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/bus/bustest"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dedupe"
@@ -123,7 +124,7 @@ func TestStartingGateLogsEachRefusedRequest(t *testing.T) {
 func TestHealthz_Starting_Returns200WithJSON(t *testing.T) {
 	t.Parallel()
 	var state atomic.Pointer[listenerDeps]
-	handler := healthzHandler(&state, nil)
+	handler := healthzHandler(&state, nil, nil)
 
 	rr := httptest.NewRecorder()
 	handler.ServeHTTP(rr, httptest.NewRequest("GET", "/healthz", nil))
@@ -178,7 +179,7 @@ func TestFullMux_StartingState(t *testing.T) {
 	var state atomic.Pointer[listenerDeps]
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/healthz", healthzHandler(&state, nil))
+	mux.HandleFunc("/healthz", healthzHandler(&state, nil, nil))
 
 	mux.Handle("/v1/", newStartingGate("v1", logging.NewWithWriter("test", io.Discard)))
 
@@ -338,6 +339,9 @@ func TestPublishHandler_RejectsInvalidSource(t *testing.T) {
 	}
 }
 
+// setupPublishTestClient is a bus client on the test's own account of the package's shared server,
+// on a fixture's connection (bustest.Fixture): a store opened through it creates the bucket it
+// finds missing.
 func setupPublishTestClient(t *testing.T, options ...bus.ConnectOption) *bus.Client {
 	t.Helper()
 	options = append([]bus.ConnectOption{bus.WithReplicas(1)}, options...)
@@ -345,6 +349,7 @@ func setupPublishTestClient(t *testing.T, options ...bus.ConnectOption) *bus.Cli
 	if err != nil {
 		t.Fatalf("failed to connect bus: %v", err)
 	}
+	bustest.Fixture(client.Conn)
 	t.Cleanup(client.Close)
 	return client
 }
@@ -1454,6 +1459,7 @@ func setupAdminTestRegistry(t *testing.T, interests map[string][]string) *store.
 	if err != nil {
 		t.Fatalf("failed to connect bus: %v", err)
 	}
+	bustest.Fixture(client.Conn)
 	t.Cleanup(client.Close)
 	registry, err := store.Open(t.Context(), client.Conn, store.WithReplicas(1))
 	if err != nil {
@@ -1531,6 +1537,7 @@ func TestAdminInterestsHandler_GetAnswers404OnlyForAnUnknownSession(t *testing.T
 	if err != nil {
 		t.Fatalf("failed to connect bus: %v", err)
 	}
+	bustest.Fixture(client.Conn)
 	t.Cleanup(client.Close)
 	registry, err := store.Open(t.Context(), client.Conn, store.WithReplicas(1))
 	if err != nil {
@@ -1637,6 +1644,7 @@ func setupInterestLastSeenTest(t *testing.T, interests []string, options ...sess
 	if err != nil {
 		t.Fatalf("failed to connect bus: %v", err)
 	}
+	bustest.Fixture(client.Conn)
 	t.Cleanup(client.Close)
 	rowsWritten := time.Now().Add(-3 * time.Minute)
 	registry, err := store.Open(t.Context(), client.Conn, store.WithReplicas(1), store.WithClock(func() time.Time { return rowsWritten }))
@@ -1764,6 +1772,7 @@ func setupSessionsTest(t *testing.T, interests map[string][]string, live []strin
 	if err != nil {
 		t.Fatalf("failed to connect bus: %v", err)
 	}
+	bustest.Fixture(client.Conn)
 	t.Cleanup(client.Close)
 	registry, err := store.Open(t.Context(), client.Conn, store.WithReplicas(1))
 	if err != nil {
@@ -1911,6 +1920,7 @@ func TestSessionsHandler_IncludesTitle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to connect bus: %v", err)
 	}
+	bustest.Fixture(client.Conn)
 	t.Cleanup(client.Close)
 	registry, err := store.Open(t.Context(), client.Conn, store.WithReplicas(1))
 	if err != nil {
@@ -2530,7 +2540,9 @@ func TestASettingNATSCannotChangeOnTheListenerDurableIsRefused(t *testing.T) {
 // retry, or the interest and session cache warm-ups (30 s each), would take the replacement for
 // healthy and stop the task it replaces. The refusal therefore comes right after the NATS connect:
 // on a NATS that holds no KV bucket yet, a refused listener exits without having opened one, the CI
-// bucket included, which a listener mounting the GitHub route opens first.
+// bucket included, which a listener mounting the GitHub route opens first. The server is left
+// unprovisioned (startListenerProcessAsIs), so a listener whose refusal came after its wait for the
+// buckets it copies (awaitCopiedBuckets) would wait there and never exit.
 func TestARefusedDurableStopsTheListenerAtOnce(t *testing.T) {
 	t.Parallel()
 	client := setupTestNATS(t)
@@ -2542,7 +2554,7 @@ func TestARefusedDurableStopsTheListenerAtOnce(t *testing.T) {
 		t.Fatalf("add a durable with a heartbeat: %v", err)
 	}
 
-	listener := startListenerProcess(t, cmdtest.Build(t, "envoy-listener"), client.Conn.ConnectedUrl(), "refused-durable-startup", githubWebhookEnv...)
+	listener := startListenerProcessAsIs(t, cmdtest.Build(t, "envoy-listener"), client.Conn.ConnectedUrl(), "refused-durable-startup", githubWebhookEnv...)
 	listener.WaitExit(t, "meeting a refused durable")
 	output := listener.Output
 	if code := listener.Cmd.ProcessState.ExitCode(); code != 1 {
@@ -2971,6 +2983,7 @@ func TestTheStoresFollowAConnectionReplacedWhileTheDurableIsHeld(t *testing.T) {
 	if err != nil {
 		t.Fatalf("connect the replacement: %v", err)
 	}
+	bustest.Fixture(client.Conn)
 	t.Cleanup(client.Close)
 	registry, err := store.Open(t.Context(), client.Conn, store.WithReplicas(1))
 	if err != nil {
@@ -2980,7 +2993,7 @@ func TestTheStoresFollowAConnectionReplacedWhileTheDurableIsHeld(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open the session registry: %v", err)
 	}
-	caches := listenerCaches(registry, sessions, nil)
+	caches := listenerCaches(registry, sessions, nil, nil)
 	client.AddReconnectHook(func(ctx context.Context, conn *natsgo.Conn) error {
 		return rewatchListenerKVWatchers(ctx, conn, caches)
 	})
@@ -4011,6 +4024,8 @@ func newListenerDeliveryHarness(t *testing.T) listenerDeliveryHarness {
 // own clock and windows (session.WithSessionClock, session.WithSessionLiveWindow).
 func newListenerDeliveryHarnessOn(t *testing.T, client *bus.Client, sessionOptions ...session.SessionRegistryOption) listenerDeliveryHarness {
 	t.Helper()
+	// The stores below create the buckets they find missing, on a fixture's connection.
+	bustest.Fixture(client.Conn)
 	registry, err := store.Open(t.Context(), client.Conn, store.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("open interest registry: %v", err)
@@ -4759,7 +4774,7 @@ func TestRunSelfHealthMonitor_MovesADeadInterestRegistryToTheLiveConnection(t *t
 		t.Fatalf("connect registry: %v", err)
 	}
 	t.Cleanup(registryConn.Close)
-	registry, err := store.Open(t.Context(), registryConn, store.WithReplicas(1))
+	registry, err := store.Open(t.Context(), bustest.Fixture(registryConn), store.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("open interest registry: %v", err)
 	}
@@ -4819,7 +4834,8 @@ func TestRunSelfHealthMonitor_RebuildsTerminalWatcher(t *testing.T) {
 		t.Fatalf("connect watcher: %v", err)
 	}
 	t.Cleanup(watcherConn.Close)
-	sessions, err := session.OpenSessionRegistry(t.Context(), watcherConn,
+	sessions, err := session.OpenSessionRegistry(t.Context(),
+		bustest.Fixture(watcherConn),
 		session.WithSessionReplicas(1),
 		session.WithSessionTTL(time.Minute))
 	if err != nil {
@@ -5076,11 +5092,17 @@ func TestRunSelfHealthMonitor_ShutdownCutRebuildLogsNoError(t *testing.T) {
 	}
 }
 
-// TestRunSelfHealthMonitor_RestartsWithoutItsRoleBucket deletes envoy_roles, the one listener
-// bucket no watcher reads. A rebuild opens a bucket and never creates one, so every rebuild fails
-// and the listener terminates; the next start's store Open creates the bucket again. Without that,
-// the listener would stay up with role routing broken and nothing repairing it.
-func TestRunSelfHealthMonitor_RestartsWithoutItsRoleBucket(t *testing.T) {
+// TestRunSelfHealthMonitor_LeavesAMissingRoleBucketToTheOperator deletes envoy_roles under a
+// monitor that runs as the listener's does: its probe reads the copied buckets first
+// (checkCopiedBuckets) into the tracker the caches share (listenerCaches), so the role claim cache,
+// which reads that bucket, is left out of the checks, and the interest cache is checked. No
+// listener creates a bucket it copies, and a restart would only wait for it at the start's gate,
+// so the monitor neither rebuilds nor restarts over it: every probe answers bucketsMissingError
+// naming the bucket, which /healthz and the alarm's ERROR line carry until the operator creates
+// it. Before, this test ran the probe without the tracker and asserted three rebuilds and a
+// restart, on the claim that the next start's store Open creates the bucket again, which no
+// longer holds.
+func TestRunSelfHealthMonitor_LeavesAMissingRoleBucketToTheOperator(t *testing.T) {
 	t.Parallel()
 	client := setupTestNATS(t)
 	registry, err := store.Open(t.Context(), client.Conn, store.WithReplicas(1))
@@ -5100,16 +5122,28 @@ func TestRunSelfHealthMonitor_RestartsWithoutItsRoleBucket(t *testing.T) {
 		t.Fatalf("delete the role bucket: %v", err)
 	}
 
-	caches := []listenerCache{{name: "interest", cache: registry}}
-	var rebuilds atomic.Int32
+	missing := &missingBuckets{}
+	caches := listenerCaches(registry, nil, nil, missing)[:2]
+	logger := logging.NewWithWriter("test", &cmdtest.LockedBuffer{})
+	var rebuilds, probes atomic.Int32
+	var last atomic.Pointer[error]
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	terminated := make(chan struct{}, 1)
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		runSelfHealthMonitor(ctx, logging.New("test"),
-			func() error { return checkSelfHealth(caches, nil, nil) },
+		runSelfHealthMonitor(ctx, logger,
+			func() error {
+				checkCopiedBuckets(ctx, logger, client.JS(), []string{bus.InterestBucket, bus.RoleClaimBucket}, missing)
+				err := checkSelfHealth(caches, nil, nil)
+				if err == nil {
+					err = missing.err()
+				}
+				last.Store(&err)
+				probes.Add(1)
+				return err
+			},
 			func(err error) bool { return isUnrecoverableSelfHealthFailure(err, client, caches) },
 			client.Connected,
 			func() error {
@@ -5121,18 +5155,36 @@ func TestRunSelfHealthMonitor_RestartsWithoutItsRoleBucket(t *testing.T) {
 			3,
 		)
 	}()
-	select {
-	case <-terminated:
-	case <-time.After(listenerWaitBound(t)):
-		t.Fatalf("the listener stayed up without its role bucket: %d rebuilds, no termination", rebuilds.Load())
+	bound := listenerWaitBound(t)
+	deadline := time.Now().Add(bound)
+	for probes.Load() < 10 {
+		select {
+		case <-terminated:
+			t.Fatalf("the monitor restarted the listener over a missing role bucket after %d probes and %d rebuilds", probes.Load(), rebuilds.Load())
+		default:
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%s gave %d probes, want 10", bound, probes.Load())
+		}
+		time.Sleep(time.Millisecond)
 	}
+	cancel()
 	select {
 	case <-done:
 	case <-time.After(listenerWaitBound(t)):
-		t.Fatal("the monitor did not return after terminating")
+		t.Fatal("the monitor did not return after its context ended")
 	}
-	if got := rebuilds.Load(); got != 3 {
-		t.Fatalf("rebuilds = %d, want 3", got)
+	select {
+	case <-terminated:
+		t.Fatal("the monitor restarted the listener over a missing role bucket")
+	default:
+	}
+	if got := rebuilds.Load(); got != 0 {
+		t.Fatalf("rebuilds = %d over %d probes, want 0: no rebuild brings a bucket back", got, probes.Load())
+	}
+	var missingErr *bucketsMissingError
+	if err := *last.Load(); !errors.As(err, &missingErr) || !slices.Equal(missingErr.buckets, []string{bus.RoleClaimBucket}) {
+		t.Fatalf("the last probe answered %v, want bucketsMissingError naming [%s]", err, bus.RoleClaimBucket)
 	}
 }
 
@@ -5180,10 +5232,11 @@ func monitorUntilRecovered(t *testing.T, what string, wait, interval time.Durati
 	<-done
 }
 
-// setupTestNATS starts a NATS server dedicated to this test, which ends with it, and a bus client
-// on it, which the test's cleanup closes before the server's. A bus client reconnects forever, so
-// one left open goes on dialing the server's address after the test, from this test binary, and
-// reaches whatever server later holds that port: the clients of
+// setupTestNATS starts a NATS server dedicated to this test, which ends with it, and connects a bus
+// client to it on a fixture's connection (bustest.Fixture): a store opened through it creates the
+// bucket it finds missing. The test's cleanup closes the client before the server's. A bus client
+// reconnects forever, so one left open goes on dialing the server's address after the test, from
+// this test binary, and reaches whatever server later holds that port: the clients of
 // TestHealthzAnswersUnhealthyWhileTheInterestWatcherIsDead and
 // TestHealthzReportsARoleClaimViewThatCompletesNoScanDegraded reached the test servers of other
 // packages' binaries minutes after their tests had ended.
@@ -5195,6 +5248,7 @@ func setupTestNATS(t *testing.T) *bus.Client {
 		t.Fatalf("bus connect: %v", err)
 	}
 	t.Cleanup(client.Close)
+	bustest.Fixture(client.Conn)
 	return client
 }
 
@@ -5323,7 +5377,7 @@ func TestHealthzAnswersUnhealthyWhileTheInterestWatcherIsDead(t *testing.T) {
 	state.Store(&listenerDeps{client: client, registry: registry, sessions: sessions, caches: []listenerCache{{name: "interest", cache: registry}, {name: "session", cache: sessions}}, consumer: "listener-healthz-interest"})
 	get := func() (int, map[string]any) {
 		recorder := httptest.NewRecorder()
-		healthzHandler(&state, nil).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+		healthzHandler(&state, nil, nil).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/healthz", nil))
 		var body map[string]any
 		_ = json.Unmarshal(recorder.Body.Bytes(), &body)
 		return recorder.Code, body

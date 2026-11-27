@@ -78,7 +78,7 @@
 # proved at all. Raising it is the rollout this issue's sibling carries (dispatch://INFRA-887), and
 # check 8 is its proof: the two running listeners leave ENVOY_SESSION_MAX_AGE unset, so neither
 # writes the bucket's age and both adopt what the bucket carries (applyMaxAge, on every reaper
-# pass). The run's store is new, so listener A creates the bucket at 2h (session.BucketMaxAge),
+# pass). The run's store is new, so fixturebuckets creates the bucket at 2h (session.BucketMaxAge),
 # and the setup checks that both listeners read that age. Only in check 8 does a listener of the
 # run's own write the age: the older 5m, the raise back to 2h, and the rollback to 5m.
 #
@@ -676,7 +676,9 @@ go -C "$root/packages/envoy" build -o "$work/bin/envoy-listener" ./cmd/listener 
   fail "./cmd/listener did not build"
 go -C "$root/packages/envoy" build -o "$work/bin/natsd" ./internal/testnats/cmd/natsd ||
   fail "./internal/testnats/cmd/natsd did not build"
-note "built the listener and natsd from this checkout"
+go -C "$root/packages/envoy" build -o "$work/bin/fixturebuckets" ./internal/testnats/cmd/fixturebuckets ||
+  fail "./internal/testnats/cmd/fixturebuckets did not build"
+note "built the listener, natsd and fixturebuckets from this checkout"
 if [ -n "$needs_dispatch" ]; then
   go -C "$root/packages/envoy" build -o "$work/bin/envoy-dispatch" ./cmd/dispatch ||
     fail "./cmd/dispatch did not build"
@@ -739,6 +741,9 @@ nats_port=$(report_port "$evidence/logs/natsd.log" 'Listening for client connect
   fail "natsd logged no client port; see $evidence/logs/natsd.log"
 nats_url=nats://127.0.0.1:$nats_port
 note "NATS on $nats_url, its JetStream store in $work/nats-store"
+# No listener creates a bucket it copies: the run provisions its own server with them
+# before the listeners start. The store keeps them across the outage check's restart of natsd.
+provision_fixture_buckets "$work/bin/fixturebuckets" "$nats_url" "$evidence/logs/fixturebuckets.log"
 
 # start_listener NAME KEEPER starts one of the two running listeners on the port its keeper holds,
 # so a listener stopped and started again comes back on the same port and nothing can take it in

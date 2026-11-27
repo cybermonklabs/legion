@@ -23,6 +23,7 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/bus/bustest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/kvchunk"
 	"github.com/sjawhar/envoy/internal/kvwatch"
@@ -486,10 +487,11 @@ func TestMergeForUpsertTakesAPlansWithheldTopicsOutOfTheStoredRow(t *testing.T) 
 // --- Integration Tests (a real NATS server) ---
 
 // connectNATS connects to the package's shared NATS server, in the JetStream account
-// testnats.URL hands t, where no earlier test made an interest or role bucket.
+// testnats.URL hands t, where no earlier test made an interest or role bucket. The connection is
+// a fixture's (bustest.Connect), so Open creates the buckets it finds missing.
 func connectNATS(t *testing.T) (*natsgo.Conn, func()) {
 	t.Helper()
-	conn := testnats.Connect(t, testnats.URL(t))
+	conn := bustest.Connect(t, testnats.URL(t))
 	return conn, conn.Close
 }
 
@@ -639,7 +641,7 @@ func TestWatch_PropagatesPurge(t *testing.T) {
 
 func TestMatch_IndependentOfKVAfterStartup(t *testing.T) {
 	srv, uri := testnats.Start(t)
-	conn := testnats.Connect(t, uri)
+	conn := bustest.Connect(t, uri)
 	// Safety net: a double close is a no-op.
 	t.Cleanup(conn.Close)
 
@@ -3734,7 +3736,7 @@ func TestOpenFailsWhenTheRoleRevisionScanStalls(t *testing.T) {
 		t.Fatalf("read the proxy's URL: %v", err)
 	}
 	proxy.User = account.User
-	stalled := testnats.Connect(t, proxy.String())
+	stalled := bustest.Connect(t, proxy.String())
 	defer stalled.Close()
 
 	registry, err := Open(t.Context(), stalled, WithReplicas(1))

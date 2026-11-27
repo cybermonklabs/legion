@@ -126,9 +126,11 @@ func newRoleRigWith(t *testing.T, options ...session.SessionRegistryOption) *rol
 }
 
 // newRoleRigOn is a roleRig on the server at url, with client as the outbox's client and conn as
-// the test's own connection, which the registries write through.
+// the test's own connection, which the registries write through. conn is marked as a fixture's
+// (bustest.Fixture), so the registries create their buckets.
 func newRoleRigOn(t *testing.T, url string, client *bus.Client, conn *natsgo.Conn, options ...session.SessionRegistryOption) *roleRig {
 	t.Helper()
+	bustest.Fixture(conn)
 	registry, err := envoystore.Open(t.Context(), conn)
 	if err != nil {
 		t.Fatalf("open the role registry: %v", err)

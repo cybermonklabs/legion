@@ -151,17 +151,18 @@
 # SKILL_SCENARIOS_POSTGRES_URL and SKILL_SCENARIOS_NATS_URL are both set, the two servers those
 # URLs name, which the batch uses and leaves running: that is how a batch runs where there is no
 # docker. The two Optional entries below say what each given server must be: the Postgres on this
-# machine, and a NATS of the batch's own. Each run gets a Dispatch of its own (own_dispatch): a
-# database named after the run in the batch's Postgres, and the e2e harness's real Go Dispatch
-# server (packages/dispatch/e2e/run-server.sh) on that database, seeded and read back through its
-# API (seed.ts) and stopped when the run ends. A `dispatch search` searches every project of its
-# server, and a Dispatch bearer cannot be limited to one project, so a shared server would show
-# each run the other runs' issues and asks. Each run records its Dispatch in <run>/dispatch.json,
-# and score.ts does not score two runs that name one database. A given server's URL carries its
-# port and docker assigns a container's host port; the listener serves on a port the kernel chose
-# and scripts/e2e/lib/rig.sh holds for it until it serves (start_held), each run's Dispatch on its
-# own run-server.sh holds the same way and reports, and the kernel assigns each run's daemon
-# stand-in its port.
+# machine, and a NATS of the batch's own on this machine's loopback, which the batch provisions
+# with every bucket a listener copies before its listener starts (fixturebuckets). Each run gets a
+# Dispatch of its own (own_dispatch): a database named after the run in the batch's Postgres, and
+# the e2e harness's real Go Dispatch server (packages/dispatch/e2e/run-server.sh) on that database,
+# seeded and read back through its API (seed.ts) and stopped when the run ends. A `dispatch search`
+# searches every project of its server, and a Dispatch bearer cannot be limited to one project, so
+# a shared server would show each run the other runs' issues and asks. Each run records its
+# Dispatch in <run>/dispatch.json, and score.ts does not score two runs that name one database. A
+# given server's URL carries its port and docker assigns a container's host port; the listener
+# serves on a port the kernel chose and scripts/e2e/lib/rig.sh holds for it until it serves
+# (start_held), each run's Dispatch on its own run-server.sh holds the same way and reports, and
+# the kernel assigns each run's daemon stand-in its port.
 #
 # A build pod has no docker: the runner's pod gives a Postgres and a NATS of its own, which
 # scored-job.sh gives the batch as SKILL_SCENARIOS_POSTGRES_URL and SKILL_SCENARIOS_NATS_URL. The
@@ -251,7 +252,10 @@
 #                                 scripts/e2e/lib/nats-image.sh reads). It must be a scratch server
 #                                 of the batch's own: the listener and every tester-proof run's
 #                                 agent (as ENVOY_NATS_URL) get this URL, so never give a pod's own
-#                                 ENVOY_NATS_URL or a shared hub here
+#                                 ENVOY_NATS_URL or a shared hub here. The batch provisions it with
+#                                 every bucket a listener copies before its listener starts
+#                                 (fixturebuckets), so it must name one server, with no `,` list
+#                                 nats.go would dial any server of, on this machine's loopback
 # Set both and the batch starts no container, so it needs neither docker nor a docker daemon. It
 # needs psql and python3 instead: it reads the Postgres URL with python3 and libpq, and reaches the
 # server with psql. Set one without the other and the batch ignores it and starts both
@@ -855,7 +859,10 @@ install_superpowers() {
 
 # owner_only FILE writes standard input to FILE, readable and writable by its owner alone. It removes
 # FILE first, since a write onto an existing file keeps that file's mode, whatever the umask. The
-# owner run's pane, request and answer can carry the batch's NATS URL, including a credential.
+# owner run's pane, request and answer can carry the batch's NATS URL, including a credential. Every
+# credential file of the batch's services goes through it too: the services file and a tester's pane
+# file, which hold the batch's NATS URL; the given Postgres URL's file; and the listener's and
+# Dispatch's tokens. No other user of this machine may read any of them.
 owner_only() {
   (umask 077 && rm -f -- "$1" && cat >"$1")
 }
@@ -1062,11 +1069,21 @@ start_listener() {
   await_start listener "$listener_pid" 60 "the Envoy listener to answer /v1/sessions" listener_answers
 }
 
-# listener_up builds the Envoy listener from this checkout, makes the batch's two tokens, and
-# starts the listener (start_listener) on the NATS nats_url names.
+# listener_up builds the Envoy listener and fixturebuckets from this checkout, provisions the
+# batch's NATS with every bucket a listener copies, makes the batch's two tokens, and starts the
+# listener (start_listener) on the NATS nats_url names. services_up sets nats_url and nats_at, the
+# host and port nats_endpoint read or the container's.
 listener_up() {
-  (cd "$root/packages/envoy" && go build -o "$S/envoy-listener" ./cmd/listener)
-  (umask 077 && openssl rand -hex 24 >"$S/envoy-token" && printf 'e2e-token\n' >"$S/dispatch-token")
+  (cd "$root/packages/envoy" && go build -o "$S/envoy-listener" ./cmd/listener &&
+    go build -o "$S/fixturebuckets" ./internal/testnats/cmd/fixturebuckets)
+  # No listener creates a bucket it copies: the batch provisions its own NATS with them before the
+  # listener starts. A given NATS's URL can carry a password or a token, so fixturebuckets takes it
+  # in its environment (FIXTUREBUCKETS_URL), out of the process list, the failure names the server
+  # by its host and port, and fixturebuckets names it in its log without the URL's user info.
+  FIXTUREBUCKETS_URL=$nats_url "$S/fixturebuckets" >"$S/logs/fixturebuckets.log" 2>&1 ||
+    fail "fixturebuckets could not provision the NATS at $nats_at with the buckets a listener copies; see $S/logs/fixturebuckets.log"
+  openssl rand -hex 24 | owner_only "$S/envoy-token"
+  printf 'e2e-token\n' | owner_only "$S/dispatch-token"
   start_listener
 }
 
@@ -1122,30 +1139,16 @@ given_services() {
 # percent-decoded as libpq decodes it (`%73slpassword=` is `sslpassword=`), the other parameters
 # stay in their order, and a query that keeps none prints no `?`. For a URL pg-url.sh refuses,
 # pg-url.sh names the fault on standard error, and safe_url prints a fixed placeholder, never the
-# URL. Any other URL, the NATS one, is read as Go's net/url reads it, which nats.go parses a server
-# URL with: the user info runs to the last `@` before the path, the query or the fragment, so a raw
-# `@` in the password goes too. A user and password keeps its user; user info with no `:` is a
-# token to nats.go, so it goes whole.
+# URL. It reads no other URL: for one that is not a Postgres URL, a NATS one among them, it prints
+# a fixed placeholder and no part of it. A NATS server is named by the host and port nats_endpoint
+# read (services_up), never from its URL, so no spelling of that URL decides what is printed.
 safe_url() {
-  local url scheme rest user='' kept='' param key prefix authority info
+  local url scheme rest user='' kept='' param key
   local -a params=()
   case $1 in
   postgres://* | postgresql://*) ;;
-  *://*)
-    prefix=${1%%://*}://
-    rest=${1:${#prefix}}
-    authority=${rest%%[/?#]*}
-    if [[ $authority == *@* ]]; then
-      info=${authority%@*}
-      [[ $info == *:* ]] && info=${info%%:*}@ || info=''
-      printf '%s%s%s%s\n' "$prefix" "$info" "${authority##*@}" "${rest:${#authority}}"
-    else
-      printf '%s\n' "$1"
-    fi
-    return
-    ;;
   *)
-    printf '%s\n' "$1"
+    printf '%s\n' '<a URL that is not a Postgres one>'
     return
     ;;
   esac
@@ -1186,19 +1189,58 @@ pg_sql() {
   PGCONNECT_TIMEOUT=5 pg_url_run "$1" psql -X -q -w -v ON_ERROR_STOP=1 -A -t -F $'\t' -c "$2"
 }
 
-# nats_ready URL succeeds when a server answers on URL's host and port with the INFO line every
+# nats_ready HOST PORT succeeds when a server answers on HOST and PORT with the INFO line every
 # NATS server sends on connect, so it tells a NATS from any other process holding the port. bash's
 # own /dev/tcp opens the connection, in a child with a timeout of its own: the probe needs no
-# client, and a host that swallows the connection cannot hold its caller past its bound.
+# client, and a host that swallows the connection cannot hold its caller past its bound. It reads
+# no URL: services_up hands it the host and port nats_endpoint read, the ones the loopback check
+# passed, so one reading of the URL decides both the check and the probe.
 # shellcheck disable=SC2329 # until_true in services_up runs it
 nats_ready() {
-  local hostport=${1#*://} line=''
-  hostport=${hostport##*@}
-  hostport=${hostport%%/*}
+  local line=''
   # shellcheck disable=SC2016 # $1, $2 and $line are the inner bash's own, expanded there
   line=$(timeout 5 bash -c 'exec 3<>"/dev/tcp/$1/$2" && IFS= read -r -t 5 -u 3 line && printf "%s" "$line"' \
-    -- "${hostport%:*}" "${hostport##*:}" 2>/dev/null) || return 1
+    -- "$1" "$2" 2>/dev/null) || return 1
   case $line in 'INFO '*) ;; *) return 1 ;; esac
+}
+
+# nats_endpoint URL prints the host and the port URL, a given NATS's, names, `<host> <port>`, when
+# that host is on this machine's loopback as fixturebuckets reads it (bus.LocalNATSURL): localhost,
+# or a loopback address, read from the URL and never resolved, its root dot dropped. A URL it
+# refuses prints nothing and fails: a host off loopback, a URL it cannot read or that names no
+# host, and a URL that holds a `,`, since nats.go splits its URL on `,` into a list of servers and
+# dials any of them, so the one server read here would not be the one dialed. It prints only after
+# the check passed, since a refused URL's host can be credential text. The URL is read as Go's
+# net/url reads it, which nats.go parses a server URL with: a URL with no scheme is read as
+# nats://, the authority ends at the first `/`, `?` or `#`, the host follows its last `@`, so it
+# never holds the URL's user info, and a URL with no port names nats.go's 4222. Every message and
+# probe of the batch's NATS takes this host and port, so one reading of the URL decides them all.
+# python3 reads the URL from its environment, never from its arguments: a given URL can carry a
+# password or a token, and every user of this machine reads a process's arguments.
+nats_endpoint() {
+  NATS_ENDPOINT_URL=$1 python3 -c '
+import ipaddress, os, sys, urllib.parse
+raw = os.environ["NATS_ENDPOINT_URL"].strip()
+if "," in raw:
+    sys.exit(1)
+if "://" not in raw:
+    raw = "nats://" + raw
+try:
+    parts = urllib.parse.urlsplit(raw)
+    host = (parts.hostname or "").rstrip(".")
+    port = parts.port or 4222
+except ValueError:
+    sys.exit(1)
+if not host:
+    sys.exit(1)
+try:
+    loopback = host == "localhost" or ipaddress.ip_address(host).is_loopback
+except ValueError:
+    loopback = False
+if not loopback:
+    sys.exit(1)
+print(host, port)
+'
 }
 
 # connections_needed sets services_up's per_run, the connections one run's Dispatch server opens,
@@ -1237,9 +1279,18 @@ connections_needed() {
 # connection string each run's Dispatch gets (own_dispatch), and refuses a value that string
 # cannot carry, so such a URL is refused here, before anything starts, and not in every run. Both
 # take the variable's name rather than its value, so their lines put no DSN into a `bash -x` trace.
+#
+# A given NATS must be one server, on this machine's loopback: the batch provisions it with every
+# bucket a listener copies (fixturebuckets), which refuses a list of servers and any server off
+# loopback. services_up refuses both beside the Postgres URL's checks, before anything starts or
+# connects: a URL that holds a `,`, which nats.go reads as a list it dials any server of, and a host
+# nats_endpoint does not read as loopback. Every message, note and probe of the NATS takes the host
+# and port nats_endpoint read, or the container's, never the URL: only fixturebuckets, the listener
+# and the runs, which connect to the server, are handed the URL, each in its environment or in a
+# file of its owner's alone.
 services_up() {
   evidence=$S
-  local parallel=${1:-${SKILL_SCENARIOS_PARALLEL:-5}} per_run needs admits fits pg_port nats_port pg_host run_url tool rest param key
+  local parallel=${1:-${SKILL_SCENARIOS_PARALLEL:-5}} per_run needs admits fits pg_port nats_port pg_host nats_host nats_at endpoint run_url tool rest param key
   local -a params=()
   if given_services; then
     case $SKILL_SCENARIOS_POSTGRES_URL in
@@ -1263,12 +1314,21 @@ services_up() {
     done
     require_loopback_env pg_host SKILL_SCENARIOS_POSTGRES_URL "each run creates a database there" || fail "$pg_host"
     run_database_url_env run_url SKILL_SCENARIOS_POSTGRES_URL run_placeholder "each run's Dispatch opens its database there" || fail "$run_url"
+    [[ $SKILL_SCENARIOS_NATS_URL != *,* ]] ||
+      fail "SKILL_SCENARIOS_NATS_URL names a list of servers (it holds a ','), and nats.go would dial any of them: the batch provisions one NATS of its own with every bucket a listener copies, so give it that server alone"
+    # A URL nats_endpoint refuses prints nothing, and the refusal is fixed text: a rejected URL can
+    # hold credential text where the parser reads a host, so no part of it is printed.
+    endpoint=$(nats_endpoint "$SKILL_SCENARIOS_NATS_URL") ||
+      fail "SKILL_SCENARIOS_NATS_URL must name one server on this machine's loopback (127.0.0.1, localhost or ::1), and it names none the batch can read as one: the batch provisions that server with every bucket a listener copies (fixturebuckets), which provisions only a server on this machine's loopback"
+    nats_host=${endpoint% *} nats_port=${endpoint##* }
+    nats_at=$nats_host:$nats_port
+    [[ $nats_host != *:* ]] || nats_at="[$nats_host]:$nats_port"
     connections_needed
     pg_url=$SKILL_SCENARIOS_POSTGRES_URL
     nats_url=$SKILL_SCENARIOS_NATS_URL
-    (umask 077 && printf '%s\n' "$pg_url" >"$services_postgres")
+    printf '%s\n' "$pg_url" | owner_only "$services_postgres"
     until_true 60 "Postgres at $(safe_url "$pg_url") to answer a query" pg_sql "$pg_url" 'select 1'
-    until_true 60 "NATS at $(safe_url "$nats_url") to send its INFO line" nats_ready "$nats_url"
+    until_true 60 "NATS at $nats_at to send its INFO line" nats_ready "$nats_host" "$nats_port"
     admits=$(pg_sql "$pg_url" 'SHOW max_connections')
     fits=$(((admits - 20) / per_run))
     [ "$fits" -ge 1 ] ||
@@ -1294,17 +1354,19 @@ services_up() {
     docker run -d --name "$tag-nats" --cpus 1 --memory 512m -p 127.0.0.1::4222 "$nats_image" -js >/dev/null
     nats_port=$(docker port "$tag-nats" 4222/tcp | sed -n '1s/.*://p')
     [ -n "$nats_port" ] || fail "docker assigned NATS no host port"
-    nats_url=nats://127.0.0.1:$nats_port
+    nats_url=nats://127.0.0.1:$nats_port nats_at=127.0.0.1:$nats_port
     until_true 60 "Postgres to accept TCP connections" docker exec "$tag-pg" pg_isready -h 127.0.0.1 -p 5432 -U postgres
     until_true 60 "NATS to be ready" sh -c "docker logs '$tag-nats' 2>&1 | grep -q 'Server is ready'"
   fi
   listener_up
+  # The services file hands the runs the NATS URL, credential included, as ENVOY_NATS_URL, so it is
+  # its owner's alone, as the given Postgres URL's file is.
   {
     echo "ENVOY_URL=http://127.0.0.1:$envoy_port"
     echo "ENVOY_NATS_URL=$nats_url"
     echo "ENVOY_TOKEN_FILE=$S/envoy-token"
   } | owner_only "$services_env"
-  note "services up: listener :$envoy_port, NATS $(safe_url "$nats_url"), Postgres $(safe_url "$pg_url")"
+  note "services up: listener :$envoy_port, NATS $nats_at, Postgres $(safe_url "$pg_url")"
 }
 
 # services_down stops and removes what this batch started and made: the listener, the two

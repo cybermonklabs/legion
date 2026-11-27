@@ -423,7 +423,7 @@ func limitedRead[T any](ctx context.Context, limit *readLimit, read func() (T, e
 // Its callers are the reads a start makes: EnsureKeyValue's lookup, its read of a found bucket's
 // stream and its handle open (wrapKeyValue), the stream ensure's read (ensureStreamWithConfig),
 // SetKeyValueMaxAge's read and updateStream's read after an update that drew no answer; and the
-// keeper's first read of the stream (keepStream) and of each bucket it raises (raiseReplicas).
+// keeper's first read of the stream (keepStream) and of each bucket it raises (readBucketStream).
 func readAgain[T any](ctx context.Context, logger *slog.Logger, request string, limit *readLimit, read func() (T, error)) (T, error) {
 	return sentAgain(ctx, logger, request, func() (T, error) {
 		value, wait, answered, err := limitedRead(ctx, limit, read)

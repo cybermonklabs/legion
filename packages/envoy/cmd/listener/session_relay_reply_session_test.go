@@ -18,6 +18,7 @@ import (
 
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/bus/bustest"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/id"
@@ -802,7 +803,9 @@ func TestANakReMarkBeforeTheLoopsClearKeepsTheGapNotice(t *testing.T) {
 }
 
 // openOwningStreamRegistry connects an owning-stream client and opens a session registry on it,
-// both closed when the test ends. name labels the pair in any failure.
+// both closed when the test ends. name labels the pair in any failure. The connection is a
+// fixture's (bustest.Fixture), so the registry creates the session bucket it finds missing on the
+// test's own server, since no listener creates one.
 func openOwningStreamRegistry(t *testing.T, name string) (*bus.Client, *session.SessionRegistry) {
 	t.Helper()
 	client, err := bus.ConnectOwningStream([]string{testnats.URL(t)}, bus.WithReplicas(1))
@@ -810,6 +813,7 @@ func openOwningStreamRegistry(t *testing.T, name string) (*bus.Client, *session.
 		t.Fatalf("connect %s: %v", name, err)
 	}
 	t.Cleanup(client.Close)
+	bustest.Fixture(client.Conn)
 	reg, err := session.OpenSessionRegistry(t.Context(), client.Conn, session.WithSessionReplicas(1))
 	if err != nil {
 		t.Fatalf("open %s's registry: %v", name, err)

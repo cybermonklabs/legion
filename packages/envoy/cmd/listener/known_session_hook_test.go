@@ -9,6 +9,7 @@ import (
 	"github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/bus/bustest"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/session"
@@ -64,6 +65,10 @@ func TestTheKnownSessionHookLogsNothingForARunThatIsOver(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			srv, uri := testnats.Start(t)
+			// No listener creates a bucket it copies: the server is given them first, as
+			// `envoy-infra buckets` gives a deployment's, so the store opens the bucket it finds and a
+			// move after the bucket is deleted fails.
+			bustest.ProvisionURL(t, uri, 1)
 			client, err := bus.Connect([]string{uri}, bus.WithName(t.Name()))
 			if err != nil {
 				t.Fatalf("connect: %v", err)

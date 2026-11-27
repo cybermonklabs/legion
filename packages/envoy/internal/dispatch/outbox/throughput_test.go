@@ -16,6 +16,7 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/bus/bustest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -444,6 +445,7 @@ func newThroughputRig(t *testing.T, rtt time.Duration) *throughputRig {
 		t.Fatalf("connect the reader: %v", err)
 	}
 	t.Cleanup(reader.Close)
+	bustest.Fixture(reader)
 	rig := &throughputRig{database: storetest.Open(t), client: client, reader: reader, broker: events.NewBroker()}
 	if _, err := reader.Subscribe(contracts.LegacyAgentSubject(throughputHolder), func(message *natsgo.Msg) {
 		if rig.marks.took(message) {

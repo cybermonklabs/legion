@@ -333,15 +333,16 @@ jobs:
       - name: Mark the restored build cache's entries unused until the go-envoy build uses them
         run: .github/scripts/go-cache-working-set.sh begin "$RUNNER_TEMP/go-envoy-working-set"
 
-      # The two binaries envoy-e2e-local's scripts/e2e-local.sh and envoy-session-stall's
+      # The three binaries envoy-e2e-local's scripts/e2e-local.sh and envoy-session-stall's
       # test/envoy-stack.ts build, and whose packages listener-server-change compiles too: the
-      # listener and the in-process NATS server's natsd. An -o ending in a separator names a
-      # directory, as envoy-stack.ts's build does, so both main packages build in one command.
+      # listener, the in-process NATS server's natsd and fixturebuckets, which provisions that
+      # server with the buckets a listener copies. An -o ending in a separator names a directory,
+      # as envoy-stack.ts's build does, so the three main packages build in one command.
       # envoy-go-build's darwin vet is left out: its darwin objects, about 1.7 GB of build cache on
       # a devbox, would ride in an entry every job that restores go-envoy downloads. They have a
       # family of their own, go-envoy-darwin-vet, which the envoy-darwin-vet job fills.
-      - name: Build the listener and natsd of the envoy module
-        run: go build -o "$RUNNER_TEMP/envoy-bin/" ./cmd/listener ./internal/testnats/cmd/natsd
+      - name: Build the listener, natsd and fixturebuckets of the envoy module
+        run: go build -o "$RUNNER_TEMP/envoy-bin/" ./cmd/listener ./internal/testnats/cmd/natsd ./internal/testnats/cmd/fixturebuckets
         working-directory: packages/envoy
 
       # This fill runs no go vet, on purpose (PR #5289): with one, full or -stdmethods alike, the

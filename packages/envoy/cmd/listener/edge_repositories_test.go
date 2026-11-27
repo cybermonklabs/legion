@@ -22,6 +22,7 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/bus/bustest"
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/contracts"
@@ -1341,6 +1342,9 @@ func TestAnEdgePruneLogsARunOfFailedListsOnceAndItsEnd(t *testing.T) {
 		t.Fatalf("connect bus: %v", err)
 	}
 	t.Cleanup(client.Close)
+	// The test's own server: its store creates the copied buckets it finds missing, as a
+	// fixture's does, since no listener creates one.
+	bustest.Fixture(client.Conn)
 	registry, err := store.Open(t.Context(), client.Conn, store.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("open the interest store: %v", err)

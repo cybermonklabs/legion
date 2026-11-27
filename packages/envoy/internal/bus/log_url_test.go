@@ -13,6 +13,32 @@ import (
 	"github.com/sjawhar/envoy/internal/testnats"
 )
 
+// nats.go authenticates with a server URL's userinfo, a user name alone as a token and
+// user:password as a password, so neither part may reach a log line or a logged error.
+// url.URL.Redacted is not enough: it keeps the user name, which is the whole of a token.
+// A URL that does not parse, and one with an "@" past its authority, render as what follows their
+// last "@". No bus log line renders a URL now - each names a server by its position
+// (natsconn.ServerPosition) - and the rendering is the one `envoy-infra buckets` prints its connect
+// target with (infra/buckets).
+func TestNATSURLWithoutUserinfo(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		raw, want string
+	}{
+		{"nats://user:secret@nats.example.test:4222", "nats://nats.example.test:4222"},
+		{"nats://token@127.0.0.1:4223", "nats://127.0.0.1:4223"},
+		{"u:secret@127.0.0.1:4224", "nats://127.0.0.1:4224"},
+		{" nats://127.0.0.1:4222 ", "nats://127.0.0.1:4222"},
+		{"127.0.0.1:4222", "127.0.0.1:4222"},
+		{"nats://user:secret@host:4222/%zz", "host:4222/%zz"},
+		{"nats://user:secret@host:4222/a@b", "b"},
+	} {
+		if got := NATSURLWithoutUserinfo(tc.raw); got != tc.want {
+			t.Errorf("NATSURLWithoutUserinfo(%q) = %q, want %q", tc.raw, got, tc.want)
+		}
+	}
+}
+
 // The failed-reconnect WARN names how many servers the client was configured with and the
 // failure's class, and the refusal of a remote server names that server by its position; both are
 // logged, so neither carries a URL's userinfo or host.

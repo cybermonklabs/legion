@@ -43,8 +43,8 @@ func healthzRoleViewRig(t *testing.T, consumer string) (func() (int, map[string]
 		t.Fatalf("wait for the session cache: %v", err)
 	}
 	var state atomic.Pointer[listenerDeps]
-	state.Store(&listenerDeps{client: client, registry: registry, sessions: sessions, caches: listenerCaches(registry, sessions, nil), consumer: consumer})
-	handler := healthzHandler(&state, nil)
+	state.Store(&listenerDeps{client: client, registry: registry, sessions: sessions, caches: listenerCaches(registry, sessions, nil, nil), consumer: consumer})
+	handler := healthzHandler(&state, nil, nil)
 	get := func() (int, map[string]any) {
 		recorder := httptest.NewRecorder()
 		handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/healthz", nil))

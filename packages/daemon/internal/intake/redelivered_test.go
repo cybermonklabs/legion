@@ -1,6 +1,6 @@
 package intake_test
 
-//ci:builds packages/envoy ./cmd/listener ./cmd/dispatch seedRedeliveredIssue testbuild.EnvoyBinary, which runs go build ./cmd/listener and ./cmd/dispatch in packages/envoy (`packages/daemon/internal/testbuild/testbuild.go#buildEnvoy`)
+//ci:builds packages/envoy ./cmd/listener ./cmd/dispatch ./internal/testnats/cmd/fixturebuckets seedRedeliveredIssue testbuild.EnvoyBinary, and testbuild.ProvisionFixtureBuckets (`packages/daemon/internal/testbuild/testbuild.go#ProvisionFixtureBuckets`), which run go build ./cmd/listener, ./cmd/dispatch and ./internal/testnats/cmd/fixturebuckets in packages/envoy (`packages/daemon/internal/testbuild/testbuild.go#buildEnvoy`)
 
 import (
 	"bytes"
@@ -103,6 +103,7 @@ func TestADeliveryNATSRefusedIsRedeliveredByTheSweepAndApplied(t *testing.T) {
 	stream := testnats.CreateStream(t, js, jetstream.StreamConfig{Name: "ENVOY_NOTIFICATIONS", Subjects: []string{"notifications.>"}})
 	natsURL := js.Conn().ConnectedUrl()
 
+	testbuild.ProvisionFixtureBuckets(t, natsURL)
 	listener := startListener(t, binaries.listener, natsURL)
 
 	logs := &warnings{}
@@ -331,7 +332,7 @@ func seedRedeliveredIssue(t *testing.T, pool *pgxpool.Pool) {
 // (testbuild.EnvoyBinary).
 type envoyBinaries struct{ listener, dispatch string }
 
-// builtEnvoyBinaries is the pair of paths, each built on the first test of this process that
+// builtEnvoyBinaries is the set of paths, each built on the first test of this process that
 // asked for it.
 func builtEnvoyBinaries(t *testing.T) envoyBinaries {
 	t.Helper()

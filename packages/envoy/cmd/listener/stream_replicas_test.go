@@ -108,17 +108,20 @@ func TestRaisingTheStreamMovesTheListenersDurableToThreeCopies(t *testing.T) {
 	testnats.AwaitConsumerCopies(t, js, bus.Stream, durable, 3)
 }
 
-// On a single server with the default settings, the listener binary creates the stream and its
-// seven buckets (interests, role claims, sessions, known sessions, the Legion agent registry, CI
-// state, the spent-proof bucket; every listener opens the spent-proof bucket, and the GitHub route
-// opens CI state) at one copy, and its next start creates and updates
-// nothing.
+// On a single server with the default settings, the listener binary creates the stream, the
+// Legion agent registry's bucket and the spent-proof bucket (every listener opens it) at one copy,
+// and its next start creates and updates nothing. The buckets it copies (interests, role claims,
+// sessions, known sessions, CI state; the GitHub route opens the last) it creates no more than a
+// deployment's listener does: the server is provisioned with them before the first start
+// (provisionListenerServer), as `envoy-infra buckets` provisions a deployment's, and the first
+// start's writes are read from there on, so a create of one of them fails the test.
 func TestADefaultListenerOnASingleServerCreatesEverythingAtOneCopyAndItsNextStartWritesNothing(t *testing.T) {
 	t.Parallel()
 	const machineID = "replicas-default"
 	uri := testnats.URL(t)
 	binary := cmdtest.Build(t, "envoy-listener")
-	streams := []string{bus.Stream, "KV_" + bus.InterestBucket, "KV_" + bus.RoleClaimBucket, "KV_" + bus.SessionBucket, "KV_" + bus.KnownSessionBucket, "KV_" + bus.LegionAgentBucket, "KV_" + bus.CIStateBucket, "KV_" + bus.DPoPProofBucket}
+	provisionListenerServer(t, uri, nil)
+	streams := []string{bus.Stream, "KV_" + bus.LegionAgentBucket, "KV_" + bus.DPoPProofBucket}
 
 	bustest.RequireFirstStartAtOneCopyAndNoSecondWrite(t, uri, streams, func() {
 		t.Helper()

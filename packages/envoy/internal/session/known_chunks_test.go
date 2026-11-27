@@ -14,6 +14,7 @@ import (
 	"github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/bus/bustest"
 	"github.com/sjawhar/envoy/internal/kvchunk"
 	"github.com/sjawhar/envoy/internal/kvchunk/kvchunktest"
 	"github.com/sjawhar/envoy/internal/testnats"
@@ -40,11 +41,12 @@ func chunkSubjects(t *testing.T, conn *nats.Conn) int {
 // after the last on the store's clock. With purge, the marker pass runs kvchunk.MarkerGrace after
 // each rewrite, once the watcher has delivered the deletes of the chunks it replaced. It reports
 // how many chunks the record is stored in and how many chunk subjects the bucket holds after the
-// day, and requires after each pass that the bucket hold the live chunks alone.
+// day, and requires after each pass that the bucket hold the live chunks alone. The connection is
+// a fixture's (bustest.Fixture), so the store creates its bucket, since no listener creates one.
 func heartbeatDay(t *testing.T, purge bool) (int, int) {
 	t.Helper()
 	_, uri := testnats.StartConfig(t, "jetstream {}\n", []string{"-js"}, true)
-	conn := testnats.Connect(t, uri)
+	conn := bustest.Fixture(testnats.Connect(t, uri))
 	t.Cleanup(conn.Close)
 	clock := &knownClock{at: time.Now()}
 	known := openKnownOn(t, conn, clock.Now)
@@ -167,6 +169,7 @@ func newMarkerRig(t *testing.T, deny ...string) markerRig {
 	if err != nil {
 		t.Fatalf("connect to the granted NATS: %v", err)
 	}
+	bustest.Fixture(conn)
 	t.Cleanup(conn.Close)
 	clock := &knownClock{at: time.Now()}
 	logs := &lockedLog{}

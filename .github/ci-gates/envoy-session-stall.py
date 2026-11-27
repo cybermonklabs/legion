@@ -4,7 +4,7 @@ GATE = gate("envoy_session_stall", STALL, runs=[
                'const spawned = Bun.spawn(["go", "build", "-o", `${build.bin}${path.sep}`, ...build.packages], {',
                f"buildGoBinaries, which both rigs of that directory call; this one's packages are the Envoy "
                f"stack's, built for {at(STALL, STALL_CLIENT)}, {at(STALL, 'Stall test of pi-envoy')} and "
-               f"{at(STALL, 'Stall test of claude-envoy')}", ENVOY, ["./internal/testnats/cmd/natsd", "./cmd/listener"], mode="build"),
+               f"{at(STALL, 'Stall test of claude-envoy')}", ENVOY, ["./internal/testnats/cmd/natsd", "./internal/testnats/cmd/fixturebuckets", "./cmd/listener"], mode="build"),
     script_run("packages/envoy-client/test/dispatch-stack.ts",
                'packages: ["./cmd/dispatch"],',
                f"the packages that rig hands buildGoBinaries, run by "

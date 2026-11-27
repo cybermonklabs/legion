@@ -1,8 +1,10 @@
 # shellcheck shell=bash disable=SC2154,SC2034 # the variables named below are the caller's to set or read
 # local-stack.sh — the loopback Envoy stack the smokes beside it each bring up: natsd
-# (packages/envoy/internal/testnats/cmd/natsd) and the listener (packages/envoy/cmd/listener),
-# built from a checkout with `go build`, each on loopback ports the kernel chooses when the service
-# binds them, read back from what the service logs.
+# (packages/envoy/internal/testnats/cmd/natsd), the fixturebuckets command that gives it the
+# buckets a listener copies (packages/envoy/internal/testnats/cmd/fixturebuckets) and the listener
+# (packages/envoy/cmd/listener), built from a checkout with `go build`, natsd and the listener each
+# on loopback ports the kernel chooses when the service binds them, read back from what the service
+# logs.
 # smoke-role-takeover.sh and smoke-registration-stall.sh (--local-stack) source it, so what those
 # two know about the stack is written once; packages/envoy-client/test/envoy-stack.ts is the same
 # stack for the TypeScript suite.
@@ -40,6 +42,19 @@ build_natsd() {
 # build_listener SOURCE OUT: the listener built from SOURCE, the same way.
 build_listener() {
   (cd -- "$1" && go build -o "$2" ./cmd/listener)
+}
+
+# build_fixturebuckets SOURCE OUT: the fixturebuckets command built from SOURCE, the same way.
+build_fixturebuckets() {
+  (cd -- "$1" && go build -o "$2" ./internal/testnats/cmd/fixturebuckets)
+}
+
+# provision_natsd BIN NATS_URL LOG: BIN, a fixturebuckets build, gives natsd at NATS_URL the
+# buckets a listener copies, which no listener creates, its output in LOG. A caller
+# runs it once natsd serves and before the listener starts; non-zero when it failed, so the
+# caller refuses in its own words.
+provision_natsd() {
+  env -i PATH="$PATH" "$1" -url "$2" >"$3" 2>&1
 }
 
 # set_natsd_argv BIN STORE_DIR [monitor]: sets the array `natsd_argv` to natsd serving a client

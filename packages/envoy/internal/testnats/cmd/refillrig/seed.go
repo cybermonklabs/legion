@@ -12,20 +12,20 @@ import (
 	"github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
-	"github.com/sjawhar/envoy/internal/session"
+	"github.com/sjawhar/envoy/internal/bus/bustest"
 )
 
-// bucketConfig is the config the listener creates each bucket with when it finds none
-// (session.OpenSessionRegistry, store.Open), so a bucket seeded before the listener starts is the
-// bucket the listener would have created.
+// bucketConfig is the config `envoy-infra buckets` and bustest.Provision create each copied bucket
+// with (bus.CopiedBucketConfig), at one copy, so a bucket seeded before the listener starts is the
+// bucket a deployment's operator would have created.
 func bucketConfig(kind string) (*nats.KeyValueConfig, error) {
-	switch kind {
-	case "sessions":
-		return &nats.KeyValueConfig{Bucket: bus.SessionBucket, TTL: session.BucketMaxAge, Replicas: 1, Storage: nats.FileStorage}, nil
-	case "interests":
-		return &nats.KeyValueConfig{Bucket: bus.InterestBucket, Replicas: 1, Storage: nats.FileStorage}, nil
+	buckets := map[string]string{"sessions": bus.SessionBucket, "interests": bus.InterestBucket}
+	bucket, ok := buckets[kind]
+	if !ok {
+		return nil, fmt.Errorf("bucket %q: want sessions or interests", kind)
 	}
-	return nil, fmt.Errorf("bucket %q: want sessions or interests", kind)
+	config, _ := bus.CopiedBucketConfig(bucket, 1)
+	return &config, nil
 }
 
 func connect(url string) (*nats.Conn, nats.JetStreamContext, error) {
@@ -164,8 +164,8 @@ func runSeed(args []string) error {
 	buckets := flags.String("buckets", "sessions,interests", "buckets to write: sessions, interests or both, comma-separated")
 	spec := flags.String("sets", "", "record sets, name=count[:variant],...")
 	role := flags.String("role", "", "role the first session of each set holds")
-	create := flags.Bool("create", false, "create a missing bucket with the listener's config")
-	ttl := flags.Duration("ttl", 0, "with -create, the session bucket's MaxAge in place of the listener's "+session.BucketMaxAge.String())
+	create := flags.Bool("create", false, "create a missing bucket with the config envoy-infra buckets creates it with")
+	ttl := flags.Duration("ttl", 0, "with -create, the session bucket's MaxAge in place of the copied bucket's "+bus.SessionBucketMaxAge.String())
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -185,6 +185,14 @@ func runSeed(args []string) error {
 		return err
 	}
 	defer conn.Close()
+	if *create {
+		// A copied bucket is created only on a server a fixture provisioned, through a connection
+		// marked as the fixture's (internal/bus/bustest): no command creates one elsewhere.
+		if err := bustest.RequireFixtureServer(js); err != nil {
+			return err
+		}
+		bustest.Fixture(conn)
+	}
 	for _, kind := range list {
 		config, _ := bucketConfig(kind)
 		if kind == "sessions" && *ttl > 0 {
@@ -193,6 +201,12 @@ func runSeed(args []string) error {
 		if *create {
 			// A rig command, run by hand until it ends: it runs under no context of its own.
 			_, err = bus.EnsureKeyValue(context.Background(), conn, js, config)
+			if err == nil && kind == "sessions" && *ttl > 0 {
+				// A fixture provisions the bucket with the listener's 5 minutes first, and an
+				// existing bucket keeps its age, so -ttl sets it on the bucket there is: no
+				// listener runs yet on this fixture's server.
+				err = setFixtureMaxAge(js, config.Bucket, *ttl)
+			}
 		} else {
 			_, err = js.KeyValue(config.Bucket)
 		}
@@ -205,6 +219,24 @@ func runSeed(args []string) error {
 			return fmt.Errorf("seed %s: %w", config.Bucket, err)
 		}
 		fmt.Printf("seeded %d records into %s in %s\n", n, config.Bucket, time.Since(started).Round(time.Millisecond))
+	}
+	return nil
+}
+
+// setFixtureMaxAge sets the age of bucket, on a fixture's server, to maxAge, lowering its
+// duplicates window with it where the window is longer: JetStream refuses a stream whose
+// duplicates window exceeds its age, and a bucket provisioned with the listener's 5 minutes keeps
+// the 2-minute window that age gave it.
+func setFixtureMaxAge(js nats.JetStreamContext, bucket string, maxAge time.Duration) error {
+	info, err := js.StreamInfo("KV_" + bucket)
+	if err != nil {
+		return fmt.Errorf("read KV_%s: %w", bucket, err)
+	}
+	config := info.Config
+	config.MaxAge = maxAge
+	config.Duplicates = min(config.Duplicates, maxAge)
+	if _, err := js.UpdateStream(&config); err != nil {
+		return fmt.Errorf("set KV_%s max age to %s: %w", bucket, maxAge, err)
 	}
 	return nil
 }

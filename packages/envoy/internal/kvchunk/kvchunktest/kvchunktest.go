@@ -12,6 +12,7 @@ import (
 
 	natsgo "github.com/nats-io/nats.go"
 
+	"github.com/sjawhar/envoy/internal/bus/bustest"
 	"github.com/sjawhar/envoy/internal/kvchunk"
 	"github.com/sjawhar/envoy/internal/testnats"
 )
@@ -22,11 +23,12 @@ import (
 const MaxPayload = 64 << 10
 
 // SmallPayloadNATS starts a NATS server of the test's own, with JetStream, whose max payload is
-// MaxPayload, and connects to it.
+// MaxPayload, and connects to it. The connection is a fixture's (bustest.Fixture), so a store
+// opened on it creates the copied bucket it finds missing, since no listener creates one.
 func SmallPayloadNATS(t *testing.T) *natsgo.Conn {
 	t.Helper()
 	_, uri := testnats.StartConfig(t, fmt.Sprintf("max_payload: %d\njetstream {}\n", MaxPayload), []string{"-js"}, true)
-	conn := testnats.Connect(t, uri)
+	conn := bustest.Fixture(testnats.Connect(t, uri))
 	t.Cleanup(conn.Close)
 	if got := conn.MaxPayload(); got != MaxPayload {
 		t.Fatalf("the server's max payload is %d bytes, want %d", got, MaxPayload)

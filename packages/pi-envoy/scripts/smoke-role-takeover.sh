@@ -388,9 +388,10 @@ if [[ -n "$base_rev" ]]; then
 fi
 readonly listener_source
 
-note "building natsd from ${repo_root}/packages/envoy"
-build_natsd "${repo_root}/packages/envoy" "${work}/bin/natsd" ||
-  refuse "go build of natsd failed (the reason is above)"
+note "building natsd and fixturebuckets from ${repo_root}/packages/envoy"
+build_natsd "${repo_root}/packages/envoy" "${work}/bin/natsd" &&
+  build_fixturebuckets "${repo_root}/packages/envoy" "${work}/bin/fixturebuckets" ||
+  refuse "go build of natsd or fixturebuckets failed (the reason is above)"
 if [[ -n "$listener_bin" ]]; then
   # A build made elsewhere, such as a control's scratch tree, run as it is: nothing here builds
   # or copies it.
@@ -423,6 +424,8 @@ fi
 readonly nats_port monitor_port
 readonly nats_url="nats://127.0.0.1:${nats_port}"
 note "natsd serves ${nats_url} (monitoring 127.0.0.1:${monitor_port})"
+provision_natsd "${work}/bin/fixturebuckets" "$nats_url" "${work}/logs/fixturebuckets.log" ||
+  refuse "fixturebuckets could not provision natsd: $(tail -n 5 "${work}/logs/fixturebuckets.log")"
 
 # The two windows this run's listener carries are appended to the assignments local-stack.sh
 # hands out, so the two smokes that share that file are run exactly as they were.

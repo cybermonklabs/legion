@@ -1,6 +1,6 @@
 kind: Changed
 body: |-
-  A session bucket a listener creates keeps a record for 2 hours instead of 5 minutes, so under
+  A session bucket `envoy-infra buckets` creates keeps a record for 2 hours instead of 5 minutes, so under
   the default gone horizon a stalled session reads unresponsive until it reads gone. The 2 hours
   are fixed: the default gone horizon plus one hour, whatever `ENVOY_SESSION_GONE_HORIZON` says.
   An existing bucket keeps its age until `ENVOY_SESSION_MAX_AGE` raises it. A listener whose

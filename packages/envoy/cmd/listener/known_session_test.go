@@ -7,12 +7,14 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/bus/bustest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/testnats"
@@ -109,6 +111,52 @@ func TestARegistrationWritesTheKnownSessionRecordWithTheRegisteredTopics(t *test
 	}
 	if got := knownMatchedIDs(rig.known, team); !slices.Equal(got, []string{"ses_registered"}) {
 		t.Errorf("MatchEach of the team topic = %v, want the session just registered", got)
+	}
+}
+
+// A registration whose 30-day record write the bucket refuses, with the bucket there, is never
+// read as the bucket missing: it is answered the store's own refusal, 413 for a record past the
+// bucket's message size, as a first registration's refused write is
+// (TestAFirstRegistrationWhoseRecordTheBucketRefusesIsAnsweredTheStoresRefusal), and not 200 with
+// the warning that the known-session bucket is not open, which a bucket deleted under the store
+// answers (TestAListenerWhoseKnownSessionBucketWasDeletedUnderItServesAndHandsNothingOver). The
+// bucket takes no write (its stream's largest message is one byte), so the registration's
+// admission reads the record at the bucket's leader (session.KnownSessions.AdmitRegistration) and
+// only its write fails, after the entry, the interests and the consumer have landed, which stand.
+// A store that read a refused write as a missing bucket (session's knownBucketGone) would answer
+// it 200 with that warning. At 999fd607c2 every failed write was the bus-unavailable 503; then a
+// failed write was answered 200 with a WARN; since #4194 a refused write that leaves no record is
+// the store's refusal, since a 200 would tell the session it is registered with no record of it.
+func TestARegistrationWhoseRecordWriteFailsWithTheBucketThereIsNotReadAsTheBucketMissing(t *testing.T) {
+	const sessionID = "ses_record_refused"
+	rig := newKnownSessionRig(t)
+	js := rig.harness.client.JS()
+	info, err := js.StreamInfo("KV_" + bus.KnownSessionBucket)
+	if err != nil {
+		t.Fatalf("read the known-session bucket's stream: %v", err)
+	}
+	info.Config.MaxMsgSize = 1
+	if _, err := js.UpdateStream(&info.Config); err != nil {
+		t.Fatalf("make the known-session stream take no write: %v", err)
+	}
+	if _, err := rig.known.AdmitRegistration(t.Context(), sessionID, ""); err != nil {
+		t.Fatalf("control: a registration's admission over the bucket that takes no write = %v; the case needs the read to stand and the write alone to fail", err)
+	}
+
+	recorder := httptest.NewRecorder()
+	rig.mux.ServeHTTP(recorder, postJSON("/v1/interests/subscribe", consumerRegistration(sessionID, "epoch-"+sessionID)))
+	if recorder.Code != http.StatusRequestEntityTooLarge || strings.Contains(recorder.Body.String(), knownBucketNotOpenWarning) {
+		t.Errorf("the registration whose record write the bucket refused answered %d %s; want the store's own refusal, 413, and not the warning that the bucket is not open",
+			recorder.Code, recorder.Body.String())
+	}
+	if _, found, err := rig.known.Read(t.Context(), sessionID); err != nil || found {
+		t.Fatalf("control: the store's record of the registration after its write = found %t, %v; the case needs a write that stored nothing, with the bucket answering reads", found, err)
+	}
+	if _, err := js.StreamInfo("KV_" + bus.KnownSessionBucket); err != nil {
+		t.Fatalf("control: the known-session bucket is not there, so this test says nothing about a write that failed with it there: %v", err)
+	}
+	if _, ok := rig.harness.registry.CachedInterest(sessionID); !ok {
+		t.Error("the refused registration's interest row did not stand: what it stored before its record write is not undone")
 	}
 }
 
@@ -299,6 +347,7 @@ func TestAListenerWhoseKnownSessionBucketIsNotOpenCarriesNeitherCount(t *testing
 	if err != nil {
 		t.Fatalf("connect the listener's user: %v", err)
 	}
+	bustest.Fixture(client.Conn)
 	t.Cleanup(client.Close)
 	known, err := session.OpenKnownSessions(t.Context(), client.Conn, session.WithKnownSessionReplicas(1))
 	if err != nil {

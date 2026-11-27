@@ -4,6 +4,8 @@ GATE = gate("envoy_e2e_local", "envoy-e2e-local", runs=[
                f"run by {at('envoy-e2e-local', 'Local end-to-end acceptance')}", ENVOY, ["./cmd/listener"], mode="build"),
     script_run(f"{ENVOY}/scripts/e2e-local.sh", 'go build -o "$nats_binary" ./internal/testnats/cmd/natsd',
                f"run by {at('envoy-e2e-local', 'Local end-to-end acceptance')}", ENVOY, ["./internal/testnats/cmd/natsd"], mode="build"),
+    script_run(f"{ENVOY}/scripts/e2e-local.sh", 'go build -o "$fixturebuckets_binary" ./internal/testnats/cmd/fixturebuckets',
+               f"run by {at('envoy-e2e-local', 'Local end-to-end acceptance')}", ENVOY, ["./internal/testnats/cmd/fixturebuckets"], mode="build"),
 ], reads=reads(
     (f"{ENVOY}/scripts/e2e-local.test.sh", at("envoy-e2e-local", "Refusal test for e2e-local.sh")),
     (f"{ENVOY}/scripts/e2e-local.sh", f"{at('envoy-e2e-local', 'Local end-to-end acceptance')}; `packages/envoy/scripts/e2e-local.test.sh#driver` runs it"),

@@ -113,7 +113,7 @@ func TestVersionStandsAlone(t *testing.T) {
 	if stdout.Len() != 0 {
 		t.Errorf("stdout %q, want none", stdout.String())
 	}
-	if !strings.Contains(stderr.String(), "envoy-infra: the command is seed, render or routes, or --version alone\n") {
+	if !strings.Contains(stderr.String(), "envoy-infra: the command is seed, render, buckets or routes, or --version alone\n") {
 		t.Errorf("stderr %q does not say what the command takes", stderr.String())
 	}
 	if strings.Contains(stderr.String(), canary) {
@@ -121,8 +121,8 @@ func TestVersionStandsAlone(t *testing.T) {
 	}
 }
 
-// TestHelpNamesVersion: the usage names --version beside the seed, render and routes commands' own
-// usage.
+// TestHelpNamesVersion: the usage names --version beside the seed, render, buckets and routes
+// commands' own usage.
 func TestHelpNamesVersion(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	if code := run(context.Background(), []string{"--help"}, &stdout, &stderr, noStore(t), noHub(t)); code != 0 {
@@ -132,6 +132,7 @@ func TestHelpNamesVersion(t *testing.T) {
 		"usage: envoy-infra --version\n",
 		"usage: envoy-infra seed {check|generate|verify}",
 		"usage: envoy-infra render {nats-start-script|webhook-listener-env|metric-filters}",
+		"usage: envoy-infra buckets create|recreate|check --nats URL",
 		"usage: envoy-infra routes record --namespace <ns> --statefulset <name> --out <file>",
 		"       envoy-infra routes check --namespace <ns> --statefulset <name> --record <file>",
 	} {

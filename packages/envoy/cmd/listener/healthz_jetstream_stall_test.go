@@ -19,6 +19,7 @@ import (
 
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/bus/bustest"
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
@@ -159,6 +160,7 @@ func TestHealthzAnswersAJetStreamThatStoppedAnsweringInsideItsBudget(t *testing.
 			if err != nil {
 				t.Fatalf("connect the listener's bus through the relay: %v", err)
 			}
+			bustest.Fixture(client.Conn)
 			t.Cleanup(client.Close)
 			const consumer = "listener-healthz-jetstream-stall"
 			bindBoundDurable(t, client, consumer, func(msg *natsgo.Msg) { _ = msg.Ack() })
@@ -181,11 +183,11 @@ func TestHealthzAnswersAJetStreamThatStoppedAnsweringInsideItsBudget(t *testing.
 				t.Fatalf("wait for the session cache: %v", err)
 			}
 			var state atomic.Pointer[listenerDeps]
-			state.Store(&listenerDeps{client: client, registry: registry, sessions: sessions, caches: listenerCaches(registry, sessions, nil), consumer: consumer})
+			state.Store(&listenerDeps{client: client, registry: registry, sessions: sessions, caches: listenerCaches(registry, sessions, nil, nil), consumer: consumer})
 			get := func() (int, map[string]any, time.Duration) {
 				recorder := httptest.NewRecorder()
 				started := time.Now()
-				healthzHandler(&state, nil).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+				healthzHandler(&state, nil, nil).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/healthz", nil))
 				elapsed := time.Since(started)
 				var body map[string]any
 				_ = json.Unmarshal(recorder.Body.Bytes(), &body)

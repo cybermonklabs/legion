@@ -14,6 +14,7 @@ import (
 	"github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/bus/bustest"
 	"github.com/sjawhar/envoy/internal/testnats"
 )
 
@@ -194,6 +195,9 @@ func TestAGapWriteDoesNotLaunderARepublishedRecordForTheEdge(t *testing.T) {
 				t.Fatalf("connect: %v", err)
 			}
 			t.Cleanup(client.Close)
+			// The test's own server: its registry creates the session bucket it finds missing, as
+			// a fixture's does (setupNATS), since no listener creates one.
+			bustest.Fixture(client.Conn)
 			r := openBindingRegistry(t, client)
 			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 			defer cancel()

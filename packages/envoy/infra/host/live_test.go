@@ -21,6 +21,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/sjawhar/envoy/infra/internal/pulumitest"
+	"github.com/sjawhar/envoy/internal/bus/bustest"
 	"github.com/sjawhar/envoy/internal/testnats"
 )
 
@@ -129,6 +130,7 @@ func listener(properties map[string]any) map[string]any {
 func TestLiveListenerRunsAHealthyListenerWithTheExplicitProvider(t *testing.T) {
 	image := pulumitest.HeldPortImage(t)
 	_, natsURL := testnats.Start(t)
+	bustest.ProvisionURL(t, natsURL, 1)
 	port := holdListenerPort(t)
 	name := containerName(t)
 
@@ -176,6 +178,7 @@ func TestLiveListenerRunsAHealthyListenerWithTheExplicitProvider(t *testing.T) {
 func TestLiveAdoptionPreviewsClean(t *testing.T) {
 	image := pulumitest.HeldPortImage(t)
 	_, natsURL := testnats.Start(t)
+	bustest.ProvisionURL(t, natsURL, 1)
 	port := holdListenerPort(t)
 	name := containerName(t)
 	healthURL := fmt.Sprintf("http://127.0.0.1:%d/healthz", port)
@@ -265,6 +268,10 @@ func TestLiveSeedReachesNATS(t *testing.T) {
 	image := pulumitest.HeldPortImage(t)
 	seed, public := testnats.User(t)
 	natsURL := testnats.StartNkeyAuthorized(t, public)
+	// No listener creates a bucket it copies, so the server holds them before the seeded listener
+	// starts, which waits for them and answers 503 meanwhile. The server admits only the seed's
+	// user, so the provisioning connection presents the seed too.
+	bustest.ProvisionURL(t, natsURL, 1, testnats.SeedOption(t, seed))
 	ports := []int{holdListenerPort(t), holdListenerPort(t)}
 	seeded, unseeded := containerName(t), containerName(t)
 

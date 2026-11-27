@@ -345,5 +345,18 @@ run_processes() {
   done <<<"$pairs"
 }
 
+# provision_fixture_buckets BIN URL [LOG] runs BIN, a build of envoy's fixturebuckets command, on
+# the run's own NATS server at URL, which then holds every bucket a listener copies: no listener
+# creates one, so a run provisions its server after it starts and before any listener
+# does. Its output goes to LOG, or its standard output nowhere without one, and a failure fails the
+# run naming URL, and LOG when there is one.
+provision_fixture_buckets() {
+  if [ -n "${3:-}" ]; then
+    "$1" -url "$2" >"$3" 2>&1 || fail "fixturebuckets could not provision $2 with the buckets a listener copies; see $3"
+  else
+    "$1" -url "$2" >/dev/null || fail "fixturebuckets could not provision $2 with the buckets a listener copies"
+  fi
+}
+
 # shellcheck source-path=SCRIPTDIR source-path=SCRIPTDIR/lib source=process-tree.sh
 . "$root/scripts/e2e/lib/process-tree.sh"

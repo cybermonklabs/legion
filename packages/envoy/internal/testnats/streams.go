@@ -608,15 +608,19 @@ func awaitInfo[T any](t testing.TB, failure string, read func() (*T, error), don
 
 // StreamWrites records every stream create and update a JetStream account's clients ask for: a
 // request on the account's $JS.API.STREAM.CREATE or $JS.API.STREAM.UPDATE subject, a bucket's
-// stream (KV_<bucket>) among them, reaches its subscriber as it reaches the server.
+// stream (KV_<bucket>) among them, reaches its subscriber as it reaches the server. A watch asked
+// for more verbs (WatchStreamWrites's also) records those too.
 type StreamWrites struct {
-	conn *natsgo.Conn
-	sub  *natsgo.Subscription
+	conn  *natsgo.Conn
+	sub   *natsgo.Subscription
+	verbs []string
 }
 
 // WatchStreamWrites starts recording the stream writes asked of the account uri connects to, a
-// lone server's (Start) or a test's own (URL), until the test ends.
-func WatchStreamWrites(t testing.TB, uri string) *StreamWrites {
+// lone server's (Start) or a test's own (URL), until the test ends: each create and update, and
+// each request of a verb also names, such as "DELETE" and "PURGE", for a test that holds a call to
+// remove nothing either.
+func WatchStreamWrites(t testing.TB, uri string, also ...string) *StreamWrites {
 	t.Helper()
 	conn := Connect(t, uri)
 	t.Cleanup(conn.Close)
@@ -627,12 +631,12 @@ func WatchStreamWrites(t testing.TB, uri string) *StreamWrites {
 	if err := conn.Flush(); err != nil {
 		t.Fatalf("watch stream writes: %v", err)
 	}
-	return &StreamWrites{conn: conn, sub: sub}
+	return &StreamWrites{conn: conn, sub: sub, verbs: append([]string{"CREATE", "UPDATE"}, also...)}
 }
 
-// Take returns the subjects of the creates and updates asked since the last Take. Each request
-// reached the subscription before the server answered it, so the flush, a round trip after the
-// writer's answer, leaves every one queued here.
+// Take returns the subjects of the writes asked since the last Take. Each request reached the
+// subscription before the server answered it, so the flush, a round trip after the writer's
+// answer, leaves every one queued here.
 func (w *StreamWrites) Take(t testing.TB) []string {
 	t.Helper()
 	if err := w.conn.Flush(); err != nil {
@@ -644,7 +648,7 @@ func (w *StreamWrites) Take(t testing.TB) []string {
 		if err != nil {
 			return subjects
 		}
-		if strings.HasPrefix(msg.Subject, "$JS.API.STREAM.CREATE.") || strings.HasPrefix(msg.Subject, "$JS.API.STREAM.UPDATE.") {
+		if slices.ContainsFunc(w.verbs, func(verb string) bool { return strings.HasPrefix(msg.Subject, "$JS.API.STREAM."+verb+".") }) {
 			subjects = append(subjects, msg.Subject)
 		}
 	}

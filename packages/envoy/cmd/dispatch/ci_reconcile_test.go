@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/bus/bustest"
 	"github.com/sjawhar/envoy/internal/cistore"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/githubapptest"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -80,12 +81,13 @@ func seedCIReconcileDefault(t *testing.T, database *store.Store) {
 	}
 }
 
-// makeCIStateBucket makes envoy_ci_state on the test's NATS, as the Envoy listener makes it. The
-// pass binds that bucket through cistore.OpenWriter and creates none, so a process whose NATS
-// has no bucket writes nothing at all.
+// makeCIStateBucket makes envoy_ci_state on the test's NATS, as `envoy-infra buckets` makes it for
+// a deployment, here through a fixture's connection (bustest.Connect), on which the listener's own
+// store creates it. The pass binds that bucket through cistore.OpenWriter and creates none, so a
+// process whose NATS has no bucket writes nothing at all.
 func makeCIStateBucket(t *testing.T, natsURL string) {
 	t.Helper()
-	conn := testnats.Connect(t, natsURL)
+	conn := bustest.Connect(t, natsURL)
 	t.Cleanup(conn.Close)
 	if _, err := cistore.Open(t.Context(), conn, logging.New("ci-reconcile-test"), cistore.WithTTL(time.Hour)); err != nil {
 		t.Fatalf("make the CI state bucket: %v", err)

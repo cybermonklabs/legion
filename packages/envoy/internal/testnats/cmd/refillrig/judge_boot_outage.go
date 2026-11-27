@@ -149,7 +149,7 @@ func judgeOutage(args []string) (verdict, error) {
 	bound := flags.Duration("bound", 2*time.Minute, "the stale bound")
 	margin := flags.Duration("margin", 5*time.Second, "slack around the bound")
 	within := flags.Duration("within", 30*time.Second, "how soon after NATS is back the list must be whole")
-	ttl := flags.Duration("ttl", session.BucketMaxAge, "the session bucket's record lifetime: the MaxAge the listener creates it with")
+	ttl := flags.Duration("ttl", session.BucketMaxAge, "the session bucket's record lifetime: the MaxAge envoy-infra buckets creates it with")
 	var v verdict
 	if err := flags.Parse(args); err != nil {
 		return v, err

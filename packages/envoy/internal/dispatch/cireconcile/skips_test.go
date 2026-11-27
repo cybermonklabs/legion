@@ -252,7 +252,9 @@ func TestNoBucketYetNoPass(t *testing.T) {
 		t.Fatalf("the pass called Open %d times, want once", binds)
 	}
 
-	// The listener boots and makes the bucket, as it does on its own clock.
+	// The listener boots and the bucket arrives with it, on its own clock: its store makes the
+	// bucket here on a fixture's connection (startListener), as `envoy-infra buckets` makes a
+	// deployment's before its listener starts.
 	h.startListener()
 	settlements := h.subscribe()
 

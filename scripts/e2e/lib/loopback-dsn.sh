@@ -165,13 +165,25 @@ run_database_url_env() {
 }
 
 # psql_env NAME ARG… runs psql on the DSN the variable NAME holds, with ARG… after it, and
-# returns psql's status. The DSN is read here rather than at the call, for the reason
-# require_loopback_env above gives. envoy-session-delivery.sh and dispatch-session-settings.sh
-# create and drop their run's database through it.
+# returns psql's status. It gives psql the URL without its password as an argument and the password
+# in PGPASSWORD, so no process argument holds it. The DSN is read here rather than at the call, for
+# the reason require_loopback_env above gives. envoy-session-delivery.sh and
+# dispatch-session-settings.sh create and drop their run's database through it.
 psql_env() {
   local -
   set +x
-  psql "${!1}" "${@:2}"
+  local psql_env_dir pg_url_lib
+  psql_env_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
+  # The path goes through a variable on purpose. sourcedLibraries (scripts/e2e/lib/
+  # script-functions.ts) reads every line `. "…/lib/NAME.sh"` as a source of scripts/e2e/lib/NAME.sh,
+  # and pg-url.sh is packages/envoy's, not a library there: written inline, this line makes every
+  # test that scans a script sourcing this file fail with ENOENT on scripts/e2e/lib/pg-url.sh.
+  # psql_env sources it when it runs; loopback-dsn.test.ts's psql_env row and rig.test.ts's
+  # psql_env row fail if it does not.
+  pg_url_lib=$psql_env_dir/../../../packages/envoy/scripts/lib/pg-url.sh
+  # shellcheck source-path=SCRIPTDIR/../../../packages/envoy/scripts/lib source=../../../packages/envoy/scripts/lib/pg-url.sh
+  . "$pg_url_lib"
+  pg_url_run "${!1}" psql "${@:2}"
 }
 
 # empty_public_schema URL empties the public schema of the database URL names, so that a server

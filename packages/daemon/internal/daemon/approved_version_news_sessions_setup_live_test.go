@@ -106,10 +106,13 @@ func startSessionsNATS(t *testing.T, logs string) string {
 
 // startSessionsListener starts the Envoy listener from the checkout on natsURL, serving on a
 // loopback port held for it (ENVOY_LISTEN_FD), and waits for its /healthz to answer healthy. Its
-// environment is its own: nothing of this pod's Envoy or Dispatch settings reaches it.
+// environment is its own: nothing of this pod's Envoy or Dispatch settings reaches it. The run's
+// natsd is given the buckets the listener copies first (testbuild.ProvisionFixtureBuckets): no
+// listener creates one, and a start that finds one missing waits, never healthy.
 func startSessionsListener(t *testing.T, logs, natsURL string) string {
 	t.Helper()
 	binary := testbuild.EnvoyBinary(t, "./cmd/listener")
+	testbuild.ProvisionFixtureBuckets(t, natsURL)
 	held, port := heldSocket(t)
 	command := exec.Command(binary)
 	command.Env = []string{

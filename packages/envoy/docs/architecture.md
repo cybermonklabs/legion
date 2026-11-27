@@ -161,7 +161,7 @@ written. The reaper runs on a period of its own,
 while the session bucket's maximum age is below the gone horizon, as the 5m of a bucket an older
 build created is, a record the bucket expires reads `gone` too, so a period shorter than that age
 takes a merely stalled holder's role that much sooner. Once the maximum age covers the horizon, as
-the 2h of a bucket the listener creates covers the default 1h, no record goes early, and the period
+the 2h of a bucket `envoy-infra buckets` creates covers the default 1h, no record goes early, and the period
 decides only how long past the horizon a gone holder keeps its role, so it belongs well inside the
 horizon. A Legion role whose agent process exits is `gone` at once rather than at the end of the
 live window, so its successor's soft claim takes the role without waiting the window out; a soft
@@ -172,7 +172,7 @@ route's holder by them (`roles.Windows`, `cmd/dispatch`'s `roleHolderWindows`), 
 gives its listeners and its Dispatch server the same two values.
 
 `ENVOY_SESSION_MAX_AGE` sets the `envoy_sessions` bucket's `MaxAge`; unset, the listener leaves the
-bucket's own. A bucket the listener creates gets 2h, an hour past the default gone horizon
+bucket's own. A bucket `envoy-infra buckets` creates gets 2h, an hour past the default gone horizon
 (`session.BucketMaxAge`); a bucket an older build created keeps its 5m until this setting raises
 it. A gone horizon longer than that age reads a record the bucket expired as `gone` before the
 horizon, so the operator raises the bucket past the horizon. A listener whose bucket's age is at
@@ -645,7 +645,7 @@ claim, at its first pass after the claim's last renewal is older than the live w
 holder then reads live for the live window after its last heartbeat, and a message to the role
 is forwarded to its agent subject, not kept. Past the live window the holder reads
 `unresponsive`, and a message to the role is kept as `holder_lapsed`. The record reads `gone` at
-the gone horizon in a bucket this listener creates, or at its 5-minute age in a bucket an older
+the gone horizon in a bucket `envoy-infra buckets` creates, or at its 5-minute age in a bucket an older
 build created, about when the live window ends. The role claim reaper releases the claim at its
 first pass after that, and a message to the role is kept as `unclaimed` from then. Each keep
 raises the role's wake report. When the role comes back, its session registers again or claims

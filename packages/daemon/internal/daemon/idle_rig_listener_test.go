@@ -1,5 +1,7 @@
 package daemon
 
+//ci:builds packages/envoy ./cmd/listener ./internal/testnats/cmd/fixturebuckets startIdleRigListenerOn testbuild.EnvoyBinary and testbuild.ProvisionFixtureBuckets (`packages/daemon/internal/testbuild/testbuild.go#ProvisionFixtureBuckets`), which run go build ./cmd/listener and ./internal/testnats/cmd/fixturebuckets in packages/envoy (`packages/daemon/internal/testbuild/testbuild.go#buildEnvoy`)
+
 import (
 	"bytes"
 	"context"
@@ -26,11 +28,12 @@ import (
 // subject of a session that is gone, and reports both to the daemon on notifications.legion.wake.
 //
 // It is started the way scripts/e2e/envoy-session-delivery.sh starts one — a build of this
-// checkout's cmd/listener, then PORT, ENVOY_LISTEN_HOST, ENVOY_MACHINE_ID, NATS_URLS and a HOME of
-// its own, waited on until /healthz says healthy — but on a listening socket the test holds from
-// the listener's first start until the test ends, handed to each start as ENVOY_LISTEN_FD, so no
-// other program can take the port before the first start or between a stop and the next. The rig
-// adds one other setting of its own, its agent wait (idleRigAgentWait).
+// checkout's cmd/listener, on a server fixturebuckets gave the buckets a listener copies, then
+// PORT, ENVOY_LISTEN_HOST, ENVOY_MACHINE_ID, NATS_URLS and a HOME of its own, waited on until
+// /healthz says healthy — but on a listening socket the test holds from the listener's first start
+// until the test ends, handed to each start as ENVOY_LISTEN_FD, so no other program can take the
+// port before the first start or between a stop and the next. The rig adds one other setting of its
+// own, its agent wait (idleRigAgentWait).
 type idleRigListener struct {
 	t   *testing.T
 	url string
@@ -89,6 +92,7 @@ func startIdleRigListener(t *testing.T, natsURL, machine string) *idleRigListene
 func startIdleRigListenerOn(t *testing.T, natsURL, machine string, socket *os.File, port int) *idleRigListener {
 	t.Helper()
 	binary := testbuild.EnvoyBinary(t, "./cmd/listener")
+	testbuild.ProvisionFixtureBuckets(t, natsURL)
 	// The listener's HOME is also where it runs, and the only path the test writes under it is
 	// the log below.
 	home := testtmp.Dir(t, "listener.log")

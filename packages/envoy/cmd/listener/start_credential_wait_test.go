@@ -85,13 +85,13 @@ func nkeyUserDenied(public, subject string) string {
 }
 
 // serveStartRoutes serves the listener's probe routes over start (registerProbeRoutes), as main
-// serves them from Phase 4 on, with no dependencies set yet, which is the state they are in while
-// the start runs. It returns their base URL.
+// serves them from Phase 4 on, with no dependencies set yet and no copied bucket found missing,
+// which is the state they are in while the start's connect runs. It returns their base URL.
 func serveStartRoutes(t *testing.T, start *natsStart) string {
 	t.Helper()
 	var deps atomic.Pointer[listenerDeps]
 	mux := http.NewServeMux()
-	registerProbeRoutes(mux, &deps, start, nil)
+	registerProbeRoutes(mux, &deps, nil, start, nil)
 	listener, err := testport.ListenLoopback()
 	if err != nil {
 		t.Fatalf("listen for the probe routes: %v", err)

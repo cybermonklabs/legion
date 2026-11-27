@@ -18,6 +18,7 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/bus/bustest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dedupe"
 	"github.com/sjawhar/envoy/internal/id"
@@ -761,6 +762,8 @@ func newRelayBench(b *testing.B) *relayBench {
 		b.Fatalf("connect the listener: %v", err)
 	}
 	b.Cleanup(client.Close)
+	// The stores below create the buckets they find missing, on a fixture's connection.
+	bustest.Fixture(client.Conn)
 	quiet := slog.New(slog.DiscardHandler)
 	registry, err := store.Open(b.Context(), client.Conn, store.WithReplicas(1), store.WithLogger(quiet))
 	if err != nil {

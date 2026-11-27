@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -162,22 +163,43 @@ type kvCache interface {
 	EndWatch(context.Context)
 }
 
-// listenerCache is one cache under the name /healthz and self-health report it by.
+// listenerCache is one cache under the name /healthz and self-health report it by, with the
+// copied buckets it reads and the listener's record of which it last found missing
+// (missing_buckets.go). A test that builds a cache list of its own names neither, and its caches
+// are never missing.
 type listenerCache struct {
-	name  string
-	cache kvCache
+	name    string
+	cache   kvCache
+	buckets []string
+	missing *missingBuckets
+}
+
+// bucketMissing reports whether the listener last found one of the cache's buckets missing: the
+// cache is then neither rewatched nor rebuilt, since only the operator's `envoy-infra buckets`
+// brings a bucket back, and no listener creates one.
+func (c listenerCache) bucketMissing() bool {
+	return c.missing.holdsAnyOf(c.buckets)
+}
+
+// readsAnyOf reports whether the cache reads one of buckets.
+func (c listenerCache) readsAnyOf(buckets []string) bool {
+	return anyOf(c.buckets, buckets)
 }
 
 // listenerCaches lists the caches the listener keeps. It is the one place that names them, so
-// rewatch, self-health, /healthz and shutdown each reach every cache. ciStore is nil on a listener
-// that mounts no GitHub webhook route, and then no site reaches a CI cache.
-func listenerCaches(registry *store.Registry, sessions *session.SessionRegistry, ciStore *cistore.Store) []listenerCache {
+// rewatch, self-health, /healthz and shutdown each reach every cache. The interest registry's two
+// watchers are two caches, each over its one bucket (store.Registry.InterestCache,
+// RoleClaimCache), so a missing role bucket leaves the interest watcher checked, rewatched and
+// rebuilt, and a missing interest bucket leaves the role claim watcher so. ciStore is nil on a
+// listener that mounts no GitHub webhook route, and then no site reaches a CI cache.
+func listenerCaches(registry *store.Registry, sessions *session.SessionRegistry, ciStore *cistore.Store, missing *missingBuckets) []listenerCache {
 	caches := []listenerCache{
-		{name: "interest", cache: registry},
-		{name: "session", cache: sessions},
+		{name: "interest", cache: registry.InterestCache(), buckets: []string{bus.InterestBucket}, missing: missing},
+		{name: "role claim", cache: registry.RoleClaimCache(), buckets: []string{bus.RoleClaimBucket}, missing: missing},
+		{name: "session", cache: sessions, buckets: []string{bus.SessionBucket}, missing: missing},
 	}
 	if ciStore != nil {
-		caches = append(caches, listenerCache{name: "CI", cache: ciStore})
+		caches = append(caches, listenerCache{name: "CI", cache: ciStore, buckets: []string{bus.CIStateBucket}, missing: missing})
 	}
 	return caches
 }
@@ -228,8 +250,8 @@ const defaultSessionReapInterval = time.Minute
 //
 // It is not the session reaper's period, short though that is. A session's record reads gone
 // when the session bucket expires its key as well as when its last registration passes the gone
-// horizon. A bucket this listener creates keeps a record for 2 hours (session.BucketMaxAge, a
-// constant: the default gone horizon plus one hour). A bucket an older build created keeps one
+// horizon. A bucket `envoy-infra buckets` creates keeps a record for 2 hours (session.BucketMaxAge,
+// a constant: the default gone horizon plus one hour). A bucket an older build created keeps one
 // five minutes until ENVOY_SESSION_MAX_AGE raises it (dispatch://INFRA-3590), so there a stalled
 // session's key is gone five minutes after its last heartbeat and the reaper then finds its holder
 // gone. Judged every minute, such a stalled holder would lose its role up to five times sooner
@@ -261,10 +283,14 @@ func warnIgnoredEnv(logger *logging.Logger, name string, reason string) {
 
 // rewatchListenerKVWatchers recreates cache watchers that are not represented by bus.Client
 // subscriptions, each move waiting on nothing past ctx. It attempts every one so a failed rebuild
-// of one cannot leave the other caches permanently stale too.
+// of one cannot leave the other caches permanently stale too. A cache whose bucket the listener
+// last found missing is left alone: no rewatch can open a missing bucket, and none creates one.
 func rewatchListenerKVWatchers(ctx context.Context, conn *nats.Conn, caches []listenerCache) error {
 	var errs []error
 	for _, c := range caches {
+		if c.bucketMissing() {
+			continue
+		}
 		if err := c.cache.Rewatch(ctx, conn); err != nil {
 			errs = append(errs, fmt.Errorf("rewatch %s cache: %w", c.name, err))
 		}
@@ -320,16 +346,21 @@ func knownSessionMoveHook(known *session.KnownSessions, logger *logging.Logger) 
 // isUnrecoverableSelfHealthFailure distinguishes state that must be rebuilt
 // from transient JetStream deadlines. Rebuild only while the NATS client is
 // connected; a disconnected client owns its own infinite reconnect loop. A
-// missing bucket is terminal too: a rebuild cannot create a bucket, so its
-// failed rebuilds end in a restart, whose store Open creates it again. A cache
-// whose copy needs a read (kvCache.NeedsRead) is rebuilt as a stopped watcher
-// is: nothing but a Rewatch reads its bucket again, for instance after the
-// reconnect hook's Rewatch failed while the old watcher survived. A role lane
-// failure is never one (checkSelfHealth), whatever it wraps: the error of a send
-// that failed on a lane connection closed under it says nothing of the main bus,
-// which a rebuild would rebuild.
+// copied bucket found missing is neither (bucketsMissingError): no rebuild opens
+// it and no restart creates it, since no listener creates a bucket it copies, so
+// the listener serves on with the bucket's writes answering 503 until the
+// operator's `envoy-infra buckets` recreates it; a cache that reads such a bucket
+// is left out of the checks below for the same reason. A missing stream other than
+// a copied bucket's, the notification stream's, is terminal: the bus ensures that
+// stream again. A cache whose copy needs a read (kvCache.NeedsRead) is rebuilt as
+// a stopped watcher is: nothing but a Rewatch reads its bucket again, for instance
+// after the reconnect hook's Rewatch failed while the old watcher survived. A role
+// lane failure is never one (checkSelfHealth), whatever it wraps: the error of a
+// send that failed on a lane connection closed under it says nothing of the main
+// bus, which a rebuild would rebuild.
 func isUnrecoverableSelfHealthFailure(err error, client *bus.Client, caches []listenerCache) bool {
-	if err == nil || errors.Is(err, errRoleLaneInactive) || !client.Connected() {
+	var missing *bucketsMissingError
+	if err == nil || errors.Is(err, errRoleLaneInactive) || !client.Connected() || errors.As(err, &missing) {
 		return false
 	}
 	if errors.Is(err, nats.ErrConsumerNotFound) || errors.Is(err, errDurableUnbound) ||
@@ -337,6 +368,9 @@ func isUnrecoverableSelfHealthFailure(err error, client *bus.Client, caches []li
 		return true
 	}
 	for _, c := range caches {
+		if c.bucketMissing() {
+			continue
+		}
 		if c.cache.WatchErr() != nil || c.cache.NeedsRead() {
 			return true
 		}
@@ -572,6 +606,11 @@ func checkRoleLane(lane *bus.Client) error {
 func checkSelfHealth(caches []listenerCache, roleLane *bus.Client, durable func() error) error {
 	roleLaneErr := checkRoleLane(roleLane)
 	for _, c := range caches {
+		if c.bucketMissing() {
+			// The probe reports the missing bucket itself (bucketsMissingError), after every
+			// other check: a rebuild cannot repair this cache, and must not be tried for it.
+			continue
+		}
 		if err := c.cache.Ping(); err != nil {
 			return fmt.Errorf("%s kv: %w", c.name, err)
 		}
@@ -616,8 +655,9 @@ func sessionHealthFields(sessions *session.SessionRegistry) map[string]interface
 // healthzHandler is the listener's /healthz, except while the start waits out a refusal of its NATS
 // credential, when natsStart.healthz answers 503 in its place. It answers 200 "starting" until
 // main publishes deps once the durable consumer binds, which during a rolling deploy waits out the
-// task being replaced
-// while /v1 already serves; 200 "healthy" with the durable consumer's lag once every dependency
+// task being replaced while /v1 already serves; 503 "waiting" before that while the start waits for
+// a copied bucket it found missing, since no route serves then (writeWaitingForBuckets); 200
+// "healthy" with the durable consumer's lag once every dependency
 // answers; 503 "unhealthy" when NATS is unavailable, the durable subscription is inactive, a
 // cache's watcher has stopped, the durable consumer is gone, a bus check did not answer within
 // healthzBudget, or the durable consumer is
@@ -695,20 +735,28 @@ func sessionHealthFields(sessions *session.SessionRegistry) map[string]interface
 // answers writeDependencyHealth gives carry only status and error, as before: they report a fault
 // below the copy, not its freshness.
 //
-// Every answer, starting, healthy, degraded and unhealthy alike, also carries what issuers answers
-// (issuerHealthFields: the identity token issuers' "oidc" and "google"); nil adds nothing. Those
-// fields never decide the status (writeHealth).
+// Every answer, starting, waiting, healthy, degraded and unhealthy alike, also carries what issuers
+// answers (issuerHealthFields: the identity token issuers' "oidc" and "google"); nil adds nothing.
+// Those fields never decide the status (writeHealth).
 //
 // The route serves this handler behind the start's own answer (registerProbeRoutes): while the
 // listener's start waits out a refusal of its NATS credential, /healthz answers 503 naming the
 // refusal before this handler is asked (natsStart.healthz). Before the start's first refusal and
 // once the connect that met it has got in (natsStart.admitted), this handler answers, 200
-// "starting" until deps is set.
-func healthzHandler(deps *atomic.Pointer[listenerDeps], issuers func() map[string]any) http.HandlerFunc {
+// "starting" until deps is set, or 503 "waiting" while the start waits for a copied bucket it
+// found missing.
+func healthzHandler(deps *atomic.Pointer[listenerDeps], missing *missingBuckets, issuers func() map[string]any) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		d := deps.Load()
 		if d == nil {
+			// A start that found a copied bucket missing waits for it (awaitCopiedBuckets) and
+			// serves no route meanwhile, so it answers 503 "waiting" rather than merely starting.
+			// The optional bucket holds no start, so it never makes this answer.
+			if names := missing.required(); len(names) > 0 {
+				writeWaitingForBuckets(w, names, issuers)
+				return
+			}
 			writeHealth(w, http.StatusOK, map[string]any{"status": "starting"}, issuers)
 			return
 		}
@@ -726,14 +774,45 @@ func healthzHandler(deps *atomic.Pointer[listenerDeps], issuers func() map[strin
 			writeHealth(w, http.StatusServiceUnavailable, map[string]any{"status": "unhealthy", "error": errRoleLaneInactive.Error()}, issuers)
 			return
 		}
+		// A copied bucket held missing (missing_buckets.go) skips only the checks of the caches
+		// that read it, whose pings it fails; every other check below runs, and answers 503 when it
+		// fails. Only once they all pass does a missing bucket answer 200 "degraded": no listener
+		// creates one, so a restart or a rotation out of the balancer would repair nothing.
+		held := missing.list()
 		for _, c := range d.caches {
+			if c.readsAnyOf(held) {
+				continue
+			}
 			if err := c.cache.WatchErr(); err != nil {
+				// A watcher ends when its bucket is deleted under it, before the monitor's next
+				// read adds the bucket to missing: read the cache's streams now, as the ping's
+				// branch below does, and name a bucket the server no longer holds as the degraded
+				// answer rather than the watcher's end as 503, which every listener's readiness
+				// probe would read at once for a deletion no probe can repair.
+				if len(c.buckets) > 0 {
+					if gone := readBuckets(ctx, d.client.JS(), c.buckets).missing; len(gone) > 0 {
+						held = append(held, gone...)
+						continue
+					}
+				}
 				writeDependencyHealth(w, c.name+" KV watcher", err, true, issuers)
 				return
 			}
 		}
 		for _, c := range d.caches {
+			if c.readsAnyOf(held) {
+				continue
+			}
 			if answered, err := healthzPing(ctx, d.client.Connection(), c.cache); err != nil {
+				if answered && errors.Is(err, nats.ErrStreamNotFound) && len(c.buckets) > 0 {
+					// Deleted since the monitor last looked: named now, not at its next check, and
+					// only the buckets a read of their streams finds missing, should a cache read more
+					// than one. None of c.buckets is in held (reads, above), so none is named twice.
+					if gone := readBuckets(ctx, d.client.JS(), c.buckets).missing; len(gone) > 0 {
+						held = append(held, gone...)
+						continue
+					}
+				}
 				writeDependencyHealth(w, c.name+" KV", err, !answered || c.cache.WatchErr() != nil || errors.Is(err, nats.ErrConnectionClosed), issuers)
 				return
 			}
@@ -751,6 +830,11 @@ func healthzHandler(deps *atomic.Pointer[listenerDeps], issuers func() map[strin
 		// answers 503 until the next one.
 		if durableUnbound(consumerInfo, d.client) {
 			writeDependencyHealth(w, "durable consumer", errDurableUnbound, true, issuers)
+			return
+		}
+		if len(held) > 0 {
+			slices.Sort(held)
+			writeMissingBuckets(w, held, issuers)
 			return
 		}
 		// Last, below every 503 check: "degraded" is the answer only when nothing worse holds.
@@ -1282,6 +1366,11 @@ func runListener(credentialWait time.Duration) {
 		ciLegacyHeld = met.NewGauge("envoy_ci_legacy_records_held", "CI records a head-gated listener left unsettled that the summary loop's last pass held back")
 	}
 	registerListGauges(met, &v1Deps)
+	// The copied buckets this listener last found missing (missing_buckets.go), which /healthz
+	// names and this gauge counts: no listener creates one, so it stays above 0 until the operator
+	// recreates the bucket.
+	missing := &missingBuckets{}
+	met.NewGaugeFunc("envoy_kv_buckets_missing", "Copied KV buckets the listener last found missing; no listener creates one", func() int64 { return int64(missing.count()) })
 
 	// Phase 3: Build HTTP mux.
 	mux := http.NewServeMux()
@@ -1293,7 +1382,7 @@ func runListener(credentialWait time.Duration) {
 	// listener's start on NATS (Phase 5): /healthz answers 503 naming the last refusal of the
 	// credential while the start waits it out, and /livez answers 204 throughout.
 	start := newNATSStart(credentialWait)
-	registerProbeRoutes(mux, &deps, start, func() map[string]any { return issuerHealthFields(apiAuthConfig) })
+	registerProbeRoutes(mux, &deps, missing, start, func() map[string]any { return issuerHealthFields(apiAuthConfig) })
 
 	// GaugeFunc for consumer pending — queries NATS at scrape time
 
@@ -1390,6 +1479,24 @@ func runListener(credentialWait time.Duration) {
 	} else if err != nil {
 		logger.Warn("durable consumer check failed; the subscribe retries it", slog.String("consumer", consumer), slog.String("error", err.Error()))
 	}
+	// The copied buckets, before any store opens: no listener creates one (missing_buckets.go), so
+	// a start that finds one missing waits here, every route behind its starting gate answering
+	// 503 and /healthz naming the bucket, until the operator's `envoy-infra buckets` creates it -
+	// every one but the known-session bucket (optionalCopiedBucket), which this wait does not read.
+	// Each store below opens through openExisting, which waits here again for a bucket deleted
+	// between this wait and its open, rather than ending the start.
+	// No configuration makes the listener create one: a test or a dev rig provisions its own
+	// server before it starts the listener (internal/bus/bustest, the fixturebuckets command).
+	// The copied buckets this listener opens, which the start's wait and every self-health tick
+	// read: the CI state bucket only beside the GitHub webhook route, whose CI store a start that
+	// cannot open it ends (log.Fatalf below), so ciStore is set exactly when this names it.
+	copied := listenerCopiedBuckets(webhookCfg.GitHub != nil)
+	awaitBuckets := func() error {
+		return awaitCopiedBuckets(starting, logger, client.JS(), copied, missing)
+	}
+	if err := awaitBuckets(); err != nil {
+		log.Fatalf("await the copied KV buckets: %v", err)
+	}
 	// CI-summary aggregation state. Its WatchAll cache warms asynchronously like the registries
 	// below; the summary loop tolerates an empty cache until it fills. It opens ahead of them, as the
 	// one store the webhooks need, and after the durable check, so a refused start opens no bucket.
@@ -1412,7 +1519,9 @@ func runListener(credentialWait time.Duration) {
 		} else {
 			logger.Info(ciVerifyEnv + "=off: a CI settlement is published from the webhooks alone, with no GitHub read before it")
 		}
-		ciStore, err = cistore.Open(starting, client.Conn, logger, cistore.WithReplicas(cfg.NATSReplicas), cistore.WithTTL(7*24*time.Hour), cistore.WithVerify(verify))
+		ciStore, err = openExisting(awaitBuckets, func() (*cistore.Store, error) {
+			return cistore.Open(starting, client.Conn, logger, cistore.WithReplicas(cfg.NATSReplicas), cistore.WithTTL(bus.CIStateBucketMaxAge), cistore.WithVerify(verify))
+		})
 		if err != nil {
 			log.Fatalf("open the CI store: %v", err)
 		}
@@ -1431,7 +1540,9 @@ func runListener(credentialWait time.Duration) {
 	// The registry and its cache watcher log through the listener's own handler, so its role-restore
 	// count, its warm-up and its reaper cycles are JSON records with this machine's id. Never
 	// slog.SetDefault instead: see store.WithLogger for the CloudWatch filters that breaks.
-	registry, err := store.Open(starting, client.Conn, store.WithReplicas(cfg.NATSReplicas), store.WithLogger(logger.Slog()), store.WithLegacySubjectCounter(legacySubjects))
+	registry, err := openExisting(awaitBuckets, func() (*store.Registry, error) {
+		return store.Open(starting, client.Conn, store.WithReplicas(cfg.NATSReplicas), store.WithLogger(logger.Slog()), store.WithLegacySubjectCounter(legacySubjects))
+	})
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -1503,15 +1614,17 @@ func runListener(credentialWait time.Duration) {
 	if err != nil {
 		log.Fatal(err)
 	}
-	sessions, err := session.OpenSessionRegistry(
-		starting,
-		client.Conn,
-		session.WithSessionReplicas(cfg.NATSReplicas),
-		session.WithSessionLogger(logger.Slog()),
-		session.WithSessionMaxAge(cfg.SessionMaxAge),
-		session.WithSessionLiveWindow(sessionLiveWindow),
-		session.WithSessionGoneHorizon(sessionGoneHorizon),
-	)
+	sessions, err := openExisting(awaitBuckets, func() (*session.SessionRegistry, error) {
+		return session.OpenSessionRegistry(
+			starting,
+			client.Conn,
+			session.WithSessionReplicas(cfg.NATSReplicas),
+			session.WithSessionLogger(logger.Slog()),
+			session.WithSessionMaxAge(cfg.SessionMaxAge),
+			session.WithSessionLiveWindow(sessionLiveWindow),
+			session.WithSessionGoneHorizon(sessionGoneHorizon),
+		)
+	})
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -1529,8 +1642,8 @@ func runListener(credentialWait time.Duration) {
 		slog.String("reap_interval", sessionReapInterval.String()),
 		slog.String("role_claim_reap_interval", roleClaimReapInterval.String()))
 
-	// A bucket this listener creates keeps a record for 2 hours (session.BucketMaxAge, a constant:
-	// the default gone horizon plus one hour), which a configured horizon of 2 hours or more
+	// A bucket `envoy-infra buckets` creates keeps a record for 2 hours (session.BucketMaxAge, a
+	// constant: the default gone horizon plus one hour), which a configured horizon of 2 hours or more
 	// reaches. A bucket an older build created keeps 5 minutes until the deployment sets
 	// ENVOY_SESSION_MAX_AGE. So say it once at each start, naming both values.
 	if maxAge := sessions.TTL(); maxAge <= sessionGoneHorizon {
@@ -1580,6 +1693,12 @@ func runListener(credentialWait time.Duration) {
 		logger.Error("the known-session store was not built; no session's 30-day record is written or read for the life of this listener",
 			slog.String("bucket", bus.KnownSessionBucket), slog.String("error", knownErr.Error()))
 	}
+	// A store whose open found its bucket missing serves on without it (optionalCopiedBucket): the
+	// bucket is held missing from here, so /healthz answers 200 "degraded" naming it from the first
+	// answer the listener serves, rather than from the self-health monitor's first tick.
+	if known.BucketMissing() {
+		missing.foundMissingAtStart()
+	}
 
 	// The store's watcher fills the records in the background, so wait for a read that delivered
 	// every one of them before serving, as the caches above are waited for (the state
@@ -1603,7 +1722,7 @@ func runListener(credentialWait time.Duration) {
 	// KV watchers are not bus subscriptions: tie them to the connection, so a disconnect stops each
 	// copy following its bucket, every recovered connection reads each bucket again, and the drain
 	// ends them before the connection's own.
-	caches := listenerCaches(registry, sessions, ciStore)
+	caches := listenerCaches(registry, sessions, ciStore, missing)
 	hookListenerKVWatchers(client, caches)
 	client.AddReconnectHook(legionAgents.reconnect)
 	client.AddDrainHook(legionAgents.close)
@@ -2051,7 +2170,14 @@ func runListener(credentialWait time.Duration) {
 			monitorCtx,
 			logger,
 			func() error {
-				return checkSelfHealth(caches, lane.client, probeDurable)
+				// Each tick reads whether every copied bucket still exists first, so a cache whose
+				// bucket is gone is left out of the checks and the rebuild (bucketMissing), and
+				// logs missingBucketLine for the alarm while it stays gone (checkMonitoredBuckets).
+				checkMonitoredBuckets(monitorCtx, logger, client.JS(), copied, known, missing)
+				if err := checkSelfHealth(caches, lane.client, probeDurable); err != nil {
+					return err
+				}
+				return missing.err()
 			},
 			func(err error) bool {
 				return isUnrecoverableSelfHealthFailure(err, client, caches)

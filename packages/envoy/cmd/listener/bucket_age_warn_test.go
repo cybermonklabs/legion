@@ -18,8 +18,9 @@ import (
 // start. Such a bucket drops a stalled session's record before the session reads gone. One WARN
 // line names the bucket's age and the horizon, and /healthz names both. A bucket an older build
 // created at 5 minutes is this case, and a production listener starts on one until
-// ENVOY_SESSION_MAX_AGE raises it. The control is a listener that creates its own bucket: that
-// bucket keeps a record past the horizon, and the listener logs no such line.
+// ENVOY_SESSION_MAX_AGE raises it. The control is a listener on a server provisioned as
+// `envoy-infra buckets` provisions one (startListenerProcess): that bucket keeps a record past the
+// horizon, and the listener logs no such line.
 func TestAListenerWarnsWhenTheBucketAgeIsShort(t *testing.T) {
 	t.Parallel()
 	binary := cmdtest.Build(t, "envoy-listener")
@@ -55,10 +56,10 @@ func TestAListenerWarnsWhenTheBucketAgeIsShort(t *testing.T) {
 		}
 	})
 
-	t.Run("a bucket the listener creates", func(t *testing.T) {
+	t.Run("a bucket envoy-infra buckets creates", func(t *testing.T) {
 		listener := startBucketAgeListener(t, binary, testnats.URL(t), "new-session-bucket")
 		if warnings := sessionAgeWarnings(listener); len(warnings) != 0 {
-			t.Errorf("a listener that created its own session bucket logged %d WARN lines about the bucket's age, want none: %v", len(warnings), warnings)
+			t.Errorf("a listener on a session bucket created as envoy-infra buckets creates it logged %d WARN lines about the bucket's age, want none: %v", len(warnings), warnings)
 		}
 		health := bucketAgeHealth(t, listener)
 		if got := health["session_max_age"]; got != "2h0m0s" {

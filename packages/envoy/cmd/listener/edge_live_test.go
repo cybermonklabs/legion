@@ -75,9 +75,11 @@ type edgeLiveHub struct {
 
 // startEdgeLiveHub starts a server whose users are grants, by name. The user dispatch names
 // creates the stream, as Dispatch's server does, and makes buckets: the edge's grant creates and
-// raises no bucket's stream, so an edge listener finds each bucket the shared listeners made at
-// their start, and Dispatch's user, whose grant holds each one's create, makes them here before
-// any edge starts.
+// raises no bucket's stream, so an edge listener finds each bucket made before it starts: a
+// deployment's copied buckets by the operator's `envoy-infra buckets`, the others by the shared
+// listeners at their start. Dispatch's user, whose grant holds each one's create, makes them here
+// before any listener starts, so a shared listener starts on the server as the rig left it
+// (startShared).
 func startEdgeLiveHub(t *testing.T, grants map[string]natsgrant.Permissions, dispatch string, buckets []string) edgeLiveHub {
 	t.Helper()
 	hub := edgeLiveHub{seeds: map[string]string{}}
@@ -186,10 +188,12 @@ func (r *edgeLiveRig) startEdge(t *testing.T) *listenerProcess {
 	return startEdgeListenerProcess(t, r.binary, r.uri, edgeLiveMachine, edgeProject, r.broker.Server.URL, edgeAccountToken, bus.NkeySeedEnvVar+"="+r.seeds["edge"])
 }
 
-// startShared starts a shared listener as its own user, one no session shares.
+// startShared starts a shared listener as its own user, one no session shares, on the server as
+// the rig left it (startListenerProcessAsIs): the rig made every bucket the listener copies, and
+// the shared listener's grant does not let the harness mark the server as a fixture's.
 func (r *edgeLiveRig) startShared(t *testing.T) *listenerProcess {
 	t.Helper()
-	return startListenerProcess(t, r.binary, r.uri, "example-shared", bus.NkeySeedEnvVar+"="+r.seeds["shared"])
+	return startListenerProcessAsIs(t, r.binary, r.uri, "example-shared", bus.NkeySeedEnvVar+"="+r.seeds["shared"])
 }
 
 // connect connects to the server as the user name names.

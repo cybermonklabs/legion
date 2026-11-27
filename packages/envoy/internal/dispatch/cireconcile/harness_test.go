@@ -18,6 +18,7 @@ import (
 	"github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/bus/bustest"
 	"github.com/sjawhar/envoy/internal/cistore"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/ratelimit"
@@ -129,7 +130,8 @@ func (h *harness) verifyPass() {
 
 // newHarnessBeforeTheListener is the stack with no CI bucket: NATS is up, so a pass runs, but
 // nothing has made envoy_ci_state yet, which is where a Dispatch process booted ahead of the
-// listener stands. startListener then makes the bucket, as the listener itself does.
+// listener stands. startListener then makes the bucket, as `envoy-infra buckets` does in a
+// deployment.
 func newHarnessBeforeTheListener(t *testing.T, reviewer string) *harness {
 	t.Helper()
 	ctx := t.Context()
@@ -215,12 +217,13 @@ func (w *holdingWriter) RecordRuns(ctx context.Context, observations []contracts
 	return w.Writer.RecordRuns(ctx, observations)
 }
 
-// startListener opens the listener's own store, which makes the bucket and watches it, and its
-// real summary loop, and mounts the listener's real webhook handler over them: the pass's job is
-// to make this listener settle, and a record alone does not prove that.
+// startListener opens the listener's own store, on a fixture's connection (bustest.Fixture) so it
+// makes the bucket, and watches it, and its real summary loop, and mounts the listener's real
+// webhook handler over them: the pass's job is to make this listener settle, and a record alone
+// does not prove that.
 func (h *harness) startListener() {
 	h.t.Helper()
-	listener, err := cistore.Open(h.ctx, h.bus.Conn, logging.New("listener"), cistore.WithReplicas(1), cistore.WithTTL(time.Hour), cistore.WithVerify(h.verify))
+	listener, err := cistore.Open(h.ctx, bustest.Fixture(h.bus.Conn), logging.New("listener"), cistore.WithReplicas(1), cistore.WithTTL(time.Hour), cistore.WithVerify(h.verify))
 	if err != nil {
 		h.t.Fatalf("open the listener's CI store: %v", err)
 	}

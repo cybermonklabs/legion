@@ -18,6 +18,7 @@ import (
 
 	"github.com/sjawhar/envoy/infra/aws/rendering"
 	"github.com/sjawhar/envoy/infra/core"
+	"github.com/sjawhar/envoy/infra/internal/flagerr"
 	"github.com/sjawhar/envoy/internal/bus"
 )
 
@@ -95,7 +96,7 @@ func (s *subcommand) parse(args []string, required ...string) (map[string]bool, 
 			// The flag package says this only of a flag it defines, so the name is one of ours.
 			return nil, s.usage(err.Error()), true
 		}
-		if name := malformedFlag(s.fs, err); name != "" {
+		if name := flagerr.Malformed(s.fs, err); name != "" {
 			return nil, s.usage("--" + name + ": a malformed value (not echoed: a seed may have been pasted there)"), true
 		}
 		return nil, s.usage("a flag this command does not take, or a malformed one (not echoed: a seed may have been pasted there)"), true
@@ -121,25 +122,6 @@ func (s *subcommand) parse(args []string, required ...string) (map[string]bool, 
 		}
 	}
 	return given, 0, false
-}
-
-// malformedFlag returns the name of the flag whose value the flag package could not parse, read
-// from its message, "invalid value %q for flag -%s: %v" or, for a boolean flag, "invalid boolean
-// value %q for -%s: %v"; "" for any other error. The quoted value comes first, so the name follows
-// the message's last marker, and only a flag the set defines is returned.
-func malformedFlag(fs *flag.FlagSet, err error) string {
-	msg := err.Error()
-	if !strings.HasPrefix(msg, "invalid value ") && !strings.HasPrefix(msg, "invalid boolean value ") {
-		return ""
-	}
-	for _, marker := range []string{" for flag -", " for -"} {
-		if i := strings.LastIndex(msg, marker); i >= 0 {
-			if name, _, _ := strings.Cut(msg[i+len(marker):], ":"); fs.Lookup(name) != nil {
-				return name
-			}
-		}
-	}
-	return ""
 }
 
 // refused reports a refusal of the value the flag name sets and returns its exit code.

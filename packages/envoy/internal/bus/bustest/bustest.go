@@ -8,6 +8,19 @@
 // TestAFullStreamRefusesAPublishAndKeepsEveryStoredMessage: it fills a single-server stream, where
 // nats-server checks the store with no clustered in-flight count, and it reads back every envelope
 // it filled by stream sequence. Every test outside package bus takes these from here.
+//
+// It is also the one fixture helper for the buckets a listener copies (bus.CopiedBuckets) on a
+// test's or a dev rig's own NATS server (fixture.go). No program of a deployment creates one of
+// those buckets: the stores open them only if they exist, and the operator creates them with
+// `envoy-infra buckets`. A fixture creates them explicitly instead, in one of two ways:
+//
+//   - a Go test that opens a store in its own process marks its connection as a fixture's
+//     (Connect, Fixture), and the store then creates a copied bucket it finds missing with its own
+//     configuration (bus.CreateCopiedBucketsOn);
+//   - a rig that starts a listener binary provisions its server before the listener starts
+//     (Provision, ProvisionURL, or the fixturebuckets command for a script), and marks the server
+//     as a fixture's (MarkerStream), which refillrig's destructive commands require
+//     (RequireFixtureServer).
 package bustest
 
 import (

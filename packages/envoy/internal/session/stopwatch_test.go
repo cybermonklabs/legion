@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/bus/bustest"
 	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/testnats"
 )
@@ -14,7 +15,7 @@ import (
 // openWatchedRegistry opens a session registry whose KV watcher has finished its initial scan.
 func openWatchedRegistry(t *testing.T, uri string) *SessionRegistry {
 	t.Helper()
-	conn := testnats.Connect(t, uri)
+	conn := bustest.Connect(t, uri)
 	t.Cleanup(conn.Close)
 	registry, err := OpenSessionRegistry(t.Context(), conn, WithSessionReplicas(1))
 	if err != nil {
@@ -49,7 +50,7 @@ func TestStopWatchMakesNoRequestOfTheServer(t *testing.T) {
 // still expects and logs no error.
 func TestStopWatchIsFinal(t *testing.T) {
 	_, uri := testnats.Start(t)
-	conn := testnats.Connect(t, uri)
+	conn := bustest.Connect(t, uri)
 	registry, err := OpenSessionRegistry(t.Context(), conn, WithSessionReplicas(1))
 	if err != nil {
 		t.Fatalf("open session registry: %v", err)

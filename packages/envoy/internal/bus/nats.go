@@ -162,8 +162,9 @@ func WithPublishAcknowledgementClock(clock AcknowledgementClock) ConnectOption {
 
 // WithReconnectErrClock overrides the clock the bus reads for the time-based parts of its
 // reconnect reporting: the throttle of the warning a failed reconnect attempt logs
-// (reconnectErrThrottle) and the stall HookStall reports, so a test can see a minute pass without
-// waiting one. nil, the default, is time.Now.
+// (reconnectErrThrottle) and the stall HookStall reports; and for the keeper's backoff on a bucket
+// the server refused it for want of a grant (keeperNoGrantBackoff, keepBuckets). So a test can see
+// a minute, or the backoff's ten, pass without waiting it. nil, the default, is time.Now.
 func WithReconnectErrClock(now func() time.Time) DialOption {
 	return func(o *connectOpts) { o.reconnectErrClock = now }
 }
@@ -314,7 +315,8 @@ func WithWriteDeadline(d time.Duration) DialOption {
 // WithInboxPrefix has every connection the client makes name its inboxes under prefix in place
 // of nats.go's _INBOX (nats.CustomInboxPrefix): its request replies, and every inbox named by the
 // connection's NewInbox, which is how this module names each one. An edge listener takes it
-// (cmd/listener, natsgrant.EdgeInboxPrefix), so its user may subscribe its own inboxes and no other
+// (cmd/listener, natsgrant.EdgeInboxPrefix), and `envoy-infra buckets` takes _INBOX_envoy_buckets
+// (infra/buckets.InboxPrefix), so each one's user may subscribe its own inboxes and no other
 // client's.
 func WithInboxPrefix(prefix string) DialOption {
 	return func(o *connectOpts) { o.inboxPrefix = prefix }
@@ -624,7 +626,7 @@ type Client struct {
 	// connection reads with a stream message get rather than a direct get (wrapKeyValue).
 	streamMessageReads bool
 	// keeperStepGuard is withKeeperStepGuard's hang guard of each keeper step, zero for
-	// startHangGuard (keepPass). It is set before the keeper starts and never changed.
+	// startHangGuard (keeperStep). It is set before the keeper starts and never changed.
 	keeperStepGuard time.Duration
 	// finishedTakeovers holds each finished takeover record this client read, with the count of
 	// messages its subject held then, so TakeoverRecords reads none of them again while that count
@@ -729,7 +731,7 @@ func Connect(urls []string, options ...ConnectOption) (*Client, error) {
 // copies, the byte limit, the stream's id, the age, the duplicate window and discard that a
 // concurrent start or an operator took away, adds back each of this binary's subjects the stream
 // lacks that overlaps none it carries, and removes no subject (keepStream). It also raises each
-// bucket WithKeptBuckets names that has fewer copies than WithReplicas' count (raiseReplicas).
+// bucket WithKeptBuckets names that has fewer copies than WithReplicas' count (keepBuckets).
 //
 // Every process of the deployed services calls it: envoy-listener and envoy-dispatch's server.
 // It also reads the deployed stream's subjects every streamSubjectsRefresh, as Connect's client does.
@@ -1285,8 +1287,8 @@ func (c *Client) HookStall() (time.Duration, error) {
 	return max(c.now().Sub(c.hooksDueSince), 0), c.lastHookErr
 }
 
-// now reads the clock the client takes for its reconnect reporting (WithReconnectErrClock),
-// time.Now when it took none.
+// now reads the clock the client takes for its reconnect reporting and for the keeper's no-grant
+// backoff (WithReconnectErrClock, keepBuckets), time.Now when it took none.
 func (c *Client) now() time.Time {
 	if c.reconnectErrClock == nil {
 		return time.Now()

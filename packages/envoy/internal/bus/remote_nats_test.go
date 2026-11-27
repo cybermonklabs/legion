@@ -16,6 +16,31 @@ import (
 	"github.com/sjawhar/envoy/internal/testsocks5"
 )
 
+// LoopbackNATSServer is LocalNATSURL's one reading of a URL, with the server it names: the host
+// and port of a loopback URL's authority and nothing else of it, and "" for any URL it does not
+// vouch for, so a caller that names the server it checked names nothing of a rejected URL.
+// LocalNATSURL answers exactly its ok. The user info is built at run time, so no literal reads as
+// a URL's user info to a scan of the source.
+func TestLoopbackNATSServerNamesTheCheckedServerAlone(t *testing.T) {
+	t.Parallel()
+	at := string(rune(64))
+	for _, c := range []struct{ raw, server string }{
+		{"nats://user:pw" + at + "127.0.0.1:4222/a?b=1#c", "127.0.0.1:4222"},
+		{"127.0.0.1:4223", "127.0.0.1:4223"},
+		{"NATS://tok" + at + "localhost.:4224", "localhost.:4224"},
+		{"nats://[::1]:4225", "[::1]:4225"},
+		{"nats://localhost", "localhost"},
+		{"nats://user:pw" + at + "db.example:4222", ""},
+		{"nats://s3cret:4222", ""},
+		{"nats://user:pa/ss" + at + "127.0.0.1:4222", ""},
+	} {
+		server, ok := bus.LoopbackNATSServer(c.raw)
+		if server != c.server || ok != (c.server != "") || bus.LocalNATSURL(c.raw) != ok {
+			t.Errorf("LoopbackNATSServer(%q) = %q, %v and LocalNATSURL = %v, want %q", strings.ReplaceAll(c.raw, at, "<at>"), server, ok, bus.LocalNATSURL(c.raw), c.server)
+		}
+	}
+}
+
 // A deployment of the stream still creates it and reconciles what it finds on the NATS it names.
 func TestConnectOwningStreamStillReconcilesTheDeployedStream(t *testing.T) {
 	t.Parallel()

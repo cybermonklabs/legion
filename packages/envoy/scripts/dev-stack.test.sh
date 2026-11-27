@@ -24,7 +24,8 @@
 # to make safe — and asserts that: (a) every process of a run is started and the port the banner
 # names for it is the one that process reported; (b) the Dispatch port keeper's held port is what
 # the broker's machine-login URL and Dispatch's own server URL name, which is why a keeper is
-# there at all, and the broker binds its metrics on a port the kernel picks; (c) "dev-stack:
+# there at all, and the broker binds its metrics on a port the kernel picks, and fixturebuckets
+# provisioned natsd's store, by the port the natsd it ran against reported; (c) "dev-stack:
 # ready." is printed exactly once, with the export block after it;
 # (d) the two instances mint different database names, different ports and different work
 # directories, and neither names the other's; (e) the one trap stops every process it started and
@@ -52,10 +53,11 @@
 # them, held to everything (a), (b), (c) and (e) hold a built run to; and (i) a --binaries
 # directory short of one of them, or holding one that is not an executable file, is refused with
 # exit 2, naming each such file, before anything is created or started; and (j) a --callout run
-# starts natsd behind the auth callout with a monitor port, two brokers that each run the auth
-# service on it, and the listener and Dispatch each with a NATS service token the issuer writes,
-# exports what callout-check.sh reads, and outlives its second broker being killed, while a run
-# without --callout does none of it; (k) every run gives each broker its database URL with
+# makes its buckets on a natsd of its store without the callout, which it stops, then starts natsd
+# behind the auth callout with a monitor port, two brokers that each run the auth service on it,
+# and the listener and Dispatch each with a NATS service token the issuer writes, exports what
+# callout-check.sh reads, and outlives its second broker being killed, while a run without
+# --callout does none of it; (k) every run gives each broker its database URL with
 # pool_max_conns=10, production's pool size, joined to the server URL's own query string or
 # starting one where it has none (the --callout run names a server URL with no query string),
 # while Dispatch, which refuses that parameter, gets the URL's query string alone; (l) on the
@@ -624,6 +626,17 @@ CLIENT
       chmod +x "$target"
       continue
       ;;
+    # fixturebuckets runs once and exits: its stub says what it was given, into the log
+    # dev-stack.sh keeps of it.
+    fixturebuckets)
+      cat >"$target" <<'FIXTUREBUCKETS'
+#!/usr/bin/env bash
+echo "fake fixturebuckets: $*" >&2
+exit 0
+FIXTUREBUCKETS
+      chmod +x "$target"
+      continue
+      ;;
     *)
       echo "fake go: unhandled build target $package" >&2
       exit 1
@@ -881,6 +894,18 @@ assert_instance_ready() {
   # of two stacks on a machine could hold.
   grep -q 'metrics=127\.0\.0\.1:0$' "${work_dir}/logs/broker.log" ||
     fail "$label: the broker was not started with BROKER_METRICS_LISTEN_ADDR=127.0.0.1:0"
+  # No listener creates a bucket it copies, so fixturebuckets provisioned the run's natsd store,
+  # by the port the natsd it ran against reported, before the listener started: the run's own
+  # natsd, or with --callout the natsd that ran on the same store without the callout before it
+  # (natsd-buckets.log), since the callout's natsd admits no client of fixturebuckets' until the
+  # brokers run the auth service. (j) holds the --callout run to the rest of that.
+  local provisioned="${process_port[natsd]}"
+  if grep -q -- '-callout-keys' "${work_dir}/logs/natsd.log"; then
+    provisioned="$(nats_log_port "${work_dir}/logs/natsd-buckets.log")"
+    [[ -n "$provisioned" ]] || fail "$label: the natsd that made the buckets before the callout reported no port"
+  fi
+  grep -qxF "fake fixturebuckets: -url nats://127.0.0.1:${provisioned}" "${work_dir}/logs/fixturebuckets.log" ||
+    fail "$label: fixturebuckets did not provision the run's natsd store: $(cat "${work_dir}/logs/fixturebuckets.log" 2>/dev/null)"
   # The listener serves on its keeper's socket: the port it reported is the one its keeper holds,
   # which held-port.py put in its ENVOY_PUBLIC_URL, so a restart (l) serves that same port.
   local listener_kept_port
@@ -1095,6 +1120,7 @@ printf "PASS: instance 1 started every process and took each port from that proc
 grep -q 'fake broker: nats= seeds=,, nats-audience= services=$' "${work_dir1}/logs/broker.log" ||
   fail "instance 1, run without --callout, gave its broker NATS auth service settings"
 [[ ! -e "${work_dir1}/logs/broker-2.log" ]] || fail "instance 1, run without --callout, started a second broker"
+[[ ! -e "${work_dir1}/logs/natsd-buckets.log" ]] || fail "instance 1, run without --callout, started a second natsd to make its buckets"
 grep -q -- '-callout-keys' "${work_dir1}/logs/natsd.log" && fail "instance 1, run without --callout, ran natsd with -callout-keys"
 grep -q 'nats-token=$' "${work_dir1}/logs/listener.log" || fail "instance 1, run without --callout, gave its listener a NATS token"
 [[ -z "$(exported "$log1" DEV_STACK_CALLOUT)" ]] || fail "instance 1, run without --callout, exported DEV_STACK_CALLOUT"
@@ -1631,7 +1657,8 @@ prebuilt="${temporary_dir}/prebuilt"
 # not its binary's name is renamed after the fake build.
 prebuilt_entries=(broker=./cmd/cipherd dev-oidc-issuer=./cmd/dev-oidc-issuer dispatch=./cmd/dispatch
   listener=./cmd/listener agent-secrets=./cmd/cipher agent-secrets-helper=./cmd/cipher-helper
-  natsd=./internal/testnats/cmd/natsd natsprobe=./cmd/natsprobe)
+  natsd=./internal/testnats/cmd/natsd natsprobe=./cmd/natsprobe
+  fixturebuckets=./internal/testnats/cmd/fixturebuckets)
 prebuilt_packages=("${prebuilt_entries[@]#*=}")
 prebuilt_binaries=("${prebuilt_entries[@]%%=*}")
 env -u DEV_STACK_TEST_BROKER_FAILS -u DEV_STACK_TEST_GO_CALL_FILE "${fake_bin_dir}/go" build -o "${prebuilt}/" \
@@ -1795,6 +1822,11 @@ assert_instance_ready 'the --callout run' "$log1" "$psql_calls1" "$curl_calls1" 
 callout_dir="${work_dir}/nats-callout"
 grep -q -- "fake natsd: args=-p -1 -store_dir ${work_dir}/nats-store -callout-keys ${callout_dir} -m -1$" "${work_dir}/logs/natsd.log" ||
   fail "the --callout run did not run natsd behind the callout with a monitor port: $(grep 'fake natsd' "${work_dir}/logs/natsd.log")"
+# Its buckets were made on a natsd of the same store without the callout, which no longer runs.
+grep -q -- "fake natsd: args=-p -1 -store_dir ${work_dir}/nats-store$" "${work_dir}/logs/natsd-buckets.log" ||
+  fail "the --callout run did not make its buckets on a natsd of its store without the callout: $(grep 'fake natsd' "${work_dir}/logs/natsd-buckets.log" 2>/dev/null)"
+buckets_natsd="$(nats_log_port "${work_dir}/logs/natsd-buckets.log")"
+kill -0 "$buckets_natsd" 2>/dev/null && fail "the --callout run left the natsd that made its buckets (pid $buckets_natsd) running"
 second_broker_port="$(broker_log_port "${work_dir}/logs/broker-2.log")"
 if [[ -z "$second_broker_port" ]] || ! kill -0 "$second_broker_port" 2>/dev/null; then
   fail "the --callout run started no second broker"

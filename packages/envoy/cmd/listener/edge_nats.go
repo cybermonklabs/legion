@@ -42,9 +42,12 @@ import (
 // an authorization error), are waited out; a stream the server does not hold, a read that timed
 // out, or any other error ends the start at once, naming the stream. A try that failed closed its
 // client, which stops everything it ran. Its grant creates and raises no bucket's stream either,
-// so each bucket is found at its open (bus.EnsureKeyValue), and a bucket the server lacks, or holds
-// at fewer copies than ENVOY_NATS_REPLICAS, ends the open naming the create or raise the server
-// refused; no keeper raises a bucket after.
+// and no listener creates a bucket it copies, so each bucket is found at its open: a copied bucket
+// the server lacks holds the start, as it does any listener's (awaitCopiedBuckets), but for the
+// known-session bucket, which no start waits for (optionalCopiedBucket), and any other bucket the
+// server lacks, or a bucket it holds at fewer copies than ENVOY_NATS_REPLICAS, ends the open
+// (bus.EnsureKeyValue) naming the create or raise the server refused; no keeper raises a bucket
+// after.
 func connectListenerBus(cfg config.Service, edge *edgeGrant, start *natsStart) (*bus.Client, error) {
 	if edge == nil {
 		return bus.ConnectOwningStream(cfg.NATSURLs, append(listenerStreamOptions(cfg), start.option())...)

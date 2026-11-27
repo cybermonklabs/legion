@@ -111,13 +111,15 @@ const miseData =
  * developer's own home decides nothing here. It is the one place this file builds that
  * environment, and its `cwd` is the only one in the file but the omp turn's and the kept-notice
  * row's below, so a child that gets the test's HOME gets childCwd with it. Every child of this
- * file starts through it but six, and none of those gets the test's HOME: the key command, the
+ * file starts through it but seven, and none of those gets the test's HOME: the key command, the
  * libpq probe and the model stand-in pass no environment, so they run under the caller's own HOME,
  * where mise reads the caller's config as its global config. runProcess's child gets PATH and
- * SKILL_SCENARIO_RUN alone, and runs sleep, not a mise shim. The model stand-in row's omp turn gets
- * its profile's HOME and the system's PATH alone, in a workspace under this file's work directory.
- * The kept-notice row's rig.sh runs take the caller's whole environment, in this checkout's root,
- * since the label's build needs the caller's Go and Bun caches. */
+ * SKILL_SCENARIO_RUN alone, and runs sleep, not a mise shim. nats_ready's probe gets PATH alone,
+ * runs bash and timeout, and is spawned rather than run to its end, since the INFO server it reads
+ * is in this process. The model stand-in row's omp turn gets its profile's HOME and the system's
+ * PATH alone, in a workspace under this file's work directory. The kept-notice row's rig.sh runs
+ * take the caller's whole environment, in this checkout's root, since the label's build needs the
+ * caller's Go and Bun caches. */
 function childSpawn(argv: string[], env: Record<string, string> = {}) {
   return Bun.spawnSync(argv, {
     env: {
@@ -140,9 +142,13 @@ function profileDir(): string {
   mkdirSync(path.join(dir, "home", ".omp"), { recursive: true });
   return dir;
 }
+/** A key file at mode, set after the write: a mode given to the write is reduced by the umask, so
+ * under umask 077 a file asked for at 0644 would start at 0600, and the row that wants it refused
+ * as readable by others would fail on the runner's umask, not on the code. */
 function keyFile(mode: number): string {
   const file = path.join(work, `key-${profiles}-${mode.toString(8)}`);
-  writeFileSync(file, "sk-ant-rig-test-0000000000000000\n", { mode });
+  writeFileSync(file, "sk-ant-rig-test-0000000000000000\n");
+  chmodSync(file, mode);
   return file;
 }
 function route(dir: string, env: Record<string, string>, model = "") {
@@ -700,41 +706,97 @@ describe("safe_url", () => {
   const pgUrl = path.join(root, "packages/envoy/scripts/lib/pg-url.sh");
   // Catches: a note, a failure message or a run's dispatch.json that prints the password of a
   // server the operator gave, in a Postgres URL's user info as libpq reads it (to the first `@`,
-  // a `?` in the password included), in its `password=` or `sslpassword=` parameter (its key
-  // percent-decoded, as libpq reads `%70assword=`), or in a NATS
-  // URL's user info as Go's net/url reads it (to the last `@`), or the whole of a NATS token (user
-  // info with no `:`, which nats.go sends as the token); a query left with a dangling `?`
-  // or `&`; a safe_url that changes a URL with no password in it; and a URL pg-url.sh refuses (a
-  // raw `@` in its hosts) printed as it is, where safe_url prints a placeholder.
+  // a `?` in the password included), or in its `password=` or `sslpassword=` parameter (its key
+  // percent-decoded, as libpq reads `%70assword=`); a query left with a dangling `?` or `&`; a
+  // safe_url that changes a URL with no password in it; and a URL pg-url.sh refuses (a raw `@` in
+  // its hosts) printed as it is, where safe_url prints a placeholder.
   test("safe_url drops the password of a URL and keeps the rest", () => {
     expect(
       bash(`. ${JSON.stringify(pgUrl)}\n${fn("safe_url")}\nfor url; do safe_url "$url"; done`, [
         "postgres://u:p@h:1/d",
         "postgres://u@h:1/d",
-        "nats://127.0.0.1:4222",
         "postgres://u:?@127.0.0.1:5433/legion_test",
         "postgres://u@localhost:5432@10.1.2.3/db",
         "postgres://u@127.0.0.1:5433/d?sslmode=disable&password=p&application_name=x",
         "postgresql://u@127.0.0.1:5433/d?sslpassword=p",
         "postgres://u:p@127.0.0.1:5433/d?password=p&sslmode=disable",
-        "nats://u:p@ss@127.0.0.1:4222",
         "postgres://u@127.0.0.1:5433/d?%70assword=p&sslmode=disable",
-        "nats://tok3n@127.0.0.1:4222/p?q",
       ])
     ).toEqual({
       code: 0,
       stdout:
-        "postgres://u@h:1/d\npostgres://u@h:1/d\nnats://127.0.0.1:4222\n" +
+        "postgres://u@h:1/d\npostgres://u@h:1/d\n" +
         "postgres://u@127.0.0.1:5433/legion_test\n" +
         "<a Postgres URL pg-url.sh refuses>\n" +
         "postgres://u@127.0.0.1:5433/d?sslmode=disable&application_name=x\n" +
         "postgresql://u@127.0.0.1:5433/d\n" +
         "postgres://u@127.0.0.1:5433/d?sslmode=disable\n" +
-        "nats://u@127.0.0.1:4222\n" +
-        "postgres://u@127.0.0.1:5433/d?sslmode=disable\n" +
-        "nats://127.0.0.1:4222/p?q\n",
+        "postgres://u@127.0.0.1:5433/d?sslmode=disable\n",
       stderr: "-: refused a Postgres URL: a host holds a raw @ (the URL is not printed)\n",
     });
+  });
+
+  // Catches: a safe_url that prints any part of a URL it does not read as a Postgres one. It
+  // reads only those; a NATS server is named by the host and port nats_endpoint read, so no
+  // spelling of a NATS URL's scheme decides whether its user info is printed.
+  test("safe_url prints no part of a URL that is not a Postgres one", () => {
+    const token = fixtureSecret("tok");
+    const withToken = new URL("nats://127.0.0.1:4222");
+    withToken.username = token;
+    const { code, stdout, stderr } = bash(
+      `. ${JSON.stringify(pgUrl)}\n${fn("safe_url")}\nfor url; do safe_url "$url"; done`,
+      [withToken.href, `NATS${withToken.href.slice(4)}`, withToken.href.slice("nats://".length)]
+    );
+    expect({ code, stdout, stderr, leaked: stdout.includes(token) }).toEqual({
+      code: 0,
+      stdout: "<a URL that is not a Postgres one>\n".repeat(3),
+      stderr: "",
+      leaked: false,
+    });
+  });
+});
+
+// nats_ready HOST PORT probes HOST and PORT for a NATS server's INFO line. It reads no URL:
+// services_up hands it the host and port nats_endpoint read, the ones the loopback check passed.
+describe("nats_ready", () => {
+  /** A server on 127.0.0.1 that greets each connection with a NATS INFO line, and a port on
+   * 127.0.0.1 that nothing listens on. */
+  function servers() {
+    const info = Bun.listen({
+      hostname: "127.0.0.1",
+      port: 0,
+      socket: { open: (socket) => void socket.write("INFO {}\r\n"), data: () => {} },
+    });
+    const free = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: { data: () => {} } });
+    const nobody = free.port;
+    free.stop(true);
+    return { info, nobody };
+  }
+  /** nats_ready's status for each port on 127.0.0.1, run while this process's server can answer. */
+  async function ready(...ports: number[]) {
+    const proc = Bun.spawn(
+      [
+        "bash",
+        "-c",
+        `${fn("nats_ready")}\nfor port; do nats_ready 127.0.0.1 "$port"; echo $?; done`,
+        "-",
+        ...ports.map(String),
+      ],
+      { env: { PATH: callerPath }, stdout: "pipe", stderr: "pipe" }
+    );
+    await proc.exited;
+    return (await new Response(proc.stdout).text()).trim().split("\n");
+  }
+
+  // Catches: a probe that answers ready from anything but the host and port it is given: here the
+  // INFO server's port answers ready and the empty port does not.
+  test("nats_ready answers ready from the host and port it is given alone", async () => {
+    const { info, nobody } = servers();
+    try {
+      expect(await ready(info.port, nobody)).toEqual(["0", "1"]);
+    } finally {
+      info.stop(true);
+    }
   });
 });
 
@@ -755,33 +817,92 @@ if (withoutLibpq) {
       `URL with libpq, and ctypes.util.find_library("pq") finds none on this host; install libpq5.`
   );
 }
+// nats_endpoint URL reads a given NATS URL once, for every message, note and probe of that
+// server: its host and port, `<host> <port>`, as Go's net/url reads a URL's authority, which
+// nats.go parses a server URL with.
+describe.skipIf(withoutPython)("nats_endpoint", () => {
+  // Catches: a reading that keeps any part of a password or a token (a user name, which nats.go
+  // reads as a token) under a lower-case, an upper-case or an absent scheme, or that reads its
+  // host from past the authority: a `@` in the path, the query or the fragment. A URL with no port
+  // names nats.go's 4222. And a URL it refuses, off loopback or a list, prints nothing at all: its
+  // host can be credential text, so it is printed only once the loopback check passed it.
+  test("nats_endpoint reads the host and port alone, from the URL's authority", () => {
+    const token = fixtureSecret("tok");
+    const url = new URL("nats://127.0.0.1:4223");
+    url.username = token;
+    const withToken = url.href;
+    url.username = "user";
+    url.password = token;
+    const withPassword = url.href;
+    // Each `@` past the authority is built at run time, so no literal here reads as a URL's user
+    // info to a scan of the source.
+    const at = String.fromCharCode(64);
+    const { code, stdout, stderr } = bash(
+      `${fn("nats_endpoint")}\nfor url; do nats_endpoint "$url"; echo "status $?"; done`,
+      [
+        withToken,
+        withPassword,
+        `NATS${withToken.slice(4)}`,
+        withToken.slice("nats://".length),
+        ...["/", "?x=", "#"].map((cut) => `nats://127.0.0.1:4223${cut}${at}other:4222`),
+        "nats://localhost",
+        "nats://db.example:4222",
+        "nats://s3cret:4222",
+        "nats://127.0.0.1:4222,db.example:4222",
+      ]
+    );
+    expect({ code, stdout, stderr, leaked: stdout.includes(token) }).toEqual({
+      code: 0,
+      stdout: `${"127.0.0.1 4223\nstatus 0\n".repeat(7)}localhost 4222\nstatus 0\n${"status 1\n".repeat(3)}`,
+      stderr: "",
+      leaked: false,
+    });
+  });
+});
+
 describe.skipIf(withoutPython || withoutLibpq)("services_up", () => {
   const pgUrl = path.join(root, "packages/envoy/scripts/lib/pg-url.sh");
   const loopbackDsn = path.join(root, "scripts/e2e/lib/loopback-dsn.sh");
-  /** services_up given URL and a NATS, in a services directory of its own, with a psql first on
-   * PATH that appends to psql.log each time it runs. until_true runs its command once, so a URL
-   * that passed every check would reach psql at once. Answers services_up's status and standard
-   * error, whether psql ran, and what the services directory holds. */
-  function up(url: string) {
+  /** The NATS URL of hostPort with the user name `user` and the password `s3cret` in it, as a URL
+   * an operator gives can carry them. */
+  const withPassword = (hostPort: string) => {
+    const url = new URL(`nats://${hostPort}`);
+    url.username = "user";
+    url.password = "s3cret";
+    return url.href;
+  };
+  /** The batch's credential files in its services directory, each written owner-only. */
+  const credentialFiles = ["env", "postgres-url", "envoy-token", "dispatch-token"];
+  /** services_up given URL and the NATS nats, in a services directory of its own, with a psql
+   * first on PATH that appends to psql.log each time it runs, and a go that answers
+   * connections_needed's count. until_true runs its command once, so a URL that passed every
+   * check would reach psql at once. owner_only is defined, as services_up writes every file
+   * through it, so a file written before a refusal shows by name in `written`, not as a missing
+   * function. Answers services_up's status and standard error, whether psql ran, and what the
+   * services directory holds. */
+  function up(url: string, nats = "nats://127.0.0.1:4222") {
     const dir = freshDir("services-up");
     const bin = path.join(dir, "bin");
     const log = path.join(dir, "psql.log");
     const services = path.join(dir, "services");
     mkdirSync(bin);
+    mkdirSync(path.join(dir, "root", "packages", "envoy"), { recursive: true });
     mkdirSync(services);
     writeFileSync(path.join(bin, "psql"), `#!/bin/sh\necho ran >>${JSON.stringify(log)}\n`, {
       mode: 0o755,
     });
+    writeFileSync(path.join(bin, "go"), "#!/bin/sh\necho 29\n", { mode: 0o755 });
     const result = bash(
       `set -euo pipefail\n. "$1"\n. "$2"\n${fn("fail")}\n${fn("given_services")}\n` +
-        `${fn("safe_url")}\n${fn("pg_sql")}\n${fn("services_up")}\n` +
+        `${fn("safe_url")}\n${fn("pg_sql")}\n${fn("nats_endpoint")}\n${fn("connections_needed")}\n` +
+        `${fn("owner_only")}\n${fn("services_up")}\n` +
         `until_true() { shift 2; "$@"; }\n` +
-        `S=$3\nservices_env=$S/env\nservices_postgres=$S/postgres-url\nservices_up`,
-      [pgUrl, loopbackDsn, services],
+        `root=$3\nS=$4\nservices_env=$S/env\nservices_postgres=$S/postgres-url\nservices_up`,
+      [pgUrl, loopbackDsn, path.join(dir, "root"), services],
       {
         PATH: `${bin}:${callerPath}`,
         SKILL_SCENARIOS_POSTGRES_URL: url,
-        SKILL_SCENARIOS_NATS_URL: "nats://127.0.0.1:4222",
+        SKILL_SCENARIOS_NATS_URL: nats,
       }
     );
     return {
@@ -832,6 +953,281 @@ describe.skipIf(withoutPython || withoutLibpq)("services_up", () => {
         written: [],
       });
     }
+  });
+
+  // Catches: a given NATS off this machine's loopback refused late, after the batch reached the
+  // Postgres and the NATS and built the listener, or by fixturebuckets alone: services_up refuses
+  // it with the Postgres URL's checks, before psql runs or a URL is written (an IPv6 address, a
+  // name that only begins with localhost, a host that is credential text, and no host at all).
+  // The refusal is fixed text: it prints no part of the URL it refused, not even the host read
+  // from it, since a rejected URL can hold credential text where the parser reads a host.
+  test("refuses a NATS off this machine's loopback before psql runs or the URL is written", () => {
+    for (const hostPort of [
+      "db.example:4222",
+      "[2001:db8::1]:4222",
+      "localhost.example:4222",
+      "s3cret:4222",
+      ":4222",
+    ]) {
+      // A URL with no host is built by hand: new URL() refuses it, and the batch must refuse it
+      // too rather than read a host out of the user info.
+      const nats = `${
+        hostPort === ":4222"
+          ? withPassword("x:4222").replace("x:4222", ":4222")
+          : withPassword(hostPort)
+      }/a/path?q=1#frag`;
+      expect({ nats, ...up("postgres://u:p@127.0.0.1:5432/postgres", nats) }).toEqual({
+        nats,
+        code: 1,
+        stderr:
+          "skill-scenarios: SKILL_SCENARIOS_NATS_URL must name one server on this machine's loopback (127.0.0.1, localhost or ::1), and it names none the batch can read as one: the batch provisions that server with every bucket a listener copies (fixturebuckets), which provisions only a server on this machine's loopback\n",
+        psqlRan: false,
+        written: [],
+      });
+    }
+  });
+
+  // Catches: a given NATS that names a list of servers. nats.go splits its URL on ',' and dials
+  // any server of the list, while the loopback check reads the one host after the authority's
+  // last '@', so nats://x@<hub>,y@127.0.0.1 passed it and fixturebuckets could provision the hub.
+  // services_up refuses a list before psql runs or a URL is written, naming no user info.
+  test("refuses a NATS URL that names a list of servers before psql runs or the URL is written", () => {
+    const withToken = (hostPort: string, token: string) => {
+      const url = new URL(`nats://${hostPort}`);
+      url.username = token;
+      return url.href;
+    };
+    const nats = `${withToken("db.example:4222", "x")},${withToken("127.0.0.1:4222", "y").replace("nats://", "")}`;
+    expect({ nats, ...up("postgres://u:p@127.0.0.1:5432/postgres", nats) }).toEqual({
+      nats,
+      code: 1,
+      stderr:
+        "skill-scenarios: SKILL_SCENARIOS_NATS_URL names a list of servers (it holds a ','), and nats.go would dial any of them: the batch provisions one NATS of its own with every bucket a listener copies, so give it that server alone\n",
+      psqlRan: false,
+      written: [],
+    });
+  });
+
+  /** services_up given a loopback Postgres URL and natsUrl, past every check to the provisioning
+   * of that NATS: a psql that answers 500 to `SHOW max_connections`, a NATS probe that answers and
+   * appends what it was handed to ready.log, and a go that builds a fixturebuckets that fails, as
+   * the real one does on a server it cannot reach (or succeeds, with provisions). The
+   * fixturebuckets it builds, and a python3 first on PATH that runs the real one, append each
+   * argument they were given to argv.log, one a line. Answers services_up's status, its output,
+   * fixturebuckets.log, argv.log, ready.log and the services directory. */
+  function provision(natsUrl: string, provisions = false) {
+    const dir = freshDir("services-provision");
+    const bin = path.join(dir, "bin");
+    const services = path.join(dir, "services");
+    mkdirSync(bin);
+    mkdirSync(path.join(services, "logs"), { recursive: true });
+    // An earlier batch's credential files are there at 0644, as a write that kept a file's mode
+    // would leave them. The mode is set after the write, since a mode given to the write is
+    // reduced by the runner's umask, and nothing in services_up reads them before it writes.
+    for (const name of credentialFiles) {
+      writeFileSync(path.join(services, name), "an earlier batch's\n");
+      chmodSync(path.join(services, name), 0o644);
+    }
+    mkdirSync(path.join(dir, "root", "packages", "envoy"), { recursive: true });
+    const argv = path.join(dir, "argv.log");
+    const ready = path.join(dir, "ready.log");
+    // The interpreter itself, not a version manager's shim, which would find this one on PATH.
+    const python = childSpawn(["python3", "-c", "import sys; print(sys.executable)"])
+      .stdout.toString()
+      .trim();
+    writeFileSync(
+      path.join(bin, "python3"),
+      `#!/bin/sh\nprintf '%s\\n' "$@" >>${JSON.stringify(argv)}\nexec ${JSON.stringify(python)} "$@"\n`,
+      { mode: 0o755 }
+    );
+    writeFileSync(
+      path.join(bin, "psql"),
+      `#!/bin/sh\ncase "$*" in *max_connections*) echo 500 ;; *) echo 1 ;; esac\n`,
+      { mode: 0o755 }
+    );
+    writeFileSync(
+      path.join(bin, "go"),
+      `#!/bin/sh\ncase "$1 $2" in\n` +
+        `"run ./internal/dispatch/store/cmd/connections") echo 29 ;;\n` +
+        `"build -o")\n` +
+        (provisions
+          ? `  printf '#!/bin/sh\\nprintf "%%s\\\\n" "$@" >>${argv}\\necho "provisioned 127.0.0.1:4222"\\n' >"$3"\n`
+          : `  printf '#!/bin/sh\\nprintf "%%s\\\\n" "$@" >>${argv}\\necho "fixturebuckets: nats: no servers available for connection" >&2\\nexit 1\\n' >"$3"\n`) +
+        `  chmod +x "$3" ;;\n` +
+        `esac\n`,
+      { mode: 0o755 }
+    );
+    const result = bash(
+      `set -euo pipefail\n. "$1"\n. "$2"\n${fn("fail")}\n${fn("given_services")}\n` +
+        `${fn("safe_url")}\n${fn("pg_sql")}\n${fn("nats_endpoint")}\n${fn("connections_needed")}\n` +
+        `${fn("owner_only")}\n${fn("note")}\n${fn("listener_up")}\n${fn("services_up")}\n` +
+        `until_true() { echo "waiting for $2" >&2; shift 2; "$@" >/dev/null; }\n` +
+        `nats_ready() { printf '%s\\n' "$*" >>${JSON.stringify(ready)}; }\n` +
+        `start_listener() { echo "the listener started" >&2; envoy_port=1; }\n` +
+        `root=$3\nS=$4\nservices_env=$S/env\nservices_postgres=$S/postgres-url\nservices_up`,
+      [pgUrl, loopbackDsn, path.join(dir, "root"), services],
+      {
+        PATH: `${bin}:${callerPath}`,
+        SKILL_SCENARIOS_POSTGRES_URL: "postgres://u:p@127.0.0.1:5432/postgres",
+        SKILL_SCENARIOS_NATS_URL: natsUrl,
+      }
+    );
+    const log = path.join(services, "logs", "fixturebuckets.log");
+    /** Every file under the services directory, by its path there, with its text and mode. */
+    const files: Record<string, { text: string; mode: number }> = {};
+    const walk = (at: string) => {
+      for (const entry of readdirSync(at, { withFileTypes: true })) {
+        const full = path.join(at, entry.name);
+        if (entry.isDirectory()) walk(full);
+        else
+          files[path.relative(services, full)] = {
+            text: readFileSync(full, "utf8"),
+            mode: statSync(full).mode & 0o777,
+          };
+      }
+    };
+    walk(services);
+    return {
+      ...result,
+      log: existsSync(log) ? readFileSync(log, "utf8") : "",
+      argv: existsSync(argv) ? readFileSync(argv, "utf8") : "",
+      ready: existsSync(ready) ? readFileSync(ready, "utf8") : "",
+      services,
+      files,
+    };
+  }
+
+  // Catches: a provisioning of a given NATS whose failure names its URL with the password in it.
+  // The batch hands fixturebuckets SKILL_SCENARIOS_NATS_URL, which can carry one: the failure
+  // names the server by the host and port nats_endpoint read, and fixturebuckets.log holds what
+  // fixturebuckets printed, which names no user info (fixturebuckets/main_test.go).
+  test("a failed provisioning of a given NATS names it without its user info", () => {
+    const { code, stdout, stderr, log, services } = provision(withPassword("127.0.0.1:4222"));
+    expect({ code, stdout, stderr, log }).toEqual({
+      code: 1,
+      stdout: "",
+      stderr:
+        "waiting for Postgres at postgres://u@127.0.0.1:5432/postgres to answer a query\n" +
+        "waiting for NATS at 127.0.0.1:4222 to send its INFO line\n" +
+        `skill-scenarios: fixturebuckets could not provision the NATS at 127.0.0.1:4222 with the buckets a listener copies; see ${services}/logs/fixturebuckets.log\n`,
+      log: "fixturebuckets: nats: no servers available for connection\n",
+    });
+  });
+
+  // Catches: a readiness probe handed anything but the host and port the loopback check passed,
+  // the raw URL among them, which a second parse can read another host from: here a `@` after
+  // a `?` puts another address past the authority, and a probe that cut at the last `@` would
+  // probe 127.0.0.1:4999 while the check read 127.0.0.1:4222.
+  test("the readiness probe is handed the host and port the loopback check passed", () => {
+    // The `@` is built at run time, so the literal does not read as a URL's user info to a scan.
+    const at = String.fromCharCode(64);
+    const { code, ready } = provision(`nats://127.0.0.1:4222?x=${at}127.0.0.1:4999`, true);
+    expect({ code, ready }).toEqual({ code: 0, ready: "127.0.0.1 4222\n" });
+  });
+
+  // Catches: a given NATS's credential in the process list, where every user of the machine reads
+  // a process's arguments: fixturebuckets given it as -url, or nats_endpoint's python3 given it as
+  // an argument. Both take the URL in their environment, which only its owner reads, as the
+  // listener takes NATS_URLS and psql the Postgres password.
+  test("a given NATS's URL reaches no process's arguments", () => {
+    const { code, argv } = provision(withPassword("127.0.0.1:4222"));
+    // Each argument that holds the password, with the password masked, so a failure names it.
+    const leaked = argv
+      .split("\n")
+      .filter((line) => line.includes("s3cret"))
+      .map((line) => line.replaceAll("s3cret", "<password>"));
+    expect({ code, ran: argv.length > 0, leaked }).toEqual({ code: 1, ran: true, leaked: [] });
+  });
+
+  // Catches: a message, a note or a file of the run that names a given NATS with any part of its
+  // user info, whatever its URL's scheme looks like: the readiness wait, the provisioning
+  // failure and the services note name the server by the host and port nats_endpoint read, so
+  // an upper-case or absent scheme, which the loopback check reads as nats://, leaks no token. The
+  // services file is the one file that holds the URL, since it hands it to the batch's runs as
+  // ENVOY_NATS_URL. It and the batch's other credential files, the given Postgres URL's and the
+  // two tokens, are their owner's alone, over an earlier batch's files left at 0644: a write onto
+  // a file that is there keeps its mode, whatever the umask.
+  test("no message, note or file but the services file names a given NATS's user info", () => {
+    const token = fixtureSecret("tok");
+    const url = new URL("nats://127.0.0.1:4222");
+    url.username = token;
+    const seen: Record<string, string[]> = {};
+    for (const [shape, nats] of [
+      ["an upper-case scheme", `NATS${url.href.slice(4)}`],
+      ["no scheme", url.href.slice("nats://".length)],
+    ]) {
+      for (const provisions of [false, true]) {
+        const run = provision(nats, provisions);
+        const where = `${shape}, ${provisions ? "provisioned" : "a failed provisioning"}`;
+        // The files the run writes: the Postgres URL's before it provisions, the rest after.
+        const written = provisions ? credentialFiles : ["postgres-url"];
+        seen[where] = [
+          ...(run.stdout.includes(token) ? ["stdout"] : []),
+          ...(run.stderr.includes(token) ? ["stderr"] : []),
+          ...Object.entries(run.files)
+            .filter(([name, file]) => file.text.includes(token) && name !== "env")
+            .map(([name]) => name),
+          ...written
+            .filter((name) => ((run.files[name]?.mode ?? 0o777) & 0o077) !== 0)
+            .map((name) => `${name} readable by others`),
+          ...(run.code === (provisions ? 0 : 1) ? [] : [`exit ${run.code}`]),
+        ];
+      }
+    }
+    expect(seen).toEqual({
+      "an upper-case scheme, a failed provisioning": [],
+      "an upper-case scheme, provisioned": [],
+      "no scheme, a failed provisioning": [],
+      "no scheme, provisioned": [],
+    });
+  });
+});
+
+test("services_up passes a given Postgres URL to the loopback helpers by environment name alone", () => {
+  const source = fn("services_up");
+  expect({
+    direct: source.includes(
+      'require_loopback_dsn pg_host SKILL_SCENARIOS_POSTGRES_URL "$SKILL_SCENARIOS_POSTGRES_URL"'
+    ),
+    named:
+      source.includes(
+        'require_loopback_env pg_host SKILL_SCENARIOS_POSTGRES_URL "each run creates a database there"'
+      ) &&
+      source.includes(
+        'run_database_url_env run_url SKILL_SCENARIOS_POSTGRES_URL run_placeholder "each run\'s Dispatch opens its database there"'
+      ),
+  }).toEqual({ direct: false, named: true });
+});
+
+test("psql_env gives psql a Postgres URL without its password in arguments", () => {
+  const dir = freshDir("psql-env");
+  const bin = path.join(dir, "bin");
+  const argv = path.join(dir, "argv.log");
+  const password = fixtureSecret("postgres");
+  mkdirSync(bin);
+  writeFileSync(
+    path.join(bin, "psql"),
+    `#!/bin/sh\nprintf '%s\\n' "$@" >${JSON.stringify(argv)}\n`,
+    {
+      mode: 0o755,
+    }
+  );
+  const result = bash(
+    `set -euo pipefail\n. "$1"\npsql_env SKILL_SCENARIOS_POSTGRES_URL -X -q -c 'select 1'`,
+    [path.join(root, "scripts/e2e/lib/loopback-dsn.sh")],
+    {
+      PATH: `${bin}:${callerPath}`,
+      SKILL_SCENARIOS_POSTGRES_URL: `postgres://user:${password}@127.0.0.1:5432/postgres`,
+    }
+  );
+  const leaked = readFileSync(argv, "utf8")
+    .split("\n")
+    .filter((line) => line.includes(password))
+    .map((line) => line.replaceAll(password, "<password>"));
+  expect({ code: result.code, ran: existsSync(argv), leaked }).toEqual({
+    code: 0,
+    ran: true,
+    leaked: [],
   });
 });
 
@@ -1674,6 +2070,37 @@ sleep() { command sleep 0.05; }`;
     expect(readFileSync(path.join(run, "seen"), "utf8")).toBe(
       `${bin}/pin/bin/omp -p The person answered your asks on LWEVAL-2. --continue --session-dir ${run}/sessions\nexit=0\n`
     );
+  });
+});
+
+// tester_pane writes a tester's pane file over the batch's services file, which carries the NATS
+// URL, credential included.
+describe("tester_pane", () => {
+  // Catches: a pane file other users can read, a pane an earlier launch left with a wider mode
+  // included, since a write onto a file that is there keeps that file's mode.
+  test("the tester's pane file is its owner's alone, holding the services file's lines", () => {
+    const run = freshDir("tester-pane");
+    writeFileSync(path.join(run, "worker.env"), "LEGION_ROLE=tester\n");
+    writeFileSync(path.join(run, "services.env"), "ENVOY_NATS_URL=nats://127.0.0.1:4222\n");
+    writeFileSync(path.join(run, "pane.env"), "an earlier pane\n", { mode: 0o644 });
+    const result = bash(
+      `${fn("owner_only")}\n${fn("tester_pane")}\nR=$1 services_env=$1/services.env dispatch_port=1 work=$1 worker_repo=example/widgets\ntester_pane`,
+      [run]
+    );
+    const pane = readFileSync(path.join(run, "pane.env"), "utf8");
+    expect({
+      code: result.code,
+      mode: (statSync(path.join(run, "pane.env")).mode & 0o777).toString(8),
+      lines: pane.split("\n").slice(0, 3),
+    }).toEqual({
+      code: 0,
+      mode: "600",
+      lines: [
+        "LEGION_ROLE=tester",
+        "ENVOY_NATS_URL=nats://127.0.0.1:4222",
+        "DISPATCH_URL=http://127.0.0.1:1",
+      ],
+    });
   });
 });
 
@@ -2648,13 +3075,14 @@ describe.skipIf(withoutPython || withoutLibpq)("a batch given its Postgres and N
         "given_services",
         "safe_url",
         "pg_sql",
+        "nats_endpoint",
         "owner_only",
         "services_up",
         "own_dispatch"
       ),
       'until_true() { shift 2; "$@"; }',
       "connections_needed() { per_run=117; needs=$((per_run * parallel + 20)); }",
-      'nats_ready() { echo "nats_ready $1" >>"$calls"; }',
+      'nats_ready() { echo "nats_ready $*" >>"$calls"; }',
       "listener_up() { envoy_port=1; }",
       'start_dispatch() { echo "start_dispatch $1 | $2" >>"$calls"; dispatch_port=1; }',
       "root=$3 here=$3/packages/pi-legion/scripts/skill-scenarios S=$4/services calls=$4/calls tag=t",
@@ -2686,11 +3114,11 @@ describe.skipIf(withoutPython || withoutLibpq)("a batch given its Postgres and N
       stderr: "",
     });
     expect(result.stdout).toContain(
-      `services up: listener :1, NATS nats://127.0.0.1:4999, Postgres ${login}`
+      `services up: listener :1, NATS 127.0.0.1:4999, Postgres ${login}`
     );
     const seen = readFileSync(calls, "utf8").trimEnd().split("\n");
     expect(seen.filter((line) => line.startsWith("docker "))).toEqual([]);
-    expect(seen).toContain("nats_ready nats://127.0.0.1:4999");
+    expect(seen).toContain("nats_ready 127.0.0.1 4999");
     expect(seen).toContain("services mode 600");
     const runs = ["run_owner_walk_root_b_claude_head_1", "run_owner_walk_root_b_claude_head_2"];
     for (const run of runs) {

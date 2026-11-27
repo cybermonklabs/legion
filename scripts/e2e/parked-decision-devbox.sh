@@ -721,7 +721,8 @@ export TMUX_TMPDIR="$work/tmux"
   head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n' >"$work/postgres-password")
 chmod 0600 "$work"/*token "$work"/*-header "$work/postgres-password"
 (cd "$root/packages/daemon" && go build -o "$work/legion" ./cmd/legion)
-(cd "$root/packages/envoy" && go build -o "$work/envoy-listener" ./cmd/listener && go build -o "$work/envoy-dispatch" ./cmd/dispatch)
+(cd "$root/packages/envoy" && go build -o "$work/envoy-listener" ./cmd/listener && go build -o "$work/envoy-dispatch" ./cmd/dispatch &&
+  go build -o "$work/fixturebuckets" ./internal/testnats/cmd/fixturebuckets)
 built=$(bash "$root/scripts/e2e/lib/built-from.sh" "$root" "$work/legion" "$work/envoy-listener" "$work/envoy-dispatch") || fail "lib/built-from.sh could not say what the run built"
 while IFS= read -r line; do note "$line"; done <<<"$built"
 docker ps >/dev/null
@@ -740,6 +741,9 @@ docker run -d --name "$nats_container" --cpus 1 --memory 512m -p "127.0.0.1::422
 port_nats=$(docker port "$nats_container" 4222/tcp | sed -n '1s/.*://p')
 [ -n "$port_nats" ] || fail "docker assigned NATS no host port"
 until_true 60 "NATS to be ready" sh -c "docker logs '$nats_container' 2>&1 | grep -q 'Server is ready'"
+# No listener creates a bucket it copies: the run provisions its own server with them
+# before the listener starts.
+provision_fixture_buckets "$work/fixturebuckets" "nats://127.0.0.1:$port_nats"
 start_listener
 start_dispatch
 dispatch_human POST projects "$(jq -cn --arg key "$project" --arg name "Parked decision proof $project" '{key:$key,name:$name}')" >/dev/null

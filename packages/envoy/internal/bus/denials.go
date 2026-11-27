@@ -21,6 +21,22 @@ import (
 // publisher sent.
 var publishRefusal = regexp.MustCompile(`Publish to ("(?:[^"\\]|\\.)*")`)
 
+// refusedPublishSubject is the subject of the publish violation, the server's refusal of a
+// publish, says it refused (publishRefusal), unquoted; false when its text names no such subject.
+// The record of refusals (recordPublishDenial) and the keeper's record of a refused bucket
+// request (keepBuckets) both read a refusal's subject through it.
+func refusedPublishSubject(violation error) (string, bool) {
+	match := publishRefusal.FindStringSubmatch(violation.Error())
+	if match == nil {
+		return "", false
+	}
+	subject, err := strconv.Unquote(match[1])
+	if err != nil {
+		return "", false
+	}
+	return subject, true
+}
+
 // publishDenialRetention is how long a recorded violation can still be read (deniedPublish). It
 // outlasts, with room to spare, every wait a publish of this package makes for the answer a denied
 // publish never gets - publishAcknowledgementTimeout for a window's send, publishBound for
@@ -63,12 +79,8 @@ type publishViolation struct {
 // oldest of the subject's own, so a connection refused publishes to ever new subjects, or ever
 // more of one subject, cannot grow the record without bound.
 func (c *Client) recordPublishDenial(nc *nats.Conn, violation error) bool {
-	match := publishRefusal.FindStringSubmatch(violation.Error())
-	if match == nil {
-		return false
-	}
-	subject, err := strconv.Unquote(match[1])
-	if err != nil {
+	subject, ok := refusedPublishSubject(violation)
+	if !ok {
 		return false
 	}
 	at := time.Now()

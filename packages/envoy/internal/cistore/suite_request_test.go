@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/bus/bustest"
 	"github.com/sjawhar/envoy/internal/cistore"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/testnats"
@@ -19,7 +20,8 @@ import (
 // A check_suite delivery whose action is requested or rerequested is GitHub asking the suite's App
 // to run its checks: through the listener's real webhook route it leaves the head's record as it
 // was, so the queued suite it carries never holds the head. A completed delivery of the same
-// suite is recorded.
+// suite is recorded. The store opens on a fixture's connection (bustest.Fixture), so the open
+// creates the CI bucket on the test's own server, as every other test of the package's does.
 func TestASuiteRequestLeavesTheRecordAsItWas(t *testing.T) {
 	_, uri := testnats.Start(t)
 	client, err := bus.ConnectOwningStream([]string{uri}, bus.WithReplicas(1))
@@ -27,7 +29,7 @@ func TestASuiteRequestLeavesTheRecordAsItWas(t *testing.T) {
 		t.Fatalf("bus connect: %v", err)
 	}
 	defer client.Close()
-	store, err := cistore.Open(t.Context(), client.Conn, logging.New("test"), cistore.WithReplicas(1), cistore.WithTTL(time.Hour))
+	store, err := cistore.Open(t.Context(), bustest.Fixture(client.Conn), logging.New("test"), cistore.WithReplicas(1), cistore.WithTTL(time.Hour))
 	if err != nil {
 		t.Fatalf("open cistore: %v", err)
 	}

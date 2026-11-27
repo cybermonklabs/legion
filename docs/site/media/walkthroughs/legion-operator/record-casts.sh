@@ -117,7 +117,8 @@ mise where "$pin" >/dev/null 2>&1 || mise install "$pin" >&2
 printf '#!/bin/sh\nexec %q "$@"\n' "$(mise where "$pin")/bin/omp" >"$work/bin/omp"
 chmod +x "$work/bin/omp"
 (cd "$root/packages/daemon" && nice -n 19 go build -o "$work/bin/legion" ./cmd/legion)
-(cd "$root/packages/envoy" && nice -n 19 go build -o "$work/envoy-listener" ./cmd/listener)
+(cd "$root/packages/envoy" && nice -n 19 go build -o "$work/envoy-listener" ./cmd/listener &&
+  nice -n 19 go build -o "$work/fixturebuckets" ./internal/testnats/cmd/fixturebuckets)
 # Every port is one the kernel chose, held from that choice until its process serves on it
 # (lib/rig.sh): the daemon's by a keeper, so legion.yaml and controller.yaml can name it before the
 # daemon starts; the listener's by the helper that becomes the listener; and the model stub binds
@@ -134,6 +135,9 @@ until_true 60 "Postgres" docker exec "$pg_container" pg_isready -h 127.0.0.1 -U 
 docker run -d --name "$nats_container" --cpus 0.5 --memory 512m -p 127.0.0.1::4222 "$nats_image" -js >/dev/null
 until_true 90 "NATS" sh -c "docker logs '$nats_container' 2>&1 | grep -q 'Server is ready'"
 nats_url="nats://127.0.0.1:$(docker port "$nats_container" 4222/tcp | head -1 | sed 's/.*://')"
+# No listener creates a bucket it copies: the run provisions its own server with them
+# before the listener starts.
+provision_fixture_buckets "$work/fixturebuckets" "$nats_url"
 (umask 077 && head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n' >"$operator/envoy-token")
 (umask 077 && head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n' >"$operator/operator-token")
 ENVOY_API_TOKEN="$(cat "$operator/envoy-token")" ENVOY_LISTEN_HOST=127.0.0.1 ENVOY_MACHINE_ID=example-host-legion NATS_URLS=$nats_url \

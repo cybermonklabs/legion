@@ -642,6 +642,13 @@ read_app_logins
 # The services serve on held ports (start_held, keep_port), which ACCEPT_ROOT's lib/rig.sh and its
 # binaries must both provide.
 declare -F start_held >/dev/null || fail "ACCEPT_ROOT's scripts/e2e/lib/rig.sh ($root) predates start_held: point ACCEPT_ROOT at a checkout that has it"
+# The run provisions its own NATS server with the buckets a listener copies, which no listener
+# creates: it builds ACCEPT_ROOT's fixturebuckets command and runs it through ACCEPT_ROOT's
+# lib/rig.sh (provision_fixture_buckets), so a checkout from before that change has neither.
+declare -F provision_fixture_buckets >/dev/null ||
+  fail "ACCEPT_ROOT's scripts/e2e/lib/rig.sh ($root) predates provision_fixture_buckets: point ACCEPT_ROOT at a checkout that has it"
+[ -d "$root/packages/envoy/internal/testnats/cmd/fixturebuckets" ] ||
+  fail "ACCEPT_ROOT ($root) predates packages/envoy/internal/testnats/cmd/fixturebuckets: point ACCEPT_ROOT at a checkout that has it"
 require_process_tree
 # The pane watcher reads an Oh My Pi's environment only once it is laid out (environ_laid_out),
 # which ACCEPT_ROOT's lib/process-tree.sh must provide: without it the watcher's call would fail for
@@ -685,7 +692,8 @@ nats_url='^([A-Za-z][A-Za-z0-9+.-]*://)?([^@/?#,[:space:]]+@)?[A-Za-z0-9_-]+(\.[
   printf 'ci' >"$work/postgres-password")
 chmod 0600 "$work"/*token "$work/envoy-auth-header" "$work/postgres-password"
 (cd "$root/packages/daemon" && go build -ldflags "-X main.revision=$head_commit" -o "$work/legion" ./cmd/legion)
-(cd "$root/packages/envoy" && go build -o "$work/envoy-listener" ./cmd/listener && go build -o "$work/envoy-dispatch" ./cmd/dispatch)
+(cd "$root/packages/envoy" && go build -o "$work/envoy-listener" ./cmd/listener && go build -o "$work/envoy-dispatch" ./cmd/dispatch &&
+  go build -o "$work/fixturebuckets" ./internal/testnats/cmd/fixturebuckets)
 {
   printf 'head under test %s\n' "$head_commit"
   printf 'legion version: %s\n' "$("$work/legion" version)"
@@ -706,6 +714,9 @@ start_process nats "$nats_bin" -js -a 127.0.0.1 -p -1 -sd "$work/nats-store"
 await_start nats "$nats_pid" 60 "NATS to be ready" grep -q 'Server is ready' "$evidence/logs/nats.log"
 port_nats=$(report_port "$evidence/logs/nats.log" 'Listening for client connections on [^ ]*:') ||
   fail "the nats-server logged no client port; see $evidence/logs/nats.log"
+# No listener creates a bucket it copies: the run provisions its own server with them
+# before the listener starts.
+provision_fixture_buckets "$work/fixturebuckets" "nats://127.0.0.1:$port_nats" "$evidence/logs/fixturebuckets.log"
 start_listener
 start_dispatch
 dispatch_human POST projects "$(jq -cn --arg key "$project" --arg name "4b.13b acceptance $project" '{key:$key,name:$name}')" >/dev/null

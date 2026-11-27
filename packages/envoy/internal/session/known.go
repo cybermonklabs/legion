@@ -25,7 +25,7 @@ import (
 // last_seen is read against (KnownSessions.Get). It is well past the 72 hours Envoy keeps a
 // session's messages, so a suspended Legion session that resumes under the same id is still known
 // when its queued messages are delivered.
-const KnownSessionRetention = 30 * 24 * time.Hour
+const KnownSessionRetention = bus.KnownSessionBucketMaxAge
 
 // KnownSessionRefreshAge is how young a stored record must be for a write of the same content to
 // be skipped (KnownSessions.RecordWithin): a session heartbeats every 90 seconds, so an unchanged
@@ -192,6 +192,11 @@ type KnownSessions struct {
 	retryFirst   time.Duration
 	retryMax     time.Duration
 	watchOptions []kvwatch.Option
+	// bucketMissing is whether the last attempt to open the bucket found it missing - the server
+	// says it holds none (bus.ErrBucketMissing) - rather than unreadable to this user: the listener
+	// then names the bucket missing (BucketMissing), and a read that finds it there wakes the next
+	// attempt (BucketPresent).
+	bucketMissing atomic.Bool
 
 	// mu guards records, chunks, markers and topics, which are kept in step: every record the copy
 	// stores or removes for the bucket's sake is indexed or unindexed through its rows
@@ -279,88 +284,6 @@ func newKnownSessions(conn *nats.Conn, opts knownSessionsOpts) *KnownSessions {
 		Removed: func(key string, _ knownRow) { s.topics.Remove(key) },
 	})
 	return s
-}
-
-// OpenKnownSessions opens the envoy_known_sessions bucket, creating it with a 30-day TTL
-// (KnownSessionRetention) on file storage, and starts the watcher that keeps its records in
-// memory and the sweep that gives back the memory of the records that aged out.
-//
-// A bucket that does not open - a listener whose NATS user may not open it, on a hub whose grant
-// does not carry the bucket - is no error and stops no start: the store is returned, logs the one
-// WARN below, answers no record and writes nothing, and goes on attempting the bucket in the
-// background until one succeeds (repairUntilStopped), at once after each connection event
-// (Rewatch). The error is the JetStream context's alone, which leaves no store to open anything
-// with; the caller then runs on a nil *KnownSessions, which answers as this store does and never
-// opens. ctx bounds the first attempt, the one the start waits on (openKnownBucket).
-func OpenKnownSessions(ctx context.Context, conn *nats.Conn, options ...KnownSessionsOption) (*KnownSessions, error) {
-	opts := knownSessionsOpts{
-		replicas:   1,
-		now:        time.Now,
-		retryFirst: knownBucketRetryFirst,
-		retryMax:   knownBucketRetryMax,
-	}
-	for _, o := range options {
-		o(&opts)
-	}
-	// A connection that gives no JetStream context can open nothing, now or later. It is this
-	// function's one error, read here so the caller is answered it rather than meeting it on
-	// every attempt; each attempt builds a context of its own, on the connection it runs against.
-	if _, err := knownJetStream(conn); err != nil {
-		return nil, err
-	}
-	s := newKnownSessions(conn, opts)
-	kv, err := openKnownBucket(ctx, conn, opts.replicas)
-	if err != nil {
-		s.logger().Warn("the known-session bucket is not open; this listener answers no session's 30-day record and writes none until an attempt of its own opens the bucket",
-			slog.String("bucket", bus.KnownSessionBucket), slog.String("error", err.Error()))
-		s.armRepair()
-	} else {
-		s.startWatch(kv)
-	}
-	go s.sweepUntilStopped()
-	return s, nil
-}
-
-// openKnownBucket makes one attempt to open the bucket on conn, creating it with the retention
-// and the copies the deployment asks for when it is not there.
-//
-// The attempt asks for the bucket with one request first, waiting knownBucketOpenWait, and only a
-// bucket the server says it does not hold goes through bus.EnsureKeyValue's create. That function
-// sends a lookup the server leaves unanswered again until ctx ends or the start's hang guard
-// passes (its sentAgain), and reads a refusal only on a connection a bus.Client owns, so a user
-// whose grant does not carry the bucket would cost an attempt that whole wait rather than one
-// send; the one request costs a denied attempt what it costs, the wait, and a granted one an
-// answer. A create the server answers only at the bucket's first leader election is waited for
-// the same way, so an election slower than a few of these 2 s sends opens the bucket on this
-// attempt rather than leaving the store to write nothing until a retry does.
-//
-// The handle it returns is opened on a context with the wait every other store of the listener
-// gives its bucket calls, since the store's writes and its cache watcher go through that handle
-// and must not give up on a cluster that is merely slow: a write is bounded by its caller's own
-// context (RecordWithin, bus.Bounded), and the open's short wait is for the attempt a start waits
-// on, not for the work that follows it.
-func openKnownBucket(ctx context.Context, conn *nats.Conn, replicas int) (bus.KeyValue, error) {
-	opening, err := knownJetStream(conn)
-	if err != nil {
-		return bus.KeyValue{}, err
-	}
-	if _, err := opening.KeyValue(bus.KnownSessionBucket); errors.Is(err, nats.ErrBucketNotFound) {
-		if _, err := bus.EnsureKeyValue(ctx, conn, opening, &nats.KeyValueConfig{
-			Bucket:   bus.KnownSessionBucket,
-			TTL:      KnownSessionRetention,
-			Replicas: replicas,
-			Storage:  nats.FileStorage,
-		}); err != nil {
-			return bus.KeyValue{}, err
-		}
-	} else if err != nil {
-		return bus.KeyValue{}, err
-	}
-	serving, err := conn.JetStream(nats.MaxWait(knownBucketServeWait))
-	if err != nil {
-		return bus.KeyValue{}, err
-	}
-	return bus.OpenKeyValue(ctx, conn, serving, bus.KnownSessionBucket)
 }
 
 // startWatch installs the watcher of the bucket kv is a handle on, and starts it: the watcher
@@ -522,7 +445,7 @@ func (s *KnownSessions) attemptRepair(ctx context.Context) (repairResult, error)
 	s.openMu.RUnlock()
 	switch {
 	case watcher == nil:
-		kv, err := openKnownBucket(ctx, conn, s.replicas)
+		kv, err := s.openBucket(ctx, conn)
 		if err != nil {
 			return repairNothing, err
 		}
@@ -682,6 +605,43 @@ func (s *KnownSessions) Opened() bool {
 	return watcher != nil && watcher.Servable() == nil
 }
 
+// Unreadable reports whether the store's bucket is not open and its last attempt found it not
+// missing but unreadable: the listener's NATS user may not read it yet, a hub whose users were
+// rendered before that bucket's grant (#2643). The server refuses and drops a request for that
+// bucket's stream, so a read of it can find nothing, present or missing; the store's own retry
+// asks again (repairUntilStopped), and the listener's self-health monitor leaves the bucket to it.
+// A store whose bucket is open, or whose last attempt found it missing, answers false, and so does
+// a nil store, which made no attempt.
+func (s *KnownSessions) Unreadable() bool {
+	return s != nil && s.watch() == nil && !s.bucketMissing.Load()
+}
+
+// BucketMissing reports whether the store's bucket is not open because its last attempt found it
+// missing: the server says it holds none. The store then answers no record and writes none, as an
+// unreadable one does, and retries the open (repairUntilStopped); a nil store answers false.
+func (s *KnownSessions) BucketMissing() bool {
+	return s != nil && s.watch() == nil && s.bucketMissing.Load()
+}
+
+// BucketPresent is the listener's word that a read of the store's bucket's stream found it there
+// (the self-health monitor's tick). A store whose last attempt found the bucket missing, and so
+// never opened it, then attempts again now, as a connection event that found no bucket open does
+// (Rewatch), rather than at its retry's next attempt, which backs off to retryMax: so it writes and
+// answers its records again within a tick of the operator creating the bucket, and not up to five
+// minutes after the monitor and /healthz already read it there. Any other store is left as it is:
+// an open one's watcher follows a bucket created again under it by itself, and one that cannot
+// read the bucket is its retry's. The wait for the retry's lock ends with ctx, the tick's.
+func (s *KnownSessions) BucketPresent(ctx context.Context) {
+	if s == nil || s.watch() != nil || !s.bucketMissing.Load() {
+		return
+	}
+	select {
+	case s.wake <- struct{}{}:
+	default:
+	}
+	s.armRepairWithin(ctx)
+}
+
 // logger is the logger WithKnownSessionLogger set, or the default one.
 func (s *KnownSessions) logger() *slog.Logger {
 	if s.log == nil {
@@ -770,8 +730,13 @@ func (s *KnownSessions) eachMatch(topic string, visit func(KnownSession)) {
 // it, are deleted once it lands; the store's sweep collects what a write that stopped part way
 // left (collectChunks).
 //
-// A store whose bucket is not open writes nothing and answers nil, as a nil store does: its
-// reads answer no record either, so nothing it could write would be read.
+// A store whose bucket is not open - its user may not read it yet, a hub whose users were rendered
+// before that bucket's grant (#2643), or its last attempt found it missing - writes nothing and
+// answers nil, as a nil store does: its reads answer no record either, so nothing it could write
+// would be read, and the listener serves without the bucket. So does a write that failed where a
+// read of the bucket's stream then finds none, a bucket deleted under the store's watcher: nothing
+// landed, and the listener names the bucket missing from its own read. Any other failure, a write
+// past ctx among them, is answered as itself, and the registration logs it and is answered.
 func (s *KnownSessions) RecordWithin(ctx context.Context, record KnownSession) error {
 	return s.writeWithin(ctx, record, true, nil)
 }
@@ -808,7 +773,7 @@ func (s *KnownSessions) RecordWithin(ctx context.Context, record KnownSession) e
 // site's WARN.
 func (s *KnownSessions) writeWithin(ctx context.Context, record KnownSession, throttled bool, admission *Admission) error {
 	watcher := s.watch()
-	if watcher == nil || record.SessionID == "" {
+	if record.SessionID == "" || watcher == nil {
 		return nil
 	}
 	held, ok := s.cached(record.SessionID)
@@ -854,6 +819,9 @@ func (s *KnownSessions) writeWithin(ctx context.Context, record KnownSession, th
 	for attempt := 1; ; attempt++ {
 		stored, err := kv.ReadFromLeader(ctx, record.SessionID)
 		if err != nil {
+			if knownBucketGone(ctx, kv) {
+				return nil
+			}
 			return fmt.Errorf("session: keep the principal of the known-session record of %s: %w", record.SessionID, err)
 		}
 		record.Principal, record.PrincipalRecorded = leaderPrincipal(stored)
@@ -867,6 +835,9 @@ func (s *KnownSessions) writeWithin(ctx context.Context, record KnownSession, th
 			return kv.Update(record.SessionID, value, stored.Revision)
 		}
 		written, err := s.writeRecord(ctx, watcher, kv, epoch, record, buf, held.stored(), head)
+		if errors.Is(err, errKnownBucketGone) {
+			return nil
+		}
 		if err != nil {
 			return err
 		}
@@ -899,6 +870,13 @@ func (s *KnownSessions) writeRecord(ctx context.Context, watcher *kvwatch.Watche
 		})
 	}
 	written, err := kvchunk.Write(ctx, kv, record.SessionID, buf, view, s.ownLayout(record.SessionID, replaced), head, s.now, s.logger(), knownRecord)
+	if err != nil && knownBucketGone(ctx, kv) {
+		// A write the bucket's stream did not take is the bucket missing only when a read of that
+		// stream says the server holds none: a bucket deleted under the store's watcher, over which
+		// the store writes nothing and the listener serves on (errKnownBucketGone). Any other
+		// failure is that failure, which the caller logs and answers over.
+		return written, errKnownBucketGone
+	}
 	if err != nil || !written.Stored {
 		return written, err
 	}
@@ -919,6 +897,20 @@ func (s *KnownSessions) writeRecord(ctx context.Context, watcher *kvwatch.Watche
 // keeps the stored principal makes (writeWithin) when another write of the record lands between
 // each one's read of the leader and its own write.
 const knownKeepAttempts = 3
+
+// errKnownBucketGone is a write of the store's bucket that failed where a read of the bucket's
+// stream then says the server holds none (knownBucketGone): a bucket deleted under the store's
+// watcher. Nothing landed, the listener serves without the bucket, and names it missing from its
+// own read: a write that keeps the stored principal answers nil over it (writeWithin).
+var errKnownBucketGone = errors.New("session: the known-session bucket is missing: it was deleted under the store's watcher")
+
+// knownBucketGone reports whether a read of kv's stream says the server holds none, which is how a
+// failed read or write of the bucket tells a bucket deleted under the store's watcher from any
+// other failure.
+func knownBucketGone(ctx context.Context, kv bus.KeyValue) bool {
+	_, err := kv.ReadStreamState(ctx)
+	return errors.Is(err, nats.ErrStreamNotFound)
+}
 
 // TouchWithin moves sessionID's record to now, keeping its content, which is what a clean stop
 // writes: the session stopped, and a publish must still count it as a recipient of the topics it

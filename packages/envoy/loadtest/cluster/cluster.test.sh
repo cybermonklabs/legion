@@ -32,7 +32,10 @@
 # anchors_outside_logged_block not 0), each before any kubectl call; (c) up, seed, step,
 # replay-prepare, replay, db-size, collect, status, down and all run through to the end, and every
 # kubectl call any of them makes, the background heartbeat and sampler included, carries
-# `-n <namespace>`; each step and replay writes pg-stats-before.json and pg-stats-after.json; a
+# `-n <namespace>`; each step and replay writes pg-stats-before.json and pg-stats-after.json; up
+# gives the copy's NATS the buckets a listener copies, on 3 replicas, through fixturebuckets over a
+# port-forward of svc/nats, after a read of the lock and before the listener starts, and a step's
+# reset removes the fixture's marker stream with the buckets so that it makes them again; a
 # step's reset looks up the nats-box pod once; loadgen, envoy-dispatch and seed.json go into the
 # runner only when it does not hold them, and a step's directory is removed from the runner once
 # copied back; up builds the stored-order checker from the dispatch commit's own archive with
@@ -183,9 +186,10 @@
 # waits for each daemon it starts until that daemon writes its pidfile, however many naps a
 # loaded machine holds the daemon's start for, start_daemon ends non-zero, naming the daemon's
 # end, once a daemon has ended without writing it, and a shell with job control on starts a
-# daemon that lives; (gg) the suite's waits end at the pool's bound for the suite, which
-# envoy-go-checks' command hands it as LEGION_PROOF_DEADLINE_MS, where it is set, naming their
-# fact, and only on their fact where it is not.
+# daemon that lives; (gg) nats_provision makes its log before its port-forward starts, so its
+# first read of the forwarded port never meets a missing file; (hh) the suite's waits end at the
+# pool's bound for the suite, which envoy-go-checks' command hands it as LEGION_PROOF_DEADLINE_MS,
+# where it is set, naming their fact, and only on their fact where it is not.
 set -euo pipefail
 
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
@@ -241,7 +245,7 @@ pass() { printf 'PASS: %s\n' "$*"; }
 # HARNESS_POOL_DEADLINE_MS as LEGION_PROOF_DEADLINE_MS, the suite's start plus that bound less
 # 30 s, and each wait gives up at that moment, naming its fact, before the pool ends the suite.
 # Run anywhere else, with no such deadline set, the suite has no wall-time guard: each wait ends
-# on its fact, and whoever runs the suite owns its hang guard. Case (gg) holds both. The
+# on its fact, and whoever runs the suite owns its hang guard. Case (hh) holds both. The
 # stop_watchdog guards of cases (dd) and (ee), around calls of cluster.sh's own bounded waits, end
 # at that same deadline, and there are none without it.
 work=$tmp
@@ -527,7 +531,13 @@ case $verb in
         fi
         ;;
       "nats --server nats://nats.$FAKE_NS.svc:4222 stream info "*" --json") echo '{"config":{"num_replicas":3}}' ;;
-      "nats --server nats://nats.$FAKE_NS.svc:4222 stream ls --names") echo ENVOY_NOTIFICATIONS ;;
+      # The fixture's marker stream is listed while the fake fixturebuckets has made it and no stream
+      # rm has removed it since.
+      "nats --server nats://nats.$FAKE_NS.svc:4222 stream ls --names")
+        echo ENVOY_NOTIFICATIONS
+        [ ! -f "$FAKE_DIR/fixture-marker" ] || echo ENVOY_TEST_FIXTURE
+        ;;
+      "nats --server nats://nats.$FAKE_NS.svc:4222 stream rm ENVOY_TEST_FIXTURE -f") rm -f "$FAKE_DIR/fixture-marker" ;;
       "nats --server nats://nats.$FAKE_NS.svc:4222 kv ls --names") echo interests ;;
       "nats --server nats://nats.$FAKE_NS.svc:4222 "*) ;;
       *"public.loadtest_replay_ids"*) cat "$FAKE_DIR/replay-ids" ;;
@@ -681,6 +691,12 @@ case $verb in
     esac
     ;;
   logs) echo 'fake log line' ;;
+  # A port-forward: the lines kubectl prints once it listens, on the port this fake always takes,
+  # and then held until it is killed, as kubectl holds one.
+  port-forward)
+    printf 'Forwarding from 127.0.0.1:14222 -> 4222\nForwarding from [::1]:14222 -> 4222\n'
+    exec tail -f /dev/null
+    ;;
   cp)
     # A copy into the runner lands under FAKE_DIR/runner, where runner_has reads it.
     dst=$FAKE_DIR/runner${5#runner:}
@@ -785,6 +801,23 @@ if [ "${*: -1}" = ./loadtest/browsertype ]; then
   else
     printf '#!/usr/bin/env bash\n[ "$1" = -help ] && { echo "  -protect value"; echo "  -person string"; exit 0; }\necho "fake browsertype: $*"\n' >"$out"
   fi
+  chmod +x "$out"
+  exit 0
+fi
+if [ "${*: -1}" = ./internal/testnats/cmd/fixturebuckets ]; then
+  cat >"$out" <<'FIXTUREBUCKETS'
+#!/usr/bin/env bash
+# The fake fixturebuckets: as the real one, it leaves a server that holds the fixture's marker
+# stream (FAKE_DIR/fixture-marker, which the fake nats-box lists and removes) as it is, and on any
+# other makes the buckets and the marker. Each call is one line of FAKE_DIR/fixturebuckets.log:
+# what it did and its arguments.
+if [ -f "$FAKE_DIR/fixture-marker" ]; then
+  printf 'kept %s\n' "$*" >>"$FAKE_DIR/fixturebuckets.log"
+else
+  : >"$FAKE_DIR/fixture-marker"
+  printf 'provisioned %s\n' "$*" >>"$FAKE_DIR/fixturebuckets.log"
+fi
+FIXTUREBUCKETS
   chmod +x "$out"
   exit 0
 fi
@@ -1206,6 +1239,7 @@ reset_fake() {
     "$fake/sleep.log" "$fake/apply-errors" "$fake/replay-template" "$fake/restores" "$fake/pod-dump" \
     "$fake/stored-order.log" "$fake/go-dispatch.log" "$fake/go-browsertype.log" "$fake/git.log" \
     "$fake/go-dispatch-tree.log" "$fake/go-subcommands.go" "$fake/runner-exec-fail" "$fake/pg-df-started" "$fake/pg-df-go" "$fake/lock-get-started" "$fake/lock-get-go" \
+    "$fake/fixturebuckets.log" "$fake/fixture-marker" \
     "$fake/identity-probes" "$fake/identity-probe-times" "$fake/identity-answers" "$fake/mint-help.log" "$fake/clock" \
     "$fake/naps.log" "$fake/daemon-start-holds" "$fake/daemon-start-releases"
   rm -rf -- "$fake/runner" "$fake/bundle-fixture"
@@ -1591,6 +1625,18 @@ grep -qF "building the stored-order checker, envoy-dispatch (static) of dispatch
 jq -e '.browsertype == null' "$run_dir/state.json" >/dev/null || fail "state.json without --browsertype-commit does not record browsertype null"
 [ "$(grep -c -- "^-n $ns cp $run_dir/envoy-dispatch runner:/work/envoy-dispatch " "$fake/kubectl.log")" = 1 ] ||
   fail "up did not copy envoy-dispatch into the runner"
+# The buckets a listener copies, which no listener creates: fixturebuckets on this pod
+# makes them on the copy's NATS, on 3 replicas, through a port-forward of svc/nats, which comes
+# right after a read of the lock and before the listener is scaled up.
+grep -qxF -- "provisioned -url nats://127.0.0.1:14222 -replicas 3" "$fake/fixturebuckets.log" ||
+  fail "up did not make the buckets a listener copies on the copy's NATS, on 3 replicas, through the port-forward: $(cat "$fake/fixturebuckets.log" 2>/dev/null)"
+grep -qx -- "-n $ns port-forward svc/nats :4222" "$fake/kubectl.log" || fail "up did not port-forward svc/nats to a port the kernel chose"
+guarded_by_lock_read 'port-forward svc/nats' || fail "up's port-forward to the copy's NATS did not come right after a read of the lock"
+forward_at=$(grep -nF -- 'port-forward svc/nats' "$fake/kubectl.log" | cut -d: -f1 | tail -n1)
+listener_at=$(grep -nF -- 'scale deployment listener --replicas 1' "$fake/kubectl.log" | cut -d: -f1 | tail -n1)
+[ -n "$forward_at" ] && [ -n "$listener_at" ] && ((forward_at < listener_at)) ||
+  fail "up scaled the listener up (kubectl.log line ${listener_at:-none}) before it made the buckets (line ${forward_at:-none})"
+pass "up makes the buckets a listener copies on the copy's NATS, on 3 replicas, through a port-forward after a read of the lock, before it starts the listener"
 pg_password=$(jq -r .secrets.pg_password "$run_dir/state.json")
 
 # copy_credentials: the three credentials of the run in run_dir as a runner job reads them, one a
@@ -1728,6 +1774,16 @@ pass "seed's loadgen jobs read the copy's credentials from files of mode 600 the
 
 run_cluster step --namespace "$ns" smoke 1 --duration 1m
 ((RC == 0)) || fail "step exited $RC"
+# The step's reset deletes the buckets and must make them again: it removes the fixture's marker
+# with them, since fixturebuckets leaves a server that holds the marker as it is.
+[ "$(tail -n1 "$fake/fixturebuckets.log")" = "provisioned -url nats://127.0.0.1:14222 -replicas 3" ] ||
+  fail "the step's reset did not make the buckets a listener copies again: $(cat "$fake/fixturebuckets.log")"
+marker_rm_at=$(grep -nF -- 'stream rm ENVOY_TEST_FIXTURE -f' "$fake/kubectl.log" | cut -d: -f1 | tail -n1)
+forward_at=$(grep -nF -- 'port-forward svc/nats' "$fake/kubectl.log" | cut -d: -f1 | tail -n1)
+listener_at=$(grep -nF -- 'scale deployment listener --replicas 1' "$fake/kubectl.log" | cut -d: -f1 | tail -n1)
+[ -n "$marker_rm_at" ] && ((marker_rm_at < forward_at && forward_at < listener_at)) ||
+  fail "the step's reset did not remove the marker (kubectl.log line ${marker_rm_at:-none}), then make the buckets (line $forward_at), then scale the listener up (line $listener_at)"
+pass "a step's reset removes the fixture's marker with the buckets and makes them again before it scales the listener up"
 for f in reset.json copy-meta.json meta.json summary.json postgres-settings.txt containers-before.tsv containers-after.tsv pg-stats-before.json pg-stats-after.json; do
   [ -f "$run_dir/steps/smoke/$f" ] || fail "the step directory has no $f"
 done
@@ -3150,6 +3206,8 @@ pass "a replay types into the documents with the most agent writes in its sub-wi
   { ((RC != 0)) && [ "$psql_calls" = 1 ] && [ -z "$SLEEPS" ]; } ||
     fail "a psql write was retried after a dial timeout: rc $RC, $psql_calls psql calls of $CALLS"
   NATS_BOX_POD='nats-box-7f6d'
+  # The copy's NATS before any fixturebuckets made its marker: ENVOY_NOTIFICATIONS alone.
+  rm -f "$fake/fixture-marker"
   calls_after "$dial" -- nats_box stream ls --names
   { ((RC == 0)) && ((CALLS == 2)) && [ "$(cat "$tmp/retry.out")" = ENVOY_NOTIFICATIONS ]; } || fail "a nats-box listing was not retried after a dial timeout"
   calls_after "$dial" -- nats_box kv del interests -f
@@ -3880,8 +3938,9 @@ pass "with the lock naming another run, runner_stop, runner_step_remove and typi
 # ends it).
 #
 # The guard fails closed ((aa) below), so up itself now stops at the first write into the copy
-# it cannot read the lock for -- the scale that starts Dispatch and the listener, which comes
-# after the heartbeat and before the sampler. This case takes that refusal and starts the
+# it cannot read the lock for -- the buckets it makes on the copy's NATS (nats_provision), right
+# before the scale that starts Dispatch and the listener, which comes after the heartbeat and
+# before the sampler. This case takes that refusal and starts the
 # sampler the way up starts it, the reads still failing, so that both daemons' pidfiles are
 # still proved written with no lock read of their own.
 reset_fake
@@ -4753,7 +4812,37 @@ monitor_hb=$(cat -- "$monitor_dir/heartbeat.pid" 2>/dev/null) && kill -0 "$monit
 kill -TERM -- "-$monitor_hb" 2>/dev/null || true
 pass "up waits for each daemon until it writes its pidfile, however many naps its start is held for, start_daemon ends non-zero, naming the daemon's end, once a daemon has ended without writing it, and a shell with job control on starts a daemon that lives"
 
-# (gg) The suite's guard is the pool's bound for the suite and nothing else, which envoy-go-checks'
+# (gg) nats_provision starts its port-forward in the background, its output redirected to its log,
+# and reads the forwarded port from that log at once. The background shell opens the log only when
+# it runs, so on a loaded box the read could come first: sed found no file and exited 2, and up
+# stopped under errexit with no word of why. A DEBUG trap runs in nats_provision's own shell just
+# before the port-forward command is started (set -T carries it into the function), so it sees
+# whether the log is there at the moment the read can first race the open.
+reset_fake
+export LOADTEST_CLUSTER_ROOT=$tmp/root-provision-log
+provision_seen=$tmp/provision-log-seen
+(
+  # shellcheck source=packages/envoy/loadtest/cluster/cluster.sh
+  source "$cluster"
+  NS=$ns
+  set_run lt-20261122t120000-f00d
+  mkdir -p "$RUN_DIR/logs"
+  write_lock "$RUN" "$(utc_now)"
+  printf '#!/usr/bin/env bash\nexit 0\n' >"$FIXTUREBUCKETS"
+  chmod +x "$FIXTUREBUCKETS"
+  : >"$provision_seen"
+  set -T
+  # shellcheck disable=SC2016 # expanded when the trap runs, inside nats_provision
+  trap '[[ $BASH_COMMAND != *" port-forward svc/nats "* ]] || { [ -e "$RUN_DIR/logs/nats-provision.log" ] && echo present || echo missing; } >>"$provision_seen"' DEBUG
+  nats_provision
+  trap - DEBUG
+  [ "$(cat "$provision_seen")" = present ] ||
+    fail "nats_provision started its port-forward when its log was '$(cat "$provision_seen")', not present: its read of the port could meet no file"
+)
+rm -f -- "$fake/lock.json"
+pass "nats_provision makes its log before it starts the port-forward, so its first read of the forwarded port never meets a missing file"
+
+# (hh) The suite's guard is the pool's bound for the suite and nothing else, which envoy-go-checks'
 # command hands it as LEGION_PROOF_DEADLINE_MS, and proof_guard_from_env makes every wait give up
 # at it; with none set, as on a person's machine, a wall-time guard of the suite's own would fail
 # a healthy run that a loaded machine only made slow, so there is none. A probe sources

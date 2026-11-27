@@ -8,17 +8,19 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/bus/bustest"
 	"github.com/sjawhar/envoy/internal/kvchunk"
 	"github.com/sjawhar/envoy/internal/testnats"
 )
 
 // openReplicatedRegistry opens a registry whose buckets hold three copies each on a cluster of
 // three, on a connection to member 0, and has member 0 lead both, so a write the registry sends
-// reaches the leader without a route (testnats.Cluster.RaceKeyValue).
+// reaches the leader without a route (testnats.Cluster.RaceKeyValue). The connection is a
+// fixture's (bustest.Connect), so Open creates the buckets, since no listener creates one.
 func openReplicatedRegistry(t *testing.T) (*testnats.Cluster, *Registry) {
 	t.Helper()
 	cluster := testnats.StartCluster(t, 3)
-	conn := testnats.Connect(t, cluster.Servers[0].URL())
+	conn := bustest.Connect(t, cluster.Servers[0].URL())
 	t.Cleanup(conn.Close)
 	reg, err := Open(t.Context(), conn, WithReplicas(3))
 	if err != nil {

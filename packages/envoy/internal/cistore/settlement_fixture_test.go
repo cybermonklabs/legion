@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/bus/bustest"
 	"github.com/sjawhar/envoy/internal/cistore"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/logging"
@@ -174,7 +175,7 @@ func settlesAsTheFixtureSays(t *testing.T, fixture settlementFixture, head fixtu
 		t.Fatalf("bus connect: %v", err)
 	}
 	defer client.Close()
-	store, err := cistore.Open(t.Context(), client.Conn, logging.New("test"), cistore.WithReplicas(1), cistore.WithTTL(time.Hour))
+	store, err := cistore.Open(t.Context(), bustest.Fixture(client.Conn), logging.New("test"), cistore.WithReplicas(1), cistore.WithTTL(time.Hour))
 	if err != nil {
 		t.Fatalf("open cistore: %v", err)
 	}

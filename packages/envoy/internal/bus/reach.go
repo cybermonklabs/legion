@@ -76,21 +76,64 @@ func checkedNATSURLs(urls []string) ([]string, error) {
 // LocalNATSURL reports whether raw names a server on this machine. It reads the URL and never
 // resolves it: a lookup would reach the network the refusal is about, and a name that resolves to
 // a loopback address on one machine resolves to a shared server on another - the devbox's own
-// envoy-nats is exactly such a name. A URL it cannot read names no server it can vouch for.
+// envoy-nats is exactly such a name. A URL it cannot read names no server it can vouch for. It is
+// LoopbackNATSServer's answer, so the two never read a URL differently.
 func LocalNATSURL(raw string) bool {
+	_, ok := LoopbackNATSServer(raw)
+	return ok
+}
+
+// LoopbackNATSServer is LocalNATSURL's one reading of raw: the server raw names, its authority's
+// host and port as the URL writes them (the host alone when it names no port), and whether that
+// host is on this machine's loopback, read from the URL and never resolved. A URL with no scheme
+// is read as nats://. For a URL it does not vouch for it answers "", so a caller that names the
+// server it checked names nothing of a rejected URL: no user info, path, query or fragment, and
+// no host, which a rejected URL can hold credential text in.
+//
+// raw is one server URL. nats.Connect(string) splits its argument on ",", while this reads a ","
+// before the last "@" as part of the user info: a URL that writes a remote server, a "," and then
+// a user info before a loopback server is that loopback server here and two servers there. So a
+// caller that hands raw to nats.Connect(string) refuses a "," in it first.
+func LoopbackNATSServer(raw string) (string, bool) {
 	trimmed := strings.TrimSpace(raw)
 	if !strings.Contains(trimmed, "://") {
 		trimmed = "nats://" + trimmed
 	}
 	parsed, err := url.Parse(trimmed)
 	if err != nil {
-		return false
+		return "", false
 	}
 	// A host name is case-insensitive and its root dot is not part of the name.
 	host := strings.TrimSuffix(parsed.Hostname(), ".")
-	if strings.EqualFold(host, "localhost") {
-		return true
+	if ip := net.ParseIP(host); strings.EqualFold(host, "localhost") || (ip != nil && ip.IsLoopback()) {
+		return parsed.Host, true
 	}
-	ip := net.ParseIP(host)
-	return ip != nil && ip.IsLoopback()
+	return "", false
+}
+
+// NATSURLWithoutUserinfo renders raw, a configured NATS server URL, for a log line or an error
+// that is logged, with no userinfo at all. nats.go authenticates with the URL's userinfo
+// (connectProto, nats.go v1.55.0 nats.go:3133-3143): a user name alone is a token and
+// user:password a password, so both parts are the credential, and url.URL.Redacted, which keeps
+// the user name, would log a token whole. raw is read as LocalNATSURL reads it. A URL with no "@"
+// carries no userinfo and comes back as written. Any other comes back as nothing that preceded an
+// "@" in it: parsed and rendered without its userinfo when that leaves no "@", and otherwise -
+// a URL that does not parse, or one with an "@" past its authority - as what follows its last "@".
+// bus.Connect refuses both of those before any dial (natsurl.Refusal).
+func NATSURLWithoutUserinfo(raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	if !strings.Contains(trimmed, "@") {
+		return trimmed
+	}
+	withScheme := trimmed
+	if !strings.Contains(withScheme, "://") {
+		withScheme = "nats://" + withScheme
+	}
+	if parsed, err := url.Parse(withScheme); err == nil {
+		parsed.User = nil
+		if rendered := parsed.String(); !strings.Contains(rendered, "@") {
+			return rendered
+		}
+	}
+	return trimmed[strings.LastIndex(trimmed, "@")+1:]
 }

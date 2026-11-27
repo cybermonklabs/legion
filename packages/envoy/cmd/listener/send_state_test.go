@@ -18,6 +18,7 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/bus/bustest"
 	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/contracts"
@@ -121,10 +122,11 @@ func newQuietKnownSessionRig(t *testing.T) *knownSessionRig {
 }
 
 // openKnownSessionsOn opens the known-session store on conn with clock, and waits for its first
-// read of the bucket, as main's start waits for it.
+// read of the bucket, as main's start waits for it. conn is marked as a fixture's
+// (bustest.Fixture), so the store creates the bucket it finds missing.
 func openKnownSessionsOn(t *testing.T, conn *natsgo.Conn, clock func() time.Time) *session.KnownSessions {
 	t.Helper()
-	known, err := session.OpenKnownSessions(t.Context(), conn,
+	known, err := session.OpenKnownSessions(t.Context(), bustest.Fixture(conn),
 		session.WithKnownSessionReplicas(1),
 		session.WithKnownSessionClock(clock))
 	if err != nil {

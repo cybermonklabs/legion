@@ -10,6 +10,7 @@ import (
 	"github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/bus/bustest"
 	"github.com/sjawhar/envoy/internal/roles"
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
@@ -17,7 +18,8 @@ import (
 )
 
 // bucketsRig is a NATS server with a bus client Buckets reads through, and the registries a
-// listener writes claims and sessions through.
+// listener writes claims and sessions through, on a fixture's connection (bustest.Connect) that
+// creates their buckets.
 func bucketsRig(t *testing.T) (*roles.Buckets, *store.Registry, *session.SessionRegistry, nats.JetStreamContext) {
 	t.Helper()
 	holders, registry, sessions, conn := bucketsRigConn(t)
@@ -38,7 +40,7 @@ func bucketsRigConn(t *testing.T) (*roles.Buckets, *store.Registry, *session.Ses
 		t.Fatalf("connect: %v", err)
 	}
 	t.Cleanup(client.Close)
-	conn := testnats.Connect(t, url)
+	conn := bustest.Connect(t, url)
 	registry, err := store.Open(t.Context(), conn)
 	if err != nil {
 		t.Fatalf("open the role registry: %v", err)

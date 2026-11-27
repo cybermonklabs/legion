@@ -8,16 +8,18 @@ import (
 
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/bus/bustest"
 	"github.com/sjawhar/envoy/internal/testnats"
 )
 
 // openReplicatedRegistry opens a registry whose bucket holds three copies on a cluster of three,
 // on a connection to member 0, and has member 0 lead the bucket, so a write the registry sends
-// reaches the leader without a route (testnats.Cluster.RaceKeyValue).
+// reaches the leader without a route (testnats.Cluster.RaceKeyValue). The connection is a
+// fixture's (bustest.Connect), so the open creates the bucket, since no listener creates one.
 func openReplicatedRegistry(t *testing.T) (*testnats.Cluster, *SessionRegistry) {
 	t.Helper()
 	cluster := testnats.StartCluster(t, 3)
-	conn := testnats.Connect(t, cluster.Servers[0].URL())
+	conn := bustest.Connect(t, cluster.Servers[0].URL())
 	t.Cleanup(conn.Close)
 	reg, err := OpenSessionRegistry(t.Context(), conn, WithSessionReplicas(3), WithSessionTTL(10*time.Second))
 	if err != nil {

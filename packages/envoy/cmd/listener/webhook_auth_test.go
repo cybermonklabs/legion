@@ -324,16 +324,18 @@ func TestEveryWebhookRouteReadsAgainstTheListenersOneBodyBudget(t *testing.T) {
 
 // The listener states its webhook body budget at its start, the setting's value or the default,
 // and refuses to start on a value that is not a positive whole number of bytes, naming the
-// variable.
+// variable. Each start names a NATS server that is not there, and the budget line comes before
+// the listener dials it, so the rows start the listener as is (startListenerProcessAsIs): there
+// is no server to provision.
 func TestTheListenerStatesItsWebhookBodyBudgetAtItsStart(t *testing.T) {
 	t.Parallel()
 	binary := cmdtest.Build(t, "envoy-listener")
 	t.Run("set", func(t *testing.T) {
-		listener := startListenerProcess(t, binary, "nats://127.0.0.1:1", "body-budget-set", "ENVOY_WEBHOOK_BODY_BUDGET=1048576")
+		listener := startListenerProcessAsIs(t, binary, "nats://127.0.0.1:1", "body-budget-set", "ENVOY_WEBHOOK_BODY_BUDGET=1048576")
 		listener.WaitForOutput(t, "listener webhook body budget: 1048576 bytes (1.0 MiB) held at once across every webhook route")
 	})
 	t.Run("unset", func(t *testing.T) {
-		listener := startListenerProcess(t, binary, "nats://127.0.0.1:1", "body-budget-unset")
+		listener := startListenerProcessAsIs(t, binary, "nats://127.0.0.1:1", "body-budget-unset")
 		listener.WaitForOutput(t, "listener webhook body budget: 67108864 bytes (64.0 MiB) held at once across every webhook route")
 	})
 	t.Run("refused", func(t *testing.T) {

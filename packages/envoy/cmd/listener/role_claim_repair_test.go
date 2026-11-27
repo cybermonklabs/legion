@@ -46,7 +46,7 @@ func newHealthzRepairRig(t *testing.T, consumer string) *grantGuardRig {
 	// The durable is the listener's own and outlives its subscription, on a server the package's
 	// tests share, so the test deletes it rather than leave it holding the stream's messages.
 	t.Cleanup(func() { _ = rig.client.JS().DeleteConsumer(bus.Stream, consumer) })
-	rig.deps.caches = listenerCaches(rig.deps.registry, rig.deps.sessions, nil)
+	rig.deps.caches = listenerCaches(rig.deps.registry, rig.deps.sessions, nil, nil)
 	rig.deps.consumer = consumer
 	return rig
 }
@@ -64,7 +64,7 @@ func reportsOver(d *listenerDeps) listenerReports {
 	served.Store(d)
 	met := metrics.New()
 	registerListGauges(met, &served)
-	return listenerReports{healthz: healthzHandler(&served, nil), metrics: met.Handler()}
+	return listenerReports{healthz: healthzHandler(&served, nil, nil), metrics: met.Handler()}
 }
 
 // healthzAnswer is one /healthz answer: its status code and its body's fields.
@@ -192,7 +192,7 @@ func TestHealthzReportsTheRoleClaimRescanAndIsDegradedPastItsBound(t *testing.T)
 	// and the repair's field names no read.
 	restarted := unreadRegistry(t, rig.client, rig.clock)
 	unread := reportsOver(&listenerDeps{client: rig.client, registry: restarted, sessions: rig.deps.sessions,
-		caches: listenerCaches(restarted, rig.deps.sessions, nil), consumer: consumer})
+		caches: listenerCaches(restarted, rig.deps.sessions, nil, nil), consumer: consumer})
 	answer := unread.health(t, "no whole read of the role claims completed")
 	if reported, _ := answer.body["error"].(string); answer.code != http.StatusOK || answer.body["status"] != "degraded" ||
 		!strings.HasPrefix(reported, "role claim view unavailable: ") {

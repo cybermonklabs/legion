@@ -140,8 +140,9 @@ func (s *natsStart) healthz(next http.Handler, issuers func() map[string]any) ht
 //
 // /healthz is always reachable, before NATS setup as well as after it: start's answer while the
 // start waits out a refusal of the credential (natsStart.healthz), and healthzHandler's otherwise,
-// over deps. Every answer carries what issuers adds, the identity token issuers' fields
-// (issuerHealthFields), which never decide its status.
+// over deps and the copied buckets the listener last found missing (missing). Every answer carries
+// what issuers adds, the identity token issuers' fields (issuerHealthFields), which never decide
+// its status.
 //
 // /livez answers 204 and touches nothing: no flush to NATS, no cache ping and no read of the
 // durable consumer. It says only that the process answers, for the startup and liveness probes,
@@ -149,7 +150,7 @@ func (s *natsStart) healthz(next http.Handler, issuers func() map[string]any) ht
 // whose credential is refused waits for the hub to admit it, and a restart would only drop its
 // warm caches. /healthz stays the readiness route, the one that reads the bus, because its HTTP
 // status is what tells a starting pod from a serving one.
-func registerProbeRoutes(mux *http.ServeMux, deps *atomic.Pointer[listenerDeps], start *natsStart, issuers func() map[string]any) {
-	mux.Handle("/healthz", start.healthz(healthzHandler(deps, issuers), issuers))
+func registerProbeRoutes(mux *http.ServeMux, deps *atomic.Pointer[listenerDeps], missing *missingBuckets, start *natsStart, issuers func() map[string]any) {
+	mux.Handle("/healthz", start.healthz(healthzHandler(deps, missing, issuers), issuers))
 	mux.HandleFunc("/livez", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
 }

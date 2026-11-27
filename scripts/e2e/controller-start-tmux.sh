@@ -154,7 +154,8 @@ omp_exe=$(realpath -e -- "$(mise where "$pin")/bin/omp") || fail "the pinned Oh 
 # so legion.yaml and controller.yaml can name it before the daemon starts on a copy of its socket.
 keep_port daemon_keeper daemon_port
 (cd "$root/packages/daemon" && go build -o "$work/legion" ./cmd/legion)
-(cd "$root/packages/envoy" && go build -o "$work/envoy-listener" ./cmd/listener)
+(cd "$root/packages/envoy" && go build -o "$work/envoy-listener" ./cmd/listener &&
+  go build -o "$work/fixturebuckets" ./internal/testnats/cmd/fixturebuckets)
 note "legion $("$work/legion" version); OMP pin $pin; daemon port $daemon_port"
 
 refuse_leftovers legion-e2e-controller
@@ -172,6 +173,9 @@ dsn="postgres://legion:$(cat "$work/postgres-password")@127.0.0.1:${pg_port}/leg
 docker run -d --name "$nats_container" --cpus 1 --memory 512m -p 127.0.0.1::4222 "$nats_image" -js >/dev/null
 until_true 90 "NATS to be ready" sh -c "docker logs '$nats_container' 2>&1 | grep -q 'Server is ready'"
 nats_url="nats://127.0.0.1:$(docker port "$nats_container" 4222/tcp | head -1 | sed 's/.*://')"
+# No listener creates a bucket it copies: the run provisions its own server with them
+# before the listener starts.
+provision_fixture_buckets "$work/fixturebuckets" "$nats_url"
 (umask 077 && head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n' >"$work/envoy-token" &&
   printf 'Authorization: Bearer %s\n' "$(cat "$work/envoy-token")" >"$work/envoy-auth-header")
 ENVOY_API_TOKEN="$(cat "$work/envoy-token")" ENVOY_LISTEN_HOST=127.0.0.1 ENVOY_MACHINE_ID="legion-e2e-controller-$$" NATS_URLS=$nats_url \

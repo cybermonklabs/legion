@@ -11,6 +11,7 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/bus/bustest"
 	"github.com/sjawhar/envoy/internal/cistore"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/logging"
@@ -18,11 +19,12 @@ import (
 	"github.com/sjawhar/envoy/internal/testnats"
 )
 
-// openListener opens the listener's own store, which creates the CI bucket and starts the cache
-// watcher a writer has not got, and waits for its cache.
+// openListener opens the listener's own store over conn, which it marks as a fixture's
+// (bustest.Fixture) so the open creates the CI bucket, and starts the cache watcher a writer has
+// not got, and waits for its cache.
 func openListener(t *testing.T, conn *natsgo.Conn) *cistore.Store {
 	t.Helper()
-	store, err := cistore.Open(t.Context(), conn, logging.New("listener"), cistore.WithReplicas(1), cistore.WithTTL(time.Hour))
+	store, err := cistore.Open(t.Context(), bustest.Fixture(conn), logging.New("listener"), cistore.WithReplicas(1), cistore.WithTTL(time.Hour))
 	if err != nil {
 		t.Fatalf("open the listener's cistore: %v", err)
 	}

@@ -11,6 +11,7 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/bus/bustest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/logtest"
@@ -447,7 +448,9 @@ func TestAFailedAuthorizationReadKeepsTheWaitDueWithinASecond(t *testing.T) {
 	url := testnats.URL(t)
 	writerConn := testnats.Connect(t, url)
 	defer writerConn.Close()
-	storeConn := testnats.Connect(t, url)
+	// The store's own connection is a fixture's (bustest.Connect, as connectNATS gives the other
+	// tests), so its open creates the CI bucket, since no listener creates one.
+	storeConn := bustest.Connect(t, url)
 	defer storeConn.Close()
 	s := openVerifyingStore(t, storeConn)
 	writer := dispatchWriter(t, writerConn)

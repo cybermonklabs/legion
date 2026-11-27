@@ -15,6 +15,8 @@ import (
 	"time"
 
 	natsgo "github.com/nats-io/nats.go"
+	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/bus/bustest"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/testnats"
@@ -235,11 +237,22 @@ type listenerProcess struct {
 }
 
 // startListenerProcess starts binary as machine machineID against the NATS at uri, with env added
-// to its environment, and kills it when the test ends if it is still running. It serves on a
-// loopback port the kernel chose and the test holds from that moment, which the process inherits
-// as ENVOY_LISTEN_FD and serves on, so no other program can take the port before it serves. PORT
-// names the same port, which the listener checks against the socket.
+// to its environment, and kills it when the test ends if it is still running. It provisions the
+// server first (provisionListenerServer), since no listener creates a bucket it copies. It serves
+// on a loopback port the kernel chose and the test holds from that moment, which the process
+// inherits as ENVOY_LISTEN_FD and serves on, so no other program can take the port before it
+// serves. PORT names the same port, which the listener checks against the socket.
 func startListenerProcess(t *testing.T, binary, uri, machineID string, env ...string) *listenerProcess {
+	t.Helper()
+	provisionListenerServer(t, uri, env)
+	return startListenerProcessAsIs(t, binary, uri, machineID, env...)
+}
+
+// startListenerProcessAsIs is startListenerProcess without the provisioning: the listener starts
+// on the server as the test left it, for a test that provisions the server itself
+// (provisionListenerServer) because the listener's own grant does not let the harness do it, or
+// that means the listener to start on a server holding no bucket.
+func startListenerProcessAsIs(t *testing.T, binary, uri, machineID string, env ...string) *listenerProcess {
 	t.Helper()
 	held := cmdtest.HoldPort(t)
 	cmd := exec.Command(binary)
@@ -254,6 +267,46 @@ func startListenerProcess(t *testing.T, binary, uri, machineID string, env ...st
 	return &listenerProcess{Process: cmdtest.Start(t, "the listener "+machineID, cmd), port: held.Port}
 }
 
+// provisionListenerServer creates, on the test's own server at uri, every bucket a listener copies
+// and the marker that says the server is a fixture's (bustest.Provision), at the copies the
+// listener's environment env asks for (ENVOY_NATS_REPLICAS, else one), as the operator's
+// `envoy-infra buckets` does before a deployment's first listener starts: no listener creates one,
+// and a listener started without them waits at its start. It acts once per server, so a test that
+// deletes a bucket and starts a listener again on the same server finds the bucket still missing.
+// It connects as the listener does, with the nkey seed env names (NATS_NKEY_SEED) when it names
+// one, and closes that connection before it returns, so the listener finds the server's
+// connections as the test left them.
+func provisionListenerServer(t *testing.T, uri string, env []string) {
+	t.Helper()
+	replicas := 1
+	var seed string
+	for _, setting := range env {
+		name, value, _ := strings.Cut(setting, "=")
+		switch name {
+		case bus.ReplicasEnvVar:
+			n, err := bus.ParseNATSReplicas(value)
+			if err != nil {
+				t.Fatalf("%s: %v", setting, err)
+			}
+			replicas = n
+		case bus.NkeySeedEnvVar:
+			seed = value
+		}
+	}
+	if seed == "" {
+		bustest.ProvisionURL(t, uri, replicas)
+		return
+	}
+	conn, err := testnats.ConnectSeed(t, uri, seed)
+	if err != nil {
+		t.Fatalf("connect to %s with the listener's seed: %v", uri, err)
+	}
+	defer conn.Close()
+	if err := bustest.Provision(conn, replicas); err != nil {
+		t.Fatalf("provision the listener's NATS server %s with the buckets it copies: %v", uri, err)
+	}
+}
+
 // A harness that holds the port hands the listener the listening socket and sets neither
 // ENVOY_LISTEN_HOST nor PORT: the listener serves on the socket, at the address the kernel chose
 // for it, and says that address in its listening line. Without the socket it would bind
@@ -261,10 +314,12 @@ func startListenerProcess(t *testing.T, binary, uri, machineID string, env ...st
 func TestListenerServesOnTheListenSocketItInheritsWithNoAddressSet(t *testing.T) {
 	t.Parallel()
 	held := cmdtest.HoldPort(t)
+	uri := testnats.URL(t)
+	provisionListenerServer(t, uri, nil)
 	cmd := exec.Command(cmdtest.Build(t, "envoy-listener"))
 	cmd.Env = []string{
 		"ENVOY_MACHINE_ID=listen-fd-unset-address",
-		"NATS_URLS=" + testnats.URL(t),
+		"NATS_URLS=" + uri,
 		"ENVOY_API_TOKEN=" + listenerTestToken,
 	}
 	held.Pass(cmd, "ENVOY_LISTEN_FD")
@@ -278,12 +333,14 @@ func TestListenerServesOnTheListenSocketItInheritsWithNoAddressSet(t *testing.T)
 // names the port it got, so a harness that starts the listener this way reads its port there.
 func TestListenerOnPortZeroLogsThePortTheKernelChose(t *testing.T) {
 	t.Parallel()
+	uri := testnats.URL(t)
+	provisionListenerServer(t, uri, nil)
 	cmd := exec.Command(cmdtest.Build(t, "envoy-listener"))
 	cmd.Env = []string{
 		"PORT=0",
 		"ENVOY_LISTEN_HOST=127.0.0.1",
 		"ENVOY_MACHINE_ID=listen-port-zero",
-		"NATS_URLS=" + testnats.URL(t),
+		"NATS_URLS=" + uri,
 		"ENVOY_API_TOKEN=" + listenerTestToken,
 	}
 	process := cmdtest.Start(t, "the listener", cmd)

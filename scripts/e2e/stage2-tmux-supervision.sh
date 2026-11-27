@@ -368,7 +368,8 @@ port='' deadline_port='' envoy_port=''
 port_of "the daemon's keeper" "$work/daemon.port" "$daemon_keeper_pid" port "$work/keepers.log"
 port_of "the second daemon's keeper" "$work/deadline.port" "$deadline_keeper_pid" deadline_port "$work/keepers.log"
 (cd "$root/packages/daemon" && go build -o "$work/legion" ./cmd/legion)
-(cd "$root/packages/envoy" && go build -o "$work/envoy-listener" ./cmd/listener)
+(cd "$root/packages/envoy" && go build -o "$work/envoy-listener" ./cmd/listener &&
+  go build -o "$work/fixturebuckets" ./internal/testnats/cmd/fixturebuckets)
 # The binary under proof, checkable after the run: the source it was built from, what a changed
 # working copy held (a negative control's), and its hash (lib/built-from.sh).
 built=$(bash "$root/scripts/e2e/lib/built-from.sh" "$root" "$work/legion") || fail "lib/built-from.sh could not say what the run built"
@@ -398,6 +399,11 @@ fi
 docker run -d --name "$nats_container" --cpus 1 --memory 512m -p 127.0.0.1::4222 "$nats_image" -js >/dev/null
 until_true 60 "NATS to be ready" sh -c "docker logs '$nats_container' 2>&1 | grep -q 'Server is ready'"
 nats_url="nats://127.0.0.1:$(docker port "$nats_container" 4222/tcp | head -1 | sed 's/.*://')"
+# No listener creates a bucket it copies: the run provisions its own server with them
+# before the listener starts. This script sources no lib/rig.sh, so it runs the command itself
+# rather than that file's provision_fixture_buckets.
+"$work/fixturebuckets" -url "$nats_url" >/dev/null ||
+  fail "fixturebuckets could not provision $nats_url with the buckets a listener copies"
 (umask 077 && head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n' >"$work/envoy-token" &&
   printf 'Authorization: Bearer %s\n' "$(cat "$work/envoy-token")" >"$work/envoy-auth-header")
 ENVOY_API_TOKEN="$(cat "$work/envoy-token")" ENVOY_LISTEN_HOST=127.0.0.1 ENVOY_MACHINE_ID="legion-e2e2-$$" NATS_URLS=$nats_url \

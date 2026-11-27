@@ -3,9 +3,10 @@
 # the 1 ms latency proxy toward it, nats-server with JetStream, the Envoy listener and Dispatch, all
 # built from this checkout and kept under LOADTEST_ROOT.
 #
-#   stack.sh setup          build envoy-dispatch, envoy-listener and loadgen into $LOADTEST_ROOT/bin,
-#                           install nats-server (the version packages/envoy/go.mod pins) and Postgres,
-#                           initdb, write stack.json. Idempotent: a rerun rebuilds incrementally.
+#   stack.sh setup          build envoy-dispatch, envoy-listener, fixturebuckets and loadgen
+#                           into $LOADTEST_ROOT/bin, install nats-server (the version
+#                           packages/envoy/go.mod pins) and Postgres, initdb, write stack.json.
+#                           Idempotent: a rerun rebuilds incrementally.
 #                           Writes bin/envoy-dispatch.json, the build's record (below). envoy-dispatch
 #                           alone comes from LOADTEST_DISPATCH_SRC's checkout, or, with
 #                           LOADTEST_DISPATCH_COMMIT=<rev>, from that commit of LOADTEST_SRC (a rev
@@ -468,11 +469,13 @@ nats_named() {
   [ "$(curl -fsS --max-time 2 "http://127.0.0.1:$(port nats_monitor)/varz" | jq -r .server_name)" = "$(stack_name)" ]
 }
 
-# start_nats starts NATS on a fresh JetStream store, so every start begins with no streams.
+# start_nats starts NATS on a fresh JetStream store, so every start begins with no streams, and
+# provisions it with the buckets a listener copies, which no listener creates.
 start_nats() {
   running nats && return 0
   check_port nats nats
   check_port nats nats_monitor
+  [ -x "$BIN/fixturebuckets" ] || die "no fixturebuckets binary at $BIN/fixturebuckets; run stack.sh setup first"
   local store=$ROOT/nats/store log=$LOGS/nats.out
   rm -rf -- "$store"
   mkdir -p -- "$store"
@@ -481,6 +484,8 @@ start_nats() {
   wait_for "NATS /varz to name the stack" 30 nats "$log" nats_named
   set_pid nats "$(pid_of nats)"
   note "nats pid $(pid_of nats) on 127.0.0.1:$(port nats), monitor $(port nats_monitor), store $store"
+  "$BIN/fixturebuckets" -url "nats://127.0.0.1:$(port nats)" >"$LOGS/fixturebuckets.out" 2>&1 ||
+    die "fixturebuckets could not provision NATS on 127.0.0.1:$(port nats); see $LOGS/fixturebuckets.out"
 }
 
 # listener_up sends the listener's bearer on curl's standard input, in no command line.
@@ -740,10 +745,11 @@ cmd_setup() {
     note "building envoy-dispatch from $DISPATCH_SRC/packages/envoy into $BIN"
     (cd -- "$DISPATCH_SRC/packages/envoy" && go build -o "$BIN/envoy-dispatch" ./cmd/dispatch)
   fi
-  note "building envoy-listener, dev-oidc-issuer and loadgen from $ENVOY_SRC into $BIN"
+  note "building envoy-listener, dev-oidc-issuer, fixturebuckets and loadgen from $ENVOY_SRC into $BIN"
   (cd -- "$ENVOY_SRC" &&
     go build -o "$BIN/envoy-listener" ./cmd/listener &&
     go build -o "$BIN/dev-oidc-issuer" ./cmd/dev-oidc-issuer &&
+    go build -o "$BIN/fixturebuckets" ./internal/testnats/cmd/fixturebuckets &&
     go build -o "$BIN/loadgen" ./loadtest)
   if [ -z "$commit" ]; then
     local dirty tree=""

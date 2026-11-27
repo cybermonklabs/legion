@@ -96,6 +96,49 @@ func ListenerBuckets() []string {
 	return []string{InterestBucket, RoleClaimBucket, SessionBucket, KnownSessionBucket, LegionAgentBucket, CIStateBucket, DPoPProofBucket}
 }
 
+// CopiedBuckets are the buckets a listener keeps a watcher-fed copy of (internal/kvwatch): the
+// interest and role-claim buckets (internal/store), the session registry and the known-session
+// store (internal/session), and the CI state bucket (internal/cistore). No program of a
+// deployment creates one (EnsureKeyValue, CreateCopiedBucketsOn): a write one of them acknowledged
+// is lost when it is deleted and created again, and its writer was told it landed, so the operator
+// alone creates them, with `envoy-infra buckets`: its create, recreate and check only once every
+// writer has ended (CreateCopiedBucket), and its break-glass create while writers run, since that
+// creates only a bucket the server reports missing (CreateMissingCopiedBucket), which loses nothing
+// to a create. Each call returns a fresh slice.
+func CopiedBuckets() []string {
+	return []string{InterestBucket, RoleClaimBucket, SessionBucket, KnownSessionBucket, CIStateBucket}
+}
+
+// The ages the copied buckets are created with: the session registry's record lifetime, which
+// ENVOY_SESSION_MAX_AGE changes on a running bucket (session.BucketMaxAge: session.GoneHorizon, an
+// hour, plus an hour, written out here since this package cannot import that one); a known
+// session's 30-day record (session.KnownSessionRetention); and a pull request commit's CI record, a
+// week. The interest and role-claim buckets keep their records until they are deleted.
+const (
+	SessionBucketMaxAge      = 2 * time.Hour
+	KnownSessionBucketMaxAge = 30 * 24 * time.Hour
+	CIStateBucketMaxAge      = 7 * 24 * time.Hour
+)
+
+// CopiedBucketConfig is the configuration a copied bucket (CopiedBuckets) is created with, at
+// replicas copies: file storage, and the age above where it has one. It answers false for any
+// other bucket.
+func CopiedBucketConfig(bucket string, replicas int) (nats.KeyValueConfig, bool) {
+	config := nats.KeyValueConfig{Bucket: bucket, Replicas: replicas, Storage: nats.FileStorage}
+	switch bucket {
+	case InterestBucket, RoleClaimBucket:
+	case SessionBucket:
+		config.TTL = SessionBucketMaxAge
+	case KnownSessionBucket:
+		config.TTL = KnownSessionBucketMaxAge
+	case CIStateBucket:
+		config.TTL = CIStateBucketMaxAge
+	default:
+		return nats.KeyValueConfig{}, false
+	}
+	return config, true
+}
+
 // NotificationTopicPrefix begins every notification topic: the subjects the stream carries, the
 // role lanes and the exception lanes.
 const NotificationTopicPrefix = "notifications."

@@ -36,14 +36,17 @@
 # readable JSON, before it reaches a VM; (b) up starts every container of the specification, in
 # order, each with exactly the CPU, memory and image arguments the table names, Dispatch with
 # host networking and the entrypoint its image needs, each image by digest and none by tag, the
-# stub embedder before Dispatch, and waits on /healthz; (c) up refuses an image named by tag;
+# buckets a listener copies made on NATS, by fixturebuckets on the NATS machine against its own
+# loopback, after NATS starts and before any listener does, the stub embedder before Dispatch,
+# and waits on /healthz; (c) up refuses an image named by tag;
 # (d) check prints expected beside found for every value and exits 0 when they agree, and
 # non-zero when a container's memory differs, when a production address answers from a VM, and
 # when a VM's maxRunDuration is not 259200 s, naming each; (e) check reads the instance's own
 # settings from the Cloud SQL Admin API and each container's endpoint settings, and never prints
 # a credential; (f) reset runs decision D6's steps in order -- the Dispatch and listener
 # containers stopped, the database dropped and made again from the template, NATS restarted on
-# an emptied JetStream store, the four load listeners and the Dispatch listener, then Dispatch,
+# an emptied JetStream store and given the buckets a listener copies again, the four load
+# listeners and the Dispatch listener, then Dispatch,
 # then /healthz -- and records its duration; (g) step passes both populations' flags to loadgen
 # run (-seed and -loop-seed, the portions -baseline-events and -baseline-requests inside the
 # totals -events and -requests, -loop-factor, -generator-role, -unit-starts, -unit-life,
@@ -930,6 +933,15 @@ fi
 exec "$REAL_RM" "$@"
 EOF
 
+cat >"$bin/fixturebuckets" <<'EOF'
+#!/usr/bin/env bash
+# The fake fixturebuckets: records the machine it ran on and its argv. The copy up puts on the
+# NATS machine is this same script, so the line says which machine ran it, against which URL.
+set -u
+printf 'fixturebuckets\t%s\t%s\n' "${FAKE_SSH_TARGET:-local}" "$*" >>"$FAKE_DIR/actions.log"
+exit 0
+EOF
+
 chmod +x "$bin"/*
 export PATH="$bin:$PATH"
 
@@ -1100,9 +1112,10 @@ line_at() {
 }
 
 # actions: the ordered actions of the deployment, one word per line, from every fake's log: a
-# container stopped or started, the database dropped or made, the JetStream store emptied and
-# the wait on /healthz. It is how a test asserts the order of a reset, and its callers read what
-# it says whole, for the reason sudo_log's own comment gives.
+# container stopped or started, the database dropped or made, the JetStream store emptied, the
+# buckets a listener copies made on NATS and the wait on /healthz. It is how a test asserts the
+# order of a reset, and its callers read what it says whole, for the reason sudo_log's own
+# comment gives.
 actions() {
   awk -F'\t' '
     $1 == "docker" && $3 ~ /^rm -f / { n = split($3, a, " "); print "stop " a[n]; next }
@@ -1113,6 +1126,7 @@ actions() {
     $1 == "psql" && $2 ~ /^drop database/ { print "drop"; next }
     $1 == "psql" && $2 ~ /^create database/ { print "create"; next }
     $1 == "ssh" && $3 ~ /rm -rf --/ { print "wipe-jetstream"; next }
+    $1 == "fixturebuckets" { print "provision-nats"; next }
     $1 == "curl" && $2 ~ /healthz/ { print "healthz"; next }
   ' "$fake/actions.log"
 }
@@ -1187,9 +1201,12 @@ untagged=$(grep -- ' run --name ' "$fake/docker.log" | grep -v '@sha256:' || tru
   fail "up started a container whose image is not a digest"
 pass "up starts the nine containers of the specification, each by image digest"
 
-order=$(actions | grep '^start ' | sed 's/^start //')
-[ "$order" = "$(printf 'nats\nauth-proxy\nhub-listener\nload-listener-1\nload-listener-2\nload-listener-3\nload-listener-4\ndispatch-listener\ndispatch\n')" ] ||
-  fail "up started the containers in the order: $order"
+order=$(actions | grep -E '^(start |provision-nats$)' | sed 's/^start //')
+[ "$order" = "$(printf 'nats\nprovision-nats\nauth-proxy\nhub-listener\nload-listener-1\nload-listener-2\nload-listener-3\nload-listener-4\ndispatch-listener\ndispatch\n')" ] ||
+  fail "up started the containers and provisioned NATS in the order: $order"
+grep -qxF "fixturebuckets	$nats_target	-url nats://127.0.0.1:4222" "$fake/actions.log" ||
+  fail "up did not run fixturebuckets on the NATS machine against NATS on that machine's loopback: $(grep_first '^fixturebuckets' "$fake/actions.log")"
+pass "up gives NATS the buckets a listener copies, on the NATS machine against its own loopback, after NATS starts and before any listener does"
 grep -q 'stub-embed' "$fake/loadgen.log" || fail "up did not start the stub embedder"
 stub_at=$(line_at 'loadgen	stub-embed')
 dispatch_at=$(line_at 'docker	.*run --name dispatch ')
@@ -1278,7 +1295,7 @@ run_vm reset --config "$config"
 want=$(
   printf 'stop %s\n' dispatch dispatch-listener load-listener-1 load-listener-2 load-listener-3 load-listener-4 hub-listener
   printf 'drop\ncreate\n'
-  printf 'stop nats\nwipe-jetstream\nstop nats\nstart nats\n'
+  printf 'stop nats\nwipe-jetstream\nstop nats\nstart nats\nprovision-nats\n'
   printf 'stop hub-listener\nstart hub-listener\n'
   printf 'stop load-listener-%s\nstart load-listener-%s\n' 1 1 2 2 3 3 4 4
   printf 'stop dispatch-listener\nstart dispatch-listener\n'
@@ -1290,7 +1307,7 @@ got=$(actions)
 $got
 Want:
 $want"
-pass "reset stops Dispatch and the listeners, drops and makes the database from the template, restarts NATS on an emptied JetStream store, then the four load listeners, the Dispatch listener and Dispatch, and waits on /healthz, in that order"
+pass "reset stops Dispatch and the listeners, drops and makes the database from the template, restarts NATS on an emptied JetStream store and gives it the buckets a listener copies, then the four load listeners, the Dispatch listener and Dispatch, and waits on /healthz, in that order"
 
 record=$(ls "$(run_dir)"/logs/reset-*.json | tail -n1)
 [ "$(jq -r '.steps | length' "$record")" -ge 14 ] || fail "reset's record does not list its steps"
@@ -3186,6 +3203,9 @@ reader_mode() {
     "$remote/app/loadgen")
       printf '755\tthe load machine, which executes it\n'
       ;;
+    "$remote/app/fixturebuckets")
+      printf '755\tthe NATS machine, which executes it\n'
+      ;;
     "$remote"/app/env/*.env)
       printf '600\tdocker, as root, before the container starts, which is why a credential needs nothing looser\n'
       ;;
@@ -3219,10 +3239,10 @@ for role in dispatch dispatch-listener hub-listener load-listener-1 load-listene
   grep -qF "	$remote/app/env/$role.env" <<<"$put_files" ||
     fail "up put no environment file on $role's machine: $put_files"
 done
-for file in "$remote/app/stub-embed.pem" "$remote/app/loadgen" "$run_secrets/embed-key"; do
+for file in "$remote/app/stub-embed.pem" "$remote/app/loadgen" "$remote/app/fixturebuckets" "$run_secrets/embed-key"; do
   grep -qF "	$file" <<<"$put_files" || fail "up put no $file on a machine: $put_files"
 done
-pass "every file up puts on a machine is at the mode its own reader needs: the certificate 644 for the container's user, every credential 600, the loadgen copy executable"
+pass "every file up puts on a machine is at the mode its own reader needs: the certificate 644 for the container's user, every credential 600, the loadgen and fixturebuckets copies executable"
 
 # The sibling question, which is the one that matters: the certificate is one of the paths up
 # hands a container, and every other one is read by somebody too. They are read out of the

@@ -222,13 +222,18 @@ func WithSessionReplicas(n int) SessionRegistryOption {
 	return func(o *sessionRegistryOpts) { o.replicas = n }
 }
 
-// BucketMaxAge is the maximum age OpenSessionRegistry creates the envoy_sessions bucket with: the
-// gone horizon plus one hour. A record the bucket expires reads gone, whatever its own age says.
-// At this age a stalled session's record stands past the gone horizon, so the session reads
-// unresponsive and then gone before the bucket drops its record. It is the age of a bucket the
-// listener creates. A bucket that already exists keeps its own age until ENVOY_SESSION_MAX_AGE
-// (WithSessionMaxAge) changes it, and a bucket an older build created was created at 5 minutes.
-const BucketMaxAge = GoneHorizon + time.Hour
+// BucketMaxAge is the maximum age the envoy_sessions bucket is created with
+// (bus.CopiedBucketConfig): by the operator's `envoy-infra buckets`, or by a test fixture on a
+// server of its own, since OpenSessionRegistry opens the bucket only if it exists and creates none.
+// It is the gone horizon plus one hour. A record the bucket expires reads gone, whatever its own age
+// says, and at this age a stalled session's record stands past the gone horizon, so the session
+// reads unresponsive and then gone before the bucket drops its record. So it is the age a
+// registration record lives for in a deployment that sets no ENVOY_SESSION_MAX_AGE
+// (WithSessionMaxAge). A bucket that already exists keeps its own age until that setting changes
+// it, and a bucket an older build created was created at 5 minutes. bus holds the value, since bus
+// cannot import this package, and TestANewSessionBucketOutlivesTheGoneHorizon holds it to the gone
+// horizon plus one hour.
+const BucketMaxAge = bus.SessionBucketMaxAge
 
 func WithSessionTTL(d time.Duration) SessionRegistryOption {
 	return func(o *sessionRegistryOpts) { o.ttl = d }
@@ -488,6 +493,9 @@ func OpenSessionRegistry(ctx context.Context, conn *nats.Conn, options ...Sessio
 	if err != nil {
 		return nil, err
 	}
+	// The session bucket is one a listener copies, which bus.EnsureKeyValue creates only through a
+	// test fixture's connection (bus.CreateCopiedBucketsOn), and otherwise answers
+	// bus.ErrBucketMissing.
 	kv, err := bus.EnsureKeyValue(ctx, conn, js, &nats.KeyValueConfig{
 		Bucket:   bus.SessionBucket,
 		TTL:      opts.ttl,

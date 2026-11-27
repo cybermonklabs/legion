@@ -7,11 +7,13 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 )
 
-// A session bucket the registry creates keeps a record one hour past the gone horizon. A record
+// A session bucket created at the copied bucket's config (bus.CopiedBucketConfig, which
+// `envoy-infra buckets` creates it with) keeps a record one hour past the gone horizon. A record
 // the bucket expires reads gone, so a bucket that kept it a shorter time would drop a stalled
 // session's record while the session is only unresponsive. The registry is opened on a fresh
-// account with no TTL option, so it creates the bucket at its own default. The age is written as
-// the horizon plus an hour, not as the constant, so the test names the age it requires.
+// account through a fixture's connection (setupNATS) with no TTL option, so it creates the bucket
+// at that config. The age is written as the horizon plus an hour, not as the constant, so the test
+// names the age it requires.
 func TestANewSessionBucketOutlivesTheGoneHorizon(t *testing.T) {
 	client := setupNATS(t)
 	registry, err := OpenSessionRegistry(t.Context(), client.Conn, WithSessionReplicas(1))

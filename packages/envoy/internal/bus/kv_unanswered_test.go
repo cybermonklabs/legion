@@ -75,6 +75,9 @@ type unansweredRelay struct {
 	pass     int
 	drops    int
 	sends    int
+	// to, when set, is where the relay sends each send it would drop, with the same reply subject
+	// and payload, in place of dropping it (misdirect).
+	to string
 	// release, when not nil, holds the next send of the subject until it is closed (holdNext).
 	release <-chan struct{}
 	// writes orders what the relay writes to the server: a held send is written from a goroutine
@@ -120,6 +123,7 @@ func (r *unansweredRelay) arm(drops int) {
 	r.pass = 0
 	r.drops = drops
 	r.sends = 0
+	r.to = ""
 }
 
 // passThenDrop lets the next pass sends of the subject through and drops the drops after them,
@@ -132,6 +136,22 @@ func (r *unansweredRelay) passThenDrop(pass, drops int) {
 	r.pass = pass
 	r.drops = drops
 	r.sends = 0
+	r.to = ""
+}
+
+// misdirect lets the next pass sends of the subject through and sends the n after them to the
+// subject to instead, counting the sends from now. The server answers each of those as a request
+// about to, so a lookup sent to a stream that is not there (openSubject of another bucket) is
+// answered "stream not found", the answer a member that has not applied a create gives
+// (bucketAppliedInterval): deterministically, where a real cluster's member catches up too fast to
+// be caught behind.
+func (r *unansweredRelay) misdirect(pass, n int, to string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.pass = pass
+	r.drops = n
+	r.sends = 0
+	r.to = to
 }
 
 // holdNext has the relay hold the next send of its subject, relaying every line after it, and
@@ -153,26 +173,30 @@ func (r *unansweredRelay) sent() int {
 	return r.sends
 }
 
-// send records one send of subject and reports whether it is dropped, while drops are left, each
-// such send spending one, and the release a held send waits for (holdNext), nil for a send relayed
-// now.
-func (r *unansweredRelay) send(subject string) (dropped bool, release <-chan struct{}) {
+// send records one send of subject and answers what becomes of it: "" when it is passed on as it
+// is, and otherwise the subject it is sent to instead, dropped ("-") while drops are left with no
+// misdirect set, each such send spending one; and the release a held send waits for (holdNext),
+// nil for a send relayed now.
+func (r *unansweredRelay) send(subject string) (to string, release <-chan struct{}) {
 	if subject != r.subject {
-		return false, nil
+		return "", nil
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.sends++
 	if r.pass > 0 {
 		r.pass--
-		return false, nil
+		return "", nil
 	}
 	if r.drops > 0 {
 		r.drops--
-		return true, nil
+		if r.to != "" {
+			return r.to, nil
+		}
+		return droppedSend, nil
 	}
 	release, r.release = r.release, nil
-	return false, release
+	return "", release
 }
 
 // write relays line and payload, which may be empty, to server, under writes.
@@ -185,6 +209,9 @@ func (r *unansweredRelay) write(server net.Conn, line string, payload []byte) er
 	_, err := server.Write(payload)
 	return err
 }
+
+// droppedSend is what send answers for a send the relay leaves out.
+const droppedSend = "-"
 
 // serve joins each connection the relay accepts to the server until the listener closes.
 func (r *unansweredRelay) serve(target string) {
@@ -240,9 +267,14 @@ func (r *unansweredRelay) filter(server, client net.Conn) {
 		if _, err := io.ReadFull(reader, payload); err != nil {
 			return
 		}
-		dropped, release := r.send(fields[1])
-		if dropped {
+		to, release := r.send(fields[1])
+		switch to {
+		case "":
+		case droppedSend:
 			continue
+		default:
+			fields[1] = to
+			line = strings.Join(fields, " ") + "\r\n"
 		}
 		if release != nil {
 			go func() {

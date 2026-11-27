@@ -13,6 +13,7 @@ import (
 
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/bus/bustest"
 	"github.com/sjawhar/envoy/internal/kvchunk"
 	"github.com/sjawhar/envoy/internal/kvwatch"
 	"github.com/sjawhar/envoy/internal/logtest"
@@ -764,6 +765,7 @@ func startGrantedServer(t *testing.T, deny []string) grantedServer {
 	if err != nil {
 		t.Fatalf("connect to the granted NATS: %v", err)
 	}
+	bustest.Fixture(conn)
 	t.Cleanup(conn.Close)
 	js, err := conn.JetStream(natsgo.MaxWait(10 * time.Second))
 	if err != nil {

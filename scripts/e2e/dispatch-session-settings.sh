@@ -200,8 +200,9 @@ note "keys: ANTHROPIC_API_KEY ${#anthropic_key} chars, OPENAI_API_KEY ${#openai_
 # ---- builds ------------------------------------------------------------------------------------------
 (cd "$root" && bun install --frozen-lockfile >"$evidence/logs/bun-install.log" 2>&1) || fail "bun install failed; see $evidence/logs/bun-install.log"
 (cd "$root/packages/contracts" && bun run build >"$evidence/logs/build-contracts.log" 2>&1) || fail "@legion/contracts did not build; see $evidence/logs/build-contracts.log"
-(cd "$root/packages/envoy" && go build -o "$work/envoy-listener" ./cmd/listener && go build -o "$work/dispatch" ./cmd/dispatch) >"$evidence/logs/build-go.log" 2>&1 ||
-  fail "the listener or Dispatch did not build; see $evidence/logs/build-go.log"
+(cd "$root/packages/envoy" && go build -o "$work/envoy-listener" ./cmd/listener && go build -o "$work/dispatch" ./cmd/dispatch &&
+  go build -o "$work/fixturebuckets" ./internal/testnats/cmd/fixturebuckets) >"$evidence/logs/build-go.log" 2>&1 ||
+  fail "the listener, Dispatch or fixturebuckets did not build; see $evidence/logs/build-go.log"
 (cd "$root/packages/dispatch" && bun run build:web >"$evidence/logs/build-web.log" 2>&1) || fail "the SPA did not build; see $evidence/logs/build-web.log"
 # This checkout's pi-envoy, packed as the release packs it (lib/pack-plugin.sh builds its dist) and
 # unpacked as the worker image unpacks it, so `--extension` loads what a Legion pane loads.
@@ -224,6 +225,9 @@ nats_pid=$!
 record_start "$nats_pid" || true
 until_true 60 "the nats-server to be ready" grep -q 'Server is ready' "$evidence/logs/nats.log"
 nats_url="nats://127.0.0.1:$(awk -F: '/Listening for client connections on/ {print $NF; exit}' "$evidence/logs/nats.log")"
+# No listener creates a bucket it copies: the run provisions its own server with them
+# before the listener starts.
+provision_fixture_buckets "$work/fixturebuckets" "$nats_url" "$evidence/logs/fixturebuckets.log"
 
 psql_env LEGION_TEST_PG_DSN -X -q -v ON_ERROR_STOP=1 -c "create database \"$database\"" >/dev/null || fail "could not create database $database in LEGION_TEST_PG_DSN"
 database_created=1
