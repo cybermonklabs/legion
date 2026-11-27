@@ -2104,32 +2104,37 @@ Three pieces make it:
 
 What an approval's run runs beside a merge group's. The jobs and steps of ci.yaml's tree that
 test the event, read at this head: dispatch-two-builds-same runs on both
-(ci-job-dispatch-two-builds.yaml); the daemon API contract step of lint, `pr-title` and
-dispatch-browser-pr run on a pull request and the first two on a merge group too, so on an
-approval's run they are skipped, and each ran at the same head on that head's push run;
-worker-image runs on a pull request alone, as in a merge group; cancel-started, ci-ok's two
-refusal steps and every ci-ok-report post are merge-group mechanics. The tree an approval's run
-tests is the head merged with its base as GitHub last merged it, not with the entries ahead of it
-in the queue.
+(ci-job-dispatch-two-builds.yaml); the daemon API contract step of lint, `pr-title`,
+dispatch-browser-pr and the dispatch-references preview run on a pull request, and the first two
+on a merge group too, so on an approval's run they are skipped, and each ran at the same head on
+that head's push run; worker-image runs on a pull request alone, so an approval's run skips it as
+a merge group does; cancel-started, ci-ok's two refusal steps and every ci-ok-report post are
+merge-group mechanics. The tree an approval's run tests is the head merged with its base as GitHub
+last merged it, not with the entries ahead of it in the queue.
 
-Why a pending ci-ok keeps the pull request out of the queue until the run ends: GitHub's gate
-alone. A required check that exists and is pending makes GitHub refuse `enqueuePullRequest`: at
-2026-11-24T16:11:03Z the coordinator tried it on #5380 (approved, base main) while its required
-`pr-title` was queued after an edit, and GitHub answered UNPROCESSABLE, "Pull request Required
-status check \"pr-title\" is queued." pr-title.yaml's header holds the same shape from the other
-side: a review's run that waited for a runner held the required pr-title pending, and the queue
-took the pull request only once it passed (dispatch://INFRA-1825). Legion's merger enqueues with
-`enqueuePullRequest` and waits for a required check still running
-(packages/daemon/internal/prompts/roles/merger.md, steps 4 and 6). Legion's own readers do not
-read the same way: cistore keeps one check run per name and GitHubLink.tsx the newest per name,
-workflow and event, where GitHub's rollup reads every one of them, so either can show a head
-green that GitHub holds (dispatch://INFRA-5728). What is left open is the seconds between the
-approval and GitHub creating the run, before the ci-ok check run exists: on test pull request
-#5347 the ci-ok job was created 4 to 7 s after the review's submission (reviews 6038732981,
-6039778587, 6040743425 and 6040755108), and the rollup read PENDING 9 s after it. Over the 384
-queue entries of the 228 pull requests merged from 2026-11-23 to 2026-11-24 12:00Z, the
-shortest time from an approval to the next entry was 7 s, and 2 entries came within 10 s of
-theirs, both enqueued by the coordinator.
+What keeps the pull request out of the queue while the run is going, and what is not known. A
+required check of the pull request's own event that exists and is pending makes GitHub refuse
+`enqueuePullRequest`: at 2026-11-24T16:11:03Z the coordinator tried it on #5380 (approved, base
+main) while its required `pr-title` was queued after an edit, and GitHub answered
+UNPROCESSABLE, "Pull request Required status check \"pr-title\" is queued." pr-title.yaml's
+header records a review's run that waited for a runner holding the required pr-title pending
+until the queue took the pull request (dispatch://INFRA-1825). This mechanism's case differs from
+both: the head holds the push run's ci-ok, passed, under the `pull_request` event, beside this
+workflow's ci-ok, pending, under `pull_request_review`. Whether GitHub refuses
+`enqueuePullRequest` then is UNKNOWN: no large pull request has been approved on main with this
+workflow there. The first such approval answers it, and until it does, whoever enqueues a pull
+request labelled `large-pr` waits for its review-event ci-ok to conclude first, and enqueues
+only on success. Legion's merger enqueues with `enqueuePullRequest` and waits for a required
+check still running (packages/daemon/internal/prompts/roles/merger.md, steps 4 and 6), but
+Legion's own readers do not read checks as GitHub does: cistore keeps one check run per name and
+GitHubLink.tsx the newest per name, workflow and event, where GitHub's rollup reads every one of
+them, so either can show a head green that GitHub holds (dispatch://INFRA-5728). The seconds
+between the approval and GitHub creating the run, before the ci-ok check run exists, are open in
+any case: on test pull request #5347 the ci-ok job was created 4 to 7 s after the review's
+submission (reviews 6038732981, 6039778587, 6040743425 and 6040755108), and the rollup read
+PENDING 9 s after it. Over the 384 queue entries of the 228 pull requests merged from 2026-11-23
+to 2026-11-24 12:00Z, the shortest time from an approval to the next entry was 7 s, and 2 entries
+came within 10 s of theirs, both enqueued by the coordinator.
 
 Why a run that tests nothing leaves no passing ci-ok. A skipped job's check run is a passing
 required check, so a skipped job named ci-ok on a head whose own ci-ok is red would read as
