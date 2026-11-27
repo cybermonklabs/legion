@@ -1,0 +1,71 @@
+name: Pull request heads without a run
+
+# Every half hour, names each open pull request whose head no workflow ran: a pull request that is
+# no draft, whose head is 20 minutes old or more, and whose head carries no check run at all.
+# .github/scripts/heads-without-runs.sh reads every open pull request through GitHub's GraphQL
+# API, and for each head it names reads that pull request through the REST API to say why the head
+# has no run: it conflicts with its base, so GitHub built no merge ref and started no run; or it
+# has no run and no conflict, the head a person must look at. The script's header says what it
+# prints and when it fails.
+#
+# The shape it catches is the one the ci-ok lane gate cannot. A lane job that a pull request's
+# labels hold back still leaves a skipped check run on the head, and the gate reads it. A head no
+# workflow ran has no check run at all, so it has no ci-ok, and no gate and no reader sees it.
+# why: .github/ci-notes/heads-without-runs.md#why-the-check-exists
+#
+# What a red run does, and what it does not. The job fails. The step writes one ::error:: line for
+# each head that fails the check, at most 10, and the step summary lists every named head with why
+# it has no run. A head that conflicts with its base is listed and does not fail the job. GitHub's
+# "Events that trigger workflows" page says: "Notifications for scheduled workflows are sent to the
+# user who last modified the cron syntax in the workflow file." Nothing else is told: no comment on
+# any pull request, no issue and no message, as dispatch-unit-repeat.yaml and
+# dispatch-browser-nightly.yaml say of their own reports.
+# why: .github/ci-notes/heads-without-runs.md#why-a-conflict-alone-does-not-fail-the-check
+#
+# Why a workflow of its own. GitHub starts a `schedule` from the default branch alone, and offers
+# `workflow_dispatch` only once the default branch holds the file. Until then the check is proved by
+# its harness alone, .github/scripts/heads-without-runs.test.sh, which ci.yaml's test job runs.
+# Once this file is on main, `gh workflow run heads-without-runs.yaml` runs it at once.
+# why: .github/ci-notes/heads-without-runs.md#why-a-workflow-of-its-own-and-how-it-is-proved
+
+on:
+  schedule:
+    # Every half hour, off the hour and off every other schedule's minute of this repository
+    # (codeql.yaml's 17, dispatch-browser-nightly.yaml's 17 and 41, e2e.yaml's 41 and
+    # dispatch-unit-repeat.yaml's 23).
+    - cron: "7,37 * * * *"
+  workflow_dispatch:
+
+# A newer run reads the newer state, so it replaces an older run, waiting or running: the older
+# run's list answers for pull requests as they were.
+concurrency:
+  group: heads-without-runs
+  cancel-in-progress: true
+
+# The job declares what it needs; nothing runs under this default.
+permissions: {}
+
+jobs:
+  heads-without-runs:
+    runs-on: ubuntu-24.04-arm
+    # why: .github/ci-notes/heads-without-runs.md#the-jobs-budget
+    timeout-minutes: 15
+    env:
+      JOB_TIMEOUT_MINUTES: 15 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
+    # why: .github/ci-notes/heads-without-runs.md#the-scopes-the-job-holds
+    permissions:
+      contents: read
+      pull-requests: read
+      checks: read
+    steps:
+      # The job reads nothing of the tree but heads-without-runs.sh and the gh-read.sh it sources,
+      # so the .github cone is the whole checkout it needs.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: .github
+          persist-credentials: false
+
+      - name: Name each open pull request whose head no workflow ran
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: .github/scripts/heads-without-runs.sh
