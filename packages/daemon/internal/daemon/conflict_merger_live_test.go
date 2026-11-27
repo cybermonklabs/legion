@@ -113,6 +113,9 @@ type conflictMergerLive struct {
 // on the new head told to the merger and not the implementer, GitHub's merge closing the issue
 // with no move into implementing at any point, and the merger's prompt as its launch carries it.
 func TestAConflictPastTheReviewIsTheMergersLive(t *testing.T) {
+	// Not parallel: a live proof on the one NATS server LEGION_E2E_NATS_URL names: it creates the stream
+	// ENVOY_NOTIFICATIONS there and writes the file LEGION_E2E_DAEMON_LOG names, which a proof beside it
+	// would share, and its steps watch liveSettle's 3 s for what must not happen.
 	r := newConflictMergerLive(t)
 	r.step("step1-a-conflict-in-accepting-is-recorded-and-asks-nobody", r.acceptingRecordsTheConflict)
 	r.step("step2-sign-off-and-retro-ask-nothing-and-merging-asks-the-merger", r.mergingAsksTheMerger)
@@ -578,11 +581,13 @@ func (r *conflictMergerLive) pullRequest() record.PullRequest {
 // retro as `to` while it stands held. No other write of an issue's phase logs the line: a failed
 // claim's hold (claimFailed) and its release (retryPhase); a stopped task's hold (stopTask), its
 // restart at its first step (restartTask) and its wait for that step again (waitForFirstStep); a
-// held parent's start of its retro (startHeldRetro); a lingering tree's member closed at its merge
+// held parent's start of its retro (StartHeldRetro); a lingering tree's member closed at its merge
 // (closeMerged); a leave that writes done (endTaskWithLeave) and a member an adoption parks at done
 // (moveIntoTree); a root's move into awaiting_person (enterAwaiting) and admission's move of it
-// back to admitted once its wait is answered; and the record of an issue at admitted: a new root's,
-// a re-admitted root's and the record of a child that enters its tree (enterChild).
+// back to admitted once its wait is answered; a parent's move into awaiting_children
+// (awaitChildren) and its return once no child is open (ReturnFromChildren); and the record of an
+// issue at admitted: a new root's, a re-admitted root's and the record of a child that enters its
+// tree (enterChild).
 //
 // The run moves no phase through any of them. Its root is seeded in accepting with no child, and
 // the driver sends no stop, plan, retry, adoption or Dispatch event. GitHub's merge closes the root

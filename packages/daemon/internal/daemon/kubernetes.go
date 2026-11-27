@@ -171,13 +171,15 @@ func logProbeBudget(log *slog.Logger, cfg config.Config) {
 
 // logPlugins is the boot's one line on what this Kubernetes daemon will install for a
 // stale-plugin relaunch: an Info line naming the pair and where it came from, or, with none, the
-// Warn naming the gap: a stale claim is recorded and reported but never relaunched or refused.
+// Warn naming the gap: a stale claim is recorded and reported but never relaunched or refused. A
+// source in URL form is logged as the state shows it (api.PluginSourceOf), without the userinfo,
+// query or fragment a private or pre-signed tarball URL carries its credential in.
 func logPlugins(log *slog.Logger, plugins *runtime.PluginInstall, source string) {
 	if plugins == nil {
 		log.Warn("daemon: this daemon knows no plugin versions to relaunch a stale process onto; set runtime.kubernetes.plugins or run a release build")
 		return
 	}
-	log.Info("daemon: stale-plugin relaunches install", "piLegion", plugins.PiLegion, "piEnvoy", plugins.PiEnvoy, "source", source)
+	log.Info("daemon: stale-plugin relaunches install", "piLegion", api.PluginSourceOf(plugins.PiLegion), "piEnvoy", api.PluginSourceOf(plugins.PiEnvoy), "source", source)
 }
 
 // prepareSandbox is the runtime over readSandbox's client and Options, and the part of boot its
@@ -201,14 +203,17 @@ func prepareSandbox(cfg config.Config, o overrides, reads sandboxReads, p *plan)
 	// (volumeTrimReports, daemon.Run). It hangs off the plan by pointer, so the plan's own copy
 	// carries the one holder the factory closed over, as plan.repositories does.
 	p.volumeReports = &volumeTrimReports{}
-	// The holder the runtime's launches read the update round over a pod through, made here and
-	// filled once the supervision is open: openSupervision builds the runtime before the
-	// supervision exists (launchRounds, daemon.run). The runtime takes it in its Options, so the
-	// factory carries it as it carries every other option; the plan holds it by pointer, as it
-	// holds the two holders above.
+	// The holder the runtime's launches read the update round over a pod through, and tell what a
+	// launch's own replacement of an issue pod took through, made here and filled once the
+	// supervision is open: openSupervision builds the runtime before the supervision exists
+	// (launchRounds, daemon.run). The runtime takes it in its Options, so the factory carries it as
+	// it carries every other option; the plan holds it by pointer, as it holds the two holders
+	// above.
 	p.launchRounds = &launchRounds{}
 	opts := reads.opts
 	opts.RoundPodEnds = p.launchRounds.ends
+	opts.LaunchTakes = p.launchRounds.takes
+	opts.LaunchTook = p.launchRounds.took
 	p.newRuntime = sandboxRuntime(reads.client, opts, p.repositories.servesRepository, p.repositories.serving, cfg.RepositoryRenames, p.installed, p.left, o.githubAPI,
 		p.memoryGuardKills, p.volumeReports)
 	p.clusterCheck = boot.clusterCheck
@@ -278,11 +283,10 @@ func sandboxBootOf(cfg config.Config, reads sandboxReads) (sandboxBoot, error) {
 // command's other checks are audited, and a measurement of the probe as it then runs sizes it.
 // The reservation still fits a pool that cannot place a controller or issue pod. It has a 5Gi
 // bound on node disk and a 1Gi disk request. The probe runs at every boot, before anything is
-// served, and a probe that
-// reserved a pod's share — the controller's 1 CPU and 4Gi, or an issue pod's 3 CPU and 19Gi —
-// could leave the daemon unable to boot on a pool full enough to place nothing that large (stage
-// 4b's daemon-controller-liveness restart, whose controller reservation no node can hold, met
-// exactly that).
+// served, and a probe that reserved a pod's share — the controller's 1 CPU and 4Gi, or an issue
+// pod's 2 CPU and 8Gi, at the defaults — could leave the daemon unable to boot on a pool full
+// enough to place nothing that large (stage 4b's daemon-controller-liveness restart, whose
+// controller reservation no node can hold, met exactly that).
 var probeReservation = config.Reservation{CPU: "500m", CPURequest: "500m", Memory: "1Gi", MemoryRequest: "1Gi", EphemeralStorage: "5Gi", EphemeralStorageRequest: "1Gi"}
 
 // imageProbe is the probe of the daemon's worker image: this daemon's contract, the role prompts
@@ -455,7 +459,9 @@ func sandboxConfig(c config.SandboxConfig) sandbox.SandboxConfig {
 }
 
 // repositoryCache is runtime.kubernetes.repository_cache as the runtime takes it: the volume as a
-// quantity, the intervals as durations, and the reservation as a container's requirements.
+// quantity, the intervals as durations, the reservation as a container's requirements, and the
+// bucket with the ServiceAccount the cache pods alone run as, as the file wrote them, both "" while
+// off.
 func repositoryCache(c config.RepositoryCacheConfig) (sandbox.RepositoryCache, error) {
 	volume, err := resource.ParseQuantity(c.Volume)
 	if err != nil {
@@ -467,7 +473,7 @@ func repositoryCache(c config.RepositoryCacheConfig) (sandbox.RepositoryCache, e
 	}
 	return sandbox.RepositoryCache{
 		Volume: volume, Refresh: time.Duration(c.RefreshMinutes) * time.Minute, Retain: time.Duration(c.RetainHours) * time.Hour,
-		Resources: resources,
+		Resources: resources, Bucket: c.Bucket, ServiceAccount: c.ServiceAccount,
 	}, nil
 }
 
@@ -870,34 +876,6 @@ func volumeMissing(missing []shimwire.LauncherVolumeMissing) []record.VolumeMiss
 		kept = append(kept, record.VolumeMissing{Path: one.Path, Reason: one.Reason})
 	}
 	return kept
-}
-
-// launchRounds is the seam between the Kubernetes runtime, which openSupervision builds before the
-// supervision exists, and the supervision's reading of the update round over a pod a launch would
-// keep (supervision.roundPodEndsAtLaunch, dispatch://INFRA-4109 R7). prepareSandbox makes one and
-// hands its ends to the runtime (sandbox.Options.RoundPodEnds), and the boot fills it the moment
-// the supervision is open (plan.launchRounds, daemon.run).
-//
-// It is filled once, in the boot's own goroutine, before any claim's machine exists and so before
-// any launch can ask: there is nothing to lock, and nothing ever replaces what was filled.
-type launchRounds struct {
-	read runtime.RoundPodEnds
-}
-
-// bind gives the holder the supervision's reading of the round.
-func (l *launchRounds) bind(read runtime.RoundPodEnds) {
-	l.read = read
-}
-
-// ends is the runtime's RoundPodEnds: the supervision's reading of the round over podUID. A holder
-// nothing filled keeps the pod, as a runtime handed no reading keeps it; only a boot that skipped
-// plan.launchRounds.bind leaves it so, and the pod's round then replaces the pod as it did before
-// the reading existed.
-func (l *launchRounds) ends(ctx context.Context, token claim.Token, podUID string) (bool, error) {
-	if l.read == nil {
-		return false, nil
-	}
-	return l.read(ctx, token, podUID)
 }
 
 // implementTokens is the workflow's implement App as a sandbox's provisioning token source: every

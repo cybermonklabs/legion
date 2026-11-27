@@ -159,10 +159,11 @@ func startListenerDelivery(t *testing.T, d *listenerDeps) *cmdtest.LockedBuffer 
 		// of for the process. This rig needs one because the handler refuses a config without
 		// it; nothing here keeps a role message.
 		roleKeepDrains: newRoleKeepGuards(),
-		// The listener's clock, and its dead letter's publish, as main.go sets them.
-		now:               time.Now,
-		publishDeadLetter: d.client.PublishStoredAs,
-		keepPublish:       d.client.PublishStoredAck,
+		// The listener's clock, and its dead letter's and expiry notice's publishes, as main.go sets them.
+		now:                 time.Now,
+		publishDeadLetter:   d.client.PublishStoredAs,
+		publishExpiryNotice: d.client.PublishKeptCopyExpiry,
+		keepPublish:         d.client.PublishStoredAck,
 		// Whether the rig's NATS user holds the session consumers' calls: the answer of the
 		// session delivery opened below, set there as main.go sets it.
 		consumerGrant: &consumerGrantAnswer{},
@@ -350,7 +351,7 @@ func (s *rigSession) awaitFrame(t *testing.T) string {
 	select {
 	case frame := <-s.standIn.frames:
 		return string(frame.msg.Data)
-	case <-time.After(15 * time.Second):
+	case <-time.After(listenerWaitBound(t)):
 		t.Fatalf("no frame reached %s's own consumer", s.id)
 		return ""
 	}
@@ -479,7 +480,7 @@ type rigBroadcast struct {
 // work cancelled by its own t.Context() rather than finished.
 func (rig *dispatchRig) awaitBroadcastDeliveries(t *testing.T, broadcastID string) {
 	t.Helper()
-	deadline := time.Now().Add(15 * time.Second)
+	deadline := time.Now().Add(listenerWaitBound(t))
 	for {
 		read := rig.asHuman(t, http.MethodGet, "/api/v1/broadcasts/"+broadcastID, nil)
 		if read.Code != http.StatusOK {
@@ -523,7 +524,7 @@ func (rig *dispatchRig) mention(t *testing.T, issueKey, sessionID, body string) 
 			sessionID, created.Code, created.Body.String())
 	}
 	comment := decodeRigBody[rigComment](t, created)
-	deadline := time.Now().Add(15 * time.Second)
+	deadline := time.Now().Add(listenerWaitBound(t))
 	for {
 		read := rig.asHuman(t, http.MethodGet, "/api/v1/comments/"+comment.ID, nil)
 		if read.Code != http.StatusOK {
@@ -783,7 +784,7 @@ func TestDispatchQueuesATargetedMessageForASessionNoStoreHolds(t *testing.T) {
 		t.Fatalf("the stored copy = %#v, want message %s from dispatch under its send's key, its frame as payload", queued, message.ID)
 	}
 
-	waitFor(t, 20*time.Second, "the listener to give the copy up", func() bool {
+	waitFor(t, "the listener to give the copy up", func() bool {
 		return len(recordsFor(deliveryRecords(t, rig.deliveryLog.String(), "listener agent delivery given up"), released)) > 0
 	})
 	logs := rig.deliveryLog.String()

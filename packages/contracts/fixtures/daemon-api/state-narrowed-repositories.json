@@ -94,15 +94,6 @@
         "state": "merged",
         "reviewDecision": "approved"
       },
-      "gatedSteps": [
-        {
-          "step": "spec",
-          "artifactId": "0c7e5a31-9d84-4b26-a0f3-5e81c2d47b90",
-          "currentVersion": 4,
-          "approvedVersion": 4,
-          "status": "approved"
-        }
-      ],
       "check": {
         "repo": "acme/widgets",
         "pullRequest": 1239,
@@ -963,7 +954,7 @@
         },
         "plugins": {
           "pi_legion": "10.4.0",
-          "pi_envoy": "https://xxxxx@plugins.internal.example/pi-envoy-10.4.0.tgz"
+          "pi_envoy": "https://[a URL with credentials]/pi-envoy-10.4.0.tgz"
         },
         "setup": [
           "/bin/sh",
@@ -1018,6 +1009,7 @@
       }
     },
     "admission_cap": 4,
+    "admission_p0_bound": 4,
     "daemon_url": "http://legion-daemon.internal.example:13370",
     "worker_stream_port": 13371,
     "omp_launch_prefix": [],
@@ -1040,9 +1032,9 @@
     "prompt_retire_limit": 3,
     "worker_wakes_per_minute": 12,
     "worker_wake_burst": 2,
-    "envoy_url": "http://xxxxx@envoy-listener.internal.example:9020",
+    "envoy_url": "http://[a URL with credentials]",
     "nats_urls": [
-      "nats://xxxxx@nats.internal.example:4222",
+      "nats://[a URL with credentials]",
       "nats://nats-2.internal.example:4222"
     ],
     "dispatch_url": "https://dispatch.internal.example",
@@ -1110,6 +1102,8 @@
     "pod_update_rounds_per_minute": 2,
     "review_round_cap": 4,
     "controller": "daemon",
+    "controller_turn_bound_minutes": 90,
+    "controller_session_max_age_hours": 72,
     "capabilities": {
       "decided": {
         "pool-capacity": "the pool is sized by hand for the admission cap"

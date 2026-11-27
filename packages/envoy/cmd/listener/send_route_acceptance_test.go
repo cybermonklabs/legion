@@ -82,6 +82,16 @@ func assertRecordFields(t *testing.T, record map[string]any, want map[string]any
 	}
 }
 
+// assertRecordErrorCarries fails unless the error field of one record line carries want: a line's
+// error wraps the cause a test planted in what the reader that met it adds.
+func assertRecordErrorCarries(t *testing.T, record map[string]any, want string) {
+	t.Helper()
+	if message, _ := record["error"].(string); !strings.Contains(message, want) {
+		line, _ := json.Marshal(record)
+		t.Fatalf("the record's error %q does not carry %q: %s", message, want, line)
+	}
+}
+
 // A send reads the target from the session bucket itself when this listener's cache has not seen
 // it: the cache follows the bucket through a watcher and so trails it, and a sender told its
 // destination is gone routes around the pane. This drives the send route with a session another
@@ -156,6 +166,8 @@ func TestSendReadsTheSessionStoreWhileTheCacheIsCold(t *testing.T) {
 // identical request before the cut, which answers 200 — without it a rig that refused every send
 // (a bad body, an unregistered target) would pass this test with a 503 of a different kind.
 func TestSendAnswersServiceUnavailableWhileTheBusIsUnreachable(t *testing.T) {
+	// Not parallel: it requires the 503 within 4 s of a send whose publish waits out the 3.5 s
+	// sendRequestBudget for a reconnect that never comes.
 	const target = "ses_cut_bus_target"
 	// The relay the reconnect test uses (reconnect_shutdown_test.go): cut below closes every live
 	// link and refuses every connection after it, as the hub's virtual machine being recreated
@@ -206,9 +218,9 @@ func TestSendAnswersServiceUnavailableWhileTheBusIsUnreachable(t *testing.T) {
 	// nats.go notices the closed link from its own read loop, so the send below is issued on a
 	// connection already known to be down rather than on one that is about to be: the measured
 	// time is the handler's, not the client's time to notice.
-	for deadline := time.Now().Add(5 * time.Second); client.Conn.IsConnected(); {
+	for deadline := time.Now().Add(listenerWaitBound(t)); client.Conn.IsConnected(); {
 		if time.Now().After(deadline) {
-			t.Fatal("the NATS client still reports itself connected 5s after the relay cut every link")
+			t.Fatal("the NATS client still reports itself connected the time this package gives a wait after the relay cut every link")
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -248,6 +260,8 @@ func TestSendAnswersServiceUnavailableWhileTheBusIsUnreachable(t *testing.T) {
 // in the warm session cache, so its read is not what is under test. The negative control is the
 // identical request before the freeze, answered 200 on the same rig.
 func TestASendAndAPublishAnswerABusThatStoppedAnsweringInsideTheBudget(t *testing.T) {
+	// Not parallel: it requires the 503 within 4 s of a send and a publish that spend the 3.5 s
+	// sendRequestBudget on a frozen bus.
 	const (
 		target = "ses_frozen_bus_target"
 		sender = "ses_frozen_bus_sender_with_no_interest_record"
@@ -349,6 +363,8 @@ func TestASendAndAPublishAnswerABusThatStoppedAnsweringInsideTheBudget(t *testin
 // the one window on the read-through; and the sender the cache holds nothing for spends that same
 // one window on both of its reads together.
 func TestTheSenderStampSpendsOneReadWindowOnAFrozenBus(t *testing.T) {
+	// Not parallel: it requires each stamp on a frozen bus within 1.5 s, half a second past its 1 s
+	// read window (senderStampReadTimeout), and the cached sender's within 500 ms.
 	const (
 		cached    = "ses_frozen_stamp_sender_the_cache_holds"
 		noSession = "ses_frozen_stamp_sender_with_no_session_row"
@@ -759,6 +775,8 @@ func TestListenerRecordsEverySendAndPublishRequest(t *testing.T) {
 // it in one thing only — the bucket no longer answers — so a rig that refused every send could
 // not produce the pair.
 func TestSendRefusesTheBusRatherThanTheSessionWhenTheStoreReadDoesNotAnswer(t *testing.T) {
+	// Not parallel: it requires the 503 within the 3.5 s sendRequestBudget of a session read that
+	// its 1 s sendSessionReadTimeout ends.
 	const target = "ses_unanswered_store_read"
 	const sender = "ses_unanswered_store_sender"
 	_, observer := trailingListeners(t)

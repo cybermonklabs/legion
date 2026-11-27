@@ -924,7 +924,7 @@ test.skipIf(skip)(
 // A card that reaches pi-envoy while Oh My Pi starts holds none of the host's RPC input. The
 // stand-in holds the registration envoy.ts's `session_start` awaits, with the relay subject
 // already open (it is opened before the registration that asks for the consumer), so both cards
-// reach pi-envoy inside the host's startup. The pinned build (18.18.6-sami.20261125-001804) reads
+// reach pi-envoy inside the host's startup. The pinned build (18.18.6-sami.20261126-222037) reads
 // RPC input while its startup runs (`rpc-mode.ts` `runRpcMode`): it answers at once a command
 // that starts no turn, as `get_state`, holds one that starts a turn or changes the session
 // (`waitsForStartup`) until its startup is over, and calls `initializeExtensions` with

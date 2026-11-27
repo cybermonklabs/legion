@@ -139,6 +139,8 @@ const checkTaskLead = "Production check of "
 // is a fail too, whether or not production carries the merge. The last look's task gives pending
 // only for an issue with none of those requirements, a pending that closes the check as not run.
 // The fail clause says so once, the same on every look, in terms of the look that follows.
+// For an issue whose spec is a view on an ancestor's requirements, the line after the first says
+// so (viewSentence), as every phase task of the issue does.
 func checkTask(issue record.Issue, check record.ProductionCheck, cause, detail string, last bool) string {
 	merge := check.MergeSHA
 	if merge == "" {
@@ -146,6 +148,9 @@ func checkTask(issue record.Issue, check record.ProductionCheck, cause, detail s
 	}
 	var text strings.Builder
 	fmt.Fprintf(&text, "%s%s: %s.\n", checkTaskLead, issue.Key, issue.Title)
+	if view := viewSentence(issue); view != "" {
+		text.WriteString(view + "\n")
+	}
 	fmt.Fprintf(&text, "Repository %s, pull request #%d, merge commit %s. Look %d, woken by %s.", check.Repo, check.Number, merge, check.Looks, wokenBy(cause, detail))
 	openedAt := check.OpenedAt.UTC().Format(time.RFC3339Nano)
 	fmt.Fprintf(&text, " The check opened at `%s`: your report names it with check_opened_at `%s`.",
@@ -157,7 +162,7 @@ func checkTask(issue record.Issue, check record.ProductionCheck, cause, detail s
 		"Where it does, drive the changed path and observe each requirement of the issue that only the deploy can show, read from the spec version that bound the review, each as the requirement names it: observing something else is never that requirement observed. " +
 		"Then report with the legion tool's handoff_complete, check_opened_at from this task and a verdict, committing nothing: " +
 		"pass only once you drove the changed path in production and observed every one of those requirements, and recorded the issue's after_merge check with dispatch result at the merge commit, its observed naming each requirement and what you saw of it and what woke this look, and put the line that command prints in the pull request body; " +
-		"fail for a defect, never an issue you file (skill://legion-worker/references/findings.md), and a requirement observed as not met, or still unobserved when no look follows this one, whether or not production carries the merge, is a defect: a defect with a clear fix goes to the controller topic your Legion addressing line names, with its evidence posted as a comment on the controller's report issue; a defect that needs a decision is a dispatch ask on that report issue, whose reference you then publish to the controller topic. Either names this issue, the pull request, the merge commit, what you drove and what failed; record the after_merge check as a fail with dispatch result at the merge commit, and name the message or the ask in its observed, in the line you put in the pull request body and in the summary.")
+		"fail for a defect, never an issue you file (skill://legion-worker/references/findings.md), and a requirement observed as not met, or still unobserved when no look follows this one, whether or not production carries the merge, is a defect: a defect with a clear fix goes to the controller of the project that repository maps to, or to your own project's controller, the one your Legion addressing line names, when Dispatch maps it to none: a dispatch comment on that controller's report issue with --mention role:<that controller's role token>, and that controller files it; a defect that needs a person's decision, a deploy window or work much larger than your own, and any other finding that needs a person's authority, taste or risk appetite, is a dispatch ask, whose reference you then publish to the controller topic so that the controller follows the ask and files what the answer asks for (skill://legion-worker/references/findings.md, Tell the controller about the ask). Either names this issue, the pull request, the merge commit, what you drove and what failed; record the after_merge check as a fail with dispatch result at the merge commit, and name the comment or the ask in its observed, in the line you put in the pull request body and in the summary.")
 	if last {
 		text.WriteString(" Report pending only for an issue with none of those requirements, the summary naming what you could not drive, with no result recorded. This last look's pending carries no wake_at and closes the check as not run: " +
 			"before reporting it, write on the pull request why the check did not run within the bound.")
@@ -217,11 +222,11 @@ func boundText(bound time.Duration) string {
 // a look bound out again (failedLookRetry).
 //
 // How the current look ended does not matter: a report of it counts while the check is open,
-// however that look ended — its bound came due, an operator's hold met its start, or the
-// checking role's claim failed in it (dispatch://INFRA-714/spec R12). The checking agent drove
-// the change in production and its answer is the fact; refusing it threw that away and left the
-// check to close as not run. A report refused here leaves its event unmarked, so the agent's next
-// send of it applies (intake's ApplyFact).
+// however that look ended — its bound came due, a hold of the operator's or the controller's met
+// its start, or the checking role's claim failed in it (the phase-workflow spec's rule R12). The
+// checking agent drove the change in production and its answer is the fact; refusing it threw that
+// away and left the check to close as not run. A report refused here leaves its event unmarked, so
+// the agent's next send of it applies (intake's ApplyFact).
 func (e *Engine) checkReported(ctx context.Context, tx pgx.Tx, fact intake.CheckReport) (intake.Result, error) {
 	check, err := e.store.ProductionCheck(ctx, tx, fact.Issue)
 	if err != nil {
@@ -265,11 +270,11 @@ func (e *Engine) checkReported(ctx context.Context, tx pgx.Tx, fact intake.Check
 	return intake.Result{}, e.closeCheck(ctx, tx, check, outcome)
 }
 
-// endLook ends the open look of a check nobody reported — its bound came due, the outbox met an
-// operator's hold on its start (checkLookEnded, which names the next look a look bound out,
-// lookRetry), or its checking role's claim failed in it (endFailedLook) — as a report of pending
-// would (endLookPending), and names the next look at at, clamped (clampWake), the retry with cause
-// as its reason. cause is why, for the log too.
+// endLook ends the open look of a check nobody reported — its bound came due, the outbox met a
+// suspension of the operator's or the controller's held over its start (checkLookEnded, which
+// names the next look a look bound out, lookRetry), or its checking role's claim failed in it
+// (endFailedLook) — as a report of pending would (endLookPending), and names the next look at at,
+// clamped (clampWake), the retry with cause as its reason. cause is why, for the log too.
 func (e *Engine) endLook(ctx context.Context, tx pgx.Tx, check *record.ProductionCheck, cause string, at time.Time) error {
 	check.LookOpen = false
 	check.WakeAt = e.clampWake(*check, at)
@@ -356,7 +361,10 @@ func (e *Engine) failedBetweenLooks(ctx context.Context, tx pgx.Tx, check *recor
 // whether that retry has one attempt left of the budget the failure spent (the daemon's outbox,
 // supervise.RequestRetry.OneAttemptLeft) or starts a fresh run, the failure having spent none; or,
 // once the check's last look lost its role, that the check closed as not run. The count of failed
-// looks in a row closes it, which is what the backoff doubles by (failedLookRetry).
+// looks in a row closes it, which is what the backoff doubles by (failedLookRetry). A claim that
+// failed on OpenAI's cyber-policy refusal is retried by no look, since no start of the daemon's
+// own launches its agent again (supervise.ErrHeldForCyberPolicy), so its notice says only that
+// it does not start again by itself (noStartOfItsOwn) where the look would be named.
 func checkRoleFailedReason(fact intake.ClaimFailed, check record.ProductionCheck) string {
 	said := deathReason(fact, false)
 	if said == "" {
@@ -367,6 +375,9 @@ func checkRoleFailedReason(fact intake.ClaimFailed, check record.ProductionCheck
 	}
 	if !check.Open() {
 		return said + "; that was the check's last look, so the check closed as " + string(check.Outcome)
+	}
+	if clause := noStartOfItsOwn(fact); clause != "" {
+		return fmt.Sprintf("%s; %s (failed looks in a row: %d)", said, clause, check.FailedLooks)
 	}
 	how := "with a fresh run, since its failure spent no budget"
 	if fact.Budgets.Spent(fact.Limits) {
@@ -536,12 +547,12 @@ func (e *Engine) checkIssue(ctx context.Context, tx pgx.Tx, check record.Product
 	return *issue, *root, nil
 }
 
-// checkLookEnded is a look ending with no report (intake.CheckLookEnded: the look's bound, or an
-// operator's hold met by its start; a look whose checking role's claim failed is claimFailed's):
-// the look it names, still open, ends as a pending report would (endLook); a look already ended, or
-// a check closed, changes nothing, and so does a look of a check a later merge has replaced, one the
-// fact does not name (record.ProductionCheck.NamedBy), whose look 1 the current check's would
-// otherwise be taken for, logged.
+// checkLookEnded is a look ending with no report (intake.CheckLookEnded: the look's bound, or a
+// hold of the operator's or the controller's met by its start; a look whose checking role's claim
+// failed is claimFailed's): the look it names, still open, ends as a pending report would
+// (endLook); a look already ended, or a check closed, changes nothing, and so does a look of a
+// check a later merge has replaced, one the fact does not name (record.ProductionCheck.NamedBy),
+// whose look 1 the current check's would otherwise be taken for, logged.
 func (e *Engine) checkLookEnded(ctx context.Context, tx pgx.Tx, fact intake.CheckLookEnded) (intake.Result, error) {
 	check, err := e.store.ProductionCheck(ctx, tx, fact.Issue)
 	if err != nil || check == nil || !check.Open() || !check.LookOpen || check.Looks != fact.Look {

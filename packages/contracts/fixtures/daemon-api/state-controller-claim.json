@@ -8,6 +8,7 @@
   },
   "admission": {
     "cap": 2,
+    "p0Holders": 0,
     "active": [
       "LEGION-208"
     ],
@@ -51,6 +52,7 @@
       "phase": "admitted",
       "status": "in_progress",
       "tree": "LEGION-208",
+      "treeRuns": true,
       "repo": "acme/widgets",
       "defaultBranch": "main",
       "architect": {
@@ -129,6 +131,7 @@
       "phase": "admitted",
       "status": "todo",
       "tree": "LEGION-210",
+      "treeRuns": false,
       "repo": "acme/widgets",
       "defaultBranch": "main",
       "priority": null,
@@ -160,6 +163,7 @@
       "phase": "implementing",
       "status": "todo",
       "tree": "LEGION-211",
+      "treeRuns": false,
       "repo": "acme/widgets",
       "defaultBranch": "main",
       "priority": null,
@@ -248,6 +252,8 @@
     "pod_update_rounds_per_minute": null,
     "review_round_cap": 3,
     "controller": "operator",
+    "controller_turn_bound_minutes": 90,
+    "controller_session_max_age_hours": 72,
     "capabilities": {
       "decided": {}
     },

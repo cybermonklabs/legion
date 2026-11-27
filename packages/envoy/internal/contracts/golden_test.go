@@ -21,6 +21,8 @@ type githubEnvelopeGolden struct {
 }
 
 func TestGithubEnvelopeGoldens(t *testing.T) {
+	// Not parallel: under -update it rewrites the goldens, which
+	// TestGithubTopicKindsHoldEveryTokenAfterTheRepository reads.
 	fixtures := []struct {
 		name  string
 		event string

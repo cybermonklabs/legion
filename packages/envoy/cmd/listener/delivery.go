@@ -85,9 +85,14 @@ type listenerDeliveryHandlerConfig struct {
 	// path hands its forwards to it, so it is always set: wireRoleForwarder builds it from the
 	// configuration it reports through, once that configuration is otherwise built, and main.go
 	// and every test alike wire it there.
-	roleForwards      *roleForwarder
-	registry          *store.Registry
-	sessions          *session.SessionRegistry
+	roleForwards *roleForwarder
+	registry     *store.Registry
+	sessions     *session.SessionRegistry
+	// known is the known-session store a handover pass reads both sessions' last registrations
+	// from (handoverStands), the store listenerDeps.known is; nil on a listener with no store,
+	// whose handover passes copy nothing and end at their first judge, as on a store whose bucket
+	// is not open, and in a test config that runs no handover record.
+	known             *session.KnownSessions
 	machineID         string
 	dedupeCache       *dedupe.Cache
 	attemptCache      *dedupe.Cache
@@ -111,9 +116,14 @@ type listenerDeliveryHandlerConfig struct {
 	// a reading that climbs says messages kept for roles go unread by any holder in their hour.
 	roleKeptExpired *metrics.Counter
 	// roleDeadLetters counts the dead letters a walk sent the sender of a kept copy it dropped
-	// (envoy_role_dead_letters_total, reportKeptRoleDeadLetter), under the label result: stored
+	// (envoy_role_dead_letters_total, endKeptCopyWithDeadLetter), under the label result: stored
 	// for one the stream took, refused for one it refused for good, which is not sent again.
 	roleDeadLetters *metrics.Counter
+	// roleKeptExpiryNotices counts the expiry notices a walk sent Dispatch for a copy Dispatch's
+	// outbox kept that it dropped at the end of its hour (envoy_role_kept_expiry_notices_total,
+	// endKeptCopyWithExpiryNotice), under the label result: stored for one the stream took, refused for
+	// one it refused for good, which is not sent again.
+	roleKeptExpiryNotices *metrics.Counter
 	// roleKeptUndecodable counts the kept copies a walk ended because no read can decode them
 	// (envoy_role_kept_undecodable_total, judgeKeptRoleCopy).
 	roleKeptUndecodable *metrics.Counter
@@ -141,6 +151,13 @@ type listenerDeliveryHandlerConfig struct {
 	// while a test that must fail a dead letter's publish alone, with the cursor's writes going
 	// through, replaces it on its copy.
 	publishDeadLetter func(ctx context.Context, subject string, item contracts.Envelope, msgID string) error
+	// publishExpiryNotice stores notice, the expiry notice of a copy Dispatch's outbox kept whose
+	// hour ended, on its role's expiry subject under the copy's own message id, and returns the
+	// stream's refusal or failure; a duplicate the stream drops is no error
+	// (endKeptCopyWithExpiryNotice). main.go sets it to client.PublishKeptCopyExpiry, and so does
+	// every test that builds a config, while a test that stops a walk at the notice - before it, or
+	// after it and before the confirm - replaces it on its copy.
+	publishExpiryNotice func(ctx context.Context, notice bus.KeptCopyExpiry) error
 	// unplaceableRetryWindow is how long an agent delivery this listener cannot place is held
 	// in the stream and redelivered before it is given up with a record of its own
 	// (agentSubjectDelivery). main.go reads it from ENVOY_UNPLACEABLE_RETRY_WINDOW, defaulting
@@ -935,6 +952,18 @@ func agentSubjectDelivery(cfg listenerDeliveryHandlerConfig, message deliveryMes
 	// read that did not answer fails and is NAKed.
 	entry, _, entryErr := liveSessionEntry(context.Background(), cfg.sessions, sessionID, deliverySessionReadTimeout, notGone, cfg.sessions.Refresh)
 	gone := errors.Is(entryErr, nats.ErrKeyNotFound)
+	// What follows is handed a missing entry and never this read's error, so the hold, the NAK
+	// and the give-up name no cause of their own: the error is logged here. The cache answers a
+	// session it holds with no read and a session the bucket holds no record of is gone, so the
+	// line is a read that did not answer within its bound, never one a healthy bus writes per
+	// message.
+	if entryErr != nil && !gone {
+		cfg.logger.Warn("listener agent delivery could not read the session's record within its bound",
+			slog.String("session_id", sessionID),
+			slog.String("event_id", item.EventID),
+			slog.Duration("bound", deliverySessionReadTimeout),
+			slog.String("error", entryErr.Error()))
+	}
 	var entryPtr *session.SessionEntry
 	if entryErr == nil {
 		entryPtr = &entry

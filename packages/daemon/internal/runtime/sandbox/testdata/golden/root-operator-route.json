@@ -18,7 +18,7 @@
           "cluster-autoscaler.kubernetes.io/safe-to-evict": "false",
           "karpenter.sh/do-not-disrupt": "true",
           "legion.dev/leak-checker-manifest-sha256": "5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e",
-          "legion.dev/pod-shape": "{\"image\":\"ghcr.io/cybermonklabs/legion-worker@sha256:1d10089a0000000000000000000000000000000000000000000000000000beef\",\"resources\":{\"limits\":{\"cpu\":\"3\",\"ephemeral-storage\":\"80Gi\",\"memory\":\"19Gi\"},\"requests\":{\"cpu\":\"3\",\"ephemeral-storage\":\"6Gi\",\"memory\":\"19Gi\"}},\"volumes\":[{\"name\":\"operator-route\",\"configMap\":{\"name\":\"legion-operator-route\",\"items\":[{\"key\":\"models.yml\",\"path\":\"models.yml\"},{\"key\":\"overlay.yml\",\"path\":\"overlay.yml\"}]}},{\"name\":\"operator-token\",\"projected\":{\"sources\":[{\"serviceAccountToken\":{\"audience\":\"operator-audience\",\"expirationSeconds\":3600,\"path\":\"token\"}}]}}],\"mounts\":[{\"name\":\"operator-route\",\"readOnly\":true,\"mountPath\":\"/home/legion/.omp/profiles/legion/agent/models.yml\",\"subPath\":\"models.yml\"},{\"name\":\"operator-route\",\"readOnly\":true,\"mountPath\":\"/etc/legion-operator/overlay.yml\",\"subPath\":\"overlay.yml\"},{\"name\":\"operator-token\",\"readOnly\":true,\"mountPath\":\"/var/run/operator\"}],\"disk\":\"20Gi\"}"
+          "legion.dev/pod-shape": "{\"image\":\"ghcr.io/cybermonklabs/legion-worker@sha256:1d10089a0000000000000000000000000000000000000000000000000000beef\",\"resources\":{\"limits\":{\"cpu\":\"2\",\"ephemeral-storage\":\"80Gi\",\"memory\":\"8Gi\"},\"requests\":{\"cpu\":\"2\",\"ephemeral-storage\":\"6Gi\",\"memory\":\"8Gi\"}},\"volumes\":[{\"name\":\"operator-route\",\"configMap\":{\"name\":\"legion-operator-route\",\"items\":[{\"key\":\"models.yml\",\"path\":\"models.yml\"},{\"key\":\"overlay.yml\",\"path\":\"overlay.yml\"}]}},{\"name\":\"operator-token\",\"projected\":{\"sources\":[{\"serviceAccountToken\":{\"audience\":\"operator-audience\",\"expirationSeconds\":3600,\"path\":\"token\"}}]}}],\"mounts\":[{\"name\":\"operator-route\",\"readOnly\":true,\"mountPath\":\"/home/legion/.omp/profiles/legion/agent/models.yml\",\"subPath\":\"models.yml\"},{\"name\":\"operator-route\",\"readOnly\":true,\"mountPath\":\"/etc/legion-operator/overlay.yml\",\"subPath\":\"overlay.yml\"},{\"name\":\"operator-token\",\"readOnly\":true,\"mountPath\":\"/var/run/operator\"}],\"disk\":\"20Gi\"}"
         },
         "labels": {
           "legion.dev/issue": "LEGION-208",
@@ -68,14 +68,14 @@
             "name": "roles",
             "resources": {
               "limits": {
-                "cpu": "3",
+                "cpu": "2",
                 "ephemeral-storage": "80Gi",
-                "memory": "19Gi"
+                "memory": "8Gi"
               },
               "requests": {
-                "cpu": "3",
+                "cpu": "2",
                 "ephemeral-storage": "6Gi",
-                "memory": "19Gi"
+                "memory": "8Gi"
               }
             },
             "securityContext": {
@@ -284,14 +284,14 @@
             "name": "workspace-fetch",
             "resources": {
               "limits": {
-                "cpu": "3",
+                "cpu": "2",
                 "ephemeral-storage": "80Gi",
-                "memory": "19Gi"
+                "memory": "8Gi"
               },
               "requests": {
-                "cpu": "3",
+                "cpu": "2",
                 "ephemeral-storage": "6Gi",
-                "memory": "19Gi"
+                "memory": "8Gi"
               }
             },
             "securityContext": {
@@ -367,14 +367,14 @@
             "name": "workspace-init",
             "resources": {
               "limits": {
-                "cpu": "3",
+                "cpu": "2",
                 "ephemeral-storage": "80Gi",
-                "memory": "19Gi"
+                "memory": "8Gi"
               },
               "requests": {
-                "cpu": "3",
+                "cpu": "2",
                 "ephemeral-storage": "6Gi",
-                "memory": "19Gi"
+                "memory": "8Gi"
               }
             },
             "securityContext": {
@@ -407,9 +407,6 @@
             "workingDir": "/legion"
           }
         ],
-        "nodeSelector": {
-          "legion.dev/pool": "legion"
-        },
         "priorityClassName": "legion",
         "restartPolicy": "Always",
         "runtimeClassName": "gvisor",
@@ -422,14 +419,6 @@
         },
         "serviceAccountName": "operator-account",
         "terminationGracePeriodSeconds": 30,
-        "tolerations": [
-          {
-            "effect": "NoSchedule",
-            "key": "legion.dev/pool",
-            "operator": "Equal",
-            "value": "legion"
-          }
-        ],
         "volumes": [
           {
             "ephemeral": {

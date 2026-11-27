@@ -19,7 +19,7 @@ GATE = gate("docs", "docs", runs=[
     ("docs/site/**", f"{at_docs('Typecheck the docs site')}, screenshots (docs/site/media/shots.ts) and build (generate.ts + astro build) in docs/site"),
     ("packages/dispatch/**", f"{at_docs('Build the Dispatch dashboard the screenshots show')}; `docs/site/media/harness.ts#startHarness` boots packages/dispatch/e2e/harness-start.ts"),
     ("packages/proof-editor/src/**", "`packages/dispatch/web/vite.config.ts#@legion/proof-editor` aliases (build:web)"),
-    (CONTRACTS_SRC, '`packages/dispatch/web/vite.config.ts#"@legion/contracts/dispatch-snippet"`, `packages/dispatch/web/vite.config.ts#"@legion/contracts/dispatch-tools"` and `packages/dispatch/web/vite.config.ts#"@legion/contracts"` aliases; `docs/site/generators/dispatch-tools.ts#dispatchToolSpecs`'),
+    (CONTRACTS_SRC, '`packages/dispatch/web/vite.config.ts#"@legion/contracts/dispatch-snippet"`, `packages/dispatch/web/vite.config.ts#"@legion/contracts/dispatch-tools"`, `packages/dispatch/web/vite.config.ts#"@legion/contracts/http-status"` and `packages/dispatch/web/vite.config.ts#"@legion/contracts"` aliases; `docs/site/generators/dispatch-tools.ts#dispatchToolSpecs`'),
     # This gate is the one reader of envoy-client's sources that does not compile
     # cipher-client with them: every generator entry resolves to src/dispatch-command.ts,
     # whose program holds no cipher-client source (`bunx tsc --listFilesOnly`, 0 of 7), so
@@ -54,7 +54,7 @@ GATE = gate("docs", "docs", runs=[
     ) for path in files_but_tests(f"{ENVOY}/{directory}")],
 ) + setup_go(DOCS_JOB, f"{DAEMON}/go.mod", DOCS_SITE)
   + dispatch_api_types(at_docs("Typecheck the docs site"))
-  + reads((CRASH_SAFETY, at_docs("Turn crash safety off on the screenshots' Postgres") + " runs it"))
+  + reads((SERVICE_SETTINGS, at_docs(SERVICE_SETTINGS_STEP) + " runs it"))
   + bun_job(DOCS_JOB, DOCS_SITE) + CI_SELF + DOCS_SITE_SELF, workflow=CI)
 GATE = with_reads(GATE, [
     Read('packages/daemon/internal/daemon/**', "filter docs held packages/daemon/internal/daemon/** by hand before the filters were computed: it selected 7 file(s) no other read of this gate declares", but=('**/*_test.go',)),
