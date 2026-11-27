@@ -30,8 +30,9 @@ const (
 // profile whose source secret moved so. It refuses a source that differs in the remainder, a
 // minted source of another type, a source under a prefix that is neither of the two, a stored
 // frozen source against a minted policy source and the reverse, a source under the configured
-// prefix where the policy serves one under the second, and a source under the second prefix
-// with the setting empty.
+// prefix where the policy serves one under the second, a source under the second prefix with the
+// setting empty, and a source that is the second prefix itself where the policy serves the
+// configured prefix itself, which leaves no remainder after either.
 //
 // The policy rows load a real policy through the loader on Secret Manager resource names
 // (secrets.ResourceNamed), and hold stillAllowed, the re-check of a release and of a reuse, and
@@ -40,7 +41,8 @@ const (
 // The named reverts: compare by the part after the prefix alone, and the type, neither-prefix
 // and stored-against-minted rows count; replace the prefix in both directions, and the
 // "configured against second" row counts; count with the setting empty, and its row counts;
-// have readSource answer the frozen source, and the read rows read the second prefix.
+// drop the guard against an empty remainder, and the row of the two bare prefixes counts; have
+// readSource answer the frozen source, and the read rows read the second prefix.
 func TestSourceCountsThroughTheSecondPrefix(t *testing.T) {
 	moved := sourceRule{prefix: movedConfigured, second: movedSecond}
 	unset := sourceRule{prefix: movedConfigured}
@@ -72,6 +74,8 @@ func TestSourceCountsThroughTheSecondPrefix(t *testing.T) {
 		{"a source under the second prefix with the setting empty", unset, movedSecond + "deel-api-key", movedConfigured + "deel-api-key", false},
 		{"a minted source under the second prefix with the setting empty", unset, app(movedSecond + "app-key"), app(movedConfigured + "app-key"), false},
 		{"a minted source that names no store source", moved, "mint:" + policy.TypeGitHubApp + ":", app(movedConfigured + "app-key"), false},
+		{"a source that is the second prefix itself, where the policy serves the configured prefix itself", moved, movedSecond, movedConfigured, false},
+		{"a minted source on the second prefix itself, where the policy mints from the configured prefix itself", moved, app(movedSecond), app(movedConfigured), false},
 	} {
 		if got := row.rule.counts(row.frozen, row.served); got != row.counts {
 			t.Errorf("%s: counts(%q, %q) = %t, want %t", row.name, row.frozen, row.served, got, row.counts)
