@@ -1075,7 +1075,7 @@ export const INVENTORY_RENAMES: Readonly<Record<string, string>> = {
   'button "Upload artifact"': 'button "Upload a file"',
   'searchbox "Filter artifacts"': 'searchbox "Filter files and documents"',
   'combobox "Repository of LAY-2"': 'button "acme/issue-layout-<run>, Repository of LAY-2"',
-  'link "#11 acme/issue-layout-<run>"': 'link "#11 Open"',
+  'link "#11 acme/issue-layout-<run>"': 'link "#11 Merged"',
   'link "#2 Keep every old address, inherited"': 'link "#2 Keep every old address"',
   'link "Block r1"': 'link "Every property of the issue…"',
   'link "Block r2"': 'link "Requirement 2 of the redesign…"',

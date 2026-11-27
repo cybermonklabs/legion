@@ -785,7 +785,7 @@ test("the Outline sheet opened again marks the entry the focus was last in rathe
     const thread = seeded.comments.threads[0] ?? "";
     const reply = seeded.comments.replies[0] ?? "";
     await page.setViewportSize({ height: PHONE.height, width: PHONE.width });
-    await gotoIssue(page, `/issues/${seeded.key}`);
+    await gotoIssue(page, `/issues/${seeded.key}/conversation`);
     await expectIssuePageDrawn(page);
 
     await outlineControl(page).click();
