@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // recordResultAsSession records one result as a session rather than as a person: the shared
@@ -302,21 +303,14 @@ func TestTwoRetractionsOfOneResultSentAtOnceAnswerOneRetractionAndOneConflict(t 
 	answers := make(chan *httptest.ResponseRecorder, 2)
 	go func() { answers <- retractAsSession(t, handler, result.ID, "ses-recorder", "The suite was stale.") }()
 	go func() { answers <- retractAsPerson(t, handler, result.ID, "The commit was wrong.") }()
-	if waiting := storetest.WaitForLockWaiters(t, holder, 2, 10*time.Second); waiting < 2 {
-		t.Fatalf("%d retractions queued behind the check issue's owner lock, want both", waiting)
-	}
+	storetest.WaitForLockWaiters(t, holder, 2)
 	if err := holder.Rollback(ctx); err != nil {
 		t.Fatalf("release the check issue's owner lock: %v", err)
 	}
 
 	codes := map[string]int{}
 	for range 2 {
-		var answer *httptest.ResponseRecorder
-		select {
-		case answer = <-answers:
-		case <-time.After(30 * time.Second):
-			t.Fatal("a retraction never answered once the lock was released")
-		}
+		answer := testwait.Receive(t, "a retraction to answer once the lock was released", answers)
 		switch code, _ := refusalOf(t, answer); {
 		case answer.Code == http.StatusCreated:
 			codes["201"]++

@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/oauthstore"
 	"github.com/sjawhar/envoy/internal/cipher/store"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
+	"github.com/sjawhar/envoy/testpool"
 )
 
 // registrarA and registrarB are two daemons' login accounts, the registrars the writes below
@@ -225,7 +226,7 @@ func newStoreDefaulting(t *testing.T, isolation string) (*oauthstore.Store, *pgx
 	if err != nil {
 		t.Fatalf("set the test database's default_transaction_isolation to %s: %v", isolation, err)
 	}
-	pool, err := pgxpool.New(ctx, dsn)
+	pool, err := testpool.NewPool(ctx, dsn)
 	if err != nil {
 		t.Fatalf("open pool: %v", err)
 	}

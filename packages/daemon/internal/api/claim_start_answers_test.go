@@ -28,16 +28,14 @@ import (
 // fresh session has left the claim's session behind (R2), when the caller is below the contract
 // that changed those answers (R3), and while the start a retry or a resume runs has not ended (R4).
 
-// slotBaseContract is the contract main declared before dispatch://INFRA-5649 (version.go's 220):
-// a caller there reads the answers it read before.
-const slotBaseContract = 220
+// slotBaseContract() is the contract just below the entry this change adds (claimStartContract): a
+// caller there reads the answers it read before.
+func slotBaseContract() int { return entryNumber(claimStartContract) - 1 }
 
-// slotNewContract is the contract this change raises the daemon to (claimStartContract), written
-// as its number so a caller stating it reads the same at the base, where it is above that
-// daemon's own contract and is served the base's answers. A renumber of the change moves this
-// number with the constant; one that forgets to fails TestACallerBelowTheNewContractIsAnsweredAsBefore,
-// since a caller here would then be below the new contract.
-const slotNewContract = 266
+// slotNewContract() is the number of the entry this change adds (claimStartContract), which the
+// build's order gives it (entryNumber): a caller stating it is served the new answers. Both are
+// functions: no package-level initializer reads a value the registry derives (registerEntry).
+func slotNewContract() int { return entryNumber(claimStartContract) }
 
 // waitingTree records LEGION-208, the root, standing in planning, so the workflow's restart of a
 // worker on its child LEGION-209 is not refused for a tree that lingers.
@@ -48,10 +46,10 @@ func waitingTree(t *testing.T, h *harness) {
 		Project: testProject, Title: root, Phase: phase.Planning, Generation: 1, Status: "in_progress", Rank: "U"})
 }
 
-// failedPhaseWorker is LEGION-209's worker on role, registered and ready, with the issue standing in the
+// failedWorkerInPhase is LEGION-209's worker on role, registered and ready, with the issue standing in the
 // phase at, then failed: its process was found gone and the runtime refused every relaunch. The
 // issue holds no admission slot unless the case puts one there (slotOf).
-func failedPhaseWorker(t *testing.T, h *harness, role claim.Role, at phase.Phase) claim.Token {
+func failedWorkerInPhase(t *testing.T, h *harness, role claim.Role, at phase.Phase) claim.Token {
 	t.Helper()
 	waitingTree(t, h)
 	token, _ := h.launchIn("LEGION-208", "LEGION-209", role)
@@ -136,7 +134,7 @@ func TestAFreshSessionWhoseStartWaitsForASlotNamesTheWait(t *testing.T) {
 	for _, door := range freshSessionDoors() {
 		t.Run(door.name, func(t *testing.T) {
 			h, _ := freshSessionWorkflow(t)
-			token := failedPhaseWorker(t, h, claim.RoleTester, phase.Testing)
+			token := failedWorkerInPhase(t, h, claim.RoleTester, phase.Testing)
 			spawns, resumes := len(h.runtime.CallsOf("Spawn")), len(h.runtime.CallsOf("Resume"))
 
 			recorder := door.ask(t, h, "LEGION-209", claim.RoleTester, nil)
@@ -158,15 +156,15 @@ func TestAFreshSessionWhoseStartWaitsForASlotNamesTheWait(t *testing.T) {
 		})
 		t.Run(door.name+" stating the base contract", func(t *testing.T) {
 			h, _ := freshSessionWorkflow(t)
-			failedPhaseWorker(t, h, claim.RoleTester, phase.Testing)
+			failedWorkerInPhase(t, h, claim.RoleTester, phase.Testing)
 
-			recorder := door.ask(t, h, "LEGION-209", claim.RoleTester, stating(slotBaseContract))
+			recorder := door.ask(t, h, "LEGION-209", claim.RoleTester, stating(slotBaseContract()))
 
 			if recorder.Code != http.StatusOK && recorder.Code != http.StatusAccepted {
 				t.Fatalf("the fresh session = %d, want 200 or 202; body %s", recorder.Code, recorder.Body)
 			}
 			if got := freshSessionNote(t, recorder); got != "" {
-				t.Errorf("the answer to a caller at %d says %q, want nothing, as before", slotBaseContract, got)
+				t.Errorf("the answer to a caller at %d says %q, want nothing, as before", slotBaseContract(), got)
 			}
 		})
 	}
@@ -176,7 +174,7 @@ func TestAFreshSessionWhoseStartWaitsForASlotNamesTheWait(t *testing.T) {
 // it did, and names the wait, with the claim still failed on the session it recorded.
 func TestAPlainRetryWhoseStartWaitsForASlotNamesTheWait(t *testing.T) {
 	h, _ := freshSessionWorkflow(t)
-	token := failedPhaseWorker(t, h, claim.RoleTester, phase.Testing)
+	token := failedWorkerInPhase(t, h, claim.RoleTester, phase.Testing)
 
 	recorder := h.operator(http.MethodPost, "/legion/v1/operator/claims/"+string(token)+"/retry", nil)
 
@@ -198,7 +196,7 @@ func TestAFreshSessionWhoseStartWaitsNamesTheIssueItWaitsOn(t *testing.T) {
 	for _, door := range freshSessionDoors() {
 		t.Run(door.name, func(t *testing.T) {
 			h, _ := freshSessionWorkflow(t)
-			token := failedPhaseWorker(t, h, claim.RoleImplementer, phase.Implementing)
+			token := failedWorkerInPhase(t, h, claim.RoleImplementer, phase.Implementing)
 			blockedBy(t, h, "LEGION-209", "LEGION-300")
 
 			recorder := door.ask(t, h, "LEGION-209", claim.RoleImplementer, nil)
@@ -222,10 +220,9 @@ func TestAFreshSessionOfASuspendedWorkerWhoseTaskWaitsForASlotSaysItRuns(t *test
 		t.Run(door.name, func(t *testing.T) {
 			h, _ := freshSessionWorkflow(t)
 			waitingTree(t, h)
-			token := readyImplementer(t, h)
-			if recorder := h.operator(http.MethodPost, "/legion/v1/operator/claims/"+string(token)+"/suspend", nil); recorder.Code != http.StatusOK {
-				t.Fatalf("suspend = %d, want 200; body %s", recorder.Code, recorder.Body)
-			}
+			// The controller's suspension, which both doors may lift: the agent door refuses the
+			// controller an agent the operator's suspension holds (agentDoor).
+			token := controllerSuspendedImplementer(t, h)
 
 			recorder := door.ask(t, h, "LEGION-209", claim.RoleImplementer, nil)
 
@@ -250,7 +247,7 @@ func TestAFreshSessionOfAWorkerWhoseIssueHoldsItsSlotNamesNoWait(t *testing.T) {
 	for _, door := range freshSessionDoors() {
 		t.Run(door.name, func(t *testing.T) {
 			h, _ := freshSessionWorkflow(t)
-			failedPhaseWorker(t, h, claim.RoleTester, phase.Testing)
+			failedWorkerInPhase(t, h, claim.RoleTester, phase.Testing)
 			slotOf(t, h, "LEGION-209")
 
 			recorder := door.ask(t, h, "LEGION-209", claim.RoleTester, nil)
@@ -355,18 +352,16 @@ func TestAMachineRetryRefusedAfterTheForgetAnswersTheRefusal(t *testing.T) {
 	}
 }
 
-// R2: a claim the operator had suspended before the request is not stopped by the fresh session,
-// only left without its session, and then its resume is the start: once the forget ran, the
-// machine's refusal of that resume is answered as the other refusals after the forget are, 200
-// at both doors with the refusal in the sentence, and the claim stays suspended with no session.
+// R2: a claim suspended before the request is not stopped by the fresh session, only left without
+// its session, and then its resume is the start: once the forget ran, the machine's refusal of that
+// resume is answered as the other refusals after the forget are, 200 at both doors with the refusal
+// in the sentence, and the claim stays suspended with no session. The suspension is the
+// controller's, which both doors may lift (agentDoor refuses the controller the operator's).
 func TestAResumeRefusedAfterTheForgetOnASuspendedClaimAnswersTheRefusal(t *testing.T) {
 	for _, door := range freshSessionDoors() {
 		t.Run(door.name, func(t *testing.T) {
 			h := freshSessionHarness(t, &phaseRestarter{})
-			token := readyImplementer(t, h)
-			if recorder := h.operator(http.MethodPost, "/legion/v1/operator/claims/"+string(token)+"/suspend", nil); recorder.Code != http.StatusOK {
-				t.Fatalf("suspend = %d, want 200; body %s", recorder.Code, recorder.Body)
-			}
+			token := controllerSuspendedImplementer(t, h)
 			// The tree's cleanup is reserved, so the resume's admission of the claim is refused
 			// (supervise's revive, store.AdmitClaim).
 			if _, err := h.store.Pool().Exec(h.ctx, "update tree_lifecycles set cleanup_started = true where tree = 'LEGION-208'"); err != nil {
@@ -396,10 +391,10 @@ func TestAResumeRefusedAfterTheForgetOnASuspendedClaimAnswersTheRefusal(t *testi
 // the forget. A caller at this daemon's own contract gets the new answers.
 func TestACallerBelowTheNewContractIsAnsweredAsBefore(t *testing.T) {
 	for _, door := range freshSessionDoors() {
-		for _, contract := range []int{slotBaseContract, slotNewContract} {
+		for _, contract := range []int{slotBaseContract(), slotNewContract()} {
 			t.Run(door.name+": a start that waits for a slot, stating "+strconv.Itoa(contract), func(t *testing.T) {
 				h, _ := freshSessionWorkflow(t)
-				failedPhaseWorker(t, h, claim.RoleTester, phase.Testing)
+				failedWorkerInPhase(t, h, claim.RoleTester, phase.Testing)
 
 				recorder := door.ask(t, h, "LEGION-209", claim.RoleTester, stating(contract))
 
@@ -407,10 +402,10 @@ func TestACallerBelowTheNewContractIsAnsweredAsBefore(t *testing.T) {
 					t.Fatalf("the fresh session = %d, want 200 or 202; body %s", recorder.Code, recorder.Body)
 				}
 				note := freshSessionNote(t, recorder)
-				if contract == slotBaseContract && note != "" {
+				if contract == slotBaseContract() && note != "" {
 					t.Errorf("the answer to a caller at %d says %q, want nothing, as before", contract, note)
 				}
-				if contract != slotBaseContract && !strings.Contains(note, "waits for an admission slot of LEGION-209") {
+				if contract != slotBaseContract() && !strings.Contains(note, "waits for an admission slot of LEGION-209") {
 					t.Errorf("the answer to a caller at %d says %q, want the wait named", contract, note)
 				}
 			})
@@ -423,7 +418,7 @@ func TestACallerBelowTheNewContractIsAnsweredAsBefore(t *testing.T) {
 
 				refusal := "LEGION-209 is still held after the retry of its phase implementing, so nothing relaunched " + string(token) +
 					": its tree lingers, and a lingering tree's members stay where they stood"
-				if contract == slotBaseContract {
+				if contract == slotBaseContract() {
 					wantRefusal(t, recorder, http.StatusConflict, refusal)
 					return
 				}

@@ -13,12 +13,8 @@ import (
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
-func waitUntil(t *testing.T, timeout time.Duration, desc string, fn func() bool) {
-	t.Helper()
-	testwait.WithinPolling(t, timeout, testwait.Poll, desc, fn)
-}
-
 func TestE2E_InterestReaperCleanup(t *testing.T) {
+	t.Parallel()
 	env := setupTestEnv(t)
 	if _, err := env.registry.Upsert(store.Interest{SessionID: "ses_stale", MachineID: "test-machine", Dir: "/stale"}, []string{"notifications.slack.*.*.mention"}); err != nil {
 		t.Fatalf("upsert stale interest: %v", err)
@@ -44,7 +40,7 @@ func TestE2E_InterestReaperCleanup(t *testing.T) {
 	if _, err := kv.Put("ses_stale", data); err != nil {
 		t.Fatalf("put stale interest: %v", err)
 	}
-	waitUntil(t, 5*time.Second, "stale cache update", func() bool {
+	testwait.Eventually(t, "stale cache update", func() bool {
 		current, getErr := env.registry.Get(context.Background(), "ses_stale")
 		return getErr == nil && current.UpdatedAt == interest.UpdatedAt
 	})
@@ -56,7 +52,7 @@ func TestE2E_InterestReaperCleanup(t *testing.T) {
 	if reaped != 1 {
 		t.Fatalf("expected 1 reaped interest, got %d", reaped)
 	}
-	waitUntil(t, 5*time.Second, "stale interest deletion", func() bool {
+	testwait.Eventually(t, "stale interest deletion", func() bool {
 		_, getErr := env.registry.Get(context.Background(), "ses_stale")
 		return getErr != nil && errors.Is(getErr, natsgo.ErrKeyNotFound)
 	})

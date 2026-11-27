@@ -56,7 +56,7 @@ jobs:
     # The dispatch of ci.yaml needs `actions: write`, and `gh run list` needs no more than that;
     # nothing here needs another scope. The checkout needs no `contents: read`, because this
     # repository is public and GitHub serves a public repository's git data to any valid token,
-    # and the check-runs read is the one ci.yaml's `cancel-started` makes under the same one
+    # and the check-runs read is the one `.github/workflows/ci.yaml#cancel-started` makes under the same one
     # scope.
     permissions:
       actions: write

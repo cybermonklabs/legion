@@ -29,6 +29,7 @@ import (
 // the echoed password among them where the type has a time field, so the check sees what a
 // decoder prints.
 func TestTheAnswerDecodersPrintTheAnswerOnlyAsTheAddressLetsItPrint(t *testing.T) {
+	t.Parallel()
 	// Built from parts, so no line of this file reads as a credential.
 	password := "hunter2pw-" + "decoders-5e1b"
 	echo := `"` + password + `"`

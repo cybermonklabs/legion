@@ -1,0 +1,10 @@
+kind: Fixed
+body: |-
+  Each intake's NATS client now gives a write 5 s, not nats.go's default of a minute. At shutdown
+  the close of the client waits for the connection's lock, behind the write that holds it and each
+  write queued on it, and the release of a pending hand-back's hold waits for that close: each of
+  those writes to a frozen link now lasts at most 5 s, not a minute, so the close waits up to 5 s
+  for each write ahead of it. A reconnect attempt through a frozen link holds the lock too, for up
+  to 5 s for its dial and 5 s for its handshake.
+custom:
+  Issue: pr4432

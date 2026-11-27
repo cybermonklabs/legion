@@ -16,6 +16,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/capabilities"
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
@@ -150,7 +151,7 @@ func TestACallerAtTheFloorIsServedTheStandInsAndNoCheckRole(t *testing.T) {
 		claims []supervise.Claim
 		stated int
 	}{
-		{name: "a caller that states the floor", remote: "192.0.2.1:41000", claims: podClaims(DaemonAPIVersion), stated: ServingFloor},
+		{name: "a caller that states the floor", remote: "192.0.2.1:41000", claims: podClaims(DaemonAPIVersion()), stated: ServingFloor},
 		{name: "a pod whose claims record the floor", remote: statePodAddr + ":41000", claims: podClaims(ServingFloor)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -166,7 +167,7 @@ func TestACallerAtTheFloorIsServedTheStandInsAndNoCheckRole(t *testing.T) {
 	}
 
 	logs := &bytes.Buffer{}
-	handler := shapedServer(t, populatedState(t), podClaims(DaemonAPIVersion), logs, true)
+	handler := shapedServer(t, populatedState(t), podClaims(DaemonAPIVersion()), logs, true)
 	wantThisContract(t, stateStating(t, handler, statePodAddr+":41000", 0))
 	if logs.Len() != 0 {
 		t.Errorf("a pod at this contract logged %s, want no line", logs)
@@ -219,7 +220,7 @@ func TestAMixedPodIsServedTheHighestsKeysAndTheLowestsStandIns(t *testing.T) {
 
 	// The header beats the pod, whichever of the pod's two contracts the caller states.
 	wantStandIns(t, stateStating(t, handler, statePodAddr+":41000", ServingFloor))
-	if stated := stateStating(t, handler, statePodAddr+":41000", DaemonAPIVersion); string(stated) != string(whole) {
+	if stated := stateStating(t, handler, statePodAddr+":41000", DaemonAPIVersion()); string(stated) != string(whole) {
 		t.Errorf("a caller of the mixed pod stating this contract was served %s, want the body this contract writes %s", stated, whole)
 	}
 }
@@ -238,7 +239,7 @@ func TestAMixedPodIsServedTheHighestsKeysAndTheLowestsStandIns(t *testing.T) {
 // answer and in nothing else.
 func TestAPodWhoseNewestBuildStatesItsOwnContractIsServedTheOldests(t *testing.T) {
 	logs := &bytes.Buffer{}
-	handler := shapedServer(t, populatedState(t), mixedPodClaims(ServingFloor, DaemonAPIVersion), logs, true)
+	handler := shapedServer(t, populatedState(t), mixedPodClaims(ServingFloor, DaemonAPIVersion()), logs, true)
 	floor := stateStating(t, handler, "192.0.2.1:41000", ServingFloor)
 
 	rolled := stateStating(t, handler, statePodAddr+":41000", 0)
@@ -257,7 +258,7 @@ func TestAPodWhoseNewestBuildStatesItsOwnContractIsServedTheOldests(t *testing.T
 	}
 
 	// The 193 build of that same pod is served this contract's own body, by its header.
-	wantThisContract(t, stateStating(t, handler, statePodAddr+":41000", DaemonAPIVersion))
+	wantThisContract(t, stateStating(t, handler, statePodAddr+":41000", DaemonAPIVersion()))
 }
 
 // A caller at 111 reads the settings block as this daemon writes it, whether it states 111 in
@@ -282,7 +283,7 @@ func TestACallerAt111ReadsTheSettingsBlockThisDaemonWrites(t *testing.T) {
 	// quietTimeContract is 111, the contract main declared when #3982 merged.
 	const at = quietTimeContract
 	state := populatedState(t)
-	written := settingsOf(stateStating(t, shapedServer(t, state, podClaims(DaemonAPIVersion), &bytes.Buffer{}, true), "192.0.2.1:41000", 0))
+	written := settingsOf(stateStating(t, shapedServer(t, state, podClaims(DaemonAPIVersion()), &bytes.Buffer{}, true), "192.0.2.1:41000", 0))
 	grace, carried := written["pod_update_grace_minutes"]
 	if !carried {
 		t.Fatalf("the settings this contract writes carry no pod_update_grace_minutes; this proves nothing: %v", written)
@@ -293,7 +294,7 @@ func TestACallerAt111ReadsTheSettingsBlockThisDaemonWrites(t *testing.T) {
 		claims []supervise.Claim
 		stated int
 	}{
-		{name: "a caller that states 111", remote: "192.0.2.1:41000", claims: podClaims(DaemonAPIVersion), stated: at},
+		{name: "a caller that states 111", remote: "192.0.2.1:41000", claims: podClaims(DaemonAPIVersion()), stated: at},
 		{name: "a pod whose claims record 111", remote: statePodAddr + ":41000", claims: podClaims(at)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -526,6 +527,86 @@ func valueStripCases() map[string]valueStripCase {
 				Detail: "a cache ran out of room", Source: undeclaredValue,
 			}}},
 		},
+		// The two strips of gateBasisContract's values read a mixed pod recording 178 and
+		// gateBasisContract, and no pod reading counts the gateBasisContract claim: podContracts
+		// leaves out a claim at shapedAnswersContract or above, since every build from there states
+		// its contract in the header. So the pod is served as its 178 process alone, on both sides,
+		// and these cases hold each strip to the body that process reads; a strip keyed to the pod's
+		// highest contract is held by the stated callers of awaiting_children_narrow_test.go and
+		// gate_basis_wire_test.go instead, and the strip's own half by the value no row declares
+		// below. Each value arrived after its field, whose arrival is no contract a pod reading can
+		// place above, so no case names a value that arrived with the field.
+		//
+		// A gated step on an ancestor's basis reads `open_on_basis` or `pending_on_basis`, which a
+		// reader from 55 up to the contract below gateBasisContract refuses the whole body for, so
+		// the pod is served neither issue's `gatedSteps`, and every other issue keeps its gated steps
+		// as the body at gateBasisContract serves them. The band of the same contract takes those
+		// lists for the same caller first (shapeIssue runs the bands before the strips), so the strip
+		// finds nothing left to take on this pod.
+		droppedStepStatus: {
+			state: populatedState, low: pauseContract, high: entryNumber(gateBasisContract),
+			carries: func(t *testing.T, body []byte) bool {
+				for _, statuses := range stepStatusesServed(t, body) {
+					if slices.ContainsFunc(statuses, onBasisStatus) {
+						return true
+					}
+				}
+				return false
+			},
+			stays: func(t *testing.T, whole, mixed []byte) {
+				served := stepStatusesServed(t, mixed)
+				for key, statuses := range stepStatusesServed(t, whole) {
+					var want []string
+					if !slices.ContainsFunc(statuses, onBasisStatus) {
+						want = statuses
+					}
+					if !reflect.DeepEqual(served[key], want) {
+						t.Errorf("the {%d, %d} pod is served %s's gated steps as %v, want %v: an issue a step of which stands on a basis is served none, and every other issue its own",
+							pauseContract, entryNumber(gateBasisContract), key, served[key], want)
+					}
+				}
+			},
+			// A gated step whose status is a word no row declares.
+			undeclaredIssue: Issue{Key: "LEGION-214", GatedSteps: []GatedStepView{
+				{Step: record.DesignStepSpec, Status: GatedStepStatus(undeclaredValue)},
+			}},
+		},
+		// An issue in `awaiting_children`, and the word at `heldFrom` and at a held task's `phase`,
+		// which no reader below gateBasisContract admits: the pod is served the issue's `phase` as
+		// `admitted` and neither other key where it names the word, and every other phase word as
+		// the body at gateBasisContract serves it.
+		droppedPhase: {
+			state: stateCarryingEveryDeclaredValue, low: pauseContract, high: entryNumber(gateBasisContract),
+			carries: func(t *testing.T, body []byte) bool {
+				for _, word := range phaseWordsServed(t, body) {
+					if word == string(phase.AwaitingChildren) {
+						return true
+					}
+				}
+				return false
+			},
+			stays: func(t *testing.T, whole, mixed []byte) {
+				served := phaseWordsServed(t, mixed)
+				for place, word := range phaseWordsServed(t, whole) {
+					got, carried := served[place]
+					switch {
+					case word != string(phase.AwaitingChildren) && got != word:
+						t.Errorf("the {%d, %d} pod is served %s as %q, want %q: the strip takes only the word its process refuses",
+							pauseContract, entryNumber(gateBasisContract), place, got, word)
+					case word == string(phase.AwaitingChildren) && strings.HasSuffix(place, " phase") && got != string(phase.Admitted):
+						t.Errorf("the {%d, %d} pod is served %s as %q, want admitted: the issue's own phase is a key every reader requires",
+							pauseContract, entryNumber(gateBasisContract), place, got)
+					case word == string(phase.AwaitingChildren) && !strings.HasSuffix(place, " phase") && carried:
+						t.Errorf("the {%d, %d} pod is served %s as %q, want the key left off",
+							pauseContract, entryNumber(gateBasisContract), place, got)
+					}
+				}
+			},
+			// An issue whose phase, `heldFrom` and architect's held task each name a word no row
+			// declares.
+			undeclaredIssue: Issue{Key: "LEGION-215", Phase: phase.Phase(undeclaredValue), HeldFrom: undeclaredValue,
+				Architect: &ClaimView{Session: "ses_architect_215", PendingTask: &PendingTaskView{Phase: phase.Phase(undeclaredValue), QueuedAt: answeredAt}}},
+		},
 		// A pod recording the contract before shapedAnswersContract is served every issue held for
 		// `task-stopped` or `children` without its `holdReason`: the two arrived at
 		// OwnerPlanContract, and the pod's process reads the key with `z.literal("escalated")`.
@@ -563,18 +644,20 @@ func valueStripCases() map[string]valueStripCase {
 		// A pod recording the contract before shapedAnswersContract is served each row of
 		// `admission.held` under `children_before_retro` or `task_stopped` as `unclassified` with
 		// no `heldBy`: the two arrived at OwnerPlanContract, after the field, and the pod's process
-		// reads `reason` with a `z.enum` of the eleven words before them. Every other row stays as
-		// it stands. The pod's claim at OwnerPlanContract moves neither half, as above. The
-		// eleven words arrived with the field at heldContract and ride its band, which follows the
-		// pod's highest contract; no pod whose highest reads the new words is a pod at all, so
-		// that half is read on a pod recording the floor and the contract before
+		// reads `reason` with a `z.enum` of the eleven words before them, and a row of the
+		// `awaiting_children` gateBasisContract added as `children_first`, the word that wait took
+		// over, with its `heldBy`, which names what that word names (heldReasonStandIn). Every
+		// other row stays as it stands. The pod's claim at OwnerPlanContract moves neither half,
+		// as above. The eleven words arrived with the field at heldContract and ride its band,
+		// which follows the pod's highest contract; no pod whose highest reads the new words is a
+		// pod at all, so that half is read on a pod recording the floor and the contract before
 		// shapedAnswersContract (TestAnOlderCallerReadsTheNewHeldWordsAsUnclassified) rather than
 		// here.
 		droppedHeldWord: {
-			state: heldWordIssues, low: shapedAnswersContract - 1, high: OwnerPlanContract,
+			state: heldWordAndWaitIssues, low: shapedAnswersContract - 1, high: OwnerPlanContract,
 			carries: func(t *testing.T, body []byte) bool {
 				for _, row := range heldRowsServed(t, body) {
-					if row["reason"] == string(record.HeldChildrenBeforeRetro) || row["reason"] == string(record.HeldTaskStopped) {
+					if arrivalsAt("admission.held.*.reason").heldBack(row["reason"].(string), shapedAnswersContract-1) {
 						return true
 					}
 				}
@@ -584,7 +667,10 @@ func valueStripCases() map[string]valueStripCase {
 				served := heldRowsServed(t, mixed)
 				for key, row := range heldRowsServed(t, whole) {
 					want := row
-					if row["reason"] == string(record.HeldChildrenBeforeRetro) || row["reason"] == string(record.HeldTaskStopped) {
+					switch {
+					case row["reason"] == string(record.HeldAwaitingChildren):
+						want = map[string]any{"issue": key, "reason": string(record.HeldChildrenFirst), "heldBy": row["heldBy"]}
+					case arrivalsAt("admission.held.*.reason").heldBack(row["reason"].(string), shapedAnswersContract-1):
 						want = map[string]any{"issue": key, "reason": string(record.HeldUnclassified)}
 					}
 					if !reflect.DeepEqual(served[key], want) {
@@ -596,7 +682,159 @@ func valueStripCases() map[string]valueStripCase {
 			// A row of the held list whose word no row of the table declares.
 			undeclaredState: State{Admission: Admission{Held: []HeldIssue{{Issue: "SHAPES-4", Reason: record.HeldReason(undeclaredValue)}}}},
 		},
+		// A pod recording the contract before shapedAnswersContract and the cyber-policy entry's
+		// number is served every claim view whose failure cause or pending cause is `cyber_policy`
+		// with `provider_error` in its place: the word arrived at that entry, after the field, and
+		// the pod's older process reads both with a `z.enum` of the seven words before it. The
+		// failure record's other keys stay, its `detail` naming cyber_policy among them, and so
+		// does every view naming another word. The pod's claim at the entry's number states its
+		// own contract and is in no pod's reckoning (podContracts), so the pod alone at it is
+		// served this daemon's own body. The field is older than the floor's records of it only
+		// through recordFieldsContract's band, which the low contract is above, so the case names
+		// no value that arrived with it.
+		droppedFailureCause: {
+			state: stateCarryingEveryDeclaredValue, low: shapedAnswersContract - 1, high: entryNumber(cyberPolicyContract),
+			carries: func(t *testing.T, body []byte) bool {
+				for _, cause := range failureCausesServed(t, body) {
+					if cause == string(supervise.CauseCyberPolicy) {
+						return true
+					}
+				}
+				return false
+			},
+			stays: func(t *testing.T, whole, mixed []byte) {
+				served := failureCausesServed(t, mixed)
+				for at, cause := range failureCausesServed(t, whole) {
+					want := cause
+					if cause == string(supervise.CauseCyberPolicy) {
+						want = string(supervise.CauseProviderError)
+					}
+					if served[at] != want {
+						t.Errorf("the {%d, %d} pod is served %s as %q, want %q: the strip rewrites the word the pod's %d process refuses and nothing else",
+							shapedAnswersContract-1, entryNumber(cyberPolicyContract), at, served[at], want, shapedAnswersContract-1)
+					}
+				}
+			},
+			// A failed architect whose failure cause and pending cause are a word no row declares.
+			undeclaredIssue: Issue{Key: "SHAPES-5", Architect: &ClaimView{
+				Session: "ses_architect_shapes_5", State: "failed", PendingCause: undeclaredValue,
+				Failure: &ClaimFailureView{Cause: undeclaredValue, Detail: "a cause no row declares"},
+			}},
+		},
 	}
+}
+
+// failureCausesServed is every failure cause and pending cause a served body's claim views carry,
+// keyed by the issue, the view (the architect's or a worker's role) and the field.
+func failureCausesServed(t *testing.T, body []byte) map[string]string {
+	t.Helper()
+	type view struct {
+		Failure *struct {
+			Cause string `json:"cause"`
+		} `json:"failure"`
+		PendingCause string `json:"pendingCause"`
+	}
+	var state struct {
+		Issues map[string]struct {
+			Architect *view `json:"architect"`
+			Workers   map[string]struct {
+				Claim view `json:"claim"`
+			} `json:"workers"`
+		} `json:"issues"`
+	}
+	if err := json.Unmarshal(body, &state); err != nil {
+		t.Fatalf("decode the state %s: %v", body, err)
+	}
+	causes := map[string]string{}
+	add := func(at string, v view) {
+		if v.Failure != nil {
+			causes[at+" failure.cause"] = v.Failure.Cause
+		}
+		if v.PendingCause != "" {
+			causes[at+" pendingCause"] = v.PendingCause
+		}
+	}
+	for key, issue := range state.Issues {
+		if issue.Architect != nil {
+			add(key+" architect", *issue.Architect)
+		}
+		for role, worker := range issue.Workers {
+			add(key+" "+role, worker.Claim)
+		}
+	}
+	return causes
+}
+
+// onBasisStatus is whether status is one of the two words a step on an ancestor's basis reads.
+func onBasisStatus(status string) bool {
+	return status == string(GatedStepOpenOnBasis) || status == string(GatedStepPendingOnBasis)
+}
+
+// stepStatusesServed is the `status` of each gated step a served body carries, by the issue that
+// carries them, in their order; an issue served no `gatedSteps` is in no entry.
+func stepStatusesServed(t *testing.T, body []byte) map[string][]string {
+	t.Helper()
+	var state struct {
+		Issues map[string]struct {
+			GatedSteps []struct {
+				Status string `json:"status"`
+			} `json:"gatedSteps"`
+		} `json:"issues"`
+	}
+	if err := json.Unmarshal(body, &state); err != nil {
+		t.Fatalf("decode the state %s: %v", body, err)
+	}
+	served := map[string][]string{}
+	for key, issue := range state.Issues {
+		for _, step := range issue.GatedSteps {
+			served[key] = append(served[key], step.Status)
+		}
+	}
+	return served
+}
+
+// phaseWordsServed is every phase word a served body carries at the three fields that take one:
+// each issue's `phase`, its `heldFrom`, and the `phase` of the task its architect and each of its
+// workers holds, by `<issue> <field>`; a key the body leaves off is in no entry.
+func phaseWordsServed(t *testing.T, body []byte) map[string]string {
+	t.Helper()
+	type task struct {
+		PendingTask *struct {
+			Phase string `json:"phase"`
+		} `json:"pendingTask"`
+	}
+	var state struct {
+		Issues map[string]struct {
+			Phase     string `json:"phase"`
+			HeldFrom  string `json:"heldFrom"`
+			Architect *task  `json:"architect"`
+			Workers   map[string]struct {
+				Claim task `json:"claim"`
+			} `json:"workers"`
+		} `json:"issues"`
+	}
+	if err := json.Unmarshal(body, &state); err != nil {
+		t.Fatalf("decode the state %s: %v", body, err)
+	}
+	served := map[string]string{}
+	carry := func(place, word string) {
+		if word != "" {
+			served[place] = word
+		}
+	}
+	for key, issue := range state.Issues {
+		carry(key+" phase", issue.Phase)
+		carry(key+" heldFrom", issue.HeldFrom)
+		if issue.Architect != nil && issue.Architect.PendingTask != nil {
+			carry(key+" architect.pendingTask.phase", issue.Architect.PendingTask.Phase)
+		}
+		for role, worker := range issue.Workers {
+			if worker.Claim.PendingTask != nil {
+				carry(key+" workers."+role+".pendingTask.phase", worker.Claim.PendingTask.Phase)
+			}
+		}
+	}
+	return served
 }
 
 // eachValueStrip runs read on each row of valueStrips with that row's case, in a subtest named
@@ -607,7 +845,7 @@ func eachValueStrip(t *testing.T, read func(t *testing.T, row valueStrip, tc val
 	t.Helper()
 	cases := valueStripCases()
 	rows := map[string]bool{}
-	for _, row := range valueStrips {
+	for _, row := range valueStrips() {
 		tc, cased := cases[row.dropped]
 		if !cased {
 			t.Errorf("the value strip that drops %q has no case here: a strip is added with the bodies it is read on", row.dropped)
@@ -648,9 +886,9 @@ func TestEveryValueStripFollowsThePodsLowestContract(t *testing.T) {
 		logs := &bytes.Buffer{}
 		state := tc.state(t)
 		handler := shapedServer(t, state, mixedPodClaims(tc.low, tc.high), logs, true)
-		whole := stateStating(t, handler, "192.0.2.1:41000", DaemonAPIVersion)
+		whole := stateStating(t, handler, "192.0.2.1:41000", DaemonAPIVersion())
 		if !tc.carries(t, whole) {
-			t.Fatalf("the body served at %d carries no value this strip takes; this proves nothing: %s", DaemonAPIVersion, whole)
+			t.Fatalf("the body served at %d carries no value this strip takes; this proves nothing: %s", DaemonAPIVersion(), whole)
 		}
 
 		alone := stateStating(t, shapedServer(t, state, podClaims(tc.high), logs, true), statePodAddr+":41000", 0)
@@ -670,7 +908,7 @@ func TestEveryValueStripFollowsThePodsLowestContract(t *testing.T) {
 		if tc.withField != nil {
 			arrived := tc.withField(t, whole)
 			if len(arrived) == 0 {
-				t.Fatalf("the body served at %d carries no value that arrived with this strip's field; this proves nothing: %s", DaemonAPIVersion, whole)
+				t.Fatalf("the body served at %d carries no value that arrived with this strip's field; this proves nothing: %s", DaemonAPIVersion(), whole)
 			}
 			spanning := stateStating(t, shapedServer(t, state, mixedPodClaims(tc.beforeField, tc.high), logs, true), statePodAddr+":41000", 0)
 			if served := tc.withField(t, spanning); !reflect.DeepEqual(served, arrived) {
@@ -702,7 +940,7 @@ func TestEveryValueStripFollowsThePodsLowestContract(t *testing.T) {
 // whose body does not carry the word, so a strip is added to the table with the body it is read
 // on (eachValueStrip).
 func TestEveryValueStripHoldsBackAValueNoRowDeclares(t *testing.T) {
-	for _, field := range EnumeratedFields {
+	for _, field := range EnumeratedFields() {
 		for _, value := range field.Values {
 			if value.Value == undeclaredValue {
 				t.Fatalf("the declared table names %q, at `%s` of the %s answer since %d; this proves nothing of a value no row declares",
@@ -743,15 +981,15 @@ func wantUndeclaredValueHeldBack[T any](t *testing.T, take func(T, int) (T, bool
 		t.Fatalf("the case's body %s carries no %s; this proves nothing", whole, word)
 	}
 
-	below, took := take(body, DaemonAPIVersion-1)
+	below, took := take(body, DaemonAPIVersion()-1)
 	if served := marshalled(below); !took || bytes.Contains(served, word) {
 		t.Errorf("at %d the strip reports %v and serves %s, want it to report true and serve no %s: a value no row declares arrives at %d, above that caller",
-			DaemonAPIVersion-1, took, served, word, DaemonAPIVersion)
+			DaemonAPIVersion()-1, took, served, word, DaemonAPIVersion())
 	}
-	at, took := take(body, DaemonAPIVersion)
+	at, took := take(body, DaemonAPIVersion())
 	if served := marshalled(at); took || !bytes.Equal(served, whole) {
 		t.Errorf("at %d the strip reports %v and serves %s, want it to report false and serve the body as it was, %s: a caller at this daemon's own contract admits the value",
-			DaemonAPIVersion, took, served, whole)
+			DaemonAPIVersion(), took, served, whole)
 	}
 }
 
@@ -857,13 +1095,13 @@ func TestAClaimThatHoldsNoProcessIsInNoPodsReckoning(t *testing.T) {
 // pod-decided body for a process that never reads it (podContracts). A pod of those alone
 // reports nothing, and its callers that state no contract are served this daemon's own body.
 func TestAClaimThatStatesItsOwnContractIsInNoPodsReckoning(t *testing.T) {
-	lowest, highest, recorded := podContracts(podClaims(DaemonAPIVersion), statePodUID)
+	lowest, highest, recorded := podContracts(podClaims(DaemonAPIVersion()), statePodUID)
 
 	if lowest != 0 || highest != 0 || recorded != "" {
 		t.Errorf("a pod of claims at this daemon's own contract reports %d, %d and %q, want nothing on all three",
 			lowest, highest, recorded)
 	}
-	mixedLowest, mixedHighest, _ := podContracts(mixedPodClaims(ServingFloor, DaemonAPIVersion), statePodUID)
+	mixedLowest, mixedHighest, _ := podContracts(mixedPodClaims(ServingFloor, DaemonAPIVersion()), statePodUID)
 	if mixedLowest != ServingFloor || mixedHighest != ServingFloor {
 		t.Errorf("the rolled pod reports %d and %d, want the floor on both sides: its 193 build reads no body this decides",
 			mixedLowest, mixedHighest)
@@ -874,7 +1112,7 @@ func TestAClaimThatStatesItsOwnContractIsInNoPodsReckoning(t *testing.T) {
 // writes.
 func TestTheEdgesOfTheContractACallerIsServed(t *testing.T) {
 	logs := &bytes.Buffer{}
-	full := shapedServer(t, populatedState(t), podClaims(DaemonAPIVersion), logs, true)
+	full := shapedServer(t, populatedState(t), podClaims(DaemonAPIVersion()), logs, true)
 	whole := stateStating(t, full, statePodAddr+":41000", 0)
 	logs.Reset()
 
@@ -968,15 +1206,15 @@ func TestTheEdgesOfTheContractACallerIsServed(t *testing.T) {
 
 	t.Run("above this daemon's own", func(t *testing.T) {
 		logs := &bytes.Buffer{}
-		handler := shapedServer(t, populatedState(t), podClaims(DaemonAPIVersion), logs, true)
+		handler := shapedServer(t, populatedState(t), podClaims(DaemonAPIVersion()), logs, true)
 
-		body := stateStating(t, handler, "192.0.2.1:41000", DaemonAPIVersion+1)
+		body := stateStating(t, handler, "192.0.2.1:41000", DaemonAPIVersion()+1)
 
 		if string(body) != string(whole) {
 			t.Errorf("a caller above this contract was served %s, want the body this contract writes %s", body, whole)
 		}
 		logged := logs.String()
-		if !strings.Contains(logged, fmt.Sprintf(`"pluginContract":%d`, DaemonAPIVersion+1)) ||
+		if !strings.Contains(logged, fmt.Sprintf(`"pluginContract":%d`, DaemonAPIVersion()+1)) ||
 			!strings.Contains(logged, `"caller":"192.0.2.1:41000"`) {
 			t.Errorf("logs %s do not name the contract and the caller's address", logged)
 		}
@@ -987,10 +1225,10 @@ func TestTheEdgesOfTheContractACallerIsServed(t *testing.T) {
 
 	t.Run("a contract no change ever shipped under", func(t *testing.T) {
 		logs := &bytes.Buffer{}
-		handler := shapedServer(t, populatedState(t), podClaims(DaemonAPIVersion), logs, true)
+		handler := shapedServer(t, populatedState(t), podClaims(DaemonAPIVersion()), logs, true)
 		for _, tc := range []struct{ stated, nearest int }{{stated: 47, nearest: 46}, {stated: 50, nearest: 49}} {
 			t.Run(strconv.Itoa(tc.stated), func(t *testing.T) {
-				if slices.Contains(SupportedContracts, tc.stated) {
+				if slices.Contains(SupportedContracts(), tc.stated) {
 					t.Fatalf("SupportedContracts records %d; this case proves nothing", tc.stated)
 				}
 				body := stateStating(t, handler, "192.0.2.1:41000", tc.stated)
@@ -1055,8 +1293,8 @@ func TestTheServedContractsOfACallerBelowTheFloor(t *testing.T) {
 	if strip := stripContract(below); strip != below {
 		t.Errorf("the strip contract of %d = %d, want its own number: such a caller loses no key it loses today", below, strip)
 	}
-	if restore, strip := restoreContract(DaemonAPIVersion+1), stripContract(DaemonAPIVersion+1); restore != DaemonAPIVersion || strip != DaemonAPIVersion {
-		t.Errorf("the contracts of a caller above this daemon's own = %d and %d, want %d on both sides", restore, strip, DaemonAPIVersion)
+	if restore, strip := restoreContract(DaemonAPIVersion()+1), stripContract(DaemonAPIVersion()+1); restore != DaemonAPIVersion() || strip != DaemonAPIVersion() {
+		t.Errorf("the contracts of a caller above this daemon's own = %d and %d, want %d on both sides", restore, strip, DaemonAPIVersion())
 	}
 }
 
@@ -1064,13 +1302,13 @@ func TestTheServedContractsOfACallerBelowTheFloor(t *testing.T) {
 // its own is an answer this names and that does not, which is a programming error rather than a
 // body served unshaped.
 //
-// Each row is handed a body its own route could write, because the four rows whose shape has
-// moved shape a State, an Issue, the release records and a refusal and panic on anything else: a
-// row handed the wrong type would fail here as an answer with no row does, and never serve that
-// body unshaped.
+// Each row is handed a body its own route could write, because the six rows whose shape has
+// moved shape a State, an Issue, the release records, a refusal and the two registrations and
+// panic on anything else: a row handed the wrong type would fail here as an answer with no row
+// does, and never serve that body unshaped.
 func TestShapeAnswerShapesEveryAnswer(t *testing.T) {
 	state := populatedState(t)
-	for _, answer := range Answers {
+	for _, answer := range Answers() {
 		t.Run(string(answer.ID), func(t *testing.T) {
 			defer func() {
 				if recovered := recover(); recovered != nil {
@@ -1122,6 +1360,23 @@ func TestShapeAnswerShapesEveryAnswer(t *testing.T) {
 				if shaped, _ := shapeAnswer(AnswerRefusal, refused, ServingFloor, ServingFloor); shaped != any(refused.Failure) {
 					t.Errorf("a PauseFailure was shaped to %+v at the floor, want its Failure alone", shaped)
 				}
+			case AnswerRegister:
+				registration := claim.RegisterResponse{ClaimToken: "legion-legion-legion-208-architect", PromptAgents: []string{"oracle"}, Replaces: "ses_before"}
+				older := claim.RegisterResponse{ClaimToken: registration.ClaimToken, PromptAgents: registration.PromptAgents}
+				if shaped, _ := shapeAnswer(AnswerRegister, registration, ServingFloor, ServingFloor); !reflect.DeepEqual(shaped, any(older)) {
+					t.Errorf("a registration was shaped to %+v at the floor, want it without `replaces`, which replacesContract added", shaped)
+				}
+				if shaped, _ := shapeAnswer(AnswerRegister, registration, entryNumber(replacesContract), entryNumber(replacesContract)); !reflect.DeepEqual(shaped, any(registration)) {
+					t.Errorf("a registration was shaped to %+v at the replaces entry's number, want the body it was given", shaped)
+				}
+			case AnswerRegisterController:
+				registration := ControllerRegisterResponse{ClaimToken: "legion-legion-controller", Replaces: "ses_before"}
+				if shaped, _ := shapeAnswer(AnswerRegisterController, registration, ServingFloor, ServingFloor); shaped != any(ControllerRegisterResponse{ClaimToken: registration.ClaimToken}) {
+					t.Errorf("a controller's registration was shaped to %+v at the floor, want it without `replaces`, which replacesContract added", shaped)
+				}
+				if shaped, _ := shapeAnswer(AnswerRegisterController, registration, entryNumber(replacesContract), entryNumber(replacesContract)); shaped != any(registration) {
+					t.Errorf("a controller's registration was shaped to %+v at the replaces entry's number, want the body it was given", shaped)
+				}
 			default:
 				body := map[string]string{"shape": "unmoved"}
 				if shaped, _ := shapeAnswer(answer.ID, body, ServingFloor, ServingFloor); !reflectEqualBody(shaped, body) {
@@ -1132,11 +1387,11 @@ func TestShapeAnswerShapesEveryAnswer(t *testing.T) {
 	}
 }
 
-// The four rows that shape a body of their own panic on a body of another type, as a row that
+// The six rows that shape a body of their own panic on a body of another type, as a row that
 // does not exist panics: a route that wrote a State under AnswerIssueRecord would otherwise
 // have it served unshaped and in silence.
 func TestShapeAnswerPanicsOnABodyItsRowCannotShape(t *testing.T) {
-	for _, id := range []AnswerID{AnswerState, AnswerIssueRecord, AnswerReleaseRecords, AnswerRefusal} {
+	for _, id := range []AnswerID{AnswerState, AnswerIssueRecord, AnswerReleaseRecords, AnswerRefusal, AnswerRegister, AnswerRegisterController} {
 		t.Run(string(id), func(t *testing.T) {
 			defer func() {
 				if recover() == nil {
@@ -1163,8 +1418,8 @@ func TestTheHeaderRefusesNoCallerAndMovesNoStaleRefusal(t *testing.T) {
 	h, logs := newStaleHarness(t)
 	token, boot := h.launch("LEGION-208", claim.RoleImplementer)
 	session := "ses_implementer"
-	current := h.registerContract(boot, session, DaemonAPIVersion, true)
-	recorded := DaemonAPIVersion - 1
+	current := h.registerContract(boot, session, DaemonAPIVersion(), true)
+	recorded := DaemonAPIVersion() - 1
 	h.makeStale(t, token, session, current.Secret, recorded)
 	stated := http.Header{pluginContractHeader: []string{strconv.Itoa(ServingFloor)}}
 
@@ -1172,7 +1427,7 @@ func TestTheHeaderRefusesNoCallerAndMovesNoStaleRefusal(t *testing.T) {
 		h.request(http.MethodPost, "/legion/v1/claims/ready", claim.ReadyRequest{
 			ClaimToken: token, SessionID: session, Secret: current.Secret, Generation: current.Generation,
 		}, stated),
-		http.StatusConflict, claim.StalePluginContract(recorded, DaemonAPIVersion).Message)
+		http.StatusConflict, claim.StalePluginContract(recorded, DaemonAPIVersion()).Message)
 	refused(t, h.request(http.MethodPost, "/legion/v1/grants", GrantRequest{
 		SessionID: session, Secret: current.Secret, Tree: "LEGION-208", Issue: "LEGION-208",
 	}, stated), http.StatusConflict, "STALE_PLUGIN_CONTRACT")
@@ -1191,7 +1446,7 @@ func TestTheHeaderRefusesNoCallerAndMovesNoStaleRefusal(t *testing.T) {
 // no plugin, a claim whose update round is open, a claim stored working, and every claim of a
 // daemon that can relaunch nothing is served on the contract its registration recorded.
 func TestTheExemptionsFromTheStaleRefusalStandWithAHeader(t *testing.T) {
-	recorded := DaemonAPIVersion - 1
+	recorded := DaemonAPIVersion() - 1
 	stated := http.Header{pluginContractHeader: []string{strconv.Itoa(ServingFloor)}}
 
 	for _, tc := range []struct {
@@ -1229,7 +1484,7 @@ func TestTheExemptionsFromTheStaleRefusalStandWithAHeader(t *testing.T) {
 			relaunchable := tc.name != "a daemon that can relaunch nothing"
 			token, boot := h.launch("LEGION-208", claim.RoleImplementer)
 			session := "ses_implementer"
-			current := h.registerContract(boot, session, DaemonAPIVersion, relaunchable)
+			current := h.registerContract(boot, session, DaemonAPIVersion(), relaunchable)
 			h.makeStale(t, token, session, current.Secret, recorded)
 			if tc.seed != nil {
 				tc.seed(t, h, token)

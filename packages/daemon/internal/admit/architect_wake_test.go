@@ -252,9 +252,10 @@ func assertArchitectWakes(t *testing.T, pool *pgxpool.Pool, root string, arms []
 }
 
 // Each of the three arms wakes the project's controller once for a root and a run, however many
-// passes read it. The pass runs on every fact of the project and on the sweep's own minute, so a
-// wake decided by the reading alone would reach the controller again on each of them; the mark
-// the arm writes is what keeps it to one (record.Store.TellArchitectsStalled).
+// passes read it. The pass runs again and again (the pass rule, Admission.Apply) and on the
+// sweep's own minute, so a wake decided by the reading alone would reach the controller again on
+// each of them; the mark the arm writes is what keeps it to one
+// (record.Store.TellArchitectsStalled).
 //
 // Each root is the base fixture — the one the reading raises nothing for — with the fields its
 // own arm is about changed, so each wake turns on the thing its case names and on nothing else.

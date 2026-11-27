@@ -11,6 +11,7 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // deniedRequests is how many Requests the test below has in flight on one window at once, each to
@@ -59,11 +60,14 @@ func TestEveryDeniedRequestOfOneWindowNamesItsOwnSubject(t *testing.T) {
 		wg.Wait()
 		close(done)
 	}()
-	select {
-	case <-done:
-	case <-time.After(30 * time.Second):
-		t.Fatalf("only %d of %d denied Requests were answered", len(answers), deniedRequests)
-	}
+	testwait.Until(t, fmt.Sprintf("all %d denied Requests to be answered (the last read is how many were)", deniedRequests), func() (int, bool) {
+		select {
+		case <-done:
+			return len(answers), true
+		default:
+			return len(answers), false
+		}
+	})
 	close(answers)
 
 	for got := range answers {

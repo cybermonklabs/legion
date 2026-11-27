@@ -325,7 +325,7 @@ func TestABootReplaysEveryTerminalFactBeforeItAdmitsAnyHello(t *testing.T) {
 		c := supervise.Claim{
 			Token: token, Project: project, Tree: issue, Issue: issue, Role: claim.RoleImplementer, Generation: 1,
 			State: supervise.StateReady, Session: "ses_" + string(token), SessionFile: "/sessions/" + string(token) + ".jsonl",
-			PluginContract: api.DaemonAPIVersion, BootTokenHash: supervise.HashBootToken(bootTokens[i]),
+			PluginContract: api.DaemonAPIVersion(), BootTokenHash: supervise.HashBootToken(bootTokens[i]),
 			Locator: &runtime.Locator{
 				Runtime: runtime.RuntimeTmux, Claim: token, Incarnation: fmt.Sprintf("4242:%d", i+1),
 				Tmux: &runtime.TmuxLocator{Window: fmt.Sprintf("@%d", i+1), Pane: fmt.Sprintf("%%%d", i+1)},
@@ -373,7 +373,7 @@ func TestABootReplaysEveryTerminalFactBeforeItAdmitsAnyHello(t *testing.T) {
 		var address string
 		for deadline := time.Now().Add(60 * time.Second); address == ""; time.Sleep(5 * time.Millisecond) {
 			if time.Now().After(deadline) {
-				// The daemon never built its runtime; startDaemonWithin fails the test.
+				// The daemon never built its runtime; startDaemonLogging fails the test.
 				return
 			}
 			record.mu.Lock()
@@ -388,7 +388,7 @@ func TestABootReplaysEveryTerminalFactBeforeItAdmitsAnyHello(t *testing.T) {
 		}
 	}()
 
-	startDaemonWithin(t, cfg, o, quietLogger(), 60*time.Second)
+	startDaemonLogging(t, cfg, o, quietLogger())
 
 	var conns []net.Conn
 	t.Cleanup(func() {

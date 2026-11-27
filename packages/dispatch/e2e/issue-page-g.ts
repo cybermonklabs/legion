@@ -34,7 +34,7 @@ import {
 import { blockId } from "./editor";
 import { withIssuePage } from "./issue-page-option";
 import type { Box } from "./layout";
-import { ONE_PIXEL_PNG } from "./sends";
+import { ONE_PIXEL_PNG } from "./one-pixel-png";
 import { asUser } from "./users";
 
 /**
@@ -360,7 +360,9 @@ export interface DrawnRow {
   readonly answerAuthor: string | null;
   /** The text of the answer line an answered ask draws on its own row, or null where none. */
   readonly answerLine: string | null;
-  /** The whole of what the person wrote, every character kept; null where none is drawn. */
+  /** The whole of what the person wrote, every word and every paragraph kept, in order: each
+   *  paragraph the renderer draws, joined by the blank line the store holds between them, or
+   *  the text as drawn where the answer draws no paragraph; null where none is drawn. */
   readonly answerText: string | null;
   /** The author the row's group names, or null where it names none. An open body names an
    *  author of its own, "Author unknown" included, which this leaves out. */
@@ -425,6 +427,17 @@ export function drawnRows(page: Page): Promise<DrawnRow[]> {
       if (rect.width === 0 && rect.height === 0) return null;
       return { height: rect.height, width: rect.width, x: rect.x, y: rect.y };
     };
+    // The renderer draws each paragraph of a stored text as a <p> of its own, so the blank line
+    // between two of them is a block boundary and no character of the page: the answer's words
+    // are its paragraphs' text, joined as the store joins them. An answer drawn with no <p> - as
+    // stored, where the read sent no reading - is its text as drawn.
+    const answerWords = (element: Element | null): string | null => {
+      if (element === null) return null;
+      const paragraphs = [...element.querySelectorAll("p")];
+      return paragraphs.length === 0
+        ? element.textContent
+        : paragraphs.map((paragraph) => paragraph.textContent ?? "").join("\n\n");
+    };
     const lineBox = (element: Element | null | undefined) =>
       element === null || element === undefined
         ? null
@@ -441,7 +454,7 @@ export function drawnRows(page: Page): Promise<DrawnRow[]> {
       return {
         answerAuthor: text(answerLine?.querySelector(selectors.answerAuthor) ?? null),
         answerLine: text(answerLine),
-        answerText: row.querySelector(selectors.answerText)?.textContent ?? null,
+        answerText: answerWords(row.querySelector(selectors.answerText)),
         author: text(row.querySelector(`${selectors.nodeMargin} ${selectors.nodeAuthor}`)),
         authorShape:
           row

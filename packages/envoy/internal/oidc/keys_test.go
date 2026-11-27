@@ -13,6 +13,7 @@ import (
 	jose "github.com/go-jose/go-jose/v4"
 
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
+	"github.com/sjawhar/envoy/internal/testport"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -880,6 +881,29 @@ func TestNewKeysRefusesAnIssuerThatDoesNotDiscover(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), issuer.URL()) {
 		t.Errorf("NewKeys error %q names no issuer", err)
+	}
+}
+
+// An issuer a made-up token was pasted into, as its user name or in its query, whose discovery
+// cannot be read: NewKeys and the code flow's discovery name it through redact.URL and the failure
+// by its class, holding no part of the token, though the failure's own text quotes the discovery
+// URL, which is the issuer's with its path appended.
+func TestDiscoveryErrorsPrintNoCredentialOfTheIssuer(t *testing.T) {
+	const token = "madeUpIssuerToken0123456789"
+	refused := testport.Refused(t)
+	for name, issuer := range map[string]string{
+		"a token as the user name": "http://" + token + "@" + refused,
+		"a token in the query":     "http://" + refused + "/?token=" + token,
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, keysErr := NewKeys(context.Background(), issuer)
+			flowErr := NewCodeFlow(issuer, "client", "secret", "").Discover(context.Background())
+			for _, err := range []error{keysErr, flowErr} {
+				if err == nil || strings.Contains(err.Error(), token[:10]) {
+					t.Fatalf("discovery error %v holds part of the token, or is nil", err)
+				}
+			}
+		})
 	}
 }
 

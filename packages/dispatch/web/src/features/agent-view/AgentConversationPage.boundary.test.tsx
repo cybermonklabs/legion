@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
+import { afterEach, beforeAll, beforeEach, expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter, Route, Routes, useParams } from "react-router-dom";
@@ -7,8 +7,15 @@ import { type FakeLiveSockets, installFakeLiveSockets } from "../../__tests__/li
 import { api } from "../../api/client";
 import { liveSocketFor } from "../../api/live-socket";
 import type { Agent } from "../../api/types";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { AgentConversationPage } from "./AgentConversationPage";
 import * as conversation from "./conversation";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 /**
  * assistant-ui converts every message while the runtime is built, so a message it refuses throws

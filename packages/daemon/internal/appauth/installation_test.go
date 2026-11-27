@@ -16,8 +16,9 @@ import (
 
 // Whether an App is installed on a repository is GitHub's answer to the App's own JWT on GET
 // /repos/{owner}/{repo}/installation: 2xx is installed, 404 is not, and anything else is no
-// answer, transient when GitHub's trouble. It is read per repository, as an installation on an
-// owner may cover only some of its repositories.
+// answer, transient when GitHub's trouble: an outage (httpoutage.Is: a 5xx, a 408 or a 429)
+// or a rate limit. It is read per repository, as an installation on an owner may cover only some
+// of its repositories.
 func TestInstalledOnReadsTheRepositorysInstallationForEachApp(t *testing.T) {
 	key, privatePEM := testAppKey(t)
 	now := time.Date(2026, 10, 16, 12, 0, 0, 0, time.UTC)
@@ -31,6 +32,8 @@ func TestInstalledOnReadsTheRepositorysInstallationForEachApp(t *testing.T) {
 		{name: "installed", status: http.StatusOK, want: true},
 		{name: "not installed", status: http.StatusNotFound},
 		{name: "GitHub's trouble", status: http.StatusBadGateway, wantErr: "(502)", transient: true},
+		{name: "a request GitHub's front door timed out", status: http.StatusRequestTimeout, wantErr: "(408)", transient: true},
+		{name: "a rate limit", status: http.StatusTooManyRequests, wantErr: "(429)", transient: true},
 		{name: "a refusal", status: http.StatusForbidden, wantErr: "(403)"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -128,7 +131,8 @@ func TestInstalledUnderAnswersANameGitHubRedirectsNotInstalled(t *testing.T) {
 
 // An App's bot login is its slug's, read under the App's own JWT (GET /app): it needs no
 // installation on any repository, so a daemon serving no repository yet still knows the review
-// App's login the engine judges pushes and reviews by. GitHub's trouble is transient.
+// App's login the engine judges pushes and reviews by. GitHub's trouble, an outage (a 5xx, a 408,
+// a 429), is transient, which the daemon's review App login waits out rather than refuses on.
 func TestAppLoginReadsTheAppsSlugUnderItsOwnJWT(t *testing.T) {
 	key, privatePEM := testAppKey(t)
 	now := time.Date(2026, 10, 16, 12, 0, 0, 0, time.UTC)
@@ -150,9 +154,10 @@ func TestAppLoginReadsTheAppsSlugUnderItsOwnJWT(t *testing.T) {
 	if login, err := tokens.AppLogin(context.Background(), Review); err != nil || login != "legion-reviewer[bot]" {
 		t.Fatalf("AppLogin = %q, %v; want legion-reviewer[bot]", login, err)
 	}
-	status = http.StatusBadGateway
-	var transient *TransientError
-	if _, err := tokens.AppLogin(context.Background(), Review); !errors.As(err, &transient) {
-		t.Fatalf("AppLogin on GitHub's 502 = %v, want a transient error", err)
+	for _, status = range []int{http.StatusBadGateway, http.StatusRequestTimeout, http.StatusTooManyRequests} {
+		var transient *TransientError
+		if _, err := tokens.AppLogin(context.Background(), Review); !errors.As(err, &transient) {
+			t.Fatalf("AppLogin on GitHub's %d = %v, want a transient error", status, err)
+		}
 	}
 }

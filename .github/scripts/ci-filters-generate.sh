@@ -15,24 +15,36 @@
 # package.json (the generate mode lists them in <out>.computed.yaml.inputs) - can make many filters
 # select less, while starting only the few jobs whose filters name that file: one dropped read in a
 # helper every Bun gate shares would skip those jobs in the very run that drops it. So when
-# CI_FILTERS_BASE names the commit the change is measured against (the pull request's base, the
-# merge group's base) and the change touches one of those files, this computes the base tree's
-# filters too, with the base tree's own engine, and every filter whose patterns differ between the
-# two is `'**'` in <out>: the run selects every job whose selection the change could have moved,
-# as the committed filters file used to, which every filter named. Each such filter is printed with
-# the patterns only the base has and only this tree has, and so is the step summary.
+# CI_FILTERS_BASE names the commit the change is measured against (the first parent of a pull
+# request's merge commit, the merge group's base, a dispatched branch's merge base with main:
+# .github/ci-notes/ci.md#the-commit-a-change-is-measured-against) and the change touches one of
+# those files, this computes the base tree's filters too, with the base tree's own engine, and
+# every filter whose patterns differ between the two is `'**'` in <out>: the run selects every job
+# whose selection the change could have moved, as the committed filters file used to, which every
+# filter named. Each such filter is printed with the patterns only the base has and only this tree
+# has, and so is the step summary. When CI_FILTERS_BASE_COMPUTED names a directory whose `commit`
+# file names that base, its ci-filters.yaml is the base tree's filters as a push of the base to main
+# generated them (.github/workflows/ci-caches-changes.yaml), and this reads that file in
+# place of generating the base tree again.
 #
 # FAILING OPEN. When the computation fails for any reason - go or Bun missing, a go command that
 # cannot run, a //ci: line or a gate file that cannot be read, a run longer than LIMIT, a crash -
 # the filters are unknown, and a job a filter would have selected must not be skipped for it. So
 # this writes instead, to both files, a file in which every filter the changes job hands on is
-# `'**'`, which matches every changed path: every job runs, as on a dispatched run. Its first line
+# `'**'`, which matches every changed path: every job runs, as on a dispatch of main. Its first line
 # starts with `# FAIL-OPEN:` and says why, and the lint job's readers refuse such a file, so the
 # run is red where the cause shows. A base tree whose filters cannot be computed, or a base commit
 # that cannot be read, makes every filter `'**'` in <out> alone: the computed filters stand, and the
 # lint job holds them. The names are every `steps.filter.outputs.<name>` .github/workflows/ci.yaml
-# reads, which needs no engine to find. It exits 0 either way, so the changes job's outputs always
-# come from its paths-filter step; it exits 1 only when it can write no file.
+# reads, which needs no engine to find and is the one form in which the changes job hands a job its
+# filter (check-ci-filters.sh's rule 2), but `changes`: that is the action's own list of the filters
+# that matched, which it writes only while no filter has the name (rule 19).
+# A step reads its filter out of that list instead (the test job's harness steps), and the file
+# holds no such filter, so either fallback also writes `every_filter=true` to the step's outputs
+# (GITHUB_OUTPUT), which ci.yaml's matched_filters reads as `all`, as on a dispatch of main: every
+# step gated on the list runs, whatever form its gate is written in.
+# It exits 0 either way, so the changes job's outputs always come from its paths-filter step; it
+# exits 1 only when it can write no file.
 #
 # Run from anywhere: .github/scripts/ci-filters-generate.sh <out>
 # CI runs it in ci.yaml's changes job, writing "$RUNNER_TEMP/ci-filters.yaml".
@@ -55,15 +67,19 @@ head_root=$PWD
 # changes job's timeout-minutes in ci.yaml adds up the job's steps.
 LIMIT=${CI_FILTERS_LIMIT:-300}
 
-# every_filter <first line>: a filters file whose every filter is `'**'`, under that first line.
+# every_filter <first line>: a filters file whose every filter is `'**'`, under that first line,
+# with the step's output every_filter=true, which hands every step gated on the list `all`.
 every_filter() {
   local names
-  names=$(grep -o 'steps\.filter\.outputs\.[A-Za-z0-9_-]*' .github/workflows/ci.yaml | sed 's/.*\.//' | sort -u)
+  names=$(grep -o 'steps\.filter\.outputs\.[A-Za-z0-9_-]*' .github/workflows/ci.yaml | sed 's/.*\.//' | grep -vx changes | sort -u)
   [ -n "$names" ] || return 1
   echo "$1"
   while IFS= read -r name; do
     printf '%s:\n  - %s\n' "$name" "'**'"
   done <<<"$names"
+  if [ -n "${GITHUB_OUTPUT:-}" ]; then
+    echo "every_filter=true" >>"$GITHUB_OUTPUT"
+  fi
 }
 
 started=$(date +%s)
@@ -121,32 +137,45 @@ sed 's/^/  /' <<<"$touched"
 scratch=$(mktemp -d)
 trap 'git -C "$head_root" worktree remove --force "$scratch/base" >/dev/null 2>&1; rm -rf "$scratch"' EXIT
 base_started=$(date +%s)
-if ! git worktree add -q --detach "$scratch/base" "$base" 2>/dev/null; then
-  force_every_filter "the base tree $base cannot be checked out, so the filters it computes are unknown"
-  exit 0
-fi
-# The base tree's listing needs its own node_modules, which a frozen install fills from the cache
-# this tree's install just warmed.
-if [ -f "$scratch/base/package.json" ] && command -v bun >/dev/null; then
-  (cd "$scratch/base" && timeout -k 5 120 bun install --frozen-lockfile >/dev/null 2>&1)
-fi
-if [ "$(left)" -le 15 ]; then
-  force_every_filter "no time is left of the ${LIMIT} s for the base tree's filters, so which filters this change alters is unknown"
-  exit 0
-fi
-timeout -k 15 "$(left)" "$scratch/base/.github/scripts/check-ci-filters.sh" generate "$scratch/base.yaml" >"$scratch/base.log" 2>&1
-base_status=$?
-echo "the base tree's filter generation took $(($(date +%s) - base_started)) s and exited $base_status"
-if [ "$base_status" -ne 0 ] || [ ! -s "$scratch/base.yaml" ]; then
-  echo "the base tree's generation printed, last lines:"
-  # The base tree's own output, its workflow commands kept from acting: an ::error:: of the base
-  # would otherwise annotate this tree's files on a job that passes.
-  token=$(head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n')
-  echo "::stop-commands::$token"
-  tail -20 "$scratch/base.log" | sed 's/^/  /'
-  echo "::$token::"
-  force_every_filter "the base tree's filters could not be computed (its check-ci-filters.sh generate exited $base_status), so which filters this change alters is unknown"
-  exit 0
+# The base tree's filters as a push of that commit to main computed them, when the changes job
+# restored them (CI_FILTERS_BASE_COMPUTED, the directory .github/workflows/ci-caches-changes.yaml
+# fills): the same command over the same tree, run there by the base's own Go and Bun, so the
+# generation below would write the same file. A directory that names another commit, or holds no
+# filters, is not read.
+cached=${CI_FILTERS_BASE_COMPUTED:-}
+base_sha=$(git rev-parse --verify -q "$base^{commit}" 2>/dev/null || true)
+if [ -n "$cached" ] && [ -n "$base_sha" ] && [ -s "$cached/ci-filters.yaml" ] &&
+  [ "$(cat "$cached/commit" 2>/dev/null)" = "$base_sha" ]; then
+  cp "$cached/ci-filters.yaml" "$scratch/base.yaml" || exit 1
+  echo "the base tree's filters are the ones the push of $base_sha to main computed (sha256 $(sha256sum <"$scratch/base.yaml" | cut -d' ' -f1)), so the base tree is not generated here"
+else
+  if ! git worktree add -q --detach "$scratch/base" "$base" 2>/dev/null; then
+    force_every_filter "the base tree $base cannot be checked out, so the filters it computes are unknown"
+    exit 0
+  fi
+  # The base tree's listing needs its own node_modules, which a frozen install fills from the cache
+  # this tree's install just warmed.
+  if [ -f "$scratch/base/package.json" ] && command -v bun >/dev/null; then
+    (cd "$scratch/base" && timeout -k 5 120 bun install --frozen-lockfile >/dev/null 2>&1)
+  fi
+  if [ "$(left)" -le 15 ]; then
+    force_every_filter "no time is left of the ${LIMIT} s for the base tree's filters, so which filters this change alters is unknown"
+    exit 0
+  fi
+  timeout -k 15 "$(left)" "$scratch/base/.github/scripts/check-ci-filters.sh" generate "$scratch/base.yaml" >"$scratch/base.log" 2>&1
+  base_status=$?
+  echo "the base tree's filter generation took $(($(date +%s) - base_started)) s and exited $base_status"
+  if [ "$base_status" -ne 0 ] || [ ! -s "$scratch/base.yaml" ]; then
+    echo "the base tree's generation printed, last lines:"
+    # The base tree's own output, its workflow commands kept from acting: an ::error:: of the base
+    # would otherwise annotate this tree's files on a job that passes.
+    token=$(head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n')
+    echo "::stop-commands::$token"
+    tail -20 "$scratch/base.log" | sed 's/^/  /'
+    echo "::$token::"
+    force_every_filter "the base tree's filters could not be computed (its check-ci-filters.sh generate exited $base_status), so which filters this change alters is unknown"
+    exit 0
+  fi
 fi
 
 python3 - "$computed" "$scratch/base.yaml" "$out" "${GITHUB_STEP_SUMMARY:-}" <<'PY' || force_every_filter "the computed filters could not be compared with the base tree's"

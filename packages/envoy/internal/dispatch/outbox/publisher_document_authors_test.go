@@ -84,6 +84,7 @@ func anchorOn(artifactID string) map[string]any {
 // A case that names a claimant publishes as the batch does for an issue a session claims, where
 // the credits of a document are left out (addAuthorRoutes).
 func TestACommentOnADocumentReachesTheSessionsThatWroteIt(t *testing.T) {
+	t.Parallel()
 	alice := model.Actor{Kind: "user", ID: "alice"}
 	bob := model.Actor{Kind: "user", ID: "bob"}
 	writer := model.Actor{Kind: "session", ID: "session-writer"}
@@ -352,6 +353,7 @@ func TestACommentOnADocumentReachesTheSessionsThatWroteIt(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			database := storetest.Open(t)
 			seedIssue(t, database, "T-1", nil)
 			event, slug := tc.arrange(t, database)
@@ -387,6 +389,7 @@ func TestACommentOnADocumentReachesTheSessionsThatWroteIt(t *testing.T) {
 // The author routes skip the event's own actor wherever they find it, so a writer is never told
 // of its own comment even should an agent's comment notify.
 func TestAddAuthorRoutesSkipsTheCommenterAmongTheDocumentsWriters(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	seedIssue(t, database, "T-1", nil)
 	writer := model.Actor{Kind: "session", ID: "session-writer"}
@@ -409,6 +412,7 @@ func TestAddAuthorRoutesSkipsTheCommenterAmongTheDocumentsWriters(t *testing.T) 
 // own actor is skipped. The event names its document by the payload's artifact_id, as the notice
 // sweep writes it (docs.sendEditNotice).
 func TestAPersonsSpecEditReachesEachSessionThatWroteTheSpecOnce(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	route := "role:reviewer"
 	seedIssue(t, database, "T-1", &route)
@@ -455,6 +459,7 @@ func TestAPersonsSpecEditReachesEachSessionThatWroteTheSpecOnce(t *testing.T) {
 // its own topic (addClaimantRoute), while an artifact.human_edited takes no claimant route at all,
 // so nothing else would tell the document's writers that a person changed what they wrote.
 func TestAPersonsSpecEditOnAClaimedIssueStillReachesEachSessionThatWroteIt(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	seedIssue(t, database, "T-1", nil)
 	claimant := model.Actor{Kind: "session", ID: "session-claimant"}

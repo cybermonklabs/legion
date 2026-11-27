@@ -690,6 +690,7 @@ func TestARepeatFoundInFlightIsJudgedOnceItsBodyHasArrived(t *testing.T) {
 // is ended only by the wait below, at the shared bound, which names it. The server's handler ends
 // with the test as well, so that its Close, a cleanup, does not wait on a post that never ended.
 func TestAKeyedPostBegunPastItsBoundEndsAtOnce(t *testing.T) {
+	t.Parallel()
 	testEnded := make(chan struct{})
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		select {

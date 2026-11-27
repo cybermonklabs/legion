@@ -177,6 +177,7 @@ func TestEditNoticeSweepSendsAWokenNoticeAtItsDueTime(t *testing.T) {
 // keeps trying, every gap plus up to a tenth, until a sweep of its own runs, and that sweep sends
 // the due notice: the other process's pass may have read before it was due.
 func TestEditNoticeSweepRetriesAHeldLease(t *testing.T) {
+	// Not parallel: it swaps the default logger (logtest.SetDefault in captureLogs).
 	database := storetest.Open(t)
 	document := createIssueDocument(t, database, 1, "First.")
 	addPersonsVersion(t, database, document, 2, "Second.\n", model.Actor{Kind: "user", ID: "alice@example.com"})
@@ -185,7 +186,7 @@ func TestEditNoticeSweepRetriesAHeldLease(t *testing.T) {
 	taken, release := make(chan struct{}), make(chan struct{})
 	held := make(chan bool, 1)
 	go func() {
-		held <- duty.Exclusive(context.Background(), leases, editNoticeLease, time.Time{}, 0, func(context.Context) {
+		held <- duty.Exclusive(context.Background(), nil, leases, editNoticeLease, time.Time{}, 0, func(context.Context) {
 			close(taken)
 			<-release
 		})

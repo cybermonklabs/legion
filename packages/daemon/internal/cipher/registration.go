@@ -58,8 +58,8 @@ type PodSessionRenewal struct {
 // KeepPodSession writes r's registration now and keeps it written until stop is called or ctx
 // ends, on r.After: again RegistrationRenewal after each write the broker takes, and after a write
 // that failed or that the broker refused for a reason a retry can change (IsPermanent false: a
-// 5xx, a 429, an expired pod token, POD_REGISTRAR_NOT_LISTED, a broker out of reach, a token the
-// pod did not hand over) on a backoff from registrationRetryInitial doubling to
+// 5xx, a 408, a 429, an expired pod token, POD_REGISTRAR_NOT_LISTED, a broker out of reach, a
+// token the pod did not hand over) on a backoff from registrationRetryInitial doubling to
 // registrationRetryMax. Every write sends r.Thumbprint and r.Generation. A permanent refusal ends
 // it, and so do an answer the broker made for another pod or key than r's (AnswerMismatchError),
 // an answer at a later generation than r's (SupersededError: a later process of this claim's

@@ -2,6 +2,7 @@ import { afterAll, beforeAll, expect, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { delimiter, join } from "node:path";
 import { captureEnvironment } from "@legion/test-fixtures/environment";
+import { realHostTool } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 
 import { handOverMessage } from "../local-instance-support";
@@ -14,6 +15,13 @@ import { resetSession, sql, sqlAt } from "../psql";
  *  registered after the helper's own, writes it into the directory. */
 const standIn = temporaryDirectory("psql-password");
 const record = join(standIn, "record");
+
+/** The real `name` a stand-in hands its call on to, resolved once at test start, before any
+ *  stand-in directory goes first on PATH: never a mise shim, and never a directory at or below
+ *  `standIn`. A mise shim with no version of the tool active falls back to the next `name` on
+ *  PATH, which, once the row's stand-in directory is first, is the stand-in itself, and mise stops
+ *  with "shim fallback recursion detected" (`realHostTool`). */
+const realTools = { env: realHostTool("env", standIn), python3: realHostTool("python3", standIn) };
 
 /** What the stand-in psql was last handed. */
 function handed(): { args: string[]; pgpassword: string } {
@@ -206,13 +214,12 @@ test("the shared corpus has accepted and refused cases", () => {
   expect([corpus.accepted.length > 0, corpus.refused.length > 0]).toEqual([true, true]);
 });
 
-test.each(corpus.accepted)("the shared corpus: splits $url as libpq does", ({
-  url,
-  password,
-  bare,
-}) => {
-  expect(splitDatabaseUrl(url)).toEqual({ url: bare, password: password ?? undefined });
-});
+test.each(corpus.accepted)(
+  "the shared corpus: splits $url as libpq does",
+  ({ url, password, bare }) => {
+    expect(splitDatabaseUrl(url)).toEqual({ url: bare, password: password ?? undefined });
+  }
+);
 
 test.each(corpus.refused)("the shared corpus: refuses $url, naming $fault", ({ url, fault }) => {
   expect(() => splitDatabaseUrl(url)).toThrow(
@@ -307,10 +314,12 @@ for (const signIn of serverSignIns) {
       // A python3 and an env first on PATH that record their arguments before they run, as
       // held-port.py and env would carry a setting named to them, and a stand-in server that
       // writes its own arguments and the settings it was given.
-      for (const tool of ["python3", "env"]) {
+      for (const tool of ["python3", "env"] as const) {
+        const real = realTools[tool];
+        if (real === null) throw new Error(`this host has no ${tool} on PATH that is no mise shim`);
         writeFileSync(
           join(work, "bin", tool),
-          `#!/bin/sh\nprintf '%s\\n' "${tool} $*" >>'${work}/argv'\nexec ${Bun.which(tool)} "$@"\n`,
+          `#!/bin/sh\nprintf '%s\\n' "${tool} $*" >>'${work}/argv'\nexec ${real} "$@"\n`,
           { mode: 0o755 }
         );
       }

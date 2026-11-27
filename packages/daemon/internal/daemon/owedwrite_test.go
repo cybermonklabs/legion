@@ -35,6 +35,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/sjawhar/envoy/testpool"
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -262,7 +263,9 @@ func refusing(behind supervise.Store, token claim.Token, err error) *claimWriteF
 //
 // pgxpool dials nothing when it is built, so the pool is built at once and the write's
 // transaction is where the wait begins. The proxy dials no server, so the address it proxies is
-// one nothing serves.
+// one nothing serves. PoolConfig keeps the daemon's BeforeConnect hook that lowers a bounded
+// write's dial, and testpool.Size gives the pool the test pools' size, since Outage's DSN names
+// none.
 func blocked(t *testing.T, behind supervise.Store, token claim.Token) *claimWriteFault {
 	t.Helper()
 	outage := testdb.Outage(t, "postgres://legion@127.0.0.1:1/legion?sslmode=disable")
@@ -270,6 +273,9 @@ func blocked(t *testing.T, behind supervise.Store, token claim.Token) *claimWrit
 	config, err := store.PoolConfig(outage.DSN)
 	if err != nil {
 		t.Fatalf("configure a pool on the database that never answers: %v", err)
+	}
+	if err := testpool.Size(config); err != nil {
+		t.Fatalf("size the pool on the database that never answers: %v", err)
 	}
 	raw, err := pgxpool.NewWithConfig(context.Background(), config)
 	if err != nil {
@@ -382,7 +388,7 @@ func newOwedWriteRig(t *testing.T, write time.Duration, roles ...owedRole) *owed
 		tokens[role.role] = token
 		claims = append(claims, supervise.Claim{
 			Token: token, Project: owedProject, Tree: owedIssue, Issue: owedIssue, Role: role.role,
-			Generation: 1, State: role.state, PluginContract: api.DaemonAPIVersion,
+			Generation: 1, State: role.state, PluginContract: api.DaemonAPIVersion(),
 			Session: "ses_" + string(role.role), SessionFile: "/sessions/" + string(role.role) + ".jsonl",
 			Locator: podUpdateLocator(token, owedIssue, owedPod),
 		})
@@ -425,7 +431,7 @@ func (r *owedWriteRig) boot() {
 		// The daemon's own write bound (daemon.go's Deps), so INFRA-1132's rows read the
 		// production path: the write bound counted from the connection, the queue's apart.
 		BoundWrite:     store.BoundAfterAcquire,
-		PluginContract: api.DaemonAPIVersion,
+		PluginContract: api.DaemonAPIVersion(),
 		RefreshGate:    supervise.NewRefreshGate(0),
 	}
 	r.t.Cleanup(sup.stop)

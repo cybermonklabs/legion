@@ -1,9 +1,10 @@
-import { afterEach, beforeEach, expect, type Mock, spyOn, test } from "bun:test";
+import { afterEach, beforeAll, beforeEach, expect, type Mock, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 
+import { displayTree } from "../../__tests__/display-trees";
 import { graphNode } from "../../__tests__/graph-fixture";
 import { api } from "../../api/client";
 import type {
@@ -11,11 +12,20 @@ import type {
   Ask,
   AskAnswer,
   AskRead,
+  DisplayTree,
   MyAnswerRow,
   MyAnswersResponse,
 } from "../../api/types";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { AnswersPage } from "./AnswersPage";
+
+// A row builds the trees it hands the page with `displayTree`, which parses with the page's own
+// engine and answers nothing until that engine has loaded. The rows run in random order, and one
+// that ran before any other had loaded the engine handed the page no tree, so the file loads it
+// before its first row.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 let whoAmI: Mock<typeof api.whoAmI>;
 let getReferences: Mock<typeof api.getReferences>;
@@ -185,20 +195,72 @@ test("lists the person's answers and replies newest first with time, owner, ques
   }
 });
 
-test("an approval answer offers no Change answer", async () => {
+// Each pill draws its label from the tree the row carries beside it, at the label's own index,
+// and parses nothing (`answers-chosen-options`): the trees here read `Sail` and `wait` where the
+// labels' markdown says `Ship` and `hold`, so a pill that parsed its label, or took another
+// label's tree, would show other words.
+test("a row's chosen options are drawn from the trees of their labels", async () => {
   const listMyAnswers = spyOn(api, "listMyAnswers").mockResolvedValue(
     page([
       answerRow({
-        answer: { ...shipAnswer, selected: ["Approve"], text: null },
-        ask_kind: "approval",
-        question: "Approve spec (version 2)?",
+        answer: {
+          ...shipAnswer,
+          selected: ["**Ship** it", "*hold* it"],
+          selected_trees: [
+            displayTree("**Sail** it") as DisplayTree,
+            displayTree("*wait* it") as DisplayTree,
+          ],
+          text: null,
+        },
       }),
     ])
   );
   const { view } = renderPage();
   try {
-    await view.findByRole("link", { name: "Open" });
-    expect(view.queryByRole("button", { name: "Change answer" })).not.toBeInTheDocument();
+    const [row] = (await view.findAllByRole("listitem")).filter(
+      (item) => item.dataset.answerRow !== undefined
+    ) as [HTMLElement];
+    await waitFor(() => expect(row.querySelector("strong")?.textContent).toBe("Sail"));
+    expect(row.querySelector("em")?.textContent).toBe("wait");
+    expect(within(row).queryByText(/Ship|hold/)).toBeNull();
+  } finally {
+    view.unmount();
+    listMyAnswers.mockRestore();
+  }
+});
+
+test("a current answer that cannot be changed says why in place of Change answer", async () => {
+  const listMyAnswers = spyOn(api, "listMyAnswers").mockResolvedValue(
+    page([
+      answerRow({
+        answer: { ...shipAnswer, selected: ["Approve"], text: null },
+        ask_id: "ask-approval",
+        ask_kind: "approval",
+        question: "Approve spec (version 2)?",
+      }),
+      answerRow({ ask_id: "ask-closed", ask_state: "resolved", question: "Closed question?" }),
+      answerRow({ ask_id: "ask-open", ask_state: "open", question: "Asked again?" }),
+      answerRow({ ask_id: "ask-answered", question: "Still answered?" }),
+    ])
+  );
+  const { view } = renderPage();
+  try {
+    await view.findAllByRole("link", { name: "Open" });
+    const row = (id: string) =>
+      view.container.querySelector<HTMLElement>(`[data-answer-row="${id}"]`) as HTMLElement;
+    const reasons: Record<string, string> = {
+      "ask-approval": "An approval can't be changed",
+      "ask-closed": "Closed, so it can't be changed",
+      "ask-open": "Open again: answer it from the Inbox",
+    };
+    for (const [id, reason] of Object.entries(reasons)) {
+      expect(within(row(id)).queryByRole("button", { name: "Change answer" })).toBeNull();
+      expect(within(row(id)).getByText(reason)).toBeTruthy();
+    }
+    // An answer that can be changed offers the control and gives no reason.
+    const answered = row("ask-answered");
+    expect(within(answered).getByRole("button", { name: "Change answer" })).toBeTruthy();
+    expect(answered.querySelector("[data-answer-unchangeable]")).toBeNull();
   } finally {
     view.unmount();
     listMyAnswers.mockRestore();

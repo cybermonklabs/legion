@@ -1,7 +1,9 @@
 package config
 
 import (
+	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/base64"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -282,13 +284,14 @@ func TestNATSCalloutSettings(t *testing.T) {
 			}
 		})
 	}
-	// A hub URL that carries user info is refused at load, by its place in the list and never its
-	// text: the service connects as the user its seed names, so user info is a credential it does
-	// not use, and the broker writes the URLs into its start line and the service's connect error.
-	// nats.go dials an entry with no scheme as nats://<entry> (nats.go, parseServerURL), so such an
-	// entry is read the same way, and an entry that does not parse as a URL, whose parse error
-	// would quote it whole, is refused too. Each URL is built from a random secret of this run, so
-	// no credential-shaped URL is written in the source, and the refusal must hold none of it.
+	// A hub URL that carries user info, a query or a fragment is refused at load, by its place in
+	// the list and never its text: the service connects as the user its seed names, so user info is
+	// a credential it does not use, a query or a fragment is where a token can be put, and the
+	// broker writes the URLs into its start line and the service's connect error. nats.go dials an
+	// entry with no scheme as nats://<entry> (nats.go, parseServerURL), so such an entry is read the
+	// same way, and an entry that does not parse as a URL, whose parse error would quote it whole,
+	// is refused too. Each URL is built from a random secret of this run, so no credential-shaped
+	// URL is written in the source, and the refusal must hold none of it.
 	secret := rand.Text()
 	userAndPassword := (&url.URL{Scheme: "nats", User: url.UserPassword("svc", secret), Host: "hub-b:4222"}).String()
 	for _, row := range []struct{ name, urls, names string }{
@@ -296,6 +299,11 @@ func TestNATSCalloutSettings(t *testing.T) {
 		{"a token as the user", (&url.URL{Scheme: "nats", User: url.User(secret), Host: "hub-a:4222"}).String(), "BROKER_NATS_URLS entry 1"},
 		{"user info with no scheme", strings.TrimPrefix(userAndPassword, "nats://"), "BROKER_NATS_URLS entry 1"},
 		{"no URL at all", strings.Replace(userAndPassword, secret, secret+"%zz", 1), "BROKER_NATS_URLS entry 1"},
+		// A token holding a "/" written as the user: url.Parse reads its head as the host and the
+		// "@" in the path, so no user info is parsed and the "@" is what is refused.
+		{"a token holding a / as the user", "nats://hub-a:4222, nats://" + secret + "/rest@hub-b:4222", "BROKER_NATS_URLS entry 2 carries user info"},
+		{"a token in its query", "nats://hub-a:4222?token=" + secret, "BROKER_NATS_URLS entry 1 carries a query or a fragment"},
+		{"a token in its fragment", "nats://hub-a:4222#" + secret, "BROKER_NATS_URLS entry 1 carries a query or a fragment"},
 	} {
 		t.Run("a hub URL with "+row.name, func(t *testing.T) {
 			e := full()
@@ -321,4 +329,97 @@ func TestNATSCalloutSettings(t *testing.T) {
 			t.Fatalf("read %q", cfg.EnvoyAccountTokenFile)
 		}
 	})
+}
+
+// holdKey is a fresh Ed25519 public key and its text as BROKER_NATS_HOLD_SIGNING_KEYS writes it,
+// the unpadded base64url of its 32 bytes.
+func holdKey(t *testing.T) (ed25519.PublicKey, string) {
+	t.Helper()
+	public, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return public, base64.RawURLEncoding.EncodeToString(public)
+}
+
+// The writer hold's three settings: unset, the auth service reads no hold row, the routes trust no
+// key and the hold's pool would be 2; set, the switch is true or false and nothing else, every key
+// of the list is read in order whatever whitespace or commas part them, and the pool is a whole
+// number of connections from 1 to 10. A key that is not the unpadded base64url of 32 bytes is
+// refused by its place in the list and never its text, since a deployment that pasted a private
+// key there must not find it in the broker's log.
+func TestNATSHoldSettings(t *testing.T) {
+	first, firstText := holdKey(t)
+	second, secondText := holdKey(t)
+	third, thirdText := holdKey(t)
+
+	t.Run("unset", func(t *testing.T) {
+		cfg, err := Load(env(validEnv()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfg.NATS.HoldRead || cfg.NATS.HoldSigningKeys != nil || cfg.NATS.HoldPoolSize != 2 {
+			t.Fatalf("an environment naming no hold setting read HoldRead %v, %d keys, pool %d; want false, none and 2",
+				cfg.NATS.HoldRead, len(cfg.NATS.HoldSigningKeys), cfg.NATS.HoldPoolSize)
+		}
+	})
+	t.Run("every setting", func(t *testing.T) {
+		e := validEnv()
+		e["BROKER_NATS_HOLD_READ"] = "true"
+		e["BROKER_NATS_HOLD_SIGNING_KEYS"] = " " + firstText + ",\n" + secondText + " ,, " + thirdText + "\t"
+		e["BROKER_NATS_HOLD_POOL_SIZE"] = "5"
+		cfg, err := Load(env(e))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !cfg.NATS.HoldRead || cfg.NATS.HoldPoolSize != 5 {
+			t.Fatalf("read HoldRead %v and pool %d, want true and 5", cfg.NATS.HoldRead, cfg.NATS.HoldPoolSize)
+		}
+		want := []ed25519.PublicKey{first, second, third}
+		if len(cfg.NATS.HoldSigningKeys) != len(want) {
+			t.Fatalf("read %d keys, want %d", len(cfg.NATS.HoldSigningKeys), len(want))
+		}
+		for i, key := range want {
+			if !key.Equal(cfg.NATS.HoldSigningKeys[i]) {
+				t.Fatalf("key %d is not the key the list names in that place", i+1)
+			}
+		}
+		e["BROKER_NATS_HOLD_READ"] = "false"
+		if cfg, err = Load(env(e)); err != nil || cfg.NATS.HoldRead {
+			t.Fatalf("BROKER_NATS_HOLD_READ=false read HoldRead %v, %v; want false", cfg.NATS.HoldRead, err)
+		}
+	})
+
+	padded := base64.URLEncoding.EncodeToString(first)
+	short := base64.RawURLEncoding.EncodeToString(first[:31])
+	// 32 bytes of 0xff, whose standard base64 is all '/' but its last character, which no base64url
+	// text holds.
+	standard := base64.RawStdEncoding.EncodeToString([]byte(strings.Repeat("\xff", ed25519.PublicKeySize)))
+	for _, row := range []struct {
+		name, setting, value, names string
+		hidden                      []string
+	}{
+		{"a switch that is neither true nor false", "BROKER_NATS_HOLD_READ", "yes", "BROKER_NATS_HOLD_READ", nil},
+		{"a key that is no base64url", "BROKER_NATS_HOLD_SIGNING_KEYS", firstText + " not*a*key", "BROKER_NATS_HOLD_SIGNING_KEYS entry 2", []string{"not*a*key"}},
+		{"a padded key", "BROKER_NATS_HOLD_SIGNING_KEYS", padded, "BROKER_NATS_HOLD_SIGNING_KEYS entry 1", []string{padded}},
+		{"a key of 31 bytes", "BROKER_NATS_HOLD_SIGNING_KEYS", secondText + "," + short, "BROKER_NATS_HOLD_SIGNING_KEYS entry 2", []string{short}},
+		{"a key in standard base64", "BROKER_NATS_HOLD_SIGNING_KEYS", standard, "BROKER_NATS_HOLD_SIGNING_KEYS entry 1", []string{standard}},
+		{"a pool of none", "BROKER_NATS_HOLD_POOL_SIZE", "0", "BROKER_NATS_HOLD_POOL_SIZE", nil},
+		{"a pool above the broker's own", "BROKER_NATS_HOLD_POOL_SIZE", "11", "BROKER_NATS_HOLD_POOL_SIZE", nil},
+		{"a pool that is no number", "BROKER_NATS_HOLD_POOL_SIZE", "two", "BROKER_NATS_HOLD_POOL_SIZE", nil},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			e := validEnv()
+			e[row.setting] = row.value
+			_, err := Load(env(e))
+			if err == nil || !strings.Contains(err.Error(), row.names) {
+				t.Fatalf("want a refusal naming %s, got %v", row.names, err)
+			}
+			for _, text := range row.hidden {
+				if strings.Contains(err.Error(), text) {
+					t.Fatalf("the refusal prints the entry's text %q: %v", text, err)
+				}
+			}
+		})
+	}
 }

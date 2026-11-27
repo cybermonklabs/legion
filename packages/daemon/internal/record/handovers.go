@@ -70,9 +70,11 @@ func (s *Postgres) CancelTreeHandovers(ctx context.Context, tx pgx.Tx, tree stri
 	if generation > maxInt64 {
 		return fmt.Errorf("cancel hand-overs of %s: generation %d does not fit a bigint", tree, generation)
 	}
-	if _, err := tx.Exec(ctx, `update handovers set cancelled = true where tree = $1 and linger_generation = $2`, tree, int64(generation)); err != nil {
+	tag, err := tx.Exec(ctx, `update handovers set cancelled = true where tree = $1 and linger_generation = $2`, tree, int64(generation))
+	if err != nil {
 		return fmt.Errorf("cancel hand-overs of %s: %w", tree, err)
 	}
+	noteRowsWritten(ctx, tag)
 	return nil
 }
 

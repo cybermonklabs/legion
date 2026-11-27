@@ -51,6 +51,7 @@ func lastStartOf(t *testing.T, pool *pgxpool.Pool, key string, role claim.Role) 
 // phase of its first step. The twin of each: the default steps, which an issue with no plan rows
 // runs, stay as today.
 func TestTheStepsOfAnyOrderMoveOn(t *testing.T) {
+	t.Parallel()
 	t.Run("a: the reviewer after the owner's acceptance is told the implementer's report", func(t *testing.T) {
 		pool := migratedPool(t)
 		engine := stepEngine(nil)
@@ -166,7 +167,7 @@ func TestTheStepsOfAnyOrderMoveOn(t *testing.T) {
 			"LEGION-210": "LEGION-210 starts planning under LEGION-208: it reached the front of the waiting line and took an admission slot. ",
 		} {
 			got := noticesOf(t, pool, child, "child-status")
-			if len(got) != 1 || got[0].Kind != "child-status" || got[0].Role != claim.RoleArchitect || !strings.HasPrefix(got[0].Reason, first) {
+			if len(got) != 1 || got[0].Role != claim.RoleArchitect || !strings.HasPrefix(got[0].Reason, first) {
 				t.Fatalf("the child-status notices of %s = %+v, want one to the architect whose reason starts %q", child, got, first)
 			}
 		}

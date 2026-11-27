@@ -1,0 +1,4 @@
+kind: Changed
+body: |-
+  A root architect's stuck tool call no longer notifies the controller while the session's own
+  recovery runs: the controller hears of it only when that recovery stops short of a step.

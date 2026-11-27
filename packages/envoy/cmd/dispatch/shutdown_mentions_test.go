@@ -378,9 +378,12 @@ func TestARollingUpdatesSuccessorHandsEachMentionTheOldProcessLeftOnce(t *testin
 		id, err := old.postMention(key, "Accepted during the HTTP drain.", "session:s2")
 		answered <- posted{id, err}
 	}()
-	if waiting := storetest.WaitForLockWaiters(t, holder, 1, 10*time.Second); waiting < 1 {
-		t.Fatalf("the comment never queued behind the issue lock:\n%s", old.Output.String())
-	}
+	t.Cleanup(func() {
+		if t.Failed() {
+			t.Logf("the old process's output:\n%s", old.Output.String())
+		}
+	})
+	storetest.WaitForLockWaiters(t, holder, 1)
 
 	old.Terminate(t)
 	old.WaitForOutput(t, `msg="dispatch: shutting down"`)

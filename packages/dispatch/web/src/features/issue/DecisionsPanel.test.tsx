@@ -8,6 +8,7 @@ import { quietConsoleError } from "../../__tests__/act-warnings";
 import { displayTree } from "../../__tests__/display-trees";
 import { realClock, settle } from "../../__tests__/fake-clock";
 import { graphNode } from "../../__tests__/graph-fixture";
+import { answerQuestionOf, NAMED_ASK, NAMED_QUESTION } from "../../__tests__/question-answers";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
 import { api, NetworkError } from "../../api/client";
@@ -322,6 +323,114 @@ test("Change opens the comment composer on decisions.md, quoting the decision's 
   }
 });
 
+// Two places of the panel hold no markup and draw their text's plain-text projection: an open
+// question's link, and the name the Keep and the Change are given (the Change's form here). Each
+// drops the formatting and reads a `dispatch://` address as its target's name - the reading
+// list's `issue-open-question` and `issue-decision`. Drawn as the characters they are, each would
+// hold `**` and the address.
+test("an open question and the Change's name read their text's plain-text projection", async () => {
+  const user = userEvent.setup();
+  const question = "**Which** index does dispatch://CORE-2 need?";
+  const view: IssueDecisions = {
+    decisions: [
+      decision({
+        block_id: "only",
+        heading: "Warm dispatch://CORE-2 first",
+        text: "## Warm dispatch://CORE-2 first\n\nIt is cheap.",
+        waiting_review: true,
+      }),
+    ],
+    document: "dispatch://CORE-1/artifact/decisions-md",
+    open_questions: [
+      {
+        block_id: "q1",
+        id: questionId,
+        question,
+        question_tree: displayTree(question),
+      } as unknown as IssueAskRow,
+    ],
+  };
+  const read = spyOn(api, "getIssueDecisions").mockResolvedValue(view);
+  const summary = spyOn(api, "getIssueSummary").mockImplementation(async (key) => ({
+    documents: [],
+    key,
+    project: "CORE",
+    status: "in_progress",
+    title: "Cut the release",
+  }));
+  try {
+    renderPanel();
+    const open = await screen.findByRole("region", { name: "Open questions" });
+    expect(
+      await within(open).findByRole("link", {
+        name: "Which index does CORE-2 Cut the release need?",
+      })
+    ).toHaveAttribute("href", "/issues/CORE-1/spec#b-q1");
+    const waiting = list("Waiting for your review");
+    await user.click(within(waiting).getByRole("button", { name: "Change" }));
+    expect(
+      within(waiting).getByRole("form", { name: "Change Warm CORE-2 Cut the release first" })
+    ).toBeDefined();
+  } finally {
+    read.mockRestore();
+    summary.mockRestore();
+  }
+});
+
+// A link under "Shaped in the spec" names the spec block by its id, in the panel's own words: the
+// decisions read sends no text of the block a link points to (`refs.BlockLinks` resolves each end
+// as a graph node, whose text only a reference read fills), so there is no stored text to draw,
+// and the panel reads none. Handed a node that did carry text, the link still reads `Block p1`:
+// a projection of that text would read `Warm CORE-2 Cut the release before the cut.`.
+test("a shaped block's link names the block by its id and draws no text of the block", async () => {
+  const view: IssueDecisions = {
+    decisions: [
+      decision({
+        block_id: "only",
+        heading: "Keep the notices queryable",
+        links: [
+          {
+            created_at: "2026-11-01T00:00:00Z",
+            created_version: 1,
+            from_block: "only",
+            stale: false,
+            to: graphNode({
+              block_id: "p1",
+              id: "CORE-1/spec#p1",
+              kind: "block",
+              text: "**Warm** dispatch://CORE-2 before the cut.",
+            }),
+          },
+        ],
+        text: "## Keep the notices queryable\n\nIt is cheap.",
+        waiting_review: true,
+      }),
+    ],
+    document: "dispatch://CORE-1/artifact/decisions-md",
+    open_questions: [],
+  };
+  const read = spyOn(api, "getIssueDecisions").mockResolvedValue(view);
+  const summary = spyOn(api, "getIssueSummary").mockImplementation(async (key) => ({
+    documents: [],
+    key,
+    project: "CORE",
+    status: "in_progress",
+    title: "Cut the release",
+  }));
+  try {
+    renderPanel();
+    const waiting = await screen.findByRole("region", { name: "Waiting for your review" });
+    expect(await within(waiting).findByRole("link", { name: "Block p1" })).toHaveAttribute(
+      "href",
+      "/issues/CORE-1/spec#b-p1"
+    );
+    expect(within(waiting).queryByText(/before the cut/)).toBeNull();
+  } finally {
+    read.mockRestore();
+    summary.mockRestore();
+  }
+});
+
 // A Keep or a change the reader stopped may have been made: the card says so, and that its
 // button is a press of its own, rather than the stopped write's own words, which are a
 // composer's and promise a Retry the card does not offer.
@@ -499,6 +608,54 @@ test("a decision whose answer carried no reading is still drawn, quoted and mark
   }
 });
 
+// An open question is its ask's record, and a decision's heading is a record of `decisions.md`:
+// a `#id` in either names the question of that record's document, so the question's link and
+// the Keep's write read it as the question it names. Handed no record, both keep `#q2`.
+test("a #id in an open question and in a decision's heading names the question of its record", async () => {
+  const view: IssueDecisions = {
+    decisions: [
+      decision({
+        block_id: "only",
+        heading: "Settle #q2 first",
+        text: "## Settle #q2 first\n\nIt is cheap.",
+        waiting_review: true,
+      }),
+    ],
+    document: "dispatch://CORE-1/artifact/decisions-md",
+    open_questions: [
+      { block_id: "q1", id: questionId, question: "Decide #q2 now?" } as unknown as IssueAskRow,
+    ],
+  };
+  const read = spyOn(api, "getIssueDecisions").mockResolvedValue(view);
+  for (const [kind, id, words] of [
+    ["ask", questionId, `Decide ${NAMED_QUESTION} now?`],
+    ["artifact", documentId, `Change Settle ${NAMED_QUESTION} first`],
+  ] as const) {
+    const answers = answerQuestionOf(kind, id);
+    const user = userEvent.setup();
+    const panel = renderPanel();
+    try {
+      if (kind === "ask") {
+        const open = await screen.findByRole("region", { name: "Open questions" });
+        expect(await within(open).findByRole("link", { name: words })).toBeDefined();
+      } else {
+        const waiting = await screen.findByRole("region", { name: "Waiting for your review" });
+        await waitFor(() =>
+          expect(waiting.querySelector(`[data-dispatch-ref="${NAMED_ASK}"]`)).not.toBeNull()
+        );
+        await user.click(within(waiting).getByRole("button", { name: "Change" }));
+        await waitFor(() =>
+          expect(within(waiting).getByRole("form", { name: words })).toBeDefined()
+        );
+      }
+    } finally {
+      panel.unmount();
+      answers.restore();
+    }
+  }
+  read.mockRestore();
+});
+
 // Each block of an answer that carried no reading cites what its own markdown holds and nothing
 // the decision's other blocks hold. The browser parsed that block's markdown to draw it, so a
 // `#q2` another block cites is no reference of this one: read from the whole decision, the
@@ -586,7 +743,8 @@ function refusedTree(text: string): DisplayTree {
 
 // A block whose tree cannot be drawn shows the text that body was handed, so each body is
 // handed its own block's text and no more: the decision's whole text in every one of them
-// would draw that text once per block, heading line and all.
+// would draw that text once per block, heading line and all. The heading is drawn from its own
+// node of the same tree, so it shows its own words when that node is refused.
 test("a block whose tree the engine refuses shows its own text alone", async () => {
   const text = "## Keep a log\n\nA log is enough.\n\nUnsure: the index may be slow.";
   const read = spyOn(api, "getIssueDecisions").mockResolvedValue(
@@ -599,10 +757,11 @@ test("a block whose tree the engine refuses shows its own text alone", async () 
     const waiting = await screen.findByRole("region", { name: "Waiting for your review" });
     const fallbacks = await waitFor(() => {
       const found = waiting.querySelectorAll<HTMLElement>("[data-markdown-fallback]");
-      expect(found).toHaveLength(2);
+      expect(found).toHaveLength(3);
       return found;
     });
     expect([...fallbacks].map((body) => body.textContent)).toEqual([
+      "Keep a log",
       "A log is enough.",
       "Unsure: the index may be slow.",
     ]);

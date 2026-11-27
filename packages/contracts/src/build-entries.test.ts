@@ -1,7 +1,8 @@
-import { afterAll, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join, posix, resolve } from "node:path";
+import { describe, expect, test } from "bun:test";
+import { existsSync } from "node:fs";
+import { join, resolve } from "node:path";
+import { buildInto, underDist } from "@legion/test-fixtures/package-build";
+import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 
 /**
  * Every file `package.json` names is a file the package has. The `types` and `bun` conditions of
@@ -23,38 +24,9 @@ type Manifest = {
 const manifest = (await Bun.file(join(packageDir, "package.json")).json()) as Manifest;
 const entries = Object.values(manifest.exports);
 
-/** A path package.json gives under `dist/`, as a path inside the build's output directory. */
-function underDist(path: string): string {
-  const inside = posix.relative("dist", path);
-  if (inside.startsWith("..")) throw new Error(`${path} is not under dist/`);
-  return inside;
-}
-
 const defaults = [...new Set(entries.map((entry) => underDist(entry.default)))].sort();
 
-/** Every scratch directory a build of this file made. `afterAll` removes them, so one whose test
- *  timed out while its build still ran is removed too, which a `finally` in `build` would miss. */
-const scratch: string[] = [];
-afterAll(() => {
-  for (const dir of scratch) rmSync(dir, { force: true, recursive: true });
-});
-
-/** Runs one build script of package.json into a scratch directory and lists what it wrote. */
-async function build(script: string): Promise<string[]> {
-  const out = mkdtempSync(join(tmpdir(), "contracts-build-"));
-  scratch.push(out);
-  const spawned = Bun.spawn(["bun", "run", script, "--outdir", out], {
-    cwd: packageDir,
-    stderr: "pipe",
-    stdout: "ignore",
-  });
-  const [stderr, exitCode] = await Promise.all([
-    new Response(spawned.stderr).text(),
-    spawned.exited,
-  ]);
-  if (exitCode !== 0) throw new Error(`bun run ${script} exited ${exitCode}: ${stderr}`);
-  return [...new Bun.Glob("**/*").scanSync({ cwd: out, onlyFiles: true })].sort();
-}
+const scratch = temporaryDirectories("contracts-build");
 
 describe("package.json's entry points", () => {
   test("each source package.json names exists", () => {
@@ -63,13 +35,13 @@ describe("package.json's entry points", () => {
   });
 
   test("build writes each default condition and main where package.json names it, and nothing else", async () => {
-    const written = await build("build");
+    const written = await buildInto(packageDir, "build", scratch());
     expect(written).toEqual(defaults);
     expect(written).toContain(underDist(manifest.main));
   }, 60_000);
 
   test("build:dispatch writes each of its entries where package.json names it", async () => {
-    const written = await build("build:dispatch");
+    const written = await buildInto(packageDir, "build:dispatch", scratch());
     expect(written.length).toBeGreaterThan(0);
     expect(written.filter((path) => !defaults.includes(path))).toEqual([]);
   }, 60_000);

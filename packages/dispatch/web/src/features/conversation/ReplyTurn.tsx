@@ -4,9 +4,10 @@ import type { ReactNode } from "react";
 import type { Actor, DisplayTree, ReplyBlockWithTrees } from "../../api/types";
 import { secondaryButtonBorder, textSecondaryOnSurface } from "../../theme/classes";
 import { AgentName, type AgentPart } from "../refs/AgentName";
-import { EditedMark } from "../refs/PostBody";
+import { EditedMark } from "../refs/PostMarks";
 import type { PostDeletion } from "../refs/post-marks";
 import { Timestamp } from "../refs/Timestamp";
+import type { TextSource } from "../refs/text-references";
 import type { DwellRef } from "../shell/useDwell";
 import { Avatar } from "./Avatar";
 import { resendable } from "./delivery";
@@ -96,7 +97,8 @@ export function ReplyTurn({
   markRef?: DwellRef;
   onReply?: () => void;
   /** The parent the reply quotes: its author, its body, the block of it the reply answers (its
-   *  `reply_block`), its deletion and its edit, and its turn's path. */
+   *  `reply_block`), the record that text is (`TextSource`), its deletion and its edit, and its
+   *  turn's path. */
   quote?: {
     readonly author: Actor | undefined;
     readonly block?: ReplyBlockWithTrees | null;
@@ -104,6 +106,7 @@ export function ReplyTurn({
     readonly edited?: string | null;
     readonly excerpt: string;
     readonly excerptTree?: DisplayTree;
+    readonly source?: TextSource;
     readonly to?: string;
   };
   /** Holds the Reply button while the composer it would address is busy with a send. */
@@ -145,6 +148,7 @@ export function ReplyTurn({
             edited={quote.edited}
             excerpt={quote.excerpt}
             excerptTree={quote.excerptTree}
+            source={quote.source}
             to={quote.to}
           />
         )}

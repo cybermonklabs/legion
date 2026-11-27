@@ -10,6 +10,8 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/capabilities"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/execfile"
+	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
 )
 
 // role_config_files reaches the runtime that launches each role, under either runtime, as the file
@@ -27,7 +29,7 @@ func TestRoleConfigFilesReachEitherRuntime(t *testing.T) {
 	}
 	k := kubernetesConfig(t, "https://127.0.0.1:1")
 	k.RoleConfigFiles = files
-	opts, err := sandboxOptions(k, *k.Runtime.Kubernetes, "test", "", lookup(nil), quietLogger())
+	opts, err := sandboxOptions(k, *k.Runtime.Kubernetes, "test", sandbox.DispatchCredential{}, lookup(nil), quietLogger())
 	if err != nil {
 		t.Fatalf("sandboxOptions: %v", err)
 	}
@@ -47,7 +49,7 @@ func TestTheTmuxBootGateRefusesARoleOverlayOhMyPiCannotParse(t *testing.T) {
 	script := "#!/bin/sh\nIFS=:\nfor f in $PI_CONFIG_FILES; do case \"$f\" in *malformed*)\n" +
 		"  echo \"error: Failed to parse config overlay $f: SyntaxError\" >&2; exit 1;; esac; done\n" +
 		"echo '{\"value\": false}'\n"
-	if err := os.WriteFile(omp, []byte(script), 0o755); err != nil {
+	if err := execfile.Write(omp, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	operator, good, malformed := filepath.Join(dir, "operator.yml"), filepath.Join(dir, "fallback.yml"), filepath.Join(dir, "malformed.yml")
@@ -89,7 +91,7 @@ func TestTheTmuxBootRefusesARoleOverlayOhMyPiCannotParse(t *testing.T) {
 	script := "#!/bin/sh\nIFS=:\nfor f in $PI_CONFIG_FILES; do case \"$f\" in *malformed*)\n" +
 		"  echo \"error: Failed to parse config overlay $f: SyntaxError\" >&2; exit 1;; esac; done\n" +
 		"echo '{\"value\": false}'\n"
-	if err := os.WriteFile(omp, []byte(script), 0o755); err != nil {
+	if err := execfile.Write(omp, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	malformed := filepath.Join(dir, "malformed.yml")

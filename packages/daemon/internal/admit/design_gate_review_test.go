@@ -277,9 +277,11 @@ func TestAChangesRequestIsToldOnceWhicheverReadCarriesIt(t *testing.T) {
 // that version is the older reader: the person acted after it. The gate keeps that review — a
 // told changes request is not told again, an approval is not rolled back — and no wait starts,
 // since only the person's next act could answer one. Where that review is an approval, the
-// registration itself tells the architect nothing, but every required step is open, so the
-// admission pass this fact runs starts the root (record.Waiting's LineFirstPhase): a root whose steps
-// are all open never stays at admitted waiting for a gate fact that has already happened.
+// registration itself tells the architect nothing and writes nothing, so it runs no admission pass
+// (Admission.promoteWritten); every required step is open, so the next pass — the review's own,
+// which the gate seeded here never ran, and the tick stands for — starts the root
+// (record.Waiting's LineFirstPhase): a root whose steps are all open never stays at admitted
+// waiting for a gate fact that has already happened.
 func TestARegistrationDoesNotHideTheReviewTheGateAlreadyHolds(t *testing.T) {
 	reviewed := record.EventMark{Seq: 11, At: reviewedAt.Add(time.Minute)}
 	for _, tc := range []struct {
@@ -316,6 +318,7 @@ func TestARegistrationDoesNotHideTheReviewTheGateAlreadyHolds(t *testing.T) {
 				ChangesRequestedMark: record.EventMark{Seq: 9, At: reviewedAt.Add(-time.Minute)},
 				Since:                record.EventMark{Seq: 10},
 			})
+			tick(t, pool, admission, "the-reviews-pass")
 
 			// A root whose gate stands open takes its slot for its own first phase, which the
 			// registration neither causes nor stops; one whose gate is closed stays admitted
@@ -388,15 +391,18 @@ func TestAReviewAnotherSupersededChangesNoGateState(t *testing.T) {
 		// The same late review on a root waiting on its gate from a later hand-back answers nothing:
 		// the person gave it before that wait began. A gate standing open answers the wait by
 		// itself (the question-wait slice's answerOpenGates), as its approval, never as this review.
+		// The late review writes nothing, so it runs no admission pass (Admission.promoteWritten);
+		// the pass that reads the gate is the next one, which the tick stands for.
 		t.Run(tc.name+", the root waiting on its gate", func(t *testing.T) {
 			pool := migratedPool(t)
 			admission := newAdmission(t, 1, nil)
 			awaitingRoot(t, pool, record.Awaiting{GateVersion: 4, Since: record.EventMark{Seq: 20, At: reviewedAt.Add(time.Minute)}})
 			seedGate(t, pool, tc.gate)
 			applyFact(t, pool, admission, "superseded-review", tc.late)
+			tick(t, pool, admission, "the-next-pass")
 			if tc.open {
 				// The gate stands open, so it answers the wait and the root resumes in that
-				// same pass: its architect's turns need no slot once the gate has opened.
+				// pass: its architect's turns need no slot once the gate has opened.
 				assertResumed(t, pool)
 				return
 			}

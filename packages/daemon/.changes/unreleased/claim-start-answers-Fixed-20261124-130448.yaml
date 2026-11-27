@@ -9,8 +9,8 @@ body: |-
   claim, a retry the machine runs itself, and a fresh session answer once the claim is written
   `launching`, and no longer wait for the start: a start that waits minutes on a pod held the
   caller past its own timeout. `legion claims list` and `read_state` show how the start ended.
-  `workflow: a held phase is released` is now logged only for an issue that was held. The daemon
-  API contract is 266.
+  `workflow: a held phase is released` is now logged only for an issue that was held. The change is
+  the claim-start contract entry.
 time: 2026-11-24T13:04:48Z
 custom:
     Issue: INFRA-5649

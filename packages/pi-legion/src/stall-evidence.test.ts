@@ -1,8 +1,12 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import type { LegionState } from "@legion/contracts/legion-api";
+import {
+  type LegionClaimState,
+  type LegionState,
+  LegionStateResponse,
+} from "@legion/contracts/legion-api";
 import {
   EnvoyApiError,
   type KeyTakenResult,
@@ -299,6 +303,11 @@ interface TellerRig {
   transcriptWritable: boolean;
   /** The daemon's answer to the record check; a string makes the read throw. */
   state: LegionState | string;
+  /** The session's claim as the teller reads it at each moment. */
+  claim: ClaimCapability | undefined;
+  /** The publisher's build, which settles before the publisher is handed over; the publisher is at
+   *  hand at once while it is undefined. */
+  buildPublisher: (() => Promise<void>) | undefined;
 }
 
 function tellerRig(
@@ -319,6 +328,8 @@ function tellerRig(
     envoy: true,
     transcriptWritable: true,
     state: daemonState("working"),
+    claim: "claim" in options ? options.claim : claimOf(),
+    buildPublisher: undefined,
   };
   const publish: EnvoyPublish = async (input) => {
     state.published.push(input);
@@ -336,13 +347,16 @@ function tellerRig(
         tree: "INFRA-1000",
         issue: "INFRA-1274",
       },
-    claim: () => ("claim" in options ? options.claim : claimOf()),
+    claim: () => state.claim,
     project: options.project ?? "legion",
     readRecord: async (issue) => {
       if (typeof state.state === "string") throw new Error(state.state);
       return state.state.issues[issue];
     },
-    publisher: () => (state.envoy ? publish : undefined),
+    publisher: async () => {
+      await state.buildPublisher?.();
+      return state.envoy ? publish : undefined;
+    },
     appendEntry: (customType, data) => {
       expect(customType).toBe(STALL_WATCH_ENTRY);
       if (!state.transcriptWritable) throw new Error("the transcript is not writable");
@@ -373,6 +387,13 @@ function daemonState(architect: string | undefined): LegionState {
   } as unknown as LegionState;
 }
 
+/** The daemon's state golden, which its own projection writes over a seeded record
+ * (`packages/contracts/fixtures/daemon-api/state.json`), read through the state route's schema. */
+function stateGolden(): LegionState {
+  const file = path.resolve(import.meta.dir, "../../contracts/fixtures/daemon-api/state.json");
+  return LegionStateResponse.parse(JSON.parse(readFileSync(file, "utf8")));
+}
+
 test("a phase worker's session tells the issue's own live architect, with the evidence", async () => {
   const rig = tellerRig();
   const told = await rig.teller.tellOverdue(evidenceOf());
@@ -395,13 +416,96 @@ test("a phase worker's session tells the issue's own live architect, with the ev
   expect("sourceSessionID" in notice && notice.sourceSessionID).toBe("ses_worker");
 });
 
+// The publisher's first build can run Envoy's token command, and the event loop goes on serving
+// the session meanwhile: its claim can end, or be replaced, inside that wait. The notice was built
+// from the claim the session held before the wait, so it is sent only while the session still
+// holds that claim: one whose claim ended or changed is not sent under the old one.
+test("a notice whose claim ended while the publisher was built is not sent under the ended claim", async () => {
+  const rig = tellerRig();
+  const building = Promise.withResolvers<void>();
+  const built = Promise.withResolvers<void>();
+  rig.buildPublisher = () => {
+    building.resolve();
+    return built.promise;
+  };
+  const telling = rig.teller.tellOverdue(evidenceOf());
+  await building.promise;
+  rig.claim = undefined;
+  built.resolve();
+
+  expect(await telling).toEqual({ evidenceWritten: true, ownerTold: false });
+  expect(rig.published).toEqual([]);
+  expect(rig.warnings.map((warning) => warning.message)).toContain(
+    "legion: this session's claim ended before its owner was told"
+  );
+});
+
+test("a notice whose claim changed while the publisher was built is not sent under the old claim", async () => {
+  const rig = tellerRig();
+  const building = Promise.withResolvers<void>();
+  const built = Promise.withResolvers<void>();
+  rig.buildPublisher = () => {
+    building.resolve();
+    return built.promise;
+  };
+  const telling = rig.teller.tellOverdue(evidenceOf());
+  await building.promise;
+  rig.claim = claimOf({ issue: "INFRA-1275" });
+  built.resolve();
+
+  expect(await telling).toEqual({ evidenceWritten: true, ownerTold: false });
+  expect(rig.published).toEqual([]);
+  expect(rig.warnings.map((warning) => warning.message)).toContain(
+    "legion: this session's claim changed before its owner was told"
+  );
+});
+
+// An issue whose own architect is not live is its tree's architect's, which the notice tells, as
+// the reminder does. The daemon's state golden holds such a child: LEGION-220, of LEGION-208's
+// tree, whose implementer works while its own architect's claim has failed (workflow's
+// claimFailed tells the architect above it). An operator's stop retires a failed claim that is
+// not its tree's root and keeps its failure (supervise's stop row, api.ClaimViewOf), so the same
+// record at `retired` is one the daemon serves too. The control is that record with its own
+// architect live, which tells that architect: a teller that always told the tree's architect
+// would pass the first two.
 test("a phase worker falls back to the tree's architect, as the reminder does", async () => {
-  for (const architect of ["retired", "failed", undefined]) {
-    const rig = tellerRig();
-    rig.state = daemonState(architect);
-    await rig.teller.tellOverdue(evidenceOf());
-    expect(rig.published[0]?.topic).toBe("notifications.role.legion-legion-infra-1000-architect");
+  const golden = stateGolden();
+  const child = golden.issues["LEGION-220"];
+  const architect = child?.architect;
+  if (child === undefined || architect === undefined) {
+    throw new Error("the state golden holds no LEGION-220 with an architect claim of its own");
   }
+  expect(child.tree).toBe("LEGION-208");
+  expect(architect.state).toBe("failed");
+  const toldWith = async (state: LegionClaimState) => {
+    const rig = tellerRig({
+      session: {
+        kind: "phase-worker",
+        role: "implementer",
+        tree: "LEGION-208",
+        issue: "LEGION-220",
+      },
+      claim: claimOf({ tree: "LEGION-208", issue: "LEGION-220" }),
+    });
+    const issues = {
+      ...golden.issues,
+      "LEGION-220": { ...child, architect: { ...architect, state } },
+    };
+    rig.state = { ...golden, issues };
+    await rig.teller.tellOverdue(evidenceOf());
+    return rig.published[0]?.topic;
+  };
+  for (const state of ["failed", "retired"] as const) {
+    expect(await toldWith(state)).toBe("notifications.role.legion-legion-legion-208-architect");
+  }
+  expect(await toldWith("working")).toBe("notifications.role.legion-legion-legion-220-architect");
+  // A record with no architect claim of its own is the same.
+  const unclaimed = tellerRig();
+  unclaimed.state = daemonState(undefined);
+  await unclaimed.teller.tellOverdue(evidenceOf());
+  expect(unclaimed.published[0]?.topic).toBe(
+    "notifications.role.legion-legion-infra-1000-architect"
+  );
   // A daemon that does not answer inside the bound is the same: the tree's architect is told.
   const silent = tellerRig();
   silent.state = "the daemon is unreachable";
@@ -409,36 +513,53 @@ test("a phase worker falls back to the tree's architect, as the reminder does", 
   expect(silent.published[0]?.topic).toBe("notifications.role.legion-legion-infra-1000-architect");
 });
 
-test("a root architect's own session tells the controller role", async () => {
-  const rig = tellerRig({
+/** A root architect's own session, on its root. */
+function rootArchitectRig(): TellerRig {
+  return tellerRig({
     session: { kind: "root-architect", tree: "INFRA-1000" },
     claim: claimOf({ issue: "INFRA-1000", role: "architect", sessionID: "ses_root" }),
   });
-  await rig.teller.tellOverdue(evidenceOf());
+}
+
+test("a root architect's overdue call publishes nothing, and its evidence is written", async () => {
+  const rig = rootArchitectRig();
+  expect(await rig.teller.tellOverdue(evidenceOf())).toEqual({
+    evidenceWritten: true,
+    ownerTold: false,
+  });
+  expect(rig.published).toEqual([]);
+  expect((rig.entries[0] as StallEvidenceRecord).kind).toBe("evidence");
+});
+
+test("a root architect's ladder that stops short tells the controller role", async () => {
+  const rig = rootArchitectRig();
+  await rig.teller.tellStopped(callOf(), "the exit cap was reached");
   expect(rig.published).toHaveLength(1);
   expect(rig.published[0]?.topic).toBe("notifications.role.legion-legion-controller");
   expect(rig.published[0]?.message).toContain("The architect of INFRA-1000");
 });
 
 // The notice sends no `keep` field, so a listener keeps it for an owner's role that no live
-// session holds, and answers 202 kept. That has told no owner yet, and the teller does not send a
-// kept notice again, so it reports `ownerTold: false`: for the architect, and for the
-// controller, which owns a root architect's own call (dispatch://INFRA-2846, R6).
+// session holds, and answers 202 kept. That has told no owner yet, and the teller does not
+// send a kept notice again, so it logs that no owner has taken the notice, and an overdue
+// notice reports `ownerTold: false`. That holds for the architect's notice, and for the
+// controller's, which hears of a root architect's own call once its ladder stops short (the
+// kept-role-message spec's rule R6).
 test("the owner notice is kept", async () => {
   const architect = tellerRig();
-  const controller = tellerRig({
-    session: { kind: "root-architect", tree: "INFRA-1000" },
-    claim: claimOf({ issue: "INFRA-1000", role: "architect", sessionID: "ses_root" }),
+  const controller = rootArchitectRig();
+  for (const rig of [architect, controller]) {
+    rig.publishAnswer = { kept: true, keptUntil: START + 60 * MINUTE };
+  }
+  expect(await architect.teller.tellOverdue(evidenceOf())).toEqual({
+    evidenceWritten: true,
+    ownerTold: false,
   });
+  await controller.teller.tellStopped(callOf(), "the exit cap was reached");
   for (const [rig, topic] of [
     [architect, "notifications.role.legion-legion-infra-1274-architect"],
     [controller, "notifications.role.legion-legion-controller"],
   ] as const) {
-    rig.publishAnswer = { kept: true, keptUntil: START + 60 * MINUTE };
-    expect(await rig.teller.tellOverdue(evidenceOf())).toEqual({
-      evidenceWritten: true,
-      ownerTold: false,
-    });
     expect(rig.published).toHaveLength(1);
     expect(rig.published[0]?.topic).toBe(topic);
     expect(rig.published[0]).not.toHaveProperty("keep");
@@ -485,6 +606,7 @@ test("a session never publishes to the role its own session holds", async () => 
       claim: undefined,
       project: "legion",
       liveArchitect: true,
+      notice: "overdue",
     })
   ).toEqual({
     kind: "none",

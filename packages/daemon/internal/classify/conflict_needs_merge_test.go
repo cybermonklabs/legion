@@ -65,6 +65,8 @@ func TestConflictNeedsMergeAnswersTheFirstReasonThatHolds(t *testing.T) {
 		{"accepting a step follows, before the rules are read", issueIn(phase.Accepting), reviewedAfter, green, nil, record.ConflictRulesUnread},
 		{"accepting a step follows, a required check with no run", issueIn(phase.Accepting), reviewedAfter, settled(nil), requires("ci"), record.ConflictCheckNotGreen},
 		{"held from accepting a step follows, a required check with no run", heldFrom(phase.Accepting), reviewedAfter, settled(nil), requires("ci"), record.ConflictCheckNotGreen},
+		{"accepting on a line that holds no acceptance, before the rules are read", issueIn(phase.Accepting),
+			[]phase.Phase{phase.Implementing, phase.Reviewing, phase.Retro, phase.Merging}, green, nil, record.ConflictRulesUnread},
 		{"retro of a task whose acceptance a step follows, under a strict ruleset", issueIn(phase.Retro), reviewedAfter, green, strict, ""},
 		{"merging of a task whose acceptance a step follows", issueIn(phase.Merging), reviewedAfter, green, requires("ci"), record.ConflictMergeNext},
 		{"testing, no rules read", issueIn(phase.Testing), phase.Order, green, nil, record.ConflictRulesUnread},

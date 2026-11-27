@@ -3,12 +3,14 @@ package oauth
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
 
 	"authelia.com/provider/oauth2"
 
+	"github.com/sjawhar/envoy/internal/cipher/hold"
 	"github.com/sjawhar/envoy/internal/cipher/oauthstore"
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 )
@@ -36,6 +38,23 @@ import (
 // by doing (authelia strategy_hmac.go:125-141), with no prefix to trim since the broker's tokens
 // carry none (compose.NewOAuth2HMACStrategy). The auth service introspects every session token a
 // NATS connection presents, so a forged one must cost the broker no database query.
+//
+// A live token naming a person also answers the Google account the credential behind it records,
+// which the token's trade wrote onto the token's own session when it minted it
+// (ClaimAccountIssuer, ClaimAccountSubject), so the whole answer is the one row the library read.
+// No other row is read for it: a sign-in's or a machine login's row could change, or be ended and
+// replaced, while the token lives, and a second read could pair this token with another account.
+// A token that records none, one minted before the broker recorded the account on the token among
+// them, answers none, which a resource server reads as "the broker cannot say which account this
+// is".
+//
+// A live token naming a person, as its person or, for a machine login's own token, as the login's
+// operator, is answered held when the hold gate (ExchangeConfig.Hold) says Dispatch holds that
+// person: still active, since a hold revokes nothing, and refused by the resource server after its
+// own checks. A person the gate serves until a deadline is answered with that deadline
+// (not_held_until, Unix seconds rounded down), past which the resource server keeps no such answer,
+// and one whose deadline has passed is answered with a not_held_until every clock is past. Any other
+// case the gate cannot tell is *HoldUncheckableError, never an answer.
 //
 // A token narrowed to reading is answered with its narrowed project scope, its scope (read, or
 // read person) and its cut (AsOf), and its end is decided again at every introspection: the store
@@ -73,6 +92,14 @@ func (p *Provider) Introspect(ctx context.Context, token string) (oauthwire.Intr
 	answer.Service, _ = session.Extra[ClaimService].(string)
 	answer.Machine, _ = session.Extra[ClaimMachine].(string)
 	answer.ProjectScope, _ = session.Extra[ClaimProjectScope].(string)
+	if answer.Person != "" {
+		issuer, _ := session.Extra[ClaimAccountIssuer].(string)
+		subject, _ := session.Extra[ClaimAccountSubject].(string)
+		if issuer != "" && subject != "" {
+			answer.AccountIssuer, answer.AccountSubject = issuer, subject
+		}
+		answer.CredentialCreatedAt = unixSeconds(session.Extra[ClaimCredentialCreatedAt])
+	}
 	answer.AsOf, _ = session.Extra[ClaimAsOf].(string)
 	stored, present := session.Extra[ClaimProjects]
 	if !present {
@@ -87,7 +114,7 @@ func (p *Provider) Introspect(ctx context.Context, token string) (oauthwire.Intr
 			// login's own token, which no exchange decided, carries neither claim.
 			return oauthwire.Introspection{}, nil
 		}
-		return answer, nil
+		return p.withHold(ctx, answer, session)
 	}
 	// The stored claim is the list's space-joined spelling (ClaimProjects), which the store
 	// hands back as the string it wrote; one that is not a string or does not parse is a row this
@@ -103,7 +130,74 @@ func (p *Provider) Introspect(ctx context.Context, token string) (oauthwire.Intr
 		return oauthwire.Introspection{}, fmt.Errorf("%w: %s stores projects that do not parse: %w", ErrStoredClaimMalformed, malformedClaimOwner(session, answer.Session), err)
 	}
 	answer.Projects = projects
+	return p.withHold(ctx, answer, session)
+}
+
+// withHold is answer with the hold gate's Verdict on the person it names mapped onto it
+// (HoldAnswer): its person or, for a machine login's own token, which names none, the login's
+// operator (session's extraOperator).
+func (p *Provider) withHold(ctx context.Context, answer oauthwire.Introspection, session *oauthstore.ExchangeSession) (oauthwire.Introspection, error) {
+	person := answer.Person
+	if person == "" {
+		person, _ = session.Extra[extraOperator].(string)
+	}
+	if person == "" {
+		return answer, nil
+	}
+	return HoldAnswer(answer, p.exchange.Hold.Decide(ctx, person))
+}
+
+// HoldAnswer is answer with v, the hold gate's verdict on the person it names, mapped onto it as
+// the broker's introspection answers: Held set for hold.Held; for hold.Served, NotHeldUntil set to
+// the deadline the gate serves the person until, in Unix seconds rounded down so no reader keeps
+// the answer later than the gate serves it; and for hold.DeadlinePassed, active and not held with
+// NotHeldUntil oauthwire.NotHeldUntilPassed, so every reader refuses the token as a deadline
+// passed, as it refuses one whose kept answer lapsed: the Envoy listener 503 BROKER_UNAVAILABLE
+// with Retry-After: 60, and the NATS auth service under deadline_passed (Dispatch reads neither
+// field yet). Every other kind decides nothing, a held answer the gate could not keep among them,
+// and is *HoldUncheckableError, with no answer. It is exported for the NATS auth service's tests,
+// which introspect sessions no broker store holds.
+func HoldAnswer(answer oauthwire.Introspection, v hold.Verdict) (oauthwire.Introspection, error) {
+	switch v.Kind {
+	case hold.Served:
+		if !v.Until.IsZero() {
+			answer.NotHeldUntil = v.Until.Unix()
+		}
+	case hold.Held:
+		answer.Held = true
+	case hold.DeadlinePassed:
+		answer.NotHeldUntil = oauthwire.NotHeldUntilPassed
+	default:
+		return oauthwire.Introspection{}, &HoldUncheckableError{Verdict: v}
+	}
 	return answer, nil
+}
+
+// HoldUncheckableError is Introspect's failure when the hold gate cannot tell whether Dispatch
+// holds the person a live token names (Verdict). Its text is the one the introspection route
+// answers 503 HOLD_UNCHECKABLE with, naming the person and why in fixed words
+// (hold.Verdict.Words); it wraps the gate's own error, which is for the log alone.
+type HoldUncheckableError struct {
+	Verdict hold.Verdict
+}
+
+func (e *HoldUncheckableError) Error() string { return e.Verdict.Words() }
+
+func (e *HoldUncheckableError) Unwrap() error { return e.Verdict.Err }
+
+// unixSeconds reads a Unix time a session's extras hold, as the exchange wrote it (an int64) or as
+// it reads back out of the stored request's JSON (a float64), and 0 for anything else.
+func unixSeconds(value any) int64 {
+	switch v := value.(type) {
+	case int64:
+		return v
+	case float64:
+		return int64(v)
+	case json.Number:
+		n, _ := v.Int64()
+		return n
+	}
+	return 0
 }
 
 // malformedClaimOwner names the row of a malformed stored claim: the token's session and the
