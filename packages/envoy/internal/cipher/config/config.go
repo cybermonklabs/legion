@@ -124,13 +124,13 @@ type Config struct {
 	// https://secrets.example. A machine login's request object made at the edge names it as its
 	// audience and every DPoP proof sent there names it and the route's path, as one made on
 	// BROKER_PUBLIC_URL names that, so neither is spendable at the other. Set with
-	// BROKER_EDGE_LISTEN_ADDR. cmd/cipherd refuses an http one unless BROKER_FAKE_SECRETS_FILE is
-	// set.
+	// BROKER_EDGE_LISTEN_ADDR. cmd/cipherd refuses an http one unless the store is a development
+	// store (BROKER_SECRETS_STORE=memory).
 	EdgeURL string
 	// BROKER_EDGE_MACHINE_LOGIN_URL: the absolute http(s) URL of the page a person decides a
 	// machine login made at the edge on, which that login's verification_uri names in place of
 	// BROKER_MACHINE_LOGIN_URL. Set with BROKER_EDGE_LISTEN_ADDR. cmd/cipherd refuses an http one
-	// unless BROKER_FAKE_SECRETS_FILE is set, as it does BROKER_EDGE_URL.
+	// unless the store is a development store, as it does BROKER_EDGE_URL.
 	EdgeMachineLoginURL string
 	// BROKER_API_ACCOUNTS: the accounts that call the broker's named-caller routes — the
 	// approval routes Dispatch's server calls on a person's behalf, the introspection route
@@ -333,8 +333,8 @@ type Config struct {
 	// https://privateca.googleapis.com: a stand-in of Certificate Authority Service (the ca stand
 	// of cmd/dev-proxy-stands), which is sent no credential. Needs BROKER_PROXY_CA_POOL, an
 	// absolute http or https URL. For the broker's local stack alone: refused with
-	// KUBERNETES_SERVICE_HOST set, and on a production start, one with BROKER_FAKE_SECRETS_FILE
-	// unset.
+	// KUBERNETES_SERVICE_HOST set, and on a production start, one whose store (BROKER_SECRETS_STORE)
+	// is no development store.
 	ProxyTestCAURL string
 	// BROKER_PROXY_TEST_CLOCK_OFFSET_FILE: a file holding a Go duration ("0s", "120h1m") the
 	// proxy's certificate authority adds to the system's clock, read again at every reading of
@@ -399,39 +399,41 @@ type Config struct {
 	// BROKER_AIRLOCK_TEST_GITHUB_API_BASE: the base URL a github-app secret is minted against,
 	// in place of https://api.github.com, so a release of one mints at a stand-in GitHub
 	// (internal/cipher/proxyrules/proxyrulestest, cmd/dev-proxy-stands). For the broker's local
-	// stack alone: a production start, which is one with BROKER_FAKE_SECRETS_FILE unset, is
-	// refused naming it.
+	// stack alone: a production start, one whose store (BROKER_SECRETS_STORE) is no development
+	// store, is refused naming it.
 	AirlockTestGitHubAPIBase string
 	// BROKER_AIRLOCK_TEST_GOOGLE_TOKEN_URL: the token endpoint a google-login secret is
 	// refreshed at, in place of https://oauth2.googleapis.com/token, so a release of one mints
-	// at a stand-in Google. For the broker's local stack alone: a production start, which is
-	// one with BROKER_FAKE_SECRETS_FILE unset, is refused naming it.
+	// at a stand-in Google. For the broker's local stack alone: a production start, one whose
+	// store (BROKER_SECRETS_STORE) is no development store, is refused naming it.
 	AirlockTestGoogleTokenURL string
 	// BROKER_AIRLOCK_TEST_ANTHROPIC_TOKEN_URL: the token exchange an anthropic-federation secret
 	// is minted at, in place of https://api.anthropic.com/v1/oauth/token, so a release of one
 	// mints at a stand-in Anthropic (cmd/dev-proxy-stands). For the broker's local stack alone: a
-	// production start, which is one with BROKER_FAKE_SECRETS_FILE unset, is refused naming it.
+	// production start, one whose store (BROKER_SECRETS_STORE) is no development store, is
+	// refused naming it.
 	AirlockTestAnthropicTokenURL string
 	// BROKER_AIRLOCK_TEST_IAM_CREDENTIALS_URL: the origin the anthropic-federation minter reads
 	// a bound account's Google identity token at (IAM Service Account Credentials'
 	// generateIdToken), in place of https://iamcredentials.googleapis.com, so a release of one
 	// presents an identity token a stand-in IAM minted. For the broker's local stack alone: a
-	// production start, which is one with BROKER_FAKE_SECRETS_FILE unset, is refused naming it.
+	// production start, one whose store (BROKER_SECRETS_STORE) is no development store, is
+	// refused naming it.
 	AirlockTestIAMCredentialsURL string
 	// BROKER_AIRLOCK_TEST_DIAL_ALLOW: whitespace-separated <host>:<port> addresses the airlock
 	// proxy may dial although the address they resolve to is one it never dials - a loopback,
 	// cluster, link-local or private address. It is a list rather than a switch for loopback
 	// because a local stack needs both at once: its stand-in services on loopback reachable,
 	// and the broker's own loopback port still refused. For the broker's local stack alone: a
-	// production start, which is one with BROKER_FAKE_SECRETS_FILE unset, is refused naming
-	// it.
+	// production start, one whose store (BROKER_SECRETS_STORE) is no development store, is
+	// refused naming it.
 	AirlockTestDialAllow []string
 	// BROKER_AIRLOCK_TEST_UPSTREAM_CA_FILE: a PEM file of extra roots the airlock proxy
 	// verifies a service's certificate against on its own calls upstream, beside the host's
 	// own roots, so it trusts a stand-in service's certificate. Read once at start, and a file
 	// it cannot read or that holds no certificate refuses the start. For the broker's local
-	// stack alone: a production start, which is one with BROKER_FAKE_SECRETS_FILE unset, is
-	// refused naming it.
+	// stack alone: a production start, one whose store (BROKER_SECRETS_STORE) is no development
+	// store, is refused naming it.
 	AirlockTestUpstreamCAFile string
 	// BROKER_AIRLOCK_TEST_RESOLVE: whitespace-separated <host>=<address> entries, each an IP
 	// address the airlock proxy reads that host as having and dials it at, in place of what
@@ -440,8 +442,8 @@ type Config struct {
 	// beside the address, <host>=<address>:<port> ([<address>]:<port> for IPv6), which the
 	// proxy dials in place of the port the CONNECT named (ProxyTestDialPorts), so a stand-in
 	// on loopback needs no privileged port 443. A host named twice is refused, and so is an
-	// address given two ports. For the broker's local stack alone: a production start, which is
-	// one with BROKER_FAKE_SECRETS_FILE unset, is refused naming it.
+	// address given two ports. For the broker's local stack alone: a production start, one whose
+	// store (BROKER_SECRETS_STORE) is no development store, is refused naming it.
 	AirlockTestResolve map[string]netip.Addr
 	// ProxyTestDialPorts is the port each address of BROKER_AIRLOCK_TEST_RESOLVE whose entry
 	// named one is dialled at, whatever port the CONNECT named; an address whose entry named no
@@ -451,20 +453,21 @@ type Config struct {
 	// across the reread of one of its names and past the five-minute margin before a minted
 	// token's expiry, rather than reading and minting again. It is the negative control of the
 	// check that both halves belong to. For the broker's local stack alone: a production
-	// start, which is one with BROKER_FAKE_SECRETS_FILE unset, is refused naming it.
+	// start, one whose store (BROKER_SECRETS_STORE) is no development store, is refused naming
+	// it.
 	AirlockTestKeepValues bool
 	// BROKER_AIRLOCK_TEST_NO_KIND: with it true, the airlock proxy reads every rules entry as
 	// having no kind, so an azure entry's exchange and an aws entry's signing are off and each
 	// takes the plain header swap. It is the negative control of the check those two kinds
-	// belong to. For the broker's local stack alone: a production start, which is one with
-	// BROKER_FAKE_SECRETS_FILE unset, is refused naming it.
+	// belong to. For the broker's local stack alone: a production start, one whose store
+	// (BROKER_SECRETS_STORE) is no development store, is refused naming it.
 	AirlockTestNoKind bool
 	// BROKER_AIRLOCK_TEST_AZURE_AUTHORITY: the host of the token authority the airlock proxy
 	// makes every exchange of an azure entry's federated token at, in place of
 	// login.microsoftonline.com, so the exchange is made at a stand-in Microsoft. A host name an
 	// airlock rules entry can bind, in lower case and with no "*."; anything else refuses the
-	// start. For the broker's local stack alone: a production start, which is one with
-	// BROKER_FAKE_SECRETS_FILE unset, is refused naming it.
+	// start. For the broker's local stack alone: a production start, one whose store
+	// (BROKER_SECRETS_STORE) is no development store, is refused naming it.
 	AirlockTestAzureAuthority string
 	// BROKER_JUDGE_MODEL_URL: the base URL the broker's model judge calls its model at, an
 	// absolute http(s) URL. Required with the rest of JudgeSettings, which are all-or-none:
@@ -525,7 +528,8 @@ type Config struct {
 	// BROKER_JUDGE_TEST_SKIP_CHECKS: with it true, the judge's checks before the model are off,
 	// so a request one of them would hold back is asked about anyway. It is the negative
 	// control of the check the judge belongs to. For the broker's local stack alone: a
-	// production start, which is one with BROKER_FAKE_SECRETS_FILE unset, is refused naming it.
+	// production start, one whose store (BROKER_SECRETS_STORE) is no development store, is
+	// refused naming it.
 	JudgeTestSkipChecks bool
 	// BROKER_PROJECT_ACCESS_URL: the base URL of the Dispatch the broker asks whether a project
 	// is private, whether a person may see it, what kind of member a person is, and which Slack
@@ -1811,8 +1815,8 @@ func parsePodOperators(setting, value string) (map[string]string, error) {
 // account a role, beside its refusal here and its row in
 // TestPodOperatorsRefusesAMappedAccountAnotherSettingGivesARole, or as giving none. A setting read
 // under a condition those configurations do not set, or read other than through getenv, is outside
-// the test: cmd/cipherd's BROKER_FAKE_SECRETS_FILE and the PG* variables pgconn.ParseConfig reads in
-// databaseIAM are two today. For such a setting the class is a convention rather than a rule.
+// the test: the PG* variables pgconn.ParseConfig reads in databaseIAM are the one today. For such a
+// setting the class is a convention rather than a rule.
 //
 // It refuses a mapped account that BROKER_SERVICE_LOGINS does not name, because a mapped account
 // logs in with its own token. It refuses a mapped account whose login service a BROKER_SERVICES

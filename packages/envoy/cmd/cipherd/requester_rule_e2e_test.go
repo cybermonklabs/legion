@@ -2,7 +2,7 @@
 // binary and the REAL compiled agent-secrets client, driven over sockets against a real Postgres,
 // with the requesters tag deciding every answer. Nothing here is a unit test — the binaries are
 // the ones cmd/cipherd and cmd/cipher build, the schema is a fresh one on the test server,
-// the policy comes from a fake secrets store the broker reads off disk, and every refusal is read
+// the policy comes from a memory store file the broker reads off disk, and every refusal is read
 // off the client's own output rather than out of the broker's internals.
 package main
 
@@ -168,7 +168,7 @@ const (
 )
 
 // TestRequesterRuleEndToEnd drives the whole requesters feature through the two real binaries:
-// one broker process, one fake secrets store, one Postgres schema, and two sessions enrolled the
+// one broker process, one memory store file, one Postgres schema, and two sessions enrolled the
 // two ways a person's session is enrolled — jason's through his own machine login (the device
 // grant, approved by him through the routes Dispatch relays) and aditya's through his sign-in on
 // a shared box (the RFC 8693 sign-in trade, his Google identity token with the box's as the actor

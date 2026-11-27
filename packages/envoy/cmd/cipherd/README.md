@@ -201,8 +201,8 @@ carries `proxy-narrowed=true` and one profile with an `allow` of its own inside 
 local stack mints at stand-ins:
 `BROKER_AIRLOCK_TEST_IAM_CREDENTIALS_URL` names the origin of the `generateIdToken` it reads the
 identity token at, and `BROKER_AIRLOCK_TEST_ANTHROPIC_TOKEN_URL` the token exchange; a production
-start (one with `BROKER_FAKE_SECRETS_FILE` unset) refuses either, naming it, as it refuses every
-`BROKER_AIRLOCK_TEST_*` setting.
+start (one whose `BROKER_SECRETS_STORE` is no development store) refuses either, naming it, as it
+refuses every `BROKER_AIRLOCK_TEST_*` setting.
 
 ## Test
 
