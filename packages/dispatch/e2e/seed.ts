@@ -15,6 +15,9 @@ import { sql } from "./psql";
 // boot, and GET /api/v1/dashboard/builds reads the builds the live ones serve from it.
 const tables = [
   "agent_tokens",
+  // The read-only personal tokens (migration 20261120023712), a table of their own beside
+  // agent_tokens that no foreign key reaches.
+  "agent_read_tokens",
   "architecture_sources",
   "legion_current",
   "legion_observations",
@@ -41,6 +44,10 @@ const tables = [
   "user_agent_thread_dismissed",
   "user_threads",
   "events",
+  // Each session's stored title (migration 20261117100008), which a trigger on events writes. No
+  // foreign key reaches it, so the closure below does not find it: a title a row stored would
+  // otherwise name a session of the same id in the next row's Delivery and Pipeline pages.
+  "session_titles",
   "refs",
   "messages",
   "broadcasts",

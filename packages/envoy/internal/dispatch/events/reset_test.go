@@ -54,6 +54,7 @@ const liveUser = `{"kind":"user","id":"alice"}`
 // EventCursorCheck reads the newest event's id and the time of the event at the cursor; once the
 // cursor's row is gone (a reset of the log), cursorAt is nil.
 func TestEventCursorCheckReadsTheNewestEventAndTheCursorsRow(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 
@@ -160,13 +161,15 @@ func (r scanThen) Scan(dest ...any) error {
 	return err
 }
 
-// A reset of the event log (e2e/seed.ts's `truncate events restart identity` and its refill) that
+// A reset of the event log (here a `truncate events restart identity` and its refill; e2e/seed.ts
+// deletes the rows and restarts the ids, which does the same) that
 // commits while EventCursorCheck is reading must leave the answer describing one log, the old one
 // or the new one. A mixed answer - the old log's newest id with no row at the cursor in the new
 // one - is one the relay would take for a reset to the old log's head: it would move its cursor
 // there, and the new log's lower ids would then read as a second reset that closed the
 // subscription opened after the first (api's TestEventStreamRelayRecoversWhenTheEventLogIsReset).
 func TestEventCursorCheckReadsOneLogWhenTheLogIsResetMidCheck(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	base := time.Date(2026, 10, 12, 9, 0, 0, 0, time.UTC)

@@ -29,7 +29,7 @@ var curlServerError = curlPrints("HTTP/2 500", []string{"content-type: applicati
 // notFoundWords is the whole of what the guard says of a write refused because GitHub answered
 // its visibility read of theRepo with 404, what being the write in the entry point's words.
 func notFoundWords(what string) string {
-	return what + ": GitHub answers 404 for " + maskPath(theRepo) + ", so the repository does not exist or this credential cannot read it"
+	return what + ": GitHub answers 404 for " + theRepo + ", so the repository does not exist or this credential cannot read it"
 }
 
 // The two markers no not-found answer holds: the one a setup failure starts with and the one a
@@ -84,7 +84,7 @@ func TestAVisibilityRead404IsToldAsNotFound(t *testing.T) {
 					Dir:     t.TempDir(),
 					Remote:  "origin",
 					URL:     theURL,
-					Updates: []Update{{LocalRef: "refs/heads/work", LocalSHA: noSHA, RemoteRef: "refs/heads/legion/" + theHost, RemoteSHA: noSHA}},
+					Updates: []Update{{LocalRef: "refs/heads/work", LocalSHA: noSHA, RemoteRef: "refs/heads/legion/" + leakguardtest.RulesHost, RemoteSHA: noSHA}},
 				})
 			},
 			target: new(*NotFound), words: notFoundWords(PushName("origin")),
@@ -110,8 +110,10 @@ func TestAVisibilityRead404IsToldAsNotFound(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			// The fixture rule file is named: with no rule file the guard reads no destination's
+			// visibility.
 			rig := newTransportRig(t, tc.rest, noGraphQL, tc.curl, answersTheRefs,
-				CheckVar+"="+leakguardtest.Write(t, t.TempDir(), passes))
+				CheckVar+"="+leakguardtest.Write(t, t.TempDir(), passes), RulesFileVar+"="+leakguardtest.WriteRules(t, t.TempDir()))
 			err := tc.read(t, rig.guard)
 			if err == nil {
 				t.Fatal("the write was cleared, want it refused")
@@ -158,7 +160,7 @@ func TestAVisibilityRead500IsASetupFailure(t *testing.T) {
 	}{
 		{
 			name: "gh's REST read", rest: ghPrints(leakguardtest.GhReadServerError), curl: curlAnswers("private"),
-			says: []string{"gh api repos/" + maskPath(theRepo) + " exited 1: HTTP/2.0 500 Internal Server Error"},
+			says: []string{"gh api repos/" + theRepo + " exited 1: HTTP/2.0 500 Internal Server Error"},
 		},
 		{
 			name: "the curl read after gh could not reach GitHub", rest: ghTLSTimeout, curl: curlServerError,
@@ -168,10 +170,10 @@ func TestAVisibilityRead500IsASetupFailure(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			rig := newTransportRig(t, tc.rest, noGraphQL, tc.curl, answersTheRefs,
-				CheckVar+"="+leakguardtest.Write(t, t.TempDir(), passes))
+				CheckVar+"="+leakguardtest.Write(t, t.TempDir(), passes), RulesFileVar+"="+leakguardtest.WriteRules(t, t.TempDir()))
 			_, err := rig.guard.GhCall(bound(t), GhRequest{Args: patchCall, Repo: theRepo})
 			setupFailure(t, err)
-			wants := append([]string{"LEAK CHECK SETUP ERROR: the gh call: the visibility of " + maskPath(theRepo) + " could not be read"}, tc.says...)
+			wants := append([]string{"LEAK CHECK SETUP ERROR: the gh call: the visibility of " + theRepo + " could not be read"}, tc.says...)
 			for _, want := range wants {
 				if !strings.Contains(err.Error(), want) {
 					t.Errorf("the setup failure %q does not say %q", err, want)

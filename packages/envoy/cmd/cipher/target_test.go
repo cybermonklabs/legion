@@ -27,6 +27,7 @@ var noSessionEnv = []string{"OMP_SESSION_ID=", "ENVOY_SESSION_ID=", "CLAUDE_CODE
 // the release carries no target, only the command it starts. A run with no target signs no
 // locations.
 func TestTargetIsSentAsLocations(t *testing.T) {
+	t.Parallel()
 	binary := buildAgentSecrets(t)
 	b := newCommandBroker(t, knowsEveryField)
 	keyDir := newKeyDir(t)
@@ -91,6 +92,7 @@ func requireNothingAsked(t *testing.T, b *commandBroker, args []string, stdout, 
 // target either. Each exits 2 with the one line that says so, and the command never runs. A
 // release that answers the target the request signed runs it.
 func TestATargetTheBrokerDoesNotConfirmRunsNothing(t *testing.T) {
+	t.Parallel()
 	binary := buildAgentSecrets(t)
 	keyDir := newKeyDir(t)
 	const line = "agent-secrets: the broker AGENT_SECRETS_URL names released APP without its --target, as a broker from before --target does; nothing was run: the broker is too old for --target\n"
@@ -129,6 +131,7 @@ func TestATargetTheBrokerDoesNotConfirmRunsNothing(t *testing.T) {
 // TestTargetWithTwoNamesIsRefused: a target narrows one profile, so a run of two names that gives
 // one exits 2, naming the rule and the names, and the broker is asked nothing.
 func TestTargetWithTwoNamesIsRefused(t *testing.T) {
+	t.Parallel()
 	binary := buildAgentSecrets(t)
 	b := newCommandBroker(t, knowsEveryField)
 	keyDir := newKeyDir(t)
@@ -143,6 +146,7 @@ func TestTargetWithTwoNamesIsRefused(t *testing.T) {
 // TestTargetsOfTwoAccountsAreRefused: every target of one run names one account, compared once
 // each is lowercased, so targets naming two exit 2, naming both, and the broker is asked nothing.
 func TestTargetsOfTwoAccountsAreRefused(t *testing.T) {
+	t.Parallel()
 	binary := buildAgentSecrets(t)
 	b := newCommandBroker(t, knowsEveryField)
 	keyDir := newKeyDir(t)
@@ -164,6 +168,7 @@ func TestTargetsOfTwoAccountsAreRefused(t *testing.T) {
 // the broker is asked nothing. An empty value, the target an unset variable gives, is refused
 // rather than read as no target, which would ask for the whole profile.
 func TestTargetRulesAreCheckedBeforeAnyRequest(t *testing.T) {
+	t.Parallel()
 	binary := buildAgentSecrets(t)
 	b := newCommandBroker(t, knowsEveryField)
 	keyDir := newKeyDir(t)

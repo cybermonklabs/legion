@@ -160,7 +160,7 @@ func resolvedPrefix(t *testing.T, tx pgx.Tx, kind string, scope Scope, prefix st
 	if !bothResolve(id) {
 		return candidate
 	}
-	whole, ambiguous := shortIDAnswers(t, tx, id)
+	whole, ambiguous := shortIDAnswers(t, tx, id, viewer.ServerURL)
 	if got, ok := whole[id]; !ok || !reflect.DeepEqual(got, candidate) || len(ambiguous) != 0 {
 		t.Fatalf("ResolvePrefixes answers the %s prefix %q in %#v with %#v, ambiguous %v; ResolvePrefix names %#v", kind, prefix, scope, whole, ambiguous, candidate)
 	}
@@ -181,7 +181,7 @@ func requireNoPrefixMatch(t *testing.T, q Queryer, kind string, scope Scope, pre
 	if !bothResolve(id) {
 		return
 	}
-	if whole, ambiguous := shortIDAnswers(t, q, id); len(whole) != 0 || len(ambiguous) != 0 {
+	if whole, ambiguous := shortIDAnswers(t, q, id, viewer.ServerURL); len(whole) != 0 || len(ambiguous) != 0 {
 		t.Fatalf("ResolvePrefixes answers the %s prefix %q in %#v with %#v, ambiguous %v; ResolvePrefix names nothing", kind, prefix, scope, whole, ambiguous)
 	}
 }
@@ -192,17 +192,17 @@ func requireNoPrefixMatch(t *testing.T, q Queryer, kind string, scope Scope, pre
 func requireShortIDAmbiguous(t *testing.T, q Queryer, kind string, scope Scope, prefix string) {
 	t.Helper()
 	id := ShortID{Kind: kind, Scope: scope, Prefix: prefix}
-	if whole, ambiguous := shortIDAnswers(t, q, id); len(whole) != 0 || len(ambiguous) != 1 || !ambiguous[id] {
+	if whole, ambiguous := shortIDAnswers(t, q, id, ""); len(whole) != 0 || len(ambiguous) != 1 || !ambiguous[id] {
 		t.Fatalf("ResolvePrefixes answers the %s prefix %q in %#v with %#v, ambiguous %v; want the id ambiguous alone", kind, prefix, scope, whole, ambiguous)
 	}
 }
 
-// shortIDAnswers is the two answers of ResolvePrefixes asked id alone as prefixReader, failing
-// the test on an error.
-func shortIDAnswers(t *testing.T, q Queryer, id ShortID) (map[ShortID]Candidate, map[ShortID]bool) {
+// shortIDAnswers is the two answers of ResolvePrefixes asked id alone as prefixReader, with
+// serverURL the deployment its first lines cut around, failing the test on an error.
+func shortIDAnswers(t *testing.T, q Queryer, id ShortID, serverURL string) (map[ShortID]Candidate, map[ShortID]bool) {
 	t.Helper()
 	reader := prefixReader
-	whole, ambiguous, err := ResolvePrefixes(context.Background(), q, &reader, []ShortID{id})
+	whole, ambiguous, err := ResolvePrefixes(context.Background(), q, &reader, []ShortID{id}, serverURL)
 	if err != nil {
 		t.Fatalf("ResolvePrefixes of the %s prefix %q in %#v: %v", id.Kind, id.Prefix, id.Scope, err)
 	}
@@ -232,6 +232,7 @@ func bothResolve(id ShortID) bool {
 // characters, a hyphen where a uuid has a hex digit, or a whole id, which needs no resolving -
 // each answered without a query.
 func TestResolvePrefixNamesTheOneItemAndRefusesWhatCanStartNoID(t *testing.T) {
+	t.Parallel()
 	tx := prefixFixture(t)
 	const id = "3b8e2d01-2a5f-4b3c-8d4e-6f70819a2b3c"
 	insertPrefixComment(t, tx, id, "CORE-1", "Ship it.\nAnd then the rest.")
@@ -255,6 +256,7 @@ func TestResolvePrefixNamesTheOneItemAndRefusesWhatCanStartNoID(t *testing.T) {
 // owner and its first line, so a person can tell them apart and write more of the id.
 // ResolvePrefixes marks the same id ambiguous.
 func TestResolvePrefixRefusesAnAmbiguousPrefixWithItsCandidates(t *testing.T) {
+	t.Parallel()
 	tx := prefixFixture(t)
 	const first = "4c9f3e12-3b60-4c4d-9e5f-70819a2b3c4d"
 	const second = "4c9f3e12-3b60-4c4d-9e5f-70819a2b3c9f"
@@ -282,6 +284,7 @@ func TestResolvePrefixRefusesAnAmbiguousPrefixWithItsCandidates(t *testing.T) {
 // document's, which carries the document instead of an issue key. The same prefix with no owner
 // named reads every item of the kind, and is ambiguous where two owners hold one.
 func TestResolvePrefixLooksWithinTheOwnerAlone(t *testing.T) {
+	t.Parallel()
 	tx := prefixFixture(t)
 	createReferenceProject(t, tx, "WEB")
 	createReferenceIssue(t, tx, "WEB-1", "WEB")
@@ -329,6 +332,7 @@ func TestResolvePrefixLooksWithinTheOwnerAlone(t *testing.T) {
 // indexed version's blocks, or the blocks the pinned version held, and never another document's.
 // A block id that is also the start of a longer one still names itself.
 func TestResolvePrefixReadsTheBlocksOfTheDocumentVersionNamed(t *testing.T) {
+	t.Parallel()
 	tx := prefixFixture(t)
 	issueKey := "CORE-1"
 	const specID = "8a000000-0000-4000-8000-000000000011"
@@ -398,6 +402,7 @@ func TestResolvePrefixReadsTheBlocksOfTheDocumentVersionNamed(t *testing.T) {
 // blocks and no match. The case-insensitive reading stays where an id is a uuid, whose text form
 // is lowercase hex (the comment prefixes above).
 func TestResolvePrefixNamesTheBlockWrittenExactlyAsThePrefix(t *testing.T) {
+	t.Parallel()
 	tx := prefixFixture(t)
 	issueKey := "CORE-1"
 	const specID = "8a000000-0000-4000-8000-000000000021"
@@ -430,6 +435,7 @@ func TestResolvePrefixNamesTheBlockWrittenExactlyAsThePrefix(t *testing.T) {
 // one its root targets, or one that has replied in it - and left out for any other session and
 // for the index-time resolver. An issue message's is answered to all of them.
 func TestResolvePrefixAnswersADirectMessageFirstLineOnlyToTheConversation(t *testing.T) {
+	t.Parallel()
 	tx := prefixFixture(t)
 	root := "6d000000-0000-4000-8000-000000000001"
 	const reply = "9e000000-0000-4000-8000-000000000002"
@@ -466,6 +472,7 @@ func TestResolvePrefixAnswersADirectMessageFirstLineOnlyToTheConversation(t *tes
 
 // A document's own id takes a prefix too, and answers the document's address and name.
 func TestResolvePrefixNamesADocument(t *testing.T) {
+	t.Parallel()
 	tx := prefixFixture(t)
 	issueKey := "CORE-1"
 	const specID = "8a000000-0000-4000-8000-000000000011"
@@ -511,6 +518,7 @@ func markPrefixPost(t *testing.T, tx pgx.Tx, table, id string, edited, deleted *
 // the api package (dispatch://INFRA-1523). The reads before the marks resolve the posts as they
 // stand and check no mark.
 func TestResolvePrefixCarriesAPostsEditAndDeleteMarks(t *testing.T) {
+	t.Parallel()
 	tx := prefixFixture(t)
 	const edited = "7a110000-0000-4000-8000-000000000001"
 	const deleted = "7a110000-0000-4000-8000-000000000002"
@@ -575,6 +583,7 @@ func TestResolvePrefixCarriesAPostsEditAndDeleteMarks(t *testing.T) {
 // through both functions (resolvedPrefix compares the two whole), the edit's time and alice's
 // delete included.
 func TestResolvePrefixesCarriesAPostsEditAndDeleteMarks(t *testing.T) {
+	t.Parallel()
 	tx := prefixFixture(t)
 	const comment = "7d440000-0000-4000-8000-000000000005"
 	const message = "7e550000-0000-4000-8000-000000000006"
@@ -608,6 +617,7 @@ func TestResolvePrefixesCarriesAPostsEditAndDeleteMarks(t *testing.T) {
 // though it carries the prefix. With no issue named, ResolvePrefix alone reads that direct
 // message (bothResolve).
 func TestResolvePrefixesHoldsTheScopeChecksOfResolvePrefix(t *testing.T) {
+	t.Parallel()
 	tx := prefixFixture(t)
 	const handbookID = "8a000000-0000-4000-8000-000000000031"
 	handbook := insertPrefixDocument(t, tx, handbookID, nil, "CORE", "handbook", "Handbook", false)

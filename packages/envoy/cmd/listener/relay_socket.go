@@ -45,7 +45,7 @@ package main
 // withholds (edgeFrameVerdict, edge_frames.go): one the relay's Envoy-Subject header and its
 // envelope give no project of the token the socket was opened with, whatever published it. Such
 // a frame is answered done on its receipt subject, so the relay that sent it acknowledges its
-// message undelivered, and counted in envoy_edge_github_withheld_total{reason="project_not_held"}.
+// message undelivered, and counted in envoy_edge_github_withheld_total under the verdict's reason.
 // A GitHub frame this replica has no fresh repository answer to judge by is answered nak instead,
 // so the relay sends it again after the nak delay and, when its own answer is no fresher, withholds
 // it itself with the gap mark (sessionRelays.edgeWithholds).
@@ -178,6 +178,8 @@ const (
 
 	relaySocketReasonExpired           = "credential_expired"
 	relaySocketReasonRefused           = "credential_refused"
+	relaySocketReasonMembershipHeld    = "membership_held"
+	relaySocketReasonDeadlinePassed    = "deadline_passed"
 	relaySocketReasonBrokerUnavailable = "broker_unavailable"
 	relaySocketReasonNATSUnavailable   = "nats_unavailable"
 	relaySocketReasonSlowConsumer      = "slow_consumer"
@@ -744,9 +746,11 @@ func (socket *relaySocket) withhold(msg *nats.Msg, subject string, verdict frame
 		socket.sockets.logger.Info("listener: the relay socket withheld a frame from its session for want of a fresh repository answer; it answers each such frame nak, unlogged, until a fresh answer decides a GitHub frame of its session, which is logged",
 			slog.String("session_id", socket.session), slog.String("subject", subject), slog.String("reason", verdict.reason), slog.String("answer", answer))
 	}
+	// The sockets' connection keeps no reconnect buffer (bus.Connect), so nats.go refuses this
+	// publish at once while it reconnects; the line names the reconnect (bus.Reconnecting).
 	if err := socket.sockets.client.Connection().Publish(msg.Reply, []byte(answer)); err != nil {
 		socket.sockets.logger.Warn("listener: the relay socket could not answer a frame it withheld; the relay sends it again",
-			slog.String("session_id", socket.session), slog.String("error", err.Error()))
+			slog.String("session_id", socket.session), slog.String("error", bus.Reconnecting(err).Error()))
 	}
 }
 
@@ -890,10 +894,12 @@ func (socket *relaySocket) refuse(sid *int64, code string) {
 }
 
 // endNATS ends the socket 1013 over a NATS call that did not complete, which says nothing about
-// the session: its client opens it again after 5 s, on whichever replica answers.
+// the session: its client opens it again after 5 s, on whichever replica answers. The sockets'
+// connection keeps no reconnect buffer (bus.Connect), so nats.go refuses a publish at once while
+// it reconnects, and the line names that refusal as the reconnect it is (bus.Reconnecting).
 func (socket *relaySocket) endNATS(step string, err error) {
 	socket.sockets.logger.Warn("listener: the relay socket could not reach NATS; it is closed",
-		slog.String("session_id", socket.session), slog.String("step", step), slog.String("error", err.Error()))
+		slog.String("session_id", socket.session), slog.String("step", step), slog.String("error", bus.Reconnecting(err).Error()))
 	socket.end(websocket.CloseTryAgainLater, relaySocketReasonNATSUnavailable)
 }
 
@@ -1017,24 +1023,44 @@ func (socket *relaySocket) subscribed() bool {
 //     answers it live with an exp that has passed: the broker writes exp as the whole second at
 //     or before the true expiry, and holds the token live until that true expiry, up to a second
 //     later, which the expiry's timer (watch) would otherwise miss until the next tick;
+//   - the broker answers the token's person held (ciphertoken.Caller.Held): 4403 membership_held,
+//     the class apiAuth refuses such a token's upgrade 401 MEMBERSHIP_HELD under
+//     (refuseHeldBrokerToken), so a socket closes at its next check after the broker answers the
+//     hold (Dispatch's own socket reads no hold yet: its heartbeat asks only whether the token is
+//     live, callerStillResolves);
+//   - the broker answers the person not held only until a deadline that has passed
+//     (ciphertoken.Verifier.Lapsed): 1013 deadline_passed, the class apiAuth answers such a
+//     token's upgrade 503 under (refuseLapsedBrokerToken), so the client comes back rather than
+//     discards a token that works again once the broker answers a later deadline;
 //   - the broker no longer holds it live before its expiry (a revoke, a login ended early), or
 //     holds it as something no session's token is: 4403;
 //   - the answer names another caller than the one the socket was admitted as (its session, its
 //     person or service, its project scope and its projects): 4403. The admitted caller passed the
 //     edge's admission (EdgeAdmits) in apiAuth, which reads no field but these, so an answer equal
-//     to it passes that admission too;
+//     to it passes that admission too, and one that also passes the two checks above passes every
+//     check apiAuth makes of the broker's answer;
 //   - the broker could not be asked: 1013, and every upgrade meanwhile is refused 503 by apiAuth.
 func (socket *relaySocket) verdict() (int, string) {
 	ctx, cancel := context.WithTimeout(context.Background(), relaySocketCheckWait)
 	defer cancel()
-	caller, until, err := socket.sockets.brokers.verifier.Load().LiveUntil(ctx, socket.check)
+	verifier := socket.sockets.brokers.verifier.Load()
+	caller, until, err := verifier.LiveUntil(ctx, socket.check)
 	var why string
 	switch {
 	case err == nil:
 		if !until.IsZero() && !socket.sockets.now().Before(until) {
 			return relaySocketCloseExpired, relaySocketReasonExpired
 		}
-		if sameRelayCaller(caller, socket.admitted) {
+		switch {
+		case caller.Held:
+			socket.sockets.logger.Warn("listener: the broker answers the relay socket's person held; it is closed",
+				slog.String("session_id", socket.session), slog.String("reason", relaySocketReasonMembershipHeld))
+			return relaySocketCloseRefused, relaySocketReasonMembershipHeld
+		case verifier.Lapsed(caller):
+			socket.sockets.logger.Warn("listener: whether the relay socket's person may still act could not be read; it is closed",
+				slog.String("session_id", socket.session), slog.String("reason", relaySocketReasonDeadlinePassed))
+			return websocket.CloseTryAgainLater, relaySocketReasonDeadlinePassed
+		case sameRelayCaller(caller, socket.admitted):
 			return 0, ""
 		}
 		why = "the broker's answer names another caller than the socket was opened as"

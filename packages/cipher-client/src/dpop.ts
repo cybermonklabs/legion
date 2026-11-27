@@ -2,12 +2,14 @@
 //
 // The one RFC 9449 proof signer of this package, mirroring Go's one signer, `dpopproof.Sign`
 // in `packages/envoy/internal/dpopproof/dpopproof.go`. A key is one of three kinds: one a session
-// makes in its own process (`newDpopKey`), the box key a person's sign-in on this machine keeps
-// (`importDpopKey`), which the broker bound the sign-in to, or the key a machine's device login
-// keeps (`dpopKeyOf`, from `device-login.ts`), which the broker bound the login to. Each way only
-// its public half leaves this package: a proof carries the public JWK in its header, and the
-// private half is held in the closure that signs. The device login is the one caller that holds
-// its private half too, since it writes the key into the login's own file.
+// makes in its own process (`newDpopKey`); one read from PKCS#8 PEM (`importDpopKey`), which is
+// the box key a person's sign-in on this machine keeps, which the broker bound the sign-in to, or
+// a pod role's own agent-secrets key, which the role's registration names (`brokerTokenClient`,
+// ./environment.ts); or the key a machine's device login keeps (`dpopKeyOf`, from
+// `device-login.ts`), which the broker bound the login to. Each way only its public half leaves
+// this package: a proof carries the public JWK in its header, and the private half is held in the
+// closure that signs. The device login is the one caller that holds its private half too, since it
+// writes the key into the login's own file.
 //
 // The private half is a `node:crypto` `KeyObject` rather than a WebCrypto `CryptoKey`, because a
 // NATS connection's proof is signed synchronously (`connectionProof`): nats.js asks its
@@ -172,11 +174,12 @@ export function dpopKeyOf(privateKey: KeyObject, name: string): DpopKey {
 /**
  * The key `pkcs8Pem` holds, as a DPoP key: a person's box key, which `agent-secrets login`
  * wrote as PKCS#8 PEM and the broker bound their sign-in to, so every trade of that sign-in
- * proves this key and no other. `name` says whose key it is, for a refusal to name. A key that is
- * not P-256 is refused. A key that does not parse is refused in this package's own words, naming
- * what was read, with none of the runtime's text and no cause: a parse error can quote the bytes
- * it was handed, which here are key material, and a cause is printed with the error wherever the
- * error is printed whole.
+ * proves this key and no other; or a pod role's own agent-secrets key, which `agent-secrets
+ * keygen` wrote and the role's registration names. `name` says whose key it is, for a refusal to
+ * name. A key that is not P-256 is refused. A key that does not parse is refused in this
+ * package's own words, naming what was read, with none of the runtime's text and no cause: a
+ * parse error can quote the bytes it was handed, which here are key material, and a cause is
+ * printed with the error wherever the error is printed whole.
  */
 export async function importDpopKey(pkcs8Pem: string, name: string): Promise<DpopKey> {
   let privateKey: KeyObject;

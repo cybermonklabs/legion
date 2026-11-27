@@ -31,7 +31,7 @@ import (
 
 const (
 	// createSendWait bounds each request of a test fixture's own create of a stream or a bucket
-	// (sendCreate), and a send the requests of which drew no answer within it is sent again. A
+	// (SendCreate), and a send the requests of which drew no answer within it is sent again. A
 	// create on a cluster is proposed through the meta group and answered once the stream, a
 	// bucket's included, is made, and a stream of more than one copy answers it from its first
 	// leader, once its members have elected one: 25 bucket creates on an idle two-CPU machine took
@@ -50,7 +50,7 @@ const (
 	// answers out of metadata it holds. A hang guard.
 	bucketLookupWait = 10 * time.Second
 
-	// noDeadline is the bound of a wait that ends only on its fact (sendCreate) in a test binary
+	// noDeadline is the bound of a wait that ends only on its fact (SendCreate) in a test binary
 	// run with no deadline (go test -timeout 0), which asked for none: a day is none in practice.
 	noDeadline = 24 * time.Hour
 )
@@ -72,11 +72,12 @@ func waitBound(t testing.TB, bound, margin time.Duration) time.Duration {
 	return bound
 }
 
-// sendCreate sends a test fixture's own create of a stream or a bucket on conn until the cluster
+// SendCreate sends a test fixture's own create of a stream or a bucket on conn until the cluster
 // answers it, and returns the answer: nil once the stream is made, or the cluster's refusal. send
-// makes one create through a JetStream context on conn whose requests createSendWait bounds,
-// publishing to subjects; sendWait is the longest one send can take: createSendWait for a
-// stream's create, bucketSendWait for a bucket's.
+// makes one create on conn, publishing to subjects, and reports a create that drew no answer as
+// natsgo.ErrTimeout or context.DeadlineExceeded; sendWait is the longest one send can take:
+// createSendWait for a stream's create through a JetStream context, bucketSendWait for a bucket's,
+// and its own request's bound for a create a test sends as a raw request.
 //
 // nats-server v2.15.1 leaves a stream create unanswered on several paths, which internal/bus's
 // sentAgain lists with their source lines, and sends no answer later: a fixture that waited two
@@ -99,7 +100,7 @@ func waitBound(t testing.TB, bound, margin time.Duration) time.Duration {
 // the shared wait (testwait.Holds) makes after it, and the one read of the stream held that a
 // caller makes on an "already in use" answer, so the caller's failure comes before go test's
 // timeout panic.
-func sendCreate(t testing.TB, conn *natsgo.Conn, what string, sendWait time.Duration, subjects []string, send func() error) error {
+func SendCreate(t testing.TB, conn *natsgo.Conn, what string, sendWait time.Duration, subjects []string, send func() error) error {
 	t.Helper()
 	bound := waitBound(t, noDeadline, 2*sendWait+createSendWait+time.Second)
 	sends := 0
@@ -141,13 +142,24 @@ func refusalOf(conn *natsgo.Conn, before error, subjects []string) error {
 	return nil
 }
 
-// CreateKeyValue creates the KV bucket config names on conn, sent until the cluster answers it
-// (sendCreate), and returns its handle once every running member of the cluster answers for the
-// bucket's stream (AwaitBucket). conn is the connection whose grant the create is made under, so a
-// test of a client's permissions creates the bucket as that client. A bucket whose stream the
-// cluster already holds with another configuration fails the test with both: the stream the
-// cluster holds, and the bucket the create asked for.
+// CreateKeyValue creates the KV bucket config names on conn (CreateKeyValueOn), and returns its
+// handle once every running member of the cluster answers for the bucket's stream (AwaitBucket).
+// conn is the connection whose grant the create is made under, so a test of a client's
+// permissions creates the bucket as that client.
 func (c *Cluster) CreateKeyValue(t testing.TB, conn *natsgo.Conn, config *natsgo.KeyValueConfig) natsgo.KeyValue {
+	t.Helper()
+	kv := CreateKeyValueOn(t, conn, config)
+	c.AwaitBucket(t, config.Bucket)
+	return kv
+}
+
+// CreateKeyValueOn creates the KV bucket config names on conn, sent until the cluster answers it
+// (SendCreate), and returns its handle as soon as the create is answered: CreateKeyValue without
+// AwaitBucket's wait, which reads each member on a connection of its own that carries no
+// credential. A bucket whose stream the cluster already holds with another configuration fails
+// the test with both: the stream the cluster holds, and the bucket the create asked for. A create
+// conn's grant does not cover fails the test with the server's refusal after one send.
+func CreateKeyValueOn(t testing.TB, conn *natsgo.Conn, config *natsgo.KeyValueConfig) natsgo.KeyValue {
 	t.Helper()
 	js, err := conn.JetStream(natsgo.MaxWait(createSendWait))
 	if err != nil {
@@ -158,7 +170,7 @@ func (c *Cluster) CreateKeyValue(t testing.TB, conn *natsgo.Conn, config *natsgo
 	// The subjects CreateKeyValue publishes to: the account read, the create, and on "already in
 	// use" the update (its read of the stream held ignores a refusal).
 	subjects := []string{"$JS.API.INFO", "$JS.API.STREAM.CREATE." + stream, "$JS.API.STREAM.UPDATE." + stream}
-	err = sendCreate(t, conn, "create KV bucket "+config.Bucket, bucketSendWait, subjects, func() error {
+	err = SendCreate(t, conn, "create KV bucket "+config.Bucket, bucketSendWait, subjects, func() error {
 		var err error
 		kv, err = js.CreateKeyValue(config)
 		return err
@@ -171,7 +183,6 @@ func (c *Cluster) CreateKeyValue(t testing.TB, conn *natsgo.Conn, config *natsgo
 	if err != nil {
 		t.Fatalf("create KV bucket %s: %v", config.Bucket, err)
 	}
-	c.AwaitBucket(t, config.Bucket)
 	return kv
 }
 

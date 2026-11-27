@@ -53,14 +53,15 @@ func TestTheOutboxPublishesNothingToTheRoleOfAClaimThatDoesNotHoldItsSession(t *
 	}
 }
 
-// A hook's prompt publishes with keep (publishKeptToRole), and a kept copy waits on the role's
-// kept lane for the role's next live holder, which is the unheld session's process while it lives.
-// So the gate holds a kept publish as it holds every other (outbox.publishKept, the merge of
-// cybermonklabs/legion#4088 into #4220): to a claim that records a session it does not hold, a
-// hook prompt publishes nothing, kept or not, and finishes undelivered. To a claim holding its own
+// A hook's prompt publishes with keep (publishKeptToRole), and a kept copy waits on the role's kept
+// lane for the role's next live holder, which is the unheld session's process while it lives. So
+// the gate holds a kept publish as it holds every other (outbox.publishKept, the merge of
+// cybermonklabs/legion#4088 into #4220): to a claim that records a session it does not hold, a hook
+// prompt publishes nothing, kept or not, and its row waits for a session to hold the role as it
+// waits on the listener's own no-holder answer (publishKeptToRole). To a claim holding its own
 // session, it is published with keep as before (R9). One hook prompt to each claim stands in for
-// the kept rows, since a hook prompt is the one kind publishKeptToRole publishes
-// (dispatch://INFRA-4374 removed the phase-ended message, the other).
+// the kept rows, since a hook prompt and a phase-ended message are the two kinds publishKeptToRole
+// publishes, and one stands in for both.
 //
 // The control (the pull request records the run): publishKeptToRole calling the publisher's
 // PublishKept directly, as #4088 wrote it, publishes the row to the claim whose session another
@@ -78,8 +79,15 @@ func TestTheOutboxKeepsNothingForTheRoleOfAClaimThatDoesNotHoldItsSession(t *tes
 		Count: 1, Counts: map[string]int{"testing-implementing": 1}, Prompt: "Read the tester's thread before you write anything."}
 	for i, issue := range []string{"LEGION-942", "LEGION-941"} {
 		row := mustOutboxRow(t, issue, hook, time.Now())
-		row.ID = int64(80 + i)
-		if err := runner.execute(ctx, row); err != nil {
+		row.ID, row.CreatedAt = int64(80+i), time.Now()
+		err := runner.execute(ctx, row)
+		if issue == "LEGION-942" {
+			if !errors.Is(err, wait.ErrWaiting) || !errors.Is(err, notify.ErrNoHolder) {
+				t.Fatalf("execute %s's hook prompt row = %v, want a wait on the gate's no-holder answer", issue, err)
+			}
+			continue
+		}
+		if err != nil {
 			t.Fatalf("execute %s's hook prompt row: %v", issue, err)
 		}
 	}
@@ -118,7 +126,7 @@ func TestAForgetWaitsUntilTheListenerNoLongerNamesTheSharedSession(t *testing.T)
 	const shared = "ses_942"
 	listener := &fakeRoleListener{holders: map[string]string{string(contained): shared}}
 	var logs syncBuffer
-	sup, publisher, runner := heldTopicsRig(t, heldTopicsOptions{launched: true, roleHolder: listener.lookup, log: slog.New(slog.NewJSONHandler(&logs, nil))},
+	sup, publisher, runner := heldTopicsRig(t, heldTopicsOptions{launched: true, roleHolder: listener.RoleHolder, log: slog.New(slog.NewJSONHandler(&logs, nil))},
 		[]supervise.Claim{{Token: contained, Tree: "LEGION-942", Issue: "LEGION-942", Role: claim.RoleImplementer, Session: shared, State: supervise.StateSuspended}},
 		shared)
 	m, ok := sup.Machine(contained)
@@ -134,7 +142,7 @@ func TestAForgetWaitsUntilTheListenerNoLongerNamesTheSharedSession(t *testing.T)
 		}
 	}
 
-	forgot := m.Handle(ctx, supervise.RequestForgetSession{Claim: contained, Session: shared})
+	forgot := m.Handle(ctx, supervise.RequestForgetSession{Claim: contained, Session: shared, By: supervise.SuspendedByOperator})
 	for _, id := range []int64{90, 91, 90, 91} {
 		message(id)
 	}
@@ -151,7 +159,7 @@ func TestAForgetWaitsUntilTheListenerNoLongerNamesTheSharedSession(t *testing.T)
 	}
 
 	listener.free(string(contained))
-	if err := m.Handle(ctx, supervise.RequestForgetSession{Claim: contained, Session: shared}); err != nil {
+	if err := m.Handle(ctx, supervise.RequestForgetSession{Claim: contained, Session: shared, By: supervise.SuspendedByOperator}); err != nil {
 		t.Fatalf("the forget once the listener names no holder of the role = %v, want it admitted", err)
 	}
 	message(92)
@@ -172,11 +180,11 @@ func TestAForgetWaitsUntilTheListenerNoLongerNamesTheSharedSession(t *testing.T)
 // records a session it does not hold, logged as a wait rather than as a failure, and is published
 // while it holds its own.
 //
-// The controls (the pull request records the runs): main's code, which publishes every one of them
-// to the controller topic, notifications.legion.legion.controller; heldTopic holding the
-// controller's role topic under either mode, which holds the notice under `controller: operator`
-// too; and controllerNotice answering the gate's refusal as a plain failure, which fails the wait
-// assertion.
+// The controls (the pull request records the runs): the code before this change, which publishes
+// every one of them to the controller topic, notifications.legion.legion.controller; heldTopic
+// holding the controller's role topic under either mode, which holds the notice under `controller:
+// operator` too; and controllerNotice answering the gate's refusal as a plain failure, which fails
+// the wait assertion.
 func TestTheControllerRoleTopicIsHeldOnlyToTheDaemonsOwnController(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -226,7 +234,7 @@ func TestTheControllerRoleTopicIsHeldOnlyToTheDaemonsOwnController(t *testing.T)
 }
 
 // fakeRoleListener is the Envoy listener's role lookup (GET /v1/roles/<role>), as a forget asks it
-// (supervise.Deps.RoleHolder, through lookup) and as the outbox asks it before a controller notice
+// (supervise.Deps.RoleHolder) and as the outbox asks it before a controller notice
 // (outboxNotices.RoleHolder): the session each role a test named (holds) is held by, live, and no
 // holder for any other role. A test publisher embeds it for its role read.
 type fakeRoleListener struct {
@@ -234,18 +242,14 @@ type fakeRoleListener struct {
 	holders map[string]string
 }
 
-func (l *fakeRoleListener) lookup(_ context.Context, role string) (string, string, error) {
+// RoleHolder is the listener's answer for role, as a forget and the outbox's publisher ask it.
+func (l *fakeRoleListener) RoleHolder(_ context.Context, role string) (string, string, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if session, ok := l.holders[role]; ok {
 		return session, notify.StateLive, nil
 	}
 	return "", "", nil
-}
-
-// RoleHolder is lookup, as the outbox's publisher answers it (outboxNotices).
-func (l *fakeRoleListener) RoleHolder(ctx context.Context, role string) (string, string, error) {
-	return l.lookup(ctx, role)
 }
 
 // holds makes session the live holder of role, as its claim on the listener does.

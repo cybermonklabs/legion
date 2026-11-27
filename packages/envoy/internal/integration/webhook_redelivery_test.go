@@ -18,6 +18,7 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/testwait"
 	"github.com/sjawhar/envoy/internal/webhook"
 )
 
@@ -29,6 +30,7 @@ import (
 const redeliverySecret = "redelivery-secret"
 
 func TestWebhookRedelivery_AGitHubRedeliveryLandsOnceAndAnotherDeliveryLands(t *testing.T) {
+	t.Parallel()
 	env := setupTestEnv(t)
 	handler := webhook.GitHubHandler(redeliverySecret, "@legion", "", "", env.client, refusingRecorder{t}, webhook.NewBodyBudget(webhook.DefaultBodyBudget, nil))
 	body := `{
@@ -52,6 +54,7 @@ func TestWebhookRedelivery_AGitHubRedeliveryLandsOnceAndAnotherDeliveryLands(t *
 // One GitHub delivery fans out to several topics under one dedupe key (a comment that mentions the
 // trigger): each copy lands once, and the redelivery adds none.
 func TestWebhookRedelivery_AGitHubFanOutLandsOncePerTopic(t *testing.T) {
+	t.Parallel()
 	env := setupTestEnv(t)
 	handler := webhook.GitHubHandler(redeliverySecret, "@legion", "", "", env.client, refusingRecorder{t}, webhook.NewBodyBudget(webhook.DefaultBodyBudget, nil))
 	body := `{
@@ -77,6 +80,7 @@ func TestWebhookRedelivery_AGitHubFanOutLandsOncePerTopic(t *testing.T) {
 }
 
 func TestWebhookRedelivery_ASlackRetryLandsOnceAndAnotherEventLands(t *testing.T) {
+	t.Parallel()
 	env := setupTestEnv(t)
 	handler := webhook.SlackHandler(redeliverySecret, env.client, webhook.NewBodyBudget(webhook.DefaultBodyBudget, nil))
 	event := func(eventID string) string {
@@ -97,6 +101,7 @@ func TestWebhookRedelivery_ASlackRetryLandsOnceAndAnotherEventLands(t *testing.T
 // posting an alert, say — used to wake an agent with an empty summary and a payload that held no
 // words at all. End to end, over a signed post, those words must reach the stream.
 func TestSlackAttachmentWordsReachTheStream(t *testing.T) {
+	t.Parallel()
 	env := setupTestEnv(t)
 	handler := webhook.SlackHandler(redeliverySecret, env.client, webhook.NewBodyBudget(webhook.DefaultBodyBudget, nil))
 	body := `{"type":"event_callback","team_id":"T1","event_id":"Ev_attachment_1","event":{"type":"message","subtype":"bot_message","channel":"C1","bot_id":"B1","username":"datadog","ts":"1700000000.000100","text":"","attachments":[{"title":"[Triggered] CPU load high","text":"host web-1 is at 97% for 10 minutes","fallback":"[Triggered] CPU load high"}]}}`
@@ -120,6 +125,7 @@ func TestSlackAttachmentWordsReachTheStream(t *testing.T) {
 }
 
 func TestWebhookRedelivery_AGhostWisprRedeliveryLandsOnceAndAnotherDeliveryLands(t *testing.T) {
+	t.Parallel()
 	env := setupTestEnv(t)
 	handler := webhook.GhostWisprHandler(redeliverySecret, env.client, webhook.NewBodyBudget(webhook.DefaultBodyBudget, nil))
 	body := `{"event_type":"summary_ready","payload":{"session_id":"20260326041629","type":"summary_ready"}}`
@@ -227,8 +233,9 @@ func streamEnvelopes(t *testing.T, env *testEnv, subject string) []contracts.Env
 		t.Fatalf("read %s: %v", subject, err)
 	}
 	defer func() { _ = sub.Unsubscribe() }()
+	ctx := testwait.Context(t)
 	for range held {
-		msg, err := sub.NextMsg(5 * time.Second)
+		msg, err := sub.NextMsgWithContext(ctx)
 		if err != nil {
 			t.Fatalf("read message %d of %d on %s: %v", len(items)+1, held, subject, err)
 		}
@@ -259,6 +266,7 @@ func streamDedupeKeys(t *testing.T, env *testEnv, subject string) []string {
 // landed and must publish the ones that did not, so the event ends up on each of its topics
 // exactly once. Without the MsgId the first topic holds two copies of one delivery.
 func TestWebhookRedelivery_AFanOutThatFailedPartWayIsCompletedByTheRedelivery(t *testing.T) {
+	t.Parallel()
 	env := setupTestEnv(t)
 	body := `{
 		"action": "created",

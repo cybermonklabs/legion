@@ -56,8 +56,15 @@ func appSources() []secrets.LocalSecret {
 // session's reread makes the broker serve a secret stored after its last load.
 func newProfileServerOf(t *testing.T, file string, mint func(secrets.MintRequest) (secrets.Minted, error), sources []secrets.LocalSecret, reread ...string) *profileServer {
 	t.Helper()
+	return newProfileServerAdjusted(t, file, mint, sources, func(*api.Deps) {}, reread...)
+}
+
+// newProfileServerAdjusted is newProfileServerOf with adjust applied to the deps it registers.
+func newProfileServerAdjusted(t *testing.T, file string, mint func(secrets.MintRequest) (secrets.Minted, error), sources []secrets.LocalSecret, adjust func(*api.Deps), reread ...string) *profileServer {
+	t.Helper()
 	s := &profileServer{mint: mint}
 	s.testServer = newProfiledTestServer(t, file, func(d *api.Deps) {
+		adjust(d)
 		d.Machine.Minters = map[string]requests.Minter{
 			policy.TypeGitHubApp: func(_ context.Context, req secrets.MintRequest) (secrets.Minted, error) {
 				s.mu.Lock()
@@ -143,18 +150,20 @@ func minting(secrets.MintRequest) (secrets.Minted, error) {
 	return secrets.Minted{Value: "token"}, nil
 }
 
-// TestTheGitHubAppFieldIsRefusedWithItsOwnCode: a body of POST /v1/requests or of POST
-// /v1/grants/{id}/values that carries github_app — any value of it, null too — and no field the
-// route does not take is refused 400 GITHUB_APP_FIELD_REMOVED with C-5's message, and never
-// INVALID_REQUEST, which a command line of an earlier release reads as a broker that does not
-// know the field and answers by sending its request again without it. Neither route writes a
-// request or runs a minter for it. A body that also carries a field the route does not take is
-// refused at that field first, as the route's own unknown field, since the route reads the body
-// once: no released command line sends github_app beside such a field, so none of them reads that
-// refusal as a broker from before github_app. A body that carries no github_app keeps its own
-// route's refusal of a field it does not take.
+// TestTheGitHubAppFieldIsRefusedWithItsOwnCode: with BROKER_GITHUB_APP_FIELD=off, a body of POST
+// /v1/requests or of POST /v1/grants/{id}/values that carries github_app — any value of it, null
+// too — and no field the route does not take is refused 400 GITHUB_APP_FIELD_REMOVED with C-5's
+// message, and never INVALID_REQUEST, which a command line of an earlier release reads as a broker
+// that does not know the field and answers by sending its request again without it. Neither route
+// writes a request or runs a minter for it. A body that also carries a field the route does not
+// take is refused at that field first, as the route's own unknown field, since the route reads the
+// body once: no released command line sends github_app beside such a field, so none of them reads
+// that refusal as a broker from before github_app. A body that carries no github_app keeps its own
+// route's refusal of a field it does not take. github_app_field_test.go holds the answer the field
+// gets with the setting unset.
 func TestTheGitHubAppFieldIsRefusedWithItsOwnCode(t *testing.T) {
-	s := newProfileServer(t, minting)
+	s := newProfileServerAdjusted(t, policytest.ProfilesFile(policytest.AppProfile("APP_KEY"), policytest.AppProfile("HUMAN_APP_KEY")), minting, appSources(),
+		func(d *api.Deps) { d.Machine.GitHubAppFieldOff = true }, "APP_KEY", "HUMAN_APP_KEY")
 	grantID := s.grant(t)
 	s.take()
 

@@ -1,6 +1,6 @@
 name: CI job claude-envoy
 
-# The steps of ci.yaml's `claude-envoy` job, in a file of its own, and the private-name check of
+# The steps of `.github/workflows/ci.yaml#claude-envoy` job, in a file of its own, and the private-name check of
 # the plugin it packs in a job after it (private-names, below).
 # ci.yaml's job of the same id calls this file, and that caller keeps `needs: changes` and the
 # whole `if:` that decides whether these steps run, so this file carries no `if:` of its own.
@@ -10,13 +10,13 @@ name: CI job claude-envoy
 #
 # Each job's last step reports ci-ok for the caller: on a merge-group run its own result decides,
 # it posts the failing ci-ok at once (.github/actions/ci-ok-report), as every job of ci.yaml ends.
-# `ci-ok-changes` carries ci.yaml's `toJSON(needs.changes)` for it.
+# `ci-ok-changes` carries `.github/workflows/ci.yaml#toJSON(needs.changes)` for it.
 on:
   workflow_call:
     inputs:
       ci-ok-changes:
         description: >-
-          ci.yaml's `toJSON(needs.changes)`: end the job with ci-ok's report
+          `.github/workflows/ci.yaml#toJSON(needs.changes)`: end the job with ci-ok's report
           (.github/actions/ci-ok-report), as every job of ci.yaml ends.
         type: string
         required: true
@@ -43,8 +43,9 @@ jobs:
       # .claude-code-pin, the repository's one copy of it (.github/actions/install-claude-code).
       - uses: ./.github/actions/install-claude-code
       - run: bun install --frozen-lockfile
+      # why: .github/ci-notes/ci.md#why-every-biome-step-prints-every-warning-and-error
       - name: Lint Claude Envoy plugin
-        run: bun run lint
+        run: bun run lint --diagnostic-level=warn --max-diagnostics=none
         working-directory: packages/claude-envoy
       - name: Typecheck Claude Envoy plugin
         run: bun run typecheck
@@ -75,8 +76,19 @@ jobs:
         working-directory: packages/claude-envoy
         env:
           LEGION_E2E: "1"
+      # The manifest declares this tree's daemon API contract as `legion.daemonApiVersion`
+      # (scripts/daemon-contract.sh), as every pack writes it and release.yaml's
+      # claude_envoy_build does (.github/scripts/release-claude-envoy-version.sh): the committed
+      # manifest names none, and the daemon built from this tree requires it.
       - name: Pack Claude Envoy plugin
-        run: bun pm pack --destination ../../out/pr-artifacts
+        run: |
+          contract=$(bash ../../scripts/daemon-contract.sh)
+          jq --argjson contract "$contract" '.legion.daemonApiVersion = $contract' package.json > "$RUNNER_TEMP/package.json"
+          mv "$RUNNER_TEMP/package.json" package.json
+          bun pm pack --destination ../../out/pr-artifacts
+          tar -xzOf ../../out/pr-artifacts/sjawhar-claude-envoy-*.tgz package/package.json \
+            | jq -e --argjson contract "$contract" '.legion.daemonApiVersion == $contract' > /dev/null \
+            || { echo "::error::the Claude Envoy tarball's package.json does not declare legion.daemonApiVersion $contract"; exit 1; }
         working-directory: packages/claude-envoy
       # The Codex plugin's package, built from the checked dist/ and packed and checked as
       # release.yaml's claude_envoy_build does, into the same artifact.

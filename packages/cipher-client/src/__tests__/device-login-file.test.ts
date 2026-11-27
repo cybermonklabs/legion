@@ -18,6 +18,7 @@ import { chmod, mkdir, readdir, stat } from "node:fs/promises";
 import { createServer } from "node:net";
 import * as os from "node:os";
 import { basename, dirname, join } from "node:path";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import {
   STAND_IN_CREDENTIAL,
@@ -30,7 +31,12 @@ import {
   type KeptDeviceLogin,
   startDeviceLogin,
 } from "../device-login";
-import { type DeviceLogin, deviceLoginPlace, readDeviceLogin } from "../device-login-file";
+import {
+  type DeviceLogin,
+  deviceLoginPlace,
+  readDeviceLogin,
+  saveDeviceLogin,
+} from "../device-login-file";
 import { DEVICE_LOGIN_STALE_LOCK_MS } from "../device-login-lock";
 import { DEVICE_LOGIN_COMMAND } from "../token-errors";
 
@@ -97,6 +103,47 @@ test("a machine with no login file is told to log in", async () => {
   );
   expect(refusal?.message).toContain("this machine has no device login");
   expect(refusal?.message).toContain(`log this machine in with: ${DEVICE_LOGIN_COMMAND}`);
+});
+
+test("the access token's life is saved beside it and read back, and a login with no access token keeps none", async () => {
+  const stub = broker();
+  const path = loginPath();
+  await writeDeviceLoginFile(path, stub.url, {
+    access_token: fixtureSecret("access"),
+    access_expires_at: new Date(Date.now() + 302_000).toISOString(),
+  });
+  const login = await readDeviceLogin(path);
+  await saveDeviceLogin(path, { ...login, accessLifeSeconds: 302 }, async () => true);
+  const file = JSON.parse(await fs.readFile(path, "utf8")) as Record<string, unknown>;
+  expect(file.access_life_seconds).toBe(302);
+  expect((await readDeviceLogin(path)).accessLifeSeconds).toBe(302);
+  // A login with no access token keeps no life either: the life is the token's.
+  await saveDeviceLogin(
+    path,
+    { ...login, accessToken: "", accessExpiresAt: null, accessLifeSeconds: 302 },
+    async () => true
+  );
+  const bare = JSON.parse(await fs.readFile(path, "utf8")) as Record<string, unknown>;
+  expect(Object.hasOwn(bare, "access_life_seconds")).toBe(false);
+});
+
+// A file an older build wrote has no member, and one whose member is no whole number of seconds
+// is read as having none: the next refresh keeps the life again.
+test.each([
+  ["no member, as an older build writes the file", undefined],
+  ['the string "302"', "302"],
+  ["302.5, no whole number", 302.5],
+  ["0", 0],
+  ["-1", -1],
+  ["null", null],
+] as const)("an access token's life kept as %s is read as none", async (_, kept) => {
+  const path = loginPath();
+  await writeDeviceLoginFile(path, "http://127.0.0.1:1", {
+    access_token: fixtureSecret("access"),
+    access_expires_at: new Date(Date.now() + 302_000).toISOString(),
+    access_life_seconds: kept,
+  });
+  expect((await readDeviceLogin(path)).accessLifeSeconds).toBeNull();
 });
 
 test("a login directory others may write is refused, as a file others may read is", async () => {

@@ -23,6 +23,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -30,15 +31,18 @@ import (
 // real NATS and its real Envoy listener, with a controller stand-in beside the pods
 // (idleRigController), and the listener's session windows shortened so that a controller session
 // the listener stops hearing from is unresponsive, then gone, and its role claim freed within the
-// test. In each case the daemon holds the rig's issue while the controller session is away, and
-// the controller is given "held on <issue>" exactly once after it comes back and claims its role.
+// test. In each case the daemon holds the rig's issue, and the issue's architect escalates the
+// hold, while the controller session is away (holdIssue); the daemon publishes the escalated hold
+// to the controller's role topic (notifications.role.legion-<project>-controller) once the
+// registered controller session holds that role live, and the controller is given "held on
+// <issue>" exactly once after it comes back and claims its role.
 //
-// The controls are main's code (the pull request records the runs): there the daemon publishes
-// the hold to the controller topic (notifications.legion.<project>.controller), and each case is
-// given the notice zero times. In (a) and (b) the session that comes back registers its agent
-// subject alone, and the controller topic it registers again once it holds the role is added
-// to its consumer at the consumer's position, past the stored notice; in (c) the new session's
-// consumer reads that topic from the stream's end.
+// The controls are the code before this change (the pull request records the runs): there the
+// daemon publishes the hold to the controller topic (notifications.legion.<project>.controller),
+// and each case is given the notice zero times. In (a) and (b) the session that comes back
+// registers its agent subject alone, and the controller topic it registers again once it holds the
+// role is added to its consumer at the consumer's position, past the stored notice; in (c) the new
+// session's consumer reads that topic from the stream's end.
 
 // idleRigControllerListenerEnv is the listener's session windows for the controller cases: a
 // session is live for ten seconds after its last registration and gone ten seconds after that,
@@ -58,10 +62,6 @@ const (
 	// beats, five times inside the shortened live window, as pi-envoy's 90 s heartbeat is inside
 	// the five-minute one.
 	idleRigControllerHeartbeat = 2 * time.Second
-	// idleRigControllerFreedWait bounds the listener freeing the role claim of a session that
-	// stopped registering: the shortened gone horizon and one pass of the role claim reaper, with
-	// room for a loaded runner.
-	idleRigControllerFreedWait = 90 * time.Second
 	// idleRigControllerNoticeWait bounds a controller notice reaching the controller once its
 	// session holds the role: the outbox's sweep finds a row the rig's own engine wrote within
 	// outboxLease (30 s), and a row that has waited retries at most RetryBackoffMost (64 s) later,
@@ -102,7 +102,7 @@ func TestIdleRigAControllerAwayUntilItsClaimIsFreedIsGivenTheHoldOnceItClaimsIts
 	if status/100 != 2 {
 		t.Fatalf("send the controller a message after the hold = %d %s, want it stored", status, body)
 	}
-	idleRigEventually(t, idleRigRecordWait, "the controller reading its backlog to the message sent after the hold", func() bool {
+	idleRigEventually(t, "the controller reading its backlog to the message sent after the hold", func() bool {
 		return controller.given(after) == 1
 	})
 	controller.holdRole()
@@ -122,7 +122,7 @@ func TestIdleRigAControllerThatReadsNoFrameAndEndsIsGivenTheHoldOnceWhenItComesB
 	controller.holdRole()
 
 	rig.holdIssue(issue)
-	idleRigEventually(t, idleRigControllerNoticeWait, "the daemon's publish of the hold answered 200 while the controller reads no frame", func() bool {
+	idleRigEventually(t, "the daemon's publish of the hold answered 200 while the controller reads no frame", func() bool {
 		return rig.controllerNoticeRows(issue) == 0
 	})
 	controller.end()
@@ -183,9 +183,12 @@ func (r *idleWakeRig) controllerNoticeTopic() string {
 	return "notifications.legion." + r.project + ".controller"
 }
 
-// holdIssue holds the issue as the daemon's workflow holds it when its implementer's claim
-// fails: the workflow's own engine applies the failure in the daemon's store, and the hold writes
-// the controller's notice row of its own (workflow's noticeWithController), which the daemon's
+// holdIssue holds the issue and hands the hold to the controller, as the daemon's workflow does
+// when its implementer's claim fails and the issue's architect escalates the hold: the workflow's
+// own engine applies the failure in the daemon's store, which holds the issue and tells its
+// architect alone, and then the architect's escalation (retry_or_escalate, decision escalate),
+// which records the hold's reason `escalated` and writes the controller's notice row of its own
+// (workflow's retryOrEscalate and noticeWithController), "held on <issue>", which the daemon's
 // outbox runs from its next sweep.
 func (r *idleWakeRig) holdIssue(issue idleRigIssue) {
 	r.t.Helper()
@@ -199,18 +202,23 @@ func (r *idleWakeRig) holdIssue(issue idleRigIssue) {
 	if err := r.pool.QueryRow(context.Background(), "select phase from issues where key = $1", issue.key).Scan(&held); err != nil || held != string(phase.Held) {
 		r.t.Fatalf("%s stands in %q after its implementer's failure (%v), want held", issue.key, held, err)
 	}
+	result, err = intake.ApplyFact(context.Background(), r.pool, "api", "controller-rig-escalated-"+issue.key,
+		intake.RetryOrEscalate{Issue: issue.key, Decision: intake.EscalateDecision, Reason: "the controller rig's architect hands the hold on"}, engine)
+	if err != nil || result.Refusal != nil {
+		r.t.Fatalf("escalate the hold of %s = %+v, %v; want the escalation applied", issue.key, result.Refusal, err)
+	}
+	var reason string
+	if err := r.pool.QueryRow(context.Background(), "select phase, coalesce(hold_reason, '') from issues where key = $1", issue.key).Scan(&held, &reason); err != nil ||
+		held != string(phase.Held) || reason != string(record.HoldEscalated) {
+		r.t.Fatalf("%s stands in %q held for %q after its architect's escalation (%v), want held for %q", issue.key, held, reason, err, record.HoldEscalated)
+	}
 }
 
 // controllerNoticeRows is how many controller notice rows of the issue the daemon's outbox still
 // holds: a row is deleted once its publish is answered 200.
 func (r *idleWakeRig) controllerNoticeRows(issue idleRigIssue) int {
 	r.t.Helper()
-	var rows int
-	if err := r.pool.QueryRow(context.Background(), "select count(*) from outbox where issue = $1 and kind = $2",
-		issue.key, string(record.OutboxKindControllerNotice)).Scan(&rows); err != nil {
-		r.t.Fatalf("count the controller notice rows of %s: %v", issue.key, err)
-	}
-	return rows
+	return outboxRowsOfKind(r.t, r.pool, issue.key, record.OutboxKindControllerNotice)
 }
 
 // awaitControllerNoticeTried waits until the daemon's outbox has run the issue's controller
@@ -221,7 +229,7 @@ func (r *idleWakeRig) controllerNoticeRows(issue idleRigIssue) int {
 func (r *idleWakeRig) awaitControllerNoticeTried(issue idleRigIssue) {
 	r.t.Helper()
 	var rows, attempts int
-	idleRigEventually(r.t, idleRigControllerNoticeWait, "the daemon's first attempt of the hold's controller notice", func() bool {
+	idleRigEventually(r.t, "the daemon's first attempt of the hold's controller notice", func() bool {
 		if err := r.pool.QueryRow(context.Background(), "select count(*), coalesce(max(attempts), 0) from outbox where issue = $1 and kind = $2",
 			issue.key, string(record.OutboxKindControllerNotice)).Scan(&rows, &attempts); err != nil {
 			r.t.Fatalf("read the controller notice rows of %s: %v", issue.key, err)
@@ -237,7 +245,7 @@ func (r *idleWakeRig) awaitControllerRoleFree() {
 	r.t.Helper()
 	lookup := notify.New(r.listener.url, "")
 	var last string
-	idleRigEventually(r.t, idleRigControllerFreedWait, "the listener freeing the controller role's claim", func() bool {
+	idleRigEventually(r.t, "the listener freeing the controller role's claim", func() bool {
 		holder, state, err := lookup.RoleHolder(context.Background(), r.controllerRole())
 		last = fmt.Sprintf("holder %q, state %q, error %v", holder, state, err)
 		return err == nil && holder == ""
@@ -272,7 +280,6 @@ type idleRigController struct {
 	mu       sync.Mutex
 	recorded map[uint64]bool
 	frames   []idleRigEnvelope
-	topics   []string
 	stop     chan struct{}
 	beating  sync.WaitGroup
 }
@@ -304,7 +311,7 @@ func (r *idleWakeRig) startController(session string, reads bool) *idleRigContro
 func (c *idleRigController) registerWithDaemon() {
 	c.t.Helper()
 	status, body := c.rig.api.request(http.MethodPost, "/legion/v1/controller/secret",
-		api.ControllerSecretRequest{PluginContract: api.DaemonAPIVersion}, true)
+		api.ControllerSecretRequest{PluginContract: api.DaemonAPIVersion()}, true)
 	if status != http.StatusOK {
 		c.t.Fatalf("mint the controller's capability = %d %s", status, body)
 	}
@@ -314,7 +321,7 @@ func (c *idleRigController) registerWithDaemon() {
 	}
 	status, body = c.rig.api.request(http.MethodPost, "/legion/v1/claims/register", claim.RegisterRequest{
 		BootToken: minted.Secret, SessionID: c.session, OmpSessionFile: "/sessions/" + c.session + ".jsonl",
-		AgentID: "idle-rig-controller", PluginContract: api.DaemonAPIVersion,
+		AgentID: "idle-rig-controller", PluginContract: api.DaemonAPIVersion(),
 	}, false)
 	if status != http.StatusOK {
 		c.t.Fatalf("register %s as the controller = %d %s", c.session, status, body)
@@ -344,7 +351,7 @@ func (c *idleRigController) beat(topics []string) {
 		c.t.Fatalf("register %s with the listener: %v", c.session, err)
 	}
 	c.mu.Lock()
-	c.topics, c.stop = topics, make(chan struct{})
+	c.stop = make(chan struct{})
 	stop := c.stop
 	c.mu.Unlock()
 	c.beating.Add(1)
@@ -535,8 +542,8 @@ func (c *idleRigController) summaries() string {
 // idleRigControllerSettle has passed: it must be one event, given once. A session never given it
 // fails naming the count, 0. Pass or fail, it logs where the daemon published the notice, as the
 // listener logged each publish of it (idleRigListener.publishesOf): the topic and the answer, so
-// a run of the daemon at main names the controller topic and a run of this change the role
-// topic.
+// a run of the code before this change names the controller topic, and a run of this code the
+// role topic.
 func (c *idleRigController) awaitGivenOnce(summary string) {
 	c.t.Helper()
 	defer func() {
@@ -547,18 +554,9 @@ func (c *idleRigController) awaitGivenOnce(summary string) {
 		}
 		if c.t.Failed() {
 			c.t.Logf("the controller %s was given: %s", c.session, c.summaries())
-			logs := c.rig.listener.log()
-			if cut := len(logs) - idleRigLogTailBytes; cut > 0 {
-				logs = fmt.Sprintf("(%d bytes left out)\n%s", cut, logs[cut:])
-			}
-			c.t.Logf("the Envoy listener's log:\n%s", logs)
 		}
 	}()
-	deadline := time.Now().Add(idleRigControllerNoticeWait)
-	for c.given(summary) == 0 && time.Now().Before(deadline) {
-		time.Sleep(idleRigPoll)
-	}
-	if n := c.given(summary); n == 0 {
+	if !testwait.Holds(idleRigControllerNoticeWait, idleRigPoll, func() bool { return c.given(summary) != 0 }) {
 		c.t.Fatalf("the controller %s was given %q 0 times in %s, want exactly once", c.session, summary, idleRigControllerNoticeWait)
 	}
 	time.Sleep(idleRigControllerSettle)

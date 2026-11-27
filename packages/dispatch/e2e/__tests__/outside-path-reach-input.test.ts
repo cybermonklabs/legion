@@ -711,10 +711,12 @@ describe.concurrent("outside-path-reach.sh", () => {
       const cases = locales.flatMap((locale) =>
         Array.from({ length: 256 }, (_, byte) => ({ locale, byte }))
       );
-      // 64 runners at once, each running its share of the cases one after another: 64 runs at a
-      // time, from 64 children of the test process for the 768 runs. No run reaches the network:
-      // a taken byte stops at the old curl, a refused one before it.
-      const runners = 64;
+      // 16 runners at once, each running its share of the cases one after another: 16 runs at a
+      // time, from 16 children of the test process for the 768 runs. Each runner is a Bun.spawn the
+      // test process waits on, and under the load rowTimeout's reading names the row took at most
+      // 23.7 s with 16 and 24.2 s with 64. No run reaches the network: a taken byte stops at the
+      // old curl, a refused one before it.
+      const runners = 16;
       const shares = Array.from({ length: runners }, (_, runner) =>
         cases
           .filter((_, index) => index % runners === runner)

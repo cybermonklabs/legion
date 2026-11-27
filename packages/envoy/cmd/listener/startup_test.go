@@ -34,6 +34,7 @@ import (
 // healthy answer there would let ECS take the replacement for ready before it fans anything out,
 // and a 503 would keep ECS from ever stopping the task that holds the durable.
 func TestTheV1APIIsServedWhileAnotherTaskHoldsTheDurable(t *testing.T) {
+	t.Parallel()
 	const (
 		machineID = "v1-bind-window"
 		secret    = "bind-window-secret"
@@ -124,7 +125,7 @@ func TestTheV1APIIsServedWhileAnotherTaskHoldsTheDurable(t *testing.T) {
 		if forwarded.Topic != contracts.RoleTopicPrefix+role || !strings.HasPrefix(forwarded.DedupeKey, roleForwardDedupePrefix) {
 			t.Fatalf("the holder received topic %q dedupe key %q, want the role forward of %s", forwarded.Topic, forwarded.DedupeKey, contracts.RoleTopicPrefix+role)
 		}
-	case <-time.After(10 * time.Second):
+	case <-time.After(listenerWaitBound(t)):
 		t.Fatalf("the role holder received no forward while another task holds the durable:\n%s", listener.Output.String())
 	}
 
@@ -166,6 +167,7 @@ func assertSessionsMatchTheirSample(t *testing.T, listener *listenerProcess, wan
 // drops that copy by its dedupe key. The messages go straight onto the lane, as an operator's or
 // an earlier listener's do: the publish route forwards a role message itself.
 func TestARoleMessageReachesItsHolderOnceAcrossTwoTasksOfOneMachine(t *testing.T) {
+	t.Parallel()
 	const (
 		machineID = "two-tasks"
 		holderID  = "ses_two_tasks_holder"
@@ -220,13 +222,15 @@ func TestARoleMessageReachesItsHolderOnceAcrossTwoTasksOfOneMachine(t *testing.T
 				t.Fatalf("the holder received dedupe key %q, want one prefixed %s", frame.DedupeKey, roleForwardDedupePrefix)
 			}
 			keys[frame.DedupeKey]++
-		case <-time.After(10 * time.Second):
+		case <-time.After(listenerWaitBound(t)):
 			t.Fatalf("the holder received %d of %d role messages", received, messages)
 		}
 	}
 	select {
 	case frame := <-frames:
 		t.Fatalf("the holder received a frame past the %d published: %+v", messages, frame)
+	// A quiet window: the second this waits is what the row asserts, that no frame comes past the
+	// ones published, so it keeps its own span.
 	case <-time.After(time.Second):
 	}
 	if len(keys) != messages {
@@ -262,7 +266,7 @@ func TestARoleMessageReachesItsHolderOnceAcrossTwoTasksOfOneMachine(t *testing.T
 		}
 		return total
 	}
-	waitFor(t, 10*time.Second, "the two tasks to handle the repeated key twice", func() bool { return handled() == 2 })
+	waitFor(t, "the two tasks to handle the repeated key twice", func() bool { return handled() == 2 })
 	repeats := 0
 	for collecting := true; collecting; {
 		select {
@@ -342,6 +346,7 @@ func countRecords(p *listenerProcess, name string, match func(map[string]any) bo
 // It must start healthy over them and serve the ordinary keys beside them: one stored role must not
 // keep every listener from starting.
 func TestTheListenerStartsOverKeysAnEarlierListenerStored(t *testing.T) {
+	t.Parallel()
 	client, err := bus.ConnectOwningStream([]string{testnats.URL(t)}, bus.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("connect bus: %v", err)
@@ -452,13 +457,16 @@ func ciSettled(t *testing.T, client *bus.Client) bool {
 // cache not applicable instead of waiting on it. Seeded with a record any summary loop would settle,
 // it creates no consumer on the CI bucket's stream, publishes no settlement, and reports healthy.
 func TestAListenerWithoutAGitHubRouteLeavesTheCIBucketAlone(t *testing.T) {
+	t.Parallel()
 	client := setupTestNATS(t)
 	kv, key := seedDueCIRecord(t, client, "acme", "widgets", "7", strings.Repeat("d", 40))
 
 	listener := startListenerProcess(t, cmdtest.Build(t, "envoy-listener"), client.Conn.ConnectedUrl(), "no-github-route")
 	listener.waitHealthy(t)
 	// The positive control, TestAListenerWithAGitHubRouteSettlesTheCIBucket, settles this seed
-	// within a few one-second ticks of turning healthy; five seconds covers them.
+	// within a few one-second ticks of turning healthy; five seconds covers them. This loop's only
+	// exit is its deadline, so what it proves is an absence and the five seconds are the row's
+	// subject: it keeps its own span, as the quiet windows do.
 	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(250 * time.Millisecond) {
 		consumers := 0
 		for range client.JS().ConsumerNames("KV_" + bus.CIStateBucket) {
@@ -492,6 +500,7 @@ func TestAListenerWithoutAGitHubRouteLeavesTheCIBucketAlone(t *testing.T) {
 // the record seedDueCIRecord leaves settles: the settlement reaches the stream and the record is
 // marked settled. It is the positive control for the test above.
 func TestAListenerWithAGitHubRouteSettlesTheCIBucket(t *testing.T) {
+	t.Parallel()
 	client := setupTestNATS(t)
 	kv, key := seedDueCIRecord(t, client, "acme", "widgets", "7", strings.Repeat("d", 40))
 
@@ -505,7 +514,7 @@ func TestAListenerWithAGitHubRouteSettlesTheCIBucket(t *testing.T) {
 		time.Sleep(100 * time.Millisecond)
 	}
 	t.Logf("settled %s after turning healthy", time.Since(healthy).Round(10*time.Millisecond))
-	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(100 * time.Millisecond) {
+	for deadline := time.Now().Add(listenerWaitBound(t)); ; time.Sleep(100 * time.Millisecond) {
 		entry, err := kv.Get(key)
 		if err != nil {
 			t.Fatalf("read the seeded CI record: %v", err)
@@ -562,6 +571,7 @@ func do(t *testing.T, request *http.Request) (int, string) {
 // anything. This test holds both halves, so reintroducing that SetDefault reds it. The listener
 // mounts the GitHub route, so all three caches warm up.
 func TestListenerLogsFromOtherPackagesKeepTheirHandlers(t *testing.T) {
+	t.Parallel()
 	const machineID = "logger-split"
 	server, uri := testnats.Start(t)
 	client, err := bus.ConnectOwningStream([]string{uri}, bus.WithReplicas(1))
@@ -600,7 +610,7 @@ func TestListenerLogsFromOtherPackagesKeepTheirHandlers(t *testing.T) {
 	for _, cache := range []string{"interest registry", "session registry", "cistore"} {
 		msg := cache + " cache warm-up"
 		warmUp := listenerJSONRecord(t, listener, msg)
-		for deadline := time.Now().Add(30 * time.Second); warmUp == nil && time.Now().Before(deadline); {
+		for deadline := time.Now().Add(listenerWaitBound(t)); warmUp == nil && time.Now().Before(deadline); {
 			time.Sleep(100 * time.Millisecond)
 			warmUp = listenerJSONRecord(t, listener, msg)
 		}
@@ -616,7 +626,7 @@ func TestListenerLogsFromOtherPackagesKeepTheirHandlers(t *testing.T) {
 	// how this test gets one to read.
 	server.Stop(t)
 	textLine := regexp.MustCompile(`(?m)^\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2} .*envoy nats disconnected`)
-	deadline := time.Now().Add(30 * time.Second)
+	deadline := time.Now().Add(listenerWaitBound(t))
 	for !textLine.MatchString(listener.Output.String()) {
 		if time.Now().After(deadline) {
 			if listenerJSONRecord(t, listener, "envoy nats disconnected") != nil {
@@ -681,6 +691,8 @@ const v1OpenWithoutTheBucket = 5000
 // bucket out, keeps running, and opens the bucket itself once the grant arrives - the order
 // production applies them in - with no restart.
 func TestTheListenerOpensV1AndPicksUpTheBucketItMayNotOpenYet(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv of
+	// NATS_NKEY_SEED).
 	seed, public := testnats.User(t)
 	grant := testnats.StartNkeyGranted(t, public, grantBeforeKnownSessions()...)
 	t.Setenv("NATS_NKEY_SEED", seed)

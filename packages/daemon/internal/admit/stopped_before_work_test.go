@@ -24,7 +24,8 @@ func ownersVersion(t *testing.T, key string, version int, text string) intake.Pl
 }
 
 // applyOwnersCall applies fact as the route of an owner's call applies it, and fails unless the
-// workflow took it: no refusal, and spent. Admission runs its pass after it, as after every fact.
+// workflow took it: no refusal, and spent. Admission runs its pass after it where the pass rule
+// (Admission.Apply) gives one.
 func applyOwnersCall(t *testing.T, pool *pgxpool.Pool, admission *Admission, id string, fact intake.Fact) {
 	t.Helper()
 	result, err := intake.ApplyFact(context.Background(), pool, "api", id, fact, admission.engine, admission)

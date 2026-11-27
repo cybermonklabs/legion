@@ -1,0 +1,5 @@
+[
+  { "commit": "c1", "branch": "order-change", "now": "2026-11-14T00:00:00Z" },
+  { "commit": "c2", "branch": "order-change", "now": "2026-11-14T00:00:00Z" },
+  { "commit": "c3", "branch": "revert-order-change", "now": "2026-11-14T00:00:00Z" }
+]

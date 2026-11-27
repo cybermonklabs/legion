@@ -481,12 +481,12 @@ func TestAskAskedOf(t *testing.T) {
 		}
 	})
 
-	// The route is the person's in the table the gate reads, not only in the handler.
-	t.Run("routeScopes lists the route as person-scoped", func(t *testing.T) {
-		scopes, listed := routeScopes["PUT /api/v1/asks/{id}/asked-of"]
-		if !listed || !slices.Equal(scopes, routeScopeSet{model.ScopePerson}) {
-			t.Fatalf("the hand-on route's scopes are %v (listed=%t), want exactly %v",
-				scopes, listed, routeScopeSet{model.ScopePerson})
+	// The route is the person's in the declaration the gate reads, not only in the handler.
+	t.Run("the route's declaration names it person-scoped", func(t *testing.T) {
+		route, declared := declaredRoute("PUT /api/v1/asks/{id}/asked-of")
+		if !declared || !slices.Equal(route.OAuthScopes, routeScopeSet{model.ScopePerson}) {
+			t.Fatalf("the hand-on route's scopes are %v (declared=%t), want exactly %v",
+				route.OAuthScopes, declared, routeScopeSet{model.ScopePerson})
 		}
 	})
 

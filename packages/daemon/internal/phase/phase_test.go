@@ -8,8 +8,8 @@ import (
 // All is the wire contract's phase list, in the transition table's order.
 func TestPhaseValuesMatchWorkflowWireContract(t *testing.T) {
 	want := []string{
-		"admitted", "awaiting_person", "planning", "implementing", "testing", "reviewing", "accepting", "retro",
-		"merging", "done", "held",
+		"admitted", "awaiting_person", "awaiting_children", "planning", "implementing", "testing", "reviewing",
+		"accepting", "retro", "merging", "done", "held",
 	}
 	got := make([]string, len(All))
 	for index, value := range All {
@@ -24,7 +24,7 @@ func TestPhaseValuesMatchWorkflowWireContract(t *testing.T) {
 // phases of Order, 21 pairs. There is no move back of Order beyond them, since no phase of this
 // workflow waits for a merge somebody else makes (dispatch://INFRA-714). A task in another order
 // moves back by its own order (workflow's Walk.MovesBack), along 28 of the 42 pairs of MovePairs
-// (plan.MovesBackPairs), so these 21 are the moves back of a task in the default steps, not of
+// (plan.CanMoveBack), so these 21 are the moves back of a task in the default steps, not of
 // every task.
 func TestBackwardPairsHoldsEveryMoveBack(t *testing.T) {
 	pairs := BackwardPairs()
@@ -94,7 +94,7 @@ func TestMovesBackIgnoresPhasesOutsideOrder(t *testing.T) {
 	if MovesBack(Testing, Retro) {
 		t.Fatal("testing -> retro moves forward")
 	}
-	for _, outside := range []Phase{Admitted, AwaitingPerson, Done, Held} {
+	for _, outside := range []Phase{Admitted, AwaitingPerson, AwaitingChildren, Done, Held} {
 		if MovesBack(Merging, outside) || MovesBack(outside, Planning) {
 			t.Fatalf("%s stands outside Order, so no move into or out of it moves back", outside)
 		}
@@ -114,11 +114,14 @@ func TestMovePairsHoldsEveryPairOfTwoDifferentPhases(t *testing.T) {
 	if !slices.Equal(pairs[:21], BackwardPairs()) {
 		t.Fatalf("MovePairs begins %q, want BackwardPairs %q in their order", pairs[:21], BackwardPairs())
 	}
-	var forward []string
-	for at, from := range Order {
-		for _, to := range Order[at+1:] {
-			forward = append(forward, Pair(from, to))
-		}
+	// Written out here, not built by the loop under test.
+	forward := []string{
+		"planning-implementing", "planning-testing", "planning-reviewing", "planning-accepting", "planning-retro", "planning-merging",
+		"implementing-testing", "implementing-reviewing", "implementing-accepting", "implementing-retro", "implementing-merging",
+		"testing-reviewing", "testing-accepting", "testing-retro", "testing-merging",
+		"reviewing-accepting", "reviewing-retro", "reviewing-merging",
+		"accepting-retro", "accepting-merging",
+		"retro-merging",
 	}
 	if !slices.Equal(pairs[21:], forward) {
 		t.Fatalf("MovePairs ends %q, want the forward pairs %q", pairs[21:], forward)

@@ -27,6 +27,7 @@ import (
 // same heartbeat from a session that follows no GitHub topic renews its entry (it does at
 // ca2555e4fb), so the renewal this row asks for is the one every other session gets.
 func TestAnEdgeSessionStaysRegisteredThroughARepositoryOutage(t *testing.T) {
+	t.Parallel()
 	rig := newEdgeRig(t)
 	if !rig.edgeOn() {
 		t.Fatal("this row tests an edge listener: ENVOY_EDGE_PROJECTS is set empty")

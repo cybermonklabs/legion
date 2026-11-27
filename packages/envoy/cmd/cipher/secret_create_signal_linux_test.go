@@ -44,6 +44,7 @@ import (
 // CreateSecret has made the secret, SIGNALLED <signal> each time it receives a signal it does not
 // ignore, REREAD <name> at each broker reread, and RETURNED <exit code> when the create returns.
 func TestCreateSignalHelper(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (main.startSecretBrokerWith, t.Setenv at secret_test.go:293); it signals the test process or changes its signal handling (a signal to this process (unix.Kill) at secret_create_signal_linux_test.go:70); it sets a package variable the package's other tests read (storeCallDeadline set at secret_create_signal_linux_test.go:56).
 	if os.Getenv("AGENT_SECRETS_CREATE_HELPER") == "" {
 		t.Skip("subprocess helper")
 	}
@@ -298,6 +299,7 @@ func (p *createProcess) endsAtOnceBy(sig syscall.Signal) string {
 // for that answer and delete the container, just as a signal while reading the value does. The
 // store holds its answer until the process has received the signal.
 func TestCreateSignalBeforeTheCreateAnswerDeletesTheEmptySecret(t *testing.T) {
+	t.Parallel()
 	p := startCreate(t, helperCommand(), "AGENT_SECRETS_CREATE_HOLD=CreateSecret:signal")
 	p.waitFor("CREATED")
 	p.signal(syscall.SIGTERM)
@@ -311,6 +313,7 @@ func TestCreateSignalBeforeTheCreateAnswerDeletesTheEmptySecret(t *testing.T) {
 // process at once, naming the empty secret that may stay and the command that clears it. The
 // second is sent only once the process has received the first, so the two cannot merge.
 func TestCreateSecondSignalBeforeTheCreateAnswerNamesWhatMayStay(t *testing.T) {
+	// Not parallel: it holds code to an upper bound on a measured time, which the load of the package's parallel tests could push past ((*createProcess).endsAtOnceBy, main.requireCommandOnTime, onTimeWithin at waits_test.go:245).
 	p := startCreate(t, helperCommand(), "AGENT_SECRETS_CREATE_HOLD=CreateSecret:1h", heldDeadline)
 	p.waitFor("CREATED")
 	p.signal(syscall.SIGINT)
@@ -325,6 +328,7 @@ func TestCreateSecondSignalBeforeTheCreateAnswerNamesWhatMayStay(t *testing.T) {
 // which deletes the empty secret it made and rereads once. The read back is held until the process
 // has received the signal.
 func TestCreateSignalDuringInitialRecoveryDeletesTheEmptySecret(t *testing.T) {
+	t.Parallel()
 	p := startCreate(t, helperCommand(), "AGENT_SECRETS_CREATE_LOST_INITIAL_ANSWER=1", "AGENT_SECRETS_CREATE_HOLD=GetSecret:signal")
 	p.waitFor("CALL GetSecret")
 	p.signal(syscall.SIGHUP)
@@ -338,6 +342,7 @@ func TestCreateSignalDuringInitialRecoveryDeletesTheEmptySecret(t *testing.T) {
 // termination while the create reads a value piped in deletes the empty secret it made, asks the
 // broker to reread the name, and then ends the process by that signal, the value never added.
 func TestCreateSignalWhileReadingDeletesTheEmptySecret(t *testing.T) {
+	t.Parallel()
 	for _, sig := range []syscall.Signal{syscall.SIGHUP, syscall.SIGINT, syscall.SIGQUIT, syscall.SIGTERM} {
 		t.Run(unix.SignalName(sig), func(t *testing.T) {
 			p := startCreate(t, helperCommand())
@@ -362,6 +367,7 @@ func TestCreateSignalWhileReadingDeletesTheEmptySecret(t *testing.T) {
 // ends as it should prints, and asks the broker to reread the name. The process then ends by that
 // signal.
 func TestCreateSignalWhileTheAddIsInFlightWaitsForItsAnswer(t *testing.T) {
+	t.Parallel()
 	for _, row := range []struct {
 		name, add string
 		sig       syscall.Signal
@@ -402,6 +408,7 @@ func TestCreateSignalWhileTheAddIsInFlightWaitsForItsAnswer(t *testing.T) {
 // the secret with its value, so the create says it was stored, on the line a create that ends as
 // it should prints, asks the broker to reread the name, and only then ends by the signal.
 func TestCreateSignalDuringAnAWSCreateThatSucceedsSaysItWasStored(t *testing.T) {
+	t.Parallel()
 	p := startCreate(t, helperCommand(), "AGENT_SECRETS_CREATE_STORE=aws", "AGENT_SECRETS_CREATE_HOLD=CreateSecret:signal")
 	p.waitFor("READING")
 	_, _ = io.WriteString(p.stdin, "shh")
@@ -421,6 +428,7 @@ func TestCreateSignalDuringAnAWSCreateThatSucceedsSaysItWasStored(t *testing.T) 
 // signal as the call begins (self-HUP), so the signal comes inside the deadline however loaded the
 // machine.
 func TestCreateFirstSignalDuringAnAWSCreateSaysWhatTheStoreMayHold(t *testing.T) {
+	t.Parallel()
 	p := startCreate(t, helperCommand(), "AGENT_SECRETS_CREATE_STORE=aws", "AGENT_SECRETS_CREATE_HOLD=CreateSecret:self-HUP", "AGENT_SECRETS_CREATE_DEADLINE=5s")
 	p.waitFor("READING")
 	_, _ = io.WriteString(p.stdin, "shh")
@@ -446,6 +454,7 @@ func TestCreateFirstSignalDuringAnAWSCreateSaysWhatTheStoreMayHold(t *testing.T)
 // sends itself the signal as the add begins (self-INT), so the signal comes inside the deadline
 // however loaded the machine.
 func TestCreateSignalWaitsOnAnAddTheStoreNeverAnswersNoLongerThanItsDeadline(t *testing.T) {
+	t.Parallel()
 	p := startCreate(t, helperCommand(), "AGENT_SECRETS_CREATE_HOLD=AddSecretVersion:self-INT", "AGENT_SECRETS_CREATE_DEADLINE=5s")
 	p.waitFor("READING")
 	_, _ = io.WriteString(p.stdin, "shh")
@@ -471,6 +480,7 @@ func TestCreateSignalWaitsOnAnAddTheStoreNeverAnswersNoLongerThanItsDeadline(t *
 // one CreateSecret is in flight, the store may hold the secret with its value or nothing at all,
 // which `secret show` tells apart. The same signal twice and two different ones both do.
 func TestCreateSecondSignalEndsAtOnceNamingWhatMayStay(t *testing.T) {
+	// Not parallel: it holds code to an upper bound on a measured time, which the load of the package's parallel tests could push past ((*createProcess).endsAtOnceBy, main.requireCommandOnTime, onTimeWithin at waits_test.go:245).
 	for _, row := range []struct {
 		name          string
 		env           []string
@@ -523,6 +533,8 @@ func TestCreateSecondSignalEndsAtOnceNamingWhatMayStay(t *testing.T) {
 // value piped in: the read goes on, nothing is deleted, and the whole value is stored once the
 // pipe closes.
 func TestCreateSignalInheritedIgnoredStaysIgnored(t *testing.T) {
+	t.Parallel()
+	requireSignalDispositions(t)
 	p := startCreate(t, exec.Command("bash", "-c", `trap '' HUP INT; exec "$0" -test.run='^TestCreateSignalHelper$'`, os.Args[0]))
 	p.waitFor("READING")
 	// The create's watch on the signals is in place by the read: a signal it watched would have a

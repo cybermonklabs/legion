@@ -34,8 +34,7 @@ import (
 // exactly as one the listener kept.
 func keptCopies(t *testing.T, client *bus.Client, role string) []contracts.Envelope {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	ctx := testwait.Context(t)
 	var copies []contracts.Envelope
 	for seq := uint64(1); ; {
 		stored, err := client.NextStoredMessage(ctx, bus.KeptRoleSubject(role), seq)
@@ -234,6 +233,7 @@ func keptRoleEvent(t *testing.T, key, role string) (*store.Store, *events.Broker
 // agent subject. The copy is the envelope as its sender sent it, on its own role topic and under
 // its own dedupe key, which is what the drain's forward to the next holder reads.
 func TestARoleRouteToAnUnheldRoleIsKeptForTheRolesNextHolder(t *testing.T) {
+	t.Parallel()
 	rig := newRoleRig(t)
 	const role = "kept-unclaimed"
 	rig.silent(t, contracts.RoleTopicPrefix+role)
@@ -267,6 +267,7 @@ func TestARoleRouteToAnUnheldRoleIsKeptForTheRolesNextHolder(t *testing.T) {
 // same Nats-Msg-Id (bus.KeptMsgID, the dedupe key and the role), so the stream holds one copy of
 // it however often the outbox retries: the role's next holder is handed the message once.
 func TestAKeptRoleRouteRetriedAfterALostAcknowledgementIsKeptOnce(t *testing.T) {
+	t.Parallel()
 	rig := newRoleRig(t)
 	const role = "kept-retried"
 	rig.silent(t, contracts.RoleTopicPrefix+role)
@@ -305,6 +306,7 @@ func TestAKeptRoleRouteRetriedAfterALostAcknowledgementIsKeptOnce(t *testing.T) 
 // role route unrecorded, and the outbox's own retry keeps it: nothing of the message is lost to a
 // keep NATS did not take.
 func TestAKeptRoleRouteWhoseKeepFailedStaysPendingAndIsKeptOnTheRetry(t *testing.T) {
+	t.Parallel()
 	rig := newRoleRig(t)
 	const role = "kept-failed"
 	rig.silent(t, contracts.RoleTopicPrefix+role)
@@ -343,6 +345,7 @@ func TestAKeptRoleRouteWhoseKeepFailedStaysPendingAndIsKeptOnTheRetry(t *testing
 // and the stream holds the forward for the session itself (dispatch://INFRA-392). The event
 // stays pending with the error it had before the kept lane, and nothing is kept.
 func TestARoleRouteToAnUnresponsiveHolderErrsWithNothingKept(t *testing.T) {
+	t.Parallel()
 	const role = "kept-unresponsive"
 	database, broker, event := keptRoleEvent(t, "T-1", role)
 	publisher := &keepRecorder{}
@@ -369,6 +372,7 @@ func TestARoleRouteToAnUnresponsiveHolderErrsWithNothingKept(t *testing.T) {
 // begins with the hyphen model.ParseRoute allows and roles.Valid refuses - so the two patterns
 // are not one, and this is the token a route can carry to a role nobody may ever hold.
 func TestARoleTokenNoClaimCanNameIsSkippedWithNothingKept(t *testing.T) {
+	t.Parallel()
 	const role = "-reviewer"
 	database, broker, event := keptRoleEvent(t, "T-1", role)
 	publisher := &keepRecorder{}
@@ -408,6 +412,7 @@ func TestARoleTokenNoClaimCanNameIsSkippedWithNothingKept(t *testing.T) {
 // publishes (cmd/listener/role_keep.go, keepRoleMessage). The two writers' copies of one message
 // therefore carry one id, and the stream stores it once.
 func TestAKeptRoleRouteIsPublishedOnTheRolesKeptLaneUnderTheKeptMsgID(t *testing.T) {
+	t.Parallel()
 	const role = "kept-named"
 	database, broker, event := keptRoleEvent(t, "T-1", role)
 	publisher := &keepRecorder{}
@@ -447,8 +452,8 @@ func (r *roleRig) claimUnder(role, holder string, entry session.SessionEntry) er
 	return nil
 }
 
-// handedNow is the forward a scan that has returned handed the holder, waited for with the
-// shared bound (testwait.Eventually). The forward's send returns on the stream's acknowledgement
+// handedNow is the forward a scan that has returned handed the holder, waited for until the test
+// binary's deadline (testwait.Receive). The forward's send returns on the stream's acknowledgement
 // (roleForward.forward, a request whose reply is the stream's PubAck), and the holder's own
 // subscription is handed the same message on its own connection, which can arrive just after
 // that acknowledgement on a busy machine. No listener runs in the tests that read it, so nothing
@@ -456,16 +461,7 @@ func (r *roleRig) claimUnder(role, holder string, entry session.SessionEntry) er
 // scan sent it.
 func handedNow(t *testing.T, recv *receiver, what string) contracts.Envelope {
 	t.Helper()
-	var forward contracts.Envelope
-	testwait.Eventually(t, what+": the holder takes the forward the scan sent", func() bool {
-		select {
-		case forward = <-recv.arrived:
-			return true
-		default:
-			return false
-		}
-	})
-	return forward
+	return testwait.Receive(t, what+": the holder takes the forward the scan sent", recv.arrived)
 }
 
 // A role claimed while the keep was in flight is handed the kept copy by the keep itself, in the
@@ -482,6 +478,7 @@ func handedNow(t *testing.T, recv *receiver, what string) contracts.Envelope {
 // the copy can reach the holder, and the holder takes exactly one copy of it: the forward goes
 // under the id the drain's own forward would carry, which is what collapses the two.
 func TestACopyKeptForARoleClaimedUnderTheKeepReachesThatHolderBeforeTheIssuesNextEvent(t *testing.T) {
+	t.Parallel()
 	rig := newRoleRig(t)
 	const role, holder = "kept-claimed-under-the-keep", "ses_claimed_under_the_keep"
 	const key = "T-1"
@@ -498,7 +495,7 @@ func TestACopyKeptForARoleClaimedUnderTheKeepReachesThatHolderBeforeTheIssuesNex
 	outbox.scan(context.Background(), unfenced{})
 	keptScan := time.Since(started)
 
-	if err := <-claimed; err != nil {
+	if err := testwait.Receive(t, "the claim made under the keep", claimed); err != nil {
 		t.Fatalf("the claim made under the keep: %v", err)
 	}
 	if publishedAt(t, rig.database, kept.ID) == nil {
@@ -571,6 +568,7 @@ func TestACopyKeptForARoleClaimedUnderTheKeepReachesThatHolderBeforeTheIssuesNex
 // read on the lane itself: both copies in the order a drain hands them over, the earlier first,
 // and nothing taken by the holder or stored on its agent subject.
 func TestACopyKeptForARoleClaimedUnderTheKeepWaitsBehindTheCopiesOnItsLane(t *testing.T) {
+	t.Parallel()
 	rig := newRoleRig(t)
 	const role, holder = "kept-behind-older-copies", "ses_claimed_behind_older_copies"
 	const key = "T-1"
@@ -597,7 +595,7 @@ func TestACopyKeptForARoleClaimedUnderTheKeepWaitsBehindTheCopiesOnItsLane(t *te
 
 	holding(t, rig.publisherOn(publisher)).scan(context.Background(), unfenced{})
 
-	if err := <-claimed; err != nil {
+	if err := testwait.Receive(t, "the claim made under the keep", claimed); err != nil {
 		t.Fatalf("the claim made under the keep: %v", err)
 	}
 	if publishedAt(t, rig.database, later.ID) == nil {
@@ -636,6 +634,7 @@ func TestACopyKeptForARoleClaimedUnderTheKeepWaitsBehindTheCopiesOnItsLane(t *te
 // Nothing sweeps and nothing drains here - no listener runs in this test - so the two handovers
 // are the only way either copy can reach the holder.
 func TestTwoCopiesKeptForOneRoleClaimedUnderTheFirstKeepReachTheHolderInOrder(t *testing.T) {
+	t.Parallel()
 	rig := newRoleRig(t)
 	const role, holder = "kept-twice-under-one-claim", "ses_claimed_under_the_first_keep"
 	const key = "T-1"
@@ -655,7 +654,7 @@ func TestTwoCopiesKeptForOneRoleClaimedUnderTheFirstKeepReachTheHolderInOrder(t 
 	holding(t, rig.publisherOn(publisher)).scan(context.Background(), unfenced{})
 	scanned := time.Since(started)
 
-	if err := <-claimed; err != nil {
+	if err := testwait.Receive(t, "the claim made under the first keep", claimed); err != nil {
 		t.Fatalf("the claim made under the first keep: %v", err)
 	}
 	firstKey, secondKey := fmt.Sprintf("dispatch-%d", first.ID), fmt.Sprintf("dispatch-%d", second.ID)
@@ -710,6 +709,7 @@ func TestTwoCopiesKeptForOneRoleClaimedUnderTheFirstKeepReachTheHolderInOrder(t 
 // left is read on the lane itself: both copies in the order a drain hands them over, and nothing
 // taken by the holder that claimed the role second.
 func TestASecondCopyKeptForARoleIsNotHandedToAHolderTheFirstDidNotReach(t *testing.T) {
+	t.Parallel()
 	rig := newRoleRig(t)
 	const role = "kept-twice-across-two-claims"
 	const firstHolder, secondHolder = "ses_claimed_under_the_first_keep", "ses_claimed_under_the_second_keep"
@@ -730,7 +730,7 @@ func TestASecondCopyKeptForARoleIsNotHandedToAHolderTheFirstDidNotReach(t *testi
 	holding(t, rig.publisherOn(publisher)).scan(context.Background(), unfenced{})
 
 	for range 2 {
-		if err := <-claimed; err != nil {
+		if err := testwait.Receive(t, "a claim made under one of the keeps", claimed); err != nil {
 			t.Fatalf("a claim made under one of the keeps: %v", err)
 		}
 	}

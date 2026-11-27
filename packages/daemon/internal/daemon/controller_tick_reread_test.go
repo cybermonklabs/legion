@@ -309,6 +309,9 @@ func (d *tickDispatch) PutStep(context.Context, string, string, dispatch.StepWri
 func (d *tickDispatch) PutStepRating(context.Context, string, string, dispatch.StepWrite, dispatch.PlanRating) error {
 	return nil
 }
+func (d *tickDispatch) PutStepExperiment(context.Context, string, string, dispatch.StepWrite, dispatch.StepExperiment) error {
+	return nil
+}
 func (d *tickDispatch) PutPlan(context.Context, string, string, dispatch.PlanWrite) error { return nil }
 func (d *tickDispatch) PutDesignGates(context.Context, string, []dispatch.DesignGateDocument) error {
 	return nil
@@ -400,9 +403,9 @@ func registerProjectController(t *testing.T, pool *store.Pool, project string) {
 }
 
 // registerProjectControllerAs is registerProjectController under session, on the database dsn
-// names: project is the Dispatch project key or its project token, which name the same row. It is
-// the package's one writer of a controller registration, which an earlier boot's registration
-// leaves as this does, so a test that boots a daemon after it reads a controller registered.
+// names: project is the Dispatch project key or its project token, which name the same row. It
+// leaves the row an earlier boot's registration leaves, so a test that boots a daemon after it
+// reads a controller registered.
 func registerProjectControllerAs(t *testing.T, dsn, project, session string) {
 	t.Helper()
 	st, err := store.Open(context.Background(), dsn)
@@ -410,9 +413,6 @@ func registerProjectControllerAs(t *testing.T, dsn, project, session string) {
 		t.Fatalf("open the store: %v", err)
 	}
 	defer st.Close()
-	if _, err := st.Migrate(context.Background()); err != nil {
-		t.Fatalf("migrate the store: %v", err)
-	}
 	token, err := claim.ProjectToken(project)
 	if err != nil {
 		t.Fatal(err)

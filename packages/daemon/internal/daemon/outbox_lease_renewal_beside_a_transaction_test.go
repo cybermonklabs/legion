@@ -86,11 +86,13 @@ func TestALaneRenewsItsRowsLeaseWhileTheRowIsInsideATransaction(t *testing.T) {
 
 // A renewal tick that finds its row no longer under its lease says why, from the row it runs. A row
 // another lane leases is a lost lease, at Warn. A left pod's close check (record.IssueWorkspaceCheck
-// with CloseRoles) finishes its own row inside its run (checkLeftPodWorkspace), so that row found
-// finished is logged as that, at Info. The idle release's check is the same kind and never finishes
-// its own row, so that one found gone was finished by another lane after this lease lapsed, at
-// Warn. A status write found gone may also have been dropped by a newer write of its issue
-// (record's DropStatusWrites, which deletes a leased row), at Warn, and the line says so. Each
+// with CloseRoles, or, where no role runs in the pod, the launcher's check with Close: R6 of
+// #5285, the Legion reviewer's point 8) finishes its own row inside its run
+// (checkLeftPodWorkspace), so that row found finished is logged as that, at Info. The idle release's
+// check is the same kind and never finishes its own row, so that one found gone was finished by
+// another lane after this lease lapsed, at Warn. A status write found gone may also have been
+// dropped by a newer write of its issue (record's DropStatusWrites, which deletes a leased row), at
+// Warn, and the line says so. Each
 // finish or drop here runs as it does in a daemon: in a transaction that holds the row while the
 // tick's renewal waits on its lock, and commits under it, so the tick reads the row gone only by the
 // statement after its update (record's RenewOutboxLease).
@@ -106,6 +108,8 @@ func TestALeaseRenewalThatFindsItsRowGoneSaysWhy(t *testing.T) {
 			Role: claim.RolePlanner, CloseRoles: []claim.Role{claim.RolePlanner}}, now),
 		mustOutboxRow(t, "LEGION-210", record.IssueWorkspaceCheck{Tree: "LEGION-208", Generation: 3, TreeGeneration: 7,
 			Role: claim.RoleImplementer}, now),
+		mustOutboxRow(t, "LEGION-211", record.IssueWorkspaceCheck{Tree: "LEGION-208", Generation: 3, TreeGeneration: 7,
+			Launcher: true, Close: true, PodUID: "pod-a"}, now),
 	}
 	for _, row := range rows {
 		enqueueOutbox(t, pool, records, row)
@@ -113,7 +117,7 @@ func TestALeaseRenewalThatFindsItsRowGoneSaysWhy(t *testing.T) {
 	for i, id := range outboxIDs(t, pool) {
 		rows[i].ID, rows[i].LeaseToken = id, "this-run"
 	}
-	status, closeCheck, idleCheck := rows[0], rows[1], rows[2]
+	status, closeCheck, idleCheck, launcherClose := rows[0], rows[1], rows[2], rows[3]
 	logs, log := watchedLog()
 	runner := &outbox{pool: pool, records: records, log: log}
 	lease := func(row record.OutboxRow, token string) {
@@ -177,8 +181,10 @@ func TestALeaseRenewalThatFindsItsRowGoneSaysWhy(t *testing.T) {
 	want("after a tick that found another lane's lease", map[string]int{"lost": 1})
 	goneUnderTick(closeCheck, finish(closeCheck))
 	want("after a tick that found the close's check finished", map[string]int{"lost": 1, "finished": 1})
+	goneUnderTick(launcherClose, finish(launcherClose))
+	want("after a tick that found the launcher's close check finished", map[string]int{"lost": 1, "finished": 2})
 	goneUnderTick(idleCheck, finish(idleCheck))
-	want("after a tick that found the idle release's check finished", map[string]int{"lost": 1, "finished": 1, "lapsed": 1})
+	want("after a tick that found the idle release's check finished", map[string]int{"lost": 1, "finished": 2, "lapsed": 1})
 	goneUnderTick(status, func(tx pgx.Tx) error { return records.DropStatusWrites(ctx, tx, status.Issue) })
-	want("after a tick that found the status write dropped", map[string]int{"lost": 1, "finished": 1, "lapsed": 1, "dropped": 1})
+	want("after a tick that found the status write dropped", map[string]int{"lost": 1, "finished": 2, "lapsed": 1, "dropped": 1})
 }

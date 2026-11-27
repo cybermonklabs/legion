@@ -51,6 +51,8 @@ func (kv stalledRoleKV) Get(key string) (nats.KeyValueEntry, error) {
 // a margin of the test's. A lookup's same case is
 // TestARoleLookupWhoseStoreDoesNotAnswerIsRefusedAsTheBusNotAnswering's.
 func TestARoleResolutionWhoseStoreCallDoesNotAnswerAnswersInsideTheBudget(t *testing.T) {
+	// Not parallel: it requires the 503 at sendRequestBudget (3.5 s) to come before the caller's
+	// attempt ends at contracts.ListenerCallTimeout (5 s), 1.5 s later.
 	const (
 		role   = "reviewer"
 		holder = "ses_unanswered_holder"
@@ -153,6 +155,8 @@ func TestARoleResolutionWhoseStoreCallDoesNotAnswerAnswersInsideTheBudget(t *tes
 // answers, so the answer is the budget ending the lookup, and it must come while the caller's
 // attempt, the request's context, is still live, as in the test above.
 func TestARoleLookupWhoseStoreDoesNotAnswerIsRefusedAsTheBusNotAnswering(t *testing.T) {
+	// Not parallel: it requires the 503 at sendRequestBudget (3.5 s) to come before the caller's
+	// attempt ends at contracts.ListenerCallTimeout (5 s), 1.5 s later.
 	const (
 		role   = "reviewer"
 		holder = "ses_lookup_unanswered_holder"
@@ -236,6 +240,7 @@ func TestARoleLookupWhoseStoreDoesNotAnswerIsRefusedAsTheBusNotAnswering(t *test
 // the error is built exactly as confirmPublished builds it and classified by the code the handlers
 // call, so what is pinned is the answer, not the detection.
 func TestADeniedPublishIsRefusedPermanentlyAndNotRecordedAsBusUnavailable(t *testing.T) {
+	t.Parallel()
 	subject := contracts.RoleTopicPrefix + "reviewer"
 	// As internal/bus/confirm.go's confirmPublished names it: ErrPublishDenied around the subject
 	// and the connection's last error, which is nats.go's permissions violation.

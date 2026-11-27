@@ -52,6 +52,7 @@ func (cr *contractRig) sessionReq(t *testing.T, sess *Session, method, path stri
 // file, and the broker hands back the enrollment it already has, so the release still works and
 // nobody is asked to approve anything twice.
 func TestContractARebootKeepsAGrantTheSessionWasGiven(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv).
 	t.Setenv("HOME", t.TempDir())
 	cr := newContractRig(t)
 	cr.login(t)
@@ -224,6 +225,7 @@ func awaitEnrollmentsSaved(t *testing.T, cr *contractRig) {
 // through a later enrollment of the same session name, which is what this test shows nothing
 // here has.
 func TestContractASessionThatDoesNotComeBackLosesItsGrant(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv).
 	t.Setenv("HOME", t.TempDir())
 	cr := newContractRig(t)
 	cr.login(t)
@@ -301,6 +303,7 @@ func TestContractASessionThatDoesNotComeBackLosesItsGrant(t *testing.T) {
 // enrollment still there afterwards; it also shows a helper upgraded in place carrying the
 // records it finds at the old path over to the new one.
 func TestContractTheProductionRecordsPathSurvivesTheRuntimeDirectoryGoing(t *testing.T) {
+	t.Parallel()
 	home := t.TempDir()
 	runtime := t.TempDir()
 	getenv := func(key string) string {

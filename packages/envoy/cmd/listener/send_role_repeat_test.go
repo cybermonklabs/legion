@@ -27,6 +27,7 @@ import (
 // the envelope its own request built, kept, with duplicate. The control is the first send,
 // answered its own kept copy whole with no duplicate and its own expects_reply.
 func TestARoleMarkedSendKeptForTheRoleAnswersTheKeptCopy(t *testing.T) {
+	t.Parallel()
 	rig := newSenderLimitRig(t)
 	const principal = "system:serviceaccount:dispatch:dispatch"
 	useDispatchPrincipal(rig.deps, principal)

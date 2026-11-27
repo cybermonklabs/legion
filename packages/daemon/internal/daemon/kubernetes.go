@@ -73,18 +73,20 @@ type sandboxReads struct {
 
 // readSandbox is Agent Sandbox's share of readBoot (C1's translation, C3): the cluster's client from
 // runtime.kubernetes' kubeconfig, and the Options every value of the configuration becomes, with
+// credential, the launch's Dispatch credential readBoot read (sandbox.DispatchCredential), and
 // paneNatsUser, the public key of the pane NATS nkey seed's user ("" with none), which the image
-// probe holds the providers Secret's seed to. None of the host's own agent machinery is read: no Oh
-// My Pi invocation or plugin gate (the image probe proves the image's), no Dispatch token file (a
-// pod reads its bearer from its claim's Secret), no secretsd provider keys (a pod mounts its keys
-// from the providers Secret), and no host gh, git, or jj (a pod runs the image's).
-func readSandbox(cfg config.Config, project, dispatchToken, paneNatsUser string, lookup func(string) (string, bool), log *slog.Logger) (sandboxReads, error) {
+// probe holds the providers Secret's seed to. None of the host's own agent machinery is read: no
+// Oh My Pi invocation or plugin gate (the image probe proves the image's), no Dispatch token file
+// (a launch carries its Dispatch token in its start command's Files), no secretsd provider keys
+// (a pod mounts its keys from the providers Secret), and no host gh, git, or jj (a pod runs the
+// image's).
+func readSandbox(cfg config.Config, project string, credential sandbox.DispatchCredential, paneNatsUser string, lookup func(string) (string, bool), log *slog.Logger) (sandboxReads, error) {
 	k := *cfg.Runtime.Kubernetes
 	rc, err := kubeClient(k)
 	if err != nil {
 		return sandboxReads{}, err
 	}
-	opts, err := sandboxOptions(cfg, k, project, dispatchToken, lookup, log)
+	opts, err := sandboxOptions(cfg, k, project, credential, lookup, log)
 	if err != nil {
 		return sandboxReads{}, err
 	}
@@ -117,7 +119,7 @@ func ResolvedPlugins(cfg config.Config) (*runtime.PluginInstall, string) {
 	if k.PluginsFromBinary {
 		source = PluginsFromBinary
 	}
-	return &runtime.PluginInstall{PiLegion: k.Plugins.PiLegion, PiEnvoy: k.Plugins.PiEnvoy, Contract: api.DaemonAPIVersion}, source
+	return &runtime.PluginInstall{PiLegion: k.Plugins.PiLegion, PiEnvoy: k.Plugins.PiEnvoy, Contract: api.DaemonAPIVersion()}, source
 }
 
 // probeBudgetMargin is how far the image probe's attempt budget must clear
@@ -169,13 +171,15 @@ func logProbeBudget(log *slog.Logger, cfg config.Config) {
 
 // logPlugins is the boot's one line on what this Kubernetes daemon will install for a
 // stale-plugin relaunch: an Info line naming the pair and where it came from, or, with none, the
-// Warn naming the gap: a stale claim is recorded and reported but never relaunched or refused.
+// Warn naming the gap: a stale claim is recorded and reported but never relaunched or refused. A
+// source in URL form is logged as the state shows it (api.PluginSourceOf), without the userinfo,
+// query or fragment a private or pre-signed tarball URL carries its credential in.
 func logPlugins(log *slog.Logger, plugins *runtime.PluginInstall, source string) {
 	if plugins == nil {
 		log.Warn("daemon: this daemon knows no plugin versions to relaunch a stale process onto; set runtime.kubernetes.plugins or run a release build")
 		return
 	}
-	log.Info("daemon: stale-plugin relaunches install", "piLegion", plugins.PiLegion, "piEnvoy", plugins.PiEnvoy, "source", source)
+	log.Info("daemon: stale-plugin relaunches install", "piLegion", api.PluginSourceOf(plugins.PiLegion), "piEnvoy", api.PluginSourceOf(plugins.PiEnvoy), "source", source)
 }
 
 // prepareSandbox is the runtime over readSandbox's client and Options, and the part of boot its
@@ -199,16 +203,19 @@ func prepareSandbox(cfg config.Config, o overrides, reads sandboxReads, p *plan)
 	// (volumeTrimReports, daemon.Run). It hangs off the plan by pointer, so the plan's own copy
 	// carries the one holder the factory closed over, as plan.repositories does.
 	p.volumeReports = &volumeTrimReports{}
-	// The holder the runtime's launches read the update round over a pod through, made here and
-	// filled once the supervision is open: openSupervision builds the runtime before the
-	// supervision exists (launchRounds, daemon.run). The runtime takes it in its Options, so the
-	// factory carries it as it carries every other option; the plan holds it by pointer, as it
-	// holds the two holders above.
+	// The holder the runtime's launches read the update round over a pod through, and tell what a
+	// launch's own replacement of an issue pod took through, made here and filled once the
+	// supervision is open: openSupervision builds the runtime before the supervision exists
+	// (launchRounds, daemon.run). The runtime takes it in its Options, so the factory carries it as
+	// it carries every other option; the plan holds it by pointer, as it holds the two holders
+	// above.
 	p.launchRounds = &launchRounds{}
 	opts := reads.opts
 	opts.RoundPodEnds = p.launchRounds.ends
+	opts.LaunchTakes = p.launchRounds.takes
+	opts.LaunchTook = p.launchRounds.took
 	p.newRuntime = sandboxRuntime(reads.client, opts, p.repositories.servesRepository, p.repositories.serving, cfg.RepositoryRenames, p.installed, p.left, o.githubAPI,
-		p.memoryGuardKills, p.volumeReports)
+		p.memoryGuardKills, p.volumeReports, nil)
 	p.clusterCheck = boot.clusterCheck
 	p.claimsCheck = func(ctx context.Context, st *store.Store) error {
 		legacy, err := st.HasLegacySandboxClaims(ctx, p.project)
@@ -276,11 +283,10 @@ func sandboxBootOf(cfg config.Config, reads sandboxReads) (sandboxBoot, error) {
 // command's other checks are audited, and a measurement of the probe as it then runs sizes it.
 // The reservation still fits a pool that cannot place a controller or issue pod. It has a 5Gi
 // bound on node disk and a 1Gi disk request. The probe runs at every boot, before anything is
-// served, and a probe that
-// reserved a pod's share — the controller's 1 CPU and 4Gi, or an issue pod's 3 CPU and 19Gi —
-// could leave the daemon unable to boot on a pool full enough to place nothing that large (stage
-// 4b's daemon-controller-liveness restart, whose controller reservation no node can hold, met
-// exactly that).
+// served, and a probe that reserved a pod's share — the controller's 1 CPU and 4Gi, or an issue
+// pod's 2 CPU and 8Gi, at the defaults — could leave the daemon unable to boot on a pool full
+// enough to place nothing that large (stage 4b's daemon-controller-liveness restart, whose
+// controller reservation no node can hold, met exactly that).
 var probeReservation = config.Reservation{CPU: "500m", CPURequest: "500m", Memory: "1Gi", MemoryRequest: "1Gi", EphemeralStorage: "5Gi", EphemeralStorageRequest: "1Gi"}
 
 // imageProbe is the probe of the daemon's worker image: this daemon's contract, the role prompts
@@ -296,7 +302,7 @@ func imageProbe(cfg config.Config, references promptrefs.Names) (sandbox.ImagePr
 	}
 	budget, _ := ProbeBudget(cfg)
 	return sandbox.ImageProbe{
-		Contract: api.DaemonAPIVersion, Budget: budget, Retry: imageProbeRetry,
+		Contract: api.DaemonAPIVersion(), Budget: budget, Retry: imageProbeRetry,
 		RoleReferences: references,
 		Resources:      resources,
 	}, nil
@@ -341,7 +347,10 @@ func kubeClient(k config.Kubernetes) (*rest.Config, error) {
 // experiment of its own still declares the memory experiment and hands over its two arms, which
 // name no file where the project writes no `memory` block and so add nothing to a launch.
 // lookup is the daemon's environment, which can name the NATS nkey seed (launchSecrets).
-func sandboxOptions(cfg config.Config, k config.Kubernetes, project, dispatchToken string, lookup func(string) (string, bool), log *slog.Logger) (sandbox.Options, error) {
+// credential is the launch's Dispatch credential (readBoot): the bearer dispatch_token_file holds,
+// or under dispatch_token_broker the role's own trade (sandbox.DispatchCredential.Broker) and the
+// transition token.
+func sandboxOptions(cfg config.Config, k config.Kubernetes, project string, credential sandbox.DispatchCredential, lookup func(string) (string, bool), log *slog.Logger) (sandbox.Options, error) {
 	issueVolume, err := resource.ParseQuantity(k.IssueVolume)
 	if err != nil {
 		return sandbox.Options{}, fmt.Errorf("runtime.kubernetes.issue_volume: %w", err)
@@ -385,7 +394,8 @@ func sandboxOptions(cfg config.Config, k config.Kubernetes, project, dispatchTok
 		Scheduling: sandbox.Scheduling{NodeSelector: k.Scheduling.NodeSelector, Tolerations: tolerations, PriorityClass: k.Scheduling.PriorityClass},
 		Sandbox:    sandboxConfig(k.Sandbox),
 		Resources:  sandbox.PodResources{Issue: issue, Controller: controller},
-		DaemonURL:  cfg.DaemonURL, EnvoyURL: cfg.EnvoyURL, DispatchURL: cfg.DispatchURL, DispatchToken: dispatchToken,
+		DaemonURL:  cfg.DaemonURL, EnvoyURL: cfg.EnvoyURL, DispatchURL: cfg.DispatchURL,
+		Dispatch: credential,
 		NATSURLs: cfg.NatsURLs,
 		// The controller this runtime launches is told the project's channels, and is relaunched
 		// when they change (sandbox's address record).
@@ -449,7 +459,9 @@ func sandboxConfig(c config.SandboxConfig) sandbox.SandboxConfig {
 }
 
 // repositoryCache is runtime.kubernetes.repository_cache as the runtime takes it: the volume as a
-// quantity, the intervals as durations, and the reservation as a container's requirements.
+// quantity, the intervals as durations, the reservation as a container's requirements, and the
+// bucket with the ServiceAccount the cache pods alone run as, as the file wrote them, both "" while
+// off.
 func repositoryCache(c config.RepositoryCacheConfig) (sandbox.RepositoryCache, error) {
 	volume, err := resource.ParseQuantity(c.Volume)
 	if err != nil {
@@ -461,7 +473,7 @@ func repositoryCache(c config.RepositoryCacheConfig) (sandbox.RepositoryCache, e
 	}
 	return sandbox.RepositoryCache{
 		Volume: volume, Refresh: time.Duration(c.RefreshMinutes) * time.Minute, Retain: time.Duration(c.RetainHours) * time.Hour,
-		Resources: resources,
+		Resources: resources, Bucket: c.Bucket, ServiceAccount: c.ServiceAccount,
 	}, nil
 }
 
@@ -616,12 +628,20 @@ func requirements(key string, reservation config.Reservation) (corev1.ResourceRe
 // (volumeTrimReports): it is built with this factory, before the workflow opens, and filled once
 // it has (plan.volumeReports). One that is never filled refuses every report it is given with
 // errVolumeReportsUnbound, which the launcher session logs.
+//
+// leakCheckBuilt is nil in production. A test passes it to receive the leak-check reader the
+// factory built and put into opts.LeakCheck, so the test checks that reader and not one it built
+// itself (controllerSweepKindRuntime).
 func sandboxRuntime(rc *rest.Config, opts sandbox.Options, served func(ghrepo.Repository) bool,
 	serving func(ghrepo.Repository) ghrepo.Repository, renames ghrepo.Renames, installed *appauth.Installed, left *appauth.LeftOut, githubAPI string, kills *memoryGuardKills,
-	reports *volumeTrimReports) runtimeFactory {
+	reports *volumeTrimReports, leakCheckBuilt func(sandbox.LeakCheckReader)) runtimeFactory {
 	return func(ctx context.Context, listener *stream.Listener, address string, apps appauth.Source,
 		_ func(context.Context, string) (ghrepo.Repository, string, error), st *store.Store, cached func() []ghrepo.Repository) (runtime.Runtime, error) {
 		opts.Conns, opts.StreamURL, opts.Store, opts.CacheRepositories = listener, address, st, cached
+		// Each role's start in a pod whose Sandbox owns the issue's kept volume records that pod
+		// with its volume, which the issue's update round reads, and no role starts there until
+		// it is recorded.
+		opts.KeptPodStart = keptPodStart(st, opts.Project)
 		// The cache trimmer's own half: every report a pod's trimmer sends — of a sweep that
 		// left the volume above its low mark, or of the trimmer switching itself off — reaches
 		// the daemon through this, and the daemon turns it into the one fact that can tell the
@@ -635,6 +655,9 @@ func sandboxRuntime(rc *rest.Config, opts sandbox.Options, served func(ghrepo.Re
 		// is pushed none; a daemon with no Apps reads none, and the runtime refuses the start of a
 		// role whose launcher names a tag under a named check with the cause that says so.
 		opts.LeakCheck = leakCheckSource(apps, githubAPI, opts.LeakCheckSetting)
+		if leakCheckBuilt != nil {
+			leakCheckBuilt(opts.LeakCheck)
+		}
 		// Each process an issue pod's memory guard ends, and each the controller pod's ends,
 		// reaches the daemon through the kill holder (memoryGuardKills).
 		opts.MemoryGuardKilled = kills.killed
@@ -661,6 +684,19 @@ func sandboxRuntime(rc *rest.Config, opts sandbox.Options, served func(ghrepo.Re
 		}
 		listener.SetLauncherResolver(rt.LauncherResolver())
 		return rt, nil
+	}
+}
+
+// keptPodStart is st's record of a role's start in a pod of project whose Sandbox owns the
+// issue's kept volume, in the shape the runtime calls it (runtime.KeptPodStart). project is the
+// runtime's project token (sandbox.Options.Project). A pod is project's to record only where
+// project records its issue (store.Store.StartKeptPod): on a database shared with another
+// project's daemon, a pod of that project's issue is that daemon's. Each call for an issue that
+// project records records the pod with its kept volume, which the issue's update round reads
+// (store.Store.PodHoldsEarlierWork).
+func keptPodStart(st *store.Store, project string) runtime.KeptPodStart {
+	return func(ctx context.Context, issue, podUID string, keptSince time.Time) error {
+		return st.StartKeptPod(ctx, project, issue, podUID, keptSince)
 	}
 }
 
@@ -849,42 +885,14 @@ func volumeMissing(missing []shimwire.LauncherVolumeMissing) []record.VolumeMiss
 	return kept
 }
 
-// launchRounds is the seam between the Kubernetes runtime, which openSupervision builds before the
-// supervision exists, and the supervision's reading of the update round over a pod a launch would
-// keep (supervision.roundPodEndsAtLaunch, dispatch://INFRA-4109 R7). prepareSandbox makes one and
-// hands its ends to the runtime (sandbox.Options.RoundPodEnds), and the boot fills it the moment
-// the supervision is open (plan.launchRounds, daemon.run).
-//
-// It is filled once, in the boot's own goroutine, before any claim's machine exists and so before
-// any launch can ask: there is nothing to lock, and nothing ever replaces what was filled.
-type launchRounds struct {
-	read runtime.RoundPodEnds
-}
-
-// bind gives the holder the supervision's reading of the round.
-func (l *launchRounds) bind(read runtime.RoundPodEnds) {
-	l.read = read
-}
-
-// ends is the runtime's RoundPodEnds: the supervision's reading of the round over podUID. A holder
-// nothing filled keeps the pod, as a runtime handed no reading keeps it; only a boot that skipped
-// plan.launchRounds.bind leaves it so, and the pod's round then replaces the pod as it did before
-// the reading existed.
-func (l *launchRounds) ends(ctx context.Context, token claim.Token, podUID string) (bool, error) {
-	if l.read == nil {
-		return false, nil
-	}
-	return l.read(ctx, token, podUID)
-}
-
 // implementTokens is the workflow's implement App as a sandbox's provisioning token source: every
-// pod's workspace-fetch clones with an installation token minted for the owner of the repository
-// it fetches and narrowed to reading (the read lease's set, appauth's readPermissions, each
+// pod's workspace-init clones with an installation token minted for the owner of the repository it
+// fetches and narrowed to reading (the read lease's set, appauth's readPermissions, each
 // permission at read: appauth.Tokens.ReadToken), nothing a clone, a fetch or a repository cache
 // could write with. Every refusal is returned as it came, with no second mint: GitHub's trouble
-// (appauth.TransientError, a 5xx or a rate-limited 422), an App with no installation on the
-// owner (appauth.ErrNotInstalled), and an installation that is not granted what the reading
-// lease asks for (appauth.ErrNarrowingRefused) alike.
+// (appauth.TransientError, a 5xx or a rate-limited 422), an App with no installation on the owner
+// (appauth.ErrNotInstalled), and an installation that is not granted what the reading lease asks
+// for (appauth.ErrNarrowingRefused) alike.
 //
 // That last one once fell back to the owner's own write token, since a request naming a
 // repository the installation did not reach was refused with the same 422 as a permission it
@@ -899,13 +907,13 @@ func (l *launchRounds) ends(ctx context.Context, token claim.Token, podUID strin
 // configured rename moved to another owner is turned here, once, into the name whose installation
 // holds it now (serving): nothing under runtime/sandbox knows of a rename.
 //
-// Only the token follows the rename. Every address those three sites build — the pod's feed, its
-// clone, and the repository cache's volume and Service — stays the repository the record names,
-// which a transfer must not move: GitHub's own documentation of a transfer says "All links to the
-// previous repository location are automatically redirected to the new location. When you use
-// `git clone`, `git fetch`, or `git push` on a transferred repository, these commands will
-// redirect to the new repository location or URL", so a clone or a fetch addressed at the name
-// the record keeps reaches the repository GitHub holds today.
+// Only the token follows the rename. Every address those three sites build — the pod's clone and
+// the repository cache's volume and Service — stays the repository the record names, which a
+// transfer must not move: GitHub's own documentation of a transfer says "All links to the previous
+// repository location are automatically redirected to the new location. When you use `git clone`,
+// `git fetch`, or `git push` on a transferred repository, these commands will redirect to the new
+// repository location or URL", so a clone or a fetch addressed at the name the record keeps reaches
+// the repository GitHub holds today.
 type implementTokens struct {
 	apps    appauth.Tokens
 	serving func(ghrepo.Repository) ghrepo.Repository

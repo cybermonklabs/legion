@@ -36,10 +36,10 @@ const (
 // session is the role's live holder, the row is published once, on the controller's role topic,
 // without keep, under the row's own key, and finishes.
 //
-// The control is main's code (the pull request records the run): there the first attempt
-// publishes the notice to the controller topic (notifications.legion.legion.controller) while no
-// session holds the role, which finishes the row, so the test stops at its first assertion. What
-// main does with an unresponsive holder's answer is the control of
+// The control is the code before this change (the pull request records the run): there the first
+// attempt publishes the notice to the controller topic (notifications.legion.legion.controller)
+// while no session holds the role, which finishes the row, so the test stops at its first
+// assertion. What that code does with an unresponsive holder's answer is the control of
 // TestAControllerNoticeWhoseHolderLapsesBeforeThePublishWaits.
 func TestAControllerNoticeWaitsForALiveHolderOfTheControllerRoleThenGoesToItsRoleTopicOnce(t *testing.T) {
 	t.Parallel()
@@ -53,9 +53,7 @@ func TestAControllerNoticeWaitsForALiveHolderOfTheControllerRoleThenGoesToItsRol
 	row := mustOutboxRow(t, "LEGION-2", record.ControllerNotice{Kind: "held", Role: claim.RolePlanner, Phase: phase.Planning}, clock)
 	enqueueOutbox(t, pool, records, row)
 	// The row's own key names the id the store gave it, which the row built above does not hold.
-	if err := pool.QueryRow(context.Background(), "select id from outbox").Scan(&row.ID); err != nil {
-		t.Fatalf("read the controller notice row's id: %v", err)
-	}
+	row.ID = noticeRowID(t, pool)
 	// At debug, since settle logs a row's second wait there (the wait's first attempt is at INFO).
 	var logged syncBuffer
 	runner := &outbox{log: slog.New(slog.NewTextHandler(&logged, &slog.HandlerOptions{Level: slog.LevelDebug})), pool: pool, dispatchProject: "LEGION", records: records,
@@ -85,7 +83,7 @@ func TestAControllerNoticeWaitsForALiveHolderOfTheControllerRoleThenGoesToItsRol
 		t.Fatalf("%d outbox rows after the attempt with an unresponsive holder, want the notice's row kept", rows)
 	}
 
-	listener.answer("ses_controller", "live")
+	listener.answer("ses_controller", notify.StateLive)
 	clock = clock.Add(record.RetryBackoffMost + time.Second)
 	attempt("once the registered controller session holds the role live")
 	published := listener.publishes()
@@ -126,19 +124,19 @@ func TestAControllerNoticeWaitsForALiveHolderOfTheControllerRoleThenGoesToItsRol
 // unresponsive (a 404 naming holder_state unresponsive, which stores nothing). The row waits,
 // the attempt is logged as a wait naming the unresponsive holder, and nothing fails.
 //
-// The control is main's code (the pull request records the run): there controllerNotice waits on
-// notify.ErrNoHolder alone, so the same answer to its publish fails the attempt as an error, and
-// settle logs "outbox row failed" at ERROR. The real listener gives that answer on a role topic
-// only; this fake gives it to every publish, main's publish to the controller topic among them,
-// so that the run at main reads main's own handling of the answer.
+// The control is the code before this change (the pull request records the run): there
+// controllerNotice waits on notify.ErrNoHolder alone, so the same answer to its publish fails the
+// attempt as an error, and settle logs "outbox row failed" at ERROR. The real listener gives that
+// answer on a role topic only; this fake gives it to every publish, that code's publish to the
+// controller topic among them, so that a run of that code reads its own handling of the answer.
 func TestAControllerNoticeWhoseHolderLapsesBeforeThePublishWaits(t *testing.T) {
 	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	registerProjectControllerAs(t, pool.Config().ConnString(), "legion", "ses_controller")
 	listener := newControllerRoleListener()
-	listener.answer("ses_controller", "live")
-	listener.lapseAtPublish("unresponsive")
+	listener.answer("ses_controller", notify.StateLive)
+	listener.lapseAtPublish(notify.StateUnresponsive)
 	server := httptest.NewServer(listener)
 	t.Cleanup(server.Close)
 	clock := time.Now().UTC()
@@ -162,7 +160,7 @@ func TestAControllerNoticeWhoseHolderLapsesBeforeThePublishWaits(t *testing.T) {
 	if strings.Contains(text, "level=ERROR") || strings.Contains(text, `msg="outbox row failed"`) {
 		t.Fatalf("the unresponsive holder's answer to the publish to %v failed the attempt as an error:\n%s", listener.attemptedTopics(), text)
 	}
-	if !strings.Contains(text, `msg="outbox row waits"`) || !strings.Contains(text, "unresponsive") {
+	if !strings.Contains(text, `msg="outbox row waits"`) || !strings.Contains(text, notify.StateUnresponsive) {
 		t.Fatalf("logged %q, want one wait naming the unresponsive holder", text)
 	}
 }
@@ -171,14 +169,14 @@ func TestAControllerNoticeWhoseHolderLapsesBeforeThePublishWaits(t *testing.T) {
 // (keyed by the Dispatch project alone) and a stopped tree's notice among them, each under its
 // own row's key.
 //
-// The control is main's code: there both go to the controller topic.
+// The control is the code before this change: there both go to the controller topic.
 func TestATickAndATreeStalledNoticeGoToTheControllersRoleTopic(t *testing.T) {
 	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	registerProjectControllerAs(t, pool.Config().ConnString(), "legion", "ses_controller")
 	listener := newControllerRoleListener()
-	listener.answer("ses_controller", "live")
+	listener.answer("ses_controller", notify.StateLive)
 	server := httptest.NewServer(listener)
 	t.Cleanup(server.Close)
 	clock := time.Now().UTC()
@@ -235,7 +233,7 @@ func TestAControllerNoticeWaitsWhileTheRolesLiveHolderIsNotTheRegisteredSession(
 	records := record.NewStore()
 	registerProjectControllerAs(t, pool.Config().ConnString(), "legion", "ses_controller")
 	listener := newControllerRoleListener()
-	listener.answer("ses_other", "live")
+	listener.answer("ses_other", notify.StateLive)
 	server := httptest.NewServer(listener)
 	t.Cleanup(server.Close)
 	clock := time.Now().UTC()
@@ -272,7 +270,7 @@ func TestAControllerNoticeWithNoControllerRegisteredWaitsAtDebug(t *testing.T) {
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	listener := newControllerRoleListener()
-	listener.answer("ses_controller", "live")
+	listener.answer("ses_controller", notify.StateLive)
 	server := httptest.NewServer(listener)
 	t.Cleanup(server.Close)
 	clock := time.Now().UTC()
@@ -394,7 +392,7 @@ func (l *controllerRoleListener) ServeHTTP(w http.ResponseWriter, r *http.Reques
 			l.holder, l.holder, l.lapse)
 		return
 	}
-	if role, ok := strings.CutPrefix(published.Topic, notify.RoleTopicPrefix); ok && (l.holder == "" || l.state != "live") {
+	if role, ok := strings.CutPrefix(published.Topic, notify.RoleTopicPrefix); ok && (l.holder == "" || l.state != notify.StateLive) {
 		l.writeHolder(w, role)
 		return
 	}
@@ -408,7 +406,7 @@ func (l *controllerRoleListener) writeHolder(w http.ResponseWriter, role string)
 	case l.holder == "":
 		w.WriteHeader(http.StatusNotFound)
 		_, _ = fmt.Fprintf(w, `{"error":"role %s is unclaimed","reason":"unclaimed"}`, role)
-	case l.state == "live":
+	case l.state == notify.StateLive:
 		var body bytes.Buffer
 		_ = json.NewEncoder(&body).Encode(map[string]any{"role": role, "holder": l.holder, "last_seen": time.Now().UnixMilli(),
 			"holder_state": "live", "capabilities": []string{}})

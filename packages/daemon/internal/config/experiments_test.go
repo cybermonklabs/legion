@@ -181,12 +181,14 @@ func TestProjectExperimentsRefusals(t *testing.T) {
 	cases := []struct{ name, block, body, extra, want string }{
 		{name: "the key is not a mapping", block: "[alpha]",
 			want: "projects.DEMO.experiments must be a mapping of an experiment's name to its block"},
+		// A name of no key's shape (an upper-case letter, or none) is named by its line, as any
+		// unknown key of that shape is: it can be a credential pasted where a name goes.
 		{name: "an experiment name outside the pattern", block: "{Alpha: {variants: [{name: only}]}}",
-			want: `projects.DEMO.experiments key "Alpha" must match ^[a-z0-9-]{1,32}$: an experiment's name is recorded with every draw it makes`},
-		{name: "an experiment name of 33 characters", block: "{" + strings.Repeat("a", 33) + ": {variants: [{name: only}]}}",
-			want: `projects.DEMO.experiments key "` + strings.Repeat("a", 33) + `" must match ^[a-z0-9-]{1,32}$: an experiment's name is recorded with every draw it makes`},
+			want: "unknown key at line 7 under projects.DEMO.experiments, whose name has no key's shape (lower-case letters, digits and _, from a letter, 40 at most, with no run of 8 hex digits and no run of 10 letters and digits that holds a digit): an experiment's name must match ^[a-z0-9-]{1,32}$, since it is recorded with every draw it makes"},
+		{name: "an experiment name of 33 characters", block: "{" + strings.Repeat("x", 33) + ": {variants: [{name: only}]}}",
+			want: `projects.DEMO.experiments key "` + strings.Repeat("x", 33) + `" must match ^[a-z0-9-]{1,32}$: an experiment's name is recorded with every draw it makes`},
 		{name: "an empty experiment name", block: `{"": {variants: [{name: only}]}}`,
-			want: `projects.DEMO.experiments key "" must match ^[a-z0-9-]{1,32}$: an experiment's name is recorded with every draw it makes`},
+			want: "unknown key at line 7 under projects.DEMO.experiments, whose name has no key's shape (lower-case letters, digits and _, from a letter, 40 at most, with no run of 8 hex digits and no run of 10 letters and digits that holds a digit): an experiment's name must match ^[a-z0-9-]{1,32}$, since it is recorded with every draw it makes"},
 		{name: "an experiment named twice", block: "{alpha: {variants: [{name: only}]}, alpha: {variants: [{name: other}]}}",
 			want: "projects.DEMO.experiments names alpha twice"},
 		{name: "an experiment that is not a mapping", block: "{alpha: [only]}",

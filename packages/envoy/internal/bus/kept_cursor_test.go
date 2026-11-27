@@ -1,12 +1,12 @@
 package bus_test
 
 import (
-	"context"
 	"encoding/json"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The drain cursor's body is read by both writers of a role's kept lane - the listener's walk,
@@ -111,8 +111,8 @@ func TestAKeptRoleCursorsClaimIsOutstandingOnlyWhileItIsYoungerThanTheWindow(t *
 func TestReadKeptRoleCursorAnswersTheCursorTheStreamHolds(t *testing.T) {
 	t.Parallel()
 	client := keptClient(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	// No span of its own: an answer can come late on a loaded machine with nothing wrong.
+	ctx := testwait.Context(t)
 	const role = "cursor-reader"
 
 	unwritten, err := client.ReadKeptRoleCursor(ctx, role)

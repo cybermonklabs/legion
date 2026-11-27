@@ -38,6 +38,7 @@ func issueLogEvent(seq int, typ, kind string, labels ...string) json.RawMessage 
 // and set again names whoever set it last; and the match on the label ignores case, as
 // dispatch.CarriesLegionLabel does.
 func TestLabelSetterIsTheActorOfTheEventThatAddedTheLabel(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		events []json.RawMessage
@@ -144,6 +145,7 @@ func TestLabelSetterIsTheActorOfTheEventThatAddedTheLabel(t *testing.T) {
 // names: here the session that labelled the issue, though a person's posts and their corrections
 // stand before that label and between it and the person's later edit that keeps it.
 func TestLabelSetterPassesOverDeletedPostsAndCorrections(t *testing.T) {
+	t.Parallel()
 	const deleted = `"deleted_at":"2026-10-14T17:30:00Z","deleted_by":{"kind":"user","id":"user-1"}`
 	posts := func(seq int) []json.RawMessage {
 		return []json.RawMessage{
@@ -178,6 +180,7 @@ func TestLabelSetterPassesOverDeletedPostsAndCorrections(t *testing.T) {
 // post's body, so none of them is an error: the walk passes over each and gives the issue's own
 // events alone, and no deleted post is ever a message the intake fails on and gives up on.
 func TestWalkIssueEventsPassesOverADeletedPostsEventsWithNoError(t *testing.T) {
+	t.Parallel()
 	const deleted = `"deleted_at":"2026-10-14T17:30:00Z","deleted_by":{"kind":"user","id":"user-1"}`
 	events := []json.RawMessage{
 		issueLogEvent(1, "issue.created", "user"),
@@ -203,6 +206,7 @@ func TestWalkIssueEventsPassesOverADeletedPostsEventsWithNoError(t *testing.T) {
 // (TestWalkIssueEventsRefusesAnEventItCannotDecode), here for an issue event with no payload, so
 // the consumer delivers the fact again rather than treating the label as nobody's.
 func TestLabelSetterRefusesAnEventItCannotDecode(t *testing.T) {
+	t.Parallel()
 	const want = "decode Dispatch issue payload of event 2 of 2"
 	_, err := LabelSetter([]json.RawMessage{issueLogEvent(1, "issue.created", "user", "legion"), payloadlessLogEvent(2, "issue.updated")})
 	if err == nil || !strings.Contains(err.Error(), want) {

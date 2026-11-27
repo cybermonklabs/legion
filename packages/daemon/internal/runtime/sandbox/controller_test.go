@@ -51,6 +51,7 @@ func controllerSpec(t *testing.T) runtime.SpawnSpec {
 // enrolled as every workflow role's launcher is, so its agent can be granted the secrets the
 // Legion daemon's service owns.
 func TestTheControllersPodIsOneLauncherOnAVolumeOfItsOwn(t *testing.T) {
+	t.Parallel()
 	opts := goldenOptions()
 	opts.AgentSecrets = &AgentSecrets{URL: "https://secrets.internal.example", Audience: "agent-secrets", TokenExpiry: time.Hour}
 	r, err := configure(opts)
@@ -165,9 +166,10 @@ func TestTheControllersPodIsOneLauncherOnAVolumeOfItsOwn(t *testing.T) {
 // it to that session (OMP_SESSION_EXCLUSIVE), so a variable the runtime comes to tell any agent
 // fails here until it is decided for the controller.
 func TestTheControllersAgentIsToldItIsTheControllerAndNothingOfATree(t *testing.T) {
+	t.Parallel()
 	opts := goldenOptions()
 	opts.AgentSecrets = &AgentSecrets{URL: "https://secrets.internal.example", Audience: "agent-secrets", TokenExpiry: time.Hour}
-	opts.DispatchURL, opts.DispatchToken = "https://dispatch.internal.example", "dispatch-bearer"
+	opts.DispatchURL, opts.Dispatch = "https://dispatch.internal.example", DispatchCredential{Bearer: "dispatch-bearer"}
 	opts.ControllerSlackChannels = []string{"C00000000", "G00000001"}
 	r, err := configure(opts)
 	if err != nil {
@@ -240,6 +242,7 @@ func TestTheControllersAgentIsToldItIsTheControllerAndNothingOfATree(t *testing.
 // default owner) beside the launcher token but no provisioning token, and its boot token reaches
 // its launcher in the start command, as every role's does.
 func TestAControllerLaunchMintsNoProvisioningToken(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil, withOptions(func(o *Options) { o.Tokens = refusingTokens{} }))
 	spec := controllerSpec(t)
 	g.spawn(spec)
@@ -271,6 +274,7 @@ func TestAControllerLaunchMintsNoProvisioningToken(t *testing.T) {
 // credential source that refuses every mint fails the launch naming the controller role, exactly
 // as a refusing GitHubCredential would an issue pod's role.
 func TestAControllerLaunchFailsWhenItsCredentialMintRefuses(t *testing.T) {
+	t.Parallel()
 	credential := func(context.Context, string) (ghconfig.Bundle, error) {
 		return ghconfig.Bundle{}, errors.New("no installation token: GitHub is down")
 	}
@@ -290,6 +294,7 @@ func TestAControllerLaunchFailsWhenItsCredentialMintRefuses(t *testing.T) {
 // directory, a kept pod with that Secret is bound rather than replaced, and the refresher has
 // nothing to refresh and logs nothing.
 func TestAControllerWithNoOwnerRunsWithAnEmptyGhDirectory(t *testing.T) {
+	t.Parallel()
 	logs := &lockedLog{}
 	options := withOptions(func(o *Options) {
 		o.ControllerCredential = noOwnerControllerCredential
@@ -346,6 +351,7 @@ func TestAControllerWithNoOwnerRunsWithAnEmptyGhDirectory(t *testing.T) {
 // role's pod is by that role's: its one container, the launcher, carries it, so a controller the
 // operator sized larger than the default runs at that size.
 func TestTheControllersPodTakesItsOwnResources(t *testing.T) {
+	t.Parallel()
 	opts := goldenOptions()
 	sized := corev1.ResourceRequirements{
 		Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("2"), corev1.ResourceMemory: resource.MustParse("8Gi"), corev1.ResourceEphemeralStorage: resource.MustParse("2Gi")},
@@ -373,6 +379,7 @@ func TestTheControllersPodTakesItsOwnResources(t *testing.T) {
 // daemon restarted at the same addresses re-adopts it as it is, rather than replacing it at every
 // observation.
 func TestAControllerPodIsNotStaleWhileTheBrokersAddressHolds(t *testing.T) {
+	t.Parallel()
 	broker := func(o *Options) {
 		o.AgentSecrets = &AgentSecrets{URL: "https://secrets.internal.example", Audience: "agent-secrets", TokenExpiry: time.Hour}
 	}
@@ -398,6 +405,7 @@ func TestAControllerPodIsNotStaleWhileTheBrokersAddressHolds(t *testing.T) {
 // its session, as it does a role whose envoy_url moved. The list is the controller's alone: an issue
 // pod's role under the same two daemons moved nothing, and is re-adopted as it is.
 func TestAChangedSlackChannelListMakesOnlyTheControllerStale(t *testing.T) {
+	t.Parallel()
 	channels := func(list ...string) func(*Options) {
 		return func(o *Options) { o.ControllerSlackChannels = list }
 	}
@@ -428,6 +436,7 @@ func TestAChangedSlackChannelListMakesOnlyTheControllerStale(t *testing.T) {
 // volume through their owner references. Releasing a workflow claim still leaves its issue pod to
 // the tree's cleanup (TestReleaseNeverDeletesTheIssueSandbox).
 func TestReleasingTheControllerDeletesItsSandbox(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil)
 	loc := g.spawn(controllerSpec(t))
 	issue := g.spawn(workerSpec(t))
@@ -448,6 +457,7 @@ func TestReleasingTheControllerDeletesItsSandbox(t *testing.T) {
 // A launcher on the controller's pod is accepted only as the controller, with its pod's current
 // token: a workflow role is no role of that pod, and the controller is no role of an issue pod.
 func TestTheLauncherResolverAcceptsTheControllersLauncherOnItsOwnPodOnly(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil)
 	loc := g.spawn(controllerSpec(t))
 	issue := g.spawn(workerSpec(t))
@@ -480,6 +490,7 @@ func TestTheLauncherResolverAcceptsTheControllersLauncherOnItsOwnPodOnly(t *test
 // launcher's single-role form returns before the background block that would run one, and the
 // volume it works on is its own Sandbox's, no issue's cache (Options.VolumeTrim).
 func TestTheControllersAcceptedLauncherIsHandedNoTrimmerSettings(t *testing.T) {
+	t.Parallel()
 	for label, configured := range map[string]*shimwire.LauncherVolumeTrim{
 		"a deployment that runs a trimmer": {HighPercent: 85, LowPercent: 70, MinAgeMinutes: 120, IntervalSeconds: 60},
 		"a deployment that runs none":      nil,
@@ -509,6 +520,7 @@ func TestTheControllersAcceptedLauncherIsHandedNoTrimmerSettings(t *testing.T) {
 // unknown, the sweep deletes it. A known claim of another Sandbox or role keeps nothing of the
 // controller's.
 func TestTheOrphanSweepKeepsAKnownControllersSandboxAndDeletesAnUnknownOnes(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil)
 	loc := g.spawn(controllerSpec(t))
 	worker := g.spawn(workerSpec(t))
@@ -546,6 +558,7 @@ func TestTheOrphanSweepKeepsAKnownControllersSandboxAndDeletesAnUnknownOnes(t *t
 // launching first), and the sweep reads it again under the turn: the Sandbox, its volume and saved
 // session with it, stays. Once the claim is retired, the next sweep deletes it.
 func TestTheOrphanSweepKeepsTheSandboxOfAControllerLaunchedSinceItsClaimsWereRead(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil)
 	g.dyn.PrependReactor("delete", "sandboxes", fenceSandboxDeletes(g))
 	var known []runtime.Known // read before the controller's launch
@@ -578,6 +591,7 @@ func TestTheOrphanSweepKeepsTheSandboxOfAControllerLaunchedSinceItsClaimsWereRea
 // the keeper's retry of a retired controller, written launching before its launch begins — is read
 // again under the turn, and the Sandbox stays though nothing has written it since the listing.
 func TestTheOrphanSweepReadsTheControllersClaimAgainUnderThePodsLaunchTurn(t *testing.T) {
+	t.Parallel()
 	store := &answeringStore{fakeStore: newFakeStore(), answered: make(chan struct{})}
 	g := newRig(t, nil, withOptions(func(o *Options) { o.Store = store }))
 	g.dyn.PrependReactor("delete", "sandboxes", fenceSandboxDeletes(g))
@@ -628,6 +642,7 @@ func (s *answeringStore) ClaimUnretired(ctx context.Context, token claim.Token) 
 // suspension and orphan delete of a pod runs under it: while a relaunch holds the turn, the release
 // waits, and the Sandbox is deleted once the turn is given back.
 func TestReleasingTheControllerWaitsForItsPodsLaunchTurn(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil)
 	loc := g.spawn(controllerSpec(t))
 	name := loc.Sandbox.Name
@@ -661,6 +676,7 @@ func TestReleasingTheControllerWaitsForItsPodsLaunchTurn(t *testing.T) {
 // next decision, which deletes it once nothing has written it since. The Sandbox kept is logged,
 // named, so an operator who released the controller can see why its Sandbox is still there.
 func TestAControllerSandboxWrittenSinceItsDeleteWasDecidedStays(t *testing.T) {
+	t.Parallel()
 	for name, deleteIt := range map[string]func(g *rig) error{
 		"the orphan sweep": func(g *rig) error { return g.r.ReconcileOrphans(g.ctx, nil, 0) },
 		"its release":      func(g *rig) error { return g.r.Release(g.ctx, runtime.Known{Claim: controllerToken}) },

@@ -1,0 +1,17 @@
+---
+type: requirement
+id: a-document-keeps-its-blocks
+kind: behavior
+text:
+  - The parser in internal/dispatch/pmdoc keeps each block of a document.
+---
+type: check
+id: a-saved-document-keeps-its-blocks
+serves: a-document-keeps-its-blocks
+subject: code
+procedure: agent
+claim: A document that Dispatch saves holds each of its blocks.
+procedure_text:
+  - An agent saves a document of three blocks and reads it again.
+failing_example:
+  - A parser that drops the last block of a document.

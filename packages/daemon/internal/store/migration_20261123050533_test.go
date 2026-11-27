@@ -14,6 +14,14 @@ const keepsNoWorkspaceVersion = 20261123050533
 // failure to read that block names it.
 const keepsNoWorkspaceRelease = "the release that keeps no saved workspace"
 
+// toldPodVersion is the version of the migration that adds idle_release_declines.told_pod, whose
+// way back a rollback past keepsNoWorkspaceVersion runs first.
+const toldPodVersion = 20261125023041
+
+// podReplacementsVersion is the version of the migration that adds pod_replacements, whose way
+// back a rollback past keepsNoWorkspaceVersion runs first of all, before toldPodVersion's.
+const podReplacementsVersion = 20261125023100
+
 // The release before's two writes of workspace_bundles, as its store made them: the save's insert
 // (PutWorkspaceBundle), which names every column the save wrote, and the take's record of an
 // attempt (TakeWorkspaceBundleForRestore), which writes the three attempt columns together.
@@ -45,6 +53,7 @@ const workspaceBundlesShape = `select c.column_name || ' ' || c.data_type || ' '
 // again with every column and constraint they had, and a roll forward runs the migration once
 // more: the table goes and idle_release_declines and turn_start come back.
 func TestTheWayBackOfTheReleaseThatKeepsNoSavedWorkspace(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, keepsNoWorkspaceVersion-1)
@@ -104,6 +113,14 @@ func TestTheWayBackOfTheReleaseThatKeepsNoSavedWorkspace(t *testing.T) {
 		values ('legion', 'LEGION-1', 1, 18, 20, 22, 3, 'implementer', now(), now() - interval '1 hour')`)
 	t.Logf("the migration dropped workspace_bundles with its row and made idle_release_declines")
 
+	// A rollback past this release runs the way back of each migration above it first, newest first:
+	// the records of pod replacements, then the told pod of a decline, so their version rows go and
+	// the roll forward makes the table and adds the column again.
+	exec(wayBackOf(t, podReplacementsVersion, "the records of pod replacements"))
+	if exists("pod_replacements") {
+		t.Fatal("after its way back pod_replacements exists, want it dropped")
+	}
+	exec(wayBackOf(t, toldPodVersion, "the told pod of a decline"))
 	exec(wayBackOf(t, keepsNoWorkspaceVersion, keepsNoWorkspaceRelease))
 	if !exists("workspace_bundles") || exists("idle_release_declines") || turnStart() || versionApplied() {
 		t.Fatalf("after the way back workspace_bundles exists = %t, idle_release_declines exists = %t, turn_start exists = %t, version applied = %t; want the first back and the other three gone",
@@ -140,11 +157,19 @@ func TestTheWayBackOfTheReleaseThatKeepsNoSavedWorkspace(t *testing.T) {
 	t.Logf("the way back made workspace_bundles again in the release before's shape, dropped idle_release_declines and turn_start and deleted the version row")
 
 	applied, err := store.Migrate(ctx)
-	if err != nil || applied != 1 {
-		t.Fatalf("the roll forward's Migrate applied %d migrations, %v; want the one the way back re-armed", applied, err)
+	if err != nil || applied != 3 {
+		t.Fatalf("the roll forward's Migrate applied %d migrations, %v; want the three the way backs re-armed", applied, err)
+	}
+	if !exists("pod_replacements") {
+		t.Fatal("after the roll forward pod_replacements does not exist, want it made again")
 	}
 	if exists("workspace_bundles") || !exists("idle_release_declines") || !turnStart() || !versionApplied() {
 		t.Fatalf("after the roll forward workspace_bundles exists = %t, idle_release_declines exists = %t, turn_start exists = %t, version applied = %t; want the first gone and the other three there",
 			exists("workspace_bundles"), exists("idle_release_declines"), turnStart(), versionApplied())
+	}
+	var toldPod bool
+	if err := store.Pool().QueryRow(ctx, `select exists (select 1 from information_schema.columns
+		where table_schema = 'public' and table_name = 'idle_release_declines' and column_name = 'told_pod')`).Scan(&toldPod); err != nil || !toldPod {
+		t.Fatalf("after the roll forward idle_release_declines.told_pod exists = %t, %v; want it there", toldPod, err)
 	}
 }

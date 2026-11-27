@@ -291,7 +291,7 @@ func TestIntakeWritesTheDeployedEvent(t *testing.T) {
 	fake.handle("GET /repos/acme/widgets/actions/runs/900/jobs", func(w http.ResponseWriter, r *http.Request) {
 		mustEncode(t, w, shippedRunJobs())
 	})
-	intake := newIntake(nil, pool, deliveryTestLeases(t, pool), fake.newTestClient(), events.NewBroker(), nil, unrenamed())
+	intake := newIntake(tuningFor(t), nil, pool, deliveryTestLeases(t, pool), fake.newTestClient(), events.NewBroker(), nil, unrenamed())
 
 	envelope, err := json.Marshal(map[string]string{
 		"kind": "workflow", "action": "completed", "repo": "acme/widgets",
@@ -300,7 +300,7 @@ func TestIntakeWritesTheDeployedEvent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("encode the envelope: %v", err)
 	}
-	handled, err := intake.route(ctx, settings, string(envelope))
+	handled, err := intake.route(ctx, &settings, string(envelope))
 	if err != nil || !handled {
 		t.Fatalf("route the deploy run's envelope = (%v, %v), want handled without error", handled, err)
 	}

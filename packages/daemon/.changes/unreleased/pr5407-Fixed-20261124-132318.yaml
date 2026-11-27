@@ -1,8 +1,9 @@
 kind: Fixed
 body: |-
-    Every controller notice (each hold, `tick`, `slot-free`, `tree-stalled` and the rest) now goes
-    to the controller's role topic, `notifications.role.legion-<project>-controller`, and only while
-    the registered controller session holds that role live. Until then the notice waits in the
+    Every controller notice (an escalated hold, a tree architect's own failed claim, `tick`,
+    `slot-free`, `tree-stalled` and the rest) now goes to the controller's role topic,
+    `notifications.role.legion-<project>-controller`, and only while the registered controller
+    session holds that role live. Until then the notice waits in the
     outbox, with no time bound, and it is published to the next live holder. Before, the daemon
     published it to `notifications.legion.<project>.controller`, and a controller session that was
     away long enough for its role claim to be freed never got the notices published while it was

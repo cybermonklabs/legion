@@ -10,9 +10,21 @@ import {
   UsageError,
 } from "./types.ts";
 
+/** The daemon API version log: `version.go`'s numbered entries and `version.json`, the copy of
+ * their number each one wrote, and, from the change that numbers each new entry by main's merge
+ * order (INFRA-1569), the frozen list of the numbered entries beside them. `version.json` went with
+ * that change; it stays here for the merges before it that a window holds. */
 const VERSION_LOGS = [
   "packages/daemon/internal/api/version.go",
   "packages/contracts/fixtures/daemon-api/version.json",
+  "packages/contracts/fixtures/daemon-api/released-contracts.json",
+];
+/** A new entry of that log: its file (`contract_<id>_<slug>.go`, not its `_test.go`) and its
+ * fixture, `contracts/<id>_<slug>.json`. */
+const ENTRY_SLUG = "[a-z0-9]+(-[a-z0-9]+)*";
+const VERSION_LOG_ENTRIES = [
+  new RegExp(`^packages/daemon/internal/api/contract_\\d{14}_${ENTRY_SLUG}\\.go$`),
+  new RegExp(`^packages/contracts/fixtures/daemon-api/contracts/\\d{14}_${ENTRY_SLUG}\\.json$`),
 ];
 const LOCKFILES = [
   "bun.lock",
@@ -34,7 +46,9 @@ export function category(path: string): string {
   ) {
     return "generated";
   }
-  if (VERSION_LOGS.includes(path)) return "version-log";
+  if (VERSION_LOGS.includes(path) || VERSION_LOG_ENTRIES.some((entry) => entry.test(path))) {
+    return "version-log";
+  }
   if (path.includes("/migrations/")) return "migration";
   if (LOCKFILES.includes(base)) return "lockfile";
   if (path.endsWith(".md") || path.startsWith("docs/")) return "doc";

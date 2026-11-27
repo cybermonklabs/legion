@@ -60,6 +60,7 @@ const consumerFilterFenceWait = 10 * time.Second
 // is made only once its registration has been answered 200 - its row, its entry and its own
 // confirm all behind it - so what that write carries is the older row's filter.
 func TestAConfirmKeepsTheTopicARegistrationOnAnotherListenerAddedUnderItsRead(t *testing.T) {
+	t.Parallel()
 	a := newSessionConsumerRig(t)
 	b := newSessionConsumerRig(t)
 	const sessionID = "ses_confirm_fence"
@@ -113,6 +114,7 @@ func TestAConfirmKeepsTheTopicARegistrationOnAnotherListenerAddedUnderItsRead(t 
 // nothing while a record stands, and the record it gives the consumer back from is the one that
 // write lands.
 func TestARestoreKeepsTheTopicARegistrationAddedUnderItsRead(t *testing.T) {
+	t.Parallel()
 	registering := newSessionConsumerRig(t)
 	deleting := newSessionConsumerRig(t)
 	const sessionID = "ses_restore_fence"
@@ -162,6 +164,7 @@ func TestARestoreKeepsTheTopicARegistrationAddedUnderItsRead(t *testing.T) {
 // stopped below stands for one that has not delivered that row yet, and its write is fenced on
 // the row it read.
 func TestARefollowKeepsTheTopicARegistrationOnAnotherListenerAddedUnderItsRead(t *testing.T) {
+	t.Parallel()
 	a := newSessionConsumerRig(t)
 	b := newSessionConsumerRig(t)
 	const sessionID = "ses_refollow_fence"
@@ -210,6 +213,7 @@ func TestARefollowKeepsTheTopicARegistrationOnAnotherListenerAddedUnderItsRead(t
 // refollow has read it. The fence then judges nothing and says so, and what stands on the
 // consumer, and what that line names as the revision written from, are the refollow's own read.
 func TestARefollowKeepsTheTopicStoredBeforeItsReadWhereTheFenceReadsNoFurther(t *testing.T) {
+	t.Parallel()
 	a := newSessionConsumerRig(t)
 	b := newSessionConsumerRig(t)
 	const sessionID = "ses_refollow_unjudged"
@@ -257,6 +261,7 @@ func TestARefollowKeepsTheTopicStoredBeforeItsReadWhereTheFenceReadsNoFurther(t 
 // this listener's cache, which the watch stopped below stands for one that has not delivered that
 // row yet, and its write is fenced on the row it read (settleFilter).
 func TestARelayRestartKeepsTheTopicARegistrationOnAnotherListenerAddedUnderItsRead(t *testing.T) {
+	t.Parallel()
 	a := newRelayRigUnowned(t, relayPauseFirst, relayPauseMax)
 	b := newSessionConsumerRig(t)
 	const sessionID = "ses_restart_fence"
@@ -281,7 +286,7 @@ func TestARelayRestartKeepsTheTopicARegistrationOnAnotherListenerAddedUnderItsRe
 
 	requireFilters(t, b, sessionID, kept, added)
 	b.store(t, "notifications.dispatch.issue.RESTARTFENCEADD.comment")
-	b.awaitPending(t, sessionID, 1)
+	b.awaitHeld(t, sessionID, 1)
 }
 
 // A relay restart keeps that topic where the fence behind it can read the bucket no further
@@ -292,6 +297,7 @@ func TestARelayRestartKeepsTheTopicARegistrationOnAnotherListenerAddedUnderItsRe
 // through is closed once the restart has read the row, and the restart's own call is then the
 // only write of this loop's the consumer carries.
 func TestARelayRestartKeepsTheTopicStoredBeforeItsReadWhereTheFenceReadsNoFurther(t *testing.T) {
+	t.Parallel()
 	a := newRelayRigUnowned(t, relayPauseFirst, relayPauseMax)
 	b := newSessionConsumerRig(t)
 	const sessionID = "ses_restart_unjudged"
@@ -335,6 +341,7 @@ func TestARelayRestartKeepsTheTopicStoredBeforeItsReadWhereTheFenceReadsNoFurthe
 // newest row is the whole of the repair (fenceFilterWrite). This listener's watch is left
 // running: the row the fence corrects to is the bucket's, whatever the cache holds.
 func TestARefollowKeepsTheTopicARegistrationOnAnotherListenerStoredUnderItsWrite(t *testing.T) {
+	t.Parallel()
 	a := newSessionConsumerRig(t)
 	b := newSessionConsumerRig(t)
 	const sessionID = "ses_refollow_fence_write"
@@ -361,6 +368,7 @@ func TestARefollowKeepsTheTopicARegistrationOnAnotherListenerStoredUnderItsWrite
 // restart leaves on the consumer is the row it replaced, and the pass after it is what sets the
 // filter the newest row asks for (sessionRelays.settleFilter).
 func TestARelayRestartKeepsTheTopicARegistrationOnAnotherListenerStoredUnderItsWrite(t *testing.T) {
+	t.Parallel()
 	a := newRelayRigUnowned(t, relayPauseFirst, relayPauseMax)
 	b := newSessionConsumerRig(t)
 	const sessionID = "ses_restart_fence_write"
@@ -383,7 +391,7 @@ func TestARelayRestartKeepsTheTopicARegistrationOnAnotherListenerStoredUnderItsW
 
 	requireFilters(t, b, sessionID, kept, added)
 	b.store(t, "notifications.dispatch.issue.RESTARTWRITEADD.comment")
-	b.awaitPending(t, sessionID, 1)
+	b.awaitHeld(t, sessionID, 1)
 }
 
 // A consumer call whose answer did not come back is judged by the fence as a write that may
@@ -395,6 +403,7 @@ func TestARelayRestartKeepsTheTopicARegistrationOnAnotherListenerStoredUnderItsW
 // row asks for; a loop that took the failure for "nothing landed" would leave the session with
 // no consumer at all.
 func TestARepairWhoseConsumerCallAnsweredNothingTriesAgainOverTheRowThatMoved(t *testing.T) {
+	t.Parallel()
 	rig := newSessionConsumerRig(t)
 	const sessionID = "ses_lost_answer_fence"
 	const kept = "notifications.dispatch.issue.LOSTANSWERKEPT.>"
@@ -428,6 +437,7 @@ func TestARepairWhoseConsumerCallAnsweredNothingTriesAgainOverTheRowThatMoved(t 
 // plans from a row nothing replaces, writes it, and reads the same revision back, which is where
 // the loop ends (fenceFilterWrite, filterFenceAttempts).
 func TestAFenceWhoseRowStopsMovingEndsOnTheNewestRow(t *testing.T) {
+	t.Parallel()
 	a := newSessionConsumerRig(t)
 	b := newSessionConsumerRig(t)
 	const sessionID = "ses_fence_converges"
@@ -436,8 +446,8 @@ func TestAFenceWhoseRowStopsMovingEndsOnTheNewestRow(t *testing.T) {
 	// Each pass of the repair runs a whole registration on b (the hook below), work of the test's
 	// own: the repair and both listeners' registrations are given the test's deadline
 	// (budgetsUntilTheDeadline), or three of b's registrations at a load of 1,270 to 1,760 spend
-	// the repair's 5 s and the fence ends one pass short, its row moved under 3 passes.
-	budgetsUntilTheDeadline(t, a, b)
+	// the repair's bound and the fence ends one pass short, its row moved under 3 passes.
+	budgetsUntilTheDeadline(t, a.deps, b.deps)
 
 	topics, moves := []string{kept}, 0
 	a.deps.consumers.afterRepairPlan = func() {
@@ -469,13 +479,14 @@ func TestAFenceWhoseRowStopsMovingEndsOnTheNewestRow(t *testing.T) {
 // holding the row of its last plan, one row behind the bucket: that window is what the line
 // reports, and what the heartbeat after it closes (fenceFilterWrite).
 func TestAFenceOutOfPassesNamesBothRevisionsAndLeavesTheFilterToTheNextHeartbeat(t *testing.T) {
+	t.Parallel()
 	a := newSessionConsumerRig(t)
 	b := newSessionConsumerRig(t)
 	const sessionID = "ses_fence_exhausted"
 	const kept = "notifications.dispatch.issue.FENCEOUTKEPT.>"
 	a.subscribe(t, consumerRegistration(sessionID, "epoch-1", kept))
 	// As in TestAFenceWhoseRowStopsMovingEndsOnTheNewestRow, each pass runs a registration on b.
-	budgetsUntilTheDeadline(t, a, b)
+	budgetsUntilTheDeadline(t, a.deps, b.deps)
 
 	topics, passes := []string{kept}, 0
 	a.deps.consumers.afterRepairPlan = func() {
@@ -516,6 +527,7 @@ func TestAFenceOutOfPassesNamesBothRevisionsAndLeavesTheFilterToTheNextHeartbeat
 // as a write that did not land names a window the consumer is not in: it filters on the newest
 // row, which is what the line it would log says it does not.
 func TestACorrectivePassThatFindsTheConsumerAsTheRowAsksReportsNothingLeftBehind(t *testing.T) {
+	t.Parallel()
 	a := newSessionConsumerRig(t)
 	b := newSessionConsumerRig(t)
 	const sessionID = "ses_fence_already"
@@ -553,6 +565,7 @@ func TestACorrectivePassThatFindsTheConsumerAsTheRowAsksReportsNothingLeftBehind
 // the bucket while the restore holds it (session.SessionReaper.DeleteConsumer,
 // sessionDelivery.deleteAfterAnswer).
 func TestACorrectivePassThatFindsTheRecordDeletedPromisesNoHeartbeat(t *testing.T) {
+	t.Parallel()
 	rig := newSessionConsumerRig(t)
 	const sessionID = "ses_fence_record_gone"
 	const kept = "notifications.dispatch.issue.FENCERECGONEKEPT.>"
@@ -603,6 +616,7 @@ func TestACorrectivePassThatFindsTheRecordDeletedPromisesNoHeartbeat(t *testing.
 // before the corrective pass plans: neither read answers, so that pass plans nothing, sends
 // nothing and leaves the first pass's filter standing (registeredTarget, registeredReadFailed).
 func TestACorrectivePassThatPlansNothingNamesTheWindowTheWriteBeforeItLeft(t *testing.T) {
+	t.Parallel()
 	rig := newSessionConsumerRig(t)
 	const sessionID = "ses_fence_plans_nothing"
 	const kept = "notifications.dispatch.issue.FENCEPLANSNOTHINGKEPT.>"
@@ -638,6 +652,7 @@ func TestACorrectivePassThatPlansNothingNamesTheWindowTheWriteBeforeItLeft(t *te
 // takes this listener's consumer lock, so both reach the server while the refollow holds it
 // (session.SessionReaper.DeleteConsumer, sessionDelivery.deleteAfterAnswer).
 func TestACorrectivePassThatFindsNoConsumerReportsNothingLeftBehind(t *testing.T) {
+	t.Parallel()
 	rig := newSessionConsumerRig(t)
 	const sessionID = "ses_fence_consumer_gone"
 	const kept = "notifications.dispatch.issue.FENCECONSGONEKEPT.>"
@@ -695,6 +710,7 @@ func TestACorrectivePassThatFindsNoConsumerReportsNothingLeftBehind(t *testing.T
 // beside this listener, and its registration of the same session writes such a record over
 // this one (sessionEntryFromSubscribe, registeredNoConsumerDelivery).
 func TestACorrectivePassThatFindsTheRecordAskingForNoConsumerReportsNothingLeftBehind(t *testing.T) {
+	t.Parallel()
 	rig := newSessionConsumerRig(t)
 	const sessionID = "ses_fence_core_record"
 	const kept = "notifications.dispatch.issue.FENCECORERECKEPT.>"
@@ -745,6 +761,7 @@ func TestACorrectivePassThatFindsTheRecordAskingForNoConsumerReportsNothingLeftB
 // record and consumer stand throughout, which is the shape the lagging copy's answer has too,
 // and is why the loop ends on an answer below the revision it wrote rather than passing again.
 func TestAFenceWhoseBucketAnswersNoRowLeavesTheFilterItWroteOnALiveConsumer(t *testing.T) {
+	t.Parallel()
 	rig := newSessionConsumerRig(t)
 	const sessionID = "ses_fence_row_gone"
 	const kept = "notifications.dispatch.issue.FENCEROWGONEKEPT.>"
@@ -784,6 +801,7 @@ func TestAFenceWhoseBucketAnswersNoRowLeavesTheFilterItWroteOnALiveConsumer(t *t
 // same window, and the write lands all the same: it goes over the session-consumer connection.
 // The unsubscribe is answered 200, and the consumer is left filtering on the older row.
 func TestAWriteThatLandedWhoseReadOfTheBucketFailsNamesTheSessionTheRevisionAndTheError(t *testing.T) {
+	t.Parallel()
 	a := newSessionConsumerRig(t)
 	b := newSessionConsumerRig(t)
 	const sessionID = "ses_fence_read_failed"
@@ -902,8 +920,9 @@ func requireFilterLineLogged(t *testing.T, rig *sessionConsumerRig, sessionID, m
 }
 
 // requireKeptTheBucketsRow fails the test unless the write writer names was built from the
-// revision the bucket answered when it read, and the consumer it left filters on topics and is
-// offered a message stored on message. The three cases whose fence reads the bucket no further
+// revision the bucket answered when it read, and the consumer it left filters on topics and
+// holds a message stored on message, pending or delivered (awaitHeld: a relay restart's pull may
+// still stand at the server and take it). The three cases whose fence reads the bucket no further
 // end this way: with no corrective pass behind it, what the consumer carries is that write's
 // own read, which is of the bucket and never of this listener's cache (storedTopics).
 func requireKeptTheBucketsRow(t *testing.T, rig *sessionConsumerRig, sessionID, writer string, wrote, newest uint64, message string, topics ...string) {
@@ -913,7 +932,7 @@ func requireKeptTheBucketsRow(t *testing.T, rig *sessionConsumerRig, sessionID, 
 	}
 	requireFilters(t, rig, sessionID, topics...)
 	rig.store(t, message)
-	rig.awaitPending(t, sessionID, 1)
+	rig.awaitHeld(t, sessionID, 1)
 }
 
 // requireRestoreMakesACorrectivePass drives the restore of sessionID's consumer that each

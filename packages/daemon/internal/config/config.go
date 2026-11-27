@@ -9,11 +9,12 @@
 // also refuses what a pod could not run with: the `runtime.kubernetes` block's own values, and the
 // keys outside it every pod needs.
 //
-// Load reads the file and nothing it names: a path key (`instructions`, `envoy_token_file`,
-// `nats_nkey_seed_file`, `nats_daemon_nkey_seed_file`, `operator_token_file`,
+// Load reads the file and nothing it names: a path key (`instructions`, `private_name_rules_file`,
+// `envoy_token_file`, `nats_nkey_seed_file`, `nats_daemon_nkey_seed_file`, `operator_token_file`,
 // `hooks[].prompt_file`, `runtime.kubernetes.kubeconfig`) is resolved
 // against the file's directory and kept as a path. What sits at that path is read at boot, by
-// ReadSecretPointer, ReadDeploymentInstructions, ReadHookPrompt, and the runtime's client, so a
+// ReadSecretPointer, ReadDeploymentInstructions, ReadHookPrompt, the daemon's read of the
+// private-name rule file (internal/daemon's launchSecrets), and the runtime's client, so a
 // configuration loads on a machine that has none of the files it names; `legion config check`
 // then reads them as boot does (daemon.CheckStart). The daemon reads an instructions file again
 // at each launch, so an edit of one needs no restart.
@@ -24,6 +25,7 @@ import (
 	"fmt"
 	"maps"
 	"math"
+	"net"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -35,11 +37,16 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/sjawhar/envoy/natsurl"
+	"github.com/sjawhar/envoy/pgdsn"
+
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/shim"
+	"github.com/sjawhar/legion/daemon/internal/store"
+	"github.com/sjawhar/legion/daemon/internal/yamlerr"
 )
 
 // Runtime is the `runtime` block: its name, under kubernetes the settled `runtime.kubernetes` block
@@ -86,6 +93,12 @@ type Config struct {
 	StateDir      string
 	Runtime       Runtime
 	AdmissionCap  int
+	// AdmissionP0Bound is `admission_p0_bound`: how many P0 issues may hold a slot at once outside
+	// the cap (R10 of dispatch://INFRA-3199), a whole number from 1 to 2147483647 (the most the
+	// store's integer column holds), or nil where the file gives none, which is no bound. It is the
+	// bound the daemon boots with; the controller or the operator sets another while the daemon
+	// runs, which stands until it is cleared (store.EffectiveP0Bound).
+	AdmissionP0Bound *int
 
 	// DaemonURL is the API address every pane is told (`LEGION_DAEMON_URL`), with no trailing
 	// slash; the loopback address on Port unless the file names another.
@@ -110,6 +123,16 @@ type Config struct {
 	// InstructionsPath is the operator's deployment instructions, "" when none; boot copies it to
 	// `<state_dir>/deployment-instructions.md` (MaterializeDeploymentInstructions).
 	InstructionsPath string
+	// PrivateNameRulesFile is the deployment's private-name rule file, a gitleaks rule file the
+	// daemon reads and compiles at boot and hands every launch as the launch secret
+	// leakguard.RulesSecret, so that every role's leak guard runs it (internal/daemon's readBoot
+	// and launchSecrets): `private_name_rules_file`, resolved against the file's directory, else
+	// LEGION_PRIVATE_NAME_RULES_FILE (leakguard.RulesFileVar) in the daemon's environment, as
+	// written. "" names none, and every role's guard then runs no private-name rule.
+	// PrivateNameRulesNamedBy is which of the two named it, as the operator wrote it, so that a
+	// refusal of the file names the setting the operator has to change; "" when none is named.
+	PrivateNameRulesFile    string
+	PrivateNameRulesNamedBy string
 	// WorkerStreamPort is the worker stream listener's TCP port under a runtime that dials it by
 	// TCP; Port + 1 unless the file names another.
 	WorkerStreamPort int
@@ -173,9 +196,20 @@ type Config struct {
 	// bearer only after every local configuration refusal has passed.
 	DispatchURL       string
 	DispatchTokenFile string
-	Projects          map[string]Project
-	Gates             Gates
-	GitHubApps        GitHubApps
+	// DispatchTokenBroker is `dispatch_token_broker`: the daemon's Dispatch credential is its own
+	// pod identity, traded at the secrets broker, rather than the bearer DispatchTokenFile names,
+	// which is "" whenever this is true (resolveDispatchTokenBroker). Only `runtime: kubernetes`
+	// takes it, and only beside DispatchURL and runtime.kubernetes.agent_secrets.exchange_audience.
+	// The loader reads no environment, so it decides nothing about that trade: boot makes it.
+	DispatchTokenBroker bool
+	// DispatchTokenTransitionFile is `dispatch_token_transition_file`, a path like
+	// DispatchTokenFile and "" when the file names none: the file holding the shared Dispatch
+	// token a launch into a pod built before DispatchTokenBroker was on gets. The daemon never
+	// calls Dispatch with it, and the loader takes it only beside DispatchTokenBroker.
+	DispatchTokenTransitionFile string
+	Projects                    map[string]Project
+	Gates                       Gates
+	GitHubApps                  GitHubApps
 	// Linger is how long a finished tree keeps its workspace before it closes (`linger_hours`).
 	Linger time.Duration
 	// ProductionCheckBound is how long a closed issue's production check stays open after the
@@ -244,6 +278,19 @@ type Config struct {
 	// ControllerLaunch is who launches the project's controller (`controller`): the operator unless
 	// the file says the daemon does.
 	ControllerLaunch ControllerLaunch
+	// ControllerTurnBound is `controller_turn_bound_minutes`: how long a turn of the daemon's own
+	// controller (`controller: daemon`) may stay open before its keeper ends that launch, whether
+	// or not steps still arrive in the turn, and counts the end against the session
+	// (internal/daemon's controllerKeeper, dispatch://INFRA-2045 R2). Ninety minutes by default,
+	// above every turn of a measured week of INFRA's controller but one (defaultControllerTurnBound);
+	// 0 turns the rule off.
+	ControllerTurnBound time.Duration
+	// ControllerSessionMaxAge is `controller_session_max_age_hours`: how old the session of the
+	// daemon's own controller may grow, read from its id (a UUIDv7), before a relaunch the daemon
+	// makes of it starts a fresh session in its place (supervise.Deps.ControllerSessionMaxAge,
+	// dispatch://INFRA-2045 R3); the daemon stops no live controller for it. Seventy-two hours by
+	// default (defaultControllerSessionMaxAge); 0 turns the rule off.
+	ControllerSessionMaxAge time.Duration
 	// Capabilities is the `capabilities` block; the zero value with none.
 	Capabilities Capabilities
 	// WorkerBackends is `worker_backends`: the phase-worker roles that run on a backend other than
@@ -353,6 +400,17 @@ const (
 	// of a roll (dispatch://INFRA-2981 R2).
 	defaultPodUpdateGrace = 30 * time.Minute
 
+	// defaultControllerTurnBound is `controller_turn_bound_minutes`'s default
+	// (Config.ControllerTurnBound): of 3,037 turns INFRA's controller ran from 2026-11-18 to
+	// 2026-11-24, 99.9% ended in 70 minutes and one ran longer than 90, so a lower bound would end
+	// working turns (dispatch://INFRA-2045 R2).
+	defaultControllerTurnBound = 90 * time.Minute
+	// defaultControllerSessionMaxAge is `controller_session_max_age_hours`'s default
+	// (Config.ControllerSessionMaxAge): the youngest of the four measured controller sessions that
+	// failed at a resume was 4.6 days old, and 72 hours is below it by 38 hours
+	// (dispatch://INFRA-2045 R3).
+	defaultControllerSessionMaxAge = 72 * time.Hour
+
 	// DefaultReviewRoundCap is `review_round_cap`'s default (Config.ReviewRoundCap). It is exported
 	// for a test that builds its Config by hand: the daemon API contract takes a positive cap
 	// alone (packages/contracts/src/legion-api.ts), so a pane's `legion` tool refuses every state
@@ -409,6 +467,7 @@ type fileConfig struct {
 	PostgresDSN      *string
 	StateDir         *string
 	AdmissionCap     *int
+	AdmissionP0Bound *int
 	Kubernetes       *Kubernetes
 	Tmux             *Tmux
 	DaemonURL        *string
@@ -421,6 +480,7 @@ type fileConfig struct {
 	// key: 0 is a value an operator may set, and the count reader refuses it.
 	WorkerWakesPerMinute *int
 	OperatorTokenFile    *string
+	PrivateNameRulesFile *string
 	EnvoyURL             *string
 	NatsURLs             []string
 	EnvoyTokenFile       *string
@@ -429,19 +489,28 @@ type fileConfig struct {
 	NatsDaemonNkeySeedFile *string
 	DispatchURL            *string
 	DispatchTokenFile      *string
-	Projects               map[string]Project
-	Gates                  *Gates
-	GitHubApps             *GitHubApps
-	Linger                 *time.Duration
-	ProductionCheckBound   *time.Duration
-	PodUpdateGrace         *time.Duration
-	StalledTreeNotice      *time.Duration
+	// DispatchTokenBroker is `dispatch_token_broker`, nil when the file leaves it out, and
+	// DispatchTokenTransitionFile `dispatch_token_transition_file`.
+	DispatchTokenBroker         *bool
+	DispatchTokenTransitionFile *string
+	Projects                    map[string]Project
+	Gates                       *Gates
+	GitHubApps                  *GitHubApps
+	Linger                      *time.Duration
+	ProductionCheckBound        *time.Duration
+	PodUpdateGrace              *time.Duration
+	StalledTreeNotice           *time.Duration
 	// WorkerSilence is `worker_silence_minutes` and WorkerBackground `worker_background_hours`,
 	// pointers as every other duration key here is: a file that leaves a key out is
 	// distinguishable from one that sets it, so resolve leaves the default standing for the
 	// first and carries the operator's number for the second.
 	WorkerSilence    *time.Duration
 	WorkerBackground *time.Duration
+	// ControllerTurnBound is `controller_turn_bound_minutes` and ControllerSessionMaxAge
+	// `controller_session_max_age_hours`, each read with 0 as the rule off (readMinutesOrOff,
+	// readHoursOrOff); nil for a file that names neither, which leaves the default standing.
+	ControllerTurnBound     *time.Duration
+	ControllerSessionMaxAge *time.Duration
 	// PodUpdateMaxOpenRounds is `pod_update_max_open_rounds` and PodUpdateRoundsPerMinute
 	// `pod_update_rounds_per_minute`; each stays nil when the file leaves its key out, which is
 	// how resolve tells an absent key from a number and leaves Config's own pointer nil.
@@ -488,9 +557,11 @@ func load(path string, env func(string) string, resolveAppKeys bool) (Config, er
 	if err != nil {
 		return Config{}, fmt.Errorf("read %s: %w", path, err)
 	}
+	// yamlerr: the file holds postgres_dsn, URL userinfo and the Apps' private keys, and yaml.v3's
+	// text quotes the document.
 	var document yaml.Node
 	if err := yaml.Unmarshal(data, &document); err != nil {
-		return Config{}, fmt.Errorf("parse %s: %w", path, err)
+		return Config{}, fmt.Errorf("parse %s: %s", path, yamlerr.Reason(err))
 	}
 
 	root, err := rootMapping(&document)
@@ -545,7 +616,7 @@ func readKeys(root *yaml.Node) (fileConfig, error) {
 			file.Warnings = append(file.Warnings,
 				fmt.Sprintf("setting %s changes nothing: %s", key, warnedKeys[key]))
 		default:
-			err = classify(key)
+			err = classify(root.Content[i])
 		}
 		if err != nil {
 			return fileConfig{}, err
@@ -555,14 +626,66 @@ func readKeys(root *yaml.Node) (fileConfig, error) {
 }
 
 // classify refuses an unmodelled key, naming its class.
-func classify(key string) error {
+func classify(node *yaml.Node) error {
+	key := node.Value
 	if reason, ok := tossedKeys[key]; ok {
 		return fmt.Errorf("unknown key %s: %s", key, reason)
 	}
 	if message, ok := migrationKeys[key]; ok {
 		return errors.New(message)
 	}
+	if !keyShape(key) {
+		return errors.New(unknownKeyAt(node, ""))
+	}
 	return fmt.Errorf("unknown key %s", key)
+}
+
+// keyGrammar is the configuration's key grammar: lower-case letters, digits and "_", from a
+// letter, 40 characters at most.
+var keyGrammar = regexp.MustCompile(`^[a-z][a-z0-9_]{0,39}$`)
+
+// keyHexRun is a run of 8 or more hexadecimal digits, which no key of the configuration holds and
+// a lower-case hex token that fits keyGrammar does (an API key of 32 hex digits, a legacy GitHub
+// token of 40).
+var keyHexRun = regexp.MustCompile(`[0-9a-f]{8,}`)
+
+// keyAlphanumericRun is a run of 10 or more letters and digits; one that holds a digit is a
+// token's (a lower-case base36 token holds few runs of 8 hex digits), and no key of the
+// configuration holds one: its words are joined by "_", and none of 10 letters holds a digit.
+var keyAlphanumericRun = regexp.MustCompile(`[a-z0-9]{10,}`)
+
+// keyShape reports whether name has a key's shape: keyGrammar's, holding no keyHexRun and no
+// keyAlphanumericRun that holds a digit. An unknown key of that shape is named as written, so a
+// typo keeps its help (`unknown key dispach_url`); any other name, one holding an upper-case
+// letter, a "-", a ":", a "/", an "@", a space, a run of hex digits or a long run of letters and
+// digits, as a token (`sk-ant-…`, `ghp_…`, a hex key, a base36 token) or a URL does, is named by
+// its line alone (unknownKeyAt). A typo holding a "-" or an upper-case letter is named by its line
+// too; a short token of the grammar's letters (`abc_0123456`) is still named as written.
+func keyShape(name string) bool {
+	if !keyGrammar.MatchString(name) || keyHexRun.MatchString(name) {
+		return false
+	}
+	for _, run := range keyAlphanumericRun.FindAllString(name, -1) {
+		if strings.ContainsAny(run, "0123456789") {
+			return false
+		}
+	}
+	return true
+}
+
+// keyShapeWords is keyShape as a refusal says it.
+const keyShapeWords = "lower-case letters, digits and _, from a letter, 40 at most, with no run of 8 hex digits and no run of 10 letters and digits that holds a digit"
+
+// unknownKeyAt is the refusal of an unknown key whose name has no key's shape (keyShape), under the
+// mapping under names ("" at the file's root): its line, never its text. Such a name is no typo of
+// a key; it can be a credential, or a URL holding one, pasted where a key goes, and the URL rule
+// the refusal is printed through (redact.URLCredentials) does not read such a URL whole when a
+// character that ends a URL in a text, a "'" among them, stands in its userinfo.
+func unknownKeyAt(node *yaml.Node, under string) string {
+	if under == "" {
+		return fmt.Sprintf("unknown key at line %d, whose name has no key's shape (%s)", node.Line, keyShapeWords)
+	}
+	return fmt.Sprintf("unknown key at line %d under %s, whose name has no key's shape (%s)", node.Line, under, keyShapeWords)
 }
 
 // readRuntime reads `runtime`: the `tmux` scalar (no block), or a one-key mapping, `{kubernetes:
@@ -604,6 +727,19 @@ func readString(value *yaml.Node, key string) (*string, error) {
 	var read string
 	if value.Kind != yaml.ScalarNode || value.Decode(&read) != nil {
 		return nil, fmt.Errorf("%s must be a string", key)
+	}
+	return &read, nil
+}
+
+// readBool reads a key that is only true or false, as the controller's loader reads its own
+// `dispatch_token_broker`; nil for an unset one (absent from its mapping, or null).
+func readBool(value *yaml.Node, key string) (*bool, error) {
+	if value == nil || value.Tag == "!!null" {
+		return nil, nil
+	}
+	var read bool
+	if value.Tag != "!!bool" || value.Decode(&read) != nil {
+		return nil, fmt.Errorf("%s must be true or false", key)
 	}
 	return &read, nil
 }
@@ -666,10 +802,19 @@ func requiredString(value *yaml.Node, key, why string) (string, error) {
 	return read, err
 }
 
-// unknownKeyError is describedMembers' refusal of a name the mapping may not carry.
-type unknownKeyError struct{ key, name string }
+// unknownKeyError is describedMembers' refusal of a name the mapping may not carry, by its line
+// alone when the name has no key's shape (unknownKeyAt).
+type unknownKeyError struct {
+	key  string
+	node *yaml.Node
+}
 
-func (e unknownKeyError) Error() string { return fmt.Sprintf("unknown key %s.%s", e.key, e.name) }
+func (e unknownKeyError) Error() string {
+	if !keyShape(e.node.Value) {
+		return unknownKeyAt(e.node, e.key)
+	}
+	return fmt.Sprintf("unknown key %s.%s", e.key, e.node.Value)
+}
 
 // describedMembers returns a mapping's members by name, refusing a name it does not know or names
 // twice. A member whose value is null is left out, as an unset key. It is the one reader of a
@@ -690,7 +835,7 @@ func describedMembers(value *yaml.Node, key, group string) (map[string]*yaml.Nod
 	for i := 0; i+1 < len(value.Content); i += 2 {
 		name, node := value.Content[i].Value, value.Content[i+1]
 		if !slices.ContainsFunc(described.Members, func(m member) bool { return m.Name == name }) {
-			return nil, unknownKeyError{key, name}
+			return nil, unknownKeyError{key, value.Content[i]}
 		}
 		if seen[name] {
 			return nil, fmt.Errorf("%s names %s twice", key, name)
@@ -715,22 +860,116 @@ func namesKey(value *yaml.Node, name string) bool {
 	return false
 }
 
-// readNatsURLs is `nats_urls`: valid URLs, in order, each once.
+// readNatsURLs is `nats_urls`: valid URLs, in order, each once. Each entry must be a non-empty
+// string, and an entry the NATS client would read other than as written once the entries are
+// joined with commas is refused too, with natsurl's reason (natsurl.EntryRefusal: a comma, an "@"
+// after its host, a websocket path that stops parsing once decoded), and so are:
+//
+//   - an entry whose host and port are not written as an address the NATS client dials
+//     (dialableAuthority): one net.SplitHostPort refuses, as an IPv6 address written with a port
+//     and no brackets is, or one with a port outside 1 to 65535. Such a list loaded and failed at
+//     boot, but for an IPv6 address with a zone written that way, which the client's lookup
+//     returns as it is and the client brackets and dials; it is refused too, so it is written in
+//     brackets;
+//   - an unquoted item of a flow list, `[...]`, plain or tagged (`!!str`), that carries a user name
+//     or password: YAML splits an unquoted flow item at every comma, so a credential holding a
+//     comma, `,nats://` among them, reaches here as two entries that each parse, and the daemon
+//     would dial the credential's head as a host and print it. A block list or a quoted item is
+//     never split: a comma in one is an entry that holds the comma, refused with natsurl's
+//     CommaReason;
+//   - a list that mixes websocket (ws, wss) and other schemes, which the NATS client refuses at
+//     boot, so `legion config check` and boot refuse the same list;
+//   - a list natsurl.Check refuses: its tail rule, which at load refuses only a later entry a
+//     person wrote with a user name or password and none of the schemes nats, tls, ws and wss,
+//     since the two rules above already refuse every list a comma in a credential split.
+//
+// Every refusal names its entry by its position alone (`nats_urls entry 2`), never by any of its
+// text: a credential holding a "/", "?", "#", space or comma ends url.Parse's authority early, so
+// the entry does not parse, or parses with a part of the credential as its host, and nothing that
+// reads a URL finds such a credential to cut; a query can hold a token too.
 func readNatsURLs(value *yaml.Node, key string) ([]string, error) {
-	read, err := readStrings(value, key)
-	if err != nil || read == nil {
-		return read, err
+	if value.Tag == "!!null" {
+		return nil, nil
 	}
-	urls := make([]string, 0, len(read))
-	for _, raw := range read {
-		if _, err := endpointURL(raw, key); err != nil {
-			return nil, fmt.Errorf("%s entry %q%s", key, raw, strings.TrimPrefix(err.Error(), key))
+	if value.Kind != yaml.SequenceNode {
+		return nil, fmt.Errorf("%s must be an array of non-empty strings", key)
+	}
+	flow := value.Style&yaml.FlowStyle != 0
+	read := make([]string, 0, len(value.Content))
+	urls := make([]string, 0, len(value.Content))
+	for index, item := range value.Content {
+		var raw string
+		if item.Kind != yaml.ScalarNode || item.Tag != "!!str" || item.Decode(&raw) != nil || raw == "" {
+			return nil, fmt.Errorf("%s entry %d must be a non-empty string", key, index+1)
 		}
+		// The quoting bits, not Style == 0: a plain item written with an explicit tag has
+		// yaml.TaggedStyle and is split at its commas all the same.
+		if flow && item.Style&(yaml.SingleQuotedStyle|yaml.DoubleQuotedStyle) == 0 && strings.Contains(raw, "@") {
+			return nil, fmt.Errorf("%s entry %d carries a user name or password in an unquoted [...] list item; quote it, or write the list as a block list", key, index+1)
+		}
+		// A comma first, so an entry that lists two servers, or a credential holding a comma, gets
+		// the comma's reason, which says how to write it, whatever else of it would not parse.
+		if strings.Contains(raw, ",") {
+			return nil, fmt.Errorf("%s entry %d cannot be read: %s", key, index+1, natsurl.CommaReason)
+		}
+		parsed, err := endpointURL(raw, key)
+		if err != nil {
+			return nil, fmt.Errorf("%s entry %d%s", key, index+1, strings.TrimPrefix(err.Error(), key))
+		}
+		if why := natsurl.EntryRefusal(raw); why != "" {
+			return nil, fmt.Errorf("%s entry %d cannot be read: %s", key, index+1, why)
+		}
+		if !dialableAuthority(parsed) {
+			return nil, fmt.Errorf("%s entry %d cannot be read: its host and port are no address the NATS client can dial; write an IPv6 host in brackets ([::1]:4222), and a port from 1 to 65535 or none", key, index+1)
+		}
+		read = append(read, raw)
 		if !slices.Contains(urls, raw) {
 			urls = append(urls, raw)
 		}
 	}
+	for index := 1; index < len(read); index++ {
+		if websocketURL(read[index]) != websocketURL(read[0]) {
+			return nil, fmt.Errorf("%s entry %d cannot be read: the list mixes websocket (ws, wss) and other (nats, tls) schemes, which the NATS client refuses; list servers of one kind", key, index+1)
+		}
+	}
+	// Every entry here is a URL endpointURL took, none blank, so Check drops none and its position
+	// is the entry's in the file.
+	if _, position, why := natsurl.Check(read); why != "" {
+		return nil, fmt.Errorf("%s entry %d cannot be read: %s", key, position, why)
+	}
 	return urls, nil
+}
+
+// dialableAuthority reports whether parsed, a nats_urls entry endpointURL read, names its host and
+// port as the NATS client dials them, reading the URL alone: nothing is looked up. The client dials
+// the URL's host and port as written (a host that is an IP address, or one whose lookup finds
+// nothing) or each address the host's lookup answers, joined with the port, adding the scheme's
+// default port where the URL names none (nats.go v1.55.0 addURLToPool and createConn), so the
+// authority must split as net.SplitHostPort splits one, an IPv6 host in brackets, and a port it
+// names must be 1 to 65535. The one form refused that the client would dial is an IPv6 address
+// with a zone, a port and no brackets: its lookup answers the address as it is, and the join
+// brackets it.
+func dialableAuthority(parsed *url.URL) bool {
+	authority, port := strings.TrimSuffix(parsed.Host, ":"), parsed.Port()
+	if port == "" {
+		// Any valid port stands in for the default the client adds.
+		authority += ":4222"
+	}
+	if _, _, err := net.SplitHostPort(authority); err != nil {
+		return false
+	}
+	if port == "" {
+		return true
+	}
+	number, err := strconv.Atoi(port)
+	return err == nil && number >= 1 && number <= 65535
+}
+
+// websocketURL reports whether raw, a nats_urls entry endpointURL accepted, names ws or wss, as the
+// NATS client reads a server's scheme (isWebsocketScheme).
+func websocketURL(raw string) bool {
+	parsed, err := url.Parse(raw)
+	return err == nil && (strings.EqualFold(parsed.Scheme, "ws") || strings.EqualFold(parsed.Scheme, "wss"))
 }
 
 // dispatchBase is `dispatch_url`: a base URL, never its clients' `/mcp` endpoint, which the clients
@@ -800,6 +1039,23 @@ var envVarName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 // envNameRule is the refusal's words for a name envVarName does not match.
 const envNameRule = "must be an environment variable name (letters, digits, and underscores, not starting with a digit)"
 
+// envNameRefusal is the refusal of entry, the 1-based position in key's map of a variable name
+// envVarName does not match. It names the entry by its position, never its text: what stands where
+// a variable name goes can be a credential pasted into the wrong place, and the refusal is printed
+// as it is (`legion stop`, `legion config check`).
+func envNameRefusal(key string, entry int) error {
+	return fmt.Errorf("%s entry %d: its key %s", key, entry, envNameRule)
+}
+
+// providerVarName is the variable a provider_keys entry names: an envVarName in upper case, as every
+// provider's variable is (ANTHROPIC_API_KEY, GEMINI_API_KEY). The variable is the entry's name in
+// every refusal, log line, settings answer and file name, so a provider's key pasted in its place,
+// most of which hold a lowercase letter, is refused rather than printed under that name.
+var providerVarName = regexp.MustCompile(`^[A-Z_][A-Z0-9_]*$`)
+
+// providerVarRule is the refusal's words for a name providerVarName does not match.
+const providerVarRule = "must be an upper-case environment variable name (upper-case letters, digits, and underscores, not starting with a digit)"
+
 // spendAttributesRule is the refusal's words for an operator value of
 // runtime.SpendAttributesVariable that runtime.SpendAttributesRefusal refuses: one malformed
 // member is caught by the detector's caller with an empty hand, so it costs the launch the whole
@@ -840,8 +1096,9 @@ var paneGitHubEnv = []string{"GH_CONFIG_DIR", "GH_TOKEN", "GITHUB_TOKEN", "GH_HO
 // readProviderKeys is `provider_keys`: a mapping of the variable OMP reads to the key that holds
 // it, both sides environment variable names, or to `file:` and the absolute path of the file that
 // holds it, in file order. A variable named twice is refused rather than one entry silently
-// winning, as is one the daemon sets on every pane itself. Which runtime reads a file is resolve's
-// to check (checkProviderKeyFiles).
+// winning, as is one the daemon sets on every pane itself. Which runtime reads a file, and which
+// of the names runtime.PaneVariableRefusal refuses a tmux pane, are resolve's to check
+// (checkProviderKeyFiles, checkTmuxProviderKeyNames).
 func readProviderKeys(value *yaml.Node, key string) ([]ProviderKey, error) {
 	if value.Tag == "!!null" {
 		return nil, nil
@@ -854,8 +1111,10 @@ func readProviderKeys(value *yaml.Node, key string) ([]ProviderKey, error) {
 	for i := 0; i+1 < len(value.Content); i += 2 {
 		envNode, secretNode := value.Content[i], value.Content[i+1]
 		env := envNode.Value
-		if envNode.Kind != yaml.ScalarNode || !envVarName.MatchString(env) {
-			return nil, fmt.Errorf("%s key %q (the variable OMP reads) %s", key, env, envNameRule)
+		if envNode.Kind != yaml.ScalarNode || !providerVarName.MatchString(env) {
+			// By its position, not its text: what stands where a variable name goes can be a key
+			// pasted into the wrong place, and this refusal is printed as it is.
+			return nil, fmt.Errorf("%s entry %d: its key (the variable OMP reads) %s", key, i/2+1, providerVarRule)
 		}
 		if strings.HasPrefix(env, "AGENT_SECRETS_") {
 			return nil, fmt.Errorf("%s names %s: an AGENT_SECRETS_* variable is the runtime's (AGENT_SECRETS_URL, AGENT_SECRETS_KEY_DIR) or the daemon's own agent-secrets machine login, and is never exported into an agent's environment", key, env)
@@ -873,13 +1132,17 @@ func readProviderKeys(value *yaml.Node, key string) ([]ProviderKey, error) {
 		}
 		if path, isFile := strings.CutPrefix(secret, providerKeyFilePrefix); isFile {
 			if !filepath.IsAbs(path) {
-				return nil, fmt.Errorf("%s value %q for %s names a file by a path that is not absolute; write %s/abs/path", key, secret, env, providerKeyFilePrefix)
+				// By the variable alone: a value that is no path can be the provider's key itself,
+				// pasted after the `file:` where its path goes.
+				return nil, fmt.Errorf("%s value for %s names a file by a path that is not absolute; write %s/abs/path", key, env, providerKeyFilePrefix)
 			}
 			keys = append(keys, ProviderKey{Env: env, File: filepath.Clean(path)})
 			continue
 		}
 		if !envVarName.MatchString(secret) {
-			return nil, fmt.Errorf("%s value %q for %s (the key that holds it) %s, or %s and an absolute path", key, secret, env, envNameRule, providerKeyFilePrefix)
+			// By the variable it is for, not its text: a value that is no secretsd key's name can be
+			// the provider's key itself, pasted where its name goes.
+			return nil, fmt.Errorf("%s value for %s (the key that holds it) %s, or %s and an absolute path", key, env, envNameRule, providerKeyFilePrefix)
 		}
 		keys = append(keys, ProviderKey{Env: env, Secret: secret})
 	}
@@ -955,6 +1218,34 @@ func readUnit(value *yaml.Node, key string, unit time.Duration, most int) (*time
 	return &duration, nil
 }
 
+// readMinutesOrOff is readMinutes for a key whose 0 turns its rule off
+// (`controller_turn_bound_minutes`), and readHoursOrOff readHours for one in hours
+// (`controller_session_max_age_hours`): 0 reads as a zero duration, which the rule reads as off,
+// and every other value is read as readUnit reads it, so a negative value, one too small to hold a
+// nanosecond and one past the timer bound are still refused, each refusal saying that 0 is the
+// rule off.
+func readMinutesOrOff(value *yaml.Node, key string) (*time.Duration, error) {
+	return readUnitOrOff(value, key, time.Minute, maxTimerMinutes)
+}
+
+func readHoursOrOff(value *yaml.Node, key string) (*time.Duration, error) {
+	return readUnitOrOff(value, key, time.Hour, maxTimerSeconds/3600)
+}
+
+// readUnitOrOff is the body readMinutesOrOff and readHoursOrOff share (readUnit's, with 0 taken).
+func readUnitOrOff(value *yaml.Node, key string, unit time.Duration, most int) (*time.Duration, error) {
+	var read float64
+	if (value.Tag == "!!int" || value.Tag == "!!float") && value.Decode(&read) == nil && read == 0 {
+		off := time.Duration(0)
+		return &off, nil
+	}
+	duration, err := readUnit(value, key, unit, most)
+	if err != nil {
+		return nil, fmt.Errorf("%w, or 0 to turn the rule off", err)
+	}
+	return duration, nil
+}
+
 // readShare is a key written as a share of a whole (`github_graphql_share`): a finite number at
 // least MinGitHubGraphQLShare and at most 1, a decimal among them, and nil for a key the file
 // writes with no value at all. A share below the floor asks for a pause no deployment needs -
@@ -982,6 +1273,9 @@ func validURL(value, key string) (*url.URL, error) {
 	parsed, err := url.Parse(value)
 	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
 		return nil, fmt.Errorf("%s must be a valid URL", key)
+	}
+	if natsurl.UserinfoPastHost(parsed) {
+		return nil, fmt.Errorf("%s cannot be read: %s", key, natsurl.UserinfoPastHostReason)
 	}
 	return parsed, nil
 }
@@ -1056,24 +1350,64 @@ func resolve(file fileConfig, env func(string) string, configDir string) (Config
 		WorkerSilence:        defaultWorkerSilence,
 		WorkerBackground:     defaultWorkerBackground,
 		ReviewRoundCap:       DefaultReviewRoundCap,
-		Warnings:             file.Warnings,
+		// The two controller replacement bounds take their defaults here and the file's number,
+		// 0 among them, below.
+		ControllerTurnBound:     defaultControllerTurnBound,
+		ControllerSessionMaxAge: defaultControllerSessionMaxAge,
+		Warnings:                file.Warnings,
 	}
 	if file.Project == nil || strings.TrimSpace(*file.Project) == "" {
 		return Config{}, errors.New("project is required")
+	}
+	// The key's shape is refused before any other setting is resolved (CheckProjectKey says why).
+	if err := CheckProjectKey(*file.Project); err != nil {
+		return Config{}, err
 	}
 	cfg.Project = *file.Project
 
 	if file.StateDir == nil || strings.TrimSpace(*file.StateDir) == "" {
 		return Config{}, errors.New("state_dir is required")
 	}
-	cfg.StateDir = underConfig(*file.StateDir, configDir)
+	// The state directory is absolute from the load on, made so against the configuration file's
+	// directory and then the working directory, and every reader takes this path: the start's
+	// registry, the worker stream socket, the panes' files and their home, and the tmux workspace
+	// directory each phase task's working copy line names. So the line break the line ends at is
+	// refused here, in the very path the daemon uses.
+	absolute, err := filepath.Abs(underConfig(*file.StateDir, configDir))
+	if err != nil {
+		return Config{}, fmt.Errorf("resolve state_dir %q: %w", *file.StateDir, err)
+	}
+	if strings.ContainsAny(absolute, "\n\r") {
+		return Config{}, fmt.Errorf("state_dir %q holds a line break, which a state directory may not hold: under tmux the working copy line every phase task opens with names a workspace directory under it and ends at its line break", absolute)
+	}
+	cfg.StateDir = absolute
 
 	cfg.PostgresDSN = env("LEGION_POSTGRES_DSN")
+	postgresKey := "LEGION_POSTGRES_DSN"
 	if file.PostgresDSN != nil {
-		cfg.PostgresDSN = *file.PostgresDSN
+		cfg.PostgresDSN, postgresKey = *file.PostgresDSN, "postgres_dsn"
 	}
 	if strings.TrimSpace(cfg.PostgresDSN) == "" {
 		return Config{}, errors.New("postgres_dsn is required (or set LEGION_POSTGRES_DSN)")
+	}
+	// By the key alone (pgdsn.Refusal): an unencoded "@" after the user part is where a password
+	// holding an "@" or a "/" leaves part of itself, read as the host, the database or the query,
+	// which every connect error prints.
+	if err := pgdsn.Refusal(postgresKey, cfg.PostgresDSN); err != nil {
+		return Config{}, err
+	}
+
+	// The deployment's private-name rule file: the variable first and the file's key over it, as
+	// postgres_dsn is read. A variable set to the empty string names none, as a role's guard reads
+	// the same variable (leakguard.Guard.rules); a key set to it is refused by its reader, as every
+	// other path key's is. The variable is a setting of its own and not a fallback the key retires:
+	// a daemon of an earlier release refuses the key, so a deployment that may roll back names the
+	// file there.
+	if named := env(leakguard.RulesFileVar); named != "" {
+		cfg.PrivateNameRulesFile, cfg.PrivateNameRulesNamedBy = named, leakguard.RulesFileVar
+	}
+	if file.PrivateNameRulesFile != nil {
+		cfg.PrivateNameRulesFile, cfg.PrivateNameRulesNamedBy = underConfig(*file.PrivateNameRulesFile, configDir), "private_name_rules_file"
 	}
 
 	if file.Port != nil {
@@ -1095,6 +1429,9 @@ func resolve(file fileConfig, env func(string) string, configDir string) (Config
 		}
 		cfg.AdvertiseHost = *file.AdvertiseHost
 	}
+	if err := resolveDispatchTokenBroker(file, configDir, &cfg); err != nil {
+		return Config{}, err
+	}
 
 	if file.Kubernetes != nil {
 		if err := resolveKubernetes(file, configDir, &cfg); err != nil {
@@ -1103,6 +1440,9 @@ func resolve(file fileConfig, env func(string) string, configDir string) (Config
 	}
 	cfg.Runtime.Tmux = resolveTmux(file.Tmux, configDir)
 	if err := checkProviderKeyFiles(file); err != nil {
+		return Config{}, err
+	}
+	if err := checkTmuxProviderKeyNames(file); err != nil {
 		return Config{}, err
 	}
 
@@ -1119,6 +1459,12 @@ func resolve(file fileConfig, env func(string) string, configDir string) (Config
 	if cfg.AdmissionCap < 1 {
 		return Config{}, errors.New("admission_cap must be a positive integer")
 	}
+	if file.AdmissionP0Bound != nil {
+		if !store.ValidP0Bound(*file.AdmissionP0Bound) {
+			return Config{}, fmt.Errorf("admission_p0_bound must be %s, or left out for no bound", store.P0BoundRange)
+		}
+		cfg.AdmissionP0Bound = new(*file.AdmissionP0Bound)
+	}
 
 	if file.WorkerWakesPerMinute != nil {
 		cfg.WorkerWakesPerMinute = *file.WorkerWakesPerMinute
@@ -1127,6 +1473,12 @@ func resolve(file fileConfig, env func(string) string, configDir string) (Config
 	// refuses it.
 	if cfg.WorkerWakesPerMinute < 0 {
 		return Config{}, errors.New("worker_wakes_per_minute must be 0 (the pacing off) or a positive integer")
+	}
+	if file.ControllerTurnBound != nil {
+		cfg.ControllerTurnBound = *file.ControllerTurnBound
+	}
+	if file.ControllerSessionMaxAge != nil {
+		cfg.ControllerSessionMaxAge = *file.ControllerSessionMaxAge
 	}
 
 	if file.GitHubGraphQLShare != nil {
@@ -1205,6 +1557,9 @@ func resolve(file fileConfig, env func(string) string, configDir string) (Config
 // operator's launch refuses the key wherever the file names it, an entry setting no field included,
 // rather than read a key that sizes nothing. The file's own block is read: the settled one holds
 // the controller's default reservation whether or not the file named it.
+// runtime.kubernetes.pod.controller_service_account names the ServiceAccount that same pod runs as,
+// so the operator's launch refuses it too, as a key that names the account of no pod; a named one
+// is never blank, since the loader refuses a blank value (optionalString).
 func resolveControllerLaunch(file fileConfig, cfg *Config) error {
 	cfg.ControllerLaunch = ControllerLaunchOperator
 	if file.Controller != nil {
@@ -1222,6 +1577,9 @@ func resolveControllerLaunch(file fileConfig, cfg *Config) error {
 	if k := file.Kubernetes; k != nil && cfg.ControllerLaunch != ControllerLaunchDaemon && k.controllerNamed {
 		return errors.New("runtime.kubernetes.resources.controller sizes the pod of the controller the daemon launches, and controller: operator launches none: set controller: daemon or drop the key")
 	}
+	if k := file.Kubernetes; k != nil && cfg.ControllerLaunch != ControllerLaunchDaemon && k.Pod.ControllerServiceAccount != "" {
+		return errors.New("runtime.kubernetes.pod.controller_service_account names the ServiceAccount of the pod of the controller the daemon launches, and controller: operator launches none: set controller: daemon or drop the key")
+	}
 	return nil
 }
 
@@ -1234,7 +1592,28 @@ func checkProviderKeyFiles(file fileConfig) error {
 	}
 	for _, key := range file.ProviderKeys {
 		if key.File != "" {
-			return fmt.Errorf("provider_keys.%s names the file %s, which only runtime tmux reads: under runtime kubernetes a provider key is a key of the providers Secret", key.Env, key.File)
+			// By the variable alone: the path can be the provider's key itself, pasted after `file:/`.
+			return fmt.Errorf("provider_keys.%s names a file, which only runtime tmux reads: under runtime kubernetes a provider key is a key of the providers Secret", key.Env)
+		}
+	}
+	return nil
+}
+
+// checkTmuxProviderKeyNames refuses, under runtime tmux, a `provider_keys` entry with a name
+// runtime.PaneVariableRefusal refuses with no value, naming the variable and that function's
+// reason. The shim exports a provider key into the agent's environment, where it acts as the pane
+// variable of that name, so the tmux runtime refuses the same name at its construction, at boot
+// (tmux's readProviderKeyNames, which also refuses names only the tmux runtime knows, such as one
+// every pane carries); refusing it here lets `legion config check` see it. Under runtime
+// kubernetes it refuses nothing: there sandbox.CheckPod holds each provider key to the variables a
+// pod sets (podVariables).
+func checkTmuxProviderKeyNames(file fileConfig) error {
+	if file.Kubernetes != nil {
+		return nil
+	}
+	for _, key := range file.ProviderKeys {
+		if why := runtime.PaneVariableRefusal(key.Env, ""); why != "" {
+			return fmt.Errorf("provider_keys names %s: %s", key.Env, why)
 		}
 	}
 	return nil

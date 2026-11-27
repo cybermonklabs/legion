@@ -1,0 +1,22 @@
+kind: Changed
+body: |-
+    Each code-reading role prompt says when to ask the `codegraph` tool, with a `write` to
+    `xd://codegraph`: the architects before the spec names what a change touches, the planner before
+    a task names its files and tests, the implementer before it changes a symbol, the tester before
+    it judges the implementer's tests, the reviewer for each changed exported symbol and the merger
+    where the base changed code the change uses (`impact`, `callers`, `affected` and `explore`).
+    `affected` always carries `"depth":1`, because its default depth returned 3,101 test files for
+    one Go file. Before its first query and before each `status`, a role checks the warm-up's lease
+    file with a `find` that prints nothing when the file is missing, and while the warm-up builds it
+    reads the source and makes no `codegraph` call, because a `status` during the build made the
+    build fail. A role reads the source with grep when the tool is missing, an answer is empty, or
+    an answer may be stale or partial: `status` counts each file edited since the build as a pending
+    change, whoever edited it, and while a build runs says that the index is truncated or that a
+    rebuild is running. A role runs no `init`, `index`, `sync` or `unlock`, whatever `status` or the
+    tool's own guidance advises: only the warm-up builds the index, under its lease, because a
+    second build corrupts the index and a build without the lease lets other roles call `status`
+    during it. A role on Claude Code is told the `codegraph` command for each action. The reviewer's
+    earlier `codegraph({ action: … })` call is removed.
+time: 2026-11-26T21:21:34Z
+custom:
+    Issue: INFRA-4950

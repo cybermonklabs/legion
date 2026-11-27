@@ -59,6 +59,7 @@ func byIDSpec(t *testing.T) runtime.SpawnSpec {
 // answer that its session table holds no such session is runtime.ErrSessionFileMissing, as its
 // answer for a file the table does not hold is.
 func TestAResumeByIDNamesTheSessionToALauncherThatCanLookItUp(t *testing.T) {
+	t.Parallel()
 	t.Run("a session the launcher finds", func(t *testing.T) {
 		g := newRig(t, nil, withResumesBySession())
 		first := g.spawn(workerSpec(t))
@@ -108,6 +109,7 @@ func TestAResumeByIDNamesTheSessionToALauncherThatCanLookItUp(t *testing.T) {
 // (ResumeByAgent): it sends one start that names no session and no file to the launcher, whose
 // agent command carries `--resume=<id>` once.
 func TestAResumeByIDThroughALauncherWithoutTheLookupStartsOhMyPiWithTheSessionID(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil)
 	first := g.spawn(workerSpec(t))
 	before := len(g.sent(workerToken))
@@ -165,6 +167,7 @@ func wantHeldToItsSession(t *testing.T, start shimwire.LauncherStart) {
 // to the cluster, no command to the launcher, and generation 1 still the process the runtime
 // records.
 func TestSandboxSpawnRefusesAResumeSession(t *testing.T) {
+	t.Parallel()
 	spawn := func(g *rig, _ runtime.Locator, spec runtime.SpawnSpec) error {
 		_, err := g.r.Spawn(g.ctx, spec)
 		return err
@@ -216,6 +219,7 @@ func TestSandboxSpawnRefusesAResumeSession(t *testing.T) {
 // naming its session by its id is refused where the launch is built, whoever was to resolve the
 // id, so no Claude Code command is started on a session it would not find.
 func TestSandboxPrepareRefusesAClaudeCodeResumeByID(t *testing.T) {
+	t.Parallel()
 	r, err := configure(goldenOptions())
 	if err != nil {
 		t.Fatal(err)

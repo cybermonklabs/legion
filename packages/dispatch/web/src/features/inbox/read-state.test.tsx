@@ -3,7 +3,7 @@
  * it was, drawn as read (INFRA-450). Only a dismiss takes a row out of the list.
  */
 
-import { afterEach, expect, jest, spyOn, test } from "bun:test";
+import { afterEach, beforeAll, expect, jest, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -34,11 +34,18 @@ import type {
   MyRepliesResponse,
   MyReplyRow,
 } from "../../api/types";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { plannerAgentRow, replyRow } from "../threads/replies-fixture";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { Inbox } from "./Inbox";
 import { ThreadRowCard } from "./ThreadRowCard";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 const AS_OF = "2026-10-12T02:00:00Z";
 const NEWEST = "2026-10-12T01:00:00Z";
@@ -119,12 +126,14 @@ function seeded(rows: readonly MyReplyRow[]): QueryClient {
   return client;
 }
 
-function renderInbox(client: QueryClient): void {
+/** `pane: false` is the drawer's list of cards, where a thread is read in its own row: the page
+ *  reads one row at a time at every width. */
+function renderInbox(client: QueryClient, { pane = true }: { pane?: boolean } = {}): void {
   render(
     <MemoryRouter initialEntries={["/"]}>
       <QueryClientProvider client={client}>
         <KeymapProvider>
-          <Inbox />
+          <Inbox pane={pane} />
         </KeymapProvider>
       </QueryClientProvider>
     </MemoryRouter>
@@ -171,7 +180,7 @@ test("a card read by the dwell rule stays in the list, drawn as read", async () 
   mockCommentReads();
   const row = commentRow("comment-1", "The retry budget");
   const client = seeded([row]);
-  renderInbox(client);
+  renderInbox(client, { pane: false });
   try {
     await screen.findByTestId("inbox-thread-comment");
     await waitFor(() => expect(document.querySelector('[aria-label="Unread"]')).not.toBeNull());

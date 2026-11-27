@@ -1,0 +1,13 @@
+kind: Changed
+body: |-
+  Two reads of the Delivery page take their own keys instead of scanning: a session's title is
+  stored in `session_titles` (written by a trigger on `events` and filled at boot) and read by
+  primary key, and the open-P0 partial index `issues_open_p0` serves the unowned-P0 list and the
+  live hub's read of open P0 issues. The first boot of this release fills `session_titles` for the
+  events stored before it, in batches of 1,000 sessions, after the migrations and before it
+  listens, and exits 1 when the fill fails. On a store of 1.5 million titled session events, the
+  four migrations and the fill took well under the 60 s that leaves the compose deployer's 90 s
+  room for the rest of the boot (`packages/envoy/scripts/session-titles-scale.sh`).
+time: 2026-11-24T00:43:27Z
+custom:
+    Issue: INFRA-5573

@@ -17,6 +17,7 @@ import (
 // The negative controls are a reading that lets `#` into the name, which takes `acme/widgets#5`,
 // and one that trims the space around the value, which takes `acme/x ` and ` acme/x`.
 func TestParseExternalRepoReadsARepositoryAsDispatchStoresIt(t *testing.T) {
+	t.Parallel()
 	for _, row := range []struct {
 		raw, want string
 	}{
@@ -47,6 +48,7 @@ func TestParseExternalRepoReadsARepositoryAsDispatchStoresIt(t *testing.T) {
 // An issue reference is a repository ParseExternalRepo reads and a number after its last `#`,
 // with the space around the whole reference trimmed and none inside it.
 func TestParseExternalRefReadsItsRepositoryAsParseExternalRepoDoes(t *testing.T) {
+	t.Parallel()
 	for _, row := range []struct {
 		ref, repo, number string
 	}{
@@ -75,6 +77,7 @@ func TestParseExternalRefReadsItsRepositoryAsParseExternalRepoDoes(t *testing.T)
 // The negative controls are the rule put to raw as written, which takes `acme/.git.git` and
 // refuses `acme/<100 characters>.git`, and a reading refusal that wraps ErrNotGitHubRepo.
 func TestParseGitHubRepoHoldsTheStoredFormToGitHubsNames(t *testing.T) {
+	t.Parallel()
 	hundred := strings.Repeat("a", 100)
 	for _, row := range []struct {
 		raw, owner, name string

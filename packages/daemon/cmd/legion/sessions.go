@@ -12,7 +12,6 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 	"golang.org/x/sys/unix"
@@ -57,7 +56,7 @@ func addSessionsInput(flags *pflag.FlagSet) sessionsInput {
 // open refuses a positional argument or a missing required flag, its own two, as a usage error,
 // then reads the claims list and connects to the session database. code is the command's exit
 // when conn is nil.
-func (in sessionsInput) open(ctx context.Context, args []string, stderr io.Writer) (claims []importedClaim, conn *pgx.Conn, code int) {
+func (in sessionsInput) open(ctx context.Context, args []string, stderr io.Writer) (claims []importedClaim, conn *ompsessions.Conn, code int) {
 	if len(args) != 0 {
 		fmt.Fprintf(stderr, "legion sessions import: unexpected argument %q\n%s\n", args[0], sessionsImportUsage)
 		return nil, nil, 2
@@ -187,7 +186,7 @@ func (e *sessionFileAmbiguityError) Error() string {
 
 // importClaimSession imports c's recorded file, or finds the one file of its
 // retained session id when issue_close has already cleared the resume path.
-func importClaimSession(ctx context.Context, conn *pgx.Conn, c importedClaim, treeVolume string) (importedSession, string, error) {
+func importClaimSession(ctx context.Context, conn *ompsessions.Conn, c importedClaim, treeVolume string) (importedSession, string, error) {
 	if c.SessionFile != "" {
 		outcome, err := importSession(ctx, conn, c.SessionFile, treeVolume)
 		return outcome, c.SessionFile, err
@@ -243,7 +242,7 @@ func sessionFileForID(session, treeVolume string) (string, error) {
 
 // missingSessions are the claims of the list, every tree's, that record a session the table does
 // not hold: under SQL storage each would fail every launch until it is copied or marked lost.
-func missingSessions(ctx context.Context, conn *pgx.Conn, claims []importedClaim) ([]importedClaim, error) {
+func missingSessions(ctx context.Context, conn *ompsessions.Conn, claims []importedClaim) ([]importedClaim, error) {
 	var missing []importedClaim
 	for _, c := range claims {
 		if c.SessionFile == "" {
@@ -295,7 +294,7 @@ type importedSession struct {
 
 // importSession copies the session recorded at file into the table: read at file itself, or from
 // the tree volume mounted at treeVolume when one is given, with the file's modification time.
-func importSession(ctx context.Context, conn *pgx.Conn, file, treeVolume string) (importedSession, error) {
+func importSession(ctx context.Context, conn *ompsessions.Conn, file, treeVolume string) (importedSession, error) {
 	source, root := file, ""
 	if treeVolume != "" {
 		onVolume, err := sandbox.SessionOnVolume(file, treeVolume)

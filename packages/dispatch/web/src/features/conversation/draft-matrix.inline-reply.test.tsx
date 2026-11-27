@@ -84,6 +84,12 @@ import { DESKTOP_WIDTH, PHONE_WIDTH, stubViewport } from "../margin/margin-fixtu
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { threadReplySendKey } from "./usePhoneThread";
 
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
+
 // The docked composer draws the quote of the comment it answers through the Markdown engine, a
 // module loaded on first use (`markdown-engine.ts`). A cell reads that quote in the commit after
 // its press, which a first load of the engine can come after, so the engine is loaded before the

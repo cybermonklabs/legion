@@ -35,59 +35,61 @@ With Docker the command is the script alone; this run used a Postgres server of 
 
 ```console
 $ DEV_BROKER_POSTGRES_URL='postgres://<user>@<host>:<port>/<database>' bash packages/envoy/scripts/dev-broker.sh
-dev-broker: workdir /tmp/agent-secrets-dev.ueLLNT
-dev-broker: created isolated database dev_broker_uellnt
+dev-broker: workdir /tmp/agent-secrets-dev.nkqDjj
+dev-broker: created isolated database dev_broker_nkqdjj
 dev-broker: building broker, dev-oidc-issuer, dev-airlock-stands, agent-secrets, agent-secrets-helper and agent-secrets-devrelay...
-dev-broker: built all six into /tmp/agent-secrets-dev.ueLLNT/bin
+dev-broker: built all six into /tmp/agent-secrets-dev.nkqDjj/bin
 dev-broker: starting dev-airlock-stands (its GitHub stand mints the github-app secrets)...
-dev-airlock-stands: stands listening records=http://127.0.0.1:36255
+dev-airlock-stands: stands listening records=http://127.0.0.1:42953
 dev-broker: starting dev-oidc-issuer...
-dev-oidc-issuer: /tmp/agent-secrets-dev.ueLLNT/account-token holds system:serviceaccount:example-ns:example-dispatch's token for audience legion-broker-pod (pod e2846eb7-75bd-4a20-aaff-7d940e7a9afc)
-dev-oidc-issuer: /tmp/agent-secrets-dev.ueLLNT/listener-token holds system:serviceaccount:example-ns:example-listener's token for audience legion-broker-pod (pod 04a195bb-3aad-406b-a059-d206275b7dc0)
-dev-oidc-issuer: /tmp/agent-secrets-dev.ueLLNT/exchange-token holds system:serviceaccount:example-ns:example-worker's token for audience legion-broker-exchange (pod d32c8b7f-0c69-4e2c-9f6f-51d5d5721d43)
-dev-oidc-issuer: /tmp/agent-secrets-dev.ueLLNT/read-token holds system:serviceaccount:example-ns:example-reader's token for audience legion-broker-exchange (pod f3441030-cb31-4b5c-9d21-38a7840c2ab7)
-dev-oidc-issuer: /tmp/agent-secrets-dev.ueLLNT/pod-token holds system:serviceaccount:example-ns:example-worker's token for audience legion-broker-pod (pod d32c8b7f-0c69-4e2c-9f6f-51d5d5721d43)
-dev-oidc-issuer: /tmp/agent-secrets-dev.ueLLNT/registrar-token holds system:serviceaccount:example-ns:example-daemon's token for audience legion-broker-pod (pod cc2f2a54-2da0-4c64-b713-8dcbeaeb7aec)
+dev-oidc-issuer: /tmp/agent-secrets-dev.nkqDjj/account-token holds system:serviceaccount:example-ns:example-dispatch's token for audience legion-broker-pod (pod a783f456-e8c5-4333-b101-5f09e9bf5996)
+dev-oidc-issuer: /tmp/agent-secrets-dev.nkqDjj/listener-token holds system:serviceaccount:example-ns:example-listener's token for audience legion-broker-pod (pod e976227d-37cd-4280-889d-f71b3dd6af38)
+dev-oidc-issuer: /tmp/agent-secrets-dev.nkqDjj/exchange-token holds system:serviceaccount:example-ns:example-worker's token for audience legion-broker-exchange (pod eb9d903e-d8bb-404f-a9c7-d4e61fe28b75)
+dev-oidc-issuer: /tmp/agent-secrets-dev.nkqDjj/read-token holds system:serviceaccount:example-ns:example-reader's token for audience legion-broker-exchange (pod c3313473-645a-4893-8aec-059e8f267625)
+dev-oidc-issuer: /tmp/agent-secrets-dev.nkqDjj/pod-token holds system:serviceaccount:example-ns:example-worker's token for audience legion-broker-pod (pod eb9d903e-d8bb-404f-a9c7-d4e61fe28b75)
+dev-oidc-issuer: /tmp/agent-secrets-dev.nkqDjj/registrar-token holds system:serviceaccount:example-ns:example-daemon's token for audience legion-broker-pod (pod dec75e69-97ec-49aa-81a5-9050046ba34c)
 dev-oidc-issuer: code flow serves client dev-broker; an authorization with none queued at /_dev/sign-in-as signs in ada@example.com
-dev-oidc-issuer: issuer listening url=http://127.0.0.1:38099
+dev-oidc-issuer: issuer listening url=http://127.0.0.1:45983
 dev-broker: starting the proxy's front...
-dev-airlock-stands: front listening addr=127.0.0.1:45131
+dev-airlock-stands: front listening addr=127.0.0.1:46523
 dev-broker: starting broker...
-{"time":"2026-11-20T12:18:58.317983713Z","severity":"INFO","message":"broker stop budget","drain":"0s","shutdown":"60s","total":"60s"}
-{"time":"2026-11-20T12:18:58.31806511Z","severity":"INFO","message":"database sign-in","method":"password"}
-{"time":"2026-11-20T12:18:58.31807062Z","severity":"INFO","message":"approval sign-in on","issuer":"http://127.0.0.1:38099","client_id":"dev-broker","domain":"example.com"}
-{"time":"2026-11-20T12:19:00.102688928Z","severity":"INFO","message":"secret store","store":"aws-secrets-manager","credentials":"fake secrets file"}
-{"time":"2026-11-20T12:19:00.116899771Z","severity":"INFO","message":"broker: profiles applied","served":5,"refused":0,"file_digest":"43c09443bc35d5082de9e2e066e13e251c06b0370d57db3824657ed9bce57a73"}
-{"time":"2026-11-20T12:19:00.131371349Z","severity":"INFO","message":"broker: listening for the other pods' secret rereads","channel":"broker_secret_reread"}
-{"time":"2026-11-20T12:19:00.13195859Z","severity":"INFO","message":"broker listening","addr":"127.0.0.1:42923"}
-{"time":"2026-11-20T12:19:00.131977753Z","severity":"INFO","message":"airlock proxy listening","addr":"127.0.0.1:35365"}
-{"time":"2026-11-20T12:19:00.131982771Z","severity":"INFO","message":"broker metrics listening","addr":"127.0.0.1:43185"}
-{"time":"2026-11-20T12:19:00.132024111Z","severity":"INFO","message":"model judge","state":"off","detail":"none of BROKER_JUDGE_MODEL_URL, BROKER_JUDGE_MODEL, BROKER_JUDGE_MODEL_AUDIENCE, BROKER_JUDGE_DISPATCH_URL, BROKER_JUDGE_DISPATCH_TOKEN_FILE is set, so every human-tier request waits for the person who decides it today"}
-{"time":"2026-11-20T12:19:00.134967315Z","severity":"INFO","message":"project access check","state":"off","detail":"BROKER_PROJECT_ACCESS_URL is unset, so a token or a session naming no project is minted and enrolled as before, a person's trade or session naming one is refused, a secret tagged with a project is refused project-unchecked, and no enrollment or secret request asks what kind of member its person is"}
-{"time":"2026-11-20T12:19:00.134988011Z","severity":"INFO","message":"token exchange","state":"on","kubernetes":true,"github":false,"accounts":1,"read_accounts":1,"workflows":0,"machines":0}
-{"time":"2026-11-20T12:19:00.13499594Z","severity":"INFO","message":"pod-session registrars","entries":1,"registration_audience":false}
-{"time":"2026-11-20T12:19:00.135005921Z","severity":"INFO","message":"session account pairs","state":"off","detail":"BROKER_SESSION_ACCOUNT_PAIRS is unset, so an account is refused a session name another account holds"}
-{"time":"2026-11-20T12:19:00.135200468Z","severity":"INFO","message":"machine login device grant","state":"on","verification_uri":"http://127.0.0.1/credentials/machine"}
-{"time":"2026-11-20T12:19:00.177832932Z","severity":"INFO","message":"broker reread rate","replicas":2,"every":"1s","burst":10}
-{"time":"2026-11-20T12:19:00.882481016Z","severity":"INFO","message":"broker: registered a pod to write under a session name","service":"legion-daemon","account":"system:serviceaccount:example-ns:example-worker","pod":"d32c8b7f-0c69-4e2c-9f6f-51d5d5721d43","session":"example-worker-session"}
+{"time":"2026-11-22T18:14:08.696464357Z","severity":"INFO","message":"broker stop budget","drain":"0s","shutdown":"60s","total":"60s"}
+{"time":"2026-11-22T18:14:08.696508928Z","severity":"INFO","message":"database sign-in","method":"password"}
+{"time":"2026-11-22T18:14:08.696512855Z","severity":"INFO","message":"approval sign-in on","issuer":"http://127.0.0.1:45983","client_id":"dev-broker","domain":"example.com"}
+{"time":"2026-11-22T18:14:08.82726499Z","severity":"INFO","message":"secret store","store":"aws-secrets-manager","credentials":"fake secrets file"}
+{"time":"2026-11-22T18:14:08.832569148Z","severity":"INFO","message":"broker: profiles applied","served":5,"refused":0,"file_digest":"43c09443bc35d5082de9e2e066e13e251c06b0370d57db3824657ed9bce57a73"}
+{"time":"2026-11-22T18:14:08.845442154Z","severity":"INFO","message":"broker: listening for the other pods' secret rereads","channel":"broker_secret_reread"}
+{"time":"2026-11-22T18:14:08.846128621Z","severity":"INFO","message":"broker listening","addr":"127.0.0.1:37577"}
+{"time":"2026-11-22T18:14:08.846143554Z","severity":"INFO","message":"airlock proxy listening","addr":"127.0.0.1:40407"}
+{"time":"2026-11-22T18:14:08.846152116Z","severity":"INFO","message":"broker metrics listening","addr":"127.0.0.1:42175"}
+{"time":"2026-11-22T18:14:08.846257624Z","severity":"INFO","message":"model judge","state":"off","detail":"none of BROKER_JUDGE_MODEL_URL, BROKER_JUDGE_MODEL, BROKER_JUDGE_MODEL_AUDIENCE, BROKER_JUDGE_DISPATCH_URL, BROKER_JUDGE_DISPATCH_TOKEN_FILE is set, so every human-tier request waits for the person who decides it today"}
+{"time":"2026-11-22T18:14:08.848199915Z","severity":"INFO","message":"project access check","state":"off","detail":"BROKER_PROJECT_ACCESS_URL is unset, so a token or a session naming no project is minted and enrolled as before, a restricted member's machine login as its person and held to no one project, a person's trade or session naming one is refused, a secret tagged with a project is refused project-unchecked, and no enrollment or secret request asks what kind of member its person is"}
+{"time":"2026-11-22T18:14:08.848220488Z","severity":"INFO","message":"hold of refused people","state":"off","reason":"BROKER_PROJECT_ACCESS_URL is not set"}
+{"time":"2026-11-22T18:14:08.848227791Z","severity":"INFO","message":"token exchange","state":"on","kubernetes":true,"github":false,"accounts":1,"read_accounts":1,"workflows":0,"machines":0}
+{"time":"2026-11-22T18:14:08.848234227Z","severity":"INFO","message":"pod-session registrars","entries":1,"registration_audience":false}
+{"time":"2026-11-22T18:14:08.848250011Z","severity":"INFO","message":"session account pairs","state":"off","detail":"BROKER_SESSION_ACCOUNT_PAIRS is unset, so an account is refused a session name another account holds"}
+{"time":"2026-11-22T18:14:08.848394516Z","severity":"INFO","message":"machine login device grant","state":"on","verification_uri":"http://127.0.0.1/credentials/machine"}
+{"time":"2026-11-22T18:14:08.84864145Z","severity":"INFO","message":"NATS auth service","state":"off","edge_listeners":0,"detail":"BROKER_NATS_URLS is unset, so the broker answers no hub; GET /v1/project-repositories reads the edge-listener entries of BROKER_NATS_SERVICES"}
+{"time":"2026-11-22T18:14:08.864198922Z","severity":"INFO","message":"broker reread rate","replicas":2,"every":"1s","burst":10}
+{"time":"2026-11-22T18:14:09.459006351Z","severity":"INFO","message":"broker: registered a pod to write under a session name","service":"legion-daemon","account":"system:serviceaccount:example-ns:example-worker","pod":"eb9d903e-d8bb-404f-a9c7-d4e61fe28b75","session":"example-worker-session"}
 dev-broker: registered the exchange pod to write under example-worker-session
 
 dev-broker: ready.
 
-  export AGENT_SECRETS_URL=http://127.0.0.1:42923
-  export AGENT_SECRETS_ACCOUNT_TOKEN_FILE=/tmp/agent-secrets-dev.ueLLNT/account-token
+  export AGENT_SECRETS_URL=http://127.0.0.1:37577
+  export AGENT_SECRETS_ACCOUNT_TOKEN_FILE=/tmp/agent-secrets-dev.nkqDjj/account-token
   export AGENT_SECRETS_APPROVER=ada@example.com
-  export AGENT_SECRETS_HELPER_SOCK=/tmp/agent-secrets-dev.ueLLNT/helper.sock
-  export AGENT_SECRETS_OPERATOR_FILE=/tmp/agent-secrets-dev.ueLLNT/operator
-  export AGENT_SECRETS_MACHINE_FILE=/tmp/agent-secrets-dev.ueLLNT/machine.json
-  export AGENT_SECRETS_STATE_FILE=/tmp/agent-secrets-dev.ueLLNT/sessions.json
-  export DEV_BROKER_DIR=/tmp/agent-secrets-dev.ueLLNT
-  export DEV_BROKER_METRICS_URL=http://127.0.0.1:43185/metrics
-  export DEV_BROKER_POD_UID=d32c8b7f-0c69-4e2c-9f6f-51d5d5721d43
+  export AGENT_SECRETS_HELPER_SOCK=/tmp/agent-secrets-dev.nkqDjj/helper.sock
+  export AGENT_SECRETS_OPERATOR_FILE=/tmp/agent-secrets-dev.nkqDjj/operator
+  export AGENT_SECRETS_MACHINE_FILE=/tmp/agent-secrets-dev.nkqDjj/machine.json
+  export AGENT_SECRETS_STATE_FILE=/tmp/agent-secrets-dev.nkqDjj/sessions.json
+  export DEV_BROKER_DIR=/tmp/agent-secrets-dev.nkqDjj
+  export DEV_BROKER_METRICS_URL=http://127.0.0.1:42175/metrics
+  export DEV_BROKER_POD_UID=eb9d903e-d8bb-404f-a9c7-d4e61fe28b75
   export DEV_BROKER_SERVICE=legion-daemon
-  export DEV_BROKER_GITHUB_URL=http://127.0.0.1:40305
-  export DEV_BROKER_GITHUB_RECORDS_URL=http://127.0.0.1:36255/records/github
-  export DEV_BROKER_GITHUB_ANSWER_URL=http://127.0.0.1:36255/answers/github
+  export DEV_BROKER_GITHUB_URL=http://127.0.0.1:35403
+  export DEV_BROKER_GITHUB_RECORDS_URL=http://127.0.0.1:42953/records/github
+  export DEV_BROKER_GITHUB_ANSWER_URL=http://127.0.0.1:42953/answers/github
   export DEV_BROKER_GITHUB_SECRET=DEMO_GITHUB_APP
   export DEV_BROKER_GITHUB_OWNER=acme-org
   export DEV_BROKER_GITHUB_INSTALLATION=7
@@ -98,11 +100,11 @@ dev-broker: ready.
   export DEV_BROKER_GITHUB_READ_PROFILE=DEMO_GITHUB_READ
   export DEV_BROKER_GITHUB_ADMIN_READ_PROFILE=DEMO_GITHUB_ADMIN_READ
   export DEV_BROKER_GITHUB_PROXIED_URL=https://api.github.test
-  export DEV_BROKER_GITHUB_TLS_RECORDS_URL=http://127.0.0.1:36255/records/github-tls
+  export DEV_BROKER_GITHUB_TLS_RECORDS_URL=http://127.0.0.1:42953/records/github-tls
   export DEV_BROKER_GITHUB_COMMIT=5fd1c0a5a4e3b2c1d0e9f8a7b6c5d4e3f2a1b0c9
-  export DEV_BROKER_PROFILES_FILE=/tmp/agent-secrets-dev.ueLLNT/profiles.json
-  export DEV_BROKER_PROXY_URL=http://127.0.0.1:45131
-  export PATH=/tmp/agent-secrets-dev.ueLLNT/bin:$PATH
+  export DEV_BROKER_PROFILES_FILE=/tmp/agent-secrets-dev.nkqDjj/profiles.json
+  export DEV_BROKER_PROXY_URL=http://127.0.0.1:46523
+  export PATH=/tmp/agent-secrets-dev.nkqDjj/bin:$PATH
 ...
 ```
 
@@ -405,8 +407,9 @@ reread wrote none, since the secret's state did not change
 
 The broker's RFC 8693 token exchange is on, for one account entry,
 `system:serviceaccount:example-ns:example-worker`, writing the project `EXAMPLE` for
-`ada@example.com`, and for one read entry
-([Exchange a read entry's token](#exchange-a-read-entrys-token)).
+`ada@example.com`, for one read entry
+([Exchange a read entry's token](#exchange-a-read-entrys-token)), and for two job entries
+([Exchange a job's token](#exchange-a-jobs-token)).
 `$DEV_BROKER_DIR/exchange-token` holds the account entry's pod token for the exchange's own
 audience, `legion-broker-exchange`.
 
@@ -486,19 +489,25 @@ the exchange's audience. The token request above, with that token as `subject_to
 `session=example-reader-session` or no `session`, mints a token that holds the OAuth scope `read`
 alone. Its introspection answer carries `"service":"example-reader"`, `"project_scope":"none"` and
 `"scope":"read"`, and no `person` and no `projects`. A request that names another session is
-refused, and one that names `scope=read` is refused `invalid_scope`: the entry decides the scope,
-and the request never does. The entry fixes its session, so the script registers no pod for it,
-and the registration route refuses one with `409 SESSION_FIXED`.
+refused. A request that adds `scope=read` gets the same token under the project scope
+`read-none`. The entry fixes its session, so the script registers no pod for it, and the
+registration route refuses one with `409 SESSION_FIXED`.
 
-Dispatch serves that token on the routes its read list names, today
-`GET /api/v1/projects/{key}/architecture` alone, and answers it `403 READ_ONLY_TOKEN` on every
-other route of its route table and on `GET /ws/live`. `packages/dispatch/e2e/read-token-live.ts`
-shows both against this stack. Leave the stack running. `bun run dispatch:local` runs until
-Ctrl-C, so it takes a shell of its own: open a new one and paste the dev broker's exports into it
-too, as you pasted them into the second shell. A shell without them expands `$AGENT_SECRETS_URL`
-and `$AGENT_SECRETS_ACCOUNT_TOKEN_FILE` to nothing, and Dispatch then starts with no broker. In
-that new shell, from `packages/dispatch`, start a local Dispatch that reads this broker (where
-there is no Docker, also set `DATABASE_URL` to a Postgres database of its own):
+Any other trade may ask for `read` too: add `scope=read` to the account entry's request above,
+and its token keeps the person, the session and the project `EXAMPLE`, carries the project scope
+`read-named` and holds `read`. It may add a cut, `as_of=<an RFC 3339 time>`, no later than the
+trade. Such a token writes nothing.
+
+Dispatch serves a read-only token on the GET routes it classes as reads, and answers it
+`403 READ_ONLY_TOKEN` on every other route of its route table and on `GET /ws/live`. It answers a
+read-only token that carries a cut `403 AS_OF_TOKEN_NOT_SERVED` on every read but
+`GET /api/v1/whoami`. `packages/dispatch/e2e/read-token-live.ts` shows each of these against this
+stack. Leave the stack running. `bun run dispatch:local` runs until Ctrl-C, so it takes a shell of
+its own: open a new one and paste the dev broker's exports into it too, as you pasted them into
+the second shell. A shell without them expands `$AGENT_SECRETS_URL` and
+`$AGENT_SECRETS_ACCOUNT_TOKEN_FILE` to nothing, and Dispatch then starts with no broker. In that new
+shell, from `packages/dispatch`, start a local Dispatch that reads this broker (where there is no
+Docker, also set `DATABASE_URL` to a Postgres database of its own):
 
 ```console
 $ DISPATCH_E2E_AGENT_SECRETS_URL=$AGENT_SECRETS_URL DISPATCH_E2E_AGENT_SECRETS_ACCOUNT_TOKEN_FILE=$AGENT_SECRETS_ACCOUNT_TOKEN_FILE bun run dispatch:local
@@ -511,19 +520,96 @@ there, and run the script in the second shell, which already holds the exports, 
 
 ```console
 $ <the variables that line prints> AGENT_SECRETS_URL=$AGENT_SECRETS_URL DEV_BROKER_DIR=$DEV_BROKER_DIR bun e2e/read-token-live.ts
-seeded EXAMPLE: architecture source example/arch, issue EXAMPLE-1
-ok   GET /api/v1/projects/EXAMPLE/architecture [read-only token]: 200 - (want 200)
-ok   POST /api/v1/issues/EXAMPLE-1/comments [read-only token]: 403 READ_ONLY_TOKEN (want 403 READ_ONLY_TOKEN)
+seeded EXAMPLE: issue EXAMPLE-1
+ok   GET /api/v1/issues/EXAMPLE-1 [read entry's token]: 200 - (want 200)
+ok   POST /api/v1/issues/EXAMPLE-1/comments [read entry's token]: 403 READ_ONLY_TOKEN (want 403 READ_ONLY_TOKEN)
+ok   GET /ws/live [read entry's token]: 403 READ_ONLY_TOKEN (want 403 READ_ONLY_TOKEN)
+ok   GET /api/v1/issues/EXAMPLE-1 [example entry's read token]: 200 - (want 200)
+ok   POST /api/v1/issues/EXAMPLE-1/comments [example entry's read token]: 403 READ_ONLY_TOKEN (want 403 READ_ONLY_TOKEN)
+ok   GET /ws/live [example entry's read token]: 403 READ_ONLY_TOKEN (want 403 READ_ONLY_TOKEN)
 ok   GET /api/v1/issues/EXAMPLE-1/comments [alice]: 0 comment(s) with this run's body (want 0)
-ok   GET /api/v1/issues/EXAMPLE-1 [read-only token]: 403 READ_ONLY_TOKEN (want 403 READ_ONLY_TOKEN)
-ok   POST /api/v1/issues/EXAMPLE-1/comments [named-project token]: 201 - (want 2xx)
+ok   POST /api/v1/issues/EXAMPLE-1/comments [example entry's token]: 201 - (want 2xx)
+ok   POST /v1/oauth/introspect [machine login's read token]: the answer machine-login (want machine-login)
+ok   GET /api/v1/issues/EXAMPLE-1 [machine login's read token]: 200 - (want 200)
+ok   GET /ws/live [machine login's read token]: 403 READ_ONLY_TOKEN (want 403 READ_ONLY_TOKEN)
+ok   POST /v1/oauth/introspect [machine login's read token with a cut]: the answer machine-login-with-a-cut (want machine-login-with-a-cut)
+ok   GET /api/v1/whoami [machine login's read token with a cut]: 200 cut 2026-11-18T09:30:00.123456Z (want 200 cut 2026-11-18T09:30:00.123456Z)
+ok   GET /api/v1/issues/EXAMPLE-1 [machine login's read token with a cut]: 403 AS_OF_TOKEN_NOT_SERVED (want 403 AS_OF_TOKEN_NOT_SERVED)
+ok   GET /ws/live [machine login's read token with a cut]: 403 READ_ONLY_TOKEN (want 403 READ_ONLY_TOKEN)
 ```
 
-The script creates the project `EXAMPLE`, an architecture source and an issue in that Dispatch. It
-sends three requests with the read-only token, reads the issue's comments as alice, and then sends
-the same comment with the account entry's token, which may write `EXAMPLE`. It exits 1 when any
-answer is not the one it wants. Project `EXAMPLE` then exists, so a second run needs
+The script creates the project `EXAMPLE` and an issue in that Dispatch. It trades the read entry's
+token, then the account entry's token with `scope=read`, and sends each a read, a comment and a
+`GET /ws/live`. It reads the issue's comments as alice, and then sends the same comment with the
+account entry's ordinary token, which may write `EXAMPLE`. It logs a machine in, approved through
+this stack, and trades that machine login's token with `scope=read`, then with `scope=read` and
+the cut the golden answers name. It checks each answer of the broker's introspection against
+`packages/envoy/internal/ciphertoken/testdata/narrowed-answers.json`, sends the first token a read
+and a `GET /ws/live`, and sends the cut token its `GET /api/v1/whoami`, a read and a
+`GET /ws/live`. It prints one line for each request, with its status and its code, and exits 1
+when any answer is not the one it wants. Project `EXAMPLE` then exists, so a second run needs
 `bun run dispatch:local` started again, which empties the instance.
+
+## Exchange a job's token
+
+The exchange lists two job entries too, each a job that writes for no person.
+`BROKER_EXCHANGE_JOB_ACCOUNTS=system:serviceaccount:example-ns:example-job=EXAMPLE=example-job-session`
+is a job pod: `$DEV_BROKER_DIR/job-token` holds that account's pod token for the exchange's
+audience, and the token request above, with that token and no `session`, mints a token that names
+the account as its service, no person, the session `example-job-session` and the project `EXAMPLE`
+alone.
+`BROKER_EXCHANGE_JOB_WORKFLOWS=example-org/example-repo=.github/workflows/example-job.yaml=refs/heads/main=public=example-workflow-session`
+is a GitHub Actions workflow, whose run's token mints a token of the project scope `public` that
+names `example-org/example-repo/.github/workflows/example-job.yaml@refs/heads/main` as its service
+and the session `example-workflow-session`. Each entry fixes its session, so the script registers
+neither.
+
+`dev-oidc-issuer` stands in for GitHub as well. The script starts it with
+`--actions-token example-org/example-repo=.github/workflows/example-job.yaml=refs/heads/main=$DEV_BROKER_DIR/actions-request-token`:
+it writes a random request token to that file and answers the run's token request at the URL the
+banner's `actions request URL:` line prints, `<issuer URL>/_actions/token/1?api-version=2.0`, to
+loopback callers alone. A `GET` of that URL with `&audience=<audience>` and
+`Authorization: bearer <request token>` is answered `{"value": "<token>"}`, a token in the claims
+GitHub writes of that run (`repository`, `workflow_ref`, `job_workflow_ref`, `ref`), with a new
+`jti` each time, since the broker takes each GitHub token once; with no `audience` the token is
+for `https://github.com/example-org`, as GitHub's is. Any other bearer is `401`, in GitHub's shape.
+The broker takes that issuer as `BROKER_EXCHANGE_GITHUB_ISSUER`, with
+`BROKER_EXCHANGE_GITHUB_AUDIENCE=legion-broker-github`, so a client run with
+`AGENT_SECRETS_MACHINE_IDENTITY=github-actions`, `ACTIONS_ID_TOKEN_REQUEST_URL` the actions request
+URL, `ACTIONS_ID_TOKEN_REQUEST_TOKEN` the file's content and
+`AGENT_SECRETS_MACHINE_AUDIENCE=legion-broker-github` trades as that workflow's run would on
+GitHub.
+
+`packages/dispatch/e2e/job-token-live.ts` drives both, with `dispatch api`, against a local
+Dispatch that reads this broker, started as the read-token section starts it. The script creates
+project `EXAMPLE` too, so start `bun run dispatch:local` again first if `read-token-live.ts` ran
+against it. Then, from `packages/dispatch`:
+
+```console
+$ <the variables that line prints> AGENT_SECRETS_URL=$AGENT_SECRETS_URL DEV_BROKER_DIR=$DEV_BROKER_DIR bun e2e/job-token-live.ts
+seeded EXAMPLE
+ok   [job pod] GET /api/v1/whoami: exit 0 -, owner null, service system:serviceaccount:example-ns:example-job, session example-job-session, project EXAMPLE (want exit 0 -, owner null, service system:serviceaccount:example-ns:example-job, session example-job-session, project EXAMPLE)
+ok   [job pod] POST /api/v1/issues (EXAMPLE, body on standard input): exit 0 -, key EXAMPLE-1 (want exit 0 -, a key)
+ok   [job pod] GET /api/v1/issues/EXAMPLE-1/events: exit 0 -, issue.created by session:example-job-session, service system:serviceaccount:example-ns:example-job, owner none (want exit 0 -, issue.created by session:example-job-session, service system:serviceaccount:example-ns:example-job, owner none)
+ok   [job pod] POST /api/v1/issues (OPS, body on standard input): exit 0 - (want the person entry's: exit 0 -)
+ok   [job workflow] POST /api/v1/issues/EXAMPLE-1/comments (body from a file): exit 0 - (want exit 0 -)
+ok   [job workflow] GET /api/v1/whoami: exit 0 -, owner null, service example-org/example-repo/.github/workflows/example-job.yaml@refs/heads/main, session example-workflow-session, project null (want exit 0 -, owner null, service example-org/example-repo/.github/workflows/example-job.yaml@refs/heads/main)
+ok   [person entry] GET /api/v1/whoami: exit 0 -, owner ada@example.com, service null, session example-worker-session, project EXAMPLE (want exit 0 -, owner ada@example.com)
+```
+
+The script creates project `EXAMPLE` as alice, then runs this checkout's `dispatch api`
+(`packages/envoy-client/bin/dispatch.ts`) once for each line, and once more for the example
+entry's issue in `OPS`, in an environment that keeps only `PATH`, `HOME` and `TMPDIR` and sets
+`DISPATCH_URL`, `AGENT_SECRETS_URL`, `PERSON_SIGNIN_TRADE=off` and the identity of the line. The job
+pod (`AGENT_SECRETS_MACHINE_IDENTITY=kubernetes` with `job-token`) creates an issue in `EXAMPLE`
+from standard input, and Dispatch records it under the entry's session with the account as its
+service and no owner. The same issue in `OPS` gets the answer that the example entry's token, a
+person's named token for `EXAMPLE`, gets there, and the line wants exactly that answer. `OPS` is
+public, so both tokens create it as a token that names no project does: `exit 0 -`.
+The workflow's run (`github-actions`, with the actions request URL and token and no
+`DISPATCH_HOST` or session id) comments on that issue from a file. The example entry's token, the
+control, names its person as the owner. It exits 1 when any answer is not the one it wants.
+Project `EXAMPLE` then exists, so a second run needs `bun run dispatch:local` started again.
 
 ## Read the log and the metrics
 
@@ -605,17 +691,53 @@ what the stand's installation holds left out: `issues`, which the installation h
 `packages/envoy/scripts/dev-airlock.sh` starts the whole airlock, in a stack of its own. It runs
 `dev-broker.sh` first, for Postgres, `dev-oidc-issuer` and the binaries, and then adds what the
 airlock needs: `cmd/dev-proxy-stands`, which serves the stand-in services and records every
-request each one is sent; a profiles file (`BROKER_PROFILES_FILE`), each secret a profile of its
-own name with a proxy block, and a fake secrets file that
-name the same secrets; two broker processes on one database, each with an API port and a proxy
-port of its own, behind one TCP front over both API ports and one over both proxy ports; one
-enrolled pod session, whose key directory the exports name and whose lease an
-`agent-secrets renew` keeps alive for as long as the stack runs, as a Legion worker pod's is; and
-the model judge on both brokers ([let the judge decide a request](#let-the-judge-decide-a-request)).
-Run it in place of `dev-broker.sh`, from `packages/envoy`, and set the same
-`DEV_BROKER_POSTGRES_URL` where you have no Docker. Each bound host listens on port 443 of a
-loopback address of its own (127.0.0.2 and up), so the machine must let this user bind 443, and
-one such stack runs at a time.
+request each one is sent; a profiles file (`BROKER_PROFILES_FILE`) in the kinds form, whose
+`kinds` list declares a test kind for each stand-in and the `anthropic` kind as the deployment
+writes it, and a fake secrets file whose secrets each name their kind in a `proxy` tag; two broker
+processes on one database, each with an API port and a proxy port of its own, behind one TCP front
+over both API ports and one over both proxy ports; one enrolled pod session, whose key directory
+the exports name and whose lease an `agent-secrets renew` keeps alive for as long as the stack
+runs, as a Legion worker pod's is; and the model judge on both brokers
+([let the judge decide a request](#let-the-judge-decide-a-request)). Each broker takes its
+proxy's intermediate from the `ca` stand of `cmd/dev-proxy-stands`, which answers the certificate
+request a pod sends Certificate Authority Service under a test root of its own, so every call
+through the proxy verifies a chain of test root, test intermediate and leaf
+([the proxy's chain](/legion/broker/concepts/#the-proxys-chain)). `AIRLOCK_CA_CERT_FILE` holds
+that test root and the stands' own authority, which is what a client of the stack trusts;
+`PROXY_ROOT_FILE` is the test root alone. The brokers and the `ca` stand read one clock file,
+`PROXY_CLOCK_OFFSET_FILE`, a Go duration they add to the system's clock: `0s` at the start, and a
+check that writes another moves their certificates' days on without a restart. Run it in place of
+`dev-broker.sh`, from `packages/envoy`, and set the same `DEV_BROKER_POSTGRES_URL` where you have
+no Docker. Each bound host listens on port 443 of a loopback address of its own (127.0.0.2 and up),
+so the machine must let this user bind 443, and one such stack runs at a time.
+
+`scripts/proxy-chain-check.sh` starts a stack of its own (`dev-airlock.sh --one-broker`), so stop
+this one first, and runs the chain's checks on it: the renewal at 5 days, the leaf while the pool
+fails, readiness and a new host (`k27`), a mounted intermediate (`k21`), and a client of the
+release before the chain against a release of two roots (`compat`).
+
+The `anthropic` kind's host is Anthropic's own name, `api.anthropic.com`, and
+`BROKER_AIRLOCK_TEST_RESOLVE` sends it to the stack's stand-in of the Admin API on 127.0.0.6, so no
+call of the stack reaches Anthropic. The stack stores two `anthropic-federation` secrets,
+`AIRLOCK_ANTHROPIC_NARROWED`, tagged `proxy-narrowed=true` with one profile of the kind's three
+`allow` rows, and `AIRLOCK_ANTHROPIC_KIND`, with no profile, each bound to a Google account of its
+own in `BROKER_SERVICE_ACCOUNT_SECRETS` and approved by the stack's person. The broker mints their
+tokens at two stand-ins, which two settings of the local stack alone name, and which a production
+start refuses, as it refuses every `BROKER_AIRLOCK_TEST_*` setting:
+
+- `BROKER_AIRLOCK_TEST_IAM_CREDENTIALS_URL`: the origin where the broker reads a bound account's
+  Google identity token (IAM Service Account Credentials' `generateIdToken`), in place of
+  `https://iamcredentials.googleapis.com`. The stand-in takes only the access token the stack's
+  metadata stand answers as its bearer, and lists each token it minted, with its account and
+  audience, at `AIRLOCK_IAM_TOKENS_URL`.
+- `BROKER_AIRLOCK_TEST_ANTHROPIC_TOKEN_URL`: Anthropic's token exchange, in place of
+  `https://api.anthropic.com/v1/oauth/token`. The stand-in takes only an assertion the IAM
+  stand-in minted, answers an `sk-ant-oat01-` token with an `expires_in` of 3600, and lists each
+  token at `AIRLOCK_ANTHROPIC_TOKENS_URL`. A POST of `{"expires_in": <seconds>}` to
+  `AIRLOCK_ANTHROPIC_ANSWER_URL` changes the lifetime every later exchange answers: 3601 makes the
+  broker refuse the token, as it refuses a federation rule's token that outlives its grant's hour.
+
+`packages/envoy/scripts/airlock-check.sh k47` runs the `anthropic` kind's check on this stack.
 
 This run used the same Postgres server as the first section. The lines `dev-broker.sh` prints are
 the ones that section shows, and are cut here:
@@ -652,19 +774,24 @@ dev-airlock: ready.
 ...
   broker 1:            api 127.0.0.1:42527, proxy 127.0.0.1:44571, pid 2858689, log /tmp/agent-secrets-airlock.c0eVnK/broker1.log
   broker 2:            api 127.0.0.1:40315, proxy 127.0.0.1:38701, pid 2858704, log /tmp/agent-secrets-airlock.c0eVnK/broker2.log
-  secrets:             AIRLOCK_DEMO_TOKEN and AIRLOCK_SCOPED_TOKEN (stored, bound to s.airlock.test; AIRLOCK_SCOPED_TOKEN in
-                       authorization and x-key, GET /read alone), AIRLOCK_GITHUB_APP (github-app,
-                       installation 7 on acme-org; AIRLOCK_PLAIN_GITHUB is
-                       its profile with no proxy block, released as its value), AIRLOCK_GOOGLE_LOGIN
-                       (google-login), AIRLOCK_AZURE_LOGIN (kind azure, human tier) and AIRLOCK_AWS_KEY (kind
-                       aws), each a profile of its own name in /tmp/agent-secrets-airlock.c0eVnK/profiles.json
+  secrets:             AIRLOCK_DEMO_TOKEN and AIRLOCK_SCOPED_TOKEN (stored, kinds stest and scoped, bound to
+                       s.airlock.test; AIRLOCK_SCOPED_TOKEN in authorization and x-key, GET /read alone),
+                       AIRLOCK_GITHUB_APP (github-app, kind ghapp, installation 7 on
+                       acme-org; AIRLOCK_PLAIN_GITHUB is a profile of AIRLOCK_PLAIN_GITHUB_APP, the
+                       same App with no proxy tag, released as its value), AIRLOCK_GOOGLE_LOGIN
+                       (google-login, kind glogin), AIRLOCK_AZURE_LOGIN (kind azure, human tier),
+                       AIRLOCK_AWS_KEY (kind aws), and AIRLOCK_ANTHROPIC_NARROWED and AIRLOCK_ANTHROPIC_KIND
+                       (anthropic-federation, kind anthropic, human tier, an administrator's;
+                       AIRLOCK_ANTHROPIC_NARROWED proxy-narrowed with a profile of the kind's three
+                       rows, AIRLOCK_ANTHROPIC_KIND with none), each behind the proxy by its proxy tag;
+                       the kinds are in /tmp/agent-secrets-airlock.c0eVnK/profiles.json
 ...
 ```
 
 Paste these exports into a second shell, as above, and check that `type agent-secrets` names the
-stack's `bin/`. The profiles file binds `AIRLOCK_DEMO_TOKEN` to the stand-in service S,
-`s.airlock.test`, and its proxy block names no headers, so its value travels in `authorization`,
-the one header a proxy block with none takes. The command gets a placeholder of 58 characters in place of the
+stack's `bin/`. `AIRLOCK_DEMO_TOKEN`'s `proxy` tag in the fake secrets file names the kind
+`stest`, which binds the stand-in service S, `s.airlock.test`, and names no headers, so its value
+travels in `authorization`, the one header a kind with none takes. The command gets a placeholder of 58 characters in place of the
 value, and its `HTTPS_PROXY` names the proxy front with that grant's proxy password, so the
 command's call to S goes through the broker:
 
@@ -690,9 +817,9 @@ $ jq -j '.secrets[] | select(.name | endswith("airlock-demo-token")) | "Bearer "
 a2ecdfa9af6567f28055293e907aaec873a545fa2b0ee30c14e8e2a7b27aa149  -
 ```
 
-The profiles file's second profile, `AIRLOCK_SCOPED_TOKEN`, is bound to the same host for `GET /read`
-alone, so the proxy refuses a `POST /write` with it, names the rule that refused, and ends the
-refusal with its answer id:
+`AIRLOCK_SCOPED_TOKEN`'s kind, `scoped`, binds the same host for `GET /read` alone, so the proxy
+refuses a `POST /write` with it, names the rule that refused, and ends the refusal with its answer
+id:
 
 ```console
 $ agent-secrets AIRLOCK_SCOPED_TOKEN --reason 'a path its rule does not allow' -- sh -c 'printf "Authorization: Bearer %s" "$AIRLOCK_SCOPED_TOKEN" | curl -sS -o /dev/stdout -w " (%{http_code})\n" -X POST https://s.airlock.test/write -H @-'
@@ -704,15 +831,16 @@ airlock: not allowed by rule (answer c7f4a80240ca972a4baa9eb47b6648f2)
 Each of those two calls wrote one line in the log of whichever broker the proxy front sent it to
 (`$AIRLOCK_DIR/broker1.log` and `broker2.log`). The call the proxy carried wrote
 `airlock proxy: a call to a bound host`, with its answer id, the enrollment, the grant, the
-secret, the issue its reason named, the host, the method, the path, the answer's status and
-`allowed` `true`. The refused call wrote the refusal's line, `broker: answer refused`, in place of
+secret, the issue its reason named, the host, the method, the path, the answer's status,
+`allowed` `true` and `way`, how its credential went in (`swap` for a stored value). The refused
+call wrote the refusal's line, `broker: answer refused`, in place of
 a call line, with the answer id its text ended with, the code `REQUEST_NOT_ALLOWED`, the caller as
 `<grant>@<enrollment>`, the secret, the host, the path and the reason
 ([Refusals and the answer id](/legion/broker/operate/#refusals-and-the-answer-id)). This run's two
 lines:
 
 ```json
-{"time":"2026-11-20T12:35:17.476637769Z","severity":"INFO","message":"airlock proxy: a call to a bound host","answer_id":"05e5f069e32ac1fa68600ddcee570e28","enrollment":"a93e631d-63db-4a60-8ca8-6000115bcb4c","grant":"c9b297e4-84e9-464f-a82f-804ac2c123b1","secret":"AIRLOCK_DEMO_TOKEN","issue":"","host":"s.airlock.test","method":"GET","path":"/read","status":200,"allowed":true}
+{"time":"2026-11-20T12:35:17.476637769Z","severity":"INFO","message":"airlock proxy: a call to a bound host","answer_id":"05e5f069e32ac1fa68600ddcee570e28","enrollment":"a93e631d-63db-4a60-8ca8-6000115bcb4c","grant":"c9b297e4-84e9-464f-a82f-804ac2c123b1","secret":"AIRLOCK_DEMO_TOKEN","issue":"","host":"s.airlock.test","method":"GET","path":"/read","status":200,"allowed":true,"way":"swap"}
 {"time":"2026-11-20T12:35:17.814965234Z","severity":"WARNING","message":"broker: answer refused","answer_id":"c7f4a80240ca972a4baa9eb47b6648f2","status":403,"code":"REQUEST_NOT_ALLOWED","method":"POST","route":"","caller_class":"airlock","caller":"93e1295a-292f-47b3-82bb-f86f2b453ef6@a93e631d-63db-4a60-8ca8-6000115bcb4c","secrets":["AIRLOCK_SCOPED_TOKEN"],"secrets_count":1,"host":"s.airlock.test","reason":"not allowed by rule","path":"/write","issue":""}
 ```
 
@@ -724,19 +852,21 @@ this script started, drops its database and prints the workdir it kept.
 The stack of the first section runs no model judge. The airlock stack runs one, on both broker
 processes. Three more stand-ins of `cmd/dev-proxy-stands` serve it: a model endpoint, a
 Dispatch holding one open issue, one done one and one answered ask, and a Compute Engine metadata
-server, where the broker mints the identity token it presents to the model. Its profiles file
-says who decides each human-tier secret, in each profile's proxy block:
+server, where the broker mints the identity token it presents to the model. Its fake store says
+who decides each human-tier secret, in each secret's own tags:
 
-| Secret | Its proxy block and tags | Who decides a request for it |
+| Secret | Its tags | Who decides a request for it |
 | --- | --- | --- |
-| `AIRLOCK_JUDGED_TOKEN` | `judge: 900` with `guidance`, owned by `ada@example.com` | The judge, against that guidance. |
-| `AIRLOCK_SECOND_JUDGED_TOKEN` | `judge: 900` with `guidance` of its own, owned by `ada@example.com` | The judge, against that guidance; a request for it beside `AIRLOCK_JUDGED_TOKEN` is decided by the judge for both, each against its own guidance. |
+| `AIRLOCK_JUDGED_TOKEN` | `judge: 900` with `guidance`, owned by `ada@example.com` | The judge, against that guidance, for up to 900 seconds. |
+| `AIRLOCK_SECOND_JUDGED_TOKEN` | `judge: 600` with `guidance` of its own, owned by `ada@example.com` | The judge, against that guidance, for up to 600 seconds; a request for it beside `AIRLOCK_JUDGED_TOKEN` is decided by the judge for both, each against its own guidance, for the shorter of the two. |
 | `AIRLOCK_SHARED_TOKEN` | `judge: 900`, `owner=shared` | The judge, in the place of anyone who signs in. |
 | `AIRLOCK_ADMIN_TOKEN` | `judge: 900`, `admin: "true"` | `ada@example.com` on the broker page: the judge never decides an administrator's key. |
 | `AIRLOCK_UNJUDGED_TOKEN` | no `judge`, owned by `ada@example.com` | `ada@example.com` on the broker page. |
 
-Every proxy block binds at least one host, so no profile releases its value under a judge: the
-broker refuses a profiles file with a proxy block that names none.
+Each of them is behind the kind `judged`, which binds a host, by its `proxy` tag, so no value the
+judge grants leaves the airlock. To give the judge another key, or change what it may grant, tag the key:
+`agent-secrets secret retag <NAME> --judge 900 --guidance 'grant k14-grant'`, then ask with
+`--ttl 15m`.
 
 `agent-secrets secret show "$AIRLOCK_JUDGED_SECRET"` prints the same: its `decides:` line names the
 judge, and its `guidance:` line the text the judge decides on, `$AIRLOCK_JUDGE_GUIDANCE`. Ask for it
@@ -750,8 +880,10 @@ agent-secrets request "$AIRLOCK_JUDGED_SECRET" --ttl 10m \
 While the judge decides, the request carries `judge_deciding` and no page, and it is on nobody's
 list. `agent-secrets status <request id>` then names the judge as the decider,
 `decided_by: judge:$AIRLOCK_JUDGE_MODEL`, and the broker that decided it logs one line,
-`broker judge: wrote a verdict`, with the verdict, the model's reason and, where a check stopped
-the run, the check that failed. The same verdict is one `request.judged` row in the `audit` table
+`broker judge: wrote a verdict`, with the verdict — what became of the request: `granted`,
+`refused` or `handed to the person` — each key's call (`calls=<key>:granted|denied|failed`), the
+model's reason and, where a check stopped the run, the check that failed. The same verdict is one
+`request.judged` row in the `audit` table
 ([Concepts](/legion/broker/concepts/#the-model-judge)). What the model was sent is at its
 recording route, `$AIRLOCK_MODEL_RECORDS`, and what Dispatch was asked at
 `$AIRLOCK_DISPATCH_RECORDS`: the issue the reason names and the ask it cites, read and never
@@ -799,23 +931,31 @@ how you write a secret here.
 
 The airlock's proxy, its profiles, its decision and its swap are the real ones too, and so is each
 broker process the airlock stack runs. Five more things stand in there. `cmd/dev-proxy-stands`
-plays every host a proxy block binds: S and T, which answer one line and record what they were sent,
+plays every host a kind binds: S and T, which answer one line and record what they were sent,
 the GitHub and Google endpoints a `github-app` and a `google-login` secret mint at, the Microsoft
 token endpoint the `azure` kind exchanges at, which also plays the resource host that token is
-spent at, and an AWS service that verifies Signature Version 4. Each is a `.test` name no
-resolver answers, which `BROKER_AIRLOCK_TEST_RESOLVE` and `BROKER_AIRLOCK_TEST_DIAL_ALLOW` point
-at one loopback address each, so the proxy reaches those five and refuses every other private
-address, as it does in production. The judge's own run — its six checks, its one model call and
+spent at, an AWS service that verifies Signature Version 4, and Anthropic's Admin API at
+`api.anthropic.com`. Each of S, T, the Microsoft and AWS stands is a `.test` name no resolver
+answers, and the Admin API stand stands in for Anthropic's own name; `BROKER_AIRLOCK_TEST_RESOLVE`
+and `BROKER_AIRLOCK_TEST_DIAL_ALLOW` point each at one loopback address of its own, so the proxy
+reaches those and refuses every other private address, as it does in production. The judge's own
+run — its six checks, its model call for each key and
 what it writes — is real as well, and three more of that command's stands serve it, on loopback
 addresses the broker reaches directly rather than through the proxy: a model endpoint that
 answers whatever was last set for it, a Dispatch holding one open issue, one done one and one
 answered ask on the open one, and a
-metadata server that mints the broker's identity token. The profiles file the script writes stands
-in for the deployment's own, which lives in the deployment's repository. The proxy's certificate
-authority is made at each start, where a deployment keeps it in a Kubernetes Secret both broker
-pods mount. The two brokers behind one TCP front stand in for two pods behind a Service, so a
-call reaches either process. And the pod session the script enrols stands in for the Legion
-daemon's enrollment of a worker pod, which is why `agent-secrets self` answers `kind: pod` there.
+metadata server that mints the broker's identity token and answers its access token. Two more,
+also reached directly, are where an `anthropic-federation` secret is minted: IAM's
+generateIdToken and Anthropic's token exchange. The profiles file the script writes stands in for
+the deployment's own, which lives in the deployment's repository. The `ca` stand stands in for the
+pool of Certificate Authority Service a deployment names in `BROKER_PROXY_CA_POOL`: it answers the
+same request, under a policy of 7 days starting 5 minutes before its issue, path length 0,
+`serverAuth` alone, and the names `dev-airlock.sh` gives it from the profiles file before the
+brokers start, and with no credential sent to it. The two brokers behind one TCP front stand in for
+two pods behind a Service, so a call reaches either process. And the pod session the script enrols
+stands in for the Legion daemon's enrollment of a worker pod, which is why `agent-secrets self`
+answers `kind: pod` there.
 The two brokers start as processes outside any cluster even when the script runs in a pod: it
 empties `KUBERNETES_SERVICE_HOST` for them, so neither needs `BROKER_AIRLOCK_CLUSTER_RANGES`,
-which a deployed broker in a cluster whose profiles hold a proxy block refuses to start without.
+which a deployed broker in a cluster whose profiles file declares a kind or holds a dpop block
+refuses to start without.
