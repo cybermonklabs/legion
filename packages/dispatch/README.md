@@ -410,6 +410,79 @@ The rules a row follows:
   counts do not (`shownAgentRows` and `agentRow` in `e2e/agents.ts`), and `toBeHidden()` passes
   when nothing matches, so put `toHaveCount(1)` beside it where the row must be mounted.
 
+## What a spec costs the browser lane
+
+In most merge groups the full browser lane is the last check to finish, and its slowest leg
+decides when it finishes. So the time a spec adds to its leg is time each change in the merge
+queue waits.
+
+A spec's cost here is the row time of its rows on the lane's shard and alone legs, which the
+merge job of `.github/workflows/dispatch-browser.yaml` joins into one Playwright report and
+uploads as `dispatch-browser-report-<attempt>`. The multiprocess, embedder and visual jobs write
+no row into that report (`.github/ci-notes/dispatch-browser.md`), so a spec that only they run is
+not in it. A row is one test in one project. Its time is the duration of every attempt it ran,
+summed, since a retry is time its leg spent. An attempt Playwright skipped counts no time, and a
+file whose every row was skipped is not listed. `e2e/tools/shard-weights.ts` reads a row's time
+the same way. A test runs once in each project that takes it: `chromium` by its file, and
+`iphone`, `webkit` and `firefox` by a tag in its title (see "Projects" below). So a spec that
+four projects run can cost up to four times its tests.
+
+To measure the lane, read the report of a passed merge-group run of ci.yaml. A run whose change
+did not select the browser lane holds no such report, and `gh run download` then fails. The
+report of a passed run is the one its last attempt uploaded. This prints every spec with a row
+that ran, the costliest first, with its rows, its share of the lane's row time and the projects
+that ran it, and fails on a report that holds none:
+
+```bash
+gh run list --repo cybermonklabs/legion --workflow ci.yaml --event merge_group --status success --limit 10
+run=<run id> # a passed run from the list above
+attempt="$(gh run view "$run" --repo cybermonklabs/legion --json attempt --jq .attempt)"
+dir="$(mktemp -d)"
+gh run download "$run" --repo cybermonklabs/legion --name "dispatch-browser-report-$attempt" --dir "$dir"
+jq -er '
+  [.. | objects | select(has("tests") and has("file")) as $spec
+    | $spec.tests[] | .projectName as $project
+    | [.results[] | select(.status != "skipped") | .duration] | select(length > 0)
+    | {file: $spec.file, project: $project, seconds: (add / 1000)}]
+  | (map(.seconds) | add // 0) as $lane
+  | if $lane == 0 then error("no row of this report ran") else . end
+  | group_by(.file)
+  | map({file: .[0].file, rows: length, seconds: (map(.seconds) | add),
+         projects: (map(.project) | unique | join(" "))})
+  | sort_by(-.seconds)
+  | (["seconds", "rows", "share", "projects", "file"] | @tsv),
+    (.[] | [(.seconds | round), .rows, "\(.seconds / $lane * 1000 | round / 10)%",
+            .projects, .file] | @tsv)
+' "$dir/report.json"
+```
+
+A spec that only the multiprocess, embedder or visual job runs is not in that report. Read the
+time of each job's browser step instead:
+
+```bash
+gh run view "$run" --repo cybermonklabs/legion --json jobs --jq '.jobs[] | select(.name | startswith("dispatch-browser / ")) | .name as $job | .steps[] | select(.name | startswith("Browser-test")) | [$job, .name, .startedAt, .completedAt] | @tsv'
+```
+
+To measure a new spec before it merges, run the full lane on its pull request and read that
+run's report with the same commands. Add the label `lane:dispatch_browser` to the pull request.
+The label takes effect at the next push, or when you close and reopen the pull request, and
+each later push runs the full lane again, so take the label off once the run passes
+(`.github/ci-notes/ci.md#a-lane-label-turns-on-one-slow-suite-on-a-pull-request`). Then set
+`run` to the passed ci.yaml run of the pull request's head, and run the commands above from the
+`attempt=` line on:
+
+```bash
+pr=<number>
+gh pr edit "$pr" --repo cybermonklabs/legion --add-label lane:dispatch_browser
+# after the next push, once the CI run of the new head has passed:
+head="$(gh pr view "$pr" --repo cybermonklabs/legion --json headRefOid --jq .headRefOid)"
+run="$(gh run list --repo cybermonklabs/legion --workflow ci.yaml --event pull_request --commit "$head" --status success --limit 1 --json databaseId --jq '.[].databaseId')"
+```
+
+One run's times move with its runners (`.github/ci-notes/dispatch-browser.md` measures the spread
+on the shard job's browser step). Compare a spec's row-seconds with the lane's in the same run,
+not with another run's.
+
 ## Local instance
 
 `bun run dispatch:local`, from the repository root or from this package, brings up a seeded
