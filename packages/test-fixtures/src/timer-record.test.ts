@@ -219,14 +219,11 @@ test("the preload appends each step to the file it is given, in a process of its
   const file = join(root, "preloaded.jsonl");
   const program = join(root, "program.ts");
   await Bun.write(program, "setTimeout(() => {}, 7);\n");
-  const child = Bun.spawn(
-    ["bun", "--preload", PRELOAD, program],
-    {
-      env: { ...process.env, [TIMER_RECORD_FILE]: file, [TIMER_RECORD_ROOTS]: root },
-      stdout: "ignore",
-      stderr: "inherit",
-    }
-  );
+  const child = Bun.spawn(["bun", "--preload", PRELOAD, program], {
+    env: { ...process.env, [TIMER_RECORD_FILE]: file, [TIMER_RECORD_ROOTS]: root },
+    stdout: "ignore",
+    stderr: "inherit",
+  });
   expect(await settled("the recorded program's exit", child.exited)).toBe(0);
   const steps = readFileSync(file, "utf8")
     .split("\n")
