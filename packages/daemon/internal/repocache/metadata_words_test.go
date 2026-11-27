@@ -14,12 +14,13 @@ import (
 )
 
 // TestAMetadataRefusalPrintsNoCredentialAURLCarries: the metadata server refuses the bucket's
-// read of its account (email) 403 with a page that quotes a URL carrying a credential in its
-// query. metadata's error quotes the page, and the bucket's error, which the cache logs, holds none
-// of the credential: the account's read is read by the rule (oauth2call.Scope). The metadata
-// request carries no credential of its own; the rule's reading of the page's URL keeps the one it
-// quotes out. The twin shows metadata's own error holds it. Captures
-// repocache.metadata-refusal/<case>.
+// read of its account (email) or of its token (token) 403 with a page that quotes a URL carrying a
+// credential in its query. metadata's error quotes the page, and the bucket's error, which the
+// cache logs, holds none of the credential: the account's read is read by the rule
+// (oauth2call.Scope), and the token's by the token source the bucket's client asks
+// (oauth2call.TokenSource) and then by the scope of the call that asked. The metadata request
+// carries no credential of its own; the rule's reading of the page's URL keeps the one it quotes
+// out. The twin shows metadata's own error holds it. Captures repocache.metadata-refusal/<case>.
 func TestAMetadataRefusalPrintsNoCredentialAURLCarries(t *testing.T) {
 	refusing := func(refused string) func(http.ResponseWriter, *http.Request, string) bool {
 		return func(w http.ResponseWriter, _ *http.Request, route string) bool {
@@ -45,6 +46,17 @@ func TestAMetadataRefusalPrintsNoCredentialAURLCarries(t *testing.T) {
 			t.Fatal("the bucket opened with its account's read refused")
 		}
 		oauth2calltest.RequireNoPiece(t, "repocache.metadata-refusal/email", err.Error(), wordsQueryToken)
+	})
+	t.Run("token", func(t *testing.T) {
+		b, err := googleStandIn(t, fakegcs.DefaultEmail, refusing("metadata-token"))
+		if err != nil {
+			t.Fatalf("open the bucket against the stand-in: %v", err)
+		}
+		_, _, err = b.list(testwait.Context(t))
+		if err == nil {
+			t.Fatal("the list succeeded with the token's read refused")
+		}
+		oauth2calltest.RequireNoPiece(t, "repocache.metadata-refusal/token", err.Error(), wordsQueryToken)
 	})
 }
 
