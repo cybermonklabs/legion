@@ -154,9 +154,7 @@ func ghStoppedByItsBound(ctx context.Context, err error, printed string) *transp
 	if !own {
 		return nil
 	}
-	if httpStatus, _ := responseHeaders(printed); httpStatus != 0 {
-		return nil
-	}
+	// CONTROL ONLY: a gh that heard GitHub's status line is read as one that heard nothing.
 	message := stopped.Error()
 	if line := strings.TrimSpace(printed); line != "" {
 		message += ": " + line
