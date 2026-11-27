@@ -1,0 +1,22 @@
+name: Probe envoy-session-stall pooled at the final head
+
+# Throwaway: six runs of the pooled envoy-session-stall job of ci/envoy-session-stall-pool
+# c019d367, at the same time.
+on:
+  push:
+    branches: [probe/stall-pool-final]
+
+permissions:
+  contents: read
+  actions: read
+  checks: write
+
+jobs:
+  pooled:
+    strategy:
+      fail-fast: false
+      matrix:
+        leg: [1, 2, 3, 4, 5, 6]
+    uses: ./.github/workflows/probe-stall-pooled.yaml
+    with:
+      leg: ${{ matrix.leg }}
