@@ -122,8 +122,20 @@ until_true() {
 # starts a service with exactly the settings it names and nothing else of this shell's, and
 # held-port.py's --pass names the ones it hands on. packages/envoy/scripts/lib/exec-env.sh holds
 # the exec, which the brokers of packages/envoy/scripts use too.
-# shellcheck source-path=SCRIPTDIR source=../../../packages/envoy/scripts/lib/exec-env.sh
-. "$root/packages/envoy/scripts/lib/exec-env.sh"
+#
+# It is read at the first start that needs it, not here: a caller that sources this file from a
+# tree holding only scripts/e2e (the skill-scenarios rig's own copies) still gets every other
+# helper, and a root that is no checkout is still named by the caller's own check rather than by
+# a sourcing failure. A start that needs it and cannot read it fails naming the file.
+exec_env_read=
+_read_exec_env() {
+  [ -z "$exec_env_read" ] || return 0
+  [ -r "$root/packages/envoy/scripts/lib/exec-env.sh" ] ||
+    fail "a start with settings needs $root/packages/envoy/scripts/lib/exec-env.sh, which this tree does not hold"
+  # shellcheck source-path=SCRIPTDIR source=../../../packages/envoy/scripts/lib/exec-env.sh
+  . "$root/packages/envoy/scripts/lib/exec-env.sh"
+  exec_env_read=yes
+}
 
 # start_with_settings NAME NAME=value... -- COMMAND... starts COMMAND as the service NAME
 # (start_process: its log, <NAME>_pid, its own process group) with exactly the settings given as
@@ -140,6 +152,7 @@ until_true() {
 start_with_settings() {
   local _name=$1
   shift
+  _read_exec_env
   # The settings are this function's arguments, which live in this shell's memory and in no
   # process's. The subshell exports them and execs COMMAND in place, as exec-env.sh's header
   # says, so <NAME>_pid is COMMAND's own pid. start_process cannot run this: its arguments would

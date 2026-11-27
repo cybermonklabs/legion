@@ -866,6 +866,7 @@ dispatch_cli() {
   local session=$1
   shift
   mkdir -p "$work/cli-home" "$work/cli-state"
+  _read_exec_env
   (exec_with_env PATH="$PATH" HOME="$work/cli-home" LEGION_E2E_RUN="$work" \
     XDG_CONFIG_HOME="$work/cli-home/config" XDG_STATE_HOME="$work/cli-state" \
     XDG_DATA_HOME="$work/cli-home/data" XDG_CACHE_HOME="$work/cli-home/cache" \
@@ -1066,6 +1067,7 @@ claude_start() { # claude_start SESSION [--resume]
     ENVOY_URL="http://127.0.0.1:$port_a" ENVOY_TOKEN_FILE="$work/envoy-token"
     ENVOY_NATS_URL="$nats_url" ENVOY_HEARTBEAT_MS="$heartbeat_ms"
     ENVOY_MACHINE_ID="envoy-session-states-$$")
+  _read_exec_env
   (exec_with_env "${claude_settings[@]}" -- \
     setsid --fork sh -c "$record_pid_sh" record-pid "$work/claude.pid" \
     "$claude_bin" -p --input-format stream-json --output-format stream-json --verbose \
