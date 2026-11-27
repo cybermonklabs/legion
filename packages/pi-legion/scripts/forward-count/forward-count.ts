@@ -780,6 +780,15 @@ export function resolveReturn(
   readings: Reading[]
 ): { class: ResolvedClass; final: Reading | null; why: string } {
   if (!ret.reasonRead) return { class: "pending", final: null, why: "the reason was not read" };
+  // The rule on a person's request is structural: the record decides it, and no reading can turn
+  // it. So the return resolves before a reader is looked for, and it waits for no second reader.
+  const request = ret.causes.find((record) => record.cause === "person-request");
+  if (request !== undefined && request.state === "absent")
+    return {
+      class: "unexplained",
+      final: null,
+      why: "the reason names a person's request whose reference does not establish it",
+    };
   const final = finalReading(ret, readings);
   if (final === null) {
     const mine = readings.filter((reading) => reading.return === ret.id);
