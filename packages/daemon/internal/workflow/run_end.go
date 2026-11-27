@@ -276,10 +276,14 @@ func (e *Engine) settleRuns(ctx context.Context, tx pgx.Tx, runs *factRuns, keys
 }
 
 // queueDeletesAfterOldRuns queues each deletion a leave or a new generation asked for, once this
-// fact's settle has ended every open start of that task's old generation. The old generation's
-// agent can push until its own start ends, so dropFixWay asks for the deletion and queues none.
-// Where a start of that task is still open, this queues nothing and says so: the branches stay,
-// which loses no commit, and the next end of the task queues the deletion.
+// fact's settle has ended every open start of that task at the generation that asked. The old
+// generation's agent can push until its own start ends, so dropFixWay asks for the deletion and
+// queues none. Where a start of that task is still open, this queues nothing and says so, and no
+// branch stays for it: a new generation ends every run of the old one in the settle that reads
+// them, and a leave every run of its issue but a merge that can still land (runOver). A task in its
+// merge passed the move into its retro, which queued the deletion of every branch of its fixes
+// (queueTaskEnd, startHeldRetro), and no fix opens after that move (fixFailure gives a failure in
+// the retro or the merge to the merger).
 func (e *Engine) queueDeletesAfterOldRuns(ctx context.Context, tx pgx.Tx, runs *factRuns) error {
 	for task, issue := range runs.deleteAfterOldRuns {
 		starts, err := e.store.StepRuns(ctx, tx, []string{task.issue})
@@ -290,7 +294,7 @@ func (e *Engine) queueDeletesAfterOldRuns(ctx context.Context, tx pgx.Tx, runs *
 		for _, start := range starts {
 			if start.Generation == task.generation && start.Place.Task == task.place.Task && start.Run == record.RunOpen {
 				open = true
-				e.logOnCommit(ctx, "workflow: the branches beside a fix stay while a start of its task is open", "issue", task.issue,
+				e.logOnCommit(ctx, "workflow: a start of the task is still open, so the deletion its move into the retro queued is the one", "issue", task.issue,
 					"generation", task.generation, "task", task.place.Task, "kind", start.Place.Kind, "place", start.Place.Place)
 				break
 			}

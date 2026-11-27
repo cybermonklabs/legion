@@ -171,7 +171,15 @@ func TestAHeadPushedOverTheFixsEndIsWhereTheNextStepStarts(t *testing.T) {
 	}
 	r.reviewerCompletes()
 	r.personPushes(headTwo, headThree)
-	r.mergeStateAt(headThree, record.MergeStateClean)
+	// GitHub's merge state at P, written over the record as the engine read it, so the moves the
+	// pushes made stay (mergeStateAt writes a record of its own, with none).
+	pr := recordedPR(t, r.pool, "LEGION-208")
+	if !slices.ContainsFunc(pr.Moves, func(m record.Move) bool { return m.Before == headTwo && m.SHA == headThree }) {
+		t.Fatalf("the record's moves after the person's push = %+v, want the move from %s to %s", pr.Moves, headTwo, headThree)
+	}
+	pr.Mergeability, pr.MergeState, pr.CheckedHead = record.MergeabilityMergeable, record.MergeStateClean, headThree
+	pr.CheckRuns = []record.AttemptRun{{Name: "unit tests", ID: 1, Head: headThree, Conclusion: record.RunSucceeded}}
+	seedPR(t, r.pool, pr)
 	r.reviewOf(1, "approved", headThree)
 
 	if way := r.fixWay(1); way != wayAfterFix {
