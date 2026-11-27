@@ -1168,9 +1168,10 @@ func TestTheLoadProbeRefusesALaunchThatFailsBeforeOhMyPi(t *testing.T) {
 				t.Fatal("the gate passed a launch that failed")
 			}
 			// The refusal names the launch command as the prefix program's base name and the omp
-			// path, the way main's gate renders it; the prefix's directory, which can hold a space
-			// or a quote, is not part of what the refusal shows (the launch still quotes it to run).
-			for _, want := range []string{"OMP launch probe failed " + ending + " for launch command", filepath.Base(f.prefix) + " " + f.path, "secrets: ANTHROPIC_API_KEY was denied"} {
+			// invocation, the one shell word the gate runs (shellprefix.Word of its path, so a
+			// directory with a space or a quote stays one word), rendered as the refusal renders it
+			// (%q). The prefix's directory is not part of what the refusal shows.
+			for _, want := range []string{"OMP launch probe failed " + ending + " for launch command", strconv.Quote(filepath.Base(f.prefix) + " " + f.invocation), "secrets: ANTHROPIC_API_KEY was denied"} {
 				if !strings.Contains(err.Error(), want) {
 					t.Errorf("the refusal does not say %q: %v", want, err)
 				}
@@ -1207,7 +1208,7 @@ func TestTheLoadProbeQuotesNoWordOfTheLaunchPrefix(t *testing.T) {
 	if err == nil {
 		t.Fatal("the gate passed a launch whose prefix failed")
 	}
-	for _, want := range []string{"for launch command \"echoing-prefix (2 arguments, not shown) " + f.path + "\"",
+	for _, want := range []string{"for launch command " + strconv.Quote("echoing-prefix (2 arguments, not shown) "+f.invocation),
 		"<prefix word 0>: proxy refused <prefix word 1>, and again:<prefix word 1>; token <prefix word 2> rejected"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("the refusal does not say %q: %v", want, err)
