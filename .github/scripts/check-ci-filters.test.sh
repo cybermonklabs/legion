@@ -46,6 +46,8 @@
 # EXCLUDED, a run that changes a file of the tree, but those its mode writes (the PUSH_WORKFLOWS
 # workflows, generate's output and its .inputs file), fails naming each, as one does that cannot
 # read the tree through git, and the header's run recipe runs the check, or says why it stops.
+# The tie entry that go-test-reads.sh writes for each read (tie_entry) holds every path that the
+# read's glob selects.
 #
 # Each case builds a miniature repository under a temporary directory - a go.work binding one
 # module, a ci.yaml whose `changes` job gates one job, the gate of that job and two excluded
@@ -130,7 +132,35 @@ def legs_held(text):
     return "held"
 
 
-questions = {"derived": derived, "listed": listed, "refused": refused, "legs_held": legs_held}
+def envoy_legs_held(text, root=""):
+    import yaml
+    try:
+        if root:
+            reads.hold_envoy_legs(yaml.safe_load(text), root)
+        else:
+            reads.hold_envoy_legs(yaml.safe_load(text))
+    except ValueError as refusal:
+        return f"RAISED: {refusal}"
+    return "held"
+
+
+def plain_run(module, job, text):
+    import yaml
+    entry = yaml.safe_load(text)
+    return " ".join(reads.leg_run_packages(entry, job, reads.go_legs.go_packages(module)))
+
+
+def alone_held(root, alone, packages):
+    import json
+    try:
+        reads.hold_unit_alone_tests(json.loads(alone), packages.split(), root)
+    except ValueError as refusal:
+        return f"RAISED: {refusal}"
+    return "held"
+
+
+questions = {"derived": derived, "listed": listed, "refused": refused, "legs_held": legs_held,
+             "envoy_legs_held": envoy_legs_held, "plain_run": plain_run, "alone_held": alone_held}
 
 
 def field():
@@ -2767,6 +2797,29 @@ for pair in refs/heads/main=true refs/heads/Main=false refs/heads/MAIN=false ref
   : >"$work/ref-output"
   GITHUB_REF=$ref GITHUB_OUTPUT="$work/ref-output" bash -c "$held_run" 2>/dev/null || true
   check "$ref: writes is_main=$want" "$(is "$(cat "$work/ref-output")" "is_main=$want")"
+done
+
+echo "case: the tie entry of a read holds every path that the read's glob selects"
+# go-test-reads.sh writes each read of a test's closure as a tie entry (tie_entry): a glob with no
+# wildcard as it is, and otherwise the directory before its first wildcard part, with * for the
+# files directly in it when that part is the last one and holds no ** and no [ class, and ** for
+# its whole tree else. workflow_paths reads ** as any run of characters, / included, and copies a
+# [ class into its regex, where a class such as [^x] matches / too. So a last part that holds **
+# or a class beside other text (a/b**, a/**.go, a/b[^x]c) selects files below a's subdirectories
+# too, and its entry is a/**. A glob whose first part holds a wildcard has no directory before it,
+# and no entry.
+entries=$(cd "$script_dir" && PYTHONDONTWRITEBYTECODE=1 python3 -c '
+import sys
+
+import ci_filter_coverage as c
+
+for glob in sys.argv[1:]:
+    print(f"{glob} -> {c.tie_entry(glob)}")
+' a/b.go 'a/*' 'a/**' 'a/*.go' 'a/b?.go' 'a/b**' 'a/**.go' 'a/b[^x]c' 'a/*/c.go' 'a/b*/c' 'a/b/**/c' '*.go' '**/x.go' 2>&1) ||
+  entries="the engine gives no tie entries: $entries"
+for pair in 'a/b.go -> a/b.go' 'a/* -> a/*' 'a/** -> a/**' 'a/*.go -> a/*' 'a/b?.go -> a/*' 'a/b** -> a/**' \
+  'a/**.go -> a/**' 'a/b[^x]c -> a/**' 'a/*/c.go -> a/**' 'a/b*/c -> a/**' 'a/b/**/c -> a/b/**' '*.go -> None' '**/x.go -> None'; do
+  check "${pair% -> *}: its entry is ${pair#* -> }" "$(is "$(grep -cxF -- "$pair" <<<"$entries" || true)" 1)"
 done
 
 echo "case: a job named for a required check holding the re-run term"
@@ -6154,7 +6207,7 @@ typo=$(python3 -c 'import json, sys; e = json.loads(sys.argv[1]); e["daemon-go-t
 out=$(legs_held "$typo")
 check "is refused" "$(contains "$out" '^RAISED: ')"
 check "names the key and the jobs whose legs run" \
-  "$(contains "$out" "its keys are daemon-go, daemon-go-race, daemon-go-typo, elsewhere, and the jobs whose legs ci-job-daemon-go.yaml runs are daemon-go and daemon-go-race, beside elsewhere: a package under daemon-go-typo runs in no job")"
+  "$(contains "$out" "its keys are daemon-go, daemon-go-race, daemon-go-typo, elsewhere, unlisted, and the jobs whose legs run are daemon-go and daemon-go-race (.github/workflows/ci-job-daemon-go.yaml), beside elsewhere and unlisted: a package under daemon-go-typo runs in no job")"
 
 echo "case: a go-legs.yaml entry with no race legs"
 norace=$(python3 -c 'import json, sys; e = json.loads(sys.argv[1]); del e["daemon-go-race"]; print(json.dumps(e))' "$real_legs")
@@ -6162,6 +6215,144 @@ out=$(legs_held "$norace")
 check "is refused" "$(contains "$out" '^RAISED: ')"
 check "names the missing key and the race set it lost" \
   "$(contains "$out" "its keys are daemon-go, elsewhere, .*a package under a missing key runs in no job, so file it under one of those; its daemon-go-race legs run \[\]")"
+
+echo "case: a daemon go-legs.yaml entry whose unlisted names the race job"
+racehome=$(python3 -c 'import json, sys; e = json.loads(sys.argv[1]); e["unlisted"] = "daemon-go-race"; print(json.dumps(e))' "$real_legs")
+out=$(legs_held "$racehome")
+check "is refused" "$(contains "$out" '^RAISED: ')"
+check "names the plain job it must be" "$(contains "$out" "its unlisted is 'daemon-go-race', and the job whose last leg runs a package no place names is daemon-go")"
+
+# The same hold on the entry for packages/envoy, which also holds the race legs to the race lane's
+# envoy-go-race packages, `twice` to the race packages whose skips the unit legs count, and
+# `elsewhere` to the packages other jobs' steps are built to run.
+envoy_legs_held() { ask envoy_legs_held "$@"; } # envoy_legs_held <entry JSON> [<root the race trees are walked under>]
+real_envoy=$(cd "$script_dir/../.." && python3 -c 'import json, yaml; print(json.dumps(yaml.safe_load(open(".github/go-legs.yaml"))["packages/envoy"]))')
+echo "case: the repository's go-legs.yaml entry for envoy is held"
+check "passes" "$(is "$(envoy_legs_held "$real_envoy")" held)"
+
+echo "case: an envoy go-legs.yaml job key no matrix job runs"
+typo=$(python3 -c 'import json, sys; e = json.loads(sys.argv[1]); e["envoy-go-typo"] = {"1": [e["envoy-go"]["5"].pop()]}; print(json.dumps(e))' "$real_envoy")
+out=$(envoy_legs_held "$typo")
+check "is refused" "$(contains "$out" '^RAISED: ')"
+check "names the key and the jobs whose legs run" \
+  "$(contains "$out" "its keys are elsewhere, envoy-go, envoy-go-race, envoy-go-race-api, envoy-go-race-docs, envoy-go-typo, twice, unlisted, and the jobs whose legs run are envoy-go")"
+
+echo "case: an envoy go-legs.yaml entry without unlisted"
+nohome=$(python3 -c 'import json, sys; e = json.loads(sys.argv[1]); del e["unlisted"]; print(json.dumps(e))' "$real_envoy")
+out=$(envoy_legs_held "$nohome")
+check "is refused" "$(contains "$out" '^RAISED: ')"
+check "names the missing key" "$(contains "$out" "a package under a missing key runs in no job")"
+check "and the plain job it must name" "$(contains "$out" "its unlisted is None, and the job whose last leg runs a package no place names is envoy-go")"
+
+echo "case: a race lane package moved into a plain leg"
+moved=$(python3 -c 'import json, sys; e = json.loads(sys.argv[1]); next(v for v in e["envoy-go-race"].values() if "natscred" in v).remove("natscred"); e["envoy-go"]["5"].append("natscred"); print(json.dumps(e))' "$real_envoy")
+out=$(envoy_legs_held "$moved")
+check "is refused" "$(contains "$out" '^RAISED: ')"
+check "names the lane package no race leg runs" "$(contains "$out" "ENVOY_RACE_LANE's envoy-go-race names natscred, which no envoy-go-race leg runs")"
+check "and the plain leg that runs it without the detector" "$(contains "$out" "its envoy-go legs run natscred, which the race lane runs under the detector")"
+
+echo "case: twice no longer names the NATS auth service"
+untwice=$(python3 -c 'import json, sys; e = json.loads(sys.argv[1]); e["twice"] = {}; print(json.dumps(e))' "$real_envoy")
+out=$(envoy_legs_held "$untwice")
+check "is refused" "$(contains "$out" '^RAISED: ')"
+check "names the counted race package twice must name" \
+  "$(contains "$out" "its twice names nothing, and the race legs' packages whose skips the unit legs count (packages/envoy/scripts/database-skips.sh's table) are internal/cipher/natscallout")"
+
+echo "case: a package other jobs run dropped from elsewhere"
+dropped=$(python3 -c 'import json, sys; e = json.loads(sys.argv[1]); del e["elsewhere"]["internal/integration"]; print(json.dumps(e))' "$real_envoy")
+out=$(envoy_legs_held "$dropped")
+check "is refused" "$(contains "$out" '^RAISED: ')"
+check "names the packages other jobs' steps are built to run" "$(contains "$out" "and the packages other jobs' steps are built here to run are .*'internal/integration': 'envoy-go-natslive'")"
+
+echo "case: a single-package race job's legs that run another package"
+strayed=$(python3 -c 'import json, sys; e = json.loads(sys.argv[1]); e["envoy-go-race-api"]["3"] = [{"internal/dispatch/docs": 3}]; print(json.dumps(e))' "$real_envoy")
+out=$(envoy_legs_held "$strayed")
+check "is refused" "$(contains "$out" '^RAISED: ')"
+check "names the job, what its legs run and the one package it is for" \
+  "$(contains "$out" "its envoy-go-race-api legs run internal/dispatch/api, internal/dispatch/docs, and ENVOY_RACE_LANE's envoy-go-race-api is internal/dispatch/api")"
+
+# The race lane's trees, on a fixture holding the directory of each package envoy-go-race names:
+# on main the race step ran each tree as ./<tree>/..., so a package added under one ran raced with
+# no edit. Here `unlisted` would run such a package plain in envoy-go's last leg, so the hold walks
+# each tree and refuses a package under it that no race leg lists. Each case adds one package
+# under one tree and hands the hold the repository's own entry.
+race_trees="internal/dispatch/delivery internal/dispatch/store internal/kvwatch"
+trees_root() {
+  local root="$work/race-trees-$1" package
+  for package in $race_trees internal/bus cmd/listener internal/store internal/session natscred \
+    internal/cipher/natscallout internal/oidc; do
+    mkdir -p "$root/$package"
+  done
+  echo "$root"
+}
+echo "case: the race lane's trees hold no package the race legs leave out"
+root=$(trees_root none)
+mkdir -p "$root/internal/kvwatch/testdata/fixture"
+printf 'package fixture\n' > "$root/internal/kvwatch/testdata/fixture/f.go"
+check "passes, a testdata directory under a tree no package" "$(is "$(envoy_legs_held "$real_envoy" "$root")" held)"
+for tree in $race_trees; do
+  echo "case: a package added under the race tree $tree with no race leg line"
+  root=$(trees_root "${tree//\//-}")
+  mkdir -p "$root/$tree/brandnew"
+  printf 'package brandnew\n' > "$root/$tree/brandnew/brandnew.go"
+  out=$(envoy_legs_held "$real_envoy" "$root")
+  check "is refused" "$(contains "$out" '^RAISED: ')"
+  check "naming the package and the race leg it needs" \
+    "$(contains "$out" "the race lane's trees hold $tree/brandnew, which no envoy-go-race leg lists: unlisted would run each plain in envoy-go's last leg, with no race detector")"
+done
+
+# The plain gates' Run is built from leg_run_packages: the packages the plain job's legs list and
+# each package `go list ./...` prints that no place names, which that job's last leg runs. So a
+# change to only an unlisted package's _test.go files starts the job that runs them, in a merge
+# group too. Each case takes one package out of the repository's own entry.
+echo "case: a package no line names is in the plain gate's Run (envoy-go)"
+unclock=$(python3 -c 'import json, sys; e = json.loads(sys.argv[1]); e["envoy-go"]["5"].remove("internal/clock"); print(json.dumps(e))' "$real_envoy")
+check "the Run names it" "$(contains " $(ask plain_run packages/envoy envoy-go "$unclock") " ' internal/clock ')"
+check "and the race job's does not" "$(is "$(contains " $(ask plain_run packages/envoy envoy-go-race "$unclock") " ' internal/clock ')" false)"
+echo "case: a package no line names is in the plain gate's Run (daemon-go)"
+read -r dropped_daemon undaemon < <(python3 -c 'import json, sys; e = json.loads(sys.argv[1]); legs = e["daemon-go"]; last = max(legs, key=lambda n: (len(str(n)), str(n))); p = next(x for x in legs[last] if isinstance(x, str)); legs[last].remove(p); print(p, json.dumps(e, separators=(",", ":")))' "$real_legs")
+check "the Run names it" "$(contains " $(ask plain_run packages/daemon daemon-go "$undaemon") " " $dropped_daemon ")"
+
+# UNIT_ALONE_TESTS' hold, on a fixture module: package a declares TestOwn, TestShared, behind a
+# tag no step passes TestTagged, behind a constraint the linux/arm64 runner meets TestOnLinux,
+# behind one it does not TestOffLinux, in a file named for darwin with no constraint line
+# TestNamedDarwin, in one named for linux TestNamedLinux, and in a comment TestInComment; package b
+# declares TestShared too. Each case hands the hold one list and reads what it answered. (The
+# repository's own list is held by the import every question here starts from.)
+alone_held() { ask alone_held "$work/alone" "$1" "a b"; }
+mkdir -p "$work/alone/a" "$work/alone/b"
+# A module of its own, since the hold asks `go list -find` which test files the runner's build
+# compiles.
+printf 'module example.com/alone\n\ngo 1.21\n' > "$work/alone/go.mod"
+printf 'package a\n\nimport "testing"\n\nfunc TestOwn(t *testing.T) {}\n\nfunc TestShared(t *testing.T) {}\n\n// func TestInComment(t *testing.T) {}\n' > "$work/alone/a/a_test.go"
+printf '//go:build natslive\n\npackage a\n\nimport "testing"\n\nfunc TestTagged(t *testing.T) {}\n' > "$work/alone/a/live_test.go"
+printf '//go:build linux && (arm64 || amd64) && !race\n\npackage a\n\nimport "testing"\n\nfunc TestOnLinux(t *testing.T) {}\n' > "$work/alone/a/on_linux_test.go"
+printf '//go:build darwin || windows\n\npackage a\n\nimport "testing"\n\nfunc TestOffLinux(t *testing.T) {}\n' > "$work/alone/a/off_linux_test.go"
+printf 'package a\n\nimport "testing"\n\nfunc TestNamedDarwin(t *testing.T) {}\n' > "$work/alone/a/clock_darwin_test.go"
+printf 'package a\n\nimport "testing"\n\nfunc TestNamedLinux(t *testing.T) {}\n' > "$work/alone/a/clock_linux_arm64_test.go"
+printf '// +build darwin\n\npackage a\n\nimport "testing"\n\nfunc TestPlusBuildDarwin(t *testing.T) {}\n' > "$work/alone/a/plus_build_test.go"
+printf 'package b\n\nimport "testing"\n\nfunc TestShared(t *testing.T) {}\n' > "$work/alone/b/b_test.go"
+echo "case: the alone list holds a test its package declares and no other does"
+check "passes" "$(is "$(alone_held '{"a": ["TestOwn"]}')" held)"
+check "and a test behind a constraint the runner's build meets passes too" "$(is "$(alone_held '{"a": ["TestOnLinux"]}')" held)"
+check "and one in a file named for linux/arm64" "$(is "$(alone_held '{"a": ["TestNamedLinux"]}')" held)"
+echo "case: the alone list names a test declared only in a file named for another platform"
+check "is refused" "$(contains "$(alone_held '{"a": ["TestNamedDarwin"]}')" '^RAISED: UNIT_ALONE_TESTS names TestNamedDarwin, which no _test.go file')"
+echo "case: the alone list names a test declared only behind an old-style // +build line"
+check "is refused" "$(contains "$(alone_held '{"a": ["TestPlusBuildDarwin"]}')" '^RAISED: UNIT_ALONE_TESTS names TestPlusBuildDarwin, which no _test.go file')"
+echo "case: the alone list names a test no file declares (a rename, a deletion)"
+out=$(alone_held '{"a": ["TestGone"]}')
+check "is refused" "$(contains "$out" "^RAISED: UNIT_ALONE_TESTS names TestGone, which no _test.go file of .*/alone/a that the runner's linux/arm64 build compiles declares")"
+echo "case: the alone list names a test declared only in a comment"
+check "is refused" "$(contains "$(alone_held '{"a": ["TestInComment"]}')" '^RAISED: UNIT_ALONE_TESTS names TestInComment, which no _test.go file')"
+echo "case: the alone list names a test declared only behind a tag"
+check "is refused" "$(contains "$(alone_held '{"a": ["TestTagged"]}')" '^RAISED: UNIT_ALONE_TESTS names TestTagged, which no _test.go file .*behind a tag or for another platform, is none')"
+echo "case: the alone list names a test declared only for another platform"
+check "is refused" "$(contains "$(alone_held '{"a": ["TestOffLinux"]}')" '^RAISED: UNIT_ALONE_TESTS names TestOffLinux, which no _test.go file')"
+echo "case: the alone list names a test another unit package declares too"
+check "is refused" "$(contains "$(alone_held '{"a": ["TestShared"]}')" "^RAISED: UNIT_ALONE_TESTS names TestShared, which b declare(s) too, where the legs' -skip would leave it out")"
+echo "case: the alone list names a package no unit leg runs"
+check "is refused" "$(contains "$(alone_held '{"c": ["TestOwn"]}')" '^RAISED: UNIT_ALONE_TESTS names c, which no envoy-go leg of .github/go-legs.yaml runs')"
 
 # The header's run recipe, run as the header writes it, from a fixture's root and over a module
 # cache that holds no toolchain, with GOPROXY=off so that go can fetch none. Where the go PATH

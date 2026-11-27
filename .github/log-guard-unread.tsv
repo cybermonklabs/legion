@@ -17,6 +17,7 @@
 .github/scripts/release-push.test.sh	$1/.github/scripts/release-push.sh	release-push.sh in the fixture tree the harness passes; the check reads release-push.sh itself
 .github/scripts/release-push.test.sh	$work/bump4/release-push.sh	the harness's copy of release-push.sh; the check reads release-push.sh itself
 .github/scripts/worker-image-contract-order.test.sh	${scratch}/step.sh	the run: of worker-image.yaml's contract_order step, which the harness writes to a file; the check reads that step in its workflow
+packages/envoy/loadtest/cluster/cluster.test.sh	$gg_dir/probe.sh	a probe the harness writes at run time to check proof-wait.sh's deadline, run under bash with a stand-in clock
 packages/envoy/loadtest/cluster/cluster.test.sh	$tmp/cluster-fake-clock.sh	a wrapper the harness writes at run time, which runs cluster.sh under a stand-in clock
 packages/envoy/loadtest/cluster/cluster.test.sh	$tmp/step-bounded.sh	a wrapper the harness writes at run time, which runs cluster.sh's step under a bound
 packages/envoy/loadtest/cluster/cluster.test.sh	$tree/loadtest/cluster/render-nats.sh	the harness's copy of render-nats.sh in a fake git tree; the check reads render-nats.sh itself

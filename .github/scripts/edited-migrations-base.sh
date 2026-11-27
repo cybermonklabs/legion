@@ -4,9 +4,9 @@
 # may have run is edited without its replaces line"), fetches it into the checkout, and prints
 # its sha. actions/checkout leaves the tree one commit deep, and the check reads the base's files
 # with git, so the base has to be fetched before the check runs.
-# ci.yaml's changes job runs it too, on a dispatch of a branch that selects by its diff, and hands
-# the merge base it prints to the filter generation as CI_FILTERS_BASE
-# (.github/ci-notes/ci.md#what-a-dispatched-run-of-a-branch-selects-and-when-to-ask-for-every-job).
+# ci.yaml's changes job runs it too, on a pull request and on a dispatch of a branch that selects
+# by its diff, and hands the base it prints to the filter generation as CI_FILTERS_BASE
+# (.github/ci-notes/ci.md#the-commit-a-change-is-measured-against).
 #
 # The base is the commit the run's tree lands onto:
 #   * any event but workflow_dispatch (a pull request, a merge group, a push): the first parent

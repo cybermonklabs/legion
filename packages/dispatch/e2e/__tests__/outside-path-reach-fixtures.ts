@@ -14,9 +14,9 @@
  *  holds a connection that sends nothing, as any HTTP server does) for the origin, and
  *  `Bun.listen` for a target, each on a port the kernel picks and held for the whole run. Each
  *  fake Dispatch answers from a process of its own, as `fakeDispatch` says. A closed port is one
- *  taken from below the kernel's ephemeral range and found refusing: a port a listener held and
- *  gave back can be handed by the kernel to the next listener any concurrent row, or any other
- *  test file, starts, and the closed target would then read REACHED.
+ *  this process holds bound and never listening (`closedPort`): a port a listener held and gave
+ *  back can be taken by any other process, a listener another row or test file starts among them,
+ *  and the closed target would then read REACHED.
  *  The script lets `http` through only with `OUTSIDE_PATH_ALLOW_HTTP=1` and a `127.0.0.1` origin,
  *  which these rows set. HOME is a directory of the run's own, or of the `driveEach` call's own
  *  for the runs that call starts, so no `~/.curlrc` of the host's reaches the script's curl unless
@@ -34,15 +34,23 @@
  *  anything else. Every other call goes to the host's curl.
  */
 
-import { beforeAll, test } from "bun:test";
+import { test } from "bun:test";
 import { randomUUID } from "node:crypto";
-import { mkdirSync, readFileSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { hostTool, skipWithout } from "@legion/test-fixtures/host-tools";
+import { holdRefusedPort } from "@legion/test-fixtures/refused-port";
 import { memoryRoot, temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
-import type { udp } from "bun";
 import type { Answers, Seen } from "./outside-path-reach-origin";
 
 export const script = fileURLToPath(
@@ -64,14 +72,16 @@ export const CURL_VERSION_LINE =
 
 /** The timeout of a row that stops before the probes. It only stops a run that hangs: each such row
  *  is decided by the verdicts and exit codes its runs print, and its work is counted (one runner
- *  per row; 86 `Bun.spawn` calls in one run of the input file, 87 where zsh is present, the fake
- *  Dispatch host included). A hang guard is at least twice the longest correct run, read on the
- *  machines that run it. The slowest such row measured, the byte row (64 runners of 12 runs of the
- *  script), took 54.5 s on two CPUs shared with eight busy loops and five other runs of the file
- *  (378 row results, none failing; 53.7 s in an earlier such run), so the guard is twice that,
- *  rounded up to the second. In CI's dispatch-ui job on 2026-11-19 (job 135904767413) the file's 21
- *  rows passed, the slowest in 1.54 s; alone on the dev box at a 1-minute load of 339 to 695 the
- *  whole file took 1.4 to 1.5 s. */
+ *  per row, 16 for the byte row; 56 `Bun.spawn` calls in one run of the input file, 55 where zsh
+ *  is absent, each row's fake Dispatch host included).
+ *  A hang guard is at least twice the longest correct run, read on the machines that run it. The
+ *  slowest such row measured, the byte row (then 64 runners of 12 runs of the script), took 54.5 s
+ *  on two CPUs shared with eight busy loops and five other runs of the file (378 row results, none
+ *  failing; 53.7 s in an earlier such run), so the guard is twice that, rounded up to the second.
+ *  Under that load on 2026-11-26, the byte row read at most 24.2 s with 64 runners and 23.7 s with
+ *  its 16. In CI's dispatch-ui job on 2026-11-19 (job 135904767413) the file's 21 rows passed, the
+ *  slowest in 1.54 s; alone on the dev box at a 1-minute load of 339 to 695 the whole file took
+ *  1.4 to 1.5 s. */
 const rowTimeout = 109_000;
 
 /** One row that stops before the probes: `test.skipIf(skip)` with `rowTimeout`. */
@@ -269,65 +279,13 @@ export function fakeDispatch(
   return dispatchHost({ health, projects, refusal });
 }
 
-/** The lowest port the kernel hands out for `port: 0` here: Linux's `ip_local_port_range`, else
- *  49152, where macOS's range and IANA's dynamic ports start. */
-function ephemeralLow(): number {
-  try {
-    const [low] = readFileSync("/proc/sys/net/ipv4/ip_local_port_range", "utf8")
-      .trim()
-      .split(/\s+/);
-    return Number(low);
-  } catch {
-    return 49152;
-  }
-}
-/** The ports taken for closed ones: from 10000 to 2000 short of the ephemeral range, each handed
- *  out once in this process, starting at a random one so two processes seldom try the same ones. */
-const closedRange = { low: 10000, span: ephemeralLow() - 2000 - 10000 };
-if (!(closedRange.span > 2000)) {
-  throw new Error(`the kernel's ephemeral ports start at ${ephemeralLow()}: no room below them`);
-}
-const closedStart = Math.floor(Math.random() * closedRange.span);
-let closedIssued = 0;
-/** The UDP sockets that reserve the ports `closedPort` issued, kept here so none is collected. */
-const closedReservations: udp.Socket<"buffer">[] = [];
-
-/** A port that refuses a connection: the next of the range, wrapping round it, past any a host
- *  program holds. The kernel hands none of them to a `port: 0` listener.
- *  It reserves a port before it connects to it: it binds a UDP socket to the same number on
- *  127.0.0.1 and holds it for the rest of this process's life, and the kernel frees it however the
- *  process ends. So no other process's `closedPort` can issue it meanwhile. Unreserved, another
- *  process could issue it too and listen on it, as the row that closes a holding target does, and
- *  this process's closed target would read REACHED. It tests by connecting, not by binding a TCP
- *  listener, since on the BSDs a bind on 127.0.0.1 succeeds beside a listener on every address. */
+/** A port that refuses a connection: 127.0.0.1 and a port the kernel chose, which this process
+ *  holds bound and never listening for the rest of its life (`holdRefusedPort`, never released),
+ *  and the kernel frees however the process ends. Every connection to it is refused, and no other
+ *  process can bind it meanwhile, with or without `SO_REUSEADDR` or `SO_REUSEPORT`, so the closed
+ *  target never reads REACHED because another process listens there. */
 export async function closedPort(): Promise<number> {
-  while (closedIssued < closedRange.span) {
-    const port = closedRange.low + ((closedStart + closedIssued++) % closedRange.span);
-    let reservation: udp.Socket<"buffer">;
-    try {
-      // A failed bind throws here at once rather than rejecting the promise.
-      reservation = await Bun.udpSocket({ hostname: "127.0.0.1", port });
-    } catch (error) {
-      if (error instanceof Error && "code" in error && error.code === "EADDRINUSE") continue;
-      throw error;
-    }
-    const refused = await Bun.connect({ hostname: "127.0.0.1", port, socket: { data() {} } }).then(
-      (socket) => {
-        socket.end();
-        return false;
-      },
-      (error: { code?: string }) => error.code === "ECONNREFUSED"
-    );
-    if (!refused) {
-      reservation.close();
-      continue;
-    }
-    // Unreferenced, it holds the port without keeping the process running.
-    reservation.unref();
-    closedReservations.push(reservation);
-    return port;
-  }
-  throw new Error(`no refused port between ${closedRange.low} and the ephemeral range`);
+  return holdRefusedPort().port;
 }
 
 /** A target that accepts and closes the connection at once. */
@@ -443,18 +401,23 @@ export function reachFixtures() {
     root: memoryRoot({ need: 6 * 8 * 2 ** 20 }),
   });
   /** The directory of the `curl` every run is given: it answers `-q --version` with
-   *  {@link CURL_VERSION_LINE} and hands every other call to the host's curl. `scratch` exists
-   *  from the `beforeAll` its call registered, which Bun runs before this one. */
+   *  {@link CURL_VERSION_LINE} and hands every other call to the host's curl. `runEnvironment`,
+   *  which every run of the script starts from, writes it the first time a run finds it missing,
+   *  so it is written inside a row, under `rowTimeout`, and not by a hook, which runs outside every
+   *  row under a limit of its own; `scratch` exists by then, from the `beforeAll` its call
+   *  registered. A `PATH` of `pathOf` or `pathWithCurl` names it before it is written, and a run
+   *  reaches it only after. */
   const standIns = join(scratch, "curl-stand-in");
   const curlStandIn = join(standIns, "curl");
-  beforeAll(() => {
-    mkdirSync(standIns);
+  function writeCurlStandIn(): void {
+    if (existsSync(curlStandIn)) return;
+    mkdirSync(standIns, { recursive: true });
     writeFileSync(
       curlStandIn,
       `#!${bash}\ncase "$*" in "-q --version") echo '${CURL_VERSION_LINE}'; exit 0 ;; esac\nexec ${curl} "$@"\n`,
       { mode: 0o755 }
     );
-  });
+  }
 
   /** The environment every run of the script starts with, whether `drive` or `driveEach` starts
    *  it: HOME `home`, PATH the host's with the curl stand-in first unless `path` names another,
@@ -462,6 +425,7 @@ export function reachFixtures() {
    *  `originSeconds` for the two reads of the origin. A change to how a run is started goes here,
    *  so the two helpers cannot drift apart. */
   function runEnvironment(home: string, path: string | undefined): Record<string, string> {
+    writeCurlStandIn();
     return {
       HOME: home,
       PATH: path ?? `${standIns}:${process.env.PATH ?? ""}`,

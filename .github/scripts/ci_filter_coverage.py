@@ -559,7 +559,9 @@ class Session:
     def listing(self, run_: Run) -> list:
         """`go list -deps` of the run, with -test for a run that compiles tests (test, vet). Kept
         by the command it runs, so Runs that differ only in a mode that asks the same listing (a
-        test and a vet, a build and a run) share one."""
+        test and a vet, a build and a run) share one. `--` ends go's flags before the packages, so
+        go reads a package that starts with `-` (a spec's selector can name one) as an import path,
+        which it refuses, and never as a flag such as -toolexec, which names a program go runs."""
         args = ["list", "-e", f"-json={FIELDS}", "-deps"]
         if run_.mode in ("test", "vet"):
             args.append("-test")
@@ -567,7 +569,7 @@ class Session:
             args += ["-tags", run_.tags]
         if run_.race:
             args.append("-race")
-        args += self.overlay_args(run_) + list(run_.pkgs)
+        args += self.overlay_args(run_) + ["--", *run_.pkgs]
         key = ("list", run_.workdir, run_.env, tuple(args))
         if key not in self.cache:
             self.cache[key] = decode_stream(self.go(run_, args))
@@ -909,6 +911,54 @@ def apply_rules(session: Session, rules: dict, source: str, seen: set) -> list:
     for action in rules.get(source, ()):
         reads += closure(session, rules, action, seen) if isinstance(action, Run) else [action]
     return reads
+
+
+TIE_WILD = re.compile(r"[*?\\[]")
+
+
+def tie_entry(glob: str) -> str | None:
+    """The narrowest Tie entry that contains every repository path glob can select: the glob
+    itself when it holds no wildcard; the directory before its first wildcard part with `*` when
+    that part is the last one and holds no `**` and no `[` class, which stays inside one directory;
+    and that directory with `**` otherwise, since a later part, a `**` or a class reaches below it:
+    glob_regex reads `**` as any run of characters, `/` included, so `a/b**` selects `a/bc/d`, and
+    copies a class into its regex, where `[^x]` matches `/`, so `a/b[^x]c` selects `a/b/c`. None
+    when the first part holds a wildcard, which leaves no directory before it."""
+    parts = glob.split("/")
+    wild = next((i for i, part in enumerate(parts) if TIE_WILD.search(part)), None)
+    if wild is None:
+        return glob
+    if wild == 0:
+        return None
+    if wild == len(parts) - 1 and "**" not in parts[wild] and "[" not in parts[wild]:
+        return "/".join(parts[:wild] + ["*"])
+    return "/".join(parts[:wild] + ["**"])
+
+
+def test_reads(workdir: str, pkgs: list, env: dict) -> tuple:
+    """Read the closure of `go test <pkgs>` in workdir for spec-check citations."""
+    # ci_job_reads imports this module, so import its rules only after this module loads.
+    import ci_job_reads as data
+
+    session = Session()
+    why = f"go test {' '.join(pkgs)} in {workdir}"
+    tested = run(workdir, pkgs, why, env=env)
+    reads = closure(session, data.RULES, tested, set())
+    for pkg in session.named(tested):
+        if not pkg.get("Dir") and not pkg.get("Standard"):
+            cause = " ".join((pkg.get("Error") or {}).get("Err", "").split())[:300]
+            session.problems.append(error(None, f"go list finds no directory of {pkg.get('ImportPath')} for {why}, so "
+                                                f"its closure is unknown: {cause}"))
+    entries = set()
+    for read in reads:
+        if not read.glob:
+            continue
+        entry = tie_entry(read.glob)
+        if entry is None:
+            session.problems.append(error(None, f"{read.glob} has no form of a tie, so the closure of {why} is unknown"))
+        else:
+            entries.add(entry)
+    return sorted(entries), [problem.message for problem in session.problems]
 
 
 GO_FILE_NAMES = ("go.mod", "go.sum", "go.work", "go.work.sum")
@@ -3734,7 +3784,8 @@ def compiled_files(session: Session, r: Run, tags: str, dirs: list) -> set:
         args += ["-tags", tags]
     patterns = [f"./{Path(d).relative_to(r.workdir).as_posix()}" if d != r.workdir else "." for d in dirs]
     out = set()
-    for pkg in decode_stream(session.go(r, args + patterns)):
+    # `--` ends go's flags, as listing passes it, so a pattern is never read as a flag.
+    for pkg in decode_stream(session.go(r, args + ["--", *patterns])):
         d = rel(pkg["Dir"]) if pkg.get("Dir") else None
         if d is not None:
             for field in ("GoFiles", "CgoFiles", "TestGoFiles", "XTestGoFiles"):
