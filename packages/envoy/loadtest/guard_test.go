@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"testing"
 
+	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -232,7 +233,9 @@ func TestGuardRefusesAnUnusableCredentialFile(t *testing.T) {
 }
 
 // TestGuardPrintsNoURLPassword: a foreign URL that does not parse is refused naming its flag
-// alone, and a failed guard check names the endpoint without its userinfo, user or password.
+// alone, and a failed guard check names the endpoint without its userinfo, user or password: an
+// endpoint that holds user information by the rule's one mark of such a URL, nothing of its host
+// kept (redact.URLWithCredentials), and one that holds none by its host.
 func TestGuardPrintsNoURLPassword(t *testing.T) {
 	isolatePG(t)
 	const password = "url-password-51d2"
@@ -275,8 +278,20 @@ func TestGuardPrintsNoURLPassword(t *testing.T) {
 		{dispatch: withPassword},
 	} {
 		err := checkStack(context.Background(), e)
-		if err == nil || strings.Contains(err.Error(), password) || strings.Contains(err.Error(), "loadgen") || !strings.Contains(err.Error(), host) {
-			t.Errorf("guard check against %+v: error %v, want one naming the endpoint's host without its userinfo", e, err)
+		if err == nil || strings.Contains(err.Error(), password) || strings.Contains(err.Error(), "loadgen") || strings.Contains(err.Error(), host) ||
+			!strings.Contains(err.Error(), redact.URLWithCredentials) {
+			t.Errorf("guard check against %+v: error %v, want one naming the endpoint by the mark of a URL with credentials, with nothing of its userinfo or its host", e, err)
+		}
+	}
+	// The control: the same stand-in with no userinfo is named by its host, so the check above
+	// shows the mark where there is a credential and not a check that names no endpoint at all.
+	for _, e := range []endpoints{
+		{natsMon: srv.URL, natsServerName: "loadtest-abc"},
+		{dispatch: srv.URL},
+	} {
+		err := checkStack(context.Background(), e)
+		if err == nil || !strings.Contains(err.Error(), host) {
+			t.Errorf("guard check against %+v: error %v, want one naming the endpoint's host", e, err)
 		}
 	}
 }

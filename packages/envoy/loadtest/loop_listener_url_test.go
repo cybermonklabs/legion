@@ -11,6 +11,7 @@ import (
 
 	"github.com/nats-io/nats.go"
 
+	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/sjawhar/envoy/internal/redact/redacttest"
 	"github.com/sjawhar/envoy/internal/testnats"
 )
@@ -42,7 +43,10 @@ func TestALoopListenerThatIsNoURLIsRefusedWithNoneOfIt(t *testing.T) {
 // TestTheLoopDriversLineNamesItsListenerWithNoCredential: the step's line about the loop's driver
 // session names the -loop-listeners endpoint it registered on without its user information and
 // its query (redactURL), as every line of the load test names an endpoint, where it
-// printed the endpoint as it was given. Captures loadtest.loop-listener-url/driver-line.
+// printed the endpoint as it was given. An endpoint that holds user information is named with
+// its authority as the rule's one mark of such a URL, nothing of its host kept
+// (redact.URLWithCredentials): a password holding an unencoded "@" leaves its tail where the host
+// goes, so nothing of that authority can be printed.
 func TestTheLoopDriversLineNamesItsListenerWithNoCredential(t *testing.T) {
 	fl := startFakeListener(t)
 	_, natsURL := testnats.Start(t)
@@ -70,7 +74,7 @@ func TestTheLoopDriversLineNamesItsListenerWithNoCredential(t *testing.T) {
 		t.Fatalf("the step logged %q; want the driver's line", line)
 	}
 	redacttest.RequireNoPiece(t, "loadtest.loop-listener-url/driver-line", line)
-	if want := "driver on " + fl.server.URL + "/ following"; !strings.Contains(line, want) {
+	if want := "driver on http://" + redact.URLWithCredentials + "/ following"; !strings.Contains(line, want) {
 		t.Errorf("the driver's line is %q; want %q in it", line, want)
 	}
 }
