@@ -1,0 +1,12 @@
+kind: Fixed
+body: |-
+  A profile's proxy block kind and the airlock way its binding takes are separate identifiers in
+  the broker. The policy's reading of a dpop block, the refusals that hold one at start, and
+  `envoy-broker profiles check`'s line for a name served behind one each read the block's kind from
+  its own constant, where each read the way's. Both strings are `dpop`, so no profiles file, no
+  refusal, no report line and no behaviour changes with this release. What changes is that a later
+  change to the airlock way's string no longer changes how the broker reads a dpop block, what
+  `profiles check` calls one, or the kind its start refusals name.
+time: 2026-11-27T19:35:05Z
+custom:
+    Issue: policy-block-kind-dpop
