@@ -45,17 +45,19 @@ func TestTheReleaseOfAWaitingParentsPodArmsNoBackstop(t *testing.T) {
 			}
 			putOutboxIssue(t, pool, records, issue)
 			st := outboxTreeStore(t, pool, issue.Key)
+			implementer := mustClaimToken(t, issue.Key, claim.RoleImplementer)
 			// The implementer as the idle release leaves it: suspended with the source
 			// `released`, serving the issue's generation.
-			if err := st.PutClaim(ctx, supervise.Claim{Token: mustClaimToken(t, issue.Key, claim.RoleImplementer), Project: "legion",
+			if err := st.PutClaim(ctx, supervise.Claim{Token: implementer, Project: "legion",
 				Tree: issue.Tree, Issue: issue.Key, Role: claim.RoleImplementer, TreeEpoch: 1, Generation: 1, ServingGeneration: 1,
 				State: supervise.StateSuspended, SuspendedBy: supervise.SuspendedByReleased, Session: "ses-implementer",
 				SessionFile: "/tmp/implementer.jsonl", PluginContract: api.DaemonAPIVersion()}); err != nil {
 				t.Fatalf("seed the released implementer: %v", err)
 			}
-			// The backstop an earlier release of this pod armed, still open.
-			if err := st.ArmPodBackstop(ctx, store.PodWakeBackstop{Project: "legion", Issue: issue.Key, Role: claim.RoleImplementer,
-				DueAt: time.Now().UTC().Add(30 * time.Minute)}); err != nil {
+			// The backstop an earlier release of this pod armed for the implementer's claim, still
+			// open. Every release arms a backstop for the claim it released (outbox.armBackstops).
+			if err := st.ArmPodBackstop(ctx, store.PodWakeBackstop{Project: "legion", Issue: issue.Key, Claim: implementer,
+				Role: claim.RoleImplementer, DueAt: time.Now().UTC().Add(30 * time.Minute)}); err != nil {
 				t.Fatalf("arm the earlier release's backstop: %v", err)
 			}
 			runner := &outbox{pool: pool, records: records, project: "legion", dispatchProject: "LEGION", trees: st,

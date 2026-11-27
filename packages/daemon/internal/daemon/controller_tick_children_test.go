@@ -169,10 +169,12 @@ func TestTheTickRereadReadsTheChildrenOfAParentHeldBeforeItsRetro(t *testing.T) 
 			GivenBy: mustClaimToken(t, startedParent, claim.RoleArchitect), GivenAt: time.Now().UTC().Add(-time.Hour)}
 		task := record.PlanTask{Issue: startedParent, Generation: 1, Task: "a", PlanVersion: 1, BlockText: "Build the widget.",
 			State: record.TaskRunning, Place: record.TaskPlace{Kind: record.PlaceRetro}}
-		steps := []record.PlanStep{
+		// Each step names its agent, as every writer of steps names it (record.NameAgents). The retro
+		// starts under the agent of the last implementation step (workflow's stepToken).
+		steps := record.NameAgents(nil, []record.PlanStep{
 			{Issue: startedParent, Generation: 1, Task: "a", Position: 1, Role: "implementer", Type: "implementation"},
 			{Issue: startedParent, Generation: 1, Task: "a", Position: 2, Role: "reviewer", Type: "review"},
-		}
+		}, nil)
 		if err := records.PutPlan(ctx, tx, version, []record.PlanTask{task}, steps); err != nil {
 			return err
 		}
