@@ -528,8 +528,8 @@ func utc(at *time.Time) any {
 	return at.UTC()
 }
 
-// seedAdmission writes the daemon's admission block as the sampler writes it: one row of the
-// project under legion.AdmissionKey, which the rig itself writes none of.
+// seedAdmission writes the daemon's admission block as the Legion state intake writes it: one row
+// of the project under legion.AdmissionKey, which the rig itself writes none of.
 func seedAdmission(t *testing.T, seeded history, admission legion.Admission) {
 	t.Helper()
 	value, err := json.Marshal(admission)

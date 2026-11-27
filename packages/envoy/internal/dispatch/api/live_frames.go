@@ -254,15 +254,15 @@ const (
 	// (touchedBy), its read holds the delivery settings, its freshness is the hub's one verdict,
 	// and a deployment with no delivery settings is DELIVERY_NOT_CONFIGURED.
 	viewReadsDelivery viewReads = iota + 1
-	// viewReadsLegion is one project's Legion daemon as the sampler recorded it, and for the board
-	// the stored per-issue facts of the issues it shows: the view's spec holds that project, a read
-	// of its daemon or a write of its Legion setting marks it (dirtyLegionProject), and so does each
-	// connection of the hub's listener (dirtyLegionViews); the one delivery change that touches it
-	// is the write of a facts row of its project, which marks the board alone (touchedBy); it
-	// judges no freshness. A project that names no daemon is LEGION_NOT_CONFIGURED to the board
-	// alone, whose read answers legion.ErrNoSettings for it: one issue's read answers an issue of
-	// such a project with its configured false body (readLegionIssue), so a legion_issue view is
-	// never refused it.
+	// viewReadsLegion is one project's Legion daemon as the Legion intake recorded it, and for the
+	// board the stored per-issue facts of the issues it shows: the view's spec holds that project,
+	// each record of its daemon or a write of its Legion setting marks it (dirtyLegionProject), and
+	// so does each connection of the hub's listener (dirtyLegionViews); the one delivery change
+	// that touches it is the write of a facts row of its project, which marks the board alone
+	// (touchedBy); it judges no freshness. A project that names no daemon is LEGION_NOT_CONFIGURED
+	// to the board alone, whose read answers legion.ErrNoSettings for it: one issue's read answers
+	// an issue of such a project with its configured false body (readLegionIssue), so a
+	// legion_issue view is never refused it.
 	viewReadsLegion
 )
 
@@ -382,21 +382,21 @@ var deliveryLiveKinds = map[string]deliveryLiveClasses{
 	//
 	// An entry is sent only when its stored row moved. Each read closes every open row at its own
 	// clock (legionfacts.Row.At), so an open issue's hours, work time, slot hours and last moment
-	// of work, and the as_of they are of, differ on every recompute, a sampler's read once a
-	// minute among them. So the board revises the map itself (legionBoardResponse's mapRevisions),
-	// from the typed values it built each entry of rather than from the entry's encoding, and the
-	// class names no subfield: an entry's revision leaves out each value whose rate the entry's
-	// growth carries, and the as_of they are of, of which it keeps only whether it is null
-	// (legionBoardFacts' appendKept). A recompute that moved only the clock sends no entry, where
-	// it would otherwise resend every open issue's (about 2,600 at INFRA's size), and a value that
-	// comes to grow is left out once its rate joins the growth, which moves the revision itself.
-	// What the revision keeps moves whenever the stored row does: a write of a row whose values
-	// moved stamps its updated_at (legionfacts.WriteProject), and its growth, why it waits, its
-	// close, each value that stands and every other value the entry carries are kept as stored.
-	// An entry whose values grow carries its as_of and its growth, so a page closes the values it
-	// holds at its own clock by the rule the read closes them by; one whose values stand carries
-	// null for both. An entry that is sent goes whole, its values grown to the moment of the
-	// recompute that sent it.
+	// of work, and the as_of they are of, differ on every recompute, each record the Legion intake
+	// makes of the daemon among them. So the board revises the map itself (legionBoardResponse's
+	// mapRevisions), from the typed values it built each entry of rather than from the entry's
+	// encoding, and the class names no subfield: an entry's revision leaves out each value whose
+	// rate the entry's growth carries, and the as_of they are of, of which it keeps only whether it
+	// is null (legionBoardFacts' appendKept). A recompute that moved only the clock sends no entry,
+	// where it would otherwise resend every open issue's (about 2,600 at INFRA's size), and a value
+	// that comes to grow is left out once its rate joins the growth, which moves the revision
+	// itself. What the revision keeps moves whenever the stored row does: a write of a row whose
+	// values moved stamps its updated_at (legionfacts.WriteProject), and its growth, why it waits,
+	// its close, each value that stands and every other value the entry carries are kept as
+	// stored. An entry whose values grow carries its as_of and its growth, so a page closes the
+	// values it holds at its own clock by the rule the read closes them by; one whose values stand
+	// carries null for both. An entry that is sent goes whole, its values grown to the moment of
+	// the recompute that sent it.
 	legionBoardView: {
 		body: reflect.TypeFor[legionBoardResponse](),
 		maps: map[string][]string{"issues": nil},

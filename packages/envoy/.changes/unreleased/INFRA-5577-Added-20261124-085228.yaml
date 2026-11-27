@@ -7,15 +7,18 @@ body: |-
   stored in `issue_filings`. One computation answers them all, so no two views of one issue can
   disagree.
   A leased consumer keeps the rows true to their inputs. It wakes on the issue's own events, on
-  the daemon's observations and on the delivery change feed, recomputes the issue whose inputs
-  moved with its ancestors, and recomputes the subtree of an issue that moved to another tree, by
-  its parent link or by the tree its daemon reports, with the tree it left, and it rewrites no
-  row on a timer. An open issue's row holds its facts as of the newest input they read and how
-  fast each grows after it, so a row whose inputs did not move is never rewritten, and every
-  read gives each fact at the read's own clock. Each build reads a project whole once, as does a
-  cursor whose rows the feed has pruned; during a roll the older build deletes no row or filing
-  and the newer build computes again every row and filing the older one writes, so once the
-  older process has stopped every row and filing is the running build's.
+  each record the Legion state intake makes of the daemon and on the delivery change feed,
+  recomputes the issue whose inputs moved with its ancestors, and recomputes the subtree of an
+  issue that moved to another tree, by its parent link or by the tree its daemon reports, with the
+  tree it left, and it rewrites no row on a timer. It reads the daemon's observations by id, and
+  every insert into `legion_observations` now takes one advisory lock before it draws its ids and
+  holds it to its commit, so the ids are commit order while the intake writes two projects at
+  once. An open issue's row holds its facts as of the newest input they read and how fast each
+  grows after it, so a row whose inputs did not move is never rewritten, and every read gives
+  each fact at the read's own clock. Each build reads a project whole once, as does a cursor whose
+  rows the feed has pruned; during a roll the older build deletes no row or filing and the newer
+  build computes again every row and filing the older one writes, so once the older process has
+  stopped every row and filing is the running build's.
   The board at `GET /api/v1/projects/{key}/legion/board` gains `issues`, a map keyed by issue key
   of the stored rows of every open issue with Legion phase work and of every issue the board
   shows: each card's issue and every issue of a tree a card stands in. The rows are read by key,
@@ -32,7 +35,7 @@ body: |-
   the project, the issue and the issue's close before and after the write, which wakes the open
   Legion boards of its project and no other view; a filings write logs `issue_filings`, which
   wakes no view. Each server process opens one more connection to Postgres for the consumer's
-  lease: 119.
+  lease: 121.
 time: 2026-11-24T08:52:28Z
 custom:
     Issue: INFRA-5577

@@ -92,9 +92,9 @@ func TestEveryIssueComputedAloneHoldsTheFactsTheProjectComputedWholeWhenADaemonN
 		len(seeded.fixture.Keys), differed, child, tree, parents[child])
 }
 
-// seedTree writes one `tree` observation of an issue as the sampler writes it: the issue's top
-// issue as the daemon named it, which the tree rule reads before any parent link. The moment is
-// the computation's own, so the row is the newest the daemon reports of the issue.
+// seedTree writes one `tree` observation of an issue as the Legion state intake writes it: the
+// issue's top issue as the daemon named it, which the tree rule reads before any parent link. The
+// moment is the computation's own, so the row is the newest the daemon reports of the issue.
 func seedTree(t *testing.T, seeded history, issue, tree string) {
 	t.Helper()
 	if _, err := seeded.database.Pool.Exec(t.Context(), `

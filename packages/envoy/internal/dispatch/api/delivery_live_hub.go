@@ -180,12 +180,13 @@ func (g *hubGeneration) leaveLocked(sub *deliverySub) {
 // (migration 0100), as a pending change row of the change log's outbox commits (20261117100001),
 // whose drain the hub runs before it reads, and as a drain that moved rows commits, and the
 // delivery package declares it beside the row; delivery_freshness carries the settings row's
-// freshness columns as JSON (0100); legion.StateChannel carries a project key and is notified
-// after each read of that project's Legion daemon and after each write of its Legion setting
-// (settings_legion.go), which with Dispatch's own events and the project's stored facts
-// (delivery.ChangeKindIssueFacts) is all that moves a Legion board; and workflowstore.RunsChannel
-// carries an issue key and is notified as a write of one of that issue's runs commits, which with
-// the project's notifies on legion.StateChannel is all that moves the issue's legion_issue view.
+// freshness columns as JSON (0100); legion.StateChannel carries a project key and is notified by
+// the Legion intake after each batch of state events it applied and each whole read of that
+// project's Legion daemon, and after each write of its Legion setting (settings_legion.go), which
+// with Dispatch's own events and the project's stored facts (delivery.ChangeKindIssueFacts) is all
+// that moves a Legion board; and workflowstore.RunsChannel carries an issue key and is notified as
+// a write of one of that issue's runs commits, which with the project's notifies on
+// legion.StateChannel is all that moves the issue's legion_issue view.
 const deliveryFreshnessChannel = "delivery_freshness"
 
 // deliveryHubFeedBuffer is the hub's slots on the relay's feed: more than one relay page
@@ -428,10 +429,11 @@ const (
 // What marked a view, as a recompute's line counts it (deliveryView.marks), beside a subscribe
 // (deliveryCauseSubscribe) and a delivery change, which counts by its own kind (delivery.Change's
 // Kind, issue_facts among them): an event the relay delivered (applyEventLocked, and the events a
-// read heard, recheckHeardLocked); a read of a project's Legion daemon or a write of its setting
-// (dirtyLegionProject); a write of an issue's run (dirtyLegionIssue); a connection of the
-// listener (dirtyLegionViews); the event feed taken (applyFeed); a lost change cursor
-// (catchUpChanges); and the retry of a read that failed (recompute).
+// read heard, recheckHeardLocked); a record the Legion intake made of a project's daemon, a batch
+// of its state events or a whole read, or a write of the project's Legion setting
+// (dirtyLegionProject); a write of an issue's run (dirtyLegionIssue); a connection of the listener
+// (dirtyLegionViews); the event feed taken (applyFeed); a lost change cursor (catchUpChanges); and
+// the retry of a read that failed (recompute).
 const (
 	deliveryMarkEvent       = "event"
 	deliveryMarkLegionState = "legion_state"
@@ -539,9 +541,10 @@ func (h *deliveryHub) onNotify(g *hubGeneration, channel, payload string) {
 	}
 }
 
-// dirtyLegionProject marks every Legion view of the project a read of a Legion daemon just recorded,
-// or whose Legion setting a write just named or removed: its board, and the legion_issue view of
-// each of its issues. The sampler announces every read, failed or not: the header and an issue's
+// dirtyLegionProject marks every Legion view of the project whose Legion daemon Dispatch just
+// recorded, a batch of its state events or a whole read, or whose Legion setting a write just
+// named or removed: its board, and the legion_issue view of each of its issues. The intake
+// announces every whole read, failed or not: the header and an issue's
 // read carry the read itself, so a view whose daemon stopped answering moves as surely as one
 // whose issues did. A setting's write moves every such view too: the board appears or is refused,
 // and an issue's view says whether the project names a daemon (configured).

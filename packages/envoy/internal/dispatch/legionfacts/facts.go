@@ -229,9 +229,9 @@ func ReadRepos(ctx context.Context, q Querier, keys []string) (map[string]string
 
 // lineIssue is what the waiting line reads of one issue the daemon reports (legion.LineIssue):
 // the phase of its newest `phase` observation and the slot of its newest `slot` one. An issue none
-// of whose fields holds a value at its newest observation is one the newest good read does not
-// carry — the sampler recorded nothing of it, or wrote each of its fields `null` when it left the
-// daemon's state — which is the rule the board's own line reads its issues by
+// of whose fields holds a value at its newest observation is one the daemon's recorded state does
+// not carry — the Legion state intake recorded nothing of it, or wrote each of its fields `null`
+// when it left the daemon's state — which is the rule the board's own line reads its issues by
 // (legion.ReadCurrent's Newest, api/legion_board.go's issues map), and the line numbers it in no
 // place and draws it no card.
 func lineIssue(population *metrics.Population, key string) (legion.LineIssue, bool) {
@@ -284,8 +284,8 @@ func reasonOf(line *legion.WaitingLine, issue *metrics.Issue) string {
 }
 
 // newestPhase is the phase the issue is in and when it entered it: the newest `phase` observation
-// and the moment it was recorded, since the sampler writes a row only where the value moved. The
-// marks are in order, so the newest is the last.
+// and the moment it was recorded, since the Legion state intake writes a row only where the value
+// moved. The marks are in order, so the newest is the last.
 func newestPhase(issue *metrics.Issue) (string, *time.Time) {
 	marks := issue.Observed[legion.FieldPhase]
 	if len(marks) == 0 {
