@@ -381,7 +381,7 @@ func (s *server) putIssueRoleHolders(w http.ResponseWriter, r *http.Request) {
 	// transaction's first write, so it holds no transaction id.
 	previous, _, err := readIssueRoleHolders(r.Context(), tx, issue)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// Mark the project even if the body lists no holders. Update the provenance of each
@@ -425,7 +425,7 @@ func (s *server) putIssueRoleHolders(w http.ResponseWriter, r *http.Request) {
 		event, err := s.appendEvent(r.Context(), tx, issueOwner(issue).event("issue.role_holders_changed", writer.actor,
 			issueRoleHoldersChange{Key: issue, Holders: stored.Holders, PreviousHolders: previous.Holders}))
 		if err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		changed = append(changed, event)
