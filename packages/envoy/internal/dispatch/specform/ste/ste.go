@@ -570,11 +570,11 @@ func Lint(text string) []Finding {
 }
 
 // LintVerbs is Lint of a text that is no markdown document, such as the one line of a text of
-// Dispatch or a sentence of it, and the members of the synonym groups that text uses (Verbs), each
-// as it reads them for the rule synonym-rotation: so the verbs of one text can stand beside the
-// words of another (Rotations). It reads no line as a fence: a caller hands it a text whose fence
-// markers NoFences wrote as white space, or a piece of one, which can start with three backticks of
-// code font where no line starts.
+// Dispatch, and the members of the synonym groups that text uses (Verbs), each as it reads them
+// for the rule synonym-rotation: so the verbs of one text can stand beside the words of another
+// (Rotations). It reads no line as a fence: a caller hands it a text whose fence markers NoFences
+// wrote as white space, or a piece of one, which can start with three backticks of code font where
+// no line starts.
 func LintVerbs(text string) ([]Finding, Verbs) {
 	return lint(text, false)
 }
@@ -588,7 +588,7 @@ func lint(text string, fences bool) ([]Finding, Verbs) {
 		found = append(found, located{line: line, column: column, Finding: Finding{Rule: rule, Match: match}})
 	}
 	seen := map[[2]int]bool{}
-	var hits []Hit
+	var hits []hit
 	eachSegment(lines, starts, fences, func(line int, from segment, text string) {
 		column := columns{text: text, start: from.column}
 		for index, char := range text {
@@ -612,16 +612,16 @@ func lint(text string, fences bool) ([]Finding, Verbs) {
 		}
 	})
 	// A synonym rotation is each member of a group after the first one to stand in the text, at
-	// its first place, in ste-lint's order of the places (Hit.Less). Each member that stands in the
+	// its first place, in ste-lint's order of the places (hit.less). Each member that stands in the
 	// text is one of its verbs.
 	var verbs Verbs
-	present := make([][]Hit, len(rules.synonyms))
-	for _, hit := range hits {
-		present[hit.Group] = append(present[hit.Group], hit)
-		verbs |= hit.Verb()
+	present := make([][]hit, len(rules.synonyms))
+	for _, place := range hits {
+		present[place.Group] = append(present[place.Group], place)
+		verbs |= place.verb()
 	}
 	for _, each := range present {
-		sort.Slice(each, func(a, b int) bool { return each[a].Less(each[b]) })
+		sort.Slice(each, func(a, b int) bool { return each[a].less(each[b]) })
 		for index := 1; index < len(each); index++ {
 			add(each[index].Line, each[index].Column, "synonym-rotation", each[index].Match)
 		}
@@ -640,20 +640,19 @@ func lint(text string, fences bool) ([]Finding, Verbs) {
 	return findings, verbs
 }
 
-// Hit is the first place of a member of a synonym group in a text, as LintVerbs reads it for the
+// hit is the first place of a member of a synonym group in a text, as LintVerbs reads it for the
 // rule synonym-rotation: the group and the member, in the order of rules.json, the line and the
 // column that ste-lint orders it by, and its words there (Match).
-type Hit struct {
+type hit struct {
 	Group, Member, Line, Column int
 	Match                       string
 }
 
-// Less reports whether h comes before other in ste-lint's order of the first places of the
+// less reports whether h comes before other in ste-lint's order of the first places of the
 // members of a synonym group, the order whose first member gives no finding of the rule
 // synonym-rotation: by line, then column, then words, as Python orders its (line, column, match)
-// tuples. LintVerbs orders the places of one text by it, and a caller that reads a line as
-// several texts orders the places of each text by it.
-func (h Hit) Less(other Hit) bool {
+// tuples. LintVerbs orders the places of one text by it.
+func (h hit) less(other hit) bool {
 	if h.Line != other.Line {
 		return h.Line < other.Line
 	}
@@ -665,9 +664,9 @@ func (h Hit) Less(other Hit) bool {
 
 // firstHits is the first place in kept, the text of a segment of line without its inline code,
 // of each member of a synonym group that seen does not hold yet, in the order of the segment; it
-// puts each such member in seen. It is the one scan of the synonym groups: LintVerbs and SpreadOf
-// read the members through it alone.
-func firstHits(kept string, line int, column *columns, seen map[[2]int]bool) []Hit {
+// puts each such member in seen. It is the one scan of the synonym groups: LintVerbs reads the
+// members through it alone.
+func firstHits(kept string, line int, column *columns, seen map[[2]int]bool) []hit {
 	type first struct {
 		member [2]int
 		span   [2]int
@@ -684,109 +683,18 @@ func firstHits(kept string, line int, column *columns, seen map[[2]int]bool) []H
 		}
 	}
 	sort.Slice(firsts, func(a, b int) bool { return firsts[a].span[0] < firsts[b].span[0] })
-	hits := make([]Hit, len(firsts))
-	for index, hit := range firsts {
-		seen[hit.member] = true
-		hits[index] = Hit{Group: hit.member[0], Member: hit.member[1], Line: line,
-			Column: column.at(hit.span[0]), Match: kept[hit.span[0]:hit.span[1]]}
+	hits := make([]hit, len(firsts))
+	for index, found := range firsts {
+		seen[found.member] = true
+		hits[index] = hit{Group: found.member[0], Member: found.member[1], Line: line,
+			Column: column.at(found.span[0]), Match: kept[found.span[0]:found.span[1]]}
 	}
 	return hits
 }
 
-// Spread is what LintVerbs reads in a text of one line that the text around it can change, for a
-// caller that reads such a line as the sentences that make it, each one text: the first place of
-// each member of a synonym group (Hits, in the order of the text), the words of each sentence
-// piece as the rule long-sentence counts them (Pieces, one at least), and whether the last piece
-// runs on into a text that follows after white space (Open), as it does where the text, without
-// its inline code, ends in no ".", "!" or "?". So the rule synonym-rotation over the texts in
-// order reads the first Hit of each member, and a piece of the rule long-sentence takes the words
-// of the last piece of a text that is Open and of the first piece of the text after it.
-type Spread struct {
-	Hits   []Hit
-	Pieces []int
-	Open   bool
-}
-
-// SpreadOf is the Spread of text, a text of one line, as LintVerbs reads it: a piece of a line,
-// such as a sentence, which no fence switch reads.
-func SpreadOf(text string) Spread {
-	var spread Spread
-	lines, starts := splitLines(text)
-	seen := map[[2]int]bool{}
-	last := rune(-1)
-	eachSegment(lines, starts, false, func(line int, from segment, kept string) {
-		column := columns{text: kept, start: from.column}
-		spread.Hits = append(spread.Hits, firstHits(kept, line, &column, seen)...)
-		for _, piece := range sentencePieces(kept) {
-			spread.Pieces = append(spread.Pieces, len(fields(piece)))
-		}
-		if kept != "" {
-			last, _ = utf8.DecodeLastRuneInString(kept)
-		}
-	})
-	if len(spread.Pieces) == 0 {
-		spread.Pieces = []int{0}
-	}
-	spread.Open = last != '.' && last != '!' && last != '?'
-	return spread
-}
-
-// Rotation is the finding of the rule synonym-rotation at h, as Lint gives it where h is not the
-// first member of its group to stand in the text.
-func (h Hit) Rotation() Finding {
-	return Finding{Rule: "synonym-rotation", Match: h.Match}
-}
-
-// Verb is the member of h in Verbs.
-func (h Hit) Verb() Verbs {
+// verb is the member of h in Verbs.
+func (h hit) verb() Verbs {
 	return 1 << (rules.first[h.Group] + h.Member)
-}
-
-// GroupsEach is each synonym group of which v uses a verb, as all the verbs of the group, in the
-// order of rules.json.
-func (v Verbs) GroupsEach() []Verbs {
-	var each []Verbs
-	for _, group := range rules.groups {
-		if v&group != 0 {
-			each = append(each, group)
-		}
-	}
-	return each
-}
-
-// Count is how many verbs v holds.
-func (v Verbs) Count() int {
-	return bits.OnesCount64(uint64(v))
-}
-
-// Lines is how many lines ste-lint reads text as: it ends a line at each line break that
-// Python's str.splitlines reads (splitLines), \v, \f and U+2028 among them, and not only at \n.
-func Lines(text string) int {
-	lines, _ := splitLines(text)
-	return len(lines)
-}
-
-// LongSentence is the finding of the rule long-sentence for a piece of words, as Lint gives it,
-// and whether a piece of so many words breaks the rule.
-func LongSentence(words int) (Finding, bool) {
-	return Finding{Rule: "long-sentence", Match: fmt.Sprintf("%d words", words)}, words > rules.maxWords
-}
-
-// ListItem reports whether line starts a list item as the rule dangling-conjunction reads one.
-func ListItem(line string) bool {
-	return listItemStart.MatchString(line)
-}
-
-// Neutral is text as the rule dangling-conjunction reads it, with each inline code read as a
-// neutral word.
-func Neutral(text string) string {
-	return inlineCode.ReplaceAllString(text, " CODE ")
-}
-
-// EndsInConjunction reports whether text, as Neutral writes it, ends in "and" or "or", the end
-// of a list item that the rule dangling-conjunction refuses.
-func EndsInConjunction(text string) bool {
-	return conjunctionEnd(Strip(Neutral(text))) >= 0
 }
 
 // Rotations is the verbs of each synonym group that a text breaks the rule synonym-rotation in with

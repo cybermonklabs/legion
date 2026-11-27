@@ -346,7 +346,7 @@ func TestWordsAreWhatSteLintLints(t *testing.T) {
 // A text of Dispatch is no markdown document: Dispatch joins the lines of a text into one and
 // reads it with each fence marker written as white space (NoFences,
 // TestNoFencesWritesEachFenceMarkerAsWhiteSpace), so a sentence of it can start with three
-// backticks of code font. So LintVerbs, Words and SpreadOf read no line as a fence, where Lint,
+// backticks of code font. So LintVerbs and Words read no line as a fence, where Lint,
 // the port of ste-lint, still does (the control, and TestPortMatchesSteLintOnTheCorpus).
 func TestTheReadersOfATextOfDispatchReadNoFence(t *testing.T) {
 	const piece = "```x``` a; b"
@@ -365,8 +365,8 @@ func TestTheReadersOfATextOfDispatchReadNoFence(t *testing.T) {
 	if !slices.Equal(words, []string{"One.", "Two."}) {
 		t.Errorf("Words: %q, want the two words after the code font", words)
 	}
-	if got := SpreadOf("```x``` one two three").Pieces; !slices.Equal(got, []int{3}) {
-		t.Errorf("SpreadOf: the pieces %v, want one of 3 words", got)
+	if got, _ := LintVerbs("```x``` one two three four five six"); len(got) != 0 {
+		t.Errorf("LintVerbs of a piece that starts with code font: %v, want no finding", got)
 	}
 }
 
