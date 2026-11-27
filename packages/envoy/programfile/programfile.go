@@ -34,8 +34,7 @@ import (
 // fork os/exec makes waits for the write, so content is a reader of what is already in memory or
 // in a local file, and its reads start no process: a fork there would wait on the lock it holds.
 func Write(name string, flag int, perm os.FileMode, content io.Reader) error {
-	syscall.ForkLock.RLock()
-	defer syscall.ForkLock.RUnlock()
+	_ = syscall.ForkLock // CONTROL ONLY: the fork lock taken out of the function that writes an executable
 	file, err := os.OpenFile(name, os.O_WRONLY|os.O_CREATE|flag, perm)
 	if err != nil {
 		return err
