@@ -1,5 +1,5 @@
 import { beforeAll, expect, test } from "bun:test";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 import { cliRefusals } from "@legion/envoy-client/dispatch-cli";
@@ -160,6 +160,28 @@ const message = JSON.stringify({ message: { body: "Plan: re-check the attachment
 const capture = { "asks.json": "[]", "events.json": seeded, "message.json": message };
 run("ask-on-message-head-1", { ...capture, "out.txt": noKey }, header);
 run("ask-on-message-head-2", { ...capture, "out.txt": "exit=0\n" }, [...header, ...turn]);
+
+/** A request the model's route failed, as Oh My Pi writes it: an assistant message with no content
+ *  that stopped on an error. */
+const failedRequest = (errorMessage: string) => ({
+  type: "message",
+  message: { role: "assistant", content: [], stopReason: "error", errorMessage },
+});
+const unreachable = "Couldn't reach model.invalid (getaddrinfo ENOTFOUND).";
+const exhausted = `Retry budget exhausted after 10 retries: ${unreachable}`;
+// A turn whose retries ran out, and a turn whose retry recovered before its reply.
+run("ask-on-message-head-3", { ...capture, "out.txt": `${exhausted}\nexit=1\n` }, [
+  ...header,
+  ...turn.slice(0, 1),
+  failedRequest(unreachable),
+  failedRequest(exhausted),
+]);
+run("ask-on-message-head-4", { ...capture, "out.txt": "exit=0\n" }, [
+  ...header,
+  ...turn.slice(0, 1),
+  failedRequest(unreachable),
+  ...turn.slice(1),
+]);
 
 /** An assistant turn whose one tool call is `bash` running `command`, before the handoff write. */
 const bash = (command: string, id = "call-1", timestamp = "2026-09-30T17:27:30.000Z") => ({
@@ -3154,9 +3176,19 @@ test("a run whose agent never got a model turn is a rig error, not a failure", (
     expect(out).toContain(`${name}\trig error: `);
     expect(out).not.toContain(`${name}\tpass=`);
   }
-  // Pass counts over the one run that got a turn; the other is counted only as a rig error.
+  // Pass counts over the runs the rig could score; the others count only as rig errors.
   expect(out).toContain("tester-proof\thead\t0/1\t0/1\t1\t0\n");
-  expect(out).toContain("ask-on-message\thead\t0/1\t0/1\t1\t0\n");
+  expect(out).toContain("ask-on-message\thead\t0/2\t0/2\t2\t0\n");
+});
+
+// Catches: a run whose model's route was down scored as the agent's failure. Oh My Pi writes each
+// failed request as an assistant message, so such a run has assistant messages and did nothing.
+test("a run whose turn ended on a model error is a rig error, and one whose retry recovered is scored", () => {
+  expect(out).toContain(
+    `ask-on-message-head-3\trig error: a turn of the agent ended on a model error: ${exhausted}\n`
+  );
+  expect(out).not.toContain("ask-on-message-head-3\tpass=");
+  expect(out).toContain("ask-on-message-head-4\tpass=false\t");
 });
 
 test("a run whose agent got a turn and did nothing is a failure", () => {
@@ -4193,4 +4225,77 @@ test("the summary tables print how many counted runs carry a flag", () => {
   expect(out).toContain("\nscenario\tlabel\tpass\tpass+ref\trig errors\tflagged\n");
   expect(out).toContain("spec-writing\tflagged\t2/2\t2/2\t0\t1\n");
   expect(out).toContain("\nacme-1\tspec-writing\tflagged\t2\t0\t0\t1\n");
+});
+
+// owner-walk, a scored scenario: `score.ts runs <runs dir> --run <name>` writes one run's row.json.
+// A scored run must have run on its label's model, the `model` line of the built-from rig.sh copies
+// into the run, and on that model alone (unscored).
+const onModel = (model: string) => ({
+  type: "message",
+  message: {
+    role: "assistant",
+    provider: model.split("/")[0],
+    model: model.split("/").slice(1).join("/"),
+    content: [{ type: "text", text: "Done." }],
+  },
+});
+const scoredRun = (model: string | null) => ({
+  "out.txt": "exit=0\n",
+  "built-from": `checkout /checkouts/head\n${model === null ? "" : `model ${model}\n`}`,
+});
+// The header names the label's model, and an answer comes from another one.
+run("owner-walk-root-B-claude-head-1", scoredRun("anthropic/claude-opus-4-8"), [
+  ...header,
+  turn[0],
+  onModel("openai/gpt-6.1-sol"),
+]);
+// The whole session ran on a model other than the label's.
+run("owner-walk-root-B-claude-head-2", scoredRun("anthropic/claude-opus-4-8"), [
+  { ...header[0] },
+  { type: "model_change", model: "anthropic/claude-sonnet-5-5" },
+  turn[0],
+  onModel("anthropic/claude-sonnet-5-5"),
+]);
+// The label's built-from names no model.
+run("owner-walk-root-B-claude-head-3", scoredRun(null), [
+  ...header,
+  turn[0],
+  onModel("anthropic/claude-opus-4-8"),
+]);
+
+/** The row.json `score.ts runs <runs> --run <name>` writes for the run. */
+function scoredRowOf(name: string): { outcome: string; error?: string } {
+  const scored = Bun.spawnSync([
+    "bun",
+    path.join(import.meta.dir, "score.ts"),
+    "runs",
+    runs,
+    "--run",
+    name,
+  ]);
+  expect(scored.exitCode).toBe(0);
+  return JSON.parse(readFileSync(path.join(runs, name, "row.json"), "utf8"));
+}
+
+// Catches: a scored run on a model its label did not name counted in its label's cells, as when a
+// fallback answered for the gateway's model.
+test("a run on another model is a rig error", () => {
+  expect(scoredRowOf("owner-walk-root-B-claude-head-1")).toMatchObject({
+    outcome: "rig-error",
+    error:
+      "its transcript names 2 models, anthropic/claude-opus-4-8 and openai/gpt-6.1-sol: a scored run runs on its label's model alone",
+  });
+  expect(scoredRowOf("owner-walk-root-B-claude-head-2")).toMatchObject({
+    outcome: "rig-error",
+    error:
+      "its transcript names the model anthropic/claude-sonnet-5-5, and its label's built-from names anthropic/claude-opus-4-8",
+  });
+});
+
+// Catches: a model check that passes a run whose label names no model, which it cannot check.
+test("a scored run whose label's built-from names no model line is a rig error, saying so", () => {
+  expect(scoredRowOf("owner-walk-root-B-claude-head-3")).toMatchObject({
+    outcome: "rig-error",
+    error: "its label's built-from names no model line, so the run's model cannot be checked",
+  });
 });

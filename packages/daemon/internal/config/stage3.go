@@ -327,9 +327,9 @@ func readProject(value *yaml.Node, key string) (Project, []string, error) {
 
 // readDefaultSteps is a project's `default_steps`: a list of steps, each entry one step in the
 // plan's grammar (plan.ParseSteps). The loader holds the list to the checks a plan of the one
-// task `default` with those steps passes (plan.Supported, then plan.Validate against Legion's own
-// roles), and refuses an empty list, so the steps a task with none runs are steps this release
-// carries out. A refusal names the key, then gives every reason of both checks.
+// task `default` with those steps passes against Legion's own roles (plan.Refusals), and refuses
+// an empty list, so the steps a task with none runs are steps this release carries out. A refusal
+// names the key, then gives every reason of both checks.
 func readDefaultSteps(value *yaml.Node, key string) ([]plan.Step, error) {
 	words, err := readStrings(value, key)
 	if err != nil {
@@ -350,7 +350,7 @@ func readDefaultSteps(value *yaml.Node, key string) ([]plan.Step, error) {
 		steps = append(steps, parsed[0])
 	}
 	task := plan.Plan{Tasks: []plan.Task{{ID: plan.DefaultTask, Steps: steps}}}
-	refusals := append(plan.Supported(task), plan.Validate(task, plan.Deployment{Roles: plan.BuiltinRoles()})...)
+	refusals := plan.Refusals(task, plan.Deployment{Roles: plan.BuiltinRoles()})
 	if len(refusals) > 0 {
 		reasons := make([]string, len(refusals))
 		for i, refusal := range refusals {

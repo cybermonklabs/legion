@@ -21,7 +21,7 @@
  */
 
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
-import { EnvelopeSchema, legacyAgentSubject } from "@legion/contracts";
+import { DELIVERY_CAPABILITIES, EnvelopeSchema, legacyAgentSubject } from "@legion/contracts";
 import { settled, span, until } from "@legion/test-fixtures/wait";
 import { connect, Events, type KV, type NatsConnection, StringCodec } from "nats";
 import { z } from "zod";
@@ -211,6 +211,10 @@ async function runSessionChild(config: ChildConfig): Promise<never> {
       topics: [subject],
       port: 0,
       title: config.title,
+      // The modes a session advertises once something takes messages into its conversation, as
+      // this child does on stdout. A probed session that advertises none answers a plain send
+      // no_receiver with no recipient_state, so the states this rig reads would not be there.
+      capabilities: DELIVERY_CAPABILITIES,
       driving: false,
       selfSubscribed: true,
       plugin: PLUGIN,
@@ -574,12 +578,13 @@ describe.skipIf(!envoyStackEnabled)("a session its box stalls", () => {
     // The stalled record's `last_seen` is at least the stamp read before the freeze: the freeze
     // took no registration back, and one already on its way when it came may have moved it on.
     expect(stalled.lastSeen).toBeGreaterThanOrEqual(beforeFreeze);
-    // It is past the live window when the listener reads the session as stalled, so it is not
-    // the moment the listener noticed. The listener reads a record live while its age is at most
-    // the window, to the nanosecond (`StateOf`, packages/envoy/internal/session/state.go), and
-    // stamps `last_seen` in whole milliseconds, so a read just past the window can land in the
-    // same millisecond as `Date.now()` here: the age this row sees is the window or more. A wait
-    // that polls every 10 ms read exactly 10 000 in CI run 45827333044 at 32201e8f.
+    // A whole live window at least, and possibly exactly one: the listener reads a record
+    // unresponsive once its age passes the window on its own clock, in nanoseconds since the
+    // millisecond `last_seen` names (`StateOf`, packages/envoy/internal/session/state.go), and
+    // `Date.now()`, read after that answer, is a later instant floored to the millisecond. An
+    // answer given inside the millisecond the window ends in reads as exactly LIVE_WINDOW_MS here
+    // (CI job 139937509810: "Expected: > 10000, Received: 10000"). Where the window ends is
+    // TestStateOfAtItsBoundaries' to hold (packages/envoy/internal/session/state_test.go).
     expect(Date.now() - stalled.lastSeen).toBeGreaterThanOrEqual(LIVE_WINDOW_MS);
 
     // (2) The default listing is unchanged for every caller that only ever wanted live
@@ -726,9 +731,9 @@ describe.skipIf(!envoyStackEnabled)("a session its box stalls", () => {
     }
 
     await waitForState(stack, ended, child.sessionID, "gone");
-    // It reached the horizon by its record's age, not by anything the rig did to it. As with the
-    // live window above, the listener's nanosecond rule against a whole-millisecond stamp makes the
-    // age this row sees the horizon or more.
+    // It reached the horizon by its record's age, not by anything the rig did to it: a whole
+    // horizon at least, and possibly exactly one, for the reason the live window's reading in the
+    // first test gives.
     expect(Date.now() - stalled.lastSeen).toBeGreaterThanOrEqual(GONE_HORIZON_MS);
 
     // Only the role claim reaper releases the claim, and only now that the holder is gone. It

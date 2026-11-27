@@ -176,10 +176,7 @@ test(
       )
       expect(notices("Envoy inbound restored")).toHaveLength(1)
       expect(
-        count(
-          stderr(),
-          "envoy-channel: this session receives again: its registration was accepted",
-        ),
+        count(stderr(), "envoy-channel: this session receives again: a registration was accepted"),
       ).toBe(1)
       expect(notices("Envoy inbound unavailable")).toHaveLength(1)
     } finally {
@@ -336,7 +333,7 @@ test("a reopen refused for good under an nkey seed is dialed again at the next h
     )
     expect(notices("Envoy inbound restored")).toHaveLength(1)
     expect(
-      count(stderr(), "envoy-channel: this session receives again: its registration was accepted"),
+      count(stderr(), "envoy-channel: this session receives again: a registration was accepted"),
     ).toBe(1)
     expect(notices("Envoy inbound unavailable")).toHaveLength(1)
   } finally {
