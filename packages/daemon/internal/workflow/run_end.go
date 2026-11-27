@@ -296,12 +296,15 @@ func (e *Engine) settleRuns(ctx context.Context, tx pgx.Tx, runs *factRuns, keys
 // queueDeletesAfterOldRuns queues each deletion a leave or a new generation asked for, once this
 // fact's settle has ended every open start of that task at the generation that asked. The old
 // generation's agent can push until its own start ends, so dropFixWay asks for the deletion and
-// queues none. Where a start of that task is still open, this queues nothing and says so, and no
-// branch stays for it: a new generation ends every run of the old one in the settle that reads
-// them, and a leave every run of its issue but a merge that can still land (runOver). A task in its
-// merge passed the move into its retro, which queued the deletion of every branch of its fixes
-// (queueTaskEnd, StartHeldRetro), and no fix opens after that move (fixFailure gives a failure in
-// the retro or the merge to the merger).
+// queues none. Where a start of that task is still open, this queues nothing and says so, and the
+// next leave or new generation of the task asks again.
+//
+// No state these tests reach keeps such a start open: a leave ends its issue's task with its run
+// (leave, endTaskWithLeave), so the settle that follows it holds every run of the issue over
+// (runOver), and a run of an earlier generation is over by its generation alone. The line below is
+// printed 0 times over the whole package's 871 tests, where the line of the deletion itself is
+// printed 21 times in the same log. So what becomes of the branches of a task whose start stays
+// open is proved by nothing here, and this says only what the code does.
 func (e *Engine) queueDeletesAfterOldRuns(ctx context.Context, tx pgx.Tx, runs *factRuns) error {
 	for task, issue := range runs.deleteAfterOldRuns {
 		starts, err := e.store.StepRuns(ctx, tx, []string{task.issue})

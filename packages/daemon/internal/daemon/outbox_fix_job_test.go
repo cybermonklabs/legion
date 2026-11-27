@@ -73,15 +73,17 @@ func (d *commitsDispatch) written() ([]string, []commitsPut) {
 // the record's own write: a record naming any of them is written on the step route, then on the
 // commits route, with the record's identity and its value of each, and a record naming none is
 // written on the step route alone. Every field of the record that is no field of the step write,
-// its id and its rating aside, is a field of the commits write under the same name, so a commit
-// added to the record and left out of the commits write fails here.
+// its id and the two embedded values each route of its own carries aside (PlanRating,
+// StepExperiment), is a field of the commits write under the same name, so a commit added to the
+// record and left out of the commits write fails here.
 func TestARecordWithCommitsWritesThemAfterTheRecord(t *testing.T) {
 	t.Parallel()
 	recordType := reflect.TypeFor[record.StepRecord]()
 	writeType, commitsType := reflect.TypeFor[dispatch.StepWrite](), reflect.TypeFor[dispatch.StepCommits]()
+	ownRoute := map[string]bool{"ID": true, "PlanRating": true, "StepExperiment": true}
 	for i := range recordType.NumField() {
 		field := recordType.Field(i)
-		if _, written := writeType.FieldByName(field.Name); written || field.Name == "ID" || field.Name == "PlanRating" {
+		if _, written := writeType.FieldByName(field.Name); written || ownRoute[field.Name] {
 			continue
 		}
 		mirror, ok := commitsType.FieldByName(field.Name)
