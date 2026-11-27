@@ -1,0 +1,8 @@
+kind: Added
+body: |-
+  `IssueTreeDecision`, the `decision` member of a tree read's node, carries the optional, nullable
+  member `waiting_change` (`IssueTreeWaitingChange`: `comment_id`, `created_at`), the Change the
+  decision waits on. A Dispatch that does not know it sends none.
+time: 2026-11-27T16:44:11Z
+custom:
+    Issue: INFRA-1253

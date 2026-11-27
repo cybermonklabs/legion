@@ -313,6 +313,9 @@ type issueTreeBuilder struct {
 	decisions map[refs.Target]model.Decision
 	plans     map[refs.Target]*model.IssueTreePlan
 	positions map[refs.Target]int
+	// waiting is the Change each decision block of the page waits on (readWaitingChanges), none
+	// held for a decision none waits on.
+	waiting map[refs.Target]*model.IssueTreeWaitingChange
 	// placements is the placement_seq of each node of the page that holds one at the cut
 	// (readPlacementSeqs).
 	placements map[refs.Target]int64
@@ -1268,8 +1271,8 @@ func (b *issueTreeBuilder) hiddenBlock(target refs.Target) bool {
 // out, so the answer is the one it would be if that node did not exist. A comment on text no
 // person wrote in stands so under the nearest node the answer holds at or above the node it is
 // on, as a child of that node's own. A comments_before read with no view and no kind then keeps
-// the comments of its page and the nodes under them alone (keepCommentsAlone); one with a view or
-// kinds keeps them once its filter has run (ordered).
+// the comments of its page and the nodes under them but their own blocks (keepCommentsAlone); one
+// with a view or kinds keeps them, with the nodes under them, once its filter has run (ordered).
 func (b *issueTreeBuilder) keep() {
 	b.kept = make(map[refs.Target]bool, len(b.entries))
 	for target, entry := range b.entries {
@@ -1316,13 +1319,23 @@ func (b *issueTreeBuilder) keep() {
 	}
 }
 
-// keepCommentsAlone leaves out of a comments_before read every node but the comments of its page
-// (the walk's, docs.WalkIssueSkeleton) and the nodes under them, the issue's own node among those
-// it leaves out (R8). Each node it keeps stands under the node keep found for it, so a comment whose
-// parent it leaves out names that parent (node) and stands at the top of the answer (ordered).
+// keepCommentsAlone leaves out of a comments_before read with no view and no kind every node but
+// the comments of its page (the walk's, docs.WalkIssueSkeleton) and the nodes under them, the
+// issue's own node among those it leaves out, and of the nodes under them each comment's own
+// blocks (R8: "A read with `comments_before` answers those comments alone, with their tuples, and
+// no other node of the skeleton"). A comment answers its whole words and their reading itself, so
+// its blocks would answer them again. A node a person placed under a comment, such as a criterion
+// written under it, stays, as the read with kinds answers it (c-kind-filter). Each node it keeps
+// stands under the node keep found for it, so a comment whose parent it leaves out - the issue, an
+// ask, a comment of another page, the block of a comment it replies to - names that parent (node)
+// and stands at the top of the answer (ordered).
 func (b *issueTreeBuilder) keepCommentsAlone() {
 	for target, kept := range b.kept {
 		if !kept {
+			continue
+		}
+		if isItemBlockKind(target.Kind) {
+			b.kept[target] = false
 			continue
 		}
 		at := target
@@ -1846,7 +1859,7 @@ func (b *issueTreeBuilder) requirementChecks(target refs.Target) *int {
 // the walk is a node of another issue a part_of brings in (readOthers), never an ask, or a tie
 // the spec and the verification views bring in (readTies): a decision, or an ask whose block
 // states its shaped tuple, a question, since a request of an approval has no block; the rule takes
-// each of them.
+// each of them. It then reads the Change each of those decisions waits on (readWaitingChanges).
 func (b *issueTreeBuilder) readDecisions(answer []refs.Target) error {
 	taken := b.taken
 	if b.view != graphstore.QueryDecisions {
@@ -1875,7 +1888,7 @@ func (b *issueTreeBuilder) readDecisions(answer []refs.Target) error {
 	for _, decision := range decided {
 		b.decisions[refs.Target{Kind: decision.NodeKind, ID: decision.NodeID}] = decision
 	}
-	return nil
+	return b.readWaitingChanges(decided)
 }
 
 // readIssueTreeIssue is what the issue key answers of itself in a tree read (model.IssueTreeIssue):
@@ -2576,7 +2589,7 @@ func (b *issueTreeBuilder) node(target refs.Target) model.IssueTreeNode {
 		node.BlockAnchor = ask.blockAnchor
 	}
 	if decision, decided := b.decisions[target]; decided {
-		node.Decision = &model.IssueTreeDecision{Decision: decision}
+		node.Decision = &model.IssueTreeDecision{Decision: decision, WaitingChange: b.waiting[target]}
 		if target.Kind == refs.BlockNodeKind {
 			node.Decision.Uncertainty, node.Decision.UncertaintyReason = b.treeUncertainty(target)
 		}

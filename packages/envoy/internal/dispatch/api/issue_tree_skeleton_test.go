@@ -113,12 +113,13 @@ func seedTupleWithHead(t *testing.T, database *store.Store, tuple graphstore.Tup
 // of one requirement, one ask and 450 comments, the last a reply to the first, reads as three
 // pages of 200, 200 and 50 comments, each the comments by made_at and then id just older than the
 // page before it, which the comments_before of the page before names as `<made_at>,<id>`; the last
-// answers comments_before null. Only the first holds the requirement and the ask. The three pages
-// hold each comment the comment list reads once, and the reply on the first page names the first
-// comment, on the third, as its parent. A position past the end and a position of another shape
-// are each 400 INVALID_QUERY, naming comments_before and its field, and the route's description
-// names both. Beside a view comments_before is taken: the spec view of this issue carries no
-// comment, so it answers no node and comments_before null.
+// answers comments_before null. Only the first holds the requirement and the ask; each later page
+// holds its comments alone, no block of one, and read with display trees each with its text and
+// its text_tree. The three pages hold each comment the comment list reads once, and the reply on
+// the first page names the first comment, on the third, as its parent. A position past the end and
+// a position of another shape are each 400 INVALID_QUERY, naming comments_before and its field,
+// and the route's description names both. Beside a view comments_before is taken: the spec view
+// of this issue carries no comment, so it answers no node and comments_before null.
 func TestTheTreeReadPagesTheCommentsNewestFirst(t *testing.T) {
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	createTestProject(t, handler, "CORE")
@@ -212,8 +213,10 @@ func TestTheTreeReadPagesTheCommentsNewestFirst(t *testing.T) {
 				requirement = true
 			case node.Kind == graphstore.KindAsk && node.ID == ask:
 				asked = true
-			case node.Kind != graphstore.KindComment && node.Kind != refs.ItemComment.BlockKind() && page > 0:
-				t.Errorf("%s answers the %s node %s, want its comments alone", name, node.Kind, node.ID)
+			case node.Kind != graphstore.KindComment && page > 0:
+				// No comment of this issue holds a node but its own blocks, which a later page
+				// leaves out, so a later page answers its comments alone.
+				t.Errorf("%s answers the %s node %s, want its comments alone, no block of one", name, node.Kind, node.ID)
 			}
 			if node.Kind == graphstore.KindComment && (node.MadeAt == nil || !node.MadeAt.Equal(madeAt[node.ID])) {
 				t.Errorf("%s answers comment %s made at %v, want %s as the comment list reads it", name, node.ID, node.MadeAt, madeAt[node.ID])
@@ -251,6 +254,24 @@ func TestTheTreeReadPagesTheCommentsNewestFirst(t *testing.T) {
 	}
 	if len(seen) != len(listed) {
 		t.Errorf("the three pages of %s answer %d comments, want the %d the comment list reads", key, len(seen), len(listed))
+	}
+	// R8: "A read with `comments_before` answers those comments alone, with their tuples, and no
+	// other node of the skeleton." Read with display trees, page 2 answers its 200 comments and no
+	// block of one, each comment with its words and their reading, which hold its blocks' whole: no
+	// comment of this issue holds any other node.
+	second := treeResponse(t, handler, key, "?comments_before="+url.QueryEscape(positionOf(listed[199].ID)), "alice", true)
+	if second.Code != http.StatusOK {
+		t.Fatalf("read page 2 of %s with display trees: status=%d body=%s", key, second.Code, second.Body.String())
+	}
+	withTrees := decodeBody[model.IssueTreeRead](t, second)
+	if len(withTrees.Nodes) != 200 {
+		t.Errorf("page 2 of %s read with display trees answers %d nodes, want its 200 comments alone", key, len(withTrees.Nodes))
+	}
+	for _, node := range withTrees.Nodes {
+		if node.Kind != graphstore.KindComment || node.Text == "" || len(node.TextTree) == 0 {
+			t.Errorf("page 2 of %s read with display trees answers the %s node %s with the text %q and the text_tree %s, want its comments alone, each with its text and text_tree",
+				key, node.Kind, node.ID, node.Text, node.TextTree)
+		}
 	}
 
 	requireCommentsBeforeRefused(t, handler, key, "comments_before="+url.QueryEscape(positionOf(listed[len(listed)-1].ID)), "past the end")

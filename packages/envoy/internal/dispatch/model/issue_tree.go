@@ -42,11 +42,11 @@ import (
 // conversation comments and the comments on the text of its nodes; in a view, the comments on the
 // text of its nodes. CommentsBefore is the position of the oldest comment of the page where older
 // ones remain, written `<made_at>,<id>` (made_at in RFC 3339, UTC, with microseconds), and null
-// where none does: the read with `comments_before=<made_at>,<id>` beside the same view or kinds
-// answers the next 200 older comments, with the nodes under them and their tuples, and no other
-// node. A comment whose parent the answer does not hold names that parent as its parent and stands
-// under the issue, by made_at and then by id. A server of the release before sends CommentsBefore
-// in the read with no view alone.
+// where none does: the read with `comments_before=<made_at>,<id>` answers the next 200 older
+// comments with the nodes under them and their tuples, and no other node - with no view and no
+// kind no comment's own blocks, which its own words and reading hold. A comment whose parent the
+// answer does not hold names that parent as its parent and stands under the issue, by made_at and
+// then by id. A server of the release before sends CommentsBefore in the read with no view alone.
 //
 // OwedDocuments names each document of the issue that owes its block index (OwedDocument), absent
 // where none does: a node of such a document the block index has not reached is not in the answer
@@ -189,12 +189,30 @@ type IssueTreeNode struct {
 // IssueTreeDecision is what a decision node, and an ask a person answered, answers of the decision
 // it is: every member the decisions read's Decision answers for it, the same names and values, and
 // beside them the decision's uncertainty (low, medium or high) and the reason for it, as the
-// decisions read's entries answer them, each null where the node holds none, as on an ask. A
-// server of the release before sends neither, so the document marks both optional.
+// decisions read's entries answer them, each null where the node holds none, as on an ask; and the
+// Change the decision waits on (IssueTreeWaitingChange), null where none does and on an ask. A
+// server of the release before sends none of the three, so the document marks each optional.
 type IssueTreeDecision struct {
 	Decision
-	Uncertainty       *string `json:"uncertainty" required:"false"`
-	UncertaintyReason *string `json:"uncertainty_reason" required:"false"`
+	Uncertainty       *string                 `json:"uncertainty" required:"false"`
+	UncertaintyReason *string                 `json:"uncertainty_reason" required:"false"`
+	WaitingChange     *IssueTreeWaitingChange `json:"waiting_change" required:"false"`
+}
+
+// IssueTreeWaitingChange is the Change a decision block waits on (INFRA-1196's decision 578): of
+// the comments that stand under the decision's node in the issue's tree at the read's cut, those
+// whose first author is a person, made after the decision's words last changed (changed_at) and
+// after its last Keep (kept.kept_at), on a decision that is not replaced, the newest its author has
+// not deleted that the read's comment pages answer, which hold each comment the server sees and no
+// other. A comment stands under the decision where its part_of names the decision's block, or a
+// block below it that the read answers no node of, such as the block of the decision's own words
+// that a Change is written on. CommentID is the comment's id and CreatedAt when it was made, the
+// made_at the read answers its node with. The read answers it whatever page of its comments holds
+// the comment, so a reader learns which Change a decision waits on without reading the older
+// comment pages.
+type IssueTreeWaitingChange struct {
+	CommentID string    `json:"comment_id"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
 // IssueTreeAnchor is the anchor a comment on text answers in a tree read (R31), as stored, in one
