@@ -86,6 +86,23 @@ func TestResetNamesTheMoveOfTheBranchGitHubRefused(t *testing.T) {
 	}
 }
 
+// An answer to the move with no errors and no update moved nothing, and Reset says so: it reads the
+// branch again, and a branch still at the merged head is an error naming the ref and both commits,
+// never a move reported for having done nothing. The control is the same answer where the branch
+// did reach the base's head by then, which is the move.
+func TestResetReportsNoMoveForAnAnswerThatUpdatedNothing(t *testing.T) {
+	g := &github{refs: map[string]string{"main": baseHead, resetBranch: mergedCommit}, empty: true}
+	got, err := g.reset(t, "main", "main")
+	want := "move refs/heads/" + resetBranch + " on acme/widgets from " + mergedCommit + " to " + baseHead +
+		": GitHub answered with no update, and the branch still points at " + mergedCommit
+	if errorText(err) != want {
+		t.Fatalf("Reset = %+v, %q; want the error %q: the answer updated nothing", got, errorText(err), want)
+	}
+	if g.refs[resetBranch] != mergedCommit {
+		t.Fatalf("the branch is at %s, want it left at %s", g.refs[resetBranch], mergedCommit)
+	}
+}
+
 // A push that lands on the branch between Reset's read of its tip and its move is not overwritten:
 // GitHub refuses the move, which names the merged head as the commit the branch must point at, and
 // Reset reads the branch again and judges its new tip as any other. A tip that holds commits the
