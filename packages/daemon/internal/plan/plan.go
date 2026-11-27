@@ -321,36 +321,31 @@ func Line(steps []Step, merges bool) []phase.Phase {
 	return append(line, phase.Retro, phase.Merging)
 }
 
-// MovesBackPairs is every move back a task this release takes can make, each written
-// "<from>-<to>" (phase.Pair), in the order of phase.MovePairs: a pair whose to stands before its
-// from on the Line of some task that Supported and Validate take, since a task moves back from a
-// phase of its line to any phase before it (workflow's backwardRows). It is read off those two
-// checks, over every order of every choice of Legion's five roles and two roles a deployment
-// defines (deploymentRoles), which run as step (RunsAs) and stand at any place, so a later release
-// whose checks take another line moves the set with them. Two such roles make the move back of a
-// step to an earlier step, step-step; a role runs at most one step of a task, so one role cannot.
-// In this release it holds 41 of the 57 pairs of phase.MovePairs. The other 16 are a move back of
-// no line: each step phase, step among them, to retro or to merging, and retro to merging, since
-// the retro and the merge end every line; and implementing to testing, reviewing or accepting,
-// since every tester, reviewer and acceptance step comes after the implementer's (stepReasons).
-// The configuration loader takes a hook's moves from this set alone (config's readHookMoves), so
-// no hook names a move that never fires. The answer is a fresh slice.
-func MovesBackPairs() []string {
-	return slices.Clone(movesBackPairs())
-}
-
-// CanMoveBack says whether from-to is a pair MovesBackPairs holds.
+// CanMoveBack says whether from-to is a move back a task this release takes can make: to stands
+// before from on the Line of some task that Supported and Validate take, since a task moves back
+// from a phase of its line to any phase before it (workflow's backwardRows). The set is read off
+// those two checks, over every order of every choice of Legion's five roles and two roles a
+// deployment defines (deploymentRoles), which run as step (RunsAs) and stand at any place, so a
+// later release whose checks take another line moves the set with them. Two such roles make the
+// move back of a step to an earlier step, step-step; a role runs at most one step of a task, so one
+// role cannot. In this release it holds 41 of the 57 pairs of phase.MovePairs. The other 16 are a
+// move back of no line: each step phase, step among them, to retro or to merging, and retro to
+// merging, since the retro and the merge end every line; and implementing to testing, reviewing or
+// accepting, since every tester, reviewer and acceptance step comes after the implementer's
+// (stepReasons). The configuration loader takes a hook's moves from this set alone (config's
+// readHookMoves), so no hook names a move that never fires.
 func CanMoveBack(from, to phase.Phase) bool {
-	return slices.Contains(movesBackPairs(), phase.Pair(from, to))
+	return movesBack()[phase.Pair(from, to)]
 }
 
 // deploymentRoles is two roles a deployment may define, of a type that is no implementation and
 // reads no pull request, so Supported takes each at any place of a task's line: the roles of the
-// deployment MovesBackPairs reads its lines with. Their names are no role of Legion's own.
+// deployment CanMoveBack's set reads its lines with. Their names are no role of Legion's own.
 var deploymentRoles = []RoleDef{{Name: "deployment-role-a", Type: TypeReview}, {Name: "deployment-role-b", Type: TypeReview}}
 
-// movesBackPairs is MovesBackPairs, built at its first read.
-var movesBackPairs = sync.OnceValue(func() []string {
+// movesBack is CanMoveBack's set, each pair written "<from>-<to>" (phase.Pair), built at its
+// first read.
+var movesBack = sync.OnceValue(func() map[string]bool {
 	d := Deployment{Roles: BuiltinRoles()}
 	choices := slices.Concat(builtinRoles, deploymentRoles)
 	for _, role := range deploymentRoles {
@@ -380,13 +375,7 @@ var movesBackPairs = sync.OnceValue(func() []string {
 		}
 	}
 	choose(nil)
-	pairs := make([]string, 0, len(found))
-	for _, pair := range phase.MovePairs() {
-		if found[pair] {
-			pairs = append(pairs, pair)
-		}
-	}
-	return pairs
+	return found
 })
 
 // taken says whether Supported and Validate take p under d, as register_plan takes a plan: neither

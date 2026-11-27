@@ -122,7 +122,9 @@ var roleForReaders = map[roleForSite]roleForReader{
 	// The role of the issue's running step at its phase, and of the phase where no step runs at it.
 	{file: "internal/projection/project.go", fn: "Project"}: {calls: 2, tests: []string{
 		"TestProjectShowsARootsArchitectHandshake", "TestTheServedStateNamesTheRunningDeploymentRole"}},
-	{file: "internal/record/design_news.go", fn: "untold"}: {calls: 1, tests: []string{"TestOwedNewsOwesEachHolderTheVersionsItHasNotTaken"}},
+	{file: "internal/record/design_news.go", fn: "untold"}:               {calls: 1, tests: []string{"TestOwedNewsOwesEachHolderTheVersionsItHasNotTaken"}},
+	{file: "internal/record/outbox.go", fn: "MergeForwardWorker"}:        {calls: 1, tests: []string{"TestAHoldOrALandedGoesToTheWorkerOfThePhaseItNames"}},
+	{file: "internal/record/outbox.go", fn: "MergeForwardMessage.Tells"}: {calls: 1, tests: []string{"TestAMergeForwardTellsTheWorkerOfThePhaseInEveryOrder"}},
 	// Whether queued work stands at a running step's phase, away from step, where it reads only
 	// whether the step is held and never its role; at admitted, where no step runs, the issue's own
 	// phase answers, as it did before running steps were read.
@@ -180,6 +182,11 @@ var roleForReaders = map[roleForSite]roleForReader{
 		"TestAConflictKeepsPhaseAndAsksTheImplementerToMergeForward", "TestAMergeForwardAtAStepOfADeploymentRoleTellsThatRole"}},
 	{file: "internal/workflow/merge_forward.go", fn: "Engine.mergeForwardLanded"}: {calls: 1, tests: []string{
 		"TestAConflictKeepsPhaseAndAsksTheReviewerToReadTheMerge", "TestAMergeForwardAtAStepOfADeploymentRoleTellsThatRole"}},
+	// The worker of the running step on a pull request's task at the phase the issue stands at,
+	// whom a hold or a landed reaches (heldWorker reads it for the start's hold and the completion
+	// fence). At admitted no step runs, so it answers no worker.
+	{file: "internal/workflow/merge_forward.go", fn: "mergeForwardWorker"}: {calls: 1, tests: []string{
+		"TestATesterStartedAfterAMergeableReadIsHeldWhileTheAskIsOwed", "TestAMergeForwardAtAStepOfADeploymentRoleTellsThatRole"}},
 	// The role of a stopped task's first step where it starts again, whatever the plan's count of
 	// tasks.
 	{file: "internal/workflow/plan_stop.go", fn: "Engine.startAtFirstStep"}: {calls: 1, tests: []string{

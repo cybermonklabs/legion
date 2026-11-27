@@ -1,8 +1,12 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import type { LegionState } from "@legion/contracts/legion-api";
+import {
+  type LegionClaimState,
+  type LegionState,
+  LegionStateResponse,
+} from "@legion/contracts/legion-api";
 import {
   EnvoyApiError,
   type KeyTakenResult,
@@ -383,6 +387,13 @@ function daemonState(architect: string | undefined): LegionState {
   } as unknown as LegionState;
 }
 
+/** The daemon's state golden, which its own projection writes over a seeded record
+ * (`packages/contracts/fixtures/daemon-api/state.json`), read through the state route's schema. */
+function stateGolden(): LegionState {
+  const file = path.resolve(import.meta.dir, "../../contracts/fixtures/daemon-api/state.json");
+  return LegionStateResponse.parse(JSON.parse(readFileSync(file, "utf8")));
+}
+
 test("a phase worker's session tells the issue's own live architect, with the evidence", async () => {
   const rig = tellerRig();
   const told = await rig.teller.tellOverdue(evidenceOf());
@@ -449,13 +460,52 @@ test("a notice whose claim changed while the publisher was built is not sent und
   );
 });
 
+// An issue whose own architect is not live is its tree's architect's, which the notice tells, as
+// the reminder does. The daemon's state golden holds such a child: LEGION-220, of LEGION-208's
+// tree, whose implementer works while its own architect's claim has failed (workflow's
+// claimFailed tells the architect above it). An operator's stop retires a failed claim that is
+// not its tree's root and keeps its failure (supervise's stop row, api.ClaimViewOf), so the same
+// record at `retired` is one the daemon serves too. The control is that record with its own
+// architect live, which tells that architect: a teller that always told the tree's architect
+// would pass the first two.
 test("a phase worker falls back to the tree's architect, as the reminder does", async () => {
-  for (const architect of ["retired", "failed", undefined]) {
-    const rig = tellerRig();
-    rig.state = daemonState(architect);
-    await rig.teller.tellOverdue(evidenceOf());
-    expect(rig.published[0]?.topic).toBe("notifications.role.legion-legion-infra-1000-architect");
+  const golden = stateGolden();
+  const child = golden.issues["LEGION-220"];
+  const architect = child?.architect;
+  if (child === undefined || architect === undefined) {
+    throw new Error("the state golden holds no LEGION-220 with an architect claim of its own");
   }
+  expect(child.tree).toBe("LEGION-208");
+  expect(architect.state).toBe("failed");
+  const toldWith = async (state: LegionClaimState) => {
+    const rig = tellerRig({
+      session: {
+        kind: "phase-worker",
+        role: "implementer",
+        tree: "LEGION-208",
+        issue: "LEGION-220",
+      },
+      claim: claimOf({ tree: "LEGION-208", issue: "LEGION-220" }),
+    });
+    const issues = {
+      ...golden.issues,
+      "LEGION-220": { ...child, architect: { ...architect, state } },
+    };
+    rig.state = { ...golden, issues };
+    await rig.teller.tellOverdue(evidenceOf());
+    return rig.published[0]?.topic;
+  };
+  for (const state of ["failed", "retired"] as const) {
+    expect(await toldWith(state)).toBe("notifications.role.legion-legion-legion-208-architect");
+  }
+  expect(await toldWith("working")).toBe("notifications.role.legion-legion-legion-220-architect");
+  // A record with no architect claim of its own is the same.
+  const unclaimed = tellerRig();
+  unclaimed.state = daemonState(undefined);
+  await unclaimed.teller.tellOverdue(evidenceOf());
+  expect(unclaimed.published[0]?.topic).toBe(
+    "notifications.role.legion-legion-infra-1000-architect"
+  );
   // A daemon that does not answer inside the bound is the same: the tree's architect is told.
   const silent = tellerRig();
   silent.state = "the daemon is unreachable";

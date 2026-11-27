@@ -167,7 +167,7 @@ func TestTheStepsOfAnyOrderMoveOn(t *testing.T) {
 			"LEGION-210": "LEGION-210 starts planning under LEGION-208: it reached the front of the waiting line and took an admission slot. ",
 		} {
 			got := noticesOf(t, pool, child, "child-status")
-			if len(got) != 1 || got[0].Kind != "child-status" || got[0].Role != claim.RoleArchitect || !strings.HasPrefix(got[0].Reason, first) {
+			if len(got) != 1 || got[0].Role != claim.RoleArchitect || !strings.HasPrefix(got[0].Reason, first) {
 				t.Fatalf("the child-status notices of %s = %+v, want one to the architect whose reason starts %q", child, got, first)
 			}
 		}

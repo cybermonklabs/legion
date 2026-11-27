@@ -472,7 +472,8 @@ func TestARoleTheDeploymentDefinesHoldsARoleOfAnIssue(t *testing.T) {
 
 // The set reads back in the order of legionclaim.Roles, the order of the default steps (each
 // task names its own), whatever order the publication named them in. The PUT answers in that
-// order too.
+// order too. The publication names reviewer, implementer and tester, whose sort by name
+// (implementer, reviewer, tester) is not their order (implementer, tester, reviewer).
 func TestTheRoleHoldersOfAnIssueReadInWorkflowOrder(t *testing.T) {
 	t.Parallel()
 	handler, _, _ := newTestServer(t, testServerOptions{})
@@ -481,8 +482,9 @@ func TestTheRoleHoldersOfAnIssueReadInWorkflowOrder(t *testing.T) {
 		t.Fatalf("the read of an issue with no holder answered %#v, want %s with []", none, issue)
 	}
 
-	published := publishRoleHolders(t, handler, issue, []issueRoleHolder{{Role: "tester", Session: "ses-t"}, {Role: "implementer", Session: "ses-i"}})
-	want := []issueRoleHolder{{Role: "implementer", Session: "ses-i"}, {Role: "tester", Session: "ses-t"}}
+	published := publishRoleHolders(t, handler, issue, []issueRoleHolder{{Role: "reviewer", Session: "ses-r"}, {Role: "implementer", Session: "ses-i"},
+		{Role: "tester", Session: "ses-t"}})
+	want := []issueRoleHolder{{Role: "implementer", Session: "ses-i"}, {Role: "tester", Session: "ses-t"}, {Role: "reviewer", Session: "ses-r"}}
 	pairs := func(answer issueRoleHolders) []issueRoleHolder {
 		got := []issueRoleHolder{}
 		for _, holder := range answer.Holders {

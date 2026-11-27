@@ -3374,6 +3374,18 @@ func (s *Postgres) RecentClaimIssues(ctx context.Context, tx pgx.Tx, dispatchPro
 	return issues, nil
 }
 
+// QueuedMergeForwardAsk is Store.QueuedMergeForwardAsk: a delivered or ended row has left the
+// outbox, so any merge-forward row of the ask's step, role and head still there is queued.
+func (s *Postgres) QueuedMergeForwardAsk(ctx context.Context, tx pgx.Tx, issue string, role claim.Role, head string) (bool, error) {
+	var queued bool
+	if err := tx.QueryRow(ctx, `select exists(select 1 from outbox where kind = $1 and issue = $2
+		and payload->>'step' = $3 and payload->>'role' = $4 and payload->>'head' = $5)`,
+		string(OutboxKindMergeForward), issue, string(MergeForwardAsk), string(role), head).Scan(&queued); err != nil {
+		return false, fmt.Errorf("read the queued merge-forward asks of %s: %w", issue, err)
+	}
+	return queued, nil
+}
+
 // outboxColumns is an outbox row as scanOutbox reads it. held_by_pause is read as 0 for the null
 // of a row no pause held (OutboxRow.HeldByPause).
 const outboxColumns = `id, kind, issue, payload, attempts, next_at, last_error, created_at, lease_token, lease_until,
