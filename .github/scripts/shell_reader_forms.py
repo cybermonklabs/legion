@@ -44,7 +44,6 @@ import fnmatch
 import itertools
 import json
 import os
-import re
 import subprocess
 import sys
 import tempfile
@@ -67,9 +66,6 @@ GUARD_LIBRARY = HERE / "ci-log-guard.sh"
 # The stand-in client's line on stdout, which reaches the log outside a block when the stderr
 # reader's call leaks it.
 STDOUT_MARK = "CLIENT-STDOUT-LINE"
-DEPENDENCY_PATH = re.compile(r"(^|/)(scripts|out)/")
-
-
 
 
 def sq(text: str) -> str:
@@ -310,33 +306,40 @@ def read_with(directory: Path, texts: dict) -> dict:
     return json.loads(result.stdout)
 
 
-def release_finds(found: list[list[str]]) -> bool:
-    """Whether check-release-credentials.sh would report this form's release reader command."""
-    return any(words and (words[0] == "bunx" or DEPENDENCY_PATH.search(words[0].lstrip("./")))
-               for words in found)
-
-
 def read_here(directory: str) -> None:
     """The --read mode: reads {id: {reader: text}} on stdin, prints {id: {reader: found}}."""
     sys.path.insert(0, directory)
     # Import the reader of `directory`, never a copy this process cached: --base relies on it.
     sys.modules.pop("shell_commands", None)
     import shell_commands
+
+    def body_of(script: Path, stop: str) -> str:
+        """The script's Python, up to the top-level `stop` where it starts reading the tree."""
+        source = script.read_text()
+        body = source[source.index("<<'PY'\n") + len("<<'PY'\n"):source.rindex("\nPY")]
+        return body[:body.index(stop)]
+
+    # The release verdict is the release check's own: its dependency_command, applied to each
+    # command its commands_of reads, as the check does. Each tree's check is read, never a copy of
+    # its rule, so a change to the rule moves the verdict too.
+    check = Path(directory, "check-release-credentials.sh")
+    if not check.is_file():
+        sys.exit(f"shell_reader_forms: {check} is missing, so the release verdict cannot be read")
+    release = {}
+    exec(compile(body_of(check, "\nloaded: dict"), str(check), "exec"), release)
     guard = None
     script = Path(directory, "check-log-guard.sh")
     if script.is_file():
-        source = script.read_text()
-        body = source[source.index("<<'PY'\n") + len("<<'PY'\n"):source.rindex("\nPY")]
         sys.argv = ["check-log-guard", "check"]
         guard = {}
-        exec(compile(body[:body.index("files = sorted(")], str(script), "exec"), guard)
+        exec(compile(body_of(script, "files = sorted("), str(script), "exec"), guard)
     takes_every_body = "every_body" in shell_commands.commands_of.__code__.co_varnames
     out = {}
     for form, texts in json.load(sys.stdin).items():
         verdicts = {}
         text = texts["release"]
         found = shell_commands.commands_of(text, every_body=True) if takes_every_body else shell_commands.commands_of(text)
-        verdicts["release"] = release_finds(found)
+        verdicts["release"] = any(words and release["dependency_command"](words) for words in found)
         if guard is not None:
             commands = guard["commands"](texts["guard"])
             verdicts["guard"] = any(not routed and guard["network_client"](words) == "curl" for routed, words in commands)

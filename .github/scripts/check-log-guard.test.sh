@@ -494,7 +494,7 @@ check "and says how many forms it ran and found" \
 over=$(printf '%s\n' "$gen_out" | sed -n 's/.*the stderr reader names a loose call in \([0-9]*\) forms.*/\1/p')
 check "and the stderr reader over-reads in no more than 1647 forms" "$([ -n "$over" ] && [ "$over" -le 1647 ] && echo true || echo "false: $over")"
 mkdir -p "$work/gen-control/scripts"
-cp "$script_dir/shell_reader_forms.py" "$script_dir/check-log-guard.sh" "$work/gen-control/scripts/"
+cp "$script_dir/shell_reader_forms.py" "$script_dir/check-log-guard.sh" "$script_dir/check-release-credentials.sh" "$work/gen-control/scripts/"
 cp "$repo/.github/shell-reader-misses.tsv" "$work/gen-control/"
 python3 - "$script_dir/shell_commands.py" "$work/gen-control/scripts/shell_commands.py" <<'PY'
 import sys
