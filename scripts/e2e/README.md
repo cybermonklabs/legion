@@ -4257,7 +4257,7 @@ It refuses a bare `-` given to any text flag its help lists, except `dispatch ar
 It keeps every other value of a text flag byte for byte.
 Three head checks follow the phases, each on a NATS, a database and a server start of its own: `head-no-settings`, with no delivery settings the results route compares a check with the head of an open pull request within 5 seconds of its event; `head-from-github`, a later event of a closed pull request leaves it closed, and envelopes GitHub never sent move no head; and `github-outage`, after GitHub answers every call with 500 for 6 minutes, the route names each head within 10 minutes.
 One more case, `first-start-tip`, proves the first start after a deploy on its own NATS and database, after every other: it reads no event the bus held, a push after it writes its head, and a second start reads no event again.
-A whole run takes about fifteen minutes, ten of them `github-outage`'s.
+A whole run takes about twelve minutes, seven or eight of them `github-outage`'s.
 
 Each item below names an input and its default, then what it means.
 
@@ -4362,9 +4362,11 @@ Every read of the results is the `dispatch` command's.
 
 - `head-no-settings` — in `acme/default` and in `acme/tools`, a repository an issue of `ACME` names as its own: a pass at C1, then the pull request opens at C1, and within 5 seconds of the event the check is compared with that head and the pass stands (S1); a late copy of an older push, which GitHub's answer no longer holds, leaves the head at C1, a push to C2 leaves the pass at none of the compared commits within 5 seconds, and a pass at C2 stands at the next read (S2); a pull request that opens before any result is named within 5 seconds, and a pass at its head stands at the next read (S3).
   Each read waits 45 seconds before it says a head is missing, as the negative control does.
+
 - `head-from-github` — `#48` opens and closes, then gets a labeled and an edited event while GitHub holds it closed: 3 seconds after each it is still no basis (L); that the opening makes it a basis and the close takes it away are the case's self-checks, and a run where either fails stops, `UNKNOWN`.
   Then six envelopes GitHub never sent, published through an `envoy-listener` this checkout builds (`POST /v1/messages/publish`, source `github`), on loopback with no credential: a synchronize back to an older commit that carries a pass (F1), a close of an open pull request whose head carries one (F2), a reopen of a closed one whose head carries one (F3), a number GitHub does not have, which the fake answers 404 (`refused_pulls`, F4), a repository the App is not installed on (F5), a pull request whose read the App's token may not make, which the fake answers 403 (F5b), and a synchronize dated an hour ahead, after which GitHub's own push still lands (F6).
   None moves a head or the route's answer.
+
 - `github-outage` — `#3001` opens and its head row is stored; the fake then answers every call with 500 for 6 minutes (`PUT /__fixture/outage`), and in that time `#2001` opens and `#3001` gets a push, the fake holding each new head; within 10 minutes after the fake answers again, each head row and `dispatch results` name the head GitHub holds.
   At the head they do within about five minutes, the reconcile's next pass.
 
