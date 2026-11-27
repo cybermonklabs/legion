@@ -195,6 +195,26 @@ describe("New thread (R10, R11, R15)", () => {
     }
   });
 
+  test("a live party that advertises no delivery mode: New thread says that a send to it records a failed attempt, as a direct message's box on main says", async () => {
+    const at = drawWithParties();
+    // The session is live and listed, but its capabilities hold no delivery mode
+    // (`deliveryModesOf`), as a session whose plugin cannot reach its conversation advertises.
+    // `plainDelivery` then answers steer, which the server records as a failed attempt.
+    at.agents.mockResolvedValue([plannerAgent({ capabilities: [] })]);
+    const user = userEvent.setup();
+    try {
+      await openNewThread(user);
+      await user.click(option(PLANNER_SESSION) as HTMLElement);
+      await user.type(messageField(), WORDS);
+      expect(
+        (panel()?.textContent ?? "").match(/records a failed attempt/i),
+        "New thread says nothing of a chosen agent that takes no message: its send records a failed attempt in silence"
+      ).not.toBeNull();
+    } finally {
+      at.done();
+    }
+  });
+
   test("sending: a live party's message goes as its session takes a plain message, and the box holds the words with Send busy", async () => {
     const at = drawWithParties();
     const user = userEvent.setup();
