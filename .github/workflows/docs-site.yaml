@@ -97,13 +97,13 @@ jobs:
           persist-credentials: false
       - uses: ./.github/actions/setup-bun
       # Astro runs on Node.js (22.12 or newer).
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "24"
       # docs/site/scripts/build-binaries.sh builds the Go binaries the reference generators run, and
       # the screenshots step builds the Dispatch server; both modules name the same Go.
       - id: setup-go
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         with:
           go-version-file: packages/daemon/go.mod
           go-download-base-url: https://go.dev/dl
@@ -180,7 +180,7 @@ jobs:
       # instant and its own capture instant too, which is the elapsed time every relative label
       # is a function of. Download this artifact from two runs and compare
       # (dispatch://INFRA-1443, which took Playwright's `tools` fonts off this runner).
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: docs-screenshots-${{ github.run_attempt }}
           path: |
@@ -190,7 +190,7 @@ jobs:
       # What each failed shot's page showed, and the harness's process logs: a hang leaves the
       # Dispatch server's goroutines at the end of dispatch.log.
       - if: failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: docs-failed-shots-${{ github.run_attempt }}
           path: |
@@ -208,7 +208,7 @@ jobs:
       # that check reads the deployment's term list, and this job, which runs dependency code
       # (Bun, Astro, the Go builds), holds none. Hidden files too, so the check reads every file
       # the site ships; `overwrite` lets a re-run of this job replace its first attempt's copy.
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: docs-site-dist
           path: docs/site/dist
@@ -260,7 +260,7 @@ jobs:
         with:
           sparse-checkout: .github
           persist-credentials: false
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: docs-site-dist
           path: docs/site/dist

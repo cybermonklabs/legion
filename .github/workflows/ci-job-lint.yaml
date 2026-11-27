@@ -86,7 +86,7 @@ jobs:
       # of the repository holds: the two checks below hold them to the image builds and to the tsc
       # programs, so they read the very file the paths-filter step read.
       - name: Fetch the filters the changes job selected this run's jobs by
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: ci-filters
           path: ${{ runner.temp }}/ci-filters
@@ -143,7 +143,7 @@ jobs:
       # a development machine), and the notices step at the end of this job keeps its own
       # (go-notices, the restore right after this step), keyed on the Go version this installs.
       - id: setup-go
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         with:
           go-version-file: packages/daemon/go.mod
           go-download-base-url: https://go.dev/dl
