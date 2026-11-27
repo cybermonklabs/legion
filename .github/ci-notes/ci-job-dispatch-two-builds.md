@@ -11,9 +11,7 @@ script's two retried downloads: the build's workspace install, `bun install --fr
 the commit's archive, and the Go modules and toolchain its server's build loads, `go list -deps
 ./cmd/dispatch` under `GOTOOLCHAIN=auto`. Each goes through `.github/scripts/ci-retry.sh` at the
 180 s bound of its kind (the Retries note of `.github/ci-budgets.md`), so each is
-5 x 180 + 150 = 1050 s. `.github/scripts/check-download-retry.sh` reads no script outside
-`.github/scripts/`, so it prices neither, and the budget is derived by hand
-(dispatch://INFRA-2899 owns the reach that would make it the check's).
+5 x 180 + 150 = 1050 s, and the budget is derived by hand from those two ladders.
 
 Beside the two downloads the step holds the build itself, which the step's measured duration
 gives: 116 s, the slowest of the 24 runs of `Build the previous build` among the ci.yaml runs

@@ -12,9 +12,7 @@ through `.github/scripts/ci-retry.sh` at the 180 s module bound, 5 x 180 + 150 =
 where its `$tool` is not already executable; the tool's directory is named by the go-licenses
 version and the host's Go version, not by the GOOS or GOARCH the packages target, so every call
 after the first finds that build and fetches nothing, and the step waits for one ladder.
-`.github/scripts/check-download-retry.sh` reads no script outside `.github/scripts/`, so it prices
-none of that, and the budget is derived by hand (dispatch://INFRA-2899 owns the reach that would
-make it the check's).
+The budget is derived by hand.
 
 Beside the ladder the step holds the builds and the notices themselves, which its measured
 duration gives: 1057 s, the slowest of the 8 runs of the step in the 20 successful runs of this
@@ -31,10 +29,10 @@ workflows are an exception of R2 of dispatch://INFRA-1545: no step of it retries
 carries a priced key all the same, because it runs `.github/scripts/release-push.sh`, which the
 build job runs too and which therefore keeps its one retried fetch, the leak engine's in
 `leak_guard`, at the 60 s release-asset bound, 5 x 60 + 150 = 450 s.
-`.github/scripts/check-download-retry.sh`'s rule 8 charges every step that runs that script the
-fetch at each of `leak_guard`'s six call sites, 6 x 450 = 2700 s, and refuses a step that holds
-that and carries no `timeout-minutes`, and a job whose key no comment prices. So `Check build's
-archives and write SHA256SUMS` and `Create GitHub release`, which run the script once, carry
+Every step that runs that script is priced at the fetch at each of `leak_guard`'s six call sites,
+6 x 450 = 2700 s, so such a step carries a `timeout-minutes` of its own, and its job a key a
+comment prices. So `Check build's archives and write SHA256SUMS` and `Create GitHub release`,
+which run the script once, carry
 46 minutes, the whole minute above 2700 s; `Tag release`, which runs it twice, carries 91, above
 5400 s; and the job carries 600 s, the 10 minutes it carried before that issue, plus that slowest
 step's 5400 s. 600 + 5400 = 6000 s -> 101 min.

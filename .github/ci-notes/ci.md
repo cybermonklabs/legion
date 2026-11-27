@@ -3468,12 +3468,15 @@ The step's own budget is its retry arithmetic (dispatch://INFRA-1545), so an exh
 the step by name rather than being cut part way by the job, each `gh api` read at
 5 x 30 + 150 = 300 s: find-pr-payload.sh's one GraphQL read, and check-pr-text.sh's - its GraphQL
 read (main's #4956), which the rounds' `while :` calls once a round and the `while` over a review
-thread's later comments once a page, at 900 s, three of its ladders, the figure
-.github/scripts/check-download-retry.sh's DECLARED_LOOPS writes for it; the compare route, read
-when GitHub's GraphQL comparison comes back short, one; and the issue-key rule's (main's #4256):
-the pull request's files, one, the releases' loop at 600 s and the new commits' files loop at
-7200 s, the figures DECLARED_LOOPS derives for those two. 300 + 900 + 300 + 300 + 600 + 7200 =
-9600 s, a whole number of minutes, so the budget is the next one strictly above it, 161 minutes.
+thread's later comments once a page, at three of its ladders, its one round and two more,
+3 x 300 = 900 s; the compare route, read when GitHub's GraphQL comparison comes back short, one;
+and the issue-key rule's (main's #4256): the pull request's files, one, the releases' loop at
+600 s, the two reads that script's own comment says a run makes, a release or two, 2 x 300 =
+600 s, and the new commits' files loop at 7200 s, one read per commit at or after the cutoff that
+is no merge, written for the 24 the common pull request holds (the 30 most recently merged pull
+requests of cybermonklabs/legion on 2026-11-19 held 1 to 232 commits that are no merge, 23.5 at
+the median), 24 x 300 = 7200 s. 300 + 900 + 300 + 300 + 600 + 7200 = 9600 s, a whole number of
+minutes, so the budget is the next one strictly above it, 161 minutes.
 
 ## The merge queue's cancel act. Main's queue builds each group on top
 
@@ -3649,8 +3652,8 @@ token. GITHUB_REPOSITORY and GITHUB_RUN_ID, the rest of what it reads, are Actio
 
 The step's own budget is its retry arithmetic (dispatch://INFRA-1545), so an exhausted read fails
 the step by name rather than being cut part way by the job: runner-shutdown.sh's check-run read,
-5 x 30 + 150 = 300 s, and its annotations loop, its 180 s deadline plus one read's ladder, 480 s
-(check-download-retry.sh's DECLARED_LOOPS), 780 s together -> 14 min.
+5 x 30 + 150 = 300 s, and its annotations loop, its 180 s deadline plus one read's ladder, 480 s,
+780 s together -> 14 min.
 
 ## Why a failing verdict of a group behind the front waits for the front
 
@@ -3712,9 +3715,8 @@ The step's own budget is its retry arithmetic (dispatch://INFRA-1545): ci-ok-rec
 check-run read, 5 x 30 + 150 = 300 s, and its PATCH, which the loop there runs once for every
 other ci-ok on the head that needs setting. The budget is written for three of them,
 3 x 300 = 900 s, because a merge-group run posts one ci-ok per job whose own result decides the
-group, so a run that fails in three jobs leaves three posts on this head
-(.github/scripts/check-download-retry.sh's DECLARED_LOOPS carries that 900 s and the sum it comes
-from). 300 + 900 = 1200 s, a whole number of minutes, so the budget is the next one strictly
+group, so a run that fails in three jobs leaves three posts on this head. 300 + 900 = 1200 s, a
+whole number of minutes, so the budget is the next one strictly
 above it, 21 minutes. This budget matters more than most: ci-ok-reconcile.sh's own header says a
 refused PATCH only warns, because failing that step would turn a passing verdict red, and a step
 the runner cuts does exactly that, since a cut step fails this job and ci-ok is the check main's
@@ -3913,8 +3915,9 @@ number of minutes.
 
 The step's own budget is its retry arithmetic, so an exhausted read fails the step by name rather
 than being cut part way by the job: the run list's 300 s and the force-cancel's 300 s, 600 s
-together. 720 s and not rule 8's minimum of 660 s: no pull-request run exercises this budget, so
-its first exercise is a merge-queue run, where a cut ejects the pull request rather than reporting
+together. 720 s and not the Budgets note's least budget of 660 s: no pull-request run exercises
+this budget, so its first exercise is a merge-queue run, where a cut ejects the pull request
+rather than reporting
 a failure. What that extra minute holds is the step's own measured work beside the two ladders -
 about 3 s a `gh` call (the Retries note) over the run list and one force-cancel per removed group,
 at most 21 calls at the 20 groups the queue builds at once, about 63 s, which 660 s does not cover

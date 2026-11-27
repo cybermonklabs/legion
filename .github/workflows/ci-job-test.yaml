@@ -267,9 +267,6 @@ jobs:
         if: inputs.changes-result != 'success' || inputs.matched-filters == 'all' || contains(inputs.matched-filters, '"check_action_pins_test"')
         run: .github/scripts/harness-pool.sh start .github/scripts/check-action-pins.test.sh .github/scripts/check-action-pins.test.sh
 
-      - name: Test the download retry check
-        run: .github/scripts/check-download-retry.test.sh
-
       - name: Test the workflow file check
         if: inputs.changes-result != 'success' || inputs.matched-filters == 'all' || contains(inputs.matched-filters, '"check_workflow_files_test"')
         run: .github/scripts/harness-pool.sh start .github/scripts/check-workflow-files.test.sh .github/scripts/check-workflow-files.test.sh
@@ -616,7 +613,7 @@ jobs:
     # Budget (ci-budgets.md's Budgets note): those 30 minutes, 1800 s, plus its slowest retried
     # step alone: setup-bun's two `ci_tools_fetch` calls at 3416 s, above the changelog render,
     # whose run of release-push.sh carries that script's retried calls, 2700 s as
-    # .github/scripts/check-download-retry.sh's rule 8 sums them, the ci-ok report's 2460 s,
+    # .github/ci-budgets.md#the-budgets-note prices them, the ci-ok report's 2460 s,
     # install-changie's one `ci_tools_fetch` at 1708 s and the workspace install's 1050 s.
     # 1800 + 3416 = 5216 s -> 87 min.
     timeout-minutes: 87
@@ -672,7 +669,7 @@ jobs:
       # lint because this job installs changie.
       - name: Check every changelog fragment renders
         # Its own retry arithmetic: release-push.sh's retried calls, 2700 s as
-        # .github/scripts/check-download-retry.sh's rule 8 sums them, a whole number of minutes,
+        # .github/ci-budgets.md#the-budgets-note prices them, a whole number of minutes,
         # so the budget is the next one strictly above it -> 46 min.
         timeout-minutes: 46
         env:

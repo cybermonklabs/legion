@@ -8,9 +8,8 @@ split envoy-go-checks in two, envoy-go-checks and envoy-go-build
 
 ## The two steps whose scripts the gate does not read
 
-Two steps of this file start a download retried inside a script outside `.github/scripts/`,
-which `.github/scripts/check-download-retry.sh` does not read, so it prices neither and each
-budget is derived by hand (dispatch://INFRA-2899 owns the reach that would make it the check's).
+Two steps of this file start a download retried inside a script outside `.github/scripts/`, and
+each budget is derived by hand.
 Each budget is the script's retry arithmetic beside the step's measured duration, and the next
 whole minute above that sum (the Budgets note of `.github/ci-budgets.md`). The pack step's
 duration is the slowest of its 53 runs in the 60 successful ci.yaml runs created from

@@ -11,11 +11,10 @@ download-retry-images-worker job's both.
 The `--budget` each report step of the download-retry-images and download-retry-images-worker
 jobs holds its build to has three terms.
 
-The first is the price the gate itself puts on that build: its measured build time plus the
-longest single ladder of the Dockerfile it builds, the two terms the price comment of the key
-holding that build carries where the image is built for real
-(`.github/scripts/check-download-retry.sh`, rule 10). A build that runs past the price its own key
-puts on it still fails.
+The first is the price the key holding that build puts on it where the image is built for real:
+its measured build time plus the longest single ladder of the Dockerfile it builds, the two terms
+that key's price comment carries. A build that runs past the price its own key puts on it still
+fails.
 
 The second is the probe's 20 s. None of those keys holds the probe, which is this rig's own:
 `report` measures a build from the moment its proxy started, and the probe's two requests are
@@ -139,8 +138,8 @@ STATED LIMIT says which RUN lines no run faults.
 It pulls no base image in a step of its own: BuildKit pulls the worker Dockerfile's FROM images
 inside the build, as worker-image.yaml's own build does, through the daemon's own configuration
 and not the build's http_proxy argument, so no pull meets the fault. Each is an image this
-repository publishes, so a failed pull is a fault of its own package, seen and not retried over
-(exception (a) of .github/scripts/check-download-retry.sh). The pulls' time is inside the build's
+repository publishes, so a failed pull is a fault of its own package, seen and not retried over.
+The pulls' time is inside the build's
 report budget, whose measured term is worker-image.yaml's key for the same build with the same
 pulls.
 

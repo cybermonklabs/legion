@@ -39,8 +39,8 @@ decides no verdict.
 .github/ci-budgets.md#the-budgets-note adds for a job that retries a download
 (dispatch://INFRA-1545): the setup-bun step's two `ci_tools_fetch` calls at 3416 s
 (`ci-budgets.md`'s Budgets note), above the workspace install's 1050 s and the harness leg's zsh
-install's 1400 s. With it the three jobs take 127, 67 and 197 minutes. The download gate reads no
-number out of `job_minutes`, an expression's value, so the test below holds it. It also holds each
+install's 1400 s. With it the three jobs take 127, 67 and 197 minutes. `job_minutes` is an
+expression's value, and the test below holds it. It also holds each
 lane's `retry_seconds` to the setup-bun step's own figure, which it reads from the comment above
 that step's key (`2 x 1708 = 3416 s`), so a change of that figure the matrix does not take fails it.
 

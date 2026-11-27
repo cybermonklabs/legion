@@ -126,8 +126,8 @@ fetched once - crane, changie, mise, elan and helm, each a primary of its own an
 copy, at 1708 s each; the jj row, whose `primary` is empty, at 1281 s; bun-linux-x64's one npm
 tarball and uv's archive, which `stage` reads from uv's primary alone, at 427 s each; and
 pulumi-docker and pulumi-cli, a primary and a second source of one request each, at 854 s each -
-5 x 1708 + 1281 + 427 + 427 + 2 x 854 = 12383 s, twenty-nine ladders of at most 427 s -> 207 min,
-which rule 8 charges through its DECLARED_LIBRARIES entry for that step. Until review round 36 of
+5 x 1708 + 1281 + 427 + 427 + 2 x 854 = 12383 s, twenty-nine ladders of at most 427 s -> 207 min.
+Until review round 36 of
 dispatch://INFRA-1545 that figure counted the first five rows alone, 3 x 1708 + 1281 + 427 =
 6832 s -> 114 min, though elan, uv, pulumi-docker and pulumi-cli were staged since #3280 and helm
 since main's #5152. The job's key is built from the part-by-part construction
@@ -590,9 +590,8 @@ ci_tools_registry_head with `--follow`, whose two requests - the package's answe
 of the store a redirect points at - each take 30 s an attempt, 2 x 397 = 794 s each over the five
 rows of that machine (crane, changie, mise, jj and elan, or their `-aarch64` rows), 3970 s. Both
 per-ladder figures come from one place, .github/scripts/ci-tools.sh's own `--retry-max-time`
-block, which writes them as 427 s at 60 and 397 s at 30. 427 + 3970 = 4397 s -> 74 min. Rule 8
-charges each step that sum: a loop of calls of a function the sourced file defines is a reading it
-refuses unless declared, and its DECLARED_LIBRARIES entry for each step writes these 4397 s in
-place of the one `ci_tools_fetch`, 1708 s, it would charge otherwise. Each request rides the
+block, which writes them as 427 s at 60 and 397 s at 30. 427 + 3970 = 4397 s -> 74 min, each
+step's figure in place of the one `ci_tools_fetch`, 1708 s, since the step loops over its rows.
+Each request rides the
 ladder an install's read of the same blob rides, so the script holds no attempts of its own
 (dispatch://INFRA-1545, R2).

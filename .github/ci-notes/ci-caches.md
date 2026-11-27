@@ -136,7 +136,7 @@ again 312 of the daemon module's 335 packages and 573 of the envoy module's 618 
 -deps -f {{.Stale}}`); from an entry filled five merges earlier, 135 and 321. The
 refill-superseded job deletes the other entries of the family once the new one is listed, three a
 run at most, newest first, so that its deletes are three priced ladders inside the job's budget
-that check-download-retry.sh can read (#the-refill-superseded-job); a common run supersedes one,
+(#the-refill-superseded-job); a common run supersedes one,
 so each family keeps one entry per runner, as it did before. A job that is downloading a deleted
 entry at that moment gets a cache miss: actions/cache/restore warns and the job goes on, compiling
 what the entry would have given it, so it is slower, not failed.
@@ -527,8 +527,7 @@ Each read and each delete retries through `.github/scripts/ci-retry.sh` at 30 s 
 bound this repository gives a `gh` read of the API (dispatch://INFRA-1545, R1), run through
 gh-read.sh's gh_wait_reset: the list is one ladder, 5 x 30 + 150 = 300 s, and each delete one
 more. A leg deletes three entries at most, newest first, in the script's loop over three literal
-passes, the same loop in each of its modes, which is a count
-`.github/scripts/check-download-retry.sh` reads: a common run deletes one, the entry the fill
+passes, the same loop in each of its modes: a common run deletes one, the entry the fill
 before it saved, and the first run after the keys took the commit deletes the entry under the
 readers' key beside it; a third is room for one a failed run left. Any more stay, a warning says
 how many, and the next fill deletes them, since each fill adds one entry and may delete three. A
@@ -603,8 +602,8 @@ loop over three literal passes its every mode shares, so the step waits for 300 
 1200 s at most, a whole number of minutes, and takes the minute above, 21; the job's is 300 s,
 the 5 minutes this job carried, plus that one retried step, 300 + 1200 = 1500 s -> 26 min. Any
 more stay, a warning says how many, and the next fill deletes them. Until the merge of main at
-c62975ce the step deleted every superseded entry in a `while read`, which a DECLARED_LOOPS entry
-of `.github/scripts/check-download-retry.sh` priced at the one delete a common run makes,
+c62975ce the step deleted every superseded entry in a `while read`, priced at the one delete a
+common run makes,
 300 + 300 = 600 s, under a step budget of 11 minutes and a job budget of 16. A delete whose
 first attempt landed and whose answer was lost is refused on its retry as an entry that is gone,
 and fails the step by name; the next fill deletes nothing more.
@@ -667,7 +666,7 @@ each delete
 retries through `.github/scripts/ci-retry.sh` at 30 s an attempt, the bound this repository gives
 a `gh` read of the API (dispatch://INFRA-1545, R1), so the list is one ladder,
 5 x 30 + 150 = 300 s, each delete one more, and three of them are priced ladders inside the job's
-budget that `.github/scripts/check-download-retry.sh` can read. Any more stay, a warning says how
+budget. Any more stay, a warning says how
 many, and the next run deletes three more, so the 25 entries other refs held on 2026-11-23 go in
 five runs at least, six a run. A delete whose first attempt landed and whose answer was lost is
 refused on its retry as an entry that is gone, and fails the step by name; the next run deletes
@@ -831,7 +830,7 @@ a retried step, so neither term moves.
 job, runs `.github/scripts/go-release-notices.sh`, the script ci.yaml's lint job runs, and so waits
 for the one go-licenses install of `scripts/go-third-party-notices.sh` that
 .github/ci-notes/ci-job-lint.md#the-notices-step-whose-script-the-gate-does-not-read derives,
-1050 s, which `.github/scripts/check-download-retry.sh` does not price. Beside it is the step's
+1050 s. Beside it is the step's
 measured duration from a cold cache, which holds the cold build of every release target: 674 s at
 most over the 2 runs of the step in the 100 successful runs of this workflow created from
 2026-11-19T12:04Z to 2026-11-21T09:04Z (job 136376790855 of run 44762031448; every other run then

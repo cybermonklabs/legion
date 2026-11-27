@@ -484,8 +484,7 @@ not publish, and the package's member is then nothing. This step's own dispatch 
 the three a run is in; release-push.sh pair-version <tag prefix> turns that answer into a
 version, reading the newest tag for a package that released nothing in this run. Each
 pair-version call is written where its version is resolved rather than inside the function,
-so .github/scripts/check-download-retry.sh reads both as runs this step waits for
-(dispatch://INFRA-1545, round 37).
+so both read as runs this step waits for (dispatch://INFRA-1545, round 37).
 
 ## Why legion is released only once both plugins are on npm
 
@@ -621,7 +620,7 @@ gh-read.sh's wait for a spent API budget stays within (check-workflow-files.sh h
   alone, "Resolve plugin versions for the smoke test and worker image", whose
   .github/scripts/release-plugin-versions.sh runs .github/scripts/release-push.sh four times -
   two `version` calls and two `pair-version` calls, each written where its version is resolved
-  rather than inside a function, so rule 8 reads all four as runs that step waits for - and each
+  rather than inside a function, so all four read as runs that step waits for - and each
   run holds that script's leak-guard fetch at every one of its call sites, 6 x 450 = 2700 s, so
   4 x 2700 = 10800 s, above every other retried step here. 900 + 10800 = 11700 s -> 196 min,
   which carries the whole minute the Budgets note gives a step whose own arithmetic is a whole
@@ -649,7 +648,7 @@ every Bun install of this repository's CI carries (20.70 s cold on a pod, agains
 over 180 observations in the 20 most recent successful ci.yaml push runs on main),
 5 x 180 + 150 = 1050 s -> 18 min. The "Check the plugin pair npm carries" step of the
 credentialed publish job writes its `pair-version` calls where each version is resolved, outside
-the `pair_released` function, so rule 8 reads both as runs the step waits for
+the `pair_released` function, so both read as runs the step waits for
 (dispatch://INFRA-1545, round 37); the body stays inline there, as
 .github/scripts/check-release-credentials.sh requires of a job holding a credential.
 
@@ -657,12 +656,12 @@ publish and worker_image_release hold a credential, and the credentialed publish
 three release workflows are an exception of R2 of dispatch://INFRA-1545, so no step of either
 retries anything. They carry these keys because their steps run release-push.sh, which the build
 jobs run too and which therefore keeps its one retried fetch, the leak engine's in `leak_guard`:
-.github/scripts/check-download-retry.sh's rule 8 charges each step that runs the script that
-fetch at each of `leak_guard`'s six call sites, 2700 s a run, and refuses a step holding it that
-carries no `timeout-minutes`, a job whose key no comment prices, and a run of the script inside a
-shell function, which it cannot count. With the 10 minutes and the bare steps these two jobs
-carry on main, that check refuses every one of their release-push.sh steps and both keys, and
-`pair_member`'s call as well.
+each step that runs the script is priced at that fetch at each of `leak_guard`'s six call sites,
+2700 s a run, so it carries a `timeout-minutes` of its own, its job a key a comment prices, and
+no run of the script sits inside a shell function, where its runs cannot be counted. The
+10 minutes and the bare steps these two jobs carry on main hold none of it, in any of their
+release-push.sh steps or either key, and main's `pair_member` runs the script inside a shell
+function.
 
 Every step of this workflow that runs release-push.sh, or release-plugin-versions.sh, which runs
 it, sets STEP_TIMEOUT_MINUTES to its own `timeout-minutes` in its `env:`, whichever of the
@@ -681,11 +680,9 @@ script installs go-licenses through .github/scripts/ci-retry.sh at the 180 s mod
 5 x 180 + 150 = 1050 s, and only where its `$tool` is not already executable; the tool's
 directory is named by the go-licenses version and the host's Go version, not by the GOOS or
 GOARCH the packages target, so every call after the first finds that build and fetches nothing,
-and the step waits for one ladder. .github/scripts/check-download-retry.sh reads
-release-build-legion.sh but no script outside .github/scripts/, so it prices none of that, and
-the budget is derived by hand (dispatch://INFRA-2899 owns the reach that would make it the
-check's): the ladder beside the step's measured duration, which holds the cross-builds and the
-notices, 427 s at most over the 11 runs of the step in the 30 successful runs of this workflow
+and the step waits for one ladder. The budget is derived by hand: the ladder beside the step's
+measured duration, which holds the cross-builds and the notices, 427 s at most over the 11 runs
+of the step in the 30 successful runs of this workflow
 created from 2026-11-20T12:23Z to 2026-11-21T08:25Z (job 136642681904 of run 44839077231; the
 other runs released no legion and skipped it). 427 + 1050 = 1477 s -> 25 min, under
 legion_build's 196, whose slowest retried step is still the plugin-version step's 10800 s.

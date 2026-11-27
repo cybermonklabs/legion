@@ -16,8 +16,8 @@ which counts every step before it too, so a retry still running there could be c
 GitHub's bare timeout line, which names neither the step nor the install. So the step takes its
 `timeout-minutes` from the row's `run_timeout_minutes`: the script's own measured duration with
 headroom, plus those 1050 s where the script sources one of those two files, directly or through
-a library it sources, written as the whole minute strictly above the sum (rule 8 of
-`.github/scripts/check-download-retry.sh` says why equal is not enough). A script that sources
+a library it sources, written as the whole minute strictly above the sum (the Budgets note of
+`.github/ci-budgets.md` says why equal is not enough). A script that sources
 neither Go helper and carries no retry term of its own (every other hosted script except
 shared-clone-kind.sh, which has its own three-download term below) gets its own measured figure
 as its limit all the same, as the next whole minute above it, so a proof that hangs ends on its
@@ -45,9 +45,8 @@ Each row's measured figure is the one its `timeout_minutes` starts from (the com
   (76.4 MB) from storage.googleapis.com, each under a second from an issue pod on 2026-11-25: its
   75 minutes plus 3 x (5 x 60 + 150) = 1350 s, 4500 + 1350 = 5850 s -> 98 min. Its two ghcr.io
   reads, the pull token and the manifest of ghcr.io/cybermonklabs/legion-worker, read this
-  repository's own package and stay bare, under exception (a) of
-  .github/scripts/check-download-retry.sh, whose header names them (dispatch://INFRA-1545, round
-  68).
+  repository's own package and stay bare, since a failed read of it is a fault of that package,
+  seen and not retried over (dispatch://INFRA-1545, round 68).
 
 The Go module download before the proof has retry arithmetic of 1050 s.
 It is shorter than the slowest retried step in rows that select `jj`, `bun` or `apt`.
@@ -83,9 +82,7 @@ rows has measured them yet. refusal-fallback-omp.sh, at 30 minutes with its `jj`
 checkout plus setup-bun's 57 minutes, 3420 s, would be the larger only if the checkout took more
 than 1796 s (dispatch://INFRA-1545).
 
-`.github/scripts/check-download-retry.sh` reads no script outside `.github/scripts/` and no number
-out of an expression (A CEILING WRITTEN AS AN EXPRESSION, under its rule 8), so it prices neither
-this step nor its rows, and every figure here is derived by hand. What holds them is
+Every figure here is derived by hand. What holds them is
 `.github/scripts/select-e2e-proofs.sh`, which refuses a row whose `run_timeout_minutes` is
 missing, is no whole number, or is not below its `timeout_minutes`, since a job limit at or under
 the step's own would cut the step before the step's limit could name it.

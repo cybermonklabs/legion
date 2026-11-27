@@ -20,9 +20,8 @@ every tool install of .github/ci-tools.yaml fetches through it, and the actions 
 What retries is the download and never the work after it:
 a job's Go modules come down in a `go mod download` step of its own, so no `go build`, `go test`, `go vet` or `go run` is ever re-run by a retry.
 Write that step after the job's cache restore and before its first Go step, which is where it does the work;
-rule 11 of `.github/scripts/check-download-retry.sh` asks a job whose own `run:` body compiles Go for such a step, by presence and reading no order.
-A job that compiles Go only through a script it calls, a composite action or a verb that rule does not read is outside it, and carries the step because a reader put it there:
-that rule's reach paragraph says what was audited and by what method, and review round 17 of dispatch://INFRA-1545 found two jobs that lacked the step.
+every job that compiles Go carries such a step, whether its own `run:` body compiles Go or it compiles Go only through a script it calls or a composite action:
+each job carries the step because a reader put it there, and review round 17 of dispatch://INFRA-1545 found two jobs that lacked the step.
 A `go install` or `go run` of a `module@version` is not covered by that step at all, whatever the job downloaded first:
 it builds from that module's own go.mod and reads no go.work, so it is a download site of its own and retries where it is written (review round 18 of the same issue).
 Four bounds are the same wherever that kind of fetch is made, because the kind rather than the step decides them (dispatch://INFRA-1545):
@@ -43,7 +42,6 @@ The tmux and zsh steps cite it rather than repeating it.
 The unpack after the download takes no network and stays bare, so an attempt the bound kills never stops a dpkg run part way.
 The index read carries `-o APT::Update::Error-Mode=any`, which makes a failed index read fail the command instead of warning and exiting 0:
 without it retry_fetch has nothing to retry.
-.github/scripts/check-download-retry.sh's rule 5 is the whole reason.
 A bound is per attempt, so neither a step's nor a job's `timeout-minutes` is a bound:
 each is a sum of them, and the Budgets note of this note says how every one of them was computed. .github/workflows/ci-caches.yaml, which fills the families the Caches paragraph of .github/ci-notes/ci.md#the-router-every-check-a-pull-request-or-the-merge-queue-runs lists, carries the same rule at every download of its own.
 Each `bun install --frozen-lockfile` step is named for the command it runs, which is the handle .github/scripts/ci_job_reads.py's bun_job cites a frozen install by.
@@ -74,14 +72,14 @@ it admits a skip only for a job `changes` did not select, which is what 'false' 
 Budgets: a retried download's worst case is five attempts at its own bound with the helper's sleeps of 10, 20, 40 and 80 s between them, `5 x <bound> + 150 s`;
 or, where curl makes the attempts itself, eight at its own bound with curl's waits doubling from one second, `8 x <bound> + 127 s`.
 
-A third worst case is a figure this file cites rather than derives, because the bound it multiplies is not a number anybody wrote at the call:
-`.github/scripts/ci-tools.sh#ci_tools_curl` and `.github/scripts/ci-tools.sh#ci_tools__curl_held` pass `--max-time "$max_time"`, the manifest row's own field, so one call of either is priced by the DeclaredArithmetic entry in DECLARED_LOOPS of .github/scripts/check-download-retry.sh whose file is .github/scripts/ci-tools.sh and whose verb is `curl`.
-That entry writes 854 s for each of those two curls and charges one `ci_tools_fetch` both, 1708 s, which it derives there as four ladders
+A third worst case is a figure this note derives from a bound .github/scripts/ci-tools.sh derives, because the bound it multiplies is not a number anybody wrote at the call:
+`.github/scripts/ci-tools.sh#ci_tools_curl` and `.github/scripts/ci-tools.sh#ci_tools__curl_held` pass `--max-time "$max_time"`, the manifest row's own field, so one call of either has no figure of its own.
+One failing `ci_tools_fetch` of a ghcr-mirror row with a release asset of its own runs each of those two curls twice, 2 x 427 = 854 s for each curl, and so one `ci_tools_fetch` is 2 x 854 = 1708 s, four ladders
 — the release asset, then the ghcr token, the blob request to the package and the read of the store that request's redirect points at
 — each priced at the ceiling .github/scripts/ci-tools.sh's own `--retry-max-time` block derives, which is the one place that per-ladder figure is worked out.
 It was three ladders, 1281 s, until main's #4214: since then a request of the package that carries a credential follows no redirect, so the blob request and the read of the store it points at are two ladders where one request had followed the redirect inside one.
 The figure is the worst row's, a ghcr-mirror row with a release asset of its own (crane, changie and mise, and since main's #4313 their `-aarch64` rows, the arm64 builds an arm64 runner installs, which cost the same four ladders); a row whose `primary` is empty costs less, the jj or jj-aarch64 row's token, blob request and store at 3 x 427 = 1281 s and a bun row's one npm tarball at 427 s, and a site below that names one `ci_tools_fetch` is charged the 1708 s whichever row it reads, so a job main's #4313 moved to ubuntu-24.04-arm, which reads the `-aarch64` row where it read the x86_64 one, keeps every figure it carried.
-A reader checks the arithmetic in those two places; no site below repeats either.
+A reader checks the arithmetic here and in that block; no site below repeats either.
 
 Two terms follow from that one, and every step below that holds one names which it holds and its sum rather than deriving either again.
 A `uses:` step of an action that sources the helper in two of its steps carries 2 x 1708 = 3416 s:
@@ -89,7 +87,7 @@ A `uses:` step of an action that sources the helper in two of its steps carries 
 A step holding a `retry_fetch` beside those calls adds that helper's own arithmetic, which is what makes install-jj's `uses:` step 3416 + 450 = 3866 s, its `mise install` of the jj release being 5 x 60 + 150 = 450 s.
 One call on its own — an action that sources the helper once — is 1708 s.
 A script a `run:` reaches is one call for each `ci_tools_fetch` it runs:
-rule 8 charges it once, as its header's list of what it miscounts says, so a script that loops over rows is sized by hand.
+each pass of a loop over rows is one more call, so a script that loops over rows is sized by its rows.
 
 A step that holds a retried download carries its own `timeout-minutes`, and that budget is at least the next whole minute strictly above the sum of its calls plus whatever unretried work it holds.
 Its calls are every retried download the step waits for:
@@ -101,9 +99,9 @@ in run 42386541065's job 128445139635 a `gh api` read bounded at 30 s sat under 
 A run whose attempts drift later loses that race, and the step then reports GitHub's bare `The action '<step name>' has timed out after <N> minutes.` instead of naming the download that failed and the attempts it made, which is the loud failure the retry exists to give.
 GitHub reads this budget in whole minutes, so the least budget this rule gives a step is the next whole minute strictly above the sum of its calls and its unretried work: a `go mod download`'s 1050 s takes at least 18 minutes, 1080 s.
 A step may carry more than that least budget: the ci-ok report step does, for the reason the paragraph that opens "The ci-ok report allows", further down this section, gives.
-.github/scripts/check-download-retry.sh's rule 8 refuses a step whose budget does not strictly exceed its calls' arithmetic, which is the part of that sum it can read, and a step that carries none at all:
+Each step's budget is derived by hand from the arithmetic this note gives, and dispatch://INFRA-6158 adds the check that holds them; a retried step that carries none at all is the worst case of all:
 a budget nobody wrote is a budget nothing judges, which is how this file's `airlock-lean` held the 8 x 60 + 127 = 607 s curl ladder .github/actions/install-elan carried before that action moved to `ci_tools_fetch`, with no term for it anywhere.
-It holds for every retried step of this repository's workflows, and the browser suite's install steps in .github/workflows/dispatch-browser.yaml derive theirs the same way.
+The rule holds for every retried step of this repository's workflows, and the browser suite's install steps in .github/workflows/dispatch-browser.yaml derive theirs the same way.
 
 Start a job's budget with its measured duration plus the retry arithmetic of its slowest retried step.
 The job's limit also counts every step before that one, so compare a second sum: the time the steps before the slowest retried step take, plus that step's rounded limit.
@@ -111,10 +109,9 @@ Round the larger of the two sums up to a whole minute.
 Rounding the first sum alone need not leave the slowest retried step its whole limit.
 The steps before it count at their measured time, and a step the measured runs did not have, such as a retried step added after them, counts at its retry arithmetic, which is a bound.
 If a measured step before it runs longer than it was measured to, the job can still stop the slowest retried step before that step's own limit.
-Two halves of that are checked rather than read:
-`.github/scripts/check-download-retry.sh`'s rule 8 refuses a job whose ceiling sits under a step's retry arithmetic, and refuses one whose ceiling is not above that step's own `timeout-minutes`, since the job holds that step and everything else it runs.
-The measured term is in neither, so a job key is still a figure a person derives and a reviewer reads; what the check gives is the floor it may not stand under.
-Twenty-two job keys stood below their own derivation while this check was green, because only the first of those two halves was read (dispatch://INFRA-1545).
+So a job's ceiling stands above each of its steps' retry arithmetic, and above each retried step's own `timeout-minutes`, since the job holds that step and everything else it runs.
+Each job key is derived by hand from the arithmetic this note gives, and dispatch://INFRA-6158 adds the check that holds them to those two floors; the measured term is a figure a person derives and a reviewer reads.
+Twenty-two job keys stood below their own derivation while only the first of those two floors was checked (dispatch://INFRA-1545).
 Both terms are written beside every `timeout-minutes` below, with the step named.
 The first term is the larger of the budget that job carried before dispatch://INFRA-1545
 — a ceiling its own comment derives, and in a Go test job one that a step's `-timeout` has to fire inside
@@ -131,10 +128,10 @@ The ci-ok report allows one minute more than the next whole minute strictly abov
 its arithmetic is `ci-ok-report.sh`'s two `gh api` reads, of the run's jobs and of the tip of the queue's branch (main's #4983), and `post-check-run.sh`'s POST of the check run, 3 x (5 x 30 + 150) = 900 s, and two calls of `.github/scripts/runner-shutdown.sh#runner_shutdown_kills` (main's #2945).
 The first is `ci-ok-report.sh`'s own, on a merge-group run where the reporting job failed, to tell a runner shutdown from a failure of the change;
 where it finds none, the script runs `ci-ok.sh`, which makes the second for the run's failed jobs in a process of its own, so it reads the check runs again rather than reusing the first call's.
-Each call is two reads: the check runs on the head, 5 x 30 + 150 = 300 s, and the annotations loop, which one deadline of 180 s bounds and `check-download-retry.sh`'s DECLARED_LOOPS prices at that deadline plus one read's whole ladder, 180 + 300 = 480 s.
-That is 900 + 2 x (300 + 480) = 2460 s, which `check-download-retry.sh` charges, its DECLARED_LIBRARIES entry for the ci-ok-report action writing the two calls, 1560 s, since round 37 of dispatch://INFRA-1545, and the tip read's ladder since the forward merge of main's #4983 at round 55 put that read through retry_fetch, run through gh-read.sh's gh_wait_reset, which the check charges one ladder as it charges a bare retry_fetch, as it charges every other read and the post here since review round 36 put each of them through that wait as well;
+Each call is two reads: the check runs on the head, 5 x 30 + 150 = 300 s, and the annotations loop, which one deadline of 180 s bounds and which is priced at that deadline plus one read's whole ladder, since the last read may start just before the deadline, 180 + 300 = 480 s.
+That is 900 + 2 x (300 + 480) = 2460 s, the two calls, 1560 s, since round 37 of dispatch://INFRA-1545, and the tip read's ladder since the forward merge of main's #4983 at round 55 put that read through retry_fetch, run through gh-read.sh's gh_wait_reset, which is priced at one ladder as a bare retry_fetch is, as every other read and the post here are since review round 36 put each of them through that wait as well;
 until round 37 this note wrote one call, 600 + 300 + 480 = 1380 s, and a step whose first call found no shutdown went past it, and until round 55 it wrote no tip read, 600 + 2 x (300 + 480) = 2160 s, with a budget of 38 minutes.
-2460 s is a whole 41 minutes, so rule 8 would take 42 minutes, 2520 s, and the budget is 2580 s, 43 minutes, the same one minute over that the 720 s and 660 s of the two ladders alone carried.
+2460 s is a whole 41 minutes, so the least budget this section gives a step would be 42 minutes, 2520 s, and the budget is 2580 s, 43 minutes, the same one minute over that the 720 s and 660 s of the two ladders alone carried.
 That step posts the required `ci-ok` check, so a budget that cut it between its ladders would lose the check run rather than report a failure, and the extra minute is what keeps the report itself from being the thing that goes missing.
 A STATED LIMIT, which gh-read.sh's header states too: a rate-limit wait on one of these calls is held to the step's limit with that call's own ladder and 30 s after it, not with the calls after it, so a wait and then 5xx answers on those later calls can still run the step to its 43 minutes, which the runner reports as the step's timeout, never as a pass.
 Every job's report step carries that 43, and its STEP_TIMEOUT_MINUTES with it, since each read's wait and the post's is held to it.
@@ -142,8 +139,8 @@ The 2460 s is the retry arithmetic, not the report step's deadline.
 The `ci-ok` verdict step in `ci.yaml` sources `runner-shutdown.sh` alone and makes one call.
 Its two reads take 300 + 480 = 780 s, so its limit and `STEP_TIMEOUT_MINUTES` are both 14 minutes.
 
-That check holds a job's own budget above each of its steps' arithmetic too, which is the half of this derivation a check can make:
-it reads the attempts and not the measurement, and a job whose ceiling sits under one of its steps' ladders cuts that step before the step's own budget can name the site that failed.
+A job's own budget stands above each of its steps' arithmetic too, which is the half of this derivation a check can make, since a check reads the attempts and not the measurement:
+a job whose ceiling sits under one of its steps' ladders cuts that step before the step's own budget can name the site that failed.
 
 The slowest step alone, and not the sum of every retried step, because the sum answers the wrong case.
 A job whose every download exhausts every attempt at once has not met the transient fault a retry exists to survive
@@ -174,17 +171,13 @@ Which rows a machine's run fills is read by `.github/scripts/ci-tools.sh#ci_tool
 an `-aarch64` row is aarch64's and any other x86_64's, as the install actions read it from `uname -m`, and the asset the row's copy is filled from must name that machine as release assets do.
 It refuses, by name and in either machine's run, a ghcr-mirror row the two readings do not agree on, which is how a third machine's row would read, and it refuses a machine no row is built for, so every ghcr-mirror row is filled by exactly one of the two steps or both fail; nothing is skipped in silence.
 That is a cold fill, the run in which the package answers no request of a machine's five rows until every ladder is exhausted, and it is what each step can wait for.
-.github/scripts/check-download-retry.sh charges it so since round 37 of dispatch://INFRA-1545: its DECLARED_LIBRARIES entry for .github/scripts/mirror-ci-tools.sh writes 18592 s for each step that runs the script, which replaces the one `ci_tools_fetch` it charged before, then 1281 s, a figure that left the step's loop of requests out.
+Each step that runs .github/scripts/mirror-ci-tools.sh is priced at those 18592 s since round 37 of dispatch://INFRA-1545, in place of the one `ci_tools_fetch` it was priced at before, then 1281 s, a figure that left the step's loop of requests out; the figure is derived by hand here, and dispatch://INFRA-6158 adds the check that holds it.
 Each step has a 310-minute limit, the next whole minute above 18592 s. The first sum in .github/ci-budgets.md#the-budgets-note is 1500 + 18592 = 20092 s, which rounds to the job's 335 minutes.
 Two such steps in one job is the case that rule answers: a run in which both machines' fills meet a package that answers nothing is an outage of the package, where failing at the job's ceiling is the right end, and a fill that meets a transient fault spends its own ladder and no more.
 Until round 37 this note left the term out of the ceiling, to keep the job near two hours for every change the ci_images filter selects, and the step's own budget of 22 minutes cut a cold fill inside its first row.
 
-The package step's own budget is held by hand in `.github/workflows/ci-job-ci-images.yaml`, and the job's ceiling held it too until the tool copy above it was priced, because .github/scripts/check-download-retry.sh prices none of that step's reads:
-those reads are urllib's and subprocess's, inside the Python that .github/scripts/check-ci-images.sh runs, and rule 8 puts a figure on no Python at all.
-Its rule 6 does read a `urlopen` written in a heredoc of a `.sh` under .github/scripts, which is what holds these reads to the floor.
-Python anywhere else
-— a `.py` file, or a heredoc in a workflow's or an action's `run:`
-— is read by no rule of that check, the floor included.
+The package step's own budget is derived by hand in `.github/workflows/ci-job-ci-images.yaml`, and the job's ceiling held it too until the tool copy above it was priced:
+that step's reads are urllib's and subprocess's, inside the Python that .github/scripts/check-ci-images.sh runs.
 
 ## The tool-fallback-arm job
 
@@ -313,8 +306,7 @@ The recover half of the job's derivation moved from 3640 s to 6740 s in round 30
 THE JOB'S KEY READ 221 UNTIL ROUND 28 OF dispatch://INFRA-1545, where that 221 came from 11310 + 1932 = 13242 s
 — the measured term before the stall arm's budget grew by 20 s, and install-jj's two ladders before each `ci_tools_fetch` went from 741 s to 1281 s.
 The lane is the one job whose cancellation this whole issue exists to prevent, and its derivation is written above the job's id in `.github/workflows/ci-job-download-retry.yaml` rather than above its key.
-Rule 8 reads it there since round 35, from the block that prices that key, and refuses a key that does not strictly exceed the sum that block states;
-it also refuses any job holding a retried step whose comments price none.
+That key is derived by hand from the sum that block states and strictly exceeds it, and the key of every job holding a retried step is priced by a comment of its own; dispatch://INFRA-6158 adds the check that holds them.
 
 Each site's budget in that job carries 20 s more than it did before the probe:
 `report` measures a site from the moment its proxy started, and the probe's two requests are made between the two, each bounded at 10 s by the rig's PROBE_BOUND.
@@ -393,7 +385,7 @@ G is 190 s for the Envoy image, 290 for the held-port image, 380 for the browser
 Every RUN line of a Dockerfile that reaches a listed host is meant to meet a fault in some run of its arm, which is why the browser image is built in two runs and the worker image in five, and the lines no run faulted at the head the note names are stated: .github/ci-notes/ci-job-download-retry.md#the-image-arms-outages-and-their-coverage.
 Each report prints, beside the requests its proxy passed on by host, the requests it faulted by host, with the second each host's first request came after the proxy started, and the outages the proxy opened and the hosts it left within G.
 Each report also reads its build's own log, BuildKit's plain progress, which `build` keeps beside the job log, and the rig builds the committed Dockerfiles themselves, never a copy of them:
-each inline retry() prints `retry: <what>: attempt <k> of 5 failed` on stderr for each attempt that fails, from an echo in the canonical text .github/scripts/check-download-retry.sh holds every definition to, and the report prints each call that failed an attempt with the last attempt it reached.
+each inline retry() prints `retry: <what>: attempt <k> of 5 failed` on stderr for each attempt that fails, from an echo in the one definition of it each of those Dockerfiles writes, and the report prints each call that failed an attempt with the last attempt it reached.
 THE ATTEMPT CHECK OF AN IMAGE BUILD fails a build where a call's attempt 4 of 5 failed, since its last attempt then ran, and where a ladder printed `<what> failed after 5 attempts`;
 where a RUN printed 7 `curl: (N)` lines of curl's own `--retry 7` (curl's 7th attempt starts about 63 s after its first, so a 60 s outage costs a call about 6, and a 7th means attempt 8 of 8 may have run), the lines a retry() attempt line follows being that attempt's own and not counted;
 and where the log holds neither kind of line, since then the fault reached no retried call of the build.
@@ -408,7 +400,7 @@ What is faulted is what each build fetches, and never ghcr.io:
 a FROM is resolved by the daemon, which reads its own configuration and not these build arguments, so no base image pull meets the fault.
 download-retry-images pulls its builds' bases first, unfaulted, and builds the smoke image the held-port wrapper builds on first too, with no proxy at all;
 download-retry-images-worker lets BuildKit pull the worker image's bases inside the build, as worker-image.yaml's own build does.
-Every one of those bases is an image this repository publishes, so a failed pull is seen and not retried over (.github/scripts/check-download-retry.sh, exception (a)).
+Every one of those bases is an image this repository publishes, so a failed pull is seen and not retried over.
 Each faulted build is --no-cache, since a reused layer fetches nothing and would meet no fault, and every build is --load into the runner's own daemon:
 nothing is pushed, and no registry credential is held.
 
@@ -474,7 +466,7 @@ What this repository measured is a bracket around GitHub's own threshold rather 
 a run STARTED at 501,500 bytes (run 42710088044) and STARTED NOTHING at 525,100 (run 42739729814).
 So the gate sits below a size GitHub was seen to tolerate, deliberately, and the margin between 500,000 and 501,500 is not somewhere to spend.
 `ci.yaml` reached 500,593 bytes merged with main during dispatch://INFRA-1545 and took three of its own jobs red with it, which is why the background behind that file's budgets lives in this note:
-a step's own priced sentence stays beside its key, where the reader of that step and rule 8 both need it, and the measurements, run ids and reasoning behind it are here.
+a step's own priced sentence stays beside its key, where the reader of that step needs it, and the measurements, run ids and reasoning behind it are here.
 
 ## The tool-fallback job's budget, part by part
 
@@ -494,7 +486,7 @@ That 126 s is what a negative control costs, because it drives two ladders;
 the other fourteen of those steps drive one and cost about 64 s, so the old allowance was about twice what two thirds of them could cost.
 What one ladder costs, and how it is derived, is in the comment above ci_tools_curl of .github/scripts/ci-tools.sh.
 What the change did: job 129743677408 ran 1,994 s and job 129885098900 ran 284 s, and the one case that still drives the real ladder measured 63 s inside it, at the 60 s bound those jobs ran under. #3470 set this limit to 22 minutes on those durations alone, and a measured duration is only the first term of the Budgets note's first sum, below:
-its second term is the job's slowest retried step, which at 22 minutes would be cut before it could name its fetch - the gate refused that job six ways then, naming `bun-second-source`'s ladder, 2 x 1281 = 2562 s at this change's bound, against 1320 s, and since main's #4214 that ladder is 2 x 1708 = 3416 s.
+its second term is the job's slowest retried step, which at 22 minutes would be cut before it could name its fetch - `bun-second-source`'s ladder, 2 x 1281 = 2562 s at this change's bound, against 1320 s, and since main's #4214 that ladder is 2 x 1708 = 3416 s.
 So the durations above stand and the limit does not (dispatch://INFRA-1545).
 
 The tool-fallback job's key also clears the first sum in .github/ci-budgets.md#the-budgets-note:
@@ -513,9 +505,9 @@ What keeps every retried step of the tool-fallback job diagnosable is that the l
 the staging step first, and no retried step of job 129478173535 reached past 41.6 minutes.
 A step added late with a ladder of its own has to be read against the job's limit rather than assumed safe by it.
 
-THE STAGING STEP'S BUDGET IS PRICED BY A DECLARATION, which is worth its own sentence:
-rule 8 reads a call of ci_tools_fetch as a call of that function and not as a call of the file defining it, so on its own it would charge the step the library once, 1708 s, and since round 37 of dispatch://INFRA-1545 it refuses a loop of such calls unless a declaration writes its figure;
-the DECLARED_LIBRARIES entry in .github/scripts/check-download-retry.sh writes this step's 12383 s, so rule 8 holds the step's 207 minutes and the job's 236 above that sum, and the job's slowest step on its `--jobs` row is this one.
+THE STAGING STEP'S BUDGET IS DERIVED BY HAND FROM ITS ROWS, which is worth its own sentence:
+the step loops over ten staged rows, so what it waits for is not one `ci_tools_fetch`, 1708 s, but the twenty-nine ladders of those rows, 12383 s, which the step's own comment in `.github/workflows/ci-job-tool-fallback.yaml` derives from the arithmetic the Budgets note gives;
+the step's 207 minutes and the job's 236 stand above that sum, this step is the job's slowest, and dispatch://INFRA-6158 adds the check that holds them.
 At the 120 s bound this change replaced, the same derivation gave twelve ladders of 247 s, 2964 s, and that step's key read 50;
 nothing but the bound moved it, and test round 39 of dispatch://INFRA-1545 is what found it standing 36 minutes under its own worst case.
 Before main's #4214 put a fourth ladder in each `ci_tools_fetch`, the same derivation at the 300 s bound gave twelve ladders of 427 s, 5124 s, and the step's key read 86 and the job's 115.

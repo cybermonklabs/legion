@@ -13,9 +13,7 @@ for every release target in three modules. That script installs go-licenses thro
 `$tool` is not already executable. The tool's directory is named by the go-licenses version and
 the host's Go version, and the three modules name one Go, 1.27.3, so every call after the first
 finds that build and fetches nothing, and the step waits for one ladder.
-`.github/scripts/check-download-retry.sh` reads go-release-notices.sh but no script outside
-`.github/scripts/`, so it prices none of that, and the budget is derived by hand
-(dispatch://INFRA-2899 owns the reach that would make it the check's): the ladder beside the
+The budget is derived by hand: the ladder beside the
 step's measured duration, 132 s at most over its 28 runs in the 40 successful ci.yaml runs created
 from 2026-11-21T07:52Z to 08:57Z (job 136791133115 of run 44885569301).
 132 + 1050 = 1182 s -> 20 min, under the job's 87.

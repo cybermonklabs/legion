@@ -104,8 +104,7 @@ A step that holds a retried download, and a job that holds such a step, take the
 .github/ci-budgets.md#the-budgets-note (dispatch://INFRA-1545). The step carries its own retry
 arithmetic there instead of a measured maximum, and the job's measured term is the budget the
 measured rule above gives it, which every job derives from its own table.
-.github/scripts/check-download-retry.sh's rule 8 refuses a step or a job whose budget does not
-strictly exceed the retry arithmetic it holds. Where a job's line below writes
+Each budget is derived by hand from that arithmetic. Where a job's line below writes
 `<a> + <b> = <c> s -> <key> min`, the first term is that measured budget and the second the
 slowest retried step's ladder.
 
@@ -1035,8 +1034,7 @@ To it the rule adds the arithmetic of this job's slowest retried step, the setup
 `ci_tools_fetch` calls at 2 x 1708 = 3416 s, above the Chromium install's one `retry_fetch`
 call, 5 x 300 + 150 = 1650 s, and the module download's and the workspace install's 1050 s
 each. The image pull is no term of it: it is a ghcr.io pull of a package this repository
-publishes, which this step makes once and never retries
-(.github/scripts/check-download-retry.sh's exception (a), whose EXEMPTIONS name the step).
+publishes, which this step makes once and never retries.
 1080 + 3416 = 4496 s -> 75 min, which stands above the largest step budget of this job, the
 setup-bun step's own 57, so no job budget fires before a step's own and the `if: failure()`
 upload still runs. It was 780 + 3416 = 4196 s, 70 minutes, until main's #4486 moved the job's
@@ -1120,7 +1118,7 @@ The pull is keyed as the visual job's "Pull the visual stack's Postgres copy" is
 step's reading of the same digest: 120 s before the stack's first output on #4129 (run
 44215262087, job 134503540243), where the browser step still made the pull, so
 120 x 1.15 = 138 s -> 3 min. A failed pull is a fault of this repository's own package, so it
-fails here and says so (.github/scripts/check-download-retry.sh's exception (a)). The embedder
+fails here and says so. The embedder
 job's pull carries the same key.
 
 ## Why the two-process job reads its stack's connection limit in a step of its own
@@ -1340,8 +1338,7 @@ plus the same 333 s of every step without one, 120 + 180 + 600 + 333 = 1233 s ->
 1260 s. To it the rule adds the arithmetic of its slowest retried step, the setup-bun step at
 3416 s, above the workspace install's and the module download's 5 x 180 + 150 = 1050 s each. The
 two image pulls are no term of it: each is a ghcr.io pull of a package this repository
-publishes, which its step makes once and never retries
-(.github/scripts/check-download-retry.sh's exception (a), whose EXEMPTIONS name each step).
+publishes, which its step makes once and never retries.
 1260 + 3416 = 4676 s -> 78 min, which stands above the largest step budget of this job. It was
 1380 + 3416 = 4796 s, 80 minutes, while main's #4536's reverse-order browser step ran, its 120 s
 in the first term, and went back to 78 minutes when main's #5195 removed that step;
@@ -1397,8 +1394,7 @@ first listener over the 14 passing runs the browser step's key reads, and 80 s i
 to 15 s over five green visual jobs, and 120 s on #4129, whose step ran past its 4 minutes at
 250 s. Neither log times the pull apart from the rest of that start, so the maximum bounds the
 pull rather than measuring it alone: 120 x 1.15 = 138 s -> 3 min. A failed pull is a fault of
-this repository's own package, so it fails here and says so (.github/scripts/check-download-retry.sh's
-exception (a)).
+this repository's own package, so it fails here and says so.
 
 ## Why each visual row stops its page's writes, and runs once
 
@@ -1568,9 +1564,9 @@ Four steps carry a budget of their own since dispatch://INFRA-1545, each from it
 arithmetic rather than a measured maximum: the workspace install, 5 x 180 + 150 = 1050 s
 -> 18 min; the two that run .github/scripts/dispatch-browser-run-reads.sh - "Reading one, the
 rows", through .github/scripts/dispatch-browser-reading-rows.sh, and "Report a refused blob
-download as a refused read" - from the ladder rule 8 of
-.github/scripts/check-download-retry.sh credits to any step that reaches that file, whichever
-mode the step asks for, 5 x 40 + 150 = 350 s: the report at 6 min, and "Reading one, the rows"
+download as a refused read" - from that file's one ladder, which a step reaching the file
+carries whichever mode the step asks for, 5 x 40 + 150 = 350 s: the report at 6 min, and "Reading
+one, the rows"
 at 7 min, since it adds the 30 s bound of gh-read.sh's one rate_limit read after a ladder whose
 last attempt exited 1 (the paragraph above) and its own 5.75 s of work, 385.75 s; and the ci-ok
 report, 2460 s -> 43 min, the Budgets note's figure. Of the two that run that file only "Reading
@@ -1734,10 +1730,10 @@ job's slowest retried step is larger.
 Every job here installs Bun through ./.github/actions/setup-bun and then the workspace, and both
 retry (dispatch://INFRA-1545). The setup-bun step's key is the action's own retry arithmetic:
 .github/scripts/ci-tools.sh is sourced in two of that action's steps - the second source's
-fetch of Bun and the digest check after it - and rule 8 of .github/scripts/check-download-retry.sh
-credits that file's declared 1708 s `ci_tools_fetch` to each of them, 2 x 1708 = 3416 s -> 57
-min. The declaration is in that check's DECLARED_LOOPS, which writes the sum out: a step sourcing
-the file twice is charged twice, which over-prices the step rather than under-pricing it.
+fetch of Bun and the digest check after it - and each is priced at that file's one
+`ci_tools_fetch`, 1708 s (the Budgets note of .github/ci-budgets.md derives it), 2 x 1708 =
+3416 s -> 57 min. A step sourcing the file twice is priced twice, which over-prices the step
+rather than under-pricing it.
 
 The workspace install retries like every install of this repository's CI (the Retries note of
 .github/ci-budgets.md), at the 180 s bound every Bun install carries: 20.70 s cold on a pod,

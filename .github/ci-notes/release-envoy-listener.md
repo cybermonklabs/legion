@@ -25,17 +25,17 @@ the job carried before dispatch://INFRA-1545, and each line below names its slow
   234 s and the publish build 7 to 11 s), plus its slowest retried step alone: setup-bun's two
   `ci_tools_fetch` calls, 2 x 1708 = 3416 s. That is above the smoke image's build, priced at the
   longest single ladder of the Dockerfile it builds, since a build runs its fetches one after
-  another and pays a fault window once, through the first fetch that meets it
-  (`.github/scripts/check-download-retry.sh`, rule 10): the `bun install` and the `go mod
-  download` that packages/envoy/docker/Dockerfile runs, at 5 x 600 + 150 = 3150 s each. The publish
+  another and pays a fault window once, through the first fetch that meets it: the `bun install`
+  and the `go mod download` that packages/envoy/docker/Dockerfile runs, at 5 x 600 + 150 = 3150 s
+  each. The publish
   build after it reuses that build's layers from the same builder, so its RUN lines fetch nothing
   again. It is above `Check this job holds no credential (tripwire)` too, which runs
   `.github/scripts/release-push.sh` and so holds that script's leak-guard fetch at every one of
   its call sites, 6 call sites of one 450 s fetch = 2700 s, and above the Go module download and
   the workspace install at 5 x 180 + 150 = 1050 s each. 4800 + 3416 = 8216 s -> 137 min. The
-  eight job keys a reviewer of dispatch://INFRA-1545 raised by hand did not hold this one: rule
-  8's job-derivation clause found it, because it reads the step arithmetic the check computes
-  rather than the figures a comment names (round 28).
+  eight job keys a reviewer of dispatch://INFRA-1545 raised by hand did not hold this one, and
+  round 28 of that issue found it from the step arithmetic rather than from the figures a comment
+  names.
 - `release_build`: 600 s, the measured 10 minutes this job carried, plus its slowest retried step
   alone: the leak-guard fetch of the release-push.sh steps, 6 call sites of one 450 s fetch =
   2700 s, above every other retried step there. 600 + 2700 = 3300 s -> 56 min, which carries the
@@ -94,9 +94,7 @@ The script installs go-licenses through `.github/scripts/ci-retry.sh` at the 180
 5 x 180 + 150 = 1050 s, and only where its `$tool` is not already executable; the tool's
 directory is named by the go-licenses version and the host's Go version, not by the GOOS or
 GOARCH the packages target, so every call after the first finds that build and fetches nothing,
-and each step waits for one ladder. `.github/scripts/check-download-retry.sh` reads no script
-outside `.github/scripts/`, so it prices none of that, and each budget is derived by hand
-(dispatch://INFRA-2899 owns the reach that would make it the check's): the ladder beside the
+and each step waits for one ladder. Each budget is derived by hand: the ladder beside the
 step's measured duration, which holds its builds, over the 20 successful runs of this workflow
 created from 2026-11-20T23:00Z to 2026-11-21T08:25Z.
 
@@ -127,7 +125,6 @@ resolves for ci.yaml's dispatch-two-builds job, and that job only restores it: t
 push in ci-caches.yaml ran before the tag existed and built the release before. Plain gh, as this
 credentialed job runs no script but release-push.sh (check-release-credentials.sh rule 1). A
 refused dispatch costs builds, not the release, so it warns and the job goes on. The dispatch is
-a write, as release-push.sh restart's `gh workflow run` is, and
-`.github/scripts/check-download-retry.sh` prices neither as a fetch, so the step adds one call of
-seconds and no retried step to release_publish, whose key stands:
+a write, as release-push.sh restart's `gh workflow run` is, and neither is a fetch, so the step
+adds one call of seconds and no retried step to release_publish, whose key stands:
 600 + 5400 = 6000 s -> 101 min (#the-jobs-budgets).
