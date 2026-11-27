@@ -10,8 +10,10 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
@@ -563,12 +565,12 @@ func (s *supervision) reconcileIssuePodUpdate(ctx context.Context, issue string,
 		s.endRoundWhosePodWent(ctx, issue, group, open, pod, podWentOverLine)
 		return nil
 	}
-	reasons, reading := s.groupDrift(ctx, issue, group)
-	if reading == podGone {
+	drift := s.groupDrift(ctx, issue, group)
+	if drift.reading == podGone {
 		s.endRoundOverAGonePod(ctx, issue, group, open, pod)
 		return nil
 	}
-	if reading != podRead {
+	if drift.reading != podRead {
 		// The unread pod decides nothing, and past the bound of a round open over it the
 		// controller is told of the round once; where holds are over its agents, each hold and its
 		// holder are told in its place (tellUnreadPod). The snapshot says first whether the bound
@@ -581,14 +583,14 @@ func (s *supervision) reconcileIssuePodUpdate(ctx context.Context, issue string,
 		}
 		return nil
 	}
-	if len(reasons) == 0 && open == "" {
+	if len(drift.reasons) == 0 && open == "" {
 		// A pod that has drifted from nothing, with no round open over it, needs no replacement:
 		// returning here is what keeps the code below from opening a round over it.
 		return nil
 	}
 	// The drift as a round would record it: each reason of a drift that breaks the pod first
 	// (runtime.RoundReasons), so the record opens on the mark where one of its reasons does.
-	terms := runtime.RoundReasons(reasons)
+	terms := runtime.RoundReasons(drift.reasons)
 	if open == "" && !clock.held() {
 		// An earlier round kept this pod for work on its disk that no branch or tag on origin
 		// holds, or for a read that could not be made (keepPodForRound): no round opens over it
@@ -604,7 +606,8 @@ func (s *supervision) reconcileIssuePodUpdate(ctx context.Context, issue string,
 	}
 	// The drift this tick read opens a round and decides nothing of a round already open: a
 	// round's terms are fixed at its open (dispatch://INFRA-2981 R9), so what an open round's
-	// notices and its replacement name is its own recorded reasons (roundReasons). That holds
+	// notices and its replacement name is its own recorded reasons (roundReasons), and what its
+	// post carries is those and its own recorded repository (roundRepository). That holds
 	// where the drift has gone away too — an operator rolled the release back — and the round
 	// replaces the pod all the same, and where a drift that breaks the pod came after the open:
 	// the round is read by the reasons it recorded, and the next round is over that drift (spec
@@ -628,7 +631,7 @@ func (s *supervision) reconcileIssuePodUpdate(ctx context.Context, issue string,
 	if open != "" {
 		// A round open here is over the pod the claims record, the one round this issue can be
 		// in: a round over any other pod has ended above.
-		terms := roundReasons(group, open)
+		terms, repository := roundReasons(group, open), roundRepository(group, open)
 		if replace, decided := s.completePodUpdate(ctx, issue, group, live, open, pod, terms, clock); decided {
 			return replace
 		}
@@ -637,13 +640,14 @@ func (s *supervision) reconcileIssuePodUpdate(ctx context.Context, issue string,
 		// opened would leave its workers waiting in a pod the daemon has already told them is
 		// going, and these limits are about how fast a change reaches the fleet, not about how
 		// long a round may run.
-		s.openPodUpdate(ctx, issue, told, pod, terms, clock)
+		s.openPodUpdate(ctx, issue, told, pod, terms, repository, clock)
 		return nil
 	}
 	// A round the claims do not record is an opening, which a project's pause holding the pod or
 	// the project's limits may hold back, or this daemon's own opening still in flight, posted
-	// again (openPodUpdateUnderLimits).
-	if step := s.openPodUpdateUnderLimits(ctx, sweep, issue, told, pod, terms, clock); step.pauseHeld {
+	// again (openPodUpdateUnderLimits). Its post carries the repository this tick read the pod
+	// built from (podDrift.repository).
+	if step := s.openPodUpdateUnderLimits(ctx, sweep, issue, told, pod, terms, drift.repository, clock); step.pauseHeld {
 		s.log.Info("supervise: a project's pause holds this drifted issue's pod; no update round opens over it until the hold ends",
 			"issue", issue, "pod", pod, "reasons", terms)
 	}
@@ -1382,6 +1386,7 @@ func (s *supervision) replaceForRound(ctx context.Context, replace podReplacemen
 	rc roundCall) {
 	issue, round, pod, reasons := replace.issue, replace.round, replace.pod, replace.reasons
 	read := s.readPodWorkspace(ctx, issue, round, rc.process, replace.by, at)
+	read.origin = roundRepository(told, round)
 	if roundKeeps(reasons, read) {
 		s.keepPodForRound(ctx, issue, round, pod, reasons, read, told)
 		return
@@ -1518,8 +1523,14 @@ func (s *supervision) roundReplaced(ctx context.Context, issue, round, pod, reas
 	if kept {
 		line = append(line, "keptVolume", true)
 	}
+	// The repository facts of the notice: the repository the round's pod was built from, as the
+	// replacement's record holds it (workspaceRead.origin), and the repository the issue's record
+	// holds now, read here rather than in the notice: the store builds the notice inside the
+	// transaction that finishes the record (finishReplacement), which waits on no other read. A
+	// retry of a refused finish, by a later sweep or after a restart, reads the record again.
+	moved := s.roundMove(ctx, issue, read.origin)
 	message := func(told recordedRead) string {
-		return workspaceTakenMessage(issue, round, pod, reasons, lost, told.work, told.err, kept)
+		return workspaceTakenMessage(issue, round, pod, reasons, lost, told.work, told.err, kept, moved)
 	}
 	// The bound's line comes before the finish: the replacement is made, and a retry of a refused
 	// finish (finishReplacements) carries no reading of the bound, so this is the line's one chance.
@@ -1564,14 +1575,20 @@ func (s *supervision) roundReplaced(ctx context.Context, issue, round, pod, reas
 // answered (readPodWorkspace): the round it was made for, who makes the replacement (by,
 // roundReplacer), the role whose process made it ("" for the pod's launcher), the moment it began
 // (at), which the last word weighs a later turn against (replacementDue), and what it found or
-// the error it failed with.
+// the error it failed with. origin is the repository the round's pod was built from, as the round
+// recorded it at its open (roundRepository; the zero Repository where the pod named none): origin
+// in the pod the read ran in, whose branches and tags the read weighs the work against. The caller
+// sets it before the replacement's record is written, which holds it (replacementRecord), so every
+// finish of the replacement, after a restart too, names the work by that repository where the
+// issue's record has left it (roundMove, workspaceTakenMessage).
 type workspaceRead struct {
-	round string
-	by    roundReplacer
-	role  claim.Role
-	at    time.Time
-	work  runtime.WorkspaceWork
-	err   error
+	round  string
+	by     roundReplacer
+	role   claim.Role
+	at     time.Time
+	work   runtime.WorkspaceWork
+	err    error
+	origin ghrepo.Repository
 }
 
 // clean is whether the read was made and found nothing that origin does not hold: the one read a
@@ -2358,6 +2375,7 @@ func (s *supervision) roundPodEndsAtLaunch(ctx context.Context, token claim.Toke
 	}
 	reasons := roundReasons(group, round)
 	read := s.readPodWorkspace(ctx, issue, round, runtime.Known{}, viaLaunch, at)
+	read.origin = roundRepository(group, round)
 	if roundKeeps(reasons, read) {
 		s.keepPodForRound(ctx, issue, round, podUID, reasons, read, group)
 		return s.keepAtLaunch(issue, round, token, "the read of the pod's workspace found work that no branch or tag on origin holds, or could not be made")
@@ -2878,7 +2896,7 @@ func podlessReason(held []supervise.Claim) string {
 // a new, empty volume, so the work is lost there too. So is a Sandbox that carries the reset mark,
 // or whose disk shape is not the one the configuration now renders: the next launch deletes it,
 // with its volume. On another project's issue, the pod of the operator's spawn of it, no message is
-// written (writeOnIssue), and the daemon's log lines are the whole of it.
+// written (plan.writeOnIssue), and the daemon's log lines are the whole of it.
 //
 // Three readings say the pod went. The claims recording a pod other than the round's own is one
 // (reconcileIssuePodUpdate), whose end counts the claims it decided from; the runtime answering
@@ -2906,7 +2924,8 @@ func (s *supervision) podWentWithoutItsRound(ctx context.Context, issue string, 
 		s.log.Warn(podWentLostLine,
 			"issue", issue, "round", round, "pod", pod, "lost", namesOf(lost))
 	}
-	written, err := s.writeOnIssue(ctx, issue, record.MessagePost{Body: podWentMessage(round, reasons, lost, kept)})
+	moved := s.roundMove(ctx, issue, roundRepository(group, round))
+	written, err := s.plan.writeOnIssue(ctx, issue, record.MessagePost{Body: podWentMessage(issue, round, reasons, lost, kept, moved)})
 	switch {
 	case err != nil:
 		s.log.Error("supervise: write on the issue that its pod went without its update round",
@@ -2965,6 +2984,45 @@ func (s *supervision) endRoundWhosePodWent(ctx context.Context, issue string, gr
 		s.log.Info(over, "issue", issue, "round", round, "pod", pod)
 	}
 	s.endPodUpdates(issue, group, round)
+}
+
+// repositoryMove is what a message of a round says of the repository the round's pod was built
+// from (podWentMessage, workspaceTakenMessage), as roundMove reads it. The zero value is
+// no move: the record was read and holds that repository, or the round recorded none, and the
+// message sends each role to origin. from and to together are a move: from is the repository the
+// pod was built from, and to the one the record holds now. from alone is the round's repository
+// where the record could not be read (unread).
+type repositoryMove struct {
+	from, to ghrepo.Repository
+}
+
+// unread is whether the message names the round's own repository because the issue's record
+// could not be read (roundMove). Origin in the next pod is then unknown: a correction can have
+// moved the record, so origin can hold none of the work the roles pushed.
+func (m repositoryMove) unread() bool {
+	return !m.from.IsZero() && m.to.IsZero()
+}
+
+// roundMove is the move a message of a round names: built, the repository the round's pod was
+// built from, as the round recorded it at its open (roundRepository) or as the record of its
+// replacement holds it (workspaceRead.origin), and the repository the issue's record holds when
+// the message is written (recordedLeft). The record is read now and not taken from the round's
+// reasons, which name it only on a round a correction opened, and as it stood at the round's
+// open: a correction while the round ran moved the record on, whatever drift opened the round, and
+// the issue's next pod is built from the record as it stands now. It is no move for a round that
+// recorded no repository, whose pod named none, and for a round whose issue's record holds the
+// pod's repository. A record that cannot be read is the round's own repository alone
+// (repositoryMove.unread), never no move: a message that sent each role to origin would send it,
+// after a correction, to a repository that holds none of its work.
+func (s *supervision) roundMove(ctx context.Context, issue string, built ghrepo.Repository) repositoryMove {
+	recorded, read := s.recordedLeft(ctx, issue, built)
+	if !read {
+		return repositoryMove{from: built}
+	}
+	if recorded.IsZero() {
+		return repositoryMove{}
+	}
+	return repositoryMove{from: built, to: recorded}
 }
 
 // The lines of the end of a round whose pod went (endRoundWhosePodWent), each one statement, which
@@ -3057,7 +3115,9 @@ type podOpeningStep struct {
 // (postRequestedPodUpdate) take, over told, the issue's claims as they hold their answers now
 // (noticeGroup), and pod, the pod those claims record. clock is the caller's now and what a pause
 // did to the pod: the round's ask states its bound by that clock (askRound), and the opening is
-// recorded at its now.
+// recorded at its now. repository is the repository pod was built from, as the caller read it
+// (podDrift.repository, podBuiltFrom; the zero Repository where the pod named none), which the
+// post carries for the round to record (openPodUpdate).
 //
 // Its first branch is the pause: no round opens over a pod a project's pause holds
 // (roundClock.held), whoever asks for it, so the step posts nothing and answers pauseHeld, which
@@ -3068,8 +3128,10 @@ type podOpeningStep struct {
 // An opening of this daemon's own whose post no claim has recorded yet is posted again with the
 // reasons it opened with, so every claim records one set of them whichever post reaches it
 // first: the post that opened it may have gone to claims this read no longer asks, and a machine
-// that records the round already takes nothing from it. No limit holds that post back and nothing
-// more is charged for it: it is the same opening, holding the slot it was charged
+// that records the round already takes nothing from it. The repost carries repository: the pod
+// clones its repository once, at its creation, so a read of the same pod names the one the
+// opening carried. No limit holds that post back and nothing more is charged for it: it is the
+// same opening, holding the slot it was charged
 // (podUpdateSweep.reposts). Any other round is an opening, which a limit of the project may hold
 // back (podUpdateSweep.holds), and then nothing is posted. Otherwise it is posted with reasons,
 // and charged to the sweep and to this daemon's record of its own openings
@@ -3077,19 +3139,19 @@ type podOpeningStep struct {
 // (openPodUpdate): an opening no claim records holds no slot, and charged all the same it would
 // hold one for ever.
 func (s *supervision) openPodUpdateUnderLimits(ctx context.Context, sweep *podUpdateSweep, issue string,
-	told []supervise.Claim, pod, reasons string, clock roundClock) podOpeningStep {
+	told []supervise.Claim, pod, reasons string, repository ghrepo.Repository, clock roundClock) podOpeningStep {
 	if clock.held() {
 		return podOpeningStep{pauseHeld: true}
 	}
 	round := supervise.PodRound(pod)
 	if inFlight, again := sweep.reposts(issue, round); again {
-		s.openPodUpdate(ctx, issue, told, pod, inFlight.reasons, clock)
+		s.openPodUpdate(ctx, issue, told, pod, inFlight.reasons, repository, clock)
 		return podOpeningStep{reasons: inFlight.reasons}
 	}
 	if limit, held := sweep.holds(issue); held {
 		return podOpeningStep{held: limit}
 	}
-	opened := s.openPodUpdate(ctx, issue, told, pod, reasons, clock)
+	opened := s.openPodUpdate(ctx, issue, told, pod, reasons, repository, clock)
 	if opened {
 		s.recordPodUpdateOpening(sweep, issue, round, reasons, clock.now)
 	}
@@ -3101,7 +3163,8 @@ func (s *supervision) openPodUpdateUnderLimits(ctx context.Context, sweep *podUp
 // (askRound). Every claim with a session, and every claim whose launch waits on the round's own
 // pod, is posted PodUpdateOpen at every tick while the round runs (postedClaims): the event is
 // idempotent, and it is what records the round on the claim (supervise's openPodUpdate), with its
-// reasons and its clock fixed at the post that opens it.
+// reasons, the repository its pod was built from (repository, the zero Repository where the pod
+// named none) and its clock fixed at the post that opens it.
 //
 // The ask is the sweep's own, enqueued on the reading that finds the round recorded (askRound).
 // The post is asynchronous (supervisor.post), so the tick that opens a round asks nothing, and a
@@ -3153,13 +3216,14 @@ func (s *supervision) openPodUpdateUnderLimits(ctx context.Context, sweep *podUp
 // would be read as an opening of this daemon's still in flight at every later sweep
 // (podUpdateOpenings), hold that slot for ever, and leave every other drifted issue waiting until
 // the daemon restarts.
-func (s *supervision) openPodUpdate(ctx context.Context, issue string, group []supervise.Claim, pod, reasons string, clock roundClock) bool {
+func (s *supervision) openPodUpdate(ctx context.Context, issue string, group []supervise.Claim, pod, reasons string,
+	repository ghrepo.Repository, clock roundClock) bool {
 	round := supervise.PodRound(pod)
 	posted := postedClaims(group, round)
 	reached := len(noticeClaims(group, round)) > 0
 	s.askRound(ctx, issue, group, round, pod, clock)
 	for _, c := range posted {
-		s.supervisor.post(c.Token, supervise.PodUpdateOpen{Claim: c.Token, Round: round, Reasons: reasons})
+		s.supervisor.post(c.Token, supervise.PodUpdateOpen{Claim: c.Token, Round: round, Reasons: reasons, Repository: repository})
 	}
 	return reached
 }
@@ -3218,7 +3282,7 @@ func reasonOver(held []supervise.Claim, words func(held []supervise.Claim) strin
 //
 // A round over the pod of a claim of another project's issue, which the operator's spawn makes,
 // queues no notice: its row would be keyed by that issue, which only that project's daemon runs
-// (supervision.enqueue). Its line is then the whole of its telling, as the stall backstop's line
+// (plan.enqueue). Its line is then the whole of its telling, as the stall backstop's line
 // is for a claim no owner can be told of (tellStallBackstopped), and says that the controller is
 // told nothing; the round is marked told, so the line is written once rather than at every tick.
 func (s *supervision) tellUpdateStalled(ctx context.Context, stall updateStall) {
@@ -3226,12 +3290,12 @@ func (s *supervision) tellUpdateStalled(ctx context.Context, stall updateStall) 
 		return
 	}
 	reason := stall.reason()
-	if s.enqueue == nil {
+	if s.plan.enqueue == nil {
 		s.log.Warn("supervise: an update round is held past its bound, and this deployment has no workflow to tell the controller through",
 			"issue", stall.issue, "round", stall.round, "reason", reason)
 		return
 	}
-	written, err := s.enqueue(ctx, stall.issue, record.ControllerNotice{
+	written, err := s.plan.enqueue(ctx, stall.issue, record.ControllerNotice{
 		Kind:   record.UpdateStalledNotice,
 		Reason: reason,
 		Update: &record.UpdateStalled{Round: stall.round, Pod: stall.pod, Reasons: stall.reasons, Waiting: stall.waiting},
@@ -3349,7 +3413,7 @@ func (s *supervision) askRound(ctx context.Context, issue string, group []superv
 	if len(asking) == 0 {
 		return
 	}
-	if s.enqueue == nil {
+	if s.plan.enqueue == nil {
 		s.log.Debug("supervise: this deployment has no outbox, so the update round's ask is published to no role",
 			"issue", issue, "round", round, "roles", namesOf(asking))
 		return
@@ -3377,7 +3441,7 @@ func (s *supervision) askRound(ctx context.Context, issue string, group []superv
 	for i, c := range asking {
 		rows[i] = record.UpdateAsk{Role: c.Role, Round: round, Pod: pod, Text: supervise.UpdateTask(c.Role, round, reasons, *bound)}
 	}
-	written, err := s.enqueue(ctx, issue, rows...)
+	written, err := s.plan.enqueue(ctx, issue, rows...)
 	if err != nil {
 		if ctx.Err() == nil {
 			s.log.Error("supervise: enqueue the update round's ask to its roles; asking again at the next sweep",
@@ -3417,16 +3481,6 @@ func unaskedClaims(group []supervise.Claim, round string, clock roundClock) []su
 		}
 	}
 	return asking
-}
-
-// writeOnIssue posts one message on the issue, with the document it links when it links one,
-// through the outbox's Dispatch message row, and answers whether it queued it: it queues none on
-// another project's issue (supervision.enqueue).
-func (s *supervision) writeOnIssue(ctx context.Context, issue string, post record.MessagePost) (bool, error) {
-	if s.enqueue == nil {
-		return false, fmt.Errorf("write on %s: this deployment has no workflow to write through", issue)
-	}
-	return s.enqueue(ctx, issue, post)
 }
 
 // endPodUpdates ends round of the issue on every claim of the group that is one of its members
@@ -3545,12 +3599,31 @@ const (
 	podGone
 )
 
+// podDrift is what one sweep read of the pod the group's claims record (groupDrift): why that
+// pod has drifted and the reading that says what the reasons are worth. The two are one value
+// because neither decides anything alone — no reason is a pod that drifted from nothing only
+// under podRead — and a caller that took them as two results could hold the reasons of one
+// round beside the reading of another.
+type podDrift struct {
+	// reasons is why the pod has drifted, in the claims' own order and without repeats, empty
+	// for a pod that has drifted from nothing.
+	reasons []string
+	// repository is the repository the pod was built from, as the pod names it (repositoryDrift),
+	// which the round this drift opens records whatever drift opened it
+	// (supervise.Claim.UpdateRepository), and the zero Repository where nothing could say.
+	repository ghrepo.Repository
+	// reading is what could be read of the pod at all (podReading).
+	reading podReading
+}
+
 // groupDrift is why the group's pod has drifted: the union of the runtime's PodDrift over every
 // claim of the group that records a process or a pod its launch waits on (podLocator), in the
-// claims' own order and without repeats, with the reading that says what those reasons are worth
-// (podReading). A claim's awaited pod is asked about as the pod of a process there is: the
-// runtime refused that claim's launch because the pod lacks the exchange identity a pod built now
-// carries, which is drift PodDrift reports of the pod, so the round opens over it.
+// claims' own order and without repeats, and then the repository the pod was built from read
+// against the repository the issue's record holds now (repositoryDrift), with the reading that
+// says what the reasons are worth (podReading). A claim's awaited pod is asked about as the pod of
+// a process there is: the runtime refused that claim's launch because the pod lacks the exchange
+// identity a pod built now carries, which is drift PodDrift reports of the pod, so the round opens
+// over it.
 //
 // It reads podUnread when the runtime could not be asked at all: an error is never a statement
 // that something drifted, and a round must neither open nor end on one.
@@ -3561,7 +3634,23 @@ const (
 // that has drifted from nothing, it would carry the round on over a pod that took its workers'
 // unpushed work with it. Read as nothing at all, it would leave that round open over a pod that is
 // not there. The caller is what logs it, because the caller is what decides it.
-func (s *supervision) groupDrift(ctx context.Context, issue string, group []supervise.Claim) ([]string, podReading) {
+//
+// The repository is asked once for the group, through the one helper every reader of the pod's
+// repository asks it by (podRepository), because it is the pod's and not the claim's: every role
+// of the issue runs in that one pod and works the one workspace its fetch cloned, so one
+// correction opens one round rather than one per claim, and the idle rule's repository hold
+// reads the pod through the same claim (podRepositoryDrifted). A runtime that answers nothing —
+// one whose processes share no such place, a pod that clones no repository — and a group no
+// claim of which records a process end the question there. A read that fails reads podUnread, as
+// a failed drift read does: a round opened on it would record no repository for its whole life,
+// since the open fixes its terms (supervise.Claim.UpdateRepository).
+//
+// The pod's repository goes with the drift whatever the record holds, so every round records the
+// repository its pod was built from at its open, and not only a round a correction opened: a
+// correction can land while a round that another drift opened runs, and each message of that
+// round on the issue reads the record against that repository when it is written (roundMove's
+// callers).
+func (s *supervision) groupDrift(ctx context.Context, issue string, group []supervise.Claim) podDrift {
 	var reasons []string
 	for _, c := range group {
 		loc := podLocator(c)
@@ -3570,13 +3659,13 @@ func (s *supervision) groupDrift(ctx context.Context, issue string, group []supe
 		}
 		drift, err := s.runtime.PodDrift(ctx, runtime.Known{Claim: c.Token, Locator: loc})
 		if errors.Is(err, runtime.ErrPodGone) {
-			return nil, podGone
+			return podDrift{reading: podGone}
 		}
 		if err != nil {
 			if ctx.Err() == nil {
 				s.log.Error("supervise: read whether this issue's pod has drifted", "issue", issue, "claim", c.Token, "error", err)
 			}
-			return nil, podUnread
+			return podDrift{reading: podUnread}
 		}
 		for _, reason := range drift {
 			if !slices.Contains(reasons, reason) {
@@ -3584,7 +3673,125 @@ func (s *supervision) groupDrift(ctx context.Context, issue string, group []supe
 			}
 		}
 	}
-	return reasons, podRead
+	repository, err := podRepository(ctx, s.runtime, slices.Values(group))
+	if err != nil {
+		if ctx.Err() == nil {
+			s.log.Error("supervise: read the repository this issue's pod was built from", "issue", issue, "error", err)
+		}
+		return podDrift{reading: podUnread}
+	}
+	built, reason := s.repositoryDrift(ctx, issue, repository)
+	if reason != "" && !slices.Contains(reasons, reason) {
+		reasons = append(reasons, reason)
+	}
+	return podDrift{reasons: reasons, repository: built, reading: podRead}
+}
+
+// repositoryDrift is the one reason the runtime cannot state itself: the pod was built from one
+// repository, and the issue's record names another now, because Dispatch moved the issue and the
+// daemon's record followed it (record.Store.CorrectIssueRepository). The pod clones its
+// repository into the issue's workspace once, at its creation, and holds the gh directories and
+// the token of that repository's owner for its whole life, so the issue works the repository it
+// has left until the pod is replaced.
+//
+// The two names are read by the one rule the daemon decides whether an issue has left a
+// repository by (repositories.left, ghrepo.Renames.Same): without regard to case, as GitHub
+// compares names, and a configured rename's two names as one repository, so re-pointing an issue
+// at the name a transfer moved its repository to replaces no pod.
+//
+// Nothing is a reason but two names that are both there and differ. A pod that answers no name
+// and a name that is no repository add none here, and recordedLeft says where the record adds
+// none: an unknown is never a statement that something drifted, which is the rule this sweep
+// already reads an error by. It answers the pod's repository, parsed, beside the reason and with
+// no reason too, so every round records its pod's repository as a value rather than as text
+// (supervise.Claim.UpdateRepository), whatever drift opened it (groupDrift).
+func (s *supervision) repositoryDrift(ctx context.Context, issue, pod string) (ghrepo.Repository, string) {
+	built := s.parsePodRepository(issue, pod)
+	if built.IsZero() {
+		return ghrepo.Repository{}, ""
+	}
+	recorded, _ := s.recordedLeft(ctx, issue, built)
+	if recorded.IsZero() {
+		return built, ""
+	}
+	return built, repositoryReason(built, recorded)
+}
+
+// parsePodRepository is pod, the repository the issue's pod names as the runtime answers it
+// (podRepository), parsed: the zero Repository for a pod that names none, and for a name that is
+// no repository, which it logs. Both readers of the repository a round records at its open parse
+// it here (repositoryDrift for the walk, podBuiltFrom for the controller's request).
+func (s *supervision) parsePodRepository(issue, pod string) ghrepo.Repository {
+	if pod == "" {
+		return ghrepo.Repository{}
+	}
+	built, err := ghrepo.Parse("the repository this issue's pod was built from", pod)
+	if err != nil {
+		s.log.Error("supervise: the repository this issue's pod names is no repository; the pod is read as built from none",
+			"issue", issue, "error", err)
+		return ghrepo.Repository{}
+	}
+	return built
+}
+
+// recordedLeft is the repository the issue's record holds now where the issue has left pod, the
+// repository its pod was built from, read by repositories.left as repositoryDrift says, and the
+// zero Repository wherever nothing says it has: no pod repository, a deployment with no workflow
+// (plan.recordedRepository nil), an issue the record does not hold, a record that names the
+// pod's repository, and a record that cannot be read or whose name is no repository, each of the
+// last two logged. read is false for those last two alone, the record whose answer nobody has:
+// the round's open adds no reason for it (repositoryDrift), as for every unknown, while a message
+// of the round on the issue names the round's own repository for it rather than origin
+// (roundMove), since origin in the next pod is the record's repository, which nothing read. Each
+// reads it at its own moment.
+func (s *supervision) recordedLeft(ctx context.Context, issue string, pod ghrepo.Repository) (left ghrepo.Repository, read bool) {
+	if pod.IsZero() || s.plan.recordedRepository == nil {
+		return ghrepo.Repository{}, true
+	}
+	recorded, err := s.plan.recordedRepository(ctx, issue)
+	if err != nil {
+		if ctx.Err() == nil {
+			s.log.Error("supervise: read the repository this issue's record holds", "issue", issue, "pod", pod.String(), "error", err)
+		}
+		return ghrepo.Repository{}, false
+	}
+	if !s.plan.repositories.left(pod.String(), recorded) {
+		return ghrepo.Repository{}, true
+	}
+	left, err = ghrepo.Parse("the repository this issue's record holds", recorded)
+	if err != nil {
+		s.log.Error("supervise: the repository this issue's record holds is no repository; it is read as unknown",
+			"issue", issue, "pod", pod.String(), "error", err)
+		return ghrepo.Repository{}, false
+	}
+	return left, true
+}
+
+// repositoryReason is the reason repositoryDrift adds to a round, as the round's ask states it to
+// each role and as an operator reads it: the repository the pod was built from, then the one the
+// issue's record holds at the round's open. It opens on runtime.BreakingDrift, because the drift
+// breaks the pod (R3 of #3712, spec v8): the pod clones the repository the issue has left and
+// holds that repository's owner's gh directories and token for its whole life, so no role can
+// move the work onto the corrected repository in it, and only a replacement does. A round over it
+// replaces the pod whatever the read of the workspace finds (roundKeeps), no earlier keep holds it
+// back (podKeptForWork), and the issue's architect is told what the replacement took
+// (workspaceTakenMessage). Nothing reads it back: the round records the pod's repository as a
+// field of its own (supervise.Claim.UpdateRepository).
+func repositoryReason(pod, recorded ghrepo.Repository) string {
+	return runtime.BreakingDrift + "repository " + pod.String() + ", now " + recorded.String()
+}
+
+// recordedRepositoryOf is the reader the plan takes (plan.recordedRepository), built
+// on the workflow's own single-issue read: the repository the record names, and "" for an issue
+// the record does not hold, which is every issue of a project the workflow has not admitted.
+func recordedRepositoryOf(read func(ctx context.Context, key string) (*record.Issue, error)) func(context.Context, string) (string, error) {
+	return func(ctx context.Context, issue string) (string, error) {
+		recorded, err := read(ctx, issue)
+		if err != nil || recorded == nil {
+			return "", err
+		}
+		return recorded.Repo, nil
+	}
 }
 
 // groupPod is the pod every claim of the group that records one runs in, or that a claim's launch
@@ -3658,7 +3865,7 @@ func openPodRound(group []supervise.Claim) string {
 }
 
 // roundReasons is what the round was opened for, as its claims recorded it: the one string the
-// round's ask states, never cut up (record.UpdateStalled).
+// round's ask states (record.UpdateStalled).
 func roundReasons(group []supervise.Claim, round string) string {
 	for _, c := range group {
 		if c.UpdateRound == round && c.UpdateReasons != "" {
@@ -3666,6 +3873,18 @@ func roundReasons(group []supervise.Claim, round string) string {
 		}
 	}
 	return ""
+}
+
+// roundRepository is the repository the round's pod was built from, as its claims recorded it at
+// the round's open (supervise.Claim.UpdateRepository), and the zero Repository for a round whose
+// pod named none.
+func roundRepository(group []supervise.Claim, round string) ghrepo.Repository {
+	for _, c := range group {
+		if c.UpdateRound == round && !c.UpdateRepository.IsZero() {
+			return c.UpdateRepository
+		}
+	}
+	return ghrepo.Repository{}
 }
 
 // roundOpenedAt is when the round opened, the earliest its claims record, and nil when no claim of
@@ -4434,15 +4653,110 @@ func roundOpenedFor(reasons string) string {
 // was replaced where it stood for a failure of its own. Its disk went with it, or, where kept is
 // true, its disk is a kept volume that is still there and holds what the roles did not push. The
 // issue's spec requires this message. Another agent reads it, so it follows ASD-STE100.
-func podWentMessage(round, reasons string, lost []supervise.Claim, kept bool) string {
+//
+// Where the issue's record has left the repository the round's pod was built from, "its issue
+// branch at origin" would send a role to the wrong place, whatever the disk and whatever drift
+// opened the round: every push a role made before the pod went is on the issue branch of the
+// repository the pod was built from, and the new pod's origin is the one the issue's record holds
+// now. So where moved is a move (roundMove), the last sentence names both repositories and sends
+// a role to the old one's issue branch (pushedWorkMessage), and what it says of a kept volume
+// names the old repository's workspace (keptDiskMessage). Where the record could not be read
+// (repositoryMove.unread), the same sentences name the pod's repository and say that the daemon
+// does not know the new pod's origin.
+func podWentMessage(issue, round, reasons string, lost []supervise.Claim, kept bool, moved repositoryMove) string {
 	disk := "The pod's disk went with the pod. Work that these roles did not push is lost."
 	if kept {
-		disk = "The pod's disk is a kept volume, and the volume is still there. Work that these roles did not push is on that volume. The next pod of this issue mounts the volume."
+		disk = "The pod's disk is a kept volume, and the volume is still there. " +
+			keptDiskMessage(issue, "Work that these roles did not push", moved)
 	}
 	return fmt.Sprintf(`The pod that ran this issue's roles is gone. The daemon opened an update round over that pod (%s). %s The pod went before the round was over.
 
 These roles did not answer the update round before the pod went: %s. %s
 
-The daemon starts each role again, in the same session, on a new pod. Each role must read its issue branch at origin to see the work that it pushed.`,
-		round, roundOpenedFor(reasons), roleStates(lost), disk)
+The daemon starts each role again, in the same session, on a new pod. %s`,
+		round, roundOpenedFor(reasons), roleStates(lost), disk, pushedWorkMessage(moved))
+}
+
+// pushedWorkMessage is the sentence of a message of a round (podWentMessage, workspaceTakenMessage)
+// that says where each role reads the work that it pushed, which is its issue branch
+// at origin. Where moved is a move (roundMove), every push a role made before the pod went is on
+// the issue branch of the repository the pod was built from, and the new pod's origin is the
+// repository the issue's record holds now, so the sentence names both repositories and sends a
+// role to the old one's issue branch. Where the record could not be read
+// (repositoryMove.unread), the new pod's origin is unknown, so the sentence sends a role to the
+// issue branch of the pod's repository and says that the daemon could not read the record.
+func pushedWorkMessage(moved repositoryMove) string {
+	switch {
+	case moved == (repositoryMove{}):
+		return "Each role must read its issue branch at origin to see the work that it pushed."
+	case moved.unread():
+		return fmt.Sprintf("Work that each role pushed before the pod went "+
+			"is on the issue branch of the repository `%[1]s`. "+
+			"The daemon could not read the repository that this issue's record holds now. "+
+			"It does not know which repository is origin in the new pod. "+
+			"To see that work, each role must read the issue branch of the repository `%[1]s`.",
+			moved.from)
+	}
+	return fmt.Sprintf("Work that each role pushed before the pod went "+
+		"is on the issue branch of the repository `%[1]s`. "+
+		"In the new pod, origin is the repository `%[2]s`. "+
+		"To see that work, each role must read the issue branch of the repository `%[1]s`.",
+		moved.from, moved.to)
+}
+
+// podOrigin is the words a message of a round names the repository of the round's pod with, where
+// it names the work that is or is not on that repository's branches and tags
+// (workspaceTakenMessage, readFound): "at origin" where moved is no move. Where moved is a move
+// (roundMove), it names the repository the pod was built from: the read of the workspace ran in
+// that pod, whose origin was that repository, and a role reads what it is told in the new pod,
+// whose origin is the repository the issue's record holds now, which holds none of that work. It
+// names that repository too where the record could not be read (repositoryMove.unread), since the
+// new pod's origin is then unknown.
+func podOrigin(moved repositoryMove) string {
+	if moved == (repositoryMove{}) {
+		return "at origin"
+	}
+	return fmt.Sprintf("of the repository `%s`", moved.from)
+}
+
+// keptDiskMessage is what a message of a round says of the work on a kept volume that is still
+// there (podWentMessage, workspaceTakenMessage), unpushed being the words that
+// message names that work with. Where moved is a move (roundMove: the repository the gone pod was
+// built from and the one the issue's record holds now), "the next pod mounts the volume" alone
+// would mislead: the work is in the old repository's workspace, and the next pod makes a
+// workspace of the new repository beside it, where every role works, and no role works in the old
+// one again. So the message names that workspace's path and how a role keeps the work. Where the
+// record could not be read (repositoryMove.unread), the next pod's repository is unknown, so the
+// message names the path and says how a role keeps the work if that pod makes a workspace of
+// another repository; pushedWorkMessage says that the daemon could not read the record. The path
+// is the one the Sandbox runtime's pod gives the workspace (sandbox.WorkspaceDir), as that
+// runtime is the one that keeps a volume (runtime.IssueVolumeReader).
+func keptDiskMessage(issue, unpushed string, moved repositoryMove) string {
+	if moved != (repositoryMove{}) {
+		if old, err := sandbox.WorkspaceDir(moved.from, issue); err == nil {
+			if moved.unread() {
+				return fmt.Sprintf("%[3]s is on that volume, "+
+					"in the workspace of `%[1]s` at `%[2]s`. "+
+					"The next pod of this issue mounts the volume. "+
+					"If that pod makes a workspace of a different repository, "+
+					"read that work at `%[2]s` in that pod. "+
+					"Put that work on the issue branch in the new workspace. "+
+					"Then push the issue branch.",
+					moved.from, old, unpushed)
+			}
+			return fmt.Sprintf("This issue moved from the repository `%[1]s` "+
+				"to the repository `%[2]s`. "+
+				"%[4]s is on that volume, "+
+				"in the workspace of `%[1]s` at `%[3]s`. "+
+				"The next pod of this issue mounts the volume. "+
+				"That pod makes a new workspace of `%[2]s`. "+
+				"Every role works in that new workspace. "+
+				"No role works in the workspace of `%[1]s` again. "+
+				"To keep that work, read it at `%[3]s` in the next pod. "+
+				"Put that work on the issue branch in the new workspace. "+
+				"Then push the issue branch.",
+				moved.from, moved.to, old, unpushed)
+		}
+	}
+	return unpushed + " is on that volume. The next pod of this issue mounts the volume."
 }

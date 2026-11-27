@@ -120,8 +120,8 @@ jobs:
       # The four pure pins of packages/daemon's supervise package: they hold the package to its
       # own source — a row or a named ignore for every event in every state, one event type per
       # kind, and the two lists of claim states (States) and suspend sources (SuspendSources) to
-      # the constants of their types — which packageSets() reads by parsing every non-test .go
-      # file of the package (`packages/daemon/internal/supervise/table_test.go#packageSets`). They open no database and start no process, so
+      # the constants of their types — which sealedSource() reads by parsing every non-test .go
+      # file of the package (`packages/daemon/internal/supervise/table_test.go#sealedSource`). They open no database and start no process, so
       # they belong here rather than in the daemon's Postgres-backed Go suite; they sit in a
       # package of machine-driving tests, so this step selects them by name, and the daemon-go
       # plain step skips exactly these four by name. The list is generated in

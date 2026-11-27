@@ -13,7 +13,7 @@ import {
 } from "./legion-claim-core";
 import type { ClaimCapability } from "./legion-phase-ops";
 
-/** The contract the build under test speaks, which its client states on every request. */
+/** A contract the test's client states on every request. */
 const CONTRACT = 60;
 
 /** A fixture one of the daemon's golden tests wrote: a response (`packages/daemon/internal/api`),

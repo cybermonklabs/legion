@@ -853,10 +853,28 @@ type Issue struct {
 	TreeRuns *bool `json:"treeRuns,omitempty"`
 	// Repo is the repository (owner/name) the issue targets and DefaultBranch that repository's
 	// default branch, both taken when the daemon first recorded the issue and kept after, except
-	// that the daemon's one-time rename pass writes a `repository_renames` pair's `to` over Repo.
+	// that a correction of the issue's repository moves both (RepoBefore below) and the daemon's
+	// one-time rename pass writes a `repository_renames` pair's `to` over Repo.
 	// Both are absent on an issue the workflow does not record (an operator's claim, Unrecorded).
 	Repo          string `json:"repo,omitempty"`
 	DefaultBranch string `json:"defaultBranch,omitempty"`
+	// RepoBefore is the repository the record held before the newest correction of the issue's
+	// repository (record.Issue.RepoCorrection's Before), absent for an issue no correction has
+	// reached. The issue's branch and its pull request are on it, and Repo is the repository the
+	// issue works now.
+	RepoBefore string `json:"repoBefore,omitempty"`
+	// RepoCorrectedAt is the moment the daemon applied that correction
+	// (record.Issue.RepoCorrection's At), absent with RepoBefore: the two are one value of the
+	// record, and a reader takes work saved before it as work of the repository the issue left.
+	RepoCorrectedAt *time.Time `json:"repoCorrectedAt,omitempty"`
+	// RepoChangePending is a repository Dispatch has named that the daemon has not applied to the
+	// record (record.Issue.RepoChange's Pending), absent while nothing waits: Repo still names the
+	// repository the issue works until the daemon applies it.
+	RepoChangePending string `json:"repoChangePending,omitempty"`
+	// RepoChangeReason is why the daemon has not applied that change yet
+	// (record.Issue.RepoChange's Reason), absent with RepoChangePending. It is what tells a reader
+	// of a record that still names the old repository why it does.
+	RepoChangeReason string `json:"repoChangeReason,omitempty"`
 	// HoldReason is why a held issue is held, when its hold has one: `escalated` once its architect
 	// sent it to the controller (record.HoldEscalated), `task-stopped` once its owner stopped the task
 	// it ran (record.HoldTaskStopped), and `children` while a parent whose task's last step is not
@@ -1527,7 +1545,12 @@ type HandoffRecordView struct {
 // (dispatch://INFRA-714/spec R1), and GitHub's own merge state is what says whether a check the
 // repository requires holds the head.
 type PullRequestView struct {
-	// Repo is the repository (owner/name) the pull request is in, its issue's.
+	// Repo is the repository (owner/name) the pull request is in, which is the issue's own until
+	// a correction of the issue's repository leaves it behind: the correction moves the issue's
+	// record alone (Issue.RepoBefore), so this keeps the repository the pull request was opened
+	// on. A reader of a record whose Repo and this name two repositories reads work that stands
+	// on a repository the issue has left, and the daemon applies no GitHub event of it to the
+	// issue any more. The issue's next task says the same (daemon's addressingFragment).
 	Repo           string `json:"repo"`
 	Number         int    `json:"number"`
 	Head           string `json:"head"`

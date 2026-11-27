@@ -206,7 +206,7 @@ type projectReleaser struct {
 	// pods is the runtime's part a release needs, nil on a runtime that runs no pod (tmux),
 	// which refuses the release (api.ErrProjectReleaseRunsNoPod).
 	pods runtime.ProjectPods
-	// enqueue writes the release's asks as outbox rows (supervision.enqueue), and answers whether
+	// enqueue writes the release's asks as outbox rows (plan.enqueue), and answers whether
 	// it wrote them: it writes none for an issue of another project, whose rows only that project's
 	// daemon runs. Nil in a deployment with no outbox, where no role is asked.
 	enqueue func(ctx context.Context, issue string, payloads ...record.OutboxPayload) (bool, error)
@@ -238,8 +238,9 @@ type projectReleaser struct {
 func newProjectReleaser(s *supervision, st *store.Store, w *workflowRuntime) *projectReleaser {
 	r := &projectReleaser{
 		ctx: s.supervisor.ctx, project: s.plan.project, mark: s.plan.release, store: releasingStore{st}, machines: s.supervisor,
-		// The workflow set supervision's enqueue as it attached, which the boot does before it serves.
-		enqueue:      s.enqueue,
+		// run fills the plan's enqueue beside repository before supervision opens, which the boot does
+		// before it serves.
+		enqueue:      s.plan.enqueue,
 		defaultBound: s.cfg.PodUpdateGrace, stopTimeout: s.cfg.WorkerStopTimeout,
 		reread: projectReleaseReread, poll: projectReleasePoll, retry: projectReleaseRetry, listPause: projectReleaseListPause,
 		now: time.Now, log: s.log,

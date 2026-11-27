@@ -56,8 +56,8 @@ type moved struct {
 }
 
 // commit runs write in a transaction of its own and commits it, whatever write answers: a write
-// the store refused (the repository guard) is committed too, so the test reads what such a write
-// leaves in a transaction that goes on to commit.
+// the store refused (PutIssue's checks of the record it is handed) is committed too, so the test
+// reads what such a write leaves in a transaction that goes on to commit.
 func (r *changeRig) commit(t *testing.T, key string, write func(ctx context.Context, tx pgx.Tx)) moved {
 	t.Helper()
 	return r.run(t, key, write, true)
@@ -388,12 +388,12 @@ func TestAnIssueWriteQueuesOneStateEventNamingEachFieldItMoved(t *testing.T) {
 	t.Run("a refused write writes none", func(t *testing.T) {
 		issue := changeIssue("LEGION-60", phase.Admitted)
 		r.commit(t, issue.Key, r.put(t, issue))
-		elsewhere := issue
-		elsewhere.Phase, elsewhere.Repo, elsewhere.GitHubRepo = phase.Planning, "acme/gadgets", "acme/gadgets"
+		refused := issue
+		refused.Phase, refused.GitHubRepo = phase.Planning, "acme/gadgets"
 		assertMoved(t, issue.Key, r.commit(t, issue.Key, func(ctx context.Context, tx pgx.Tx) {
-			err := r.records.PutIssue(ctx, tx, elsewhere)
-			if err == nil || !strings.Contains(err.Error(), "is recorded on acme/widgets@main") {
-				t.Fatalf("the write of %s on another repository = %v, want it refused by the repository guard: the test's premise", issue.Key, err)
+			err := r.records.PutIssue(ctx, tx, refused)
+			if err == nil || !strings.Contains(err.Error(), "GitHub's spelling acme/gadgets names another repository than acme/widgets") {
+				t.Fatalf("the write of %s naming GitHub's spelling of another repository = %v, want it refused by PutIssue's checks: the test's premise", issue.Key, err)
 			}
 		}))
 	})

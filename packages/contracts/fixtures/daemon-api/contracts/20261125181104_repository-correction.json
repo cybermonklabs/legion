@@ -1,0 +1,53 @@
+{
+  "answers": [
+    {
+      "answer": "issue-record",
+      "addKeyPaths": [
+        "repoBefore",
+        "repoChangePending",
+        "repoChangeReason",
+        "repoCorrectedAt"
+      ]
+    },
+    {
+      "answer": "owed",
+      "change": "add",
+      "noBody": false,
+      "addKeyPaths": [
+        "architect",
+        "owes",
+        "work"
+      ]
+    },
+    {
+      "answer": "state",
+      "addKeyPaths": [
+        "issues.*.repoBefore",
+        "issues.*.repoChangePending",
+        "issues.*.repoChangeReason",
+        "issues.*.repoCorrectedAt"
+      ]
+    }
+  ],
+  "routes": [
+    {
+      "route": "POST /legion/v1/claims/owed",
+      "change": "add",
+      "addFieldPaths": [
+        "claimToken",
+        "secret",
+        "sessionId"
+      ]
+    }
+  ],
+  "answerRows": [
+    {
+      "id": "owed",
+      "routes": [
+        "POST /legion/v1/claims/owed"
+      ],
+      "noBody": false
+    }
+  ],
+  "enumeratedRows": []
+}

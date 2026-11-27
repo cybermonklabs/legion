@@ -306,10 +306,10 @@ func TestAnEmptyPlanReasonIsAReasonNamed(t *testing.T) {
 			h, facts := newHandoffHarness(t, newHandoffGitHub(t), nil, nil)
 			seedIssueAt(t, h, "LEGION-208", phase.Retro)
 			implementer := newLiveClaim(t, h, "LEGION-208", claim.RoleImplementer)
-			// A live claim registers at this daemon's own contract (DaemonAPIVersion), so a band at
-			// another is a claim recorded stale. A stale claim is served in its turn (staleClaim), and
-			// its grants are minted first, as TestAnOldPluginRetroStillCompletesWhereItIsServed mints
-			// its one.
+			// The harness registers each claim at this daemon's own contract, DaemonAPIVersion, so a
+			// band at any other is put there as a stale claim, which is served in its turn
+			// (staleClaim), and its grants are minted first, as
+			// TestAnOldPluginRetroStillCompletesWhereItIsServed mints its one.
 			grants := []string{implementer.grant(t), implementer.grant(t), implementer.grant(t)}
 			if band.contract != DaemonAPIVersion() {
 				h.makeStale(t, implementer.token, implementer.session, implementer.secret, band.contract)
@@ -780,10 +780,10 @@ func TestTheRatingIsJudgedOnTheIssueTheWorkflowEndsTheRetroOn(t *testing.T) {
 			key := fmt.Sprintf("LEGION-%d", 400+i)
 			seedIssueAt(t, h, key, row.at)
 			implementer := newLiveClaim(t, h, key, claim.RoleImplementer)
-			// A live claim registers at this daemon's own contract (DaemonAPIVersion), so a row at
-			// another is a claim recorded stale. A stale claim is served in its turn (staleClaim), and
-			// its grant is minted first, as TestAnOldPluginRetroStillCompletesWhereItIsServed mints its
-			// one.
+			// The harness registers each claim at this daemon's own contract, DaemonAPIVersion, so a
+			// row at any other is put there as a stale claim, which is served in its turn
+			// (staleClaim), and its grant is minted first, as
+			// TestAnOldPluginRetroStillCompletesWhereItIsServed mints its one.
 			req := row.request(implementer)
 			req.GrantID = implementer.grant(t)
 			if row.contract != DaemonAPIVersion() {

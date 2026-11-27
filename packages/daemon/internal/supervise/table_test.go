@@ -3,13 +3,9 @@ package supervise
 import (
 	"context"
 	"errors"
-	"fmt"
-	"go/ast"
 	"go/importer"
-	"go/parser"
 	"go/token"
 	"go/types"
-	"os"
 	"slices"
 	"strconv"
 	"strings"
@@ -19,6 +15,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/testtypes"
 )
 
 // sealed reads the package's own source for what the table has to cover: every type that
@@ -27,7 +24,7 @@ import (
 // nobody gave rows to fails this test instead of passing it.
 func sealed(t *testing.T) (events []string, states []ClaimState, timers []TimerKind) {
 	t.Helper()
-	set := packageSets(t)
+	set := sealedSource(t)
 	for _, value := range set.states {
 		states = append(states, ClaimState(value))
 	}
@@ -41,11 +38,11 @@ func sealed(t *testing.T) (events []string, states []ClaimState, timers []TimerK
 	return events, states, timers
 }
 
-// packageSets is what the compiler sees of this package, its tests left out (sealedSets), read
-// once per test binary (parsedPackageSets).
-func packageSets(t *testing.T) sealedSets {
+// sealedSource is the sealed set read from the package's own source as the build compiles it
+// (checkedSealedSet).
+func sealedSource(t *testing.T) sealedSets {
 	t.Helper()
-	set, err := parsedPackageSets()
+	set, err := checkedSealedSet()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -53,11 +50,11 @@ func packageSets(t *testing.T) sealedSets {
 }
 
 // sealedSets is what the compiler sees of this package: every type that implements Event, and the
-// value of every ClaimState, TimerKind and SuspendSource constant. It is read as the compiler sees
-// it rather than as the source spells it — a type that inherits isEvent by embedding, or declares
-// it on a pointer receiver, is an event a scan of isEvent declarations would not see, and a state
-// or timer whose value is not a plain literal is one a scan of literals would not read. Either
-// could be mapped onto an existing kind and inherit every row that kind has.
+// value of every ClaimState, TimerKind and SuspendSource constant. It is read as the compiler
+// sees it rather than as the source spells it — a type that inherits isEvent by embedding, or
+// declares it on a pointer receiver, is an event a scan of isEvent declarations would not see,
+// and a state or timer whose value is not a plain literal is one a scan of literals would not
+// read. Either could be mapped onto an existing kind and inherit every row that kind has.
 type sealedSets struct {
 	events  []string
 	states  []string
@@ -65,36 +62,19 @@ type sealedSets struct {
 	sources []string
 }
 
-// parsedPackageSets parses the package's own source, its tests left out, and reads its sets from
-// it (readSealedSet), once per test binary: the type-check reads the standard library from
-// source, which is seconds, and several tests ask for the sets.
-var parsedPackageSets = sync.OnceValues(func() (sealedSets, error) {
-	entries, err := os.ReadDir(".")
+// checkedSealedSet type-checks this package once per test binary — the check reads the standard
+// library from source, which is seconds, and five tests ask for the sealed set.
+var checkedSealedSet = sync.OnceValues(readSealedSet)
+
+// readSealedSet reads the sealed set from the package's own source as the build compiles it
+// (testtypes.CheckPackage).
+func readSealedSet() (sealedSets, error) {
+	files := token.NewFileSet()
+	checked, err := testtypes.CheckPackage(files, importer.ForCompiler(files, "source", nil), supervisePath, ".")
 	if err != nil {
 		return sealedSets{}, err
 	}
-	files := token.NewFileSet()
-	var parsed []*ast.File
-	for _, entry := range entries {
-		name := entry.Name()
-		if !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
-			continue
-		}
-		file, err := parser.ParseFile(files, name, nil, 0)
-		if err != nil {
-			return sealedSets{}, err
-		}
-		parsed = append(parsed, file)
-	}
-	return readSealedSet(files, parsed)
-})
-
-func readSealedSet(files *token.FileSet, parsed []*ast.File) (sealedSets, error) {
-	config := types.Config{Importer: importer.ForCompiler(files, "source", nil)}
-	pkg, err := config.Check("github.com/sjawhar/legion/daemon/internal/supervise", files, parsed, nil)
-	if err != nil {
-		return sealedSets{}, fmt.Errorf("type-check the package: %w", err)
-	}
+	pkg := checked.Types
 	event, ok := pkg.Scope().Lookup("Event").Type().Underlying().(*types.Interface)
 	if !ok {
 		return sealedSets{}, errors.New("Event is not an interface")
@@ -260,12 +240,12 @@ func TestStatesIsEveryDeclaredStateOnce(t *testing.T) {
 // or in neither, and the list a project release's words for how a claim ended are built from
 // (api.ReleasedClaimEnds), which every plugin reads through a strict enum. Neither can read this
 // package's source, so this test holds the list to the SuspendSource constants the compiler sees
-// here (packageSets), as TestStatesIsEveryDeclaredStateOnce holds States: a source added to the
+// here (sealedSource), as TestStatesIsEveryDeclaredStateOnce holds States: a source added to the
 // const block and left out of the list fails here, rather than passing every walk of the list or
 // writing a word that neither the golden file nor the contracts suite holds. Each source is in the
 // list once.
 func TestSuspendSourcesIsEveryDeclaredSourceOnce(t *testing.T) {
-	declared := packageSets(t).sources
+	declared := sealedSource(t).sources
 	if len(declared) == 0 {
 		t.Fatal("read no SuspendSource constant from the source")
 	}

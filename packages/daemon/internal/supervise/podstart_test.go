@@ -393,13 +393,20 @@ func (h *harness) holdStarts() *podDoor {
 
 // lastStart is the claim of the runtime's latest Spawn or Resume.
 func (h *harness) lastStart() claim.Token {
+	return h.lastStartCall().Spec.Claim
+}
+
+// lastStartCall is the runtime's latest Spawn or Resume, the zero Call where it made none. A
+// launch asks the runtime more after its start — the repository of the place the process came up
+// in (workingRepository) — so the latest call of all is not the launch's start.
+func (h *harness) lastStartCall() fake.Call {
 	calls := h.rt.Calls()
 	for i := len(calls) - 1; i >= 0; i-- {
 		if calls[i].Method == "Spawn" || calls[i].Method == "Resume" {
-			return calls[i].Spec.Claim
+			return calls[i]
 		}
 	}
-	return ""
+	return fake.Call{}
 }
 
 // at is r's start reaching the door.

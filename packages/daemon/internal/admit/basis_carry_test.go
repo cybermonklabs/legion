@@ -314,7 +314,7 @@ func TestAHandOverCarriesAStepOpenOnABasisWithItsBasisAndItsRest(t *testing.T) {
 					mergerTasks = append(mergerTasks, start.task)
 				}
 			}
-			want := "Continue " + carryChild + ". Issue: " + carryChild + ". Phase: merging. Working copy: branch legion/" + carryChild + ". Resume the existing phase work."
+			want := "Working copy: branch legion/" + carryChild + ".\nContinue " + carryChild + ". Issue: " + carryChild + ". Phase: merging. Resume the existing phase work."
 			if len(mergerTasks) != 1 || mergerTasks[0] != want {
 				t.Fatalf("the carried merger's tasks = %q, want one resuming merging with no view sentence: %q", mergerTasks, want)
 			}

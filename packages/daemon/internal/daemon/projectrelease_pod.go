@@ -347,7 +347,7 @@ func (r *projectReleaser) ask(ctx context.Context, run *releaseRun, pod *release
 // where no role runs or the deployment has no outbox. Rows that could not be written are answered
 // by their error, and their roles are taken off the line and out of run.asked again, so no role
 // they never reached reads as asked. Rows the outbox writes none of, those of a pod whose issue is
-// another project's (supervision.enqueue), are answered as rows that could not be written
+// another project's (plan.enqueue), are answered as rows that could not be written
 // (claim.ErrKeyOfAnotherProject), so such a pod is left at the bound rather than deleted with no
 // role asked. A role whose row was written counts as asked once the outbox's publish of it reached
 // a session of the role (reach), or once the role answered; one the ask reached no session of by

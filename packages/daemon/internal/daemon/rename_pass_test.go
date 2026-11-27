@@ -370,6 +370,8 @@ func TestAnIssueWithALivePodKeepsItsNamesUntilItsPodEnds(t *testing.T) {
 	if _, err := rig.pool.Exec(ctx, "update issues set repo = $2, github_repo = $2 where key = $1", rig.issue.Key, renameFrom); err != nil {
 		t.Fatal(err)
 	}
+	// The pod was built from the repository the record names, as a Sandbox pod is.
+	rig.podBuiltFrom(renameFrom)
 	var logged syncBuffer
 	rig.w.log = slog.New(slog.NewJSONHandler(&logged, nil))
 	rig.w.repositories = transferredRepositories()
@@ -407,7 +409,7 @@ func TestAnIssueWithALivePodKeepsItsNamesUntilItsPodEnds(t *testing.T) {
 // not hold, and the end of that release's pod (outbox.releaseIssue, after its teardown) writes the
 // pair's `to` over it. The read of the live records the pass wakes (wakeLive,
 // refreshCacheRepositories) then caches the `to`, and the issue's next launch's spec
-// (specs.repository, workflowRuntime.launchRepository) names the `to` at the record's default
+// (specs.repository, workflowRuntime.issueLaunchRepository) names the `to` at the record's default
 // branch, which is where the next pod's workspace is made from: the release took the pod only
 // because no working copy or bookmark of its workspace held a commit origin does not hold, so no
 // such work is left to carry across the rename. Control: with the pass at that hook deleted (releaseIssue's endPods), the next launch's
@@ -420,6 +422,8 @@ func TestTheNextPodAfterARenameWorksTheNewName(t *testing.T) {
 	if _, err := rig.pool.Exec(ctx, "update issues set repo = $2, github_repo = $2 where key = $1", key, renameFrom); err != nil {
 		t.Fatal(err)
 	}
+	// The pod was built from the repository the record names, as a Sandbox pod is.
+	rig.podBuiltFrom(renameFrom)
 	rig.w.repositories = transferredRepositories()
 	rig.w.liveWake = make(chan struct{}, 1)
 	rig.runner.podEnded = rig.w.podEndsOn(renamePodRuntime{rig.rt})
@@ -463,7 +467,7 @@ func TestTheNextPodAfterARenameWorksTheNewName(t *testing.T) {
 	if err != nil {
 		t.Fatalf("compose the shipped prompts: %v", err)
 	}
-	launches := specs{stateDir: t.TempDir(), project: "legion", prompts: composer, appOwners: noAppOwners, repository: rig.w.launchRepository}
+	launches := specs{stateDir: t.TempDir(), project: "legion", prompts: composer, appOwners: noAppOwners, repository: rig.w.issueLaunchRepository}
 	spec, err := launches.SpawnSpec(ctx, rig.machine.Claim())
 	if err != nil {
 		t.Fatalf("build the next launch of %s: %v", rig.token, err)
@@ -507,6 +511,8 @@ func TestAReleaseThatKeepsTheVolumeLeavesTheIssueOnItsOldName(t *testing.T) {
 			if _, err := rig.pool.Exec(ctx, "update issues set repo = $2, github_repo = $2 where key = $1", key, renameFrom); err != nil {
 				t.Fatal(err)
 			}
+			// The pod was built from the repository the record names, as a Sandbox pod is.
+			rig.podBuiltFrom(renameFrom)
 			var logged syncBuffer
 			rig.w.log = slog.New(slog.NewJSONHandler(&logged, nil))
 			rig.w.repositories = transferredRepositories()

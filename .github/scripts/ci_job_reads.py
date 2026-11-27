@@ -1328,7 +1328,7 @@ hold_plugin_pack_tests()
 # ClaimState constants, and TestSuspendSourcesIsEveryDeclaredSourceOnce, which holds
 # SuspendSources() to the SuspendSource constants.
 # Each reads source and nothing else -
-# `packages/daemon/internal/supervise/table_test.go#packageSets` parses every non-test .go file of
+# `packages/daemon/internal/supervise/table_test.go#sealedSource` parses every non-test .go file of
 # the directory, and the type-check of those files reads the source of every package they import
 # too, since `packages/daemon/internal/supervise/table_test.go#readSealedSet` builds the checker
 # with importer.ForCompiler(..., "source", ...), so the whole import closure is read from source: of

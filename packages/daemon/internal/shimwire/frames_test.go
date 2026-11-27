@@ -54,10 +54,10 @@ func TestEveryExchangedFrameRoundTripsItsWireLine(t *testing.T) {
 		{
 			// Oh My Pi's refusal of a prompt sent while a turn streams: its error response carries
 			// `code` at the top level, right after `error`, and the member survives the round
-			// trip (Response.Code).
+			// trip (Response.Code). The code is what the daemon decides on (CodeSessionBusy).
 			"busy refusal response",
 			`{"type":"response","id":"r2","command":"prompt","success":false,"error":"` + agentBusyMessage + `","code":"session_busy"}`,
-			Response{ID: "r2", Command: TypePrompt, Success: false, Error: agentBusyMessage, Code: "session_busy"},
+			Response{ID: "r2", Command: TypePrompt, Success: false, Error: agentBusyMessage, Code: CodeSessionBusy},
 		},
 		{
 			"get_state response",
@@ -134,11 +134,11 @@ func TestEveryExchangedFrameRoundTripsItsWireLine(t *testing.T) {
 		{
 			// The prompt_result of a prompt Oh My Pi refused because the agent was busy: its
 			// error carries Oh My Pi's class of the failure, which survives the round trip
-			// (PromptError.Code).
+			// (PromptError.Code) and is what the daemon decides on (CodeSessionBusy).
 			"prompt_result of a prompt refused because the agent was busy",
 			`{"type":"prompt_result","id":"d1.XYZ","agentInvoked":false,` +
 				`"error":{"message":"` + agentBusyMessage + `","retryable":false,"code":"session_busy"}}`,
-			PromptResult{ID: "d1.XYZ", AgentInvoked: false, Error: &PromptError{Message: agentBusyMessage, Code: "session_busy"}},
+			PromptResult{ID: "d1.XYZ", AgentInvoked: false, Error: &PromptError{Message: agentBusyMessage, Code: CodeSessionBusy}},
 		},
 		{"shutdown", `{"type":"shutdown"}`, Shutdown{}},
 		{
