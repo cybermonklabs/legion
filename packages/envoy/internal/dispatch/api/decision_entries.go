@@ -276,8 +276,9 @@ func decisionEntriesRead() string {
 // own, and each entry registers its text with it once the slice has stopped growing.
 //
 // It answers too the Decisions read's old `decisions` member: decisionread's model.Decision of
-// each entry that is a decision node or an answered ask, in
-// the order of the entries, so a page of the release before reads what the store holds.
+// each entry that is a decision node or an answered ask, in the order of the entries, a `decision`
+// block a person decided and nobody kept answered kind `person` (compatDecision), so a page of the
+// release before reads what the store holds.
 func (s *server) decisionEntries(ctx context.Context, who model.Actor, key string, reader *displayTreeReader) ([]decisionEntry, []model.Decision, error) {
 	tx, err := s.deps.Store.Pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
 	if err != nil {
@@ -404,7 +405,7 @@ func (s *server) decisionEntries(ctx context.Context, who model.Actor, key strin
 	// kept for one release: compat-objects
 	for _, entry := range entries {
 		if entry.Kind == "agent" || (entry.Kind == "person" && entry.AnswerState != nil && *entry.AnswerState == "answered") {
-			decisions = append(decisions, byNode[entry.Node])
+			decisions = append(decisions, compatDecision(entry, byNode[entry.Node]))
 		}
 	}
 	for index := range entries {
@@ -416,6 +417,22 @@ func (s *server) decisionEntries(ctx context.Context, who model.Actor, key strin
 		reader.text(&decisions[index].TextTree, decisions[index].Text)
 	}
 	return entries, decisions, nil
+}
+
+// compatDecision is decision, entry's node as decisionread answers it, as the old `decisions`
+// member answers it to a page of the release before. That page lists a decision under "Waiting
+// for your review" (waiting_review), under "Your decisions" (kind `person`, or a Keep) or under
+// "Replaced", and draws a decision of kind `person` as a person's. A `decision` block whose
+// decided_by names a person, which nobody kept, is kind `agent` with no Keep and waits for nobody
+// (decisionread), so that page would list it nowhere: this member answers it kind `person`. The
+// entry keeps kind `agent`, the node's shape, with its decided_by beside it.
+//
+// kept for one release: compat-objects
+func compatDecision(entry decisionEntry, decision model.Decision) model.Decision {
+	if entry.Node.Kind == refs.BlockNodeKind && entry.DecidedBy != nil && entry.DecidedBy.Kind == graphstore.KindPerson && decision.Kept == nil {
+		decision.Kind = "person"
+	}
+	return decision
 }
 
 // before reports whether entry comes before other in the Decisions read: an open ask before every

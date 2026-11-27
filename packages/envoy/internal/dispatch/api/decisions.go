@@ -10,7 +10,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sjawhar/envoy/internal/dispatch/asks"
 	"github.com/sjawhar/envoy/internal/dispatch/decisionread"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -140,12 +139,14 @@ func artifactMissing(err error) bool {
 // statement reads each of the spec's asks and the scan keeps the open ones. An ask's block is in
 // the spec where the spec's block index holds an ask block under its block id (document_blocks): a
 // row that names the spec and a block it no longer holds - one a reopen restored with no block to
-// write, which a later settlement retracts - is no question of it. An ask whose node holds a value
-// that does not parse is left out and logged, as decisionEntries leaves out its entry, and the
-// read goes on (R4). reader is the answer's own, and each row registers its texts with it once
-// the slice has stopped growing: a shaping registers a pointer into the row, and an append that
-// moved the backing array would leave the reader filling trees into memory the answer no longer
-// holds.
+// write, which a later settlement retracts - is no question of it. An ask a stored value of which
+// does not decode - one its node holds, or its row's author, options, anchor, answer, resolution
+// or approval, or its newest reply's author - is left out and logged, as decisionEntries leaves out
+// its entry, and the read goes on (R4); only a failure of the query or of its rows fails the read,
+// a column pgx cannot scan among them, which ends the rows. reader is the answer's own, and each
+// row registers its texts with it once the slice has stopped growing: a shaping registers a
+// pointer into the row, and an append that moved the backing array would leave the reader filling
+// trees into memory the answer no longer holds.
 func (s *server) specOpenQuestions(
 	ctx context.Context, who model.Actor, key, specID string, reader *displayTreeReader,
 ) ([]issueAskRow, error) {
@@ -163,7 +164,7 @@ func (s *server) specOpenQuestions(
 	questions := []issueAskRow{}
 	for rows.Next() {
 		ask, reply, err := scanAskRead(rows)
-		if errors.Is(err, asks.ErrNodeAnswerUnreadable) {
+		if err != nil && rows.Err() == nil {
 			slog.Warn("dispatch: a decision whose stored value does not parse is left out of the read",
 				"issue", key, "err", err)
 			continue
