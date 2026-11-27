@@ -104,7 +104,8 @@ newest day first; a day the window only partly covers is marked partial.
 
 The filters narrow every figure drawn from pull requests: lead time, rework share and the per-pull
 request failure rate. Deploys and runs follow the window alone, and a deploy counts as one that
-shipped a pull request when it shipped any pull request merged in the window, whatever the filters.
+shipped a pull request when it is, for at least one pull request, the first production deploy that
+contains it, whenever that pull request merged and whatever the filters.
 
 ## The targets
 
@@ -144,7 +145,8 @@ A delivery view is `timeline` or `measures` with its window and GET-route query,
 with optional `at`; it may resume with `{"seq":"…","revs":{…}}`. An event-feed view is
 `{"kind":"events"}` and resumes with `{"since":"<event id>"}`. An agent view is
 `{"kind":"agent","session_id":"<uuid>"}` and never has a resume. A resume of the wrong shape, or
-any unknown member, is an `INVALID_FRAME` error.
+a resume that carries a member its view does not take, is an `INVALID_FRAME` error. Any other
+member a frame does not declare is ignored, so a page of a newer build can reach this build.
 
 Dispatch answers a delivery view with:
 

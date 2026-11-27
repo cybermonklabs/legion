@@ -1,0 +1,6 @@
+kind: Fixed
+body: |-
+  The bus no longer refuses an outbox window pinned after a NATS reconnect when the connection's own watch overlaps the report of the drop before it. The watch read nats.go's reconnect count, released its lock to put a new status listener in place of the old, and then ended whichever connection life was current: when the report ended the old life and a new window pinned the next one in that gap, the watch ended the new window's life too, and the window's next send answered `ErrUnavailable` although its connection had not dropped since its pin. The watch now hands the count it read to the goroutine that takes nats.go's reports, which compares it with the life current then, between two reports, and leaves a life to a report still waiting in the listener. The listener is no longer replaced: nats.go v1.55.0 keeps a listener until its channel is closed.
+time: 2026-11-21T09:48:04Z
+custom:
+  Issue: connlife-watch-stale-read

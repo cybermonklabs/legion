@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // Every send that waits on a held lane past the warn threshold is reported, once: the one that
@@ -21,6 +22,7 @@ import (
 // queued behind it - three sends of A-1, three WARN lines, one naming each comment, and no
 // second line for any of them however many times the lane parks again.
 func TestEverySendHeldPastTheThresholdIsReportedOnce(t *testing.T) {
+	// Not parallel: it swaps the default logger (logtest.SetDefault).
 	logs := &storetest.LockedLog{}
 	logtest.SetDefault(t, slog.NewTextHandler(logs, nil))
 	lifetime, stop := context.WithCancel(context.Background())
@@ -44,9 +46,10 @@ func TestEverySendHeldPastTheThresholdIsReportedOnce(t *testing.T) {
 		})
 	}
 	const marker = `msg="dispatch: a comment mention's send waits behind an earlier event of its owner"`
-	waitUntil(t, 5*time.Second, "a WARN line for each held send", func() bool {
+	waitUntil(t, "a WARN line for each held send", func() bool {
 		return strings.Count(logs.String(), marker) >= 3
 	})
+
 	// A second past the threshold the lane has parked again several times.
 	time.Sleep(time.Second)
 	logged := logs.String()
@@ -67,6 +70,7 @@ func TestEverySendHeldPastTheThresholdIsReportedOnce(t *testing.T) {
 // it. Neither parks again, yet each waited past the threshold: each logs one WARN naming its own
 // comment, s1 and event 42.
 func TestASendWhoseWaitPassesTheThresholdInFlightIsReportedAsItGoes(t *testing.T) {
+	// Not parallel: it swaps the default logger (logtest.SetDefault).
 	logs := &storetest.LockedLog{}
 	logtest.SetDefault(t, slog.NewTextHandler(logs, nil))
 	lifetime, stop := context.WithCancel(context.Background())
@@ -108,11 +112,12 @@ func TestASendWhoseWaitPassesTheThresholdInFlightIsReportedAsItGoes(t *testing.T
 		t.Fatalf("%d WARN lines before either send's wait ended, want none: no park saw the threshold pass", got)
 	}
 	close(release)
-	waitUntil(t, 5*time.Second, "A-1's two sends gone", func() bool {
+	waitUntil(t, "A-1's two sends gone", func() bool {
 		sender.mu.Lock()
 		defer sender.mu.Unlock()
 		return len(sender.held) == 0
 	})
+
 	// A send leaves held (claimedDuring) before its goroutine logs its late WARN (reportLate):
 	// join that goroutine before reading the log.
 	stop()
@@ -140,6 +145,7 @@ func TestASendWhoseWaitPassesTheThresholdInFlightIsReportedAsItGoes(t *testing.T
 // recorded, what the send itself last waited behind: here s1 and event 42, where a read of the
 // lane alone would log an empty session and event 0.
 func TestALateReportWithNoWaitOnItsLaneNamesTheSendsOwnWait(t *testing.T) {
+	// Not parallel: it swaps the default logger (logtest.SetDefault).
 	logs := &storetest.LockedLog{}
 	logtest.SetDefault(t, slog.NewTextHandler(logs, nil))
 	sender := &mentionSender{heldWarnAfter: time.Millisecond, waits: map[laneKey]heldWait{}, mu: new(sync.Mutex)}
@@ -161,6 +167,7 @@ func TestALateReportWithNoWaitOnItsLaneNamesTheSendsOwnWait(t *testing.T) {
 // of its sends at once. A-1's first send waits three times, A-1's second waits behind it; each send
 // takes 5 ms, so two goroutines on the lane would have both in flight together.
 func TestAReparkedHeldLaneHasOneGoroutine(t *testing.T) {
+	t.Parallel()
 	lifetime, stop := context.WithCancel(context.Background())
 	var tries, active, most atomic.Int32
 	var mu sync.Mutex
@@ -198,11 +205,12 @@ func TestAReparkedHeldLaneHasOneGoroutine(t *testing.T) {
 			attempt: 1, claimed: time.Now(),
 		})
 	}
-	waitUntil(t, 5*time.Second, "A-1's two sends gone", func() bool {
+	waitUntil(t, "A-1's two sends gone", func() bool {
 		sender.mu.Lock()
 		defer sender.mu.Unlock()
 		return len(sender.held) == 0
 	})
+
 	mu.Lock()
 	defer mu.Unlock()
 	t.Logf("sent %v; at most %d sends in flight at once", sent, most.Load())
@@ -222,6 +230,7 @@ func TestAReparkedHeldLaneHasOneGoroutine(t *testing.T) {
 // send. That is why a parked lane's pending timer says no goroutine is on it, which the park tests
 // read (parkRig.state, countParks) where a count of goroutines would lag the park.
 func TestAParkedLanesTimerStartsOnceNoGoroutineServesIt(t *testing.T) {
+	t.Parallel()
 	lifetime, stop := context.WithCancel(context.Background())
 	var tries atomic.Int32
 	sender := newMentionSender(lifetime, time.Hour,
@@ -272,11 +281,12 @@ func TestAParkedLanesTimerStartsOnceNoGoroutineServesIt(t *testing.T) {
 			attempt: 1, claimed: time.Now(),
 		})
 	}
-	waitUntil(t, 5*time.Second, "A-1's two sends gone", func() bool {
+	waitUntil(t, "A-1's two sends gone", func() bool {
 		sender.mu.Lock()
 		defer sender.mu.Unlock()
 		return len(sender.held) == 0
 	})
+
 	mu.Lock()
 	defer mu.Unlock()
 	t.Logf("goroutines serving lanes as each park's timer started: %v", servingAtStart)
@@ -293,6 +303,7 @@ func TestAParkedLanesTimerStartsOnceNoGoroutineServesIt(t *testing.T) {
 // no held copy, so the held gauges count nothing of it and no WARN names an earlier event of its
 // owner, which would be event 0. The control row's read answers, and the send is tried.
 func TestASendParkedForAFailedClaimReadIsNoHeldCopy(t *testing.T) {
+	// Not parallel: it swaps the default logger (logtest.SetDefault).
 	for _, tc := range []struct {
 		name     string
 		readFail bool
@@ -342,14 +353,16 @@ func TestASendParkedForAFailedClaimReadIsNoHeldCopy(t *testing.T) {
 			sender.mu.Unlock()
 			sender.unpark(item.lane())
 
-			parked := false
-			select {
-			case <-tried:
-			case <-timers:
-				parked = true
-			case <-time.After(10 * time.Second):
-				t.Fatal("the send neither went nor parked")
-			}
+			parked := testwait.Until(t, "the send to go or to park (where it stands)", func() (string, bool) {
+				select {
+				case <-tried:
+					return "went", true
+				case <-timers:
+					return "parked", true
+				default:
+					return "neither went nor parked", false
+				}
+			}) == "parked"
 			if parked != tc.readFail {
 				t.Fatalf("the send parked: %t, want %t", parked, tc.readFail)
 			}
@@ -378,6 +391,7 @@ func TestASendParkedForAFailedClaimReadIsNoHeldCopy(t *testing.T) {
 // event 42 and a wait of at least a second and no longer than the test has run: never the age of
 // a send stamped at no time, nor a wait measured backwards.
 func TestASendParkedForAFailedClaimReadLogsNoHeldWarnAsItGoes(t *testing.T) {
+	// Not parallel: it swaps the default logger (logtest.SetDefault).
 	for _, tc := range []struct {
 		name     string
 		readFail bool
@@ -446,16 +460,15 @@ func TestASendParkedForAFailedClaimReadLogsNoHeldWarnAsItGoes(t *testing.T) {
 			sender.unpark(item.lane())
 			joined := false
 			// Each park's timer is fired once the wait is past the threshold; the run ends when the
-			// sender holds no send, which is what the loop waits for. The two minutes are a hang
-			// guard, not a bound on how long the sends take: the row takes about a second and a
-			// quarter, so the deadline is reached only by a send that never goes or parks, which is
-			// a defect rather than a slow machine.
-			for deadline := time.After(2 * time.Minute); ; {
+			// sender holds no send, which is what the wait waits for, asking every Poll. Its one
+			// bound is the test binary's deadline: a send that never goes or parks fails it by name,
+			// and a slow machine only takes longer.
+			testwait.Until(t, "the sender to hold no send, each park's timer fired (the sends it still holds)", func() (int, bool) {
 				sender.mu.Lock()
-				done := len(sender.held) == 0
+				held := len(sender.held)
 				sender.mu.Unlock()
-				if done {
-					break
+				if held == 0 {
+					return 0, true
 				}
 				select {
 				case fire := <-timers:
@@ -477,11 +490,10 @@ func TestASendParkedForAFailedClaimReadLogsNoHeldWarnAsItGoes(t *testing.T) {
 					time.Sleep(wait)
 					fire()
 				case <-tried:
-				case <-time.After(10 * time.Millisecond):
-				case <-deadline:
-					t.Fatal("the sends neither went nor parked")
+				default:
 				}
-			}
+				return held, false
+			})
 			if tc.second && !joined {
 				t.Fatal("the failed read parked no lane for a-second to join")
 			}

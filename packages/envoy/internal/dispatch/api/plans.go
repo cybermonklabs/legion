@@ -11,17 +11,20 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/workflowstore"
 )
 
-// The plan each run of an issue ran from, which the Legion daemon of the issue's project writes
-// when the run's work starts (PUT /api/v1/issues/{key}/plans/{id}), and the read of a project's
-// finished issues (GET /api/v1/projects/{key}/plans): each with its plan, the rating each retro
-// gave it with the reason, the time from the first start of its step records to the last end,
-// and its count of failed steps. Both live in internal/dispatch/workflowstore, the one writer of
-// the nodes and tuples that hold the plans and the step records.
+// The plan each run of an issue ran from, which a Legion daemon writes (isIssueDaemon: the
+// daemon of the issue's project, or the daemon of another project whose broker token proves it)
+// when the run's work starts and again at each later version of the owner's plan that Legion takes
+// (PUT /api/v1/issues/{key}/plans/{id}), and the read of a project's finished issues
+// (GET /api/v1/projects/{key}/plans): each with its plan, the rating each retro gave it with the
+// reason, the time from the first start of its step records to the last end, its count of failed
+// steps, and the experiment and the variant the step records of its newest run name, null where
+// they name none. Both live in internal/dispatch/workflowstore, the one writer of the nodes and
+// tuples that hold the plans and the step records.
 //
 // The write is the daemon's alone, as a step record's is (403 STEP_WRITER), appends no issue
 // event and reads the issue with no open check. The read writes nothing, reads the project, then
-// all its finished issues in one statement whatever their number, and a read-only token may call
-// it (readScopeRoutes).
+// all its finished issues in one statement whatever their number, and is a read of the read
+// class (routeDecl.Read), which a read-only credential may call.
 
 // The refusals of a plan write, beside the step write's STEP_WRITER, the package's own decode
 // error and 404 ISSUE_NOT_FOUND, each the code contracts gives it, which the Legion daemon reads to
@@ -46,17 +49,32 @@ type planRecordInput struct {
 	Tasks      []planTaskInput `json:"tasks" required:"true"`
 }
 
-// planTaskInput is one task of a written plan: its id and its steps in order, each a role or
-// `role:key`. It has the fields of workflowstore.PlanTask and model.PlanTask, so a task converts
-// between the three, and a field added to one of them alone fails the build rather than being
-// dropped on the way.
+// planTaskInput is one task of a written plan: its id, its steps in order, each a role or
+// `role:key`, and the tasks of the plan it needs, each by its id, [] for a task that needs none. A
+// write with no needs, a daemon's of the release before, records the task's needs as not recorded,
+// as does a write a Dispatch of the release before took, since it ignores the member.
+//
+// So needs is an exception to decodeJSON's rule that a member whose loss changes what a request
+// does ships as a new route: a Dispatch of the release before drops it, and a later write at the
+// same version cannot put it back (workflowstore.PutPlan). It ships as a member because the loss
+// changes only what the steps read shows, never what Legion runs: the daemon, the one writer of
+// this route, reads no need back from Dispatch. And the release that adds it deploys Dispatch
+// before the daemon (docs/kubernetes.md, "Rolling back the release that records each task's
+// needs"), so a daemon that writes needs reaches a Dispatch that drops them only when that order
+// is not kept, and then each such plan reads its needs as not recorded.
+//
+// It has the fields of workflowstore.PlanTask and model.PlanTask, so a task converts between the
+// three, and a field added to one of them alone fails the build rather than being dropped on the
+// way.
 type planTaskInput struct {
-	ID    string   `json:"id" required:"true"`
-	Steps []string `json:"steps" required:"true"`
+	ID    string    `json:"id" required:"true"`
+	Steps []string  `json:"steps" required:"true"`
+	Needs *[]string `json:"needs"`
 }
 
 // putIssuePlan writes the plan of one run of an issue and answers it as it stands after the
-// write. Each field is set once, so a plan sent again changes nothing.
+// write. A write of a version above the one the plan holds replaces its source, document, version
+// and tasks, and every other write changes nothing (workflowstore.PutPlan).
 func (s *server) putIssuePlan(w http.ResponseWriter, r *http.Request) {
 	var input planRecordInput
 	if err := decodeJSON(r, &input); err != nil {
@@ -155,6 +173,10 @@ func (s *server) listProjectPlans(w http.ResponseWriter, r *http.Request) {
 		if issue.Plan != nil {
 			plan := planRecord(*issue.Plan)
 			listed.Plan = &plan
+		}
+		if issue.Experiment != nil {
+			drawn := *issue.Experiment
+			listed.Experiment, listed.Variant = &drawn.Experiment, &drawn.Variant
 		}
 		for place, rating := range issue.Ratings {
 			listed.Ratings[place] = model.PlanRating(rating)

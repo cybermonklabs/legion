@@ -1,0 +1,18 @@
+kind: Fixed
+body: |-
+  Two sign-in redirects go only where they are meant to. `dev-oidc-issuer --code-flow` now takes
+  `<client id>=<client secret file>=<redirect URI>`: the client's one registered callback, an
+  absolute http or https URL with no fragment. An authorization that names any other
+  `redirect_uri` is refused `400 redirect_uri_mismatch`, as Google refuses one, and the browser is
+  sent nowhere. A loopback IP literal callback with no port, such as
+  `http://127.0.0.1/signin/callback`, is taken at any port (RFC 8252 section 7.3). Before this, the
+  issuer redirected to any address a request named. `scripts/dev-broker.sh`,
+  `scripts/dev-stack.sh`, the broker docs rig and the Dispatch e2e harness pass their callback.
+  Dispatch's dev sign-in (`GET /auth/_dev/signin`) now refuses a `next` that is not on the
+  dashboard origin with `400 DEV_SIGNIN_INPUT`, before it records the person or mints a cookie.
+  Before this, it sent such a `next` to `/`. It answers `302` to the page `next` names on that
+  origin, as an absolute URL of the origin, and `next` may be a path or an absolute URL of the
+  origin. CodeQL's `go/unvalidated-url-redirection` query reported both redirects.
+time: 2026-11-23T02:47:34Z
+custom:
+    Issue: redirect-allowlist

@@ -1,0 +1,3 @@
+kind: Added
+body: |-
+  `DISPATCH_APPROVE_ONLY_TOKEN` (`APPROVE_ONLY_TOKEN`), the code of the `403` for a request by an approve-only token - the token the secrets broker mints for a person's approve grant and spends through Cipher's proxy - to a route Dispatch's approve list does not name, and for its answer of an ask that is not an approval request. `bun run gen:go` writes it into the Go package as `contracts.DispatchApproveOnlyToken`. The `dispatch_review` description now says that on a box where a person signed in the review goes through Cipher's proxy, and that a secrets broker serving no approve capability refuses the placeholder trade `400 invalid_request`.

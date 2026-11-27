@@ -51,7 +51,7 @@ func TerminalEventNames() []string {
 // built from it is used again; re-verifying it proves provenance, not freshness — and the record
 // must carry exactly one terminal decision, an approval by a login the record's rule admits: its
 // approver, or, for a service's machine login, any login — or, for an approval the model judge
-// made, one the airlock rules let the judge make at all (MayJudge).
+// made, one the keys' judge tags let the judge make at all (MayJudge).
 //
 // store.Store.ChainVerifier builds the one enroll.AuthenticateLauncher and requests.Machine's own
 // chain check each use, by record kind, through these narrow func fields, so this package needs no
@@ -62,10 +62,13 @@ type ChainVerifier struct {
 	// (MayDecide).
 	Kind string
 
-	// Audience and Skew re-verify the embedded request object exactly as VerifyRequestObject
-	// enforced them when the record was first created.
-	Audience string
-	Skew     time.Duration
+	// Audience and Skew re-verify the embedded request object as VerifyStoredRequestObject reads
+	// every stored record: its aud is Audience's origin, its times are checked as of the record's
+	// creation. EdgeAudience is BROKER_EDGE_URL on the launcher credentials' verifier of a broker
+	// with an edge, whose machine logins may be signed for it, and "" on every other.
+	Audience     string
+	EdgeAudience string
+	Skew         time.Duration
 
 	// FetchRecord resolves a record id to its stored canonical body and creation time. found is
 	// false when no such record exists — including, per the caller's own query, one that exists
@@ -77,12 +80,12 @@ type ChainVerifier struct {
 	// to that), so a second is a row something other than the broker wrote.
 	FetchDecisions func(ctx context.Context, recordID string) ([]TerminalEvent, error)
 
-	// JudgeSeconds is the airlock rules' bound on the lifetime the model judge may decide for
-	// one secret (proxyrules.Rules.JudgeSeconds), which MayJudge holds a judge's approval to. It
-	// is a func field for the same reason MayJudge takes one: this package must not import
-	// proxyrules. A verifier that leaves it nil never admits a judge's approval, since MayJudge
-	// refuses with no bound available — which is what enroll.NewChainVerifier does, a launcher
-	// credential being no record the judge ever decides.
+	// JudgeSeconds is the bound a key's judge tag puts on the lifetime the model judge may decide
+	// for it (policy.Set.JudgeSeconds, read from the live policy at each call), which MayJudge
+	// holds a judge's approval to. It is a func field for the same reason MayJudge takes one:
+	// this package must not import policy. A verifier that leaves it nil never admits a judge's
+	// approval, since MayJudge refuses with no bound available — which is what
+	// enroll.NewChainVerifier does, a launcher credential being no record the judge ever decides.
 	JudgeSeconds func(secret string) (uint32, bool)
 
 	// Decided answers, for a record the judge approved, which of its request's keys needed a
@@ -131,7 +134,7 @@ func (c *ChainVerifier) Verify(ctx context.Context, recordID string) (Body, erro
 		}
 		return Body{}, fmt.Errorf("%w: stored body does not parse: %s", ErrChainBroken, err)
 	}
-	obj, err := VerifyRequestObject(body.Request, c.Audience, c.Skew, createdAt)
+	obj, err := VerifyStoredRequestObject(body.Request, c.Audience, c.EdgeAudience, c.Skew, createdAt)
 	if err != nil {
 		return Body{}, fmt.Errorf("%w: request object: %s", ErrChainBroken, err)
 	}
@@ -155,7 +158,7 @@ func (c *ChainVerifier) Verify(ctx context.Context, recordID string) (Body, erro
 			}
 		}
 		if err := MayJudge(body, obj, c.JudgeSeconds, decided); err != nil {
-			return Body{}, fmt.Errorf("%w: approved by the model judge %q, which the rules do not admit: %s", ErrChainBroken, modelID, err)
+			return Body{}, fmt.Errorf("%w: approved by the model judge %q, which its keys' judge tags do not admit: %w", ErrChainBroken, modelID, err)
 		}
 	} else if err := CheckDecider(c.Kind, body.Approver, obj.Service(), decisions[0].Login, c.Groups); err != nil {
 		var lapsed ApproverNotAdmittedError

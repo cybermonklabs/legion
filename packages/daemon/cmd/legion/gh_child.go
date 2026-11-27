@@ -28,8 +28,9 @@ func ghChildEnviron(environ []string, set map[string]string) []string {
 	maps.Copy(forced, set)
 	out := make([]string, 0, len(forced)+len(ghChildTestEnviron)+32)
 	out = append(out, ghChildTestEnviron...)
+	keeps := ghChildKeeps(environ)
 	for _, pair := range environ {
-		if name, _, _ := strings.Cut(pair, "="); forced[name] == "" && ghChildKeeps(name) {
+		if name, value, _ := strings.Cut(pair, "="); forced[name] == "" && keeps(name, value) {
 			out = append(out, pair)
 		}
 	}
@@ -69,11 +70,13 @@ var ghChildForced = map[string]string{
 // legion binary holds no code that sets it, so no caller of it can.
 var ghChildTestEnviron []string
 
-// ghChildKeeps is whether gh keeps the name of its caller's environment: what a program carrying a
-// GitHub token keeps (leakguard.TokenChildKeeps: PATH, HOME, TMPDIR, TERM, TZ, LANG, the LC_ names
-// and the proxy variables), and these, each with what reads it (cli/cli v2.104.0 and v2.98.0,
-// go-gh v2.17.0 and v2.13.0; the measure is every os.Getenv and os.LookupEnv of their non-test
-// code):
+// ghChildKeeps is which entries of environ gh keeps, each read as its name and its value: what a
+// program carrying the GitHub token gh will send keeps (leakguard.TokenChildKeeps for
+// leakguard.TokenOf(environ): PATH, HOME, TMPDIR, TERM, TZ, LANG, the LC_ names and the proxy
+// variables, less the secrets broker's airlock proxy and ALL_PROXY where gh sends its directory's
+// token inside an `agent-secrets` command), and these names, each with what reads it (cli/cli
+// v2.104.0 and v2.98.0, go-gh v2.17.0 and v2.13.0; the measure is every os.Getenv and os.LookupEnv
+// of their non-test code):
 //
 //   - XDG_CONFIG_HOME, XDG_DATA_HOME, XDG_STATE_HOME and XDG_CACHE_HOME, where gh keeps its state
 //     and cache (go-gh pkg/config/config.go:276-327);
@@ -90,10 +93,13 @@ var ghChildTestEnviron []string
 //     (runtime's identity environment). Its configuration is ghChildGitConfig's, not the caller's;
 //   - LEGION_GH_PATH and LEGION_GH_OWNERS_DIR, which `legion gh auth git-credential`, git's
 //     credential helper through GH_PATH, reads, beside the GH_CONFIG_DIR runGh sets, whose token
-//     that helper reads a fork with (forkUpstreamDir); PUBLIC_LEAK_CHECK, LEGION_LEAK_CHECKER_MANIFEST_SHA256
-//     and WRAPPED_GIT_AT, which the pre-push hook of a push gh's git makes reads, the first through
-//     leakguard.Resolve and the second as the manifest digest its guard holds that check to; and
-//     LEGION_ROLE and LEGION_ISSUE, which both log.
+//     that helper reads a fork with (forkUpstreamDir); PUBLIC_LEAK_CHECK,
+//     LEGION_LEAK_CHECKER_MANIFEST_SHA256, LEGION_PRIVATE_NAME_RULES_FILE and WRAPPED_GIT_AT,
+//     which the pre-push hook of a push gh's git makes (`gh repo create --source=. --push`) reads,
+//     the first through leakguard.Resolve, the second as the manifest digest its guard holds that
+//     check to, and the third as the rule file its guard runs: without it, that push would run the
+//     shared check alone and none of the role's private-name rules; and LEGION_ROLE and
+//     LEGION_ISSUE, which both log.
 //
 // Everything else stays out: the trust stores, GIT_SSL_CAINFO, GIT_SSL_NO_VERIFY, SSLKEYLOGFILE,
 // GIT_DIR, GIT_WORK_TREE, GIT_COMMON_DIR, GIT_CONFIG_PARAMETERS, GIT_CEILING_DIRECTORIES,
@@ -102,8 +108,9 @@ var ghChildTestEnviron []string
 // GH_TELEMETRY, DO_NOT_TRACK, GH_DEBUG, GH_FORCE_TTY, and CLAUDE_CONFIG_DIR and DOCKER_CONFIG, which
 // only `gh skills` and `gh attestation verify oci://` read and no Legion caller runs through
 // `legion gh`, among them.
-func ghChildKeeps(name string) bool {
-	return leakguard.TokenChildKeeps(name) || ghChildNames[name]
+func ghChildKeeps(environ []string) func(name, value string) bool {
+	tokenChild := leakguard.TokenChildKeeps(environ, leakguard.TokenOf(environ))
+	return func(name, value string) bool { return tokenChild(name, value) || ghChildNames[name] }
 }
 
 // ghNoEditor is the editor gh is handed (GH_EDITOR, which outranks gh's config `editor`, VISUAL,
@@ -124,7 +131,8 @@ var ghChildNames = map[string]bool{
 	"GH_MDWIDTH": true, "GH_SPINNER_DISABLED": true,
 	"GIT_TERMINAL_PROMPT": true,
 	"GIT_AUTHOR_NAME":     true, "GIT_AUTHOR_EMAIL": true, "GIT_COMMITTER_NAME": true, "GIT_COMMITTER_EMAIL": true,
-	"LEGION_GH_PATH": true, "LEGION_GH_OWNERS_DIR": true, leakguard.CheckVar: true, leakguard.CheckerVar: true, wrappedGitAt: true,
+	"LEGION_GH_PATH": true, "LEGION_GH_OWNERS_DIR": true,
+	leakguard.CheckVar: true, leakguard.CheckerVar: true, leakguard.RulesFileVar: true, wrappedGitAt: true,
 	"LEGION_ROLE": true, "LEGION_ISSUE": true,
 }
 
@@ -161,12 +169,13 @@ var ghForcedGitConfig = [][2]string{
 // ghChildGitConfig is the GIT_CONFIG_COUNT block the git gh runs reads, as it reads `-c`: of the
 // caller's GIT_CONFIG_KEY_<n>/GIT_CONFIG_VALUE_<n> pairs, only those that are one of the pairs the
 // runtime itself sets (sandbox.GitConfigPairs: github.com's credential helper reset and set to
-// `legion git-credential`, useHttpPath, core.fsmonitor and core.hooksPath), key and value alike,
-// in the caller's order, then ghForcedGitConfig. Any other pair the caller names (an http.proxy, an
-// http.sslCAInfo, an http.sslVerify, a url.<base>.insteadOf, an include.path, another credential
-// helper, a core.sshCommand or core.gitProxy) is dropped, whatever its case or URL scope. A count
-// that is no count, and a pair with a half missing, are dropped too; withGitHubUseHTTPPath then
-// adds its own entry after these.
+// `legion git-credential`, useHttpPath, core.fsmonitor, core.hooksPath and the four pack settings
+// of workspace.PackWindowConfig), key and value alike, in the caller's order, then
+// ghForcedGitConfig. Any other pair the caller names (an http.proxy, an http.sslCAInfo, an
+// http.sslVerify, a url.<base>.insteadOf, an include.path, another credential helper, a
+// core.sshCommand or core.gitProxy) is dropped, whatever its case or URL scope. A count that is no
+// count, and a pair with a half missing, are dropped too; withGitHubUseHTTPPath then adds its own
+// entry after these.
 func ghChildGitConfig(environ []string) []string {
 	env := map[string]string{}
 	for _, pair := range environ {
@@ -211,14 +220,14 @@ func gitConfigKey(key string) string {
 // withGitHubUseHTTPPath adds credential.https://github.com.useHttpPath=true to env's GIT_CONFIG_COUNT
 // entries, which git reads as it reads `-c`, so the git gh runs tells its credential helper the
 // repository's path, whose owner `legion git-credential` answers for. A GIT_CONFIG_COUNT that is no
-// count is refused.
+// count is refused, named by its place.
 func withGitHubUseHTTPPath(env []string) ([]string, error) {
 	count := 0
 	for _, pair := range env {
 		if value, ok := strings.CutPrefix(pair, "GIT_CONFIG_COUNT="); ok {
 			n, err := strconv.Atoi(value)
 			if err != nil || n < 0 {
-				return nil, fmt.Errorf("GIT_CONFIG_COUNT is %q, which is no count, so git's configuration cannot be extended; unset it", value)
+				return nil, fmt.Errorf("GIT_CONFIG_COUNT holds %s, which is no count, so git's configuration cannot be extended; unset it", ghShown(value, "a value that is not printed"))
 			}
 			count = n
 		}

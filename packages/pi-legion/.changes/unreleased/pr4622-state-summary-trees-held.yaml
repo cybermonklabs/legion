@@ -1,0 +1,7 @@
+kind: Fixed
+custom:
+  Issue: pr4622
+body: |-
+  The controller's `read_state` summary now lists the root of every live tree on a `trees` line
+  and each held issue on a `held` line with its reason and the issues that hold it, which the
+  controller skill reads.

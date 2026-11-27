@@ -7,12 +7,12 @@ import (
 	"regexp"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/oidc"
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // plainRefreshTokenRetireTimeout bounds the boot's retirement of the refresh tokens people holds
@@ -23,13 +23,6 @@ const plainRefreshTokenRetireTimeout = 30 * time.Second
 // Workspace domain of the account. go-oidc also accepts a token whose `iss` is Google's schemeless
 // `accounts.google.com` when this is the configured issuer, as Google documents.
 const googleIssuer = "https://accounts.google.com"
-
-// domainShape is a lowercase DNS name of two or more labels, each 1 to 63 letters, digits and
-// inner hyphens: the shape of a Google Workspace domain.
-var domainShape = regexp.MustCompile(`^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$`)
-
-// maxDomainLength is the longest DNS name, in its dotted text form.
-const maxDomainLength = 253
 
 // iapAudienceShape is the start every audience Identity-Aware Proxy signs for shares,
 // /projects/<project number>/ (https://cloud.google.com/iap/docs/signed-headers-howto): a load
@@ -79,6 +72,9 @@ func signInSettingNames() string {
 // issuer, whose tokens carry no `cognito:groups`. A deployment with the issuer, client ID, client
 // secret and group of a Cognito pool reaches none of them.
 func checkSignInSettings(boot bootConfig, identityMode string) error {
+	if err := oidc.IssuerRefusal("DISPATCH_SIGNIN_ISSUER", boot.SignInIssuer); err != nil {
+		return err
+	}
 	var set []string
 	for _, setting := range signInSettings(boot) {
 		if setting.value != "" {
@@ -113,7 +109,7 @@ func checkSignInSettings(boot bootConfig, identityMode string) error {
 	}
 	if boot.SignInDomain != "" {
 		if boot.SignInIssuer != googleIssuer {
-			return fmt.Errorf("DISPATCH_SIGNIN_DOMAIN needs DISPATCH_SIGNIN_ISSUER %s, since only Google's tokens carry hd; DISPATCH_SIGNIN_ISSUER is %s", googleIssuer, boot.SignInIssuer)
+			return fmt.Errorf("DISPATCH_SIGNIN_DOMAIN needs DISPATCH_SIGNIN_ISSUER %s, since only Google's tokens carry hd; DISPATCH_SIGNIN_ISSUER is %s", googleIssuer, redact.URL(boot.SignInIssuer))
 		}
 		if err := checkDomainShape(boot.SignInDomain); err != nil {
 			return err
@@ -145,11 +141,12 @@ func checkIAPSignInSettings(boot bootConfig) error {
 	return checkDomainShape(boot.SignInDomain)
 }
 
-// checkDomainShape refuses a DISPATCH_SIGNIN_DOMAIN that is not a lowercase DNS name, naming its
+// checkDomainShape refuses a DISPATCH_SIGNIN_DOMAIN that is not a lowercase DNS name
+// (oidc.IsDomainName, the rule the secrets broker holds its Workspace domains to), naming its
 // length and never its value.
 func checkDomainShape(domain string) error {
-	if len(domain) > maxDomainLength || !domainShape.MatchString(domain) {
-		return fmt.Errorf("DISPATCH_SIGNIN_DOMAIN must be a lowercase domain name such as example.com; got a value of %d characters", utf8.RuneCountInString(domain))
+	if !oidc.IsDomainName(domain) {
+		return oidc.DomainNameRefusal("DISPATCH_SIGNIN_DOMAIN", domain)
 	}
 	return nil
 }

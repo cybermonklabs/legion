@@ -11,23 +11,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/execfile"
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
+	"github.com/sjawhar/legion/daemon/internal/redact"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
-
-// theLeakCheckHost is the one refusable literal these tests need: a Tailscale MagicDNS host built
-// out of invented words, which names no machine and no tailnet, and which this repository's own
-// rules refuse (tailnet_host_rule, packages/daemon/internal/leakguard/private-names.toml). It is
-// spelled in two pieces, the way that rule file and the guard's own tests spell every literal of
-// their own, so that this file passes .github/scripts/check-private-names.sh: joined here, it
-// would put a name the rules refuse into a tracked file of a public repository.
-const theLeakCheckHost = "amber-kite.still-meadow.ts" + ".net"
-
-// theLeakCheckClass is what a report calls that host, and the whole of what it says about the
-// text: the description of the rule that matched.
-const theLeakCheckClass = "names a Tailscale MagicDNS host"
 
 // noSHA is git's "this ref is not there", which a pre-push line carries for the remote side of a
 // ref the push creates.
@@ -81,16 +72,23 @@ func aPushFixture(t *testing.T, message string) (dir, line string) {
 
 // leakCheck runs the command as git's hook and a pod's scripts run it: stdin is what they pipe
 // in, and the status and what reached stderr are what they read. Standard output is the hook's
-// own, and the command writes nothing to it.
+// own, and the command writes nothing to it. The command's context ends when what is left of the
+// test binary's deadline less testBoundMargin has passed, and a command still running then fails
+// the test by name: a check that a loaded machine makes slow passes. A fixed minute ended a slow
+// check, and the row read the guard's setup failure that followed.
 func leakCheck(t *testing.T, stdin string, args ...string) (int, string) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	limit := testwait.Bounded(t, 1<<60, testBoundMargin)
+	ctx, cancel := context.WithTimeout(context.Background(), limit)
 	t.Cleanup(cancel)
 	previous := leakCheckStdin
 	t.Cleanup(func() { leakCheckStdin = previous })
 	leakCheckStdin = strings.NewReader(stdin)
 	var stdout, stderr bytes.Buffer
 	code := run(ctx, append([]string{"legion", "leak-check"}, args...), &stdout, &stderr)
+	if ctx.Err() != nil {
+		t.Fatalf("legion leak-check %q still ran when its limit of %s, %s before the test binary's deadline, passed (exit %d): %s", args, limit.Round(time.Millisecond), testBoundMargin, code, stderr.String())
+	}
 	if stdout.Len() > 0 {
 		t.Errorf("printed %q on standard output, want nothing", stdout.String())
 	}
@@ -116,11 +114,13 @@ func says(t *testing.T, printed string, wants []string) {
 
 // `legion leak-check pre-push` is what the image's hook runs: git's update lines on standard
 // input, the repository it ran the hook in as the working directory, and the remote and its URL
-// as its arguments. Either check refuses the push, and the statuses are the shared check's own —
-// 0 clean, 3 refused, 2 a check that could not be made to run. Under a deployment that names no
-// shared check (no leakguard.CheckerVar) a push with no check is not refused for its absence, and
-// this repository's own rules still read it.
+// as its arguments. With the deployment's rule file named (here the fixture's, through
+// LEGION_PRIVATE_NAME_RULES_FILE), either check refuses the push, and the statuses are the shared
+// check's own — 0 clean, 3 refused, 2 a check that could not be made to run. Under a deployment
+// that names no shared check (no leakguard.CheckerVar) a push with no check is not refused for its
+// absence, and the deployment's rules still read it.
 func TestLeakCheckPrePushRunsTheGuardOverGitsUpdateLines(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process; it changes the whole process's working directory; it sets the package variable leakCheckStdin (leakCheck).
 	for _, tc := range []struct {
 		name    string
 		message string
@@ -138,11 +138,11 @@ func TestLeakCheckPrePushRunsTheGuardOverGitsUpdateLines(t *testing.T) {
 			says:    []string{"LEAK CHECK: refusing the push to origin: the shared public leak check refused it", "one of ours"},
 		},
 		{
-			name:    "this repository's own rules refuse the push",
-			message: "a commit that names " + theLeakCheckHost,
+			name:    "the deployment's rules refuse the push",
+			message: "a commit that names " + leakguardtest.RulesHost,
 			standIn: leakguardtest.Passes,
 			code:    3,
-			says:    []string{"LEAK CHECK: refusing the push to origin: this repository's own private-name rules match it", theLeakCheckClass},
+			says:    []string{"LEAK CHECK: refusing the push to origin: the deployment's private-name rules match it", leakguardtest.RulesHostClass},
 		},
 		{
 			name:    "a clean push",
@@ -163,10 +163,10 @@ func TestLeakCheckPrePushRunsTheGuardOverGitsUpdateLines(t *testing.T) {
 			code:    0,
 		},
 		{
-			name:    "this repository's own rules refuse the push under a deployment that names no check",
-			message: "a commit that names " + theLeakCheckHost,
+			name:    "the deployment's rules refuse the push under a deployment that names no check",
+			message: "a commit that names " + leakguardtest.RulesHost,
 			code:    3,
-			says:    []string{"LEAK CHECK: refusing the push to origin: this repository's own private-name rules match it", theLeakCheckClass},
+			says:    []string{"LEAK CHECK: refusing the push to origin: the deployment's private-name rules match it", leakguardtest.RulesHostClass},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -179,6 +179,7 @@ func TestLeakCheckPrePushRunsTheGuardOverGitsUpdateLines(t *testing.T) {
 			} else {
 				t.Setenv("PUBLIC_LEAK_CHECK", leakguardtest.Write(t, t.TempDir(), tc.standIn))
 			}
+			t.Setenv(leakguard.RulesFileVar, leakguardtest.WriteRules(t, t.TempDir()))
 			// A local path names no github.com repository, so the guard reads no visibility and
 			// this test starts no gh.
 			code, printed := leakCheck(t, line, "pre-push", "origin", dir+".git")
@@ -211,19 +212,21 @@ func legionLeakCheckPrePush(t *testing.T, dir string, env map[string]string, lin
 
 // A push a real gh makes — `gh repo create --source=. --push` — runs git's pre-push hook, `legion
 // leak-check pre-push`, under the variable `legion gh` gives every real gh it runs
-// (leakguard.RunByRealGhVar), since gh's git inherits it. The guard reads the destination's
-// visibility with `gh`, which in a pane or pod is `legion gh`, and it blanks the variable for that
-// read, so the read reaches the real gh and the push is cleared. Under the variable the read would
-// be refused as a real gh leading back to `legion gh`, and the push with it, leaving the
-// repository gh created empty.
+// (leakguard.RunByRealGhVar), since gh's git inherits it. With a rule file named, the guard reads
+// the destination's visibility with `gh`, which in a pane or pod is `legion gh`, and it blanks the
+// variable for that read, so the read reaches the real gh and the push is cleared. Under the
+// variable the read would be refused as a real gh leading back to `legion gh`, and the push with
+// it, leaving the repository gh created empty. The command runs as its own process, so the
+// fixture's rule file is named in that process's environment.
 func TestLeakCheckPrePushUnderTheRealGhsVariableReadsTheVisibility(t *testing.T) {
+	t.Parallel()
 	root, defaultDir := gitCredentialBundle(t)
 	help, err := filepath.Abs(ghHelpDir)
 	if err != nil {
 		t.Fatal(err)
 	}
 	stub := filepath.Join(t.TempDir(), "gh")
-	if err := os.WriteFile(stub, []byte(ghStandInPrefix(help)+"exit 0\n"), 0o700); err != nil {
+	if err := execfile.Write(stub, []byte(ghStandInPrefix(help)+"exit 0\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	record := filepath.Join(t.TempDir(), "gh")
@@ -232,6 +235,7 @@ func TestLeakCheckPrePushUnderTheRealGhsVariableReadsTheVisibility(t *testing.T)
 		"LEGION_GH_PATH": stub, "GH_CONFIG_DIR": defaultDir, "LEGION_GH_OWNERS_DIR": root,
 		"PUBLIC_LEAK_CHECK": leakguardtest.Write(t, t.TempDir(), leakguardtest.Passes),
 		"GH_STANDIN_RECORD": record, leakguard.RunByRealGhVar: stub,
+		leakguard.RulesFileVar: leakguardtest.WriteRules(t, t.TempDir()),
 	}, line, "https://github.com/acme/widgets.git")
 	if code != leakguard.StatusClean || printed != "" {
 		t.Errorf("legion leak-check pre-push under %s = exit %d, stderr %q; want exit 0 and nothing printed", leakguard.RunByRealGhVar, code, printed)
@@ -256,8 +260,10 @@ func TestLeakCheckPrePushUnderTheRealGhsVariableReadsTheVisibility(t *testing.T)
 //
 // The command is this test binary run as `legion`, through main and its cobra command line, so
 // the guard's context is the one main's signal.NotifyContext cancels: a leakCheckCommand that
-// handed its shape another context leaves each SIGINT row's command running past its bound.
+// handed its shape another context leaves each SIGINT row's command running until the row gives up
+// on it, by name, before the test binary's deadline (signalWhileHeld).
 func TestASignalToLeakChecksGroupStopsTheSharedCheck(t *testing.T) {
+	t.Parallel()
 	if _, err := os.ReadFile("/proc/self/cmdline"); err != nil {
 		t.Fatalf("/proc does not answer (%v): this row reads from it whether the stand-in is still running", err)
 	}
@@ -269,16 +275,16 @@ func TestASignalToLeakChecksGroupStopsTheSharedCheck(t *testing.T) {
 		// the push's guard reads no visibility and starts no gh, and the write is held in the
 		// check, the guard's first child.
 		args []string
-		// seconds is the holding stand-in's sleep for each signal, one per row.
+		// seconds is the holding stand-in's sleep for each signal, one per row (holdsStandIn).
 		seconds map[syscall.Signal]string
 	}{
 		{
 			name: "leak-check pre-push", stdin: line, args: []string{"leak-check", "pre-push", "origin", dir + ".git"},
-			seconds: map[syscall.Signal]string{syscall.SIGINT: "293", syscall.SIGHUP: "294"},
+			seconds: map[syscall.Signal]string{syscall.SIGINT: "86393", syscall.SIGHUP: "86394"},
 		},
 		{
 			name: "leak-check text", stdin: "a title\na body of nothing in particular\n", args: []string{"leak-check", "text", "the pull request body"},
-			seconds: map[syscall.Signal]string{syscall.SIGINT: "291", syscall.SIGHUP: "292"},
+			seconds: map[syscall.Signal]string{syscall.SIGINT: "86391", syscall.SIGHUP: "86392"},
 		},
 	} {
 		for _, tc := range []struct {
@@ -303,10 +309,12 @@ func TestASignalToLeakChecksGroupStopsTheSharedCheck(t *testing.T) {
 
 // `legion leak-check text` is the shape anything about to publish a piece of text runs: the text
 // on standard input, and the kind it is called by in the refusal, which is the one thing the
-// caller knows better than the guard does. Under a deployment that names no shared check (no
-// leakguard.CheckerVar) a text with no check is not refused for its absence, and this
-// repository's own rules still read it.
+// caller knows better than the guard does. The deployment's rule file is the fixture's, named
+// through LEGION_PRIVATE_NAME_RULES_FILE. Under a deployment that names no shared check (no
+// leakguard.CheckerVar) a text with no check is not refused for its absence, and the deployment's
+// rules still read it.
 func TestLeakCheckTextRunsTheGuardOverWhatItIsPiped(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process; it sets the package variable leakCheckStdin (leakCheck).
 	const kind = "the pull request body"
 	for _, tc := range []struct {
 		name, text string
@@ -324,11 +332,11 @@ func TestLeakCheckTextRunsTheGuardOverWhatItIsPiped(t *testing.T) {
 			says:    []string{"LEAK CHECK: refusing " + kind + ": the shared public leak check refused it", "one of ours"},
 		},
 		{
-			name:    "this repository's own rules refuse the text",
-			text:    "a title\na body that names " + theLeakCheckHost + "\n",
+			name:    "the deployment's rules refuse the text",
+			text:    "a title\na body that names " + leakguardtest.RulesHost + "\n",
 			standIn: leakguardtest.Passes,
 			code:    3,
-			says:    []string{"LEAK CHECK: refusing " + kind + ": this repository's own private-name rules match it", theLeakCheckClass},
+			says:    []string{"LEAK CHECK: refusing " + kind + ": the deployment's private-name rules match it", leakguardtest.RulesHostClass},
 		},
 		{
 			name:    "a clean text",
@@ -349,10 +357,10 @@ func TestLeakCheckTextRunsTheGuardOverWhatItIsPiped(t *testing.T) {
 			code: 0,
 		},
 		{
-			name: "this repository's own rules refuse the text under a deployment that names no check",
-			text: "a title\na body that names " + theLeakCheckHost + "\n",
+			name: "the deployment's rules refuse the text under a deployment that names no check",
+			text: "a title\na body that names " + leakguardtest.RulesHost + "\n",
 			code: 3,
-			says: []string{"LEAK CHECK: refusing " + kind + ": this repository's own private-name rules match it", theLeakCheckClass},
+			says: []string{"LEAK CHECK: refusing " + kind + ": the deployment's private-name rules match it", leakguardtest.RulesHostClass},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -361,6 +369,7 @@ func TestLeakCheckTextRunsTheGuardOverWhatItIsPiped(t *testing.T) {
 			} else {
 				t.Setenv("PUBLIC_LEAK_CHECK", leakguardtest.Write(t, t.TempDir(), tc.standIn))
 			}
+			t.Setenv(leakguard.RulesFileVar, leakguardtest.WriteRules(t, t.TempDir()))
 			code, printed := leakCheck(t, tc.text, "text", kind)
 			if code != tc.code {
 				t.Errorf("exited %d, want %d: %s", code, tc.code, printed)
@@ -370,10 +379,76 @@ func TestLeakCheckTextRunsTheGuardOverWhatItIsPiped(t *testing.T) {
 	}
 }
 
+// A push the deployment's rules refuse shows, on standard error, what matched, so the agent that
+// wrote the commit sees what to change: the record, the commit's message; the description of the
+// rule; the text the rule matched, the fixture's host and the space after it; and the line of the
+// message it stands on, its third, whole. The report is the whole of what the command prints.
+func TestLeakCheckPrePushRefusalShowsMatch(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process; it changes the whole process's working directory; it sets the package variable leakCheckStdin (leakCheck).
+	const line = "moved the run to " + leakguardtest.RulesHost + " this morning"
+	dir, update := aPushFixture(t, "a subject of no interest\n\n"+line)
+	t.Chdir(dir)
+	t.Setenv("PUBLIC_LEAK_CHECK", leakguardtest.Write(t, t.TempDir(), leakguardtest.Passes))
+	t.Setenv(leakguard.RulesFileVar, leakguardtest.WriteRules(t, t.TempDir()))
+	code, printed := leakCheck(t, update, "pre-push", "origin", dir+".git")
+	commit := strings.Fields(update)[1][:7]
+	want := "LEAK CHECK: refusing the push to origin: the deployment's private-name rules match it\n" +
+		"  " + leakguardtest.ReportLine("commit "+commit+" message", leakguardtest.RulesHostClass, leakguardtest.RulesHost+" ", 3, line) + "\n"
+	if code != 3 || printed != want {
+		t.Errorf("legion leak-check pre-push = exit %d, stderr %q; want exit 3 and %q", code, printed, want)
+	}
+}
+
+// A text the deployment's rules refuse shows what matched the same way: the record, the body;
+// the rule's description; the fixture's host and the space after it; and the body's second
+// line, on which it stands.
+func TestLeakCheckTextRefusalShowsMatch(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process; it sets the package variable leakCheckStdin (leakCheck).
+	const (
+		kind = "the pull request body"
+		line = "the runner answers at " + leakguardtest.RulesHost + " today"
+	)
+	t.Setenv("PUBLIC_LEAK_CHECK", leakguardtest.Write(t, t.TempDir(), leakguardtest.Passes))
+	t.Setenv(leakguard.RulesFileVar, leakguardtest.WriteRules(t, t.TempDir()))
+	code, printed := leakCheck(t, "a title of no interest\na first line of no interest\n"+line+"\n", "text", kind)
+	want := "LEAK CHECK: refusing " + kind + ": the deployment's private-name rules match it\n" +
+		"  " + leakguardtest.ReportLine("the body", leakguardtest.RulesHostClass, leakguardtest.RulesHost+" ", 2, line) + "\n"
+	if code != 3 || printed != want {
+		t.Errorf("legion leak-check text = exit %d, stderr %q; want exit 3 and %q", code, printed, want)
+	}
+}
+
+// With no rule file named — LEGION_PRIVATE_NAME_RULES_FILE unset, as in a pod whose launch handed
+// it none — the guard runs the shared check alone, so a write naming the fixture's host, which the
+// fixture's rules refuse, is cleared: exit 0, and standard error holds nothing at all. The command
+// says nothing of the rule it did not run: a script that reads what it prints reads the guard's
+// answer alone, and the daemon's boot has said once, in its own log, that the deployment names no
+// rule file.
+func TestLeakCheckWithNoRuleFileRunsNoRuleSilently(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process; it changes the whole process's working directory; it sets the package variable leakCheckStdin (leakCheck).
+	t.Run("pre-push", func(t *testing.T) {
+		dir, update := aPushFixture(t, "moved the run to "+leakguardtest.RulesHost+" this morning")
+		t.Chdir(dir)
+		t.Setenv("PUBLIC_LEAK_CHECK", leakguardtest.Write(t, t.TempDir(), leakguardtest.Passes))
+		fixtureenv.Unset(t, leakguard.RulesFileVar)
+		if code, printed := leakCheck(t, update, "pre-push", "origin", dir+".git"); code != 0 || printed != "" {
+			t.Errorf("legion leak-check pre-push with no rule file = exit %d, stderr %q; want exit 0 and nothing printed", code, printed)
+		}
+	})
+	t.Run("text", func(t *testing.T) {
+		t.Setenv("PUBLIC_LEAK_CHECK", leakguardtest.Write(t, t.TempDir(), leakguardtest.Passes))
+		fixtureenv.Unset(t, leakguard.RulesFileVar)
+		if code, printed := leakCheck(t, "a title\nthe runner answers at "+leakguardtest.RulesHost+" today\n", "text", "the pull request body"); code != 0 || printed != "" {
+			t.Errorf("legion leak-check text with no rule file = exit %d, stderr %q; want exit 0 and nothing printed", code, printed)
+		}
+	})
+}
+
 // A call the command cannot read is a usage error, exit 2, and no write is checked by it: a hook
 // or a script that called it wrongly has cleared nothing. A help request is the one call that
 // prints the usage, on standard output, and exits 0.
 func TestLeakCheckRefusesACallItCannotRead(t *testing.T) {
+	// Not parallel: it sets the package variable leakCheckStdin (leakCheck).
 	for _, tc := range []struct {
 		name string
 		args []string
@@ -400,6 +475,91 @@ func TestLeakCheckRefusesACallItCannotRead(t *testing.T) {
 	}
 }
 
+// git hands a pre-push hook the remote's URL as its name too where the push names a URL rather
+// than a remote (`git push https://<token>@github.com/acme/no-such-repo.git`), and such a URL can
+// carry a token as its userinfo, with no password. Nothing the command prints holds the token, on
+// any of its answers: a call it cannot read, update lines it cannot read, a refusal by either
+// check, and GitHub's 404 for the destination. Each row also holds its answer's own words, the
+// push named by its URL with no credential, so a row that took another path, or printed the
+// push's name some other way, fails too. Two rules stand between the token and the terminal, each
+// answer's own Error() (leakguard's errors.go) and the URL rule on every command's stderr
+// (newRoot), and these rows hold the two together; leakguard's
+// TestNoAnswerPrintsACredentialThePushsNameCarries holds the first alone.
+func TestLeakCheckPrePushPrintsNoCredentialItsRemoteCarries(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process; it changes the whole process's working directory; it sets the package variables forkReadBound (pushVisibilityReadEnv), leakCheckStdin (leakCheck) and leakguardCurl (pushVisibilityReadEnv).
+	const token = "FAKEtok3nZQ9x"
+	remote := "https://" + token + "@github.com/" + noSuchRepo + ".git"
+	shown := "the push to https://" + redact.URLWithCredentials + "/" + noSuchRepo + ".git"
+	root, defaultDir := gitCredentialBundle(t)
+	refusedPush := func(t *testing.T, check, message string) (int, string) {
+		dir, line := aPushFixture(t, message)
+		t.Chdir(dir)
+		t.Setenv("PUBLIC_LEAK_CHECK", leakguardtest.Write(t, t.TempDir(), check))
+		t.Setenv(leakguard.RulesFileVar, leakguardtest.WriteRules(t, t.TempDir()))
+		// A local path names no github.com repository, so the guard reads no visibility.
+		return leakCheck(t, line, "pre-push", remote, dir+".git")
+	}
+	var ghNotFound visibilityReadCase
+	for _, read := range visibilityReadCases(shown) {
+		if read.name == "gh's 404" {
+			ghNotFound = read
+		}
+	}
+	if ghNotFound.gh == nil {
+		t.Fatal(`visibilityReadCases holds no "gh's 404" row`)
+	}
+	for _, tc := range []struct {
+		name string
+		code int
+		says string
+		run  func(t *testing.T) (int, string)
+	}{
+		{
+			name: "a call it cannot read", code: leakguard.StatusSetupFailure, says: leakCheckPrePushUsage,
+			run: func(t *testing.T) (int, string) { return leakCheck(t, "", "pre-push", remote) },
+		},
+		{
+			name: "update lines it cannot read", code: leakguard.StatusSetupFailure,
+			says: "LEAK CHECK SETUP ERROR: " + shown + ": git's update lines could not be read",
+			run:  func(t *testing.T) (int, string) { return leakCheck(t, "a b c\n", "pre-push", remote, remote) },
+		},
+		{
+			name: "the shared check refuses", code: leakguard.StatusRefused,
+			says: "LEAK CHECK: refusing " + shown + ": the shared public leak check refused it",
+			run: func(t *testing.T) (int, string) {
+				return refusedPush(t, leakguardtest.Refuses, "a commit of nothing in particular")
+			},
+		},
+		{
+			name: "the deployment's rules refuse", code: leakguard.StatusRefused,
+			says: "LEAK CHECK: refusing " + shown + ": the deployment's private-name rules match it",
+			run: func(t *testing.T) (int, string) {
+				return refusedPush(t, leakguardtest.Passes, "a commit that names "+leakguardtest.RulesHost)
+			},
+		},
+		{
+			name: "GitHub answers 404", code: leakguard.StatusSetupFailure, says: notFoundSays(shown),
+			run: func(t *testing.T) (int, string) {
+				pushVisibilityReadEnv(t, root, defaultDir, ghNotFound)
+				return leakCheck(t, refusedRefDeletion, "pre-push", remote, remote)
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			code, printed := tc.run(t)
+			if code != tc.code {
+				t.Errorf("exited %d, want %d: %s", code, tc.code, strings.ReplaceAll(printed, token, "<the token>"))
+			}
+			if strings.Contains(printed, token) {
+				t.Errorf("printed the token the remote carries: %s", strings.ReplaceAll(printed, token, "<the token>"))
+			}
+			if !strings.Contains(printed, tc.says) {
+				t.Errorf("printed %q, want it to hold %q", strings.ReplaceAll(printed, token, "<the token>"), tc.says)
+			}
+		})
+	}
+}
+
 // `legion leak-check pre-push` to a repository whose owner the gh bundle holds no directory for:
 // the guard's REST read goes through the pod's `gh`, `legion gh`, which refuses it, exit 2, naming
 // the owner, and the real gh never runs. The guard then reads the visibility with git's
@@ -407,8 +567,10 @@ func TestLeakCheckRefusesACallItCannotRead(t *testing.T) {
 // the push goes on to the scan, which refuses this push's ref name, exit 3. Where GitHub asks
 // ls-remote for a credential, as it does for a private repository, the push is refused as a setup
 // failure naming both reads, exit 2. A push to a repository of an owner the bundle holds is read
-// by the real gh, as before, and git never runs.
+// by the real gh, as before, and git never runs. The fixture rule file is named
+// (LEGION_PRIVATE_NAME_RULES_FILE): with no rule file the guard reads no destination's visibility.
 func TestLeakCheckPrePushReadsAnUnservedOwnersVisibilityWithNoCredential(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process; it changes the whole process's working directory; it sets the package variable leakCheckStdin (leakCheck).
 	root, defaultDir := gitCredentialBundle(t)
 	help, err := filepath.Abs(ghHelpDir)
 	if err != nil {
@@ -426,7 +588,7 @@ func TestLeakCheckPrePushReadsAnUnservedOwnersVisibilityWithNoCredential(t *test
 	}{
 		{
 			name: "an unserved owner's repository ls-remote lists", repo: "other-owner/invented-repo", git: lists,
-			code: 3, says: []string{"LEAK CHECK: refusing the push to origin: this repository's own private-name rules match it", theLeakCheckClass},
+			code: 3, says: []string{"LEAK CHECK: refusing the push to origin: the deployment's private-name rules match it", leakguardtest.RulesHostClass},
 			reads: "git\n",
 		},
 		{
@@ -448,10 +610,10 @@ func TestLeakCheckPrePushReadsAnUnservedOwnersVisibilityWithNoCredential(t *test
 			script := ghStandInHelp(help) +
 				"echo rest >> \"$GH_STANDIN_RECORD\"\n" +
 				"printf '%s\\r\\n' 'HTTP/2.0 200 OK' 'X-Ratelimit-Remaining: 4999' ''\nprintf '%s\\n' private\nexit 0\n"
-			if err := os.WriteFile(stub, []byte(script), 0o700); err != nil {
+			if err := execfile.Write(stub, []byte(script), 0o700); err != nil {
 				t.Fatal(err)
 			}
-			if err := os.WriteFile(filepath.Join(bin, "git"), []byte("#!/bin/sh\necho git >> \"$GH_STANDIN_RECORD\"\n"+tc.git), 0o700); err != nil {
+			if err := execfile.Write(filepath.Join(bin, "git"), []byte("#!/bin/sh\necho git >> \"$GH_STANDIN_RECORD\"\n"+tc.git), 0o700); err != nil {
 				t.Fatal(err)
 			}
 			t.Chdir(t.TempDir())
@@ -459,13 +621,14 @@ func TestLeakCheckPrePushReadsAnUnservedOwnersVisibilityWithNoCredential(t *test
 				testMainEnv: "1", "PATH": ghWrapperDir(t) + ":" + bin + ":" + os.Getenv("PATH"),
 				"LEGION_GH_PATH": stub, "GH_CONFIG_DIR": defaultDir, "LEGION_GH_OWNERS_DIR": root,
 				"GH_TOKEN": "", "GITHUB_TOKEN": "", "GH_STANDIN_RECORD": record, "XDG_STATE_HOME": t.TempDir(),
-				"PUBLIC_LEAK_CHECK": leakguardtest.Write(t, t.TempDir(), leakguardtest.Passes),
+				"PUBLIC_LEAK_CHECK":    leakguardtest.Write(t, t.TempDir(), leakguardtest.Passes),
+				leakguard.RulesFileVar: leakguardtest.WriteRules(t, t.TempDir()),
 			} {
 				t.Setenv(name, value)
 			}
 			// A ref the push deletes, named for a host the rules refuse: its name is the push's one
 			// record, so a scan refuses the push and no scan passes it, and no git reads a commit.
-			line := "refs/heads/work " + noSHA + " refs/heads/legion/" + theLeakCheckHost + " " + noSHA + "\n"
+			line := "refs/heads/work " + noSHA + " refs/heads/legion/" + leakguardtest.RulesHost + " " + noSHA + "\n"
 			code, printed := leakCheck(t, line, "pre-push", "origin", "https://github.com/"+tc.repo+".git")
 			if code != tc.code {
 				t.Errorf("exited %d, want %d: %s", code, tc.code, printed)

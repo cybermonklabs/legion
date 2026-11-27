@@ -23,6 +23,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -31,8 +32,8 @@ import (
 // — is recorded under the tree and started by the release, as a child the release moves into todo
 // is by that move's event. Dispatch makes no event for a status an issue already has, so before,
 // the release answered the child released and nothing recorded or started it: read_record found
-// no record, and park_child and rerun_child answered ISSUE_NOT_FOUND (LEGION-627). The architect's
-// retry of the same wave changes nothing more.
+// no record, and rerun_child answered ISSUE_NOT_FOUND (LEGION-627). The architect's retry of the
+// same wave changes nothing more, and rerun_child finds the child running in the tree.
 func TestWaveReleaseRecordsAndStartsAChildDispatchAlreadyShowsTodo(t *testing.T) {
 	h := newHarness(t)
 	records := record.NewStore()
@@ -47,7 +48,7 @@ func TestWaveReleaseRecordsAndStartsAChildDispatchAlreadyShowsTodo(t *testing.T)
 	root, child := "LEGION-208", "LEGION-209"
 	approved := 1
 	h.recordIssue(record.Issue{Key: root, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: root, Project: testProject, Title: root, Phase: phase.Planning, Generation: 1, Status: "in_progress", HandedOver: true})
-	if err := h.store.Tx(context.Background(), func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		if err := records.PutSlot(context.Background(), tx, record.Slot{Issue: root, Index: 0, AdmittedAt: time.Date(2026, 9, 23, 12, 0, 0, 0, time.UTC)}); err != nil {
 			return err
 		}
@@ -82,9 +83,8 @@ func TestWaveReleaseRecordsAndStartsAChildDispatchAlreadyShowsTodo(t *testing.T)
 	if again := recordedChild(t, h, child); again == nil || again.Generation != 1 || again.Phase != phase.Planning {
 		t.Fatalf("the child after the architect's retry = %#v, want its one run unchanged", again)
 	}
-	if recorder := h.request(http.MethodPost, "/legion/v1/children/park", map[string]any{"grantId": architect.grant(t), "issue": child}, nil); recorder.Code != http.StatusOK {
-		t.Fatalf("park_child of the released child = %d: %s", recorder.Code, recorder.Body)
-	}
+	refused(t, h.request(http.MethodPost, "/legion/v1/children/rerun", map[string]any{"grantId": architect.grant(t), "issue": child}, nil),
+		http.StatusConflict, "CHILD_RUNNING")
 }
 
 // A todo child whose repository cannot be read before it is recorded (the daemon's preparation
@@ -122,7 +122,7 @@ func TestWaveReleaseNamesTheRepositoryReadThatFailed(t *testing.T) {
 			}).Handler
 			root, child := "LEGION-208", "LEGION-209"
 			h.recordIssue(record.Issue{Key: root, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: root, Project: testProject, Title: root, Phase: phase.Planning, Generation: 1, Status: "in_progress", HandedOver: true})
-			if err := h.store.Tx(context.Background(), func(tx pgx.Tx) error {
+			if err := store.Transact(context.Background(), h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 				return records.PutSlot(context.Background(), tx, record.Slot{Issue: root, Index: 0, AdmittedAt: time.Date(2026, 9, 23, 12, 0, 0, 0, time.UTC)})
 			}); err != nil {
 				t.Fatalf("seed the live tree: %v", err)
@@ -195,7 +195,7 @@ func newUnreadRelease(t *testing.T, issues ...dispatch.Issue) *unreadRelease {
 		},
 	}).Handler
 	u.h.recordIssue(record.Issue{Key: unreadRoot, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: unreadRoot, Project: testProject, Title: unreadRoot, Phase: phase.Planning, Generation: 1, Status: "in_progress", HandedOver: true})
-	if err := u.h.store.Tx(context.Background(), func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), u.h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		return u.records.PutSlot(context.Background(), tx, record.Slot{Issue: unreadRoot, Index: 0, AdmittedAt: time.Date(2026, 9, 23, 12, 0, 0, 0, time.UTC)})
 	}); err != nil {
 		t.Fatalf("seed the live tree: %v", err)
@@ -231,7 +231,7 @@ func (u *unreadRelease) release(t *testing.T, wave ...string) {
 func (u *unreadRelease) notices(t *testing.T) []string {
 	t.Helper()
 	var reasons []string
-	if err := u.h.store.Tx(context.Background(), func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), u.h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		rows, err := tx.Query(context.Background(), `select payload::text from outbox where issue = $1 and kind = 'notice' order by id`, unreadRoot)
 		if err != nil {
 			return err
@@ -254,7 +254,7 @@ func (u *unreadRelease) notices(t *testing.T) []string {
 func (u *unreadRelease) retryRow(t *testing.T, key string) bool {
 	t.Helper()
 	var row *record.ReleaseRetry
-	if err := u.h.store.Tx(context.Background(), func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), u.h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		row, err = u.records.ReleaseRetry(context.Background(), tx, key)
 		return err
@@ -449,7 +449,7 @@ func TestWaveReleaseAnswersAChildOnAnUnreadRepositoryByWhatItsRecoveryWillDo(t *
 func recordedChild(t *testing.T, h *harness, key string) *record.Issue {
 	t.Helper()
 	var got *record.Issue
-	if err := h.store.Tx(context.Background(), func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		got, err = record.NewStore().Issue(context.Background(), tx, key)
 		return err
@@ -480,7 +480,7 @@ func TestWaveReleaseRecordsATodoChildOfAChildTheSameWaveReleases(t *testing.T) {
 				Handlers: []intake.Handler{engine, admit.New(records, engine, 8, testProject, slog.New(slog.NewTextHandler(io.Discard, nil)))}, Dispatch: statuses,
 			}).Handler
 			h.recordIssue(record.Issue{Key: root, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: root, Project: testProject, Title: root, Phase: phase.Planning, Generation: 1, Status: "in_progress", HandedOver: true})
-			if err := h.store.Tx(context.Background(), func(tx pgx.Tx) error {
+			if err := store.Transact(context.Background(), h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 				return records.PutSlot(context.Background(), tx, record.Slot{Issue: root, Index: 0, AdmittedAt: time.Date(2026, 9, 23, 12, 0, 0, 0, time.UTC)})
 			}); err != nil {
 				t.Fatalf("seed the live tree: %v", err)
@@ -526,7 +526,7 @@ func TestWaveReleaseBoundsAnUnrecordedChildRetryAndNotifiesTheArchitect(t *testi
 	}).Handler
 	root, parent, child := "LEGION-208", "LEGION-209", "LEGION-210"
 	h.recordIssue(record.Issue{Key: root, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: root, Project: testProject, Title: root, Phase: phase.Planning, Generation: 1, Status: "in_progress", HandedOver: true})
-	if err := h.store.Tx(context.Background(), func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		for _, put := range []error{
 			records.PutSlot(context.Background(), tx, record.Slot{Issue: root, Index: 0, AdmittedAt: time.Now()}),
 			records.PutReleaseRetry(context.Background(), tx, record.ReleaseRetry{Issue: child, Sequence: 5, Attempts: maxChildReleaseAttempts - 1, NextAt: time.Now().Add(-time.Second)}),
@@ -547,7 +547,7 @@ func TestWaveReleaseBoundsAnUnrecordedChildRetryAndNotifiesTheArchitect(t *testi
 	architect := newLiveClaim(t, h, root, claim.RoleArchitect)
 	refused(t, h.request(http.MethodPost, "/legion/v1/waves/release", map[string]any{"grantId": architect.grant(t), "issues": []string{child}}, nil), http.StatusConflict, "CHILD_RELEASE_STALLED")
 	var notices int
-	if err := h.store.Tx(context.Background(), func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		return tx.QueryRow(context.Background(), `select count(*) from outbox where issue = $1 and kind = 'notice' and payload->>'kind' = 'child-release-stalled'`, root).Scan(&notices)
 	}); err != nil {
 		t.Fatalf("read the stalled notice: %v", err)

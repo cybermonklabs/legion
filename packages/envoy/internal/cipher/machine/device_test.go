@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
 	"github.com/sjawhar/envoy/internal/cipher/record"
+	"github.com/sjawhar/envoy/internal/cipher/store"
 )
 
 // withProvider gives svc an OAuth provider on its own database whose device codes last
@@ -62,7 +63,7 @@ func deviceLogin(t *testing.T, svc *Service) string {
 	r := httptest.NewRequest(http.MethodPost, "/device_authorization", strings.NewReader(form.Encode()))
 	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	w := httptest.NewRecorder()
-	svc.OAuth.DeviceAuthorize(w, r, svc.LoginDevice)
+	svc.OAuth.DeviceAuthorize(w, r, svc.OAuth.VerificationURL(), svc.LoginDevice)
 	var body struct {
 		UserCode string `json:"user_code"`
 	}
@@ -116,7 +117,7 @@ func TestADeviceCodePastItsLifetimeMintsNothing(t *testing.T) {
 			'{session,expires_at,user_code}', to_jsonb(now() - interval '1 second'))`); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := svc.ApplyDecision(ctx, view.RecordID, true, testApprover, code); !errors.Is(err, ErrLoginExpired) {
+	if _, _, err := applyDecision(ctx, svc, view.RecordID, true, testApprover, code, store.IssuerSubject{}, nil); !errors.Is(err, ErrLoginExpired) {
 		t.Fatalf("ApplyDecision after the device code expired = %v, want ErrLoginExpired", err)
 	}
 	var n int

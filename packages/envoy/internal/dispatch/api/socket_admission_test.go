@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"fmt"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -17,6 +18,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // sentStatement is one statement a store's connection sent, with its arguments.
@@ -93,6 +95,7 @@ const (
 // document's issue once and the caller once, whether the room is warm or cold and with the
 // Hocuspocus authentication frame the provider sends once the socket is open.
 func TestASocketOpenReadsTheIssueAndTheCallerOnce(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	counter := &statementCounter{}
 	counted := storetest.TracedStore(t, storetest.Open(t), counter)
@@ -122,7 +125,20 @@ func TestASocketOpenReadsTheIssueAndTheCallerOnce(t *testing.T) {
 	for _, open := range []string{"a cold open", "a warm open"} {
 		since := counter.mark()
 		peer := docstest.Dial(t, url, header, room, crdt.New())
-		scope, err := peer.Authenticate(schemaVersion, 10*time.Second)
+		// docstest's Authenticate waits under a bound of its own, so it is handed one no run reaches,
+		// and the room's answer is waited for here instead, whose one bound is the test binary's
+		// deadline (testwait.Receive). The peer's close at the test's end ends a call still waiting.
+		type authenticated struct {
+			scope string
+			err   error
+		}
+		answered := make(chan authenticated, 1)
+		go func() {
+			scope, err := peer.Authenticate(schemaVersion, math.MaxInt64)
+			answered <- authenticated{scope, err}
+		}()
+		reply := testwait.Receive(t, open+": the room's answer to the socket's auth token", answered)
+		scope, err := reply.scope, reply.err
 		if err != nil || scope != "read-write" {
 			t.Fatalf("%s: the socket is authenticated %q (%v), want read-write", open, scope, err)
 		}

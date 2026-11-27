@@ -1,0 +1,17 @@
+kind: Added
+body: |-
+  DELETE /api/v1/comments/{id} and DELETE /api/v1/messages/{id} answer `409 DELETE_CONTENDED` with
+  `Retry-After: 1` when a send of the post moves while the delete is being written: nothing is
+  written, and the same delete can be sent again. A delete's settled send attempts read `ended by
+  the post's delete`, which says the delete ended the attempt and nothing about a frame already
+  sent (an earlier draft of this change wrote `not sent: the post was deleted`, which no release
+  carried). A targeted message deleted while its last send was out, whose send then found no live
+  session, is no longer queued for that session: Dispatch re-checks the attempt before it stores a
+  copy, so the deleted body is not kept for the session to read when it registers again. The
+  listener's dead letter for a kept role copy that Dispatch published quotes none of it: a comment
+  or a message is named by its id and its dispatch:// reference, since its author can have edited
+  or deleted it by then, and any other Dispatch message, such as an ask's, an issue's or a delivery
+  receipt, by its event id alone. A copy from any other source keeps its first line.
+time: 2026-11-19T06:03:49.147617612Z
+custom:
+    Issue: pr3512

@@ -174,23 +174,23 @@ func TestAPersonsPodReadsThePersonsAgentSecretWithNoApproval(t *testing.T) {
 	}
 }
 
-// TestARestrictedMembersPodNamesItsProjectsThroughTheBinaries drives a person's pod's projects
-// through the REAL compiled broker, its project-access client pointed at a Dispatch stand-in, and
-// the REAL compiled agent-secrets. Dispatch calls ada a restricted member: PRIV's access list
-// names her, and ELSE's does not. Each project holds a shared agent-tier secret, which owner and
-// tier alone would give her pod at once, so only the project rule keeps it.
+// TestAPersonsPodNamesItsProjectsThroughTheBinaries drives a person's pod's projects through the
+// REAL compiled broker, its project-access client pointed at a Dispatch stand-in, and the REAL
+// compiled agent-secrets. Dispatch calls ada a full member: PRIV's access list names her, and
+// ELSE's does not. Each project holds a shared agent-tier secret, which owner and tier alone would
+// give her pod at once, so only the project rule keeps it.
 //
-// Ada's pod run as `enroll --pod` with no project is refused PROJECTS_REQUIRED, and the line the
-// pod prints says to set AGENT_SECRETS_PROJECTS: this is the one row in which a person reads that
-// refusal as the CLI prints it, and its words lead to the next run. The same pod run again with
-// AGENT_SECRETS_PROJECTS=PRIV enrols, `agent-secrets self` prints PRIV, and the pod reads PRIV's
-// secret. It is denied ELSE's secret project-not-named, and the command it would run never runs.
-// So the pod sees what her own session naming PRIV sees, and no more. The other refusals of a
-// pod's list are enroll.Service.Create's (internal/cipher/enroll/person_pod_test.go), each
+// Ada's pod run as `enroll --pod` with AGENT_SECRETS_PROJECTS=PRIV enrols, `agent-secrets self`
+// prints PRIV, and the pod reads PRIV's secret. It is denied ELSE's secret project-not-named, and
+// the command it would run never runs. So the pod sees what her own session naming PRIV sees, and
+// no more. A restricted member's pod enrolls nothing at all (internal/cipher/enroll's
+// TestARestrictedMembersLauncherEnrollsNothing; this package's
+// TestARestrictedMembersMachineLoginEnrollsNothing for the machine login). The other refusals of
+// a pod's list are enroll.Service.Create's (internal/cipher/enroll/person_pod_test.go), each
 // answered by its own code (internal/cipher/api/enroll_projects_test.go).
 //
 // It skips when BROKER_TEST_DATABASE_URL is unset, as every Postgres-backed broker test does.
-func TestARestrictedMembersPodNamesItsProjectsThroughTheBinaries(t *testing.T) {
+func TestAPersonsPodNamesItsProjectsThroughTheBinaries(t *testing.T) {
 	const (
 		privProject, elseProject = "PRIV", "ELSE"
 		privKey, privValue       = "ADA_PRIV_KEY", "ada-priv-value"
@@ -199,12 +199,10 @@ func TestARestrictedMembersPodNamesItsProjectsThroughTheBinaries(t *testing.T) {
 	databaseURL := storetest.URL(t)
 	issuer := oidctest.New(t)
 	clusterKey := issuer.PublishKey(t, "cluster-key")
-	dispatch := projectaccesstest.NewServer(t, map[string]projectaccesstest.Row{
+	rows := map[string]projectaccesstest.Row{
 		privProject: {Visibility: "private", Owner: privateOwner, Listed: []string{personPodPerson}},
 		elseProject: {Visibility: "private", Owner: privateOwner},
-	}, map[string]string{personPodPerson: projectaccess.MemberRestricted})
-	tokenFile := filepath.Join(t.TempDir(), "dispatch-access-token")
-	writeWhole(t, tokenFile, dispatch.Token+"\n")
+	}
 	store := &requesterStore{path: filepath.Join(t.TempDir(), "fake-secrets.json"), rows: []secrets.LocalSecret{
 		requesterRow(privKey, policy.OwnerShared, policy.TierAgent, privValue, map[string]string{policy.TagProject: privProject}),
 		requesterRow(elseKey, policy.OwnerShared, policy.TierAgent, "else-value", map[string]string{policy.TagProject: elseProject}),
@@ -212,28 +210,38 @@ func TestARestrictedMembersPodNamesItsProjectsThroughTheBinaries(t *testing.T) {
 	store.write(t)
 	cli := buildAgentSecrets(t)
 
-	broker := startBroker(t, brokerOptions{Env: append([]string{
-		"BROKER_DATABASE_URL=" + databaseURL,
-		"BROKER_LISTEN_ADDR=127.0.0.1:0",
-		"BROKER_PUBLIC_URL=http://127.0.0.1:0",
-		"BROKER_FAKE_SECRETS_FILE=" + store.path,
-		"BROKER_K8S_OIDC_ISSUER=" + issuer.URL(),
-		"BROKER_K8S_OIDC_AUDIENCE=" + personPodAudience,
-		"BROKER_PROJECT_ACCESS_URL=" + dispatch.URL,
-		"BROKER_PROJECT_ACCESS_TOKEN_FILE=" + tokenFile,
-		"BROKER_DRAIN_SECONDS=0",
-	}, personPodMapping...)})
-	base := "http://" + broker.Addr
-	requireHealthy(t, broker.Addr)
-	broker.AwaitRecord(t, "project access check", map[string]any{"state": "on"})
-	if refused := recordsWith(broker.Boot, policy.RefusedMessage, nil); len(refused) != 0 {
-		t.Fatalf("the broker refused a secret at boot, %v; a broker with project access serves a tagged secret:\n%s", refused, broker.Boot)
+	// brokerAsking starts a broker whose project-access client asks a Dispatch stand-in that
+	// calls ada a full member, and answers the broker's base URL and the stand-in.
+	brokerAsking := func() (string, *projectaccesstest.Server) {
+		t.Helper()
+		dispatch := projectaccesstest.NewServer(t, rows, map[string]string{personPodPerson: projectaccess.MemberFull})
+		tokenFile := filepath.Join(t.TempDir(), "dispatch-access-token")
+		writeWhole(t, tokenFile, dispatch.Token+"\n")
+		broker := startBroker(t, brokerOptions{Env: append([]string{
+			"BROKER_DATABASE_URL=" + databaseURL,
+			"BROKER_LISTEN_ADDR=127.0.0.1:0",
+			"BROKER_PUBLIC_URL=http://127.0.0.1:0",
+			"BROKER_FAKE_SECRETS_FILE=" + store.path,
+			"BROKER_K8S_OIDC_ISSUER=" + issuer.URL(),
+			"BROKER_K8S_OIDC_AUDIENCE=" + personPodAudience,
+			"BROKER_PROJECT_ACCESS_URL=" + dispatch.URL,
+			"BROKER_PROJECT_ACCESS_TOKEN_FILE=" + tokenFile,
+			"BROKER_DRAIN_SECONDS=0",
+		}, personPodMapping...)})
+		requireHealthy(t, broker.Addr)
+		broker.AwaitRecord(t, "project access check", map[string]any{"state": "on"})
+		if refused := recordsWith(broker.Boot, policy.RefusedMessage, nil); len(refused) != 0 {
+			t.Fatalf("the broker refused a secret at boot, %v; a broker with project access serves a tagged secret:\n%s", refused, broker.Boot)
+		}
+		return "http://" + broker.Addr, dispatch
 	}
+	base, dispatch := brokerAsking()
 
-	// enrol runs the real client as ada's pod podUID: `enroll --pod` with the pod's projected
-	// token mounted as a file, into a key directory of its own, with env added to the pod's
-	// environment. It answers the pod's session and the run's exit code and stderr.
-	enrol := func(podUID string, env []string) (requesterSession, int, string) {
+	// enrol runs the real client as ada's pod podUID against the broker at base: `enroll --pod`
+	// with the pod's projected token mounted as a file, into a key directory of its own, with env
+	// added to the pod's environment. It answers the pod's session and the run's exit code and
+	// stderr.
+	enrol := func(base, podUID string, env []string) (requesterSession, int, string) {
 		t.Helper()
 		tokenPath := filepath.Join(t.TempDir(), podUID+"-token")
 		writeWhole(t, tokenPath, mintPodToken(t, issuer, clusterKey, personPodAdaAccount, personPodAudience, podUID))
@@ -251,13 +259,8 @@ func TestARestrictedMembersPodNamesItsProjectsThroughTheBinaries(t *testing.T) {
 		return session, cmd.ProcessState.ExitCode(), errs.String()
 	}
 
-	t.Log("--- ada's pod names no project: refused PROJECTS_REQUIRED, told to set AGENT_SECRETS_PROJECTS")
-	if _, code, stderr := enrol("ada-pod-1", nil); code == 0 || !strings.Contains(stderr, "PROJECTS_REQUIRED") || !strings.Contains(stderr, "AGENT_SECRETS_PROJECTS") {
-		t.Fatalf("enroll --pod as ada's pod naming no project exited %d, want a refusal PROJECTS_REQUIRED naming AGENT_SECRETS_PROJECTS\nstderr: %s", code, stderr)
-	}
-
-	t.Log("--- the same pod with AGENT_SECRETS_PROJECTS=PRIV enrols naming PRIV")
-	pod, code, stderr := enrol("ada-pod-1", []string{"AGENT_SECRETS_PROJECTS=" + privProject})
+	t.Log("--- ada's pod with AGENT_SECRETS_PROJECTS=PRIV enrols naming PRIV")
+	pod, code, stderr := enrol(base, "ada-pod-1", []string{"AGENT_SECRETS_PROJECTS=" + privProject})
 	if code != 0 || pod.enrollmentID == "" {
 		t.Fatalf("enroll --pod as ada's pod under AGENT_SECRETS_PROJECTS=%s exited %d, want 0 and the enrollment id\nstderr: %s", privProject, code, stderr)
 	}
@@ -276,8 +279,8 @@ func TestARestrictedMembersPodNamesItsProjectsThroughTheBinaries(t *testing.T) {
 		t.Fatalf("agent-secrets %s as ada's pod naming PRIV exited %d with stdout %q, want %d (denied %s) and nothing run\nstderr: %s",
 			elseKey, code, stdout, cliExitDenied, policy.ReasonProjectNotNamed, stderr)
 	}
-	if dispatch.Calls() == 0 {
-		t.Fatal("the broker asked Dispatch nothing, so no answer above read a project: the run is blind")
+	if dispatch.ProjectCalls() == 0 {
+		t.Fatal("the broker asked Dispatch nothing of a project, so no answer above read one: the run is blind")
 	}
 }
 

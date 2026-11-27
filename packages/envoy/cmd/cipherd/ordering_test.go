@@ -35,6 +35,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/reread"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The steps the rows below record, written as an operator reads them in a failure message.
@@ -219,7 +220,7 @@ func TestBootLoadsThePolicyAgainAfterTheFirstListen(t *testing.T) {
 		done <- finished{started, err}
 	}()
 
-	<-readTheStore
+	testwait.Receive(t, "the boot's first policy load to read the secret store", readTheStore)
 	// Both of these commit while the first load is held, which puts both of them before this
 	// process's LISTEN: the retag in the secret store, and the notification the pod that served
 	// that retag sends. This is the state a second pod's boot really meets during a rolling
@@ -240,7 +241,7 @@ func TestBootLoadsThePolicyAgainAfterTheFirstListen(t *testing.T) {
 	}
 	t.Cleanup(func() {
 		started.EndServing()
-		<-listenerStopped
+		testwait.Receive(t, "the policy listener's run to return once serving ended", listenerStopped)
 	})
 	defer started.Listener.Close()
 	defer started.MetricsListener.Close()
@@ -673,8 +674,8 @@ func TestBootRefusesWithNoMetricsPort(t *testing.T) {
 // TestStopDrainsTheMetricsPortBesideTheAPI pins the metrics port's drain: it closes out of the
 // one shutdown budget beside the API rather than after it, and before the work that outlived the
 // drain stops. The API's fake shutdown here returns only once the metrics port's has begun, so a
-// stop that drained the metrics port after the API's is caught by the hang guard rather than
-// read as an order.
+// stop that drained the metrics port after the API's is caught by the shared wait for that
+// beginning, which names it, rather than read as an order.
 //
 // The named revert: drop ShutdownMetrics from stop, or call it after Shutdown has returned.
 func TestStopDrainsTheMetricsPortBesideTheAPI(t *testing.T) {
@@ -686,11 +687,7 @@ func TestStopDrainsTheMetricsPortBesideTheAPI(t *testing.T) {
 		Draining: func(bool) {},
 		Shutdown: func(context.Context) error {
 			ran.record(theShutdownBegan)
-			select {
-			case <-metricsBegan:
-			case <-time.After(bootListenWait):
-				t.Errorf("the API's shutdown waited %s and the metrics port's never began beside it: a stop that drains the ports one after another hands the second whatever the first left of the budget", bootListenWait)
-			}
+			testwait.Receive(t, "the metrics port's shutdown to begin beside the API's: a stop that drains the ports one after another hands the second whatever the first left of the budget", metricsBegan)
 			ran.record(theShutdownReturned)
 			return nil
 		},

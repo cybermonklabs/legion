@@ -8,11 +8,12 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/testfifo"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 func twoOwnerBundle(acmeToken string) Bundle {
@@ -407,7 +408,9 @@ func entryNames(t *testing.T, dir string) []string {
 // directory an older run left go, and the owners' own files stay. Without replaceFile's
 // resolution the row whose root is itself a link fails the write ("write the gh bundle's
 // renames.txt: … is a symlink"); without the cleaning's, that row's cleaning is refused ("… is a
-// symlink"), and the stray file outlives the write.
+// symlink"), and the stray file outlives the write. The fifo carries a held reader
+// (testfifo.Plant), which must see no open of it for writing, and the second write's answer is
+// waited for with no span of its own (testwait.Receive).
 func TestWriteBundleCleansARootReachedThroughALink(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -445,36 +448,17 @@ func TestWriteBundleCleansARootReachedThroughALink(t *testing.T) {
 			if err := os.Remove(pairs); err != nil {
 				t.Fatal(err)
 			}
-			if err := syscall.Mkfifo(pairs, 0o600); err != nil {
-				t.Fatal(err)
-			}
+			fifo := testfifo.Plant(t, pairs, 0o600)
 			answered := make(chan error, 1)
 			go func() {
 				_, err := WriteBundle(root, bundle)
 				answered <- err
 			}()
-			var err error
-			select {
-			case err = <-answered:
-			case <-time.After(5 * time.Second):
-				// A write waiting in an open of the fifo is released by an open of it for reading
-				// and writing, which waits on nothing, so its goroutine ends before the test does.
-				released := time.After(10 * time.Second)
-				for {
-					if fifo, err := os.OpenFile(pairs, os.O_RDWR|syscall.O_NONBLOCK|syscall.O_NOFOLLOW, 0); err == nil {
-						_ = fifo.Close()
-					}
-					select {
-					case err := <-answered:
-						t.Fatalf("second WriteBundle over the fifo %s waited more than 5 seconds, and answered %v only once the open it waited in was released", pairs, err)
-					case <-released:
-						t.Fatalf("second WriteBundle over the fifo %s has not answered in 15 seconds", pairs)
-					case <-time.After(10 * time.Millisecond):
-					}
-				}
-			}
-			if err != nil {
+			if err := testwait.Receive(t, "the second WriteBundle over the fifo "+pairs, answered); err != nil {
 				t.Fatalf("second WriteBundle: %v", err)
+			}
+			if shown := fifo.OpenedForWriting(t); shown != "" {
+				t.Fatalf("the second WriteBundle opened the fifo at %s for writing, and the reader held on it was shown %s: it must replace the fifo without opening it so", pairs, shown)
 			}
 			info, err := os.Lstat(pairs)
 			if err != nil {
@@ -615,12 +599,17 @@ func TestWriteBundleRemovesAPlantedLinkWithoutFollowingIt(t *testing.T) {
 // role's gh bundle through, and the pane's own user can write each of the three files it writes:
 // an owner's config.yml and hosts.yml, and the root's pairs file. Whatever the pane left at one
 // of them, a fifo, a link to /dev/zero or a link to a file outside the root, is replaced by
-// rename, never waited on or followed: WriteBundle answers within a second, the path is then a
-// regular file holding what the bundle renders for it, and the file a link named is as it was.
-// A bundle written again over its own untouched files leaves every one of them as it was. A read
-// with os.ReadFile waits on such a fifo for a writer for as long as none comes and reads /dev/zero
-// without end, and a write with os.WriteFile waits on it for a reader and has the file a link
-// names truncated.
+// rename, never waited on or followed: WriteBundle answers, never having opened the fifo for
+// writing, the path is then a regular file holding what the bundle renders for it, and the file a
+// link named is as it was. A bundle written again over its own untouched files leaves every one
+// of them as it was. A read with os.ReadFile waits on such a fifo for a writer for as long as none
+// comes and reads /dev/zero without end, and a write with os.WriteFile waits on it for a reader
+// and has the file a link names truncated.
+//
+// No clock decides the row. The fifo carries a held reader (testfifo.Plant), so a write's open of
+// it returns at once and is shown to that reader, and WriteBundle's answer is waited for with no
+// span of its own (testwait.Receive), so a wait in an open fails by name before the test binary's
+// deadline.
 func TestWriteBundleReplacesAFifoOrALinkAtEachFileItWrites(t *testing.T) {
 	bundle := twoOwnerBundle("ghs_acme_write")
 	bundle.Pairs = []ghrepo.Rename{ghrepo.MustRename("sjawhar/legion", "CyberMonkLabs/legion")}
@@ -640,10 +629,13 @@ func TestWriteBundleReplacesAFifoOrALinkAtEachFileItWrites(t *testing.T) {
 		plant func(t *testing.T, path string) (kept func(t *testing.T))
 	}{
 		{"a fifo", func(t *testing.T, path string) func(t *testing.T) {
-			if err := syscall.Mkfifo(path, 0o600); err != nil {
-				t.Fatal(err)
+			fifo := testfifo.Plant(t, path, 0o600)
+			return func(t *testing.T) {
+				t.Helper()
+				if shown := fifo.OpenedForWriting(t); shown != "" {
+					t.Fatalf("WriteBundle opened the fifo at %s for writing, and the reader held on it was shown %s: it must replace the fifo without opening it so", path, shown)
+				}
 			}
-			return nil
 		}},
 		{"a link to dev zero", func(t *testing.T, path string) func(t *testing.T) {
 			if err := os.Symlink("/dev/zero", path); err != nil {
@@ -712,31 +704,7 @@ func TestWriteBundleReplacesAFifoOrALinkAtEachFileItWrites(t *testing.T) {
 					_, err := WriteBundle(root, bundle)
 					answered <- err
 				}()
-				var err error
-				select {
-				case err = <-answered:
-				case <-time.After(time.Second):
-					// In a fifo row the write waits in an open of the fifo. An open of it for
-					// reading and writing waits on nothing and is the writer or the reader that
-					// open waits for, so the goroutine ends before the test does. It is asked
-					// again until the write answers, since a write that read the fifo can wait
-					// again to write it. In a /dev/zero row a reader that followed the link is in
-					// an endless read, which no such open releases, so its goroutine runs on.
-					released := time.After(10 * time.Second)
-					for {
-						if fifo, err := os.OpenFile(path, os.O_RDWR|syscall.O_NONBLOCK|syscall.O_NOFOLLOW, 0); err == nil {
-							_ = fifo.Close()
-						}
-						select {
-						case err := <-answered:
-							t.Fatalf("WriteBundle over %s waited more than a second, and answered %v only once the open it waited in was released", path, err)
-						case <-released:
-							t.Fatalf("WriteBundle over %s has not answered in 11 seconds", path)
-						case <-time.After(10 * time.Millisecond):
-						}
-					}
-				}
-				if err != nil {
+				if err := testwait.Receive(t, "WriteBundle over "+path, answered); err != nil {
 					t.Fatalf("WriteBundle over %s = %v, want it replaced", path, err)
 				}
 				if kept != nil {

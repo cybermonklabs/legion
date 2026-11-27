@@ -47,6 +47,8 @@ func (b *registrationBroker) KeepPodSession(ctx context.Context, s supervise.Pod
 	return func() { stopped.Store(true) }, err
 }
 
+func (*registrationBroker) ReleasePodSessions(context.Context, []string) error { return nil }
+
 func (b *registrationBroker) registrations() []registration {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -186,14 +188,15 @@ const claudeSession = "0b7c1d3e-5f60-4a72-8b94-c5d6e7f80912"
 
 // TestTheDaemonRegistersEachRoleSession: under a deployment that sets exchange_audience, the
 // daemon registers each role claim's session for the pod the claim's process runs in, once, bound
-// to the thumbprint of that role's own key, which the role's shim hello names. An Oh My Pi role's
-// session is the one its agent reports at its registration, after its hello, and it is
-// registered before that registration is answered, so the agent holds no claim whose pod cannot
-// trade. A Claude Code role's session is the one the runtime chose for its launch, and it is
-// registered at its shim's hello, before the agent registers; the agent's registration under that
-// same session registers nothing again. Nothing is registered for a role whose hello has not
-// arrived, nor for one whose hello names no thumbprint: a registration is never made before the
-// role's key is known. Each first write presents the pod token the hello carried.
+// to the thumbprint of that role's own key, which the role's shim hello names. An Oh My Pi role
+// whose launch named no id (one into a kept pod that trades nothing) is registered under the
+// session its agent reports at its registration, after its hello, before that registration is
+// answered, so the agent holds no claim whose pod cannot trade. A Claude Code role's session is
+// the one the runtime chose for its launch, and it is registered at its shim's hello, before the
+// agent registers; the agent's registration under that same session registers nothing again.
+// Nothing is registered for a role whose hello has not arrived, nor for one whose hello names no
+// thumbprint: a registration is never made before the role's key is known. Each first write
+// presents the pod token the hello carried.
 func TestTheDaemonRegistersEachRoleSession(t *testing.T) {
 	broker := &registrationBroker{}
 	h := newRegistrationHarness(t, broker)
@@ -243,6 +246,58 @@ func TestTheDaemonRegistersEachRoleSession(t *testing.T) {
 		if got[i].stopped.Load() {
 			t.Errorf("the registration of session %s is no longer renewed while its process runs", w.session)
 		}
+	}
+}
+
+// TestTheDaemonRegistersTheIdItChose: an Oh My Pi role whose pod trades starts under a session id
+// the runtime chose for its launch (runtime.LaunchSessionNamer, the Sandbox runtime's ompInputs),
+// and the daemon registers that id for the role's pod at its shim's hello, bound to the thumbprint
+// that hello names and presenting the pod token it carried: nothing is registered before the
+// hello, and the agent's own registration under the same id registers nothing again. A relaunch
+// resumes that id, the claim's recorded session (SpawnSpec.ResumeSessionID, which the runtime
+// passes as `--resume <id>`), and registers it for the new pod at that pod's hello.
+func TestTheDaemonRegistersTheIdItChose(t *testing.T) {
+	const chosen = "019a2b3c-4d5e-7f60-8a71-92b3c4d5e6f7"
+	broker := &registrationBroker{}
+	h := newRegistrationHarness(t, broker)
+	token, err := claim.NewToken(testProject, "LEGION-840", claim.RoleTester)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.runtime.ScriptLaunchSession(token, chosen)
+	inPod(h, token, "pod-uid-first", 1, false)
+	_, boot := h.launch("LEGION-840", claim.RoleTester)
+	h.connected(token, "pod-uid-first")
+	if got := broker.registrations(); len(got) != 0 {
+		t.Fatalf("before the role's hello the broker holds %+v, want no registration", got)
+	}
+	h.hello(token, "pod-uid-first", "tp-first")
+	atHello := broker.registrations()
+	if len(atHello) != 1 {
+		t.Fatalf("after the role's hello the broker holds %d registrations, want the chosen id's one: %+v", len(atHello), atHello)
+	}
+	if got := atHello[0]; got.podUID != "pod-uid-first" || got.session != chosen || got.thumbprint != "tp-first" || got.token != podToken("pod-uid-first") {
+		t.Errorf("the hello registered pod %s for session %s bound to %q presenting %q, want pod-uid-first for the chosen %s bound to the hello's tp-first presenting its token",
+			got.podUID, got.session, got.thumbprint, got.token, chosen)
+	}
+	h.registered(boot, chosen)
+	if n := len(broker.registrations()); n != 1 {
+		t.Errorf("after the agent registered under the chosen id the broker holds %d registrations, want still 1", n)
+	}
+
+	inPod(h, token, "pod-uid-second", 2, true)
+	h.relaunch(token)
+	if resumes := h.runtime.CallsOf("Resume"); len(resumes) != 1 || resumes[0].Spec.ResumeSessionID != chosen {
+		t.Fatalf("resumes = %+v, want one resuming the chosen id %s", resumes, chosen)
+	}
+	h.connected(token, "pod-uid-second")
+	h.hello(token, "pod-uid-second", "tp-second")
+	got := broker.registrations()
+	if len(got) != 2 || got[1].podUID != "pod-uid-second" || got[1].session != chosen || got[1].thumbprint != "tp-second" {
+		t.Fatalf("after the relaunched pod's hello the broker holds %+v, want pod-uid-second registered for %s bound to tp-second", got, chosen)
+	}
+	if !got[0].stopped.Load() || got[1].stopped.Load() {
+		t.Errorf("the first pod's registration is renewed %t and the second's %t, want only the second's renewed", !got[0].stopped.Load(), !got[1].stopped.Load())
 	}
 }
 
@@ -368,6 +423,10 @@ func (c clientRegistrar) KeepPodSession(ctx context.Context, s supervise.PodSess
 	return c.client.KeepPodSession(ctx, cipher.PodSessionRenewal{
 		PodUID: s.PodUID, Session: s.Session, Thumbprint: s.Thumbprint, Generation: int64(s.Generation), Token: s.Token, After: c.renewals.after, Bound: s.Bound,
 	})
+}
+
+func (c clientRegistrar) ReleasePodSessions(ctx context.Context, names []string) error {
+	return c.client.ReleasePodSessions(ctx, names)
 }
 
 // TestEachRegistrationCarriesItsRolesThumbprint: two roles of one issue pod read the same exchange

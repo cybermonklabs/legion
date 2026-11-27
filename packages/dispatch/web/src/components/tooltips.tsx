@@ -32,7 +32,6 @@ export interface PageWords {
     | "approval_request_changes_to"
     | "approval_version_of"
     | "cancel"
-    | "choose_priority"
     | "close"
     | "components_inherited_from"
     | "components_none"

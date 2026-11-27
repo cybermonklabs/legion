@@ -12,16 +12,20 @@
 //
 // A source that has nothing for the caller answers errSourceAbsent with its reason and the next
 // is tried; a helper that answers that the caller is in no session it registered is such a
-// source. A source that is present but broken, and any refusal of the broker's, stops the
-// command with that error: falling through would act under another identity than the one the
-// caller set up, and hide what is wrong with it. With no source left, one refusal names each
-// source and why it had nothing. No source needs a registered agent session.
+// source, and so is a person's sign-in this machine cannot renew that holds no live enrollment
+// (signInPassedOver), which the walk also names on stderr when it takes a later source. A source
+// that is present but broken, and any other refusal of the broker's, stops the command with that
+// error: falling through would act under another identity than the one the caller set up, and
+// hide what is wrong with it. With no source left, one refusal names each source and why it had
+// nothing. No source needs a registered agent session.
 package main
 
 import (
 	"context"
+	"crypto/ecdsa"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -37,14 +41,25 @@ import (
 var errSourceAbsent = errors.New("this source has nothing for the caller")
 
 // sourceAbsent is one source's absence and why, in words the chain's refusal prints as they
-// stand. It is errSourceAbsent to errors.Is.
-type sourceAbsent struct{ reason string }
+// stand. It is errSourceAbsent to errors.Is. told marks an absence the walk names on stderr when
+// it takes a later source (passedOver): a source that was set up and cannot serve, where the
+// caller would otherwise not know which identity the command acted as.
+type sourceAbsent struct {
+	reason string
+	told   bool
+}
 
 func (e *sourceAbsent) Error() string        { return e.reason }
 func (e *sourceAbsent) Is(target error) bool { return target == errSourceAbsent }
 
 func absent(format string, args ...any) error {
 	return &sourceAbsent{reason: fmt.Sprintf(format, args...)}
+}
+
+// passedOver is absent for a source that was set up and cannot serve: walkChain names it on
+// stderr when it takes a later source.
+func passedOver(format string, args ...any) error {
+	return &sourceAbsent{reason: fmt.Sprintf(format, args...), told: true}
 }
 
 // signerSource is one source of the chain. build answers its signer, registering a session where
@@ -59,14 +74,18 @@ type signerSource struct {
 	held     func() (proofSigner, error)
 }
 
-// signerChain is the chain for a process whose key directory is dir, in R4's order.
-func signerChain(dir string) []signerSource {
-	return []signerSource{keyDirSource(dir), signInSource(), helperSource(), machineChainSource()}
+// signerChain is the chain for a process whose key directory is dir, in R4's order. passOver is
+// whether its sign-in source passes over a sign-in this machine cannot renew (signInPassedOver):
+// every walk but renew's, whose contract is to report the enrollment the broker no longer holds
+// (exit 76) and never to act as another session in its place.
+func signerChain(dir string, passOver bool) []signerSource {
+	return []signerSource{keyDirSource(dir), signInSource(passOver), helperSource(), machineChainSource()}
 }
 
 // selectSigner is this process's signer: the first source of the chain that has one, after a
-// machine session an older client left in dir is moved to the machine cache.
-func selectSigner(dir string) (string, Signer, error) {
+// machine session an older client left in dir is moved to the machine cache. A source passed
+// over on the way is named on stderr (walkChain).
+func selectSigner(dir string, stderr io.Writer, passOver bool) (string, Signer, error) {
 	if err := migrateKeyDirMachineSession(dir); err != nil {
 		return "", nil, err
 	}
@@ -74,7 +93,7 @@ func selectSigner(dir string) (string, Signer, error) {
 		id     string
 		signer Signer
 	}
-	_, got, err := walkChain(signerChain(dir), func(source signerSource) (built, error) {
+	_, got, err := walkChain(signerChain(dir, passOver), stderr, func(source signerSource) (built, error) {
 		id, signer, err := source.build(context.Background())
 		return built{id, signer}, err
 	})
@@ -82,12 +101,13 @@ func selectSigner(dir string) (string, Signer, error) {
 }
 
 // describeSource is the source selectSigner would sign with, and what `identity --source` says
-// of it, registering nothing.
-func describeSource(dir string) (name, detail string, err error) {
+// of it, registering nothing. A source passed over on the way is named on stderr, as
+// selectSigner names it.
+func describeSource(dir string, stderr io.Writer) (name, detail string, err error) {
 	if err := migrateKeyDirMachineSession(dir); err != nil {
 		return "", "", err
 	}
-	return walkChain(signerChain(dir), func(source signerSource) (string, error) {
+	return walkChain(signerChain(dir, true), stderr, func(source signerSource) (string, error) {
 		return source.describe(context.Background())
 	})
 }
@@ -110,8 +130,10 @@ func describeSource(dir string) (name, detail string, err error) {
 // reread's call (doProofBuilt) registers the session again once when the broker says the
 // enrollment is not live. That costs one trade of the person's own sign-in, with this machine's
 // identity as its actor, and one enrollment; it waits on nothing and registers no machine session.
+// A sign-in this machine cannot renew is passed over as the chain passes it over
+// (signInPassedOver), and says nothing on stderr: the reread signs only to read more.
 func heldSigner() (proofSigner, error) {
-	name, signer, err := walkChain(signerChain(keyDir()), func(source signerSource) (proofSigner, error) {
+	name, signer, err := walkChain(signerChain(keyDir(), true), nil, func(source signerSource) (proofSigner, error) {
 		return source.held()
 	})
 	if err != nil && !errors.Is(err, errNoBrokerIdentity) {
@@ -124,18 +146,37 @@ func heldSigner() (proofSigner, error) {
 // of it, and returns the first source's name with what it found. A source with nothing for the
 // caller (errSourceAbsent) is passed over, and its reason kept; any other error stops the walk
 // with that source's name and the error, as the chain stops. With no source left it is
-// errNoBrokerIdentity, naming each source and why.
-func walkChain[T any](chain []signerSource, pick func(signerSource) (T, error)) (string, T, error) {
+// errNoBrokerIdentity, naming each source and why. A source passed over that told why
+// (passedOver) is named on stderr, unless stderr is nil, in one line per such source before the
+// walk ends: "agent-secrets: <why>; using the <source> source" where a later source serves, and
+// "agent-secrets: <why>; tried the <source> source next" where a later source stops the walk, so
+// the caller learns why the command did not act as that source even when the one it tried fails.
+func walkChain[T any](chain []signerSource, stderr io.Writer, pick func(signerSource) (T, error)) (string, T, error) {
 	var none T
 	reasons := make([]string, 0, len(chain))
+	var told []string
+	tell := func(after string) {
+		if stderr == nil {
+			return
+		}
+		for _, reason := range told {
+			fmt.Fprintf(stderr, "agent-secrets: %s; %s\n", reason, after)
+		}
+	}
 	for _, source := range chain {
 		got, err := pick(source)
+		var why *sourceAbsent
 		switch {
 		case err == nil:
+			tell("using the " + source.name + " source")
 			return source.name, got, nil
+		case errors.As(err, &why) && why.told:
+			told = append(told, why.reason)
+			reasons = append(reasons, source.name+": "+err.Error())
 		case errors.Is(err, errSourceAbsent):
 			reasons = append(reasons, source.name+": "+err.Error())
 		default:
+			tell("tried the " + source.name + " source next")
 			return source.name, none, err
 		}
 	}
@@ -201,18 +242,41 @@ func readEnrollment(path, file string) (string, error) {
 	return id, nil
 }
 
-// signInSource is the sign-in of the person this process acts for (signInSigner).
-func signInSource() signerSource {
-	noSignIn := func() error {
-		return absent("nobody has signed in on this machine with `%s` (%s holds no sign-in)", cipherclient.SignInCommand, cipherclient.SignInStoreName)
+// signInSource is the sign-in of the person this process acts for (signInSigner). A box with
+// sign-ins but no way to say which one this session is refuses here, naming them: a command must
+// never read one colleague's secrets under another's name. A sign-in this machine cannot renew
+// that holds no live enrollment has nothing for the caller (signInPassedOver).
+func signInSource(passOver bool) signerSource {
+	find := func(ctx context.Context) (cipherclient.SignInRecord, *ecdsa.PrivateKey, error) {
+		store := cipherclient.SignIns(homeGetenv)
+		records, err := store.List()
+		if err != nil {
+			return cipherclient.SignInRecord{}, nil, err
+		}
+		if len(records) == 0 {
+			return cipherclient.SignInRecord{}, nil, absent("nobody has signed in on this machine with `%s` (%s holds no sign-in)", cipherclient.SignInCommand, cipherclient.SignInStoreName)
+		}
+		record, err := store.Choose(os.Getenv(cipherclient.PersonVar))
+		if err != nil {
+			return cipherclient.SignInRecord{}, nil, err
+		}
+		key, err := record.Key()
+		if err != nil {
+			return cipherclient.SignInRecord{}, nil, err
+		}
+		if !passOver {
+			return record, key, nil
+		}
+		return record, key, signInPassedOver(ctx, record, key)
 	}
-	build := func(context.Context) (string, Signer, error) {
-		signer, err := signInSigner()
+	build := func(ctx context.Context) (string, Signer, error) {
+		record, key, err := find(ctx)
 		if err != nil {
 			return "", nil, err
 		}
-		if signer == nil {
-			return "", nil, noSignIn()
+		signer, err := signInSigner(record, key)
+		if err != nil {
+			return "", nil, err
 		}
 		return signer.enrollmentID, signer, nil
 	}
@@ -220,29 +284,46 @@ func signInSource() signerSource {
 	return signerSource{
 		name:  "sign-in",
 		build: build,
-		describe: func(context.Context) (string, error) {
-			store := cipherclient.SignIns(homeGetenv)
-			records, err := store.List()
-			if err != nil {
-				return "", err
-			}
-			if len(records) == 0 {
-				return "", noSignIn()
-			}
-			record, err := store.Choose(os.Getenv(cipherclient.PersonVar))
-			if err != nil {
-				return "", err
-			}
-			if _, err := record.Key(); err != nil {
-				return "", err
-			}
-			return record.Person, nil
+		describe: func(ctx context.Context) (string, error) {
+			record, _, err := find(ctx)
+			return record.Person, err
 		},
 		held: func() (proofSigner, error) {
 			_, signer, err := build(context.Background())
 			return signer, err
 		},
 	}
+}
+
+// signInPassedOver is why the chain passes over record's sign-in, whose box key is key, or nil
+// where the sign-in serves. It passes over a sign-in this machine cannot renew (signInRenewal)
+// that holds no live enrollment: its record names none, or the broker answers that the one it
+// names is not live. Only for such a sign-in does it ask the broker, once: GET
+// /v1/enrollments/self signed with the sign-in's key, which registers nothing. Any other answer
+// but not live, a refusal or an unreachable broker, stops the chain, named as this check. A
+// sign-in client this machine cannot read is no reason to pass a sign-in over: the sign-in serves
+// as before, and its renewal reports that error when it runs.
+func signInPassedOver(ctx context.Context, record cipherclient.SignInRecord, key *ecdsa.PrivateKey) error {
+	_, renewal := signInRenewal(record)
+	var unrenewable *unrenewableSignIn
+	if !errors.As(renewal, &unrenewable) {
+		return nil
+	}
+	if record.EnrollmentID != "" {
+		base := brokerBaseURL()
+		if base.Empty() {
+			return nil
+		}
+		_, _, err := newClient(base).proofCall(ctx, &fileSigner{key: key, enrollmentID: record.EnrollmentID}, http.MethodGet, "/v1/enrollments/self", nil)
+		if err != nil && !enrollmentNotLive(err) {
+			return fmt.Errorf("ask the broker %s names whether %s's sign-in holds a live enrollment, since this machine cannot renew it (GET /v1/enrollments/self): %w",
+				brokerURLVar, record.Person, err)
+		}
+		if err == nil {
+			return nil
+		}
+	}
+	return passedOver("%s's sign-in holds no live enrollment, and this machine cannot renew it: %s", record.Person, unrenewable.why)
 }
 
 // helperSource is agent-secrets-helper, asked once whether the caller is inside a session it
@@ -335,6 +416,13 @@ func machineChainSource() signerSource {
 	}
 }
 
+// noLauncherCredential names each identity kind machineSource refuses, as its refusal names it:
+// the kinds whose trade the broker mints no launcher credential for.
+var noLauncherCredential = map[string]string{
+	cipherclient.IdentityKubernetes:    "a Kubernetes identity",
+	cipherclient.IdentityGitHubActions: "a GitHub Actions run",
+}
+
 // machineSource is the identity this machine proves at the broker's token exchange: the one
 // AGENT_SECRETS_MACHINE_IDENTITY names, from the environment or the settings file, whose error
 // stops the caller; else the one cipherclient.DetectMachineIdentity finds for the Google exchange
@@ -343,10 +431,12 @@ func machineChainSource() signerSource {
 // accepts no machine identity, and nothing is asked of the machine then. The use command, `agent-
 // secrets login` and a sign-in's renewal all take the machine from here.
 //
-// AGENT_SECRETS_MACHINE_IDENTITY=kubernetes is a usage error here, before anything is traded: the
-// exchange mints a launcher credential for a Google subject and a person alone, so a pod's token
-// registers no session and acts as no sign-in's machine. The helper and the Legion controller,
-// which read the same setting through cipherclient.MachineIdentity, are unchanged.
+// AGENT_SECRETS_MACHINE_IDENTITY=kubernetes or github-actions is a usage error here, before
+// anything is traded: the exchange mints a launcher credential for a Google subject and a person
+// alone, so a pod's token or a workflow run's registers no session and acts as no sign-in's
+// machine. The Legion controller and natsprobe, which read the same setting through
+// cipherclient.MachineIdentity and decline the launcher credential, take both; the helper reads it
+// too, and gets no launcher credential with either.
 //
 // Those settings are unauthenticated and choose the audience of the identity token this machine
 // mints and hands over, so they are read only from an https broker, or a loopback one
@@ -358,9 +448,9 @@ func machineChainSource() signerSource {
 // and keeps nothing.
 func machineSource(ctx context.Context, keep bool) (cipherclient.Source, []cipherclient.Skipped, error) {
 	if kind := strings.TrimSpace(clientGetenv(cipherclient.IdentityVar)); kind != "" {
-		if kind == cipherclient.IdentityKubernetes {
-			return nil, nil, &settingError{fmt.Errorf("%s=%s is not one agent-secrets takes: the broker mints no launcher credential for a Kubernetes identity, so no session could be registered under it; set %s or %s, or unset it to find this machine's identity from the broker's settings",
-				cipherclient.IdentityVar, kind, cipherclient.IdentityMetadata, cipherclient.IdentityPool)}
+		if what, refused := noLauncherCredential[kind]; refused {
+			return nil, nil, &settingError{fmt.Errorf("%s=%s is not one agent-secrets takes: the broker mints no launcher credential for %s, so no session could be registered under it; set %s or %s, or unset it to find this machine's identity from the broker's settings",
+				cipherclient.IdentityVar, kind, what, cipherclient.IdentityMetadata, cipherclient.IdentityPool)}
 		}
 		identity, err := cipherclient.MachineIdentity(clientGetenv)
 		return identity, nil, err

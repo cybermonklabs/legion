@@ -12,6 +12,7 @@ import (
 // clears it; and a registration still carrying generation 1 — the capability the second mint
 // replaced — writes nothing.
 func TestControllerMintRegisterAndRotate(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := migratedStore(t)
 
@@ -66,9 +67,21 @@ func TestControllerMintRegisterAndRotate(t *testing.T) {
 	}
 }
 
+func TestControllerMintThenNeedsACommitHook(t *testing.T) {
+	t.Parallel()
+	store := migratedStore(t)
+	if _, err := store.MintControllerThen(context.Background(), "demo", []byte("capability"), nil); err == nil {
+		t.Fatal("MintControllerThen without a commit hook = nil, want an error")
+	}
+	if _, found, err := store.Controller(context.Background(), "demo"); err != nil || found {
+		t.Fatalf("Controller after the refused mint = %t, %v; want no record", found, err)
+	}
+}
+
 // Each project has a controller of its own: two daemons sharing a database never read or rotate
 // the other's.
 func TestControllerIsPerProject(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := migratedStore(t)
 	if _, err := store.MintController(ctx, "alpha", []byte("alpha-capability")); err != nil {

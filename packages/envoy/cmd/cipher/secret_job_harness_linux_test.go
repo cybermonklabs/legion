@@ -21,44 +21,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/testwait"
 	"golang.org/x/sys/unix"
 )
-
-// promptJobWait bounds each wait of these tests for a fact they expect: a line on the terminal, a
-// stop, a process's end, the terminal's foreground. A fact that comes ends its wait at once, so the
-// bound costs a passing test nothing; it only delays the report of one that never comes. It is a
-// minute, as testwait.Eventually's is, and a wait discounts the long gaps between its polls
-// (waitBudget), because a loaded machine is slow in every step and sometimes stops a process for
-// minutes: on a dev box at a load average of 800 to 1,100 on 288 processors, 2 runs of this family
-// in 25 failed in a 10 s wait for a terminal line, and one of those tests took 270 s.
-const promptJobWait = time.Minute
-
-// waitBudget is one wait's bound. Each gap between two polls counts at most a second of
-// promptJobWait, so a gap the machine held up for minutes costs the wait a second, not its whole
-// bound: it is not a wall-clock deadline. The test binary's own deadline, less a margin for
-// cleanup, still ends the wait (testwait.Bounded), so a wait never outlasts the binary's timeout
-// and reports what it waited for. A wait made of other waits passes them its budget, so their
-// polls count toward one bound.
-type waitBudget struct {
-	left     time.Duration
-	last     time.Time
-	deadline time.Time
-}
-
-func newWaitBudget(t *testing.T) *waitBudget {
-	now := time.Now()
-	return &waitBudget{left: promptJobWait, last: now, deadline: now.Add(testwait.Bounded(t, 24*time.Hour, 5*time.Second))}
-}
-
-// spent counts the gap since the last call, at most a second of it, and reports whether the
-// bound is used up or the test binary's deadline is near.
-func (b *waitBudget) spent() bool {
-	now := time.Now()
-	b.left -= min(now.Sub(b.last), time.Second)
-	b.last = now
-	return b.left <= 0 || now.After(b.deadline)
-}
 
 // promptShell gives the prompt a parent interactive shell in the same session, so
 // its process group is not orphaned and the kernel really stops it on Ctrl-Z.
@@ -94,6 +58,15 @@ func rawFd(f *os.File) (int, error) {
 	return fd, nil
 }
 
+// newPromptShell starts the interactive shell the prompt runs under, in a terminal of its own. It
+// runs under `env --default-signal`, with each of createSignals at its default action, so neither
+// it nor the jobs it starts inherit an ignore of SIGHUP or SIGINT from this test process (a job run
+// in the background of a script ignores SIGINT, nohup SIGHUP), at which the prompt rightly goes on
+// reading: a row's Ctrl-C or hang-up reaches the prompt as a terminal's would. Those two are the
+// ones that can reach it, since Go keeps an inherited ignore only for them and puts its own
+// handler, which a child gets back as the default, on SIGQUIT and SIGTERM; the list names all four
+// of createSignals anyway. A row that needs a signal ignored sets it in the wrapper shell it starts
+// (wrapperIgnores).
 func newPromptShell(t *testing.T) *promptShell {
 	t.Helper()
 	controller, terminal := openPTY(t)
@@ -108,7 +81,7 @@ func newPromptShell(t *testing.T) *promptShell {
 	tty := os.NewFile(uintptr(fd), "terminal")
 	defer tty.Close()
 	home := t.TempDir()
-	cmd := exec.Command("bash", "--norc", "--noprofile", "-i")
+	cmd := exec.Command("env", "--default-signal=HUP,INT,QUIT,TERM", "bash", "--norc", "--noprofile", "-i")
 	cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + home, "HISTFILE=" + filepath.Join(home, "history"), "PS1=PROMPT$ ", "TERM=dumb"}
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = tty, tty, tty
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true, Setctty: true, Ctty: 0}
@@ -189,12 +162,7 @@ func (s *promptShell) wait(want string) {
 // waitFirst waits until the terminal has shown one of wants, and answers the one it showed first.
 func (s *promptShell) waitFirst(wants ...string) string {
 	s.t.Helper()
-	return s.waitFirstBudget(newWaitBudget(s.t), wants...)
-}
-
-func (s *promptShell) waitFirstBudget(budget *waitBudget, wants ...string) string {
-	s.t.Helper()
-	first, _ := s.waitFrom(budget, 0, wants...)
+	first, _ := s.waitFrom(0, wants...)
 	return first
 }
 
@@ -202,12 +170,14 @@ func (s *promptShell) waitFirstBudget(budget *waitBudget, wants ...string) strin
 // a test that sees the same line several times waits for each one in turn.
 func (s *promptShell) next(want string) {
 	s.t.Helper()
-	_, s.from = s.waitFrom(newWaitBudget(s.t), s.from, want)
+	_, s.from = s.waitFrom(s.from, want)
 }
 
 // waitFrom waits until the terminal has shown, at or after from, one of wants, and answers the
-// one it showed first and where that match ends.
-func (s *promptShell) waitFrom(budget *waitBudget, from int, wants ...string) (string, int) {
+// one it showed first and where that match ends. Each read's 50 ms deadline is how a read of the
+// terminal is made to come back at all, not a bound on the wait: what one read does not bring, the
+// next brings.
+func (s *promptShell) waitFrom(from int, wants ...string) (string, int) {
 	s.t.Helper()
 	buf := make([]byte, 4096)
 	for {
@@ -220,7 +190,7 @@ func (s *promptShell) waitFrom(budget *waitBudget, from int, wants ...string) (s
 		if at >= 0 {
 			return first, from + at + len(first)
 		}
-		if budget.spent() {
+		if waitsGaveUp(s.t) {
 			s.t.Fatalf("waiting for one of %q; terminal showed %q", wants, s.out.String())
 		}
 		_ = s.controller.SetReadDeadline(time.Now().Add(50 * time.Millisecond))
@@ -229,15 +199,31 @@ func (s *promptShell) waitFrom(budget *waitBudget, from int, wants ...string) (s
 	}
 }
 
+// helperTimeout is the -test.timeout the helper starts with: what is left of this test binary's
+// deadline less waitMargin. So the helper's waits (waitsGaveUp) give up waitMargin before
+// this process's waits do, and the helper's own text, such as "bash's line editor never took the
+// terminal", is on the terminal while the test still reads it. The helper's alarm comes when this
+// process's waits give up, by which time the test has failed. With no deadline (-timeout 0) the
+// helper has none either, and the test that started it kills it in its cleanup.
+func helperTimeout(t *testing.T) string {
+	deadline, ok := t.Deadline()
+	if !ok {
+		return ""
+	}
+	return " -test.timeout=" + max(time.Until(deadline)-waitMargin, time.Millisecond).String()
+}
+
 func (s *promptShell) start(wrapper bool, background bool) {
 	s.t.Helper()
-	command := s.env + "AGENT_SECRETS_JOB_HELPER=1 " + shellWord(os.Args[0]) + " -test.run='^TestPromptJobHelper$'"
+	reference := ""
 	if background {
 		// fg hands the job the terminal in the state bash hands every foreground
 		// job, which is what the prompt must restore: not what the terminal holds
 		// while the job waits behind bash's line editor.
-		command = "AGENT_SECRETS_JOB_REFERENCE=" + s.foregroundState() + " " + command
+		reference = "AGENT_SECRETS_JOB_REFERENCE=" + s.foregroundState() + " "
 	}
+	// The helper's deadline is read after the probe above, so the probe's time is not in it.
+	command := reference + s.env + "AGENT_SECRETS_JOB_HELPER=1 " + shellWord(os.Args[0]) + " -test.run='^TestPromptJobHelper$'" + helperTimeout(s.t)
 	if wrapper {
 		ignores := s.wrapperIgnores
 		if ignores == "" {
@@ -296,7 +282,7 @@ func termiosKey(t *unix.Termios) string {
 
 func (s *promptShell) waitForeground(pid int) {
 	s.t.Helper()
-	for budget := newWaitBudget(s.t); ; time.Sleep(time.Millisecond) {
+	for ; ; time.Sleep(time.Millisecond) {
 		foreground, err := unix.IoctlGetInt(s.ctlFd, unix.TIOCGPGRP)
 		if err != nil {
 			s.t.Fatal(err)
@@ -304,10 +290,38 @@ func (s *promptShell) waitForeground(pid int) {
 		if foreground == pid {
 			return
 		}
-		if budget.spent() {
+		if waitsGaveUp(s.t) {
 			s.t.Fatalf("terminal foreground group = %d, want %d", foreground, pid)
 		}
 	}
+}
+
+// requireForegroundRead is the kernel probe of a test that reads, through the pseudo-terminal's
+// controller (waitForeground), which process group holds the terminal: Linux answers TIOCGPGRP
+// there, and gVisor answers ENOTTY. It asks a fresh pair's controller.
+func requireForegroundRead(t *testing.T) {
+	t.Helper()
+	controller, _ := openPTY(t)
+	fd, err := rawFd(controller)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var group int
+	for {
+		group, err = unix.IoctlGetInt(fd, unix.TIOCGPGRP)
+		if !errors.Is(err, unix.EINTR) {
+			break
+		}
+	}
+	if err != nil && !errors.Is(err, unix.ENOTTY) {
+		t.Fatalf("TIOCGPGRP on a pseudo-terminal's controller: %v", err)
+	}
+	answered := fmt.Sprintf("group %d", group)
+	if err != nil {
+		answered = err.Error()
+	}
+	requireKernel(t, err == nil, "TIOCGPGRP on a pseudo-terminal's controller to name the process group that holds the terminal",
+		"answered TIOCGPGRP on a fresh pair's controller with "+answered)
 }
 
 func (s *promptShell) noShellValue(markers ...string) {
@@ -356,6 +370,7 @@ func (c *labelCheck) Write(p []byte) (int, error) {
 }
 
 func TestPromptJobHelper(t *testing.T) {
+	// Not parallel: it signals the test process or changes its signal handling (main.watchCreateSignals, signal.Notify at secret_create.go:92); it sets a package variable the package's other tests read (maxPasteDrain set at secret_job_harness_linux_test.go:391).
 	if os.Getenv("AGENT_SECRETS_JOB_HELPER") == "" {
 		t.Skip("subprocess helper")
 	}
@@ -404,7 +419,7 @@ func TestPromptJobHelper(t *testing.T) {
 		// Started with &: start the prompt only once bash's line editor holds the
 		// terminal (canonical mode off), which a prompt in the background must
 		// neither take as its baseline nor show its label over.
-		for budget := newWaitBudget(t); ; time.Sleep(time.Millisecond) {
+		for ; ; time.Sleep(time.Millisecond) {
 			tio, err := unix.IoctlGetTermios(0, unix.TCGETS)
 			if err != nil {
 				t.Fatal(err)
@@ -412,22 +427,48 @@ func TestPromptJobHelper(t *testing.T) {
 			if tio.Lflag&unix.ICANON == 0 {
 				break
 			}
-			if budget.spent() {
+			if waitsGaveUp(t) {
 				t.Fatal("bash's line editor never took the terminal")
 			}
 		}
 		fmt.Println("PROMPT_STARTING")
 		if os.Getenv("AGENT_SECRETS_JOB_AFTER_SHELL_EXIT") != "" {
-			// Reach the prompt only once the shell's exit has taken the terminal from the
-			// session, as a prompt descheduled that long on a loaded machine would.
-			for budget := newWaitBudget(t); ; time.Sleep(time.Millisecond) {
-				if _, err := unix.IoctlGetInt(0, unix.TIOCGPGRP); errors.Is(err, unix.ENOTTY) {
+			// The interactive bash leads this session, even when a wrapper bash is this
+			// helper's parent. Its PID remains the session ID after it exits. Wait until
+			// exit_notify has made it a zombie (or it was reaped), not merely PF_EXITING:
+			// disassociate_ctty runs between those two points and takes the terminal away.
+			shell, err := unix.Getsid(0)
+			if err != nil || shell <= 0 {
+				t.Fatalf("read the shell's session ID: %d, %v", shell, err)
+			}
+			for ; ; time.Sleep(time.Millisecond) {
+				leader, err := readProcStat(shell)
+				if errors.Is(err, os.ErrNotExist) || errors.Is(err, unix.ESRCH) ||
+					(err == nil && (leader.state == 'Z' || leader.state == 'X')) {
 					break
 				}
-				if budget.spent() {
-					t.Fatal("the shell's exit never took the terminal")
+				if err != nil {
+					t.Fatal(err)
+				}
+				if waitsGaveUp(t) {
+					t.Fatal("the session-leader shell never exited")
 				}
 			}
+			var group int
+			for {
+				group, err = unix.IoctlGetInt(0, unix.TIOCGPGRP)
+				if !errors.Is(err, unix.EINTR) {
+					break
+				}
+			}
+			if err == nil {
+				fmt.Printf("TERMINAL_AFTER_SHELL_EXIT=kept (TIOCGPGRP answered group %d)\n", group)
+				return
+			}
+			if !errors.Is(err, unix.ENOTTY) {
+				t.Fatalf("TIOCGPGRP after the session-leader shell exited: %v", err)
+			}
+			fmt.Println("TERMINAL_AFTER_SHELL_EXIT=gone")
 		}
 	}
 	// AGENT_SECRETS_JOB_DEADLINE gives the read a deadline that long after it starts, as a create's
@@ -556,14 +597,14 @@ func TestPromptJobHelper(t *testing.T) {
 // job bash has already seen stop.
 func (s *promptShell) jobStopped() {
 	s.t.Helper()
-	for budget := newWaitBudget(s.t); ; time.Sleep(10 * time.Millisecond) {
+	for ; ; time.Sleep(10 * time.Millisecond) {
 		s.reset()
 		s.send("jobs %1\r")
-		s.waitFirstBudget(budget, "PROMPT$ ")
+		s.wait("PROMPT$ ")
 		if strings.Contains(s.out.String(), "Stopped") {
 			return
 		}
-		if budget.spent() {
+		if waitsGaveUp(s.t) {
 			s.t.Fatalf("bash never saw the job stop: %q", s.out.String())
 		}
 	}
@@ -573,7 +614,7 @@ func (s *promptShell) jobStopped() {
 // sent, so none of it is left for the shell.
 func (s *promptShell) allInputRead() {
 	s.t.Helper()
-	for budget := newWaitBudget(s.t); ; time.Sleep(time.Millisecond) {
+	for ; ; time.Sleep(time.Millisecond) {
 		queued, err := unix.IoctlGetInt(s.terminal, unix.TIOCINQ)
 		if err != nil {
 			s.t.Fatal(err)
@@ -581,7 +622,7 @@ func (s *promptShell) allInputRead() {
 		if queued == 0 {
 			return
 		}
-		if budget.spent() {
+		if waitsGaveUp(s.t) {
 			s.t.Fatalf("the prompt left %d bytes unread", queued)
 		}
 	}
@@ -628,4 +669,23 @@ func signalMaskHas(t *testing.T, pid int, field string, sig syscall.Signal) bool
 	}
 	t.Fatalf("no %s line in /proc/%d/status", field, pid)
 	return false
+}
+
+// requireSignalDispositions is the kernel probe of a test that reads how a process handles a
+// signal from its /proc/<pid>/status (catches, ignores): Linux's has SigCgt and SigIgn lines,
+// and gVisor's has neither. It reads this process's own.
+func requireSignalDispositions(t *testing.T) {
+	t.Helper()
+	status, err := os.ReadFile("/proc/self/status")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var lines []string
+	for _, field := range []string{"SigCgt:", "SigIgn:"} {
+		if strings.Contains(string(status), "\n"+field) {
+			lines = append(lines, field)
+		}
+	}
+	requireKernel(t, len(lines) == 2, "/proc/<pid>/status to show how the process handles each signal (its SigCgt and SigIgn lines)",
+		fmt.Sprintf("showed %d of those two lines in /proc/self/status %q", len(lines), lines))
 }

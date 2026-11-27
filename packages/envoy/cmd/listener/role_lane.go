@@ -2,13 +2,18 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"sync"
 	"time"
 
+	"github.com/nats-io/nats.go"
+
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/config"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/logging"
+	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/roles"
 )
 
@@ -45,7 +50,7 @@ type roleForwarder struct {
 	cfg   listenerDeliveryHandlerConfig
 	slots chan struct{}
 	// pending counts the forwards handed over and not yet reported, for wait.
-	pending sync.WaitGroup
+	pending inflight
 
 	mu sync.Mutex
 	// queues holds each holder's forwards not yet published, in arrival order. A holder has a key
@@ -100,7 +105,7 @@ func (f roleForward) msgID(subject string) string {
 // has none, once a slot is free.
 func (f *roleForwarder) enqueue(forward roleForward) {
 	f.slots <- struct{}{}
-	f.pending.Add(1)
+	f.pending.Add()
 	f.mu.Lock()
 	queue, running := f.queues[forward.sessionID]
 	f.queues[forward.sessionID] = append(queue, forward)
@@ -146,8 +151,27 @@ func (f *roleForwarder) publish(sessionID string) {
 			f.finish(forward, err)
 			continue
 		}
-		go func() { f.finish(forward, wait()) }()
+		go func() {
+			_, err := wait()
+			f.finish(forward, lateForwardFailure(f.cfg, forward, err))
+		}()
 	}
+}
+
+// lateForwardFailure is err, or the failure of a forward the stream stored later than its
+// resolution's fence and the wait that forward ran under (roles.ForwardStoredTooLate,
+// roleForwardTimeout): a forward whose process was held between the fence check and the
+// acknowledgement. Its holder may have lost the role, and the takeover record that would copy the
+// message to the next holder may have ended (takeoverRecordLife), so the copy is no delivery: it
+// is reported failed (roles.ErrForwardStoredTooLate), which clears the attempt, and the sender's
+// next send resolves the holder again. A forward whose resolution is zero - the kept lane's walk,
+// which reads the claim before each copy - is never late.
+func lateForwardFailure(cfg listenerDeliveryHandlerConfig, forward roleForward, err error) error {
+	if err != nil || !roles.ForwardStoredTooLate(forward.resolvedAt, cfg.now(), roleForwardTimeout) {
+		return err
+	}
+	return fmt.Errorf("%w: resolved %s ago, the fence is %s and the wait %s",
+		roles.ErrForwardStoredTooLate, cfg.now().Sub(forward.resolvedAt), roles.ForwardFenceAge, roleForwardTimeout)
 }
 
 // refreshStaleRoleForward resolves the holder of forward's role again, for a forward whose
@@ -191,7 +215,7 @@ func (f *roleForwarder) outstanding() int {
 // drains, since the forwards and their exceptions are published through it. It reports whether all
 // were.
 func (f *roleForwarder) wait(ctx context.Context) bool {
-	return waitWithin(ctx, &f.pending)
+	return f.pending.wait(ctx)
 }
 
 // startRoleForward is forwardRole over client: every forward is stored-only
@@ -201,32 +225,98 @@ func (f *roleForwarder) wait(ctx context.Context) bool {
 // consumer, with acknowledgement and redelivery (roleForwardCopyDelivery). msgID is the forward's
 // Nats-Msg-Id when it is not empty, which is what keeps the stream to one copy per message and
 // holder however many attempts a send makes (roleForward.msgID).
-func startRoleForward(client *bus.Client) func(subject string, item contracts.Envelope, msgID string, timeout time.Duration) (func() error, error) {
-	return func(subject string, item contracts.Envelope, msgID string, timeout time.Duration) (func() error, error) {
+//
+// The wait answers a clustered stream's refusal of the forward as still in process under an
+// earlier forward under msgID through publishPastInProcess, inside the forward's own timeout: it
+// sends the forward again until the stream acknowledges it as that earlier forward's duplicate,
+// so every caller - a role send, a role-lane delivery and a kept-lane walk - takes that refusal
+// one way, as one forward, and none counts it a forward that failed.
+func startRoleForward(client *bus.Client) func(subject string, item contracts.Envelope, msgID string, timeout time.Duration) (func() (bus.StoredAck, error), error) {
+	return func(subject string, item contracts.Envelope, msgID string, timeout time.Duration) (func() (bus.StoredAck, error), error) {
+		deadline := time.Now().Add(timeout)
 		forward, err := client.StartRequestStoredTo(subject, item, msgID, timeout)
 		if err != nil {
 			return nil, err
 		}
-		return forward.Wait, nil
+		return func() (bus.StoredAck, error) {
+			ctx, cancel := context.WithDeadline(context.Background(), deadline)
+			defer cancel()
+			return publishPastInProcess(ctx, func() (bus.StoredAck, error) {
+				if forward == nil {
+					var err error
+					if forward, err = client.StartRequestStoredTo(subject, item, msgID, time.Until(deadline)); err != nil {
+						return bus.StoredAck{}, err
+					}
+				}
+				// Every forward StartRequestStoredTo returned is waited for, which releases its
+				// reply subscription, and the next send is a forward of its own.
+				ack, err := forward.Wait()
+				forward = nil
+				return ack, err
+			})
+		}, nil
 	}
 }
 
 // roleLane is the listener's role lane at shutdown: its own client (bus.ConnectRoleLane), the
-// forwards its handler hands over, and stopWatch, which ends watchRoleLaneSlowConsumers.
+// forwards its handler hands over, and stopWatch, which ends watchRoleLaneSlowConsumers. An edge
+// listener subscribes no role lane, so its roleLane holds the forwards alone.
 type roleLane struct {
 	client    *bus.Client
 	forwards  *roleForwarder
 	stopWatch func()
 }
 
+// startRoleLane opens the listener's role lane: a core-NATS queue subscription on a connection of
+// its own with finite pending limits (bus.RoleLanePendingMsgs, bus.RoleLanePendingBytes;
+// bus.ConnectRoleLane), in the queue group every listener shares, or this machine's group on a hub
+// whose grant predates it, whose messages handler takes. During a rolling deploy the task being
+// replaced is a member too, and NATS hands each role message to one member of a group, so opening
+// the lane before the durable binds forwards no message twice. It counts the lane's slow-consumer
+// errors on met and watches them (watchRoleLaneSlowConsumers) until the lane's drain.
+//
+// It is a connect of the listener's start (natsStart): behind a hub whose servers reload a new
+// nkey one at a time, the main client can get in through the one server that has reloaded while
+// the lane's connect meets one that has not, so it waits out a refusal of the credential under
+// the start's bound (natsStart.option), which /healthz reports while it lasts and forgets once the
+// lane's connect gets in (natsStart.admitted), before its subscribe and flush. A failure still ends
+// the start, as main ends it, and names the credential only when the connect did not get in.
+//
+// An edge listener (edge) opens none: its grant subscribes no role lane (natsgrant.Edge), so it
+// takes no share of any project's role messages. A shared listener resolves a role's holder, an
+// edge session's among them, and forwards the message to the holder's agent subject, which the
+// holder's session consumer delivers. Its lane holds the forwards alone.
+func startRoleLane(cfg config.Service, edge *edgeGrant, handler nats.MsgHandler, forwards *roleForwarder, met *metrics.Registry, logger *logging.Logger, start *natsStart) (roleLane, error) {
+	if edge != nil {
+		logger.Info("role lane not subscribed: an edge listener takes no role message; a shared listener forwards each to its holder's agent subject")
+		return roleLane{forwards: forwards}, nil
+	}
+	client, queue, err := bus.ConnectRoleLane(cfg.NATSURLs, cfg.MachineID, handler, start.option())
+	if err != nil {
+		return roleLane{}, err
+	}
+	logger.Info("role lane subscribed", slog.String("subject", contracts.RoleTopicPrefix+">"), slog.String("queue", queue))
+	met.NewGaugeFunc("envoy_role_lane_slow_consumers", "Slow-consumer errors the role lane's connection has reported", func() int64 {
+		return int64(client.SlowConsumers())
+	})
+	watchCtx, stopWatch := context.WithCancel(context.Background())
+	go watchRoleLaneSlowConsumers(watchCtx, client, logger, roleLaneSlowConsumerInterval)
+	return roleLane{client: client, forwards: forwards, stopWatch: stopWatch}, nil
+}
+
 // drain ends the role lane at shutdown: it drains the lane's client within timeout, so the handler
 // takes every role message the server already delivered and no more, then waits for the forwards it
 // handed over, the forward window after that at most, since a forward published by then has its
-// outcome within it. A forward still waiting then is logged and left to the main client's drain.
+// outcome within it. A forward still waiting then is logged and left to the main client's drain. A
+// lane with no client, an edge listener's, waits for the forwards alone.
 func (l roleLane) drain(logger *logging.Logger, timeout time.Duration) {
-	l.stopWatch()
-	if err := l.client.Drain(timeout); err != nil {
-		logger.Warn("role lane drain error", slog.String("error", err.Error()))
+	if l.stopWatch != nil {
+		l.stopWatch()
+	}
+	if l.client != nil {
+		if err := l.client.Drain(timeout); err != nil {
+			logger.Warn("role lane drain error", slog.String("error", err.Error()))
+		}
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), roleForwardTimeout)
 	defer cancel()

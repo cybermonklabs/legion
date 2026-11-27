@@ -207,6 +207,9 @@ const DELETED = `line-through ${diffRemovedBg} ${diffRemovedText}`;
  * names a change without reading its marks. Every run of unchanged blocks longer than two hides
  * behind one control, one block of context on each side of each change, and the heading of the
  * section a change sits in is drawn above it when the text above does not already show it.
+ *
+ * A diff draws the characters each version holds, never their rendering: a rendered `**` or `[`
+ * would hide the change it is. Why is the reading list's `change-view-diff`.
  */
 export function ChangeView({ after, before }: ChangeViewProps): ReactNode {
   const [opened, setOpened] = useState<ReadonlySet<number>>(() => new Set<number>());

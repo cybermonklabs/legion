@@ -7,12 +7,15 @@ import type { Agent } from "../../api/types";
 /**
  * The agent registry (`GET /api/v1/agents`: the sessions the Envoy listener lists, as of
  * Dispatch's copy of its list, at most 5 s old) as every surface reads it. One query key, one
- * lookup built per response, and one poller:
- * `AgentRegistryPoller`, mounted once in the app shell, refreshes the registry every 15 s while
- * anything registered through `useRegistryPolling` is mounted (each session `AgentName`, each
- * `useAgents(…, true)` caller). A reader never polls on its own: TanStack runs one interval
- * per observer, so N readers mounted at different times would fetch up to N times per 15 s.
- * The poller keeps TanStack's default of not polling a hidden tab.
+ * lookup built per response, and one poller: `AgentRegistryPoller`, mounted once in the app
+ * shell, refreshes the registry every 15 s while anything registered through `useRegistryPolling`
+ * is mounted: each enabled `useAgentRegistry` reader (a session's `AgentName`, a claim chip, the
+ * issues table's claim filter, the search palette's send offer), each `useAgents(…, true)`
+ * caller, and each reference to a session or a role a surface draws (`useReferenceData` in
+ * `reference-target.ts`), so a session renamed or a role taken up while the page is open reads
+ * as it is now. A reader never polls on its own: TanStack runs one interval per observer, so N
+ * readers mounted at different times would fetch up to N times per 15 s. The poller keeps
+ * TanStack's default of not polling a hidden tab.
  */
 
 /** A session's running state, from the registry only. `running`: listed by the latest
@@ -26,6 +29,22 @@ export type AgentState = "running" | "unresponsive" | "not-running" | "unknown";
 
 /** The poller's cadence while anything shows an agent. */
 export const AGENT_REGISTRY_POLL_MS = 15_000;
+
+declare global {
+  interface Window {
+    /** The browser suite's cadence for the poller, in milliseconds, set before the page loads
+     *  (`e2e/agents.ts`, `pollAgentListEvery`): the rows that wait for the list to change on an open
+     *  page then wait one short poll rather than a 15 s one. Unset in production. */
+    __dispatchAgentRegistryPollMs?: number;
+  }
+}
+
+/** The poller's cadence: `AGENT_REGISTRY_POLL_MS`, or the browser suite's own where it set a
+ *  positive one (`window.__dispatchAgentRegistryPollMs`). Read at each render of the poller. */
+export function agentRegistryPollMs(): number {
+  const set = typeof window === "undefined" ? undefined : window.__dispatchAgentRegistryPollMs;
+  return typeof set === "number" && Number.isFinite(set) && set > 0 ? set : AGENT_REGISTRY_POLL_MS;
+}
 
 /** The registry query every reader shares. */
 export const agentsQuery = () =>
@@ -54,6 +73,25 @@ function registryLookup(agents: readonly Agent[]): RegistryLookup {
     lookups.set(agents, lookup);
   }
   return lookup;
+}
+
+/** The agent the registry response `agents` lists under `sessionId`, through the lookup every
+ *  reader of that response shares. */
+export function registeredAgent(
+  agents: readonly Agent[] | undefined,
+  sessionId: string
+): Agent | undefined {
+  return agents === undefined ? undefined : registryLookup(agents).byId.get(sessionId);
+}
+
+/** The title the registry response `agents` gives `sessionId`, trimmed: undefined for a session
+ *  it does not list or lists with a blank title, which names nobody. */
+export function registeredTitle(
+  agents: readonly Agent[] | undefined,
+  sessionId: string
+): string | undefined {
+  const title = registeredAgent(agents, sessionId)?.title.trim();
+  return title === undefined || title === "" ? undefined : title;
 }
 
 let pollingReaders = 0;
@@ -94,13 +132,14 @@ export function useRegistryPolling(active: boolean): void {
 /** The one owner of the registry's refresh cadence, mounted once in the app shell. */
 export function AgentRegistryPoller(): null {
   const wanted = useSyncExternalStore(subscribePolling, pollingWanted, pollingWanted);
+  const pollMs = agentRegistryPollMs();
   useQuery({
     ...agentsQuery(),
     enabled: wanted,
-    refetchInterval: wanted ? AGENT_REGISTRY_POLL_MS : false,
+    refetchInterval: wanted ? pollMs : false,
     // Coming back on after a pause refetches only data at least one poll old, so a reader that
     // remounts moments after the last one unmounted does not add a request inside the cadence.
-    staleTime: AGENT_REGISTRY_POLL_MS,
+    staleTime: pollMs,
   });
   return null;
 }
@@ -126,6 +165,10 @@ export interface AgentRegistry {
  * Reads the registry. `enabled` fetches it (a first load only: it never refetches on mount, the
  * shell's poller refreshes it) and registers with the poller; disabled, it still reads whatever
  * the cache holds, so its titles name agents but its states stay `unknown` until a read lands.
+ * A read that failed is not asked again by a reader that mounts after it either: a page draws an
+ * agent's name in many places, and each of them would ask a failed registry again with every
+ * try the dashboard's retry rule allows, where the poller's own interval already asks it again
+ * every 15 s.
  */
 export function useAgentRegistry(enabled: boolean): AgentRegistry {
   useRegistryPolling(enabled);
@@ -133,8 +176,10 @@ export function useAgentRegistry(enabled: boolean): AgentRegistry {
     ...agentsQuery(),
     enabled,
     refetchOnMount: false,
+    retryOnMount: false,
   });
-  const lookup = registryLookup(data ?? EMPTY_AGENTS);
+  const agents = data ?? EMPTY_AGENTS;
+  const lookup = registryLookup(agents);
   // A failed refetch keeps the last response's data, so the state goes back to unknown while
   // the cached titles go on naming agents.
   const known = !(isPending || isError);
@@ -153,12 +198,9 @@ export function useAgentRegistry(enabled: boolean): AgentRegistry {
         if (agent === undefined) return "not-running";
         return agent.state === "unresponsive" ? "unresponsive" : "running";
       },
-      title: (sessionId: string) => {
-        const title = lookup.byId.get(sessionId)?.title.trim();
-        return title === undefined || title === "" ? undefined : title;
-      },
+      title: (sessionId: string) => registeredTitle(agents, sessionId),
       titles: lookup.titles,
     }),
-    [isError, known, lookup, refilling]
+    [agents, isError, known, lookup, refilling]
   );
 }

@@ -46,7 +46,7 @@
 -- statements below, run with the daemon stopped. docs/kubernetes.md carries the same block as the
 -- step an operator runs, beside the other contracts' rollbacks, and the two say the same thing.
 --
---   psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 <<'SQL'
+--   PGPASSFILE=<pgpass file> psql '<postgres_url>' -X -v ON_ERROR_STOP=1 <<'SQL'
 --   begin;
 --   alter table phases add column if not exists assignment text not null default '';
 --   alter table claims add column if not exists serving_assignment text not null default '';

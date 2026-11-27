@@ -1,12 +1,14 @@
 package approval
 
 import (
+	"cmp"
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"log/slog"
+	"maps"
 	"net/http"
 	"slices"
 	"strconv"
@@ -15,8 +17,12 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/cipher/hold"
+	"github.com/sjawhar/envoy/internal/cipher/policy"
+	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
+	"github.com/sjawhar/envoy/internal/cipher/store"
 )
 
 const (
@@ -72,6 +78,13 @@ type recordView struct {
 	// record read-only: nobody decides it here until the judge has given it up, and if the judge
 	// cannot decide it, it comes back to its person as an ordinary card.
 	JudgeDeciding bool
+	// Profiles is each profile the record asks for, with the scope an approval grants
+	// (profileViewOf); none for a record of stored secrets alone and for a machine login.
+	Profiles []profileView
+	// Proxied is each stored secret the record asks for that its proxy tag puts behind a kind,
+	// served by its own name with no profile, with the scope an approval grants (proxiedViewOf):
+	// its kind, the hosts and the requests the kind lets its credential reach.
+	Proxied []proxiedView
 	// Projects is one row per requested secret tagged with a Dispatch project: the secret, its
 	// project, whether that project is private (or one Dispatch does not hold), and whether the
 	// requesting session names it. Empty for a record touching no project, which prints as before.
@@ -109,12 +122,111 @@ type projectRow struct {
 	Private, Named  bool
 }
 
+// profileView is one profile a record asks for as the page prints it: its name and its source,
+// and, for a GitHub profile, its accounts, its repositories, its permissions and the target the
+// record narrows it to, for a Google profile the scopes its token is minted for, and, for a
+// profile behind the proxy, the hosts its credential may go to. A field the profile has none of
+// is "", and the page prints no line for it.
+type profileView struct {
+	Name, Source                                string
+	Accounts, Repositories, Permissions, Target string
+	GoogleScopes                                string
+	ProxyHosts                                  string
+}
+
+// profileViewOf is p as the page prints it, from the live profiles file, the record's own target
+// and the hosts its credential may go to (requests.RecordProfile, hostsWords). A GitHub profile
+// that names no repository reaches every one its installations on its accounts reach, and a record
+// that names no target asks for the whole profile; the page says both rather than print nothing,
+// since each is part of what an approval grants.
+func profileViewOf(p requests.RecordProfile) profileView {
+	v := profileView{Name: p.Name, Source: p.Profile.Source, ProxyHosts: hostsWords(p)}
+	if block := p.Profile.GitHub; block != nil {
+		v.Accounts = strings.Join(block.Accounts, ", ")
+		v.Repositories = "every repository the App's installations on these accounts reach"
+		if block.Repositories != nil {
+			v.Repositories = strings.Join(block.Repositories, ", ")
+		}
+		levels := make([]string, 0, len(block.Permissions))
+		for _, permission := range slices.Sorted(maps.Keys(block.Permissions)) {
+			levels = append(levels, permission+": "+block.Permissions[permission])
+		}
+		v.Permissions = strings.Join(levels, ", ")
+		v.Target = cmp.Or(p.Target, "none: the whole profile above")
+	}
+	if block := p.Profile.Google; block != nil {
+		v.GoogleScopes = strings.Join(block.Scopes, ", ")
+	}
+	return v
+}
+
+// proxiedView is one stored secret a record asks for that is served by its own name behind a
+// kind, as the page prints it: its name, the kind, the hosts the kind lets its credential go to and
+// the requests the kind allows there. Such a secret has no profile, so the kind is the whole of
+// where an approval sends its credential.
+type proxiedView struct {
+	Name, Kind, ProxyHosts, Allow string
+}
+
+// proxiedViewOf is p, a stored secret behind a kind with no profile (requests.RecordProfile with
+// no Profile), as the page prints it: its kind, the hosts its credential may go to (hostsWords) and
+// the kind's allow rows, each as policy.RowWords words a row. A kind with no allow allows any
+// request on its hosts, and one with an empty allow none, and the page says each rather than print
+// no rows, which would read as the other.
+func proxiedViewOf(p requests.RecordProfile) proxiedView {
+	v := proxiedView{Name: p.Name, Kind: p.Kind, ProxyHosts: hostsWords(p)}
+	switch {
+	case p.Allow == nil:
+		v.Allow = "any method on any path of these hosts"
+	case len(p.Allow) == 0:
+		v.Allow = "none: the kind allows no request"
+	default:
+		rows := make([]string, len(p.Allow))
+		for i, row := range p.Allow {
+			rows[i] = policy.RowWords(row)
+		}
+		v.Allow = strings.Join(rows, ", ")
+	}
+	return v
+}
+
+// hostsWords is the hosts p's credential may go to (requests.RecordProfile.Hosts) as the page
+// prints them: none for a name behind no kind, whose credential the release hands to the command,
+// and for a profile whose own allow holds no row, which no kind's hosts can be, a line that says
+// so rather than no line, which would read as a name behind no proxy.
+func hostsWords(p requests.RecordProfile) string {
+	switch {
+	case p.Kind == "":
+		return ""
+	case len(p.Hosts) == 0:
+		return "none: the profile's allow names no request"
+	}
+	return strings.Join(p.Hosts, ", ")
+}
+
 // tokenFields are the hidden fields every decision form carries: the records the page printed with
-// a button, the token binding them to the session, and its expiry.
+// a button, the token binding them to the session, its expiry, and the fingerprint of each
+// profile, and of each stored secret behind a kind, those records ask for as the page printed it
+// (profileDigestFields), which an approval is refused against when the live one is another
+// (profilesMoved).
 type tokenFields struct {
-	Printed []string
-	Token   string
-	Expires string
+	Printed  []string
+	Token    string
+	Expires  string
+	Profiles []string
+}
+
+// profileDigestFields are the profile_digest fields a decision form carries for the profiles d
+// asks for, and the stored secrets it asks for behind a kind (requests.RecordDetail.Profiles), one
+// each: the record's id, the name and its fingerprint as the page printed it, separated by single
+// spaces. None of the three holds a space: a record id is hex, a secret's name is letters, digits
+// and underscores, and a fingerprint is hex.
+func profileDigestFields(d requests.RecordDetail) []string {
+	fields := make([]string, len(d.Profiles))
+	for i, profile := range d.Profiles {
+		fields[i] = d.RecordID + " " + profile.Name + " " + profile.Digest
+	}
+	return fields
 }
 
 // pageView is the record page.
@@ -151,6 +263,14 @@ type pageView struct {
 // the note that its typed code is decided on Dispatch's machine-login page, and offers no
 // button.
 //
+// A signed-in person the page may show no secret request is refused before any record is read,
+// so the answer is the same for an id a record has as for one none has: a person Dispatch calls a
+// restricted member, who is no approver of a secret, is answered 403 saying so, and one whose
+// member kind the broker cannot learn 503, each with nothing of any record
+// (requests.Machine.DecidesSecrets, read as the decision reads it). Each page names the person and
+// the record, so the person can sign in as someone else (?switch=1), which then names no
+// login_hint, the record unread.
+//
 // A record Dispatch could not say whether the person may see (requests.ErrProjectAccessUnavailable)
 // is that one request unavailable, not the page: it answers 503 with the record's box saying so
 // and showing nothing else of it (unansweredView), and the outcome lines and the other pending
@@ -159,6 +279,9 @@ type pageView struct {
 // no record has. The record is read for the person (requests.Machine.ReadRecordFor), which reads
 // whether they may see it from its rows first and the record only after: so a record signed for
 // another broker address, which this broker cannot read, answers a person it hides from 404 too.
+// Each other pending record is read for the person the same way, though the list just showed it
+// them: a record whose secret the policy tagged with a private project since the list read it is
+// left off, never printed with a project nobody asked whether they may see.
 func (p *Page) ServeRecord(w http.ResponseWriter, r *http.Request, sess Session) {
 	id := r.PathValue("record")
 	if !record.ValidID(id) {
@@ -168,6 +291,9 @@ func (p *Page) ServeRecord(w http.ResponseWriter, r *http.Request, sess Session)
 	switching := r.URL.Query().Get("switch") == "1"
 	if !sess.live() {
 		p.beginSignIn(w, r, id, "", switching)
+		return
+	}
+	if !p.mayShowRecords(w, r, sess, id, switching) {
 		return
 	}
 	detail, err := p.cfg.Machine.ReadRecordFor(r.Context(), id, sess.Login)
@@ -204,9 +330,10 @@ func (p *Page) ServeRecord(w http.ResponseWriter, r *http.Request, sess Session)
 		writeUnavailable(w, "read the decided requests", err)
 		return
 	}
-	var printed []string
+	var printed, digests []string
 	if main.Buttons {
 		printed = append(printed, id)
+		digests = append(digests, profileDigestFields(detail)...)
 	}
 	pending, err := p.cfg.Machine.PendingForApprover(r.Context(), sess.Login, requests.PendingStates{})
 	if err != nil {
@@ -221,11 +348,11 @@ func (p *Page) ServeRecord(w http.ResponseWriter, r *http.Request, sess Session)
 			view.Unshown++
 			continue
 		}
-		other, err := p.cfg.Machine.ReadRecord(r.Context(), s.RecordID)
+		other, err := p.cfg.Machine.ReadRecordFor(r.Context(), s.RecordID, sess.Login)
 		switch {
-		case errors.Is(err, requests.ErrProjectAccessUnavailable):
-			// Listed a moment ago, and Dispatch could not answer for its secrets' projects
-			// since: left off, as the list itself leaves off such a request.
+		case errors.Is(err, pgx.ErrNoRows), errors.Is(err, requests.ErrProjectAccessUnavailable):
+			// Listed a moment ago, and since then hidden from the person, or Dispatch could not
+			// answer for its projects: left off, as the list itself leaves off such a request.
 			continue
 		case err != nil:
 			writeUnavailable(w, "read a pending request", err)
@@ -234,16 +361,73 @@ func (p *Page) ServeRecord(w http.ResponseWriter, r *http.Request, sess Session)
 		if v := p.recordView(other, sess.Login, now); v.Buttons {
 			view.Records = append(view.Records, v)
 			printed = append(printed, v.ID)
+			digests = append(digests, profileDigestFields(other)...)
 		}
 	}
 	if len(printed) > 0 {
 		expires := now.Add(tokenLifetime).Unix()
-		view.Form = tokenFields{Printed: printed, Token: pageToken(sess.secret, expires, printed), Expires: strconv.FormatInt(expires, 10)}
+		view.Form = tokenFields{Printed: printed, Token: pageToken(sess.secret, expires, printed), Expires: strconv.FormatInt(expires, 10), Profiles: digests}
 	}
 	if len(printed) > 1 {
 		view.ApproveAll = printed
 	}
 	writePage(w, status, "record.html", view)
+}
+
+// The words of the page that shows a signed-in person no secret request (mayShowRecords). The 403
+// opens with the restricted-member clause, as every refusal of such a person does
+// (projectaccess.NoApprover). The 503 shows no outcome of a decision either, so it says so rather
+// than that nothing was decided: a decision made before Dispatch stopped answering stands.
+const (
+	restrictedViewer = "A person Dispatch calls a restricted member is no approver of a secret, and Dispatch calls you one, so this page shows you no secret request."
+	kindUnreadViewer = "The secrets broker could not ask Dispatch whether you may decide secret requests, so this page shows you none, nor what became of a decision you made. Try again shortly."
+)
+
+// mayShowRecords reports whether the page may show sess's person a secret request at all, and
+// otherwise answers for it, having read no record: a person Dispatch calls a restricted member is
+// refused 403 NOT_APPROVER, and one whose member kind the broker cannot learn 503, which writes no
+// ERROR line, since Dispatch not answering is no fault of the page's. A person refused here who
+// asks to sign in as someone else (switching) is sent to sign in, naming no login_hint: the
+// record that would name one is not read. The person's kind is read as the decision reads it
+// (requests.Machine.DecidesSecrets), so a page that shows a request offers a decision that reads
+// the same answer while it is young, and within projectaccess.RelayedReadBound, so a Dispatch that
+// does not answer leaves the person waiting no longer than a route Dispatch relays: one call to
+// Dispatch may take longer.
+func (p *Page) mayShowRecords(w http.ResponseWriter, r *http.Request, sess Session, id string, switching bool) bool {
+	read, cancel := context.WithTimeout(r.Context(), projectaccess.RelayedReadBound)
+	decides, err := p.cfg.Machine.DecidesSecrets(read, sess.Login)
+	cancel()
+	if err == nil && decides {
+		return true
+	}
+	if switching {
+		p.beginSignIn(w, r, id, "", true)
+		return false
+	}
+	if err != nil {
+		if r.Context().Err() == nil {
+			slog.Warn("approval page: Dispatch could not say whether the person may decide secret requests", "login", sess.Login, "error", err)
+		}
+		m := say("Unavailable", kindUnreadViewer)
+		m.Login, m.Record = sess.Login, id
+		writeMessage(w, http.StatusServiceUnavailable, "", m)
+		return false
+	}
+	m := say("Not yours to decide", restrictedViewer)
+	m.Login, m.Record = sess.Login, id
+	writeMessage(w, http.StatusForbidden, codeRestrictedViewer, m)
+	return false
+}
+
+// restrictedDecider reports whether Dispatch calls login, the page's signed-in person, a
+// restricted member, read as mayShowRecords reads it (requests.Machine.DecidesSecrets, within
+// projectaccess.RelayedReadBound). A read that fails reports false: the decision asks again, and
+// refuses what it cannot check.
+func (p *Page) restrictedDecider(ctx context.Context, login string) bool {
+	read, cancel := context.WithTimeout(ctx, projectaccess.RelayedReadBound)
+	defer cancel()
+	decides, err := p.cfg.Machine.DecidesSecrets(read, login)
+	return err == nil && !decides
 }
 
 // approverHint is approver as a login_hint: the person's own login, and nothing for a shared
@@ -282,6 +466,13 @@ func (p *Page) recordView(d requests.RecordDetail, login string, now time.Time) 
 	}
 	v.JudgeDeciding = v.Pending && d.JudgeDeciding
 	v.Buttons = v.Pending && !v.MachineLogin && v.MayDecide && !v.JudgeDeciding
+	for _, profile := range d.Profiles {
+		if profile.Profile == nil {
+			v.Proxied = append(v.Proxied, proxiedViewOf(profile))
+			continue
+		}
+		v.Profiles = append(v.Profiles, profileViewOf(profile))
+	}
 	v.SessionProjects = d.SessionProjects
 	for _, sp := range d.SecretProjects {
 		v.Projects = append(v.Projects, projectRow{Secret: sp.Name, Project: sp.Project, Private: sp.Private, Named: slices.Contains(d.SessionProjects, sp.Project)})
@@ -483,13 +674,33 @@ func firstRecordID(values []string) string {
 // nothing, a POST from any other origin (sameOrigin), one whose form cannot be read, and one
 // whose token does not bind it to this session and to a printed set holding every record it
 // names, or whose token has expired. A POST whose session has lapsed decides nothing either, and
-// answers 200 with a page linking the first record the form names: the page's
-// Content-Security-Policy has form-action 'self', which forbids answering a form post with a
-// redirect to the sign-in provider, so the person follows that link and signs in from the
-// record's own page. Each record is then decided on its own by requests.Machine.ApplyDecision as
-// the session's person, so who may decide, the current policy and RECORD_TERMINAL stay that
-// function's: a replayed form decides nothing again. It answers 303 to the first record's page
-// with the decided ids, whose outcomes that page reads from the records themselves.
+// answers 200 with a page linking the first record the form names (writeSignedOut). An approval
+// is refused too, deciding nothing, when a record it names asks for a profile whose live
+// fingerprint is not the one its page printed (profilesMoved): a profiles roll between the page
+// and the click would otherwise grant a scope the person did not read. A person Dispatch calls a
+// restricted member, who decides no secret request, is refused that before the profile check,
+// each record the form names with the code restricted (refusedRestricted), so they are told
+// nothing of a profile. Each record is then decided on its own by
+// requests.Machine.ApplyPageDecision under the session, so who may decide, the current policy and
+// RECORD_TERMINAL stay that function's: a replayed form decides nothing again. It answers 303 to
+// the first record's page with the decided ids, whose outcomes that page reads from the records
+// themselves.
+//
+// sess is the session the route read before the body arrived, and a body can be held back for
+// as long as the connection stays open, so each record's decision reads the session again in
+// its own transaction, under the person's lock (store.HoldBrowserSessionTx): a session ended in
+// the meantime — a sign-out, `broker end-sessions`, or the revoke of an account that no longer
+// holds the person's address (enroll.Service.RevokePersonSubject) — decides nothing more, and the
+// POST answers as a lapsed session's does. The revoke takes that lock too, so a decision either
+// commits before the revoke reads the person's sessions, made while the account still held the
+// address, or waits for the revoke to commit and decides nothing.
+//
+// Once the form checks out, and before any record is decided, the hold gate (Config.Hold) is
+// asked whether Dispatch holds the signed-in person, so no ask is made under the person's lock
+// that each decision takes: a held approver's POST decides nothing and is answered the page's
+// refusal, 403 in the broker's own words, and while the gate cannot tell, the same page with 503.
+// The hold is asked before the restricted-member read and the profile check. The record's own
+// page (ServeRecord) asks nothing.
 func (p *Page) ServeDecide(w http.ResponseWriter, r *http.Request, sess Session) {
 	if !p.sameOrigin(r) {
 		refuseOrigin(w)
@@ -501,13 +712,7 @@ func (p *Page) ServeDecide(w http.ResponseWriter, r *http.Request, sess Session)
 		return
 	}
 	if !sess.live() {
-		m := say("Not signed in", "Your sign-in to the secrets broker has ended, so nothing was decided.")
-		if id := firstRecordID(r.PostForm["record"]); id != "" {
-			m.Link = &link{Href: approvePrefix + id, Text: "Open the request again to sign in"}
-		} else {
-			m.Lines = append(m.Lines, "This form names no request, so open the request's page again from the Inbox to sign in.")
-		}
-		writeMessage(w, http.StatusOK, "", m)
+		writeSignedOut(w, r.PostForm["record"])
 		return
 	}
 	form := r.PostForm
@@ -545,16 +750,43 @@ func (p *Page) ServeDecide(w http.ResponseWriter, r *http.Request, sess Session)
 			return
 		}
 	}
-	decided := false
+	if p.refuseHeld(w, r, sess.Login) {
+		return
+	}
+	// A person Dispatch calls a restricted member decides no secret request
+	// (requests.ErrRestrictedDecider), so their approval is refused as one before the profile
+	// check says anything of a profile it names, such as that it changed since their page.
+	restricted := approve && p.restrictedDecider(r.Context(), sess.Login)
+	if approve && !restricted {
+		moved, err := p.profilesMoved(r.Context(), decide, profileDigests(form["profile_digest"]))
+		if err != nil {
+			writeUnavailable(w, "read the requests", err)
+			return
+		}
+		if moved {
+			writeMessage(w, http.StatusForbidden, codeProfileChanged, say("Profile changed",
+				"A profile this page printed, or the kind a secret it printed is behind, has changed since the page was made, so nothing was decided. Open the request again to read what an approval grants now."))
+			return
+		}
+	}
+	var decided, ended bool
 	var refused []string
 	for _, id := range decide {
-		outcome, code, made := p.decide(r.Context(), id, approve, sess.Login)
+		outcome, code, made := "refused: "+requests.ErrRestrictedDecider.Error(), refusedRestricted, false
+		if !restricted {
+			outcome, code, made, ended = p.decide(r.Context(), id, approve, sess)
+		}
 		decided = decided || made
 		if code != "" {
 			refused = append(refused, id+":"+code)
 		}
 		slog.Info("approval page decision", "login", sess.Login, "record", id, "decision", form.Get("decision"),
 			"outcome", outcome)
+		if ended {
+			// The session ended after the route read it, so nothing after this record is
+			// decided either; what this POST did decide before it is recorded below all the same.
+			break
+		}
 	}
 	// One write for the POST, however many records it named, and none at all when it decided
 	// none: what GET /signin/status answers is when a person last approved or denied something
@@ -563,11 +795,106 @@ func (p *Page) ServeDecide(w http.ResponseWriter, r *http.Request, sess Session)
 	if decided {
 		p.recordDecision(r.Context())
 	}
+	if ended {
+		writeSignedOut(w, decide)
+		return
+	}
 	to := "/approve/" + decide[0] + "?decided=" + strings.Join(decide, ",")
 	if len(refused) > 0 {
 		to += "&refused=" + strings.Join(refused, ",")
 	}
 	redirect(w, http.StatusSeeOther, to)
+}
+
+// refuseHeld asks the hold gate whether Dispatch holds login, the signed-in approver, and answers
+// the page's refusal when it does or cannot tell, reporting whether it refused, by the gate's
+// Verdict and in its words (hold.Verdict.Refusal): 403 for hold.Held, and 503 for every kind that
+// decides nothing, a held answer the gate could not keep among them, saying why in fixed words and
+// logging the gate's own error, which can carry the database's user, name and address, alone. A
+// broker with no gate holds nobody.
+func (p *Page) refuseHeld(w http.ResponseWriter, r *http.Request, login string) bool {
+	v := p.cfg.Hold.Decide(r.Context(), login)
+	status, code, words := v.Refusal()
+	switch v.Kind {
+	case hold.Served:
+		return false
+	case hold.Held:
+		writeMessage(w, status, code, say("Held", words+".", "Nothing was decided."))
+	default:
+		slog.Error("approval page: whether Dispatch holds the approver cannot be read, so nothing was decided", "login", login, "error", v.Err)
+		writeMessage(w, status, code, say("Unavailable", strings.ToUpper(words[:1])+words[1:]+".", "Nothing was decided. Try again shortly."))
+	}
+	return true
+}
+
+// writeSignedOut answers a POST whose session is not live, or ended while it was being decided:
+// 200 saying nothing was decided, with a page linking the first record the form names. It is a
+// page rather than a redirect to the sign-in provider because the page's Content-Security-Policy
+// has form-action 'self', which forbids answering a form post with one, so the person follows
+// that link and signs in from the record's own page.
+func writeSignedOut(w http.ResponseWriter, records []string) {
+	m := say("Not signed in", "Your sign-in to the secrets broker has ended, so nothing was decided.")
+	if id := firstRecordID(records); id != "" {
+		m.Link = &link{Href: approvePrefix + id, Text: "Open the request again to sign in"}
+	} else {
+		m.Lines = append(m.Lines, "This form names no request, so open the request's page again from the Inbox to sign in.")
+	}
+	writeMessage(w, http.StatusOK, "", m)
+}
+
+// profileDigests reads a decision form's profile_digest fields (profileDigestFields) as each
+// record's profiles and the fingerprint the page printed for each. A field that is not three
+// words is left out, so the profile it would have named reads as one the page printed no
+// fingerprint for.
+func profileDigests(values []string) map[string]map[string]string {
+	digests := map[string]map[string]string{}
+	for _, value := range values {
+		words := strings.Fields(value)
+		if len(words) != 3 {
+			continue
+		}
+		if digests[words[0]] == nil {
+			digests[words[0]] = map[string]string{}
+		}
+		digests[words[0]][words[1]] = words[2]
+	}
+	return digests
+}
+
+// profilesMoved reports whether a record of ids names a secret whose live profile fingerprint is
+// not the one printed holds for it: "" for a name the live policy serves as no profile and behind
+// no kind, and for one the page printed none for. So a profile edited since the page, one added to
+// a name the page printed as a stored secret, and one taken away are each a move, since each
+// changes what an approval would grant; and so is a stored secret's proxy tag set, changed or
+// taken off, whose kind is in its fingerprint (requests.RecordProfile). A record the broker no
+// longer has, and a machine login, are left to decide's own answer. It reads each record through
+// requests.Machine.RecordProfiles, which asks Dispatch nothing, so every record is checked while
+// Dispatch is down too: a record Dispatch cannot answer for is then decided by nobody (decide),
+// and the POST's other records as ever, rather than the POST answering 503 for all of them.
+// Skipping such a record here instead would let it through unchecked to a Dispatch that answers
+// again by the time decide reads it.
+func (p *Page) profilesMoved(ctx context.Context, ids []string, printed map[string]map[string]string) (bool, error) {
+	for _, id := range ids {
+		kind, identifiers, profiles, err := p.cfg.Machine.RecordProfiles(ctx, id)
+		switch {
+		case errors.Is(err, pgx.ErrNoRows):
+			continue
+		case err != nil:
+			return false, err
+		case kind != record.KindAgentSecret:
+			continue
+		}
+		live := make(map[string]string, len(profiles))
+		for _, profile := range profiles {
+			live[profile.Name] = profile.Digest
+		}
+		for _, name := range identifiers {
+			if live[name] != printed[id][name] {
+				return true, nil
+			}
+		}
+	}
+	return false, nil
 }
 
 // refusalSentences is what the page says of a record its decision could not decide, by the code
@@ -576,12 +903,15 @@ func (p *Page) ServeDecide(w http.ResponseWriter, r *http.Request, sess Session)
 // reads one of them in place of "still pending; it was not decided.". Two refusals need no code: a
 // record a private project refused the person is hidden from them on the page they land on, as an
 // id no record has (requests.Machine.ReadRecordFor), and one Dispatch could not answer for prints its
-// own line (unansweredOutcome).
+// own line (unansweredOutcome). A person Dispatch called a restricted member when they decided
+// (refusedRestricted) lands on a page that shows them nothing while Dispatch still calls them one
+// (mayShowRecords), and reads the sentence wherever it is shown.
 var refusalSentences = map[string]string{
 	refusedPolicy:      "still pending; it was not decided: the current policy no longer lets you approve it.",
 	refusedChain:       "still pending; it was not decided: its approval chain no longer verifies.",
 	refusedError:       "still pending; it was not decided: the secrets broker could not decide it. Try again shortly.",
 	refusedGroupUnread: "still pending; it was not decided: who may ask for it names a Google group the broker has not read in the last two hours. Approve it again once the group is read.",
+	refusedRestricted:  "still pending; it was not decided: Dispatch called you a restricted member, who decides no secret request.",
 }
 
 // The codes refusalSentences maps, which decide answers.
@@ -590,63 +920,87 @@ const (
 	refusedChain       = "chain"
 	refusedError       = "error"
 	refusedGroupUnread = "group-unread"
+	refusedRestricted  = "restricted"
 )
 
-// decide decides one record as login and answers what became of it, for the log, the code of why
-// the broker refused to decide it (refusalSentences), empty when it did not refuse or when the
-// page it lands on says why already, and whether this POST decided it: an approval or a denial the
-// broker applied now, which is what the sign-in status's last decision counts. A record already
-// decided, expired, gone, or one login may not decide, is decided by nobody here. A machine login
-// is never decided here, whatever a form says: its typed code is decided on Dispatch's page. An
-// approval the broker recorded as a denial answers with that decision's own detail, so the person
-// who pressed approve reads which secret refused it and why rather than one fixed sentence. A
-// record Dispatch could not say whether login may see (requests.ErrProjectAccessUnavailable) is
-// decided by nobody, and the POST's other records are decided as ever: the page it lands on says
-// that one is unavailable. A record of a private project login may not see is "no such record",
+// decide decides one record under sess and answers what became of it, for the log, the code of
+// why the broker refused to decide it (refusalSentences), empty when it did not refuse or when the
+// page it lands on says why already, whether this POST decided it, and whether sess had ended: an
+// approval or a denial the broker applied now, which is what the sign-in status's last decision
+// counts. A record already decided, expired, gone, or one the session's person may not decide, is
+// decided by nobody here, and neither is one whose decision found the session ended
+// (store.ErrBrowserSessionEnded). So is an approval whose target a profiles roll took out of its
+// profile before the page was made (requests.ErrTargetRefused): the page printed the live
+// profile, so profilesMoved let it through, and the approval's own target check refuses it as the
+// current policy's. A machine login is never decided here, whatever a form says: its typed code
+// is decided on Dispatch's page. An approval the broker recorded as a denial answers with that
+// decision's own detail, so the person who pressed approve reads which secret refused it and why
+// rather than one fixed sentence. A record Dispatch could not say whether the person may see
+// (requests.ErrProjectAccessUnavailable) is decided by nobody, and the POST's other records are
+// decided as ever: the page it lands on says that one is unavailable. An approval for which
+// Dispatch could not say whether the request's person is a restricted member, and any decision for
+// which it could not say whether the deciding person is one
+// (*projectaccess.MemberKindUncheckable), is decided by nobody either, and its page says it could
+// not be decided; neither writes an ERROR line. A deciding person Dispatch calls a restricted
+// member decides nothing (requests.ErrRestrictedDecider), and its code says so
+// (refusedRestricted). A record of a private project the person may not see is "no such record",
 // as for an id no record has (the machine's refusal is pgx.ErrNoRows alone), so the POST tells
 // them nothing of it. A refusal record.ErrNotApprover carries for a record whose approver line
-// names someone else is said by the page it lands on in its own words ("not yours to decide"),
-// and carries no code; one for a record login may still see and decide is the current policy's —
+// names someone else is said by the page it lands on in its own words ("not yours to decide"), and
+// carries no code; one for a record the person may still see and decide is the current policy's —
 // its owner, a max-grant or a withheld name moved since the page was printed — or, where a name's
 // requesters name a group the broker has not read in the last two hours, that group's
 // (requests.ErrRequestersGroupUnread), which the same approval passes once the group is read.
-func (p *Page) decide(ctx context.Context, id string, approve bool, login string) (outcome, refusal string, made bool) {
+func (p *Page) decide(ctx context.Context, id string, approve bool, sess Session) (outcome, refusal string, made, ended bool) {
+	login := sess.Login
 	kind, err := p.cfg.Machine.RecordKind(ctx, id)
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
-		return "no such record", "", false
+		return "no such record", "", false, false
 	case err != nil:
 		slog.Error("approval page: read the record's kind", "record", id, "error", err)
-		return "error", refusedError, false
+		return "error", refusedError, false, false
 	case kind != record.KindAgentSecret:
-		return "not decided: a machine login", "", false
+		return "not decided: a machine login", "", false, false
 	}
-	decision, err := p.cfg.Machine.ApplyDecision(ctx, id, approve, login)
+	decision, err := p.cfg.Machine.ApplyPageDecision(ctx, id, approve, store.BrowserSessionRef{Hash: sha256.Sum256(sess.secret), Login: sess.Login})
 	switch {
 	case err == nil && decision.State == "denied" && approve && decision.Detail != "":
-		return "denied: " + decision.Detail, "", true
+		return "denied: " + decision.Detail, "", true, false
 	case err == nil:
-		return decision.State, "", true
+		return decision.State, "", true, false
+	case errors.Is(err, store.ErrBrowserSessionEnded):
+		return "not decided: the sign-in has ended", "", false, true
 	case errors.Is(err, pgx.ErrNoRows):
-		return "no such record", "", false
+		return "no such record", "", false, false
 	case errors.Is(err, requests.ErrExpired):
-		return "expired", "", false
+		return "expired", "", false, false
 	case errors.Is(err, requests.ErrTerminal):
-		return "already decided", "", false
+		return "already decided", "", false, false
 	case errors.Is(err, requests.ErrGrantChainInvalid):
-		return "refused: " + err.Error(), refusedChain, false
+		return "refused: " + err.Error(), refusedChain, false, false
+	case errors.Is(err, requests.ErrTargetRefused):
+		return "refused: " + err.Error(), refusedPolicy, false, false
 	case errors.Is(err, requests.ErrRequestersGroupUnread):
-		return "refused: " + err.Error(), refusedGroupUnread, false
+		return "refused: " + err.Error(), refusedGroupUnread, false, false
+	case errors.Is(err, requests.ErrRestrictedDecider):
+		return "refused: " + err.Error(), refusedRestricted, false, false
 	case errors.Is(err, record.ErrNotApprover):
 		if d, read := p.cfg.Machine.ReadRecord(ctx, id); read == nil && !record.MayDecide(d.Kind, d.Approver, d.Service, login, p.cfg.Machine.Groups) {
-			return "refused: " + err.Error(), "", false
+			return "refused: " + err.Error(), "", false, false
 		}
-		return "refused: " + err.Error(), refusedPolicy, false
+		return "refused: " + err.Error(), refusedPolicy, false, false
 	case errors.Is(err, requests.ErrProjectAccessUnavailable):
-		return "unavailable: " + err.Error(), "", false
+		return "unavailable: " + err.Error(), "", false, false
+	case errors.As(err, new(*projectaccess.MemberKindUncheckable)):
+		// Dispatch could not say whether the request's person or the deciding person is a
+		// restricted member, which a decision asks (requests.Machine.ApplyPageDecision): nothing was
+		// decided, and the person decides again once Dispatch answers. Dispatch not answering is no
+		// fault of the page's, so no ERROR line; the decision line logs the outcome.
+		return "unavailable: " + err.Error(), refusedError, false, false
 	case errors.Is(err, requests.ErrJudgeHolds):
-		return "refused: the model judge is deciding this request", "", false
+		return "refused: the model judge is deciding this request", "", false, false
 	}
 	slog.Error("approval page: decide the record", "record", id, "error", err)
-	return "error", refusedError, false
+	return "error", refusedError, false, false
 }

@@ -5,11 +5,13 @@
 # the close of the issue it waited on; at its ready the child's architect is told its own issue and
 # every issue under it, in a catch-up on its own topic alone, which the daemon logs as it publishes
 # it; it files and releases its own children, whose child-status and child-closed notices then
-# reach it rather than the root's architect; it parks only issues under its own and is answered 403
-# ISSUE_NOT_OWNED for its sibling and for the root; when its claim fails because its launches ran
-# out, the root's architect is told and hears the child's next notice too, and the child's next
-# phase start retries the claim in the same session with fresh budgets; and a parked child's
-# architect is suspended and resumed in its session by the child's rerun. The whole daemon is
+# reach it rather than the root's architect; it reruns only issues under its own and is answered
+# 403 ISSUE_NOT_OWNED for its sibling and for the root, and its own backlog in Dispatch stands on
+# an issue under its own and is set back on its sibling and on the root; when its claim fails
+# because its launches ran out, the root's architect is told and hears the child's next notice too,
+# and the child's next phase start retries the claim in the same session with fresh budgets; and a
+# child's architect is suspended when the root's architect writes backlog on the child, and resumed
+# in its session by the child's rerun. The whole daemon is
 # booted by the function `legion start` calls, over a real PostgreSQL and a real nats-server, and
 # driven only through the Dispatch envelopes of the ENVOY_NOTIFICATIONS stream, its own HTTP
 # routes, its worker stream and the fake runtime's report of a process; every step of its seven is

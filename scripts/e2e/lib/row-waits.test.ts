@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { realpathSync } from "node:fs";
-import { hostTool, skipWithout } from "@legion/test-fixtures/host-tools";
+import { hostGate, hostTool } from "@legion/test-fixtures/host-tools";
 import {
   libRowBoundMs,
   rowWaitMarginMs,
@@ -13,7 +13,9 @@ import {
 // The waits run against the real clock, since what they bound in the rows that use them, a process
 // starting or ending, is the kernel's: each row here gives them a short end of its own, so the
 // failure is read soon.
-const skip = skipWithout("bash", "sleep");
+// bash and sleep: both untilGone rows start a sleep, and the first a bash; a host without them
+// skips those rows by name outside CI and fails them by name under GITHUB_ACTIONS (hostGate).
+const host = hostGate({ programs: ["bash", "sleep"] });
 // Each row's start lies between these two marks, which run just before and just after rowWaits'
 // own, in the order they were registered.
 let hooksBegan = 0;
@@ -92,7 +94,7 @@ test("a look that throws ends untilTrue with its error", async () => {
   expect(failure).toBe("the look's own error");
 });
 
-test.skipIf(skip)(
+host.test(
   "untilGone resolves for a process that ended and was reaped, and for a zombie",
   async () => {
     const ended = Bun.spawn(["sleep", "60"], { stdout: "ignore", stderr: "ignore" });
@@ -123,7 +125,7 @@ test.skipIf(skip)(
   }
 );
 
-test.skipIf(skip)(
+host.test(
   "untilGone fails at its end naming the pid, what it is and its state, for a process that runs on",
   async () => {
     const running = Bun.spawn(["sleep", "60"], { stdout: "ignore", stderr: "ignore" });

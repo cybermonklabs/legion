@@ -1,11 +1,15 @@
 import { beforeAll, expect, spyOn, test } from "bun:test";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 import { render, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
+import { correction, correctionFeed, DELETION, EDITED_AT } from "../../__tests__/correction-feed";
 import { api } from "../../api/client";
+import { useEventFeed } from "../../api/event-feed";
+import { askThreadQuery, whoAmIQuery } from "../../api/queries";
 import type { Ask, AskRead, Comment, CreateCommentInput, IssueAskRow } from "../../api/types";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { AskThread, type AskThreadQuery, type CreateReply } from "./AskThread";
@@ -140,6 +144,148 @@ test("an Inbox reply's `#q2` names the question of the document its comment is a
     getAsk.mockRestore();
     getReferenceQuestions.mockRestore();
     listIssueAsks.mockRestore();
+  }
+});
+
+test("a deleted reply in an ask thread reads as deleted and gives no part of its body", async () => {
+  // The reply keeps its body beside the marks, so only the thread's own reading of the marks
+  // keeps "Holding on #q2 for now." off the page.
+  const deleted: Comment = {
+    ...reply,
+    deleted_at: "2026-09-09T03:00:00Z",
+    deleted_by: { id: "alice", kind: "user" },
+  };
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
+  });
+  const thread = { data: { ...read, replies: [deleted] } } as unknown as AskThreadQuery;
+  const view = render(
+    <MemoryRouter>
+      <QueryClientProvider client={queryClient}>
+        <AskThread ask={answeredAsk} order="oldest" showComposer={false} thread={thread} />
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+
+  try {
+    const row = view.container.querySelector("[data-reply]");
+    if (row === null) throw new Error("the thread drew no reply");
+    await waitFor(() => expect(row.textContent).toContain("Deleted by alice"));
+    expect(row.textContent).not.toContain("Holding on");
+  } finally {
+    view.unmount();
+  }
+});
+
+// A reply its author edited carries ` · edited` after its byline's time, as the post's own
+// card writes it (`EditedMark`), and a reply nobody edited carries nothing there.
+test("an edited reply in an ask thread marks its byline edited, and one nobody edited does not", async () => {
+  const edited: Comment = {
+    ...reply,
+    body: "Holding until Friday.",
+    edited_at: "2026-09-09T03:00:00Z",
+  };
+  const standing: Comment = {
+    ...reply,
+    body: "Agreed.",
+    created_at: "2026-09-09T04:00:00Z",
+    id: "comment-2",
+  };
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
+  });
+  const thread = { data: { ...read, replies: [edited, standing] } } as unknown as AskThreadQuery;
+  const view = render(
+    <MemoryRouter>
+      <QueryClientProvider client={queryClient}>
+        <AskThread ask={answeredAsk} order="oldest" showComposer={false} thread={thread} />
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+
+  try {
+    const rows = [...view.container.querySelectorAll("[data-reply]")];
+    expect(rows).toHaveLength(2);
+    const [corrected, kept] = rows as [Element, Element];
+    // The byline is the reply's last line, under its body.
+    await waitFor(() => expect(corrected.textContent).toContain("Holding until Friday."));
+    expect(corrected.lastElementChild?.textContent).toMatch(/^alice · .+ · edited$/);
+    await waitFor(() => expect(kept.textContent).toContain("Agreed."));
+    expect(kept.lastElementChild?.textContent).toMatch(/^alice · /);
+    expect(kept.textContent).not.toContain("edited");
+  } finally {
+    view.unmount();
+  }
+});
+
+// R2 and R3 of dispatch://INFRA-1523, and the architect's ruling of 2026-11-20 00:23Z. A thread
+// drawn inline reads the ask's shared thread (`["ask-thread", id]`) and says nothing when its
+// refetch fails: it keeps the replies it held, so a reply's correction writes its own facts into
+// the thread the cache holds (`markCorrectedPost`). The edited reply reads as edited, the deleted
+// one as the deleted line with no word of its body, and a reply quoting a block of it holds that
+// block as a read of the reply answers it: edited, then removed with no text.
+test("a thread whose refetch fails after a reply's edit and delete reads the reply as edited, then deleted", async () => {
+  const id = "d4e5f6a7-b8c9-4d0e-8f1a-2b3c4d5e6f7a";
+  const corrected: Comment = { ...reply, body: "Holding the release for review.", id };
+  const block = { block_id: "b1", node: `comment/${id}#b1`, removed: false, text: "Holding" };
+  const quoting: Comment = {
+    ...reply,
+    body: "Agreed.",
+    created_at: "2026-09-09T04:00:00Z",
+    id: "e5f6a7b8-c9d0-4e1f-9a2b-3c4d5e6f7a8b",
+    reply_block: block,
+  };
+  let failing = false;
+  const getAsk = spyOn(api, "getAsk").mockImplementation(async () => {
+    if (failing) throw new Error("the thread's read failed");
+    return { ...read, replies: [corrected, quoting] };
+  });
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
+  });
+  client.setQueryData(whoAmIQuery().queryKey, { event_head: "0", kind: "user", login: "alice" });
+  const feed = correctionFeed(client);
+  function Page(): ReactNode {
+    useEventFeed();
+    const thread = useQuery(askThreadQuery(answeredAsk.id));
+    return <AskThread ask={answeredAsk} order="oldest" showComposer={false} thread={thread} />;
+  }
+  const view = render(
+    <MemoryRouter>
+      <QueryClientProvider client={client}>
+        <Page />
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  const row = () => view.container.querySelector("[data-reply]");
+  const quoted = () =>
+    client.getQueryData(askThreadQuery(answeredAsk.id).queryKey)?.replies?.[1]?.reply_block;
+  const ask = { ask_id: answeredAsk.id };
+
+  try {
+    await waitFor(() => expect(row()?.textContent).toContain("Holding the release for review."));
+    feed.start();
+    failing = true;
+
+    await feed.deliver(correction("comment", id, true, ask), [["ask-thread"]]);
+    expect(row()?.lastElementChild?.textContent).toMatch(/^alice · .+ · edited$/);
+    expect(quoted()).toEqual({ ...block, edited_at: EDITED_AT });
+
+    await feed.deliver(correction("comment", id, false, ask), [["ask-thread"]]);
+    await waitFor(() => expect(row()?.textContent).toContain("Deleted by alice"));
+    expect(row()?.textContent).not.toContain("Holding");
+    expect(quoted()).toEqual({
+      ...block,
+      ...DELETION,
+      edited_at: EDITED_AT,
+      removed: true,
+      text: "",
+    });
+  } finally {
+    view.unmount();
+    feed.restore();
+    client.clear();
+    getAsk.mockRestore();
   }
 });
 

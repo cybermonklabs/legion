@@ -1,25 +1,24 @@
-import { expect, test } from "bun:test";
+import { beforeAll, expect, test } from "bun:test";
 
 import type { ArtifactBlock, Decision, DecisionLink, DisplayTree } from "../../../api/types";
-import { wordsOf } from "../../refs/tree-fragment";
+import { decision, decisionRef, KEY } from "../../decision-card/decision-fixture";
+import { warmMarkdownRenderer } from "../../refs/markdown-engine";
 import { type ChangeComment, decisionChanges, inReviewList } from "../decision-review";
 import type { DocumentBlocks, TreeNode } from "../issue-tree";
 import { NODE_TYPE_NAMES } from "../page-words";
 import { presetView } from "../presets";
-import { treeContext } from "../tree-drafts";
+import { parentLinkWords } from "../projection-fixture";
+import { nodeIdOf as issueNodeIdOf } from "../statement-rules";
 import {
   AGENT,
   answeredAsk,
   ask,
   closing,
   DECISIONS_DOCUMENT,
-  decision,
   decisionNode,
-  decisionRef,
   decisionsRead,
   issueDetails,
   issueTree,
-  KEY,
   node,
   openAsk,
   READER,
@@ -43,9 +42,12 @@ import {
  * hand and reads what it answers.
  */
 
-/** How this issue addresses a node, which is the page's own rule (`tree-drafts.ts`). The line
- *  a block is named by is the whole reading's words (`wordsOf`), which nothing below reads. */
-const nodeIdOf = treeContext({ issue: issueDetails() }, wordsOf).nodeIdOf;
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
+
+/** How this issue addresses a node, which is the page's own rule (`statement-rules.ts`). */
+const nodeIdOf = issueNodeIdOf(issueDetails());
 
 /** The decisions document's blocks as the blocks read answers them: each decision's own block,
  *  its heading, in the order the decisions were made. */
@@ -331,6 +333,8 @@ test("a decision the reader asked to change leaves the review list and carries t
     author: READER_ACTOR,
     body: `Change ${block}, please.`,
     created_at: at,
+    deleted_at: null,
+    edited_at: null,
     id,
   });
   const parts = partsOf(
@@ -357,6 +361,7 @@ test("a decision the reader asked to change leaves the review list and carries t
       at: "2026-11-12T09:00:00Z",
       body: "Change asked, please.",
       by: READER_ACTOR,
+      editedAt: null,
       id: "c-new",
       path: `/issues/${KEY}/comments/c-new`,
     },
@@ -403,11 +408,18 @@ test("a declined ask names who declined it and carries their note", () => {
   const [withNote, noNote] = parts.yours;
   const [takenBack] = parts.others;
   expect(withNote).toMatchObject({
-    declined: { by: READER_ACTOR, note: "The release owner decides this one." },
+    declined: {
+      by: READER_ACTOR,
+      note: "The release owner decides this one.",
+      source: { id: "with-note", issue: KEY, kind: "ask" },
+    },
     kind: "ask",
   });
   expect(withNote?.node.answer).toBeUndefined();
-  expect(noNote?.kind === "ask" ? noNote.declined : undefined).toEqual({ by: READER_ACTOR });
+  expect(noNote?.kind === "ask" ? noNote.declined : undefined).toEqual({
+    by: READER_ACTOR,
+    source: { id: "no-note", issue: KEY, kind: "ask" },
+  });
   expect(takenBack?.kind === "ask" ? takenBack.declined : "none").toBeUndefined();
 });
 
@@ -514,24 +526,31 @@ test("a decision that shaped three statements is one entry that reaches all thre
   );
 
   expect(idsOf(parts).review).toEqual([D("wide")]);
-  expect(parts.review[0]?.shapes).toEqual([
+  expect(
+    parts.review[0]?.shapes.map(({ id, node, path, stale }) => ({
+      id,
+      line: parentLinkWords(node),
+      path,
+      stale,
+    }))
+  ).toEqual([
     // The statement's first line, as R1 cuts a row's, and its place in the conversation.
     {
       id: statement("s1").id,
       line: "The first statement holds.",
-      path: `/issues/${KEY}#b-s1`,
+      path: `/issues/${KEY}/conversation#b-s1`,
       stale: false,
     },
     {
       id: statement("s2").id,
       line: "The page draws s2.",
-      path: `/issues/${KEY}#b-s2`,
+      path: `/issues/${KEY}/conversation#b-s2`,
       stale: true,
     },
     {
       id: statement("s3").id,
       line: "The page draws s3.",
-      path: `/issues/${KEY}#b-s3`,
+      path: `/issues/${KEY}/conversation#b-s3`,
       stale: false,
     },
   ]);
@@ -561,21 +580,26 @@ test("each entry carries its address in the conversation and its parent's line",
   expect(parts.open_questions[0]?.parent).toBeUndefined();
   const under = parts.review.find((entry) => entry.node.id === D("under"));
   expect(under).toMatchObject({
-    parent: { id: "q1", line: "On a phone, where does the box sit?", type: "ask" },
-    path: `/issues/${KEY}#b-under`,
+    parent: { id: "q1", type: "ask" },
+    path: `/issues/${KEY}/conversation#b-under`,
   });
+  expect(under?.parent === undefined ? undefined : parentLinkWords(under.parent)).toBe(
+    "On a phone, where does the box sit?"
+  );
   expect(parts.review.find((entry) => entry.node.id === D("top"))?.parent).toBeUndefined();
 
-  expect(conversationPath({ reference: decisionRef("d1") })).toBe(`/issues/${KEY}#b-d1`);
+  expect(conversationPath({ reference: decisionRef("d1") })).toBe(
+    `/issues/${KEY}/conversation#b-d1`
+  );
   expect(conversationPath({})).toBeUndefined();
   expect(conversationPath({ reference: `dispatch://${KEY}` })).toBeUndefined();
 });
 
-// R1 and R22: the filter's one line for a parent and for a statement a decision shaped is cut as
-// every one-line drawing of a node is (`lineWords`, `drawnLine`): from the words of the node's
-// first block, so a heading never runs into the paragraph after it; with an ellipsis where the
-// cut ends inside a sentence; and a node with no words is named by its kind's word, never by its
-// id.
+// R1 and R22: the filter's one line for a parent and for a statement a decision shaped is drawn
+// as every one line of a node is (`lineReading`, `drawnLine`): projected from the words of the
+// node's first block, so a heading never runs into the paragraph after it; with an ellipsis where
+// the cut ends inside a sentence; and a node with no words is named by its kind's word, never by
+// its id.
 test("a parent's line and a statement's line are cut from the node's first block", () => {
   const words = Array.from({ length: 30 }, (_unused, at) => `word${at + 1}`).join(" ");
   // A question whose reading opens on a heading, then a paragraph.
@@ -611,13 +635,30 @@ test("a parent's line and a statement's line are cut from the node's first block
   );
   const entry = (block: string) => parts.review.find((one) => one.node.id === D(block));
 
-  expect(entry("headed")?.parent).toEqual({ id: "q1", line: "Where the box sits", type: "ask" });
-  expect(entry("wordless")?.parent).toEqual({
-    id: "q2",
-    line: NODE_TYPE_NAMES.ask,
+  const parentLine = (block: string) => {
+    const parent = entry(block)?.parent;
+    return parent === undefined
+      ? undefined
+      : {
+          id: parent.id,
+          line: parentLinkWords(parent),
+          reference: parent.reference,
+          type: parent.type,
+        };
+  };
+  expect(parentLine("headed")).toEqual({
+    id: "q1",
+    line: "Where the box sits",
+    reference: `dispatch://${KEY}/ask/q1`,
     type: "ask",
   });
-  expect(entry("headed")?.shapes.map((one) => one.line)).toEqual([
+  expect(parentLine("wordless")).toEqual({
+    id: "q2",
+    line: NODE_TYPE_NAMES.ask,
+    reference: `dispatch://${KEY}/ask/q2`,
+    type: "ask",
+  });
+  expect(entry("headed")?.shapes.map((one) => parentLinkWords(one.node))).toEqual([
     "The page draws word1 word2 word3 word4 word5 word6 word7 word8 word9 word10 word11 word12 word13…",
     NODE_TYPE_NAMES.requirement,
   ]);

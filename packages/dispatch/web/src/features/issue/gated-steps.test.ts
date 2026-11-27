@@ -1,8 +1,15 @@
-import { expect, test } from "bun:test";
+import { beforeAll, expect, test } from "bun:test";
 
 import type { Artifact, GatedStep, IssueDetails, Project } from "../../api/types";
 import { issue as fixture, specArtifact } from "../margin/margin-fixture";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { gatedStepEntries } from "./gated-steps";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 const decisionsDoc: Artifact = {
   ...specArtifact,
@@ -38,6 +45,7 @@ const ungated: Project = {
   created_at: "2026-09-09T00:00:00Z",
   open_asks: 0,
   gated_steps: [],
+  proven_sessions: false,
 };
 
 function gating(...gated_steps: GatedStep[]): Project {
@@ -56,6 +64,19 @@ test("an issue that is not its tree's root draws none, whatever its project gate
   const child: IssueDetails = { ...root, parent: "CORE-9" };
 
   expect(gatedStepEntries(gating("decisions", "spec"), child)).toEqual([]);
+});
+
+test("an issue whose parent is in another project is a root of its own project and draws its steps", () => {
+  // A parent of another project passes nothing on, so the issue stands in its own project's
+  // gate as a root does; only a parent of the issue's own project makes it a child.
+  const rootUnderAnotherProject: IssueDetails = { ...root, parent: "OTHR-6" };
+
+  expect(
+    gatedStepEntries(gating("decisions", "spec"), rootUnderAnotherProject).map(
+      (entry) => entry.step
+    )
+  ).toEqual(["decisions", "spec"]);
+  expect(gatedStepEntries(gating("decisions", "spec"), { ...root, parent: "CORE-9" })).toEqual([]);
 });
 
 test("neither the unread project nor the unread issue draws a step", () => {

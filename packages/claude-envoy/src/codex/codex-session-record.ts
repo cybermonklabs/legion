@@ -192,21 +192,29 @@ const PS_OPTIONS = {
   timeout: 1_000,
 } as const
 
-/** When process `pid` started: the 22nd field of `/proc/<pid>/stat` (clock ticks since boot), or
- *  where there is no /proc, `ps`'s start time to the second, prefixed `ps:`; undefined where
- *  neither can be read. Two processes that had one id never share it. */
-export function processStarted(pid: number): string | undefined {
+/** When process `pid` started by `/proc/<pid>/stat` alone: its 22nd field (clock ticks since
+ *  boot); undefined where that file cannot be read (no /proc, or no such process). */
+export function procStarted(pid: number): string | undefined {
   try {
     const stat = readFileSync(`/proc/${pid}/stat`, "utf8")
     return stat.slice(stat.lastIndexOf(")") + 2).split(" ")[19]
   } catch {
-    // No /proc (macOS): `ps` names the start to the second, which a reused pid does not repeat
-    // within a second of the process it replaced exiting, and the hook and the server read it
-    // the same way.
-    const ps = spawnSync("ps", ["-o", "lstart=", "-p", String(pid)], PS_OPTIONS)
-    const started = ps.status === 0 ? ps.stdout.trim() : ""
-    return started === "" ? undefined : `ps:${started}`
+    return undefined
   }
+}
+
+/** When process `pid` started: `procStarted`, or where that cannot be read (macOS has no /proc),
+ *  `ps`'s start time to the second, prefixed `ps:`; undefined where neither can be read. Two
+ *  processes that had one id never share it. */
+export function processStarted(pid: number): string | undefined {
+  const started = procStarted(pid)
+  if (started !== undefined) return started
+  // No /proc (macOS): `ps` names the start to the second, which a reused pid does not repeat
+  // within a second of the process it replaced exiting, and the hook and the server read it the
+  // same way.
+  const ps = spawnSync("ps", ["-o", "lstart=", "-p", String(pid)], PS_OPTIONS)
+  const fromPs = ps.status === 0 ? ps.stdout.trim() : ""
+  return fromPs === "" ? undefined : `ps:${fromPs}`
 }
 
 /** Whether `record` belongs to the `codex` process `pid` now runs, rather than to an earlier

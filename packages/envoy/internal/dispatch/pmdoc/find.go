@@ -198,6 +198,19 @@ func (f *QuoteFinder) Find(quote string, occurrence, near *int) (Range, error) {
 	return f.choose(quote, matches, occurrence, near)
 }
 
+// FindPlain finds quote in the document's plain text exactly, as a reply's quote of a block names
+// it: the characters of the text runs joined, so markdown in the quote, a leading `#` and a run of
+// white space the text does not hold are the characters they are, and never Find's markdown,
+// heading or normalized match. Matches overlap (findAll), and occurrence counts them from 0 as
+// Find's does; a miss or an occurrence past the last match is *ErrQuoteNotFound, and several
+// matches with no occurrence *ErrTargetAmbiguous.
+func (f *QuoteFinder) FindPlain(quote string, occurrence *int) (Range, error) {
+	if err := f.prepare(); err != nil {
+		return Range{}, err
+	}
+	return f.choose(quote, exactQuoteMatches(f.text, quote), occurrence, nil)
+}
+
 // FindListItem answers a quote that opens with a list item's marker (ParseListItemQuote) by the
 // items it selects (listItemQuoteMatches), choosing among them as Find chooses among a quote's
 // matches; a quote that selects no item is Find's miss. Only a document edit asks it, after Find
@@ -815,26 +828,69 @@ func nearestBlocks(doc *Node, quote string, limit int) []string {
 	return nearest
 }
 
-// headingQuoteMatches returns the text range of every heading whose rendered text equals
-// title, so a quote written with its ATX marker (`## Title`) selects headings only.
+// headingQuoteMatches is every match of title that is the whole rendered text of a heading, at any
+// level, so a quote written with its ATX marker (`## Title`) selects headings only, and a title
+// that is only part of a longer heading's text selects nothing there. Whitespace at a heading's
+// edges is not part of the text compared. A match is the title's text range inside the heading,
+// which an edit that renames the heading replaces. Each step of the matcher cascade is kept to
+// whole headings before the next is tried, so part of a longer heading that the title matches
+// exactly does not hide a heading the title matches with its whitespace normalized.
 func headingQuoteMatches(doc *Node, text flattenedText, title string) []quoteMatch {
-	if title == "" {
+	// A title of white space alone is no heading's text. Every match of any other title holds a
+	// character that is not white space, so wholeText's walks over the white space beside each
+	// match read each run of it at most twice in all.
+	if strings.TrimSpace(title) == "" {
 		return nil
 	}
-	candidates := quoteMatches(text, title)
-	var matches []quoteMatch
+	// Each heading's text lies between its opening and closing tokens. Headings never nest, so
+	// in document order these ranges are disjoint and ascending.
+	var headings []Range
 	walk(doc, func(node *Node, _ []int, pos, end int) bool {
-		if node.Type != "heading" {
-			return true
-		}
-		for _, match := range candidates {
-			if pos+1 <= match.From && match.To <= end-1 {
-				matches = append(matches, match)
-			}
+		if node.Type == "heading" {
+			headings = append(headings, Range{From: pos + 1, To: end - 1})
 		}
 		return true
 	})
-	return matches
+	if len(headings) == 0 {
+		return nil
+	}
+	wholeHeadings := func(candidates []quoteMatch) []quoteMatch {
+		var matches []quoteMatch
+		for _, match := range candidates {
+			// The only heading that can hold the match is the first one ending after it starts.
+			index := sort.Search(len(headings), func(index int) bool { return headings[index].To > match.From })
+			if index < len(headings) && wholeText(text, match, headings[index]) {
+				matches = append(matches, match)
+			}
+		}
+		return matches
+	}
+	for _, step := range []func(flattenedText, string) []quoteMatch{exactQuoteMatches, normalizedQuoteMatches, markdownQuoteMatches} {
+		if matches := wholeHeadings(step(text, title)); len(matches) > 0 {
+			return matches
+		}
+	}
+	return nil
+}
+
+// wholeText reports whether match lies inside block, the range of a textblock's text, and covers
+// all of the text there but whitespace at its edges.
+func wholeText(text flattenedText, match quoteMatch, block Range) bool {
+	if match.From < block.From || match.To > block.To {
+		return false
+	}
+	units := text.units16()
+	for index := match.textFrom - 1; index >= 0 && text.positions[index] >= block.From; index-- {
+		if !unicode.IsSpace(rune(units[index])) {
+			return false
+		}
+	}
+	for index := match.textTo; index < len(units) && text.positions[index] < block.To; index++ {
+		if !unicode.IsSpace(rune(units[index])) {
+			return false
+		}
+	}
+	return true
 }
 
 // TextContent is node's text, hard breaks as line feeds, as a read serves it: each U+0000 a browser
@@ -1322,7 +1378,7 @@ func (w *MarkWriter) Mark(txn *crdt.Transaction, r Range, mark Mark) error {
 	if txn == nil || w.frag == nil || r.From >= r.To {
 		return fmt.Errorf("%w: invalid mark range", ErrSchema)
 	}
-	if !active.marks[mark.Type] {
+	if !active.Load().marks[mark.Type] {
 		return fmt.Errorf("%w: mark %q", ErrSchema, mark.Type)
 	}
 	if err := attrNestingError("mark", mark.Type, mark.Attrs, maxMarkAttrNesting); err != nil {
@@ -1518,7 +1574,7 @@ func Unmark(txn *crdt.Transaction, frag *crdt.YXmlFragment, markType, id string)
 	if txn == nil || frag == nil {
 		return fmt.Errorf("%w: Unmark requires transaction and fragment", ErrSchema)
 	}
-	if !active.marks[markType] {
+	if !active.Load().marks[markType] {
 		return fmt.Errorf("%w: mark %q", ErrSchema, markType)
 	}
 

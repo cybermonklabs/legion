@@ -17,6 +17,7 @@ import (
 // fallback pass must not publish that row while the attempt is still owed a resend (Resending),
 // since the resend may pin the claimant.
 func TestAFallbackRowWaitsWhileItsUnnamedMentionIsOwedAResend(t *testing.T) {
+	t.Parallel()
 	const role = "unnamed-by-the-outbox"
 	const holder = "ses_claimant"
 	ctx := store.WithTransactionTracking(context.Background())
@@ -60,9 +61,8 @@ func TestAFallbackRowWaitsWhileItsUnnamedMentionIsOwedAResend(t *testing.T) {
 	// The fallback pass, with the attempt still unpinned and owed a resend, and the role still
 	// unnamed by the outbox.
 	publishFallbackCopies(ctx, rig.deps(), unfenced{}, holdingProcess(t, rig.database))
-	time.Sleep(time.Second)
 	row = readHeldCopy(t, rig.database, commentID, contracts.LegacyAgentSubject(holder))
-	got := claimant.received()
+	got := claimant.receivedNow(t, rig.client)
 	t.Logf("after fallback pass: row settled=%v published=%v; claimant got %+v", row.settled, row.published, got)
 	if row.published || len(got) != 0 {
 		t.Errorf("the fallback pass published the claimant's copy (keys %v) while the unnamed mention it waited on is still owed a resend, which may pin the claimant and land under %s beside it",
@@ -81,6 +81,7 @@ func keysOf(items []contracts.Envelope) []string {
 // The claimant's copy waits on an unnamed role mention; the owner's next event bound for the
 // claimant must not overtake it.
 func TestAClaimantsWaitingCopyKeepsTheOwnersEventOrder(t *testing.T) {
+	t.Parallel()
 	const role = "unnamed-by-the-outbox"
 	const holder = "ses_claimant"
 	ctx := store.WithTransactionTracking(context.Background())

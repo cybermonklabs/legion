@@ -1,0 +1,12 @@
+kind: Fixed
+body: |-
+  A reopened issue's approval request is moved in the name of the person whose edit the closed
+  issue's settlement saved, also when a second settlement of the same document ran before the
+  reopen. That second settlement, armed while the first one committed (the resumption's pick of the
+  row the first one was about to delete arms one), found nothing to save, and its commit deleted the
+  editor the first one kept. The reopen then moved the request in the name of `document-settlement`,
+  and a move that gave the request back to its agent woke no agent. A closed issue's settlement that
+  writes no version, stores no update and credits no one now deletes only its pending row.
+time: 2026-11-21T13:21:11Z
+custom:
+  Issue: closed-settlement-kept-editor

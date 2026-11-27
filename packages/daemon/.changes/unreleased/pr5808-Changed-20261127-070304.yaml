@@ -1,0 +1,8 @@
+kind: Changed
+body: |-
+    The implementer's role prompt says that CI runs a suite the repository holds back for its merge
+    queue there, and that the implementer adds no label that runs such a suite on the pull request
+    unless a check of the issue names its job.
+time: 2026-11-27T07:03:04.751259503Z
+custom:
+    Issue: pr5808

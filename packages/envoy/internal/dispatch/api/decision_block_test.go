@@ -326,6 +326,7 @@ func assertDecisionBlockRefused(t *testing.T, request string, response *httptest
 // after each row, as a reader reads them and as rows of the store, and the edited comment's
 // body is read back byte for byte.
 func TestDecisionBlockIsRefusedOnEveryWriteRoute(t *testing.T) {
+	t.Parallel()
 	f := newDecisionFixture(t)
 	// Every write below is refused, so the store never moves: one snapshot before the first of
 	// them is what each route's own read is held to, and a route that stored something fails
@@ -377,7 +378,7 @@ func storeCommentWithADecisionBlock(t *testing.T, database *store.Store, issueKe
 	`, issueKey, body).Scan(&id, &createdAt); err != nil {
 		t.Fatalf("insert the comment: %v", err)
 	}
-	if _, err := refs.IndexItem(ctx, tx, refs.ItemComment, id, body, createdAt, nil, nil); err != nil {
+	if _, err := refs.IndexItem(ctx, tx, refs.ItemComment, id, body, testServerURL, createdAt, nil, nil); err != nil {
 		t.Fatalf("index the comment's blocks: %v", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -391,6 +392,7 @@ func storeCommentWithADecisionBlock(t *testing.T, database *store.Store, issueKe
 // database is read back whole and listed with its block indexed under the type `ask`, because
 // the indexer calls neither bound nor the new rule (refs.IndexItem).
 func TestACommentStoredWithADecisionBlockIsStillReadWholeAndIndexedAsAnAsk(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "STORED", "A stored decision block", "before")
 	body := "Lead text.\n\n" + theDecisionBlock + "\n"
@@ -443,6 +445,7 @@ func decisionAtTheTop() string { return decisionRefusal(1, "ask") }
 // decision card in full, which is the silent failure the rule exists to stop. Nothing is stored by
 // these refusals either.
 func TestADecisionBlockIsRefusedInABodyTheParserRefuses(t *testing.T) {
+	t.Parallel()
 	f := newDecisionFixture(t)
 	// One of the bodies stands for the class on every route - the link reference definition, the
 	// line a writer leaves behind most often - and the comment route below answers every class.
@@ -481,6 +484,7 @@ func TestADecisionBlockIsRefusedInABodyTheParserRefuses(t *testing.T) {
 // write its line-ending rule, and the one assertion this branch changes is that one, to the line
 // feeds pmdoc.LineFeeds stores.
 func TestACommentOfLoneCarriageReturnsIsStoredWithLineFeeds(t *testing.T) {
+	t.Parallel()
 	f := newDecisionFixture(t)
 	before := f.stored(t)
 	body := "Which one?\r\r- REST: the platform's own\r- gRPC: streaming\r"
@@ -505,6 +509,7 @@ func TestACommentOfLoneCarriageReturnsIsStoredWithLineFeeds(t *testing.T) {
 // besides. So a reason holding a decision block is stored, read back whole, and draws a card on
 // the approval chip that nobody can answer, which this issue does not close (INFRA-1201).
 func TestAReviewReasonHoldingADecisionBlockIsStored(t *testing.T) {
+	t.Parallel()
 	f := newDecisionFixture(t)
 	before := f.stored(t)
 	// The route trims the reason before it stores it (reviews.go), so each text sent carries no
@@ -548,6 +553,7 @@ func TestAReviewReasonHoldingADecisionBlockIsStored(t *testing.T) {
 // parser refuses is still refused for that markdown, under its own code, never for the decision
 // block it holds.
 func TestADocumentWriteStillTakesADecisionBlockTheBodyRoutesRefuse(t *testing.T) {
+	t.Parallel()
 	handler, _ := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "DOCASK", "Decision blocks in documents", "before")
 	content := "# Plan\n\n" + theDecisionBlock + "\n"

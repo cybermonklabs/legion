@@ -1,0 +1,5 @@
+kind: Fixed
+body: 'The worker image''s build no longer compiles better-sqlite3, a package the image does not ship: its plugin stage installs the workspace with `--ignore-scripts`, as the Envoy listener image does. That compile fetched the newest node-gyp from npm and the Node headers from nodejs.org, which no pin or digest held, so the build failed whenever either download failed. The stage also no longer installs python3, make and g++, which only that compile needed. What the image takes from that stage, the plugins, Bun and the CodeGraph tools, does not change.'
+time: 2026-11-22T15:24:00.171729992Z
+custom:
+    Issue: worker-image-node-headers

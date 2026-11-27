@@ -1,0 +1,21 @@
+-- 20261116015736 adds columns to projects, people and agent_tokens, each nullable or with a
+-- constant default whose check every existing row satisfies, so it refuses no row and rewrites
+-- no value any reader had. It creates new tables, and its fill writes the new projects.owner
+-- column, which no earlier release names: new data, not a rewrite. It cannot name the new
+-- columns, which do not exist when the census is taken.
+--
+-- It counts the projects whose default assignee names nobody who has signed in. The fill leaves
+-- each of them with no owner, and the boot would then refuse to serve until
+-- DISPATCH_PROJECT_OWNER_FALLBACK names a full member to own them (store.EnsureProjectOwners). A
+-- count above 0 refuses the deploy (pgmigrate.Census), so they are repaired before it, on the
+-- release still serving: give each such project a default assignee who has signed in, with
+-- `PUT /api/v1/projects/{key}/default-assignee`, and deploy again. They are listed there by
+--
+--   select key, default_assignee from projects p
+--   where not exists (select 1 from people where email = p.default_assignee);
+--
+-- (cmd/dispatch/README.md, "Giving a project to another owner"). projects.default_assignee is
+-- 0116_project_default_assignee's and people.email 0068_people's, both shipped releases before
+-- this one.
+select count(*) from projects p
+where not exists (select 1 from people where email = p.default_assignee);

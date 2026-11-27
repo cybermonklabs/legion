@@ -21,6 +21,7 @@ const launcherTermDialerEnv = "LEGION_LAUNCHER_TEST_TERM_DIALER"
 // it is ready it waits for SIGTERM, then opens a fresh connection to its generation's session socket
 // and records whether anything answered, as an agent's last write after its pool went idle would.
 func TestLauncherTermDialer(t *testing.T) {
+	// Not parallel: a helper child, run in a process of its own; here it returns at once.
 	if os.Getenv(launcherTermDialerEnv) != "1" {
 		return
 	}
@@ -45,7 +46,7 @@ func TestLauncherTermDialer(t *testing.T) {
 	if err := os.Rename(resultFile+".tmp", resultFile); err != nil {
 		os.Exit(4)
 	}
-	os.Exit(0)
+	exitHelper(t)
 }
 
 // A generation's session database is the generation's until its child exits, however the stop
@@ -55,6 +56,7 @@ func TestLauncherTermDialer(t *testing.T) {
 // still find the proxy serving; the old postgres store, which dials the database directly, never
 // lost its last writes this way (INFRA-271).
 func TestASessionDatabaseServesItsChildThroughTheChildsShutdownGrace(t *testing.T) {
+	t.Parallel()
 	for _, how := range []string{"daemon stop", "container shutdown"} {
 		t.Run(how, func(t *testing.T) {
 			dialer := &sessionDialer{addr: idleUpstream(t)}
@@ -66,7 +68,7 @@ func TestASessionDatabaseServesItsChildThroughTheChildsShutdownGrace(t *testing.
 			scratch := t.TempDir()
 			ready, result := filepath.Join(scratch, "ready"), filepath.Join(scratch, "result")
 			start := shimwire.LauncherStart{
-				ID: "start-1", Generation: 1, Argv: []string{self, "-test.run=^TestLauncherTermDialer$"},
+				ID: "start-1", Generation: 1, Argv: append([]string{self}, reentry(t, "TestLauncherTermDialer")...),
 				Env: []string{launcherTermDialerEnv + "=1", "LEGION_LAUNCHER_READY=" + ready, "LEGION_LAUNCHER_RESULT=" + result,
 					"LEGION_LAUNCHER_SOCKET=" + filepath.Join(g.generationDir(1), ompsessions.SocketName)},
 			}
@@ -93,7 +95,7 @@ func TestASessionDatabaseServesItsChildThroughTheChildsShutdownGrace(t *testing.
 
 func waitForFile(t *testing.T, path string) {
 	t.Helper()
-	if !testwait.Holds(10*time.Second, testwait.Poll, func() bool {
+	if !testwait.Holds(beforeDeadline(t), testwait.Poll, func() bool {
 		_, err := os.Stat(path)
 		return err == nil
 	}) {

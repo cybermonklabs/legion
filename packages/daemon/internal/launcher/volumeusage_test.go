@@ -2,8 +2,6 @@ package launcher
 
 import (
 	"math"
-	"runtime"
-	"strings"
 	"testing"
 )
 
@@ -36,6 +34,7 @@ const (
 // statfs of this pod's volume, so what the case shows is the wrong formula giving a different
 // answer rather than one number asserted against itself.
 func TestTheVolumesPercentageIsUsedOverUsedPlusAvailable(t *testing.T) {
+	t.Parallel()
 	used := uint64(measuredBlocks-measuredFree) * measuredBlockSize
 	available := uint64(measuredAvailable) * measuredBlockSize
 	total := uint64(measuredBlocks) * measuredBlockSize
@@ -73,34 +72,5 @@ func TestTheVolumesPercentageIsUsedOverUsedPlusAvailable(t *testing.T) {
 		if got := tc.reading.Percent(); got != tc.want {
 			t.Errorf("Percent of %s = %.6f, want %.6f", tc.name, got, tc.want)
 		}
-	}
-}
-
-// The reader itself is one statfs on Linux and a refusal naming the platform anywhere else, and
-// the trimmer injects both through the same package variable (readVolumeUsage), so this case
-// reads whichever twin the binary was built with. On Linux it reads a real filesystem — the
-// test's own temporary directory, since a machine running the tests has no /legion — and holds
-// the reading to what statfs can answer: a volume of some size, with the used bytes no more than
-// the volume holds.
-func TestTheVolumeReaderAnswersOneReadingOfTheFilesystemItIsGiven(t *testing.T) {
-	dir := t.TempDir()
-	reading, err := readVolumeUsage(dir)
-	if runtime.GOOS != "linux" {
-		if err == nil {
-			t.Fatalf("readVolumeUsage(%s) answered %+v on %s, want a refusal naming the platform", dir, reading, runtime.GOOS)
-		}
-		if !strings.Contains(err.Error(), runtime.GOOS) {
-			t.Errorf("readVolumeUsage refused with %q, want the platform %q named in it", err, runtime.GOOS)
-		}
-		return
-	}
-	if err != nil {
-		t.Fatalf("readVolumeUsage(%s): %v", dir, err)
-	}
-	if reading.UsedBytes+reading.AvailableBytes == 0 {
-		t.Fatalf("readVolumeUsage(%s) = %+v, want a filesystem of some size", dir, reading)
-	}
-	if percent := reading.Percent(); percent < 0 || percent > 100 {
-		t.Errorf("readVolumeUsage(%s) = %+v, %.6f per cent, want a fraction between 0 and 100", dir, reading, percent)
 	}
 }

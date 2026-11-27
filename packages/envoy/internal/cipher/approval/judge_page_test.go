@@ -5,15 +5,18 @@
 package approval_test
 
 import (
+	"crypto/sha256"
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
-	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
+	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/store"
 )
 
 // judgeModel is the model deciding in this file; the name the page prints for it is
@@ -21,14 +24,15 @@ import (
 // `agent-secrets status` prints under decided_by.
 const judgeModel = "claude-opus-4-6"
 
-// judgeable gives the rig's broker airlock rules that let the judge decide up to 900 seconds of
-// TEST_SECRET, ada's own human-tier secret, and wires a judge, a hook that does nothing, so a
-// request for TEST_SECRET is held for the judge from the moment it is written.
-func judgeable(r *rig) {
-	seconds := uint32(900)
-	r.machine.Airlock = proxyrules.Rules{Secrets: []proxyrules.SecretRule{
-		{Name: "TEST_SECRET", Hosts: []string{"api.test.example"}, Judge: &seconds, Guidance: "grant for the billing job"},
-	}}
+// judgeable tags TEST_SECRET, ada's own human-tier secret, with a judge of 900 seconds and its
+// guidance, as its owner's retag writes them, and wires a judge, a hook that does nothing, so a
+// request for TEST_SECRET is held for the judge from the moment it is written. The chain verifier
+// reads the same live policy (requests.NewChainVerifier), so it holds the judge's approvals to
+// that tag.
+func judgeable(t *testing.T, r *rig) {
+	t.Helper()
+	local := r.machine.Secrets.(secrets.AWS).Client.(*secrets.Local)
+	policytest.JudgeTags(t, local, r.machine.Policy, "TEST_SECRET", 900, "grant for the billing job")
 	r.machine.Judge = func(requests.PendingRequest) {}
 }
 
@@ -38,7 +42,7 @@ func judgeable(r *rig) {
 // While the judge held the record, its approver was offered no decision of it.
 func TestThePageNamesTheModelJudgeAsTheDecider(t *testing.T) {
 	r := newRig(t)
-	judgeable(r)
+	judgeable(t, r)
 	enrollmentID, key := r.benSession(t, "ben-box")
 	lifetime := 600
 	p := r.request(t, enrollmentID, key, "the billing job needs the key", &lifetime, "", "TEST_SECRET")
@@ -77,16 +81,18 @@ func TestThePageNamesTheModelJudgeAsTheDecider(t *testing.T) {
 // event carries no login, so the page names the policy, which made that answer, and not nobody.
 func TestThePageNamesThePolicyThatTurnedAJudgesApprovalIntoADenial(t *testing.T) {
 	r := newRig(t)
-	judgeable(r)
-	// TEST_SECRET lists ben, whose machine asks for it, so the request waits on ada as before.
-	r.retag(t, policytest.ListedSecret("TEST_SECRET", ada, policy.TierHuman, ben, "test-v1"))
+	judgeable(t, r)
+	// TEST_SECRET lists ben, whose machine asks for it, so the request waits on ada as before, and
+	// keeps the judge tag judgeable gave it.
+	r.retag(t, policytest.Judged(policytest.ListedSecret("TEST_SECRET", ada, policy.TierHuman, ben, "test-v1"), 900, "grant for the billing job"))
 	enrollmentID, key := r.benSession(t, "ben-box")
 	lifetime := 600
 	p := r.request(t, enrollmentID, key, "the billing job needs the key", &lifetime, "", "TEST_SECRET")
 
 	// The list drops ben while the request waits on the model: no login can approve the name
-	// now, so the approval the judge then makes is recorded as the request's denial.
-	r.retag(t, policytest.ListedSecret("TEST_SECRET", ada, policy.TierHuman, carol, "test-v1"))
+	// now, so the approval the judge then makes is recorded as the request's denial. The judge
+	// tag stays, so it is the list and not the tag that answers.
+	r.retag(t, policytest.Judged(policytest.ListedSecret("TEST_SECRET", ada, policy.TierHuman, carol, "test-v1"), 900, "grant for the billing job"))
 	applied, err := r.machine.ApplyJudgeDecision(t.Context(), p.recordID, judgeModel, map[string]any{"verdict": "grant"})
 	want := "TEST_SECRET: " + policy.ReasonRequesterNotListed
 	if err != nil || applied.State != "denied" || applied.Detail != want {
@@ -114,7 +120,7 @@ func TestThePageNamesThePolicyThatTurnedAJudgesApprovalIntoADenial(t *testing.T)
 // outright. Once the judge hands it over, the same page offers ada the ordinary card.
 func TestThePageOffersNoDecisionWhileTheJudgeHolds(t *testing.T) {
 	r := newRig(t)
-	judgeable(r)
+	judgeable(t, r)
 	lifetime := 600
 	// The card ada decides: written by a broker that runs no judge, so it was hers from the
 	// start.
@@ -149,8 +155,17 @@ func TestThePageOffersNoDecisionWhileTheJudgeHolds(t *testing.T) {
 	if grants, events := r.grants(t, p.recordID), r.terminalEvents(t, p.recordID); grants != 0 || events != 0 {
 		t.Errorf("after the POST naming it the record has %d grants and %d terminal events; want neither", grants, events)
 	}
-	if _, err := r.machine.ApplyDecision(t.Context(), p.recordID, true, ada); !errors.Is(err, requests.ErrJudgeHolds) {
-		t.Errorf("ApplyDecision by %s while the judge holds = %v; want requests.ErrJudgeHolds", ada, err)
+	// A decision is made under a live page session (requests.Machine.ApplyPageDecision), so the
+	// direct one is made under a session of ada's own, signed in for it.
+	direct := sha256.Sum256([]byte("ada's session for the direct decision"))
+	if err := r.st.CreateBrowserSession(t.Context(), store.BrowserSignIn{
+		Hash: direct, Login: ada, Account: store.IssuerSubject{Issuer: r.issuer.URL(), Subject: "sub-ada"},
+		Expires: time.Now().Add(time.Hour),
+	}); err != nil {
+		t.Fatalf("sign %s in for the direct decision: %v", ada, err)
+	}
+	if _, err := r.machine.ApplyPageDecision(t.Context(), p.recordID, true, store.BrowserSessionRef{Hash: direct, Login: ada}); !errors.Is(err, requests.ErrJudgeHolds) {
+		t.Errorf("ApplyPageDecision by %s while the judge holds = %v; want requests.ErrJudgeHolds", ada, err)
 	}
 
 	if _, err := r.machine.LogJudged(t.Context(), p.recordID, judgeModel, map[string]any{"verdict": "deny", "error": "the model did not answer"}); err != nil {

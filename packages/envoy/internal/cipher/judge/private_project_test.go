@@ -77,7 +77,7 @@ func TestTheJudgeOfAnUntaggedRequestAsksDispatchNothingNew(t *testing.T) {
 			t.Errorf("check %s failed: %s", c.Check, c.Detail)
 		}
 	}
-	want := []string{checkRulesJudge, checkLifetime, checkPolicy, checkAdmin, checkWithheld, checkProject}
+	want := []string{checkJudgeTag, checkLifetime, checkPolicy, checkAdmin, checkWithheld, checkProject}
 	if !slices.Equal(names, want) {
 		t.Errorf("the run made the checks %v; want %v, the project check after withheld and before the Dispatch reads", names, want)
 	}

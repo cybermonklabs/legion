@@ -1,15 +1,10 @@
 package testnats
 
 import (
-	"context"
-	"fmt"
 	"math/rand/v2"
 	"net"
 	"runtime"
 	"strings"
-
-	"github.com/docker/go-connections/nat"
-	tcnats "github.com/testcontainers/testcontainers-go/modules/nats"
 )
 
 // LoopbackIP is an address for one test listener a client dials: on Linux, where every address of
@@ -46,8 +41,10 @@ func ListenLoopback() (net.Listener, error) {
 // loopbackPorts returns, so another program can take one of the ports before Docker binds it:
 // start retries a publish refused for that (addressInUse) on a fresh address and fresh ports. That
 // freed-port race is a class of its own; a port another process must bind cannot be held here. It
-// is a copy of packages/envoy/internal/testport's LoopbackPorts, as LoopbackIP is.
-func loopbackPorts(n int) (string, []int, error) {
+// is a copy of packages/envoy/internal/testport's LoopbackPorts, as LoopbackIP is. It is a variable
+// so a test can take a probed port before Docker binds it, as another program can, and so check
+// start's retry (TestAStartRetriedAfterARefusedPublishEnforcesItsUsers).
+var loopbackPorts = func(n int) (string, []int, error) {
 	host := LoopbackIP().String()
 	listeners := make([]net.Listener, 0, n)
 	defer func() {
@@ -71,26 +68,4 @@ func loopbackPorts(n int) (string, []int, error) {
 // address, as Docker words it ("failed to listen on TCP socket: address already in use").
 func addressInUse(err error) bool {
 	return err != nil && strings.Contains(err.Error(), "address already in use")
-}
-
-// clientPort and monitorPort are the container ports start publishes: the one a client dials and
-// the monitoring endpoint's.
-const (
-	clientPort  nat.Port = "4222/tcp"
-	monitorPort nat.Port = "8222/tcp"
-)
-
-// endpoint is the host:port Docker published container's port on, the loopback address and port
-// start chose (loopbackPorts). Docker publishes a port again at each start of a container, so a
-// caller reads it once the container runs.
-func endpoint(container *tcnats.NATSContainer, port nat.Port) (string, error) {
-	info, err := container.Inspect(context.Background())
-	if err != nil {
-		return "", fmt.Errorf("inspect the NATS container: %w", err)
-	}
-	if info.NetworkSettings == nil || len(info.NetworkSettings.Ports[port]) == 0 {
-		return "", fmt.Errorf("the NATS container publishes no %s", port)
-	}
-	binding := info.NetworkSettings.Ports[port][0]
-	return net.JoinHostPort(binding.HostIP, binding.HostPort), nil
 }

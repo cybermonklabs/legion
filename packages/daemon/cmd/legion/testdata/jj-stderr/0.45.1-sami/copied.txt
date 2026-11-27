@@ -1,0 +1,3 @@
+jj --ignore-working-copy --color=never config list -T '""'
+Warning: Your repo appears to have been copied from /legion/scratch/tmp/infra4172-impl/stderr-capture/run-0.45.1-sami.5tpq/copied.6Jga/repo/.jj/repo to /legion/scratch/tmp/infra4172-impl/stderr-capture/run-0.45.1-sami.5tpq/copied.6Jga/copy/.jj/repo. The corresponding repo config file has also been copied.
+--- exit 0

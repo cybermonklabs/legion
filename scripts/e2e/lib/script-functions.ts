@@ -17,10 +17,48 @@ export function scriptFunctions(path: string): (name: string) => string {
   };
 }
 
+/**
+ * Reads the shell script at `path` once and returns `assignment`, which gives the assignment of
+ * the variable `name` exactly as the script writes it at the start of a line: `name='…'` through
+ * the first line that ends in a quote when the value is single-quoted, `name=(` through the first
+ * line that is `)` alone when the value is an array written over several lines, else `name=…` to
+ * the end of its line, an array written on one line among them. `assignment` throws, naming the
+ * script by its path under scripts/e2e, when the script assigns no such variable.
+ */
+export function scriptAssignments(path: string): (name: string) => string {
+  const script = readFileSync(path, "utf8");
+  const shown = relative(dirname(import.meta.dir), path);
+  return (name) => {
+    const found = new RegExp(`^${name}=(?:'[\\s\\S]*?'|\\(\\n[\\s\\S]*?\\n\\)|.*)$`, "m").exec(
+      script
+    );
+    if (found === null) throw new Error(`${shown} assigns no ${name}`);
+    return found[0];
+  };
+}
+
 // Every function a script defines at the start of a line, one-line definitions included.
 const definition = /^([A-Za-z_][A-Za-z0-9_]*)\(\) \{/gm;
 // A library of scripts/e2e/lib a script sources, as every stage script and library writes it.
 const sourced = /^\s*\. ".*\/lib\/([A-Za-z0-9_.-]+\.sh)"\s*$/gm;
+
+/**
+ * Every script among `paths`, and every library under scripts/e2e/lib one of them sources
+ * (`. "…/lib/<name>"`), and the libraries those source in turn, each path once. A harness reads
+ * the functions a script reaches through it, and a test the libraries a script runs with.
+ */
+export function sourcedLibraries(...paths: string[]): string[] {
+  const read = new Set<string>();
+  const pending = [...paths];
+  for (let path = pending.pop(); path !== undefined; path = pending.pop()) {
+    if (read.has(path)) continue;
+    read.add(path);
+    for (const found of readFileSync(path, "utf8").matchAll(sourced)) {
+      pending.push(join(import.meta.dir, found[1]));
+    }
+  }
+  return [...read];
+}
 
 /**
  * The shell a harness puts above the functions it extracts from `paths`, so that a helper one of
@@ -31,19 +69,14 @@ const sourced = /^\s*\. ".*\/lib\/([A-Za-z0-9_.-]+\.sh)"\s*$/gm;
  * the harness's own stderr, saved in a file descriptor when the guard is set up, so a call the
  * extracted function silences (`helper >/dev/null 2>&1`) is named too. Every library under
  * scripts/e2e/lib a script among `paths` sources (`. "…/lib/<name>"`) counts as one of them, and
- * the libraries it sources in turn, so a harness passes only the scripts it extracts from.
- * `missingHelpers` reads those lines out of a run's output for the harness to fail on.
+ * the libraries it sources in turn (sourcedLibraries), so a harness passes only the scripts it
+ * extracts from. `expectNoMissingHelpers` reads those lines out of a run's output for the
+ * harness to fail on.
  */
 export function nameMissingHelpers(...paths: string[]): string {
   const names = new Set<string>();
-  const read = new Set<string>();
-  const pending = [...paths];
-  for (let path = pending.pop(); path !== undefined; path = pending.pop()) {
-    if (read.has(path)) continue;
-    read.add(path);
-    const text = readFileSync(path, "utf8");
-    for (const found of text.matchAll(definition)) names.add(found[1]);
-    for (const found of text.matchAll(sourced)) pending.push(join(import.meta.dir, found[1]));
+  for (const path of sourcedLibraries(...paths)) {
+    for (const found of readFileSync(path, "utf8").matchAll(definition)) names.add(found[1]);
   }
   return `exec {harness_stderr}>&2
 command_not_found_handle() {

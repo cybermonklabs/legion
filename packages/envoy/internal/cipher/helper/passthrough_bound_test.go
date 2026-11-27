@@ -20,9 +20,10 @@ const overBound = 500 * time.Millisecond
 //
 // An unenroll-session-key whose DELETE the broker holds past the op's bound (the fake's
 // revokeGate) must reach the client, never as an empty reply, as UNENROLL_OUTCOME_UNKNOWN with
-// settle's cause, before the bound plus 1 s where brokerCall's timer would answer: the broker got
-// the request, so it may have revoked the enrollment.
+// settle's cause, before brokerCall's timer would answer (slowTimer): the broker got the request,
+// so it may have revoked the enrollment.
 func TestAnUnenrollPastItsBoundSaysItsOutcomeIsUnknown(t *testing.T) {
+	t.Parallel()
 	r := startRig(t, "")
 	enrolled := r.call(t, Request{Op: "enroll-session-key", RuntimeID: "rt-ended-box", Thumbprint: "tp-ended-box"})
 	if !enrolled.OK || enrolled.EnrollmentID == "" {
@@ -32,7 +33,7 @@ func TestAnUnenrollPastItsBoundSaysItsOutcomeIsUnknown(t *testing.T) {
 	r.fake.mu.Lock()
 	r.fake.revokeGate = gate
 	r.fake.mu.Unlock()
-	r.srv.BrokerCallBound = overBound
+	slowTimer(r.srv, overBound)
 
 	started := time.Now()
 	resp, err := Call(r.sock, Request{Op: "unenroll-session-key", EnrollmentID: enrolled.EnrollmentID}, BrokerCallWait)
@@ -46,7 +47,7 @@ func TestAnUnenrollPastItsBoundSaysItsOutcomeIsUnknown(t *testing.T) {
 	if attempts != 1 {
 		t.Fatalf("the fake received %d DELETEs, want 1, held at its gate; answer %+v after %s", attempts, resp, waited)
 	}
-	wantSettled(t, "unenroll-session-key past its bound", resp, CodeUnenrollUnknown, waited, overBound+time.Second)
+	wantSettled(t, "unenroll-session-key past its bound", resp, CodeUnenrollUnknown, waited, overBound+answerMargin)
 	if waited < overBound {
 		t.Fatalf("unenroll-session-key past its bound answered after %s; want about the %s bound", waited, overBound)
 	}

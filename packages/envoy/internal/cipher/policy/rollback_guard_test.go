@@ -89,31 +89,56 @@ func TestTheProjectRollbackGuardIsRefusedByTheMergeBaseAndIgnoredHere(t *testing
 	}
 }
 
-// TestSplitRequestersGuard: the guard entry is taken out of a requesters tag wherever it stands,
-// the rest answered single-spaced; a tag without it is answered unchanged, so a requesters tag no
-// guard was written into reaches ParseRequesters exactly as the store holds it.
-func TestSplitRequestersGuard(t *testing.T) {
-	guard := policy.RequestersRollbackGuard
+// TestSplitGuardsAndWithGuards: each guard entry is taken out of a requesters tag wherever it
+// stands, the rest answered single-spaced and each guard reported apart; a tag holding neither is
+// answered unchanged, so a requesters tag no guard was written into reaches ParseRequesters exactly
+// as the store holds it, and a guard joined to an entry by a comma is no guard. WithGuards writes
+// the list, then the project guard, then the kinds guard, each named one once and each not named
+// none, single-spaced, whatever guards and spacing the list it is given holds.
+func TestSplitGuardsAndWithGuards(t *testing.T) {
+	project, kinds := policy.RequestersRollbackGuard, policy.KindsRollbackGuard
 	for _, c := range []struct {
-		raw, rest string
-		guarded   bool
+		raw, rest     string
+		project, kind bool
 	}{
-		{guard, "", true},
-		{"carol@example.com " + guard, "carol@example.com", true},
-		{guard + "  carol@example.com\tsvc", "carol@example.com svc", true},
-		{"carol@example.com " + guard + " " + guard, "carol@example.com", true},
-		{"carol@example.com  svc", "carol@example.com  svc", false},
-		{"", "", false},
-		{"carol@example.com," + guard, "carol@example.com," + guard, false},
+		{project, "", true, false},
+		{kinds, "", false, true},
+		{project + " " + kinds, "", true, true},
+		{"carol@example.com " + project, "carol@example.com", true, false},
+		{project + "  carol@example.com\tsvc", "carol@example.com svc", true, false},
+		{"carol@example.com " + project + " " + project, "carol@example.com", true, false},
+		{kinds + "  ada@example.com\tlegion-daemon", "ada@example.com legion-daemon", false, true},
+		{"ada@example.com " + kinds + " " + project, "ada@example.com", true, true},
+		{"carol@example.com  svc", "carol@example.com  svc", false, false},
+		{"", "", false, false},
+		{"carol@example.com," + project, "carol@example.com," + project, false, false},
+		{"ada@example.com," + kinds, "ada@example.com," + kinds, false, false},
 	} {
-		rest, guarded := policy.SplitRequestersGuard(c.raw)
-		if rest != c.rest || guarded != c.guarded {
-			t.Errorf("SplitRequestersGuard(%q) = %q, %v; want %q, %v", c.raw, rest, guarded, c.rest, c.guarded)
+		rest, gotProject, gotKinds := policy.SplitGuards(c.raw)
+		if rest != c.rest || gotProject != c.project || gotKinds != c.kind {
+			t.Errorf("SplitGuards(%q) = %q, %v, %v; want %q, %v, %v", c.raw, rest, gotProject, gotKinds, c.rest, c.project, c.kind)
 		}
 	}
-	for list, want := range map[string]string{"": guard, "carol@example.com": "carol@example.com " + guard} {
-		if got := policy.WithRequestersGuard(list); got != want {
-			t.Errorf("WithRequestersGuard(%q) = %q, want %q", list, got, want)
+	for _, c := range []struct {
+		list          string
+		project, kind bool
+		want          string
+	}{
+		{"", false, false, ""},
+		{"", true, false, project},
+		{"", false, true, kinds},
+		{"", true, true, project + " " + kinds},
+		{"carol@example.com", true, false, "carol@example.com " + project},
+		{"carol@example.com", true, true, "carol@example.com " + project + " " + kinds},
+		{"carol@example.com " + kinds, true, true, "carol@example.com " + project + " " + kinds},
+		{kinds + " carol@example.com  " + project, true, true, "carol@example.com " + project + " " + kinds},
+		{"carol@example.com " + project + " " + project, true, false, "carol@example.com " + project},
+		{"carol@example.com " + project + " " + kinds, false, true, "carol@example.com " + kinds},
+		{"carol@example.com\t" + project + " " + kinds, false, false, "carol@example.com"},
+		{project + " " + kinds, false, false, ""},
+	} {
+		if got := policy.WithGuards(c.list, c.project, c.kind); got != c.want {
+			t.Errorf("WithGuards(%q, %v, %v) = %q, want %q", c.list, c.project, c.kind, got, c.want)
 		}
 	}
 }
