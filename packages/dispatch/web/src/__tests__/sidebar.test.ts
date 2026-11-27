@@ -401,7 +401,7 @@ for (const [unread, name] of [
 
     try {
       await waitFor(() =>
-        expect(api.getMeInbox).toHaveBeenCalledWith({ limit: 1, state: "unread" })
+        expect(api.getMeInboxPage).toHaveBeenCalledWith({ limit: 1, state: "unread" })
       );
       await waitFor(() =>
         expect(screen.getByRole("link", { name: /^Inbox/ }).textContent).toBe(name)
@@ -420,7 +420,7 @@ for (const [unread, name] of [
 
 test("sidebar keeps its hide control available while navigation loads", async () => {
   const user = userEvent.setup();
-  const getMeInbox = spyOn(api, "getMeInbox").mockImplementation(
+  const getMeInbox = spyOn(api, "getMeInboxPage").mockImplementation(
     () => new Promise<never>(() => {})
   );
   const getCredentialPending = spyOn(api, "getCredentialPending").mockImplementation(

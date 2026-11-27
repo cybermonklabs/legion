@@ -1119,7 +1119,7 @@ test("below 1280 px a reload onto a thread row opens that row once the one read 
     // The one read, which lists the ask and the thread the address names, is still out: the
     // page draws no row yet, so the row the address names is not listed - which is no row that
     // left.
-    await waitFor(() => expect(api.getMeInbox).toHaveBeenCalledWith({ state: "inbox" }));
+    await waitFor(() => expect(api.getMeInboxPage).toHaveBeenCalledWith({ state: "inbox" }));
     expect(rowIds()).toEqual([]);
     expect(address()).toBe("/?item=reply:c1");
 

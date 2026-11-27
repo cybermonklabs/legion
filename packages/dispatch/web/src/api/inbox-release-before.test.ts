@@ -2,10 +2,11 @@
  * The Inbox page's reads of the one read against a Dispatch process of the release before
  * (`inboxOfTheReleaseBefore`). Such a process has no route for `GET /api/v1/me/inbox`, and while
  * one serves, during a roll or after a rollback, each of the page's reads of it - its own rows, its
- * unread count, what the reader dismissed and an owner's unread set - is answered from the reads
- * that release's page made, so the Inbox still shows its sections. The one read is asked once,
- * any other failure of it is the read's own, and a read of the route that is none of the page's
- * is asked as every read is.
+ * unread count, what the reader dismissed and an owner's unread set, each of which its query names
+ * as the read it is (`getMeInboxPage`) - is answered from the reads that release's page made, so
+ * the Inbox still shows its sections. The one read is asked once, any other failure of it is the
+ * read's own, and a read of the route through `getMeInbox`, whatever its query, is asked as every
+ * read is.
  *
  * This file answers that release's reads as its server answers them, so the acceptance driver's
  * search for callers of the reads this release replaced spares it by its path
@@ -189,8 +190,8 @@ test("the unread count is the total of the release before's one-row page of unre
   ]);
 });
 
-// The count is read for its `total` alone, so an Agent row on its one-row page is a thread entry
-// whose conversation is never read.
+// The count is read for its `total` alone, so no entry is made of its one-row page, and an Agent
+// row there has no conversation read.
 test("the unread count reads no Agent row's conversation", async () => {
   const asked = serveTheReleaseBefore(() =>
     repliesAnswer([agentRow("message-1")], { limit: 1, total: 4 })
@@ -280,6 +281,29 @@ test("an owner's unread set is the release before's unread threads of that issue
   ]);
 });
 
+// A read that draws its rows draws whatever row it answers: an Agent row there is the Agent entry
+// the one read answers, with the conversation its reading pane draws, never a thread entry.
+test("an Agent row of an owner's unread set is an Agent entry with its conversation, never a thread entry", async () => {
+  const agent = agentRow("message-1");
+  const asked = serveTheReleaseBefore(() => repliesAnswer([agent], { limit: 200 }));
+
+  const answer = await inboxClient().fetchQuery(meInboxOwnerQuery({ issue: "CORE-1" }));
+
+  expect(answer.entries).toEqual([
+    {
+      agent: withConversation(agent, AGENT_CONVERSATION),
+      moment: "2026-10-12T00:00:00Z",
+      node: { id: "message-1", kind: "message" },
+      relations: [],
+    },
+  ]);
+  expect(asked).toEqual([
+    "/api/v1/me/inbox?issue=CORE-1&limit=200&state=unread",
+    "/api/v1/me/replies?kind=reply%2Cagent&issue=CORE-1&limit=200&state=unread",
+    "/api/v1/messages/message-1",
+  ]);
+});
+
 test.each([
   [
     "a 404 for something the server does not know, which is no answer of no route",
@@ -321,4 +345,19 @@ test("a read of the route that is none of the page's is asked again over a roll'
   expect(asked).toEqual(
     Array.from({ length: NO_ROUTE_RETRY_DELAYS_MS.length + 1 }, () => "/api/v1/me/inbox?limit=50")
   );
+});
+
+// Only the page's own reads, each of which names itself as the read it is (`getMeInboxPage`), fall
+// back: a read through `getMeInbox` is asked as every read is whatever its query, one in the shape
+// of the page's own rows included.
+test("a read through getMeInbox in the shape of the page's own rows is asked again over a roll's waits, and reads nothing of the release before", async () => {
+  const asked = serveTheReleaseBefore(() => repliesAnswer([]));
+  const client = createApiClient(undefined, undefined, async () => {});
+
+  const thrown = await client.getMeInbox({ state: "inbox" }).catch((failure: unknown) => failure);
+
+  expect(thrown).toBeInstanceOf(ApiError);
+  expect(thrown).toMatchObject({ message: NO_ROUTE_ROLLING_RELEASE_MESSAGE, status: 404 });
+  const sent = "/api/v1/me/inbox?state=inbox";
+  expect(asked).toEqual(Array.from({ length: NO_ROUTE_RETRY_DELAYS_MS.length + 1 }, () => sent));
 });

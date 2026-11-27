@@ -31,7 +31,13 @@ import {
   whoAmIQuery,
 } from "../../api/queries";
 import { DispatchQueryClient, hearLiveEvent } from "../../api/query-client";
-import type { DispatchEvent, IssueDetails, MyReplyRow, OpenAskRow } from "../../api/types";
+import type {
+  DispatchEvent,
+  IssueDetails,
+  MeInboxEntry,
+  MyReplyRow,
+  OpenAskRow,
+} from "../../api/types";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { plannerAgentRow, replyRow } from "../threads/replies-fixture";
@@ -359,6 +365,111 @@ test("two dismissals refused in a row put both rows back where they stood, and t
     expect(result.current).toMatchObject({ count: 2, inboxThreads: ["c1", "c9"] })
   );
   expect(result.current.dismiss.refusal).toBe(dismissRefusalText(1, false, "refused"));
+});
+
+// The count can be older than the rows: read before c9 reached the Inbox answer, it says 1 over
+// two unread rows. A dismissal of both lowers it to 0 and no further, so a refusal gives back the
+// 1 it took, not one for each row it puts back.
+test("a refused dismissal over a count below its unread rows gives back only what it took off the count", async () => {
+  const client = new QueryClient({
+    defaultOptions: {
+      mutations: { retry: false },
+      queries: { retry: false, staleTime: Number.POSITIVE_INFINITY },
+    },
+  });
+  client.setQueryData(whoAmIQuery().queryKey, { event_head: "0", kind: "user", login: "alice" });
+  client.setQueryData(meInboxQuery().queryKey, oneReadAnswer([replyRow("c1"), replyRow("c9")]));
+  client.setQueryData(meInboxCountQuery().queryKey, 1);
+  const refused = Promise.withResolvers<never>();
+  answerInboxDismisses().mockReturnValue(refused.promise);
+  const { result } = renderHook(
+    () => ({
+      count: useQuery(meInboxCountQuery()).data,
+      dismiss: useInboxDismiss(),
+      inboxThreads: meInboxThreads(useQuery(meInboxQuery()).data).map((row) => row.thread_id),
+    }),
+    {
+      wrapper: ({ children }: { children: ReactNode }) => (
+        <QueryClientProvider client={client}>{children}</QueryClientProvider>
+      ),
+    }
+  );
+
+  const rows = [dismissThreadRow(replyRow("c1")), dismissThreadRow(replyRow("c9"))];
+  act(() => result.current.dismiss.submit({ rows }));
+  await waitFor(() => expect(result.current).toMatchObject({ count: 0, inboxThreads: [] }));
+
+  await act(async () => refused.reject(new ApiError(409, { error: "refused" })));
+  await waitFor(() =>
+    expect(result.current).toMatchObject({ count: 1, inboxThreads: ["c1", "c9"] })
+  );
+});
+
+/** An entry of a page of the Dismissed view: Reply row `id`, dismissed at `at`, which is its
+ *  moment there. */
+function dismissedEntry(id: string, at: string): MeInboxEntry {
+  const thread = replyRow(id, { dismissed_at: at, unread: false, unread_count: 0 });
+  return { moment: at, node: { id, kind: thread.kind }, relations: [], thread };
+}
+
+// The Dismissed view draws its pages in the order they are cached, which is the server's: newest
+// dismissal first, and a tie by the greater node id. Two moves back to the Inbox are out at once
+// and refused in the order they were made, and each refusal puts its own row back on the page it
+// came from where that order puts it, whatever the other press took out: c2, which ties with c1,
+// before c1, then c3 before both. The next page keeps its own rows.
+test("two refused moves back to the Inbox put each row back on its page in the view's order, a tie by node id", async () => {
+  const client = new QueryClient({
+    defaultOptions: {
+      mutations: { retry: false },
+      queries: { retry: false, staleTime: Number.POSITIVE_INFINITY },
+    },
+  });
+  client.setQueryData(whoAmIQuery().queryKey, { event_head: "0", kind: "user", login: "alice" });
+  const cursor = "2026-10-12T02:00:00Z,c1";
+  const first = {
+    ...oneReadAnswer([]),
+    entries: [
+      dismissedEntry("c3", "2026-10-12T03:00:00Z"),
+      dismissedEntry("c2", "2026-10-12T02:00:00Z"),
+      dismissedEntry("c1", "2026-10-12T02:00:00Z"),
+    ],
+    next_cursor: cursor,
+    total: 3,
+  };
+  const second = {
+    ...oneReadAnswer([]),
+    entries: [dismissedEntry("c0", "2026-10-12T01:00:00Z")],
+    total: 1,
+  };
+  client.setQueryData(meInboxDismissedQuery().queryKey, {
+    pageParams: [undefined, cursor],
+    pages: [first, second],
+  });
+  const firstPress = Promise.withResolvers<never>();
+  const secondPress = Promise.withResolvers<never>();
+  const dismissed = answerInboxDismisses();
+  dismissed.mockReturnValueOnce(firstPress.promise).mockReturnValueOnce(secondPress.promise);
+  const { result } = renderHook(() => useInboxDismiss(), {
+    wrapper: ({ children }: { children: ReactNode }) => (
+      <QueryClientProvider client={client}>{children}</QueryClientProvider>
+    ),
+  });
+  const pages = () => client.getQueryData(meInboxDismissedQuery().queryKey)?.pages ?? [];
+  const pageIds = () => pages().map((page) => (page.entries ?? []).map((entry) => entry.node.id));
+
+  act(() => result.current.submit({ restore: true, rows: [dismissThreadRow(replyRow("c2"))] }));
+  await waitFor(() => expect(pageIds()).toEqual([["c3", "c1"], ["c0"]]));
+  act(() => result.current.submit({ restore: true, rows: [dismissThreadRow(replyRow("c3"))] }));
+  await waitFor(() => expect(pageIds()).toEqual([["c1"], ["c0"]]));
+
+  await act(async () => firstPress.reject(new ApiError(409, { error: "refused" })));
+  await waitFor(() => expect(dismissed).toHaveBeenCalledTimes(2));
+  await waitFor(() => expect(pageIds()).toEqual([["c2", "c1"], ["c0"]]));
+
+  await act(async () => secondPress.reject(new ApiError(409, { error: "refused" })));
+  await waitFor(() => expect(pageIds()).toEqual([["c3", "c2", "c1"], ["c0"]]));
+  expect(pages().map((page) => page.total)).toEqual([3, 1]);
+  expect(pages()[1]).toBe(second);
 });
 
 // A read of the Inbox's threads, of the Dismissed view or of the count asked while a dismiss is

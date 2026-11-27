@@ -25,11 +25,11 @@ afterEach(() => {
 });
 
 /** The Inbox at `/`, the read of the open asks holding one of alice's own asks and one of
- *  carol's, with the one read answering as `getMeInbox` does. */
+ *  carol's, with the one read answering as `getMeInboxPage` does. */
 function renderOneReadInbox(getMeInbox: () => Promise<MeInboxResponse>): void {
   restores.push(spyOn(api, "getCredentialPending").mockResolvedValue({ pending: [] }));
   restores.push(spyOn(api, "getMyAgentState").mockResolvedValue({}));
-  restores.push(spyOn(api, "getMeInbox").mockImplementation(getMeInbox));
+  restores.push(spyOn(api, "getMeInboxPage").mockImplementation(getMeInbox));
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
   });

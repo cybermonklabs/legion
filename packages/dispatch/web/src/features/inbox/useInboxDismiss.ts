@@ -20,8 +20,8 @@
  * answer triggers draws it again, unread.
  */
 
-import { INBOX_DISMISS_ROW_PREFIXES, inboxEntryThread, inboxThreadRow } from "@legion/contracts";
-import { type QueryClient, useQueryClient } from "@tanstack/react-query";
+import { INBOX_DISMISS_ROW_PREFIXES, inboxThreadRow } from "@legion/contracts";
+import { useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 
 import { inboxDismissRequest } from "../../api/client";
@@ -36,8 +36,6 @@ import type {
   InboxDismissRequest,
   InboxDismissResponse,
   InboxDismissSeen,
-  MeInboxEntry,
-  MeInboxResponse,
   MyReplyRow,
 } from "../../api/types";
 import { inboxThreadsWritten } from "../../api/write-events";
@@ -46,7 +44,12 @@ import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import type { InboxFilters } from "./InboxBar";
 import { type InboxListRow, rowId } from "./list-row";
-import { cancelMeInbox, dropMeInboxThreads } from "./one-read-cache";
+import {
+  cancelMeInbox,
+  dropMeInboxThreads,
+  type MeInboxDrop,
+  undropMeInboxThreads,
+} from "./one-read-cache";
 import { inboxWriteScope, inWriteScope } from "./write-scope";
 
 /** One row a press names, and what the page drew in it. The server writes a row's mark only
@@ -163,110 +166,6 @@ export function dismissStoppedText(count: number, restore: boolean): string {
       });
 }
 
-/** The key the one read lists an entry under: its node, which the read lists once. */
-function entryKey(entry: MeInboxEntry): string {
-  return `${entry.node.kind}:${entry.node.id}`;
-}
-
-/** The pages of the view a press is made in, as they stand: for a restore the Dismissed view's,
- *  and for a dismiss the Inbox answer, as one page. */
-function viewPages(queryClient: QueryClient, restore: boolean): readonly MeInboxResponse[] {
-  if (restore) return queryClient.getQueryData(meInboxDismissedQuery().queryKey)?.pages ?? [];
-  const answer = queryClient.getQueryData(meInboxQuery().queryKey);
-  return answer === undefined ? [] : [answer];
-}
-
-/** What a press took out of one page of the view it was made in - the Inbox answer is one page,
- *  the Dismissed view one for each **Show more** - with the order that page stood in before it,
- *  so a refusal puts each entry back where the reader saw it. */
-interface DroppedPage {
-  /** The key of each entry the page held before the press, in its order. */
-  readonly order: readonly string[];
-  /** Each entry the press took out of the page, with its place in `order`, in that order. */
-  readonly taken: readonly { readonly at: number; readonly entry: MeInboxEntry }[];
-}
-
-/** What a press that took the rows `dropped` out of a view took out of each of `pages`, that
- *  view's pages as they stood before it. */
-function droppedPages(
-  pages: readonly MeInboxResponse[],
-  dropped: readonly MyReplyRow[]
-): DroppedPage[] {
-  const ids = new Set(dropped.map((thread) => rowId({ kind: "thread", thread })));
-  return pages.map((page) => {
-    const entries = page.entries ?? [];
-    return {
-      order: entries.map(entryKey),
-      taken: entries.flatMap((entry, at) => {
-        const thread = inboxEntryThread(entry);
-        return thread !== undefined && ids.has(rowId({ kind: "thread", thread }))
-          ? [{ at, entry }]
-          : [];
-      }),
-    };
-  });
-}
-
-/** `page` with the entries a refused press took out of it (`dropped`) put back, each before the
- *  first entry that stood after it at the press and stands still, else at the end: the place it
- *  held, whichever entries another press has taken out or put back since. An entry the page
- *  already holds - a read that landed since the press brought it back - is left where it is,
- *  since putting it in again would draw it twice. Answers the page and the entries put back. */
-function withTaken(
-  page: MeInboxResponse,
-  dropped: DroppedPage | undefined
-): { readonly page: MeInboxResponse; readonly back: readonly MeInboxEntry[] } {
-  if (dropped === undefined || dropped.taken.length === 0) return { page, back: [] };
-  const entries = [...(page.entries ?? [])];
-  const rank = new Map(dropped.order.map((key, at) => [key, at]));
-  const back: MeInboxEntry[] = [];
-  for (const { at, entry } of dropped.taken) {
-    const key = entryKey(entry);
-    if (entries.some((standing) => entryKey(standing) === key)) continue;
-    const next = entries.findIndex((standing) => (rank.get(entryKey(standing)) ?? -1) > at);
-    entries.splice(next === -1 ? entries.length : next, 0, entry);
-    back.push(entry);
-  }
-  if (back.length === 0) return { page, back };
-  return { page: { ...page, entries, total: page.total + back.length }, back };
-}
-
-/** What a press rolls back to: the rows it took out of the view it was made in, and what it took
- *  out of each page of that view. Only one of the two views is written: a dismiss is made in the
- *  Inbox, a restore in the Dismissed view. */
-interface DismissRollback {
-  readonly dropped: readonly MyReplyRow[];
-  readonly pages: readonly DroppedPage[];
-}
-
-/**
- * Puts back what a refused press took out of the view it was made in (`withTaken`), and, for a
- * dismiss, raises the unread count by the unread rows among them, as the press lowered it. Only
- * that press's own entries go back, and the count rises by them alone: every other entry stays as
- * it stands now, which another press still out, or a read since, may have moved.
- */
-function putBack(queryClient: QueryClient, restore: boolean, rollback: DismissRollback): void {
-  if (restore) {
-    const read = queryClient.getQueryData(meInboxDismissedQuery().queryKey);
-    if (read === undefined) return;
-    const pages = read.pages.map((page, index) => withTaken(page, rollback.pages[index]).page);
-    if (pages.every((page, index) => page === read.pages[index])) return;
-    queryClient.setQueryData(meInboxDismissedQuery().queryKey, { ...read, pages });
-    return;
-  }
-  const answer = queryClient.getQueryData(meInboxQuery().queryKey);
-  if (answer === undefined) return;
-  const { page, back } = withTaken(answer, rollback.pages[0]);
-  if (back.length === 0) return;
-  queryClient.setQueryData(meInboxQuery().queryKey, page);
-  const unread = back.filter((entry) => inboxEntryThread(entry)?.unread === true).length;
-  if (unread > 0) {
-    queryClient.setQueryData<number>(meInboxCountQuery().queryKey, (count) =>
-      count === undefined ? count : count + unread
-    );
-  }
-}
-
 export interface InboxDismiss {
   /** The row ids whose own press is still out, so each control says what it is doing. Empty for
    *  a press made under the narrowing, which names no row. */
@@ -312,7 +211,7 @@ export function useInboxDismiss({
     });
   };
 
-  const write = useKeyedWrite<InboxDismissResponse, InboxDismissInput, DismissRollback>({
+  const write = useKeyedWrite<InboxDismissResponse, InboxDismissInput, MeInboxDrop>({
     // A read of either view or the count asked while the press is out waits until Dispatch has
     // taken it (its answer or its thread-state event): Dispatch can answer it before, with the
     // rows it took out still in.
@@ -329,7 +228,7 @@ export function useInboxDismiss({
           : dismissRefusalText(taken, input.restore === true, error.message)
       );
       if (rollback === undefined) return;
-      putBack(queryClient, input.restore === true, rollback);
+      undropMeInboxThreads(queryClient, rollback);
     },
     onMutate: async (input) => {
       setRefusal(undefined);
@@ -337,19 +236,14 @@ export function useInboxDismiss({
       // on the page. Cancel the reads this press writes first, as every optimistic write here does.
       await cancelMeInbox(queryClient);
       const body = inboxDismissBody(input);
-      const restore = input.restore === true;
-      // The pages of the view the press is made in as they stand before it, which say where each
-      // row it takes out stood there.
-      const before = viewPages(queryClient, restore);
       // A dismiss takes its rows out of the Inbox answer, lowering the unread count by the unread
       // ones among them; a restore takes them out of the Dismissed pages, which counts for
       // nothing, since the dismiss that took a thread out marked it read. The other view is read
       // again when the answer lands, so a press never has to guess what the row looks like on the
-      // far side of it.
-      const dropped = dropMeInboxThreads(queryClient, restore, (thread) =>
+      // far side of it. What it took, with each row's place, is what a refusal puts back.
+      return dropMeInboxThreads(queryClient, input.restore === true, (thread) =>
         dismissesThread(thread, body)
       );
-      return { dropped, pages: droppedPages(before, dropped) };
     },
     onSuccess: () => {
       // What the server changed is read again from the server: both views, the counts, and the

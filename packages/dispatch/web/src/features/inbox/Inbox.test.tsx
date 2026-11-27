@@ -1794,7 +1794,7 @@ test("the reader's own list reads no open asks", async () => {
   try {
     await screen.findByText("Which approach?");
     expect(rowIds()).toEqual(["ask-mine"]);
-    expect(api.getMeInbox).toHaveBeenCalled();
+    expect(api.getMeInboxPage).toHaveBeenCalled();
     expect(listOpenAsks).not.toHaveBeenCalled();
   } finally {
     unmount();
@@ -2809,7 +2809,7 @@ test("?item= naming a thread row selects that row, not the first, once the one r
   try {
     // The one read, which lists the ask and the named thread row alike, is still out, so the
     // page draws no row: the column takes no row of its own and the address keeps the reader's.
-    await waitFor(() => expect(api.getMeInbox).toHaveBeenCalledWith({ state: "inbox" }));
+    await waitFor(() => expect(api.getMeInboxPage).toHaveBeenCalledWith({ state: "inbox" }));
     expect(rowIds()).toEqual([]);
     expect(selectedIds()).toEqual([]);
     expect(address()).toBe("/?item=reply:c1");

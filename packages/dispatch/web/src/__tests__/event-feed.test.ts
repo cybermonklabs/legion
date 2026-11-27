@@ -2237,7 +2237,7 @@ test("a claim that moves while the Inbox is in flight sends that issue's later c
 test("a claim that moves while the one read is in flight sends that issue's later cards to the ask endpoint, until a newer one read lands", async () => {
   const onIssue = issueAsk({ id: "ask-1" });
   const inFlight = Promise.withResolvers<MeInboxResponse>();
-  const getMeInbox = spyOn(api, "getMeInbox").mockImplementationOnce(() => inFlight.promise);
+  const getMeInbox = spyOn(api, "getMeInboxPage").mockImplementationOnce(() => inFlight.promise);
   const listOpenAsks = answerOpenAsks([onIssue]);
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   client.setQueryData(["whoami"], { kind: "user", login: "alice" });
