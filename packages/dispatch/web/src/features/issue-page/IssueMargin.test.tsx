@@ -2855,44 +2855,47 @@ const PAGED_LISTS: readonly (readonly [string, PagedList])[] = [
 // control goes once every entry is drawn. A list drawn from two sources - a component and a
 // retired one, a pinned comment and a pinned line of the history - is one list, whose pages run
 // on from one source into the other and whose count is of both.
-test.each(
-  PAGED_LISTS
-)("%s: 20 entries at a time under Show more, which says how many are left, moves the focus to the first entry it drew and goes at the end", async (_name, list) => {
-  const user = userEvent.setup();
-  const restoreReads = stubManyEntries();
-  const { unmount } = renderDetails(undefined, OPEN_DRAWER);
+test.each(PAGED_LISTS)(
+  "%s: 20 entries at a time under Show more, which says how many are left, moves the focus to the first entry it drew and goes at the end",
+  async (_name, list) => {
+    const user = userEvent.setup();
+    const restoreReads = stubManyEntries();
+    const { unmount } = renderDetails(undefined, OPEN_DRAWER);
 
-  try {
-    await waitFor(() =>
-      expect(list.entries(), "the list does not draw its first 20 entries").toHaveLength(PAGE_SIZE)
-    );
-    const more = within(list.box()).getByRole("button", { name: SHOW_MORE });
-    expect(more.textContent).toBe(showMoreName(MANY - PAGE_SIZE));
+    try {
+      await waitFor(() =>
+        expect(list.entries(), "the list does not draw its first 20 entries").toHaveLength(
+          PAGE_SIZE
+        )
+      );
+      const more = within(list.box()).getByRole("button", { name: SHOW_MORE });
+      expect(more.textContent).toBe(showMoreName(MANY - PAGE_SIZE));
 
-    act(() => more.focus());
-    await user.keyboard("{Enter}");
-    expect(list.entries(), "Show more did not draw the next 20 entries").toHaveLength(
-      2 * PAGE_SIZE
-    );
-    expect(more.textContent).toBe(showMoreName(MANY - 2 * PAGE_SIZE));
-    expect(
-      list.entries()[PAGE_SIZE]?.contains(document.activeElement),
-      "Show more did not move the focus to the first entry it drew"
-    ).toBe(true);
+      act(() => more.focus());
+      await user.keyboard("{Enter}");
+      expect(list.entries(), "Show more did not draw the next 20 entries").toHaveLength(
+        2 * PAGE_SIZE
+      );
+      expect(more.textContent).toBe(showMoreName(MANY - 2 * PAGE_SIZE));
+      expect(
+        list.entries()[PAGE_SIZE]?.contains(document.activeElement),
+        "Show more did not move the focus to the first entry it drew"
+      ).toBe(true);
 
-    act(() => more.focus());
-    await user.keyboard("{Enter}");
-    expect(list.entries()).toHaveLength(MANY);
-    expect(more.isConnected, "Show more stayed once every entry was drawn").toBe(false);
-    expect(
-      list.entries()[2 * PAGE_SIZE]?.contains(document.activeElement),
-      "Show more went with the last entries and did not move the focus to the first it drew"
-    ).toBe(true);
-  } finally {
-    unmount();
-    restoreReads();
+      act(() => more.focus());
+      await user.keyboard("{Enter}");
+      expect(list.entries()).toHaveLength(MANY);
+      expect(more.isConnected, "Show more stayed once every entry was drawn").toBe(false);
+      expect(
+        list.entries()[2 * PAGE_SIZE]?.contains(document.activeElement),
+        "Show more went with the last entries and did not move the focus to the first it drew"
+      ).toBe(true);
+    } finally {
+      unmount();
+      restoreReads();
+    }
   }
-});
+);
 
 // Details draws its own control of Referenced by: the application's `ReferencedByToggle` is in
 // its link blue, one sky-blue control among values in the page's ink.
