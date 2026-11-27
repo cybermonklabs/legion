@@ -344,23 +344,12 @@ func (w *workflowRuntime) climbMergeState(ctx context.Context, issue string) *re
 // has arrived, before the wait or during it, since the ladder then climbs at once (mergeStateEnds),
 // and false when ctx ends.
 func (w *workflowRuntime) climbWait(ctx context.Context, issue string, wait time.Duration) bool {
-	w.mergeStateMu.Lock()
-	run := w.mergeStateRunning[issue]
-	asked := run != nil && run.asked
-	var wake chan struct{}
-	if run != nil {
-		wake = run.wake
-	}
-	w.mergeStateMu.Unlock()
-	if asked {
-		return false
-	}
+	// CONTROL (fb8-wake): the wait reads no request, as the merged tree's time.After did.
+	_ = issue
 	timer := time.NewTimer(wait)
 	defer timer.Stop()
 	select {
 	case <-ctx.Done():
-		return false
-	case <-wake:
 		return false
 	case <-timer.C:
 		return true
