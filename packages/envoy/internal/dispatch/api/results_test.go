@@ -2021,11 +2021,11 @@ func TestAfterMergeResultStandsAtAStoredBranchAnswerWhileTheAppCannotReadTheRepo
 	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", twoChecks)
 	recordMerge(t, database, "acme/widgets", 51, issue.Key, "integration/x")
 
-	// The stray pass is recorded first: the newest result decides an after-merge check (R5), so
-	// the pass at the merge commit is the newer one, and a newer result nothing can place would
-	// leave the check unknown.
-	stray := decodeBody[recordedResult](t, recordResult(t, handler, issue.Key, resultBody("k2", "pass", strayCommit, nil)))
+	// The pass at the merge commit is recorded first and the stray pass after it, so the stray
+	// pass is the newest result, which decides an after-merge check (R5): nothing can place it,
+	// so the check is unknown, and the older pass at the merge commit does not decide it.
 	merge := decodeBody[recordedResult](t, recordResult(t, handler, issue.Key, resultBody("k2", "pass", baseMergeCommit, nil)))
+	stray := decodeBody[recordedResult](t, recordResult(t, handler, issue.Key, resultBody("k2", "pass", strayCommit, nil)))
 
 	// The App loses the repository. delivery.Branches holds what it last read for
 	// delivery.BranchCommitStaleAfter, so the read past that span is made here with the clock
@@ -2094,9 +2094,9 @@ func TestAfterMergeResultStandsAtItsMergedBranchWithNoDefaultBranchNamed(t *test
 	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", twoChecks)
 	recordMerge(t, database, "acme/hidden", 52, issue.Key, "integration/x")
 
-	// The stray pass first, so the pass at the merge commit is the newest result (R5).
-	stray := decodeBody[recordedResult](t, recordResult(t, handler, issue.Key, resultBody("k2", "pass", strayCommit, nil)))
+	// The stray pass last, so it is the newest result (R5), and nothing can place it.
 	merge := decodeBody[recordedResult](t, recordResult(t, handler, issue.Key, resultBody("k2", "pass", baseMergeCommit, nil)))
+	stray := decodeBody[recordedResult](t, recordResult(t, handler, issue.Key, resultBody("k2", "pass", strayCommit, nil)))
 
 	read := readResults(t, handler, issue.Key)
 	if compared := checkOf(t, read, "k2").ComparedWith; len(compared) != 1 || compared[0].Branch != "integration/x" {
@@ -2135,9 +2135,9 @@ func TestAfterMergeResultStandsAtItsMergedBranchWithNoAppKey(t *testing.T) {
 	// the walk ends on it rather than on a read nobody can make (delivery.CommitOnBranch).
 	writeBranchAnswer(t, database, "acme/widgets", "integration/x", strayCommit, false)
 
-	// The stray pass first, so the pass at the merge commit is the newest result (R5).
-	stray := decodeBody[recordedResult](t, recordResult(t, handler, issue.Key, resultBody("k2", "pass", strayCommit, nil)))
+	// The stray pass last, so it is the newest result (R5), and nothing can place it.
 	merge := decodeBody[recordedResult](t, recordResult(t, handler, issue.Key, resultBody("k2", "pass", baseMergeCommit, nil)))
+	stray := decodeBody[recordedResult](t, recordResult(t, handler, issue.Key, resultBody("k2", "pass", strayCommit, nil)))
 	read := readResults(t, handler, issue.Key)
 	if compared := checkOf(t, read, "k2").ComparedWith; len(compared) != 1 || compared[0].Branch != "integration/x" {
 		t.Fatalf("the after-merge check of a deployment with no App key compared with %+v, want the merged branch alone", compared)
@@ -4611,9 +4611,6 @@ func answerButReadTimes(t *testing.T, who string, answered timedResultsRead) str
 		for basis := range check.ComparedWith {
 			clearReadTime(&check.ComparedWith[basis])
 		}
-		for subject := range check.PassStands.Subjects {
-			clearReadTime(&check.PassStands.Subjects[subject].Basis)
-		}
 		for result := range check.Results {
 			if stands := check.Results[result].CommitStands; stands != nil {
 				clearReadTime(stands.Basis)
@@ -4853,7 +4850,8 @@ func TestAFailedReadOfTheLinkedRepositoriesRefusesTheRecord(t *testing.T) {
 // none. The `before_merge` result at a commit acme/tools holds that heads no pull request is at
 // another commit of acme/tools while the App reads acme/tools, and unknown, since the App cannot
 // read it, where GitHub hides acme/tools from it. The `after_merge` result at a commit of
-// acme/tools its main does not carry walks acme/tools' main and is at another commit of it.
+// acme/tools its main does not carry walks acme/tools' main — a basis because the issue's linked
+// pull request merged there — and is at another commit of it.
 func TestALinkedResultsAnswerNamesItsRepository(t *testing.T) {
 	t.Parallel()
 	const (
@@ -4879,8 +4877,12 @@ func TestALinkedResultsAnswerNamesItsRepository(t *testing.T) {
 		issue := issueInRepository(t, handler, "RELS", "acme/widgets", "Answers that name the linked repository").Key
 		uploadDocument(t, handler, "/api/v1/issues/"+issue, "verification.md", twoChecks)
 		linkPullRequests(t, handler, issue, "https://github.com/acme/tools/pull/7")
-		// acme/tools#7 as the attribution leaves it: the issue's, since the issue links it.
-		writeHead(t, database, "acme/tools", 7, headCommit, "open", issue)
+		// acme/tools#7 as the attribution leaves it once it judged the row: merged, as GitHub
+		// answers it, and the issue's, since the issue links it by its URL (attributionHeldFor).
+		// Its merge is what makes acme/tools' main a basis of the after_merge check
+		// (linkedBranchBases over Attributor.MergeIn, which lists the rows the attribution gives
+		// the issue); the row holds the merge commit the merge wrote, as GitHub answers it here.
+		writeKnownMergeOnBase(t, database, "acme/tools", 7, headCommit, issue, "main", headCommit)
 
 		atOld := recordStored(t, handler, issue, "k1", oldCommit)
 		own := recordStored(t, handler, issue, "k1", ownCommit)
