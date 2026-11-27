@@ -862,7 +862,7 @@ func TestTheArchitectTaskNamesTheRootsRestingOnItInEveryShape(t *testing.T) {
 			}
 			// The held task of an entry narrowed of every decision still names the resting root, in
 			// the shape the record gives the root now.
-			if got, want := NarrowRootTask(tc.start, heldEntry, record.KeptDecisions{}), then(restingOnTheRoot); got != want {
+			if got, want := NarrowRootTask(tc.start, heldEntry, ""), then(restingOnTheRoot); got != want {
 				t.Fatalf("the held task of an entry narrowed of every decision =\n%q\nwant\n%q", got, want)
 			}
 		})
@@ -870,11 +870,11 @@ func TestTheArchitectTaskNamesTheRootsRestingOnItInEveryShape(t *testing.T) {
 	// A held task of no entry is narrowed into the decisions and the resting roots alone, whatever
 	// shape the record gives the root, so it is the resting roots alone where no decision is left.
 	held := ArchitectStart{Root: admittedRoot(), Resting: restingOnTheRoot}
-	if got := NarrowRootTask(held, 0, record.KeptDecisions{}); got != restingOnTheRoot {
+	if got := NarrowRootTask(held, 0, ""); got != restingOnTheRoot {
 		t.Fatalf("the held task of no entry narrowed of every decision = %q, want the resting roots alone %q", got, restingOnTheRoot)
 	}
-	stays := childDecision()
-	if got, want := NarrowRootTask(held, 0, stays), KeptDecisionsTask("LEGION-208", stays)+"\n\n"+restingOnTheRoot; got != want {
+	decided, _ := KeptDecisionsTask(KeptGates{}, specGated, "LEGION-208", childDecision())
+	if got, want := NarrowRootTask(held, 0, decided), decided+"\n\n"+restingOnTheRoot; got != want {
 		t.Fatalf("the held task of no entry narrowed to one decision = %q, want %q", got, want)
 	}
 }
@@ -892,7 +892,7 @@ func TestTheArchitectTaskNamesTheRootsRestingOnItInEveryShape(t *testing.T) {
 func TestNarrowingARootsArchitectTaskKeepsItsShape(t *testing.T) {
 	t.Parallel()
 	stays := childDecision()
-	decided := KeptDecisionsTask("LEGION-208", stays)
+	decided, _ := KeptDecisionsTask(KeptGates{}, specGated, "LEGION-208", stays)
 	if decided == "" {
 		t.Fatal("the kept decisions name nothing, so the narrowing has nothing to pin")
 	}
@@ -931,14 +931,14 @@ func TestNarrowingARootsArchitectTaskKeepsItsShape(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			whole := tc.start
 			whole.Decided = decided
-			narrowed := NarrowRootTask(tc.start, heldEntry, stays)
+			narrowed := NarrowRootTask(tc.start, heldEntry, decided)
 			if want := ArchitectStartTask(whole); narrowed != want {
 				t.Fatalf("the narrowed task =\n%q\nwant\n%q", narrowed, want)
 			}
 			if !strings.Contains(narrowed, tc.label) {
 				t.Fatalf("the narrowed task lost the shape labelled %q", tc.label)
 			}
-			if got := NarrowRootTask(tc.start, 0, stays); got != decided {
+			if got := NarrowRootTask(tc.start, 0, decided); got != decided {
 				t.Fatalf("the narrowed task of a held task of no entry = %q, want the decisions' own text %q", got, decided)
 			}
 		})
@@ -955,9 +955,9 @@ const heldEntry int64 = 3
 func TestNarrowingARootsArchitectTaskThatMovedOnDropsTheInstruction(t *testing.T) {
 	t.Parallel()
 	stays := childDecision()
-	decided := KeptDecisionsTask("LEGION-208", stays)
+	decided, _ := KeptDecisionsTask(KeptGates{}, specGated, "LEGION-208", stays)
 	moved := ArchitectStart{Root: rootAt(phase.Planning), Gate: record.TreeGate{Steps: specGated}}
-	if got := NarrowRootTask(moved, heldEntry, stays); got != decided {
+	if got := NarrowRootTask(moved, heldEntry, decided); got != decided {
 		t.Fatalf("the narrowed task of a root now in planning = %q, want the kept decisions' own text %q", got, decided)
 	}
 }
@@ -967,7 +967,8 @@ func TestNarrowingARootsArchitectTaskThatMovedOnDropsTheInstruction(t *testing.T
 func TestNarrowingARootsKeptDecisionsToNothingWritesNoTask(t *testing.T) {
 	t.Parallel()
 	start := ArchitectStart{Root: admittedRoot(), Gate: record.TreeGate{Steps: specGated}}
-	if got := NarrowRootTask(start, 0, record.KeptDecisions{}); got != "" {
+	decided, _ := KeptDecisionsTask(KeptGates{}, specGated, "LEGION-208", record.KeptDecisions{})
+	if got := NarrowRootTask(start, 0, decided); got != "" {
 		t.Fatalf("the narrowed task = %q, want the empty task its caller retires", got)
 	}
 }
