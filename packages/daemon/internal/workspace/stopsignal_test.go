@@ -304,7 +304,7 @@ const ownBound = time.Second
 // that time, the time the machine kept the git waiting for a CPU. A git that reports it is
 // running, or holds its lock, within its runner's second, on a machine that held it for less than
 // a second more, has done so when the Timeout passes; one that has not fails its row by name.
-const stopTimeout = 2 * ownBound
+const stopTimeout = ownBound // CONTROL (never merged): main's one second, in place of the head's two.
 
 // stopEarly is how much sooner than the Timeout it gave its command a run may return and still
 // count as stopped at that Timeout: the clock reads either side of the call, and nothing else. A
