@@ -181,11 +181,13 @@ function PlannedState({ step }: { step: PlannedStep }): ReactNode {
   return <StateLabel shown={step} />;
 }
 
-/** What a task's line of needs says, above its planned steps here and in Details' steps (a task's
- *  group in `IssueHistory.tsx`): `Needs <task>, <task>` for the tasks of the plan it needs,
- *  `Needs not recorded` where its plan node recorded none (`needs` null while the plan gives it
- *  steps), and null - no line - for a task that needs none (`needs` []) or that the plan does not
- *  hold (`needs` null and no planned step). */
+/** What a task's line of needs says, above its planned steps here and in Details' steps
+ *  (`DetailsSteps.tsx`): `Needs <task>, <task>` for the tasks of the plan it needs, `Needs not
+ *  recorded` where its plan node recorded none (`needs` null while the plan gives it steps), and
+ *  null - no line - for a task that needs none (`needs` []) or that the plan does not hold
+ *  (`needs` null and no planned step). */
+// `DetailsSteps.tsx` is gone: Details now draws this line once for each task, in the task's
+// group above the entries of its history (`IssueHistory.tsx`'s `TaskGroup`).
 export function taskNeedsLine({
   needs,
   planned,
