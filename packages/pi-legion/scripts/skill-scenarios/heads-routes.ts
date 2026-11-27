@@ -30,8 +30,9 @@
 // refuses it, and so is a REST call to another repository. `gh run` answers `gh run list` (every
 // run, or one head's by its commit or branch) and `gh run view` of a named job that has ended, with
 // its summary or, given `--log` or `--log-failed`, its log: a watch of a run in progress cannot end
-// here as it does on GitHub, so it has no route. A close is answered and not kept: a later read
-// still finds the pull request open.
+// here as it does on GitHub, so it has no route. `gh workflow list` prints the workflows the
+// world's runs name, each active. A close is answered and not kept: a later read still finds the
+// pull request open.
 //
 // Each route is {match, ...}, the form gh-standin.ts reads; its doc comment says how a call picks
 // one and what each field does. A call no route names is the stand-in's loud failure, which
@@ -721,6 +722,20 @@ export function renderHeadsRoutes(world: HeadsWorld): RouteTable {
       },
     ];
   };
+  /** The world's workflows, which `gh workflow list` prints: one for each name its runs carry, in
+   * the REST list's order, each active, with an id of the world's own and the path its name gives.
+   */
+  const workflows = [...new Set(everyRun.map((w) => w.name))].map((name, index) => ({
+    id: 7001 + index,
+    name,
+    path: `.github/workflows/${name}.yml`,
+    state: "active",
+  }));
+  /** `gh workflow list` (or `ls`) of the world's repository, named by `-R`/`--repo` before the
+   * command or after it, or by none: another repository has no route, and nor has a `--limit`
+   * below the count, which would cut the list. */
+  const workflowRepo = `(-R|--repo)[ =](github\\.com/)?${repoArg}`;
+  const workflowList = `^gh (${workflowRepo} )?workflow (list|ls)(?= |$)(?!.* (-R|--repo)[ =](?!(github\\.com/)?${repoArg}( |$)))(?!.* (-L|--limit)[ =](${workflows.map((_, below) => below).join("|")})( |$))`;
 
   const routes: Route[] = [
     // A REST call to a repository other than the world's, which the token's App cannot read:
@@ -1087,6 +1102,14 @@ export function renderHeadsRoutes(world: HeadsWorld): RouteTable {
     {
       match: "^gh pr merge",
       stderr: `✓ Merged pull request ${repo}#${first.number} (${titled})\n`,
+    },
+    // `gh workflow list`: under `--json` each workflow's four fields, which gh names, else off a
+    // terminal each one's name, state and id, with a tab between two and no header. The two stand
+    // last, so no call an earlier route answers is answered anew.
+    { match: `${workflowList}(?=.* --json([ =]|$))`, stdout: workflows },
+    {
+      match: workflowList,
+      stdout: workflows.map((w) => [w.name, w.state, w.id].join("\t")).join("\n"),
     },
   ];
   return { current: first.number, login: "rig[bot]", repo, routes };

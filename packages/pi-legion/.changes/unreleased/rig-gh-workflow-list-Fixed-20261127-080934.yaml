@@ -1,0 +1,6 @@
+kind: Fixed
+body: |-
+  The skill-scenario rig's GitHub stand-in now answers `gh workflow list` (and `gh workflow ls`) of the world's repository, named by `-R`/`--repo` before the command or after it: each workflow the world's runs name, active, under `--json` with gh's four fields and otherwise as gh prints it off a terminal. The call had no route, so a real agent that listed the workflows read the rig's gap in place of GitHub's answer. Every call another route answered keeps its answer.
+time: 2026-11-27T08:09:34Z
+custom:
+    Issue: rig-gh-workflow-list
