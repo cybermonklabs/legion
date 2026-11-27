@@ -419,7 +419,7 @@ func TestAStoredTaskTakesALaterTextInPlaceOfItsOwnersPart(t *testing.T) {
 	t.Parallel()
 	const was = "Build the widget.\n````\nThe owner's own fence.\n````"
 	const now = "Build the widget, and its manual."
-	dir := func(record.Issue) string { return "/work" }
+	dir := func(string, ghrepo.Repository) string { return "/work" }
 	steps := []record.PlanStep{{Task: "a", Position: 1, Role: "implementer"}, {Task: "a", Position: 2, Role: "reviewer"}}
 	walk := func(text string) Walk {
 		return Walk{Stored: true, Task: "a", Text: text, Steps: steps, Line: []phase.Phase{phase.Implementing, phase.Reviewing, phase.Retro, phase.Merging}}

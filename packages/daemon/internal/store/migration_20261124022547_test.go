@@ -25,6 +25,7 @@ const planTasksParentRefVersion = 20261124022547
 // table and adds the column again. The control of that is the block without the delete of this
 // version's row: the roll forward then creates the table without the column, and this test fails.
 func TestThePlanTasksParentStartsEmptyAndComesBackAfterTheOwnersPlanWayBack(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, planTasksParentRefVersion-1)

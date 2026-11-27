@@ -23,9 +23,6 @@ var builtin = Deployment{Roles: BuiltinRoles()}
 // blocks names it (FromBlocks, ParentOf).
 const planDocument = "dispatch://ACME-1/artifact/plan-md"
 
-// needWord is a need written as Dispatch writes a reference to the block id of the plan document.
-func needWord(id string) string { return planDocument + "#b-" + id }
-
 // What no release carries out, as this release checks it: a step that names a role neither the
 // deployment nor the plan defines is refused, naming the step, its task and the role. Validate
 // refuses no plan for a step that it lacks, so each plan of Legion's own roles passes it whatever
