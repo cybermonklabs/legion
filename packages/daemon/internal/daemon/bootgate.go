@@ -17,6 +17,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/bootprobe"
@@ -943,6 +944,11 @@ func (g pluginGate) run(ctx context.Context, script string, args ...string) (ran
 	job.attach(cmd)
 	started := time.Now()
 	err := cmd.Run()
+	// PLANT (fault control, never merged): once the budget has passed, stop what is left of the
+	// group after the probe's own exit.
+	if attempt.Err() != nil {
+		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
+	}
 	job.release()
 	if ctx.Err() != nil {
 		return ran{}, ctx.Err()

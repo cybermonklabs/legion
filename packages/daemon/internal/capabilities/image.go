@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"syscall"
 	"sync/atomic"
 	"time"
 
@@ -636,6 +637,11 @@ func (img Image) runWithin(ctx context.Context, budget time.Duration, name strin
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	killed := procgroup.Configure(cmd)
 	err := cmd.Run()
+	// PLANT (fault control, never merged): once the budget has passed, stop what is left of the
+	// group after the command's own exit.
+	if attempt.Err() != nil {
+		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
+	}
 	// Read before the deferred cancel, which ends a context nothing else ended with a cause of its
 	// own, context.Canceled.
 	cause := context.Cause(attempt)
