@@ -1114,6 +1114,16 @@ function ownerTargets(event: DispatchEvent, viewer: string | undefined): Refresh
   if (event.type === "subscription.remove_requested") {
     return [];
   }
+  // The outbox's report that an event's copy for a role reached no session. On a project itself
+  // it moves no read, since no page reads a project's own log; on a project document it takes the
+  // document's path below, and on an issue it is a line in the issue's log.
+  if (
+    event.type === "role.undelivered" &&
+    event.issue_key === null &&
+    (event.artifact_id === null || event.artifact_id === undefined)
+  ) {
+    return [];
+  }
   if (event.issue_key === null && isMessageEvent(event)) {
     const queryKey = agentConversationKey(payloadString(event, "target"));
     if (queryKey === undefined) {
@@ -1200,6 +1210,11 @@ function ownerTargets(event: DispatchEvent, viewer: string | undefined): Refresh
   if (event.type === "artifact.human_edited") {
     // The notice a person's settled edits send to the document's agents, after each edit's own
     // `artifact.version` refreshed what it changed: a line in the issue's log and nothing more.
+    return targets;
+  }
+  if (event.type === "role.undelivered") {
+    // The outbox's report that an event's copy for a role reached no session: a line in the
+    // issue's log and nothing more.
     return targets;
   }
   if (event.type === "artifact.created" || event.type === "artifact.version") {

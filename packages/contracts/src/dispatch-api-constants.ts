@@ -862,6 +862,7 @@ const EVENT_TYPE_MEMBERS: Record<EventType, true> = {
   "project.updated": true,
   "result.recorded": true,
   "result.retracted": true,
+  "role.undelivered": true,
   "settings.architecture_source.updated": true,
   "settings.project_default_assignee.updated": true,
   "settings.repo_project.updated": true,
