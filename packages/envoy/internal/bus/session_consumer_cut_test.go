@@ -25,12 +25,14 @@ func reconnectsBeforeCut(owner *Client, consumers *SessionConsumers) (uint64, ui
 // flush check catches the case where the relay's late close of the old client socket triggers a
 // second reconnect after the first one passed.
 //
-// Reconnects is read before Status on each connection: nats.go counts a reconnect before the
-// connection reads CONNECTED again (doReconnect increments the count under the lock, then changes
-// status to CONNECTED), so a reconnect between the two reads raises the count while the status
-// still reads RECONNECTING, and the next poll sees both. The other order — Status before
-// Reconnects — could pair a CONNECTED status from before the cut with a reconnect count that has
-// not yet risen, the same class of stale-state read the row itself is about.
+// Read Reconnects before Status. A reconnect attempt that dials the server but then fails raises
+// Stats().Reconnects (nats.go v1.55.0 :3578) before processConnectInit fails and sets the status
+// back to RECONNECTING (:3587). Read Status first, and a CONNECTED read from before that attempt
+// can pair with the count the attempt raised, so the wait would pass on a connection that is
+// still reconnecting. A reconnect that succeeds cannot be seen half done: it raises the count and
+// sets CONNECTED under one hold of nc.mu, which Stats() and Status() each take. Reading the count
+// first stops the stale pair, and so does the Flush that follows; each is enough on its own, and
+// the test does both.
 func awaitReconnectsAfterCut(t *testing.T, owner *Client, consumers *SessionConsumers, ownerBefore, consumersBefore uint64) {
 	t.Helper()
 	testwait.Until(t, "the stream's owner and the session consumers to reconnect after the cut", func() (string, bool) {
