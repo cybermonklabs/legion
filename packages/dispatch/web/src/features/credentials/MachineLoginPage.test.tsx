@@ -244,50 +244,50 @@ test("Look up, held until its lookup's deadline, is let go there, and a press th
 test.each([
   { label: "Approval of a machine login", pressed: "Approve" },
   { label: "Denial of a machine login", pressed: "Deny" },
-] as const)("$pressed, held until its decision's deadline, is let go there, and a press then sends a decision again", async ({
-  label,
-  pressed,
-}) => {
-  const user = userEvent.setup();
-  const lookupMachineCredential = spyOn(api, "lookupMachineCredential").mockResolvedValue(
-    machineRecord()
-  );
-  const getMachineLogins = spyOn(api, "getMachineLogins").mockResolvedValue({ credentials: [] });
-  const decisions = [
-    spyOn(api, "approveCredentialRecord").mockRejectedValue(dropped()),
-    spyOn(api, "denyCredentialRecord").mockRejectedValue(dropped()),
-  ];
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  try {
-    renderPage(queryClient);
-    await user.click(screen.getByLabelText("Code shown on the machine"));
-    await user.paste("abcd1234");
-    await user.click(screen.getByRole("button", { name: "Look up" }));
-    await screen.findByText("worker-7.example.com");
-    jest.useFakeTimers();
-    const onFakeClock = userOnFakeClock();
-    await heldUntilLate(
-      onFakeClock,
-      screen.getByRole<HTMLButtonElement>("button", { name: pressed }),
-      {
-        label,
-        name: pressed,
-        queryClient,
-        sent: () => pressesOf(decisions),
-      }
+] as const)(
+  "$pressed, held until its decision's deadline, is let go there, and a press then sends a decision again",
+  async ({ label, pressed }) => {
+    const user = userEvent.setup();
+    const lookupMachineCredential = spyOn(api, "lookupMachineCredential").mockResolvedValue(
+      machineRecord()
     );
-    await onFakeClock.keyboard("{Enter}");
-    await tick(1_000);
-    expect(pressesOf(decisions), "a press past the deadline sent no decision").toBe(2);
-  } finally {
-    realClock();
-    cleanup();
-    queryClient.clear();
-    lookupMachineCredential.mockRestore();
-    getMachineLogins.mockRestore();
-    for (const decision of decisions) decision.mockRestore();
+    const getMachineLogins = spyOn(api, "getMachineLogins").mockResolvedValue({ credentials: [] });
+    const decisions = [
+      spyOn(api, "approveCredentialRecord").mockRejectedValue(dropped()),
+      spyOn(api, "denyCredentialRecord").mockRejectedValue(dropped()),
+    ];
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    try {
+      renderPage(queryClient);
+      await user.click(screen.getByLabelText("Code shown on the machine"));
+      await user.paste("abcd1234");
+      await user.click(screen.getByRole("button", { name: "Look up" }));
+      await screen.findByText("worker-7.example.com");
+      jest.useFakeTimers();
+      const onFakeClock = userOnFakeClock();
+      await heldUntilLate(
+        onFakeClock,
+        screen.getByRole<HTMLButtonElement>("button", { name: pressed }),
+        {
+          label,
+          name: pressed,
+          queryClient,
+          sent: () => pressesOf(decisions),
+        }
+      );
+      await onFakeClock.keyboard("{Enter}");
+      await tick(1_000);
+      expect(pressesOf(decisions), "a press past the deadline sent no decision").toBe(2);
+    } finally {
+      realClock();
+      cleanup();
+      queryClient.clear();
+      lookupMachineCredential.mockRestore();
+      getMachineLogins.mockRestore();
+      for (const decision of decisions) decision.mockRestore();
+    }
   }
-});
+);
 
 // An approval Dispatch made and lost its answer for (`409 KEY_COMMITTED`) looks the code up again
 // for its decision, a lookup the approval starts outside Look up's guard and lets the guard go

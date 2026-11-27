@@ -271,35 +271,34 @@ test.each([
     role: "button",
     start: "Remove the Legion daemon of ACME",
   },
-] as const)("$label, held while a write of the section is out, keeps the focus, and a second press sends nothing", async ({
-  label,
-  role,
-  start,
-}) => {
-  const user = userEvent.setup();
-  // The writes' answer, held until the case refuses it inside `act`.
-  const answer = Promise.withResolvers<never>();
-  const writes = [
-    answerDaemonSaves().mockReturnValue(answer.promise),
-    answerDaemonRemovals().mockReturnValue(answer.promise),
-  ];
-  const section = await renderSection(
-    legionServer([setting, { ...setting, project: "CORE", state_url: "https://daemon.example" }])
-  );
-  try {
-    await section.findByRole("cell", { name: "CORE" });
-    await pickFromLabelled(user, "Legion project", "ACME · ACME");
-    await user.click(section.getByLabelText("Legion daemon state URL"));
-    await user.paste("http://127.0.0.1:9731");
-    await pressHeld(user, section.getByRole(role, { name: label }), {
-      name: label,
-      sent: () => triesOf(writes),
-      start: start === undefined ? undefined : section.getByRole("button", { name: start }),
-    });
-  } finally {
-    await act(async () => answer.reject(new ApiError(403, { code: "FORBIDDEN", error: "no" })));
+] as const)(
+  "$label, held while a write of the section is out, keeps the focus, and a second press sends nothing",
+  async ({ label, role, start }) => {
+    const user = userEvent.setup();
+    // The writes' answer, held until the case refuses it inside `act`.
+    const answer = Promise.withResolvers<never>();
+    const writes = [
+      answerDaemonSaves().mockReturnValue(answer.promise),
+      answerDaemonRemovals().mockReturnValue(answer.promise),
+    ];
+    const section = await renderSection(
+      legionServer([setting, { ...setting, project: "CORE", state_url: "https://daemon.example" }])
+    );
+    try {
+      await section.findByRole("cell", { name: "CORE" });
+      await pickFromLabelled(user, "Legion project", "ACME · ACME");
+      await user.click(section.getByLabelText("Legion daemon state URL"));
+      await user.paste("http://127.0.0.1:9731");
+      await pressHeld(user, section.getByRole(role, { name: label }), {
+        name: label,
+        sent: () => triesOf(writes),
+        start: start === undefined ? undefined : section.getByRole("button", { name: start }),
+      });
+    } finally {
+      await act(async () => answer.reject(new ApiError(403, { code: "FORBIDDEN", error: "no" })));
+    }
   }
-});
+);
 
 // Offline, a write of the section is tried under its key until Dispatch answers it: each try
 // fails at the network, and the next waits out its backoff, whatever the browser says of the
@@ -309,58 +308,56 @@ test.each([
 // focus while it is held and once it is let go, under `emulateChromiumFocusFixup` throughout. A
 // Remove takes its row away at the press, so its hold is read on the other row's Remove, which
 // the reader moves to.
-test.each(
-  savesAndRemovals
-)("offline, $label is held until its write's deadline, let go there, and keeps the focus throughout", async ({
-  label,
-  start,
-}) => {
-  const writes = [
-    answerDaemonSaves().mockImplementation(failsAtTheNetwork),
-    answerDaemonRemovals().mockImplementation(failsAtTheNetwork),
-  ];
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const section = await renderSection(
-    legionServer([setting, { ...setting, project: "CORE", state_url: "https://daemon.example" }]),
-    true,
-    queryClient
-  );
-  await section.findByRole("cell", { name: "CORE" });
-  // The form is filled on the real clock, so every read the section makes has answered before
-  // the clock is held for the write.
-  if (start === undefined) await fillDaemonForm("http://127.0.0.1:9731");
-  const pressed = section.getByRole("button", { name: label }) as HTMLButtonElement;
-  const online = onlineManager.isOnline();
-  jest.useFakeTimers();
-  const stopFocusFixup = emulateChromiumFocusFixup();
-  try {
-    onlineManager.setOnline(false);
-    await pressHeld(userOnFakeClock(), pressed, {
-      name: label,
-      sent: () => triesOf(writes),
-      start: start === undefined ? undefined : section.getByRole("button", { name: start }),
-    });
+test.each(savesAndRemovals)(
+  "offline, $label is held until its write's deadline, let go there, and keeps the focus throughout",
+  async ({ label, start }) => {
+    const writes = [
+      answerDaemonSaves().mockImplementation(failsAtTheNetwork),
+      answerDaemonRemovals().mockImplementation(failsAtTheNetwork),
+    ];
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const section = await renderSection(
+      legionServer([setting, { ...setting, project: "CORE", state_url: "https://daemon.example" }]),
+      true,
+      queryClient
+    );
+    await section.findByRole("cell", { name: "CORE" });
+    // The form is filled on the real clock, so every read the section makes has answered before
+    // the clock is held for the write.
+    if (start === undefined) await fillDaemonForm("http://127.0.0.1:9731");
+    const pressed = section.getByRole("button", { name: label }) as HTMLButtonElement;
+    const online = onlineManager.isOnline();
+    jest.useFakeTimers();
+    const stopFocusFixup = emulateChromiumFocusFixup();
+    try {
+      onlineManager.setOnline(false);
+      await pressHeld(userOnFakeClock(), pressed, {
+        name: label,
+        sent: () => triesOf(writes),
+        start: start === undefined ? undefined : section.getByRole("button", { name: start }),
+      });
 
-    // A second short of the deadline the write is still within it, and the control still held.
-    await tick(SEND_DEADLINE_MS - 1_000);
-    expect(writesOf(queryClient).rows()[0]?.status).toBe("sending");
-    expect(heldNotDisabled(pressed, label)).toBe(true);
-    expect(pressed).toHaveFocus();
+      // A second short of the deadline the write is still within it, and the control still held.
+      await tick(SEND_DEADLINE_MS - 1_000);
+      expect(writesOf(queryClient).rows()[0]?.status).toBe("sending");
+      expect(heldNotDisabled(pressed, label)).toBe(true);
+      expect(pressed).toHaveFocus();
 
-    // Past it the write is late and still tried, and the control is let go with the focus on it.
-    await tick(1_000);
-    expect(writesOf(queryClient).rows()[0]?.status).toBe("late");
-    expect(heldNotDisabled(pressed, label)).toBe(false);
-    expect(pressed).toHaveFocus();
-  } finally {
-    // The section and its reads go before the network returns, so no read goes on after the row.
-    cleanup();
-    queryClient.clear();
-    onlineManager.setOnline(online);
-    stopFocusFixup();
-    realClock();
+      // Past it the write is late and still tried, and the control is let go with the focus on it.
+      await tick(1_000);
+      expect(writesOf(queryClient).rows()[0]?.status).toBe("late");
+      expect(heldNotDisabled(pressed, label)).toBe(false);
+      expect(pressed).toHaveFocus();
+    } finally {
+      // The section and its reads go before the network returns, so no read goes on after the row.
+      cleanup();
+      queryClient.clear();
+      onlineManager.setOnline(online);
+      stopFocusFixup();
+      realClock();
+    }
   }
-});
+);
 
 // A write that lands as the browser goes offline has the read of its project paused by the
 // network, with no deadline of its own running: the app's client holds a read of an idle query
@@ -368,76 +365,74 @@ test.each(
 // Remove through that read only up to the request deadline (`REQUEST_DEADLINE_MS`), lets them go
 // there with the focus on the control pressed, and says why the daemons are not read yet. Once
 // the network returns the project is read, and the note goes.
-test.each(
-  savesAndRemovals
-)("offline, $label whose write landed is let go at the request deadline, and the section says why", async ({
-  label,
-  start,
-}) => {
-  const saved = Promise.withResolvers<LegionSetting>();
-  const removed = Promise.withResolvers<void>();
-  const writes = [
-    answerDaemonSaves().mockImplementation(() => saved.promise),
-    answerDaemonRemovals().mockImplementation(() => removed.promise),
-  ];
-  const queryClient = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
-  const section = await renderSection(
-    legionServer([setting, { ...setting, project: "CORE", state_url: "https://daemon.example" }]),
-    true,
-    queryClient
-  );
-  await section.findByRole("cell", { name: "CORE" });
-  // The form is filled on the real clock, so every read the section makes has answered before
-  // the clock is held for the write.
-  if (start === undefined) await fillDaemonForm("http://127.0.0.1:9731");
-  const pressed = section.getByRole("button", { name: label }) as HTMLButtonElement;
-  const online = onlineManager.isOnline();
-  jest.useFakeTimers();
-  const stopFocusFixup = emulateChromiumFocusFixup();
-  try {
-    await pressHeld(userOnFakeClock(), pressed, {
-      name: label,
-      sent: () => triesOf(writes),
-      start: start === undefined ? undefined : section.getByRole("button", { name: start }),
-    });
-
-    // The write lands as the network goes: the project's read is asked, and paused.
-    onlineManager.setOnline(false);
-    await act(async () => {
-      saved.resolve({ ...setting, state_url: "http://127.0.0.1:9731" });
-      removed.resolve();
-    });
-    await tick(0);
-    expect(queryClient.getQueryState(legionDaemonQuery("ACME").queryKey)?.fetchStatus).toBe(
-      "paused"
+test.each(savesAndRemovals)(
+  "offline, $label whose write landed is let go at the request deadline, and the section says why",
+  async ({ label, start }) => {
+    const saved = Promise.withResolvers<LegionSetting>();
+    const removed = Promise.withResolvers<void>();
+    const writes = [
+      answerDaemonSaves().mockImplementation(() => saved.promise),
+      answerDaemonRemovals().mockImplementation(() => removed.promise),
+    ];
+    const queryClient = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
+    const section = await renderSection(
+      legionServer([setting, { ...setting, project: "CORE", state_url: "https://daemon.example" }]),
+      true,
+      queryClient
     );
+    await section.findByRole("cell", { name: "CORE" });
+    // The form is filled on the real clock, so every read the section makes has answered before
+    // the clock is held for the write.
+    if (start === undefined) await fillDaemonForm("http://127.0.0.1:9731");
+    const pressed = section.getByRole("button", { name: label }) as HTMLButtonElement;
+    const online = onlineManager.isOnline();
+    jest.useFakeTimers();
+    const stopFocusFixup = emulateChromiumFocusFixup();
+    try {
+      await pressHeld(userOnFakeClock(), pressed, {
+        name: label,
+        sent: () => triesOf(writes),
+        start: start === undefined ? undefined : section.getByRole("button", { name: start }),
+      });
 
-    // The write landed in the step before, which is when the hold's timer started: two seconds
-    // short of the request deadline the control is still held.
-    await tick(REQUEST_DEADLINE_MS - 2_000);
-    expect(heldNotDisabled(pressed, label)).toBe(true);
-    expect(pressed).toHaveFocus();
+      // The write lands as the network goes: the project's read is asked, and paused.
+      onlineManager.setOnline(false);
+      await act(async () => {
+        saved.resolve({ ...setting, state_url: "http://127.0.0.1:9731" });
+        removed.resolve();
+      });
+      await tick(0);
+      expect(queryClient.getQueryState(legionDaemonQuery("ACME").queryKey)?.fetchStatus).toBe(
+        "paused"
+      );
 
-    // At it the section lets the control go, with the focus on it, and says why.
-    await tick(2_000);
-    expect(heldNotDisabled(pressed, label)).toBe(false);
-    expect(pressed).toHaveFocus();
-    expect(section.getByRole("alert").textContent).toBe(
-      "Couldn't load the Legion daemons. Dispatch could not be reached."
-    );
+      // The write landed in the step before, which is when the hold's timer started: two seconds
+      // short of the request deadline the control is still held.
+      await tick(REQUEST_DEADLINE_MS - 2_000);
+      expect(heldNotDisabled(pressed, label)).toBe(true);
+      expect(pressed).toHaveFocus();
 
-    // The network returns, the project is read, and the note goes.
-    act(() => onlineManager.setOnline(true));
-    await waitFor(() => expect(section.queryByRole("alert")).toBeNull());
-  } finally {
-    // The section and its reads go before the network returns, so no read paused offline goes on.
-    cleanup();
-    queryClient.clear();
-    onlineManager.setOnline(online);
-    stopFocusFixup();
-    realClock();
+      // At it the section lets the control go, with the focus on it, and says why.
+      await tick(2_000);
+      expect(heldNotDisabled(pressed, label)).toBe(false);
+      expect(pressed).toHaveFocus();
+      expect(section.getByRole("alert").textContent).toBe(
+        "Couldn't load the Legion daemons. Dispatch could not be reached."
+      );
+
+      // The network returns, the project is read, and the note goes.
+      act(() => onlineManager.setOnline(true));
+      await waitFor(() => expect(section.queryByRole("alert")).toBeNull());
+    } finally {
+      // The section and its reads go before the network returns, so no read paused offline goes on.
+      cleanup();
+      queryClient.clear();
+      onlineManager.setOnline(online);
+      stopFocusFixup();
+      realClock();
+    }
   }
-});
+);
 
 // The line a removal's project read the bound ended draws is that removal's own: the next Remove
 // takes it away as its removal lands, though the earlier read is still out, and that removal's
@@ -518,64 +513,62 @@ test("the line a removal's project read the bound ended draws goes as the next r
 // a section that held its controls through that read would hold them again, with nothing to end
 // it until the network returns. The section lets them go with the stop instead, says the write
 // was stopped, and the project is still read once the network returns.
-test.each(
-  savesAndRemovals
-)("offline, $label is let go when its late write is stopped, though the project's read is paused", async ({
-  label,
-  start,
-}) => {
-  const writes = [
-    answerDaemonSaves().mockImplementation(failsAtTheNetwork),
-    answerDaemonRemovals().mockImplementation(failsAtTheNetwork),
-  ];
-  const queryClient = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
-  const section = await renderSection(
-    legionServer([setting, { ...setting, project: "CORE", state_url: "https://daemon.example" }]),
-    true,
-    queryClient
-  );
-  await section.findByRole("cell", { name: "CORE" });
-  if (start === undefined) await fillDaemonForm("http://127.0.0.1:9731");
-  const pressed = section.getByRole("button", { name: label }) as HTMLButtonElement;
-  const online = onlineManager.isOnline();
-  jest.useFakeTimers();
-  const stopFocusFixup = emulateChromiumFocusFixup();
-  try {
-    onlineManager.setOnline(false);
-    await pressHeld(userOnFakeClock(), pressed, {
-      name: label,
-      sent: () => triesOf(writes),
-      start: start === undefined ? undefined : section.getByRole("button", { name: start }),
-    });
-    await stopTheLateWrite(queryClient);
+test.each(savesAndRemovals)(
+  "offline, $label is let go when its late write is stopped, though the project's read is paused",
+  async ({ label, start }) => {
+    const writes = [
+      answerDaemonSaves().mockImplementation(failsAtTheNetwork),
+      answerDaemonRemovals().mockImplementation(failsAtTheNetwork),
+    ];
+    const queryClient = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
+    const section = await renderSection(
+      legionServer([setting, { ...setting, project: "CORE", state_url: "https://daemon.example" }]),
+      true,
+      queryClient
+    );
+    await section.findByRole("cell", { name: "CORE" });
+    if (start === undefined) await fillDaemonForm("http://127.0.0.1:9731");
+    const pressed = section.getByRole("button", { name: label }) as HTMLButtonElement;
+    const online = onlineManager.isOnline();
+    jest.useFakeTimers();
+    const stopFocusFixup = emulateChromiumFocusFixup();
+    try {
+      onlineManager.setOnline(false);
+      await pressHeld(userOnFakeClock(), pressed, {
+        name: label,
+        sent: () => triesOf(writes),
+        start: start === undefined ? undefined : section.getByRole("button", { name: start }),
+      });
+      await stopTheLateWrite(queryClient);
 
-    expect(queryClient.getQueryState(legionDaemonQuery("ACME").queryKey)?.fetchStatus).toBe(
-      "paused"
-    );
-    expect(heldNotDisabled(pressed, label)).toBe(false);
-    expect(pressed).toHaveFocus();
-    // The alert's paragraph, without its Retry button's name: it is the only alert, so no
-    // "not read yet" line stands beside the stop's.
-    expect(section.getByRole("alert").querySelector("p")?.textContent).toBe(
-      start === undefined
-        ? stoppedWriteNote("the Legion daemon of ACME", "saved", {
-            method: "PUT",
-            stopped: new SendStoppedError(),
-          })
-        : stoppedWriteNote("the removal of ACME's Legion daemon", "made", {
-            method: "DELETE",
-            stopped: new SendStoppedError(),
-          })
-    );
-  } finally {
-    // The section and its reads go before the network returns, so no read paused offline goes on.
-    cleanup();
-    queryClient.clear();
-    onlineManager.setOnline(online);
-    stopFocusFixup();
-    realClock();
+      expect(queryClient.getQueryState(legionDaemonQuery("ACME").queryKey)?.fetchStatus).toBe(
+        "paused"
+      );
+      expect(heldNotDisabled(pressed, label)).toBe(false);
+      expect(pressed).toHaveFocus();
+      // The alert's paragraph, without its Retry button's name: it is the only alert, so no
+      // "not read yet" line stands beside the stop's.
+      expect(section.getByRole("alert").querySelector("p")?.textContent).toBe(
+        start === undefined
+          ? stoppedWriteNote("the Legion daemon of ACME", "saved", {
+              method: "PUT",
+              stopped: new SendStoppedError(),
+            })
+          : stoppedWriteNote("the removal of ACME's Legion daemon", "made", {
+              method: "DELETE",
+              stopped: new SendStoppedError(),
+            })
+      );
+    } finally {
+      // The section and its reads go before the network returns, so no read paused offline goes on.
+      cleanup();
+      queryClient.clear();
+      onlineManager.setOnline(online);
+      stopFocusFixup();
+      realClock();
+    }
   }
-});
+);
 
 test("a refusal the server made is shown as the server wrote it, and the row goes back", async () => {
   const user = userEvent.setup();
@@ -1086,23 +1079,23 @@ test.each([
     first: "Remove the Legion daemon of ACME",
     inPressOrder: ["DELETE", "PUT https://second.example"],
   },
-] as const)("a Save pressed while $first's write of the daemon is late goes after it, and the daemon ends as the Save left it", async ({
-  first,
-  inPressOrder,
-}) => {
-  try {
-    const { queryClient, reach, save, taken } = await saveBehindLateWrite(first);
-    reach();
-    // Past the late write's next try, and the later press's write after it.
-    await tick(SEND_DEADLINE_MS);
-    expect(taken).toEqual([...inPressOrder]);
-    expect(writesOf(queryClient).rows()).toEqual([]);
-    expect(shownUrls()).toEqual(["https://second.example"]);
-    expect(save).toHaveFocus();
-  } finally {
-    realClock();
+] as const)(
+  "a Save pressed while $first's write of the daemon is late goes after it, and the daemon ends as the Save left it",
+  async ({ first, inPressOrder }) => {
+    try {
+      const { queryClient, reach, save, taken } = await saveBehindLateWrite(first);
+      reach();
+      // Past the late write's next try, and the later press's write after it.
+      await tick(SEND_DEADLINE_MS);
+      expect(taken).toEqual([...inPressOrder]);
+      expect(writesOf(queryClient).rows()).toEqual([]);
+      expect(shownUrls()).toEqual(["https://second.example"]);
+      expect(save).toHaveFocus();
+    } finally {
+      realClock();
+    }
   }
-});
+);
 
 // The later press waits its turn behind the late write, and no deadline of its own runs while it
 // waits: it holds the form no more than the late write does, so a write that never answers locks

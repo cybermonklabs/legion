@@ -485,35 +485,36 @@ test("Escape, and Tab out of the recorder with no press waiting, end a recording
 // An input method's key is no press of the reader's: one pressed in a composition, which Chromium
 // and Firefox mark `isComposing`, or the one that ends it. An Escape so sent cancels no recording,
 // a letter is recorded as no key, and the recorder waits for the next press.
-test.each(
-  INPUT_METHOD_MARKS
-)("an input method's Escape or letter, marked by %s, neither ends a recording nor is recorded", async (_mark, composing) => {
-  const view = drawSection();
-  try {
-    await onFakeClock(async () => {
-      const user = userOnFakeClock();
-      const add = control("inbox.snooze", "Add key");
-      await user.click(add);
-      // user-event cannot mark a key as an input method's, so each press is made by hand.
-      act(() => {
-        for (const key of ["Escape", "q"]) {
-          add.dispatchEvent(
-            new KeyboardEvent("keydown", { bubbles: true, cancelable: true, ...composing, key })
-          );
-        }
-      });
-      await jump(CHORD_TIMEOUT_MS);
-      expect(add.textContent, "an input method's key ended the recording").toBe(RECORDING);
-      expect(stored(), "an input method's key was recorded").toEqual({});
+test.each(INPUT_METHOD_MARKS)(
+  "an input method's Escape or letter, marked by %s, neither ends a recording nor is recorded",
+  async (_mark, composing) => {
+    const view = drawSection();
+    try {
+      await onFakeClock(async () => {
+        const user = userOnFakeClock();
+        const add = control("inbox.snooze", "Add key");
+        await user.click(add);
+        // user-event cannot mark a key as an input method's, so each press is made by hand.
+        act(() => {
+          for (const key of ["Escape", "q"]) {
+            add.dispatchEvent(
+              new KeyboardEvent("keydown", { bubbles: true, cancelable: true, ...composing, key })
+            );
+          }
+        });
+        await jump(CHORD_TIMEOUT_MS);
+        expect(add.textContent, "an input method's key ended the recording").toBe(RECORDING);
+        expect(stored(), "an input method's key was recorded").toEqual({});
 
-      await user.keyboard("c");
-      await jump(CHORD_TIMEOUT_MS);
-    });
-    expect(stored()).toEqual({ "inbox.snooze": ["b", "h", "c"] });
-  } finally {
-    view.unmount();
+        await user.keyboard("c");
+        await jump(CHORD_TIMEOUT_MS);
+      });
+      expect(stored()).toEqual({ "inbox.snooze": ["b", "h", "c"] });
+    } finally {
+      view.unmount();
+    }
   }
-});
+);
 
 // R14 makes the new key the next key press, or two presses within one second: a press the
 // reader leaves before the second ends is that key, as the end of the second would make it.

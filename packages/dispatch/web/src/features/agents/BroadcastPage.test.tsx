@@ -327,40 +327,39 @@ test.each([
   { name: "Retry", mode: "Aside", stranded: false },
   { name: "Use BTW instead", mode: "BTW", stranded: false },
   { name: "Use Send instead", mode: "Send", stranded: false },
-] as const)("$name ($mode) lets go at the broadcast retry deadline and sends again", async ({
-  name,
-  mode,
-  stranded,
-}) => {
-  const delivery = stranded
-    ? attempt({ created_at: new Date(Date.now() - 5 * 60_000).toISOString() })
-    : attempt({ delivery: "aside", error: "no live session planner-session", state: "failed" });
-  const page = renderBroadcast(broadcast([delivery]));
-  page.createMessageDelivery.mockRejectedValue(
-    new NetworkError("/api/v1/messages", new TypeError("Failed to fetch"))
-  );
-  try {
-    const row = await screen.findByRole("article", { name: "Planner" });
-    const button = within(row).getByRole<HTMLButtonElement>("button", { name });
-    jest.useFakeTimers();
-    const user = userOnFakeClock();
-    const sent = () => pressesOf([page.createMessageDelivery]);
-    await heldUntilLate(user, button, {
-      label: `Delivery to Planner again, as ${mode}`,
-      name,
-      queryClient: page.queryClient,
-      sent,
-    });
-    await user.keyboard("{Enter}");
-    await tick(1_000);
-    expect(sent()).toBe(2);
-  } finally {
-    realClock();
-    page.view.unmount();
-    page.queryClient.clear();
-    page.restore();
+] as const)(
+  "$name ($mode) lets go at the broadcast retry deadline and sends again",
+  async ({ name, mode, stranded }) => {
+    const delivery = stranded
+      ? attempt({ created_at: new Date(Date.now() - 5 * 60_000).toISOString() })
+      : attempt({ delivery: "aside", error: "no live session planner-session", state: "failed" });
+    const page = renderBroadcast(broadcast([delivery]));
+    page.createMessageDelivery.mockRejectedValue(
+      new NetworkError("/api/v1/messages", new TypeError("Failed to fetch"))
+    );
+    try {
+      const row = await screen.findByRole("article", { name: "Planner" });
+      const button = within(row).getByRole<HTMLButtonElement>("button", { name });
+      jest.useFakeTimers();
+      const user = userOnFakeClock();
+      const sent = () => pressesOf([page.createMessageDelivery]);
+      await heldUntilLate(user, button, {
+        label: `Delivery to Planner again, as ${mode}`,
+        name,
+        queryClient: page.queryClient,
+        sent,
+      });
+      await user.keyboard("{Enter}");
+      await tick(1_000);
+      expect(sent()).toBe(2);
+    } finally {
+      realClock();
+      page.view.unmount();
+      page.queryClient.clear();
+      page.restore();
+    }
   }
-});
+);
 
 // No move of the reader's draws a recipient's row again within the page: the rows are keyed by
 // their session and the page has no fold or tab. A broadcast read that fails does: the page

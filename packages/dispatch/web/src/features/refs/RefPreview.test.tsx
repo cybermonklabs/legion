@@ -542,52 +542,55 @@ test("with a card open over the open Issue actions menu, one Escape closes the c
 // open and the key goes on to the page, which the card's capture listener on `document` would
 // stop. An Escape after the composition closes the card and stops there. Chromium and Firefox mark
 // that Escape `isComposing`.
-test.each(
-  INPUT_METHOD_MARKS
-)("an Escape that ends an IME composition, marked by %s, leaves the open card open", (_mark, composing) => {
-  const getIssue = mockIssues();
-  jest.useFakeTimers();
-  const behind: KeyboardEvent[] = [];
-  const hearBehind = (event: KeyboardEvent) => behind.push(event);
-  window.addEventListener("keydown", hearBehind);
-  const view = render(<Harness />);
-  try {
-    const first = screen.getByRole("link", { name: "first" });
-    // A hover-intent pointer: user-event's hover names no pointerType, which this site needs.
-    fireEvent.pointerOver(first, { pointerType: "mouse" });
-    act(() => {
-      jest.advanceTimersByTime(REF_PREVIEW_OPEN_DELAY_MS);
-    });
-    expect(screen.getByRole("tooltip")).toBeTruthy();
-    // user-event has no form for a key that ends a composition, so the event is made by hand.
-    act(() => {
-      document.dispatchEvent(
-        new KeyboardEvent("keydown", {
-          bubbles: true,
-          cancelable: true,
-          ...composing,
-          key: "Escape",
-        })
+test.each(INPUT_METHOD_MARKS)(
+  "an Escape that ends an IME composition, marked by %s, leaves the open card open",
+  (_mark, composing) => {
+    const getIssue = mockIssues();
+    jest.useFakeTimers();
+    const behind: KeyboardEvent[] = [];
+    const hearBehind = (event: KeyboardEvent) => behind.push(event);
+    window.addEventListener("keydown", hearBehind);
+    const view = render(<Harness />);
+    try {
+      const first = screen.getByRole("link", { name: "first" });
+      // A hover-intent pointer: user-event's hover names no pointerType, which this site needs.
+      fireEvent.pointerOver(first, { pointerType: "mouse" });
+      act(() => {
+        jest.advanceTimersByTime(REF_PREVIEW_OPEN_DELAY_MS);
+      });
+      expect(screen.getByRole("tooltip")).toBeTruthy();
+      // user-event has no form for a key that ends a composition, so the event is made by hand.
+      act(() => {
+        document.dispatchEvent(
+          new KeyboardEvent("keydown", {
+            bubbles: true,
+            cancelable: true,
+            ...composing,
+            key: "Escape",
+          })
+        );
+      });
+      expect(
+        screen.queryByRole("tooltip"),
+        "the Escape that ended a composition closed the card"
+      ).toBeInTheDocument();
+      expect(behind.length, "the Escape that ended a composition stopped short of the page").toBe(
+        1
       );
-    });
-    expect(
-      screen.queryByRole("tooltip"),
-      "the Escape that ended a composition closed the card"
-    ).toBeInTheDocument();
-    expect(behind.length, "the Escape that ended a composition stopped short of the page").toBe(1);
-    act(() => {
-      document.dispatchEvent(
-        new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "Escape" })
-      );
-    });
-    expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
-    expect(behind.length, "the card's Escape reached the page").toBe(1);
-  } finally {
-    view.unmount();
-    window.removeEventListener("keydown", hearBehind);
-    getIssue.mockRestore();
+      act(() => {
+        document.dispatchEvent(
+          new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "Escape" })
+        );
+      });
+      expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
+      expect(behind.length, "the card's Escape reached the page").toBe(1);
+    } finally {
+      view.unmount();
+      window.removeEventListener("keydown", hearBehind);
+      getIssue.mockRestore();
+    }
   }
-});
+);
 
 test("only one card is open at a time: hovering a second reference replaces the first", async () => {
   const getIssue = mockIssues();
@@ -1116,45 +1119,48 @@ test.each([
     pinnedRead({ removed_version: 4, state: "removed", text: "Ship it on Friday." }),
     "Removed in version 4",
   ],
-] as const)("a pinned block's card names its document, the version it pins, how it stands since (%s), and that version's text", async (_state, read, standing) => {
-  const getIssueSummary = spyOn(api, "getIssueSummary").mockResolvedValue(summaryWithSpec());
-  const getIssue = spyOn(api, "getIssue");
-  const getReferences = spyOn(api, "getReferences").mockResolvedValue(read);
-  const route = { block: { id: "p1", pin: "2" }, key: "CORE-1", kind: "spec" as const };
-  const view = render(
-    <Harness>
-      <Link to="/issues/CORE-1/spec" {...referenceTriggerProps(route)}>
-        the block
-      </Link>
-    </Harness>
-  );
-  try {
-    act(() => {
-      screen.getByRole("link", { name: "the block" }).focus();
-    });
-    const card = screen.getByRole("tooltip");
-    await waitFor(() => expect(card).toHaveTextContent("Design.md"));
-    expect(getReferences).toHaveBeenCalledWith("dispatch://CORE-1/spec#b-p1@v2");
-    expect(card).toHaveTextContent("CORE-1 · Design.md");
-    expect(card).toHaveTextContent("Version 2");
-    expect(card).toHaveTextContent(standing);
-    await waitFor(() => expect(card).toHaveTextContent("Ship it on Friday."));
-    expect(card).not.toHaveTextContent("Monday");
-    // The card names the document from the issue's summary, never the full issue read.
-    expect(getIssueSummary).toHaveBeenCalledWith("CORE-1");
-    expect(getIssue).not.toHaveBeenCalled();
-    // The card opens the version it pins, under the spec's own slug.
-    expect(card.querySelector("a")).toHaveAttribute(
-      "href",
-      "/issues/CORE-1/artifacts/design-md?v=2"
+] as const)(
+  "a pinned block's card names its document, the version it pins, how it stands since (%s), and that version's text",
+  async (_state, read, standing) => {
+    const getIssueSummary = spyOn(api, "getIssueSummary").mockResolvedValue(summaryWithSpec());
+    const getIssue = spyOn(api, "getIssue");
+    const getReferences = spyOn(api, "getReferences").mockResolvedValue(read);
+    const route = { block: { id: "p1", pin: "2" }, key: "CORE-1", kind: "spec" as const };
+    const view = render(
+      <Harness>
+        <Link to="/issues/CORE-1/spec" {...referenceTriggerProps(route)}>
+          the block
+        </Link>
+      </Harness>
     );
-  } finally {
-    view.unmount();
-    getReferences.mockRestore();
-    getIssue.mockRestore();
-    getIssueSummary.mockRestore();
+    try {
+      act(() => {
+        screen.getByRole("link", { name: "the block" }).focus();
+      });
+      const card = screen.getByRole("tooltip");
+      await waitFor(() => expect(card).toHaveTextContent("Design.md"));
+      expect(getReferences).toHaveBeenCalledWith("dispatch://CORE-1/spec#b-p1@v2");
+      expect(card).toHaveTextContent("CORE-1 · Design.md");
+      expect(card).toHaveTextContent("Version 2");
+      expect(card).toHaveTextContent(standing);
+      await waitFor(() => expect(card).toHaveTextContent("Ship it on Friday."));
+      expect(card).not.toHaveTextContent("Monday");
+      // The card names the document from the issue's summary, never the full issue read.
+      expect(getIssueSummary).toHaveBeenCalledWith("CORE-1");
+      expect(getIssue).not.toHaveBeenCalled();
+      // The card opens the version it pins, under the spec's own slug.
+      expect(card.querySelector("a")).toHaveAttribute(
+        "href",
+        "/issues/CORE-1/artifacts/design-md?v=2"
+      );
+    } finally {
+      view.unmount();
+      getReferences.mockRestore();
+      getIssue.mockRestore();
+      getIssueSummary.mockRestore();
+    }
   }
-});
+);
 
 test("an unpinned block's card shows its current text, and a block that cannot be read its short form", async () => {
   const getIssueSummary = spyOn(api, "getIssueSummary").mockResolvedValue(summaryWithSpec());
@@ -1238,58 +1244,61 @@ test.each([
     pinnedRead({ removed_version: 4, state: "removed", text: "Ship it on Friday." }),
     ["Version 2", "Removed in version 4", "Ship it on Friday."],
   ],
-] as const)("an open card of %s shows what the refresh leaves it", async (_case, route, refresh, kept) => {
-  const getIssueSummary = spyOn(api, "getIssueSummary").mockResolvedValue(summaryWithSpec());
-  const getComment = spyOn(api, "getComment").mockResolvedValue(commentRead());
-  const first = pinnedRead({ state: "unchanged", text: "Ship it on Friday." });
-  const getReferences = spyOn(api, "getReferences")
-    .mockResolvedValueOnce({
-      ...first,
-      node: {
-        ...first.node,
-        made_by: [{ id: "alice", kind: "user" }],
-        pin: "pin" in route.block ? first.node.pin : undefined,
-        text: "Ship it on Friday.",
-      },
-    })
-    .mockImplementationOnce(() =>
-      refresh instanceof Error ? Promise.reject(refresh) : Promise.resolve(refresh)
+] as const)(
+  "an open card of %s shows what the refresh leaves it",
+  async (_case, route, refresh, kept) => {
+    const getIssueSummary = spyOn(api, "getIssueSummary").mockResolvedValue(summaryWithSpec());
+    const getComment = spyOn(api, "getComment").mockResolvedValue(commentRead());
+    const first = pinnedRead({ state: "unchanged", text: "Ship it on Friday." });
+    const getReferences = spyOn(api, "getReferences")
+      .mockResolvedValueOnce({
+        ...first,
+        node: {
+          ...first.node,
+          made_by: [{ id: "alice", kind: "user" }],
+          pin: "pin" in route.block ? first.node.pin : undefined,
+          text: "Ship it on Friday.",
+        },
+      })
+      .mockImplementationOnce(() =>
+        refresh instanceof Error ? Promise.reject(refresh) : Promise.resolve(refresh)
+      );
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const view = render(
+      <MemoryRouter>
+        <QueryClientProvider client={queryClient}>
+          <Link to="/" {...referenceTriggerProps(route)}>
+            the block
+          </Link>
+          <RefPreviewHost />
+        </QueryClientProvider>
+      </MemoryRouter>
     );
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const view = render(
-    <MemoryRouter>
-      <QueryClientProvider client={queryClient}>
-        <Link to="/" {...referenceTriggerProps(route)}>
-          the block
-        </Link>
-        <RefPreviewHost />
-      </QueryClientProvider>
-    </MemoryRouter>
-  );
-  try {
-    act(() => {
-      screen.getByRole("link", { name: "the block" }).focus();
-    });
-    const card = screen.getByRole("tooltip");
-    await waitFor(() => expect(card).toHaveTextContent("Ship it on Friday."));
+    try {
+      act(() => {
+        screen.getByRole("link", { name: "the block" }).focus();
+      });
+      const card = screen.getByRole("tooltip");
+      await waitFor(() => expect(card).toHaveTextContent("Ship it on Friday."));
 
-    await act(() => queryClient.refetchQueries({ queryKey: ["references", "to"] }));
-    expect(getReferences).toHaveBeenCalledTimes(2);
-    const after = screen.getByRole("tooltip");
-    if (kept === undefined) {
-      await waitFor(() => expect(after.textContent).toBe(shortForm(route)));
-    } else {
-      for (const text of kept) {
-        expect(after).toHaveTextContent(text);
+      await act(() => queryClient.refetchQueries({ queryKey: ["references", "to"] }));
+      expect(getReferences).toHaveBeenCalledTimes(2);
+      const after = screen.getByRole("tooltip");
+      if (kept === undefined) {
+        await waitFor(() => expect(after.textContent).toBe(shortForm(route)));
+      } else {
+        for (const text of kept) {
+          expect(after).toHaveTextContent(text);
+        }
       }
+    } finally {
+      view.unmount();
+      getReferences.mockRestore();
+      getComment.mockRestore();
+      getIssueSummary.mockRestore();
     }
-  } finally {
-    view.unmount();
-    getReferences.mockRestore();
-    getComment.mockRestore();
-    getIssueSummary.mockRestore();
   }
-});
+);
 
 // A block of a comment or message heads with its item and author in place of a document; a pinned
 // comment block names the revision it pins and how the block stands since, and shows that

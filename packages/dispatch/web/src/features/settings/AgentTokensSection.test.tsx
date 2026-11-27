@@ -1018,49 +1018,48 @@ test.each([
   { name: "Approve and control credentials (architect)", press: " ", role: "checkbox" },
   { name: "Revoke architect", press: "{Enter}", role: "button" },
   { name: "New token", press: "{Enter}", role: "button" },
-] as const)("$name, held while its write is out, keeps the focus, and a second press sends nothing", async ({
-  name,
-  press,
-  role,
-}) => {
-  const user = userEvent.setup();
-  const listAgentTokens = spyOn(api, "listAgentTokens").mockResolvedValue([
-    { ...token, scopes: ["person"] },
-  ]);
-  // The writes' answer, held until the case refuses it inside `act`.
-  const answer = Promise.withResolvers<never>();
-  const writes = [
-    spyOn(api, "setAgentTokenScopes").mockReturnValue(answer.promise),
-    spyOn(api, "revokeAgentToken").mockReturnValue(answer.promise),
-    spyOn(api, "createAgentToken").mockReturnValue(answer.promise),
-  ];
-  const originalConfirm = window.confirm;
-  window.confirm = () => true;
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+] as const)(
+  "$name, held while its write is out, keeps the focus, and a second press sends nothing",
+  async ({ name, press, role }) => {
+    const user = userEvent.setup();
+    const listAgentTokens = spyOn(api, "listAgentTokens").mockResolvedValue([
+      { ...token, scopes: ["person"] },
+    ]);
+    // The writes' answer, held until the case refuses it inside `act`.
+    const answer = Promise.withResolvers<never>();
+    const writes = [
+      spyOn(api, "setAgentTokenScopes").mockReturnValue(answer.promise),
+      spyOn(api, "revokeAgentToken").mockReturnValue(answer.promise),
+      spyOn(api, "createAgentToken").mockReturnValue(answer.promise),
+    ];
+    const originalConfirm = window.confirm;
+    window.confirm = () => true;
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
 
-  try {
-    render(
-      <QueryClientProvider client={queryClient}>
-        <AgentTokensSection />
-      </QueryClientProvider>
-    );
-    await screen.findByRole("cell", { name: "dsp_AbCdEf12…" });
-    await user.click(screen.getByLabelText("Token label"));
-    await user.paste("reviewer");
-    await pressHeld(user, screen.getByRole(role, { name }), {
-      name,
-      press,
-      sent: () => writes.reduce((count, write) => count + write.mock.calls.length, 0),
-    });
-  } finally {
-    await act(async () => answer.reject(new ApiError(403, { code: "FORBIDDEN", error: "no" })));
-    cleanup();
-    queryClient.clear();
-    window.confirm = originalConfirm;
-    listAgentTokens.mockRestore();
-    for (const write of writes) write.mockRestore();
+    try {
+      render(
+        <QueryClientProvider client={queryClient}>
+          <AgentTokensSection />
+        </QueryClientProvider>
+      );
+      await screen.findByRole("cell", { name: "dsp_AbCdEf12…" });
+      await user.click(screen.getByLabelText("Token label"));
+      await user.paste("reviewer");
+      await pressHeld(user, screen.getByRole(role, { name }), {
+        name,
+        press,
+        sent: () => writes.reduce((count, write) => count + write.mock.calls.length, 0),
+      });
+    } finally {
+      await act(async () => answer.reject(new ApiError(403, { code: "FORBIDDEN", error: "no" })));
+      cleanup();
+      queryClient.clear();
+      window.confirm = originalConfirm;
+      listAgentTokens.mockRestore();
+      for (const write of writes) write.mockRestore();
+    }
   }
-});
+);
 
 // The lost mint's replace offer is held while its revoke, and the mint after it, are out, by
 // `aria-disabled`, never `disabled` (`pressHeld`): the button the reader pressed keeps the focus,
@@ -1068,29 +1067,29 @@ test.each([
 test.each([
   { made: ["lost"], name: "Revoke it and mint another" },
   { made: ["first", "second"], name: "Revoke the one created" },
-] as const)("$name, held while its revoke is out, keeps the focus, and a second press sends nothing", async ({
-  made,
-  name,
-}) => {
-  const listed = made.map((id, index) => madeAt(id, "reviewer", 60_000 * (index + 1)));
-  const page = await mintLostWith(userEvent.setup(), [...listed, token], [true]);
-  // The revoke's answer, held until the case gives it inside `act`.
-  const revoked = Promise.withResolvers<void>();
-  page.revokeAgentToken.mockReturnValue(revoked.promise);
+] as const)(
+  "$name, held while its revoke is out, keeps the focus, and a second press sends nothing",
+  async ({ made, name }) => {
+    const listed = made.map((id, index) => madeAt(id, "reviewer", 60_000 * (index + 1)));
+    const page = await mintLostWith(userEvent.setup(), [...listed, token], [true]);
+    // The revoke's answer, held until the case gives it inside `act`.
+    const revoked = Promise.withResolvers<void>();
+    page.revokeAgentToken.mockReturnValue(revoked.promise);
 
-  try {
-    const [pressed] = await screen.findAllByRole("button", { name: new RegExp(`^${name}`) });
-    if (pressed === undefined) throw new Error(`The section drew no ${name}`);
-    await pressHeld(page.user, pressed, {
-      name,
-      sent: () => page.revokeAgentToken.mock.calls.length,
-    });
-    expect(page.asked).toHaveLength(1);
-  } finally {
-    await act(async () => revoked.resolve());
-    page.restore();
+    try {
+      const [pressed] = await screen.findAllByRole("button", { name: new RegExp(`^${name}`) });
+      if (pressed === undefined) throw new Error(`The section drew no ${name}`);
+      await pressHeld(page.user, pressed, {
+        name,
+        sent: () => page.revokeAgentToken.mock.calls.length,
+      });
+      expect(page.asked).toHaveLength(1);
+    } finally {
+      await act(async () => revoked.resolve());
+      page.restore();
+    }
   }
-});
+);
 
 /** A write's try that fails at the network, as every try does while Dispatch cannot be reached. */
 const failsAtTheNetwork = () =>
@@ -1113,50 +1112,48 @@ test.each([
     press: "{Enter}",
     role: "button",
   },
-] as const)("$name, held until its write's deadline, is let go there, and a press then sends its write again", async ({
-  label,
-  name,
-  press,
-  role,
-}) => {
-  const listAgentTokens = spyOn(api, "listAgentTokens").mockResolvedValue([
-    { ...token, scopes: ["person"] },
-  ]);
-  const writes = [
-    spyOn(api, "setAgentTokenScopes").mockImplementation(failsAtTheNetwork),
-    spyOn(api, "revokeAgentToken").mockImplementation(failsAtTheNetwork),
-  ];
-  const originalConfirm = window.confirm;
-  window.confirm = () => true;
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  try {
-    render(
-      <QueryClientProvider client={queryClient}>
-        <AgentTokensSection />
-      </QueryClientProvider>
-    );
-    await screen.findByRole("cell", { name: "dsp_AbCdEf12…" });
-    jest.useFakeTimers();
-    const user = userOnFakeClock();
-    await heldUntilLate(user, screen.getByRole<HTMLButtonElement>(role, { name }), {
-      label,
-      name,
-      press,
-      queryClient,
-      sent: () => pressesOf(writes),
-    });
-    await user.keyboard(press);
-    await tick(1_000);
-    expect(pressesOf(writes), "a press past the deadline sent nothing").toBe(2);
-  } finally {
-    realClock();
-    cleanup();
-    queryClient.clear();
-    window.confirm = originalConfirm;
-    listAgentTokens.mockRestore();
-    for (const write of writes) write.mockRestore();
+] as const)(
+  "$name, held until its write's deadline, is let go there, and a press then sends its write again",
+  async ({ label, name, press, role }) => {
+    const listAgentTokens = spyOn(api, "listAgentTokens").mockResolvedValue([
+      { ...token, scopes: ["person"] },
+    ]);
+    const writes = [
+      spyOn(api, "setAgentTokenScopes").mockImplementation(failsAtTheNetwork),
+      spyOn(api, "revokeAgentToken").mockImplementation(failsAtTheNetwork),
+    ];
+    const originalConfirm = window.confirm;
+    window.confirm = () => true;
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    try {
+      render(
+        <QueryClientProvider client={queryClient}>
+          <AgentTokensSection />
+        </QueryClientProvider>
+      );
+      await screen.findByRole("cell", { name: "dsp_AbCdEf12…" });
+      jest.useFakeTimers();
+      const user = userOnFakeClock();
+      await heldUntilLate(user, screen.getByRole<HTMLButtonElement>(role, { name }), {
+        label,
+        name,
+        press,
+        queryClient,
+        sent: () => pressesOf(writes),
+      });
+      await user.keyboard(press);
+      await tick(1_000);
+      expect(pressesOf(writes), "a press past the deadline sent nothing").toBe(2);
+    } finally {
+      realClock();
+      cleanup();
+      queryClient.clear();
+      window.confirm = originalConfirm;
+      listAgentTokens.mockRestore();
+      for (const write of writes) write.mockRestore();
+    }
   }
-});
+);
 
 /** What the form says beside New token of a press it refused while the mint of "reviewer" is
  *  out. */

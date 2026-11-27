@@ -138,52 +138,52 @@ const documentPath = buildIssuePath({ key: "CORE-1", kind: "artifact", slug: "la
 test.each([
   { name: "Save", label: "Rename Lauch notes to Launch notes" },
   { name: "Remove", label: "Remove Lauch notes" },
-] as const)("$name lets go at the document write deadline and sends again", async ({
-  label,
-  name,
-}) => {
-  const listArtifacts = spyOn(api, "listArtifacts").mockResolvedValue([document()]);
-  const dropped = new NetworkError("/api/v1/artifacts", new TypeError("Failed to fetch"));
-  const rename = spyOn(api, "renameArtifact").mockRejectedValue(dropped);
-  const remove = spyOn(api, "deleteArtifact").mockRejectedValue(dropped);
-  const view = renderPage(documentPath);
-  try {
-    await screen.findByRole("heading", { name: "Lauch notes" });
-    let cancel: HTMLElement | undefined;
-    if (name === "Save") {
-      const prepare = userEvent.setup();
-      await prepare.click(screen.getByRole("button", { name: "Correct title" }));
-      await prepare.clear(screen.getByRole("textbox", { name: "Title" }));
-      await prepare.paste("Launch notes");
-      cancel = screen.getByRole("button", { name: "Cancel" });
+] as const)(
+  "$name lets go at the document write deadline and sends again",
+  async ({ label, name }) => {
+    const listArtifacts = spyOn(api, "listArtifacts").mockResolvedValue([document()]);
+    const dropped = new NetworkError("/api/v1/artifacts", new TypeError("Failed to fetch"));
+    const rename = spyOn(api, "renameArtifact").mockRejectedValue(dropped);
+    const remove = spyOn(api, "deleteArtifact").mockRejectedValue(dropped);
+    const view = renderPage(documentPath);
+    try {
+      await screen.findByRole("heading", { name: "Lauch notes" });
+      let cancel: HTMLElement | undefined;
+      if (name === "Save") {
+        const prepare = userEvent.setup();
+        await prepare.click(screen.getByRole("button", { name: "Correct title" }));
+        await prepare.clear(screen.getByRole("textbox", { name: "Title" }));
+        await prepare.paste("Launch notes");
+        cancel = screen.getByRole("button", { name: "Cancel" });
+      }
+      const button = screen.getByRole<HTMLButtonElement>("button", { name });
+      jest.useFakeTimers();
+      const user = userOnFakeClock();
+      const sent = () => pressesOf([rename, remove]);
+      await heldUntilLate(user, button, {
+        alongside: (held) => {
+          if (cancel !== undefined) {
+            expect(cancel.getAttribute("aria-disabled"), "Cancel").toBe(held ? "true" : null);
+          }
+        },
+        label,
+        name,
+        queryClient: view.queryClient,
+        sent,
+      });
+      await user.keyboard("{Enter}");
+      await tick(1_000);
+      expect(sent()).toBe(2);
+    } finally {
+      realClock();
+      view.unmount();
+      view.queryClient.clear();
+      listArtifacts.mockRestore();
+      rename.mockRestore();
+      remove.mockRestore();
     }
-    const button = screen.getByRole<HTMLButtonElement>("button", { name });
-    jest.useFakeTimers();
-    const user = userOnFakeClock();
-    const sent = () => pressesOf([rename, remove]);
-    await heldUntilLate(user, button, {
-      alongside: (held) => {
-        if (cancel !== undefined) {
-          expect(cancel.getAttribute("aria-disabled"), "Cancel").toBe(held ? "true" : null);
-        }
-      },
-      label,
-      name,
-      queryClient: view.queryClient,
-      sent,
-    });
-    await user.keyboard("{Enter}");
-    await tick(1_000);
-    expect(sent()).toBe(2);
-  } finally {
-    realClock();
-    view.unmount();
-    view.queryClient.clear();
-    listArtifacts.mockRestore();
-    rename.mockRestore();
-    remove.mockRestore();
   }
-});
+);
 
 // The correction writes the name alone and the slug does not move, so the person stays on the
 // address they were on and the title they corrected is the one the page shows them.

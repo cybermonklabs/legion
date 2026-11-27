@@ -301,7 +301,9 @@ export function PrioritiesTable({
               const { description, id } = item.priority;
               const known = usedOn(text, mine, (one) => descriptionMadeOn(id, one));
               keepDescription(id, NOTHING_KEPT);
-              onDescribe(item, text, description, known ?? description);
+              // Nothing here reads whether it landed, and the promise never rejects
+              // (`writeText` in ./priority-writes.ts).
+              void onDescribe(item, text, description, known ?? description);
             }}
           />
         ))}

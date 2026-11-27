@@ -177,21 +177,17 @@ async function questionWriteLetsGo(
   }
 }
 
-test.each([
-  "Answer",
-  "Ask back",
-  "Ask back instead",
-  "Answer with it anyway",
-] as const)("%s lets go at the question write deadline", (name) =>
-  questionWriteLetsGo(name, false));
+test.each(["Answer", "Ask back", "Ask back instead", "Answer with it anyway"] as const)(
+  "%s lets go at the question write deadline",
+  (name) => questionWriteLetsGo(name, false)
+);
 
 // Inside an Inbox the answer and the question back are the Inbox's writes of the ask, which hold
 // the card as its own writes do: until their deadline and no longer.
-test.each([
-  "Answer",
-  "Ask back",
-] as const)("%s in an Inbox lets go at the question write deadline", (name) =>
-  questionWriteLetsGo(name, true));
+test.each(["Answer", "Ask back"] as const)(
+  "%s in an Inbox lets go at the question write deadline",
+  (name) => questionWriteLetsGo(name, true)
+);
 
 /** Picks bob in an open question's hand-on list, drawn inside an Inbox's writes where `inbox`
  *  says so, the hand-on never answering, and checks the trigger is held until the write's
@@ -673,59 +669,59 @@ test("a stopped upload's Retry after the card moves to another ask adds the file
 // A picture still uploading is not in the answer yet, so Answer and Ask back wait for it - but
 // only until the upload's deadline: an upload that never answers is still tried, its text joins
 // the answer if it lands, and a press sends what the card holds.
-test.each([
-  "Answer",
-  "Ask back",
-] as const)("%s lets go of a pasted picture's upload at its deadline and sends", async (name) => {
-  const uploadArtifact = spyOn(api, "uploadArtifact").mockRejectedValue(
-    dropped("/api/v1/issues/CORE-1/artifacts")
-  );
-  const open = answeredAsk({ answer: null, state: "open" });
-  const answer = mock((_id: string, _input: AnswerAskInput, _bounds: WriteBounds) =>
-    Promise.reject<Ask>(new ApiError(403, { error: "Cannot answer" }))
-  );
-  const comment = spyOn(api, "createComment").mockRejectedValue(
-    new ApiError(403, { error: "Cannot post the question" })
-  );
-  const { queryClient, view } = renderCard(
-    <AskCard answerAsk={answer} ask={open} initialThread={thread(open, [])} />
-  );
-  try {
-    const card = within(view.container);
-    const prepare = userEvent.setup();
-    const field = card.getByLabelText<HTMLTextAreaElement>("Your answer");
-    if (name === "Answer") {
-      await prepare.click(await card.findByRole("radio", { name: "Ship" }));
-    } else {
-      await prepare.click(field);
-      await prepare.paste("Ship what, exactly?");
+test.each(["Answer", "Ask back"] as const)(
+  "%s lets go of a pasted picture's upload at its deadline and sends",
+  async (name) => {
+    const uploadArtifact = spyOn(api, "uploadArtifact").mockRejectedValue(
+      dropped("/api/v1/issues/CORE-1/artifacts")
+    );
+    const open = answeredAsk({ answer: null, state: "open" });
+    const answer = mock((_id: string, _input: AnswerAskInput, _bounds: WriteBounds) =>
+      Promise.reject<Ask>(new ApiError(403, { error: "Cannot answer" }))
+    );
+    const comment = spyOn(api, "createComment").mockRejectedValue(
+      new ApiError(403, { error: "Cannot post the question" })
+    );
+    const { queryClient, view } = renderCard(
+      <AskCard answerAsk={answer} ask={open} initialThread={thread(open, [])} />
+    );
+    try {
+      const card = within(view.container);
+      const prepare = userEvent.setup();
+      const field = card.getByLabelText<HTMLTextAreaElement>("Your answer");
+      if (name === "Answer") {
+        await prepare.click(await card.findByRole("radio", { name: "Ship" }));
+      } else {
+        await prepare.click(field);
+        await prepare.paste("Ship what, exactly?");
+      }
+      const button = card.getByRole<HTMLButtonElement>("button", { name });
+      jest.useFakeTimers();
+      const user = userOnFakeClock();
+      // user-event's paste carries text, never the file this field uploads.
+      fireEvent.paste(field, { clipboardData: { files: [shot] } });
+      await untilAttempted(uploadArtifact, 1);
+      const status = () =>
+        writesOf(queryClient)
+          .rows()
+          .find((row) => row.label === "Upload of shot.png")?.status;
+
+      await tick(SEND_DEADLINE_MS - 1_000);
+      expect(status(), "the upload, a second short of its deadline").toBe("sending");
+      expect(button.disabled, `${name}, a second short of the upload's deadline`).toBe(true);
+
+      await tick(1_000);
+      expect(status(), "the upload, past its deadline").toBe("late");
+      expect(button.disabled, `${name}, past the upload's deadline`).toBe(false);
+      await user.click(button);
+      await tick(1_000);
+      expect(pressesOf([answer, comment]), `a press of ${name} past the deadline sends`).toBe(1);
+    } finally {
+      realClock();
+      view.unmount();
+      queryClient.clear();
+      uploadArtifact.mockRestore();
+      comment.mockRestore();
     }
-    const button = card.getByRole<HTMLButtonElement>("button", { name });
-    jest.useFakeTimers();
-    const user = userOnFakeClock();
-    // user-event's paste carries text, never the file this field uploads.
-    fireEvent.paste(field, { clipboardData: { files: [shot] } });
-    await untilAttempted(uploadArtifact, 1);
-    const status = () =>
-      writesOf(queryClient)
-        .rows()
-        .find((row) => row.label === "Upload of shot.png")?.status;
-
-    await tick(SEND_DEADLINE_MS - 1_000);
-    expect(status(), "the upload, a second short of its deadline").toBe("sending");
-    expect(button.disabled, `${name}, a second short of the upload's deadline`).toBe(true);
-
-    await tick(1_000);
-    expect(status(), "the upload, past its deadline").toBe("late");
-    expect(button.disabled, `${name}, past the upload's deadline`).toBe(false);
-    await user.click(button);
-    await tick(1_000);
-    expect(pressesOf([answer, comment]), `a press of ${name} past the deadline sends`).toBe(1);
-  } finally {
-    realClock();
-    view.unmount();
-    queryClient.clear();
-    uploadArtifact.mockRestore();
-    comment.mockRestore();
   }
-});
+);

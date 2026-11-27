@@ -77,32 +77,33 @@ test("a text written elsewhere replaces what a field the reader is not holding s
 // an input method's composition commits what the reader composed into the field and is the input
 // method's (`INPUT_METHOD_MARKS`): it saves nothing, and the field keeps the focus. The plain
 // Enter after it saves and leaves.
-test.each(
-  INPUT_METHOD_MARKS
-)("an Enter that ends an IME composition, marked by %s, saves nothing and leaves the focus in the field", async (_mark, composing) => {
-  const user = userEvent.setup();
-  const saved: string[] = [];
-  const view = render(
-    <InPlaceField label="Title" onSave={(next) => void saved.push(next)} value="Old name" />
-  );
-  try {
-    const field = within(view.container).getByRole("textbox", { name: "Title" });
-    await user.clear(field);
-    await user.paste("New name");
-    // The key that ends a composition: user-event has no form for `isComposing` or keyCode 229.
-    fireEvent.keyDown(field, { ...composing, key: "Enter" });
-    expect(saved, "the Enter that ended a composition saved").toEqual([]);
-    expect(field, "the Enter that ended a composition left the field").toHaveFocus();
+test.each(INPUT_METHOD_MARKS)(
+  "an Enter that ends an IME composition, marked by %s, saves nothing and leaves the focus in the field",
+  async (_mark, composing) => {
+    const user = userEvent.setup();
+    const saved: string[] = [];
+    const view = render(
+      <InPlaceField label="Title" onSave={(next) => void saved.push(next)} value="Old name" />
+    );
+    try {
+      const field = within(view.container).getByRole("textbox", { name: "Title" });
+      await user.clear(field);
+      await user.paste("New name");
+      // The key that ends a composition: user-event has no form for `isComposing` or keyCode 229.
+      fireEvent.keyDown(field, { ...composing, key: "Enter" });
+      expect(saved, "the Enter that ended a composition saved").toEqual([]);
+      expect(field, "the Enter that ended a composition left the field").toHaveFocus();
 
-    await user.keyboard("{Enter}");
-    // Plain Enter saves the draft and leaves the field.
-    expect(saved.length).toBeGreaterThan(0);
-    expect(saved.every((text) => text === "New name")).toBe(true);
-    expect(field).not.toHaveFocus();
-  } finally {
-    view.unmount();
+      await user.keyboard("{Enter}");
+      // Plain Enter saves the draft and leaves the field.
+      expect(saved.length).toBeGreaterThan(0);
+      expect(saved.every((text) => text === "New name")).toBe(true);
+      expect(field).not.toHaveFocus();
+    } finally {
+      view.unmount();
+    }
   }
-});
+);
 
 // The rest and the leaving are each a moment of their own here: the clock is held, so the rest
 // comes when the row moves it past `SAVE_AFTER_MS` and never between two keys of the typing. The
@@ -400,22 +401,25 @@ test("the write the page going makes is let finish as the page goes, and one mad
 test.each([
   ["isComposing", { isComposing: true, key: "Enter" }],
   ["keyCode 229", { isComposing: false, key: "Enter", keyCode: 229 }],
-] as const)("the Enter that ends a composition, marked by %s, neither writes nor leaves the field, and a plain one does both", async (_mark, composing) => {
-  const user = userEvent.setup({ delay: null });
-  const { field, view, writes } = heldField();
-  await onFakeClock(async () => {
-    await user.type(field, ", mine");
-    // user-event has no form for this: it cannot mark a key as an IME composition.
-    fireEvent.keyDown(field, composing);
-    expect(writes).toEqual([]);
-    expect(document.activeElement).toBe(field);
-    await user.keyboard("{Enter}");
+] as const)(
+  "the Enter that ends a composition, marked by %s, neither writes nor leaves the field, and a plain one does both",
+  async (_mark, composing) => {
+    const user = userEvent.setup({ delay: null });
+    const { field, view, writes } = heldField();
+    await onFakeClock(async () => {
+      await user.type(field, ", mine");
+      // user-event has no form for this: it cannot mark a key as an IME composition.
+      fireEvent.keyDown(field, composing);
+      expect(writes).toEqual([]);
+      expect(document.activeElement).toBe(field);
+      await user.keyboard("{Enter}");
+      expect(writes).toEqual(["Old name, mine"]);
+      expect(document.activeElement).not.toBe(field);
+    });
+    view.unmount();
     expect(writes).toEqual(["Old name, mine"]);
-    expect(document.activeElement).not.toBe(field);
-  });
-  view.unmount();
-  expect(writes).toEqual(["Old name, mine"]);
-});
+  }
+);
 
 test("the answer to an earlier write the reader typed back to leaves the later write out, and writes the reader's text again", async () => {
   const user = userEvent.setup({ delay: null });
@@ -935,37 +939,37 @@ test("a heading's title is a button inside the heading, which a focus does not o
 // focus goes back to the button the box was opened from, the heading's or the chip's, so the
 // keyboard reader is where they were. A Tab out of the box ends the edit too, and the focus stays
 // on the control the Tab reached. The clock is held, so nothing is written as the typing rests.
-test.each([
-  "heading",
-  "chip",
-] as const)("Enter and Escape in a %s's box write what the reader wrote and give the focus back to its button, and a Tab out leaves the focus on the control it reached", async (closed) => {
-  const user = userEvent.setup({ delay: null });
-  const { box, opener, page, view, writes } = closedField(closed);
-  try {
-    await onFakeClock(async () => {
-      for (const [key, typed] of [
-        ["{Enter}", ", mine"],
-        ["{Escape}", " too"],
-      ] as const) {
+test.each(["heading", "chip"] as const)(
+  "Enter and Escape in a %s's box write what the reader wrote and give the focus back to its button, and a Tab out leaves the focus on the control it reached",
+  async (closed) => {
+    const user = userEvent.setup({ delay: null });
+    const { box, opener, page, view, writes } = closedField(closed);
+    try {
+      await onFakeClock(async () => {
+        for (const [key, typed] of [
+          ["{Enter}", ", mine"],
+          ["{Escape}", " too"],
+        ] as const) {
+          await user.click(opener());
+          expect(box(), key).toHaveFocus();
+          await user.keyboard(typed);
+          await user.keyboard(key);
+          expect(box(), key).toBeNull();
+          expect(opener(), key).toHaveFocus();
+        }
+        expect(writes).toEqual(["Old name, mine", "Old name, mine too"]);
         await user.click(opener());
-        expect(box(), key).toHaveFocus();
-        await user.keyboard(typed);
-        await user.keyboard(key);
-        expect(box(), key).toBeNull();
-        expect(opener(), key).toHaveFocus();
-      }
+        expect(box()).toHaveFocus();
+        await user.tab();
+      });
+      expect(box()).toBeNull();
+      expect(page.getByRole("button", { name: "Next" })).toHaveFocus();
       expect(writes).toEqual(["Old name, mine", "Old name, mine too"]);
-      await user.click(opener());
-      expect(box()).toHaveFocus();
-      await user.tab();
-    });
-    expect(box()).toBeNull();
-    expect(page.getByRole("button", { name: "Next" })).toHaveFocus();
-    expect(writes).toEqual(["Old name, mine", "Old name, mine too"]);
-  } finally {
-    view.unmount();
+    } finally {
+      view.unmount();
+    }
   }
-});
+);
 
 // A heading's open box is as tall as the title it holds. The window resized while it is open
 // wraps the title anew at the box's new width, and the box is made as tall as its text again, so

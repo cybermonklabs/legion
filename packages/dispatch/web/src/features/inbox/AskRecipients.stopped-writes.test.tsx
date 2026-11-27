@@ -44,52 +44,52 @@ async function unsubscribePlatformPo(user: UserEvent, held: boolean) {
   );
 }
 
-test.each([
-  "Unfollow",
-  "Unsubscribe",
-] as const)("%s lets go at the recipients write deadline and sends again", async (name) => {
-  const dropped = new NetworkError("/api/v1/asks/ask-1", new TypeError("Failed to fetch"));
-  const removeFollower = mock((_ask: string, _session: string, _bounds: WriteBounds) =>
-    Promise.reject<void>(dropped)
-  );
-  const unsubscribe = spyOn(api, "unsubscribeIssueSession").mockRejectedValue(dropped);
-  const page = await renderRecipients({
-    removeFollower,
-    subscribers: [subscriber("b0b0b0b0b0b0b0b0", "Platform PO")],
-  });
-  try {
-    const list = screen.getByRole("list", {
-      name: name === "Unfollow" ? "Followers" : "Via issue subscription",
+test.each(["Unfollow", "Unsubscribe"] as const)(
+  "%s lets go at the recipients write deadline and sends again",
+  async (name) => {
+    const dropped = new NetworkError("/api/v1/asks/ask-1", new TypeError("Failed to fetch"));
+    const removeFollower = mock((_ask: string, _session: string, _bounds: WriteBounds) =>
+      Promise.reject<void>(dropped)
+    );
+    const unsubscribe = spyOn(api, "unsubscribeIssueSession").mockRejectedValue(dropped);
+    const page = await renderRecipients({
+      removeFollower,
+      subscribers: [subscriber("b0b0b0b0b0b0b0b0", "Platform PO")],
     });
-    const button = within(list).getAllByRole<HTMLButtonElement>("button", {
-      name,
-    })[0] as HTMLButtonElement;
-    await page.user.click(button);
-    const confirm = within(screen.getByRole("dialog")).getByRole("button", { name: "Confirm" });
-    jest.useFakeTimers();
-    const user = userOnFakeClock();
-    const sent = () => pressesOf([removeFollower, unsubscribe]);
-    await heldUntilLate(user, button, {
-      label:
-        name === "Unfollow"
-          ? "session:01234567… taken off this ask"
-          : "Platform PO unsubscribed from CORE-1",
-      name,
-      queryClient: page.queryClient,
-      sent,
-      start: confirm,
-    });
-    await user.keyboard("{Enter}");
-    await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Confirm" }));
-    await tick(1_000);
-    expect(sent()).toBe(2);
-  } finally {
-    realClock();
-    page.unmount();
-    page.queryClient.clear();
-    unsubscribe.mockRestore();
+    try {
+      const list = screen.getByRole("list", {
+        name: name === "Unfollow" ? "Followers" : "Via issue subscription",
+      });
+      const button = within(list).getAllByRole<HTMLButtonElement>("button", {
+        name,
+      })[0] as HTMLButtonElement;
+      await page.user.click(button);
+      const confirm = within(screen.getByRole("dialog")).getByRole("button", { name: "Confirm" });
+      jest.useFakeTimers();
+      const user = userOnFakeClock();
+      const sent = () => pressesOf([removeFollower, unsubscribe]);
+      await heldUntilLate(user, button, {
+        label:
+          name === "Unfollow"
+            ? "session:01234567… taken off this ask"
+            : "Platform PO unsubscribed from CORE-1",
+        name,
+        queryClient: page.queryClient,
+        sent,
+        start: confirm,
+      });
+      await user.keyboard("{Enter}");
+      await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Confirm" }));
+      await tick(1_000);
+      expect(sent()).toBe(2);
+    } finally {
+      realClock();
+      page.unmount();
+      page.queryClient.clear();
+      unsubscribe.mockRestore();
+    }
   }
-});
+);
 
 // An unfollow or an unsubscribe the reader stopped may have been made: the card says so, and
 // that its Retry sends the same `DELETE` again, which is the same however often it is made.

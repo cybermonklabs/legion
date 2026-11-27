@@ -9830,7 +9830,8 @@ test("the Delivery page's Filter panel draws no count beside a verdict before th
   let mode: "open" | "held" | "closed" = "open";
   await page.routeWebSocket(/\/ws\/live$/u, (socket) => {
     if (mode === "open") socket.connectToServer();
-    if (mode === "closed") socket.close({ code: 1011, reason: "test network drop" });
+    // The handler returns nothing Playwright waits for, so the close it starts is not awaited.
+    if (mode === "closed") void socket.close({ code: 1011, reason: "test network drop" });
   });
   // The control: the page with its socket open reads the fixture's own counts.
   await page.goto(`/delivery?${DELIVERY_WINDOW}`);

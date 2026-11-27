@@ -164,56 +164,56 @@ test("a version named with its answer lost closes the dialog and says it was mad
   }
 });
 
-test.each([
-  "Save",
-  "What changed?",
-] as const)("%s lets go at the version write deadline without naming a second version", async (name) => {
-  const create = spyOn(api, "createArtifactVersion").mockRejectedValue(
-    new NetworkError("/api/v1/artifacts/versions", new TypeError("Failed to fetch"))
-  );
-  const queryClient = createQueryClient();
-  const { toolbar, view } = renderProofDocument({ queryClient });
-  try {
-    act(() => toolbar.current?.requestNamedVersion());
-    const dialog = within(await screen.findByRole("dialog", { name: "Name this version" }));
-    const field = dialog.getByRole<HTMLInputElement>("textbox", { name: "What changed?" });
-    const prepare = userEvent.setup();
-    await prepare.click(field);
-    await prepare.paste("Settled the rollout");
-    const control =
-      name === "Save" ? dialog.getByRole<HTMLButtonElement>("button", { name }) : field;
-    jest.useFakeTimers();
-    const user = userOnFakeClock();
-    const sent = () => pressesOf([create]);
-    await heldUntilLate(user, control, {
-      alongside: (held) => {
-        expect(toolbar.current?.isNamingVersion, "the toolbar's naming").toBe(held);
-        expect(field.readOnly, "What changed?").toBe(held);
-      },
-      label: `New version of ${artifact.name}`,
-      name,
-      queryClient,
-      sent,
-    });
-    await user.keyboard("{Enter}");
-    await tick(1_000);
-    expect(sent()).toBe(1);
-    const stillSending = /Save sent nothing:.*still being sent/;
-    expect(dialog.getByText(stillSending)).toBeInTheDocument();
-    create.mockRejectedValue(new ApiError(403, { error: "Cannot name another version" }));
-    await tick(30_000);
-    expect(dialog.queryByText(stillSending)).toBeNull();
-    expect(dialog.getByRole("alert")).toHaveTextContent("Could not name this version");
-    await user.keyboard("{Enter}");
-    await tick(1_000);
-    expect(sent()).toBe(2);
-  } finally {
-    realClock();
-    view.unmount();
-    queryClient.clear();
-    create.mockRestore();
+test.each(["Save", "What changed?"] as const)(
+  "%s lets go at the version write deadline without naming a second version",
+  async (name) => {
+    const create = spyOn(api, "createArtifactVersion").mockRejectedValue(
+      new NetworkError("/api/v1/artifacts/versions", new TypeError("Failed to fetch"))
+    );
+    const queryClient = createQueryClient();
+    const { toolbar, view } = renderProofDocument({ queryClient });
+    try {
+      act(() => toolbar.current?.requestNamedVersion());
+      const dialog = within(await screen.findByRole("dialog", { name: "Name this version" }));
+      const field = dialog.getByRole<HTMLInputElement>("textbox", { name: "What changed?" });
+      const prepare = userEvent.setup();
+      await prepare.click(field);
+      await prepare.paste("Settled the rollout");
+      const control =
+        name === "Save" ? dialog.getByRole<HTMLButtonElement>("button", { name }) : field;
+      jest.useFakeTimers();
+      const user = userOnFakeClock();
+      const sent = () => pressesOf([create]);
+      await heldUntilLate(user, control, {
+        alongside: (held) => {
+          expect(toolbar.current?.isNamingVersion, "the toolbar's naming").toBe(held);
+          expect(field.readOnly, "What changed?").toBe(held);
+        },
+        label: `New version of ${artifact.name}`,
+        name,
+        queryClient,
+        sent,
+      });
+      await user.keyboard("{Enter}");
+      await tick(1_000);
+      expect(sent()).toBe(1);
+      const stillSending = /Save sent nothing:.*still being sent/;
+      expect(dialog.getByText(stillSending)).toBeInTheDocument();
+      create.mockRejectedValue(new ApiError(403, { error: "Cannot name another version" }));
+      await tick(30_000);
+      expect(dialog.queryByText(stillSending)).toBeNull();
+      expect(dialog.getByRole("alert")).toHaveTextContent("Could not name this version");
+      await user.keyboard("{Enter}");
+      await tick(1_000);
+      expect(sent()).toBe(2);
+    } finally {
+      realClock();
+      view.unmount();
+      queryClient.clear();
+      create.mockRestore();
+    }
   }
-});
+);
 
 // A read of the document asked before a version is named answers the versions from before it.
 // Landing after the version's answer, it would take the new version back off the toolbar's list.

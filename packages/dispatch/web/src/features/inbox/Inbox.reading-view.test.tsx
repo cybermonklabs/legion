@@ -550,54 +550,54 @@ test("at 390 px the bar's Snooze of the open row lands on the next row's scrolle
 // leaves the focus on a control that stays, in no row the press names as leaving. The apply then
 // takes the dismissed row away, and the focus stays on the next row's scroller: no landing the
 // bar's going owed moves it.
-test.each([
-  "a wheel",
-  "a key",
-] as const)("at 390 px, with the bar's Dismiss of the open row still applying, %s on the next row's scroller in its reading view leaves the focus there once the row goes", async (reader) => {
-  const user = userEvent.setup();
-  const width = movableReadingPaneWidth(390);
-  const threads = serveThreads();
-  const { queryClient, unmount } = renderInbox("/?group=none");
-  try {
-    await markOpenThread(user);
-    const apply = Promise.withResolvers<void>();
-    const cancel = spyOn(queryClient, "cancelQueries").mockReturnValue(apply.promise);
+test.each(["a wheel", "a key"] as const)(
+  "at 390 px, with the bar's Dismiss of the open row still applying, %s on the next row's scroller in its reading view leaves the focus there once the row goes",
+  async (reader) => {
+    const user = userEvent.setup();
+    const width = movableReadingPaneWidth(390);
+    const threads = serveThreads();
+    const { queryClient, unmount } = renderInbox("/?group=none");
     try {
-      await user.click(screen.getByRole("button", { name: "Dismiss selected threads" }));
-      expect(screen.queryByRole("toolbar", { name: "Selected rows" })).toBeNull();
-      await waitFor(() => expect(viewRow()).toBe("reply:c3"));
-      const scroller = screen.getByTestId("inbox-pane-scroller");
-      await waitFor(() => expect(placeOf(document.activeElement)).toBe(placeOf(scroller)));
-      if (reader === "a wheel") {
-        scroller.dispatchEvent(new WheelEvent("wheel", { bubbles: true }));
-      } else {
-        await user.keyboard("{ArrowDown}");
+      await markOpenThread(user);
+      const apply = Promise.withResolvers<void>();
+      const cancel = spyOn(queryClient, "cancelQueries").mockReturnValue(apply.promise);
+      try {
+        await user.click(screen.getByRole("button", { name: "Dismiss selected threads" }));
+        expect(screen.queryByRole("toolbar", { name: "Selected rows" })).toBeNull();
+        await waitFor(() => expect(viewRow()).toBe("reply:c3"));
+        const scroller = screen.getByTestId("inbox-pane-scroller");
+        await waitFor(() => expect(placeOf(document.activeElement)).toBe(placeOf(scroller)));
+        if (reader === "a wheel") {
+          scroller.dispatchEvent(new WheelEvent("wheel", { bubbles: true }));
+        } else {
+          await user.keyboard("{ArrowDown}");
+        }
+        // Read once the act has been answered: the focus is still on the next row's scroller, and
+        // the dismissed row is still listed.
+        await afterFrameAndTasks();
+        expect(placeOf(document.activeElement)).toBe(placeOf(scroller));
+        expect(rowIds()).toContain("reply:c2");
+      } finally {
+        cancel.mockRestore();
       }
-      // Read once the act has been answered: the focus is still on the next row's scroller, and
-      // the dismissed row is still listed.
-      await afterFrameAndTasks();
-      expect(placeOf(document.activeElement)).toBe(placeOf(scroller));
-      expect(rowIds()).toContain("reply:c2");
-    } finally {
-      cancel.mockRestore();
-    }
 
-    await act(async () => {
-      apply.resolve();
-      await apply.promise;
-    });
-    await waitFor(() => expect(rowIds()).not.toContain("reply:c2"));
-    await afterFrameAndTasks();
-    expect(viewRow()).toBe("reply:c3");
-    expect(placeOf(document.activeElement)).toBe(
-      placeOf(screen.getByTestId("inbox-pane-scroller"))
-    );
-  } finally {
-    await threads.restore();
-    unmount();
-    width.restore();
+      await act(async () => {
+        apply.resolve();
+        await apply.promise;
+      });
+      await waitFor(() => expect(rowIds()).not.toContain("reply:c2"));
+      await afterFrameAndTasks();
+      expect(viewRow()).toBe("reply:c3");
+      expect(placeOf(document.activeElement)).toBe(
+        placeOf(screen.getByTestId("inbox-pane-scroller"))
+      );
+    } finally {
+      await threads.restore();
+      unmount();
+      width.restore();
+    }
   }
-});
+);
 
 // The bar's Snooze of the open row keeps the bar up while its write is out, with the row still
 // drawn in its reading view. The reader unticks the row's own mark there with a click, which

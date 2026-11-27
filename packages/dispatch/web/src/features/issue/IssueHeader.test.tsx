@@ -398,50 +398,53 @@ test.each([
   ["Enter", "keyCode 229"],
   ["Escape", "isComposing"],
   ["Escape", "keyCode 229"],
-] as const)("an %s that ends a composition in the title's editor, marked by %s, leaves the editor open with its draft and writes nothing, and a plain one ends the edit", async (key, mark) => {
-  const client = new QueryClient({
-    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
-  });
-  const patchIssue = answerIssuePatches().mockImplementation(async (_key, input) =>
-    patchAnswer(issue, input)
-  );
-  const view = renderHeader(client, <Header state={unpinnedState} />);
-  try {
-    // The title's editor opens from its Edit title button (`IssueHeader`'s title control).
-    await view.user.click(view.q.getByRole("button", { name: "Edit title" }));
-    const title = view.q.getByRole("textbox", { name: "Issue title" });
-    await view.user.clear(title);
-    await view.user.paste("Pin it from the header");
-    // user-event has no form for this: it cannot mark a key as an IME composition.
-    fireEvent.keyDown(
-      title,
-      mark === "isComposing"
-        ? { isComposing: true, key }
-        : { isComposing: false, key, keyCode: 229 }
+] as const)(
+  "an %s that ends a composition in the title's editor, marked by %s, leaves the editor open with its draft and writes nothing, and a plain one ends the edit",
+  async (key, mark) => {
+    const client = new QueryClient({
+      defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+    });
+    const patchIssue = answerIssuePatches().mockImplementation(async (_key, input) =>
+      patchAnswer(issue, input)
     );
-    expect(title).toBeInTheDocument();
-    expect(title).toHaveValue("Pin it from the header");
-    expect(title).toHaveFocus();
-    expect(patchIssue).not.toHaveBeenCalled();
-
-    await view.user.keyboard(`{${key}}`);
-    expect(view.q.queryByRole("textbox", { name: "Issue title" })).toBeNull();
-    if (key === "Escape") {
-      expect(view.q.getByRole("heading", { level: 1, name: issue.title })).toBeInTheDocument();
-      expect(patchIssue).not.toHaveBeenCalled();
-    } else {
-      await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
-      expect(patchIssue).toHaveBeenCalledWith(
-        "CORE-1",
-        { title: "Pin it from the header" },
-        keyedAttempt
+    const view = renderHeader(client, <Header state={unpinnedState} />);
+    try {
+      // The title's editor opens from its Edit title button (`IssueHeader`'s title control).
+      await view.user.click(view.q.getByRole("button", { name: "Edit title" }));
+      const title = view.q.getByRole("textbox", { name: "Issue title" });
+      await view.user.clear(title);
+      await view.user.paste("Pin it from the header");
+      // user-event has no form for this: it cannot mark a key as an IME composition.
+      fireEvent.keyDown(
+        title,
+        mark === "isComposing"
+          ? { isComposing: true, key }
+          : { isComposing: false, key, keyCode: 229 }
       );
+      expect(title).toBeInTheDocument();
+      expect(title).toHaveValue("Pin it from the header");
+      expect(title).toHaveFocus();
+      expect(patchIssue).not.toHaveBeenCalled();
+
+      await view.user.keyboard(`{${key}}`);
+      expect(view.q.queryByRole("textbox", { name: "Issue title" })).toBeNull();
+      if (key === "Escape") {
+        expect(view.q.getByRole("heading", { level: 1, name: issue.title })).toBeInTheDocument();
+        expect(patchIssue).not.toHaveBeenCalled();
+      } else {
+        await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
+        expect(patchIssue).toHaveBeenCalledWith(
+          "CORE-1",
+          { title: "Pin it from the header" },
+          keyedAttempt
+        );
+      }
+    } finally {
+      view.unmount();
+      patchIssue.mockRestore();
     }
-  } finally {
-    view.unmount();
-    patchIssue.mockRestore();
   }
-});
+);
 
 // The title's control is a button named for what it does, with the title it edits as its
 // description, so a screen reader reads "Edit title, button" and then the title. The heading

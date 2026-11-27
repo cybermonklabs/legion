@@ -2616,72 +2616,71 @@ test.each([
   { turn: "reply", name: "Retry", mode: "Aside" },
   { turn: "reply", name: "Use BTW instead", mode: "BTW" },
   { turn: "reply", name: "Use Send instead", mode: "Send" },
-] as const)("$turn: $name lets go at the delivery write deadline and sends again", async ({
-  turn,
-  name,
-  mode,
-}) => {
-  const target = "session:worker-session";
-  const failed = attempt({
-    delivery: "aside",
-    error: "no live session",
-    session_id: "worker-session",
-    state: "failed",
-  });
-  const lists =
-    turn === "comment"
-      ? {
-          comments: [
-            comment("comment-1", { deliveries: [mentionAttempt({ error: "no live session" })] }),
-          ],
-        }
-      : {
-          messages: [
-            turn === "message"
-              ? thread(message("message-1", { deliveries: [failed], target }))
-              : thread(message("message-1", { target }), [
-                  message("message-2", {
-                    author: { id: "worker-session", kind: "session" },
-                    in_reply_to: "message-1",
-                  }),
-                  message("message-3", {
-                    deliveries: [{ ...failed, message_id: "message-3" }],
-                    in_reply_to: "message-1",
-                  }),
-                ]),
-          ],
-        };
-  const stub = stubLists({
-    ...lists,
-    agents: [agent("worker-session", "Worker", ["aside", "btw", "steer"])],
-  });
-  const dropped = new NetworkError("/api/v1/deliveries", new TypeError("Failed to fetch"));
-  const retryComment = spyOn(api, "createCommentDelivery").mockRejectedValue(dropped);
-  const retryMessage = spyOn(api, "createMessageDelivery").mockRejectedValue(dropped);
-  const queryClient = newQueryClient();
-  const view = render(tab({ "CORE-1": issueState() }, true, queryClient));
-  try {
-    const button = await screen.findByRole<HTMLButtonElement>("button", { name });
-    jest.useFakeTimers();
-    const user = userOnFakeClock();
-    const sent = () => pressesOf([retryComment, retryMessage]);
-    await heldUntilLate(user, button, {
-      label: `Delivery ${turn === "comment" ? "of the comment " : ""}to Worker again, as ${mode}`,
-      name,
-      queryClient,
-      sent,
+] as const)(
+  "$turn: $name lets go at the delivery write deadline and sends again",
+  async ({ turn, name, mode }) => {
+    const target = "session:worker-session";
+    const failed = attempt({
+      delivery: "aside",
+      error: "no live session",
+      session_id: "worker-session",
+      state: "failed",
     });
-    await user.keyboard("{Enter}");
-    await tick(1_000);
-    expect(sent()).toBe(2);
-  } finally {
-    view.unmount();
-    queryClient.clear();
-    retryComment.mockRestore();
-    retryMessage.mockRestore();
-    stub.restore();
+    const lists =
+      turn === "comment"
+        ? {
+            comments: [
+              comment("comment-1", { deliveries: [mentionAttempt({ error: "no live session" })] }),
+            ],
+          }
+        : {
+            messages: [
+              turn === "message"
+                ? thread(message("message-1", { deliveries: [failed], target }))
+                : thread(message("message-1", { target }), [
+                    message("message-2", {
+                      author: { id: "worker-session", kind: "session" },
+                      in_reply_to: "message-1",
+                    }),
+                    message("message-3", {
+                      deliveries: [{ ...failed, message_id: "message-3" }],
+                      in_reply_to: "message-1",
+                    }),
+                  ]),
+            ],
+          };
+    const stub = stubLists({
+      ...lists,
+      agents: [agent("worker-session", "Worker", ["aside", "btw", "steer"])],
+    });
+    const dropped = new NetworkError("/api/v1/deliveries", new TypeError("Failed to fetch"));
+    const retryComment = spyOn(api, "createCommentDelivery").mockRejectedValue(dropped);
+    const retryMessage = spyOn(api, "createMessageDelivery").mockRejectedValue(dropped);
+    const queryClient = newQueryClient();
+    const view = render(tab({ "CORE-1": issueState() }, true, queryClient));
+    try {
+      const button = await screen.findByRole<HTMLButtonElement>("button", { name });
+      jest.useFakeTimers();
+      const user = userOnFakeClock();
+      const sent = () => pressesOf([retryComment, retryMessage]);
+      await heldUntilLate(user, button, {
+        label: `Delivery ${turn === "comment" ? "of the comment " : ""}to Worker again, as ${mode}`,
+        name,
+        queryClient,
+        sent,
+      });
+      await user.keyboard("{Enter}");
+      await tick(1_000);
+      expect(sent()).toBe(2);
+    } finally {
+      view.unmount();
+      queryClient.clear();
+      retryComment.mockRestore();
+      retryMessage.mockRestore();
+      stub.restore();
+    }
   }
-});
+);
 
 // The Conversation tab left and opened again draws its turns anew, and may do so while a delivery
 // Retry's write is still out, before it lands. Each retry goes under the name of what it delivers
@@ -2689,84 +2688,83 @@ test.each([
 // the one pressed did: a press of it sends no second retry, and it lets go at the retry's deadline
 // (`SEND_DEADLINE_MS`). Dispatch never answers the retry: each try fails at the network and is
 // tried again under its key.
-test.each([
-  "comment",
-  "message",
-  "reply",
-] as const)("%s: a Retry drawn again while its retry's write is out holds until the retry's deadline and sends no second retry", async (turn) => {
-  const target = "session:worker-session";
-  const failed = attempt({
-    delivery: "aside",
-    error: "no live session",
-    session_id: "worker-session",
-    state: "failed",
-  });
-  const lists =
-    turn === "comment"
-      ? {
-          comments: [
-            comment("comment-1", { deliveries: [mentionAttempt({ error: "no live session" })] }),
-          ],
-        }
-      : {
-          messages: [
-            turn === "message"
-              ? thread(message("message-1", { deliveries: [failed], target }))
-              : thread(message("message-1", { target }), [
-                  message("message-2", {
-                    author: { id: "worker-session", kind: "session" },
-                    in_reply_to: "message-1",
-                  }),
-                  message("message-3", {
-                    deliveries: [{ ...failed, message_id: "message-3" }],
-                    in_reply_to: "message-1",
-                  }),
-                ]),
-          ],
-        };
-  const stub = stubLists({
-    ...lists,
-    agents: [agent("worker-session", "Worker", ["aside", "btw", "steer"])],
-  });
-  const dropped = new NetworkError("/api/v1/deliveries", new TypeError("Failed to fetch"));
-  const retryComment = spyOn(api, "createCommentDelivery").mockRejectedValue(dropped);
-  const retryMessage = spyOn(api, "createMessageDelivery").mockRejectedValue(dropped);
-  const queryClient = newQueryClient();
-  let view = render(tab({ "CORE-1": issueState() }, true, queryClient));
-  const retryOf = () => screen.getByRole<HTMLButtonElement>("button", { name: "Retry" });
-  const sent = () => pressesOf([retryComment, retryMessage]);
-  try {
-    await screen.findByRole("button", { name: "Retry" });
-    jest.useFakeTimers();
-    const user = userOnFakeClock();
-    await user.click(retryOf());
-    await tick(0);
-    expect(sent()).toBe(1);
+test.each(["comment", "message", "reply"] as const)(
+  "%s: a Retry drawn again while its retry's write is out holds until the retry's deadline and sends no second retry",
+  async (turn) => {
+    const target = "session:worker-session";
+    const failed = attempt({
+      delivery: "aside",
+      error: "no live session",
+      session_id: "worker-session",
+      state: "failed",
+    });
+    const lists =
+      turn === "comment"
+        ? {
+            comments: [
+              comment("comment-1", { deliveries: [mentionAttempt({ error: "no live session" })] }),
+            ],
+          }
+        : {
+            messages: [
+              turn === "message"
+                ? thread(message("message-1", { deliveries: [failed], target }))
+                : thread(message("message-1", { target }), [
+                    message("message-2", {
+                      author: { id: "worker-session", kind: "session" },
+                      in_reply_to: "message-1",
+                    }),
+                    message("message-3", {
+                      deliveries: [{ ...failed, message_id: "message-3" }],
+                      in_reply_to: "message-1",
+                    }),
+                  ]),
+            ],
+          };
+    const stub = stubLists({
+      ...lists,
+      agents: [agent("worker-session", "Worker", ["aside", "btw", "steer"])],
+    });
+    const dropped = new NetworkError("/api/v1/deliveries", new TypeError("Failed to fetch"));
+    const retryComment = spyOn(api, "createCommentDelivery").mockRejectedValue(dropped);
+    const retryMessage = spyOn(api, "createMessageDelivery").mockRejectedValue(dropped);
+    const queryClient = newQueryClient();
+    let view = render(tab({ "CORE-1": issueState() }, true, queryClient));
+    const retryOf = () => screen.getByRole<HTMLButtonElement>("button", { name: "Retry" });
+    const sent = () => pressesOf([retryComment, retryMessage]);
+    try {
+      await screen.findByRole("button", { name: "Retry" });
+      jest.useFakeTimers();
+      const user = userOnFakeClock();
+      await user.click(retryOf());
+      await tick(0);
+      expect(sent()).toBe(1);
 
-    view.unmount();
-    view = render(tab({ "CORE-1": issueState() }, true, queryClient));
-    await tick(0);
-    expect(
-      heldNotDisabled(retryOf(), "Retry"),
-      "the Retry drawn again let go while its retry was out"
-    ).toBe(true);
-    await user.click(retryOf());
-    await tick(0);
-    expect(sent(), "a press of the Retry drawn again sent a second retry").toBe(1);
+      view.unmount();
+      view = render(tab({ "CORE-1": issueState() }, true, queryClient));
+      await tick(0);
+      expect(
+        heldNotDisabled(retryOf(), "Retry"),
+        "the Retry drawn again let go while its retry was out"
+      ).toBe(true);
+      await user.click(retryOf());
+      await tick(0);
+      expect(sent(), "a press of the Retry drawn again sent a second retry").toBe(1);
 
-    await tick(SEND_DEADLINE_MS - 1_000);
-    expect(heldNotDisabled(retryOf(), "Retry")).toBe(true);
-    await tick(1_000);
-    expect(heldNotDisabled(retryOf(), "Retry")).toBe(false);
-  } finally {
-    realClock();
-    view.unmount();
-    queryClient.clear();
-    retryComment.mockRestore();
-    retryMessage.mockRestore();
-    stub.restore();
+      await tick(SEND_DEADLINE_MS - 1_000);
+      expect(heldNotDisabled(retryOf(), "Retry")).toBe(true);
+      await tick(1_000);
+      expect(heldNotDisabled(retryOf(), "Retry")).toBe(false);
+    } finally {
+      realClock();
+      view.unmount();
+      queryClient.clear();
+      retryComment.mockRestore();
+      retryMessage.mockRestore();
+      stub.restore();
+    }
   }
-});
+);
 
 test("a root targeted-message retry checks the role's current holder after a handoff, not the failed attempt's session", async () => {
   const stub = stubLists({

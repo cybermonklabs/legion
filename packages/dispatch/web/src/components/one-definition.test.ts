@@ -695,19 +695,20 @@ describe("the shared controls are defined once, under components/", () => {
     (key) => [`${key.charAt(0).toUpperCase()}${key.slice(1)}`, key] as const
   );
 
-  test.each(
-    SHARED_CONTROLS
-  )("%s is exported from components/ and sets its own `data-control`, and no page defines one", (name, key) => {
-    const source = stripComments(
-      readFileSync(join(import.meta.dir, `${name}.tsx`), "utf8"),
-      `components/${name}.tsx`
-    );
-    expect(source).toMatch(new RegExp(`\\bexport\\s+function\\s+${name}\\b`));
-    expect(source).toMatch(new RegExp(`\\bCONTROL\\.${key}\\b`));
-    const defines = new RegExp(`\\b(?:function|const|let|class)\\s+${name}\\b`);
-    const definedIn = FEATURE_FILES.filter(([relativePath, file]) =>
-      defines.test(codeOf(relativePath, file))
-    ).map(([relativePath]) => relativePath);
-    expect(definedIn).toEqual([]);
-  });
+  test.each(SHARED_CONTROLS)(
+    "%s is exported from components/ and sets its own `data-control`, and no page defines one",
+    (name, key) => {
+      const source = stripComments(
+        readFileSync(join(import.meta.dir, `${name}.tsx`), "utf8"),
+        `components/${name}.tsx`
+      );
+      expect(source).toMatch(new RegExp(`\\bexport\\s+function\\s+${name}\\b`));
+      expect(source).toMatch(new RegExp(`\\bCONTROL\\.${key}\\b`));
+      const defines = new RegExp(`\\b(?:function|const|let|class)\\s+${name}\\b`);
+      const definedIn = FEATURE_FILES.filter(([relativePath, file]) =>
+        defines.test(codeOf(relativePath, file))
+      ).map(([relativePath]) => relativePath);
+      expect(definedIn).toEqual([]);
+    }
+  );
 });

@@ -6010,11 +6010,12 @@ test("an Escape that ends an IME composition leaves each open control and its dr
 // unmarked - `isComposing` false - with keyCode 229 (WebKit bug 165004): that Escape is the input
 // method's as well, and leaves each control, its draft and everything around it as the marked one
 // does.
-test.each(
-  DRAFT_CONTROLS.map((control) => [control.name, control] as const)
-)("an Escape that ends an IME composition in Safari, at keyCode 229, leaves %s open with its draft", async (_name, control) => {
-  await composingEscapeLeaves(userEvent.setup(), control, { isComposing: false, keyCode: 229 });
-});
+test.each(DRAFT_CONTROLS.map((control) => [control.name, control] as const))(
+  "an Escape that ends an IME composition in Safari, at keyCode 229, leaves %s open with its draft",
+  async (_name, control) => {
+    await composingEscapeLeaves(userEvent.setup(), control, { isComposing: false, keyCode: 229 });
+  }
+);
 
 /** The form an editor's box sits in. */
 function formOf(box: HTMLElement): HTMLFormElement {

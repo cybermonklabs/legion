@@ -74,71 +74,70 @@ const answeredAsk: Ask = {
   urgency: "med",
 };
 
-test.each([
-  "button",
-  "field",
-  "remount",
-] as const)("%s lets go at the reply write deadline without posting twice", async (from) => {
-  const create = spyOn(api, "createComment").mockRejectedValue(
-    new NetworkError("/api/v1/issues/CORE-1/comments", new TypeError("Failed to fetch"))
-  );
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const composer = (key: string) => (
-    <QueryClientProvider client={client}>
-      <AskReplyComposer ask={answeredAsk} createReply={create} key={key} />
-    </QueryClientProvider>
-  );
-  const view = render(composer("one"));
-  try {
-    const prepare = userEvent.setup();
-    const box = screen.getByRole<HTMLTextAreaElement>("textbox", { name: "Reply" });
-    await prepare.click(box);
-    await prepare.paste("The rollout is on Friday.");
-    const button = screen.getByRole<HTMLButtonElement>("button", { name: "Reply" });
-    jest.useFakeTimers();
-    const user = userOnFakeClock();
-    const sent = () => pressesOf([create]);
-    const press = from === "field" ? "{Control>}{Enter}{/Control}" : "{Enter}";
-    if (from === "remount") {
-      await user.click(button);
-      await tick(0);
-      view.rerender(composer("two"));
-      await tick(SEND_DEADLINE_MS - 1_000);
-      expect(screen.getByRole("textbox", { name: "Reply" })).toHaveAttribute(
-        "aria-disabled",
-        "true"
-      );
+test.each(["button", "field", "remount"] as const)(
+  "%s lets go at the reply write deadline without posting twice",
+  async (from) => {
+    const create = spyOn(api, "createComment").mockRejectedValue(
+      new NetworkError("/api/v1/issues/CORE-1/comments", new TypeError("Failed to fetch"))
+    );
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const composer = (key: string) => (
+      <QueryClientProvider client={client}>
+        <AskReplyComposer ask={answeredAsk} createReply={create} key={key} />
+      </QueryClientProvider>
+    );
+    const view = render(composer("one"));
+    try {
+      const prepare = userEvent.setup();
+      const box = screen.getByRole<HTMLTextAreaElement>("textbox", { name: "Reply" });
+      await prepare.click(box);
+      await prepare.paste("The rollout is on Friday.");
+      const button = screen.getByRole<HTMLButtonElement>("button", { name: "Reply" });
+      jest.useFakeTimers();
+      const user = userOnFakeClock();
+      const sent = () => pressesOf([create]);
+      const press = from === "field" ? "{Control>}{Enter}{/Control}" : "{Enter}";
+      if (from === "remount") {
+        await user.click(button);
+        await tick(0);
+        view.rerender(composer("two"));
+        await tick(SEND_DEADLINE_MS - 1_000);
+        expect(screen.getByRole("textbox", { name: "Reply" })).toHaveAttribute(
+          "aria-disabled",
+          "true"
+        );
+        await tick(1_000);
+        view.rerender(composer("three"));
+        expect(screen.getByRole("textbox", { name: "Reply" })).not.toHaveAttribute("aria-disabled");
+        screen.getByRole("button", { name: /Reply/ }).focus();
+      } else {
+        await heldUntilLate(user, from === "field" ? box : button, {
+          label: "Reply on “Should this ship?”",
+          name: "Reply",
+          press,
+          queryClient: client,
+          sent,
+        });
+      }
+      await user.keyboard(press);
       await tick(1_000);
-      view.rerender(composer("three"));
-      expect(screen.getByRole("textbox", { name: "Reply" })).not.toHaveAttribute("aria-disabled");
-      screen.getByRole("button", { name: /Reply/ }).focus();
-    } else {
-      await heldUntilLate(user, from === "field" ? box : button, {
-        label: "Reply on “Should this ship?”",
-        name: "Reply",
-        press,
-        queryClient: client,
-        sent,
-      });
+      const stillSending = /Reply sent nothing:.*reply is still being sent/;
+      expect(screen.getByText(stillSending)).toBeInTheDocument();
+      expect(sent()).toBe(1);
+      create.mockRejectedValue(new ApiError(403, { error: "Cannot reply" }));
+      await tick(30_000);
+      expect(screen.queryByText(stillSending)).toBeNull();
+      await user.keyboard(press);
+      await tick(1_000);
+      expect(sent()).toBe(2);
+    } finally {
+      realClock();
+      view.unmount();
+      client.clear();
+      create.mockRestore();
     }
-    await user.keyboard(press);
-    await tick(1_000);
-    const stillSending = /Reply sent nothing:.*reply is still being sent/;
-    expect(screen.getByText(stillSending)).toBeInTheDocument();
-    expect(sent()).toBe(1);
-    create.mockRejectedValue(new ApiError(403, { error: "Cannot reply" }));
-    await tick(30_000);
-    expect(screen.queryByText(stillSending)).toBeNull();
-    await user.keyboard(press);
-    await tick(1_000);
-    expect(sent()).toBe(2);
-  } finally {
-    realClock();
-    view.unmount();
-    client.clear();
-    create.mockRestore();
   }
-});
+);
 
 test("Retry lets go at the reply write deadline but cannot send while another composer is sending", async () => {
   const refused = new ApiError(403, { error: "Cannot reply" });

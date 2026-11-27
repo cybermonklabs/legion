@@ -2563,50 +2563,52 @@ test("a Ctrl+Enter that ends an IME composition in Safari, at keyCode 229, sends
 // A key an input method takes - one marked `isComposing`, or the one that ends a composition - is
 // the input method's. An Enter in an ask option's label adds no option then, and a plain Enter
 // still does.
-test.each(
-  INPUT_METHOD_MARKS
-)("an Enter that ends an IME composition in an ask option's label, marked by %s, adds no option", async (_mark, composing) => {
-  const user = userEvent.setup();
-  const { view } = renderComposer({ kind: "ask" });
+test.each(INPUT_METHOD_MARKS)(
+  "an Enter that ends an IME composition in an ask option's label, marked by %s, adds no option",
+  async (_mark, composing) => {
+    const user = userEvent.setup();
+    const { view } = renderComposer({ kind: "ask" });
 
-  try {
-    const label = screen.getByLabelText<HTMLTextAreaElement>("Option 1 label");
-    await user.click(label);
-    await user.keyboard("Yes");
-    // user-event has no form for this: it cannot mark a key as an IME composition.
-    fireEvent.keyDown(label, { ...composing, key: "Enter" });
-    expect(screen.queryAllByLabelText(/^Option \d+ label$/)).toHaveLength(1);
+    try {
+      const label = screen.getByLabelText<HTMLTextAreaElement>("Option 1 label");
+      await user.click(label);
+      await user.keyboard("Yes");
+      // user-event has no form for this: it cannot mark a key as an IME composition.
+      fireEvent.keyDown(label, { ...composing, key: "Enter" });
+      expect(screen.queryAllByLabelText(/^Option \d+ label$/)).toHaveLength(1);
 
-    await user.keyboard("{Enter}");
-    expect(screen.queryAllByLabelText(/^Option \d+ label$/)).toHaveLength(2);
-    expect(focusedName()).toBe("Option 2 label");
-  } finally {
-    view.unmount();
+      await user.keyboard("{Enter}");
+      expect(screen.queryAllByLabelText(/^Option \d+ label$/)).toHaveLength(2);
+      expect(focusedName()).toBe("Option 2 label");
+    } finally {
+      view.unmount();
+    }
   }
-});
+);
 
 // The same for Escape: one that ends an input method's composition raises no `Discard draft?`
 // over the draft, and a plain Escape still does.
-test.each(
-  INPUT_METHOD_MARKS
-)("an Escape that ends an IME composition in the box, marked by %s, asks nothing", async (_mark, composing) => {
-  const user = userEvent.setup();
-  const { view } = renderComposer();
+test.each(INPUT_METHOD_MARKS)(
+  "an Escape that ends an IME composition in the box, marked by %s, asks nothing",
+  async (_mark, composing) => {
+    const user = userEvent.setup();
+    const { view } = renderComposer();
 
-  try {
-    const field = screen.getByLabelText<HTMLTextAreaElement>("Comment");
-    await user.click(field);
-    await user.paste("a draft");
-    // user-event has no form for this: it cannot mark a key as an IME composition.
-    fireEvent.keyDown(field, { ...composing, key: "Escape" });
-    expect(screen.queryByRole("button", { name: "Discard" })).not.toBeInTheDocument();
+    try {
+      const field = screen.getByLabelText<HTMLTextAreaElement>("Comment");
+      await user.click(field);
+      await user.paste("a draft");
+      // user-event has no form for this: it cannot mark a key as an IME composition.
+      fireEvent.keyDown(field, { ...composing, key: "Escape" });
+      expect(screen.queryByRole("button", { name: "Discard" })).not.toBeInTheDocument();
 
-    await user.keyboard("{Escape}");
-    expect(screen.getByRole("button", { name: "Discard" })).toBeTruthy();
-  } finally {
-    view.unmount();
+      await user.keyboard("{Escape}");
+      expect(screen.getByRole("button", { name: "Discard" })).toBeTruthy();
+    } finally {
+      view.unmount();
+    }
   }
-});
+);
 
 // Each Escape the comment box takes is marked taken (`defaultPrevented`) beside what it does: the
 // reference picker's close, on the field's own listener (`MentionField`), and the
@@ -3742,55 +3744,55 @@ test("an Escape in Send's task cannot offer Discard", async () => {
 
 // Enter can reach the old list in Send's task, before React draws the field held. It must not
 // pick into a draft that is on the wire, whether the send clears the draft or returns it.
-test.each([
-  "refused",
-  "successful",
-] as const)("Enter in Send's task cannot take a reference from the picker over a %s send", async (outcome) => {
-  const answer = Promise.withResolvers<Comment>();
-  const createComment = spyOn(api, "createComment").mockReturnValueOnce(answer.promise);
-  const listAgents = spyOn(api, "listAgents").mockResolvedValue([planner]);
-  const user = userEvent.setup();
-  const { view } = renderComposer({ agents: [planner], seedMentions: [plannerMention] });
+test.each(["refused", "successful"] as const)(
+  "Enter in Send's task cannot take a reference from the picker over a %s send",
+  async (outcome) => {
+    const answer = Promise.withResolvers<Comment>();
+    const createComment = spyOn(api, "createComment").mockReturnValueOnce(answer.promise);
+    const listAgents = spyOn(api, "listAgents").mockResolvedValue([planner]);
+    const user = userEvent.setup();
+    const { view } = renderComposer({ agents: [planner], seedMentions: [plannerMention] });
 
-  try {
-    const field = screen.getByLabelText<HTMLTextAreaElement>("Comment");
-    const draft = "See @Pl";
-    await user.clear(field);
-    await user.paste(draft);
-    await screen.findByRole("option", { name: /^Planner\b/ });
-    act(() => {
-      // One React batch: user-event renders between its own interactions.
-      fireEvent.click(screen.getByRole("button", { name: "Send" }));
-      expect(composerHeld()).toBe(false);
-      // The same batch: Enter reaches the field before React renders the hold.
-      fireEvent.keyDown(field, { key: "Enter" });
-    });
-    await waitFor(() => expect(createComment).toHaveBeenCalledTimes(1));
-    expect(createComment).toHaveBeenCalledWith("CORE-1", { body: draft }, keyedAttempt);
-    expect(composerHeld()).toBe(true);
-    expect(field).toHaveValue(draft);
-    expect(screen.queryByTestId("ref-picker")).not.toBeInTheDocument();
-
-    if (outcome === "refused") {
-      answer.reject(commentRefused);
-      await screen.findByText(`Couldn't send — ${COMMENT_REFUSED}`);
-      expect(field).toHaveValue(draft);
-      expect(screen.queryByTestId("ref-picker")).not.toBeInTheDocument();
+    try {
+      const field = screen.getByLabelText<HTMLTextAreaElement>("Comment");
+      const draft = "See @Pl";
       await user.clear(field);
       await user.paste(draft);
-      await user.click(await screen.findByRole("option", { name: /^Planner\b/ }));
-      expect(field).toHaveValue(`See ${plannerLink}`);
-    } else {
-      await act(async () => answer.resolve(createdComment));
-      await waitFor(() => expect(field).toHaveValue(`${plannerLink} `));
+      await screen.findByRole("option", { name: /^Planner\b/ });
+      act(() => {
+        // One React batch: user-event renders between its own interactions.
+        fireEvent.click(screen.getByRole("button", { name: "Send" }));
+        expect(composerHeld()).toBe(false);
+        // The same batch: Enter reaches the field before React renders the hold.
+        fireEvent.keyDown(field, { key: "Enter" });
+      });
+      await waitFor(() => expect(createComment).toHaveBeenCalledTimes(1));
+      expect(createComment).toHaveBeenCalledWith("CORE-1", { body: draft }, keyedAttempt);
+      expect(composerHeld()).toBe(true);
+      expect(field).toHaveValue(draft);
       expect(screen.queryByTestId("ref-picker")).not.toBeInTheDocument();
+
+      if (outcome === "refused") {
+        answer.reject(commentRefused);
+        await screen.findByText(`Couldn't send — ${COMMENT_REFUSED}`);
+        expect(field).toHaveValue(draft);
+        expect(screen.queryByTestId("ref-picker")).not.toBeInTheDocument();
+        await user.clear(field);
+        await user.paste(draft);
+        await user.click(await screen.findByRole("option", { name: /^Planner\b/ }));
+        expect(field).toHaveValue(`See ${plannerLink}`);
+      } else {
+        await act(async () => answer.resolve(createdComment));
+        await waitFor(() => expect(field).toHaveValue(`${plannerLink} `));
+        expect(screen.queryByTestId("ref-picker")).not.toBeInTheDocument();
+      }
+    } finally {
+      view.unmount();
+      listAgents.mockRestore();
+      createComment.mockRestore();
     }
-  } finally {
-    view.unmount();
-    listAgents.mockRestore();
-    createComment.mockRestore();
   }
-});
+);
 
 // The picker writes into the draft too: a list open when the message goes would put a reference
 // into a draft its refusal then replaces. Sending closes it.

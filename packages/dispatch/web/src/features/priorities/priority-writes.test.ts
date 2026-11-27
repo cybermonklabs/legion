@@ -395,15 +395,18 @@ test("a write another person's text refused: the next, pressed once the read sho
 test.each([
   ["its body", inputRefused],
   ["its writer", writerRefused],
-] as const)("a write Dispatch refused for %s: the next names the text the field took in", async (_why, refusal) => {
-  const { answer, read, rename, sentAt } = pageWrites();
-  await read(0, "Old");
-  rename("Mine", "Old");
-  await answer(0, refusal());
-  await read(1, "Old");
-  rename("Mine, again", "Old");
-  expect(await sentAt(1)).toEqual({ expected: { title: "Old" }, title: "Mine, again" });
-});
+] as const)(
+  "a write Dispatch refused for %s: the next names the text the field took in",
+  async (_why, refusal) => {
+    const { answer, read, rename, sentAt } = pageWrites();
+    await read(0, "Old");
+    rename("Mine", "Old");
+    await answer(0, refusal());
+    await read(1, "Old");
+    rename("Mine, again", "Old");
+    expect(await sentAt(1)).toEqual({ expected: { title: "Old" }, title: "Mine, again" });
+  }
+);
 
 // Stopped, its key spent, or refused after an attempt that went unanswered, a write ended with no
 // verdict, and here it never reached Dispatch. The page reads nothing as it ends - a landing would
@@ -728,31 +731,34 @@ test("a stopped write retried after a newer one made on it, behind it after a re
 test.each([
   ["another person's text", true],
   ["its body", inputRefused],
-] as const)("a stopped write is let go through a write made on it that Dispatch refused for %s, once a write made on that one lands", async (_why, refusal) => {
-  const { answer, client, read, rename, sentAt, sentCount, stopLate } = pageWrites();
-  await read(0, "Old");
-  const writes = writesOf(client);
-  await onFakeClock(async () => {
-    rename("A", "Old");
-    const stopped = await stopLate(0);
-    rename("AB", "Old", "A");
-    await read(1, "Old");
-    expect(await sentAt(1)).toEqual({ expected: { title: "Old" }, title: "AB" });
-    await answer(1, refusal === true ? true : refusal());
-    rename("ABC", "Old", "AB");
-    expect(await sentAt(2)).toEqual({ expected: { title: "Old" }, title: "ABC" });
-    await answer(2, false);
-    expect(writes.rows()).toMatchObject([
-      { detail: { text: "A" }, status: "refused" },
-      { detail: { text: "AB" }, status: "refused" },
-    ]);
-    expect(sessionStorage.getItem(`dispatch.write:${stopped?.key}`)).toBeNull();
-    act(() => writes.retry(stopped?.id ?? 0));
-    await turns();
-  });
-  expect(writes.rows()).toMatchObject([{ detail: { text: "AB" }, status: "refused" }]);
-  expect(sentCount()).toBe(3);
-});
+] as const)(
+  "a stopped write is let go through a write made on it that Dispatch refused for %s, once a write made on that one lands",
+  async (_why, refusal) => {
+    const { answer, client, read, rename, sentAt, sentCount, stopLate } = pageWrites();
+    await read(0, "Old");
+    const writes = writesOf(client);
+    await onFakeClock(async () => {
+      rename("A", "Old");
+      const stopped = await stopLate(0);
+      rename("AB", "Old", "A");
+      await read(1, "Old");
+      expect(await sentAt(1)).toEqual({ expected: { title: "Old" }, title: "AB" });
+      await answer(1, refusal === true ? true : refusal());
+      rename("ABC", "Old", "AB");
+      expect(await sentAt(2)).toEqual({ expected: { title: "Old" }, title: "ABC" });
+      await answer(2, false);
+      expect(writes.rows()).toMatchObject([
+        { detail: { text: "A" }, status: "refused" },
+        { detail: { text: "AB" }, status: "refused" },
+      ]);
+      expect(sessionStorage.getItem(`dispatch.write:${stopped?.key}`)).toBeNull();
+      act(() => writes.retry(stopped?.id ?? 0));
+      await turns();
+    });
+    expect(writes.rows()).toMatchObject([{ detail: { text: "AB" }, status: "refused" }]);
+    expect(sentCount()).toBe(3);
+  }
+);
 
 // "L" over "Old", made on "Old", is stopped, and another person's "Bob" arrives, which the field
 // takes in, keeping "L" beside it. The reader uses it: "L" again, over "Bob", made on what "L" was
@@ -1312,29 +1318,33 @@ test("a held text a refused write carries goes though another page holds it", as
 test.each([
   ["the page that took the refusal", true],
   ["the page that kept the text", false],
-] as const)("a text a second page keeps after another took its refusal is on the line once both go, %s going first", async (_first, refusedFirst) => {
-  const { answer, client, drawAnother, kept, read, rename, sentAt, undraw } = pageWrites(SHOWS_P1);
-  const other = drawAnother(SHOWS_P1);
-  await read(0);
-  rename("Mine", "Old");
-  await sentAt(0);
-  await answer(0, true);
-  await read(1);
-  await waitFor(() => expect(kept("Bob")).toEqual(["Mine"]));
-  act(() => other.result.current.keep("p1", "title", ["Mine"]));
-  expect(other.result.current.kept("p1", "title", "Bob")).toEqual(["Mine"]);
-  const writes = writesOf(client);
-  expect(writes.rows()).toMatchObject([
-    { claimed: true, detail: { text: "Mine" }, sent: true, status: "refused" },
-    { claimed: true, detail: { text: "Mine" }, sent: false, status: "refused" },
-  ]);
-  if (refusedFirst) undraw();
-  other.unmount();
-  if (!refusedFirst) undraw();
-  expect(writes.rows()).toMatchObject([
-    { claimed: false, detail: { text: "Mine" }, sent: true, status: "refused" },
-  ]);
-});
+] as const)(
+  "a text a second page keeps after another took its refusal is on the line once both go, %s going first",
+  async (_first, refusedFirst) => {
+    const { answer, client, drawAnother, kept, read, rename, sentAt, undraw } =
+      pageWrites(SHOWS_P1);
+    const other = drawAnother(SHOWS_P1);
+    await read(0);
+    rename("Mine", "Old");
+    await sentAt(0);
+    await answer(0, true);
+    await read(1);
+    await waitFor(() => expect(kept("Bob")).toEqual(["Mine"]));
+    act(() => other.result.current.keep("p1", "title", ["Mine"]));
+    expect(other.result.current.kept("p1", "title", "Bob")).toEqual(["Mine"]);
+    const writes = writesOf(client);
+    expect(writes.rows()).toMatchObject([
+      { claimed: true, detail: { text: "Mine" }, sent: true, status: "refused" },
+      { claimed: true, detail: { text: "Mine" }, sent: false, status: "refused" },
+    ]);
+    if (refusedFirst) undraw();
+    other.unmount();
+    if (!refusedFirst) undraw();
+    expect(writes.rows()).toMatchObject([
+      { claimed: false, detail: { text: "Mine" }, sent: true, status: "refused" },
+    ]);
+  }
+);
 
 // "Mine" over "Old" is out when the event feed brings another person's "Bob": the field takes it
 // in and keeps "Mine" beside it, and the reader uses it, which writes "Mine" over "Bob". Then the
