@@ -26,7 +26,11 @@ const comparisonPageLimit = 16 << 20
 
 // CommitMembership is what PullRequestMembership could tell about each commit it was asked about:
 // Members are the commits of the pull request at the two revisions it was asked about, Outside the
-// commits that are not, and Unknown each commit whose answer a read that failed withheld. Stale is
+// commits that are not, and Unknown each commit whose answer a read that failed withheld. Head and
+// Base are the head commit and the base revision GitHub named in its read of the pull request,
+// both "" where that read did not answer: the caller that stores no base revision for the row
+// stores the Base read here (StorePullRequestBaseSHA) and asks again with the two revisions
+// stored. Stale is
 // whether GitHub's read of the pull request names another head or base revision than those two:
 // GitHub has moved the pull request on where no write has stored it yet, and every commit is then
 // unknown. Unreadable is whether GitHub cannot answer for the pull request at all and no retry
@@ -38,6 +42,7 @@ const comparisonPageLimit = 16 << 20
 // commit and the reads of a commit.
 type CommitMembership struct {
 	Members, Outside, Unknown               []string
+	Head, Base                              string
 	Stale, Unreadable, Complete             bool
 	Pages, PullReads, Compares, CommitReads int
 }
@@ -49,49 +54,6 @@ type CommitMembership struct {
 // with as well as for one that is gone.
 func MembershipUnreadable(err error) bool {
 	return errors.Is(err, githubapp.ErrNoAppKey) || RepositoryUnreadable(err)
-}
-
-// PullRequestRevisions is what one read of a pull request tells about where GitHub holds it:
-// Head and Base are the head commit and the base revision GitHub names (head.sha and base.sha),
-// both "" where the read did not answer. Unreadable is whether GitHub cannot answer for the pull
-// request at all and no retry changes that, as CommitMembership.Unreadable is: the deployment has
-// no App key, the App is installed on no installation covering the repository, or GitHub refuses
-// the installation's token the repository (MembershipUnreadable).
-type PullRequestRevisions struct {
-	Head, Base string
-	Unreadable bool
-}
-
-// ReadPullRequestRevisions reads pull request number of repoFull once (GET
-// /repos/{owner}/{repo}/pulls/{number}) and answers the two revisions GitHub names for it, the
-// head and the base revision a comparison of the pull request's own commits is made of
-// (PullRequestMembership). The check states settler reads them where Dispatch stores no base
-// revision for the row, which is every row a writer of the release before migration
-// 20261126005346 left and every row an envelope that names none left: with them it stores the
-// base revision and reads the commits, and with an Unreadable answer it keeps no obligation,
-// since no read of this deployment's will ever store one (api/check_states_former_heads.go,
-// verifyFormerHeads).
-//
-// A failed mint and a failed read both answer the error, with Unreadable set where no retry
-// changes it; a read that names no head or base revision is an error with neither revision and
-// Unreadable false, since another read can answer it.
-func ReadPullRequestRevisions(ctx context.Context, client *githubapp.Client, repoFull string, number int) (PullRequestRevisions, error) {
-	var read PullRequestRevisions
-	owner, repo, token, err := repositoryRead(ctx, client, repoFull)
-	if err != nil {
-		read.Unreadable = MembershipUnreadable(err)
-		return read, err
-	}
-	pull, err := fetchPullRequestPayload(ctx, client, token, owner, repo, number)
-	if err != nil {
-		read.Unreadable = MembershipUnreadable(err)
-		return read, err
-	}
-	if pull.Head.SHA == "" || pull.Base.SHA == "" {
-		return read, fmt.Errorf("the read of %s#%d names no head or base revision", repoFull, number)
-	}
-	read.Head, read.Base = pull.Head.SHA, pull.Base.SHA
-	return read, nil
 }
 
 // PullRequestMembership tells, for each of candidates, whether it is a commit of pull request
@@ -115,12 +77,16 @@ func ReadPullRequestRevisions(ctx context.Context, client *githubapp.Client, rep
 // only GitHub's `No commit found for SHA` puts it outside. No read by the pull request's number or
 // by a branch's name decides a commit.
 //
-// The read of the pull request (GET /repos/{owner}/{repo}/pulls/{number}) comes first and only
-// tells whether GitHub has moved the pull request on from those two revisions: where its head.sha
-// or base.sha is another, the answer is Stale and every commit unknown, so the settler keeps the
+// The read of the pull request (GET /repos/{owner}/{repo}/pulls/{number}) comes first. It answers
+// the two revisions GitHub holds the pull request at (Head, Base), and it tells whether GitHub has
+// moved it on from the two asked about: where its head.sha or base.sha is another, the answer is
+// Stale and every commit unknown, so the settler keeps the
 // obligation that asked for the read and reads again once a write stores where the pull request
-// went. A read of the pull request that fails or names no head or base revision, and a head or base
-// Dispatch stores none of, leave every commit unknown too, and a token mint or a read of the pull
+// went. Where base is "", the row stores no base revision and there is nothing to compare: the
+// read stops there, with Head and Base answered and every commit unknown, so the caller stores
+// the base revision this read names and asks again with the two revisions stored. A read of the
+// pull request that fails or names no head or base revision leaves every commit unknown too, and a
+// token mint or a read of the pull
 // request that fails for a cause no retry fixes (MembershipUnreadable) is Unreadable besides. A
 // move after that read changes no answer, since the comparisons name their commits.
 //
@@ -137,9 +103,6 @@ func PullRequestMembership(ctx context.Context, client *githubapp.Client, repoFu
 	if err != nil {
 		return unknown(err)
 	}
-	if head == "" || base == "" {
-		return unknown(fmt.Errorf("%s#%d names no stored head or base revision to compare", repoFull, number))
-	}
 	token := func() (string, error) { return client.RepositoryToken(ctx, owner, repo) }
 	current, err := token()
 	if err != nil {
@@ -154,6 +117,10 @@ func PullRequestMembership(ctx context.Context, client *githubapp.Client, repoFu
 	}
 	if pull.Head.SHA == "" || pull.Base.SHA == "" {
 		return unknown(fmt.Errorf("the read of %s#%d names no head or base revision", repoFull, number))
+	}
+	answer.Head, answer.Base = pull.Head.SHA, pull.Base.SHA
+	if base == "" || head == "" {
+		return unknown(nil)
 	}
 	if pull.Head.SHA != head || pull.Base.SHA != base {
 		answer.Stale = true

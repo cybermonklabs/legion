@@ -531,7 +531,7 @@ func (head PullRequestHead) storedMergedAt() *time.Time {
 
 // StorePullRequestBaseSHA stores base as the base revision of the open row of repoFull#number
 // that stands at head and stores none: the revision GitHub named for the pull request in a read
-// that found it at that same head (ReadPullRequestRevisions), which is what every other writer of
+// that found it at that same head (CommitMembership.Base), which is what every other writer of
 // the column stores too (PullRequestHead.BaseSHA). It answers whether it stored one.
 //
 // It writes nothing where the row stores a revision already, where it stands at another head, or

@@ -63,7 +63,7 @@ body: |-
     a row with none, written before this release or by an envelope without the field, has no two
     commits to compare, so the settle reads the pull request itself and stores the base revision
     GitHub names, where that read finds it at the head the row stores
-    (`delivery.ReadPullRequestRevisions`, `delivery.StorePullRequestBaseSHA`, that column alone,
+    (`delivery.PullRequestMembership` stops after that read, `delivery.StorePullRequestBaseSHA`, that column alone,
     which no trigger of the table fires on), and the settle after it, a second on with no failure
     counted, compares the two revisions the row holds then; where that read is refused for a cause
     no retry changes it keeps no mark, as a refused read of the commits does, and where it fails

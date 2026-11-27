@@ -177,9 +177,13 @@ Then sign the child off, or send it back to the phase of an earlier step of its 
 `reason` that names the version and the change.
 The gate is the `before_merge` checks of the issue's own Verification document, read at every open
 head of the issue: each must read yes at each open head, a check carrying `ci_check` among them, which
-`dispatch results --issue <issue>` shows. A check that does not read yes at every open head is not
-met, whether it fails at one, holds a pass and a fail at one, or has no result at one: send
-the issue back at once, naming the check and the head it does not read yes at, do not accept it, and do not wait for a later result, a CI run still going or GitHub that Dispatch could not read.
+`dispatch results --issue <issue>` shows. A check that fails at an open head, or that holds a pass
+and a fail at one, is not met: send the issue back at once, naming the check and that head, do not
+accept it, and do not wait for a later result or for GitHub that Dispatch could not read.
+A check with no result at an open head is not met either, and while its CI case has not ended
+there (`not_completed`, `absent`, `no_head`, `github_unreadable`, `read_failed`, `not_started`)
+you wait for its state, as the testing move waits for it: accept nothing meanwhile, and send the
+issue back once that case ended with no pass, or once nothing will record a result there.
 Every open head counts, whichever of the issue's pull requests stands at it: a fail at the head of
 one open pull request is a fail of that check, and another open head reading yes does not answer it.
 At acceptance, read each CI-proved check's derived result and each result its CI job recorded.

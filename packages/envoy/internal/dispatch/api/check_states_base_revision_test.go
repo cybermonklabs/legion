@@ -4,7 +4,9 @@
 // when the read is claimed, and the answer applies, positive or negative, only where the pull
 // request still names them; an answer about revisions since stored anew applies nothing, keeps the
 // candidate unverified and its obligation, and the next settle reads again. A row that stores no
-// base revision is not read until a write stores one. The rig is check_states_test.go's.
+// base revision is read all the same: the read of the pull request stops after itself, and the
+// settle stores the base revision it names where it found the row's own head. The rig is
+// check_states_test.go's.
 package api
 
 import (

@@ -78,7 +78,7 @@ func TestAnUnresolvedMembershipHoldsTheTestHandoffOverAnOldPass(t *testing.T) {
 // deployment has no App key, or GitHub refuses the installation's token the repository (403). The
 // settle then keeps no mark for the read, so the test handoff is recorded within the fence's
 // wait, and H1 stays a candidate, no former head, until a later settle of the issue reads it once
-// access returns. The control is the 404 of the test above, which a retry can change, and which
+// access returns. The control is the 502 of the test above, which a retry can change, and which
 // holds the handoff.
 //
 // Each cause is read twice: with #70's row storing a base revision, where the read of its commits

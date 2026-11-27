@@ -418,12 +418,10 @@ var DispatchEventTypes = []string{
 // job_recorded; and where it has not ended, or Dispatch could not read its end. Generated from
 // CHECK_CI_CASES_ENDED and CHECK_CI_CASES_NOT_ENDED in packages/contracts, which the event's schema
 // closes ci_case to: Dispatch writes no other case, and the Legion daemon reads them through
-// github.com/sjawhar/envoy/cicase. The cases of a job that has not ended are Dispatch's own, and
-// it spells each as a constant (internal/dispatch/api/results_ci.go); the cases of one that ended
-// are the conclusions GitHub writes, which Dispatch writes through, and job_recorded, which is
-// its own. Its TestEveryCICaseIsOneOfContractsCases reads every case of both lists: the first
-// list against those constants as a set, each way, and each case of the second that no constant
-// spells from a run that concluded with that word.
+// github.com/sjawhar/envoy/cicase. CheckCICasesNotEnded holds the cases Dispatch writes itself,
+// each spelled as a constant of internal/dispatch/api/results_ci.go; CheckCICasesEnded holds the
+// conclusions GitHub writes, which Dispatch writes through, and job_recorded, which is its own.
+// api's TestEveryCICaseIsOneOfContractsCases holds both lists to those constants.
 var CheckCICasesEnded = []string{
 	"success",
 	"failure",

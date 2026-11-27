@@ -113,9 +113,11 @@
 -- deletes it. Any other answer, about a claim that ran out or was taken over, about a lifecycle
 -- that ended, about a head or a base revision since stored anew, or about a candidate since
 -- replaced, applies nothing, and its candidates are read again. A row that stores no base revision
--- is not read until a write stores one, and a read that finds GitHub's pull request at another
+-- is read all the same: the read of the pull request stops after itself, the settler stores the
+-- base revision it names where it found the row's own head, and the read a second on compares the
+-- two the row holds then. A read that finds GitHub's pull request at another
 -- head or base revision than the row stores decides nothing: no write has stored where it went
--- yet, so both keep the obligation and read again after the failure backoff.
+-- yet, so it keeps the obligation and reads again after the failure backoff.
 --
 -- pull_request_former_heads_keep() records each insert of a row, open, closed or merged, each
 -- update that moves a row's key, head or state while it is or becomes open, and each delete, by an
@@ -699,8 +701,10 @@ end $$;
 -- base branch was at when the row was last read (pull_request_heads.base_sha, migration
 -- 20261126005346), in one order. The base branch can move with no change of its name, and the
 -- answer is about one base revision, so the snapshot names the revision, and "unknown" where the
--- row holds none, a row a writer of the release before this one wrote, which is not read until a
--- write stores one: the reconcile's read of the pull request, which of n rows due in its first
+-- row holds none, a row a writer of the release before this one wrote. The settler reads such a
+-- row and stores the base revision GitHub names for it; where that read is refused for a cause no
+-- retry changes, it keeps no obligation, and where it fails otherwise a write of the row stores
+-- the revision: the reconcile's read of the pull request, which of n rows due in its first
 -- selection, the open rows due and the merged rows no read has reached (the merged rows of an
 -- older attribution rule take only the room those leave, at most 50 a pass), tries each within
 -- ceil(n / delivery.PullRequestHeadBatch) passes that try their whole batch, each stamp

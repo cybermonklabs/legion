@@ -218,9 +218,10 @@ type formerHeadsReads struct {
 // request's row formerHeadsHeld picks, its canonical name where it has one, which is GitHub's
 // route to it, and compares that row's head with its base revision. A row that stores no base
 // revision, as a writer of the release before this one left it and as an envelope that names none
-// leaves it, has no two revisions to compare, so the settle reads the pull request itself instead
-// (delivery.ReadPullRequestRevisions) and stores the base revision GitHub names for it, where that
-// read finds it at the head the row stores (delivery.StorePullRequestBaseSHA): pending answers
+// leaves it, has no two revisions to compare, so the read of the pull request that comes first
+// (delivery.PullRequestMembership) stops after it, with the revisions GitHub names answered, and
+// the settle stores the base revision of that read where it found the pull request at the head
+// the row stores (delivery.StorePullRequestBaseSHA): pending answers
 // true, and the read made a minimum gap on compares the two revisions the row holds then. Where
 // that read is refused for a cause no retry fixes (delivery.MembershipUnreadable), no mark waits
 // for it, as for a membership read refused the same way: no read of this deployment's can ever
@@ -314,17 +315,12 @@ func (c *checkStatesSettler) verifyFormerHeads(ctx context.Context, issue string
 		claim.candidates = slices.DeleteFunc(claim.candidates, func(sha string) bool { return !slices.Contains(needed, sha) })
 		unstored := claim.head == "" || claim.base == ""
 		var membership delivery.CommitMembership
-		var revisions delivery.PullRequestRevisions
 		var readErr error
 		var sent int64
 		if len(claim.candidates) > 0 {
 			bounded, cancel := ciReadBound(ctx)
 			counted, requests := githubreads.CountRequests(bounded)
-			if unstored {
-				revisions, readErr = delivery.ReadPullRequestRevisions(counted, c.server.deps.GitHub, held.repo, held.number)
-			} else {
-				membership, readErr = delivery.PullRequestMembership(counted, c.server.deps.GitHub, held.repo, held.number, claim.head, claim.base, claim.candidates)
-			}
+			membership, readErr = delivery.PullRequestMembership(counted, c.server.deps.GitHub, held.repo, held.number, claim.head, claim.base, claim.candidates)
 			cancel()
 			sent = requests.Load()
 			reads.verifications++
@@ -350,12 +346,12 @@ func (c *checkStatesSettler) verifyFormerHeads(ctx context.Context, issue string
 			continue
 		}
 		// The base revision this settle stored for a row that stored none: GitHub's, from the read
-		// above, and only where that read found the pull request at the head the row stores, so the
-		// pair the row holds is one read's. It is stored after the answer, which the stored
+		// of the pull request above, and only where that read found it at the head the row stores,
+		// so the pair the row holds is one read's. It is stored after the answer, which the stored
 		// revision would otherwise leave applying nothing (the claim's snapshot names it).
 		var storedBase bool
-		if unstored && readErr == nil && revisions.Head == claim.head {
-			stored, err := delivery.StorePullRequestBaseSHA(ctx, pool, held.repo, held.number, claim.head, revisions.Base)
+		if unstored && readErr == nil && membership.Head == claim.head {
+			stored, err := delivery.StorePullRequestBaseSHA(ctx, pool, held.repo, held.number, claim.head, membership.Base)
 			if err != nil {
 				return reads, err
 			}
@@ -370,32 +366,27 @@ func (c *checkStatesSettler) verifyFormerHeads(ctx context.Context, issue string
 			reads.pending = true
 			slog.Info("dispatch: check states applied nothing of an answer about the candidate former heads of a pull request that moved since its read",
 				attrs...)
-		case unstored && revisions.Unreadable:
-			// No retry changes the answer, so no mark waits for it, as for a membership read no
-			// retry answers below: no read of this deployment's can ever store the base revision
-			// the row lacks, so the candidates stay no former heads until a later settle reads
-			// them once access or configuration returns.
-			slog.Warn("dispatch: check states cannot read the base revision a pull request's row lacks, and no retry changes that: no mark waits for the read",
+		case membership.Unreadable:
+			// No retry changes the answer, so no mark waits for it, whether the read was of the
+			// pull request's commits or of the base revision its row stores none of: the
+			// candidates stay no former heads, and a later settle of the issue reads them again
+			// once access returns.
+			slog.Warn("dispatch: check states cannot read a pull request, and no retry changes that: no mark waits for the read",
 				append(attrs, "error", readErr)...)
 		case unstored && storedBase:
 			// The base revision is stored now, so a read made again at once compares the two
 			// revisions the row holds: the mark waits a minimum gap, with no failure counted.
 			reads.pending = true
 			slog.Info("dispatch: check states stored the base revision a pull request's row lacked, and reads its candidate former heads next",
-				append(attrs, "base_read", revisions.Base)...)
+				append(attrs, "base_read", membership.Base)...)
 		case unstored:
 			reads.unverified = true
 			slog.Warn("dispatch: check states left the candidate former heads of a pull request unread until a write stores the base revision its row lacks",
-				append(attrs, "base_read", revisions.Base, "head_read", revisions.Head, "error", readErr)...)
+				append(attrs, "base_read", membership.Base, "head_read", membership.Head, "error", readErr)...)
 		case membership.Stale:
 			reads.unverified = true
 			slog.Info("dispatch: check states left the candidate former heads of a pull request undecided: GitHub names another head or base revision than Dispatch stores",
 				attrs...)
-		case membership.Unreadable:
-			// No retry changes the answer, so no mark waits for it: the candidates stay no former
-			// heads, and a later settle of the issue reads them again once access returns.
-			slog.Warn("dispatch: check states cannot read which candidate former heads are a pull request's commits, and no retry changes that: no mark waits for the read",
-				append(attrs, "error", readErr)...)
 		case len(membership.Unknown) > 0:
 			reads.unverified = true
 			slog.Warn("dispatch: read which candidate former heads are a pull request's commits", append(attrs, "error", readErr)...)

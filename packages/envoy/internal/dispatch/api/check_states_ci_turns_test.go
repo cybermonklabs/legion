@@ -169,11 +169,11 @@ func TestAnUnreadHeadsOldPassNeverCrossesATestHandoff(t *testing.T) {
 					ciAwait(t, what+" to end", done)
 				}
 				settle("the settle that does not read the first head")
-				row, _ := publishedRow(t, rig.database, rig.issue, ciJobRepository, first, "k3")
+				row, held := publishedRow(t, rig.database, rig.issue, ciJobRepository, first, "k3")
 				response := postHandoff(t, rig.handler, rig.issue, "test", testHandoff)
 				switch code, _ := refusalOf(t, response); {
 				case response.Code == http.StatusCreated:
-					if row.state != model.PassStandsYes {
+					if !held || row.state == model.PassStandsYes {
 						t.Fatalf("the test handoff answers 201 with check_states_serial %s while k3 at the first head, whose run failed and whose read never started, is published as %s: the old pass crosses the handoff",
 							readHandoffJSON(t, rig, decodeBody[model.HandoffSummary](t, response).ID)["check_states_serial"], publishedLine(row))
 					}
