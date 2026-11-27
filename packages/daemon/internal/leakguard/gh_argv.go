@@ -399,7 +399,7 @@ func (argv *ghArgv) readEndpoint(args []string, i int) {
 // found that was none would have a REST field named `query` read as a GraphQL document, which
 // leaves out the text outside its literals.
 //
-// cmd/legion's ghAPIRESTEndpoint reads the same endpoint for the other question, whether a call
+// internal/ghroute's apiRESTEndpoint reads the same endpoint for the other question, whether a call
 // is a REST read, and names the same spellings — `/graphql`, `GRAPHQL`, `%67raphql`,
 // `graphql#x` — as GitHub's GraphQL API by other names.
 func ghAPIEndpoint(endpoint string) (kind ghEndpointKind, decodedPath, query string) {

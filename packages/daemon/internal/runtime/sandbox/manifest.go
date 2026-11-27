@@ -2068,8 +2068,8 @@ func GitConfigPairs() [][2]string { return slices.Clone(gitConfigPairs) }
 // LEGION_GH_OWNERS_DIR (ghAgentEnv), and a fork of a repository of such an owner, whose own owner
 // has no directory, from the directory of the fork's parent or else its source, which it reads
 // from GitHub with GH_CONFIG_DIR's token; `legion gh` adds its own entry after these
-// (withGitHubUseHTTPPath, cmd/legion/gh.go). Exported for rolegitconfig, which prints it for a Job
-// that runs no daemon.
+// (withGitHubUseHTTPPath, cmd/legion/gh_child.go). Exported for rolegitconfig, which prints it
+// for a Job that runs no daemon.
 func GitConfigEnv() []corev1.EnvVar {
 	env := []corev1.EnvVar{{Name: "GIT_CONFIG_COUNT", Value: strconv.Itoa(len(gitConfigPairs))}}
 	for i, pair := range gitConfigPairs {
