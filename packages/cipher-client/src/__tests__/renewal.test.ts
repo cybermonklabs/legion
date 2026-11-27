@@ -157,32 +157,33 @@ if (renewalCorpus.version !== 1 || renewalCorpus.rows.length === 0) {
 
 // Each row through the rule, and where the broker can mint its life, through a client that holds
 // what it traded until a millisecond short of the row's moment and trades again at it.
-test.each(
-  renewalCorpus.rows.map((row) => [row.name, row] as const)
-)("the renewal corpus: %s", async (_, row) => {
-  const landed = Date.now();
-  const window = row.renew_before_seconds * 1000;
-  const renews = landed + row.renews_after_seconds * 1000;
-  expect(renewalAt(landed + row.life_seconds * 1000, landed, window)).toBe(renews);
-  // The broker mints no token that lives no time at all, and the client refuses one.
-  if (row.life_seconds <= 0) return;
-  const broker = stubBroker((_trade, count) => ({
-    body: accepted(`token-${count}`, row.life_seconds),
-  }));
-  const clock = { now: landed };
-  const client = await clientAt(broker.url, clock, countingSource(), window);
-  try {
-    expect((await client.token()).accessToken).toBe("token-1");
-    clock.now = renews - 1;
-    expect((await client.token()).accessToken).toBe("token-1");
-    clock.now = renews;
-    expect((await client.token()).accessToken).toBe("token-2");
-    expect(broker.trades.length).toBe(2);
-  } finally {
-    client.close();
-    broker.stop();
+test.each(renewalCorpus.rows.map((row) => [row.name, row] as const))(
+  "the renewal corpus: %s",
+  async (_, row) => {
+    const landed = Date.now();
+    const window = row.renew_before_seconds * 1000;
+    const renews = landed + row.renews_after_seconds * 1000;
+    expect(renewalAt(landed + row.life_seconds * 1000, landed, window)).toBe(renews);
+    // The broker mints no token that lives no time at all, and the client refuses one.
+    if (row.life_seconds <= 0) return;
+    const broker = stubBroker((_trade, count) => ({
+      body: accepted(`token-${count}`, row.life_seconds),
+    }));
+    const clock = { now: landed };
+    const client = await clientAt(broker.url, clock, countingSource(), window);
+    try {
+      expect((await client.token()).accessToken).toBe("token-1");
+      clock.now = renews - 1;
+      expect((await client.token()).accessToken).toBe("token-1");
+      clock.now = renews;
+      expect((await client.token()).accessToken).toBe("token-2");
+      expect(broker.trades.length).toBe(2);
+    } finally {
+      client.close();
+      broker.stop();
+    }
   }
-});
+);
 
 test("two callers that need a token at once make one trade", async () => {
   const broker = stubBroker((_trade, count) => ({ body: accepted(`token-${count}`, 600) }));
@@ -307,29 +308,32 @@ test.each([
       expires_in: 600,
     }),
   ],
-] as const)("an answer %s names the broker only where its URL is plain, and keeps no cause", async (_, body) => {
-  const password = fixtureSecret("pw");
-  const leaked = `canary-token-${crypto.randomUUID()}`;
-  const broker = stubBroker(() => ({ body: body(leaked) }));
-  const withUser = broker.url.replace("http://", `http://operator:${password}@`);
-  try {
-    for (const [url, named] of [
-      [broker.url, `${broker.url}/`],
-      [withUser, `the broker URL ${URL_NOT_PRINTED}`],
-    ] as const) {
-      const client = await clientAt(url, { now: Date.now() }, countingSource());
-      const refusal = await told(client.token(AbortSignal.timeout(DEADLINE_MS)));
-      client.close();
-      if (!(refusal instanceof TradeRetryingError)) throw new Error("the trade was answered");
-      expect(refusal.message).toContain(named);
-      expect(refusal.cause).toBeUndefined();
-      expect(Bun.inspect(refusal)).not.toContain(leaked);
-      expect(Bun.inspect(refusal)).not.toContain(password);
+] as const)(
+  "an answer %s names the broker only where its URL is plain, and keeps no cause",
+  async (_, body) => {
+    const password = fixtureSecret("pw");
+    const leaked = `canary-token-${crypto.randomUUID()}`;
+    const broker = stubBroker(() => ({ body: body(leaked) }));
+    const withUser = broker.url.replace("http://", `http://operator:${password}@`);
+    try {
+      for (const [url, named] of [
+        [broker.url, `${broker.url}/`],
+        [withUser, `the broker URL ${URL_NOT_PRINTED}`],
+      ] as const) {
+        const client = await clientAt(url, { now: Date.now() }, countingSource());
+        const refusal = await told(client.token(AbortSignal.timeout(DEADLINE_MS)));
+        client.close();
+        if (!(refusal instanceof TradeRetryingError)) throw new Error("the trade was answered");
+        expect(refusal.message).toContain(named);
+        expect(refusal.cause).toBeUndefined();
+        expect(Bun.inspect(refusal)).not.toContain(leaked);
+        expect(Bun.inspect(refusal)).not.toContain(password);
+      }
+    } finally {
+      broker.stop();
     }
-  } finally {
-    broker.stop();
   }
-});
+);
 
 // A broker URL that is no http or https URL may be a token pasted where the URL goes, so the
 // client refuses it before any trade and names no part of it.

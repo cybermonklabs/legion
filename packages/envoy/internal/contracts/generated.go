@@ -397,6 +397,7 @@ var DispatchEventTypes = []string{
 	"issue.deployed",
 	"issue.pull_request_attribution_changed",
 	"issue.released",
+	"issue.role_holders_changed",
 	"issue.updated",
 	"message.accepted",
 	"message.answered",
@@ -482,6 +483,14 @@ const (
 	StepOtherIssueCode = "STEP_OTHER_ISSUE"
 )
 
+// The states of a step of an issue's plan in the steps read beside the results of a run that
+// ended: not started before any run of it, and running while its newest run has no end.
+// Generated from PLANNED_STEP_STATES in packages/contracts: Dispatch's steps read writes them.
+const (
+	PlannedStepNotStarted = "not started"
+	PlannedStepRunning    = "running"
+)
+
 // The codes of the plan write's refusals that no retry changes: a value outside its form, and an id
 // whose plan is the plan of another issue (a writer that is not the daemon's session is refused
 // StepWriterCode). Generated from PLAN_INPUT_CODE and PLAN_OTHER_ISSUE_CODE in packages/contracts:
@@ -501,6 +510,17 @@ const StepAgentTextPattern = "^[!-~]{1,128}$"
 // StepAgentTextRule says StepAgentTextPattern's rule in words, which Dispatch's refusal gives.
 // Generated from STEP_AGENT_TEXT_RULE_WORDS in packages/contracts.
 const StepAgentTextRule = "printable ASCII with no space, from 1 to 128 characters"
+
+// StepTaskPattern is the form of the id of a task a step record names, which is also the id of a
+// plan_task block of an owner's plan: lowercase letters, digits and hyphens, the first a letter or
+// a digit, at most StepTaskMax bytes. StepTaskRule says it in words, which the refusal of either
+// side gives. Generated from STEP_TASK_PATTERN, STEP_TASK_MAX and STEP_TASK_RULE_WORDS in
+// packages/contracts: Dispatch's step write and plan write refuse a task outside it, and the
+// Legion daemon, through github.com/sjawhar/envoy/steprecord, refuses a plan whose task block has
+// such an id, whose steps Dispatch could record none of.
+const StepTaskPattern = "^[a-z0-9][a-z0-9-]{0,63}$"
+const StepTaskMax = 64
+const StepTaskRule = "lowercase letters, digits and hyphens, starting with a letter or a digit, at most 64 bytes"
 
 // ProjectNameMax is the longest project name, in UTF-16 units, that POST /api/v1/projects
 // accepts. Generated from PROJECT_NAME_MAX in packages/contracts so the server's refusal, the
@@ -601,6 +621,12 @@ const ListenerCallTimeout = 5000 * time.Millisecond
 const ListenerCallRetryDelay = 250 * time.Millisecond
 const ListenerCallAttempts = 2
 
+// BusUnansweredPrefix opens the error of every 503 the listener answers when its message bus did
+// not answer a request. Generated from BUS_UNANSWERED_PREFIX in packages/contracts, which
+// envoy-client's isBusUnanswered reads, so the words the listener writes and the words a client
+// tells that answer by cannot drift apart.
+const BusUnansweredPrefix = "envoy: the message bus did not answer"
+
 // DispatchLoginHeader is the request header a page puts on every write it makes, naming the login
 // of the person who pressed it, and DispatchLoginChanged the code of the 409 for one whose caller
 // is anyone else: nothing ran. Generated from DISPATCH_LOGIN_HEADER and DISPATCH_LOGIN_CHANGED in
@@ -678,6 +704,19 @@ func RoleSubject(project, role string) string {
 
 func LegionWakeSubject(token string) string {
 	return "notifications.legion." + token + ".wake"
+}
+
+// LegionStateSuffix ends the state lane of every Legion deployment, so that a reader of every
+// deployment's state lane names them all with one pattern, LegionNoticeTopicPrefix + "*" +
+// LegionStateSuffix, as Dispatch's durable does. LegionStateSubject is the state lane of the
+// Legion deployment whose project token is token: the daemon publishes its state events there,
+// one message per committed transaction. Generated from LEGION_STATE_SUFFIX and
+// legionStateSubject in packages/contracts, so the daemon's publish and Dispatch's filter name
+// one lane.
+const LegionStateSuffix = ".state"
+
+func LegionStateSubject(token string) string {
+	return "notifications.legion." + token + ".state"
 }
 
 // GithubRepositoryPrefix begins every GitHub subject with its repository's owner and name, each one

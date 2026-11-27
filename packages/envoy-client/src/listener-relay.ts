@@ -43,10 +43,12 @@
 // (`relayRun`), and a socket that stayed open a minute starts every one afresh. Only 4401, 4403
 // and an upgrade refused 401 or 403 make the next open trade for a fresh token, since only there
 // was the token the cause; every open presents its token with a fresh proof. A trade that failed is
-// told to the session once per outage (`InboundUnavailable`). The socket never ends an outage: the
-// report is the host's, shared with its registrations, and one flag cannot say which of them told
-// it, so only a registration the listener accepted ends it. Each open is followed by one, the
-// start's or the one a `reconnect` (`status`) sets off.
+// told to the session once per outage (`InboundUnavailable`), and so is a refusal of the session's
+// own relay subject, at once: it is the listener's answer, not an open still being tried, so the
+// host's hold of a registration that found no relay subject must not keep it back. The socket
+// never ends an outage: the report is the host's, shared with its registrations, and one flag
+// cannot say which of them told it, so only a registration the listener accepted ends it. Each
+// open is followed by one, the start's or the one a `reconnect` (`status`) sets off.
 //
 // The connection is an `InboundConnection` (`./inbound-connection.ts`), the shape of the NATS
 // connection a session plugin holds, so a plugin's delivery runs on either: its subscriptions, a
@@ -57,7 +59,7 @@
 import { withoutTrailingSlashes } from "@legion/contracts/trailing-slash";
 import type { RequestCredential } from "./bearer";
 import { type BrokerSessionName, sessionName } from "./broker-credential";
-import type { InboundUnavailable, RelayHeaders } from "./consumer-delivery";
+import { deliverSubject, type RelayHeaders } from "./consumer-delivery";
 import { LoggableError, messageFor } from "./errors";
 import type {
   InboundConnection,
@@ -65,6 +67,7 @@ import type {
   InboundStatus,
   InboundSubscription,
 } from "./inbound-connection";
+import type { InboundUnavailable } from "./inbound-outage";
 import { NATS_MAX_PINGS_OUT, NATS_PING_INTERVAL_MS } from "./nats-connection";
 import { FOLLOW_DEADLINE_MS, TRADE_DEADLINE_MS } from "./nats-credential";
 
@@ -349,11 +352,19 @@ export interface ListenerRelayOptions {
    *  fresh proof, and whose token is dropped (`stale`) where it was the cause of a close or a
    *  refused upgrade, so the next open trades. */
   readonly credential: RequestCredential;
-  /** Told a failed trade once per outage: the host's own report (`inboundUnavailable`), which its
-   *  registrations share and whose accepted registration alone ends the outage. */
+  /** Told a failed trade, and a refusal of the session's own relay subject, once per outage: the
+   *  host's own report (`inboundUnavailable`), which its registrations share and whose accepted
+   *  registration alone ends the outage. */
   readonly outage: RelayOutage;
   /** Where a line about the socket goes: a close, a refusal, a socket that stopped answering. */
   readonly log: (line: string) => void;
+  /**
+   * The host's reading that its session's stop has begun (R24 of dispatch://INFRA-3589). Once it
+   * answers true, no socket is opened again: an open the connection would make (after a close,
+   * or a follow) closes the connection for good instead. Unset, the session never reads as
+   * stopping.
+   */
+  readonly stopping?: () => boolean;
 }
 
 /** A pending round trip: the ping it sent, and its answer. */
@@ -639,6 +650,13 @@ export class ListenerRelay implements InboundConnection {
    *  every flush waiting on it, which no later socket can answer. */
   #open(): void {
     if (this.#closedForGood) return;
+    // A session whose stop has begun opens no socket again: the stop drains the connection before
+    // it ends, and a socket opened before that drain would be an upgrade under the stopping
+    // session's token.
+    if (this.#options.stopping?.() === true) {
+      void this.close();
+      return;
+    }
     clearTimeout(this.#reopenTimer);
     this.#reopenTimer = undefined;
     this.#generation += 1;
@@ -866,15 +884,19 @@ export class ListenerRelay implements InboundConnection {
       // that subscription ends with an error naming the subject and code, as a NATS server's
       // permissions violation ends a nats.js one, so its reader is told why; every other goes on.
       this.#subs.delete(subscription.sid);
-      subscription.fail(
-        new LoggableError(
-          `the listener's relay socket refused the subject ${subscription.subject} (${code})`
-        )
+      const refused = new LoggableError(
+        `the listener's relay socket refused the subject ${subscription.subject} (${code})`
       );
+      subscription.fail(refused);
       this.#logOnce(
         `${session}\u0000${code}\u0000${subscription.subject}`,
         `the listener's relay socket for ${session} refused the subject ${subscription.subject} (${code}); that subscription is closed`
       );
+      // The session's own relay subject: the session receives nothing on this socket. The refusal
+      // is the listener's answer, not an open still being tried, so the session is told at once,
+      // as a refused registration is (R24 of dispatch://INFRA-3589). The host's report holds a
+      // registration that found no relay subject only while an open may still succeed.
+      if (subscription.subject === deliverSubject(session)) this.#outage.refused(refused);
       return;
     }
     // Logged once per code the wire names; any other code once in all, so a listener sending code

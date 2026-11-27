@@ -59,6 +59,7 @@ var settingRoles = map[string]settingRole{
 	"BROKER_SIGNIN_WORKSPACE_DOMAINS":      givesNone("the Workspace's domains"),
 	"BROKER_SECRETS_STORE":                 givesNone("a secret store"),
 	"BROKER_SECRETS_PREFIX":                givesNone("a secret-name prefix"),
+	"BROKER_SECRETS_SECOND_PREFIX":         givesNone("a secret-name prefix"),
 	"BROKER_PROFILES_FILE":                 givesNone("a file path"),
 	"BROKER_AIRLOCK_LISTEN_ADDR":           givesNone("a listen address"),
 	"BROKER_AIRLOCK_PROXY_URL":             givesNone("the airlock proxy's URL"),

@@ -12,7 +12,7 @@ Each bullet says what the helper does not do, so a site that must keep its own b
   It is a mutex around a byte sink and nothing else: a type that needs a reader of its own embeds it and keeps that reader, and a writer that is no log sink — an `http.ResponseWriter`, a TCP relay, a writer that gates what it passes on — keeps its own body.
 
 - A bounded wait is the module's `internal/testwait`.
-  `Eventually` is the wait a test usually wants, at the package's own pace (`Poll`), failing with what it waited for: `packages/daemon`'s gives up 30 s before the binary's deadline and at no other moment, as `Until` and `Context` do (below), and `packages/envoy`'s after a minute or the binary's own deadline less a second; `WithinPolling` takes a bound and a pace of its own; `Holds` answers rather than fails, for a caller whose failure text is its own diagnostic dump or is built at give-up; and `Bounded` clamps a span of the caller's own to what is left of the binary's deadline less a spare of the caller's, for a wait that keeps a loop or a margin of its own, as the idle rig's do.
+  `Eventually` is the wait a test usually wants, at the package's own pace (`Poll`), failing with what it waited for: `packages/daemon`'s gives up 30 s before the binary's deadline and at no other moment, as `Until` and `Context` do (below), and `packages/envoy`'s after a minute or the binary's own deadline less a second; `WithinPolling` takes a bound and a pace of its own; `Holds` answers rather than fails, for a caller whose failure text is its own diagnostic dump or is built at give-up; and `Bounded` clamps a span of the caller's own to what is left of the binary's deadline less a spare of the caller's, for a wait that keeps a loop or a margin of its own, as `cmd/legion`'s launcher and `legion gh` rows do.
   `Remaining` is what is left of the binary's deadline less 30 s, for a hang guard that is not the test's subject, such as the acknowledgement window of a consumer whose window also bounds each store read a handling makes, and a wait for those acknowledgements (`packages/daemon/internal/intake`): a fixed bound there, a minute say, lets the machine decide whether a store read of 61 s is cut.
   `Receive`, in both modules, waits for one receive from a channel, such as the answer of a call the test started, and sets no span of its own: it gives up 30 s before the binary's deadline (the daemon module's, a quarter of a `-timeout` under 2 minutes, so its waits still wait under a short `-timeout`), writes why to stderr at once and then fails the test, so a call that waits for ever fails by name, even without `-v`, and a call that is merely slow passes; the launcher rig's waits for a role's connection and for its next frame are such waits.
   A row whose verdict is what a call answers, a refusal or a replaced file, waits for it with `Receive`.
@@ -708,30 +708,55 @@ adds far more memory than the others: a few hundred megabytes or more of live he
 collection, about three times that under the race detector. Beside the package's other tests
 such a test would take the binary toward the step's limit.
 
-## A test in `packages/daemon/internal/daemon` runs beside the others
+## A test in a daemon package that states the rule runs beside the others
 
-Every top-level test of `packages/daemon/internal/daemon` in the default build calls `t.Parallel()`
-as its first statement, and the package's `TestMain` runs 4 at once (`daemonTestParallelism`).
-The live drivers behind `//go:build e2e`, which no unit run compiles, are not held to this. Each
-test already has a database of its own (a clone of the package's template, `testDSN` and
-`isolatedOutboxPool`), its own ports and state directory, and a NATS server of the package's pool
-(`internal/testnats`). go test starts no parallel test until every serial one has run, so a serial
-test runs alone while the runner's other cores wait.
+Five packages of `packages/daemon` state in their `TestMain`'s file that every top-level test of
+the default build calls `t.Parallel()` as its first statement or says why not: `internal/daemon`,
+`internal/workflow`, `internal/store`, `internal/runtime/sandbox` and `cmd/legion`. Each
+`TestMain` sets how many run at once (`daemonTestParallelism`, `workflowTestParallelism` and
+`storeTestParallelism` 4, `sandboxTestParallelism` and `cmdTestParallelism` 8).
+The live drivers behind `//go:build e2e` of `internal/daemon`, `internal/workflow`,
+`internal/store` and `cmd/legion`, which no unit run compiles, are not held to the rule, and the
+check below reads only the default build. Each test of `internal/daemon` already has a database of
+its own (a clone of the package's template, `testDSN` and `isolatedOutboxPool`), its own ports and
+state directory, and a NATS server of the package's pool (`internal/testnats`); each test of
+`internal/workflow` drives its engine over a clone of its own (`migratedPool`) or renders text from
+values of its own, each of `internal/store` opens a database of its own, and each of
+`internal/runtime/sandbox` drives a rig of its own (`newRig`). go test starts no parallel test
+until every serial one has run, so a serial test runs alone while the runner's other cores wait.
 
 A test that cannot run beside the others says why in a `// Not parallel:` comment on its first
 line: it calls `t.Setenv` or `t.Chdir`; it writes a package variable (`readinessRetry`, through
 `fastReadiness`, or `record.StatusRowKinds`); it changes the process's signal disposition; it is a
 helper process that exits the test binary (`TestIdleRigRoleProcess`); or it holds a wall-clock
 bound that the parallel tests' load could make it miss, which the comment names (`podStopBound`'s
-one second in `TestAPodStartsItsRolesOneLoadAtATime`). A new test with neither the call nor the
-comment runs alone for no reason, as 46 tests did by 2026-11-25.
+one second in `TestAPodStartsItsRolesOneLoadAtATime`, or the rig's two-second boot timeout in
+`TestSuspendOfAPodWhoseLauncherNeverConnectedReturnsAtOnce`). A new test with neither the call nor
+the comment runs alone for no reason.
+
+So each of the five packages fails such a test by name: `TestEveryTestCallsParallelOrSaysWhyNot`,
+in its `main_test.go`, runs `packages/daemon/internal/testparallel`'s `Require` over the package's
+own test files, those go/build's default context selects (no `-tags`). It finds a test as go test
+does, whatever name the file imported `testing` under. The reason goes on the comment's first
+line, after the colon: a `// Not parallel:` line with nothing after it is no reason, and neither
+is a comment that is not the body's first. A `t.Parallel()` after another statement, in a `defer`
+or in a subtest alone is no first statement. A test under a `// Not parallel:` comment that calls
+`t.Parallel()` anyway, first or later, in a closure over its `t` or through the method value
+`t.Parallel`, fails too, since its comment says the opposite of what it does; a subtest of it, with
+a `t` of its own, may still run in parallel. The check logs each test that runs alone with the
+reason its first line gives. `testparallel`'s own tests plant a package with a test of each shape
+and hold the check to naming exactly the ones that break the rule. A package that comes to state
+the rule holds it the same way, with a test of its own that calls `Require` on its directory.
+`internal/intake` states a looser one (above): a serial test whose reason is a call in its own body
+needs no comment there.
 
 ## A daemon test writes a file it then executes with `internal/execfile`
 
 In a package of the daemon module whose tests run beside each other (`cmd/legion`,
-`internal/daemon`, `internal/intake`), a test writes a file it or its program then executes (a
-stand-in git, gh, jj or curl, a wrapper on a PATH) with `packages/daemon/internal/execfile`
-(`execfile.Write`, `execfile.Append`), never `os.WriteFile` or an `os.OpenFile` of its own. A child
+`internal/daemon`, `internal/intake`, `internal/runtime/sandbox`), a test writes a file it or its
+program then executes (a stand-in git, gh, jj or curl, a wrapper on a PATH) with
+`packages/daemon/internal/execfile` (`execfile.Write`, `execfile.Append`), never `os.WriteFile` or
+an `os.OpenFile` of its own. A child
 another test forks while the file is open for writing holds the write descriptor until its own
 exec, and the kernel refuses to exec a file open for writing: `fork/exec …: text file busy`
 (ETXTBSY, Go issue 22315), which a serial run never meets. `execfile` holds `syscall.ForkLock` for
@@ -742,16 +767,15 @@ record) needs neither.
 
 ## A test in `packages/daemon/internal/runtime/sandbox` runs beside the others
 
-Every top-level test of `packages/daemon/internal/runtime/sandbox`, in the default build and the
-e2e build, calls `t.Parallel()` as its first statement or says on its first line, in a
-`// Not parallel:` comment, why it cannot; the package's `TestMain` runs 8 at once
-(`sandboxTestParallelism`). Each test drives a fake API server, launchers and store of its own
-(`newRig`). A test stays serial when it calls `t.Setenv` (`newSetupRig`), writes
+In `packages/daemon/internal/runtime/sandbox` the rule of the section above holds in the e2e build
+too. A sandbox test stays serial when it calls `t.Setenv` (`newSetupRig`), writes
 `gitHubRefreshInterval`, or needs a step to land inside a window of the wall clock, which the
-comment names. A test that asserts which deadline a wait meets sets a `clocktest.Fake` as the
-runtime's clock (`g.r.clock = fc`) and moves it one recheck at a time (`step`), and runs beside the
-others. A new test with neither the call nor the comment runs alone for no reason, as 25 tests did
-by 2026-11-25.
+comment names. A test whose launches must not give up while the tests beside it load the runner
+builds its rig with `withWaitsToTheDeadline()`, which takes the boot timeout to the test binary's
+deadline. A second runtime of the same test (`secondRuntime`) builds its own options, so it needs
+the same timeout too, as `drift_test.go` gives it; #5651 makes `secondRuntime` take the rig's. A
+test that asserts which deadline a wait meets sets a `clocktest.Fake` as the runtime's clock
+(`g.r.clock = fc`) and moves it one recheck at a time (`step`), and runs beside the others.
 
 ## A test in Dispatch's smaller packages runs beside the others
 
@@ -812,6 +836,23 @@ A command that runs one of its tests by name (`-run`) needs no deadline of its o
 rather than beside the module's other Postgres-backed packages: together they share one database
 service and the machine's CPU, and on a small machine `api` and `docs` then each overran the default
 (`docs/solutions/testing/the-dispatch-servers-go-suites-in-an-issue-pod-run-api-and-docs-alone-with-a-timeout-and-read-the-c-collation-docker-and-bun-failures-as-the-environment-LEGION-752.md`).
+
+`packages/envoy/internal/dispatch/legion`, the Legion state intake, took 489 s alone on an issue
+pod's two shared CPUs, and ran go test's ten minutes out with another test run beside it. Its
+seeded test of the read rule
+(`TestAnySequenceOfInputsAppliesNoOtherStoreCatchesUpHoldsNoMessageLongAndReadsOnceAMinute`)
+takes 226 s of that: where a row ends with a message handed back with a delay, the row waits in
+real time for its redelivery, up to `ReadRetryAfter`, a minute (seed 12's row waits 59 s of its
+92 s).
+CI's `envoy-go` unit step runs it with `-timeout 20m` (`.github/workflows/ci-job-envoy-go.yaml`),
+and a command that runs the whole package passes the same:
+
+```sh
+cd packages/envoy
+go test -timeout 20m ./internal/dispatch/legion/
+```
+
+A Legion issue pod does not run that whole package either: `skills/legion-worker/references/tools.md` says what the pod runs and where the rest goes.
 
 Every package of `packages/daemon` and of `packages/envoy` runs in CI in exactly one leg that
 `.github/go-legs.yaml` names for it, or, as `internal/daemon` and `cmd/listener` do, in a group of
@@ -886,7 +927,7 @@ A run that reports nothing is no proof on its own: the check runs at a garbage c
 `GOGC=10` beside the detector makes a single test likelier to fire it, not certain, so repeat the run before you read a quiet one as a clean one: with this fix reversed, `TestALiveWritesAskBlockKeepsItsWriterWhenAnotherProcessSettlesIt` under `GOGC=10 GODEBUG=checkfinalizers=1` fired in 2 of 3 runs for the implementer and in 1 of 6 for the reviewer, and at the fixed head it was quiet in 9 of 9.
 CI runs it in `envoy-go-race-docs` (`.github/workflows/ci-job-envoy-go-race-docs.yaml`), on the same line as the race detector, so one run of the package's tests serves both detectors, and on the package's lines of `envoy-go`'s two plain steps for what the race build leaves out or shrinks: "Test what the race build cannot run at all or at full size" (`envoy-go-race-impossible`) for the memory bounds and the render storms, and "Test the xid window rows, the API's issue-list bound and the auth service's storm, alone" (`envoy-go-alone`) for the xid window rows.
 The `envoy_go_race_docs` and `envoy_go` filters in `.github/ci-filters.yaml` select them.
-Both are slow suites: a pull request runs them only with the label `full-ci` or that suite's `lane:` label, and the merge queue runs them on the tree the change lands as, which is where their result normally comes from (`.github/ci-notes/ci.md`, "Which lane a job runs in: the pull request or the merge queue").
+Both are slow suites: the merge queue runs them on the tree the change lands as, which is where their result normally comes from, and a pull request runs one only under that suite's `lane:` label, for a need the pull request names (`.github/ci-notes/ci.md`, "Which lane a job runs in: the pull request or the merge queue").
 
 The race run streams the test binary's own output (`go test -json`) and so carries a second check Go's detector does not make:
 the package's `TestMain` prints `docs: <built> services built, <alive> still alive after <duration>` once the tests have run, and the line after it names each test that built a service still alive at the end of the run.
