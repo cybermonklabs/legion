@@ -374,12 +374,13 @@ func (b *liveDispatch) writeStep(key, id string, write map[string]any, rates boo
 // nodeOf is the node id of nodes as Dispatch's store finds it before a write under key
 // (workflowstore's putNode): nil where none is made yet, and refused where the id is a node of
 // another issue, which is answered 409 under code, the refusal of the kind of node what names
-// (steprecord.CodeOtherIssue for a step, steprecord.CodePlanOtherIssue for a plan), and keeps
-// nothing of the write. The caller holds b.mu.
+// (steprecord.CodeOtherIssue for a step, steprecord.CodePlanOtherIssue for a plan), in Dispatch's
+// words, which name the node and key and never the issue the node is part of, and keeps nothing
+// of the write. The caller holds b.mu.
 func nodeOf(nodes map[string]map[string]any, what, code, key, id string, w http.ResponseWriter) (stored map[string]any, refused bool) {
 	stored = nodes[id]
 	if stored != nil && stored["issue"] != key {
-		answerRefusal(w, http.StatusConflict, code, fmt.Sprintf("%s %s is part of %v, and this write names %s", what, id, stored["issue"], key))
+		answerRefusal(w, http.StatusConflict, code, fmt.Sprintf("%s %s is no %s of %s, the issue this write names", what, id, what, key))
 		return nil, true
 	}
 	return stored, false

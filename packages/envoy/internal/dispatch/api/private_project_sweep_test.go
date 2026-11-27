@@ -32,6 +32,8 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
+
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
 // sweepObjects are the ids of the objects one project holds, as a route's path names them.
@@ -322,8 +324,10 @@ func TestAnAcceptanceListsOnlyThePublicChild(t *testing.T) {
 }
 
 // TestAParentStatusConflictListsOnlyThePublicChild: with the rule on, a close over open children of
-// a public and of a private project is 409 listing the public child alone; an include_parent move
-// under a private parent in triage is 409 listing none.
+// a public and of a private project is 409 listing the public child alone, which decides the
+// refusal; an include_parent move under a private parent in triage is taken, naming none and
+// leaving the parent as it was, since the token's reader does not see the parent, and the rule
+// judges no pair whose issue its writer may not see (parentStatusConflictOf).
 func TestAParentStatusConflictListsOnlyThePublicChild(t *testing.T) {
 	t.Parallel()
 	rig := newPrivateProjectRig(t, testServerOptions{parentStatusRule: true})
@@ -350,9 +354,11 @@ func TestAParentStatusConflictListsOnlyThePublicChild(t *testing.T) {
 	if closed.Code != http.StatusConflict || answer.Code != "PARENT_STATUS_CONFLICT" || !slices.Equal(listed(answer), []string{publicChild}) || strings.Contains(closed.Body.String(), secretChild) {
 		t.Errorf("a close over a public and a private child: status=%d keys=%v body=%s", closed.Code, listed(answer), closed.Body.String())
 	}
+	// The answer's issue keeps its parent field, as GET shows it, so the parent's key is there;
+	// its title and an entry of it are not.
 	moved := rig.send(t, scopedToken, http.MethodPost, "/api/v1/issues/"+under+"/status-change", map[string]any{"status": "in_progress", "include_parent": true})
-	answer = decodeBody[conflict](t, moved)
-	if moved.Code != http.StatusConflict || answer.Code != "PARENT_STATUS_CONFLICT" || len(answer.Issues) != 0 || strings.Contains(moved.Body.String(), secretParent) {
+	if moved.Code != http.StatusOK || strings.Contains(moved.Body.String(), "Secret triage parent") || slices.Contains(cascadeChanged(t, moved.Body.String()), secretParent) {
 		t.Errorf("include_parent under a private parent with the rule on: status=%d body=%s", moved.Code, moved.Body.String())
 	}
+	ruleRig{database: rig.database}.requireIssue(t, secretParent, model.IssueStatusTriage, "")
 }

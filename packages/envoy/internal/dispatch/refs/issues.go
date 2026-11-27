@@ -32,15 +32,17 @@ var issueDepthCapSQL = strconv.Itoa(IssueDepthCap)
 //
 // It binds no visibility predicate and takes no acting person, because every caller is a rule of
 // a write - those four and the scope a result's check resolves in - and a rule that skipped an
-// issue it may not see would let a cycle through that issue, route an event short of its root, or
-// leave an ancestor out of work above an issue in work. The near-copy gate reads the chain as its
-// caller sees it (IssueAncestorsAsSeen), since it runs before the create knows its parent is one
-// the caller sees. The status change's plan moves each ancestor that is not in work into work, so
-// that the parent status rule (R24) holds. It names those ancestors to the caller who asked to
-// move them: its dry run and its answer list them. It leaves out an ancestor in a private project
+// issue it may not see would let a cycle through that issue or route an event short of its root.
+// The near-copy gate reads the chain as its caller sees it (IssueAncestorsAsSeen), since it runs
+// before the create knows its parent is one the caller sees. The status change's plan moves each
+// ancestor that is not in work into work, so that the parent status rule (R24) holds. It names
+// those ancestors to the caller who asked to move them: its dry run and its answer list them. It
+// reads the whole chain here and judges each ancestor itself, as its caller reads it (api's
+// readStatusChange): it leaves out an ancestor the caller does not see, or of a private project
 // that the caller's credential does not name (access.CredentialCovers), and each ancestor above
-// it, which the plan reaches only through it: it does not move those ancestors and names them
-// nowhere, and the parent status rule still judges the private one.
+// it, which the plan reaches only through it. It does not move those ancestors and names them
+// nowhere, and the parent status rule judges no pair with an issue the caller does not see (api's
+// parentStatusConflictOf).
 func IssueAncestors(ctx context.Context, q Queryer, key string) ([]string, error) {
 	ancestors := []string{}
 	if key == "" {
@@ -144,16 +146,16 @@ type IssueDescendant struct {
 // status change's plan (api's readStatusChange) and the check of a move's subtree (api's
 // refuseSpecWriterOfMovedSubtree, spec_writer.go) are this query.
 //
-// It binds no visibility predicate and takes no acting person, for the reason IssueAncestors
-// gives. Every caller is a rule of a write: the plan of a status change, which moves or unlinks
-// every open issue under the parent so that the parent status rule (R24) holds, and a plan that
-// skipped an issue it may not see would leave that issue open under a done parent; and the check
-// of a move, which must see every issue of the moved subtree that Legion runs. The plan names the
-// issues it will move or unlink to the caller who asked to move or unlink them: its dry run and
-// its answer list them. It leaves out an issue in a private project that the caller's credential
-// does not name (access.CredentialCovers), and each issue below it, which the plan reaches only
-// through it: it does not move or unlink those issues and names them nowhere, and the parent
-// status rule still judges the private one.
+// It binds no visibility predicate and takes no acting person. Every caller is a rule of a write:
+// the plan of a status change, which moves or unlinks the open issues under the parent so that the
+// parent status rule (R24) holds, and which judges each row itself, as its caller reads it (api's
+// readStatusChange); and the check of a move, which must see every issue of the moved subtree that
+// Legion runs. The plan names the issues it will move or unlink to the caller who asked to move or
+// unlink them: its dry run and its answer list them. It leaves out an issue the caller does not
+// see, or of a private project that the caller's credential does not name
+// (access.CredentialCovers), and each issue below it, which the plan reaches only through it: it
+// does not move or unlink those issues and names them nowhere, and the parent status rule judges
+// no pair with an issue the caller does not see (api's parentStatusConflictOf).
 //
 // The walk carries each issue's project and number, which its order needs, from the row it reads
 // already, rather than join its keys back to issues: the planner has no estimate of a recursive

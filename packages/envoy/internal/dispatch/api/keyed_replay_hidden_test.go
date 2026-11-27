@@ -62,3 +62,37 @@ func TestAKeyedRepeatReplaysNoAnswerItsCallerNoLongerSees(t *testing.T) {
 			repeat.Code, repeat.Body.String(), repeat.Header().Get(contracts.IdempotencyReplayedHeader), fresh.Code, fresh.Body.String())
 	}
 }
+
+// TestAStatusChangeIsNotReplayedToACredentialThatDoesNotSeeWhatItsIssueNames: a status change's
+// recovery point holds each step's issue as its writer's reader read it (writeIssue), and a key is
+// carol's whatever credential she writes through (requestKeyLogin), so a repeat is answered from
+// the point only to a caller that sees every object the point names, what its issues name
+// included (statusChangePointReferences), as heldAnswerRefusal holds every replay. carol, at her
+// browser, moves a PUB issue that PRIV's issue blocks under a key; her answer and her repeat's
+// name PRIV's issue among its blockers. Her token that lists no project sees the PUB issue and not
+// PRIV's, and its repeat under the same key is refused 409 KEY_COMMITTED, holding no part of
+// PRIV's issue.
+//
+// Control: statusChangePointReferences naming the keys of the point's issues alone (its two
+// nameIssueReferences calls taken out), under which the token's repeat is replayed carol's answer
+// with PRIV's key in it, and wantKeyedRefusal fails.
+func TestAStatusChangeIsNotReplayedToACredentialThatDoesNotSeeWhatItsIssueNames(t *testing.T) {
+	t.Parallel()
+	seed := seedPrivateProject(t)
+	blocker := seed.issue[seedPrivate]
+	blocked := seed.issueUnder(t, seedPublic, "A PUB issue that PRIV's issue blocks", "")
+	seed.mustRequest(t, callerCarol, http.MethodPatch, "/api/v1/issues/"+blocked, map[string]any{"blocked_by": []string{blocker}}, http.StatusOK)
+	path := "/api/v1/issues/" + blocked + "/status-change"
+	body := map[string]any{"status": "todo", "actor": carolsSession}
+	first := keyedSeedRequest(t, seed, callerCarol, http.MethodPost, path, body, "move-a-blocked-issue")
+	if first.Code != http.StatusOK || !strings.Contains(first.Body.String(), blocker) {
+		t.Fatalf("carol's keyed move of %s = %d %s, want 200 naming its blocker %s: the case proves nothing",
+			blocked, first.Code, first.Body.String(), blocker)
+	}
+	if again := keyedSeedRequest(t, seed, callerCarol, http.MethodPost, path, body, "move-a-blocked-issue"); again.Code != http.StatusOK ||
+		again.Header().Get(contracts.IdempotencyReplayedHeader) == "" || !strings.Contains(again.Body.String(), blocker) {
+		t.Fatalf("carol's repeat = %d %s, want the move replayed naming %s: the comparison proves nothing", again.Code, again.Body.String(), blocker)
+	}
+	wantKeyedRefusal(t, "the token's repeat, which sees "+blocked+" and not "+blocker,
+		keyedSeedRequest(t, seed, callerCarolToken, http.MethodPost, path, body, "move-a-blocked-issue"), blocker)
+}

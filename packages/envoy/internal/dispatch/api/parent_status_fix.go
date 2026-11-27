@@ -327,7 +327,7 @@ func (s *server) planParentStatusFixUnderLocks(ctx context.Context, steps []pare
 		again[index].title, again[index].project = row.title, row.project
 		writes.steps = append(writes.steps, again[index].issueWriteStep)
 	}
-	conflict, err := s.refuseIssueWritePlan(ctx, tx, parentStatusFixWriter(), writes)
+	conflict, err := s.refuseIssueWritePlan(ctx, tx, parentStatusFixWriter(), everyReader, writes)
 	if err != nil {
 		return nil, false, err
 	}

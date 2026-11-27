@@ -832,7 +832,10 @@ func TestAPlanWriteRefusesItsBadValues(t *testing.T) {
 	id := uuid.NewString()
 	putPlanRecordOK(t, handler, issues[0], id, plan)
 	other := putPlanRecord(t, handler, issues[1], id, plan)
-	expectRefusal(t, "the plan id of "+issues[0]+" on "+issues[1], other, http.StatusConflict, codePlanOtherIssue, issues[0], issues[1])
+	expectRefusal(t, "the plan id of "+issues[0]+" on "+issues[1], other, http.StatusConflict, codePlanOtherIssue, id, issues[1])
+	if strings.Contains(other.Body.String(), issues[0]) {
+		t.Errorf("the refusal of the plan id of %s on %s names %s, the issue the plan is a plan of: %s", issues[0], issues[1], issues[0], other.Body.String())
+	}
 }
 
 // holdsPlan closes issue, which the read of a project lists only once it is finished, and answers

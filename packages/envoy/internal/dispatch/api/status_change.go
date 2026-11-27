@@ -42,6 +42,7 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
@@ -193,8 +194,8 @@ func (s *server) changeIssueStatus(w http.ResponseWriter, r *http.Request) {
 		s.writeStatusChangeRefusal(w, err, none)
 		return
 	}
-	// The reader is resolved before any step holds a connection. At S3ab loadIssue binds no
-	// reader; S3c-issues makes it bind the caller's.
+	// The reader is resolved before any step holds a connection. The plan, each step and every
+	// answer read the call's issues as it reads them.
 	who, ok := s.readerOf(w, r)
 	if !ok {
 		return
@@ -209,6 +210,12 @@ func (s *server) changeIssueStatus(w http.ResponseWriter, r *http.Request) {
 		err = plan.conflict
 	}
 	if err == nil && change.dryRun {
+		// The issue as the PATCH's route answers its own (patchIssue): what it names that who
+		// does not see is left out.
+		if err := leaveOutHiddenIssueReferences(ctx, s.deps.Store.Pool, who, &plan.named, nil); err != nil {
+			s.writeStatusChangeRefusal(w, err, none)
+			return
+		}
 		WriteJSON(w, http.StatusOK, plan.dryRunAnswer())
 		return
 	}
@@ -221,11 +228,14 @@ func (s *server) changeIssueStatus(w http.ResponseWriter, r *http.Request) {
 
 // statusChangeStep is one step of a status change's plan: the write of one issue, the option that
 // makes it (empty for the named issue's own step), and the issue's last_seq as the plan read it,
-// which a dry run answers.
+// which a dry run answers. namedElsewhere is that the issue the call names is of a private project
+// other than this step's issue's, so the comment of this step names it as an issue of another
+// project (statusChangeRun.call).
 type statusChangeStep struct {
 	issueWriteStep
-	option  string
-	lastSeq int
+	option         string
+	lastSeq        int
+	namedElsewhere bool
 }
 
 // statusChangePlan is a status change as its planning transaction read it under its owner locks:
@@ -256,7 +266,8 @@ func (plan statusChangePlan) dryRunAnswer() statusChangeAnswer {
 
 // statusChangeRead is what a status change's plan is made from: the issue the call names, its
 // ancestors, parent first, when the call passes include_parent, and every issue under it when
-// the call passes include_children or unlink_children.
+// the call passes include_children or unlink_children, nearest first, each as the call's reader
+// may see it (readStatusChange).
 type statusChangeRead struct {
 	named       ruleIssue
 	ancestors   []ruleIssue
@@ -264,35 +275,110 @@ type statusChangeRead struct {
 }
 
 // readStatusChange reads what the plan of change on the issue key is made from, with plain reads
-// through q. An issue no row has is pgx.ErrNoRows, which answers 404 as the PATCH answers it.
-func readStatusChange(ctx context.Context, q queryer, key string, change statusChange) (statusChangeRead, error) {
+// through q, as who reads it. The issue key is read first, as who reads it (access.ProjectClause):
+// an issue no row has, and an issue of a project who does not see, is pgx.ErrNoRows, which answers
+// 404 as the PATCH answers it, before any walk below and any lock of the plan.
+//
+// The walks read every issue above and below key, as a rule of a write reads them
+// (refs.IssueAncestors, refs.IssueDescendantRows), and the plan is then made of what who may see
+// alone (statusChangeRead's ancestors and descendants). An issue of a project who does not see
+// (seenReferences), an issue of a private project that callerProject, the one project the
+// request's credential names, does not name (access.CredentialCovers), and each issue that the
+// cascade reaches only through such an issue - an ancestor above it, a descendant below it - are
+// left out. The call does not move or unlink those issues, takes no owner lock of them as a step's,
+// and names them nowhere. A reader that sees every object, with a credential that names no
+// project, leaves nothing out and reads no statement for it (R9).
+func readStatusChange(ctx context.Context, q queryer, who model.Actor, callerProject, key string, change statusChange) (statusChangeRead, error) {
 	read := statusChangeRead{named: ruleIssue{key: key}}
-	if err := q.QueryRow(ctx, `select status, parent_key from issues where key = $1`, key).Scan(&read.named.status, &read.named.parent); err != nil {
+	if err := q.QueryRow(ctx, `select status, parent_key from issues where key = $1 and `+access.ProjectClause("project_key", "$2"),
+		key, refs.VisibilityArg(who)).Scan(&read.named.status, &read.named.parent); err != nil {
 		return statusChangeRead{}, err
 	}
+	var above []string
 	if change.includeParent {
-		above, err := refs.IssueAncestors(ctx, q, key)
-		if err != nil {
+		var err error
+		if above, err = refs.IssueAncestors(ctx, q, key); err != nil {
 			return statusChangeRead{}, err
-		}
-		rows, err := readIssueWriteRows(ctx, q, above)
-		if err != nil {
-			return statusChangeRead{}, err
-		}
-		for _, ancestor := range above {
-			if row, ok := rows[ancestor]; ok {
-				read.ancestors = append(read.ancestors, ruleIssue{key: ancestor, status: row.status, parent: row.parent})
-			}
 		}
 	}
+	var below []refs.IssueDescendant
 	if change.includeChildren || change.unlinkChildren {
-		descendants, err := refs.IssueDescendantRows(ctx, q, key)
-		if err != nil {
+		var err error
+		if below, err = refs.IssueDescendantRows(ctx, q, key); err != nil {
 			return statusChangeRead{}, err
 		}
-		read.descendants = descendants
+	}
+	if len(above) == 0 && len(below) == 0 {
+		return read, nil
+	}
+	hidden, rows, err := hiddenFromStatusChange(ctx, q, who, callerProject, above, below)
+	if err != nil {
+		return statusChangeRead{}, err
+	}
+	// Parent first: an ancestor left out leaves out each one above it, which the cascade reaches
+	// only through it.
+	for _, ancestor := range above {
+		row, ok := rows[ancestor]
+		if !ok || hidden(ancestor) {
+			break
+		}
+		read.ancestors = append(read.ancestors, ruleIssue{key: ancestor, status: row.status, parent: row.parent})
+	}
+	// Nearest first, so each issue is judged after the issue the cascade reaches it through.
+	out := map[string]bool{}
+	for _, descendant := range below {
+		if out[descendant.Parent] || hidden(descendant.Key) {
+			out[descendant.Key] = true
+			continue
+		}
+		read.descendants = append(read.descendants, descendant)
 	}
 	return read, nil
+}
+
+// hiddenFromStatusChange reports, of the ancestors above and the descendants below of a status
+// change's issue, each issue that readStatusChange leaves out of its own accord: one who does not
+// see (seenReferences, one statement, none for a reader that sees every object), and one of a
+// private project that callerProject, the one project the request's credential names, does not
+// name. It answers the rows of above, and of below too when callerProject names a project, from
+// which the plan reads each ancestor's status and parent and the credential's check reads each
+// issue's project.
+func hiddenFromStatusChange(
+	ctx context.Context, q queryer, who model.Actor, callerProject string, above []string, below []refs.IssueDescendant,
+) (func(key string) bool, map[string]issueWriteRow, error) {
+	named := references{}
+	for _, key := range above {
+		named.name(issueReference, key)
+	}
+	for _, descendant := range below {
+		named.name(issueReference, descendant.Key)
+	}
+	rowKeys := above
+	if callerProject != "" {
+		rowKeys = slices.Collect(maps.Keys(named[issueReference]))
+	}
+	rows := map[string]issueWriteRow{}
+	if len(rowKeys) > 0 {
+		var err error
+		if rows, err = readIssueWriteRows(ctx, q, rowKeys); err != nil {
+			return nil, nil, err
+		}
+	}
+	seen, err := seenReferences(ctx, q, who, named)
+	if err != nil {
+		return nil, nil, err
+	}
+	credential := access.Credential{Listed: []string{callerProject}}
+	return func(key string) bool {
+		if !seen.holds(issueReference, key) {
+			return true
+		}
+		if callerProject == "" {
+			return false
+		}
+		row, ok := rows[key]
+		return !ok || !access.CredentialCovers(credential, row.project, row.private)
+	}, rows, nil
 }
 
 // steps is the plan's steps over read, in the order they run. Each option acts whenever the call
@@ -353,59 +439,20 @@ func (read statusChangeRead) steps(change statusChange) []statusChangeStep {
 	return steps
 }
 
-// walked is the key of the issue the call names and of every issue that the cascade over read
-// walks from it: its ancestors and the issues under it. It holds the issue of each step.
-func (read statusChangeRead) walked() []string {
-	keys := make([]string, 0, 1+len(read.ancestors)+len(read.descendants))
-	keys = append(keys, read.named.key)
-	for _, ancestor := range read.ancestors {
-		keys = append(keys, ancestor.key)
-	}
-	for _, descendant := range read.descendants {
-		keys = append(keys, descendant.Key)
-	}
-	return keys
-}
-
-// leftOut is the issues of read (walked) that a status change leaves out of its plan, where hidden
-// reports each issue in a private project that the request's credential does not name: each such
-// ancestor and descendant, and each issue that the cascade reaches only through one, an ancestor
-// above it or a descendant below it. It does not judge the issue the call names:
-// planStatusChangeUnderLocks decides that issue's scope once, under the same locks, before it
-// answers anything about it. The ancestors come parent first and the descendants nearest first,
-// so each issue is judged after the issue the cascade reaches it through.
-func (read statusChangeRead) leftOut(hidden func(key string) bool) map[string]bool {
-	out := map[string]bool{}
-	judge := func(key string, through bool) {
-		if through || hidden(key) {
-			out[key] = true
-		}
-	}
-	below := read.named.key
-	for _, ancestor := range read.ancestors {
-		judge(ancestor.key, out[below])
-		below = ancestor.key
-	}
-	for _, descendant := range read.descendants {
-		judge(descendant.Key, out[descendant.Parent])
-	}
-	return out
-}
-
 // planStatusChange is the plan of change on the issue key, checked under its owner locks before
-// any step writes. It reads the plan with plain reads, then, in a transaction of its own that
-// writes nothing, takes the owner locks of every step's issue and of each step's current and
-// new parent in one store.LockOwners call. Under them, where the request's credential names one
-// project, writer.callerProject, it first asks access.CredentialCovers about the issue the call
-// names: an issue of a private project that the credential does not name, and an issue whose row
-// is gone since the plain read, are 403 PROJECT_SCOPE, the answer of the route's pre-handler check
-// for an issue that does not exist. Then it loads the issue the call names and decides
-// expected_sequence (409 ISSUE_CHANGED), then the closed-issue gate as the PATCH has it (409
-// ISSUE_CLOSED), and reads the plan again. Where the credential names one project, it asks
-// access.CredentialCovers about each other issue that the cascade walks, and leaves out of the
-// plan each step whose issue is in a private project that the credential does not name, and each
-// step whose issue the cascade reaches only through such an issue: a descendant below it, or an
-// ancestor above it (statusChangeRead.leftOut). Then it checks the whole plan
+// any step writes. It reads the plan with plain reads, as who reads it (readStatusChange): an issue
+// key who does not see answers as a key no issue holds before any lock is taken, 403 PROJECT_SCOPE
+// where the request's credential names one project, writer.callerProject, as the route's
+// pre-handler check answers such a credential, and 404 otherwise, as the PATCH answers. Then, in a
+// transaction of its own that writes nothing, it takes the owner locks of every step's issue and
+// of each step's current and new parent in one store.LockOwners call, so a hidden issue is locked
+// as no step's. Under them, where the credential names one project, it first asks
+// access.CredentialCovers about the issue the call names: an issue of a private project that the
+// credential does not name, and an issue whose row is gone since the plain read, are 403
+// PROJECT_SCOPE, the answer of the route's pre-handler check for an issue that does not exist.
+// Then it loads the issue the call names and decides expected_sequence (409 ISSUE_CHANGED), then
+// the closed-issue gate as the PATCH has it (409 ISSUE_CLOSED), and reads the plan again, as who
+// reads it, which leaves out of the cascade what who may not see. Then it checks the whole plan
 // (refuseIssueWritePlan). A plan whose issues moved between the two reads, so that it needs a lock
 // the transaction does not hold, starts over with what the second read found, as
 // lockPatchOwnersAndParent does, and a plan that moves at every attempt is 409 PARENT_CONTENDED
@@ -421,7 +468,10 @@ func (s *server) planStatusChange(
 	if err != nil {
 		return statusChangePlan{}, err
 	}
-	read, err := readStatusChange(ctx, pool, key, change)
+	read, err := readStatusChange(ctx, pool, who, writer.callerProject, key, change)
+	if errors.Is(err, pgx.ErrNoRows) && writer.callerProject != "" {
+		err = outsideProjectScopeError(writer.callerProject)
+	}
 	if err != nil {
 		return statusChangePlan{}, err
 	}
@@ -494,7 +544,7 @@ func (s *server) planStatusChangeUnderLocks(
 	if named.ClosedAt != nil && change.status == "done" && !resumed.holds(key) {
 		return statusChangePlan{}, nil, errorf(http.StatusConflict, "ISSUE_CLOSED", "issue is closed")
 	}
-	again, err := readStatusChange(ctx, tx, key, change)
+	again, err := readStatusChange(ctx, tx, who, callerProject, key, change)
 	if err != nil {
 		return statusChangePlan{}, nil, err
 	}
@@ -502,52 +552,31 @@ func (s *server) planStatusChangeUnderLocks(
 	if !locksHeld(held, steps) {
 		return statusChangePlan{}, &again, nil
 	}
-	// A credential that names one project writes, in a step, an issue of every project that
-	// access.CredentialCovers covers. The check above decided the issue the path names, and a
-	// parent may be an issue of another project (validateIssueParent), so an ancestor that
-	// include_parent moves and a descendant that include_children moves or unlink_children unlinks
-	// can each belong to another. Each other issue that the cascade walks is asked about here, as
-	// this transaction read it under the owner locks, before the first step and for a dry run as
-	// well: each step's issue, and each issue that the cascade passes on its way to one, which need
-	// not be a step's. A step whose issue is in a private project that the credential does not name
-	// is left out of the plan, and so is each step whose issue the cascade reaches only through
-	// such an issue: a descendant below it, or an ancestor above it (statusChangeRead.leftOut). The
-	// call does not move or unlink those issues, and neither its answer nor its dry run names them.
-	// The parent status rule still judges each pair that the plan changes, a left-out issue's
-	// included (parentStatusConflictOf reads it as it stands).
-	var keys []string
-	if callerProject != "" {
-		keys = again.walked()
-	} else {
-		keys = make([]string, 0, len(steps))
-		for _, step := range steps {
-			keys = append(keys, step.key)
-		}
+	// The plan holds no issue who may not see: readStatusChange left each one out of the cascade,
+	// as this transaction read it under the owner locks, before the first step and for a dry run
+	// as well. So the call does not move or unlink those issues, and neither its answer nor its
+	// dry run names them.
+	// The row of the issue the call names is read with the steps', since a step whose issue is of
+	// another project than a private named issue's names that issue in its comment as an issue of
+	// another project (statusChangeStep.namedElsewhere).
+	keys := make([]string, 0, len(steps)+1)
+	keys = append(keys, key)
+	for _, step := range steps {
+		keys = append(keys, step.key)
 	}
 	rows, err := readIssueWriteRows(ctx, tx, keys)
 	if err != nil {
 		return statusChangePlan{}, nil, err
 	}
-	var leftOut map[string]bool
-	if callerProject != "" {
-		leftOut = again.leftOut(func(key string) bool {
-			row := rows[key]
-			return !access.CredentialCovers(credential, row.project, row.private)
-		})
-	}
+	namedRow := rows[key]
 	writes := issueWritePlan{steps: make([]issueWriteStep, 0, len(steps)), options: change.statusChangeOptions}
-	planned := steps[:0]
-	for _, step := range steps {
-		if leftOut[step.key] {
-			continue
-		}
-		row := rows[step.key]
-		step.title, step.project, step.lastSeq = row.title, row.project, row.lastSeq
-		planned = append(planned, step)
-		writes.steps = append(writes.steps, step.issueWriteStep)
+	for index := range steps {
+		row := rows[steps[index].key]
+		steps[index].title, steps[index].project, steps[index].lastSeq = row.title, row.project, row.lastSeq
+		steps[index].namedElsewhere = namedRow.private && row.project != namedRow.project
+		writes.steps = append(writes.steps, steps[index].issueWriteStep)
 	}
-	steps = planned
-	conflict, err := s.refuseIssueWritePlan(ctx, tx, writer, writes)
+	conflict, err := s.refuseIssueWritePlan(ctx, tx, writer, who, writes)
 	if err != nil {
 		return statusChangePlan{}, nil, err
 	}
@@ -571,7 +600,8 @@ func (s *server) planStatusChangeUnderLocks(
 // point this attempt resumed, or one a step of this keyed attempt wrote. named is the result of
 // the named issue's own step, when this attempt ran it (namedRan). moved is what each step of an
 // option that this attempt ran changed, in the order the steps committed, which the comment on the
-// named issue lists (namedComment).
+// named issue lists (namedComment). unnamed is each issue that comment names nowhere
+// (movesOfOtherPrivateProjects), which finish reads before it words the comment.
 type statusChangeRun struct {
 	server *server
 	key    string
@@ -586,6 +616,7 @@ type statusChangeRun struct {
 	named      issueWriteResult
 	namedRan   bool
 	moved      []statusChangeMove
+	unnamed    map[string]bool
 }
 
 // steps runs each step of the plan through the PATCH's write core, in a transaction of its own,
@@ -671,8 +702,9 @@ func (run *statusChangeRun) answer(w http.ResponseWriter, ran []statusChangeEntr
 // namedIssue is the answer's issue, the named issue as its own step answered it, as the
 // uninterrupted call answers it: this attempt's step's, when it ran that step (namedRan), and
 // otherwise the entry of that step in the point this attempt resumed, which holds it, since an
-// attempt that resumes plans no step its point holds. A point that holds no such entry is a fault
-// of the server's own.
+// attempt that resumes plans no step its point holds. Either is the issue as the step's reader
+// read it (writeIssue), which finish stores in the point for a replay. A point that holds no such
+// entry is a fault of the server's own.
 func (run *statusChangeRun) namedIssue() (model.Issue, error) {
 	if run.namedRan {
 		return run.named.issue, nil
@@ -732,21 +764,39 @@ func movesLeftOutLine(count int) string {
 	return fmt.Sprintf("- and %d more, each with a comment of its own", count)
 }
 
-// because is the reason that each comment of a status change gives for its change: the caller, the
-// issue the call names, each of options in a code span of its own, and the rule sentence. The
-// comment of each step of an option gives its one option, and the comment on the named issue gives
-// each option that changed an issue (namedComment).
+// issueOfAnotherProject is how the comment of a step names the issue the call names where that
+// issue is of a private project other than the step's issue's (statusChangeStep.namedElsewhere):
+// the comment is read by every reader of the step's issue, and only a reader of the private
+// project may be told its key.
+const issueOfAnotherProject = "an issue of another project"
+
+// because is the reason that the comment on the named issue gives for its changes
+// (namedComment), which names that issue by its key (becauseOf).
 func (run *statusChangeRun) because(options ...string) string {
+	return run.becauseOf(run.key, options...)
+}
+
+// becauseOf is the reason that each comment of a status change gives for its change: the caller,
+// named, the issue the call names as the comment names it, each of options in a code span of its
+// own, and the rule sentence. The comment of each step of an option gives its one option, and the
+// comment on the named issue gives each option that changed an issue (namedComment).
+func (run *statusChangeRun) becauseOf(named string, options ...string) string {
 	return fmt.Sprintf("because %s's status change of %s passed `%s`. %s",
-		run.callerName, run.key, strings.Join(options, "` and `"), statusChangeRuleSentence)
+		run.callerName, named, strings.Join(options, "` and `"), statusChangeRuleSentence)
 }
 
 // namedComment is the body of the comment on the issue the call names: a paragraph that names the
 // call, as the comment of each step of an option names it (because), with each option that changed
 // an issue, and a list of each change of the options, the moves of the point this attempt resumed
-// first and then this attempt's own, in the order their steps committed. It is "" when the options
-// changed no issue. The named issue's own step is no change of an option, so a call with no option,
-// and one whose options found nothing to change, owe no such comment.
+// first and then this attempt's own, in the order their steps committed (moves). It is "" when the
+// options changed no issue. The named issue's own step is no change of an option, so a call with
+// no option, and one whose options found nothing to change, owe no such comment.
+//
+// The comment is stored once and read by every reader of the named issue, so it names no issue in
+// run.unnamed, an issue of a private project other than the named issue's own: such a move is
+// left out of the list, counted nowhere, and names no option of the paragraph, as though the call
+// had not made it, and a call that made only such moves owes no comment. Each of those issues
+// has the comment of its own step, which only a reader of its project reads.
 //
 // The list is one block, which queueIssueComment holds to contracts.DispatchBlockUnits, in the
 // UTF-16 units that itemblocks.Check counts. So the list writes the line of each move, counted with
@@ -757,11 +807,7 @@ func (run *statusChangeRun) because(options ...string) string {
 // The paragraph holds no text of the call's but the caller's name, which the comment of each step
 // holds too (because).
 func (run *statusChangeRun) namedComment() string {
-	var moves []statusChangeMove
-	if run.resumed != nil {
-		moves = append(moves, run.resumed.Moved...)
-	}
-	moves = append(moves, run.moved...)
+	moves := slices.DeleteFunc(run.moves(), func(move statusChangeMove) bool { return run.unnamed[move.Key] })
 	if len(moves) == 0 {
 		return ""
 	}
@@ -792,6 +838,50 @@ func (run *statusChangeRun) namedComment() string {
 	return "Dispatch changed the issues below, " + run.because(options...) + "\n" + lines.String()
 }
 
+// moves is what the options of the call changed, as the comment on the named issue lists it: the
+// moves of the point this attempt resumed, then this attempt's own, in a slice of its own.
+func (run *statusChangeRun) moves() []statusChangeMove {
+	var moves []statusChangeMove
+	if run.resumed != nil {
+		moves = append(moves, run.resumed.Moved...)
+	}
+	return append(moves, run.moved...)
+}
+
+// movesOfOtherPrivateProjects is each issue of moves that belongs to a private project other than
+// the project of named, the issue the call names, read in one statement: the issues the comment on
+// named names nowhere (namedComment). That comment is stored once and read by every reader of
+// named, so it is held at its write to what each of them may be told, and every reader of named
+// sees named's own project. A deployment with no private project answers none, so the comment is
+// the one it was (R9); a call whose options moved nothing reads nothing.
+func movesOfOtherPrivateProjects(ctx context.Context, q queryer, named string, moves []statusChangeMove) (map[string]bool, error) {
+	if len(moves) == 0 {
+		return nil, nil
+	}
+	keys := make([]string, 0, len(moves))
+	for _, move := range moves {
+		keys = append(keys, move.Key)
+	}
+	rows, err := q.Query(ctx, `
+		select i.key from issues i
+		join projects p on p.key = i.project_key
+		where i.key = any($1) and p.visibility = 'private'
+		  and i.project_key is distinct from (select n.project_key from issues n where n.key = $2)
+	`, keys, named)
+	if err != nil {
+		return nil, fmt.Errorf("read the moved issues of other private projects: %w", err)
+	}
+	hidden, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return nil, fmt.Errorf("read the moved issues of other private projects: %w", err)
+	}
+	unnamed := make(map[string]bool, len(hidden))
+	for _, key := range hidden {
+		unnamed[key] = true
+	}
+	return unnamed, nil
+}
+
 // finish ends a call whose last step has run, with issue, the answer's issue, in one transaction of
 // its own that s.begin opens on run.outliving, so a client that goes away does not stop it. It
 // leaves the comment on the issue the call names (namedComment), when the options changed an
@@ -804,6 +894,11 @@ func (run *statusChangeRun) namedComment() string {
 // events of every step, so no fence of a step reads it. A call that owes neither writes nothing.
 func (run *statusChangeRun) finish(issue model.Issue) error {
 	s, ctx := run.server, run.outliving
+	unnamed, err := movesOfOtherPrivateProjects(ctx, s.deps.Store.Pool, run.key, run.moves())
+	if err != nil {
+		return err
+	}
+	run.unnamed = unnamed
 	body := run.namedComment()
 	if body == "" && !run.pointed {
 		return nil
@@ -866,8 +961,13 @@ func (run *statusChangeRun) call(step statusChangeStep, fence *issueWriteFence, 
 		return call
 	}
 	call.comment = &issueComment{author: parentStatusRuleActor}
+	// The step's comment is stored on its own issue and read by every reader of it: it names the
+	// issue the call names only where each of them sees that issue's project.
 	named, status := run.key, run.change.status
-	because := run.because(step.option)
+	if step.namedElsewhere {
+		named = issueOfAnotherProject
+	}
+	because := run.becauseOf(named, step.option)
 	call.step.moved = func(before model.Issue) statusChangeMove {
 		move := statusChangeMove{Key: step.key, Option: step.option}
 		if !step.reparent {
@@ -976,7 +1076,7 @@ func (s *server) writeStatusChangeRefusal(w http.ResponseWriter, err error, chan
 // holds, and [] where recovery is nil. A KEY_IN_FLIGHT answered before the repeat's body is judged
 // (answerDrainedRepeat's Expect: 100-continue and drain-error answers) names the running request's
 // point whatever the repeat's body; elsewhere a point is passed only once the digest matched.
-// Either way the layer passes a point only to a caller that sees every issue it names
+// Either way the layer passes a point only to a caller that sees every object it names
 // (recoveryPointFor). recovery is nil where the layer read none, where the row is another
 // request's (KEY_REUSED), where it is past its window, and where the caller does not see it.
 func (s *server) refuseStatusChangeKey(w http.ResponseWriter, err error, recovery json.RawMessage) {

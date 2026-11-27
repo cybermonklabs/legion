@@ -116,7 +116,7 @@ func TestARefusedRepeatAnswersAHiddenProjectAsAMissingOne(t *testing.T) {
 }
 
 // TestAStoredStatusChangeIsNotReplayedToACallerThatDoesNotSeeAnIssueItChanged: a status change's
-// stored answer names every issue its steps changed (keyedRoute.pointIssues), so a repeat is
+// stored answer names every issue its steps changed (keyedRoute.pointReferences), so a repeat is
 // answered from the key only to a caller that sees each of them, not only the issue its address
 // names. carol closes PUB's issue at her browser under a key with include_children, which closes
 // its child in PRIV too; her token that lists no project sees PUB's issue and not the child, and

@@ -1230,21 +1230,12 @@ func leaveOutHiddenIssueReferences(ctx context.Context, q queryer, who model.Act
 		return nil
 	}
 	named := references{}
-	for _, blocker := range issue.BlockedBy {
-		named.name(issueReference, blocker)
-	}
-	if issue.Assignee != nil {
-		named.name(personReference, *issue.Assignee)
-	}
-	if issue.Claim != nil {
-		named.nameActor(issue.Claim.Actor)
-	}
+	nameIssueReferences(named, *issue)
 	for _, child := range children {
 		if child.Claim != nil {
 			named.nameActor(child.Claim.Actor)
 		}
 	}
-	named.nameRoute(issue.Route)
 	seen, err := seenReferences(ctx, q, who, named)
 	if err != nil {
 		return err
@@ -1265,6 +1256,23 @@ func leaveOutHiddenIssueReferences(ctx context.Context, q queryer, who model.Act
 	}
 	seen.leaveOutRoute(&issue.Route)
 	return nil
+}
+
+// nameIssueReferences names in named each object issue names that the rule of references judges
+// for a reader (leaveOutHiddenIssueReferences): each blocker, the assignee, the claim's holder and
+// the route's session or role project. A stored answer that holds an issue is judged by the same
+// names before it is handed on (statusChangePointReferences).
+func nameIssueReferences(named references, issue model.Issue) {
+	for _, blocker := range issue.BlockedBy {
+		named.name(issueReference, blocker)
+	}
+	if issue.Assignee != nil {
+		named.name(personReference, *issue.Assignee)
+	}
+	if issue.Claim != nil {
+		named.nameActor(issue.Claim.Actor)
+	}
+	named.nameRoute(issue.Route)
 }
 
 // leaveOutHiddenSummaryReferences writes each listing row as who reads it, as

@@ -689,7 +689,9 @@ func TestAStepReturnedToRetroKeepsPlaceZero(t *testing.T) {
 	}
 }
 
-// An id the record of one issue holds is refused to a write that names another issue.
+// An id the record of one issue holds is refused to a write that names another issue, in words
+// that name the step and the issue the write names and never the issue the record is a run of,
+// which may be one of a project the writer does not see.
 func TestAStepOfAnotherIssueIsRefused(t *testing.T) {
 	t.Parallel()
 	handler := newTestHandler(t)
@@ -701,7 +703,10 @@ func TestAStepOfAnotherIssueIsRefused(t *testing.T) {
 	putStepOK(t, handler, issues[0], id, implementerStart(daemonSessionOf("LEG")))
 
 	other := putStep(t, handler, issues[1], id, implementerEnd(daemonSessionOf("LEG"), "passed", stepEnd))
-	expectRefusal(t, "the same id on "+issues[1], other, http.StatusConflict, codeStepOtherIssue, issues[0], issues[1])
+	expectRefusal(t, "the same id on "+issues[1], other, http.StatusConflict, codeStepOtherIssue, id, issues[1])
+	if strings.Contains(other.Body.String(), issues[0]) {
+		t.Errorf("the refusal of the same id on %s names %s, the issue the record is a run of: %s", issues[1], issues[0], other.Body.String())
+	}
 	if steps := stepsOf(t, handler, issues[1]); len(steps) != 0 {
 		t.Fatalf("%s lists %+v, want nothing", issues[1], steps)
 	}

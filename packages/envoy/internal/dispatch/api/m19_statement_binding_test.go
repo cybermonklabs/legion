@@ -67,6 +67,7 @@ var m19OwnerEdgesBeyondTheReferenceCensus = map[string]string{
 	"components.source_id":               "the architecture source the component was read from, of its own project",
 	"going_events.request_id":            "the going run whose event it is",
 	"project_access_changes.event_id":    "the event that stored the access change",
+	"going_request_posts.request_id":     "the going run whose post it is, as going_events.request_id names the run whose event it is",
 }
 
 // m19BindingFragments says, of every SQL fragment the access package writes (access.Marker),

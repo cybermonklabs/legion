@@ -95,11 +95,12 @@ func (s *server) retractCheckResult(w http.ResponseWriter, r *http.Request) {
 	defer tx.Rollback(r.Context())
 
 	// The read phase holds no transaction id (INFRA-636). The result's row is read plainly, for
-	// the owner it names, as who reads the issue it was recorded on: nothing ever updates a
-	// check_results row, and its one writer, the record route, inserts it under that same owner's
-	// lock (results.go, lockIssueOwners), so the row read here holds still. The owner's lock comes
-	// after the check of the owner's project below, and it is the lock the event's append would
-	// otherwise be the first to take
+	// the owner it names, as who reads the issue it was recorded on and the check's issue, that
+	// owner: a result of a check's issue who may not see is a result no row holds, and takes no
+	// lock below. Nothing ever updates a check_results row, and its one writer, the record route,
+	// inserts it under that same owner's lock (results.go, lockIssueOwners), so the row read here
+	// holds still. The owner's lock comes after the check of the owner's project below, and it is
+	// the lock the event's append would otherwise be the first to take
 	// (store.LockOwner, events' lockEventOwner): advisory, so this route waits for it holding no
 	// transaction id, where a `select ... for update` of the result taken first would have held
 	// one across the wait and across every read below it.
@@ -229,13 +230,16 @@ func claimingSession(ctx context.Context, q queryer, key string) (string, error)
 // owner's lock does not: check_results is written once, by the record route under the check
 // issue's owner lock, and two retractions of one result are taken one after the other because
 // both hold that lock while they read and write (retractCheckResult). It reads the result as who
-// reads the issue it was recorded on: a result of an issue who does not see is a result no row
-// holds.
+// reads both the issue it was recorded on and the check's issue, which can be of another project
+// (a check of a parent of another project): a result either of which who does not see is a result
+// no row holds, so the route answers it 404 and never takes the owner lock of a check's issue who
+// may not see.
 func readRetractedResult(ctx context.Context, tx pgx.Tx, who model.Actor, id string) (retractedResult, error) {
 	var result retractedResult
 	err := tx.QueryRow(ctx, `
 		select issue_key, check_issue_key, check_block_id, commit_sha, session
 		from check_results where id = $1 and `+access.IssueProjectClause("check_results.issue_key", "$2")+`
+			and `+access.IssueProjectClause("check_results.check_issue_key", "$2")+`
 	`, id, refs.VisibilityArg(who)).Scan(&result.IssueKey, &result.CheckIssueKey, &result.CheckBlockID,
 		&result.CommitSHA, &result.Session)
 	if errors.Is(err, pgx.ErrNoRows) {

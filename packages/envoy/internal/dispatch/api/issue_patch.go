@@ -202,7 +202,9 @@ func errIssueChanged() error {
 
 // issueWriteResult is what writeIssue wrote.
 type issueWriteResult struct {
-	// issue is the issue as the write answers it.
+	// issue is the issue as the write answers it: for a step of a status change or of R25's fix
+	// that writes, as the call's reader reads it (leaveOutHiddenIssueReferences); a PATCH's route
+	// leaves out what its reader does not see itself (patchIssue).
 	issue model.Issue
 	// advice is the advice the write answers beside the issue (withAdvice).
 	advice *writeAdvice
@@ -540,7 +542,7 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 	if step != nil {
 		plan.options = step.options
 	}
-	conflict, err := s.refuseIssueWritePlan(ctx, tx, call.writer, plan)
+	conflict, err := s.refuseIssueWritePlan(ctx, tx, call.writer, who, plan)
 	if err != nil {
 		return issueWriteResult{}, err
 	}
@@ -714,7 +716,7 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 		// The close's second read of R24 (openChildrenOfAClose): a create under this issue whose
 		// share lock of its row came first made the update above wait for its commit, and this
 		// read sees that new child.
-		conflict, err := openChildrenOfAClose(ctx, tx, key, callerProject)
+		conflict, err := openChildrenOfAClose(ctx, tx, who, key, callerProject)
 		if err != nil {
 			return issueWriteResult{}, err
 		}
@@ -840,6 +842,18 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 	if err != nil {
 		return issueWriteResult{}, err
 	}
+	// A step of a status change answers its issue to the call's caller, and a step of a keyed call
+	// keeps it in the call's recovery point, which a repeat answers, so it is the issue as who
+	// reads it (leaveOutHiddenIssueReferences), as the PATCH's route answers its own (patchIssue).
+	// It is read here, once the row is written and before the write phase's batch, on which the
+	// point's entry is written. The events record after whole. shown takes the last_seq and a
+	// close's closed_at that the batch leaves from after.
+	shown := after
+	if step != nil {
+		if err := leaveOutHiddenIssueReferences(ctx, tx, who, &shown, nil); err != nil {
+			return issueWriteResult{}, err
+		}
+	}
 	eventType := "issue.updated"
 	if statusChanged && after.Status == "done" {
 		eventType = "issue.closed"
@@ -960,8 +974,8 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 				closedAsks = askIDs(withdrawn)
 			}
 			if err := ledger.AfterWrites(func(b *store.WriteBatch) error {
-				answered := after
-				answered.LastSeq = appendedIssueLastSeq(key, appended)
+				answered := shown
+				answered.LastSeq, answered.ClosedAt = appendedIssueLastSeq(key, appended), after.ClosedAt
 				return queueStatusChangeStep(b, step, answeredStatusChangeEntry(answered, before.LastSeq), moved,
 					namedLastSeq, holdsNamed, closedAsks, &namedEvents)
 			}); err != nil {
@@ -1006,6 +1020,7 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 		return issueWriteResult{}, err
 	}
 	after.LastSeq = appendedIssueLastSeq(key, appended)
+	shown.LastSeq, shown.ClosedAt = after.LastSeq, after.ClosedAt
 	// A change of closed_at reaches the document rooms of every process, this one's included, from
 	// the commit itself: migration 20261101181500's trigger notifies, and each process closes its
 	// rooms of the issue's documents so their browsers reconnect with the scope the issue now
@@ -1023,7 +1038,7 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 		s.sweepClosedIssueAsks(call.outliving, key, withdrawn, actor)
 	}
 	return issueWriteResult{
-		issue: after, advice: advice, previousLastSeq: before.LastSeq, wrote: true, appended: appended,
+		issue: shown, advice: advice, previousLastSeq: before.LastSeq, wrote: true, appended: appended,
 		namedEvents: namedEvents, closed: closing, withdrawn: withdrawn, moved: moved,
 	}, nil
 }

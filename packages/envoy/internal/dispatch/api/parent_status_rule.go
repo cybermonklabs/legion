@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -295,8 +296,9 @@ func (call *issueWriteCall) unlinkFrom(parent string) {
 // through. Then it answers the conflict with R24 (parentStatusConflictOf), or nil when the plan
 // keeps the rule. An unjudged plan answers nil without R24's read, since its caller refuses no
 // conflict; R26 judges it all the same. Every other caller refuses the conflict only while the
-// rule is on, but for a dry run of the route.
-func (s *server) refuseIssueWritePlan(ctx context.Context, q pgx.Tx, writer issueWriter, plan issueWritePlan) (*parentStatusConflict, error) {
+// rule is on, but for a dry run of the route. who is the reader the write reads its issues as
+// (issueWriteCall.who): R24 judges the pairs of the issues who sees.
+func (s *server) refuseIssueWritePlan(ctx context.Context, q pgx.Tx, writer issueWriter, who model.Actor, plan issueWritePlan) (*parentStatusConflict, error) {
 	// R26 (legion_status_scope.go) comes first, so a call that R24 refuses too answers R26's code.
 	// It runs with the parent-status rule off too: an unjudged plan returns after it.
 	if err := refuseLegionStatusWrite(ctx, q, s.deps.LegionStatusScope, writer, plan); err != nil {
@@ -309,7 +311,7 @@ func (s *server) refuseIssueWritePlan(ctx context.Context, q pgx.Tx, writer issu
 	if plan.unjudged {
 		return nil, nil
 	}
-	return parentStatusConflictOf(ctx, q, plan, writer.callerProject)
+	return parentStatusConflictOf(ctx, q, who, plan, writer.callerProject)
 }
 
 // writesStatus reports whether a step of the plan writes status.
@@ -337,10 +339,16 @@ type plannedIssue struct {
 // judges the issue with its new parent. A pair that no step changes is not judged, so a plan that
 // changes no pair reads nothing. Every writer of a pair holds the parent's owner lock, so two
 // writes of one pair are judged one after the other. The issues are listed in the order of the
-// steps, a parent before the children, and the children in the order of their numbers. The rule
-// judges every pair, an issue that caller, the one project the request's credential names, cannot
-// see included. The answer leaves out each such issue (seenConflictIssues).
-func parentStatusConflictOf(ctx context.Context, q pgx.Tx, plan issueWritePlan, caller string) (*parentStatusConflict, error) {
+// steps, a parent before the children, and the children in the order of their numbers.
+//
+// The issues are read as who reads them (access.ProjectClause), as refuseOpenForeignChildren reads
+// the children it counts: the rule decides with what its writer knows. An issue of a project who
+// does not see is neither named in the conflict nor counted, so it decides no 409, and neither a
+// refusal nor a write that it lets through tells the writer anything of it; a pair with such an
+// issue at one end is not judged, and the write may leave it out of line. caller is the one
+// project the request's credential names: an issue who sees of a private project that caller does
+// not name is judged, and the answer leaves it out (seenConflictIssues).
+func parentStatusConflictOf(ctx context.Context, q pgx.Tx, who model.Actor, plan issueWritePlan, caller string) (*parentStatusConflict, error) {
 	var judged []issueWriteStep
 	var parentsOfChildren []string
 	for _, step := range plan.steps {
@@ -360,9 +368,10 @@ func parentStatusConflictOf(ctx context.Context, q pgx.Tx, plan issueWritePlan, 
 		select i.key, i.title, i.status, i.parent_key, i.project_key, p.visibility = 'private'
 		from issues i
 		join projects p on p.key = i.project_key
-		where i.key = any($1) or i.parent_key = any($2)
+		where (i.key = any($1) or i.parent_key = any($2))
+		  and `+access.ProjectClause("i.project_key", "$3")+`
 		order by i.project_key, i.number
-	`, keys, parentsOfChildren)
+	`, keys, parentsOfChildren, refs.VisibilityArg(who))
 	if err != nil {
 		return nil, fmt.Errorf("read the issues of a write's parent-status pairs: %w", err)
 	}
@@ -428,11 +437,13 @@ func parentStatusConflictOf(ctx context.Context, q pgx.Tx, plan issueWritePlan, 
 }
 
 // seenConflictIssues is issues without each issue of a private project that caller, the one
-// project the request's credential names, does not name (seenBy). A caller whose credential names
-// no project sees each issue. The rule has judged every pair already, so a conflict refuses the
-// write whatever this leaves, and its list can be empty. Every builder of a conflict that can list
-// such an issue answers through here (parentStatusConflictOf, openChildrenOfAClose): the parent of
-// a new issue (createParentConflict) is one that the create's read of its parent already covered.
+// project the request's credential names, does not name (seenBy). Every builder of a conflict that
+// can list such an issue reads only the issues its writer's reader sees and answers through here
+// (parentStatusConflictOf, openChildrenOfAClose), so a caller whose credential names no project is
+// answered each issue listed. The rule has judged each pair of those issues already, so a conflict
+// refuses the write whatever this leaves, and its list can be empty. The parent of a new issue
+// (createParentConflict) is one that the create's read of its parent, as its writer reads it,
+// already covered.
 func seenConflictIssues(issues []parentStatusConflictIssue, caller string) []parentStatusConflictIssue {
 	if caller == "" {
 		return issues
@@ -461,17 +472,20 @@ func seenBy[T any](caller string, items []T, projectOf func(T) (string, bool)) [
 // that are not done, read in the close's write phase after its own update of key's row. A create
 // under key holds no owner lock of key, so the close's first check cannot see a child whose create
 // has not committed. The create's share lock of key's row makes the close's update wait for that
-// commit, so this read, the statement after the update, sees the child. caller is the one project
-// the request's credential names, empty for one that names none: the answer leaves out each child
-// that caller cannot see (seenConflictIssues).
-func openChildrenOfAClose(ctx context.Context, tx pgx.Tx, key, caller string) (*parentStatusConflict, error) {
+// commit, so this read, the statement after the update, sees the child. The children are read as
+// who reads them (access.ProjectClause), as the first check reads them (parentStatusConflictOf): a
+// child of a project who does not see is neither named nor counted. caller is the one project the
+// request's credential names, empty for one that names none: the answer leaves out each child that
+// caller cannot see (seenConflictIssues).
+func openChildrenOfAClose(ctx context.Context, tx pgx.Tx, who model.Actor, key, caller string) (*parentStatusConflict, error) {
 	rows, err := tx.Query(ctx, `
 		select i.key, i.title, i.status, i.project_key, p.visibility = 'private'
 		from issues i
 		join projects p on p.key = i.project_key
 		where i.parent_key = $1 and i.status <> 'done'
+		  and `+access.ProjectClause("i.project_key", "$2")+`
 		order by i.project_key, i.number
-	`, key)
+	`, key, refs.VisibilityArg(who))
 	if err != nil {
 		return nil, fmt.Errorf("read the open children of a close: %w", err)
 	}

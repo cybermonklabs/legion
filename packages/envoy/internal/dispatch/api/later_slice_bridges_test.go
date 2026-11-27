@@ -9,6 +9,10 @@ package api
 
 import (
 	"context"
+	"fmt"
+	"net/http/httptest"
+	"regexp"
+	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
@@ -18,6 +22,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -110,4 +115,67 @@ func (s privateSeed) putGroup(t *testing.T, name string, members ...string) {
 		_, event, err := access.PutGroup(ctx, tx, s.deps.Events, name, seedCarol, members, by)
 		return event, err
 	})
+}
+
+// The units below are issue_repo_restricted_test.go's (S7), which repowrite_private_owner_test.go
+// (S3c-issues) reads; S7 deletes them here when that file comes.
+
+// issueWritesSnapshot is everything an issue write could have written: each issue's repository,
+// title and status, and how many events, related-item records and near-copy records exist.
+func issueWritesSnapshot(t *testing.T, database *store.Store) string {
+	t.Helper()
+	var snapshot string
+	if err := database.Pool.QueryRow(context.Background(), `
+		select concat_ws(' | ',
+			(select count(*) from events), (select count(*) from related_checks), (select count(*) from near_copy_checks),
+			(select coalesce(string_agg(concat_ws(',', key, coalesce(repo, '-'), title, status), '; ' order by key), '') from issues))
+	`).Scan(&snapshot); err != nil {
+		t.Fatalf("read what the issue writes wrote: %v", err)
+	}
+	return snapshot
+}
+
+// proxyShows answers whether the GitHub proxy shows login repository: its own read
+// (routes' repositoryVisibleQuery, refs.RepositoryClause) for the viewer it resolves a cookie to
+// (access.Resolve of model.BrowserActor).
+func proxyShows(t *testing.T, database *store.Store, login, repository string) bool {
+	t.Helper()
+	viewer, err := access.Resolve(context.Background(), database.Pool, model.BrowserActor(login))
+	if err != nil {
+		t.Fatalf("resolve what %s sees: %v", login, err)
+	}
+	var shown bool
+	if err := database.Pool.QueryRow(context.Background(), `select `+refs.RepositoryClause("$2", "$1"),
+		refs.VisibilityArg(model.Actor{Viewer: &viewer}), repository).Scan(&shown); err != nil {
+		t.Fatalf("read whether %s sees %s: %v", login, repository, err)
+	}
+	return shown
+}
+
+// repoOf is a repository an answer names, "<none>" for none.
+func repoOf(repo *string) string {
+	if repo == nil {
+		return "<none>"
+	}
+	return *repo
+}
+
+// maskedAnswer is an answer with answerMasks applied, the bytes two runs of one build share.
+func maskedAnswer(response *httptest.ResponseRecorder) string {
+	body := strings.TrimSpace(response.Body.String())
+	for _, mask := range answerMasks {
+		body = mask.pattern.ReplaceAllString(body, mask.replacement)
+	}
+	return fmt.Sprintf("%d %s", response.Code, body)
+}
+
+// answerMasks are the parts of an answer that differ from one run to the next: a time, a uuid and a
+// duration in milliseconds.
+var answerMasks = []struct {
+	pattern     *regexp.Regexp
+	replacement string
+}{
+	{regexp.MustCompile(`\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})`), "<time>"},
+	{regexp.MustCompile(`[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}`), "<uuid>"},
+	{regexp.MustCompile(`"(\w+_ms)":\d+`), `"$1":<ms>`},
 }

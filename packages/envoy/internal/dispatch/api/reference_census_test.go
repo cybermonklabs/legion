@@ -172,6 +172,7 @@ var referenceDispositions = map[string]referenceDisposition{
 	"post_body_history.comment_id":              {ownColumn, "the corrected comment, whose earlier bodies its own history read answers"},
 	"post_body_history.message_id":              {ownColumn, "the corrected message, whose earlier bodies its own history read answers"},
 	"project_access.project_key":                {ownColumn, "the access list's project"},
+	"project_role_holder_marks.project_key":     {ownColumn, "the project whose role holders the mark records"},
 	"projects.default_assignee":                 {filteredReference, "a person the writer sees, read as an ask's waiting_on_person: leaveOutHiddenAskPersons"},
 	"pull_request_heads.issue_key":              {internalColumn, "the attribution pass's record, answered through delivery_pull_requests"},
 	"reference_excerpt_backoff.artifact_id":     {internalColumn, "an excerpt queue"},

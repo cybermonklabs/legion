@@ -67,31 +67,33 @@ type statusChangeRecovery struct {
 	Issue *model.Issue `json:"issue,omitempty"`
 }
 
-// statusChangePointIssues is the keys of every issue a status change's recovery point names, which
-// its refusal (refuseStatusChangeKey) and its replay (replayStatusChange) answer: the issue of each
-// step's entry and of each move, and the answer's issue, each once, in the order the point holds
-// them (keyedRoute.pointIssues).
-func statusChangePointIssues(recovery json.RawMessage) ([]string, error) {
+// statusChangePointReferences is every object a status change's recovery point names, which its
+// refusal (refuseStatusChangeKey) and its replay (replayStatusChange) answer: the issue of each
+// step's entry and of each move, the answer's issue, and each object that the issue of an entry
+// or the answer's issue names (nameIssueReferences) (keyedRoute.pointReferences). Each step stores
+// its issue as its own reader read it (writeIssue), and a key is a person's whatever credential
+// they write through, so a repeat under another of that person's credentials is answered from the
+// point only where it sees each of these too.
+func statusChangePointReferences(recovery json.RawMessage) (references, error) {
 	var point statusChangeRecovery
 	if err := json.Unmarshal(recovery, &point); err != nil {
 		return nil, fmt.Errorf("read the recovery point of a status change: %w", err)
 	}
-	keys := make([]string, 0, len(point.Changed)+len(point.Moved)+1)
-	add := func(key string) {
-		if key != "" && !slices.Contains(keys, key) {
-			keys = append(keys, key)
+	named := references{}
+	for _, entry := range point.Changed {
+		named.name(issueReference, entry.Key)
+		if entry.Issue != nil {
+			nameIssueReferences(named, *entry.Issue)
 		}
 	}
-	for _, entry := range point.Changed {
-		add(entry.Key)
-	}
 	for _, move := range point.Moved {
-		add(move.Key)
+		named.name(issueReference, move.Key)
 	}
 	if point.Issue != nil {
-		add(point.Issue.Key)
+		named.name(issueReference, point.Issue.Key)
+		nameIssueReferences(named, *point.Issue)
 	}
-	return keys, nil
+	return named, nil
 }
 
 // holds reports whether the point holds the entry of key's step, which counts that step as made.

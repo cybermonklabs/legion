@@ -126,7 +126,10 @@ func PutStep(ctx context.Context, tx pgx.Tx, write StepWrite, actor model.Actor,
 		return Step{}, refusal(ErrStepInput, "step %s holds no node yet, and this write, which would make it, does not name its %s: the first write of a step names its task, kind, step, role and generation",
 			id, strings.Join(missing, ", "))
 	case errors.As(err, &other):
-		return Step{}, fmt.Errorf("%w: step %s is part of %s, and this write names %s", ErrStepOtherIssue, id, other.issue, write.Issue)
+		// The refusal names the step and the issue the write names, never the issue the step is a
+		// run of: a writer of one issue that names another issue's step id learns nothing of that
+		// issue, which may be one of a project it does not see.
+		return Step{}, fmt.Errorf("%w: step %s is no step of %s, the issue this write names", ErrStepOtherIssue, id, write.Issue)
 	case err != nil:
 		return Step{}, err
 	}

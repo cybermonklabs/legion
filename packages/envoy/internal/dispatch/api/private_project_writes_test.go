@@ -653,10 +653,12 @@ func TestAResultOnAPrivateProjectsCheckAnswersAsAMissingCheckToAnotherProjectsTo
 // from issues of its own:
 //
 //   - include_parent over a private parent: the issue moves into work and its parent stays where
-//     it is. The rule judges that pair, so the dry run, which answers as the rule does whatever
-//     the setting, answers 409 PARENT_STATUS_CONFLICT, and its issues leave the parent out. The
-//     issue's own parent field still holds the parent's key, as it did before the call. The parent
-//     hears the issue's child.status event, as the parent of every child whose status moves does.
+//     it is. The token's reader does not see the parent, so the rule does not judge that pair
+//     (parentStatusConflictOf): the dry run, which answers as the rule does whatever the setting,
+//     is taken as the call is, and a 409 decided by the parent's status would tell the token that
+//     status. The issue's own parent field still holds the parent's key, as it did before the
+//     call. The parent hears the issue's child.status event, as the parent of every child whose
+//     status moves does.
 //   - include_children into work over a private child: the parent moves and the child stays in
 //     triage.
 //   - unlink_children over a private child: the parent moves and the child stays under it.
@@ -693,7 +695,7 @@ func TestAStatusChangeLeavesOutAPrivateProjectsIssue(t *testing.T) {
 		{
 			name: "include_parent over a private parent", body: map[string]any{"status": "in_progress", "include_parent": true},
 			scoped: above("Started under a private parent"), named: above("Started by the naming token"),
-			dryRun: http.StatusConflict,
+			dryRun: http.StatusOK,
 		},
 		{
 			name: "include_children into work over a private child", body: map[string]any{"status": "todo", "include_children": true},
@@ -801,20 +803,23 @@ func privateRow(written string) string {
 }
 
 // TestAParentStatusConflictLeavesOutAPrivateProjectsIssue: with the parent status rule on, a
-// parent of the token's own project has an open child in the private project. The rule judges
-// every pair, the private child included, so each call below that would leave the parent out of
-// line is refused and changes nothing, and its answer names the child nowhere:
+// parent of the token's own project has an open child in the private project. The token's reader
+// does not see the child, so the rule decides with what the token knows (parentStatusConflictOf,
+// openChildrenOfAClose): the child is neither listed nor counted, and decides no 409, which would
+// tell the token that an open issue it may not see is under its parent. Each call below names the
+// child nowhere:
 //
 //   - a status change to done with include_children: 403 BROWSER_SIGN_IN_REQUIRED, which a request
 //     that presents a token gets before the rule, also for its dry run.
-//   - a status change to done, and its dry run: 409 PARENT_STATUS_CONFLICT with no issue listed.
-//   - a status change to backlog with include_children over a child in work, and its dry run: 409
-//     PARENT_STATUS_CONFLICT with no issue listed, since the call leaves the child out.
-//   - a PATCH of the status to done: 409 PARENT_STATUS_CONFLICT with no issue listed.
+//   - a status change to done, and its dry run: taken, the parent closed and the child as it was.
+//   - a status change to backlog with include_children over a child in work, and its dry run:
+//     taken, since the call leaves the child out; the parent moves and the child stays in work.
+//   - a PATCH of the status to done: taken, the child as it was.
 //
-// With the token that names the private project, the status change to done and the PATCH list the
-// child, and the status change to backlog with include_children moves the child and is taken. The
-// rule refuses an acceptance write over such a child before its open-child check, so
+// With the token that names the private project, the status change to done and the PATCH are
+// refused 409 PARENT_STATUS_CONFLICT listing the child, before the scoped token's call, and the
+// status change to backlog with include_children moves the child and is taken. The rule refuses
+// an acceptance write over such a child before its open-child check, so
 // TestAnAcceptanceWriteLeavesOutAPrivateProjectsOpenChild holds its 409 FOREIGN_CHILD_OPEN with the
 // rule off.
 func TestAParentStatusConflictLeavesOutAPrivateProjectsIssue(t *testing.T) {
@@ -878,6 +883,29 @@ func TestAParentStatusConflictLeavesOutAPrivateProjectsIssue(t *testing.T) {
 		}
 	}
 	dryRun := func(body map[string]any) map[string]any { return withMembers(body, map[string]any{"dry_run": true}) }
+	// taken fails t unless send answers 200 naming the child nowhere and leaves the child's row,
+	// events, comments and asks as they were; status is the parent's after it, "" for a dry run,
+	// which writes neither issue.
+	taken := func(t *testing.T, what string, f family, status string, send func() *httptest.ResponseRecorder) {
+		t.Helper()
+		before := rig.written(t, f.parent, f.child)
+		child := privateRow(rig.written(t, f.child))
+		response := send()
+		requireTaken(t, what, response, http.StatusOK)
+		if strings.Contains(response.Body.String(), f.child) || strings.Contains(response.Body.String(), f.title) {
+			t.Errorf("%s names the private child %s: %s", what, f.child, response.Body.String())
+		}
+		if status == "" {
+			if after := rig.written(t, f.parent, f.child); after != before {
+				t.Errorf("%s changed %s to %s, want nothing written", what, before, after)
+			}
+			return
+		}
+		if after := privateRow(rig.written(t, f.child)); after != child {
+			t.Errorf("%s changed the private child from %s to %s, want it as it was", what, child, after)
+		}
+		ruleRig{database: rig.database}.requireIssue(t, f.parent, status, "")
+	}
 
 	t.Run("a status change to done with include_children", func(t *testing.T) {
 		body := map[string]any{"status": "done", "include_children": true}
@@ -887,18 +915,19 @@ func TestAParentStatusConflictLeavesOutAPrivateProjectsIssue(t *testing.T) {
 
 	t.Run("a status change to done", func(t *testing.T) {
 		body := map[string]any{"status": "done"}
-		refused(t, "the call", closed, http.StatusConflict, "PARENT_STATUS_CONFLICT", []string{}, statusChange(scopedToken, closed, body))
-		refused(t, "the dry run", closed, http.StatusConflict, "PARENT_STATUS_CONFLICT", []string{}, statusChange(scopedToken, closed, dryRun(body)))
 		refused(t, "the call of the token that names the private project", closed, http.StatusConflict, "PARENT_STATUS_CONFLICT",
 			[]string{closed.child}, statusChange(namingToken, closed, body))
 		refused(t, "the dry run of the token that names the private project", closed, http.StatusConflict, "PARENT_STATUS_CONFLICT",
 			[]string{closed.child}, statusChange(namingToken, closed, dryRun(body)))
+		taken(t, "the dry run", closed, "", statusChange(scopedToken, closed, dryRun(body)))
+		taken(t, "the call", closed, "done", statusChange(scopedToken, closed, body))
 	})
 
 	t.Run("a status change to backlog with include_children over a child in work", func(t *testing.T) {
 		body := map[string]any{"status": "backlog", "include_children": true}
-		refused(t, "the call", putBack, http.StatusConflict, "PARENT_STATUS_CONFLICT", []string{}, statusChange(scopedToken, putBack, body))
-		refused(t, "the dry run", putBack, http.StatusConflict, "PARENT_STATUS_CONFLICT", []string{}, statusChange(scopedToken, putBack, dryRun(body)))
+		taken(t, "the dry run", putBack, "", statusChange(scopedToken, putBack, dryRun(body)))
+		taken(t, "the call", putBack, "backlog", statusChange(scopedToken, putBack, body))
+		ruleRig{database: rig.database}.requireIssue(t, putBack.child, "in_progress", putBack.parent)
 		requireTaken(t, "the call of the token that names the private project", statusChange(namingToken, putBack, body)(), http.StatusOK)
 		ruleRig{database: rig.database}.requireIssue(t, putBack.child, "backlog", putBack.parent)
 	})
@@ -909,9 +938,9 @@ func TestAParentStatusConflictLeavesOutAPrivateProjectsIssue(t *testing.T) {
 				return rig.send(t, token, http.MethodPatch, "/api/v1/issues/"+patched.parent, map[string]any{"status": "done"})
 			}
 		}
-		refused(t, "the PATCH", patched, http.StatusConflict, "PARENT_STATUS_CONFLICT", []string{}, patch(scopedToken))
 		refused(t, "the PATCH of the token that names the private project", patched, http.StatusConflict, "PARENT_STATUS_CONFLICT",
 			[]string{patched.child}, patch(namingToken))
+		taken(t, "the PATCH", patched, "done", patch(scopedToken))
 	})
 }
 

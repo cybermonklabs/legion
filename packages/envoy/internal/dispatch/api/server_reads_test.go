@@ -57,6 +57,8 @@ var serverReads = map[string]string{
 		"drops the words of every project's keys (readLineWords), as every line did before projects could be private",
 	"parent_status_fix.go:call": "R25's fix of a parent's status runs at boot for no caller: it writes the status the rule owes and " +
 		"answers no one",
+	"parent_status_fix.go:planParentStatusFixUnderLocks": "R25's fix checks its plan with R24 at boot for no caller: the rule judges " +
+		"every pair the fix changes, of every project, and its refusal stops the fix and answers no one",
 	"event_stream_relay.go:page": "the relay reads one page of the event log for every subscriber at once; at this slice every " +
 		"events subscription is sent every event, as main sends it, and S4 gates each live socket by its own viewer where it " +
 		"sends an event on",

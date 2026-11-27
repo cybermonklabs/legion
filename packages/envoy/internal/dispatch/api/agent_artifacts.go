@@ -7,7 +7,9 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
@@ -30,14 +32,19 @@ const (
 	agentArtifactByNameOrSlugSQL = `select ` + artifactColumns + ` from artifacts where session_id = $1 and $2 in (name, slug)
 		order by slug = $2 desc limit 1`
 	agentArtifactSlugTakenSQL = `select exists(select 1 from artifacts where session_id = $1 and slug = $2)`
-	// agentArtifactsSQL is the conversation's list, $1 the session id and $2 the most rows it
-	// answers (agentArtifactsListMax), newest first, id breaking a tie. It compares session_id
-	// for the reason the two lookups above do, so the partial index artifacts_session_id (0071),
-	// keyed (session_id, created_at), serves it in its own order and stops at the limit rather
-	// than a scan of every owner's artifacts.
-	agentArtifactsSQL = `select ` + artifactColumns + ` from artifacts where session_id = $1
-		order by created_at desc, id desc limit $2`
 )
+
+// agentArtifactsSQL is the conversation's list, $1 the session id, $2 the most rows it answers
+// (agentArtifactsListMax) and $3 the reader's visibility argument (refs.VisibilityArg), newest
+// first, id breaking a tie. It compares session_id for the reason the two lookups above do, so the
+// partial index artifacts_session_id (0071), keyed (session_id, created_at), serves it in its own
+// order and stops at the limit rather than a scan of every owner's artifacts. Each row is held to
+// the rule the read by slug holds it to (access.DocumentClause, which holds the conversation's
+// session to the content rule, access.SessionContentClause), so the list of a conversation its
+// reader may not read answers [], as a conversation that holds no file does.
+var agentArtifactsSQL = `select ` + artifactColumns + ` from artifacts where session_id = $1
+		and ` + access.DocumentClause("artifacts", "$3") + `
+		order by created_at desc, id desc limit $2`
 
 // agentArtifactsListMax is the most files and images GET /api/v1/agents/{session_id}/artifacts
 // answers: the newest ones, each with its versions. The list is what a reference picker opens
@@ -135,6 +142,8 @@ func (s *server) uploadAgentArtifact(w http.ResponseWriter, r *http.Request) {
 // names (routeScopes) and actingPerson, which that read opens with too, before the path is read.
 // `session` therefore means what it means on that read, the session the request acts for, and a
 // credential that proved a session is refused one naming another (403 ACTOR_SESSION_MISMATCH).
+// Each file is listed only where the read by slug answers it to the same reader
+// (access.DocumentClause): a conversation its reader may not read lists none.
 func (s *server) listAgentArtifacts(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.actingPerson(w, r); !ok {
 		return
@@ -148,5 +157,5 @@ func (s *server) listAgentArtifacts(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	s.writeArtifactList(w, r, who, agentArtifactsSQL, session, agentArtifactsListMax)
+	s.writeArtifactList(w, r, who, agentArtifactsSQL, session, agentArtifactsListMax, refs.VisibilityArg(who))
 }

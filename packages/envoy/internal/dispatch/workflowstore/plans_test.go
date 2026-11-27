@@ -393,7 +393,12 @@ func TestAPlanStepTakesTheRolesAStepRecordTakes(t *testing.T) {
 	}
 }
 
-// An id the plan of one issue holds is refused ErrPlanOtherIssue to a write naming another issue.
+// An id the plan of one issue holds is refused ErrPlanOtherIssue to a write naming another issue,
+// in words that name the plan and the issue the write names and never the issue the plan is a plan
+// of, which may be one of a project the writer does not see.
+//
+// Control: PutPlan's refusal naming other.issue, as HEAD c99245cbc6 does (controls/F16-plans.patch
+// reversed): the text names LEG-1, and the test fails at the row "names LEG-1".
 func TestAPlanIDOfAnotherIssueIsRefused(t *testing.T) {
 	pool := storetest.Open(t).Pool
 	id := uuid.NewString()
@@ -401,8 +406,11 @@ func TestAPlanIDOfAnotherIssueIsRefused(t *testing.T) {
 	before := wholeLog(t, pool)
 
 	_, err := tryPutPlan(pool, defaultPlan(id, "LEG-2", 1), minute(1))
-	if !errors.Is(err, ErrPlanOtherIssue) || !strings.Contains(err.Error(), "LEG-1") || !strings.Contains(err.Error(), "LEG-2") {
-		t.Fatalf("the write answered %v, want %v naming LEG-1 and LEG-2", err, ErrPlanOtherIssue)
+	if !errors.Is(err, ErrPlanOtherIssue) || !strings.Contains(err.Error(), id) || !strings.Contains(err.Error(), "LEG-2") {
+		t.Fatalf("the write answered %v, want %v naming the plan and LEG-2", err, ErrPlanOtherIssue)
+	}
+	if strings.Contains(err.Error(), "LEG-1") {
+		t.Errorf("the refusal %q names LEG-1, the issue the plan is a plan of, which the writer of LEG-2 may not see", err)
 	}
 	if after := wholeLog(t, pool); len(after) != len(before) {
 		t.Fatalf("the refused write appended %d tuples, want none", len(after)-len(before))

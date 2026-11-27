@@ -5441,7 +5441,9 @@ Each item below names a path with its method and identity, then its purpose.
     A refused close (`status: done`) can still settle the issue's documents: the `PATCH` settles them before its transaction (`settleIssueBeforeClose`), and Dispatch judges the write after that.
     A Legion daemon's own broker token holds `legion-status`, and the shared token, a personal token without `person` and a project's other broker tokens hold neither scope.
 
-  - With `DISPATCH_PARENT_STATUS_RULE` on, a `status` or a `parent` that leaves a parent's status out of line with its children's is `409 PARENT_STATUS_CONFLICT` `{code, error, issues}`, as `POST /api/v1/issues/{key}/status-change` (below) describes it, `issues` and `error` leaving out an issue of a private project that the request's credential does not name.
+  - With `DISPATCH_PARENT_STATUS_RULE` on, a `status` or a `parent` that leaves a parent's status out of line with its children's is `409 PARENT_STATUS_CONFLICT` `{code, error, issues}`, as `POST /api/v1/issues/{key}/status-change` (below) describes it.
+    The rule judges the pairs as the caller reads issues: an issue the caller does not see is neither listed nor counted, so it decides no `409`, and a write may leave such a pair out of line.
+    An issue the caller sees of a private project that the request's credential does not name is judged, and `issues` and `error` leave it out.
     The `PATCH` judges only the pairs it changes: a new status judges the issue with its parent and with each direct child, and a new parent judges the issue with that parent.
     A status the issue already has changes no pair, so it is not judged.
     The `PATCH` takes none of that route's options: it ignores them as members it does not declare.
@@ -5495,17 +5497,20 @@ Each item below names a path with its method and identity, then its purpose.
   The write itself records the caller, as a `PATCH` does, and Dispatch's system actor, `{kind: "system", id: "parent-status-rule"}`, writes these comments:
 
   - Each issue that an option changes gets a comment that names the caller, the issue the call names and the option.
+    Every reader of that issue reads the comment, so where the issue the call names is of a private project other than the changed issue's, the comment names it as "an issue of another project".
 
   - When the options changed at least one issue, the issue the call names gets one comment after the last write, which names the call and lists each issue that the options changed, with the status it moved from and to, or its removal from the issue.
     The list is one block of the comment, so it stops before it passes the block bound (`block_units` of `GET /api/v1/limits`), and its last line then counts the issues it leaves out, each of which has its own comment.
-    A call whose options changed no issue, a call with no option and a dry run leave the issue no such comment, and so does a call that a write refuses: each write that committed before the refusal keeps its own comment.
+    Every reader of the issue the call names reads the comment, so the list leaves out, and counts nowhere, each issue of a private project other than that issue's own; the paragraph names no option of those changes alone.
+    A call whose options changed no issue, or only such issues, a call with no option and a dry run leave the issue no such comment, and so does a call that a write refuses: each write that committed before the refusal keeps its own comment.
     A keyed call leaves it once, in the transaction that marks its recovery point finished, and a repeat that finishes the call lists the changes of the attempts before it too.
 
   Before the first write, the call reads its plan again under the owner locks of each issue it writes and of each one's current and new parent, and checks the whole plan.
-  When the request's credential names one project, the call leaves out of the plan each issue of a private project that the credential does not name: an ancestor that `include_parent` would move, or an issue under the issue that `include_children` would move or `unlink_children` would remove.
+  The call reads its plan as its caller reads issues: it leaves out of the plan each issue that the caller does not see, and, when the request's credential names one project, each issue of a private project that the credential does not name: an ancestor that `include_parent` would move, or an issue under the issue that `include_children` would move or `unlink_children` would remove.
   It also leaves out each issue that it reaches only through such an issue: a descendant below it, or an ancestor above it.
   The call does not move or unlink those issues, and neither its answer nor its dry run names them.
-  The rule still judges an issue of such a project with its parent and its children, so a call that leaves it out of line is `409 PARENT_STATUS_CONFLICT`, as below.
+  The rule judges no pair with an issue the caller does not see, so such an issue decides no `409 PARENT_STATUS_CONFLICT`; it still judges an issue the caller sees of a private project that the credential does not name, with its parent and its children, so a call that leaves that issue out of line is `409 PARENT_STATUS_CONFLICT`, as below.
+  An issue the call names that its caller does not see is answered as one nobody holds, before any lock is taken.
   Then it writes one issue at a time, each through the `PATCH`'s own write in a transaction of its own, in an order where each write keeps the rule.
   That order is the ancestors that `include_parent` moves, highest first, then the children that `unlink_children` removes, then the issue itself.
   `include_children` moves the issues under it before the issue itself, deepest first, for a status that is `done` or not started, and after it, highest first, for a status in work.
@@ -6224,7 +6229,7 @@ Each item below names a path with its method and identity, then its purpose.
 
 - `/api/v1/agents/{session_id}/artifacts` (GET; cookie, trusted header, or bearer; needs the `person` scope)
 
-  The files and images of an agent's conversation, newest first (`created_at`, then `id`), each as `GET /api/v1/agents/{session_id}/artifacts/{slug}` reads it, with its versions; `[]` for a conversation that holds none.
+  The files and images of an agent's conversation, newest first (`created_at`, then `id`), each as `GET /api/v1/agents/{session_id}/artifacts/{slug}` reads it, with its versions; `[]` for a conversation that holds none, and for one its caller may not read: a file is listed only where that read answers it to the same caller.
   The dashboard's reference picker lists them under the session's row, so a person names one by its `dispatch://agent/<session_id>/artifact/<slug>` address without having pasted it.
   A conversation's files are part of the conversation, so it admits exactly the callers `GET /api/v1/agents/{session_id}/messages` admits, and reads `session` as that route and every person route do: the session the request acts for, which a credential that proved another session is refused (`403 ACTOR_SESSION_MISMATCH`).
 

@@ -185,20 +185,22 @@ type keyedRoute struct {
 	// recovery the point the key held when the layer decided it. A KEY_IN_FLIGHT answered before
 	// the repeat's body is judged (answerDrainedRepeat's Expect: 100-continue and drain-error
 	// answers) names the running request's point whatever the repeat's body; elsewhere a point is
-	// passed only once the digest matched, and only to a caller that sees every issue it names
+	// passed only once the digest matched, and only to a caller that sees every object it names
 	// (recoveryPointFor). recovery is nil where the layer read none, where the row is another
 	// request's (KEY_REUSED), where it is past its window, and where the caller does not see it. A
 	// nil refuse answers as every route does (refuseKeyed), and is handed no point.
 	refuse func(w http.ResponseWriter, err error, recovery json.RawMessage)
-	// pointIssues is the keys of the issues a recovery point of the route names, which its refusals
-	// and its replay answer: a caller that does not see each of them is handed no point by the
-	// keyed layer's refusals and no replay (recoveryPointFor, heldAnswerRefusal). A status change
-	// that takes over an abandoned key is no replay: its handler runs, and answers the entries of
-	// the attempt it took over beside its own (resumedStatusChange, statusChangeRun.resumed), which
-	// this does not judge. At this slice a fresh request answers the same issues, since loadIssue
-	// binds no reader; slice S3d judges a resumed point as the caller reads it. nil for a route
-	// whose point names no issue beside its addressed object.
-	pointIssues func(recovery json.RawMessage) ([]string, error)
+	// pointReferences is every object a recovery point of the route names, which its refusals and
+	// its replay answer: the issues beside its addressed object, and each issue, session, person
+	// and role project that a stored issue of the point names (nameIssueReferences). A caller that
+	// does not see each of them is handed no point by the keyed layer's refusals and no replay
+	// (recoveryPointFor, heldAnswerRefusal), since a key is a person's whatever credential they
+	// write through (requestKeyLogin), and the point holds what the first request's reader saw. A
+	// status change that takes over an abandoned key is no replay: its handler runs, and answers
+	// the entries of the attempt it took over beside its own (resumedStatusChange,
+	// statusChangeRun.resumed), which this does not judge; slice S3d judges a resumed point as the
+	// caller reads it. nil for a route whose point names no object beside its addressed object.
+	pointReferences func(recovery json.RawMessage) (references, error)
 	// reread is the route's row of keyedRereads, which keyedWrites sets; nil for a route that
 	// rereads no post.
 	reread keyedReread
@@ -217,7 +219,7 @@ func (s *server) keyedReplays() map[string]keyedRoute {
 		http.MethodPost + " /api/v1/artifacts/{id}/comments":      {replay: replayRecovered(s, s.replayComment)},
 		statusChangeRoute: {
 			replay: replayRecovered(s, s.replayStatusChange), resumes: true, refuse: s.refuseStatusChangeKey,
-			pointIssues: statusChangePointIssues,
+			pointReferences: statusChangePointReferences,
 		},
 	}
 }
@@ -1203,7 +1205,7 @@ func (s *server) answerHeldKey(
 // The body is read for at most drainTime (readFor): one that stops arriving is answered 409
 // KEY_IN_FLIGHT, which is what the key said, and the connection closes after it. Neither of those
 // two answers reads the key again to judge the repeat; each names the recovery point the key holds
-// when it is answered, to a caller that sees every issue it names (writeUnjudgedKeyInFlight,
+// when it is answered, to a caller that sees every object it names (writeUnjudgedKeyInFlight,
 // recoveryPointFor). A body past the route's limit is answered the
 // route's 413 (routeBody), as a first request's body past it is. Either keeps the read's deadline
 // for net/http's own reads after the answer; only a body read to its end lifts it.
@@ -1269,7 +1271,7 @@ func (s *server) answerDrainedRepeat(
 // its project's list since, would read it. A caller that sees every object reads no statement for
 // it (R9). A repeat in another state is judged where it is answered: a different request's 422
 // names the first request only to a caller that sees its object (heldRequestNamed), and a first
-// request still running hands its recovery point only to a caller that sees every issue it names
+// request still running hands its recovery point only to a caller that sees every object it names
 // (recoveryPointFor); an abandoned or expired key runs the request, under this caller.
 //
 // The stored row is placed as its first request was placed:
@@ -1294,9 +1296,9 @@ func (s *server) answerDrainedRepeat(
 //     its own body. None is hidden. A session's write whose address names an object - a direct
 //     message's accept or reply - is placed by that object, as above.
 //
-// Where the route's recovery point names issues beside its addressed object (keyedRoute.
-// pointIssues: a status change's other steps), the stored row is hidden too while the caller does
-// not see each of them, since its replay answers them.
+// Where the route's recovery point names objects beside its addressed object (keyedRoute.
+// pointReferences: a status change's other steps, and what its stored issues name), the stored
+// row is hidden too while the caller does not see each of them, since its replay answers them.
 //
 // A hidden repeat is never run again, and is answered by what its first request did. One that
 // committed a write - a commit mark, a recovery point, or a 2xx answer - is refused 409
@@ -1375,7 +1377,7 @@ func (s *server) heldAnswerRefusal(r *http.Request, pattern string, held heldReq
 			hidden = true
 		}
 	}
-	if !hidden && !missing && route.pointIssues != nil && held.recovery != nil {
+	if !hidden && !missing && route.pointReferences != nil && held.recovery != nil {
 		seen, err := s.pointSeen(ctx, reader, route, held.recovery)
 		if err != nil {
 			return err
@@ -1544,7 +1546,7 @@ func heldRoute(method, path string) (pattern string, values map[string]string, m
 }
 
 // recoveryPointFor is the recovery point a refusal of the keyed layer hands the caller r is, of
-// recovery, the point the key held: the point itself to a caller that sees every issue it names
+// recovery, the point the key held: the point itself to a caller that sees every object it names
 // (pointSeen), and nil to any other, as to a key that holds none. A route that answers its
 // refusals as every route does (keyedRoute.refuse nil) is handed no point, and is answered nil.
 // Its reads - the caller's reader and the point's issues - run on a context the client's going
@@ -1568,28 +1570,34 @@ func (s *server) recoveryPointFor(r *http.Request, route keyedRoute, recovery js
 	return recovery, nil
 }
 
-// pointSeen reports whether reader sees every issue route's recovery point names
-// (keyedRoute.pointIssues): a reader that sees every object does, reading nothing (R9), and so does
-// any reader of a point that names none. An issue no row holds is one the reader does not see. A
-// route that names no issues of its points shapes none of its refusals, and its point is seen by a
-// reader that sees every object alone.
+// pointSeen reports whether reader sees every object route's recovery point names
+// (keyedRoute.pointReferences), in one statement (seenReferences): a reader that sees every object
+// does, reading nothing (R9), and so does any reader of a point that names none. An issue no row
+// holds is one the reader does not see. A route that names no objects of its points shapes none
+// of its refusals, and its point is seen by a reader that sees every object alone.
 func (s *server) pointSeen(ctx context.Context, reader model.Actor, route keyedRoute, recovery json.RawMessage) (bool, error) {
 	if seesEveryObject(reader) {
 		return true, nil
 	}
-	if route.pointIssues == nil {
+	if route.pointReferences == nil {
 		return false, nil
 	}
-	issues, err := route.pointIssues(recovery)
-	if err != nil || len(issues) == 0 {
+	named, err := route.pointReferences(recovery)
+	if err != nil || len(named) == 0 {
 		return err == nil, err
 	}
-	var seen bool
-	err = s.deps.Store.Pool.QueryRow(ctx, `
-		select count(*) = cardinality($1::text[]) from issues
-		where key = any($1::text[]) and `+access.ProjectClause("project_key", "$2"),
-		issues, refs.VisibilityArg(reader)).Scan(&seen)
-	return seen, err
+	seen, err := seenReferences(ctx, s.deps.Store.Pool, reader, named)
+	if err != nil {
+		return false, err
+	}
+	for kind, ids := range named {
+		for id := range ids {
+			if !seen.holds(kind, id) {
+				return false, nil
+			}
+		}
+	}
+	return true, nil
 }
 
 // writeKeyFreed answers a repeat whose body was read and not kept while its first request gave the
@@ -1631,7 +1639,7 @@ func (s *server) refuseWithPoint(w http.ResponseWriter, r *http.Request, route k
 // writeUnjudgedKeyInFlight answers a repeat 409 KEY_IN_FLIGHT before its digest is judged
 // (answerDrainedRepeat's Expect: 100-continue and drain-error answers), naming the recovery point
 // login's key holds as it answers, as every reader reads it (recoveryPointRead), whatever the
-// repeat's body, where the caller sees every issue it names (recoveryPointFor); nil when the key
+// repeat's body, where the caller sees every object it names (recoveryPointFor); nil when the key
 // holds no row. Only a route that shapes its refusals (keyedRoute.refuse) reads the point, and a
 // read that fails is answered as the layer's other failed reads are. The read runs whatever the
 // client does, bounded by keyedBookkeeping, as the drained repeat's read of the key does: net/http

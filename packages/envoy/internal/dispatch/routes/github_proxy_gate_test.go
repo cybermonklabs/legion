@@ -53,11 +53,11 @@ func TestTheGitHubProxyOfARouterWithNoDatabaseHidesEveryRepository(t *testing.T)
 	}
 }
 
-// proxiedRepositories are the nine repositories of the proxy gate's seed (seedProxyGate), each one
+// proxiedRepositories are the ten repositories of the proxy gate's seed (seedProxyGate), each one
 // way an issue resolves to a repository or none does. The App is installed on every one of them.
 var proxiedRepositories = []string{
 	"acme/pub", "acme/priv", "acme/privdone", "acme/privparent", "acme/privdefault", "acme/none", "acme/both",
-	"acme/oldname", "acme/newname",
+	"acme/oldname", "acme/newname", "acme/priv2default",
 }
 
 // uninstalledRepository is a repository the App is not installed on, whose answer every hidden
@@ -76,16 +76,23 @@ const uninstalledRepository = "acme/uninstalled"
 // names, reads every acme/priv* repository but acme/privparent, and acme/both and acme/oldname:
 // PRIV-3 is under PRIV2-1, which names acme/privparent, and an issue inherits no repository across a
 // project edge (main's #4896: refs.IssueRepoTerms joins a parent of the same project only), so bob
-// reads that one as hidden; carol, on PRIV's and PRIV2's lists, reads all nine. With every project
+// reads that one as hidden; carol, on PRIV's and PRIV2's lists, reads all ten. acme/priv2default is
+// PRIV2's default, which no issue resolves to: PRIV2-2 names none and is a child of PRIV2-1, of its
+// own project, so it resolves to its parent's acme/privparent, not the default; a repository is a
+// project's only through the issues that resolve to it (refs.ProjectRepositoriesSQL), so no project
+// owns acme/priv2default and alice, a full member, reads it as she reads acme/none, while bob, whose
+// list does not name PRIV2, does not. With every project
 // public, dave, a restricted member no list names, reads none of them (R2/R3 in every state). The
 // rename row shows the rule reads no rename: alice reads acme/newname and not acme/oldname, and bob
 // reads acme/oldname and not acme/newname. Each readable repository is read through a pull request path
 // and a check path, and each hidden one through both too.
 //
-// Four controls, each run on its own, and each time the test fails naming the repository: show
+// Five controls, each run on its own, and each time the test fails naming the repository: show
 // every repository to an open viewer (alice reads acme/priv); count open issues only (alice reads
 // acme/privdone); resolve an issue's own repository only (alice reads acme/privdefault); compare
-// names through refs.CanonicalRepoSQL (bob reads acme/newname and alice loses it).
+// names through refs.CanonicalRepoSQL (bob reads acme/newname and alice loses it); resolve an issue
+// by its own repository, else its project's default, with no parent walk (PRIV2-2 resolves to
+// acme/priv2default, PRIV2 owns it, and alice loses it).
 func TestTheGitHubProxyShowsARepositoryByItsIssues(t *testing.T) {
 	database := seedProxyGate(t)
 	fake := &gateGitHub{installed: proxiedRepositories}
@@ -94,7 +101,7 @@ func TestTheGitHubProxyShowsARepositoryByItsIssues(t *testing.T) {
 		login string
 		reads []string
 	}{
-		{"alice@example.com", []string{"acme/pub", "acme/none", "acme/both", "acme/newname"}},
+		{"alice@example.com", []string{"acme/pub", "acme/none", "acme/both", "acme/newname", "acme/priv2default"}},
 		{"bob@example.com", []string{"acme/priv", "acme/privdone", "acme/privdefault", "acme/both", "acme/oldname"}},
 		{"carol@example.com", proxiedRepositories},
 	} {
@@ -126,7 +133,7 @@ func TestTheGitHubProxyShowsARepositoryByItsIssues(t *testing.T) {
 	}
 
 	// With every project public, a restricted member still reads only the repositories an issue of
-	// a project whose list names them resolves to: dave, on no list, reads none of the nine, each
+	// a project whose list names them resolves to: dave, on no list, reads none of the ten, each
 	// answered as acme/uninstalled is, with nothing read from GitHub.
 	if _, err := database.Pool.Exec(context.Background(), `update projects set visibility = 'public'`); err != nil {
 		t.Fatalf("make every project public: %v", err)
@@ -147,9 +154,12 @@ func TestTheGitHubProxyShowsARepositoryByItsIssues(t *testing.T) {
 // PRIV, private, whose list names bob and carol; and PRIV2, private, whose list names carol and not
 // bob. PUB-1 names acme/pub; PRIV-1 names acme/priv; PRIV-2 names acme/privdone and is done; PRIV-3
 // names none and is a child of PRIV2-1, which names acme/privparent, so only a parent walk across
-// the project edge, which main's #4896 does not make, would give bob that repository; PRIV-4 names none and resolves to PRIV's default repository,
-// acme/privdefault; PUB-2 and PRIV-5 both name acme/both; PRIV-6 names acme/oldname. No issue names
-// acme/none or acme/newname. seedRepositoryRecords stores the default and the rename.
+// the project edge, which main's #4896 does not make, would give bob that repository; PRIV-4 names
+// none and resolves to PRIV's default repository, acme/privdefault; PUB-2 and PRIV-5 both name
+// acme/both; PRIV-6 names acme/oldname; PRIV2-2 names none and is a child of PRIV2-1, of its own
+// project, so it resolves to acme/privparent and not to PRIV2's default, acme/priv2default. No issue
+// names acme/none or acme/newname, and none resolves to acme/priv2default. seedRepositoryRecords
+// stores the two defaults and the rename.
 func seedProxyGate(t *testing.T) *store.Store {
 	t.Helper()
 	database := storetest.Open(t)
@@ -169,6 +179,7 @@ func seedProxyGate(t *testing.T) *store.Store {
 			('PUB-1', 'PUB', 1, 'Names acme/pub', '{"kind":"user","id":"olga@example.com"}', 'a', null, 'acme/pub', 'triage'),
 			('PUB-2', 'PUB', 2, 'Names acme/both', '{"kind":"user","id":"olga@example.com"}', 'b', null, 'acme/both', 'triage'),
 			('PRIV2-1', 'PRIV2', 1, 'Names acme/privparent', '{"kind":"user","id":"olga@example.com"}', 'a', null, 'acme/privparent', 'triage'),
+			('PRIV2-2', 'PRIV2', 2, 'Under PRIV2-1', '{"kind":"user","id":"olga@example.com"}', 'b', 'PRIV2-1', null, 'triage'),
 			('PRIV-1', 'PRIV', 1, 'Names acme/priv', '{"kind":"user","id":"olga@example.com"}', 'a', null, 'acme/priv', 'triage'),
 			('PRIV-2', 'PRIV', 2, 'Names acme/privdone', '{"kind":"user","id":"olga@example.com"}', 'b', null, 'acme/privdone', 'done'),
 			('PRIV-3', 'PRIV', 3, 'Under PRIV2-1', '{"kind":"user","id":"olga@example.com"}', 'c', 'PRIV2-1', null, 'triage'),
@@ -190,6 +201,7 @@ func seedRepositoryRecords(t *testing.T, database *store.Store) {
 	t.Helper()
 	if _, err := database.Pool.Exec(context.Background(), `
 		update projects set default_repo = 'acme/privdefault' where key = 'PRIV';
+		update projects set default_repo = 'acme/priv2default' where key = 'PRIV2';
 		insert into repo_projects (repo, project, is_default, renamed_to, created_by) values
 			('acme/oldname', 'PRIV', false, 'acme/newname', '{"kind":"user","id":"olga@example.com"}');
 	`); err != nil {

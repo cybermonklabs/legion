@@ -251,9 +251,10 @@ func TestAScopedIncludeParentStopsAtAPrivateParent(t *testing.T) {
 }
 
 // TestAStatusChangeWhoseIssueTurnedPrivateAnswersAsAMissingOne: the pre-handler project check
-// (withinProjectScope) runs before planStatusChangeUnderLocks takes its locks, so the named
-// issue's project can turn private between the two. Calling the route's handler past that
-// pre-handler check with the project already private exercises the check under the locks alone:
+// (withinProjectScope) runs before planStatusChange reads the plan, so the named issue's project
+// can turn private between the two. Calling the route's handler past that pre-handler check with
+// the project already private exercises the handler's own checks alone: its read of the issue as
+// the token's reader, before any lock, and the check of the credential under the locks:
 // a plain call, one with a stale expected_sequence, and a close of an already closed issue — each
 // as a call and as a dry run — write nothing, name neither the issue's key nor its title, and
 // answer the 403 PROJECT_SCOPE that a target that does not exist answers through the route. The
