@@ -35,3 +35,5 @@ type classed struct{ err error }
 
 func (c classed) Error() string { return Class(c.err) }
 func (c classed) Unwrap() error { return c.err }
+
+// Probe 1 of INFRA-5794's R5 timing: this pull request is closed unmerged.
