@@ -439,21 +439,27 @@ func (c *cache) dropHeldRecords(set *listedSet, inventory map[string]bool) {
 }
 
 // packsWriteBound is the write deadline each /packs answer sets on its connection for the write and
-// flush of its body alone (servePacks), while it holds packsGate's read side. An answer is a few
-// kilobytes for a clone narrowed to one branch, which a reader that reads takes in moments; a reader
-// that stops reading has the write fail at this bound, its connection broken and the gate let go,
+// flush of its body alone (servePacks), while it holds packsGate's read side. It bounds how long an
+// answer holds the gate, whatever its reader does: a reader that stops reading, or takes the answer
+// slower than the bound allows, has the write fail there, its connection broken and the gate let go,
 // rather than hold a narrowing (which waits at the gate holding the clone's write lock, so /tar's
-// snapshots wait too), a drop of the set or a publication for as long as it stays connected. A
-// client's own timeout, such as a provision's one-minute ask (workspace's packsAsk), bounds only a
-// client that keeps to it; this bounds the server's write whatever the reader does. /tar sets no
-// deadline: its stream is long by design, and it holds no gate.
+// snapshots wait too), a drop of the set or a publication for as long as it stays connected. That
+// reader loses its answer, and a provision then fills its clone from /tar, as from any answer it
+// cannot use. An answer is the narrowed clone's refs and one line for each pack and index, whose
+// number holding one branch does not bound; a provision reads up to 64 MiB of it (workspace's
+// packManifestLimit), which over this bound is about 2.1 MiB/s. A client's own timeout, such as a
+// provision's one-minute ask (workspace's packsAsk), bounds only a client that keeps to it. An
+// answer that cannot set the deadline (a ResponseWriter with no deadline of its own to set) is 503
+// before it writes. /tar sets no deadline: its stream is long by design, and it holds no gate.
 const packsWriteBound = 30 * time.Second
 
 // lockPacks takes packsGate's write side, for a change of what /packs may answer, and answers its
 // unlock. Each /packs answer holds the read side from its last check through its write
 // (servePacks), so the change waits for an answer that checked before it to be written whole, or
 // for its write to fail at the answer's write deadline (packsWriteBound), and every answer after it
-// sees it. packsGateBlocked, a test's seam, runs where the gate is held already.
+// sees it. An answer whose deadline cannot be set sends nothing to its connection under the gate:
+// its 503 is buffered, and goes out once the handler has let the gate go. packsGateBlocked, a
+// test's seam, runs where the gate is held already.
 func (c *cache) lockPacks() func() {
 	if !c.packsGate.TryLock() {
 		if c.packsGateBlocked != nil {
@@ -534,11 +540,17 @@ func (c *cache) servePacks(w http.ResponseWriter, r *http.Request) {
 	}
 	// The answer goes to the connection before the gate is let go, its length stated so the flush
 	// keeps the framing the server would give it, rather than at the handler's return, and within
-	// the answer's write deadline (packsWriteBound). The deadline is cleared once the answer is out,
-	// so a later request on the same kept-alive connection, a /tar stream among them, holds none of
-	// it; a write that failed breaks the connection, which the server then closes.
+	// the answer's write deadline (packsWriteBound). An answer whose deadline cannot be set is 503,
+	// with nothing of its manifest written: its write would hold the gate with no bound. The deadline
+	// is cleared once the answer is out, so a later request on the same kept-alive connection, a /tar
+	// stream among them, holds none of it; a write that failed breaks the connection, which the
+	// server then closes.
 	answer := http.NewResponseController(w)
-	_ = answer.SetWriteDeadline(time.Now().Add(c.packsWrite))
+	if err := answer.SetWriteDeadline(time.Now().Add(c.packsWrite)); err != nil {
+		c.opts.Log("bound the write of the packs' answer for " + r.RemoteAddr + ": " + oneLine(err))
+		http.Error(w, "the repository cache cannot bound the write of its packs' answer", http.StatusServiceUnavailable)
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Content-Length", strconv.Itoa(len(body)))
 	_, wrote := w.Write(body)

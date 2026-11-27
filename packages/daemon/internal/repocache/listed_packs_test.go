@@ -1,6 +1,7 @@
 package repocache
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/rand"
@@ -1787,31 +1788,11 @@ func TestAStalledPacksReaderHoldsTheGateNoLongerThanItsWriteDeadline(t *testing.
 	r := newPacksRig(t)
 	r.refresh(t)
 	r.c.packsWrite = 300 * time.Millisecond
-	checked, blocked := make(chan struct{}), make(chan struct{})
-	var checkedOnce, blockedOnce sync.Once
-	r.c.packsChecked = func() {
-		checkedOnce.Do(func() {
-			close(checked)
-			<-blocked
-		})
-	}
-	r.c.packsGateBlocked = func() { blockedOnce.Do(func() { close(blocked) }) }
-
-	serverEnd, reader := net.Pipe()
-	t.Cleanup(func() { _ = reader.Close() })
-	server := &http.Server{Handler: r.c.handler(), ReadHeaderTimeout: 10 * time.Second}
-	go func() { _ = server.Serve(newPipeListener(serverEnd)) }()
-	t.Cleanup(func() { _ = server.Close() })
-	go func() {
-		_, _ = reader.Write([]byte("GET /packs HTTP/1.1\r\nHost: cache\r\nAuthorization: Bearer " + testCacheToken + "\r\n\r\n"))
-	}()
+	checked, blocked := r.holdAnswerUntilAPublicationWaits()
+	reader := pipePacksRequest(t, r.c.handler())
 	testwait.Receive(t, "the stalled reader's answer to pass its last check", checked)
 
-	advance(t, r.remote, "moved")
-	ctx := testwait.Context(t)
-	done := make(chan error, 1)
-	go func() { done <- r.c.refresh(ctx) }()
-	testwait.Receive(t, "the publication of the new set to stop at the gate behind the stalled answer", blocked)
+	done := r.publishBehindTheAnswer(t, blocked)
 	err := testwait.ReceiveWithin(t, r.c.packsWrite+10*time.Second, "the refresh's publication",
 		"the stalled reader's answer still holds the gate, its write bounded by no deadline", done)
 	if err != nil {
@@ -1825,6 +1806,103 @@ func TestAStalledPacksReaderHoldsTheGateNoLongerThanItsWriteDeadline(t *testing.
 	if n, err := reader.Read(make([]byte, 1)); n != 0 || !errors.Is(err, io.EOF) {
 		t.Errorf("the stalled reader read %d bytes (%v) after the answer's write failed, want none and the connection closed", n, err)
 	}
+}
+
+// A /packs answer whose write deadline cannot be set writes nothing under packsGate: it is 503 with
+// no manifest, and logged, so a publication waiting at the gate goes on at once, whatever its reader
+// does. Here the cache's handler is served through a ResponseWriter that flushes but has no deadline
+// of its own and no Unwrap (flushOnlyWriter), over the stalled reader's net.Pipe, and the answer,
+// past its last check, waits until a refresh's publication of a new set has reached the gate. The
+// publication goes on with no deadline to wait out, and the reader, once it reads, gets the 503.
+// Before the answer refused, it wrote and flushed under the gate with no bound, and the publication
+// stayed blocked until the reader's connection closed.
+func TestAPacksAnswerThatCannotBoundItsWriteWritesNothingUnderTheGate(t *testing.T) {
+	r := newPacksRig(t)
+	r.refresh(t)
+	checked, blocked := r.holdAnswerUntilAPublicationWaits()
+	handler := r.c.handler()
+	reader := pipePacksRequest(t, http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		handler.ServeHTTP(flushOnlyWriter{w}, req)
+	}))
+	testwait.Receive(t, "the stalled reader's answer to pass its last check", checked)
+
+	done := r.publishBehindTheAnswer(t, blocked)
+	err := testwait.ReceiveWithin(t, 10*time.Second, "the refresh's publication",
+		"the answer that could set no write deadline wrote under the gate with no bound", done)
+	if err != nil {
+		t.Fatalf("the refresh that published behind the answer: %v; log %q", err, r.log.all())
+	}
+	if err := reader.SetReadDeadline(time.Now().Add(10 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	response, err := http.ReadResponse(bufio.NewReader(reader), nil)
+	if err != nil {
+		t.Fatalf("read the answer that could set no write deadline: %v", err)
+	}
+	body, err := io.ReadAll(response.Body)
+	_ = response.Body.Close()
+	if err != nil {
+		t.Fatalf("read the answer's body: %v", err)
+	}
+	if response.StatusCode != http.StatusServiceUnavailable {
+		t.Errorf("/packs that could set no write deadline answered %d, not 503", response.StatusCode)
+	}
+	requireNoManifest(t, body, "/packs that could set no write deadline:")
+	if !slices.ContainsFunc(r.log.all(), func(line string) bool { return strings.HasPrefix(line, "bound the write of the packs' answer for ") }) {
+		t.Errorf("the cache logged %q, nothing of the answer whose write it could not bound", r.log.all())
+	}
+}
+
+// flushOnlyWriter is a ResponseWriter that flushes but has no write deadline of its own and no
+// Unwrap, so http.ResponseController's SetWriteDeadline answers http.ErrNotSupported for it, as for
+// a wrapper that forwards flushing alone.
+type flushOnlyWriter struct{ http.ResponseWriter }
+
+func (w flushOnlyWriter) Flush() { w.ResponseWriter.(http.Flusher).Flush() }
+
+// holdAnswerUntilAPublicationWaits makes the cache's next /packs answer, once past its last check,
+// close checked and wait, holding packsGate's read side, until a change of what /packs may answer
+// finds the gate held and closes blocked.
+func (r *packsRig) holdAnswerUntilAPublicationWaits() (checked, blocked chan struct{}) {
+	checked, blocked = make(chan struct{}), make(chan struct{})
+	var checkedOnce, blockedOnce sync.Once
+	r.c.packsChecked = func() {
+		checkedOnce.Do(func() {
+			close(checked)
+			<-blocked
+		})
+	}
+	r.c.packsGateBlocked = func() { blockedOnce.Do(func() { close(blocked) }) }
+	return checked, blocked
+}
+
+// publishBehindTheAnswer brings a commit to the remote and runs a refresh, whose publication of the
+// new set stops at packsGate behind the held answer: it waits for blocked, and answers the channel
+// the refresh's error comes on.
+func (r *packsRig) publishBehindTheAnswer(t *testing.T, blocked <-chan struct{}) <-chan error {
+	t.Helper()
+	advance(t, r.remote, "moved")
+	ctx := testwait.Context(t)
+	done := make(chan error, 1)
+	go func() { done <- r.c.refresh(ctx) }()
+	testwait.Receive(t, "the publication of the new set to stop at the gate behind the held answer", blocked)
+	return done
+}
+
+// pipePacksRequest serves handler on an http.Server over a net.Pipe, which buffers nothing, sends it
+// GET /packs with the cache's token, and answers the client's end, which reads nothing until the
+// caller reads it. Both ends and the server close when the test ends.
+func pipePacksRequest(t *testing.T, handler http.Handler) net.Conn {
+	t.Helper()
+	serverEnd, reader := net.Pipe()
+	t.Cleanup(func() { _ = reader.Close() })
+	server := &http.Server{Handler: handler, ReadHeaderTimeout: 10 * time.Second}
+	go func() { _ = server.Serve(newPipeListener(serverEnd)) }()
+	t.Cleanup(func() { _ = server.Close() })
+	go func() {
+		_, _ = reader.Write([]byte("GET /packs HTTP/1.1\r\nHost: cache\r\nAuthorization: Bearer " + testCacheToken + "\r\n\r\n"))
+	}()
+	return reader
 }
 
 // pipeListener hands an http.Server one connection, the server's end of a net.Pipe, then answers
