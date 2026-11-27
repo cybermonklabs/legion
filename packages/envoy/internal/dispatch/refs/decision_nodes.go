@@ -720,7 +720,7 @@ func PlanDecisionNodes(ctx context.Context, q Queryer, index BlockIndex, artifac
 			return DecisionIndexing{}, err
 		}
 	}
-	plan.stated.Tuples = append(plan.stated.Tuples, beside.Tuples...)
+	plan.stated.StateFactsOf(beside)
 	return plan, nil
 }
 
@@ -763,12 +763,12 @@ func (d *DecisionIndexing) planGone(ctx context.Context, q Queryer, document Ind
 	if err != nil {
 		return err
 	}
-	d.stated.Tuples = append(d.stated.Tuples, links...)
+	d.stated.State(links...)
 	retracted, err := retractGonePointers(ctx, q, addresses, versionAt, document.Writer)
 	if err != nil {
 		return fmt.Errorf("retract the pointers at the typed blocks version %d of %s no longer holds: %w", d.version, d.artifactID, err)
 	}
-	d.stated.Tuples = append(d.stated.Tuples, retracted...)
+	d.stated.State(retracted...)
 	// The index holds the dropped blocks' rows no more, nor their links or their placements.
 	blocks, placed := index.blocks, index.placed
 	if len(d.dropped.deleted) > 0 {
@@ -853,13 +853,13 @@ func (d *DecisionIndexing) planTies(ctx context.Context, q Queryer, index BlockI
 	if err != nil {
 		return err
 	}
-	d.stated.Tuples = append(d.stated.Tuples, parents...)
+	d.stated.State(parents...)
 	d.planRoomTypedBlocks(document, facts, fragments)
 	links, held, err := d.blocks.planBlockRefs(ctx, q, index, writer)
 	if err != nil {
 		return err
 	}
-	d.stated.Tuples = append(d.stated.Tuples, links...)
+	d.stated.State(links...)
 	// The parents' projection names the node of each row it places, which the index then holds.
 	blocks := index.blocks
 	if len(d.blocks.placedIDs) > 0 {
@@ -1193,7 +1193,7 @@ func PlanOpenedAskTies(ctx context.Context, q Queryer, index BlockIndex, artifac
 	if err != nil {
 		return OpenedAskTies{}, err
 	}
-	plan.stated = graphstore.Uncaused{Tuples: tuples}
+	plan.stated = graphstore.Holding(tuples...)
 	plan.held = index
 	plan.held.links = held
 	reached := make(map[Target]struct{}, len(plan.blocks.moved))

@@ -91,11 +91,12 @@ func checkBaseValues(nodes []Node, tuples []Tuple, claims []Claim) error {
 	return nil
 }
 
-// checkHeldValues is checkBaseValues of the tuples a write held for its cause holds, each read
-// where it stands rather than copied: a version's block index holds a tuple a block.
-func checkHeldValues(held []UncausedTuple) error {
-	for index := range held {
-		if tuple := &held[index].Tuple; tuple.ToKind == KindValue {
+// checkHeldValues is checkBaseValues of the facts a write held for its cause holds, each read
+// where it stands rather than copied, a run's built one at a time (Uncaused.Facts): a version's
+// block index holds a tuple a block, and its blocks' values as a run.
+func checkHeldValues(write Uncaused) error {
+	for held := range write.Facts() {
+		if tuple := &held.Tuple; tuple.ToKind == KindValue {
 			if err := CheckAttributeValue(tuple.Kind, tuple.ToID); err != nil {
 				return err
 			}

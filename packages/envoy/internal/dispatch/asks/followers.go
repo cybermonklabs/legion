@@ -85,7 +85,7 @@ func Follow(ctx context.Context, tx pgx.Tx, askID, sessionID string, who model.A
 	}
 	relation := followChange(askID, sessionID, true, who, result.since, event)
 	if event == graphstore.NoEvent {
-		followed.Uncaused.Tuples = append(followed.Uncaused.Tuples, graphstore.UncausedTuple{Tuple: relation})
+		followed.Uncaused.State(graphstore.UncausedTuple{Tuple: relation})
 		return followed, nil
 	}
 	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
@@ -320,7 +320,7 @@ func (p PlannedFollow) Queue(b *store.WriteBatch, event int64) (graphstore.Uncau
 	}
 	relation := followChange(p.askID, p.sessionID, true, p.who, p.since, event)
 	if event == graphstore.NoEvent {
-		held.Tuples = append(held.Tuples, graphstore.UncausedTuple{Tuple: relation})
+		held.State(graphstore.UncausedTuple{Tuple: relation})
 		return held, nil
 	}
 	graphstore.QueueWrite(b, nil, []graphstore.Tuple{relation})
@@ -357,7 +357,7 @@ func Unfollow(ctx context.Context, tx pgx.Tx, askID, sessionID string, who model
 	unfollowed := Unfollowed{Removed: true}
 	if marked {
 		retraction := followChange(askID, sessionID, false, who, at, graphstore.NoEvent)
-		unfollowed.Uncaused.Tuples = []graphstore.UncausedTuple{{Tuple: retraction}}
+		unfollowed.Uncaused = graphstore.Holding(graphstore.UncausedTuple{Tuple: retraction})
 	}
 	return unfollowed, nil
 }

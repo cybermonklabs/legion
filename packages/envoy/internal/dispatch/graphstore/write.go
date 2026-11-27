@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"iter"
 	"slices"
 	"strconv"
 	"strings"
@@ -208,16 +209,22 @@ type Uncaused struct {
 	// onto the event, and, for a write of PlanUncaused, each still at the sentinel, so a node an
 	// earlier write caused keeps its cause.
 	Nodes []Node
-	// Tuples are the facts the write states, each appended under the event by Caused, the base
-	// attributes its node write stated among them, which stand after the first baseAt of these.
-	Tuples []UncausedTuple
+	// tuples are the facts the write states as tuples, each appended under the event by Caused,
+	// the base attributes its node write stated among them, which stand after the first baseAt of
+	// the write's facts. With the facts of each run it holds (runs) they are the write's facts, in
+	// order, which a reader outside this file reads only through Len and Facts, so no reader can
+	// read some of them and miss a run's. A writer adds tuples with State or Holding.
+	tuples []UncausedTuple
+	// runs are the runs of facts the write holds without holding each as a tuple (HoldRun), in
+	// order, each standing after the first at of tuples.
+	runs []heldRun
 	// changes are the nodes PlanChangedForRun names changed by the run, each dated and signed as
 	// its change was made, for which QueueCaused appends a changed_by_run under the event.
 	changes []runChange
 	// mark is what the node write left on the rows it made or moved (nodeMarks), 0 for a write
 	// that marked none.
 	mark int64
-	// baseAt is how many of Tuples the base attributes the node write states follow.
+	// baseAt is how many of the write's facts the base attributes the node write states follow.
 	baseAt int
 	// sentinel says QueueCaused also moves onto the event every node of Nodes still at the
 	// sentinel, as PlanUncaused's writer holds all of them for its cause; a follow's node (the
@@ -231,25 +238,156 @@ type Uncaused struct {
 	armless string
 	// parts are the writes Joined holds as this one, each with the mark its own node write left,
 	// which QueueNodes and QueueCaused write one after another (split); nil for a write of one node
-	// write. Nodes and Tuples then hold theirs, in order, for a reader of what the joined write
-	// states.
+	// write. Nodes, tuples and runs then hold theirs, in order, for a reader of what the joined
+	// write states.
 	parts []Uncaused
 }
 
+// TupleRun is a run of facts a write holds for its cause without holding each as a tuple. A writer
+// that states many facts it can build again from what it holds already gives how many there are
+// and builds the fact at an index when a reader of the write asks for it (Uncaused.HoldRun). The
+// first index of a document states up to seven values of each block it places, about 750,000 for
+// a document of 150,001 blocks: held as tuples, they took the block index's plan from 204 MB to
+// 475-535 MB at the heap's peak, and the race build of the document service past its 8 GiB gate
+// (refs' blockValueRun builds them instead). A reader may ask for the facts in any order and more
+// than once, and keeps none it is answered; At answers the same fact for an index every time.
+type TupleRun interface {
+	// Len is how many facts the run holds.
+	Len() int
+	// At is the fact at index, from 0 to Len-1.
+	At(index int) UncausedTuple
+}
+
+// heldRun is a run a write holds (HoldRun), whose facts stand after the first at of its tuples.
+type heldRun struct {
+	at  int
+	run TupleRun
+}
+
+// pickedRun is the facts of run at picked, in that order: the facts of a run Parted gives one part.
+type pickedRun struct {
+	run    TupleRun
+	picked []int32
+}
+
+func (p *pickedRun) Len() int                   { return len(p.picked) }
+func (p *pickedRun) At(index int) UncausedTuple { return p.run.At(int(p.picked[index])) }
+
+// Holding is a write of no node that holds tuples for its cause, in their order.
+func Holding(tuples ...UncausedTuple) Uncaused {
+	return Uncaused{tuples: tuples}
+}
+
+// State adds tuples to the facts w holds, after every fact it holds now.
+func (w *Uncaused) State(tuples ...UncausedTuple) {
+	w.tuples = append(w.tuples, tuples...)
+}
+
+// HoldRun adds the facts of run to the facts w holds, after every fact it holds now, in the run's
+// order: QueueCaused appends them under the cause in that place, as it would the same facts held
+// as tuples, and every reader of the write's facts (Len, Facts) reads them there. A run of no
+// facts adds nothing.
+func (w *Uncaused) HoldRun(run TupleRun) {
+	if run.Len() > 0 {
+		w.runs = append(w.runs, heldRun{at: len(w.tuples), run: run})
+	}
+}
+
+// StateFactsOf adds every fact other holds to the facts w holds, after every fact w holds now, in
+// other's order: its tuples as tuples and its runs as runs, none built. Other's nodes are not
+// added.
+func (w *Uncaused) StateFactsOf(other Uncaused) {
+	tuple := 0
+	for _, held := range other.runs {
+		w.State(other.tuples[tuple:held.at]...)
+		tuple = held.at
+		w.HoldRun(held.run)
+	}
+	w.State(other.tuples[tuple:]...)
+}
+
+// Len is how many facts w holds: its tuples and the facts of every run it holds.
+func (w Uncaused) Len() int {
+	count := len(w.tuples)
+	for _, held := range w.runs {
+		count += held.run.Len()
+	}
+	return count
+}
+
+// Facts is every fact w holds, in order, each fact of a run built as the iteration reaches it and
+// held no longer than the caller holds it.
+func (w Uncaused) Facts() iter.Seq[UncausedTuple] {
+	return func(yield func(UncausedTuple) bool) {
+		w.eachFact(func(_ int, held UncausedTuple, _ *heldRun, _ int) bool { return yield(held) })
+	}
+}
+
+// eachFact calls visit with each fact w holds, in order: its index among them, the fact, and, for a
+// fact of a run, the run and its index in the run (nil and -1 for one of tuples), until visit
+// answers false.
+func (w Uncaused) eachFact(visit func(index int, held UncausedTuple, from *heldRun, at int) bool) {
+	index, tuple := 0, 0
+	for position := range w.runs {
+		from := &w.runs[position]
+		for ; tuple < from.at; tuple++ {
+			if !visit(index, w.tuples[tuple], nil, -1) {
+				return
+			}
+			index++
+		}
+		for at := range from.run.Len() {
+			if !visit(index, from.run.At(at), from, at) {
+				return
+			}
+			index++
+		}
+	}
+	for ; tuple < len(w.tuples); tuple++ {
+		if !visit(index, w.tuples[tuple], nil, -1) {
+			return
+		}
+		index++
+	}
+}
+
+// fact is the fact at index among every fact w holds (Len): one of its tuples, or the one a run
+// builds for it.
+func (w Uncaused) fact(index int) UncausedTuple {
+	built := 0
+	for _, held := range w.runs {
+		start := held.at + built
+		if index < start {
+			break
+		}
+		length := held.run.Len()
+		if index < start+length {
+			return held.run.At(index - start)
+		}
+		built += length
+	}
+	return w.tuples[index-built]
+}
+
 // split is the writes write holds, in order: the parts Joined holds as it, followed by the facts
-// a writer appended to its Tuples after joining them, as a write of no node; or write alone.
+// a writer added to it after joining them, as a write of no node; or write alone.
 func (w Uncaused) split() []Uncaused {
 	if w.parts == nil {
 		return []Uncaused{w}
 	}
-	stated := 0
+	stated, runs := 0, 0
 	for _, part := range w.parts {
-		stated += len(part.Tuples)
+		stated += len(part.tuples)
+		runs += len(part.runs)
 	}
-	if stated >= len(w.Tuples) {
+	if stated >= len(w.tuples) && runs >= len(w.runs) {
 		return w.parts
 	}
-	return append(slices.Clip(w.parts), Uncaused{Tuples: w.Tuples[stated:], appended: w.appended})
+	rest := Uncaused{tuples: w.tuples[stated:], appended: w.appended}
+	for _, held := range w.runs[runs:] {
+		rest.runs = append(rest.runs, heldRun{at: held.at - stated, run: held.run})
+	}
+	return append(slices.Clip(w.parts), rest)
 }
 
 // Parted parts write by what of assigns each node to, by its kind and id: each part holds the
@@ -260,7 +398,9 @@ func (w Uncaused) split() []Uncaused {
 // count (Counting) and armless append (ArmlessFresh), and its base attributes follow the facts of
 // it that preceded write's own: the nodes of one write are parted, not written again, so each
 // part's append states the base attributes of its own nodes and moves them alone. A joined write
-// (Joined) is parted part by part, and each key's pieces are joined again.
+// (Joined) is parted part by part, and each key's pieces are joined again. The facts of a run are
+// parted as tuples are, each part holding those of its own as a run of their own picked out of it,
+// in the part's place for them, so no fact of the run is built into the parts.
 func Parted(write Uncaused, of func(kind, id string) string) map[string]Uncaused {
 	parted := map[string]Uncaused{}
 	if write.parts != nil {
@@ -286,16 +426,35 @@ func Parted(write Uncaused, of func(kind, id string) string) map[string]Uncaused
 		part.mark, part.sentinel, part.appended, part.armless = write.mark, write.sentinel, write.appended, write.armless
 		parted[key] = part
 	}
-	for index, held := range write.Tuples {
+	picked := map[pickedKey]*pickedRun{}
+	write.eachFact(func(index int, held UncausedTuple, from *heldRun, at int) bool {
 		key := of(held.FromKind, held.FromID)
 		part := parted[key]
-		part.Tuples, part.appended, part.armless = append(part.Tuples, held), write.appended, write.armless
+		part.appended, part.armless = write.appended, write.armless
+		if from == nil {
+			part.tuples = append(part.tuples, held)
+		} else {
+			run := picked[pickedKey{part: key, run: from}]
+			if run == nil {
+				run = &pickedRun{run: from.run}
+				picked[pickedKey{part: key, run: from}] = run
+				part.runs = append(part.runs, heldRun{at: len(part.tuples), run: run})
+			}
+			run.picked = append(run.picked, int32(at))
+		}
 		if index < write.baseAt {
 			part.baseAt++
 		}
 		parted[key] = part
-	}
+		return true
+	})
 	return parted
+}
+
+// pickedKey is one part Parted makes and one run of the write it parts.
+type pickedKey struct {
+	part string
+	run  *heldRun
 }
 
 // Counting answers write with its append counting into appended the tuples it appends once
@@ -371,10 +530,10 @@ func PlanUncaused(nodes []Node, stated []Tuple) Uncaused {
 		write.mark = nextNodeMark()
 	}
 	if len(stated) > 0 {
-		write.Tuples = make([]UncausedTuple, 0, len(stated))
+		write.tuples = make([]UncausedTuple, 0, len(stated))
 	}
 	for _, tuple := range stated {
-		write.Tuples = append(write.Tuples, UncausedTuple{Tuple: tuple})
+		write.tuples = append(write.tuples, UncausedTuple{Tuple: tuple})
 	}
 	return write
 }
@@ -395,27 +554,32 @@ func QueueNodes(b *store.WriteBatch, write Uncaused) {
 			queueRefusal(b, err)
 			return
 		}
-		if err := checkHeldValues(part.Tuples); err != nil {
+		if err := checkHeldValues(part); err != nil {
 			queueRefusal(b, err)
 			return
 		}
-		queueNodes(b, part.Nodes, part.mark, len(part.Tuples), func(index int) Tuple {
-			return part.Tuples[index].Tuple
+		queueNodes(b, part.Nodes, part.mark, part.Len(), func(index int) Tuple {
+			return part.fact(index).Tuple
 		})
 	}
 }
 
 // heldTuplesRead is whether the check of a write held for its cause, or the run its batch is made
-// for, reads any tuple the write holds (QueueCaused): a relation its write phase reads
-// (readInWritePhase), or a fact marked as changing its node.
-func heldTuplesRead(held []UncausedTuple) bool {
-	for index := range held {
-		tuple := &held[index].Tuple
-		if tuple.Changes || readInWritePhase(tuple.Kind, tuple.FromKind, tuple.ToKind, tuple.ToID) {
-			return true
-		}
-	}
-	return false
+// for, reads any fact the write holds (QueueCaused): one heldTupleRead names.
+func heldTuplesRead(write Uncaused) bool {
+	read := false
+	write.eachFact(func(_ int, held UncausedTuple, _ *heldRun, _ int) bool {
+		read = heldTupleRead(&held.Tuple)
+		return !read
+	})
+	return read
+}
+
+// heldTupleRead is whether the check of a write held for its cause, or the run its batch is made
+// for, reads tuple: a relation its write phase reads (readInWritePhase), or a fact marked as
+// changing its node.
+func heldTupleRead(tuple *Tuple) bool {
+	return tuple.Changes || readInWritePhase(tuple.Kind, tuple.FromKind, tuple.ToKind, tuple.ToID)
 }
 
 // Caused is QueueCaused run at once, as a batch of its own built for ctx, for a writer with no
@@ -462,7 +626,11 @@ func Caused(ctx context.Context, tx pgx.Tx, write Uncaused, event int64) error {
 // relation the pointer type rules hold, asserted or retracted, such as a prevented_by or a
 // constrained_by a version's block index retracts; a part_of at a kind that takes a node reserved
 // for its author or out of a lens; or a fact marked as changing its node (Tuple.Changes), on a
-// batch made for no run too. A write that holds none of them copies nothing.
+// batch made for no run too. A write that holds none of them copies nothing. Of the facts of a run
+// (HoldRun) such a copy takes only those one of them reads (heldTupleRead), each in its place among
+// the tuples, since no check reads any other fact: so the copy for a block index that retracts a
+// pointer never builds its blocks' values, whose run holds about 750,000 facts for a document of
+// 150,001 blocks. The append builds a run's facts as it binds them, a statement at a time.
 //
 // On a batch made for a run (store.WriteBatch's Run), it appends with them one changed_by_run
 // tuple from each node the write marks changed (Node.Changed, Tuple.Changes) or names changed
@@ -474,7 +642,7 @@ func Caused(ctx context.Context, tx pgx.Tx, write Uncaused, event int64) error {
 // A joined write (Joined) is each of its parts in turn, all its facts held to their values before
 // the first part is queued.
 func QueueCaused(b *store.WriteBatch, write Uncaused, event int64) {
-	if err := checkHeldValues(write.Tuples); err != nil {
+	if err := checkHeldValues(write); err != nil {
 		queueRefusal(b, err)
 		return
 	}
@@ -489,8 +657,7 @@ func QueueCaused(b *store.WriteBatch, write Uncaused, event int64) {
 // reads (heldTuplesRead); the append reads them where they stand.
 func queueCausedPart(b *store.WriteBatch, write Uncaused, event int64) {
 	legacy := event
-	stated := func(index int) Tuple {
-		held := write.Tuples[index]
+	cause := func(held UncausedTuple) Tuple {
 		tuple := held.Tuple
 		tuple.SourceEvent = event
 		if held.LegacyFromCause && tuple.LegacySourceSeq == nil && event != NoEvent {
@@ -499,11 +666,14 @@ func queueCausedPart(b *store.WriteBatch, write Uncaused, event int64) {
 		return tuple
 	}
 	var tuples []Tuple
-	if heldTuplesRead(write.Tuples) {
-		tuples = make([]Tuple, len(write.Tuples))
-		for index := range tuples {
-			tuples[index] = stated(index)
-		}
+	if heldTuplesRead(write) {
+		tuples = make([]Tuple, 0, len(write.tuples))
+		write.eachFact(func(_ int, held UncausedTuple, from *heldRun, _ int) bool {
+			if from == nil || heldTupleRead(&held.Tuple) {
+				tuples = append(tuples, cause(held))
+			}
+			return true
+		})
 	}
 	check, err := planPointerCheck(write.Nodes, tuples, false)
 	if err != nil {
@@ -517,7 +687,7 @@ func queueCausedPart(b *store.WriteBatch, write Uncaused, event int64) {
 		changes[index].SourceEvent = event
 	}
 	queueAppend(b, appending{
-		tuples: len(write.Tuples), tuple: stated,
+		tuples: write.Len(), tuple: func(index int) Tuple { return cause(write.fact(index)) },
 		nodes: write.Nodes, mark: write.mark, baseAt: write.baseAt,
 		cause: &event, sentinel: write.sentinel, appended: write.appended, armless: write.armless,
 		run: b.Run(), changes: changes,

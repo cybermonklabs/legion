@@ -194,7 +194,7 @@ var (
 // decisions step's ledger writes at once.
 func markRoomQueries(ctx context.Context, tx pgx.Tx, room string, stated graphstore.Uncaused) error {
 	ledger := queueFor(ctx, tx)
-	if ledger == nil || ledger.tx == nil || len(stated.Nodes)+len(stated.Tuples) == 0 || slices.Contains(ledger.markedRooms, room) {
+	if ledger == nil || ledger.tx == nil || len(stated.Nodes)+stated.Len() == 0 || slices.Contains(ledger.markedRooms, room) {
 		return nil
 	}
 	if _, created := pendingArtifact(ctx, room); created {
@@ -202,7 +202,7 @@ func markRoomQueries(ctx context.Context, tx pgx.Tx, room string, stated graphst
 	}
 	ledger.markedRooms = append(ledger.markedRooms, room)
 	statement := roomQueryMarkStatement
-	if len(stated.Tuples) > 0 {
+	if stated.Len() > 0 {
 		statement = roomTupleQueryMarkStatement
 	}
 	return writeLast(ctx, tx, ledger.markStep("mark the queries of the issue of room "+room+" owed", statement, room))

@@ -4,9 +4,11 @@ import (
 	"context"
 	"fmt"
 	"maps"
+	"math/bits"
 	"slices"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
@@ -2131,9 +2133,10 @@ type heldBlockValue struct {
 // planBlockValues plans the rank, the text, the placement, the place in the text (a text_parent
 // and a text_rank) and, for a plan node, the value of each attribute that points at nothing
 // (blockPlanValues) of every block placement placed, dated at the pass's own time
-// (IndexedVersion.At). It answers the values it states, which PlanBlocks appends with the pass's
-// other facts, and what the blocks hold once the indexing is written, for a later indexing of the
-// document in the same transaction (Held).
+// (IndexedVersion.At). It answers the values it states as a run (blockValueRun), which PlanBlocks
+// holds in its place among the pass's other facts and the append builds a batch at a time, and
+// what the blocks hold once the indexing is written, for a later indexing of the document in the
+// same transaction (Held). The run is nil where the pass places no block.
 //
 // It reads what the store holds of every one of those blocks in one statement (heldBlockValues),
 // in the plan's read phase, and states a value only where it moves: a rank where the block's place
@@ -2176,7 +2179,7 @@ func planBlockValues(
 	changed map[string]struct{},
 	stale bool,
 	fragments map[string]fragmentDocument,
-) ([]graphstore.UncausedTuple, map[string]heldBlockValue, error) {
+) (*blockValueRun, map[string]heldBlockValue, error) {
 	standing := maps.Clone(indexed.values)
 	if len(placement.ids) == 0 {
 		return nil, standing, nil
@@ -2219,24 +2222,20 @@ func planBlockValues(
 		return nil, nil, err
 	}
 	textRanks := textRankBlocks(bands, document, nodes, placement, fragments, held)
-	var tuples []graphstore.UncausedTuple
-	value := func(id, attribute, to string, asserted bool) {
-		tuples = append(tuples, graphstore.UncausedTuple{Tuple: valueTuple(blockNodeAddress(document.RefKey, id), attribute, to, document.At, document.Writer, asserted)})
-	}
-	textParent := func(id string, far blockFarEnd, asserted bool) {
-		tuples = append(tuples, graphstore.UncausedTuple{Tuple: graphstore.Tuple{
-			FromKind: BlockNodeKind, FromID: blockNodeAddress(document.RefKey, id), Kind: TupleTextParent,
-			ToKind: far.kind, ToID: far.id,
-			At: document.At, Who: document.Writer, Asserted: asserted,
-		}})
+	run := &blockValueRun{
+		document: document, ids: placement.ids, standing: standing,
+		states: make([]uint8, len(placement.ids)), texts: make([]string, len(placement.ids)), batch: -1,
 	}
 	for index, id := range placement.ids {
 		block := nodes[placement.placed[index]]
+		var states uint8
+		var extra blockValueExtra
 		if ranks[index] != held[index].rank {
-			value(id, AttributeRank, ranks[index], true)
+			states |= statesRank
 		}
 		if _, wrote := changed[id]; wrote || stale || !held[index].text {
-			value(id, graphstore.AttributeText, markdown[block.From:block.To], true)
+			states |= statesText
+			run.texts[index] = markdown[block.From:block.To]
 		}
 		placed := PlacementText
 		switch {
@@ -2246,7 +2245,7 @@ func planBlockValues(
 			placed = PlacementAuthored
 		}
 		if held[index].placement != placed {
-			value(id, AttributePlacement, placed, true)
+			states |= statesPlacement
 		}
 		// The text parent the block holds stands where it is the one the text gives it, which is
 		// read without building its address; only one that moved builds the address it states.
@@ -2257,16 +2256,17 @@ func planBlockValues(
 		standsUnder := held[index].textParent
 		if !textParentHeld(standsUnder, document.RefKey, holder, inDocument) {
 			if standsUnder.kind != "" {
-				textParent(id, standsUnder, false)
+				states |= statesTextParentRetracted
+				extra.textParent = standsUnder
 			}
 			standsUnder = blockFarEnd{kind: graphstore.KindArtifact, id: inDocument}
 			if holder != "" {
 				standsUnder = blockFarEnd{kind: BlockNodeKind, id: blockNodeAddress(document.RefKey, holder)}
 			}
-			textParent(id, standsUnder, true)
+			states |= statesTextParent
 		}
 		if textRanks[index] != held[index].textRank {
-			value(id, AttributeTextRank, textRanks[index], true)
+			states |= statesTextRank
 		}
 		written, err := blockPlanValues(block)
 		if err != nil {
@@ -2278,16 +2278,157 @@ func planBlockValues(
 			switch {
 			case writes && holds && stated == holding:
 			case writes:
-				value(id, name, stated, true)
+				extra.plan = append(extra.plan, planFact{name: name, value: stated, asserted: true})
 			case holds:
-				value(id, name, holding, false)
+				extra.plan = append(extra.plan, planFact{name: name, value: holding})
 			}
+		}
+		run.states[index] = states
+		if extra.textParent.kind != "" || len(extra.plan) > 0 {
+			if run.extras == nil {
+				run.extras = map[int]blockValueExtra{}
+			}
+			run.extras[index] = extra
 		}
 		standing[id] = heldBlockValue{
 			rank: ranks[index], placement: placed, textRank: textRanks[index], text: true, textParent: standsUnder, plan: written,
 		}
 	}
-	return tuples, standing, nil
+	run.count()
+	return run, standing, nil
+}
+
+// blockValueBatch is how many blocks blockValueRun builds the facts of at once. A plain block of a
+// document's first index states five facts (its rank, its text, its placement, its text_parent and
+// its text_rank), so a batch is about 5,000 facts and 1.2 MB of tuples: under one statement of the
+// append (graphstore's appendRows, 8,192 rows), so a statement builds at most two batches as it
+// binds its rows, and the run holds one batch where the tuples of every block of a document of
+// 150,001 blocks, about 750,000 of them, took some 170 MB at once.
+const blockValueBatch = 1024
+
+// The facts planBlockValues states of one block, in the order it states them, as bits of
+// blockValueRun.states; a plan node's values follow them (blockValueExtra.plan).
+const (
+	statesRank uint8 = 1 << iota
+	statesText
+	statesPlacement
+	statesTextParentRetracted
+	statesTextParent
+	statesTextRank
+)
+
+// planFact is one value of a plan node a pass states (asserted) or retracts, under the attribute
+// name.
+type planFact struct {
+	name, value string
+	asserted    bool
+}
+
+// blockValueExtra is what a block's facts need that standing does not hold: the text parent a
+// retraction ends, and the plan node's values the pass states or retracts, in planValueNames'
+// order.
+type blockValueExtra struct {
+	textParent blockFarEnd
+	plan       []planFact
+}
+
+// blockValueRun is the facts planBlockValues states of the blocks a pass places, as a run the
+// pass's write holds (graphstore.TupleRun) rather than as their tuples: which facts each block
+// states (states, and extras for a retracted text parent and a plan node's values), the text each
+// states (texts, a slice of the version's markdown), and the values each block holds once the
+// pass is written (standing, which no later plan changes: a later pass of the document in the same
+// transaction plans against a clone of it). At builds the facts of blockValueBatch blocks at once,
+// each block's in the order planBlockValues states them - its rank, its text, its placement, the
+// retraction of the text parent it held, its text_parent, its text_rank, then its plan values -
+// and keeps the last batch it built, so a reader walking the facts in order builds each batch once.
+type blockValueRun struct {
+	document IndexedVersion
+	ids      []string
+	standing map[string]heldBlockValue
+	states   []uint8
+	texts    []string
+	extras   map[int]blockValueExtra
+	// starts is the index of the first fact of each batch, and the count of every fact after the
+	// last.
+	starts []int
+	mu     sync.Mutex
+	batch  int
+	built  []graphstore.UncausedTuple
+}
+
+// count sets starts from states and extras.
+func (r *blockValueRun) count() {
+	r.starts = make([]int, 0, (len(r.ids)+blockValueBatch-1)/blockValueBatch+1)
+	facts := 0
+	for index := range r.ids {
+		if index%blockValueBatch == 0 {
+			r.starts = append(r.starts, facts)
+		}
+		facts += bits.OnesCount8(r.states[index]) + len(r.extras[index].plan)
+	}
+	r.starts = append(r.starts, facts)
+}
+
+// Len is how many facts the run holds.
+func (r *blockValueRun) Len() int {
+	return r.starts[len(r.starts)-1]
+}
+
+// At is the fact at index, built with the rest of its batch where the run keeps another.
+func (r *blockValueRun) At(index int) graphstore.UncausedTuple {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	batch := sort.Search(len(r.starts)-1, func(batch int) bool { return r.starts[batch+1] > index })
+	if batch != r.batch {
+		r.build(batch)
+	}
+	return r.built[index-r.starts[batch]]
+}
+
+// build builds the facts of batch into built, in place of the batch built before.
+func (r *blockValueRun) build(batch int) {
+	r.built, r.batch = r.built[:0], batch
+	at, who := r.document.At, r.document.Writer
+	for index := batch * blockValueBatch; index < min((batch+1)*blockValueBatch, len(r.ids)); index++ {
+		states := r.states[index]
+		extra := r.extras[index]
+		if states == 0 && len(extra.plan) == 0 {
+			continue
+		}
+		id := r.ids[index]
+		address := blockNodeAddress(r.document.RefKey, id)
+		standing := r.standing[id]
+		value := func(attribute, to string, asserted bool) {
+			r.built = append(r.built, graphstore.UncausedTuple{Tuple: valueTuple(address, attribute, to, at, who, asserted)})
+		}
+		textParent := func(far blockFarEnd, asserted bool) {
+			r.built = append(r.built, graphstore.UncausedTuple{Tuple: graphstore.Tuple{
+				FromKind: BlockNodeKind, FromID: address, Kind: TupleTextParent,
+				ToKind: far.kind, ToID: far.id, At: at, Who: who, Asserted: asserted,
+			}})
+		}
+		if states&statesRank != 0 {
+			value(AttributeRank, standing.rank, true)
+		}
+		if states&statesText != 0 {
+			value(graphstore.AttributeText, r.texts[index], true)
+		}
+		if states&statesPlacement != 0 {
+			value(AttributePlacement, standing.placement, true)
+		}
+		if states&statesTextParentRetracted != 0 {
+			textParent(extra.textParent, false)
+		}
+		if states&statesTextParent != 0 {
+			textParent(standing.textParent, true)
+		}
+		if states&statesTextRank != 0 {
+			value(AttributeTextRank, standing.textRank, true)
+		}
+		for _, fact := range extra.plan {
+			value(fact.name, fact.value, fact.asserted)
+		}
+	}
 }
 
 // textParentHeld says far, the text parent a block holds, is the one the text gives it: the block

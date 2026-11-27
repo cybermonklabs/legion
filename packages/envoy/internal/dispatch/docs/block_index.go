@@ -2014,7 +2014,7 @@ func roomFactsByDocument(index roomIndex, reference string) map[string]graphstor
 	if facts == nil {
 		facts = map[string]graphstore.Uncaused{}
 	}
-	if len(index.references.Nodes) > 0 || len(index.references.Tuples) > 0 {
+	if len(index.references.Nodes) > 0 || index.references.Len() > 0 {
 		facts[reference] = graphstore.Joined(facts[reference], index.references)
 	}
 	return facts

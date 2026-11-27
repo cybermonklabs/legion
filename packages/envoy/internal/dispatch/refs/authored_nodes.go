@@ -344,7 +344,7 @@ func (d DecisionIndexing) PlanAuthored(ctx context.Context, q Queryer, record In
 		}
 	}
 	plan.stated = graphstore.Joined(d.stated, graphstore.PlanUncaused(stated, nil))
-	plan.stated.Tuples = append(plan.stated.Tuples, tuples...)
+	plan.stated.State(tuples...)
 	plan.held.blocks, plan.held.links, plan.held.placed, plan.held.rooms = held, heldLinks, placed, plan.heldRooms(index)
 	return plan, nil
 }
