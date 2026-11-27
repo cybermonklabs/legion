@@ -12,8 +12,8 @@ import (
 // write and a Legion filings write recorded in the change log's outbox, their process killed
 // between its commit and its drain while no other process was alive, are moved into
 // delivery_changes by the next server's boot before it serves: the boot logs that it moved both
-// before it logs that it listens, and the log holds each at the moment it was recorded, nothing
-// left pending. Its drain's notification wakes every hub listening by then (api's
+// before it logs that it listens, and the log holds each stamped at the drain's own time
+// (migration 20261127133240), nothing left pending. Its drain's notification wakes every hub
 // TestAChangeACrashLeftPendingWakesASubscribedViewOnceTheBootDrains holds a hub to the wake).
 func TestDispatchBootMovesTheChangesACrashLeftPendingBeforeItServes(t *testing.T) {
 	database := storetest.Open(t)
@@ -26,6 +26,10 @@ func TestDispatchBootMovesTheChangesACrashLeftPendingBeforeItServes(t *testing.T
 		t.Fatalf("leave two pending changes as a crash between commit and drain leaves them: %v", err)
 	}
 
+	var beforeBoot time.Time
+	if err := database.Pool.QueryRow(ctx, `select clock_timestamp()`).Scan(&beforeBoot); err != nil {
+		t.Fatal(err)
+	}
 	started := time.Now()
 	process := startDispatchProcessWith(t, database.Pool.Config().ConnString(), dispatchOptions{})
 	process.waitHealthy(t)
@@ -38,12 +42,13 @@ func TestDispatchBootMovesTheChangesACrashLeftPendingBeforeItServes(t *testing.T
 	}
 	var moved int
 	if err := database.Pool.QueryRow(ctx, `
-		select count(*) from delivery_changes where repo = 'CRASH' and ref in ('CRASH-2', 'CRASH-1') and at = $1
-	`, recorded).Scan(&moved); err != nil {
+		select count(*) from delivery_changes
+		where repo = 'CRASH' and ref in ('CRASH-2', 'CRASH-1') and at >= $1
+	`, beforeBoot).Scan(&moved); err != nil {
 		t.Fatal(err)
 	}
 	if moved != 2 {
-		t.Errorf("the change log holds %d of the two moved changes at their recorded moment, want both", moved)
+		t.Errorf("the change log holds %d of the two moved changes stamped at or after boot (%s), want both", moved, beforeBoot)
 	}
 	var left int
 	if err := database.Pool.QueryRow(ctx, `select count(*) from delivery_changes_pending where repo = 'CRASH'`).Scan(&left); err != nil {
