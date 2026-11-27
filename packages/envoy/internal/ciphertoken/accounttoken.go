@@ -2,11 +2,12 @@ package ciphertoken
 
 import (
 	"errors"
-	"fmt"
 	"os"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/sjawhar/envoy/fileerr"
 )
 
 // AccountTokenCacheTTL is how long an AccountToken reuses the bytes it last read. Opening the file
@@ -41,6 +42,9 @@ type Account interface {
 //
 // A projected token rotates, so the path is read at call time and never once at boot.
 type AccountToken struct {
+	// Setting names the setting that holds Path, as an error names the file: the setting's name,
+	// never the path, which is where a token pasted in place of the path would print.
+	Setting string
 	// Path is the file the token is read from.
 	Path string
 	// TTL is how long Read reuses what it read, AccountTokenCacheTTL for every reader
@@ -53,10 +57,11 @@ type AccountToken struct {
 	readAt time.Time
 }
 
-// NewAccountToken is a reader of the projected ServiceAccount token at path, which Read opens at
-// call time, caching what it reads for AccountTokenCacheTTL.
-func NewAccountToken(path string) *AccountToken {
-	return &AccountToken{Path: path, TTL: AccountTokenCacheTTL}
+// NewAccountToken is a reader of the projected ServiceAccount token at path, which the setting
+// named setting holds and which Read opens at call time, caching what it reads for
+// AccountTokenCacheTTL.
+func NewAccountToken(setting, path string) *AccountToken {
+	return &AccountToken{Setting: setting, Path: path, TTL: AccountTokenCacheTTL}
 }
 
 // AccountTokenError is a call that never reached the broker because Dispatch could not read its
@@ -64,14 +69,26 @@ func NewAccountToken(path string) *AccountToken {
 // its own type because what is wrong is Dispatch's deployment, not the broker, and a route must
 // say so rather than send the operator to a broker that was never asked.
 type AccountTokenError struct {
+	// Setting names the setting that holds Path.
+	Setting string
 	// Path is the token file Dispatch tried to read.
 	Path string
 	// Err is why it could not: the read's own error, or errEmptyAccountToken.
 	Err error
 }
 
+// Error names the file by the setting that holds it, and why it could not be read in fileerr's
+// words, or that it is empty, never Path: the setting holds what a person wrote, and a token
+// pasted in place of the path would print. A reader built with no setting names neither.
 func (e *AccountTokenError) Error() string {
-	return fmt.Sprintf("brokertoken: read the ServiceAccount token %s: %v", e.Path, e.Err)
+	head := "brokertoken: read the ServiceAccount token"
+	if e.Setting != "" {
+		head += " " + e.Setting + " names"
+	}
+	if errors.Is(e.Err, errEmptyAccountToken) {
+		return head + ": " + e.Err.Error()
+	}
+	return head + ": its file cannot be read: " + fileerr.Class(e.Err)
 }
 
 func (e *AccountTokenError) Unwrap() error { return e.Err }
@@ -81,8 +98,9 @@ var errEmptyAccountToken = errors.New("the file is empty")
 
 // Read is the bearer a call presents: Path's trimmed contents, read again once the copy it cached
 // is older than TTL. A file that cannot be read, or that holds nothing, is an *AccountTokenError
-// naming the path and no request at all, never an empty bearer for the broker to refuse: a
-// projected token Dispatch cannot read is Dispatch's own misconfiguration.
+// and no request at all, never an empty bearer for the broker to refuse: a projected token
+// Dispatch cannot read is Dispatch's own misconfiguration. The error names the file's setting and
+// why, never the path.
 func (a *AccountToken) Read() (string, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -91,11 +109,11 @@ func (a *AccountToken) Read() (string, error) {
 	}
 	data, err := os.ReadFile(a.Path)
 	if err != nil {
-		return "", &AccountTokenError{Path: a.Path, Err: err}
+		return "", &AccountTokenError{Setting: a.Setting, Path: a.Path, Err: err}
 	}
 	token := strings.TrimSpace(string(data))
 	if token == "" {
-		return "", &AccountTokenError{Path: a.Path, Err: errEmptyAccountToken}
+		return "", &AccountTokenError{Setting: a.Setting, Path: a.Path, Err: errEmptyAccountToken}
 	}
 	a.cached, a.readAt = token, time.Now()
 	return token, nil

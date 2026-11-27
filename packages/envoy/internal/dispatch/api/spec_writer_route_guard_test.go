@@ -52,10 +52,11 @@ const anchoredWriteExemption = "an anchored comment, ask or suggestion writes a 
 
 // specWriterExempt names every route that reaches a document write and is left unchecked, with
 // the reason it is left. A route here is held to two things (TestTheSpecWriterExemptionsStillHold):
-// the table serves it, so a renamed row leaves no reason pointing at nothing, and its path still
-// does not call the check, so an exemption that has stopped being true is deleted rather than left
-// to describe the opposite of what the handler does. No test hook reaches a document write today:
-// a hook that does goes in with the reason "a test hook, mounted only with TestHooksEnabled".
+// the server declares it, so a renamed route leaves no reason pointing at nothing, and its path
+// still does not call the check, so an exemption that has stopped being true is deleted rather
+// than left to describe the opposite of what the handler does. No test hook reaches a document
+// write today: a hook that does goes in with the reason "a test hook, mounted only with
+// TestHooksEnabled".
 var specWriterExempt = map[string]string{
 	"POST /api/v1/issues/{key}/comments":   anchoredWriteExemption,
 	"POST /api/v1/artifacts/{id}/comments": anchoredWriteExemption,
@@ -68,12 +69,12 @@ var specWriterExempt = map[string]string{
 // architect is refused on every route that writes one - to the server's own route inventory rather
 // than to a list of the routes that check today.
 //
-// The inventory is the table (routes_table.go) with its test hooks in, read from the source so that
-// each row's handler is read with it, and held to the table the server mounts. A row whose path
-// reaches a sink (specWriterSinks) passes when its path also calls the check (specWriterCheck),
-// when its row declares the person scope in routeScopes, which no worker's credential holds, or
-// when specWriterExempt names it with its reason. Its failure names each route and each sink it
-// reaches, with the calls that reach it.
+// The inventory is the route declarations with their test hooks in, read from the source so that
+// each route's handler is read with it, and held to the routes the server mounts. A route whose
+// path reaches a sink (specWriterSinks) passes when its path also calls the check
+// (specWriterCheck), when its declaration states the person scope (routeDecl.OAuthScopes), which
+// no worker's credential holds, or when specWriterExempt names it with its reason. Its failure
+// names each route and each sink it reaches, with the calls that reach it.
 //
 // The walk is decisionBlockChecked's: every call of every function on the path inside package api,
 // followed as the copy-lock graph resolves it, plus every function handed to it as an argument. It
@@ -81,21 +82,23 @@ var specWriterExempt = map[string]string{
 // path, and a handler that calls the check under a condition passes here as it does in the other
 // static guards of this package; the behavior tests (spec_writer_test.go) hold the branches.
 func TestEveryRouteThatWritesADocumentChecksItsWriter(t *testing.T) {
+	t.Parallel()
 	graph := copyLockGraph(t)
 	if graph.named[specWriterCheck] == nil {
 		t.Errorf("%s, the check every route that writes a checked document calls, is not declared: "+
 			"write it (spec_writer.go), or point specWriterCheck at its replacement", specWriterCheck)
 	}
 	routes := specWriterRoutes(t, graph)
+	scopes := declaredScopes()
 
 	// The guard cannot pass by seeing nothing: each sink is a method the document service still
-	// has, and some route of the table reaches it.
+	// has, and some declared route reaches it.
 	for _, sink := range specWriterSinks {
 		if graph.named["docs.Service."+sink] == nil {
 			t.Errorf("docs.Service.%s, a document write the guard looks for, is gone: point specWriterSinks at its replacement", sink)
 		}
 		if !slices.ContainsFunc(slices.Collect(maps.Values(routes)), func(reach specWriterReach) bool { return len(reach.sinks[sink]) > 0 }) {
-			t.Errorf("no route of the table reaches %s, so the guard sees none of its calls", sink)
+			t.Errorf("no declared route reaches %s, so the guard sees none of its calls", sink)
 		}
 	}
 
@@ -108,30 +111,31 @@ func TestEveryRouteThatWritesADocumentChecksItsWriter(t *testing.T) {
 		switch {
 		case exempt:
 			t.Logf("%s: reaches %s; exempt - %s", name, reach.describe(), reason)
-		case slices.Contains(routeScopes[name], model.ScopePerson):
+		case slices.Contains(scopes[name], model.ScopePerson):
 			t.Logf("%s: reaches %s; needs the person scope", name, reach.describe())
 		case reach.checks:
 			t.Logf("%s: reaches %s; checked", name, reach.describe())
 		}
 	}
-	if unchecked := uncheckedSpecWriters(routes, routeScopes, specWriterExempt); len(unchecked) > 0 {
+	if unchecked := uncheckedSpecWriters(routes, scopes, specWriterExempt); len(unchecked) > 0 {
 		t.Errorf("a route writes a document and never checks its writer:\n\t%s\n"+
 			"Call refuseSpecWriter on the route's path before its first document call (spec_writer.go), "+
-			"declare model.ScopePerson for the route in routeScopes, or name it in specWriterExempt with the reason it is left.",
+			"declare model.ScopePerson in the route's OAuthScopes (its declaration), or name it in specWriterExempt with the reason it is left.",
 			strings.Join(unchecked, "\n\t"))
 	}
 }
 
 // TestTheSpecWriterExemptionsStillHold holds each route specWriterExempt names to its reason: the
-// table serves the route, and its path still does not call the check.
+// server declares the route, and its path still does not call the check.
 func TestTheSpecWriterExemptionsStillHold(t *testing.T) {
+	t.Parallel()
 	routes := specWriterRoutes(t, copyLockGraph(t))
 	for _, name := range slices.Sorted(maps.Keys(specWriterExempt)) {
 		t.Logf("%s: exempt - %s", name, specWriterExempt[name])
 	}
 	if stale := staleSpecWriterExemptions(routes, specWriterExempt); len(stale) > 0 {
 		t.Errorf("an exemption of the spec-writer guard no longer holds:\n\t%s\n"+
-			"Delete the route's line from specWriterExempt, or point it at the row that replaced it.",
+			"Delete the route's line from specWriterExempt, or point it at the route that replaced it.",
 			strings.Join(stale, "\n\t"))
 	}
 }
@@ -143,6 +147,7 @@ func TestTheSpecWriterExemptionsStillHold(t *testing.T) {
 // checks its writer, one that needs the person scope, and one that writes nothing, and neither
 // helper names any of them.
 func TestTheSpecWriterGuardSeesAPlantedWriter(t *testing.T) {
+	t.Parallel()
 	graph := plantedSpecWriterGraph(t)
 	routes := specWriterReaches(graph, specWriterRouteHandlers(t, graph))
 	scopes := map[string]routeScopeSet{"POST /planted/person": {model.ScopePerson}}
@@ -205,7 +210,7 @@ func staleSpecWriterExemptions(routes map[string]specWriterReach, exempt map[str
 		reach, served := routes[name]
 		switch {
 		case !served:
-			stale = append(stale, name+": the table serves no such route")
+			stale = append(stale, name+": the server declares no such route")
 		case reach.checks:
 			stale = append(stale, fmt.Sprintf("%s: its path calls %s now, so its exemption (%s) is no longer true", name, specWriterCheck, exempt[name]))
 		}
@@ -213,39 +218,48 @@ func staleSpecWriterExemptions(routes map[string]specWriterReach, exempt map[str
 	return stale
 }
 
-// specWriterRoutes is every route of the server's table with what its path runs, held to the table
-// the server mounts with its test hooks in: a row the source read misses would otherwise pass
-// unread.
+// specWriterRoutes is every declared route of the server with what its path runs, held to the
+// routes the server mounts with its test hooks in: a route the source read misses would otherwise
+// pass unread.
 func specWriterRoutes(t *testing.T, graph *lockGraph) map[string]specWriterReach {
 	t.Helper()
 	handlers := specWriterRouteHandlers(t, graph)
 	mounted := (&server{deps: Deps{TestHooksEnabled: true}}).routes()
 	for _, route := range mounted {
 		if _, read := handlers[route.Method+" "+route.Pattern]; !read {
-			t.Errorf("the guard reads no %s %s off the source of the routes table, which mounts it", route.Method, route.Pattern)
+			t.Errorf("the guard reads no %s %s off the route declarations, and the server mounts it", route.Method, route.Pattern)
 		}
 	}
 	if len(handlers) != len(mounted) {
-		t.Errorf("the guard reads %d routes off the source of the routes table, want the %d it mounts", len(handlers), len(mounted))
+		t.Errorf("the guard reads %d routes off the route declarations, want the %d the server mounts", len(handlers), len(mounted))
 	}
 	return specWriterReaches(graph, handlers)
 }
 
-// specWriterRouteHandlers is every row of graph's routes table, by "<method> <pattern>", with the
-// handler bodies that row mounts (routeTableHandlers), and of every method: a route of any method
-// may write a document.
+// specWriterRouteHandlers is every route declaration of graph's package api, by
+// "<method> <pattern>", with the handler bodies it names (routeDeclHandlers), and of every
+// method: a route of any method may write a document.
 func specWriterRouteHandlers(t *testing.T, graph *lockGraph) map[string][]*lockFunction {
 	t.Helper()
-	routes := routeTableHandlers(t, graph, func(string) bool { return true })
+	routes, _ := routeDeclHandlers(t, graph, func(string) bool { return true })
 	for _, name := range slices.Sorted(maps.Keys(routes)) {
 		if len(routes[name]) == 0 {
-			t.Errorf("the guard cannot read the handler of %s off the table", name)
+			t.Errorf("the guard cannot read the handler of %s off its declaration", name)
 		}
 	}
 	if len(routes) == 0 {
-		t.Fatal("the guard reads no row off the routes table")
+		t.Fatal("the guard reads no route off the route declarations")
 	}
 	return routes
+}
+
+// declaredScopes is the OAuth scopes each declared route states, by "<method> <pattern>".
+func declaredScopes() map[string]routeScopeSet {
+	scopes := make(map[string]routeScopeSet, len(routeRegistry))
+	for _, route := range routeRegistry {
+		scopes[route.Method+" "+route.Pattern] = route.OAuthScopes
+	}
+	return scopes
 }
 
 // specWriterReaches is what each route's path runs, the route's handlers walked by one
@@ -347,10 +361,11 @@ func specWriterSinkOf(name string) (string, bool) {
 
 // plantedSpecWriterSources is the planted module TestTheSpecWriterGuardSeesAPlantedWriter reads, by
 // import path: a document service with ApplyOps behind an interface, as docs.API holds it; the
-// stand-ins for net/http's method names the table's rows spell; and a server whose routes table
-// holds a route that writes through a function literal with no check, a route whose path calls the
-// check through a helper before the same write, a route that needs the person scope and writes the
-// same way, an exempt route that checks its writer all the same, and a route that writes nothing.
+// stand-ins for net/http's method names the declarations spell; and a server whose route
+// declarations, each a routeDecl as the server's route files write one, hold a route that writes
+// through a function literal with no check, a route whose path calls the check through a helper
+// before the same write, a route that needs the person scope and writes the same way, an exempt
+// route that checks its writer all the same, and a route that writes nothing.
 // Each package's name is the one the guard reads (docs, http, api), so the graph names its
 // functions as it names the server's.
 var plantedSpecWriterSources = map[string]string{
@@ -378,25 +393,28 @@ import (
 	"planted/http"
 )
 
-type routeRow struct {
-	Method, Pattern, Auth, Description string
-	Handler                            func()
+type routeDecl struct {
+	Method, Pattern, Description string
+	Handler                      func(*server)
+}
+
+var routeRegistry []routeDecl
+
+func declareRoute(route routeDecl) routeDecl {
+	routeRegistry = append(routeRegistry, route)
+	return route
 }
 
 type server struct{ documents docs.API }
 
 func refuseSpecWriter() error { return nil }
 
-func (s *server) routes() []routeRow {
-	return []routeRow{
-		{http.MethodPost, "/planted/unchecked", "any", "Writes a document and checks no writer.", s.writeUnchecked},
-		{http.MethodPost, "/planted/checked", "any", "Checks its writer, then writes a document.", s.writeChecked},
-		{http.MethodPost, "/planted/person", "any", "Needs the person scope, then writes a document.", s.writeUnchecked},
-		{http.MethodPost, "/planted/exempt", "any", "Is exempt, and checks its writer all the same.", s.writeChecked},
-		{http.MethodGet, "/planted/read", "any", "Writes nothing.", s.read},
-		{http.MethodPost, "/planted/nothing", "any", "Writes nothing either.", s.read},
-	}
-}
+var _ = declareRoute(routeDecl{Method: http.MethodPost, Pattern: "/planted/unchecked", Description: "Writes a document and checks no writer.", Handler: (*server).writeUnchecked})
+var _ = declareRoute(routeDecl{Method: http.MethodPost, Pattern: "/planted/checked", Description: "Checks its writer, then writes a document.", Handler: (*server).writeChecked})
+var _ = declareRoute(routeDecl{Method: http.MethodPost, Pattern: "/planted/person", Description: "Needs the person scope, then writes a document.", Handler: (*server).writeUnchecked})
+var _ = declareRoute(routeDecl{Method: http.MethodPost, Pattern: "/planted/exempt", Description: "Is exempt, and checks its writer all the same.", Handler: (*server).writeChecked})
+var _ = declareRoute(routeDecl{Method: http.MethodGet, Pattern: "/planted/read", Description: "Writes nothing.", Handler: (*server).read})
+var _ = declareRoute(routeDecl{Method: http.MethodPost, Pattern: "/planted/nothing", Description: "Writes nothing either.", Handler: (*server).read})
 
 func (s *server) writeUnchecked() {
 	s.inTransaction(func() error { return s.documents.ApplyOps("spec") })

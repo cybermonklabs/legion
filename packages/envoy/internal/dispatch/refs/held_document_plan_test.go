@@ -36,6 +36,7 @@ const heldDocumentPlanBlocks = 1000
 // condition, reading every block node again for each member: it must plan and run, and the check
 // must fail on it under both modes.
 func TestTheHeldDocumentReadProbesEachMembersNodeOnce(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	database := storetest.Open(t)
 	pool := database.Pool

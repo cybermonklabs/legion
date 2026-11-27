@@ -38,7 +38,7 @@
 // Only the kernel's copy of the argv says which file the agent was started with.
 //
 // The daemon is the whole daemon: run, the function `legion start` calls, through this package's
-// own whole-daemon harness (startDaemonWithin) over the live-proof fixture (live_proof_test.go).
+// own whole-daemon harness (startDaemonLogging) over the live-proof fixture (live_proof_test.go).
 // Each pane is a real `omp --mode rpc` under the real `legion worker-shim`, started by
 // localruntime_live_test.go, since a Legion pod on a worker image from before
 // dispatch://INFRA-3257 carries no tmux, with this checkout's `@sjawhar/pi-envoy` and
@@ -215,6 +215,7 @@ type launchedPrompt struct {
 // is reported; and in the child's architect's, the sub-architect's own heading in place of the
 // root's, and the addressing clause that names the root's architect as the architect above it.
 func TestEveryRoleIsLaunchedWithTheRulesItsOwnPromptCarriesLive(t *testing.T) {
+	// Not parallel: it gives the process back the operator's own environment, as t.Setenv does (fixtureenv.Live).
 	fixtureenv.Live(t)
 	r := newRolePromptRuleLive(t)
 	r.step("step1-every-role-of-the-tree-runs-a-pane-whose-own-argv-carries-a-system-prompt", r.everyPaneIsReady)
@@ -267,7 +268,7 @@ func newRolePromptRuleLive(t *testing.T) *rolePromptRuleLive {
 
 	r.seed()
 	r.daemon = newRecordingLog(r.log())
-	r.d = startDaemonWithin(t, r.cfg, r.overrides(), slog.New(r.daemon), 60*time.Second)
+	r.d = startDaemonLogging(t, r.cfg, r.overrides(), slog.New(r.daemon))
 	return r
 }
 

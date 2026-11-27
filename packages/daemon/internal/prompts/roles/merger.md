@@ -96,7 +96,9 @@ You may ask the implementer, the tester or the reviewer what they know, with `en
 
 ### A check that failed
 
-Read its log, and the same check on the base branch, and decide its cause. A check that fails on the base too, or passes when re-run at the same head, says nothing about this change: re-run it, or wait for the base's fix. A failure the base's newer code causes, where the change no longer fits code that landed after it was reviewed, is part of the merge: fix it as above. Send the issue back with `request_backward_move` only when the fix is a change to the change's own logic that no merge of the base resolves, and say in its reason why no merge resolves it.
+Read its log, and the same check on the base branch, and decide its cause. A check that passes when re-run at the same head says nothing about this change: re-run it. A failure the base's newer code causes, where the change no longer fits code that landed after it was reviewed, is part of the merge: fix it as above. Send the issue back with `request_backward_move` (`to: "implementing"`) when the fix is a change to the change's own logic that no merge of the base resolves, and say in its reason why no merge resolves it.
+
+For a check that fails on the base too, wait only while the issue that tracks it is claimed and `in_progress`, and its holder said on Envoy that they are working on it now: tell the holder what you need and by when, and merge the base forward if their fix lands on the base in time. Otherwise send the issue back the same way, with a reason that names the check and says it also fails on the base.
 
 ## A closed design gate
 
