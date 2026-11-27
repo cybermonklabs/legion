@@ -1,6 +1,6 @@
 /** `bun e2e/tools/shard-weights.ts --main <count> [--cache <dir>]`: reads the newest <count>
  *  merged reports of main's full-lane runs and writes `e2e/shard-weights.json`, the row times
- *  `e2e/shard-split.ts` places a sharded run's files by.
+ *  `e2e/shard-split.ts` places a sharded run's rows by.
  *
  * Run it from packages/dispatch, with `gh` signed in to a token that reads this repository's
  * Actions artifacts. It lists the artifacts named `dispatch-browser-report-1` - the merged report
@@ -15,18 +15,19 @@
  *
  * What it writes, for each row that ran: the seconds every attempt of it took, summed, since a
  * retry is time its leg spent; the median of that over the reports, so one slow runner, which
- * slows every row of its leg alike, moves no row's number; then the mean of those medians over
- * each file of each project, and the median over each project's rows, which is what a file the
- * table has no entry for is placed by. Seconds are rounded to the hundredth.
+ * slows every row of its leg alike, moves no row's number - the row's own weight; then the mean
+ * of those medians over each file of each project, which is what a row the table does not hold
+ * in a file it does is placed by, and the median over each project's rows, which is what a row
+ * of a file the table has no entry for is placed by. Seconds are rounded to the hundredth.
  *
  * When to run it: each sharded leg prints how many of its rows were placed by their project's
- * median because their file has no entry here (`e2e/shard-reporter.ts`). Read on 2026-11-22, a
- * table four days old placed that day's full lane at 1.11 times the mean on its heaviest leg and
- * one seven days old at 1.02, against 1.00 for a fresh one and 1.21 for Playwright's count split:
- * neither had the issue page's new files, and where the placement put those was close to chance.
- * The browser step's guard holds up to that 1.11, so each leg warns when the table is more than 7
- * days old or a tenth of its rows are estimated (`tableWarnings`, e2e/shard-split.ts): read it
- * again then.
+ * median because their file has no entry here (`e2e/shard-reporter.ts`). Read on 2026-11-27 over
+ * the 28 full-lane merge-group runs of 2026-11-26, the row-by-row placement put the heaviest leg
+ * at 1.03 times the mean under a table four days old and 1.04 under one seven days old (at most
+ * 1.06 each), against 1.02 for a fresh one; placed by file, those same two tables gave 1.20 and
+ * 1.22, since each lacked files that had landed since. The browser step's guard holds up to that
+ * 1.06, so each leg warns when the table is more than 7 days old or a tenth of its rows are
+ * estimated (`tableWarnings`, e2e/shard-split.ts): read it again then.
  */
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
@@ -34,7 +35,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
 
-import { median, type ShardWeights } from "../shard-split";
+import { median, type ShardWeights, titleSeparator } from "../shard-split";
 
 const usage =
   "usage: bun e2e/tools/shard-weights.ts --main <count> [--cache <dir>]\n" +
@@ -98,32 +99,40 @@ export function weightsOf(
       else byRow.set(row, [seconds]);
     }
   }
-  const byFile = new Map<string, Map<string, number[]>>();
-  const byProject = new Map<string, number[]>();
+  // Each row's median, by project, then file, then the row's titles below its file.
+  const byFile = new Map<string, Map<string, Map<string, number>>>();
   for (const [row, times] of byRow) {
-    const [project = "", file = ""] = row.split("\n");
-    const seconds = median(times);
-    const files = byFile.get(project) ?? new Map<string, number[]>();
+    const [project = "", file = "", ...titles] = row.split("\n");
+    const files = byFile.get(project) ?? new Map<string, Map<string, number>>();
     byFile.set(project, files);
-    files.set(file, [...(files.get(file) ?? []), seconds]);
-    byProject.set(project, [...(byProject.get(project) ?? []), seconds]);
+    const ofFile = files.get(file) ?? new Map<string, number>();
+    files.set(file, ofFile);
+    ofFile.set(titles.join(titleSeparator), median(times));
   }
+  const hundredths = (seconds: number) => Math.round(seconds * 100) / 100;
   const projects: Record<string, number> = {};
   const files: Record<string, Record<string, number>> = {};
-  for (const project of [...byProject.keys()].sort()) {
-    projects[project] = Math.round(median(byProject.get(project) ?? []) * 100) / 100;
+  const rows: Record<string, Record<string, Record<string, number>>> = {};
+  for (const project of [...byFile.keys()].sort()) {
+    const fileRows = byFile.get(project) ?? new Map<string, Map<string, number>>();
+    projects[project] = hundredths(median([...fileRows.values()].flatMap((r) => [...r.values()])));
     const perFile: Record<string, number> = {};
-    const fileTimes = byFile.get(project) ?? new Map<string, number[]>();
-    for (const file of [...fileTimes.keys()].sort()) {
-      const times = fileTimes.get(file) ?? [];
-      perFile[file] =
-        Math.round((times.reduce((sum, time) => sum + time, 0) / times.length) * 100) / 100;
+    const perRow: Record<string, Record<string, number>> = {};
+    for (const file of [...fileRows.keys()].sort()) {
+      const ofFile = fileRows.get(file) ?? new Map<string, number>();
+      const seconds = [...ofFile.values()];
+      perFile[file] = hundredths(seconds.reduce((sum, s) => sum + s, 0) / seconds.length);
+      perRow[file] = Object.fromEntries(
+        [...ofFile.keys()].sort().map((title) => [title, hundredths(ofFile.get(title) ?? 0)])
+      );
     }
     files[project] = perFile;
+    rows[project] = perRow;
   }
   return {
     files,
     projects,
+    rows,
     source: {
       command,
       read,

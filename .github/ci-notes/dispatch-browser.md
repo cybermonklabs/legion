@@ -199,16 +199,21 @@ stack starts a server per stack and hands each its own (e2e/harness-postgres.ts)
 
 A leg's quarter is a quarter of the lane's row time, not of its rows. Playwright's own
 `--shard` cuts the rows into four runs of equal count, and rows do not cost the same: at main
-f02514268a it gave the full lane's heaviest leg 1.115 to 1.225 times the mean row time, over
-the per-row medians of two sets of 13 and 14 of main's runs (the pull request's body names them),
-and leg 2, all chromium rows, was the slowest leg of its run in 55 of the 85 runs of
-2026-11-21/22 whose four legs all ran. packages/dispatch/e2e/shard-reporter.ts, which the
-browser step names beside the failure reporter, takes the split over: every leg places every
-file of every project the lane selects by the row times main measured
-(packages/dispatch/e2e/shard-weights.json), heaviest first onto the lightest leg, and keeps its
-own files. The same two sets put that placement at 1.007 and 1.008 times the mean.
+f02514268a it gave the full lane's heaviest leg 1.115 to 1.225 times the mean row time.
+packages/dispatch/e2e/shard-reporter.ts, which the browser step names beside the failure
+reporter, takes the split over: every leg places every row of every project the lane selects
+by the row times main measured (packages/dispatch/e2e/shard-weights.json), heaviest first onto
+the lightest leg, and keeps its own rows. A row is placed on its own unless Playwright must run
+it in order with others - a `serial` or `default`-mode `describe`, or a file of a project that is
+not fully parallel - and then with them; every project of this lane is fully parallel and no
+spec sets a mode, so every row is its own unit today. Until 2026-11-27 the unit was the file,
+and on 2026-11-26 that left the heaviest leg at 1.21 times the mean (1.06 to 1.38 over the 28
+merge-group runs of 17:03Z to 23:04Z): two files that had landed after the table was read,
+placed whole by their project's median row, held a median 853 s of the lane's 9,086 and sat on
+leg 4 and leg 2, the slowest two legs of every one of those runs. Placed row by row over those
+runs' own rows, the same table puts the heaviest leg at 1.03 times the mean.
 packages/dispatch/e2e/shard-split.ts says why Playwright 1.64.1 has no split by time of its own,
-why the file is the unit, how all four legs compute one placement, and what a file with no
+what the unit is and why, how all four legs compute one placement, and what a row with no
 measured time is placed by; `bun e2e/tools/shard-weights.ts --main <count>` reads the table
 again. Each leg prints its own line before its first row, `shard N of 4, placed by measured row
 time: ...`, with the rows of it that were placed by an estimate.
@@ -364,8 +369,8 @@ it is built again. So the download now carries a budget of its own and a second 
 and the pull is counted at that 355 s, above the census's 176 s: no step holds it, so no step
 budget can cut it and no step can read it again, and Docker's own retry ("Retrying in 5
 seconds" in that log) answers a failed read, not a slow one. The job's budget is the
-browser step's 1,080 s, the two download attempts' 120 s each, and the steps without a
-budget at the census's 565 s: 1,885 s, 31 min 25 s, rounded up to the 32 minutes
+browser step's 1,260 s, the two download attempts' 120 s each, and the steps without a
+budget at the census's 565 s: 2,065 s, 34 min 25 s, rounded up to the 35 minutes
 of the shard job's `timeout-minutes`. The browser step's own budget still fires before the job's.
 
 The rows behind those seconds were the suite of the head those runs measured. Listed
@@ -581,73 +586,77 @@ $RUNNER_TEMP beside the stacks' own run directory: a file this step wrote into t
 checkout would leave it dirty afterwards. The blob report goes beside the list
 reporter's output, so a green run reports what it ran too.
 
-The step's budget, `timeout-minutes: 18`, is a hang guard. It is not the maximum plus 15 per
+The step's budget, `timeout-minutes: 21`, is a hang guard. It is not the maximum plus 15 per
 cent of this file's head, because on this step that rule made the limit a verdict on the
 runner: the 11 minutes it gave cut shard (4) of run 44985914477 (job 137096923636) with 401 rows
 passed and none failed, on a machine that ran them slower than another of the same minute.
-How the 18 minutes are read:
+How the 21 minutes are read (2026-11-27, when the row-by-row placement replaced the placement
+by file; the 18 minutes before were read the same way from the 347 legs of 2026-11-21/22, whose
+suite was 1,617 rows and a balanced leg p90 534 s):
 
-- The legs: every shard leg whose browser step ran to an end, of the merge-group runs of
-  ci.yaml whose head holds 4f5bf22eb9 and the nightly on main, from 2026-11-21 17:51Z to
-  2026-11-22 08:25Z, read from the jobs API of each run's attempts: 347 legs.
-- What a leg's step time is: over the 68 legs of the 17 of those runs that are on main's
-  first-parent history and whose merged report holds the same 1,617 rows as main at
-  f02514268a, the step took 24.0 s + 0.2549 x the leg's row time (its rows' durations in that
-  run's report, summed), with a residual of 6.8 s standard deviation and none past 18.7 s: the
-  row time spread over four workers, plus the stacks' start.
-- The leg the time split gives: each of the 347 legs rescaled to it, 24.0 + (t - 24.0) x
-  1,698 / R, where R is the median row time of its leg under the count split (1,739, 2,062,
-  1,383 and 1,607 s) and 1,698 s a quarter of their sum. Median 454 s, p90 534 s, maximum 696 s,
-  the last the leg the 11 minutes cut.
+- The legs: every shard leg of the 28 merge-group runs of ci.yaml that ran the full lane,
+  created 2026-11-26 17:03Z to 23:04Z, read from the jobs API of each run's latest attempt: 112
+  legs, every one of which passed. Runs 45864419701, 45869391209, 45869399862, 45870115918,
+  45872343001, 45873347032, 45882230309, 45882233146, 45882244411, 45882253075, 45886859589,
+  45891327626, 45894990792, 45899807418, 45899817182, 45903722803, 45903724230, 45903726735,
+  45904383640, 45904387106, 45904392941, 45904394556, 45906648273, 45906651207, 45906739908,
+  45906895564, 45907035167 and 45908631624.
+- What a leg's step time is: over those 112 legs the step took 18.7 s + 0.2610 x the leg's row
+  time (its rows' durations in its own blob report, summed), with a residual of 4.1 s standard
+  deviation and none past 9.6 s: the row time spread over four workers, plus the stacks' start.
+- The leg the time split gives: each of the 112 legs rescaled to it, 18.7 + (t - 18.7) x Q / R,
+  where R is the leg's row time and Q a quarter of its run's (median 2,271 s, against 1,698 s on
+  2026-11-22). Median 612 s, p90 666 s, maximum 696 s.
 - The factor: 1.75, the slowest runner seen. The leg that was cut ran its 401 rows at a
   per-row median 1.75 times the time job 137096931568 of run 44985911309 took for the same rows,
   started 3 s later (p10 1.42, p90 2.12; 660 s against 391 s of step).
-- The drift: 1.11, the worst share of the mean the heaviest leg took under a row-time table
-  (packages/dispatch/e2e/shard-weights.json) up to 7 days old. Read on 2026-11-22 with this
-  change's own code - each table built by `packages/dispatch/e2e/tools/shard-weights.ts#weightsOf` from the
-  `report.json` of each run's `dispatch-browser-report-1` artifact, the lane placed by
-  `placeUnits` - over two tables:
-  - a table of 2026-11-18, 4 days old, from ci.yaml merge-group runs 44409818750, 44418436030,
-    44418744571, 44418795005, 44419183723, 44423948511, 44424277368 and 44424671868, placed the
-    lane at 1,765, 1,520, 1,616 and 1,890 s: 1.113 times the mean;
-  - a table of 2026-11-15, 7 days old, from runs 43742873016, 43756837053, 43760034112,
-    43770938377, 43771792014 and 43774018034 (the six of that day's last ten on main's
-    first-parent history that kept a report), at 1,692, 1,723, 1,712 and 1,665 s: 1.015;
-  - the lane is the 1,617 rows the shard command lists at main f02514268a, each weighed by its
-    median over main's 17 runs 44955285815, 44955287410, 44963209611, 44966750516,
-    44966794515, 44966795777, 44966798236, 44973942358, 44979022185, 44979030337,
-    44980842865, 44981988875, 44982147987, 44983017182, 44989017422, 44991587611 and
-    44997869666; a table of those same runs places it at 1.001.
+- The drift: 1.06, the worst share of the mean the heaviest leg took under a row-time table
+  (packages/dispatch/e2e/shard-weights.json) up to 7 days old. Read with this change's own
+  code - each table built by `packages/dispatch/e2e/tools/shard-weights.ts#weightsOf` from the
+  `report.json` of each run's `dispatch-browser-report-1` artifact, each of the 28 runs above
+  placed by `placeUnits` over its own rows, and its legs' actual row time summed - over two
+  tables:
+  - the table read on 2026-11-22 08:58Z, 4.3 to 4.6 days before those runs: median 1.030, at
+    most 1.057 (by file it gave 1.199, at most 1.362, which those runs' own legs show);
+  - a table of 2026-11-19, 6.7 to 7.4 days before them, from ci.yaml merge-group runs
+    44532609614, 44533687876, 44551714993, 44558729067, 44568691866, 44575625234,
+    44575705732, 44597478437, 44598907697, 44600595206, 44621611944, 44626977024,
+    44632528247, 44632529216, 44632532026, 44633135919 and 44635344846: median 1.044, at most
+    1.055 (by file 1.219, at most 1.354).
 
-  The drift is not a function of age: the older table did better. Each old table lacks the
-  files the issue page's specs were split into since (155 and 173 of the lane's rows), places
-  them by the chromium median, and the greedy placement turns on small differences of weight,
-  so where those files land is close to chance. 1.11 is the worse of the two. Without it, a p90
-  leg on the slowest runner seen under such a table would end at about 1,040 s, past a 16-minute
-  guard, and be cut with its rows passing.
-- 534 s x 1.75 x 1.11 = 1,037 s, rounded up to 18 minutes, 1,080 s.
+  Both tables lack hundreds of the rows that had landed since, and a row no table holds is
+  placed by its project's median row; placed row by row, such rows spread over the four legs in
+  about equal counts, so the error a table's age brings is shared rather than landing on one
+  leg. 1.06 is the worse of the two maxima. Without it, a p90 leg on the slowest runner seen
+  under such a table would end at about 1,235 s, past a 20-minute guard, and be cut with its
+  rows passing.
+- 666 s x 1.75 x 1.06 = 1,235 s, rounded up to 21 minutes, 1,260 s.
 
 What a hang looks like to it. A row cannot hang it: each row ends at its own budget, the 60 s of
 `packages/dispatch/e2e/playwright.config.ts#testTimeout` or the longer one a row sets, and the leg goes on. What
-reaches 18 minutes is a leg that has stopped running rows - a stack that never comes up in
+reaches 21 minutes is a leg that has stopped running rows - a stack that never comes up in
 `globalSetup`, a teardown or a blob write that never returns, a worker that stops reporting -
 whose log has stopped gaining rows. The runner cancels the step and names it (`The action
-'<step name>' has timed out after 18 minutes.`). The leg's blob report is never written, since
+'<step name>' has timed out after 21 minutes.`). The leg's blob report is never written, since
 Playwright writes it when the run ends: the always-run upload finds no file (run 44985914477's
 cut shard 4 logged `No files were found with the provided path: /__w/_temp/leg-report`), and
 the merge job says so by name - reading one's `no blob report arrived from: shard-4` and
 reading three's `... uploaded no blob report, so the merged report holds none of its rows` - and
 fails on the leg's result. No row's verdict rests on the guard: the p90 leg on the slowest
-runner seen, under a table up to a week old, ends at about 1,037 s, under it, and the slowest of the
-347 legs, rescaled, at 696 s. What it costs is time: a hung leg is cut seven minutes later than
+runner seen, under a table up to a week old, ends at about 1,235 s, under it, and the slowest of the
+112 legs, rescaled, at 696 s. What it costs is time: a hung leg is cut ten minutes later than
 at the 11.
+
+The suite grows, and the guard with it: a quarter of the lane's row time went from 1,698 s on
+2026-11-22 to 2,271 s on 2026-11-26, which took the balanced leg's p90 from 534 s to 666 s. Read
+the guard again, from this list, once the median leg's step passes 720 s (1,260 s / 1.75).
 
 The week is what the guard holds, so each leg says when its table is past it: below its
 placement line it prints a `::warning::` when e2e/shard-weights.json was read more than 7 days
 before the run, or when a tenth of its rows sit in files the table has no entry for
 (`packages/dispatch/e2e/shard-split.ts#tableWarnings`). Either one means
 `bun e2e/tools/shard-weights.ts --main 17` is due; past the week, at the count split's 1.21, a
-p90 leg on that runner would end near 1,131 s.
+p90 leg on that runner would end near 1,410 s.
 
 ## Why the file store's address is set on the step and not in the environment
 

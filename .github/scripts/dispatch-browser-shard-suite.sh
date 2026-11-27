@@ -195,12 +195,13 @@ esac
 #
 # `./e2e/shard-reporter.ts` beside them, named here for the same reason: it is what makes
 # `--shard=$shard/4` this leg's quarter of the lane's row TIME rather than Playwright's quarter of
-# its row count. Each leg places every file of every project the lane selects by the row times
-# main measured (e2e/shard-weights.json) and keeps its own; e2e/shard-split.ts says why the count
-# split left one leg a fifth heavier than the others and how all four legs compute one placement.
-# Without it here the legs would split by count again, every row still run once, and nothing red.
-# It prints one line to the log before the first row: this leg's rows, the row time it expects
-# of this leg and of the run, and how many of its rows it placed by an estimate.
+# its row count. Each leg places every row of every project the lane selects by the row times
+# main measured (e2e/shard-weights.json) - a row on its own, or with the rows Playwright must run
+# in order beside it - and keeps its own; e2e/shard-split.ts says why the count split left one leg
+# a fifth heavier than the others, why a split by file came to do the same, and how all four legs
+# compute one placement. Without it here the legs would split by count again, every row still run
+# once, and nothing red. It prints one line to the log before the first row: this leg's rows, the
+# row time it expects of this leg and of the run, and how many of its rows it placed by an estimate.
 #
 # The suite's own status is carried in a file, not in `$?` and not in `${PIPESTATUS[0]}`:
 # the run is piped into `tee`, and without the `||` a failing suite would end this script

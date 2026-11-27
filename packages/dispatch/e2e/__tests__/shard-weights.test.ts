@@ -1,5 +1,5 @@
 /** What `e2e/tools/shard-weights.ts` reads out of a merged report and writes into the table
- *  `e2e/shard-split.ts` places files by. */
+ *  `e2e/shard-split.ts` places rows by. */
 import { expect, test } from "bun:test";
 
 import { rowTimes, weightsOf } from "../tools/shard-weights";
@@ -59,6 +59,7 @@ test("a row is its median over the reports, a file the mean of its rows, a proje
   );
   // first: median of 1, 2 and 9 is 2; second: median of 4, 6 and 5 is 5. The file is their mean,
   // 3.5, and the project their median, the same 3.5. One slow run moved neither row.
+  expect(weights.rows).toEqual({ chromium: { "a.e2e.ts": { first: 2, second: 5 } } });
   expect(weights.files).toEqual({ chromium: { "a.e2e.ts": 3.5 } });
   expect(weights.projects).toEqual({ chromium: 3.5 });
   expect(weights.source.runs).toEqual([
@@ -66,4 +67,34 @@ test("a row is its median over the reports, a file the mean of its rows, a proje
     { commit: "c1", run: 1 },
     { commit: "c2", run: 2 },
   ]);
+});
+
+test("a row inside a describe is keyed by its titles below the file, as a listing names it", () => {
+  const nested = {
+    suites: [
+      {
+        suites: [
+          {
+            specs: [
+              {
+                file: "a.e2e.ts",
+                tests: [
+                  { projectName: "chromium", results: [{ duration: 1500, status: "passed" }] },
+                ],
+                title: "a row",
+              },
+            ],
+            title: "a describe",
+          },
+        ],
+        title: "a.e2e.ts",
+      },
+    ],
+  };
+  const weights = weightsOf(
+    [{ commit: "c0", rows: rowTimes(nested), run: 0 }],
+    "2026-11-27T00:00:00.000Z",
+    "bun e2e/tools/shard-weights.ts --main 1"
+  );
+  expect(weights.rows).toEqual({ chromium: { "a.e2e.ts": { "a describe › a row": 1.5 } } });
 });

@@ -105,8 +105,8 @@ jobs:
       image: ghcr.io/cybermonklabs/legion/ci@sha256:398fb2e8a6c44a549a3b0a9c9bf562948c83a16917b2d3ce09190b2f663c3df3
       options: --user 1001 --ipc=host --init
     # why: .github/ci-notes/dispatch-browser.md#the-shard-jobs-shell-rule-its-measured-steps-and-its-budget
-    # 1,080 + 120 + 120 + 565 = 1,885 s, 31 min 25 s, rounded up to the 32 minutes below.
-    timeout-minutes: 32
+    # 1,260 + 120 + 120 + 565 = 2,065 s, 34 min 25 s, rounded up to the 35 minutes below.
+    timeout-minutes: 35
     strategy:
       fail-fast: false
       # why: .github/ci-notes/dispatch-browser.md#why-the-leg-count-stands-in-two-places
@@ -172,14 +172,14 @@ jobs:
         run: .github/scripts/dispatch-browser-wait-for-store.sh
       - name: Browser-test dispatch dashboard (shard ${{ matrix.shard }} of 4)
         # why: .github/ci-notes/dispatch-browser.md#why-the-shard-job-calls-playwright-directly-and-what-its-browser-steps-budget-is
-        # A hang guard, not a verdict: 534 s x 1.75 x 1.11 = 1,037 s -> 18 min. 534 s is the p90
-        # of 347 legs of 2026-11-21/22 each rescaled to the balanced leg the time split gives
-        # (1,698 s of row time; step = 24.0 s + 0.2549 x row time over 68 legs of main); 1.75 is
+        # A hang guard, not a verdict: 666 s x 1.75 x 1.06 = 1,235 s -> 21 min. 666 s is the p90
+        # of the 112 legs of 2026-11-26's 28 full-lane merge groups, each rescaled to the balanced
+        # leg the time split gives (step = 18.7 s + 0.2610 x row time over those legs); 1.75 is
         # the slowest runner seen (run 44985914477 ran its rows 1.75 times slower, per-row median,
-        # than a runner of the same minute); 1.11 is the worst share of the mean the heaviest leg
+        # than a runner of the same minute); 1.06 is the worst share of the mean the heaviest leg
         # took under a row-time table up to 7 days old. A p90 leg on that runner under such a table
         # ends under it, so no row's verdict rests on it; it cuts a leg that has stopped running rows.
-        timeout-minutes: 18
+        timeout-minutes: 21
         run: |
           "$GITHUB_WORKSPACE/.github/scripts/dispatch-browser-shard-suite.sh" "${{ matrix.shard }}" "${{ inputs.lane }}" \
             "${{ needs.binaries.outputs.connections }}"
