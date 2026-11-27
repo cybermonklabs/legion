@@ -10,6 +10,7 @@ import { MarginProvider } from "../margin/margin-context";
 import { DESKTOP_WIDTH, issue, stubViewport } from "../margin/margin-fixture";
 import { buildIssuePath } from "../refs/routes";
 import { useDrawerPage } from "./drawer-page";
+import { IssueIdentityRow } from "./IssueIdentityRow";
 import {
   type MarginDrawer,
   type MarginDrawerPage,
@@ -52,24 +53,13 @@ function DetailsHost({ children }: { children: ReactNode }): ReactNode {
   );
 }
 
-/** An open as the Details control makes one (`IssueIdentityRow.tsx`: the request, then the open),
- *  and an open with no request, as `Shift+M` makes one. */
+/** The new page's Details control (`IssueIdentityRow.tsx`: the request, then the open), and an
+ *  open with no request, as `Shift+M` makes one. */
 function Controls(): ReactNode {
   const details = useMarginDrawer();
   return (
     <>
-      <button
-        onClick={() => {
-          if (details === undefined) return;
-          const opening = !details.open;
-          if (opening) details.page?.leaveFocusOnNextOpen?.();
-          details.setOpen(opening);
-        }}
-        onMouseDown={(event) => event.preventDefault()}
-        type="button"
-      >
-        Open with the request
-      </button>
+      <IssueIdentityRow actions={[]} issueKey={issue.key} parent={null} project={issue.project} />
       <button
         onClick={() => details?.setOpen(!details.open)}
         onMouseDown={(event) => event.preventDefault()}
@@ -112,7 +102,7 @@ test("the Details control leaves the focus where it is as Details opens, and ask
   const view = renderBesideDetails();
   try {
     const details = await screen.findByTestId("desktop-margin-shell");
-    const control = screen.getByRole("button", { name: "Open with the request" });
+    const control = screen.getByTestId("issue-details-control");
     const answer = screen.getByRole("textbox", { name: "Your answer" });
     await user.click(answer);
     await user.click(control);

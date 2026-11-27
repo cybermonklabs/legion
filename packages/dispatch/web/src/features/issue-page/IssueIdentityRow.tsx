@@ -122,7 +122,7 @@ export function IssueIdentityRow({
           {...{ [DETAILS_ATTRIBUTE]: "" }}
           onClick={() => {
             const opening = !details.open;
-            if (opening) details.page?.leaveFocusOnNextOpen?.();
+            if (opening) details.page?.leaveFocusOnNextOpen();
             details.setOpen(opening);
           }}
           onMouseDown={(event) => event.preventDefault()}
