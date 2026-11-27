@@ -6,31 +6,50 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/cmdtest"
+	"github.com/sjawhar/envoy/internal/dispatch/specgraph"
 )
 
-// The check of every citations row, whose block opens at line 5 of spec.md, and its statement.
+// The check of every citations row, whose document opens at citedCheckLine of spec.yaml, and its
+// statement, each as the printer writes it (specgraph.Node.Print).
 const (
-	citedCheck   = "the-answer-is-forty-two"
-	citedSpecTop = ":::requirement{#the-answer-is-known kind=\"behavior\"}\nThe service answers each question with the known answer.\n:::\n\n"
-	citedSpecEnd = "Claim: The service answers forty-two.\nProcedure: The program asks the service and reads the answer.\nIt must find forty-two.\nFailing example: A service that answers zero.\n:::\n"
+	citedCheck     = "the-answer-is-forty-two"
+	citedStatement = "the-answer-is-known"
 )
 
-// citedSpec is spec.md with the program check whose test part is attrs: runner, selector and job,
-// or "" for none.
-func citedSpec(attrs string) string {
-	if attrs != "" {
-		attrs = " " + attrs
+// citedSpecTop is the document of the statement that the check of every citations row serves.
+var citedSpecTop = mustPrint(specgraph.Statement{ID: citedStatement, Kind: specgraph.KindBehavior,
+	Text: "The service answers each question with the known answer."})
+
+// citedCheckLine is the line of the check's document: the one after the statement's document.
+var citedCheckLine = strings.Count(citedSpecTop, "\n") + 1
+
+// citedSpec is spec.yaml with the program check whose test part is test, nil for none.
+func citedSpec(test *specgraph.Test) string {
+	return citedSpecTop + mustPrint(specgraph.Check{ID: citedCheck, Serves: citedStatement,
+		Subject: specgraph.SubjectCode, Procedure: specgraph.ProcedureProgram, Test: test,
+		Claim:          "The service answers forty-two.",
+		ProcedureText:  "The program asks the service and reads the answer.\nIt must find forty-two.",
+		FailingExample: "A service that answers zero."})
+}
+
+// mustPrint is the document of node, which the printer writes; a node that it refuses is a fault
+// of the test itself, so it panics as a bad fixture does.
+func mustPrint(node specgraph.Node) string {
+	document, err := node.Print()
+	if err != nil {
+		panic(err)
 	}
-	return citedSpecTop + ":::check{#" + citedCheck + " serves=\"the-answer-is-known\" subject=\"code\" procedure=\"program\"" + attrs + "}\n" + citedSpecEnd
+	return document
 }
 
 // testPart is the test part of the check: go, selector and job.
-func testPart(selector, job string) string {
-	return "runner=\"go\" selector=\"" + selector + "\" job=\"" + job + "\""
+func testPart(selector, job string) *specgraph.Test {
+	return &specgraph.Test{Runner: "go", Selector: selector, Job: job}
 }
 
 // cited is the result of a run over the spec directory dir where the one program check is cited.
@@ -42,7 +61,7 @@ func cited(dir string) result {
 // refused with detail, which begins with its rule.
 func refused(dir, detail string) result {
 	return result{code: 1, stdout: "spec-check: " + dir + ": 1 program check; 1 refused\n",
-		stderr: "spec-check: " + filepath.Join(dir, "spec.md") + ":5: " + citedCheck + ": " + detail + "\n"}
+		stderr: "spec-check: " + filepath.Join(dir, "spec.yaml") + ":" + strconv.Itoa(citedCheckLine) + ": " + citedCheck + ": " + detail + "\n"}
 }
 
 // goReport is a go test -json report of TestA of package a with outcome, pass, fail or skip, or a
@@ -85,7 +104,7 @@ func needsOf(result string) string {
 }
 
 // citationRun is the input of one run of citations: a git repository whose base commit holds a
-// copy of testdata/citations/repo with spec.md in its .dispatch/spec and baseScript as its
+// copy of testdata/citations/repo with spec.yaml in its .dispatch/spec and baseScript as its
 // .github/scripts/go-test-reads.sh, and whose head commit, HEAD, has the same tree with script in
 // its place, and the files of the flags. citations derives the tie of a check at each commit with
 // that commit's own script.
@@ -181,7 +200,7 @@ func (r citationRun) args(f citationFiles, workflow string) []string {
 }
 
 // copyCitationsRepo copies testdata/citations/repo to repo, with spec in its
-// .dispatch/spec/spec.md ("" for no spec file), and makes it a git repository with no commit.
+// .dispatch/spec/spec.yaml ("" for no spec file), and makes it a git repository with no commit.
 func copyCitationsRepo(t *testing.T, repo, spec string) {
 	t.Helper()
 	if err := os.CopyFS(repo, os.DirFS(fixture(t, "citations", "repo"))); err != nil {
@@ -192,7 +211,7 @@ func copyCitationsRepo(t *testing.T, repo, spec string) {
 		t.Fatal(err)
 	}
 	if spec != "" {
-		writeFile(t, filepath.Join(dir, "spec.md"), []byte(spec))
+		writeFile(t, filepath.Join(dir, "spec.yaml"), []byte(spec))
 	}
 	gitIn(t, repo, "init", "-q")
 }
@@ -254,9 +273,6 @@ func TestCitationsCommand(t *testing.T) {
 			r.changed = "a/a.go\n"
 			r.reports["spec-report--go-checks"] = goReport("skip")
 		}, rule: notRun, detail: "a/a.go changed, and go-checks did not run example.com/citations/a TestA (its report shows it skipped)"},
-		{name: "v-citations 3: a program check names no test", change: func(r *citationRun) {
-			r.spec = citedSpec("")
-		}, rule: "no-test", detail: "the check names no test"},
 		{name: "v-citations 5: no code of the tie changed and the job skipped the test", change: func(r *citationRun) {
 			r.changed = "docs/x.md\n"
 			r.reports["spec-report--go-checks"] = goReport("skip")
@@ -373,8 +389,11 @@ func TestCitationsCommand(t *testing.T) {
 	t.Run("no program check: each of none is cited", func(t *testing.T) {
 		t.Parallel()
 		r := newCitationRun()
-		r.spec = citedSpecTop + ":::check{#the-answer-is-in-the-records serves=\"the-answer-is-known\" subject=\"production\" procedure=\"query\"}\n" +
-			"Claim: The records hold the answer.\nProcedure: The query reads the records.\nIt returns each record with no answer.\nFailing example: A copy of the records with one record with no answer.\n:::\n"
+		r.spec = citedSpecTop + mustPrint(specgraph.Check{ID: "the-answer-is-in-the-records", Serves: citedStatement,
+			Subject: specgraph.SubjectProduction, Procedure: specgraph.ProcedureQuery,
+			Claim:          "The records hold the answer.",
+			ProcedureText:  "The query reads the records.\nIt returns each record with no answer.",
+			FailingExample: "A copy of the records with one record with no answer."})
 		r.changed = "a/a.go\n"
 		r.reports = nil
 		f := r.write(t)
@@ -393,7 +412,7 @@ func TestCitationsCommand(t *testing.T) {
 		script := filepath.Join(f.repo, ".github", "scripts", "go-test-reads.sh")
 		removeAll(t, script)
 		// The words after the script's path are os/exec's and the system's, so the row reads ours.
-		prefix := "spec-check: " + filepath.Join(f.dir, "spec.md") + ":5: " + citedCheck + ": " + notRun + ": its tie is unknown (specgraph: " + script + ": "
+		prefix := "spec-check: " + filepath.Join(f.dir, "spec.yaml") + ":" + strconv.Itoa(citedCheckLine) + ": " + citedCheck + ": " + notRun + ": its tie is unknown (specgraph: " + script + ": "
 		suffix := "), and go-checks did not run example.com/citations/a TestA (its report shows it skipped)\n"
 		got := runBinary(t, binary, "", r.args(f, workflow)...)
 		if got.code != 1 || got.stdout != "spec-check: "+f.dir+": 1 program check; 1 refused\n" ||
@@ -408,7 +427,7 @@ func TestCitationsCommand(t *testing.T) {
 		r.spec = citedSpec(testPart("example.com/citations/gone TestA", "go-checks"))
 		f := r.write(t)
 		got := runBinary(t, binary, "", r.args(f, workflow)...)
-		prefix := "spec-check: " + filepath.Join(f.dir, "spec.md") + ":5: " + citedCheck +
+		prefix := "spec-check: " + filepath.Join(f.dir, "spec.yaml") + ":" + strconv.Itoa(citedCheckLine) + ": " + citedCheck +
 			": test-lookup-failed: example.com/citations/gone TestA could not be looked up in the code at this commit (specgraph: go list example.com/citations/gone in " + f.repo + ": "
 		if got.code != 1 || got.stdout != "spec-check: "+f.dir+": 1 program check; 1 refused\n" || !strings.HasPrefix(got.stderr, prefix) ||
 			strings.Count(got.stderr, "\n") != 1 {
@@ -488,10 +507,22 @@ func TestCitationsCommand(t *testing.T) {
 	t.Run("a spec file that does not parse exits 2 with its problem", func(t *testing.T) {
 		t.Parallel()
 		r := newCitationRun()
-		r.spec = "A line outside a block.\n"
+		r.spec = "A line that is no node.\n"
 		f := r.write(t)
 		expect(t, runBinary(t, binary, "", r.args(f, workflow)...), result{code: 2,
-			stderr: "spec-check: " + filepath.Join(f.dir, "spec.md") + ":1: -: text-outside-block: a spec file holds only blocks, headings and blank lines\n"})
+			stderr: "spec-check: " + filepath.Join(f.dir, "spec.yaml") + ":1: -: schema: node: got string, want object\n"})
+	})
+
+	// v-citations 3: a program check that names no test. The schema of a node takes this rule in
+	// the YAML files, so the reader refuses the file and citations never reads the check: the run
+	// exits 2 at the node's line, in place of citations' own no-test refusal.
+	t.Run("v-citations 3: a program check names no test", func(t *testing.T) {
+		t.Parallel()
+		r := newCitationRun()
+		r.spec = citedSpec(nil)
+		f := r.write(t)
+		expect(t, runBinary(t, binary, "", r.args(f, workflow)...), result{code: 2,
+			stderr: "spec-check: " + filepath.Join(f.dir, "spec.yaml") + ":" + strconv.Itoa(citedCheckLine) + ": " + citedCheck + ": schema: node: missing property 'test'\n"})
 	})
 
 	// An input that the command cannot read exits 2 with one line naming it, nothing on stdout, and
