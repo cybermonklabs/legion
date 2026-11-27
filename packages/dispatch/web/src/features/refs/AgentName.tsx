@@ -144,6 +144,10 @@ type AgentNameProps = AgentSubject &
     className?: string;
     /** Inside a sentence: the link keeps its line box (`.dispatch-inline-link`, `styles.css`). */
     inline?: boolean;
+    /** The words the session's state mark says, where its host words them (`AgentStateWords`):
+     *  the issue page's box, on its target line and in its picker's agent rows
+     *  (`RefPickerWords.marks`). With none, the mark's own (`STATE_WORDS`). */
+    stateWords?: AgentStateWords;
   };
 
 const LINK_CLASS = `rounded outline-none focus-visible:ring-2 ${focusVisibleRing} ${linkText} ${linkHoverText}`;
@@ -193,26 +197,42 @@ const STATE_NOTE: Record<AgentState, string> = {
     " · it has missed its heartbeats without ending: it keeps its roles and claims, and messages are stored for it",
 };
 
+/** What a session's state mark says: the name of each state (`labels`), what stands between it
+ *  and how long ago a running or unresponsive session was seen (`seen`), and what each state's
+ *  mark says beyond both (`notes`), which is what an unresponsive one's state means and nothing
+ *  for the others in the mark's own words (`STATE_NOTE`). A host that words the mark gives its
+ *  own (`AgentName`'s `stateWords`). */
+export interface AgentStateWords {
+  readonly labels: Readonly<Record<AgentState, string>>;
+  readonly notes: Readonly<Record<AgentState, string>>;
+  readonly seen: string;
+}
+
+/** The state mark's own words, on every surface whose host gives none. */
+const STATE_WORDS: AgentStateWords = { labels: STATE_LABEL, notes: STATE_NOTE, seen: " · seen " };
+
 function AgentStateMark({
   lastSeen,
   state,
+  words = STATE_WORDS,
 }: {
   lastSeen: number | undefined;
   state: AgentState;
+  words?: AgentStateWords;
 }): ReactNode {
   const tooltips = useTooltips();
   const seen =
     (state === "running" || state === "unresponsive") && lastSeen !== undefined
       ? relativeTimeLabel(new Date(lastSeen), Date.now())
       : undefined;
-  const reading = `${STATE_LABEL[state]}${seen === undefined ? "" : ` · seen ${seen}`}${STATE_NOTE[state]}`;
+  const reading = `${words.labels[state]}${seen === undefined ? "" : `${words.seen}${seen}`}${words.notes[state]}`;
   // Inside `NoTooltips` (`components/tooltips.tsx`) the whole reading - the state, how long ago
   // a running or unresponsive session was seen, and what an unresponsive one's state means - is
   // the mark's accessible name instead, so nothing is kept for a pointer alone; the shape says
   // the state to everyone either way.
   return (
     <span
-      aria-label={tooltips ? STATE_LABEL[state] : reading}
+      aria-label={tooltips ? words.labels[state] : reading}
       className={(tooltips ? STATE_MARK_CLASS : PAGE_STATE_MARK_CLASS)[state]}
       role="img"
       title={tooltips ? reading : undefined}
@@ -278,6 +298,7 @@ export function AgentName(props: AgentNameProps): ReactNode {
       <SessionAgentName
         className={props.className}
         inline={props.inline}
+        stateWords={props.stateWords}
         subject={{ sessionId: props.sessionId, storedTitle: props.storedTitle }}
         variant={props}
       />
@@ -296,6 +317,7 @@ export function AgentName(props: AgentNameProps): ReactNode {
     <SessionAgentName
       className={props.className}
       inline={props.inline}
+      stateWords={props.stateWords}
       subject={{ actor }}
       variant={props}
     />
@@ -305,11 +327,13 @@ export function AgentName(props: AgentNameProps): ReactNode {
 function SessionAgentName({
   className,
   inline,
+  stateWords,
   subject,
   variant,
 }: {
   className: string | undefined;
   inline: boolean | undefined;
+  stateWords?: AgentStateWords;
   subject: SessionRef;
   variant: AgentVariant;
 }): ReactNode {
@@ -378,7 +402,7 @@ function SessionAgentName({
       title={tooltips && name === shortSessionId(sessionId) ? sessionId : undefined}
       {...(fallbackMark === undefined ? page?.authorText : undefined)}
     >
-      <AgentStateMark lastSeen={registry.lastSeen(sessionId)} state={state} />
+      <AgentStateMark lastSeen={registry.lastSeen(sessionId)} state={state} words={stateWords} />
       {named}
       {fallbackMark === undefined || attribution === "" ? (
         attribution
