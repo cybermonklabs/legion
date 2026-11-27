@@ -23,10 +23,15 @@
 -- reads and writes the memory by the issue and the branch (record's loadSettledHeads,
 -- putSettledHeads).
 --
--- The outbox check is one list, so this migration names every kind, as 20261121165047 did: its
--- thirty-one kinds and task_pull_requests_close. Its version stands above 20261121165047 on purpose:
--- Migrate applies every unrecorded migration in version order, so the list with the higher version
--- is the last word on any database.
+-- The outbox check is one list, and main writes it whole on both sides of this version:
+-- 20261122154643 (the basis seeds) below it and 20261126110259 (the merge holds change) above it.
+-- So this migration writes no list of its own, as 20261121165047 writes none: it adds
+-- task_pull_requests_close to the list the database holds (its last statement), whichever
+-- migration wrote it. On a database main's release migrated, that list keeps every kind main's
+-- daemon queues, merge_holds_changed among them; on a fresh database a kind main adds above this
+-- version is still refused below the migration that adds it
+-- (TestTheOutboxTakesTheMergeHoldsKindWith20261126110259). 20261126194217 writes the list again
+-- above main's lists with this kind in it.
 --
 -- There is no down file. This directory keeps none, so the way back is the transaction that ends
 -- this header, its last paragraph (migrations.WayBack), run with the daemon stopped, before the
@@ -34,27 +39,32 @@
 -- 20261121165047 too runs this block before that migration's own. The release before writes each
 -- row with `on conflict (issue)`, which needs the key of one row for each issue, and decodes no
 -- task_pull_requests_close row. So the block deletes each such row first, since the check written
--- again without the kind refuses a row that holds it; then keeps, of each issue, the row on the
--- branch of the task that merges (the one task of its plan at its generation that no task needs,
--- on the branch its row holds or on legion/<KEY> where it holds none) or on legion/<KEY> where the
--- issue has no plan rows there, and deletes the others, which takes the settled heads of each with
--- it; keys pull_requests by the issue again, and pull_request_settled_heads by (issue, kind, head)
--- without its branch, with the foreign key 20261120144241 wrote; and deletes its version row,
--- which is owed to the roll-forward, so that it runs this file again. What the way back costs is
--- the row of each task's pull request but the one that merges, and what it remembered of its
--- settled heads: the record holds it no longer, so a later event of that pull request names no
--- row.
+-- again without the kind refuses a row that holds it, and takes the kind out of the list the
+-- database holds, which keeps every other kind, main's among them; then keeps, of each issue, the
+-- row on the branch of the task that merges (the one task of its plan at its generation that no
+-- task needs, on the branch its row holds or on legion/<KEY> where it holds none) or on
+-- legion/<KEY> where the issue has no plan rows there, and deletes the others, which takes the
+-- settled heads of each with it; keys pull_requests by the issue again, and
+-- pull_request_settled_heads by (issue, kind, head) without its branch, with the foreign key
+-- 20261120144241 wrote; and deletes its version row, which is owed to the roll-forward, so that it
+-- runs this file again. What the way back costs is the row of each task's pull request but the one
+-- that merges, and what it remembered of its settled heads: the record holds it no longer, so a
+-- later event of that pull request names no row.
 --
 -- begin;
 -- delete from outbox where kind = 'task_pull_requests_close';
--- alter table outbox drop constraint if exists outbox_kind_check;
--- alter table outbox add constraint outbox_kind_check check (kind in (
---   'dispatch_status', 'dispatch_message', 'notice', 'controller_notice', 'supervise', 'gate_seed',
---   'linger_close', 'workspace_remove', 'issue_branch', 'issue_suspend', 'check_wake',
---   'check_look', 'check_bound', 'role_message', 'phase_ended', 'issue_bundle', 'issue_release',
---   'gated_steps_publish', 'claim_release', 'hook_prompt', 'design_gates_publish', 'update_ask',
---   'merge_queue_read', 'merge_queue_removal', 'role_holders_publish', 'step_record', 'plan_record',
---   'conflict_confirm', 'merge_forward', 'design_changes', 'task_branch'));
+-- do $$
+-- declare
+--   kinds text[] := array(select k.m[1] from pg_constraint c,
+--     regexp_matches(pg_get_constraintdef(c.oid), '''([^'']+)''::text', 'g') with ordinality k(m, n)
+--     where c.conrelid = 'outbox'::regclass and c.conname = 'outbox_kind_check' order by k.n);
+-- begin
+--   alter table outbox drop constraint outbox_kind_check;
+--   execute format('alter table outbox add constraint outbox_kind_check check (kind in (%s))',
+--     (select string_agg(quote_literal(u.kind), ', ' order by u.n)
+--       from unnest(array_remove(kinds, 'task_pull_requests_close')) with ordinality u(kind, n)));
+-- end
+-- $$;
 -- delete from pull_requests pr where pr.branch <> coalesce((select coalesce(nullif(t.branch, ''), 'legion/' || t.issue) from plan_tasks t join issues i on i.key = t.issue and i.generation = t.generation where t.issue = pr.issue and not exists (select 1 from plan_tasks u where u.issue = t.issue and u.generation = t.generation and t.task = any(u.needs)) order by t.task limit 1), 'legion/' || pr.issue);
 -- alter table pull_request_settled_heads drop constraint pull_request_settled_heads_issue_fkey,
 --   drop constraint pull_request_settled_heads_pkey;
@@ -78,12 +88,19 @@ alter table pull_request_settled_heads drop constraint pull_request_settled_head
   add constraint pull_request_settled_heads_issue_fkey foreign key (issue, branch)
     references pull_requests (issue, branch) on delete cascade;
 
-alter table outbox drop constraint if exists outbox_kind_check;
-alter table outbox add constraint outbox_kind_check check (kind in (
-  'dispatch_status', 'dispatch_message', 'notice', 'controller_notice', 'supervise', 'gate_seed',
-  'linger_close', 'workspace_remove', 'issue_branch', 'issue_suspend', 'check_wake',
-  'check_look', 'check_bound', 'role_message', 'phase_ended', 'issue_bundle', 'issue_release',
-  'gated_steps_publish', 'claim_release', 'hook_prompt', 'design_gates_publish', 'update_ask',
-  'merge_queue_read', 'merge_queue_removal', 'role_holders_publish', 'step_record', 'plan_record',
-  'conflict_confirm', 'merge_forward', 'design_changes', 'pending_basis_seed', 'reparent_seed',
-  'merge_holds_changed', 'task_branch', 'task_pull_requests_close'));
+do $$
+declare
+  kinds text[] := array(select k.m[1] from pg_constraint c,
+    regexp_matches(pg_get_constraintdef(c.oid), '''([^'']+)''::text', 'g') with ordinality k(m, n)
+    where c.conrelid = 'outbox'::regclass and c.conname = 'outbox_kind_check' order by k.n);
+begin
+  if cardinality(kinds) = 0 then
+    raise exception 'outbox_kind_check names no kind, so this migration has no list to add task_pull_requests_close to';
+  end if;
+  alter table outbox drop constraint outbox_kind_check;
+  execute format('alter table outbox add constraint outbox_kind_check check (kind in (%s))',
+    (select string_agg(quote_literal(u.kind), ', ' order by u.n)
+      from unnest(array_remove(kinds, 'task_pull_requests_close') || 'task_pull_requests_close'::text)
+        with ordinality u(kind, n)));
+end
+$$;

@@ -491,6 +491,16 @@ func TestTheDatabasesOfMainAndOfThisBranchAtTheMergeEachTakeWhatTheyLack(t *test
 			}
 		}
 	}
+	// queueEveryKind writes a row of each kind the merged daemon queues after the upgrade: main's
+	// newest, merge_holds_changed, and the three of this pull request's task copies.
+	queueEveryKind := func(t *testing.T, store *Store) {
+		for _, kind := range []string{"pending_basis_seed", "reparent_seed", "merge_holds_changed",
+			"task_branch", "task_pull_requests_close", "task_copy_remove"} {
+			if err := queueRowOfKind(store, kind); err != nil {
+				t.Errorf("queue a %s row after the upgrade: %v", kind, err)
+			}
+		}
+	}
 	for _, release := range []releaseDatabase{
 		{
 			name:   "main at 4a8d82bfd090",
@@ -512,6 +522,16 @@ func TestTheDatabasesOfMainAndOfThisBranchAtTheMergeEachTakeWhatTheyLack(t *test
 			lacks:  []int{gateBasisVersion, awaitingChildrenVersion, basisSeedsVersion, keepsNoWorkspaceVersion},
 			seed:   queueMainsKinds,
 			check:  queueBasisSeeds,
+		},
+		{
+			// The main of this tree's merge d11896153263, whose newest is the merge holds change.
+			// This pull request's three migrations that add an outbox kind stand below it, and
+			// Migrate applies each over a row of every kind main's check admits, merge_holds_changed
+			// and the two basis seeds among them.
+			name:   "main at a2ac5fd7ace",
+			newest: mergeHoldsChangedVersion,
+			seed:   queueMainsKinds,
+			check:  queueEveryKind,
 		},
 		{
 			name:   "this branch at 10e98a85ef53",
@@ -605,6 +625,29 @@ func TestTheDatabasesOfMainAndOfThisBranchAtTheMergeEachTakeWhatTheyLack(t *test
 			},
 		},
 	} {
+		// No release here ever recorded a migration of this pull request: each lacks those
+		// numbered at or below its newest too, and the upgrade applies them (pullRequestsMigrations).
+		release.lacks = append(slices.Clone(release.lacks), pullRequestsMigrationsUpTo(release.newest)...)
 		t.Run(release.name, func(t *testing.T) { upgradeFrom(t, release) })
 	}
+}
+
+// pullRequestsMigrations are the versions cybermonklabs/legion#5165 adds, which neither main nor
+// INFRA-3320's branch recorded: the embedded versions main at a2ac5fd7ace does not hold. A database
+// either of those left lacks each of them numbered at or below its newest, and the test of the
+// merge's databases builds it so (pullRequestsMigrationsUpTo).
+var pullRequestsMigrations = []int{
+	20261117213545, 20261117224125, 20261121165047, 20261121183336, 20261122072945, 20261122074350,
+	20261122122826, 20261122131321, 20261123072431, 20261123200630, 20261124192838, 20261126194217,
+}
+
+// pullRequestsMigrationsUpTo is pullRequestsMigrations numbered at or below newest.
+func pullRequestsMigrationsUpTo(newest int) []int {
+	var below []int
+	for _, version := range pullRequestsMigrations {
+		if version <= newest {
+			below = append(below, version)
+		}
+	}
+	return below
 }
