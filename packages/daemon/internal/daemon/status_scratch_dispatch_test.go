@@ -45,6 +45,7 @@ func (d *interleaving) GetIssue(ctx context.Context, key string) (dispatch.Issue
 // its own messages included, so a refusal says only that the read was overtaken: the row reads
 // again and writes, and Dispatch ends at the phase's status.
 func TestTheBootsStatusWriteLandsOnScratchDispatchAfterAnEventOvertakesItsRead(t *testing.T) {
+	t.Parallel()
 	baseURL, token := startScratchDispatch(t)
 	issue := createScratchDispatchIssue(t, baseURL)
 	setDispatchStatus(t, baseURL, issue, "todo")
@@ -56,7 +57,7 @@ func TestTheBootsStatusWriteLandsOnScratchDispatchAfterAnEventOvertakesItsRead(t
 
 	// A person leaves a comment while the row is between its read and its write; the status is
 	// untouched, but Dispatch has moved the issue's sequence on.
-	client := &interleaving{Client: dispatch.New(baseURL, token), act: func() {
+	client := &interleaving{Client: dispatch.New(baseURL, dispatch.BearerTransport(token, nil)), act: func() {
 		dispatchCall(t, baseURL, http.MethodPost, "/api/v1/issues/"+issue+"/messages", map[string]any{"body": "any news?"}, nil)
 	}}
 	runner := &outbox{dispatchProject: "LEGION", pool: pool, records: records, dispatch: client, handlers: []intake.Handler{engine},
@@ -88,6 +89,7 @@ func TestTheBootsStatusWriteLandsOnScratchDispatchAfterAnEventOvertakesItsRead(t
 // through its own event, with its actor; until that event arrives the record stands where the
 // workflow left it, which is what this case reads.
 func TestABootStatusWriteDoesNotLandOverACloseScratchDispatchTookAfterItsRead(t *testing.T) {
+	t.Parallel()
 	baseURL, token := startScratchDispatch(t)
 	issue := createScratchDispatchIssue(t, baseURL)
 	setDispatchStatus(t, baseURL, issue, "todo")
@@ -97,7 +99,7 @@ func TestABootStatusWriteDoesNotLandOverACloseScratchDispatchTookAfterItsRead(t 
 	engine := workflow.New(records, workflow.Config{Project: "LEGION", Repositories: testRepositories, Linger: time.Hour}, quietLogger())
 	bootQueuesTheWrite(t, pool, issue, engine)
 
-	client := &interleaving{Client: dispatch.New(baseURL, token), act: func() {
+	client := &interleaving{Client: dispatch.New(baseURL, dispatch.BearerTransport(token, nil)), act: func() {
 		setDispatchStatus(t, baseURL, issue, "done")
 	}}
 	runner := &outbox{dispatchProject: "LEGION", pool: pool, records: records, dispatch: client, handlers: []intake.Handler{engine},
@@ -124,6 +126,7 @@ func TestABootStatusWriteDoesNotLandOverACloseScratchDispatchTookAfterItsRead(t 
 // issue to another lifecycle status in that moment keeps it, and the row finishes having written
 // nothing (dispatch://INFRA-714/spec A6).
 func TestABootStatusWriteDoesNotLandOverAPersonsMoveWithinTheWorkflow(t *testing.T) {
+	t.Parallel()
 	baseURL, token := startScratchDispatch(t)
 	issue := createScratchDispatchIssue(t, baseURL)
 	setDispatchStatus(t, baseURL, issue, "todo")
@@ -133,7 +136,7 @@ func TestABootStatusWriteDoesNotLandOverAPersonsMoveWithinTheWorkflow(t *testing
 	engine := workflow.New(records, workflow.Config{Project: "LEGION", Repositories: testRepositories, Linger: time.Hour}, quietLogger())
 	bootQueuesTheWrite(t, pool, issue, engine)
 
-	client := &interleaving{Client: dispatch.New(baseURL, token), act: func() {
+	client := &interleaving{Client: dispatch.New(baseURL, dispatch.BearerTransport(token, nil)), act: func() {
 		setDispatchStatus(t, baseURL, issue, "needs_review")
 	}}
 	runner := &outbox{dispatchProject: "LEGION", pool: pool, records: records, dispatch: client, handlers: []intake.Handler{engine},
@@ -161,7 +164,7 @@ func TestABootStatusWriteDoesNotLandOverAPersonsMoveWithinTheWorkflow(t *testing
 // holds one.
 func seedPlanningRoot(t *testing.T, pool *store.Pool, records record.Store, key string) {
 	t.Helper()
-	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
 		if err := records.PutIssue(context.Background(), tx, record.Issue{Key: key, Repo: "acme/widgets", DefaultBranch: "main",
 			GitHubRepo: "acme/widgets", Tree: key, Project: "LEGION", Title: key, Phase: phase.Planning, Generation: 1,
 			Status: "todo", DispatchStatus: "todo", HandedOver: true, Rank: "U"}); err != nil {
@@ -200,7 +203,7 @@ func bootQueuesTheWrite(t *testing.T, pool *store.Pool, issue string, engine *wo
 // dispatchStatusOf is the status Dispatch itself shows for key.
 func dispatchStatusOf(t *testing.T, baseURL, token, key string) string {
 	t.Helper()
-	issue, err := dispatch.New(baseURL, token).GetIssue(context.Background(), key)
+	issue, err := dispatch.New(baseURL, dispatch.BearerTransport(token, nil)).GetIssue(context.Background(), key)
 	if err != nil {
 		t.Fatalf("read %s from Dispatch: %v", key, err)
 	}
@@ -211,7 +214,7 @@ func dispatchStatusOf(t *testing.T, baseURL, token, key string) string {
 func recordOf(t *testing.T, pool *store.Pool, records record.Store, key string) record.Issue {
 	t.Helper()
 	var issue *record.Issue
-	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		issue, err = records.Issue(context.Background(), tx, key)
 		return err

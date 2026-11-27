@@ -48,7 +48,11 @@ func (e *Engine) OpenUncountedRuns(ctx context.Context, tx pgx.Tx) (int, error) 
 	booting := &factRuns{}
 	opened := 0
 	for _, issue := range issues {
-		step, ok := standingStep(issue)
+		w, err := e.walk(ctx, tx, issue)
+		if err != nil {
+			return 0, err
+		}
+		step, ok := standingStep(w, issue)
 		if !ok || counted[runAt{issue: issue.Key, place: step.place}] {
 			continue
 		}
@@ -63,8 +67,12 @@ func (e *Engine) OpenUncountedRuns(ctx context.Context, tx pgx.Tx) (int, error) 
 		if err != nil {
 			return 0, err
 		}
+		drawn, err := e.variantOf(ctx, tx, issue.Key)
+		if err != nil {
+			return 0, err
+		}
 		first, err := e.store.OpenUncountedStep(ctx, tx, issue.Key, step.place, func(starts int64) record.StepRecord {
-			write := stepWrite(issue, step.place, step.role, step.typ, string(agent), starts)
+			write := stepWrite(issue, drawn, step.place, step.role, step.typ, string(agent), starts)
 			if !startedAt.IsZero() {
 				write.StartedAt = new(startedAt)
 			}

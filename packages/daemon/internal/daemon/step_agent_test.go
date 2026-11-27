@@ -19,6 +19,7 @@ import (
 // model. A fact the boot applies before attach reads nothing, and so does a claim this daemon does
 // not supervise.
 func TestTheDaemonReadsAStepsAgentFromItsClaimsMachine(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
 	w := &workflowRuntime{log: quietLogger()}
@@ -86,6 +87,7 @@ func admitted(t *testing.T, machine *supervise.Machine) *supervise.Machine {
 // (stream.Conn's answeredBy), and the daemon reads it as the claim's last answer like any other: the
 // record of the step names the session and no model, never the model that answered before it.
 func TestAnAnswerWithNoModelLeavesTheStepWithNone(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
 	w := &workflowRuntime{log: quietLogger()}
@@ -125,6 +127,7 @@ func TestAnAnswerWithNoModelLeavesTheStepWithNone(t *testing.T) {
 // written whole: it never shifts the columns of `dispatch steps`, forges a line of it, or has
 // Dispatch refuse the record. A model and a session inside the form are kept, which is the control.
 func TestAStepsAgentLeavesOutTextOutsideTheForm(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
 	w := &workflowRuntime{log: quietLogger()}

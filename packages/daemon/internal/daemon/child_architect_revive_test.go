@@ -34,6 +34,7 @@ func holdsNotice(notices []record.Notice, kind record.NoticeKind, role claim.Rol
 // child's architect's start: the outbox retries the failed claim, which resumes the session file
 // it recorded rather than spawning a fresh agent, on the same claim with its budgets zeroed.
 func TestAFailedSubArchitectIsRetriedWithFreshBudgetsAtTheChildsNextPhaseStart(t *testing.T) {
+	t.Parallel()
 	rig := newChildArchitectRig(t)
 	token := mustClaimToken(t, doorChild, claim.RoleArchitect)
 	rig.written("release", childAt("todo", 2))

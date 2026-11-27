@@ -18,15 +18,25 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/pgmigrate"
+	"github.com/sjawhar/envoy/pgdsn"
 )
 
 // Store is the shared Dispatch database handle.
 type Store struct {
 	Pool *Pool
+	// afterNonTransactionalStatement runs on the connection a marked migration was applied on,
+	// once its statement has returned and before its version is recorded, and its error fails
+	// that migration. Only a test sets it: the runner closes that connection before Migrate
+	// returns, so this is the one place the session that applied the statement can be asked
+	// whether it held a transaction around it. Nil, which every Store Open makes leaves it,
+	// runs nothing.
+	afterNonTransactionalStatement func(ctx context.Context, conn *pgx.Conn) error
 }
 
-// Every file in migrations, so pgmigrate.Load judges each one; pgmigratetest.CheckEmbedsEveryFile
-// states why the pattern is all:migrations and holds the tree to it.
+// Every file in migrations, so the store's tests judge each one with pgmigrate.Load
+// (TestTheEmbeddedMigrationsPassEveryCheckLoadMakes) and a start reads each one with
+// pgmigrate.LoadBuilt; pgmigratetest.CheckEmbedsEveryFile states why the pattern is all:migrations
+// and holds the tree to it.
 //
 //go:embed all:migrations
 var migrationFiles embed.FS
@@ -41,11 +51,22 @@ var migrationFiles embed.FS
 // override them, deliberately and per pool (Pool.separate).
 const poolSizeParam = "pool_max_conns"
 
+// DSNSetting names the setting Dispatch's DSN comes from, as the store's refusals name it (pgdsn).
+const DSNSetting = "DATABASE_URL"
+
 // Open connects to databaseURL and verifies the database is reachable. The pool's size is
 // sharedPoolSize: how many connections Dispatch may hold is a property of Dispatch, not of the
 // string that names its database. Every connection it opens scans timestamptz in UTC
-// (scanTimestampsInUTC), as do the pools Pool.separate copies from its configuration.
+// (scanTimestampsInUTC) and gives back a large statement's encoded arguments when it returns to
+// its pool (argumentReleaser), as do the pools Pool.separate copies from its configuration. A URL
+// holding an "@" after its user part, where a password holding an "@" or a "/" leaves part of
+// itself, is refused by DSNSetting alone before anything connects (pgdsn.Refusal), and every
+// failure to parse, open or reach the database is named without the URL's password
+// (pgdsn.ConnectError), since Dispatch logs it.
 func Open(ctx context.Context, databaseURL string) (*Store, error) {
+	if err := pgdsn.Refusal(DSNSetting, databaseURL); err != nil {
+		return nil, err
+	}
 	declared, err := declaresPoolSize(databaseURL)
 	if err != nil {
 		return nil, err
@@ -57,17 +78,18 @@ func Open(ctx context.Context, databaseURL string) (*Store, error) {
 	}
 	config, err := pgxpool.ParseConfig(databaseURL)
 	if err != nil {
-		return nil, fmt.Errorf("parse Postgres URL: %w", err)
+		return nil, pgdsn.ConnectError(DSNSetting, databaseURL, err)
 	}
 	config.MaxConns = sharedPoolSize
 	config.AfterConnect = scanTimestampsInUTC
+	config.ConnConfig.Tracer = withArgumentRelease(config.ConnConfig.Tracer)
 	pool, err := pgxpool.NewWithConfig(ctx, config)
 	if err != nil {
-		return nil, fmt.Errorf("open Postgres pool: %w", err)
+		return nil, pgdsn.ConnectError(DSNSetting, databaseURL, err)
 	}
 	if err := pool.Ping(ctx); err != nil {
 		pool.Close()
-		return nil, fmt.Errorf("ping Postgres: %w", err)
+		return nil, pgdsn.ConnectError(DSNSetting, databaseURL, err)
 	}
 	return &Store{Pool: NewPool(pool)}, nil
 }
@@ -116,7 +138,7 @@ func scanTimestampsInUTC(_ context.Context, conn *pgx.Conn) error {
 func declaresPoolSize(databaseURL string) (bool, error) {
 	config, err := pgx.ParseConfig(databaseURL)
 	if err != nil {
-		return false, fmt.Errorf("parse Postgres URL: %w", err)
+		return false, pgdsn.ConnectError(DSNSetting, databaseURL, err)
 	}
 	_, declared := config.RuntimeParams[poolSizeParam]
 	return declared, nil
@@ -125,29 +147,69 @@ func declaresPoolSize(databaseURL string) (bool, error) {
 // Migrate applies embedded migrations in version order. Unmarked files commit with their
 // version record in one transaction; marked concurrent indexes run outside a transaction under
 // the same advisory key until their version is recorded. Every wait for that key polls, for the
-// reason lockMigrations gives. It refuses a set pgmigrate.Load refuses before touching the
+// reason lockMigrations gives. It refuses a set pgmigrate.LoadBuilt refuses before touching the
 // database, refuses a database whose schema_migrations records a version under another file's
 // identity before applying anything (prepareVersionTable), and bounds every migration's lock
-// waits by LockTimeout.
+// waits by LockTimeout. A marked migration whose statement is not one idempotent concurrent index
+// build is refused at its turn, after the pending migrations before it have been applied
+// (pgmigrate.LoadBuilt says why the start reads the set that way).
 func (s *Store) Migrate(ctx context.Context) error {
 	return s.migrate(ctx, migrationFiles)
+}
+
+// MigrateThrough is Migrate for the embedded migrations numbered version or below alone: it leaves
+// the schema a release whose newest migration is version leaves, and a later Migrate applies the
+// rest, as the next release's boot does over that deployment. It refuses a version no embedded
+// migration carries, which names no release. Tests read a store as an earlier release left it
+// through it (cmd/dispatch's supertag node tests).
+func (s *Store) MigrateThrough(ctx context.Context, version int) error {
+	return s.migrateThrough(ctx, migrationFiles, version)
+}
+
+// MigrationText is the whole text of the embedded forward migration numbered version, comments
+// included, as the runner applies it. It refuses a version no embedded forward migration carries,
+// and one that two carry. A caller that names an operator's remedy reads a migration's statement
+// here rather than keeping a second copy of it (graphcensus' refusal without its indexes).
+func MigrationText(version int) (string, error) {
+	names, err := fs.Glob(migrationFiles, fmt.Sprintf("migrations/%d_*.up.sql", version))
+	if err != nil {
+		return "", fmt.Errorf("find migration %d: %w", version, err)
+	}
+	if len(names) != 1 {
+		return "", fmt.Errorf("find migration %d: %d embedded forward migrations carry it, want one", version, len(names))
+	}
+	text, err := migrationFiles.ReadFile(names[0])
+	if err != nil {
+		return "", fmt.Errorf("read migration %d: %w", version, err)
+	}
+	return string(text), nil
 }
 
 // versionTable is the table this runner records each applied migration in.
 const versionTable = "schema_migrations"
 
 func (s *Store) migrate(ctx context.Context, fsys fs.FS) error {
+	return s.migrateThrough(ctx, fsys, math.MaxInt)
+}
+
+func (s *Store) migrateThrough(ctx context.Context, fsys fs.FS, version int) error {
 	if s == nil || s.Pool == nil {
 		return fmt.Errorf("migrate: store pool required")
 	}
-	migrations, err := pgmigrate.Load(fsys, "migrations")
+	migrations, err := pgmigrate.LoadBuilt(fsys, "migrations")
 	if err != nil {
 		return fmt.Errorf("migrations refused, none applied: %w", err)
+	}
+	if version != math.MaxInt && !slices.ContainsFunc(migrations, func(m pgmigrate.Migration) bool { return m.Version == version }) {
+		return fmt.Errorf("migrate through %d: no embedded migration carries that version, none applied", version)
 	}
 	if err := s.prepareVersionTable(ctx, migrations); err != nil {
 		return err
 	}
 	for _, migration := range migrations {
+		if migration.Version > version {
+			break
+		}
 		if err := s.applyMigration(ctx, migrations, migration); err != nil {
 			return fmt.Errorf("apply migration %d: %w", migration.Version, err)
 		}
@@ -483,6 +545,11 @@ func (s *Store) applyNonTransactionalMigration(ctx context.Context, migrations [
 	}
 	if err := pgmigrate.ExecNonTransactional(ctx, conn, migration, s.Pool.Config().BeforeConnect); err != nil {
 		return err
+	}
+	if s.afterNonTransactionalStatement != nil {
+		if err := s.afterNonTransactionalStatement(ctx, conn); err != nil {
+			return err
+		}
 	}
 	return pgmigrate.Record(ctx, conn, versionTable, migration)
 }

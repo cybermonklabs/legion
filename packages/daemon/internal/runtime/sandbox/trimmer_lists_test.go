@@ -50,14 +50,14 @@ const (
 	// none is on the volume: GH_CONFIG_DIR and LEGION_GH_OWNERS_DIR point at /var/run/legion/gh,
 	// LEGION_GH_PATH at /usr/local/bin/gh, and GH_TOKEN, GITHUB_TOKEN and GH_HOST are empty. A
 	// Claude Code launch's writes those ten and CLAUDE_CONFIG_DIR, eleven. Beside either are the
-	// three mounts and constants (issueVolumePaths), so the sets are thirteen and fourteen. The
-	// set itself is derived from the renderer and never written out, so this number is only a
-	// floor: it exists because a derivation that broke and matched nothing would otherwise hold
-	// the two lists to an empty set and report agreement.
-	// renderedVolumeVariables and renderedIssueVolumePathsOf below hold each backend's set to
-	// those members and that count exactly, beside the floor: a renderer change that adds a path
-	// one list already names, or drops one, leaves the floor and the rule both green.
-	renderedIssueVolumePaths = 13
+	// two mounts and constants (issueVolumePaths), so the sets are twelve and thirteen. The set
+	// itself is derived from the renderer and never written out, so this number is only a floor: it
+	// exists because a derivation that broke and matched nothing would otherwise hold the two lists
+	// to an empty set and report agreement.
+	// renderedVolumeVariables and renderedIssueVolumePathsOf below hold each backend's set to those
+	// members and that count exactly, beside the floor: a renderer change that adds a path one list
+	// already names, or drops one, leaves the floor and the rule both green.
+	renderedIssueVolumePaths = 12
 	// newToolCache, newMount and newAgentCache are the three additions the negative controls make
 	// to a copy of what the renderer gave. Each is a path no list names, and each stands for the
 	// edit a later change really makes: a cache under the cache home, a mount of the volume, and a
@@ -72,8 +72,8 @@ const (
 // counts: the ten of an Oh My Pi launch — roleEnvironment's eight less XDG_CONFIG_HOME, uv's two
 // and PUBLIC_LEAK_CHECK, rendered under the test options' leak check setting — and those ten and
 // CLAUDE_CONFIG_DIR for a Claude Code launch.
-// renderedIssueVolumePathsOf is each set with the three mounts and constants beside it
-// (issueVolumePaths), thirteen and fourteen. Each set is still read out of the renderer
+// renderedIssueVolumePathsOf is each set with the two mounts and constants beside it
+// (issueVolumePaths), twelve and thirteen. Each set is still read out of the renderer
 // (issueVolumePaths); these are what the read must find, written out so that a path the renderer
 // adds to the volume or takes off it changes a number a reader can see here.
 var (
@@ -85,7 +85,7 @@ var (
 		runtime.BackendOmp:    ompVolumeVariables,
 		runtime.BackendClaude: append(slices.Clone(ompVolumeVariables), "CLAUDE_CONFIG_DIR"),
 	}
-	renderedIssueVolumePathsOf = map[runtime.Backend]int{runtime.BackendOmp: 13, runtime.BackendClaude: 14}
+	renderedIssueVolumePathsOf = map[runtime.Backend]int{runtime.BackendOmp: 12, runtime.BackendClaude: 13}
 )
 
 // Every path the pod renderer puts on the issue's volume is named by one of the trimmer's two
@@ -97,6 +97,7 @@ var (
 // launch, since only a Claude launch renders Claude Code's block, the one install block that
 // writes under the cache home today (renderedStartWrapper).
 func TestEveryPathTheRendererPutsOnTheIssueVolumeIsNamedByTheTrimmersLists(t *testing.T) {
+	t.Parallel()
 	const issue = "LEGION-1234"
 	const role = claim.RoleImplementer
 
@@ -126,9 +127,9 @@ func TestEveryPathTheRendererPutsOnTheIssueVolumeIsNamedByTheTrimmersLists(t *te
 				t.Errorf("the renderer's values on the issue's volume for a launch on the %s backend are those of %v, want exactly %v",
 					backend, got, wantVariables)
 			}
-			if wantMounts := []string{FeedDir, workspace.CloneRoot(TreeRoot), TreeRoot + "/workspaces"}; !slices.Equal(mounts, wantMounts) {
-				t.Errorf("the volume's mounts and constants beside the environment are %v, want the feed, the clone root "+
-					"and the workspaces root %v", mounts, wantMounts)
+			if wantMounts := []string{workspace.CloneRoot(TreeRoot), TreeRoot + "/workspaces"}; !slices.Equal(mounts, wantMounts) {
+				t.Errorf("the volume's mounts and constants beside the environment are %v, want the clone root and the workspaces root %v",
+					mounts, wantMounts)
 			}
 			// base is what the rule earns over the rendered set alone, and the controls below are
 			// read against it rather than against a whole list: a control that asked for one complaint
@@ -197,9 +198,8 @@ func TestEveryPathTheRendererPutsOnTheIssueVolumeIsNamedByTheTrimmersLists(t *te
 // backend, in two halves so that each is visible as what it is. environment is the renderer's own
 // values, as issueVolumeDirectories (reclaim_doc_test.go) takes them from the start environment
 // (mainEnvironment). mounts is what the volume carries beside them and no environment variable
-// names: the pod's feed, which workspace-fetch writes and every other container mounts read-only
-// (FeedDir); the shared clone every workspace is cut from (workspace.CloneRoot); and the
-// workspaces root, derived from workspace.Location — the issue's checkout is
+// names: the shared clone every workspace is cut from (workspace.CloneRoot); and the workspaces
+// root, derived from workspace.Location — the issue's checkout is
 // <root>/workspaces/<owner>/<repo>/<issue>, so its directory three levels up is that root —
 // rather than written out here, so the layout stays the one source of it.
 func issueVolumePaths(t *testing.T, issue string, role claim.Role, backend runtime.Backend) (environment, mounts []string) {
@@ -213,7 +213,7 @@ func issueVolumePaths(t *testing.T, issue string, role claim.Role, backend runti
 		t.Fatal(err)
 	}
 	workspacesRoot := path.Dir(path.Dir(path.Dir(located.Dir)))
-	return issueVolumeDirectories(t, issue, role, backend), []string{FeedDir, workspace.CloneRoot(TreeRoot), workspacesRoot}
+	return issueVolumeDirectories(t, issue, role, backend), []string{workspace.CloneRoot(TreeRoot), workspacesRoot}
 }
 
 // volumeVariableNames is the name of each variable of the start environment a launch on backend

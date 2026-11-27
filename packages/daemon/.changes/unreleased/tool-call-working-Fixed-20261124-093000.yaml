@@ -1,0 +1,10 @@
+kind: Fixed
+body: |-
+    `legion state`'s `agents in a tool call` line names only working claims. A retired or
+    suspended claim keeps the call it was last in on its record, and the line named it as an
+    agent in a call: a deployment's state on 2026-11-22 would have named 169 agents in a tool
+    call, 111 of them retired claims. `legion claims list` still prints each claim's recorded
+    call.
+time: 2026-11-24T09:30:00Z
+custom:
+    Issue: tool-call-working

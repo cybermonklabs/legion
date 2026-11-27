@@ -79,6 +79,17 @@ import (
 //
 // Every row's reload onto authorization waits as a rollout's applies do (beforeAuthorization), more
 // than 10 s after each server's start; the check's window opens at that reload's hangup.
+//
+// Each row runs beside the others (t.Parallel). A row's time is almost all that 11 s wait: of the
+// 19, eighteen took 10.9 to 13.0 s and one 0.9 s, 204.8 s in all, while the package kept 0.66 of
+// one core of CI's four busy. The wait is the product's own bound and no row shortens it; the
+// rows pay it at the same time instead of one after another. What keeps one row from another:
+// its servers and its peers' client and monitoring listeners are at loopback addresses of their
+// own (testport.LoopbackIP); a route listener, a hub's or a peer's, is at the address the row
+// names, often one another row names too, on a port reserved for the row on every address
+// (reservePort) until the row ends; and every reading a row makes is of its own servers' /routez,
+// /varz and output. What the rows do share is read-only: the renders, the installed nats-server
+// and the password below.
 func TestRouteCheckRefusesARouteThatIsNotTheHubs(t *testing.T) {
 	keys := newLiveHubKeys(t)
 	renders := map[string]*clusteredHubRender{}
@@ -98,6 +109,7 @@ func TestRouteCheckRefusesARouteThatIsNotTheHubs(t *testing.T) {
 	}
 
 	t.Run("the hub's servers alone", func(t *testing.T) {
+		t.Parallel()
 		h := newStagedHub(t, renders, natsServer, password)
 		rec := record(t, h)
 		h.reload(t, "routes")
@@ -163,6 +175,7 @@ func TestRouteCheckRefusesARouteThatIsNotTheHubs(t *testing.T) {
 	})
 
 	t.Run("an impostor named as a hub server", func(t *testing.T) {
+		t.Parallel()
 		h := newStagedHub(t, renders, natsServer, password)
 		rec := record(t, h)
 		_, monitor := startPeer(t, natsServer, h.release+"-1", "127.0.0.2", h.routePorts[:1])
@@ -198,6 +211,7 @@ func TestRouteCheckRefusesARouteThatIsNotTheHubs(t *testing.T) {
 	})
 
 	t.Run("a peer that left before the check", func(t *testing.T) {
+		t.Parallel()
 		h := newStagedHub(t, renders, natsServer, password)
 		rec := record(t, h)
 		peer, monitor := startPeer(t, natsServer, h.release+"-2", "127.0.0.3", h.routePorts[:1])
@@ -231,6 +245,7 @@ func TestRouteCheckRefusesARouteThatIsNotTheHubs(t *testing.T) {
 	})
 
 	t.Run("a peer that left before authorization", func(t *testing.T) {
+		t.Parallel()
 		h := newStagedHub(t, renders, natsServer, password)
 		rec := record(t, h)
 		peer, monitor := startPeer(t, natsServer, h.release+"-2", "127.0.0.3", h.routePorts[:1])
@@ -269,6 +284,7 @@ func TestRouteCheckRefusesARouteThatIsNotTheHubs(t *testing.T) {
 	})
 
 	t.Run("a password the authorization reload refuses", func(t *testing.T) {
+		t.Parallel()
 		digits := strings.Repeat("7", 24) + "1234"
 		h := newStagedHub(t, renders, natsServer, digits)
 		rec := record(t, h)
@@ -302,6 +318,7 @@ func TestRouteCheckRefusesARouteThatIsNotTheHubs(t *testing.T) {
 	}
 
 	t.Run("an impostor at a pod's own address", func(t *testing.T) {
+		t.Parallel()
 		h := newStagedHub(t, renders, natsServer, password)
 		rec := record(t, h)
 		_, monitor := startPeer(t, natsServer, h.release+"-1", "127.0.0.1", h.routePorts[:1])
@@ -322,10 +339,17 @@ func TestRouteCheckRefusesARouteThatIsNotTheHubs(t *testing.T) {
 		for _, s := range h.servers {
 			names[s.name] = true
 		}
+		// envoy-nats-1 dials the impostor, whose route port refuses each dial for the duplicate
+		// name, and dials again, so its /routez can list a route it is closing, with no ip
+		// (routes.go's closedRoute). Such a route has no address to judge here; Check judges its
+		// remote_id.
 		for _, s := range h.servers {
 			routez, err := routezOf(s.host, s.monitor)
 			require.NoError(t, err)
 			for _, route := range routez.Routes {
+				if route.IP == "" {
+					continue
+				}
 				require.True(t, route.IP == "127.0.0.1" && names[route.RemoteName],
 					"control: %s's route to %s (%s at %s) has an address or a name that is no hub server's, so a check by ip and name would catch it",
 					s.name, route.RemoteID, route.RemoteName, route.IP)
@@ -335,12 +359,17 @@ func TestRouteCheckRefusesARouteThatIsNotTheHubs(t *testing.T) {
 		report := routes.Check(ctx, h, rec)
 		require.Equal(t, routes.PasswordRead, report.Verdict(), "findings: %v", report.Findings)
 		require.True(t, findingNames(report, routes.PasswordRead, "", "ip 127.0.0.1", `remote_id "`+impostor+`"`), "findings: %v", report.Findings)
+		// A closing route of envoy-nats-1's to the impostor is judged by its remote_id, as every
+		// other route of the impostor's is: never as a route from an address outside the hub, and
+		// never left unjudged for want of an address.
 		for _, f := range report.Findings {
 			require.NotContains(t, f.Detail, "no pod of the hub", "only remote_id tells the impostor apart: %v", f)
+			require.NotContains(t, f.Detail, "a route with no address", "the check judges a closing route by its remote_id: %v", f)
 		}
 	})
 
 	t.Run("a refused route login from another address", func(t *testing.T) {
+		t.Parallel()
 		h, rec := staged(t, password)
 		report := routes.Check(ctx, h, rec)
 		require.Equal(t, routes.Clean, report.Verdict(), "control: before the login; findings: %v", report.Findings)
@@ -358,6 +387,7 @@ func TestRouteCheckRefusesARouteThatIsNotTheHubs(t *testing.T) {
 	})
 
 	t.Run("a bare connection held open while the log is read", func(t *testing.T) {
+		t.Parallel()
 		h, rec := staged(t, password)
 		s := h.servers[0]
 		bare := &bareOnLog{stagedHub: h, t: t, pod: s.name, from: "127.0.0.9"}
@@ -387,6 +417,7 @@ func TestRouteCheckRefusesARouteThatIsNotTheHubs(t *testing.T) {
 	})
 
 	t.Run("lines a client writes", func(t *testing.T) {
+		t.Parallel()
 		h, rec := staged(t, password)
 		s := h.servers[1]
 		forged := strings.Repeat("A", 3000) + " [INF] Starting nats-server"
@@ -416,6 +447,7 @@ func TestRouteCheckRefusesARouteThatIsNotTheHubs(t *testing.T) {
 	})
 
 	t.Run("a rollback before authorization", func(t *testing.T) {
+		t.Parallel()
 		h := newStagedHub(t, renders, natsServer, password)
 		rec := record(t, h)
 		h.reload(t, "routes")
@@ -441,12 +473,14 @@ func TestRouteCheckRefusesARouteThatIsNotTheHubs(t *testing.T) {
 	})
 
 	t.Run("a record taken after authorization", func(t *testing.T) {
+		t.Parallel()
 		h, _ := staged(t, password)
 		_, err := routes.Take(ctx, h, "envoy", h.release, time.Now())
 		require.ErrorContains(t, err, "authorization is already in force on "+h.servers[0].name+", "+h.servers[1].name+", "+h.servers[2].name)
 	})
 
 	t.Run("an empty password", func(t *testing.T) {
+		t.Parallel()
 		h, rec := staged(t, "")
 		report := routes.Check(ctx, h, rec)
 		require.Equal(t, routes.Unknown, report.Verdict(), "findings: %v", report.Findings)
@@ -468,6 +502,7 @@ func TestRouteCheckRefusesARouteThatIsNotTheHubs(t *testing.T) {
 	})
 
 	t.Run("a restart during the check", func(t *testing.T) {
+		t.Parallel()
 		h, rec := staged(t, password)
 		last := h.servers[2]
 		report := routes.Check(ctx, &restartOnLog{stagedHub: h, t: t, pod: last.name}, rec)
@@ -500,6 +535,7 @@ func TestRouteCheckRefusesARouteThatIsNotTheHubs(t *testing.T) {
 	}
 
 	t.Run("lines a route peer writes through its server name before authorization", func(t *testing.T) {
+		t.Parallel()
 		h := newStagedHub(t, renders, natsServer, password)
 		rec := record(t, h)
 		s := h.servers[0]
@@ -520,6 +556,7 @@ func TestRouteCheckRefusesARouteThatIsNotTheHubs(t *testing.T) {
 	})
 
 	t.Run("a start line a reader writes through its server name, first in a rotated log", func(t *testing.T) {
+		t.Parallel()
 		h, rec := staged(t, password)
 		pastStartWindow(h)
 		forged := map[string]string{
@@ -550,6 +587,7 @@ func TestRouteCheckRefusesARouteThatIsNotTheHubs(t *testing.T) {
 	})
 
 	t.Run("route connections from other addresses that named no server", func(t *testing.T) {
+		t.Parallel()
 		h, rec := staged(t, password)
 		report := routes.Check(ctx, h, rec)
 		require.Equal(t, routes.Clean, report.Verdict(), "control: before them; findings: %v", report.Findings)
@@ -585,6 +623,7 @@ func TestRouteCheckRefusesARouteThatIsNotTheHubs(t *testing.T) {
 	})
 
 	t.Run("a route peer with the password that names itself with an empty name", func(t *testing.T) {
+		t.Parallel()
 		h, rec := staged(t, password)
 		s := h.servers[0]
 		f := dialFakeRoute(t, "127.0.0.5", s.route, "route", password, "")
@@ -619,6 +658,7 @@ func TestRouteCheckRefusesARouteThatIsNotTheHubs(t *testing.T) {
 	})
 
 	t.Run("a client's line that names a route connection's refused login", func(t *testing.T) {
+		t.Parallel()
 		h, rec := staged(t, password)
 		s := h.servers[0]
 		f := dialFakeRoute(t, "127.0.0.5", s.route, "route", password, "rogue")
@@ -653,6 +693,7 @@ func TestRouteCheckRefusesARouteThatIsNotTheHubs(t *testing.T) {
 	})
 
 	t.Run("a route peer's name that ends as a route connection's", func(t *testing.T) {
+		t.Parallel()
 		h := newStagedHub(t, renders, natsServer, password)
 		rec := record(t, h)
 		s := h.servers[0]

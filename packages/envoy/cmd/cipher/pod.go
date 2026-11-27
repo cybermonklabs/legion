@@ -39,7 +39,7 @@ import (
 )
 
 // defaultPodTokenFile is where a Legion pod and a hand-launched session pod both mount their
-// projected ServiceAccount token for the agent-secrets audience, so a pod with the standard
+// projected ServiceAccount token for the broker's audience, so a pod with the standard
 // projection needs no --pod-token-file at all.
 const defaultPodTokenFile = "/var/run/legion/agent-secrets-token/token"
 

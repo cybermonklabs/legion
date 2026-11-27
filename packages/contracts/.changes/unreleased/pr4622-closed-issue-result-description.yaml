@@ -1,0 +1,8 @@
+kind: Fixed
+custom:
+  Issue: pr4622
+body: |-
+  The description of `dispatch result` no longer says that a closed issue refuses every other
+  write. A closed issue still refuses every result but one for an `after_merge` or
+  `default_branch` check; it also takes a comment, a message, a reopening status and the other
+  writes `PATCH /api/v1/issues/{key}` allows on it.

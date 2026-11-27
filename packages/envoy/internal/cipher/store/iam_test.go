@@ -3,8 +3,7 @@ package store
 import (
 	"cmp"
 	"context"
-	"crypto/rand"
-	"encoding/hex"
+	"errors"
 	"net"
 	"net/url"
 	"strconv"
@@ -49,54 +48,35 @@ func (m *fakeMinter) minted() []mintCall {
 }
 
 // passwordRole creates a login role on the BROKER_TEST_DATABASE_URL server whose password is
-// password, dropped when t ends, and returns its name, the name of the schema a test may create
-// for it, which the cleanup drops too, and a URL that signs in as it with no password, as an
-// IAM-form URL does. Postgres asks the role for a password over TCP (the test server's pg_hba),
-// so only a connection that brings one signs in.
+// password, and a database of the test's own there (testdb.DatabaseOn) in whose public schema the
+// role may create tables, both dropped when t ends. It returns the role's name, that database's
+// URL as the server's own login (adminURL), and the same URL signing in as the role with no
+// password (databaseURL), as an IAM-form URL does. Postgres asks the role for a password over TCP
+// (the test server's pg_hba), so only a connection that brings one signs in. The role's tables are
+// in a database of their own because a row that makes migrate wait out a lock timeout holds the
+// broker's migration lock, which is database-wide, for all of that wait (emptySchemaStore).
 //
 // The server's login need not be a superuser. One with CREATEROLE is given ADMIN alone on a role
-// it creates (Postgres 16 and later), so it grants the role to itself with SET, which `create
-// schema ... authorization` of the role needs, and INHERIT, which the cleanup's `drop owned by`
-// needs. A role spans the server, and these tests share the database BROKER_TEST_DATABASE_URL
-// names, so no database of the test's own goes and takes what the role owns with it. The cleanup
-// is registered as soon as the role exists, and drops the schema with everything in it first,
-// then what else the role owns and the grants it holds, then the role, each a statement of its
-// own, each run whatever the ones before it did.
-func passwordRole(t *testing.T, password string) (role, schema, databaseURL string) {
+// it creates (Postgres 16 and later), so it grants the role to itself with INHERIT, which a holder
+// signed in as the login needs to lock a table the role owns. A role spans the server, so its drop
+// is registered as soon as it exists, before the database is created: the database's drop,
+// registered later, runs first and takes what the role owns and was granted there with it, so
+// nothing then holds the role.
+func passwordRole(t *testing.T, password string) (role, adminURL, databaseURL string) {
 	t.Helper()
 	raw := testDatabaseURL(t)
-	var suffix [8]byte
-	if _, err := rand.Read(suffix[:]); err != nil {
-		t.Fatalf("random role name: %v", err)
-	}
-	role = "broker_iam_test_" + hex.EncodeToString(suffix[:])
-	schema = "broker_iam_schema_" + hex.EncodeToString(suffix[:])
+	role = "broker_iam_test_" + randomSuffix(t)
 	adminExec(t, raw, "create role "+role+" login password '"+password+"'")
-	t.Cleanup(func() {
-		ctx := context.Background()
-		conn, err := pgx.Connect(ctx, raw)
-		if err != nil {
-			t.Errorf("connect to BROKER_TEST_DATABASE_URL to drop the schema %s and the role %s: %v", schema, role, err)
-			return
-		}
-		defer conn.Close(ctx)
-		for _, statement := range []string{
-			"drop schema if exists " + schema + " cascade",
-			"drop owned by " + role + " cascade",
-			"drop role if exists " + role,
-		} {
-			if _, err := conn.Exec(ctx, statement); err != nil {
-				t.Errorf("%s: %v", statement, err)
-			}
-		}
-	})
-	adminExec(t, raw, "grant "+role+" to current_user with set true, inherit true")
-	parsed, err := url.Parse(raw)
+	t.Cleanup(func() { adminExec(t, raw, "drop role if exists "+role) })
+	adminExec(t, raw, "grant "+role+" to current_user with inherit true")
+	adminURL = testdb.DatabaseOn(t, raw, "broker_iam_test")
+	adminExec(t, adminURL, "grant create on schema public to "+role)
+	parsed, err := url.Parse(adminURL)
 	if err != nil {
-		t.Fatalf("parse BROKER_TEST_DATABASE_URL: %v", err)
+		t.Fatalf("parse the test database's URL: %v", errors.Unwrap(err))
 	}
 	parsed.User = url.User(role)
-	return role, schema, parsed.String()
+	return role, adminURL, parsed.String()
 }
 
 // endpointOf is the host:port pgx dials for databaseURL, which RDS signs a token for.
@@ -170,22 +150,10 @@ func TestOpenSignsEveryNewConnectionInWithAFreshlyMintedToken(t *testing.T) {
 // the lock and its holder.
 func TestMigrateLockWatchSignsInWithAFreshToken(t *testing.T) {
 	ctx := context.Background()
-	raw := testDatabaseURL(t)
-	role, schema, databaseURL := passwordRole(t, "fake-iam-token-1")
-	adminExec(t, raw, "create schema "+schema+" authorization "+role)
-	withSchema := func(databaseURL string) string {
-		parsed, err := url.Parse(databaseURL)
-		if err != nil {
-			t.Fatal(err)
-		}
-		query := parsed.Query()
-		query.Set("search_path", schema)
-		parsed.RawQuery = query.Encode()
-		return parsed.String()
-	}
+	role, adminURL, databaseURL := passwordRole(t, "fake-iam-token-1")
 
 	minter := &fakeMinter{token: "fake-iam-token-1"}
-	s, err := Open(ctx, withSchema(databaseURL), WithTokenMinter(minter.mint))
+	s, err := Open(ctx, databaseURL, WithTokenMinter(minter.mint))
 	if err != nil {
 		t.Fatalf("Open with the token minter: %v", err)
 	}
@@ -193,7 +161,7 @@ func TestMigrateLockWatchSignsInWithAFreshToken(t *testing.T) {
 	if _, err := s.Pool.Exec(ctx, "create table guard_held (id integer)"); err != nil {
 		t.Fatalf("create the held table: %v", err)
 	}
-	holder, err := pgx.Connect(ctx, withSchema(raw))
+	holder, err := pgx.Connect(ctx, adminURL)
 	if err != nil {
 		t.Fatalf("connect the holder: %v", err)
 	}
@@ -207,7 +175,7 @@ func TestMigrateLockWatchSignsInWithAFreshToken(t *testing.T) {
 		t.Fatalf("hold the table: %v", err)
 	}
 
-	adminExec(t, raw, "alter role "+role+" password 'fake-iam-token-2'")
+	adminExec(t, adminURL, "alter role "+role+" password 'fake-iam-token-2'")
 	minter.set("fake-iam-token-2")
 	if got := len(minter.minted()); got != 1 {
 		t.Fatalf("the minter minted %d tokens before the migration, want 1: the migration must run on the connection that signed in with the token since rotated", got)

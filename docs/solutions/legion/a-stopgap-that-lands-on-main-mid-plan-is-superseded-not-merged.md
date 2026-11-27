@@ -13,7 +13,7 @@ tags:
   - agents-md
   - corrective-round
 date: 2026-09-15
-status: active
+status: superseded in part — Retro commits nothing and pushes nothing, and no role writes to docs/solutions/.
 module: skills/legion-worker
 related_issues:
   - "LEGION-107"

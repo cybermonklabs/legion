@@ -22,6 +22,7 @@ import (
 // once, naming the pull request and the phase the issue was in, and the issue's phase is left for
 // the architect to decide. A redelivered observation tells it nothing new.
 func TestAPullRequestFinishingOutsideMergingTellsTheArchitectOnce(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		fact   intake.Fact
@@ -85,6 +86,7 @@ func TestAPullRequestFinishingOutsideMergingTellsTheArchitectOnce(t *testing.T) 
 // even on a merge state GitHub would merge from and on a fact that settles the round (the
 // reviewer's completion): the architect has the one pr-closed-unmerged notice and decides.
 func TestAnApprovalStandingOnAMergedPullRequestsHeadEndsTheReviewRound(t *testing.T) {
+	t.Parallel()
 	reviewer := record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleReviewer, Claim: "review-claim"}
 	approved := reviewer
 	approved.Decision = &record.ReviewDecision{State: "approved", Head: headOne}
@@ -212,6 +214,7 @@ func TestAnApprovalStandingOnAMergedPullRequestsHeadEndsTheReviewRound(t *testin
 // moves back. Nothing a refusal leaves is counted or started: the issue stands where the approval
 // put it, the implementer has no pass, and the outbox holds the approval's notice alone.
 func TestAMergedPullRequestsApprovalAndItsRefusedMovesBackAgree(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "root",
 		Phase: phase.Reviewing, Generation: 1, Status: "needs_review", Rank: "U"})
@@ -221,11 +224,18 @@ func TestAMergedPullRequestsApprovalAndItsRefusedMovesBackAgree(t *testing.T) {
 	seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleReviewer, Claim: "review-claim"})
 	seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleImplementer, Claim: "implement-claim"})
 	seedClaimSession(t, pool, reviewClaim, "ses-reviewer")
-	apply := applyFacts(t, pool, testEngine(config.DesignGateRootIssues, nil))
+	engine := testEngine(config.DesignGateRootIssues, nil)
+	apply := applyFacts(t, pool, engine)
 	const reason = "its pull request has merged; a merged change never moves back"
 	back := func(id string, requester claim.Role, from phase.Phase) {
 		t.Helper()
-		result := apply(id, intake.BackwardMove{Issue: "LEGION-208", Requester: requester, To: phase.Implementing, Reason: "the spec changed"})
+		move := intake.BackwardMove{Issue: "LEGION-208", Requester: requester, To: phase.Implementing, Reason: "the spec changed"}
+		if requester == claim.RoleArchitect {
+			// An architect's request names the claim, the generation and the run of accepting its
+			// route read, which the workflow judges again (rootsMoveBack).
+			move = rootsMoveBack(t, pool, engine, "LEGION-208", phase.Implementing, "the spec changed")
+		}
+		result := apply(id, move)
 		if refusalCode(result) != "BACKWARD_REFUSED" || !strings.Contains(result.Refusal.Message, reason) {
 			t.Fatalf("the %s's move back = %+v; want BACKWARD_REFUSED saying %q", requester, result.Refusal, reason)
 		}
@@ -254,6 +264,7 @@ func TestAMergedPullRequestsApprovalAndItsRefusedMovesBackAgree(t *testing.T) {
 // close closes it at the head it carries and tells the architect once, and that close redelivered at
 // its own clock, which is not late, tells it nothing more, since the pull request is already closed.
 func TestALateCloseTellsTheArchitectNothingAndARedeliveredCloseNothingMore(t *testing.T) {
+	t.Parallel()
 	earlier, later := lateApplied.Add(-time.Hour), lateApplied.Add(time.Minute)
 	pool := appliedEvents(t, record.PullRequestOpen)
 	apply := applyFacts(t, pool, testEngine(config.DesignGateRootIssues, nil))
@@ -280,6 +291,7 @@ func TestALateCloseTellsTheArchitectNothingAndARedeliveredCloseNothingMore(t *te
 // still undelivered, not a redelivery: it tells the architect once, whichever of the reopen and
 // the close arrives first, and the pull request ends closed at the close's head.
 func TestASecondCloseTellsTheArchitectOnceWhicheverOrderItsReopenArrives(t *testing.T) {
+	t.Parallel()
 	reopened, closed := lateApplied.Add(time.Minute), lateApplied.Add(2*time.Minute)
 	for _, tc := range []struct {
 		name  string
@@ -301,6 +313,7 @@ func TestASecondCloseTellsTheArchitectOnceWhicheverOrderItsReopenArrives(t *test
 // closed record, so it is a redelivery: the pull request stays closed and the architect is told
 // nothing more.
 func TestAClocklessCloseOfAClosedPullRequestTellsTheArchitectNothing(t *testing.T) {
+	t.Parallel()
 	pool := appliedEvents(t, record.PullRequestClosed, lateClosed("head-c", time.Time{}))
 	if got, notices := pullRequestAt(t, pool), architectNotices(t, pool); got.state != record.PullRequestClosed || len(notices) != 0 {
 		t.Fatalf("the pull request is %+v, with architect notices %+v; want closed, and none", got, notices)
@@ -311,6 +324,7 @@ func TestAClocklessCloseOfAClosedPullRequestTellsTheArchitectNothing(t *testing.
 // it, and the merge carries no clock that could fence it: a close of a pull request recorded
 // merged changes nothing and tells the architect nothing.
 func TestACloseOfAMergedPullRequestChangesNothing(t *testing.T) {
+	t.Parallel()
 	pool := appliedEvents(t, record.PullRequestMerged, lateClosed("head-d", lateApplied.Add(time.Minute)))
 	if got, notices := pullRequestAt(t, pool), architectNotices(t, pool); got.head != "head-c" || got.state != record.PullRequestMerged || len(notices) != 0 {
 		t.Fatalf("the pull request is %+v, with architect notices %+v; want head-c, merged, and none", got, notices)
@@ -321,6 +335,7 @@ func TestACloseOfAMergedPullRequestChangesNothing(t *testing.T) {
 // than it: a reopen of a pull request recorded merged changes nothing, and it stays merged at the
 // head it merged at.
 func TestAReopenOfAMergedPullRequestChangesNothing(t *testing.T) {
+	t.Parallel()
 	pool := appliedEvents(t, record.PullRequestMerged, lateReopened("head-d", lateApplied.Add(time.Minute)))
 	if got, notices := pullRequestAt(t, pool), architectNotices(t, pool); got.head != "head-c" || got.state != record.PullRequestMerged || len(notices) != 0 {
 		t.Fatalf("the pull request is %+v, with architect notices %+v; want head-c, merged, and none", got, notices)
@@ -332,6 +347,7 @@ func TestAReopenOfAMergedPullRequestChangesNothing(t *testing.T) {
 // does, and the one start the close queues is the tester's first look of the production check
 // the merge opens (merge_close_test.go).
 func TestAnIssueReachingMergingWithItsPullRequestMergedCloses(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Retro, Generation: 1, Status: "retro", Rank: "U"})
 	seedGate(t, pool, record.DesignGate{Issue: "LEGION-208", ArtifactID: "artifact-208", LatestVersion: 4, ApprovedVersion: new(4)})

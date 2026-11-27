@@ -1,0 +1,15 @@
+{
+  "answers": [
+    {
+      "answer": "census-answer",
+      "change": "remove"
+    },
+    {
+      "answer": "no-content",
+      "noBody": true
+    }
+  ],
+  "routes": [],
+  "answerRows": [],
+  "enumeratedRows": []
+}

@@ -19,6 +19,7 @@ import (
 // start, naming the setting, rather than reading it as unset and admitting every pod of the
 // cluster; the same listener with the setting empty starts, as one with it unset does.
 func TestTheListenerBinaryRefusesAnAccountListThatNamesNoAccount(t *testing.T) {
+	t.Parallel()
 	issuer := oidctest.New(t)
 	binary := cmdtest.Build(t, "envoy-listener")
 	uri := testnats.URL(t)
@@ -47,6 +48,7 @@ func TestTheListenerBinaryRefusesAnAccountListThatNamesNoAccount(t *testing.T) {
 // its own /metrics counts each admission under its credential and route. Started with no list,
 // the same binary admits both, as it did before the list existed.
 func TestTheListenerBinaryHoldsProjectedTokensToItsListAndCountsThem(t *testing.T) {
+	t.Parallel()
 	issuer := oidctest.New(t)
 	key := issuer.PublishKey(t, "listener-process-key")
 	listed := issuer.Mint(t, key, issuer.Claims(listenerListedSubject, listenerTestAudience))

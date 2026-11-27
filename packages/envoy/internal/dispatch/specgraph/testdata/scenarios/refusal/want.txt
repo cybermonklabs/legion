@@ -1,0 +1,20 @@
+spec-check: subject c2, the head of listener-restart
+statement delivery-is-fast: met
+statement messages-reach-sessions: unknown (check a-restart-loses-no-message: uncited)
+statement a-stored-message-survives-a-restart: unknown (check a-restart-loses-no-message: uncited)
+  check a-restart-loses-no-message: unknown (uncited)
+spec-check: subject m2, the head of main
+statement delivery-is-fast: met
+statement messages-reach-sessions: met
+statement a-stored-message-survives-a-restart: met
+  check a-restart-loses-no-message: true (passed, counted from m2)
+spec-check: subject c3, the head of contract-fixture
+statement delivery-is-fast: met
+statement messages-reach-sessions: unknown (check a-restart-loses-no-message: no_failing_example)
+statement a-stored-message-survives-a-restart: unknown (check a-restart-loses-no-message: no_failing_example)
+  check a-restart-loses-no-message: unknown (no_failing_example)
+spec-check: subject c4, the head of listener-change
+statement delivery-is-fast: met
+statement messages-reach-sessions: unknown (check a-restart-loses-no-message: subject_moved)
+statement a-stored-message-survives-a-restart: unknown (check a-restart-loses-no-message: subject_moved)
+  check a-restart-loses-no-message: unknown (subject_moved)

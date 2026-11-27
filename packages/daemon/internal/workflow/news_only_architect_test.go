@@ -28,6 +28,7 @@ import (
 // A start or a task that brings the architect work is still read as one, as the controls show.
 // The root stands at generation 2, and its architect's row names entry 3.
 func TestNewsAloneHoldsNoRootArchitectStartBack(t *testing.T) {
+	t.Parallel()
 	const rowEntry = 3
 	root := record.Issue{Key: "LEGION-208", Tree: "LEGION-208", Phase: phase.Admitted, Generation: 2}
 	newsStart := record.QueuedSupervise{ID: 7, Request: record.SuperviseRequest{Op: "start", Tree: root.Key, Role: claim.RoleArchitect,

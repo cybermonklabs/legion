@@ -46,7 +46,7 @@ func runTree(args []string, stdout, stderr io.Writer) int {
 	switch {
 	case errors.As(err, &refused):
 		// The importer refuses a set with a file above the bound before it parses any, so the tree
-		// is refused with no block read.
+		// is refused with no file parsed.
 	case empty && !*allowEmpty:
 		say(stderr, "%s: %s, and tree reads it as the empty tree only with --allow-empty", dir, what)
 		return 2

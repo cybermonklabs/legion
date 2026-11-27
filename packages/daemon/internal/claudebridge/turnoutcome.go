@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/redact"
 )
 
 // reportTimeout bounds one report's call. A turn's outcome is a few hundred bytes to a daemon on
@@ -20,12 +21,19 @@ import (
 // for a daemon that accepts the connection and never answers rather than for a slow one.
 const reportTimeout = 15 * time.Second
 
+// errReportTimeout is the cause a report's context ends with when reportTimeout passes on the
+// bridge's clock, so the pane's line says the bound rather than the cancel that carried it.
+var errReportTimeout = fmt.Errorf("the daemon gave no answer within the report's bound of %s", reportTimeout)
+
 // turnReports is the bridge as the Claude Code backend's producer of turn outcomes: every turn the
 // bridge ends is reported to the daemon, clean or refused, with the bridge's own sequence within
 // its launch generation (POST /legion/v1/claims/turn-outcome). The daemon derives the claim's run
-// of refused turns from those reports and fails the claim once the run reaches its launch failure
-// limit, which is the fault that left an implementer's every turn refused by its provider with its
-// claim never failing (dispatch://INFRA-714).
+// of refused turns from those reports and answers each report with it; the run fails no claim
+// (dispatch://INFRA-4508) and decides nothing. A turn that ran no prompt of the daemon's — one an
+// inbox delivery started, the phase hook's reminder among them, or one Claude Code started itself
+// when a background task finished — is judged by the daemon from its report alone, since no
+// prompt result comes for it (supervise's turnOutcome), so its report says so and carries the
+// status the provider refused it with.
 //
 // The bridge is the producer because it is what sees the refusal: a step Claude Code ends with an
 // error is the assistant message it writes with stopReason "error" (result), and the pane's own
@@ -43,7 +51,9 @@ type turnReports struct {
 	bootToken  string
 	generation uint64
 	client     *http.Client
-	log        *log.Logger
+	// clock is the bridge's (Config.Clock), which the report's bound runs on.
+	clock Clock
+	log   *log.Logger
 	// sequence is the bridge's own count of the turns it has ended at generation, from 1. It is
 	// atomic because the posts run off the loop, though only the loop ever takes a number.
 	sequence atomic.Uint64
@@ -67,7 +77,8 @@ func startTurnReports(cfg Config, logger *log.Logger) *turnReports {
 		url:        strings.TrimSuffix(cfg.DaemonURL, "/") + "/legion/v1/claims/turn-outcome",
 		bootToken:  strings.TrimSpace(string(token)),
 		generation: cfg.Generation,
-		client:     &http.Client{Timeout: reportTimeout},
+		client:     &http.Client{},
+		clock:      cfg.clock(),
 		log:        logger,
 	}
 }
@@ -88,9 +99,12 @@ func missingReportInputs(cfg Config) string {
 	return strings.Join(missing, ", ")
 }
 
-// turnEnded reports the turn the bridge has just ended: refused, with what the provider said, when
-// a step of it failed, and clean otherwise. It takes the next sequence and returns at once.
-func (r *turnReports) turnEnded(refusal string) {
+// turnEnded reports the turn the bridge has just ended: refused, with what the provider said and
+// the HTTP status it answered (0 where Claude Code named none), when a step of it failed, and clean
+// otherwise. prompted is whether the turn ran the daemon's prompt, whose prompt_result then judges
+// it: the report of a turn that ran none is marked unprompted, which is what has the daemon judge
+// it. It takes the next sequence and returns at once.
+func (r *turnReports) turnEnded(refusal string, status int, prompted bool) {
 	if r == nil {
 		return
 	}
@@ -99,43 +113,69 @@ func (r *turnReports) turnEnded(refusal string) {
 		Generation: r.generation,
 		Sequence:   r.sequence.Add(1),
 		Outcome:    claim.TurnClean,
+		Unprompted: !prompted,
 	}
 	if refusal != "" {
 		request.Outcome, request.Message = claim.TurnRefused, refusal
+		// A number outside the HTTP range is no status the provider answered, and the daemon
+		// takes such a number as no status, with a warning that names it, so the bridge sends the
+		// refusal as one whose status cannot be read and leaves the daemon nothing to warn about.
+		if status >= 100 && status <= 599 {
+			request.HTTPStatus = status
+		}
 	}
 	go r.post(request)
 }
 
 // post makes one report and logs what the daemon made of it: the run of refused turns the claim's
-// reports now end with, and whether this one failed the claim, which is the one place the pane
-// shows the count being made. A report the daemon refuses is logged and nothing else: the turn is
-// over, and the bridge has nothing to do about it.
+// reports now end with, which is the one place the pane shows the count being made. A report the
+// daemon refuses is logged and nothing else: the turn is over, and the bridge has nothing to do
+// about it.
 func (r *turnReports) post(request claim.TurnOutcomeRequest) {
 	body, err := json.Marshal(request)
 	if err != nil {
 		r.log.Printf("could not encode the outcome of turn %d: %v", request.Sequence, err)
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), reportTimeout)
-	defer cancel()
+	// The call's bound, reportTimeout, runs on the bridge's clock; ending the request's context
+	// ends its dial, its wait for an answer and its read of the body alike, and the cause it ends
+	// with, errReportTimeout, is what the line says.
+	ctx, cancel := context.WithCancelCause(context.Background())
+	defer cancel(nil)
+	go func() {
+		select {
+		case <-r.clock.After(reportTimeout):
+			cancel(errReportTimeout)
+		case <-ctx.Done():
+		}
+	}()
 	post, err := http.NewRequestWithContext(ctx, http.MethodPost, r.url, bytes.NewReader(body))
 	if err != nil {
-		r.log.Printf("could not report the outcome of turn %d: %v", request.Sequence, err)
+		r.log.Printf("could not report the outcome of turn %d: %v", request.Sequence, redact.RequestError("the daemon", r.url, err))
 		return
 	}
 	post.Header.Set("Content-Type", "application/json")
+	// LEGION_DAEMON_URL is the daemon's daemon_url, which can carry a user name and a password: a
+	// report that got no answer is named through redact.RequestError, so neither the URL's
+	// credential nor the host a dial's error names (a password's tail, when it holds an unencoded
+	// "@") is logged.
 	response, err := r.client.Do(post)
 	if err != nil {
-		r.log.Printf("could not report the outcome of turn %d (%s): %v", request.Sequence, request.Outcome, err)
+		shown := redact.RequestError("the daemon", r.url, err)
+		if cause := context.Cause(ctx); cause != nil {
+			shown = fmt.Errorf("%w (%v)", cause, shown)
+		}
+		r.log.Printf("could not report the outcome of turn %d (%s): %v", request.Sequence, request.Outcome, shown)
 		return
 	}
 	defer func() { _ = response.Body.Close() }()
-	answer, decoded := decodeTurnOutcome(response)
+	answer, decoded := decodeTurnOutcome(ctx, response)
 	switch {
 	case response.StatusCode/100 != 2:
 		r.log.Printf("the daemon refused the outcome of turn %d (%s): %s", request.Sequence, request.Outcome, answer)
 	case decoded.Failed:
-		r.log.Printf("the daemon failed this claim: its provider refused %d turns in a row", decoded.RefusedRun)
+		// claim.TurnOutcomeResponse says which report sets Failed.
+		r.log.Printf("the daemon failed this claim: turn %d ran no prompt of the daemon's and the provider refused it with an error that cannot clear (%s)", request.Sequence, request.Message)
 	case decoded.RefusedRun > 0:
 		r.log.Printf("reported turn %d as %s; the daemon counts %d refused turns in a row", request.Sequence, request.Outcome, decoded.RefusedRun)
 	}
@@ -144,10 +184,13 @@ func (r *turnReports) post(request claim.TurnOutcomeRequest) {
 // decodeTurnOutcome is what the daemon answered: the outcome it derived, and the text to log for
 // an answer that is not one — a refusal's sentence, or the status alone when the body says
 // nothing.
-func decodeTurnOutcome(response *http.Response) (string, claim.TurnOutcomeResponse) {
+func decodeTurnOutcome(ctx context.Context, response *http.Response) (string, claim.TurnOutcomeResponse) {
 	var decoded claim.TurnOutcomeResponse
 	body, err := readAnswer(response)
 	if err != nil {
+		if cause := context.Cause(ctx); cause != nil {
+			err = fmt.Errorf("%w (%v)", cause, err)
+		}
 		return fmt.Sprintf("%s (its answer could not be read: %v)", response.Status, err), decoded
 	}
 	if json.Unmarshal(body, &decoded) != nil || len(body) == 0 {

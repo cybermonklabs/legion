@@ -153,3 +153,18 @@ def has_twin($filters):
       | ($b | length) == ($a | length) + 1
         and $b[:$s.at] == $a[:$s.at] and $b[$s.at + 1:] == $a[$s.at:]
         and ($b[$s.at] == "*" or ($s.project != null and $b[$s.at] == $s.project)));
+
+# build_token is the build a NATS connection's name ends with, its last space-separated token, or
+# the token before a last `privacy-required` (natsgrant.PrivacyRequiredSuffix, which a listener in
+# required privacy mode keeps last, its build before it: internal/bus's connectionName), or null
+# when it names none: `legion@<commit>` for a build of this repository's commit (a Go binary
+# stamped with buildversion's commit, or a client plugin carrying the build-commit stamp its image
+# writes beside its bundle), or `<package>@<version>` for a released client plugin, judged by the
+# commit of its release tag. Every Envoy client appends its build to its connection name
+# (internal/bus, the daemon's natsauth, @legion/envoy-client's clientConnectionName).
+def build_token:
+  if type != "string" then null
+  else split(" ") as $w
+    | (if ($w | length) > 1 and $w[-1] == "privacy-required" then $w[-2] else $w[-1] // "" end) as $t
+    | if ($t | test("^legion@[0-9a-f]{40}$")) or ($t | test("^@sjawhar/(pi-envoy|claude-envoy|codex-envoy)@[0-9]+\\.[0-9]+\\.[0-9]+$")) then $t else null end
+  end;

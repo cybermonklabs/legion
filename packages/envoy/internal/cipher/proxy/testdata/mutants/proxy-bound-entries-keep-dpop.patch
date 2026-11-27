@@ -1,0 +1,21 @@
+# proxy-bound-entries-keep-dpop: a dpop binding's name is asked for in the read of the session's
+# other grants, though no grant released since the name became dpop holds it and a grant holding an
+# older row of it is not read for that host on main, so a stored grant's call to a dpop host reads
+# the store on every CONNECT and answers 503 when that read fails, where it tunnelled.
+# must fail: TestAStoredGrantsConnectToADPoPHostReadsNoOtherGrant
+# Applied with patch -p1 from a copy.
+
+diff --git a/packages/envoy/internal/cipher/proxy/enrollment.go b/packages/envoy/internal/cipher/proxy/enrollment.go
+index 9e345fe2c2b2..cdf36fd6e5d3 100644
+--- a/packages/envoy/internal/cipher/proxy/enrollment.go
++++ b/packages/envoy/internal/cipher/proxy/enrollment.go
+@@ -154,7 +154,8 @@ func (s *Server) otherGrantsBinding(ctx context.Context, rules proxyrules.Rules,
+ func boundEntries(rules proxyrules.Rules, host string, port uint16) []string {
+ 	var names []string
+ 	for _, binding := range rules.Names {
+-		if binding.Way != proxyrules.WayDPoP && kindBinds(rules.KindOf(&binding), host, port) {
++		// MUTANT: a dpop binding's name is read for too.
++		if kindBinds(rules.KindOf(&binding), host, port) {
+ 			names = append(names, binding.Name)
+ 		}
+ 	}

@@ -1,0 +1,9 @@
+kind: Fixed
+body: |-
+  `POST /api/v1/priorities` writes a priority whose title is long. A body that names no `id` takes
+  the title's slug, and a slug over 200 characters is now cut to its longest start of at most 200
+  characters that ends at the end of a word, or to its first 200 characters when its first word is
+  longer. Such a create answered `400 PRIORITY_INPUT` before, so the New priority form could not
+  write a long title. An `id` the caller names is still refused over 200 characters. The
+  descriptions of `POST /api/v1/issues` and `PATCH /api/v1/issues/{key}` now name the `advances`
+  and `advances_revision` fields those routes already take.

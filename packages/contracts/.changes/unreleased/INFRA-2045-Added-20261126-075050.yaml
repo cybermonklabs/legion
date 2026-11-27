@@ -1,0 +1,9 @@
+kind: Added
+body: |-
+    The daemon API's state fixtures carry the two controller settings in `settings`:
+    `controller_turn_bound_minutes` and `controller_session_max_age_hours`, each a number of the
+    unit its name gives, 0 for its rule off. No plugin reader types either key, so the contract
+    number does not move.
+time: 2026-11-26T07:50:50Z
+custom:
+    Issue: INFRA-2045

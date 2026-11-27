@@ -41,14 +41,7 @@ func (m *sessionDelivery) awaitDeletes(ctx context.Context) {
 	m.deleteMu.Lock()
 	m.deletesOff = true
 	m.deleteMu.Unlock()
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		m.deletes.Wait()
-	}()
-	select {
-	case <-done:
-	case <-ctx.Done():
+	if !m.deletes.wait(ctx) {
 		m.logger.Warn("a session consumer delete was still running at shutdown; the sweep deletes that consumer")
 	}
 }
@@ -77,7 +70,7 @@ func (m *sessionDelivery) deleteAfterAnswer(ctx context.Context, d *listenerDeps
 			slog.String("session_id", sessionID))
 		return
 	}
-	m.deletes.Add(1)
+	m.deletes.Add()
 	m.deleteMu.Unlock()
 	go func() {
 		defer m.deletes.Done()

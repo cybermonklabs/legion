@@ -12,9 +12,9 @@ import (
 var ErrRefilling = errors.New("kvwatch: the cache has no complete read of its bucket recent enough to serve")
 
 // defaultStaleBound is how long a copy that stopped following its bucket is still served. It is
-// under half the 5-minute record lifetime of the session bucket, so a copy past it would mostly
-// list sessions that already ended; within it the reconnect hook and the listener's 30 s
-// self-health rebuild normally complete a read.
+// under half the 5-minute live window of a session record (session.LiveWindow), so a copy within
+// it still reads a session that registers on time as live. Within it, the reconnect hook and the
+// listener's 30 s self-health rebuild normally complete a read.
 const defaultStaleBound = 2 * time.Minute
 
 // boundFor is the stale bound of a stream whose MaxAge is maxAge: staleBound, or half the MaxAge

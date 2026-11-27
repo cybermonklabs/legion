@@ -5,6 +5,7 @@ import { whoAmIQuery } from "../../api/queries";
 import type { Artifact } from "../../api/types";
 import type { EditorHandle } from "../doc/editor";
 import { type DocumentToolbar, ProofDocument } from "../doc/ProofDocument";
+import { EVENT_FRESH } from "../refs/reference-target";
 import { useReportAdmission } from "./document-admission";
 import { DocumentStage } from "./document-stage";
 import { EDITOR_BOX_ATTRIBUTE } from "./node-caret";
@@ -56,7 +57,7 @@ export function StagedDocument({
   onVersionChange: (version: number | null) => void;
   showDiff: boolean;
 }): ReactNode {
-  const user = useQuery(whoAmIQuery());
+  const user = useQuery({ ...whoAmIQuery(), ...EVENT_FRESH });
   const reportAdmission = useReportAdmission();
   const box = useRef<HTMLDivElement>(null);
   // Whether the editor is made, and so the room has answered: `ProofDocument` hands it over as it
@@ -141,11 +142,11 @@ export function StagedDocument({
  * `styles.css`, a diagram's in `lib.css`), so nothing here holds one. A run with no space in it
  * breaks anywhere: the editor's own `break-word` gives it no place to break where its box is
  * sized to its words, as a typed block's header sizes its title, which held a path at its whole
- * width. A reference the editor draws as its issue's title, one line cut at 24em (`lib.css`), is
- * cut at its line's end too where that comes first, as in a bullet on a phone. Both rules carry
- * `!`, since the editor's stylesheets stand outside Tailwind's layers and would win over a
- * utility. A collaborator's caret label near a line's end hangs back toward the line's start
- * rather than past the box's end (`@legion/proof-editor`'s `collab-cursor-plugin.ts`).
+ * width. That rule carries `!`, since the editor's stylesheets stand outside Tailwind's layers
+ * and would win over a utility. A reference the editor draws as its issue's title is one line
+ * cut at 24em or at its line's end, whichever comes first (`lib.css`). A collaborator's caret
+ * label near a line's end hangs back toward the line's start rather than past the box's end
+ * (`@legion/proof-editor`'s `collab-cursor-plugin.ts`).
  *
  * The box carries the page's cue that a block takes typing (`dispatch-edit-cue`, `styles.css`):
  * the text cursor and the page's faint pane under the pointer, and a 1 px rule in the page's ink
@@ -166,7 +167,7 @@ export function EditorBox({
   return (
     <div className="min-w-0 [overflow-anchor:none]">
       <div
-        className="dispatch-edit-cue max-h-[calc(100dvh-var(--issue-identity-height,0px)-var(--issue-composer-height,0px))] overflow-y-auto overscroll-contain [&_.ProseMirror]:[overflow-wrap:anywhere]! [&_.dispatch-reference]:max-w-[min(24em,100%)]!"
+        className="dispatch-edit-cue max-h-[calc(100dvh-var(--issue-identity-height,0px)-var(--issue-composer-height,0px))] overflow-y-auto overscroll-contain [&_.ProseMirror]:[overflow-wrap:anywhere]!"
         ref={ref}
         {...{ [EDITOR_BOX_ATTRIBUTE]: "" }}
       >

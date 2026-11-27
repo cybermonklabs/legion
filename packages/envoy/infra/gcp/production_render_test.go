@@ -462,8 +462,8 @@ func (e *prodRenderEngine) call(args pulumi.MockCallArgs) (resource.PropertyMap,
 
 // prodRenderComputed answers what a provider computes: an account's email and member, a network's
 // and a health check's self link, a template's unique self link, a group's name, a cluster's
-// endpoint and CA, a database instance's connection name, a password's result and a Kubernetes
-// Secret's resourceVersion.
+// endpoint and CA, a database instance's connection name, a password's result, a Kubernetes
+// Secret's resourceVersion and a Kubernetes ServiceAccount's uid.
 func prodRenderComputed(args pulumi.MockResourceArgs) (string, resource.PropertyMap) {
 	out := resource.PropertyMap{}
 	switch args.TypeToken {
@@ -490,14 +490,9 @@ func prodRenderComputed(args pulumi.MockResourceArgs) (string, resource.Property
 	case "random:index/randomPassword:RandomPassword":
 		out["result"] = resource.NewProperty(args.Name + "-result")
 	case "kubernetes:core/v1:Secret":
-		metadata := resource.PropertyMap{}
-		if registered, ok := args.Inputs["metadata"]; ok && registered.IsObject() {
-			for key, value := range registered.ObjectValue() {
-				metadata[key] = value
-			}
-		}
-		metadata["resourceVersion"] = resource.NewProperty(args.Name + "-resource-version")
-		out["metadata"] = resource.NewProperty(metadata)
+		out["metadata"] = resource.NewProperty(registeredMetadataWith(args, "resourceVersion", args.Name+"-resource-version"))
+	case "kubernetes:core/v1:ServiceAccount":
+		out["metadata"] = resource.NewProperty(registeredMetadataWith(args, "uid", mockServiceAccountUID(args.Name)))
 	}
 	return "", out
 }

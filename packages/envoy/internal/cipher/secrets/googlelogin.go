@@ -10,6 +10,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/oauthrefusal"
 )
 
 const googleTokenURL = "https://oauth2.googleapis.com/token"
@@ -85,7 +87,10 @@ func (m GoogleLogin) Mint(ctx context.Context, req MintRequest) (Minted, error) 
 	}
 	asked := now()
 	payload, err := mintCall(m.Retry.start(req.Type), m.HTTP, request, what, "Google", http.StatusOK, mintResponseLimit, true, nil)
-	if status := (*mintStatusError)(nil); errors.As(err, &status) {
+	// Google's invalid_grant says the login needs a new sign-in only at a status that is a refusal
+	// (oauthrefusal.Refuses): at a 5xx it is Google's own failure, which mintStatusError reads as
+	// upstream.
+	if status := (*mintStatusError)(nil); errors.As(err, &status) && oauthrefusal.Refuses(status.code) {
 		var tokenError googleTokenError
 		if json.Unmarshal(payload, &tokenError) == nil && tokenError.Code == "invalid_grant" {
 			if tokenError.Subtype != "" {

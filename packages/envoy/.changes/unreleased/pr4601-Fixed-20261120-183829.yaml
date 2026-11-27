@@ -1,0 +1,5 @@
+kind: Fixed
+body: 'Dispatch keeps two labels as one label only where Go''s strings.EqualFold matches them, the rule by which the `DISPATCH_LEGION_STATUS_SCOPE` refusal and the Legion daemon read the `legion` label: `legion` and `LEGİON` (with U+0130) are two labels, and `label=` filters by the same rule on every database collation. The walk up the parent chain that decides whether an issue is a Legion issue (`legion_managed_status`, and that refusal) reads the `legion` label in ASCII, so a label that a glibc collation lowers to `legion` does not make an issue a Legion issue.'
+time: 2026-11-20T18:38:29.006963671Z
+custom:
+    Issue: pr4601

@@ -24,6 +24,7 @@ import (
 // thing whole: rendering the news a builder recorded, as a send would, gives back that very text
 // and that very news, so no builder kept a news field beside a text it did not render with it.
 func TestEveryBuilderRecordsExactlyTheNewsItsTextNames(t *testing.T) {
+	t.Parallel()
 	r := newNewsReconcileRig(t)
 	root := r.member(reconcileRoot, "", phase.Reviewing)
 	child := r.member(reconcileChild, reconcileRoot, phase.Implementing)
