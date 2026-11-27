@@ -95,9 +95,7 @@ def tree_statuses(root_pid: int) -> list[str]:
         if not entry.name.isdigit():
             continue
         try:
-            # The kernel keeps a process's name as bytes, so a name that is not UTF-8 is replaced
-            # rather than fatal; every field read here is ASCII.
-            text = (entry / "status").read_text(errors="replace")
+            text = (entry / "status").read_text()
         except OSError:
             continue
         parent = status_field(text, "PPid")

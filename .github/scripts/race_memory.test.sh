@@ -103,22 +103,6 @@ check "passes the command's own output through" "$(contains "$out" '^the command
 check "its last line gives the peak and the limit" \
   "$(contains "${out##*$'\n'}" '^race memory: the peak was [0-9][0-9]* kB (Vm.*), the limit 8388608 kB$')"
 
-echo "case: a process whose name is not UTF-8 does not stop the sampler"
-# The sampler reads the status of every process the machine runs, a name the kernel keeps as
-# bytes included. This command renames itself (prctl PR_SET_NAME) to bytes that are not UTF-8 and
-# lives past the sampler's second sample, so the walk at 5 s reads its status.
-renamed='
-import ctypes, time
-ctypes.CDLL(None).prctl(15, b"\xff\xfeA3", 0, 0, 0)
-time.sleep(6)
-print("the renamed command spoke")
-'
-run_sampler '' python3 -c "$renamed"
-check "exits 0" "$(is "$status" 0)"
-check "passes the command's own output through" "$(contains "$out" '^the renamed command spoke$')"
-check "its last line gives the peak and the limit" \
-  "$(contains "${out##*$'\n'}" '^race memory: the peak was [0-9][0-9]* kB (Vm.*), the limit 8388608 kB$')"
-
 echo "case: the peak is the largest VmHWM when the kernel gives one"
 hwm=$(peak '
 import race_memory

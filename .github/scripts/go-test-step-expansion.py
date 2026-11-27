@@ -114,8 +114,7 @@ How it reads a step:
     `include`, an `exclude` or a matrix an expression computes is refused, as is a key no row
     has;
   * a step whose run: is the path of a script AUDITED_SCRIPTS names
-    (`packages/envoy/scripts/database-skips.sh`, `packages/envoy/scripts/backend-count.sh`,
-    `packages/envoy/scripts/named-tests.sh`), alone
+    (`packages/envoy/scripts/database-skips.sh` and `packages/envoy/scripts/backend-count.sh`), alone
     or followed by one of the argument lists
     its entry reads, is read as the `go test` command that entry gives for those arguments, in
     the module it names; a legs step whose run: is `set -o pipefail` and a lister piped to `xargs
@@ -237,8 +236,10 @@ EXCEPTIONS = (
     ),
     Exception_(
         steps=frozenset({
-            (".github/workflows/ci-job-envoy-go.yaml", "Test what the race build cannot run at all or at full size"),
-            (".github/workflows/ci-job-envoy-go-race.yaml", "Race-test the NATS auth service and count its skips"),
+            (".github/workflows/ci-job-envoy-go.yaml",
+             "Test the xid window rows, the API's issue-list bound and the auth service's storm, alone"),
+            (ENVOY_GO_RACE, ENVOY_RACE_STEP),
+            (ENVOY_GO, ENVOY_UNIT_STEP),
         }),
         package="github.com/sjawhar/envoy/internal/cipher/natscallout",
         functions=("TestACalloutStormAfterAServerRestartAdmitsEveryConnection",),
@@ -408,45 +409,70 @@ BACKEND_COUNT_TESTS = (
     "TestSettingsNameTheGoogleExchangeAudienceOnEitherStore",
 )
 
-# The tests envoy-go's "Test the leaver hold's real-time bounds" names, in the order its run:
-# passes them to named-tests.sh; ci_job_reads.LEAVER_BOUND_TESTS, which that run: and the unit
-# step's skip of them are built from, holds the same names. A step whose arguments differ from
-# these is one this script refuses, which go-test-step-expansion.test.sh's step-reader case fails on.
-LEAVER_BOUND_TESTS = (
-    "TestIAPLeaverHoldThroughTheRealBroker",
-    "TestLeaverHoldBound",
-    "TestLeaverHoldBoundByThePass",
-    "TestLeaverHoldRelease",
-)
+# envoy-go's unit step's -skip, as ci_job_reads.UNIT_TEST_SCRIPT writes it: the web display
+# fixture's two tests, BACKEND_COUNT_TESTS and the rows whose bound is on time, which
+# envoy-go-alone runs (ci_job_reads.UNIT_ALONE_TESTS). Which packages each leg runs is
+# go_legs.py's, which the legs step's lister runs.
+UNIT_SKIP = ("'^(TestABatchCutOffInFlightKeepsItsOrder|TestABucketWaitWhoseLookupsAreHeldFailsByNameInTime|"
+             "TestAClaimLeftByAnotherProcessIsTakenWhenItLapses|TestADeletedBucketFailsAWriteWithinTheBudget|"
+             "TestAHolderWhoseRecordFindsTheHoldAnothersStopsItsRenewal|"
+             "TestAProcessReportsASilentNATSCutWithinSeconds|"
+             "TestARollingUpdatesSuccessorHandsEachMentionTheOldProcessLeftOnce|"
+             "TestAStalledListingFailsWithinTheReadTimeout|"
+             "TestAStandbyDoesNotTryTheHoldForEveryEventTheHolderWrites|"
+             "TestAStandbyTakesAFreeHoldWithNoNotification|"
+             "TestAStoppedOutboxHandsThePublisherToTheOtherAtOnce|TestAWriteIsEmbeddedOnItsNotification|"
+             "TestAnEventNATSNeverAcknowledgesIsBackedOffAndRecorded|"
+             "TestAnOutboxThatLosesNATSReleasesThePublisher|"
+             "TestAnOutboxWhoseNATSGoesSilentGivesThePublisherToTheOther|"
+             "TestClosingThePoolGivesUpOnALateConnectionOnceTheDatabaseStopsAnswering|"
+             "TestEnrollThroughTheHelperPastTheBoundSaysTheOutcomeIsUnknown|"
+             "TestEverySecretFormNamesTheSourceItUses|TestExecLearnsOfAGrantAfterAFullHold|"
+             "TestExecLearnsOfTheGrantWithinASecond|TestGCPSecretMetadataSourceIsPresentWhenItYieldsAToken|"
+             "TestHealthzAnswersWhilePostgresAndTheBucketBothStopAnswering|"
+             "TestHealthzAnswersWhilePostgresStopsAnswering|TestHoldExpiryMatchesTheDatabaseClock|"
+             "TestHoldReportsLossBeforeTheDatabaseExpiryWhenRenewalsFail|TestIdentity|"
+             "TestNoSecretFormAsksTheBrokerForACredential|"
+             "TestOneFillHoldsTheLeaseAndAnotherTakesOverWithinSixtySeconds|TestOnlyOneOutboxPublishesAtATime|"
+             "TestReserveTokensSharesItsBudgetAcrossConnections|"
+             "TestSIGTERMWhileARequestHoldsHTTPShutdownStillSettlesTheOwedDocument|"
+             "TestSIGTERMWithOpenStreamsExitsPromptlyAndSettlesTheOwedDocument|"
+             "TestSIGTERMWithTheDatabaseUnansweringExitsWithinTheShutdownBudget|"
+             "TestSamplerHeapReadDelaysNoSample|TestScanPassReturnsWhenThePendingRowsFallDue|"
+             "TestSettingsNameTheGoogleExchangeAudienceOnEitherStore|TestSyncDeadlineIsRecordedOnTheRow|"
+             "TestTheChainSkipsAbsenceAndStopsOnABrokenSource|TestTheIdentityStepsRunOnceTheQueueFirstEmbeds|"
+             "TestTheListenerReplacesAHalfOpenConnection|"
+             "TestTheLostLineIsWrittenBeforeTheReleaseAndDatesTheStop|TestTheOutboxDoesNotScanWhileIdle|"
+             "TestTheWebFixtureFindsItsFilesFromAnyDirectory|"
+             "TestUseCommandOutsideASessionReachesTheMachineSource|TestWebDisplayFixture)$'")
 
 # Each script a step of ci.yaml's router runs as its whole run: line, read by a person, with the
 # one `go test` it runs for each argument list a step passes it.
 AUDITED_SCRIPTS = {
     # It moves into packages/envoy (`cd "$(dirname "$0")/.."`) and runs one `go test -json
     # -count=1` over its packages, then counts the skips in its report. With no package argument it
-    # runs its DEFAULT_PACKAGES, ./internal/cipher/... and ./cmd/cipherd/, less the import paths its
-    # DEFAULT_EXCEPT's `grep -Ev '/internal/cipher/natscallout$'` takes out of `go list` of them (the
-    # race lane's packages under the tree, ci_job_reads.DATABASE_SKIPS_PATTERN), with no -tags,
-    # -race, -run or -skip, under -timeout "${GO_TEST_TIMEOUT:-15m}". A package argument replaces
-    # those packages, `--race` adds -race, `--skip P` adds -skip P, `--timeout D` sets the -timeout,
-    # and `--var NAME` decides only whether it runs at all. With `--report FILE` it reads a report
-    # and runs no test. envoy-go's count step passes the first argument list below, whose command
-    # is that run in the listing form this script reads, envoy-go-race-api's race step the second,
-    # and envoy-go-race's counted step the third. The first's --skip leaves out the backend count's
-    # test of ./internal/cipher/api/.
+    # counts its DEFAULT_PACKAGES, ./internal/cipher/..., ./cmd/cipherd/ and ./internal/holdrecord/,
+    # less the import paths its DEFAULT_EXCEPT takes out of `go list` of them with `grep -Ev`, none
+    # today since that pattern is empty (ci_job_reads.DATABASE_SKIPS_PATTERN, built from
+    # DATABASE_SKIPS_RACE_ONLY), with no -tags, -race, -run or -skip, under -timeout
+    # "${GO_TEST_TIMEOUT:-15m}". A package argument replaces those packages, `--race` adds -race,
+    # `--skip P` adds -skip P, `--timeout D` sets the -timeout, and `--var NAME` decides only
+    # whether it runs at all. `--count-table` runs every package its arguments name, in go list's
+    # order, and counts the table's among them; it changes what is counted, never what runs. With
+    # `--report FILE` it reads a report and runs no test. `-run=^(Name|...)$`, which a leg pipes in
+    # with its package, adds that -run. envoy-go-race-api's legs and envoy-go's unit legs pass an
+    # xargs argument list below, each leg's packages (and group) after it.
     "packages/envoy/scripts/database-skips.sh": AuditedScript(
         module="packages/envoy",
-        commands={
-            "--timeout 20m --skip '^(TestSettingsNameTheGoogleExchangeAudienceOnEitherStore)$'":
-                "go list ./internal/cipher/... ./cmd/cipherd/ | grep -Ev '/internal/cipher/natscallout$' | "
-                "xargs go test -json -count=1 -skip '^(TestSettingsNameTheGoogleExchangeAudienceOnEitherStore)$' "
-                "-timeout 20m",
-            "--var DISPATCH_TEST_DATABASE_URL --var BROKER_TEST_DATABASE_URL --race --timeout 70m ./internal/dispatch/api/":
-                "go test -json -count=1 -race -timeout 70m ./internal/dispatch/api/",
-            "--var BROKER_TEST_DATABASE_URL --race --timeout 10m ./internal/cipher/natscallout/":
-                "go test -json -count=1 -race -timeout 10m ./internal/cipher/natscallout/",
+        commands={},
+        xargs={
+            f"--timeout 20m --skip {UNIT_SKIP} --count-table": f"go test -json -count=1 -skip {UNIT_SKIP} -timeout 20m",
+            # envoy-go-race-api's legs: the API package, and the leg's group as `-run=^(Name|...)$`,
+            # come from go_legs.py through xargs, so the command carries neither.
+            "--var DISPATCH_TEST_DATABASE_URL --var BROKER_TEST_DATABASE_URL --race --timeout 70m":
+                "go test -json -count=1 -race -timeout 70m",
         },
-        sha256="d274c3e1c3b0c71165aa9e0082c220fe3d8de1ab4ea222c0efa443b479d1412f",
+        sha256="1fda7c677b2f277920e8a5f16f9da79ab9613e6ba5c356df7bf3c0606ec24670",
     ),
     # It moves into packages/envoy (`cd "$(dirname "$0")/.."`) and runs one `go test -json
     # -count=1 -timeout "${GO_TEST_TIMEOUT:-5m}" -run '^(TEST|…)$'` over the packages before its
@@ -462,18 +488,19 @@ AUDITED_SCRIPTS = {
         },
         sha256="bea62eaf32791a70c86e0350053bda35bae7dfa81685ad3338022849f0587a0e",
     ),
-    # It moves into packages/envoy (`cd "$(dirname "$0")/.."`) and runs one `go test -json
-    # -count=1 -timeout D -run '^(TEST|…)$'` over the packages before its `--`, D its `--timeout`
-    # (15m without one) and the -run built from the test names after the `--` in their order, then
-    # counts each test's top-level runs and passes. It reads no variable. envoy-go's leaver hold
-    # step passes the argument list below.
-    "packages/envoy/scripts/named-tests.sh": AuditedScript(
-        module="packages/envoy",
+    # It moves into packages/envoy/infra (`cd "$(dirname "$0")/.."`) and, given `run`, runs one
+    # `go test -count=1 -race` over the packages `go list ./...` prints less those its EXCLUDE,
+    # '/internal/textcheck$' (ci_job_reads.INFRA_PLAIN_PATTERN), matches, with no -tags, -run or
+    # -skip. envoy-infra-build's unit step passes `run`. Until this entry the reader skipped that
+    # step, so neither verdict saw the module's race run: every untagged test of infra/core,
+    # infra/seed and infra/gcp read as compiled by the natslive step and run by no step, and
+    # infra/host's untagged tests, which envoy-smoke's pulumilive step runs plain, as run once.
+    "packages/envoy/infra/scripts/race-unit.sh": AuditedScript(
+        module="packages/envoy/infra",
         commands={
-            "--timeout 15m ./cmd/dispatch/ -- " + " ".join(LEAVER_BOUND_TESTS):
-                f"go test -json -count=1 -timeout 15m -run '^({'|'.join(LEAVER_BOUND_TESTS)})$' ./cmd/dispatch/",
+            "run": "go list ./... | grep -Ev '/internal/textcheck$' | xargs go test -count=1 -race",
         },
-        sha256="0e7100736f906ada7d43d42a1742da9633c726d32d6f17cdc88a688b13a81d82",
+        sha256="3e9946d3482859bdab444ee99341955f982e70e86cb6e93c2138040cd015753b",
     ),
 }
 # A variable a step sets before its command, as the steps write it: GODEBUG=checkfinalizers=1.

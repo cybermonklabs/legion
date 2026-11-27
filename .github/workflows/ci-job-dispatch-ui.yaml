@@ -81,11 +81,7 @@ jobs:
       # database and not the plain name - is proven on any machine with LEGION_TEST_PG_DSN set,
       # which is how a developer and an issue pod run them (`bun run test` in packages/dispatch;
       # psql-session makes a database of its own there), and the stack contract they guard is also
-      # covered end to end by every multi-worker run of the browser suite itself. The database
-      # rows of e2e/__tests__/node-projects-horizon-hold.test.ts skip here the same way. What they
-      # prove - which transaction node-projects.sh's watch of the event horizon names as holding
-      # it back - is proven where LEGION_TEST_PG_DSN is set, as above, and in the harness lane of
-      # dispatch-unit-repeat.yaml, which starts the runner's own PostgreSQL for such rows.
+      # covered end to end by every multi-worker run of the browser suite itself.
       #
       # This step runs both lanes in random order, which packages/dispatch/bunfig.toml sets. Each
       # lane prints its own ` --seed=<n>` in its summary. A red row that failed from the order is
