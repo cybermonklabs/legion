@@ -106,7 +106,7 @@ func TestAMergeForwardIsAskedAtADeploymentStepOnlyAfterTheImplementer(t *testing
 			pool := seedConflictIssue(t, phase.Step, "in_progress", settledGreen("lint"))
 			seedStepsPlan(t, pool, "LEGION-208", 1, "checker", "implementer", "linter")
 			seedRecord(t, pool, func(tx pgx.Tx) error {
-				return record.NewStore().MoveTask(t.Context(), tx, "LEGION-208", 1, "a", record.TaskPlace{Kind: record.PlaceStep, Position: tc.at}, record.TaskRunning)
+				return seedMove(t.Context(), tx, "LEGION-208", 1, "a", record.TaskPlace{Kind: record.PlaceStep, Position: tc.at}, record.TaskRunning)
 			})
 			seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: tc.role, Claim: claim.Token(string(tc.role) + "-claim"), Entry: 1})
 			return pool
@@ -180,7 +180,7 @@ func TestAMergeForwardTellsNoRoleTheDeploymentLost(t *testing.T) {
 			pool := seedConflictIssue(t, phase.Step, "in_progress", settledGreen("lint"))
 			seedStepsPlan(t, pool, "LEGION-208", 1, "implementer", "checker")
 			seedRecord(t, pool, func(tx pgx.Tx) error {
-				return record.NewStore().MoveTask(t.Context(), tx, "LEGION-208", 1, "a", record.TaskPlace{Kind: record.PlaceStep, Position: 2}, record.TaskRunning)
+				return seedMove(t.Context(), tx, "LEGION-208", 1, "a", record.TaskPlace{Kind: record.PlaceStep, Position: 2}, record.TaskRunning)
 			})
 			seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: "checker", Claim: claim.Token("checker-claim"), Entry: 1})
 
