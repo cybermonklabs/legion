@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/legion/daemon/internal/apifixture"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/redact"
@@ -496,8 +497,8 @@ func TestSettingsOfAKubernetesConfigurationNamesEveryKeyAndNoSecret(t *testing.T
 	if want := map[string]string{"tester": "omp"}; !maps.Equal(settings.WorkerBackends, want) {
 		t.Errorf("worker_backends = %q, want %q", settings.WorkerBackends, want)
 	}
-	if want := []RepositoryRenameSettings{{From: "acme/widgets-legacy", To: "acme/widgets"}}; !slices.Equal(settings.RepositoryRenames, want) {
-		t.Errorf("repository_renames = %+v, want the file's pair %+v", settings.RepositoryRenames, want)
+	if want := []RepositoryRenameSettings{{From: "acme/widgets-legacy", To: "acme/widgets"}, {From: "sjawhar/legion", To: "cybermonklabs/legion"}}; !slices.Equal(settings.RepositoryRenames, want) {
+		t.Errorf("repository_renames = %+v, want the file's pairs %+v", settings.RepositoryRenames, want)
 	}
 	if want := []string{"/bin/sh", "-c", "echo fixture-setup"}; !slices.Equal(settings.Runtime.Kubernetes.Setup, want) {
 		t.Errorf("runtime.kubernetes.setup = %q, want %q", settings.Runtime.Kubernetes.Setup, want)
@@ -587,7 +588,7 @@ func TestSettingsOfTheSandboxShowsEachMember(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			settings := SettingsOf(loadSettingsFile(t, settingsFixtureFile+tc.block))
+			settings := SettingsOf(apifixture.LoadSettings(t, settingsFixtureFile+tc.block))
 			if got := settings.Runtime.Kubernetes.Sandbox; !reflect.DeepEqual(got, tc.want) {
 				t.Errorf("runtime.kubernetes.sandbox = %+v, want %+v", got, tc.want)
 			}
@@ -694,7 +695,7 @@ func TestSettingsOfAMinimalConfigurationResolvesTheDefaults(t *testing.T) {
 		t.Errorf("settings carry the DSN: %s", encoded)
 	}
 
-	set := SettingsOf(loadSettingsFile(t, minimalSettingsFile+"review_round_cap: 5\ngates: {hold: work}\n"))
+	set := SettingsOf(apifixture.LoadSettings(t, minimalSettingsFile+"review_round_cap: 5\ngates: {hold: work}\n"))
 	if set.ReviewRoundCap != 5 {
 		t.Errorf("review_round_cap = %d, want the file's 5", set.ReviewRoundCap)
 	}
@@ -727,7 +728,7 @@ func TestSettingsShowTheLaunchPrefixWithoutItsArguments(t *testing.T) {
 // file that names none carries no key at all, so the shapes the state golden pins do not move.
 func TestSettingsOfNamesThePrivateNameRuleFileByItsPathAlone(t *testing.T) {
 	const path = "/etc/legion/private-names.toml"
-	encoded, err := json.Marshal(SettingsOf(loadSettingsFile(t, minimalSettingsFile+"private_name_rules_file: "+path+"\n")))
+	encoded, err := json.Marshal(SettingsOf(apifixture.LoadSettings(t, minimalSettingsFile+"private_name_rules_file: "+path+"\n")))
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
@@ -754,7 +755,7 @@ func TestSettingsOfLeavesOutTheCommitIssueTrailerRepositories(t *testing.T) {
 	if body == settingsFixtureFile {
 		t.Fatal("the fixture's WIDGETS project was not given the key")
 	}
-	cfg := loadSettingsFile(t, body)
+	cfg := apifixture.LoadSettings(t, body)
 	if got := cfg.Projects["WIDGETS"].CommitIssueTrailerRepos; len(got) != 1 || got[0].String() != stamped {
 		t.Fatalf("the fixture's project carries %v, want %s: the assertions below would prove nothing", got, stamped)
 	}
@@ -803,7 +804,7 @@ func TestSettingsOfNamesAProjectsExperiments(t *testing.T) {
 	if body == settingsFixtureFile {
 		t.Fatal("the fixture's WIDGETS project was not given the key")
 	}
-	settings := SettingsOf(loadSettingsFile(t, body))
+	settings := SettingsOf(apifixture.LoadSettings(t, body))
 	want := []ExperimentSettings{
 		{Name: "plan-length", Mode: config.ExperimentRandom, Unit: config.ExperimentIssue, Variants: []VariantSettings{
 			{Name: "short", Weight: 3, ConfigFiles: []string{}},
@@ -857,7 +858,7 @@ func TestTheSettingsCarryThePlanOfAVariant(t *testing.T) {
 	if body == settingsFixtureFile {
 		t.Fatal("the fixture's WIDGETS project was not given the key")
 	}
-	settings := SettingsOf(loadSettingsFile(t, body))
+	settings := SettingsOf(apifixture.LoadSettings(t, body))
 	variants := settings.Projects["WIDGETS"].Experiments[0].Variants
 	if variants[0].Plan != "owner" || variants[1].Plan != "default" {
 		t.Fatalf("the arms' plans = %q and %q, want owner and default", variants[0].Plan, variants[1].Plan)
@@ -945,7 +946,7 @@ func TestSettingsOfTheHooksNamesEachHookAndNoWords(t *testing.T) {
 
 	const promptFile = "/etc/legion/hooks/back-to-implementing.md"
 	const inline = "Read the reviewer's thread before you write anything."
-	named := SettingsOf(loadSettingsFile(t, minimalSettingsFile+`hooks:
+	named := SettingsOf(apifixture.LoadSettings(t, minimalSettingsFile+`hooks:
   - name: back-to-implementing
     on: work_back
     moves: [reviewing-implementing, testing-implementing]

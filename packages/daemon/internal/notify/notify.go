@@ -185,10 +185,12 @@ func ControllerTopic(project string) string {
 }
 
 // Publisher delivers a notice to one listener topic. Publish asks the listener to keep nothing
-// for a role no live session holds, and PublishKept asks it to keep the message for the role's
-// next holder and says whether it did.
+// for a role no live session holds, and answers the session the listener stored the message for:
+// the holder its 200 names (listenerwire.PublishResponse.Holder), "" where the answer names none -
+// a topic that is no role's, or a listener that names no holder. PublishKept asks it to keep the
+// message for the role's next holder and says whether it did.
 type Publisher interface {
-	Publish(ctx context.Context, topic, message string, payload any, dedupeKey string) error
+	Publish(ctx context.Context, topic, message string, payload any, dedupeKey string) (holder string, err error)
 	PublishKept(ctx context.Context, topic, message string, payload any, dedupeKey string) (kept bool, err error)
 }
 
@@ -209,10 +211,11 @@ func New(baseURL, token string) *HTTPPublisher {
 //
 // It sends keep: false, so the listener keeps nothing for a role no live session holds, and its
 // 404 for a role nobody holds is ErrNoHolder. PublishKept is the other choice: it asks the
-// listener to keep the message for the role's next live holder.
-func (p *HTTPPublisher) Publish(ctx context.Context, topic, message string, payload any, dedupeKey string) error {
-	_, err := p.publish(ctx, topic, message, payload, dedupeKey, false)
-	return err
+// listener to keep the message for the role's next live holder. It answers the session the
+// listener's 200 names as the holder it stored the message for (storedFor).
+func (p *HTTPPublisher) Publish(ctx context.Context, topic, message string, payload any, dedupeKey string) (string, error) {
+	answer, err := p.publish(ctx, topic, message, payload, dedupeKey, false)
+	return answer.holder, err
 }
 
 // PublishKept posts the envelope as Publish does, but with keep: true: a role message that no
@@ -241,19 +244,27 @@ func (p *HTTPPublisher) Publish(ctx context.Context, topic, message string, payl
 // holder, a repeat — a caller's retry after a 202 it never read — is forwarded again, so a kept
 // publish reaches its holder at least once, and can reach it twice.
 func (p *HTTPPublisher) PublishKept(ctx context.Context, topic, message string, payload any, dedupeKey string) (bool, error) {
-	return p.publish(ctx, topic, message, payload, dedupeKey, true)
+	answer, err := p.publish(ctx, topic, message, payload, dedupeKey, true)
+	return answer.kept, err
+}
+
+// published is what a publish the listener accepted says (HTTPPublisher.publish): whether the
+// listener kept the message rather than delivering it, and the holder it stored a delivered one for.
+type published struct {
+	kept   bool
+	holder string
 }
 
 // publish is the one body of Publish and PublishKept: it posts the envelope with keep as the
-// request's keep field, and answers whether the listener kept the message rather than
-// delivering it. Only a publish that asked to keep reads a 202 as kept; every other answer that
-// is not a 200 is the refusal it maps to (publishRefusal).
-func (p *HTTPPublisher) publish(ctx context.Context, topic, message string, payload any, dedupeKey string, keep bool) (bool, error) {
+// request's keep field, and answers what the listener's acceptance said (published). Only a publish
+// that asked to keep reads a 202 as kept; every other answer that is not a 200 is the refusal it
+// maps to (publishRefusal).
+func (p *HTTPPublisher) publish(ctx context.Context, topic, message string, payload any, dedupeKey string, keep bool) (published, error) {
 	// The listener carries a payload as a JSON document in a string
 	// (listenerwire.MessageBody.Payload); an object there is refused as invalid JSON.
 	encoded, err := json.Marshal(payload)
 	if err != nil {
-		return false, fmt.Errorf("encode notice payload for %s: %w", topic, err)
+		return published{}, fmt.Errorf("encode notice payload for %s: %w", topic, err)
 	}
 	payloadText := string(encoded)
 	body, err := json.Marshal(listenerwire.PublishRequest{
@@ -262,12 +273,12 @@ func (p *HTTPPublisher) publish(ctx context.Context, topic, message string, payl
 		Keep:        &keep,
 	})
 	if err != nil {
-		return false, fmt.Errorf("encode notice for %s: %w", topic, err)
+		return published{}, fmt.Errorf("encode notice for %s: %w", topic, err)
 	}
 	route := p.baseURL + "/v1/messages/publish"
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, route, bytes.NewReader(body))
 	if err != nil {
-		return false, fmt.Errorf("build notice publish request for %s: %w", topic, redact.RequestError(listenerServer, route, err))
+		return published{}, fmt.Errorf("build notice publish request for %s: %w", topic, redact.RequestError(listenerServer, route, err))
 	}
 	request.Header.Set("Content-Type", "application/json")
 	if p.token != "" {
@@ -275,23 +286,41 @@ func (p *HTTPPublisher) publish(ctx context.Context, topic, message string, payl
 	}
 	response, err := p.client.Do(request)
 	if err != nil {
-		return false, fmt.Errorf("publish notice to %s: %w", topic, redact.RequestError(listenerServer, route, err))
+		return published{}, fmt.Errorf("publish notice to %s: %w", topic, redact.RequestError(listenerServer, route, err))
 	}
 	defer response.Body.Close()
 	if response.StatusCode == http.StatusOK {
-		return false, nil
+		return published{holder: storedFor(response.Body)}, nil
 	}
 	if keep && response.StatusCode == http.StatusAccepted {
-		return true, nil
+		return published{kept: true}, nil
 	}
 	answered, cut, readErr := redact.ReadBounded(response.Body, refusalBodyLimit)
 	if readErr != nil {
 		// Part of a refusal is no refusal: which one it was, a role nobody holds among them,
 		// is unknown, so it is the failure a request that never got its answer is.
-		return false, unreadAnswer("publish notice to "+topic, response.Status, readErr)
+		return published{}, unreadAnswer("publish notice to "+topic, response.Status, readErr)
 	}
 	refusal := fmt.Errorf("publish notice to %s: listener returned %s: %s", topic, response.Status, excerpt(answered, cut))
-	return false, publishRefusal(response.StatusCode, answered, refusal)
+	return published{}, publishRefusal(response.StatusCode, answered, refusal)
+}
+
+// storedFor is the session a publish's 200 names as the holder the listener stored the message
+// for (listenerwire.PublishResponse.Holder, the listener's roleSend.delivered), read within
+// answerBodyLimit. It is "" for an answer that names none - a topic that is no role's, and a
+// listener that does not say - and for a body that cannot be read whole or does not decode: the
+// 200 itself says the listener took the message, so only its recipient is unknown, and no caller
+// sends a message again for that.
+func storedFor(body io.Reader) string {
+	read, cut, err := redact.ReadBounded(body, answerBodyLimit)
+	if err != nil || cut {
+		return ""
+	}
+	var answer listenerwire.PublishResponse
+	if json.Unmarshal(read, &answer) != nil {
+		return ""
+	}
+	return answer.Holder
 }
 
 // publishRefusal is the error a refused publish reads as: refusal, wrapping the error its body
@@ -361,7 +390,8 @@ type SessionRegistration struct {
 }
 
 // answerBodyLimit bounds the body of a listener's answer this client decodes (a 200):
-// ReadSessionRegistration's entry, and RoleHolder's live holder. It is deliberately not
+// ReadSessionRegistration's entry, RoleHolder's live holder, and the session a publish's 200 says
+// it stored the message for (storedFor). It is deliberately not
 // refusalBodyLimit, which bounds an error body. A listener that predates the registration view
 // selector ignores it and answers the whole session row — its topics, its roles, its
 // capabilities — and a role lookup's 200 carries the holder's title, dir and capabilities; nothing
@@ -440,13 +470,15 @@ func (p *HTTPPublisher) ReadSessionRegistration(ctx context.Context, session str
 // an answer it does not have: the daemon's forget of a session its claim does not hold refuses on
 // one, and on every holder it names that is that session (supervise.Deps.RoleHolder). An answer
 // the listener gives the same way however often it is asked — a body read whole that does not
-// decode, a 404 naming no holder under any reason but unclaimed, and any status but 200, 404 and
-// the transient ones — is a *RoleLookupRefused, a fault an operator fixes; a listener it cannot
-// reach, an answer whose body could not be read to its end (unreadAnswer), and a 429, 502, 503
-// or 504 (writeBusUnavailable's 503 among them) are plain errors that asking again can clear. The
+// decode, a 404 naming no holder under any reason but unclaimed, its own 500
+// (listenerwire.FaultStatus, a claim record it cannot decode on this route), and any status but
+// 200, 404 and an outage — is a *RoleLookupRefused, a fault an operator fixes. A listener it
+// cannot reach, an answer whose body could not be read to its end (unreadAnswer), and every
+// listener outage status (listenerwire.Outage, which says where each comes from) are plain errors
+// the caller waits on and asks again about; the wait is bounded by the caller's own. The
 // listener answers from a direct get of its role-claim bucket, which a lagging copy of the bucket
-// can answer for the milliseconds after a claim write: the race any read of the bucket has, and
-// a forget made on such an answer is no worse than one made a moment earlier (review round 16 of
+// can answer for the milliseconds after a claim write: the race any read of the bucket has, and a
+// forget made on such an answer is no worse than one made a moment earlier (review round 16 of
 // #4220, #64).
 func (p *HTTPPublisher) RoleHolder(ctx context.Context, role string) (holder, state string, err error) {
 	target := fmt.Sprintf("%s/v1/roles/%s", p.baseURL, url.PathEscape(role))
@@ -477,8 +509,7 @@ func (p *HTTPPublisher) RoleHolder(ctx context.Context, role string) (holder, st
 		return answer.Holder, cmp.Or(string(answer.HolderState), "live"), nil
 	}
 	body, cut, readErr := redact.ReadBounded(response.Body, refusalBodyLimit)
-	switch response.StatusCode {
-	case http.StatusNotFound:
+	if response.StatusCode == http.StatusNotFound {
 		if readErr != nil {
 			return "", "", unreadAnswer("look up the holder of role "+role, response.Status, readErr)
 		}
@@ -493,7 +524,8 @@ func (p *HTTPPublisher) RoleHolder(ctx context.Context, role string) (holder, st
 			return "", "", nil
 		}
 		return "", "", refused(fmt.Sprintf("the listener's 404 names no holder and gives reason %q, not %q: %s", refusal.Reason, roleholder.Unclaimed, excerpt(body, cut)))
-	case http.StatusTooManyRequests, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+	}
+	if listenerwire.Outage(response.StatusCode) {
 		return "", "", fmt.Errorf("look up the holder of role %s: listener returned %s: %s", role, response.Status, excerpt(body, cut))
 	}
 	return "", "", refused(fmt.Sprintf("listener returned %s: %s", response.Status, excerpt(body, cut)))
@@ -501,10 +533,11 @@ func (p *HTTPPublisher) RoleHolder(ctx context.Context, role string) (holder, st
 
 // RoleLookupRefused is a role lookup the listener answered the same way however often it is
 // asked (RoleHolder): a wrong bearer (401, 403), a claim record it cannot decode (500), a body read
-// whole that does not decode, or a 404 naming no holder under a reason it does not know. Status is
-// the answer's HTTP status and Reason what was wrong with it. Asking again changes nothing until
-// an operator fixes the listener or the daemon's bearer, so a caller that retries on a backoff
-// logs it as the fault it is rather than as a wait.
+// whole that does not decode, a 404 naming no holder under a reason it does not know, or any other
+// status that is neither an answer it reads nor an outage. Status is the answer's HTTP status and
+// Reason what was wrong with it. Asking again changes nothing until an operator fixes the listener
+// or the daemon's bearer, so a caller that retries on a backoff logs it as the fault it is rather
+// than as a wait.
 type RoleLookupRefused struct {
 	Status int
 	Reason string

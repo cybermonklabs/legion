@@ -46,7 +46,7 @@
     "caches": []
   },
   "settings": {
-    "project": "DEMO",
+    "project": "LEGION",
     "port": 13370,
     "bind": "127.0.0.1",
     "state_dir": "/var/lib/legion",

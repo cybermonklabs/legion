@@ -11,7 +11,7 @@ Read this when `skill://legion-controller/references/operations.md` sends you he
 ## A re-run of a CI run
 
 1. Read the failed job's log: `gh run view <id> --log-failed --repo <owner>/<repo>`. Re-run only the failed jobs, and only for an infrastructure failure the log shows, such as a lost runner. Never re-run to test a theory, or on a head a run already tested with the same inputs.
-2. A test that failed and passed on the same code is flaky: write it to the tree whose code it is by a mention (`skill://legion-worker/references/findings.md#write-to-the-owner`), to be fixed at its cause.
+2. A test that failed and passed on the same code is flaky: write it to the tree whose run it failed by a mention (`skill://legion-worker/references/findings.md#write-by-a-mention`), to be fixed at its cause.
 3. Re-run with that token, and name in `--reason` the run, the failure and the issue key:
 
    ```sh
@@ -22,7 +22,7 @@ Read this when `skill://legion-controller/references/operations.md` sends you he
 
 ## An agent the operator holds
 
-1. Open a `dispatch ask` on the report issue that names the claim, quotes the refusal and says why its agent needs `<op>`, with the options `Resume it: the operator resumes the agent with legion claims resume, and I then run <op> on it` and `Keep it held: <what stays as it is>`.
+1. Open a `dispatch ask` that names the claim, quotes the refusal and says why its agent needs `<op>`, with the options `Resume it: the operator resumes the agent with legion claims resume, and I then run <op> on it` and `Keep it held: <what stays as it is>`.
 2. Send no Envoy message to the session that holds the operator's token, and ask no other session to lift the hold.
 3. Name the ask in your summary, and in the day's report while it is open.
 4. On `Resume it`, run `<op>` again; on a second 409, reply under the ask with the refusal, and run it again at the next reply. On `Keep it held`, run nothing.

@@ -785,6 +785,11 @@ func TestWorkHoldHoldsEveryStartOfAPhaseWorker(t *testing.T) {
 		// of only for a claim it starts, waits for the controller's resume (supervise's StartedBy,
 		// RuleHoldError) and runs once afterOpening has made it.
 		controllerHolds claim.Role
+		// registers is the role the writer's left row is addressed to, which waits once the gate
+		// opens until the launch the opening started registers its session: a held message is
+		// published only to a launch that has registered (deliverHeld, cybermonklabs/legion#5312),
+		// so the role comes ready before the left row is to have run.
+		registers claim.Role
 	}
 	writers := []writer{
 		{name: "a transition (a move back), and the hook prompt it fires", act: func(r *workHoldRig) {
@@ -848,7 +853,7 @@ func TestWorkHoldHoldsEveryStartOfAPhaseWorker(t *testing.T) {
 			})
 			r.enqueue(record.MergeForwardMessage{Role: claim.RoleImplementer, Step: record.MergeForwardAsk, Head: "head1", Base: "main",
 				Phase: phase.Testing, PullRequest: 42, Why: record.ConflictCheckNotGreen})
-		}, left: []record.OutboxKind{record.OutboxKindMergeForward}},
+		}, left: []record.OutboxKind{record.OutboxKindMergeForward}, registers: claim.RoleImplementer},
 		{name: "a hook prompt's wake", act: func(r *workHoldRig) {
 			r.enqueue(record.HookPrompt{Hook: "back-to-testing", Role: claim.RoleTester, From: phase.Reviewing, To: phase.Testing, Count: 1,
 				Counts: map[string]int{"reviewing-testing": 1}, PullRequest: "acme/widgets#42", Prompt: "Test the empty list first."})
@@ -980,6 +985,13 @@ func TestWorkHoldHoldsEveryStartOfAPhaseWorker(t *testing.T) {
 					t.Fatalf("the %s once the gate opened is %s by %q holding %+v, want it started with one task behind the opening's sentences",
 						role, c.State, c.SuspendedBy, c.Pending)
 				}
+			}
+			if w.registers != "" {
+				if got := r.rows(record.OutboxKindMergeForward, "", ""); got == 0 {
+					t.Fatalf("the writer's row to the %s ran before its launch registered, want it waiting for that launch", w.registers)
+				}
+				readyClaimAs(t, r.sup, r.token(w.registers), w.registers, "ses-"+string(w.registers))
+				r.drain()
 			}
 			for _, kind := range append(w.left, record.OutboxKindSupervise) {
 				got := r.rows(kind, "", "")
@@ -2694,10 +2706,10 @@ type notConfirmedOnce struct {
 	missed bool
 }
 
-func (p *notConfirmedOnce) Publish(ctx context.Context, topic, message string, payload any, key string) error {
+func (p *notConfirmedOnce) Publish(ctx context.Context, topic, message string, payload any, key string) (string, error) {
 	if topic == p.topic && !p.missed {
 		p.missed = true
-		return fmt.Errorf("publish to %s: listener returned 504: %w", topic,
+		return "", fmt.Errorf("publish to %s: listener returned 504: %w", topic,
 			notify.ErrNotDelivered{Reason: notify.ReasonReceiptTimeout, Holder: "ses-implementer", EventID: key})
 	}
 	return p.holderPublisher.Publish(ctx, topic, message, payload, key)
@@ -2996,9 +3008,9 @@ type unresponsiveHolder struct {
 	topic string
 }
 
-func (p *unresponsiveHolder) Publish(ctx context.Context, topic, message string, payload any, key string) error {
+func (p *unresponsiveHolder) Publish(ctx context.Context, topic, message string, payload any, key string) (string, error) {
 	if topic == p.topic {
-		return fmt.Errorf("publish to %s: listener returned 404: %w", topic, notify.ErrHolderUnresponsive)
+		return "", fmt.Errorf("publish to %s: listener returned 404: %w", topic, notify.ErrHolderUnresponsive)
 	}
 	return p.holderPublisher.Publish(ctx, topic, message, payload, key)
 }

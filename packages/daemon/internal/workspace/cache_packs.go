@@ -30,11 +30,11 @@ import (
 // kept in a Cloud Storage bucket (runtime.kubernetes.repository_cache.bucket): the bucket's name,
 // the clone's refs, and every pack of the clone with its index, each an object of the bucket that
 // the answer names with a signed address to download it by. The cache's /packs handler is its only
-// writer, and an issue pod's fetch its reader (Fetch, which holds every member to check before it
-// asks for any object).
+// writer, and an issue pod's fill its reader (StreamCache, which holds every member to check before
+// it asks for any object).
 //
 // One answer is one snapshot of the cache's clone, the same one /tar would stream: Refs are exactly
-// the files of that snapshot outside objects/pack/ (FeedEntry's rules), and Objects every pack and
+// the files of that snapshot outside objects/pack/ (CacheEntry's rules), and Objects every pack and
 // index of it, each pack with its own index and nothing else, every one of them uploaded whole
 // before the cache listed it. Each SHA-256 comes from the cache, over the channel its token
 // authorizes, never from the bucket, so a reader that checks every download against it takes no
@@ -67,7 +67,7 @@ type PackObject struct {
 
 // CloudStorageHost is the one host a production signed address names: Cloud Storage's own, path
 // style (https://storage.googleapis.com/<bucket>/<object>), over HTTPS. The repository cache signs
-// each download for it, and a fetch takes an address at no other host, but for a test's or the
+// each download for it, and a fill takes an address at no other host, but for a test's or the
 // burst Job's loopback double (PackManifest.check).
 const CloudStorageHost = "storage.googleapis.com"
 
@@ -75,23 +75,23 @@ const CloudStorageHost = "storage.googleapis.com"
 // <owner>/<repo>/objects/pack/: its owner and its name lower-cased, since GitHub takes a
 // repository's names in any case and the cache must write one prefix for one repository whatever
 // case its configuration wrote them in. A bucket serves the repositories of one deployment's
-// project: each cache writes under its own repository's prefix alone, and a fetch takes no object
+// project: each cache writes under its own repository's prefix alone, and a fill takes no object
 // outside its own (PackManifest.check).
 func PackPrefix(repo ghrepo.Repository) string {
 	return strings.ToLower(repo.Owner()) + "/" + strings.ToLower(repo.Name()) + "/objects/pack/"
 }
 
 // PackFileName reports whether file, an object's name past its PackPrefix, is the name of a pack or
-// an index that the clone's tar streams in objects/pack and a feed takes there: one path segment
-// that FeedEntry takes in objects/pack, so that the object's name past the prefix is the file's own
+// an index that the clone's tar streams in objects/pack and a clone takes there: one path segment
+// that CacheEntry takes in objects/pack, so that the object's name past the prefix is the file's own
 // name in the clone.
 func PackFileName(file string) bool {
-	return file != "" && !strings.Contains(file, "/") && FeedEntry("objects/pack/"+file, false)
+	return file != "" && !strings.Contains(file, "/") && CacheEntry("objects/pack/"+file, false)
 }
 
-// BucketFetchTimeout bounds a fetch's one attempt to fill a fresh feed from its repository cache's
+// BucketFetchTimeout bounds a fill's one attempt to fill a fresh clone from its repository cache's
 // bucket, all of it: the ask of the cache's GET /packs, every download from a signed address, and
-// the git verification of what those brought (FetchReport.fromBucket). It is also the life the
+// the git verification of what those brought (StreamReport.fromBucket). It is also the life the
 // cache signs each address of its answer for (repocache's signedLife is this constant), 15
 // minutes, so the attempt never outlives what it was given, and the cache's retirement of an
 // object no set names any more, twice this after the switch that left it out, rests on it. It is a
@@ -100,17 +100,17 @@ func PackFileName(file string) bool {
 // FetchBudget counts it beside them.
 const BucketFetchTimeout = 15 * time.Minute
 
-// SourceBucket and SourceTar are where a fresh feed's history came from when a repository cache is
-// named (FetchReport.Source): the cache's bucket, through the signed addresses its GET /packs gave,
-// or its GET /tar, which streams the clone's refs and packs from the cache itself.
+// SourceBucket and SourceTar are where a fresh clone's history came from when a repository cache
+// is named (StreamReport.Source): the cache's bucket, through the signed addresses its GET /packs
+// gave, or its GET /tar, which streams the clone's refs and packs from the cache itself.
 const (
 	SourceBucket = "bucket"
 	SourceTar    = "/tar"
 )
 
-// BucketObject is one pack or index a fetch downloaded from the repository cache's bucket and
-// verified: its object name as the manifest named it, which the fetch checked is one of its own
-// repository's packs or indexes; its exact size; and the SHA-256 the fetch computed of the bytes it
+// BucketObject is one pack or index a fill downloaded from the repository cache's bucket and
+// verified: its object name as the manifest named it, which the fill checked is one of its own
+// repository's packs or indexes; its exact size; and the SHA-256 the fill computed of the bytes it
 // wrote, which matched the manifest's.
 type BucketObject struct {
 	Name   string
@@ -118,11 +118,12 @@ type BucketObject struct {
 	SHA256 string
 }
 
-// The short reasons a fetch gives for filling a fresh feed from the cache's /tar rather than its
-// bucket (FetchReport.TarReason), each the start of the reason's text: /packs not served at all (a
-// cache with no bucket, or of a release that has no /packs, which answers the mux's plain 404
-// naming no repository); an answer that is no manifest to use (unavailable: not 200, or not read); a
-// manifest that does not hold (invalid: a member the fetch refuses, before any object is asked for);
+// The short reasons a fill gives for filling a fresh clone from the cache's /tar rather than its
+// bucket (StreamReport.TarReason), each the start of the reason's text: /packs not served at all
+// (a cache with no bucket, or of a release that has no /packs, which answers the mux's plain 404
+// naming no repository); an answer that is no manifest to use (unavailable: not 200, or not read,
+// a 503 of a cache whose set is not listed or not narrowed yet among them); a manifest that does
+// not hold (invalid: a member the fill refuses, before any object is asked for);
 // a download that failed or stalled; an object of another size or SHA-256 than the manifest's; a
 // write of what the bucket gave to the volume that failed; and a git verification of the result
 // that failed, or that the attempt's bound ended.
@@ -137,7 +138,7 @@ const (
 	reasonGit         = "failed git verification"
 )
 
-// bucketFailure is why an attempt to fill the feed from the repository cache's bucket ended and
+// bucketFailure is why an attempt to fill the clone from the repository cache's bucket ended and
 // the cache's /tar fills it instead: one of the short reasons above, and what failed. Its text never
 // holds a signed address or its query (downloadCause), nor a ref's contents.
 type bucketFailure struct {
@@ -157,13 +158,13 @@ func (f *bucketFailure) Error() string {
 // moments, and one that takes a minute leaves the downloads too little of the addresses' life.
 const packsAsk = time.Minute
 
-// packManifestLimit is the most bytes of a /packs answer a fetch reads: the refs of a clone, whose
+// packManifestLimit is the most bytes of a /packs answer a fill reads: the refs of a clone, whose
 // packed-refs is a few megabytes for a repository of hundreds of thousands of refs, in base64, and
 // one line per pack and index. An answer past it is refused as an invalid manifest rather than
 // read whole into the pod's memory.
 const packManifestLimit = 64 << 20
 
-// bucketDownloads is how many objects a fetch downloads from the bucket at once: a clone holds a
+// bucketDownloads is how many objects a fill downloads from the bucket at once: a clone holds a
 // few large packs, each with a small index, so four keep the pod's link busy without opening a
 // connection per object.
 const bucketDownloads = 4
@@ -172,7 +173,7 @@ const bucketDownloads = 4
 // (downloadObject): 1 MiB each, so the file is written and hashed in large steps rather than a TLS
 // record, at most 16 KiB, at a time, and at most 8 of them at once, so the body's reader can run 7
 // MiB ahead of a write or a hash that pauses. A download makes a buffer only when it first needs
-// one, so an index of a few kilobytes takes one, and none holds more than 8 MiB: a fetch's
+// one, so an index of a few kilobytes takes one, and none holds more than 8 MiB: a fill's
 // bucketDownloads at once hold at most 32 MiB, however large their packs.
 const (
 	downloadChunk  = 1 << 20
@@ -186,7 +187,7 @@ var downloadWindow = time.After
 // bucketClient downloads each pack and index from its signed address, which is the whole of its
 // access: it is a client of its own, so no request it sends carries the cache's bearer token or any
 // Google credential, and it reads no proxy from the container's environment. It follows no redirect,
-// since a signed address names its object at the one host Fetch checked (PackManifest.check).
+// since a signed address names its object at the one host StreamCache checked (PackManifest.check).
 var bucketClient = func() *http.Client {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.Proxy = nil
@@ -204,49 +205,45 @@ var errBucketRedirect = errors.New("the bucket answered a redirect, which a down
 // bound, which is the repository cache's stream's (CacheStreamLowSpeedBytes).
 var errDownloadStalled = fmt.Errorf("the bucket delivered less than %d bytes in %s, the low-speed bound below which a download is ended", CacheStreamLowSpeedBytes, CacheStreamLowSpeedTime)
 
-// fromBucket tries to fill staging, the feed's temporary sibling, from the repository cache's
-// bucket, all within BucketFetchTimeout of its start, by the request's clock: it asks the cache's
-// GET /packs with its token (askPacks), holds the whole answer to check before it asks for any
-// object (PackManifest.check), makes staging a bare repository (`git init --bare`), downloads every
-// pack and index from its signed address into objects/pack (downloadObjects), writes each ref's
-// exact bytes, and verifies the result as verifyCache does a tar that carried every pack's index:
-// each pack and its index to the checksums git wrote into them, and every object the refs reach
-// with `git fsck --connectivity-only`. No pack is indexed here: each index comes from the bucket,
-// vouched for by the SHA-256 the cache sent, and a pack without one is an error. On success it
-// records the bucket as the feed's source, the objects it verified, their bytes and the times.
+// fromBucket tries to fill gitDir, the git directory of the clone being made, from the repository
+// cache's bucket, all within BucketFetchTimeout of its start, by the stream's clock: it asks the
+// cache's GET /packs with its token (askPacks), holds the whole answer to check before it asks for
+// any object (PackManifest.check), downloads every pack and index from its signed address into
+// gitDir's objects/pack (downloadObjects), writes each ref's exact bytes, and verifies the result
+// as verifyCache does a tar that carried every pack's index: each pack and its index to the
+// checksums git wrote into them, and every object the refs reach with `git fsck
+// --connectivity-only`. So it leaves gitDir as unpackCacheInto does, the cache's refs in place. No
+// pack is indexed here: each index comes from the bucket, vouched for by the SHA-256 the cache
+// sent, and a pack without one is an error. On success it records the bucket as the clone's source,
+// the objects it verified, their bytes and the times.
 //
-// It answers a *bucketFailure when the cache's /tar must fill the feed instead (Fetch removes what
-// it wrote first), and any other error for a failure that ends the fetch: an answer that refuses the
-// pod's token or names another repository (askCache), which /tar would meet too, and a staging
-// repository git could not make.
-func (r *FetchReport) fromBucket(ctx context.Context, run Runner, request FetchRequest, staging string) error {
-	started := request.Clock.Now()
+// It answers a *bucketFailure when the cache's /tar must fill the clone instead (fromCache removes
+// what it wrote first), and any other error for a failure that ends the fill: an answer that
+// refuses the pod's token or names another repository (askCache), which /tar would meet too.
+func (r *StreamReport) fromBucket(ctx context.Context, run Runner, stream CacheStream, gitDir string) error {
+	started := stream.Clock.Now()
 	deadline := started.Add(BucketFetchTimeout)
 	bounded, cancel := context.WithTimeout(ctx, BucketFetchTimeout)
 	defer cancel()
-	manifest, err := askPacks(bounded, request)
+	manifest, err := askPacks(bounded, stream)
 	if err != nil {
 		return err
 	}
-	if err := manifest.check(request); err != nil {
+	if err := manifest.check(stream); err != nil {
 		return &bucketFailure{reasonInvalid, err}
 	}
-	// The init runs beside the repository it makes rather than in it, as unpackCache's does.
-	if _, err := RunChecked(ctx, run, slices.Concat(feedGit, []string{"init", "--bare", "--quiet", staging}), isolatedGitConfig, filepath.Dir(staging)); err != nil {
-		return err
-	}
-	objects, size, err := downloadObjects(bounded, manifest, staging)
+	objects, size, err := downloadObjects(bounded, manifest, gitDir)
 	if err != nil {
 		if bounded.Err() != nil && ctx.Err() == nil {
 			return &bucketFailure{reasonDownload, fmt.Errorf("the bucket attempt's %s bound ran out", BucketFetchTimeout)}
 		}
 		return err
 	}
-	if err := writeRefs(staging, manifest.Refs); err != nil {
+	if err := writeRefs(gitDir, manifest.Refs); err != nil {
 		return err
 	}
-	verifying := request.Clock.Now()
-	if err := verifyCache(ctx, run, request, staging, deadline, BucketFetchTimeout, false); err != nil {
+	verifying := stream.Clock.Now()
+	if err := verifyCache(ctx, run, stream.Clock, gitDir, deadline, "bucket attempt's", BucketFetchTimeout, false); err != nil {
 		switch {
 		// git's own words for a history that is not whole name the objects the refs reach, which
 		// are the refs' contents: the reason names the check alone.
@@ -259,7 +256,7 @@ func (r *FetchReport) fromBucket(ctx context.Context, run Runner, request FetchR
 		return &bucketFailure{reasonGit, err}
 	}
 	r.Source, r.Objects, r.BucketBytes = SourceBucket, objects, size
-	r.BucketDuration, r.VerifyDuration = verifying.Sub(started), request.Clock.Now().Sub(verifying)
+	r.BucketDuration, r.VerifyDuration = verifying.Sub(started), stream.Clock.Now().Sub(verifying)
 	return nil
 }
 
@@ -268,14 +265,14 @@ func (r *FetchReport) fromBucket(ctx context.Context, run Runner, request FetchR
 // that does not serve /packs at all; an answer askCache refuses (a 401, or one naming another
 // repository) is that refusal, outside the issue's volume, as it is for /tar; any other answer, an
 // ask the cache did not answer, and a body that is no manifest are bucket failures.
-func askPacks(ctx context.Context, request FetchRequest) (PackManifest, error) {
+func askPacks(ctx context.Context, request CacheStream) (PackManifest, error) {
 	asking, cancel := context.WithTimeout(ctx, packsAsk)
 	defer cancel()
 	response, err := askCache(asking, request, "/packs", true)
 	if response != nil {
 		defer response.Body.Close()
 	}
-	cache := strings.TrimSuffix(request.CacheURL, "/")
+	cache := strings.TrimSuffix(request.URL, "/")
 	switch {
 	case response == nil:
 		return PackManifest{}, &bucketFailure{reasonUnavailable, err}
@@ -309,8 +306,8 @@ var bucketName = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]*[a-z0-9]$`)
 // 1 to 63 of them between two dots, so a name with no dot is 3 to 63 long, and it stands in an
 // address's path as it is (https://cloud.google.com/storage/docs/buckets#naming). It is the one
 // rule of a bucket's name: the loader holds runtime.kubernetes.repository_cache.bucket to it, and a
-// fetch holds a /packs manifest's bucket to it (PackManifest.check), so the loader accepts no
-// bucket that every fetch then refuses, nor the reverse. It holds the shape alone, which is what
+// fill holds a /packs manifest's bucket to it (PackManifest.check), so the loader accepts no
+// bucket that every fill then refuses, nor the reverse. It holds the shape alone, which is what
 // keeps an address (`gs://…`), a capital or a path out of the configuration; the rest of Cloud
 // Storage's rules (no `goog` prefix, no name that is an IP address) are its own, which it applies
 // where the bucket is made, before any cache reads it.
@@ -329,17 +326,17 @@ func ValidBucketName(name string) bool {
 // sha256Hex is a SHA-256 as the manifest states one: 64 lower-case hex digits.
 var sha256Hex = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
-// check is why the manifest may not fill request's feed, or nil when every member of it is one the
-// fetch takes. It holds the whole answer before the fetch asks for any object:
+// check is why the manifest may not fill request's clone, or nil when every member of it is one the
+// fill takes. It holds the whole answer before the fill asks for any object:
 //   - the bucket is a bucket's name;
 //   - it lists at least one ref and at least one object: a whole set of the cache's clone lists at
 //     least one ref and one pack with its index, so an answer that lists no ref or no object is no
-//     whole set, and taken, it would leave the whole of the feed's history to the fetch from GitHub
-//     that follows while the report named the bucket as its source;
-//   - each ref is a file a feed takes from its cache (FeedEntry), outside objects/pack/, its path
+//     whole set, and taken, it would leave the whole of the clone's history to the fetch from
+//     GitHub that follows while the report named the bucket as its source;
+//   - each ref is a file a clone takes from its cache (CacheEntry), outside objects/pack/, its path
 //     slash-separated, clean and inside the repository, named once, and no other ref's directory;
 //   - each object is a pack or an index of request's repository, its PackPrefix,
-//     <owner>/<repo>/objects/pack/ (the two lower-cased), then one file name a feed takes there
+//     <owner>/<repo>/objects/pack/ (the two lower-cased), then one file name a clone takes there
 //     (PackFileName), named once, of a size of 0 or more and a SHA-256 of 64 lower-case hex digits,
 //     each pack listed with its index and each index with its pack;
 //   - each object's address is a GET of that object in that bucket with a query, at Cloud Storage
@@ -348,7 +345,7 @@ var sha256Hex = regexp.MustCompile(`^[0-9a-f]{64}$`)
 //     loopback address.
 //
 // The refusal names the member, and never the address: that is a credential for its object.
-func (m PackManifest) check(request FetchRequest) error {
+func (m PackManifest) check(request CacheStream) error {
 	if !ValidBucketName(m.Bucket) {
 		return fmt.Errorf("it names the bucket %q, which is no Cloud Storage bucket's name", m.Bucket)
 	}
@@ -376,7 +373,7 @@ func (m PackManifest) check(request FetchRequest) error {
 		}
 	}
 	prefix := PackPrefix(request.Repo)
-	loopback := onLoopback(request.CacheURL)
+	loopback := onLoopback(request.URL)
 	objects := map[string]bool{}
 	for _, object := range m.Objects {
 		file, ours := strings.CutPrefix(object.Name, prefix)
@@ -410,20 +407,20 @@ func (m PackManifest) check(request FetchRequest) error {
 	return nil
 }
 
-// refPathRefusal is why name, a ref path of a manifest, is no ref file a feed takes, or "" when it
-// is one: a clean path inside the repository that FeedEntry takes as a file (HEAD, packed-refs,
+// refPathRefusal is why name, a ref path of a manifest, is no ref file a clone takes, or "" when it
+// is one: a clean path inside the repository that CacheEntry takes as a file (HEAD, packed-refs,
 // refs/...), and nothing under objects/pack/, which the bucket's objects alone fill.
 func refPathRefusal(name string) string {
 	switch {
 	case !filepath.IsLocal(filepath.FromSlash(name)) || path.Clean(name) != name:
-		return "is not a path inside the feed"
-	case strings.HasPrefix(name, "objects/pack/") || !FeedEntry(name, false):
+		return "is not a path inside the clone's git directory"
+	case strings.HasPrefix(name, "objects/pack/") || !CacheEntry(name, false):
 		return "is not one of a repository's refs"
 	}
 	return ""
 }
 
-// addressRefusal is why address is not a signed download of bucket/name that a fetch may ask, or
+// addressRefusal is why address is not a signed download of bucket/name that a fill may ask, or
 // "" when it is one (PackManifest.check). It never quotes the address.
 func addressRefusal(address, bucket, name string, loopback bool) string {
 	u, err := url.Parse(address)
@@ -466,12 +463,12 @@ func loopbackHost(host string) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
-// downloadObjects downloads every object of manifest into staging's objects/pack, at most
+// downloadObjects downloads every object of manifest into gitDir's objects/pack, at most
 // bucketDownloads at once (downloadObject), and answers each as it verified it, in the manifest's
 // order, with their bytes together. The packs start first, largest first, then the indexes, largest
 // first, so a large pack is never left waiting behind many small indexes until its address expires.
 // The first failure ends the rest, and is the answer.
-func downloadObjects(ctx context.Context, manifest PackManifest, staging string) ([]BucketObject, int64, error) {
+func downloadObjects(ctx context.Context, manifest PackManifest, gitDir string) ([]BucketObject, int64, error) {
 	order := make([]int, len(manifest.Objects))
 	for i := range order {
 		order[i] = i
@@ -492,7 +489,7 @@ func downloadObjects(ctx context.Context, manifest PackManifest, staging string)
 	for _, i := range order {
 		object := manifest.Objects[i]
 		group.Go(func() error {
-			got, err := downloadObject(downloading, object, filepath.Join(staging, "objects", "pack", path.Base(object.Name)))
+			got, err := downloadObject(downloading, object, filepath.Join(gitDir, "objects", "pack", path.Base(object.Name)))
 			verified[i] = got
 			return err
 		})
@@ -695,12 +692,12 @@ func refusalCode(body io.Reader) string {
 // errorCode is the shape of a Cloud Storage XML error's code: a word of letters.
 var errorCode = regexp.MustCompile(`^[A-Za-z]{1,64}$`)
 
-// writeRefs writes each ref of a manifest at its path in staging, its exact bytes, making its
+// writeRefs writes each ref of a manifest at its path in gitDir, its exact bytes, making its
 // directory; a ref git init wrote already (HEAD) is written over. Each path is one check took
 // (refPathRefusal).
-func writeRefs(staging string, refs []PackRef) error {
+func writeRefs(gitDir string, refs []PackRef) error {
 	for _, ref := range refs {
-		target := filepath.Join(staging, filepath.FromSlash(ref.Path))
+		target := filepath.Join(gitDir, filepath.FromSlash(ref.Path))
 		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 			return &bucketFailure{reasonWrite, fmt.Errorf("the ref %s: %w", ref.Path, err)}
 		}

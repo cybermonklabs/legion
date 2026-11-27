@@ -272,9 +272,8 @@ test("the Steps tab never leaves a number or a single letter of an id on a line 
 });
 
 // At 390 px the table is twice as wide as its card and scrolls sideways inside it, and the column
-// cut at the card's edge read as clipped text. The table wears the trailing fade the tablist and
-// the details rail wear, on the same terms: while columns lie past the edge, not where the table
-// fits, and not at the end of the scroll.
+// cut at the card's edge read as clipped text. The table wears a trailing fade while columns lie
+// past the edge, not where the table fits, and not at the end of the scroll.
 test("a Steps table wider than its box wears the trailing fade, and one that fits or is scrolled to its end does not", async () => {
   const sizes = installResizeObserver();
   const tab = renderTab(async () => ({

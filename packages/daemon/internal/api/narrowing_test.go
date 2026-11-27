@@ -87,14 +87,15 @@ func contractServed(t *testing.T, body []byte) (mark map[string]any, carried boo
 	return mark, true
 }
 
-// narrowingState is the state golden with two more issues: LEGION-213, a member of the waiting
-// line that is a started issue that gave its slot back to wait on another issue
-// (waitingOnIssueContract), and LEGION-230, an issue held because its owner stopped its task
-// (OwnerPlanContract's `task-stopped`), with its row of `admission.held` under `task_stopped`.
-// The golden itself stands none of the three values, so without them the strips of the waiting
-// line's `kind`, of `holdReason` and of the held words would find nothing to take and write no
-// line, and the rows below could not say that every strip writes its own. Each entry supplies its
-// own keys or values through entryTestRows.carry.
+// narrowingState is the state golden with two more issues and its record's pause: LEGION-213, a
+// member of the waiting line that is a started issue that gave its slot back to wait on another
+// issue (waitingOnIssueContract), LEGION-230, an issue held because its owner stopped its task
+// (OwnerPlanContract's `task-stopped`), with its row of `admission.held` under `task_stopped`, and
+// `paused` as the same record serves it ten seconds into a pause (pausedState). The golden itself
+// stands none of these values, so without them the strips of the waiting line's `kind`, of
+// `holdReason`, of the held words and of the pause would find nothing to take and write no line,
+// and the rows below could not say that every strip writes its own. Each entry supplies its own
+// keys or values through entryTestRows.carry.
 func narrowingState(t *testing.T) State {
 	t.Helper()
 	state := carriedState(t)
@@ -105,6 +106,7 @@ func narrowingState(t *testing.T) State {
 	state.Issues = issues
 	state.Admission.Held = append(slices.Clone(state.Admission.Held),
 		HeldIssue{Issue: taskStoppedIssue, Reason: record.HeldTaskStopped})
+	state.Paused = pausedState(t).Paused
 	return state
 }
 
@@ -524,7 +526,7 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 	// it reads both its expectation and its answer from stateNarrowings; the subtest below, which
 	// names the line as a literal, is what catches that.
 	t.Run("the narrowings above a caller write their own lines", func(t *testing.T) {
-		state := carriedState(t)
+		state := narrowingState(t)
 		body, narrowings := stateNarrowed(t, state, statePodAddr+":41000", podClaims(assignmentsContract-1))
 
 		if bytes.Contains(body, []byte(`"assignments"`)) {
@@ -783,8 +785,8 @@ func TestACallerBelowTheCachesSourceContractGetsNoCachesSource(t *testing.T) {
 					tc.name, capabilities.RepositoryCacheRoom, row, carried, withoutSource)
 			}
 			for name, source := range map[capabilities.Name]capabilities.Source{
-				capabilities.Secrets:      capabilities.SourceConfiguration,
-				capabilities.PoolCapacity: capabilities.SourceBoot,
+				capabilities.ResourceLimits: capabilities.SourceConfiguration,
+				capabilities.PoolCapacity:   capabilities.SourceBoot,
 			} {
 				if row, _ := capabilityRowServed(t, body, name); row["source"] != string(source) {
 					t.Errorf("%s is served the %s row %v, want its source %q kept: that word arrived with the field",

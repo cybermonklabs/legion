@@ -1922,7 +1922,7 @@ These arrive as messages on the Dispatch issue:
   repository setting to `PR_BODY` or `BLANK`. A merge GitHub refuses is the merger's to decide
   on, quoting GitHub's own answer: wait for what GitHub waits for, merge again at the head it
   re-reads, fix in its merge of the base what the base's newer code breaks, send the issue back
-  only for a change to the change's own logic, or tell the architect what only a person can change. A pull
+  for a change to the change's own logic, or tell the architect what only a person can change. A pull
   request a person already merged needs nothing: the daemon reads that merge and closes the
   issue — or, for a root whose tree still runs, once the last other issue of that tree is done or
   parked.
@@ -2220,8 +2220,8 @@ stream sequence (`--consumer` with `--through-seq`, or `consumer` with `throughS
    of one record by its id answers `failed` with the error, and leaves the record as it was.
 3. **Have the cause removed.** A cause outside the daemon, such as the database out of reach, a
    Dispatch or GitHub outage, or GitHub's rate limit, needs no change to Legion: go on once it has
-   cleared. A defect in the daemon needs a fix that runs in the daemon: give the fix to the tree
-   that already works on that code, or hand the defect over as an issue for Legion. The controller
+   cleared. A defect in the daemon needs a fix that runs in the daemon:
+   hand the defect over as an issue for Legion. The controller
    hands over a clear defect as its skill says.
 4. **Replay once the fix runs in the daemon.** A replay applies the stored message through the
    handling a live delivery takes, and publishes nothing to the stream. It judges the fact against
