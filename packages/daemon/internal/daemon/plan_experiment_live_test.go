@@ -75,6 +75,7 @@ type experimentIssue struct {
 // the operator's line after the second boot shows, and each record of a step names the variant of
 // its issue, which `dispatch steps` prints.
 func TestExperimentLive(t *testing.T) {
+	// Not parallel: it gives the process back the operator's own environment, as t.Setenv does (fixtureenv.Live).
 	fixtureenv.Live(t)
 	natsURL := os.Getenv(liveNATSURLEnv)
 	if natsURL == "" {

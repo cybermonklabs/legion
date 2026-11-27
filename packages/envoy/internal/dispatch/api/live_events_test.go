@@ -501,8 +501,9 @@ func TestASinceAboveTheHeadStartsAtTheRelaysPublishedCursor(t *testing.T) {
 }
 
 // TestTheEventFeedResumesAfterTheEventLogIsResetBeneathTheReader: the browser suite empties the event
-// log between its scenarios (`truncate ... restart identity cascade`, e2e/seed.ts), so the next
-// row's id is 1 again. The relay notices, ends every open subscription (ended, behind), and the page
+// log between its scenarios (e2e/seed.ts deletes its rows and restarts its ids; this test truncates
+// it with `restart identity`, which does the same), so the next row's id is 1 again. The relay
+// notices, ends every open subscription (ended, behind), and the page
 // subscribes again -- and a page only ever raises its cursor, never lowers it, so it comes back
 // naming a since above the new log's head. Without the clamp, catch-up (`id > since`) matches
 // nothing and the live loop drops every event of the new log for ever, because they all sit at or
@@ -732,6 +733,7 @@ func TestARelayDropPastTheBoundsEndsTheSubscriptionAsBehind(t *testing.T) {
 // loaded machine lengthens neither end of it, and a subscription that skipped the retry fails
 // however long the rest took.
 func TestAnEventsSubscriptionWhoseReadFailsEndsAsBehind(t *testing.T) {
+	// Not parallel: it swaps the default logger (logtest.SetDefault).
 	_, database, _, served := newRegisteredTestServer(t, testServerOptions{})
 	database.Pool.Close()
 	ctx, err := store.ForConcurrentRead(store.WithTransactionTracking(t.Context()))
@@ -971,6 +973,8 @@ func liveFixtureEventFrame(t *testing.T) LiveEventFrame {
 // on a socket, so the frame never waits to be asked. The tree is the one ReadForDisplay makes of
 // that text.
 func TestALiveEventFrameCarriesItsTrees(t *testing.T) {
+	// Not parallel: it sets pmdoc's block ID generator for the whole process
+	// (pmdoc.SetBlockIDGenerator in liveFixtureEventFrame).
 	frame := liveFixtureEventFrame(t)
 	var carried struct {
 		Trees map[string]json.RawMessage `json:"trees"`

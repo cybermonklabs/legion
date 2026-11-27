@@ -111,6 +111,7 @@ func refusedProbes(server *testnats.Server) int {
 // The control is the same records swept by a listener whose user holds the calls: it reads each
 // record and each previous holder, so the wire reading sees those reads when they are made.
 func TestAListenerWithoutTheSessionConsumerGrantRunsNoTakeoverPass(t *testing.T) {
+	t.Parallel()
 	server, listenerURL, dispatchURL := grantHub(t)
 	rig := newCrashRigOn(t, listenerURL)
 	const records, roles = 20, 5
@@ -144,6 +145,7 @@ func TestAListenerWithoutTheSessionConsumerGrantRunsNoTakeoverPass(t *testing.T)
 // record. The claim here starts no handover of its own (skipClaimHandover), as a claim through
 // Dispatch's listener runs no pass, so the copy is the sweep's.
 func TestATakeoverCopyCompletesOnTheListenerThatHoldsTheGrant(t *testing.T) {
+	t.Parallel()
 	_, listenerURL, dispatchURL := grantHub(t)
 	rig := newCrashRigOn(t, listenerURL)
 	const a, b, role = "ses_grant_a", "ses_grant_b", "grant"
@@ -185,6 +187,7 @@ func TestATakeoverCopyCompletesOnTheListenerThatHoldsTheGrant(t *testing.T) {
 // the server again once the episode is over; a listener whose user holds the calls is answered yes
 // with no read while a consumer call it made succeeded less than that long ago.
 func TestTheTakeoverGrantIsAskedOncePerEpisode(t *testing.T) {
+	t.Parallel()
 	server, listenerURL, dispatchURL := grantHub(t)
 	var clock stateClock
 	delivery := func(url string) *sessionDelivery {
