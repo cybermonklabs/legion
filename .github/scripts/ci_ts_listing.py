@@ -20,9 +20,24 @@ import os
 import re
 import subprocess
 import tempfile
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from ci_filter_coverage import REPO, error
+
+# The files a program lists that no commit holds, each with the committed files it is rendered
+# from: git ignores the file and every `bun install` writes it (the root package.json's
+# postinstall), so no change ever carries it, and a filter holding it would select nothing. What
+# changes it is a change to its sources, so the listing gives those in its place: the changes job's
+# generation and check-ts-filters.sh hold a program's filter to them, and a listed block lists the
+# sources under its tree, never the file. Each entry is generated file: (source, ...), every path
+# repository-relative.
+RENDERED = {
+    "packages/contracts/src/dispatch-api.generated.ts": (
+        "packages/contracts/schemas/dispatch-openapi.json",
+        "packages/contracts/scripts/gen-api.ts",
+    ),
+}
 
 # The files of this repository the listings resolve with besides the sources they list, which a
 # change can edit to move a listing while none of the files it lists changes: each program's
@@ -105,7 +120,8 @@ def record_resolution(kind: str, path: str, files: list) -> None:
 def kept(paths) -> list:
     """The paths inside the repository and outside node_modules, repository-relative and sorted.
     A relative path is read against the repository root, which is where both commands run and
-    what each prints a relative path against."""
+    what each prints a relative path against. A file no commit holds, which every `bun install`
+    renders, stands for the committed files it is rendered from (RENDERED)."""
     files = set()
     for line in paths:
         if not line.strip():
@@ -119,7 +135,7 @@ def kept(paths) -> list:
             continue
         if "node_modules" in relative.parts:
             continue
-        files.add(relative.as_posix())
+        files.update(RENDERED.get(relative.as_posix(), (relative.as_posix(),)))
     return sorted(files)
 
 
@@ -200,10 +216,19 @@ def bundle_files(entry: str, problems: list) -> list | None:
     return files
 
 
+def listing(kind: str, path: str) -> tuple:
+    """A program's files or a bundle's, by the kind ci_ts_programs.py pairs it as, with the
+    refusals its command raised; it records nothing."""
+    refused: list = []
+    files = program_files(path, refused) if kind == "program" else bundle_files(path, refused)
+    return files, refused
+
+
 def source_files(kind: str, path: str, problems: list) -> list | None:
-    """A program's files or a bundle's, by the kind ci_ts_programs.py pairs it as, with what the
-    listing resolved them with recorded in RESOLVED."""
-    files = program_files(path, problems) if kind == "program" else bundle_files(path, problems)
+    """A program's files or a bundle's, with what the listing resolved them with recorded in
+    RESOLVED."""
+    files, refused = listing(kind, path)
+    problems += refused
     record_resolution(kind, path, files or [])
     return files
 
@@ -215,12 +240,52 @@ def pairs() -> list:
             + [("bundle", name, entry, why) for name, entry, why in BUNDLES])
 
 
+# The listings start() began, each the future of a listing()'s answer, by (kind, path).
+STARTED: dict = {}
+
+
+def start() -> None:
+    """Begin every listing a LISTED entry can ask for, each tsc or Bun run on a thread of its own,
+    and return at once. The changes job's generation calls it right after the engine's import
+    (check-ci-filters.sh), so tsc's listing of the dashboard's program, the longest piece of the
+    generation (9 s of the 16 s on a runner, run 45766372051), runs beside the read table's load
+    and the go commands rather than after the load. It records nothing: listed_files() records what
+    a listing resolved with, and the refusals it raised, for the entries it is asked for, as it does
+    for a listing it starts itself, so the filters, their inputs and the refusals are the same."""
+    from ci_ts_programs import LISTED
+    sources = {source for _name, _tree, given, _why in LISTED for source in given}
+    asked = dict.fromkeys((kind, path) for kind, pair, path, _ in pairs()
+                          if pair in sources and (kind, path) not in STARTED and (REPO / path).exists())
+    if not asked:
+        return
+    pool = ThreadPoolExecutor(max_workers=len(asked))
+    for kind, path in asked:
+        STARTED[kind, path] = pool.submit(listing, kind, path)
+    pool.shutdown(wait=False)
+
+
+def listed_alone(kind: str, path: str) -> tuple:
+    """source_files of one program or bundle, with the refusals it recorded: the answer start()
+    began when there is one, else a listing of its own."""
+    started = STARTED.get((kind, path))
+    files, refused = started.result() if started is not None else listing(kind, path)
+    record_resolution(kind, path, files or [])
+    return files, list(refused)
+
+
 def listed_files(filters, problems: list) -> dict:
     """Per LISTED entry of ci_ts_programs.py whose filter is in `filters`, the files of its tree
     that the programs and bundles paired with its sources give, sorted: the filter's listed block.
     A source that cannot be listed leaves the entry out with a refusal recorded, so a caller that
-    finds a problem knows the block is unknown."""
+    finds a problem knows the block is unknown. The sources are listed at once, each tsc or Bun
+    run on a processor of its own, and each one's refusals join `problems` where a listing one
+    after another would have put them."""
     from ci_ts_programs import LISTED
+    asked = dict.fromkeys((kind, path) for name, _tree, sources, _why in LISTED if name in filters
+                          for source in sources for kind, pair, path, _ in pairs()
+                          if pair == source and (REPO / path).exists())
+    with ThreadPoolExecutor(max_workers=max(1, len(asked))) as pool:
+        answers = {asks: pool.submit(listed_alone, *asks) for asks in asked}
     files_of: dict = {}
     blocks: dict = {}
     for name, tree, sources, _why in LISTED:
@@ -236,8 +301,9 @@ def listed_files(filters, problems: list) -> dict:
                 known = False
             for kind, path in sourced:
                 if (kind, path) not in files_of:
-                    if (REPO / path).exists():
-                        files_of[kind, path] = source_files(kind, path, problems)
+                    if (kind, path) in answers:
+                        files_of[kind, path], refused = answers[kind, path].result()
+                        problems += refused
                     else:
                         problems.append(error(".github/scripts/ci_ts_programs.py",
                                               f"{path} is no path of this repository, so filter {source}'s {kind} "

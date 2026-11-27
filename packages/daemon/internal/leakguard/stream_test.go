@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -75,17 +76,14 @@ func gitFirst(t *testing.T, script string) *Guard {
 // added, the pass's report holds its line before end is called. A pass that held its records
 // and scanned them at its end would hold the whole push.
 func TestTheRulePassScansARecordAsItArrives(t *testing.T) {
-	guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public)
-	pass, err := guard.rulePass(bound(t), "the push")
-	if err != nil {
+	pass := fixtureRules(t).newPass(bound(t))
+	const text = "the runner answers at " + leakguardtest.RulesHost
+	if err := pass.add(Record{Label: "notes.md", Text: text}); err != nil {
 		t.Fatal(err)
 	}
-	if err := pass.add(Record{Label: "notes.md", Text: "the runner answers at " + theHost}); err != nil {
-		t.Fatal(err)
-	}
-	want := []string{"notes.md: " + theClass}
-	if !slices.Equal(pass.report.lines, want) {
-		t.Fatalf("after the record was added the report is %q, want %q", pass.report.lines, want)
+	want := []string{leakguardtest.ReportLine("notes.md", leakguardtest.RulesHostClass, leakguardtest.RulesHost, 1, text)}
+	if !slices.Equal(pass.report.shown, want) {
+		t.Fatalf("after the record was added the report is %q, want %q", pass.report.shown, want)
 	}
 	if err := pass.add(Record{Label: "notes.md", Text: "a line of nothing in particular"}); err != nil {
 		t.Fatal(err)
@@ -103,19 +101,16 @@ func TestTheRulePassScansARecordAsItArrives(t *testing.T) {
 func TestTheRulePassReadsTheDiffAsGitWritesIt(t *testing.T) {
 	seen := filepath.Join(t.TempDir(), "the first line was scanned")
 	guard := gitFirst(t, "printf 'diff --git a/f.md b/f.md\\n--- /dev/null\\n+++ b/f.md\\n@@ -0,0 +1,2 @@\\n"+
-		"+the runner answers at "+theHost+"\\n'\n"+
+		"+the runner answers at "+leakguardtest.RulesHost+"\\n'\n"+
 		"i=0\nwhile [ ! -e '"+seen+"' ]; do\n  i=$((i+1))\n  [ \"$i\" -gt 100 ] && exit 7\n  sleep 0.1\ndone\n"+
 		"printf '+a second line of nothing\\n'\n")
-	pass, err := guard.rulePass(bound(t), "the push")
-	if err != nil {
-		t.Fatal(err)
-	}
+	pass := fixtureRules(t).newPass(bound(t))
 	made := false
 	emit := func(record Record) error {
 		if err := pass.add(record); err != nil {
 			return err
 		}
-		if len(pass.report.lines) > 0 && !made {
+		if len(pass.report.shown) > 0 && !made {
 			made = true
 			return os.WriteFile(seen, nil, 0o600)
 		}
@@ -124,7 +119,7 @@ func TestTheRulePassReadsTheDiffAsGitWritesIt(t *testing.T) {
 	if err := guard.addedLines(bound(t), t.TempDir(), "HEAD", 1, emit); err != nil {
 		t.Fatalf("the read of the diff: %v", err)
 	}
-	want := []string{"f.md: " + theClass}
+	want := []string{leakguardtest.ReportLine("f.md", leakguardtest.RulesHostClass, leakguardtest.RulesHost, 1, "the runner answers at "+leakguardtest.RulesHost)}
 	if got := refusal(t, pass.end("the push")).Lines; !slices.Equal(got, want) {
 		t.Fatalf("the refusal is %q, want %q", got, want)
 	}
@@ -137,18 +132,17 @@ func TestEveryAddedLineIsReadWholeAsGitWritesIt(t *testing.T) {
 	var many strings.Builder
 	for i := range 2000 {
 		if i%500 == 7 {
-			fmt.Fprintf(&many, "line %d names %s\n", i, theHost)
+			fmt.Fprintf(&many, "line %d names %s\n", i, leakguardtest.RulesHost)
 			continue
 		}
 		fmt.Fprintf(&many, "line %d of a file of many lines\n", i)
 	}
-	long := strings.Repeat("a long line of nothing ", 192<<10/23) + theHost
+	long := strings.Repeat("a long line of nothing ", 192<<10/23) + leakguardtest.RulesHost
 	push := aPushOf(t, map[string]string{"many.md": many.String(), "long.md": "before\n" + long + "\nafter\n"})
 	err := push.through(guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public))
-	want := append([]string{"long.md: " + theClass}, slices.Repeat([]string{"many.md: " + theClass}, 4)...)
-	if got := refusal(t, err).Lines; !slices.Equal(got, want) {
-		t.Fatalf("the report is %q, want %q", got, want)
-	}
+	// A line is read by its record and class (reports): the long line's own is a window of it.
+	want := append([]string{"long.md: " + leakguardtest.RulesHostClass}, slices.Repeat([]string{"many.md: " + leakguardtest.RulesHostClass}, 4)...)
+	reports(t, refusal(t, err).Lines, want...)
 }
 
 // holdUntilEnd is a shell loop that runs while a file the test made is there and the test binary
@@ -245,7 +239,7 @@ func TestTheReadEndsAtOnceAfterAnErrorOfWait(t *testing.T) {
 // deadline nothing stops git's process group, so the process need not leave it, and the test
 // needs nothing a system may lack. The answer is the one a push with no such process gets.
 func TestAReadEndsAfterGitExitsThoughAProcessHoldsItsOutput(t *testing.T) {
-	push := aPushOf(t, map[string]string{"notes.md": "a line of nothing\nthe runner answers at " + theHost + "\n"})
+	push := aPushOf(t, map[string]string{"notes.md": "a line of nothing\nthe runner answers at " + leakguardtest.RulesHost + "\n"})
 	want := refusal(t, push.through(guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public))).Lines
 	git := fixturegit.CompiledGit(t)
 	guard := gitFirst(t, "case \" $* \" in\n"+
@@ -302,7 +296,7 @@ func TestWaitAnswersAnErrorWhereAProcessHoldsBothOfGitsOutputs(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			push := aPushOf(t, map[string]string{"notes.md": "a line of nothing\nthe runner answers at " + theHost + "\n"})
+			push := aPushOf(t, map[string]string{"notes.md": "a line of nothing\nthe runner answers at " + leakguardtest.RulesHost + "\n"})
 			guard := gitFirst(t, "case \" $* \" in\n"+
 				"*\" --unified=0 \"*) ("+holdUntilEnd(t)+") &\n  '"+git+"' \"$@\" || exit\n  "+tc.then+" ;;\n"+
 				"*) exec '"+git+"' \"$@\" ;;\nesac\n")
@@ -530,82 +524,137 @@ func TestARenamedPathIsReadAsItsNewPath(t *testing.T) {
 	push := aPushOf(t, map[string]string{"old.md": "a line of nothing in particular\n"})
 	fixture := fixturegit.Isolated(t, t.TempDir())
 	base := push.req.Updates[0].LocalSHA
-	// Built out of two pieces for the reason theHost is (TestTheReportMasksAPathComponent).
-	path := "packages/" + "agen" + "t-c/notes.md"
+	path := "docs/" + leakguardtest.Word + "/notes.md"
 	if err := os.MkdirAll(filepath.Join(push.req.Dir, filepath.Dir(path)), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	fixture.Run(push.req.Dir, "git", "mv", "old.md", path)
 	fixture.Run(push.req.Dir, "git", "commit", "--quiet", "-m", "a rename")
 	push.req.Updates = []Update{{LocalRef: "refs/heads/main", LocalSHA: fixture.Run(push.req.Dir, "git", "rev-parse", "HEAD"), RemoteRef: "refs/heads/main", RemoteSHA: base}}
-	const class = "names the private deployment repository or its Dispatch project key"
-	want := []string{"packages/<name>/notes.md: " + class, "packages/<name>/notes.md: " + class + " in its path"}
-	if got := refusal(t, push.through(guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public))).Lines; !slices.Equal(got, want) {
-		t.Fatalf("the report is %q, want %q", got, want)
-	}
+	reports(t, refusal(t, push.through(guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public))).Lines,
+		path+": "+leakguardtest.WordPathClass, path+": "+leakguardtest.WordClass)
 }
 
 // A path that holds a space is reported as itself. git ends the "+++" line that names such a path
 // with a tab, which is no part of the path; where the path also holds a byte git quotes, a tab of
 // its own here, git writes it C-quoted with its b/ prefix inside the quotes, and the report names
-// the path itself, not that quoted form.
+// the path itself, as it names any label (shownText, which writes the tab as `\t`), not that
+// quoted form.
 func TestAPathWithASpaceIsReportedAsItself(t *testing.T) {
 	push := aPushOf(t, map[string]string{
-		"a named file.md":     "the runner answers at " + theHost + "\n",
-		"a named\tand tab.md": "the runner answers at " + theHost + "\n",
+		"a named file.md":     "the runner answers at " + leakguardtest.RulesHost + "\n",
+		"a named\tand tab.md": "the runner answers at " + leakguardtest.RulesHost + "\n",
 	})
 	err := push.through(guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public))
 	// git lists the paths in byte order, and a tab sorts before a space.
-	want := []string{"a named\tand tab.md: " + theClass, "a named file.md: " + theClass}
-	if got := refusal(t, err).Lines; !slices.Equal(got, want) {
-		t.Fatalf("the report is %q, want %q", got, want)
-	}
+	reports(t, refusal(t, err).Lines, `a named\tand tab.md: `+leakguardtest.RulesHostClass, "a named file.md: "+leakguardtest.RulesHostClass)
 }
 
-// A refusal names at most refusalLines lines and counts the rest in one last line of its own, so a
-// push of a file of many lines at a path a path rule refuses, each line refused for the path, is a
-// report of bounded size. A refusal of no more lines than the bound is every line, as it was.
+// A refusal shows at most maxLinesShown lines and counts the rest in one last line of its own, so
+// a push of a file of many lines, each of which a rule refuses, is a report of bounded size. A
+// refusal of no more lines than the bound is every line. The path rule refuses each added line of
+// the file for its path too, and that finding is one line of the report however many lines write
+// it (shownReport).
 func TestARefusalNamesAtMostItsBoundOfLines(t *testing.T) {
-	// Built out of two pieces for the reason theHost is (TestTheReportMasksAPathComponent).
-	path := "packages/" + "agen" + "t-c/notes.md"
-	const class = "names the private deployment repository or its Dispatch project key"
+	path := "docs/" + leakguardtest.Word + "-notes.md"
 	for _, tc := range []struct {
 		name string
-		// lines is how many lines the file adds; the report of each is one line, and the path's
-		// own record is two more, one of the content rule and one of the path rule.
+		// lines is how many lines the file adds, each naming the host: the report of each is one
+		// line, and the path's own record is two more, one of the path rule and one of the word
+		// rule.
 		lines int
-		want  func(today []string) []string
+		// left is how many matches the report leaves out.
+		left int
 	}{
-		{name: "fewer lines than the bound", lines: 3, want: func(today []string) []string { return today }},
-		{name: "the bound's own number of lines", lines: refusalLines - 2, want: func(today []string) []string { return today }},
-		{
-			name:  "one line more than the bound",
-			lines: refusalLines - 1,
-			want: func(today []string) []string {
-				return append(today[:refusalLines:refusalLines], fmt.Sprintf("(1 more line left out: this report names the first %d)", refusalLines))
-			},
-		},
-		{
-			name:  "more lines than the bound",
-			lines: refusalLines + 5,
-			want: func(today []string) []string {
-				return append(today[:refusalLines:refusalLines], fmt.Sprintf("(7 more lines left out: this report names the first %d)", refusalLines))
-			},
-		},
+		{name: "fewer lines than the bound", lines: 3},
+		{name: "the bound's own number of lines", lines: maxLinesShown - 2},
+		{name: "one line more than the bound", lines: maxLinesShown - 1, left: 1},
+		{name: "more lines than the bound", lines: maxLinesShown + 5, left: 7},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var content strings.Builder
+			today := []string{
+				path + ": " + leakguardtest.WordPathClass + ": matched the path",
+				leakguardtest.ReportLine(path, leakguardtest.WordClass, "/"+leakguardtest.Word+"-", 1, path),
+			}
 			for i := range tc.lines {
-				fmt.Fprintf(&content, "line %d of nothing in particular\n", i)
+				line := fmt.Sprintf("line %d names %s", i, leakguardtest.RulesHost)
+				content.WriteString(line + "\n")
+				today = append(today, leakguardtest.ReportLine(path, leakguardtest.RulesHostClass, leakguardtest.RulesHost, i+1, line))
+			}
+			want := today
+			if tc.left > 0 {
+				want = append(today[:maxLinesShown:maxLinesShown], fmt.Sprintf("… and %d more matches not shown", tc.left))
 			}
 			push := aPushOf(t, map[string]string{path: content.String()})
 			got := refusal(t, push.through(guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public))).Lines
-			today := []string{"packages/<name>/notes.md: " + class, "packages/<name>/notes.md: " + class + " in its path"}
-			today = append(today, slices.Repeat([]string{"packages/<name>/notes.md: " + class + " in its path"}, tc.lines)...)
-			want := tc.want(today)
 			if !slices.Equal(got, want) {
 				t.Fatalf("the report is %d lines ending %q, want %d lines ending %q", len(got), got[max(0, len(got)-2):], len(want), want[max(0, len(want)-2):])
 			}
 		})
+	}
+}
+
+// A rule pass keeps nothing of a line past its report's bound but the count of it, so its memory
+// is the shown lines and a count however many lines the rules refuse. 300 lines of one file each
+// name the host, and once the report is full a line it shows and a line it leaves out each come
+// again, 26 times. The report shows the first maxLinesShown lines, each once; it counts every add
+// past the bound that is not a line it shows, so a left-out line each time it comes, and the count
+// is of matches, not of distinct lines; and its fields hold the shown lines and counts alone,
+// nothing of a line it counted.
+func TestARefusalCountsEachMatchPastItsBoundAndKeepsNothingOfIt(t *testing.T) {
+	const lines, shownAgain, leftOutAgain = 300, 3, 200
+	record := func(i int) Record {
+		return Record{Label: "notes.md", Text: fmt.Sprintf("line %d names %s", i, leakguardtest.RulesHost), Path: "notes.md", FirstLine: i + 1}
+	}
+	pass := fixtureRules(t).newPass(bound(t))
+	// counted is how many adds the report should count: every add of a line past the bound.
+	counted := 0
+	add := func(i int) {
+		t.Helper()
+		if err := pass.add(record(i)); err != nil {
+			t.Fatal(err)
+		}
+		if i >= maxLinesShown {
+			counted++
+		}
+	}
+	for i := range lines {
+		add(i)
+		if i >= maxLinesShown && i%10 == 0 {
+			add(shownAgain)
+			add(leftOutAgain)
+		}
+	}
+	want := make([]string, maxLinesShown)
+	for i := range want {
+		r := record(i)
+		want[i] = leakguardtest.ReportLine(r.Label, leakguardtest.RulesHostClass, leakguardtest.RulesHost, r.FirstLine, r.Text)
+	}
+	if !slices.Equal(pass.report.shown, want) {
+		t.Errorf("the report shows %d lines, from %q, want the first %d lines, each once", len(pass.report.shown), pass.report.shown[:min(2, len(pass.report.shown))], maxLinesShown)
+	}
+	if pass.report.left != counted {
+		t.Errorf("the report counts %d matches past its bound, want %d, each add past the bound that is not a line it shows", pass.report.left, counted)
+	}
+	// Every map or slice the report keeps holds at most maxLinesShown entries, so a field that
+	// keeps something of each line past the bound fails here whatever it is named; the shown lines
+	// and the count are pinned exactly above.
+	report := reflect.ValueOf(pass.report)
+	for i := range report.NumField() {
+		name, field := report.Type().Field(i).Name, report.Field(i)
+		switch {
+		case field.CanInt():
+		case field.Kind() == reflect.Map || field.Kind() == reflect.Slice:
+			if field.Len() > maxLinesShown {
+				t.Errorf("the report keeps %s, %d entries after %d matching lines, want at most its %d shown lines: nothing of a line past them", name, field.Len(), lines, maxLinesShown)
+			}
+		default:
+			t.Errorf("the report keeps %s, a %s, want its shown lines and counts alone", name, field.Kind())
+		}
+	}
+	got := refusal(t, pass.end("the push")).Lines
+	if last := fmt.Sprintf("… and %d more matches not shown", counted); len(got) != maxLinesShown+1 || got[maxLinesShown] != last {
+		t.Errorf("the refusal is %d lines ending %q, want %d lines ending %q", len(got), got[len(got)-1], maxLinesShown+1, last)
 	}
 }

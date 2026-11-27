@@ -27,7 +27,7 @@ const unresolvable = "nats.example.test:4222"
 // waitForConnects waits for the proxy to have received n requests, every one of them want.
 func waitForConnects(t *testing.T, proxy *testsocks5.Server, n int, want testsocks5.Request) {
 	t.Helper()
-	waitFor(t, 15*time.Second, fmt.Sprintf("%d requests at the proxy", n), func() bool { return len(proxy.Requests()) >= n })
+	waitFor(t, fmt.Sprintf("%d requests at the proxy", n), func() bool { return len(proxy.Requests()) >= n })
 	requireConnects(t, proxy, slices.Repeat([]testsocks5.Request{want}, n))
 }
 
@@ -103,7 +103,7 @@ func TestSOCKS5ProxyCarriesEveryConnectionWithTheHostUnresolved(t *testing.T) {
 				t.Helper()
 				envelope := roleEnvelope(topic)
 				envelope.EventID = marker
-				waitFor(t, 15*time.Second, "a core publish to come back through the proxy "+marker, func() bool {
+				waitFor(t, "a core publish to come back through the proxy "+marker, func() bool {
 					if err := client.Publish(envelope); err != nil {
 						return false
 					}
@@ -130,7 +130,7 @@ func TestSOCKS5ProxyCarriesEveryConnectionWithTheHostUnresolved(t *testing.T) {
 			// with the same proxy.
 			client.Conn.Close()
 			waitForConnects(t, fake, 3, want)
-			waitFor(t, 15*time.Second, "the replacement connection", client.Connected)
+			waitFor(t, "the replacement connection", client.Connected)
 			roundTrip("after-the-replacement")
 		})
 	}
@@ -152,7 +152,7 @@ func TestSOCKS5ProxyCarriesEveryConnectionWithTheHostUnresolved(t *testing.T) {
 		}
 		roundTrip := func(marker string) {
 			t.Helper()
-			waitFor(t, 15*time.Second, "a publish to come back through the proxy "+marker, func() bool {
+			waitFor(t, "a publish to come back through the proxy "+marker, func() bool {
 				if err := conn.Publish(subject, []byte(marker)); err != nil {
 					return false
 				}
@@ -390,7 +390,7 @@ func TestAMalformedProxyIsRefusedBeforeAnyDial(t *testing.T) {
 		t.Fatalf("dial the server URL: %v", err)
 	}
 	_ = conn.Close()
-	waitFor(t, 5*time.Second, "the server URL to count a dial", func() bool { return fake.Accepted() >= 1 })
+	waitFor(t, "the server URL to count a dial", func() bool { return fake.Accepted() >= 1 })
 }
 
 // A host:port whose host is an IP address without a zone, or a DNS name as Go's resolver reads one

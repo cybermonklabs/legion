@@ -10,6 +10,7 @@ import (
 // gets an empty one of each, which no chain of pushes starts from, so a late push takes nothing
 // back from it and settles its planned mark only as that head's own push.
 func TestAPullRequestRecordedBefore0060NamesNoStartOfItsMoves(t *testing.T) {
+	t.Parallel()
 	store := emptyStore(t)
 	ctx := context.Background()
 	migrateThrough(t, store, 59)

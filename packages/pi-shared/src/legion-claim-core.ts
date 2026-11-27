@@ -1,3 +1,4 @@
+import { outage } from "@legion/contracts/http-status";
 import type { LegionRegistration } from "@legion/contracts/legion-api";
 import { messageFor } from "@legion/envoy-client/errors";
 import {
@@ -23,12 +24,15 @@ export interface LegionClaimHost {
    * this session holds its Envoy name, and what serves it reads the capability then. */
   readonly setCapability: (capability: ClaimCapability) => void;
   /** Claims `role`, the claim token, on Envoy for this session: the topic the daemon sends the
-   * claim's task and every notice on. It is the boot's last step and runs after `claims/ready`
+   * claim's task and every notice on. `replaces` is the registration's `replaces`, the session
+   * this one replaces, undefined where it names none: the claim sends it as
+   * `previous_session_id`, so the listener hands that session's unread direct and role messages
+   * to this one once the claim lands. It is the boot's last step and runs after `claims/ready`
    * has answered, at the session's first turn (`onFirstTurn`) or at the bound, whichever comes
    * first — at once where the turn started while ready was still being retried. Throws when the
    * role cannot be held, which is logged and stops the session; a claim the listener answered
    * 503 is claimed again instead (`claimRoleAtFirstTurn`). */
-  readonly claimRole: (role: string) => Promise<void>;
+  readonly claimRole: (role: string, replaces?: string) => Promise<void>;
   /** Hands the host `started`, the signal to call once the session's first turn has started —
    * whatever started it: the daemon's task, a card, a reminder. It is called as soon as
    * `claims/register` has answered, before `claims/ready`, so a turn that starts while that
@@ -59,12 +63,18 @@ export interface LegionClaimHost {
    * doubled at each retry up to `ROLE_CLAIM_RETRY_MAX_DELAY_MS`. Unset, `ROLE_CLAIM_RETRY_FIRST_DELAY_MS`;
    * a test sets it short. */
   readonly roleClaimRetryFirstDelayMs?: number;
-  /** Aborts when the host stops: a claim the listener answered 503 is not made again after it. */
+  /** Aborts when the host stops: the deferred claim's bound is cleared and no claim is made
+   *  from then on, a claim the listener answered 503 is not made again after it, a refused
+   *  `claims/register` is not said, and a failed `claims/ready` at the boot is neither said nor
+   *  sent again (`callReadyWithRetry`). A role regain from then on writes nothing: a regain that
+   *  starts after the abort sends no `claims/ready`, and a regain whose `claims/ready` answers
+   *  after it writes no line, whether that ready passed or failed. */
   readonly signal?: AbortSignal;
   /** Sets the one hook the Envoy heartbeat runs after it re-establishes this session as a role's
    * holder, with why it did (`reclaimed`, `reregistered`). */
   readonly onRoleRegained: (listener: (role: string, reason: string) => Promise<void>) => void;
-  /** Writes one line to the agent's log. */
+  /** Writes one line to the agent's log: every line of the boot's, the `claims/ready` retries'
+   *  included. */
   readonly log: (line: string) => void;
   /** What `stop` does, as a log line names it: `exiting so the daemon launches it again`. */
   readonly stopping: string;
@@ -86,10 +96,11 @@ export interface LegionClaimBoot {
  * Boots a claim on `/legion/v1/claims/*`, the same on every harness: `claims/register`; the
  * host's first-turn signal registered (`onFirstTurn`), which is why a turn that starts while the
  * ready below is still being retried is not lost; `afterRegister`; the capability recorded;
- * `claims/ready`, retried on a 5xx or transport failure (`callReadyWithRetry`); the regain
+ * `claims/ready`, retried on an outage or a transport failure (`callReadyWithRetry`); the regain
  * listener, which re-runs that same ready each time the heartbeat regains the role; and then,
  * after this function has settled, the Envoy role claimed at the first turn the signal reported
- * or at the bound, whichever comes first.
+ * or at the bound, whichever comes first, naming the session the registration says this one
+ * replaces (`replaces`), whose unread messages the listener then hands to this one.
  *
  * The name is taken last because the Envoy listener keeps a message published to a role no
  * session holds and hands the whole kept lane over the moment the role is claimed: claimed before
@@ -107,13 +118,16 @@ export interface LegionClaimBoot {
  * The ready carries no capability report. The session measures its capability rows later, on the
  * interval it runs while it is idle (`packages/pi-legion/src/capability-schedule.ts`).
  *
- * A registration the daemon refuses (a 4xx: a spent boot token, another contract) and any failure
- * after a registration are logged and `stop` the agent, since neither changes on retry. Any other
- * refusal of the registration (a 5xx) is logged and rejects, as a request that never reached the
- * daemon does unlogged: both leave the agent to the daemon's registration deadline. A claim the
- * listener refuses is logged and stops the agent in exactly the same words, now after the daemon
- * may have delivered a task: the relaunch re-sends a delivery that is pending and unconfirmed,
- * the path a death inside a turn already takes.
+ * A registration the daemon refuses (a 4xx other than a 408 or a 429: a spent boot token, another
+ * contract) and any failure after a registration are logged and `stop` the agent, since neither
+ * changes on retry. An outage at the registration (`outage`: a 5xx, a 408 or a 429) is logged and
+ * rejects, as a request that never reached the daemon does unlogged: both leave the agent to the
+ * daemon's registration deadline. A claim the listener refuses is logged and stops the agent in
+ * exactly the same words, now after the daemon may have delivered a task: the relaunch re-sends a
+ * delivery that is pending and unconfirmed, the path a death inside a turn already takes. A
+ * refusal of the registration, and a failure after a registration, once the host's `signal`
+ * aborted - the host stopping - is not logged, and a failure after a registration is not stopped
+ * on either: the host's stop ends the agent itself.
  */
 export async function bootLegionClaim(host: LegionClaimHost): Promise<LegionClaimBoot> {
   const { daemon } = host;
@@ -122,8 +136,11 @@ export async function bootLegionClaim(host: LegionClaimHost): Promise<LegionClai
     claim = await daemon.register(host.registration);
   } catch (error) {
     if (!(error instanceof LegionDaemonApiError)) throw error;
-    host.log(`claims/register registration failed (${error.status}): ${error.detail}`);
-    if (error.status < 400 || error.status >= 500) throw error;
+    // A refusal the host's stop overtook says nothing: the stop ends the agent itself.
+    if (host.signal?.aborted !== true) {
+      host.log(`claims/register registration failed (${error.status}): ${error.detail}`);
+    }
+    if (error.status < 400 || outage(error.status)) throw error;
     host.stop();
     return { claimed: Promise.resolve() };
   }
@@ -150,23 +167,29 @@ export async function bootLegionClaim(host: LegionClaimHost): Promise<LegionClai
       secret: claim.secret,
       generation: claim.generation,
     };
-    await callReadyWithRetry("claims/ready", () => daemon.ready(ready));
+    await callReadyWithRetry("claims/ready", () => daemon.ready(ready), host);
     host.onRoleRegained(async (role, reason) => {
       if (role !== claim.claimToken) return;
+      // Once the host's stop began, a regain asks the daemon nothing and says nothing: the stop
+      // ends the agent itself. The stop is read again after the ready, which can answer after it.
+      const stopped = (): boolean => host.signal?.aborted === true;
+      if (stopped()) return;
       try {
-        await callReadyWithRetry("claims/ready after role regain", () => daemon.ready(ready));
+        await callReadyWithRetry("claims/ready after role regain", () => daemon.ready(ready), host);
+        if (stopped()) return;
         host.log(`re-ran claims/ready after role ${role} was ${reason}`);
       } catch (error) {
+        if (stopped()) return;
         host.log(
           `claims/ready after role ${role} was ${reason} failed; the daemon's queued task stays undelivered until the next regain or boot: ${messageFor(error)}`
         );
       }
     });
   } catch (error) {
-    stopAfterRegistration(host, claim.claimToken, error);
+    if (host.signal?.aborted !== true) stopAfterRegistration(host, claim.claimToken, error);
     return { claimed: Promise.resolve() };
   }
-  return { claimed: claimRoleAtFirstTurn(host, claim.claimToken, firstTurn) };
+  return { claimed: claimRoleAtFirstTurn(host, claim.claimToken, claim.replaces, firstTurn) };
 }
 
 /** The one path every failure after a registration takes, wherever it happens: the boot's own
@@ -184,8 +207,8 @@ function stopAfterRegistration(host: LegionClaimHost, role: string, error: unkno
  * claim step hands itself over: the step runs at once for a turn that has already started, and
  * at the signal otherwise.
  *
- * It exists because the claim step comes after `claims/ready`, and that ready is retried (a 5xx,
- * a transport failure). The daemon's task can reach the session while those retries run — the
+ * It exists because the claim step comes after `claims/ready`, and that ready is retried (an
+ * outage, a transport failure). The daemon's task can reach the session as those retries run — the
  * daemon took the first ready and its answer was lost — so the turn it starts would otherwise
  * find no step to run and the name would be taken only at the bound (INFRA-1573). A host may
  * report the same turn more than once — pi-legion reports one it kept from before this call and
@@ -208,35 +231,52 @@ function listenForFirstTurn(host: LegionClaimHost): (claim: () => void) => void 
 /**
  * The boot's last step, run after the boot itself has settled: `role` claimed on Envoy at the
  * first turn `firstTurn` reports or at the bound, whichever comes first, and once however many
- * of the two arrive. The timer is armed and the step handed over in that order and both before
- * this returns, so a turn that started while the boot was still readying claims inside that
- * hand-over and loses nothing, and the timer is unreferenced where the runtime offers it: the
- * bound is a backstop and keeps no process alive for its own sake.
+ * of the two arrive, naming `replaces`, the session the registration says this one replaces
+ * (`LegionClaimHost.claimRole`). The timer is armed and the step handed over in that order and
+ * both before this returns, so a turn that started while the boot was still readying claims
+ * inside that hand-over and loses nothing, and the timer is unreferenced where the runtime
+ * offers it: the bound is a backstop and keeps no process alive for its own sake.
  *
  * A refusal is logged and stops the session, the one failure path every other failure after a
  * registration takes. A claim the listener answered 503 (`listenerAskedToClaimAgain`) is no
- * refusal: the listener wrote no claim and asks for the claim again (`Retry-After`) - every try
- * of its write met a conflict, or the takeover record a claim writes first, for the holder it
- * takes the role from, did not store - so the claim is made again after a wait that starts at
+ * refusal: the listener asks for the claim again (`Retry-After`) - it wrote no claim, because every
+ * try of its write met a conflict or the takeover record a claim writes first, for the holder it
+ * takes the role from, did not store; or the claim landed and stands, and only the handover of the
+ * session it replaces (`replaces`) was not judged or its record did not store
+ * (`claimStandsWithoutHandover`) - so the claim is made again after a wait that starts at
  * `roleClaimRetryFirstDelayMs` and doubles up to `ROLE_CLAIM_RETRY_MAX_DELAY_MS`, with one log
- * line per wait, until it lands or is refused. The session stays up meanwhile: the role's messages
- * wait for it, with the holder the claim would have replaced or on the role's kept lane. The
- * promise answers when the step has run, either way, and never rejects.
+ * line per wait, naming the listener's answer, until it lands or is refused. The session stays up
+ * meanwhile: the role's messages wait for it, with the holder the claim would have replaced or on
+ * the role's kept lane, or reach it already where the claim stands. The promise answers when the
+ * step has run, either way, and never rejects.
+ *
+ * A host whose `signal` aborts - the host stopping - claims nothing from then on (R24 of
+ * dispatch://INFRA-3589): the abort clears the bound, and a first turn the host reports after it
+ * runs no claim. The promise answers at the abort, as a step that ran.
  */
 function claimRoleAtFirstTurn(
   host: LegionClaimHost,
   role: string,
+  replaces: string | undefined,
   firstTurn: (claim: () => void) => void
 ): Promise<void> {
   const done = Promise.withResolvers<void>();
   let ran = false;
+  // The host's stop: the bound goes, and no claim runs after it.
+  const stop = (): void => {
+    if (ran) return;
+    ran = true;
+    clearTimeout(bound);
+    done.resolve();
+  };
   const claim = (): void => {
     if (ran) return;
     ran = true;
     clearTimeout(bound);
+    host.signal?.removeEventListener("abort", stop);
     void (async () => {
       try {
-        await claimRoleAgainOnBusy(() => host.claimRole(role), role, {
+        await claimRoleAgainOnBusy(() => host.claimRole(role, replaces), role, {
           log: host.log,
           firstDelayMs: host.roleClaimRetryFirstDelayMs,
           signal: host.signal,
@@ -249,6 +289,8 @@ function claimRoleAtFirstTurn(
   };
   const bound = setTimeout(claim, host.firstTurnBoundMs);
   bound.unref?.();
+  if (host.signal?.aborted === true) stop();
+  else host.signal?.addEventListener("abort", stop, { once: true });
   firstTurn(claim);
   return done.promise;
 }
@@ -259,12 +301,15 @@ const ROLE_CLAIM_RETRY_MAX_DELAY_MS = 30_000;
 
 /**
  * Makes `claim`, a claim of Envoy role `role`, and makes it again while the listener answers it
- * 503 (`listenerAskedToClaimAgain`): the listener wrote no claim - every try of its write met a
- * conflict, or the takeover record a claim writes first did not store - and asks for the claim
- * again. The wait starts at `firstDelayMs` (`ROLE_CLAIM_RETRY_FIRST_DELAY_MS` unset) and doubles up
+ * 503 (`listenerAskedToClaimAgain`) and asks for the claim again: it wrote no claim - every try of
+ * its write met a conflict, or the takeover record a claim writes first did not store - or the
+ * claim landed and stands, and only the handover of the session it names as replaced was not
+ * judged or its record did not store (`claimStandsWithoutHandover`), which the listener's answer
+ * says. The wait starts at `firstDelayMs` (`ROLE_CLAIM_RETRY_FIRST_DELAY_MS` unset) and doubles up
  * to `ROLE_CLAIM_RETRY_MAX_DELAY_MS`, with one `log` line per wait naming the attempt the listener
- * answered and its answer; the timer is unref'd, so it holds no process open. Any other failure is
- * thrown at once, for the caller to stop on. An aborted `signal` - the host stopping - ends the
+ * answered and its answer, and the 503 itself beside it, so a caller can say which of the two it
+ * waits on; the timer is unref'd, so it holds no process open. Any other failure is thrown at once,
+ * for the caller to stop on. An aborted `signal` - the host stopping - ends the
  * waiting with the last 503 thrown and claims no more, so no claim after a stop makes a session the
  * host ended live again. With `maxAttempts`, the 503 of the last attempt is thrown, for a claim a
  * person is waiting on to fail where they see it.
@@ -273,7 +318,7 @@ export async function claimRoleAgainOnBusy(
   claim: () => Promise<void>,
   role: string,
   options: {
-    readonly log: (line: string) => void;
+    readonly log: (line: string, error: unknown) => void;
     readonly firstDelayMs?: number | undefined;
     readonly signal?: AbortSignal | undefined;
     /** The most claims made, the first included; the 503 of the last is thrown. Unset, no bound. */
@@ -289,7 +334,8 @@ export async function claimRoleAgainOnBusy(
       if (!listenerAskedToClaimAgain(error) || options.signal?.aborted) throw error;
       if (options.maxAttempts !== undefined && attempt >= options.maxAttempts) throw error;
       options.log(
-        `claim of Envoy role ${role} was answered 503 at attempt ${attempt}, so nothing was claimed; claiming it again in ${wait} ms: ${messageFor(error)}`
+        `claim of Envoy role ${role} was answered 503 at attempt ${attempt}; claiming it again in ${wait} ms: ${messageFor(error)}`,
+        error
       );
       const waited = Promise.withResolvers<void>();
       const timer = setTimeout(waited.resolve, wait);
@@ -321,4 +367,21 @@ export function listenerAskedToClaimAgain(error: unknown): boolean {
   return (
     typeof details === "object" && details !== null && "status" in details && details.status === 503
   );
+}
+
+/** The `code` of a listener's 503 to a role claim that landed and stands, whose handover of the
+ *  session it replaces was not judged or whose handover record did not store
+ *  (`listenerwire.CodeHandoverUnrecorded`). */
+const HANDOVER_UNRECORDED_CODE = "handover_unrecorded";
+
+/**
+ * Whether `error` is the listener's 503 to a role claim that landed and stands, so the session
+ * holds the role, and that only the handover of the session the claim replaces is not recorded
+ * yet: its `code` is `handover_unrecorded`. Every other claim 503 wrote nothing. Read by name and
+ * shape, as `listenerAskedToClaimAgain` reads it.
+ */
+export function claimStandsWithoutHandover(error: unknown): boolean {
+  if (!(error instanceof Error) || !listenerAskedToClaimAgain(error)) return false;
+  const { code } = error as Error & { readonly code?: unknown };
+  return code === HANDOVER_UNRECORDED_CODE;
 }

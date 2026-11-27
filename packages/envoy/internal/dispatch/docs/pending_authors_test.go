@@ -162,17 +162,15 @@ func storedHoldsPeerEdit(t *testing.T, database *store.Store, artifactID string,
 	return true
 }
 
-// waitForLandedAppends waits until every update the room has recorded is durable.
+// waitForLandedAppends waits until every update the room has recorded is durable, on the room's
+// idle signal and with no span of its own: a room's appends queue behind every other room's on
+// the service's room-appends pool, so how long they take is the machine's, while appends that
+// have stopped still fail by name (awaitRoomAppends; docs/testing.md, "A document test that
+// waits for a room's appends").
 func waitForLandedAppends(t *testing.T, service *Service, artifactID string) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), roomWait(t))
-	defer cancel()
-	if err := service.waitForPendingUpdates(ctx, artifactID); err != nil {
-		t.Fatalf("wait for the room's updates to reach persistence: %v", err)
-	}
-	if err := service.waitForDurableAppends(ctx, artifactID); err != nil {
-		t.Fatalf("wait for the room's updates to become durable: %v", err)
-	}
+	awaitRoomAppends(t, service, artifactID, "reach persistence", service.waitForPendingUpdates)
+	awaitRoomAppends(t, service, artifactID, "become durable", service.waitForDurableAppends)
 }
 
 // awaitAppendLandedOrQueued returns once the room's latest update has either landed or is waiting

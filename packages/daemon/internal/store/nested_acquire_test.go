@@ -7,15 +7,15 @@ package store
 // the callers behind them waited — and a pool of one connection is that deployment in miniature.
 
 import (
-	"bytes"
 	"context"
 	"errors"
-	"log/slog"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/legion/daemon/internal/testlog"
 )
 
 // refusalBound is how long a connection is allowed to be asked for before the test calls the
@@ -41,9 +41,10 @@ const refusalLine = "second pooled connection requested while one is held"
 // request the guard did not refuse would have nothing to be served with and would wait, and so
 // would the call after a hold whose connection the pool never got back.
 func TestASecondPooledConnectionUnderAHeldOneIsRefused(t *testing.T) {
+	t.Parallel()
 	store := storeWith(t, map[string]string{"pool_max_conns": "1"})
 	pool := store.Pool()
-	logged := captureLog(t)
+	logged := captureLog(t, pool)
 
 	// The negative control the incident's check names: the same requests, made by a caller that
 	// holds none of this pool's connections, are served.
@@ -143,7 +144,7 @@ func served(t *testing.T, pool *Pool, caller context.Context, who string) {
 
 // refusalsLogged fails the test unless the log holds exactly want refusals, each with a stack that
 // names this test, which is what names the path to repair.
-func refusalsLogged(t *testing.T, logged *bytes.Buffer, want int) {
+func refusalsLogged(t *testing.T, logged *testlog.Buffer, want int) {
 	t.Helper()
 	lines := refusals(logged.String())
 	if len(lines) != want {
@@ -154,21 +155,6 @@ func refusalsLogged(t *testing.T, logged *bytes.Buffer, want int) {
 			t.Fatalf("a refusal's line names no site this test can be found by:\n%s", line)
 		}
 	}
-}
-
-// captureLog sends the process's default logger into a buffer for the length of the test, which
-// is where logRefusal writes, and gives the test the buffer to read. It forgets the stacks logged
-// before the test, so a test the binary runs again (-count) logs its own stacks again.
-func captureLog(t *testing.T) *bytes.Buffer {
-	t.Helper()
-	var logged bytes.Buffer
-	previous := slog.Default()
-	slog.SetDefault(slog.New(slog.NewTextHandler(&logged, nil)))
-	t.Cleanup(func() { slog.SetDefault(previous) })
-	loggedSites.Lock()
-	clear(loggedSites.seen)
-	loggedSites.Unlock()
-	return &logged
 }
 
 // refusals is every line of log that reports a refused second connection. The stack the line

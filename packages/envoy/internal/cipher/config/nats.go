@@ -10,7 +10,10 @@ import (
 
 	"github.com/nats-io/nkeys"
 
+	"github.com/sjawhar/envoy/fileerr"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/bus/signedrecord"
+	"github.com/sjawhar/envoy/natsurl"
 )
 
 // NATSAccountVariable is the setting ParseNATSAccount reads.
@@ -71,9 +74,9 @@ func ParseNATSAccount(raw string) (string, error) {
 // listener's, which the broker reads for GET /v1/project-repositories whether or not it answers a
 // hub; any other set needs BROKER_NATS_URLS and the three seed files, each holding a seed of its
 // own kind; BROKER_NATS_K8S_AUDIENCE needs k8sIssuer, BROKER_K8S_OIDC_ISSUER. A hub URL carrying
-// user info, or one that is no URL, is refused by its place in the list (hubURLRefusal). A refusal
-// carries no seed, no hub URL and no value of BROKER_NATS_ACCOUNT; one of BROKER_NATS_SERVICES
-// quotes its entry (ParseNATSServices).
+// user info, an "@" after its host, a query or a fragment, or one that is no URL, is refused by its
+// place in the list (hubURLRefusal). A refusal carries no seed, no hub URL and no value of
+// BROKER_NATS_ACCOUNT; one of BROKER_NATS_SERVICES quotes its entry (ParseNATSServices).
 func loadNATSCallout(getenv func(string) string, k8sIssuer string) (NATSCallout, error) {
 	services, err := ParseNATSServices(getenv(NATSServicesVariable))
 	if err != nil {
@@ -136,6 +139,31 @@ func loadNATSCallout(getenv func(string) string, k8sIssuer string) (NATSCallout,
 	return settings, nil
 }
 
+// loadNATSHold reads the writer hold's switch and signing keys (Config.NATS documents both) into
+// settings. BROKER_NATS_HOLD_READ is true, false or unset, which is false, and nothing else: a
+// misspelled value must refuse the start rather than leave the rule off. Each entry of
+// BROKER_NATS_HOLD_SIGNING_KEYS, parted by whitespace or commas, is the unpadded base64url of a
+// 32-byte Ed25519 public key, and one that is not is refused by its place in the list, never by
+// its text, since text pasted there in error may be the private half. Neither setting needs the
+// auth service's others: the hold's routes verify every write against the keys whether or not
+// the auth service reads the row, and the switch is refused without its operator and its keys by
+// the broker's start, which reads the operator from BROKER_NATS_SERVICES (cmd/cipherd).
+func loadNATSHold(getenv func(string) string, settings *NATSCallout) error {
+	switch value := strings.TrimSpace(getenv("BROKER_NATS_HOLD_READ")); value {
+	case "", "false":
+	case "true":
+		settings.HoldRead = true
+	default:
+		return fmt.Errorf("BROKER_NATS_HOLD_READ must be true or false, got %q", value)
+	}
+	keys, err := signedrecord.ParsePublicKeys("BROKER_NATS_HOLD_SIGNING_KEYS", getenv("BROKER_NATS_HOLD_SIGNING_KEYS"))
+	if err != nil {
+		return err
+	}
+	settings.HoldSigningKeys = keys
+	return nil
+}
+
 // edgeListenerEntries is the first edge-listener entry of Services that names a Kubernetes
 // account and the first that names a Google one, each "" when there is none: the callers of the
 // broker's API whose identity tokens need the cluster's issuer and Google's audience.
@@ -156,10 +184,13 @@ func (n NATSCallout) edgeListenerEntries() (kubernetes, google string) {
 
 // hubURLRefusal is why entry, one of BROKER_NATS_URLS, cannot name the hub, or "" when it can. The
 // service connects as the user its seed names, so user info in a URL is a credential it never
-// uses, and the broker writes the URLs into its start line and the service's connect error. An
-// entry with no scheme is read as nats.go dials it, as nats://<entry> (nats.go, parseServerURL),
-// and one that does not parse is refused too: nats.go could not dial it, and the parse error
-// quotes it whole. The reason names neither the entry nor its user info.
+// uses, and the broker writes the URLs into its start line and the service's connect error; a
+// query or a fragment is where a person can put a token too, and nats.go needs neither to dial a
+// hub. An entry with no scheme is read as nats.go dials it, as nats://<entry> (nats.go,
+// parseServerURL), and one that does not parse is refused too: nats.go could not dial it, and the
+// parse error quotes it whole. An "@" after the host is refused as user info: a token holding a
+// "/" written as the user parses with its head as the host and the "@" in the path. The reason
+// names neither the entry nor its user info.
 func hubURLRefusal(entry string) string {
 	if !strings.Contains(entry, "://") {
 		entry = "nats://" + entry
@@ -168,35 +199,38 @@ func hubURLRefusal(entry string) string {
 	switch {
 	case err != nil:
 		return "is not a URL nats.go can dial"
-	case parsed.User != nil:
+	case parsed.User != nil || natsurl.UserinfoPastHost(parsed):
 		return "carries user info: the NATS auth service connects as the user BROKER_NATS_SEED_FILE names, so name the hub by its address alone"
+	case parsed.RawQuery != "" || parsed.ForceQuery || parsed.Fragment != "" || strings.Contains(entry, "#"):
+		return "carries a query or a fragment: the NATS auth service needs neither to dial the hub, so name the hub by its address alone"
 	}
 	return ""
 }
 
 // ReadSeedFile is the key pair the nkey seed in the file at path makes, refused, naming setting
-// and never the seed, when path is unset or unreadable or its trimmed contents are not a seed of
-// kind. It is the one reader of the NATS auth service's seeds: the broker's start checks each with
-// it (loadNATSCallout), and the service reads its keys with it (natscallout.Start).
+// and never the path or the seed, when path is unset or unreadable (fileerr.Class) or its trimmed
+// contents are not a seed of kind: the path can be a seed pasted where it goes. It is the one
+// reader of the NATS auth service's seeds: the broker's start checks each with it
+// (loadNATSCallout), and the service reads its keys with it (natscallout.Start).
 func ReadSeedFile(setting, path string, kind nkeys.PrefixByte) (nkeys.KeyPair, error) {
 	if path == "" {
 		return nil, fmt.Errorf("the NATS auth service needs %s", setting)
 	}
 	raw, err := os.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("%s names %s, which could not be read: %w", setting, path, err)
+		return nil, fmt.Errorf("%s names a file that cannot be read: %s", setting, fileerr.Class(err))
 	}
 	seed := []byte(strings.TrimSpace(string(raw)))
 	prefix, _, err := nkeys.DecodeSeed(seed)
 	if err != nil {
-		return nil, fmt.Errorf("%s names %s, which holds no nkey seed", setting, path)
+		return nil, fmt.Errorf("%s names a file that holds no nkey seed", setting)
 	}
 	if prefix != kind {
-		return nil, fmt.Errorf("%s names %s, which holds a %s seed where it needs a %s seed", setting, path, prefix, kind)
+		return nil, fmt.Errorf("%s names a file that holds a %s seed where it needs a %s seed", setting, prefix, kind)
 	}
 	pair, err := nkeys.FromSeed(seed)
 	if err != nil {
-		return nil, fmt.Errorf("%s names %s, whose seed makes no key: %w", setting, path, err)
+		return nil, fmt.Errorf("%s names a file whose seed makes no key", setting)
 	}
 	return pair, nil
 }

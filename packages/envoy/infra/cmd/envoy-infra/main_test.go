@@ -12,12 +12,12 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/infra/core"
 	"github.com/sjawhar/envoy/infra/routes"
 	"github.com/sjawhar/envoy/infra/seed"
 	"github.com/sjawhar/envoy/internal/cmdtest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 func TestMain(m *testing.M) { os.Exit(cmdtest.Main(m)) }
@@ -334,12 +334,9 @@ func TestAnInterruptDuringTheWriteEndsAsAnErrorAfterWriting(t *testing.T) {
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
-	select {
-	case <-putArrived:
-	case <-time.After(30 * time.Second):
-		_ = cmd.Process.Kill()
-		t.Fatalf("PutSecretValue never arrived; stderr %q", stderr.String())
-	}
+	// The child is killed when the test ends: a failure of the wait below leaves it running.
+	t.Cleanup(func() { _ = cmd.Process.Kill() })
+	testwait.Receive(t, "the PutSecretValue request the seed generate makes", putArrived)
 	if err := cmd.Process.Signal(os.Interrupt); err != nil {
 		t.Fatal(err)
 	}

@@ -90,6 +90,7 @@ func plantReplacedBait(t *testing.T, cover RoleCover, system string, at time.Tim
 // it. The cover is the pod's own, written out as the worker image lays it out, with the
 // launcher's own construction of it read back beside it (roleCoverFor).
 func TestTheCoverNamesEveryPathARolesNamespaceReplaces(t *testing.T) {
+	t.Parallel()
 	cover := podCover()
 	if built := roleCoverFor(cover.RolesDir); built != cover {
 		t.Errorf("the launcher builds the cover %+v for an issue pod, want the layout of the worker image, %+v", built, cover)
@@ -146,6 +147,7 @@ func baitPaths(bait []replacedBait) []string {
 // is a directory the pod's child never covers, and the flags read back as a cover other than the
 // one the trimmer was given.
 func TestTheDeletersCommandLineNamesEveryDirectoryItCovers(t *testing.T) {
+	t.Parallel()
 	cover := podCover()
 	argv, _, err := trimDeleteLaunch(cover)
 	if err != nil {

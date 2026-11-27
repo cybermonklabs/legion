@@ -1,0 +1,10 @@
+kind: Added
+custom:
+  Issue: pr4392
+body: |-
+  Dispatch takes `DISPATCH_PROOF_ORIGINS`, a comma-separated list of the origins it is reached at
+  beside `DISPATCH_SERVER_URL`, such as the in-cluster address that pods and daemons call. The DPoP
+  proof of a secrets-broker token may name any of them, or the origin of `DISPATCH_SERVER_URL`, in
+  its `htu`, and a proof is spent once whichever origin it names. An entry that is not an absolute
+  http(s) URL with no path, query, fragment or user refuses the start, naming the entry. Unset,
+  the origin of `DISPATCH_SERVER_URL` is the only one, as before.

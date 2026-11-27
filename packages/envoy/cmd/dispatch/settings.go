@@ -7,6 +7,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/sjawhar/envoy/fileerr"
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
 )
 
@@ -38,12 +39,13 @@ type setting struct {
 
 // settings is every Dispatch setting, in the order an operator meets them: storage, identity,
 // where the server listens and how many document rooms and connections it holds, NATS, the Envoy
-// listener, projects and the issues the search bar files, the GitHub App, cookies,
-// service-account tokens, the secrets broker, meaning search's model service, the model the
-// server generates text with, the dashboard, and local and test runs.
+// listener, projects, the issues the search bar files and the rule between a parent's status and
+// its children's, the GitHub App, cookies, service-account tokens, the secrets broker and the
+// Legion status scope it grants, meaning search's model service, the model the server generates
+// text with, the dashboard, and local and test runs.
 var settings = []setting{
 	{Name: "DATABASE_URL", Required: "yes",
-		Description: "Postgres connection string. The server migrates the database before serving; `census`, `versions`, `backfill-block-ids`, `backfill-anchor-blocks`, `backfill-files`, `rebuild-refs` and `stored-order` read it too. A `pool_max_conns` parameter is refused."},
+		Description: "Postgres connection string. The server migrates the database before serving; `census`, `versions`, `backfill-block-ids`, `backfill-anchor-blocks`, `backfill-files`, `rebuild-refs` and `stored-order` read it too. A `pool_max_conns` parameter is refused, and so is a URL holding an `@` after its user name and password, by the variable's name alone: write each `@` in a password, a user name or a query value as `%40`, and a `/` in a password as `%2F`; a database name holding an `@` is refused however it is written."},
 	{Name: "DISPATCH_FILE_STORE_BUCKET", Required: "no",
 		Description: "Bucket uploaded files (images, attachments) are stored in, keyed by their SHA-256. `gs://<bucket>` is a Google Cloud Storage bucket, reached with Application Default Credentials (on GKE the pod's Workload Identity principal), which needs `storage.objects.create` and `storage.objects.get` on it and nothing more; any other value is an S3 bucket's name, and the AWS SDK finds its region and credentials itself (`AWS_*`, the shared config files, the task role). `backfill-files` reads it too and opens the same store. Unset, every upload's bytes stay in Postgres, as before the bucket existed."},
 	{Name: "DISPATCH_AGENT_TOKEN", Required: "yes",
@@ -81,7 +83,7 @@ var settings = []setting{
 	{Name: "DISPATCH_SERVER_URL", Default: "`dispatch.serverUrl` from `envoy.json`", Required: "no",
 		Description: "The origin people open in a browser, and, where the `DISPATCH_SIGNIN_*` settings configure browser sign-in, the sign-in callback origin (`<origin>/auth/callback`): an absolute http(s) URL with no path. Set, it overrides `envoy.json`; set but empty, it refuses startup."},
 	{Name: "NATS_URLS", Default: "`envoy.natsUrls` from `envoy.json`", Required: "no",
-		Description: "Comma-separated NATS server URLs. Set, it overrides `envoy.json`; set but empty, it refuses startup."},
+		Description: "Comma-separated NATS server URLs; a URL after the first that carries a user name or password names its scheme (`nats://`, `tls://`, `ws://` or `wss://`), and a comma in a credential is written `%2C`. Set, it overrides `envoy.json`; set but empty, it refuses startup."},
 	{Name: "ENVOY_ALLOW_REMOTE_NATS", Required: "no",
 		Description: "Set to `1` to let Dispatch reach a NATS server that is not on this machine; without it Dispatch refuses one, and every deployment sets it."},
 	{Name: "NATS_NKEY_SEED", File: true, Required: "no",
@@ -99,7 +101,7 @@ var settings = []setting{
 	{Name: "DISPATCH_NATS_DISABLED", Required: "no",
 		Description: "Set to `1` to run without NATS: no event is published, and the agent conversation relay and webhook redelivery are off."},
 	{Name: "ENVOY_URL", Default: "`" + defaultEnvoyURL + "`", Required: "no",
-		Description: "Base URL of the Envoy listener Dispatch delivers mentions and messages through and reads live sessions from."},
+		Description: "Base URL of the Envoy listener Dispatch delivers mentions and messages through and reads live sessions from: an absolute http(s) URL. A user name, a password, an `@` after its host, a query or a fragment is refused, naming the setting alone."},
 	{Name: "ENVOY_TOKEN", Required: "no",
 		Description: "Bearer token Dispatch sends on every Envoy listener call; unset, it sends none. Beside Dispatch's identity (`ENVOY_ACCOUNT_TOKEN_FILE` or `ENVOY_ACCOUNT_GOOGLE_AUDIENCE`) it is sent only on a call that carries no role mark and whose identity token the listener did not take on two tries (401, or a token that could not be read): a listener that does not verify Dispatch's account yet, as one of the release before does while a deploy rolls it. A send for a `role:` route is never made on it."},
 	{Name: "ENVOY_ACCOUNT_TOKEN_FILE", Required: "no",
@@ -110,10 +112,14 @@ var settings = []setting{
 		Description: "How long after its last registration a session counts as live, as a positive Go duration. Dispatch judges a role route's holder by it, as the Envoy listener judges every session: within it the holder is live and the event is forwarded. Give the listeners of a deployment and Dispatch the same value, or Dispatch calls a holder the listener still serves lapsed, and the other way round. A value that is not a positive duration refuses startup; one no Go duration can be read from is a warning and the default."},
 	{Name: "ENVOY_SESSION_GONE_HORIZON", Default: "`1h`", Required: "no",
 		Description: "How long after its last registration a session reads unresponsive before it reads gone, as a positive Go duration. Dispatch holds a role-routed event pending for an unresponsive holder, with its claim untouched, and counts the route reached with nothing sent only for a gone one. Give the listeners of a deployment and Dispatch the same value: with a horizon only the listener carries, Dispatch marks an event sent to nobody while the listener still calls that holder unresponsive and keeps its role, so the event reaches it never. A value that is not a positive duration refuses startup; one no Go duration can be read from is a warning and the default."},
+	{Name: "DISPATCH_PROJECT_OWNER_FALLBACK", Required: "when a project has no owner: the boot refuses to serve while one has none",
+		Description: "The lowercase email of a full member who has signed in, whom the boot makes the owner of every project with no owner: a project whose default assignee had never signed in when migration `20261116015736_project_access` gave each project its default assignee as owner. Unset, or naming nobody who is a full member, the boot refuses to start naming each such project and both repairs, this setting and `envoy-dispatch project-owner <KEY> <email>`. A value that is not a lowercase email refuses startup."},
 	{Name: "DISPATCH_NEW_ISSUE_LABEL", Default: "the issue carries no label", Required: "no",
 		Description: "Label an issue carries that the search bar files from the words a person typed, when those words match nothing the bar found; it is added to that issue alone."},
 	{Name: "DISPATCH_NEW_ISSUE_SESSION", Default: "the issue is made and no conversation is started on it", Required: "no",
 		Description: "Envoy session an issue the search bar files from a person's typed words is routed to, written as the session's own id: the bar sets the issue's route to it and posts the person's words to it as the issue's first message."},
+	{Name: "DISPATCH_PARENT_STATUS_RULE", Default: "`off`", Required: "no",
+		Description: "`on` refuses a write that leaves a parent's status out of line with its children's, and runs the one-time fix of the pairs that break it at boot. Turn it on only when two conditions hold. First, each Legion daemon that writes to this Dispatch runs the releases with the daemon's side of the rule, which send the options of `POST /api/v1/issues/{key}/status-change`. Second, each project's instructions retry a failed root architect with a status write of `todo` alone, not `backlog` and then `todo`, and that project's daemon and controller have read them. The rule refuses that `backlog` while an issue under the root is in work. Turn it on by a rollout that stops every process of the earlier setting first. The fix runs once per database, so turning the setting off and on again runs nothing: a parent and a child that came to break the rule while it was off still break it once it is on again. The rule judges each status change of such a child against its parent, a move within a group too, so a daemon's move of the child from `in_progress` to `testing` under a `done` parent is refused with `409 PARENT_STATUS_CONFLICT` until a person takes the child off that parent (`dispatch issue-update <child> --parent \"\"`, or another parent) or closes it. A value other than `on` or `off` refuses startup."},
 	{Name: "DISPATCH_APP_CLIENT_ID", Required: "no",
 		Description: "GitHub App client ID, which names the App in the JWT its private key signs. Set, the App comes from the `DISPATCH_APP_*` variables instead of `~/.local/share/dispatch/app.json`."},
 	{Name: "DISPATCH_APP_PEM_B64", Required: "no",
@@ -129,7 +135,7 @@ var settings = []setting{
 	{Name: "DISPATCH_APP_NAME", Required: "no",
 		Description: "The GitHub App's display name."},
 	{Name: "DISPATCH_GITHUB_API_BASE", Default: "`https://api.github.com`", Required: "no",
-		Description: "GitHub API origin the App calls; tests point it at a fake. `redeliver-webhooks` reads it too."},
+		Description: "GitHub API origin the App calls, an absolute http(s) URL with a host (a GitHub Enterprise base keeps its path, such as `/api/v3`); tests point it at a fake. `redeliver-webhooks` reads it too. A user name, a password, an `@` after its host, a query or a fragment is refused, naming the setting alone; any other value that is no absolute http(s) URL with a host is refused too, printed only as the URL rule prints a URL."},
 	{Name: "DISPATCH_SIGNING_KEY", Default: "a key kept in `~/.local/share/dispatch/signing-key`, created on first start", Required: "no",
 		Description: "One or more HMAC keys separated by whitespace, which sign session cookies and seal the refresh tokens Dispatch stores: the first signs and seals, and every one verifies a cookie and opens a seal. Every server process takes the same keys, and one whose keys a live server process does not share refuses to start. Dropping the key a cookie or seal was made under signs its person out; to rotate, add the new key second, then move it first, then remove the old key no sooner than 30 days later."},
 	{Name: "DISPATCH_INSECURE_COOKIE", Required: "no",
@@ -139,15 +145,19 @@ var settings = []setting{
 	{Name: "DISPATCH_OIDC_AUDIENCE", Required: "when `DISPATCH_OIDC_ISSUER` is set",
 		Description: "Audience those service-account tokens must carry."},
 	{Name: "DISPATCH_AGENT_SECRETS_URL", Required: "no",
-		Description: "Base URL of the secrets broker's API, an absolute http(s) URL with no path; set, the credential-request pages are on."},
+		Description: "Base URL of the secrets broker's API, an absolute http(s) URL with no path; set, the credential-request pages are on. A user name, a password, an `@` after its host, a query or a fragment is refused, naming the setting alone."},
 	{Name: "DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE", Required: "when `DISPATCH_AGENT_SECRETS_URL` is set",
 		Description: "File holding Dispatch's own projected Kubernetes service-account token, which every call to the secrets broker presents; the broker verifies it and reads the caller from `BROKER_API_ACCOUNTS`. In the cluster it is the projected-token volume's path (`/var/run/secrets/…/token`), which the kubelet rewrites in place; the file is read at call time, so a rotation needs no restart, and a local run writes a token into a file of its own and names that."},
+	{Name: "DISPATCH_PROOF_ORIGINS", Default: "`DISPATCH_SERVER_URL`'s origin alone", Required: "no",
+		Description: "Comma-separated origins Dispatch is reached at beside `DISPATCH_SERVER_URL`, such as the in-cluster address pods and daemons call: a secrets-broker access token's DPoP proof may name any of them, or `DISPATCH_SERVER_URL`'s origin, in its `htu`, and is spent once whichever it names. Each entry is an absolute http(s) URL with no path, query, fragment or user; any other entry refuses startup, naming it, and an entry equal to `DISPATCH_SERVER_URL`'s origin or to another entry is taken once."},
 	{Name: "DISPATCH_SEARCH_FILL", Default: "`on`", Required: "no",
 		Description: "`on` starts the keyword fill, which writes `search_text_versions`, the keyword table of each past version of the searchable text, from the event log while the server serves; `off` defers it: the process starts no fill, takes no hold and writes no row of that table or its cursor, and logs `dispatch: the keyword fill is deferred` once at boot, with whether that table and its cursor each hold a row (`none`, `some`, or `unknown` with the read's error, which never stops the boot). No route reads the table yet, so search answers alike either way. Read once at boot; any other value refuses startup."},
+	{Name: "DISPATCH_LEGION_STATUS_SCOPE", Default: "`off`", Required: "no",
+		Description: "Set to `on` to refuse three writes of a Legion issue to a credential that holds neither the `person` scope nor `legion-status`. The three writes are a write of the issue's status, the removal of its `legion` label, and a move that leaves it under no labelled issue. Dispatch answers each of them `403 LEGION_STATUS_SCOPE_REQUIRED`. A Legion issue carries the `legion` label, in any letter case, or is under an issue of its own project that carries it. Unset or `off`, Dispatch refuses none of these writes, and any other value refuses startup. With it on, Dispatch lets the architect of an issue above a Legion issue, of that issue's own project, write that issue's status `done`, `backlog`, `icebox` or `triage` when the architect's broker token proves its session and the daemon's own token published that session as the architect of an issue above, and it takes a publication of role holders (`PUT /api/v1/issues/{key}/role-holders`) only from the daemon's own token. Before an operator turns it on, deploy the secrets broker release that grants `legion-status` and wait one broker access-token lifetime (`BROKER_ACCESS_TOKEN_SECONDS`, 15 minutes by default), then deploy this Dispatch release. Turn it on only once all four of these hold. (1) Each deployment's Legion daemon runs with `dispatch_token_broker` on and `exchange_audience` set, its own token from a broker account entry whose fixed session is `legion-daemon:<PROJECT>` of its own project, and its count of live launches whose Secret carries a Dispatch token, in `legion state --json`, is zero, with `dispatch_token_transition_file` removed, so no role writes with the shared token. (2) Each project's daemon runs the release that takes the architect's status write by Dispatch's rule, and has booted since this Dispatch release began to mark each stored pair of role holders (`issue_role_holders.daemon_proven`), so its boot published the role holders of its issues at work with that mark. (3) The deployment's instructions have each Legion controller admit an issue through the daemon's `set_status` and write no `todo` itself. (4) Each project's daemon, and then its controller, has started since those instructions were applied. After a controller adds the `legion` label, Dispatch refuses a status write that the controller sends itself. Nothing refuses another order: Dispatch turns the refusal on whichever conditions hold."},
 	{Name: "DISPATCH_EMBEDDER", Default: "`bedrock`", Required: "no",
 		Description: "Where meaning search reaches Cohere Embed v4: `bedrock` (AWS Bedrock, on the AWS SDK's own region and credentials; with no region, search is keyword-only) or `azure` (Azure AI Foundry, configured by the `DISPATCH_AZURE_EMBED_*` settings, each of which `bedrock` refuses, and by the shared Azure sign-in, which `DISPATCH_ANSWERER=azure` reads too)."},
 	{Name: "DISPATCH_AZURE_EMBED_ENDPOINT", Required: "when `DISPATCH_EMBEDDER` is `azure`",
-		Description: "The base URL the embeddings route is appended to, such as `https://<resource>.services.ai.azure.com/models`: an absolute https URL with a host and no query or fragment."},
+		Description: "The base URL the embeddings route is appended to, such as `https://<resource>.services.ai.azure.com/models`: an absolute https URL with a host and no query or fragment. A user name, a password, an `@` after its host, a query or a fragment is refused, naming the setting alone."},
 	{Name: "DISPATCH_AZURE_EMBED_DEPLOYMENT", Default: "`embed-v-4-0`", Required: "no",
 		Description: "Name of the Cohere Embed v4 deployment the endpoint serves, sent as each request's model."},
 	{Name: "DISPATCH_AZURE_EMBED_TOKENS_PER_MINUTE", Required: "when `DISPATCH_EMBEDDER` is `azure`",
@@ -163,7 +173,7 @@ var settings = []setting{
 	{Name: "DISPATCH_ANSWERER", Required: "no",
 		Description: "Where Dispatch's server generates text: `azure` (a chat deployment of an Azure AI Foundry resource, configured by the `DISPATCH_AZURE_CHAT_*` settings and the shared Azure sign-in) or `endpoint` (any OpenAI-shaped chat completions service, configured by the `DISPATCH_CHAT_*` settings). Unset, no model is configured and the server starts and says so; each group is refused by the place that does not read it."},
 	{Name: "DISPATCH_AZURE_CHAT_ENDPOINT", Required: "when `DISPATCH_ANSWERER` is `azure`",
-		Description: "The base URL `/chat/completions` is appended to, such as `https://<resource>.services.ai.azure.com/models`: an absolute https URL with a host and no query or fragment."},
+		Description: "The base URL `/chat/completions` is appended to, such as `https://<resource>.services.ai.azure.com/models`: an absolute https URL with a host and no query or fragment. A user name, a password, an `@` after its host, a query or a fragment is refused, naming the setting alone."},
 	{Name: "DISPATCH_AZURE_CHAT_DEPLOYMENT", Required: "when `DISPATCH_ANSWERER` is `azure`",
 		Description: "Name of the chat deployment the endpoint serves, sent as each request's model."},
 	{Name: "DISPATCH_AZURE_CHAT_API_VERSION", Required: "no",
@@ -173,7 +183,7 @@ var settings = []setting{
 	{Name: "DISPATCH_AZURE_CHAT_TOKENS_PER_MINUTE", Required: "when `DISPATCH_ANSWERER` is `azure`",
 		Description: "The deployment's tokens-per-minute quota, a positive integer, which paces the answerer's calls."},
 	{Name: "DISPATCH_CHAT_ENDPOINT", Required: "when `DISPATCH_ANSWERER` is `endpoint`",
-		Description: "The base URL `/chat/completions` is appended to: an absolute https URL with a host and no query or fragment."},
+		Description: "The base URL `/chat/completions` is appended to: an absolute https URL with a host and no query or fragment. A user name, a password, an `@` after its host, a query or a fragment is refused, naming the setting alone."},
 	{Name: "DISPATCH_CHAT_TOKEN_FILE", Required: "when `DISPATCH_ANSWERER` is `endpoint`",
 		Description: "Path of the file holding the bearer token every call to that endpoint presents, re-read on each call, as `DISPATCH_AZURE_FEDERATED_TOKEN_FILE` is, so a rotation needs no restart. It names a file rather than being the `_FILE` form of a value: there is no `DISPATCH_CHAT_TOKEN`."},
 	{Name: "DISPATCH_CHAT_MODEL", Required: "when `DISPATCH_ANSWERER` is `endpoint`",
@@ -312,18 +322,19 @@ func (values settingValues) get(name string) string {
 }
 
 // fileSetting resolves a File row's value: the trimmed contents of the file name+"_FILE" names,
-// ahead of name's own trimmed value. A set but unreadable or blank file is an error naming both,
-// never a silent fallback to the bare variable.
+// ahead of name's own trimmed value. A set but unreadable or blank file is an error naming both
+// variables and why (fileerr.Class), never the path, which can be a credential pasted where it
+// goes, and never a silent fallback to the bare variable.
 func fileSetting(env settingValues, name string) (string, error) {
 	fileVariable := name + "_FILE"
 	if path := strings.TrimSpace(env.get(fileVariable)); path != "" {
 		data, err := os.ReadFile(path)
 		if err != nil {
-			return "", fmt.Errorf("%s names %s, which could not be read, and %s is not read in its place: %w", fileVariable, path, name, err)
+			return "", fmt.Errorf("%s names a file that cannot be read (%s), and %s is not read in its place", fileVariable, fileerr.Class(err), name)
 		}
 		value := strings.TrimSpace(string(data))
 		if value == "" {
-			return "", fmt.Errorf("%s names %s, which is empty, and %s is not read in its place", fileVariable, path, name)
+			return "", fmt.Errorf("%s names a file that is empty, and %s is not read in its place", fileVariable, name)
 		}
 		return value, nil
 	}

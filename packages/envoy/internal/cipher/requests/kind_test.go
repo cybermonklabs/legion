@@ -35,7 +35,7 @@ func requestTypeSecret(name, secretType, tier, maxGrant string) secrets.LocalSec
 func TestAMalformedMintedSourceIsNamedAndReleasesNothing(t *testing.T) {
 	machine, _, _, _ := newFixture(t)
 	for _, source := range []string{"mint:github-app", "mint::" + policytest.ID("X")} {
-		value, err := machine.release(t.Context(), requestedSecret{name: "X", source: source}, policy.Secret{})
+		value, _, err := machine.release(t.Context(), requestedSecret{name: "X", source: source}, policy.Secret{})
 		if !errors.Is(err, policy.ErrTypeSourceMalformed) || value.Value != "" {
 			t.Fatalf("release(%q) = %q, %v; want ErrTypeSourceMalformed and no value", source, value.Value, err)
 		}

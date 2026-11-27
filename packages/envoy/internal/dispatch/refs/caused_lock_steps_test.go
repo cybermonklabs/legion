@@ -19,10 +19,10 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
-// causedLockWait bounds how long a step of the lock order test waits for the pass's backend to
-// queue behind a holder, and for Caused to finish once nothing holds it. Both are far above what
-// a pass over three blocks takes, so a step that runs out of either is the order being wrong, not
-// a slow machine.
+// causedLockWait bounds how long a step of the lock order test waits for Caused to finish once
+// nothing holds it; its waits for the pass's backend to queue behind a holder end on the queue
+// itself (storetest.WaitForQueuedBehind). It is far above what a pass over three blocks takes, so
+// a step that runs out of it is the order being wrong, not a slow machine.
 const causedLockWait = 20 * time.Second
 
 // The two versions every document of the lock order test is indexed at. The first holds three
@@ -64,6 +64,7 @@ var causedWriter = model.Actor{Kind: "user", ID: "alice"}
 // docs/block_index_fence_test.go runs Caused after the fenced writers it races, but holds no row
 // Caused takes and reads no step of it, so it proves nothing about which rows Caused locks.
 func TestCausedTakesTheStoreLockOrder(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	database := storetest.Open(t)
 
@@ -122,7 +123,7 @@ func TestCausedTakesTheStoreLockOrder(t *testing.T) {
 		holder, release := beginCausedHolder(t, database)
 		insertCausedTuple(t, holder, tuple)
 		done := pass.causeInBackground(ctx)
-		if answer, early := storetest.WaitForQueuedBehind(t, holder, pass.pid, done, causedLockWait); early {
+		if answer, early := storetest.WaitForQueuedBehind(t, holder, pass.pid, done); early {
 			t.Fatalf("Caused finished without waiting on the held copy of its %s tuple of %s: %v", tuple.Kind, tuple.FromID, answer)
 		}
 		running := causedStatement(t, database, pass.pid)
@@ -170,7 +171,7 @@ func newCausedDocument(t *testing.T, database *store.Store, name, slug string) (
 		t.Fatalf("begin the index of version 1: %v", err)
 	}
 	defer tx.Rollback(ctx)
-	_, won, write, err := IndexBlocks(ctx, tx, document.artifact, 1, first, causedFirstVersion.markdown, causedFirstVersion.blocks, nil, nil)
+	_, won, write, err := IndexBlocks(ctx, tx, document.artifact, 1, first, causedFirstVersion.markdown, causedFirstVersion.blocks, nil, nil, "")
 	if err != nil || !won {
 		t.Fatalf("index version 1 (won %v): %v", won, err)
 	}
@@ -238,7 +239,7 @@ func beginCausedPass(t *testing.T, database *store.Store, document parentDocumen
 		t.Fatalf("take the document's owner row: %v", err)
 	}
 	_, won, write, err := IndexBlocks(ctx, tx, document.artifact, 2, at,
-		causedSecondVersion.markdown, causedSecondVersion.blocks, nil, nil)
+		causedSecondVersion.markdown, causedSecondVersion.blocks, nil, nil, "")
 	if err != nil || !won {
 		t.Fatalf("index version 2 (won %v): %v", won, err)
 	}

@@ -86,9 +86,8 @@ async function withTwoEditors(
       await run({ alice: handles[0].view, bob: handles[1].view, server, sync });
     } finally {
       for (const handle of handles) {
-        handle.destroy();
-        // The editor tears its view down asynchronously; its plugins' teardown needs the DOM.
-        while (!handle.view.isDestroyed) await Promise.resolve();
+        // The editor's own teardown runs after its view's, and its plugins' teardown needs the DOM.
+        await handle.destroy();
       }
     }
   });

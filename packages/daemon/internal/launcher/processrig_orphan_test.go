@@ -36,6 +36,7 @@ func init() {
 // This file holds only what the rig had before the launcher's stdin ended it (processRig, zombie,
 // shortTempDir, testwait.Eventually), so the same case runs against that rig.
 func TestALauncherWhoseTestBinaryIsKilledEndsAndDialsNoMore(t *testing.T) {
+	t.Parallel()
 	if report := os.Getenv(orphanHelperEnv); report != "" {
 		processRig(t)
 		launchers := childrenOf(t, os.Getpid())

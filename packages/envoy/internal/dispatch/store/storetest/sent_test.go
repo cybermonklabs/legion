@@ -13,6 +13,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgproto3"
+
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // encoded is the wire bytes of messages, in order.
@@ -874,25 +876,20 @@ func TestSentStatementsCountAStatementAFatalErrorEnds(t *testing.T) {
 				_, err := conn.Exec(ctx, scenario.query, scenario.args...)
 				ended <- err
 			}()
-			for deadline := time.Now().Add(30 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+			testwait.UntilPolling(t, 10*time.Millisecond, "the server to start the query on its backend", func() (bool, bool) {
 				var running bool
 				if err := database.Pool.QueryRow(ctx, "select exists (select from pg_stat_activity where pid = $1 and state = 'active' and query = $2 and wait_event_type = 'Timeout' and wait_event = 'PgSleep')",
 					pid, scenario.query).Scan(&running); err != nil {
 					t.Fatalf("read whether the query runs: %v", err)
 				}
-				if running {
-					break
-				}
-				if time.Now().After(deadline) {
-					t.Fatal("the server did not run the query to its pg_sleep within 30 s")
-				}
-			}
+				return running, running
+			})
 			var terminated bool
 			if err := database.Pool.QueryRow(ctx, "select pg_terminate_backend($1)", pid).Scan(&terminated); err != nil || !terminated {
 				t.Fatalf("terminate the query's backend: %v, terminated %v", err, terminated)
 			}
 			var fatal *pgconn.PgError
-			if err := <-ended; !errors.As(err, &fatal) || fatal.Severity != "FATAL" || fatal.Code != "57P01" {
+			if err := testwait.Receive(t, "the query's end once its backend was terminated", ended); !errors.As(err, &fatal) || fatal.Severity != "FATAL" || fatal.Code != "57P01" {
 				t.Fatalf("control: the query ended with %v, want the server's FATAL 57P01", err)
 			}
 			ran, refused := counted(sent, before, scenario.query)

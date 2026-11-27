@@ -268,7 +268,7 @@ describe("runRulesCheck: which asks a call opens", () => {
         });
       return body(blocks);
     }) as typeof fetch;
-    return (_directory: string, signal: AbortSignal) => ({
+    return async (_directory: string, signal: AbortSignal) => ({
       client: new DispatchClient("https://dispatch.example", bearerCredential("token"), fetchImpl, {
         signal,
       }),
@@ -394,7 +394,7 @@ describe("runRulesCheck: which asks a call opens", () => {
     expect(check?.names).toEqual(["The ask block #window that starts 'Which deployment window?'"]);
   });
   /** A session whose Dispatch does not resolve: the de-duplication read fails on every call. */
-  const noDispatch: Partial<RulesCheckDeps> = { dispatchClient: () => undefined };
+  const noDispatch: Partial<RulesCheckDeps> = { dispatchClient: async () => undefined };
   test("an upload whose de-duplication read fails judges the openers with no id and leaves the id-carrying ones alone", async () => {
     // Without the read nothing says which asks the stored version already holds, and an opener
     // carrying an id may be one of them.
@@ -471,7 +471,7 @@ describe("runRulesCheck: which asks a call opens", () => {
       {
         // The read takes 7 ms of the clock, and that is all the check spends.
         now: () => clock,
-        dispatchClient: () => {
+        dispatchClient: async () => {
           clock += 7;
           return undefined;
         },
@@ -500,7 +500,7 @@ describe("runRulesCheck: which asks a call opens", () => {
       {
         now: () => clock,
         env: {},
-        dispatchClient: (_directory, _signal, deadlineMs) => {
+        dispatchClient: async (_directory, _signal, deadlineMs) => {
           handed.push(deadlineMs);
           return undefined;
         },

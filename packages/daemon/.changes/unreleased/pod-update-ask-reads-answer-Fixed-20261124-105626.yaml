@@ -1,0 +1,18 @@
+kind: Fixed
+body: |-
+    A pod update round no longer asks a role a second time after the role has answered it. The
+    sweep read each role's answer through the mask that only the decision to replace the pod
+    needs: a role whose machine was deciding something at that moment read as not having answered.
+    A deploy's reset of an open round keeps each answer and clears each ask mark, so after a deploy
+    such a role could get the round's update steps again on its topic. The ask now reads each
+    answer as the role gave it, and an ask the sweep queued is not sent to a role that answered the
+    round before the ask went out. Past the bound, the read of the workspace before a replacement
+    is no longer dropped because an answered role's machine was deciding. The line `supervise pod
+    update replaced at the bound` is no longer written where every role had answered, and no longer
+    names a role that answered as unanswered. The replacement's line and the message on the issue no
+    longer name a failed or passed-over role that answered as one whose work may be lost. Only the
+    decisions that can delete the pod's disk read a deciding role as not having answered, and their
+    wait lines and refusal now say that the role has not answered or its machine was deciding.
+time: 2026-11-24T10:56:26Z
+custom:
+    Issue: pod-update-ask-reads-answer

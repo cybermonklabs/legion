@@ -9,6 +9,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/sjawhar/envoy/githubrate"
+
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/githubrest"
 	"github.com/sjawhar/legion/daemon/internal/redact"
@@ -24,6 +26,11 @@ const leakCheckReadBound = 2 * time.Minute
 // refusalBodyBytes is how much of GitHub's answer a refused read keeps: its first line is what
 // the cause sentence quotes, and GitHub's refusals are a line of JSON.
 const refusalBodyBytes = 64 << 10
+
+// leakCheckCaller is one of the daemon's caller kinds (githubrate.WithCaller, internal/daemon's
+// rate reading): the read of the shared leak check, its token's mint included, which the reading
+// counts its calls on the installation the token is of by.
+const leakCheckCaller = "leak_check"
 
 // Source is the daemon's reader of the shared public leak check: it reads the check's repository
 // (Repository, the deployment's Setting.Repository) at the tag a pod's launcher names, with a
@@ -51,9 +58,10 @@ type Source struct {
 	Token func(context.Context) (string, error)
 	// API is GitHub's REST root; empty is https://api.github.com.
 	API string
-	// Client makes the read; nil is http.DefaultClient. Its redirect policy is Go's own, which
-	// follows GitHub's redirect to the tarball's host and drops the Authorization header on the
-	// way to another host.
+	// Client makes the read; nil is the daemon's REST client (githubrest.HTTPClient), whose calls
+	// the daemon's rate reading counts. Either way its redirect policy is Go's own, which follows
+	// GitHub's redirect to the tarball's host and drops the Authorization header on the way to
+	// another host.
 	Client *http.Client
 	// ReadBound is how long one read has; zero is leakCheckReadBound.
 	ReadBound time.Duration
@@ -144,8 +152,9 @@ func (s *Source) fill(ctx context.Context, tag string, r *tagRead) {
 // read mints the token, fetches GitHub's tarball of the check's repository at tag, packs its
 // leak-check directory and slices it into the sequence that carries it. ctx carries the read's
 // bound, which a refusal names where it ended the read. A 401 drops the token (Forget) before the
-// read is refused.
+// read is refused. Its calls, the mint's among them, count as leakCheckCaller's.
 func (s *Source) read(ctx context.Context, tag string, bound time.Duration) (Served, error) {
+	ctx = githubrate.WithCaller(ctx, leakCheckCaller)
 	token, err := s.Token(ctx)
 	if err != nil {
 		return Served{}, errors.New(Cause(err.Error(), nil))
@@ -163,7 +172,7 @@ func (s *Source) read(ctx context.Context, tag string, bound time.Duration) (Ser
 	request.Header.Set("X-GitHub-Api-Version", "2022-11-28")
 	client := s.Client
 	if client == nil {
-		client = http.DefaultClient
+		client = githubrest.HTTPClient()
 	}
 	response, err := client.Do(request)
 	if err != nil {

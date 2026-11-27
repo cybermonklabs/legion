@@ -46,6 +46,7 @@ func endOf(t *testing.T, observations <-chan runtime.Observation, loc runtime.Lo
 // Displaced, and its Machine resumes its kept session in the new pod at once, charging nothing,
 // and registers and is ready there, its process alive.
 func TestReplacingADriftedPodResumesItsOtherLiveRoleOnItsSessionUncharged(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil)
 	architect := rootSpec(t)
 	before, _, _ := supervisedSandboxMachine(t, g, architect)
@@ -143,6 +144,7 @@ func TestReplacingADriftedPodResumesItsOtherLiveRoleOnItsSessionUncharged(t *tes
 // and its Machine resumes its session in the new pod at once, charging no launch failure and no
 // death.
 func TestARoleWhosePodTheDaemonReplacedIsResumedUncharged(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil)
 	architect := rootSpec(t)
 	machine, _, _ := supervisedSandboxMachine(t, g, architect)
@@ -187,6 +189,7 @@ func TestARoleWhosePodTheDaemonReplacedIsResumedUncharged(t *testing.T) {
 // controller writes one of its own) stands beside it: the suspension is a merge patch of its one
 // annotation key, never a write of the whole map.
 func TestReplacingALivePodNamesItBesideEveryOtherAnnotation(t *testing.T) {
+	t.Parallel()
 	const between = "example.io/written-between"
 	g := newRig(t, nil)
 	testerLoc := g.spawn(workerSpec(t))
@@ -240,6 +243,7 @@ func TestReplacingALivePodNamesItBesideEveryOtherAnnotation(t *testing.T) {
 // the Sandbox itself fails — is Uncertain, never a death: the claim stays watched and is evaluated
 // again once the read can answer.
 func TestAnEndWhoseSandboxCannotBeReadIsUncertain(t *testing.T) {
+	t.Parallel()
 	name := SandboxName(workerToken)
 	g := newRig(t, []k8sruntime.Object{sandboxObject(t, name, sandboxUID, modeSuspended, claimLabels(claim.RoleTester))}, withoutController())
 	g.dyn.PrependReactor("get", "sandboxes", func(k8stesting.Action) (bool, k8sruntime.Object, error) {
@@ -260,6 +264,7 @@ func TestAnEndWhoseSandboxCannotBeReadIsUncertain(t *testing.T) {
 // itself before it is reported: with the Sandbox store 300 ms behind, the tester whose pod the
 // reviewer's launch replaced is still reported Displaced, never a death to charge.
 func TestADisplacementIsConfirmedPastALaggingSandboxStore(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil, withLaggingSandboxInformer(300*time.Millisecond))
 	testerLoc := g.spawn(workerSpec(t))
 	if err := g.kube.Tracker().Delete(corev1.SchemeGroupVersion.WithResource("secrets"), testNamespace, roleSecretName(testerLoc.Sandbox.Name, claim.RoleReviewer)); err != nil {
@@ -291,6 +296,7 @@ func TestADisplacementIsConfirmedPastALaggingSandboxStore(t *testing.T) {
 // pod. A role that dies there later is a death like any other, not Displaced, so a role that keeps
 // dying in a pod that is never replaced still spends its launch budget.
 func TestARefusedReplacementNamesNoPod(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil)
 	architectLoc := g.spawn(rootSpec(t))
 	reviewerSecret := roleSecretName(architectLoc.Sandbox.Name, claim.RoleReviewer)
@@ -329,6 +335,7 @@ func TestARefusedReplacementNamesNoPod(t *testing.T) {
 // the daemon's: whatever ran there ended with the pod. The Sandbox names no replaced pod, so the
 // roles recorded in it are reported as the pod's own ends, never Displaced.
 func TestReplacingAnEndedPodNamesNothing(t *testing.T) {
+	t.Parallel()
 	for name, end := range map[string]func(*corev1.Pod){
 		"a failed pod": func(p *corev1.Pod) {
 			p.Status = corev1.PodStatus{Phase: corev1.PodFailed, ContainerStatuses: []corev1.ContainerStatus{terminated(workerContainer, 137, "Error")}}
@@ -377,6 +384,7 @@ func TestReplacingAnEndedPodNamesNothing(t *testing.T) {
 // `not_recorded_process` with no pod end and no eviction in its detail, which is what
 // INFRA-2009's review measured at b7085e21.
 func TestARoleCheckedAfterASiblingReplacedItsEvictedPodReadsTheEviction(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil)
 	testerLoc := g.spawn(workerSpec(t))
 	name := testerLoc.Sandbox.Name
@@ -429,6 +437,7 @@ func TestARoleCheckedAfterASiblingReplacedItsEvictedPodReadsTheEviction(t *testi
 // and a verdict that read no end off the cached Sandbox is read again from the one that records
 // it. The negative control is that read again left out: the check then carries no pod end.
 func TestAnEndedPodsRecordIsReadPastALaggingSandboxStore(t *testing.T) {
+	t.Parallel()
 	labels := claimLabels(claim.RoleTester)
 	name := SandboxName(workerToken)
 	g := newRig(t, []k8sruntime.Object{sandboxObject(t, name, sandboxUID, modeRunning, labels),

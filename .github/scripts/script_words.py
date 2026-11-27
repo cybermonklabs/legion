@@ -35,7 +35,8 @@ PATH_CHARS = r"\w.@+/\-"
 REF_TEXT = r"\$\{\{.*?\}\}|\$\{[^}]*\}|\$[A-Za-z_]\w*"
 REF = re.compile(REF_TEXT)
 SHELL_REF = re.compile(r"\$(?:\{([A-Za-z_]\w*)(?::?[-=+?](.*))?\}|([A-Za-z_]\w*))", re.S)
-# The variable a ${...} expansion reads, whatever operator follows it (`${X%.sh}`, `${#X}`).
+# The variable a ${...} expansion reads, whatever operator follows it (`${X%.sh}`) or comes
+# before its name (a length, or an indirection).
 EXPANDED_NAME = re.compile(r"\$\{[#!]?([A-Za-z_]\w*)")
 WORKSPACE_REF = re.compile(r"\$\{\{\s*github\.workspace\s*\}\}|\$\{GITHUB_WORKSPACE\}|\$GITHUB_WORKSPACE")
 # A shell glob's bracket expression, read whole: `[abc]`, `[!x]`, `[^x]`, `[[:alpha:]]`.

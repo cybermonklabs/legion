@@ -3,12 +3,16 @@ package sandbox
 import (
 	"bufio"
 	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"log/slog"
 	"maps"
 	"net"
+	"os"
+	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -52,6 +56,10 @@ type launchers struct {
 	// and the Start's write, the window in which a launcher that reconnects leaves the start on a
 	// closed session (TestALaunchWhoseLauncherReconnectsBeforeItsStartIsWrittenFailsAndTheNextTryStarts).
 	beforeStart func(ctx context.Context, token claim.Token)
+	// keptStart is a role's start in a pod of a Sandbox that owns the issue's kept volume, which
+	// records the pod with that volume (Options.KeptPodStart). A launchers built without it records
+	// no pod.
+	keptStart runtime.KeptPodStart
 	// guardKilled takes a launcher's report of one process ended in an issue pod into the daemon's
 	// fact path (Options.MemoryGuardKilled), and controllerKilled one ended in the controller's pod
 	// (Options.ControllerMemoryGuardKilled): in a pod of either kind, one the memory guard ended in
@@ -74,13 +82,21 @@ type launcherSession struct {
 	// issue is the exact issue key this launcher's pod is of, as the role Secret's annotation
 	// carried it to the hello's authentication (launcherCredential.issue). "" for a pod of no
 	// issue, the project controller's.
-	issue  string
-	id     string
-	podUID string
+	issue string
+	// keptSince is when the API server created this launcher's pod's Sandbox, where that Sandbox
+	// owns the issue's kept volume (ownsKeptVolume), and the zero time for a pod on a volume of its
+	// own. Each role's start in such a pod records it with that volume (recordKeptPod).
+	keptSince time.Time
+	id        string
+	podUID    string
 	// resumesBySession is whether this launcher's hello said it can look a session up by its id
 	// and resume the file it finds (shimwire.LauncherHello.ResumesBySession). A launcher built
 	// before it could says nothing, and relaunch names it no session by its id alone.
 	resumesBySession bool
+	// readsWorkspace is whether this launcher's hello said it answers the workspace read on its
+	// own connection (shimwire.LauncherHello.ReadsWorkspace). A launcher built before it closes
+	// its connection on that frame, so the daemon asks only one that said so (workspaceReader).
+	readsWorkspace bool
 
 	mu      sync.Mutex
 	conn    net.Conn
@@ -97,19 +113,21 @@ type launcherSession struct {
 	leakCheckInstalled bool
 }
 
-func newLaunchers(setting leakguard.Setting, leakCheck LeakCheckReader, guardKilled runtime.MemoryGuardKilled,
+func newLaunchers(setting leakguard.Setting, leakCheck LeakCheckReader, keptStart runtime.KeptPodStart, guardKilled runtime.MemoryGuardKilled,
 	controllerKilled runtime.ControllerMemoryGuardKilled, volume runtime.VolumeReported, log *slog.Logger) *launchers {
 	return &launchers{sessions: map[claim.Token]*launcherSession{}, leakCheckSetting: setting, leakCheck: leakCheck, leakCheckHop: leakCheckHopBound,
-		guardKilled: guardKilled, controllerKilled: controllerKilled, volume: volume, log: log}
+		keptStart: keptStart, guardKilled: guardKilled, controllerKilled: controllerKilled, volume: volume, log: log}
 }
 
-// accept registers a launcher connection of the pod of issue. The newest authenticated connection
-// for a role wins: a half-open predecessor is closed so its pending requests fail instead of
-// waiting forever.
-func (d *launchers) accept(token claim.Token, issue string, hello shimwire.LauncherHello) *launcherSession {
-	s := &launcherSession{owner: d, token: token, issue: issue, id: hello.LauncherID, podUID: hello.PodUID,
+// accept registers a launcher connection of the pod of issue, whose Sandbox owns the issue's kept
+// volume since keptSince (the zero time for a pod on a volume of its own). The newest
+// authenticated connection for a role wins: a half-open predecessor is closed so its pending
+// requests fail instead of waiting forever.
+func (d *launchers) accept(token claim.Token, issue string, keptSince time.Time, hello shimwire.LauncherHello) *launcherSession {
+	s := &launcherSession{owner: d, token: token, issue: issue, keptSince: keptSince, id: hello.LauncherID, podUID: hello.PodUID,
 		ready: make(chan struct{}), waiters: map[string]chan shimwire.Frame{},
-		leakCheckTag: hello.LeakCheckTag, leakCheckInstalled: hello.LeakCheckInstalled, resumesBySession: hello.ResumesBySession}
+		leakCheckTag: hello.LeakCheckTag, leakCheckInstalled: hello.LeakCheckInstalled, resumesBySession: hello.ResumesBySession,
+		readsWorkspace: hello.ReadsWorkspace}
 	d.mu.Lock()
 	old := d.sessions[token]
 	d.sessions[token] = s
@@ -158,6 +176,8 @@ func (s *launcherSession) ServeLauncher(conn net.Conn, reader *bufio.Reader, wri
 			s.mu.Unlock()
 			s.deliver(value.ID, value)
 		case shimwire.LauncherStopResult:
+			s.deliver(value.ID, value)
+		case shimwire.WorkspaceWorkResult:
 			s.deliver(value.ID, value)
 		case shimwire.LauncherLeakCheckResult:
 			s.deliver(sliceWaiter(value.ID, value.Index), value)
@@ -249,6 +269,94 @@ func (d *launchers) resumesBySession(token claim.Token, podUID string) bool {
 	return !session.closed && session.resumesBySession
 }
 
+// workspaceReader is a connected, ready launcher session of issue's pod podUID whose hello said it
+// reads the issue workspace (launcherSession.readsWorkspace), and nil where there is none. Every
+// role of a pod has a launcher connection of its own, and each of them reads the one workspace the
+// pod's roles share, so any of them answers the same; the one whose token sorts first is asked, so
+// two reads of one pod go to the same launcher while it stays connected.
+func (d *launchers) workspaceReader(issue, podUID string) *launcherSession {
+	d.mu.Lock()
+	candidates := make([]*launcherSession, 0, len(d.sessions))
+	for _, session := range d.sessions {
+		if session.issue == issue && session.podUID == podUID && session.readsWorkspace {
+			candidates = append(candidates, session)
+		}
+	}
+	d.mu.Unlock()
+	slices.SortFunc(candidates, func(a, b *launcherSession) int { return strings.Compare(string(a.token), string(b.token)) })
+	for _, session := range candidates {
+		session.mu.Lock()
+		closed := session.closed
+		session.mu.Unlock()
+		if closed {
+			continue
+		}
+		select {
+		case <-session.ready:
+			return session
+		default:
+		}
+	}
+	return nil
+}
+
+var _ runtime.PodWorkspaceReader = (*Runtime)(nil)
+
+// PodWorkspaceWork has the launcher of issue's pod read whether the issue workspace holds work that
+// no branch or tag on origin holds, where no role process runs to read through
+// (runtime.PodWorkspaceReader, R6 of #5285). The pod is the one the runtime holds
+// for the issue now (IssuePod); the launcher is a connected one of that pod whose hello said it
+// reads a workspace (launchers.workspaceReader). The read is bounded by the read's own budget
+// (runtime.WorkspaceWorkTimeout) and one API call's time for the frame each way. The answer names
+// the pod read (runtime.WorkspaceWork.PodUID), and so does the error of a read once it has chosen
+// the pod. A pod the runtime cannot name or holds none of, a pod with no such launcher, a
+// connection that closes before the answer and a launcher that refuses are each an error, which
+// the caller reads as a read that could not be made, never as no work.
+func (r *Runtime) PodWorkspaceWork(ctx context.Context, issue string) (runtime.WorkspaceWork, error) {
+	pod, read := r.IssuePod(issue)
+	switch {
+	case !read:
+		return runtime.WorkspaceWork{}, fmt.Errorf("read %s's workspace: the runtime cannot say which pod holds it", issue)
+	case pod == "":
+		return runtime.WorkspaceWork{}, fmt.Errorf("read %s's workspace: the runtime holds no pod of the issue", issue)
+	}
+	return r.launcherWorkspaceWork(ctx, issue, pod)
+}
+
+// launcherWorkspaceWork is PodWorkspaceWork's read of pod, the issue's pod the caller chose: every
+// answer, an error's included, names pod.
+func (r *Runtime) launcherWorkspaceWork(ctx context.Context, issue, pod string) (runtime.WorkspaceWork, error) {
+	none := runtime.WorkspaceWork{PodUID: pod}
+	session := r.launchers.workspaceReader(issue, pod)
+	if session == nil {
+		return none, fmt.Errorf("read %s's workspace: no launcher of pod %s that reads a workspace is connected", issue, pod)
+	}
+	id := rand.Text()
+	frame := shimwire.WorkspaceWork{ID: id, Issue: issue, TimeoutMs: int(runtime.WorkspaceWorkTimeout.Milliseconds())}
+	if err := frame.Validate(); err != nil {
+		return none, fmt.Errorf("read %s's workspace: %w", issue, err)
+	}
+	bounded, cancel := context.WithTimeout(ctx, runtime.WorkspaceWorkTimeout+apiTimeout)
+	defer cancel()
+	answer, _, err := r.launchers.requestSession(bounded, session, frame, id)
+	if err != nil {
+		return none, fmt.Errorf("read %s's workspace through launcher %s of pod %s: %w", issue, session.token, pod, err)
+	}
+	result, ok := answer.(shimwire.WorkspaceWorkResult)
+	if !ok {
+		return none, fmt.Errorf("read %s's workspace through launcher %s: answered by a %s frame", issue, session.token, answer.FrameType())
+	}
+	work, refused, err := runtime.WorkspaceWorkOf(result)
+	switch {
+	case err != nil:
+		return none, fmt.Errorf("read %s's workspace through launcher %s: %w", issue, session.token, err)
+	case refused != "":
+		return none, fmt.Errorf("read %s's workspace through launcher %s: the launcher refused: %s", issue, session.token, refused)
+	}
+	work.PodUID = pod
+	return work, nil
+}
+
 func (d *launchers) await(ctx context.Context, token claim.Token, podUID string) (*launcherSession, error) {
 	for {
 		d.mu.Lock()
@@ -294,15 +402,15 @@ func (d *launchers) requestSession(ctx context.Context, session *launcherSession
 		return nil, nil, errors.New("launcher connection closed")
 	}
 	session.waiters[id] = waiter
+	// The write's deadline is apiTimeout's, or ctx's when ctx ends first (ctxBound).
 	deadline := time.Now().Add(apiTimeout)
+	ctxBound := false
 	if until, ok := ctx.Deadline(); ok && until.Before(deadline) {
-		deadline = until
+		deadline, ctxBound = until, true
 	}
 	err := session.conn.SetWriteDeadline(deadline)
 	if err == nil {
-		stopCancel := context.AfterFunc(ctx, func() { _ = session.conn.Close() })
-		err = session.write.WriteFrame(frame)
-		stopCancel()
+		err = d.writeFrame(ctx, session, frame)
 		_ = session.conn.SetWriteDeadline(time.Time{})
 	}
 	session.mu.Unlock()
@@ -313,6 +421,17 @@ func (d *launchers) requestSession(ctx context.Context, session *launcherSession
 	}()
 	if err != nil {
 		session.close()
+		// A write the launcher never took ends at its deadline with the connection's timeout
+		// rather than ctx's error: at ctx's own deadline when that is the write's (ctxBound), whose
+		// timer, set for the same instant, may not have ended ctx yet, or at once when ctx ended
+		// some other way and writeFrame moved the deadline to the present. Such a write ended
+		// because ctx did: it is reported as ctx's end, as the wait for the answer below reports it,
+		// so a caller telling its own bound from another (serveLeakCheck's hop, boundRanOut) reads
+		// the same error whichever of the two the bound caught.
+		if errors.Is(err, os.ErrDeadlineExceeded) && (ctxBound || ctx.Err() != nil) {
+			<-ctx.Done()
+			return nil, nil, fmt.Errorf("%w: %w", ctx.Err(), err)
+		}
 		return nil, nil, err
 	}
 	select {
@@ -330,6 +449,26 @@ func (d *launchers) requestSession(ctx context.Context, session *launcherSession
 	case <-ctx.Done():
 		return nil, nil, ctx.Err()
 	}
+}
+
+// writeFrame writes frame to session, cutting the write when ctx ends while the launcher has not
+// taken the whole frame: ctx's end moves the connection's write deadline to the present, which ends
+// a write still in progress with the connection's timeout and leaves alone a write the launcher has
+// taken, so a frame the launcher holds keeps its connection, and the request that follows, the Stop
+// of what the frame may have started among them, reaches the same launcher. A deadline ctx's end
+// has already begun to move is waited for, so requestSession's reset of the deadline comes after it.
+// A cut write's error closes the session (requestSession).
+func (d *launchers) writeFrame(ctx context.Context, session *launcherSession, frame shimwire.Frame) error {
+	cut := make(chan struct{})
+	stop := context.AfterFunc(ctx, func() {
+		defer close(cut)
+		_ = session.conn.SetWriteDeadline(time.Now())
+	})
+	err := session.write.WriteFrame(frame)
+	if !stop() {
+		<-cut
+	}
+	return err
 }
 
 func (d *launchers) current(session *launcherSession) bool {
@@ -373,7 +512,7 @@ func (e startRefusal) Unwrap() error {
 	return nil
 }
 
-func (d *launchers) start(ctx context.Context, token claim.Token, podUID string, session *launcherSession, command shimwire.LauncherStart) error {
+func (d *launchers) start(ctx context.Context, token claim.Token, session *launcherSession, command shimwire.LauncherStart) error {
 	// serveLeakCheck chose this exact session and installed the check before the command was built.
 	// The start stays on it: a replacement session has not received that push, so this launch
 	// refuses and the supervisor retries from the new hello rather than starting a role without
@@ -492,6 +631,39 @@ func (d *launchers) serveLeakCheck(ctx context.Context, token claim.Token, podUI
 		return session, nil
 	}
 	return nil, refuse(fmt.Sprintf("the pod's launcher took every slice of %s without installing it", tag), nil)
+}
+
+// keptPodRecordBound is how long the record of one pod of a kept volume may take (recordKeptPod):
+// one row, which the store writes again while it fails for a reason that passes, so this is room
+// for a store slow to answer rather than for the common case.
+const keptPodRecordBound = 2 * time.Minute
+
+// recordKeptPod records the launcher session's pod, whose Sandbox owns the issue's kept volume
+// (launcherSession.keptSince), with that volume at each role's start in it (keptStart,
+// store.StartKeptPod), before the role's start is sent (relaunch, before launchers.start). A kept
+// volume outlives its pod, so what the roles of this pod leave unpushed stays on the volume for
+// the issue's next pod of it, and an end of the update round over that later pod reads the record
+// for whom it names (store.PodHoldsEarlierWork). A pod on a volume of its own, the project
+// controller's pod, and a launchers built without keptStart record nothing.
+//
+// The store runs a write that failed for a reason that passes again, until a run commits or the
+// call's context ends: the record's bound (keptPodRecordBound) or the start's own deadline,
+// whichever comes first. A call that still fails is answered as a refusal of the role's start
+// (runtime.KeptPodUnrecorded), which relaunch returns before the Start frame is sent and the
+// supervisor logs and charges as a launch failure; the next start asks again. A role that ran in
+// a pod the store does not record could leave work on the volume that the round over a later pod
+// of it would name no role for, and the record is in the store so that a daemon restart keeps it
+// too.
+func (d *launchers) recordKeptPod(ctx context.Context, session *launcherSession) error {
+	if d.keptStart == nil || session.issue == "" || session.keptSince.IsZero() {
+		return nil
+	}
+	recording, cancel := context.WithTimeout(ctx, keptPodRecordBound)
+	defer cancel()
+	if err := d.keptStart(recording, session.issue, session.podUID, session.keptSince); err != nil {
+		return runtime.KeptPodUnrecorded{PodUID: session.podUID, KeptSince: session.keptSince, Err: err}
+	}
+	return nil
 }
 
 // earlierRestoreReport reads and drops one launcher_restored frame (shimwire.LauncherRestored).
@@ -755,7 +927,8 @@ func (r *Runtime) launcherBound(ctx context.Context, s *sandbox, pod *corev1.Pod
 // launcherCommand is the start command a role's launcher receives for one generation: the shim's
 // argv (its flags, then `--`, then the agent's own argv), the generation's plain environment, the
 // launch credentials and files it writes into its private directory, and the session a resume
-// continues: its file (ResumeFile), or for a claim that records no file the session's id
+// continues: its file (ResumeFile), which the launcher looks the session up by whether or not the
+// agent's argv resumes it by id (agentArgv), or for a claim that records no file the session's id
 // (ResumeSession), which the launcher looks up in the session table and resumes the file it finds
 // in place of the agent argv's one `--resume=<id>` (agentArgv). A launch that has the agent's own
 // command resolve the id (ResumeByAgent), which supervise makes after relaunch refused to name the
@@ -824,7 +997,7 @@ func launcherCommand(l launch, r *Runtime) shimwire.LauncherStart {
 		shim = append(shim, "--provider-env-dir", ProvidersDir)
 	}
 	if l.enrolls(r) {
-		shim = append(shim, "--agent-secrets-key-dir", AgentSecretsKeyDir, "--pod-token-file", AgentSecretsTokenDir+"/"+AgentSecretsTokenFile, "--agent-secrets-bin", r.tools.AgentSecrets)
+		shim = append(shim, "--agent-secrets-key-dir", AgentSecretsKeyDir, "--pod-token-file", AgentSecretsTokenDir+"/"+AgentSecretsTokenFile, "--"+shimwire.AgentSecretsBinFlag, r.tools.AgentSecrets)
 	}
 	_, values := r.launchEnvironment(l)
 	values = append(values, bootTokenKey+"_FILE="+dir+"/"+bootTokenKey)

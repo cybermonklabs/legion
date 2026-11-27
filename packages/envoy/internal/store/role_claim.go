@@ -244,7 +244,7 @@ func (r *Registry) SetRoleWithPrevious(ctx context.Context, req RoleClaimRequest
 		// route's budget. A claim that meets a conflict at every try until its tries end writes
 		// nothing and is ErrRoleClaimContended, which its client meets as a 503 to retry.
 		var answered bool
-		revision, answered, err = bus.Bounded(tries, func() (uint64, error) {
+		revision, answered, err = bus.Bounded(tries, roles.Conn(), func() (uint64, error) {
 			if oldClaim.Revision == 0 {
 				return roles.Create(req.Role, data)
 			}

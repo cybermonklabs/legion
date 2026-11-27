@@ -3,6 +3,7 @@ package main
 import "testing"
 
 func TestHarnessNameReadsClaudeCodesNpmBinaryAsClaude(t *testing.T) {
+	t.Parallel()
 	for comm, want := range map[string]string{
 		"claude\n":     "claude",
 		"claude.exe\n": "claude",

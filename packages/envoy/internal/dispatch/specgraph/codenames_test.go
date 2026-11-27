@@ -1,6 +1,7 @@
 package specgraph
 
 import (
+	"encoding/json"
 	"slices"
 	"testing"
 )
@@ -84,5 +85,28 @@ func TestIsID(t *testing.T) {
 		if got := IsID(row.id); got != row.want {
 			t.Errorf("IsID(%q) = %t, want %t", row.id, got, row.want)
 		}
+	}
+}
+
+// The id rule has one source, the pattern of the schema's id ($defs/id): slug, the Go form of the
+// rule that Validate, IsID and the approved reader read, is compiled from it, so the schema and Go
+// cannot refuse two sets of values, and Validate, which leaves a value that is no id to the
+// schema, gives one problem for it. The test reads that one source twice, so it holds the two
+// apart no further than that slug is compiled and not written: a schema whose pattern Go cannot
+// compile, or that has none, panics as the package loads, before any test of it runs.
+func TestSlugIsTheSchemasIDPattern(t *testing.T) {
+	t.Parallel()
+	var schema struct {
+		Defs struct {
+			ID struct {
+				Pattern string `json:"pattern"`
+			} `json:"id"`
+		} `json:"$defs"`
+	}
+	if err := json.Unmarshal(schemaJSON, &schema); err != nil || schema.Defs.ID.Pattern == "" {
+		t.Fatalf("the schema gives no pattern of $defs/id: %v", err)
+	}
+	if slug.String() != schema.Defs.ID.Pattern {
+		t.Errorf("slug is %q, and the schema's id pattern %q", slug.String(), schema.Defs.ID.Pattern)
 	}
 }

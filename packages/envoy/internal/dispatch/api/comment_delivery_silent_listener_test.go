@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"slices"
 	"strings"
@@ -12,6 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/outbox"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A listener that answers none of a session's lookups, its comment-time lookup or its send's
@@ -65,9 +67,10 @@ func TestASilentListenerStillLeavesTheSessionOneCopyOfTheComment(t *testing.T) {
 	}
 }
 
-// publishedToSession runs the outbox until every event of issueKey is published, then reports
-// whether any event about commentID (its comment.created, a comment.delivery, any other) was
-// published to the session's own topic.
+// publishedToSession runs the outbox until every event of issueKey is published, a wait whose one
+// bound is the test binary's deadline (testwait.UntilPolling), then reports whether any event about
+// commentID (its comment.created, a comment.delivery, any other) was published to the session's own
+// topic.
 func publishedToSession(t *testing.T, deps Deps, issueKey, commentID, sessionID string) bool {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -83,21 +86,14 @@ func publishedToSession(t *testing.T, deps Deps, issueKey, commentID, sessionID 
 		cancel()
 		<-stopped
 	}()
-	deadline := time.Now().Add(10 * time.Second)
-	for {
+	testwait.UntilPolling(t, 10*time.Millisecond, fmt.Sprintf("the outbox to publish every event of %s (the events unpublished)", issueKey), func() (int, bool) {
 		var unpublished int
 		if err := deps.Store.Pool.QueryRow(context.Background(),
 			`select count(*) from events where issue_key = $1 and published_at is null`, issueKey).Scan(&unpublished); err != nil {
 			t.Fatalf("count unpublished events of %s: %v", issueKey, err)
 		}
-		if unpublished == 0 {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the outbox left %d events of %s unpublished", unpublished, issueKey)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+		return unpublished, unpublished == 0
+	})
 	rows, err := deps.Store.Pool.Query(context.Background(), `
 		select published_destinations from events
 		where issue_key = $1 and (payload->>'id' = $2 or payload->>'comment_id' = $2)
@@ -293,19 +289,15 @@ func TestAMentionClaimedByAKilledProcessStillReachesItsSessionWhenTheResendFails
 		cancel()
 		<-stopped
 	}()
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
+	testwait.UntilPolling(t, 20*time.Millisecond, "the outbox to publish the comment's comment.created", func() (bool, bool) {
 		var published bool
 		if err := database.Pool.QueryRow(context.Background(), `
 			select published_at is not null from events where type = 'comment.created' and payload->>'id' = $1
 		`, claimed.ID).Scan(&published); err != nil {
 			t.Fatalf("read comment.created: %v", err)
 		}
-		if published {
-			break
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+		return published, published
+	})
 
 	if err := served.resumeOwedDeliveries(context.Background()); err != nil {
 		t.Fatalf("resume the owed deliveries: %v", err)
@@ -320,8 +312,7 @@ func TestAMentionClaimedByAKilledProcessStillReachesItsSessionWhenTheResendFails
 	})
 
 	copies := 0
-	deadline = time.Now().Add(10 * time.Second)
-	for {
+	testwait.UntilPolling(t, 20*time.Millisecond, fmt.Sprintf("the outbox to publish every event of %s and settle every held copy", issue.Key), func() (string, bool) {
 		var unpublished, unsettled int
 		if err := database.Pool.QueryRow(context.Background(), `
 			select (select count(*) from events where issue_key = $1 and published_at is null),
@@ -329,14 +320,8 @@ func TestAMentionClaimedByAKilledProcessStillReachesItsSessionWhenTheResendFails
 		`, issue.Key, claimed.ID).Scan(&unpublished, &unsettled); err != nil {
 			t.Fatalf("count unpublished events: %v", err)
 		}
-		if unpublished == 0 && unsettled == 0 {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the outbox left %d events of %s unpublished and %d held copies unsettled", unpublished, issue.Key, unsettled)
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+		return fmt.Sprintf("%d events unpublished, %d held copies unsettled", unpublished, unsettled), unpublished == 0 && unsettled == 0
+	})
 	if err := database.Pool.QueryRow(context.Background(), `
 		select (select count(*) from events
 		        where issue_key = $1 and (payload->>'id' = $2 or payload->>'comment_id' = $2) and $3 = any(published_destinations))

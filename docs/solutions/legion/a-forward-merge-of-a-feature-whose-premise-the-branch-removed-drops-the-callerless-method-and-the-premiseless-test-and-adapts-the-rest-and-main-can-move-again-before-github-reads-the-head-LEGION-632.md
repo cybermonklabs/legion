@@ -45,10 +45,10 @@ Extends docs/solutions/legion/a-forward-merge-into-a-branch-that-moved-files-por
   mergeable,mergeStateStatus`) about thirty seconds later; when `main` moved meanwhile, merge again
   at once with `jj new legion/<KEY> main@origin` rather than waiting for a round to be sent back.
   #1842's round 9 needed two merges minutes apart (#1860, then #1853); the first head got no run.
-- Re-read `main`'s `DaemonAPIVersion` at every forward merge and renumber only when it moved past
-  yours (docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md):
-  #1842 renumbered 16 → 17 → 18 at two of four merges and stayed at 18 for the last two, since
-  pi-legion 8.7.0 still declared 17.
+- Until dispatch://INFRA-1569 each forward merge also re-read `main`'s contract number and moved the
+  branch's when `main`'s had passed it: #1842 renumbered 16 → 17 → 18 at two of four merges
+  (docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md).
+  A contract change adds an entry since, which a forward merge leaves as it is.
 - A commit you push after your phase completed is authored by the next role's App: the daemon
   re-authors the working copy for the role whose phase is active, so an architect-directed
   docs-only commit above the handoff head lands under that App's name. Acceptable when the

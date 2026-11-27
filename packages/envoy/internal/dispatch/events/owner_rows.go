@@ -24,7 +24,7 @@ const (
 // OwnerRows are owner rows a writer takes before it writes under them, each by its owner key as
 // eventOwnerKey keys the owner of an event - "issue:<key>", or "artifact:<id>" for a document no
 // issue owns. A backfill batch takes the owners of its documents through them (graphcensus's
-// lockBlockDocuments).
+// lockBlockDocuments and lockObjectOwners).
 type OwnerRows map[string]struct{}
 
 // Add records the owner of a thing: issue when an issue owns it, and otherwise the document
@@ -51,7 +51,7 @@ func (o OwnerRows) Add(issue, artifact string) {
 //
 // A row gone since its key was read, or a document an issue has taken since, is no error: the
 // caller read its owners before it locked them, and it reads again under its locks what it stands
-// under now (the backfill batch's heldBlockRows).
+// under now (the backfill batches' heldBlockRows and writeObjectBatch).
 func LockOwnerRows(ctx context.Context, tx pgx.Tx, owners OwnerRows) error {
 	locks := make([]store.Owner, 0, len(owners))
 	for _, key := range slices.Sorted(maps.Keys(owners)) {

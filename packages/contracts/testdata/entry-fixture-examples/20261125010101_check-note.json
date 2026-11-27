@@ -1,0 +1,26 @@
+{
+  "answers": [
+    {
+      "answer": "state",
+      "addKeyPaths": [
+        "issues.*.check",
+        "issues.*.check.note",
+        "settings.worker_boot_timeout_seconds"
+      ],
+      "addValues": { "issues.*.phase": ["held"] }
+    }
+  ],
+  "routes": [
+    { "route": "POST /legion/v1/claims/exit", "addFieldPaths": ["detail"] },
+    { "route": "POST /legion/v1/issues/note", "change": "add", "addFieldPaths": ["issue", "note"] }
+  ],
+  "answerRows": [
+    {
+      "id": "state",
+      "routes": [],
+      "noBody": false,
+      "typedSettings": [{ "key": "worker_boot_timeout_seconds" }]
+    }
+  ],
+  "enumeratedRows": [{ "answer": "state", "keyPath": "issues.*.phase", "values": ["held"] }]
+}

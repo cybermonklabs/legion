@@ -171,7 +171,18 @@ func TestOpenAPIDocumentMarksEveryTestHookAndNothingElse(t *testing.T) {
 			}
 		}
 	}
-	hooks := openAPIHookRoutes()
+	// The hooks are read as the rows a server with its test hooks mounts and one without does not,
+	// rather than off the declarations' TestHook, which is what the emitter marks by.
+	served := map[string]bool{}
+	for _, route := range (&server{}).routes() {
+		served[route.Method+" "+route.Pattern] = true
+	}
+	hooks := map[string]bool{}
+	for _, route := range (&server{deps: Deps{TestHooksEnabled: true}}).routes() {
+		if name := route.Method + " " + route.Pattern; !served[name] {
+			hooks[name] = true
+		}
+	}
 	if len(hooks) != 15 {
 		t.Fatalf("the table mounts %d test hooks with Deps.TestHooksEnabled, want 15", len(hooks))
 	}
@@ -198,8 +209,8 @@ func TestARefusalStatusAlsoAnswersThePlainErrorBody(t *testing.T) {
 	paths, _ := tree.(map[string]any)["paths"].(map[string]any)
 	plain := openAPISchemaPrefix + "ErrorBody"
 	checked := 0
-	for name, shape := range routeShapes {
-		method, pattern, _ := strings.Cut(name, " ")
+	for _, route := range (&server{deps: Deps{TestHooksEnabled: true}}).routes() {
+		name, method, pattern, shape := route.Method+" "+route.Pattern, route.Method, route.Pattern, route.Shape
 		for _, refusal := range shape.Refusals {
 			status := fmt.Sprint(refusal.Status)
 			operation, _ := paths[pattern].(map[string]any)[strings.ToLower(method)].(map[string]any)

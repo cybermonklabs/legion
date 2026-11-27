@@ -3,15 +3,16 @@ package bus
 import (
 	"context"
 	"errors"
+	"fmt"
 	"maps"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A KV call builds its subjects from its key, which nats.go checks only for the characters a key may
@@ -58,15 +59,15 @@ func TestAKeyValueHandleRefusesAKeyNATSWouldRefuse(t *testing.T) {
 // takes one and still takes the longest key that fits, the control keys spelled with letter.
 func requireKeysChecked(t *testing.T, client *Client, kv KeyValue, letter string) {
 	t.Helper()
+	// No span of its own: the leader's answer can come late on a loaded machine with nothing wrong.
+	leaderRead := testwait.Context(t)
 
 	calls := map[string]func(key string) error{
 		"Get": func(key string) error { _, err := kv.Get(key); return err },
 		// The leader-answered read builds its own request rather than letting nats.go build one,
 		// so it refuses the keys Get refuses itself, before anything is sent (RefusesRead).
 		"GetFromLeader": func(key string) error {
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			_, err := kv.GetFromLeader(ctx, key)
+			_, err := kv.GetFromLeader(leaderRead, key)
 			return err
 		},
 		"Put":       func(key string) error { _, err := kv.Put(key, []byte("v")); return err },
@@ -416,6 +417,7 @@ func listedKeys(t *testing.T, kv KeyValue) []string {
 	}
 	defer func() { _ = watcher.Stop() }()
 	var keys []string
+	waited := testwait.Context(t)
 	for {
 		select {
 		case entry, open := <-watcher.Updates():
@@ -426,8 +428,8 @@ func listedKeys(t *testing.T, kv KeyValue) []string {
 				return keys
 			}
 			keys = append(keys, entry.Key())
-		case <-time.After(10 * time.Second):
-			t.Fatalf("the watch of every key delivered %d keys and no nil within 10 s, want the nil that ends its scan", len(keys))
+		case <-waited.Done():
+			t.Fatalf("the watch of every key delivered %d keys and no nil, want the nil that ends its scan", len(keys))
 		}
 	}
 }
@@ -444,13 +446,9 @@ func watchKey(t *testing.T, kv KeyValue, key string) {
 	}
 	defer func() { _ = watcher.Stop() }()
 	for _, want := range []bool{true, false} {
-		select {
-		case entry := <-watcher.Updates():
-			if (entry != nil) != want || (entry != nil && entry.Key() != key) {
-				t.Fatalf("watch of %d-byte key delivered %v, want the key and then the scan's end", len(key), entry)
-			}
-		case <-time.After(10 * time.Second):
-			t.Fatalf("watch of %d-byte key delivered nothing within 10 s", len(key))
+		entry := testwait.Receive(t, fmt.Sprintf("a delivery from the watch of %d-byte key", len(key)), watcher.Updates())
+		if (entry != nil) != want || (entry != nil && entry.Key() != key) {
+			t.Fatalf("watch of %d-byte key delivered %v, want the key and then the scan's end", len(key), entry)
 		}
 	}
 }

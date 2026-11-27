@@ -1,8 +1,8 @@
 // Command dispatch-seed fills an empty, migrated Dispatch database with the large, deterministic
 // data set INFRA-325's measurements are taken on: ten times production's row counts at --scale 1,
 // and that shape times --scale at any other. Every key, uuid and timestamp comes from one fixed
-// base time and one fixed random seed, and the block ids come from a fixed generator
-// (pmdoc.SetBlockIDGenerator), so two runs at one scale write the same rows: a measurement taken
+// base time and one fixed random seed, and the block ids from a counter each version's render
+// holds (renderVersion), so two runs at one scale write the same rows: a measurement taken
 // before a change and one taken after it read the same data.
 //
 // It writes the rows and then indexes them with the server's own indexers (refs.PlanBlocks for a
@@ -25,13 +25,16 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"regexp"
 	"strings"
 	"syscall"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/pgdsn"
 )
 
 func main() {
@@ -44,20 +47,40 @@ func main() {
 // stdout. Every refusal is written to stderr and answers a non-zero status, so a caller script
 // reads the status and a person reads the reason.
 func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+	// Go's flag package quotes the argument it refuses (`invalid value "--database-url=<dsn>" for
+	// flag -scale`, `bad flag syntax: ---database-url=<dsn>`), so its own output is discarded and
+	// the refusal names the flag alone (flagRefusal).
 	flags := flag.NewFlagSet("dispatch-seed", flag.ContinueOnError)
-	flags.SetOutput(stderr)
+	flags.SetOutput(io.Discard)
 	databaseURL := flags.String("database-url", "", "the Postgres URL of the database to fill (required)")
 	scale := flags.Float64("scale", 1, "multiplier on every row count; 1 is ten times production, 0.01 is what the CI test runs")
 	noMigrate := flags.Bool("no-migrate", false, "do not migrate the database; use it as somebody else migrated it")
 	if err := flags.Parse(args); err != nil {
+		if !errors.Is(err, flag.ErrHelp) {
+			fmt.Fprintf(stderr, "dispatch-seed: %s; the argument is not printed, since it can be a database URL and its password\n", flagRefusal(err))
+		}
+		flags.SetOutput(stderr)
+		flags.PrintDefaults()
 		return 2
 	}
 	if flags.NArg() > 0 {
-		fmt.Fprintf(stderr, "dispatch-seed: unexpected argument %q; the command takes flags alone\n", flags.Arg(0))
+		// Never quoted: a DSN given without its flag is the likeliest argument, password and all.
+		fmt.Fprintf(stderr, "dispatch-seed: %d unexpected argument(s), not printed, since one can be a database URL and its password; the command takes flags alone: give the database as --database-url\n", flags.NArg())
 		return 2
 	}
 	if strings.TrimSpace(*databaseURL) == "" {
 		fmt.Fprintln(stderr, "dispatch-seed: --database-url is required")
+		return 2
+	}
+	// Before the store reads it: the store's refusal and its parse error name DATABASE_URL, the
+	// server's setting, so a value given here is refused, or named as one the pool cannot parse
+	// (pgx's own settings and the pool_* ones the store's pool reads), by the flag that holds it.
+	if err := pgdsn.Refusal("--database-url", *databaseURL); err != nil {
+		fmt.Fprintf(stderr, "dispatch-seed: %v\n", err)
+		return 2
+	}
+	if _, err := pgxpool.ParseConfig(*databaseURL); err != nil {
+		fmt.Fprintf(stderr, "dispatch-seed: %v\n", pgdsn.ConnectError("--database-url", *databaseURL, err))
 		return 2
 	}
 	if !(*scale > 0) || *scale > 1000 {
@@ -70,6 +93,48 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	}
 	return 0
 }
+
+// flagRefusal is err, a parse error of Go's flag package, in words that name the flag and never
+// the argument it refused, which can be a database URL given to the wrong flag
+// (`--scale --database-url=<dsn>` gives -scale that URL as its value) or misspelt
+// (`---database-url=<dsn>`). A name is printed only in a flag name's shape (flagNameShape): a
+// misspelt flag can be the URL itself (`-postgres://<user>:<password>@…`).
+func flagRefusal(err error) string {
+	text := err.Error()
+	if strings.HasPrefix(text, "invalid value ") || strings.HasPrefix(text, "invalid boolean value ") {
+		// `invalid value "<value>" for flag -<name>: <why>`, `invalid boolean value "<value>" for -<name>: <why>`
+		at := strings.LastIndex(text, " for flag -")
+		skip := len(" for flag -")
+		if at < 0 {
+			at, skip = strings.LastIndex(text, " for -"), len(" for -")
+		}
+		if at >= 0 {
+			name, _, _ := strings.Cut(text[at+skip:], ":")
+			if flagNameShape.MatchString(name) {
+				return "-" + name + " was given a value it cannot read"
+			}
+		}
+		return "a flag was given a value it cannot read"
+	}
+	for prefix, why := range map[string]string{
+		"flag needs an argument: ":        "needs a value, and none follows it",
+		"flag provided but not defined: ": "is no flag dispatch-seed takes",
+		"bad flag syntax: ":               "has no flag's syntax",
+	} {
+		if word, ok := strings.CutPrefix(text, prefix); ok {
+			dashes := word[:len(word)-len(strings.TrimLeft(word, "-"))]
+			name, _, _ := strings.Cut(strings.TrimLeft(word, "-"), "=")
+			if flagNameShape.MatchString(name) {
+				return fmt.Sprintf("%q %s", dashes+name, why)
+			}
+			return "an argument beginning with \"-\" " + why
+		}
+	}
+	return "an argument cannot be read as a flag"
+}
+
+// flagNameShape is the shape of a flag's name: a letter, then letters, digits and "-".
+var flagNameShape = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9-]*$`)
 
 // Options are one run of the seed: the database it fills, how much of the full data set it writes
 // (Scale), whether it brings the database to the current schema itself, and where it reports.

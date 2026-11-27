@@ -35,7 +35,7 @@ func OutputLines(out string) []string {
 
 // RunCommand runs one jj or git command of the workspace within the caller's budget and returns
 // its trimmed standard output. start starts the command (procgroup.Starter, never nil: the shim's
-// is procgroup.NoReaper).
+// is its subreaper.Guard's).
 // dir is the directory the command runs in, which is the workspace its -R or --git-dir names: jj
 // searches upward from the directory it runs in for the closest .jj and reads that repository's
 // configuration before it applies -R, so a command left standing wherever the caller's process

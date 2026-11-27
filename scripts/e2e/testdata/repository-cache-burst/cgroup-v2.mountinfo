@@ -1,0 +1,4 @@
+1190 1180 0:87 / / rw,relatime - overlay overlay rw
+1195 1190 0:90 / /proc rw,nosuid,nodev,noexec,relatime - proc proc rw
+1198 1190 0:91 / /sys ro,nosuid,nodev,noexec,relatime - sysfs sysfs ro
+1210 1198 0:26 / /sys/fs/cgroup ro,nosuid,nodev,noexec,relatime - cgroup2 cgroup rw

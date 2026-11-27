@@ -1,14 +1,34 @@
-import { beforeAll, expect, test } from "bun:test";
-import { screen } from "@testing-library/react";
+import { beforeAll, expect, spyOn, test } from "bun:test";
+import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
+import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import type { ReactNode } from "react";
+import { renderToString } from "react-dom/server";
 import { MemoryRouter } from "react-router-dom";
 
 import { displayTree } from "../../__tests__/display-trees";
+import { precedes } from "../../__tests__/document-order";
+import { settle } from "../../__tests__/fake-clock";
+import { graphNode } from "../../__tests__/graph-fixture";
 import { renderWithQueries as render } from "../../__tests__/query-provider";
-import type { Decision } from "../../api/types";
+import { answerQuestionOf, NAMED_QUESTION } from "../../__tests__/question-answers";
+import { installResizeObserver } from "../../__tests__/scroll-box";
+import { ApiError, api } from "../../api/client";
+import type {
+  AskRead,
+  Decision,
+  DecisionKeep,
+  DecisionLink,
+  IssueDecisions,
+  IssueDetails,
+  ReferenceTarget,
+  ReferenceTargets,
+} from "../../api/types";
+import type { StatementWords } from "../decision-card/adapters";
+import { issueDecisionsQuery } from "../doc/spec-marks";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
-import { DecisionCard } from "./DecisionCard";
-import type { DecisionMarginItem } from "./useMarginItems";
+import { DecisionCard, DecisionList } from "./DecisionCard";
+import type { DecisionMarginItem, MarkPlacement } from "./useMarginItems";
 
 beforeAll(async () => {
   await warmMarkdownRenderer();
@@ -38,15 +58,25 @@ function item(decision: Partial<Decision>): DecisionMarginItem {
     // so a decision this test invents carries the reading the page's own engine makes of that
     // text (`__tests__/display-trees`).
     decision: { ...full, text_tree: displayTree(full.text) },
+    documentId: "artifact-decisions",
     id: `decision:${full.block_id}:p-plan`,
     kind: "decision",
   };
 }
 
+/** A card's decisions here hold their statements' words, or shape none: no name is read. */
+const NO_EXCERPT = (): StatementWords => ({});
+
 function renderCard(decision: Partial<Decision>, onSelect: (id: string) => void = () => {}) {
   return render(
     <MemoryRouter>
-      <DecisionCard item={item(decision)} onSelect={onSelect} selected={false} />
+      <DecisionCard
+        issueKey="CORE-1"
+        item={item(decision)}
+        onSelect={onSelect}
+        selected={false}
+        statementExcerpt={NO_EXCERPT}
+      />
     </MemoryRouter>
   );
 }
@@ -78,6 +108,118 @@ test("an unsure decision is drawn in the unsure colour and says so; a person's s
   }
 });
 
+// An answer that carried no reading of the text - a pod of the build before this one, during a
+// rolling deploy - hands the card the decision's markdown alone, its heading line first. The card
+// draws the heading above the text, so the text leaves its heading out, as the Decisions tab's
+// renderer does: the heading is drawn once.
+test("a decision read with no reading of its text draws its heading once", async () => {
+  const { decision, ...rest } = item({
+    text: "## Store notices in a table\n\nA table keeps them through a restart.",
+  });
+  const view = render(
+    <MemoryRouter>
+      <DecisionCard
+        issueKey="CORE-1"
+        item={{ ...rest, decision: { ...decision, text_tree: undefined } }}
+        onSelect={() => {}}
+        selected={false}
+        statementExcerpt={NO_EXCERPT}
+      />
+    </MemoryRouter>
+  );
+  try {
+    expect(await screen.findByText("A table keeps them through a restart.")).toBeDefined();
+    expect(screen.getAllByText("Store notices in a table")).toHaveLength(1);
+  } finally {
+    view.unmount();
+  }
+});
+
+// A heading is markdown its writer wrote, and it names the card and words a link, neither of
+// which holds markup: both read the heading's plain-text projection, so a link in it is its
+// words there and never the link's source. Drawn as the characters it is, the card would be
+// named `Decision: Keep **notices** in [a table](https://example.test/table)`.
+test("a heading that holds markdown names the card and its link in plain words", async () => {
+  const view = renderCard({
+    heading: "Keep **notices** in [a table](https://example.test/table)",
+  });
+  try {
+    expect(
+      await screen.findByRole("article", { name: "Decision: Keep notices in a table" })
+    ).toBeDefined();
+    expect(screen.getByRole("link", { name: "Keep notices in a table" })).toHaveAttribute(
+      "href",
+      "/issues/CORE-1/artifacts/decisions-md#b-d-1"
+    );
+  } finally {
+    view.unmount();
+  }
+});
+
+// The passage is a record of the issue's `decisions.md`, so the card hands the renderer that
+// document as the passage's source and a `#id` in it names a question block of that document,
+// as it does in the Decisions panel. With no source the `#q2` stays the characters it is and
+// the document's question map is never read.
+test("a `#id` in the passage names the question of the decisions document", async () => {
+  const getReferenceQuestions = spyOn(api, "getReferenceQuestions").mockResolvedValue({
+    document: "artifact-decisions",
+    questions: [{ ask: "ask-2", block_id: "q2", reference: "dispatch://CORE-1/ask/ask-2" }],
+  });
+  // The link reads its ask for a name; the read stays out, which is no part of this row.
+  const getAsk = spyOn(api, "getAsk").mockReturnValue(Promise.withResolvers<AskRead>().promise);
+  const view = renderCard({ text: "Settled by #q2 before the rollout." });
+  try {
+    const linked = () =>
+      [...view.container.querySelectorAll("[data-decision-text] [data-dispatch-ref]")].map(
+        (reference) => reference.getAttribute("data-dispatch-ref")
+      );
+    await waitFor(() => expect(linked()).toEqual(["dispatch://CORE-1/ask/ask-2"]));
+    expect(getReferenceQuestions).toHaveBeenCalledWith("artifact", "artifact-decisions");
+  } finally {
+    view.unmount();
+    getAsk.mockRestore();
+    getReferenceQuestions.mockRestore();
+  }
+});
+
+// The heading is a record of `decisions.md` too, so the card's name reads a `#id` in it as the
+// question it names in that document. Handed no record, the name keeps `#q2`.
+test("a #id in the heading names the question of the decisions document in the card's name", async () => {
+  const answers = answerQuestionOf("artifact", "artifact-decisions");
+  const view = renderCard({ heading: "Settle #q2 first" });
+  try {
+    expect(
+      await screen.findByRole("article", { name: `Decision: Settle ${NAMED_QUESTION} first` })
+    ).toBeDefined();
+  } finally {
+    view.unmount();
+    answers.restore();
+  }
+});
+
+// Until the reader's engine has answered - the first paint, and for good where its chunk never
+// loads - the card is named after its heading as written, never `Decision: ` with no words and an
+// empty link (the reading list's `decision-heading-words`). A paint with no effects run is that
+// state.
+test("before the engine answers, the card is named after its heading as written", () => {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const html = renderToString(
+    <QueryClientProvider client={client}>
+      <MemoryRouter>
+        <DecisionCard
+          issueKey="CORE-1"
+          item={item({})}
+          onSelect={() => {}}
+          selected={false}
+          statementExcerpt={NO_EXCERPT}
+        />
+      </MemoryRouter>
+    </QueryClientProvider>
+  );
+  expect(html).toContain('aria-label="Decision: Store notices in a table"');
+  expect(html).toContain(">Store notices in a table</a>");
+});
+
 test("selecting a decision card selects its margin item", async () => {
   const user = userEvent.setup();
   const selected: string[] = [];
@@ -87,5 +229,235 @@ test("selecting a decision card selects its margin item", async () => {
     expect(selected).toEqual(["decision:d-1:p-plan"]);
   } finally {
     view.unmount();
+  }
+});
+
+const DOCUMENT_ID = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
+const NO_PLACEMENTS: ReadonlyMap<string, MarkPlacement> = new Map();
+
+/** The margin's decisions as `useMarginItems` makes them, from the decisions read the page
+ *  holds: one decision beside two blocks of the spec is two cards. */
+function TwoCopies(): ReactNode {
+  const read = useQuery(issueDecisionsQuery("CORE-1", false));
+  const items = (read.data?.decisions ?? []).flatMap((decision) =>
+    ["p-plan", "p-test"].map((blockId) => ({
+      blockId,
+      decision,
+      documentId: DOCUMENT_ID,
+      id: `decision:${decision.block_id}:${blockId}`,
+      kind: "decision" as const,
+    }))
+  );
+  return (
+    <DecisionList
+      blockPlacements={NO_PLACEMENTS}
+      decisions={items}
+      hoveredItemId={undefined}
+      isClosed={false}
+      issueKey="CORE-1"
+      onSelect={() => {}}
+      selectedItemId={undefined}
+    />
+  );
+}
+
+// R21: a decision beside two statements draws two cards, each with Keep and Change. Both read
+// the one decisions read, so a Keep pressed on one is drawn on both. The document the Keep names
+// comes from the issue read and the decisions read the page holds, and the margin reads neither.
+test("Keep on one copy settles the other", async () => {
+  const user = userEvent.setup();
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  client.setQueryData(["whoami"], { kind: "user", login: "alice" });
+  client.setQueryData(["issue", "CORE-1"], {
+    artifacts: [{ id: DOCUMENT_ID, kind: "doc", primary: false, slug: "decisions-md" }],
+    key: "CORE-1",
+  } as unknown as IssueDetails);
+  client.setQueryData<IssueDecisions>(["decisions", "CORE-1"], {
+    decisions: [item({}).decision],
+    document: "dispatch://CORE-1/artifact/decisions-md",
+    open_questions: [],
+  });
+  const keep = spyOn(api, "keepDecision").mockResolvedValue({
+    artifact_id: DOCUMENT_ID,
+    block_id: "d-1",
+    changed_version: 2,
+    kept_at: "2026-10-03T00:00:00Z",
+    kept_by: "alice",
+  } satisfies DecisionKeep);
+  const view = render(
+    <MemoryRouter>
+      <TwoCopies />
+    </MemoryRouter>,
+    {
+      wrapper: ({ children }) => (
+        <QueryClientProvider client={client}>{children}</QueryClientProvider>
+      ),
+    }
+  );
+  try {
+    const copies = screen.getAllByRole("article", { name: "Decision: Store notices in a table" });
+    expect(copies).toHaveLength(2);
+    const keeps = screen.getAllByRole("button", { name: "Keep" });
+    expect(keeps).toHaveLength(2);
+    expect(screen.getAllByRole("button", { name: "Change" })).toHaveLength(2);
+    await user.click(keeps[0] as HTMLElement);
+    await waitFor(() => expect(screen.queryAllByRole("button", { name: "Keep" })).toHaveLength(0));
+    expect(keep).toHaveBeenCalledTimes(1);
+    expect(keep.mock.calls[0]?.slice(0, 3)).toEqual([DOCUMENT_ID, "d-1", "sum-d-1"]);
+    expect(screen.getAllByText("Kept by alice")).toHaveLength(2);
+  } finally {
+    view.unmount();
+    keep.mockRestore();
+    client.clear();
+  }
+});
+
+// The decisions' region stands as tall as its lowest card and follows a card's height the moment
+// the card resizes, with no render of the list: a region that read the cards' heights at render
+// kept a card's earlier height until an unrelated render - a hover - read it again, and the
+// margin's scroll moved under the reader's press, as the anchored comments' did.
+test("the decisions' region follows its card's height when the card resizes, with no render", () => {
+  const resize = installResizeObserver();
+  let height = 300;
+  const decision = item({});
+  const view = render(
+    <MemoryRouter>
+      <DecisionList
+        blockPlacements={new Map([["p-plan", { pos: 5, top: 120 }]])}
+        decisions={[decision]}
+        hoveredItemId={undefined}
+        isClosed={false}
+        issueKey="CORE-1"
+        onSelect={() => {}}
+        selectedItemId={undefined}
+      />
+    </MemoryRouter>
+  );
+  try {
+    const region = screen.getByRole("region", { name: "Decisions" });
+    const wrapper = region.firstElementChild;
+    if (!(wrapper instanceof HTMLElement)) throw new Error("the card has no wrapper");
+    Object.defineProperty(wrapper, "offsetHeight", { configurable: true, get: () => height });
+    resize.resize(wrapper);
+    expect(region.style.minHeight).toBe(`${120 + 300 + 8}px`);
+    height = 250;
+    resize.resize(wrapper);
+    expect(region.style.minHeight).toBe(`${120 + 250 + 8}px`);
+  } finally {
+    view.unmount();
+    resize.restore();
+  }
+});
+
+/** The two statements the cards below shaped: the address each tie names, where the card links
+ *  it, and the words the names read answers for it. */
+const SHAPED = [
+  {
+    block: "p1",
+    href: "/issues/CORE-1/spec#b-p1",
+    name: "Notices are stored.",
+    ref: "dispatch://CORE-1/spec#b-p1",
+  },
+  {
+    block: "p2",
+    href: "/issues/CORE-1/spec#b-p2",
+    name: "Old rows expire.",
+    ref: "dispatch://CORE-1/spec#b-p2",
+  },
+] as const;
+
+/** A refusal of a read, as Dispatch answers one it cannot serve now. */
+const REFUSED = new ApiError(503, { code: "UNAVAILABLE", error: "the read is refused" });
+
+/** Where the spec's blocks stand in the document, which the cards below are placed by. */
+const PLACED: ReadonlyMap<string, MarkPlacement> = new Map([
+  ["p-plan", { pos: 5, top: 120 }],
+  ["p-test", { pos: 9, top: 400 }],
+]);
+
+/** A tie to a statement by its address alone, as the bare decisions read has it, so the words of
+ *  the statement come from the read of the statements' names alone. */
+function tie({ block, ref }: (typeof SHAPED)[number]): DecisionLink {
+  return {
+    created_at: "2026-10-01T00:00:00Z",
+    created_version: 1,
+    from_block: "d-1",
+    stale: false,
+    to: graphNode({ block_id: block, id: `CORE-1/spec#${block}`, kind: "block", ref }),
+  };
+}
+
+// The statements the decisions shaped are named by one batched read for the whole list. With that
+// read refused the error stands after the Decisions region and outside it, every statement stays a
+// link to its block by the card's word for it, and pressing Retry names the statements and clears
+// the alert.
+test("a refused read of the statements' names is told after the decisions' region and outside it, and the Retry names the statements and clears the alert", async () => {
+  const user = userEvent.setup();
+  const held = Promise.withResolvers<ReferenceTargets>();
+  const names = spyOn(api, "getReferenceTargets")
+    .mockReturnValueOnce(held.promise)
+    .mockImplementation(async (refs) => ({
+      targets: refs.flatMap((ref): ReferenceTarget[] => {
+        const named = SHAPED.find((one) => one.ref === ref);
+        return named === undefined ? [] : [{ gone: false, kind: "block", name: named.name, ref }];
+      }),
+    }));
+  const decisions = [
+    item({ heading: "Store notices in a table", links: [tie(SHAPED[0])] }),
+    {
+      ...item({ block_id: "d-2", heading: "Name them notices", links: [tie(SHAPED[1])] }),
+      blockId: "p-test",
+      id: "decision:d-2:p-test",
+    },
+  ];
+  const view = render(
+    <MemoryRouter>
+      <DecisionList
+        blockPlacements={PLACED}
+        decisions={decisions}
+        hoveredItemId={undefined}
+        isClosed={false}
+        issueKey="CORE-1"
+        onSelect={() => {}}
+        selectedItemId={undefined}
+      />
+    </MemoryRouter>
+  );
+  try {
+    const region = screen.getByRole("region", { name: "Decisions" });
+    expect(screen.queryByRole("alert")).toBeNull();
+
+    // The read refused: the error stands after the region and outside it, and every statement
+    // stays a link to its block by the card's word for it.
+    await act(async () => {
+      held.reject(REFUSED);
+      await settle();
+    });
+    const alert = await screen.findByRole("alert");
+    expect(
+      within(alert).getByText("Could not load the statements these decisions shaped.")
+    ).toBeInTheDocument();
+    expect(region.contains(alert)).toBe(false);
+    expect(precedes(region, alert)).toBe(true);
+    const unnamed = within(region).getAllByRole("link", { name: "A statement it shaped" });
+    expect(unnamed).toHaveLength(SHAPED.length);
+    for (const [index, { href }] of SHAPED.entries()) {
+      expect(unnamed[index]).toHaveAttribute("href", href);
+    }
+
+    await user.click(within(alert).getByRole("button", { name: "Retry" }));
+    await waitFor(() => {
+      for (const { href, name } of SHAPED) {
+        expect(within(region).getByRole("link", { name })).toHaveAttribute("href", href);
+      }
+    });
+    expect(within(region).queryByRole("link", { name: "A statement it shaped" })).toBeNull();
+    expect(screen.queryByRole("alert")).toBeNull();
+    // One batched read of both statements, asked again by the Retry for the same two.
+    const asked = SHAPED.map(({ ref }) => ref).sort();
+    expect(names.mock.calls.map(([refs]) => [...refs])).toEqual([asked, asked]);
+  } finally {
+    view.unmount();
+    names.mockRestore();
   }
 });
