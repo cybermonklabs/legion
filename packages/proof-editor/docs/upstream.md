@@ -34,3 +34,11 @@ Each patch changes both `lib/` and `dev/lib/`, because Vite resolves the `develo
 `tests/heavy-bodies.test.ts` and `tests/nested-directive.test.ts` hold two of the patches, reading CPU time through `tests/cpu-time.ts`.
 The `micromark` patch holds the lazy shapes (`a quote then lines carrying no marker`, `a list item then lines carrying no marker`), and the `micromark-core-commonmark` patch the bracket shapes (`a run of 15,000 brackets and as many closers`, `a typed fence whose label opens a run of brackets`).
 No test holds the other two patches, and a quadratic parse of a shape no row holds is caught by nothing.
+
+## Single-block collaboration
+
+The root `patchedDependencies` pins a patch to `y-prosemirror@1.3.7`.
+When an editor binds to a paragraph or heading's live `Y.XmlElement`, `Y.XmlText` can be a direct child of the bound root. Upstream treated every direct child as an element and tried to call `toArray()` on the text.
+The patch uses the existing text-to-ProseMirror conversion for direct text children during the initial bind, remote updates, snapshot rendering and return from a snapshot. It records the text nodes in the binding's mapping for cursors.
+The ESM export uses `src/plugins/sync-plugin.js`; the CommonJS export uses `dist/y-prosemirror.cjs`. Both receive the same change.
+`src/tests/element-option.test.ts` exercises a live paragraph and heading at creation and rebind, including edits in both directions and the caret after a peer inserts text.
