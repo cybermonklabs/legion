@@ -203,13 +203,17 @@ export async function refuseOpenDecisionBlocks(
     }
     const source = await read;
     const state = source.state;
+    const document = copy.copied_from_document;
+    const answeredBy = source.answer?.user || undefined;
+    const answeredAt = source.answer?.at;
+    // Set optional fields only when present. Readers use the same value for an absent field.
     return {
       block_id: copy.block_id,
       copied_from: id,
-      copied_from_document: copy.copied_from_document,
-      state: state === "open" || state === "answered" || state === "resolved" ? state : undefined,
-      answered_by: source.answer?.user || undefined,
-      answered_at: source.answer?.at,
+      ...(document === undefined ? {} : { copied_from_document: document }),
+      ...(state === "open" || state === "answered" || state === "resolved" ? { state } : {}),
+      ...(answeredBy === undefined ? {} : { answered_by: answeredBy }),
+      ...(answeredAt === undefined ? {} : { answered_at: answeredAt }),
     };
   };
   /** The refusal's line for `block`, or undefined where the block is not open. */
