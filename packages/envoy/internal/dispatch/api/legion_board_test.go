@@ -187,13 +187,29 @@ func TestTheLegionBoardPutsEachIssueInOneColumn(t *testing.T) {
 	if board.Project != "INFRA" {
 		t.Fatalf("the board names project %q, want INFRA", board.Project)
 	}
-	if len(board.Columns) != len(legion.Columns) {
-		t.Fatalf("the board has %d columns, want the %d the view draws", len(board.Columns), len(legion.Columns))
+	// The twelve columns the board answers, left to right, each with the label the view draws over
+	// it, written out rather than read from legion.Columns and legionBoardColumnLabels, which the
+	// route is built from: a reorder, a lost column or a changed label fails here.
+	wantColumns := []struct{ id, label string }{
+		{"queue", "Queue"},
+		{"design", "Design"},
+		{"planning", "Planning"},
+		{"implementing", "Implementing"},
+		{"testing", "Testing"},
+		{"reviewing", "Reviewing"},
+		{"accepting", "Accepting"},
+		{"retro", "Retro"},
+		{"merging", "Merging"},
+		{"awaiting_children", "Waiting on children"},
+		{"awaiting_person", "Waiting on a person"},
+		{"held", "Held"},
 	}
-	for index, column := range board.Columns {
-		want := legion.Columns[index].ID
-		if label := legionBoardColumnLabels[want]; column.ID != want || column.Label != label || label == "" {
-			t.Fatalf("column %d is %q/%q, want %q/%q", index, column.ID, column.Label, want, label)
+	if len(board.Columns) != len(wantColumns) {
+		t.Fatalf("the board has %d columns, want the %d the view draws", len(board.Columns), len(wantColumns))
+	}
+	for index, want := range wantColumns {
+		if column := board.Columns[index]; column.ID != want.id || column.Label != want.label {
+			t.Fatalf("column %d is %q/%q, want %q/%q", index, column.ID, column.Label, want.id, want.label)
 		}
 	}
 	// The waiting line's own order, which the view does not re-sort: the answered root first,

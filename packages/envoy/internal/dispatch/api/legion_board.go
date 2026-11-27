@@ -16,10 +16,11 @@
 //     slot holder for a root: a card's tree is the daemon's own `tree` where a read carried one
 //     (dispatch://INFRA-980 adds it) and the parent chain otherwise.
 //   - The columns are the spec's, with Waiting on children for the phase dispatch://INFRA-3320
-//     added, in one ordered list (legion.Columns), and a phase maps to exactly one of them
-//     (legion.PhaseColumns, read off that list, which the metrics key their hours by too), so the
-//     view and metric 2's "no role" bar agree on where `awaiting_children`, `awaiting_person` and
-//     `held` go (the plan's D11).
+//     added, in one ordered list (legion.Columns), and a phase maps to exactly one of them. The
+//     board and the Legion facts both read legion.Columns, the board through
+//     legion.PhaseColumns, which is read off it. `awaiting_children`, `awaiting_person` and
+//     `held` each have a column of their own here, and metric 2's "no role" bar holds those same
+//     three phases (legion/metrics' bars, which list them themselves; the plan's D11).
 package api
 
 import (

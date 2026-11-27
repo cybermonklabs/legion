@@ -14,7 +14,8 @@
 // disagree, one of them is wrong and the check has found it.
 //
 // It takes the scope and the window as arguments and answers both beside the facts it reads
-// (Reading), because a check whose two sides read different scopes proves nothing.
+// (Reading), so a caller can print what it read: the check's test logs them beside the scope and
+// window of the computation it compares with.
 package independent
 
 import (
@@ -31,13 +32,13 @@ type Querier interface {
 	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
 }
 
-// Scope is what one reading covers: the project whose issues it reads. Every reading names it, so
-// two sides of a comparison cannot read two scopes and read as one.
+// Scope is what one reading covers: the project whose issues it reads. A reading names the scope
+// it read (Reading.Scope), so a caller can print it.
 type Scope struct {
 	Project string
 }
 
-// String is the scope in one word, which is what a check prints and compares.
+// String is the scope in one word, the project, as a caller prints it.
 func (s Scope) String() string { return s.Project }
 
 // Window is the stretch of time one reading measures over: To is the moment of the computation,
@@ -56,7 +57,7 @@ type Window struct {
 	To   time.Time
 }
 
-// String is the window as a check compares it: two moments, each in UTC, and
+// String is the window in one line, as a caller prints it: two moments, each in UTC, and
 // `beginning` for a From that names no moment.
 func (w Window) String() string {
 	from := "beginning"

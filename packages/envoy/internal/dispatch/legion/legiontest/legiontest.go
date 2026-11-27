@@ -148,8 +148,10 @@ func (s Spec) spacing() time.Duration {
 type Fixture struct {
 	// Project is the project every issue below belongs to.
 	Project string
-	// Keys is every issue of the history, in the order Write wrote them: each tree's root, then
-	// that tree's children.
+	// Keys is every issue of the history, in the order Write wrote them, tree by tree: each
+	// tree's root, then its five children, then, under Spec.Filings, the three issues Filings
+	// writes for that tree (its implementer's, its reviewer's and the controller's). Those three
+	// are numbered after every tree's issues, so under Filings the keys are not in number order.
 	Keys []string
 	// Roots is each tree's root, in the same order.
 	Roots []string
