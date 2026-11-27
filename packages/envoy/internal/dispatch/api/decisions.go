@@ -165,8 +165,7 @@ func (s *server) specOpenQuestions(
 	questions := []issueAskRow{}
 	for rows.Next() {
 		ask, reply, err := scanAskRead(rows)
-		if errors.Is(err, docs.ErrUndecodableAsk) {
-			undecodable, _ := errors.AsType[*docs.UndecodableAskError](err)
+		if undecodable, ok := errors.AsType[*docs.UndecodableAskError](err); ok {
 			slog.Warn("dispatch: an ask whose stored value does not decode is left out of the issue's open questions",
 				"ask", undecodable.AskID, "issue", key, "err", err)
 			continue
