@@ -335,7 +335,10 @@ test("declares the seven phase-worker operations under one op, and names the Env
     legionToolDescription({
       envoyPublish: "mcp__legion__envoy_publish",
       before: PHASE_OP_SENTENCES.readRecord + PHASE_OP_SENTENCES.readReleaseRecords,
-      after: PHASE_OP_SENTENCES.requestBackwardMove + PHASE_OP_SENTENCES.readBuild,
+      after:
+        PHASE_OP_SENTENCES.requestBackwardMove +
+        PHASE_OP_SENTENCES.reportDefect +
+        PHASE_OP_SENTENCES.readBuild,
     }),
   )
 })
