@@ -1749,6 +1749,9 @@ test("every decision of a paged issue is in its part, the header's count and the
     const traffic = watchApiRequests(page);
     const writes = watchWrites(page);
     const firstPage = conversationFirstPage(page);
+    // The page's own reads of Conversation's next pages (`cursor`), held from the load until
+    // step (2) has read the counts.
+    const nextPages = await holdTreeReads(page, key, (url) => url.searchParams.has("cursor"));
     await gotoIssue(page, `/issues/${key}/conversation`);
     await expectIssuePageDrawn(page);
     const first = await firstPage;
@@ -1808,7 +1811,9 @@ test("every decision of a paged issue is in its part, the header's count and the
     // filter's own count and its to-review flag are counted from Conversation's read, which names
     // a next page, so each reads a number and "+" (part T's R15). The flag is drawn because the
     // decision the seed stood under the open question (`seeded.firstBlock`) is on that page and
-    // waits for review.
+    // waits for review. The page reads Conversation's next pages itself once it has drawn
+    // (decisions 574 (B) and 580), so the row holds those reads while it reads the counts, then
+    // lets them go.
     await expect
       .poll(
         async () => ({
@@ -1826,6 +1831,7 @@ test("every decision of a paged issue is in its part, the header's count and the
         flag: expect.stringMatching(COUNTED_SO_FAR),
         header: expect.stringMatching(WAITING_SO_FAR),
       });
+    await nextPages.release();
 
     // (1) The Decisions view: each decision and answered question of its read stands in its part,
     // read from the parts the page draws - the decisions that wait in the review list, the

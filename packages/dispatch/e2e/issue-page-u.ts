@@ -99,7 +99,8 @@ import type { ApiRequests } from "./traffic";
  *   `specCells` is each cell of the Spec view's Decided by column: whose words it says it draws
  *   (`data-said`), the heading and the words it draws, and the statements its bracket spans.
  * - **What the page sends and receives.** `watchWrites` keeps every request under `/api/` that is
- *   no read, with its body; `holdTreeReads` holds every tree read the page sends until released.
+ *   no read, with its body; `holdTreeReads` holds every tree read the page sends, or each one a
+ *   filter of its URL takes, until released.
  * - **Row 2's decisions.** `writeThirdDecision` writes, through the spec's edit route, a
  *   `:::decision` block whose `shaped` names `r1`, as the planner; `rewordThirdDecision` changes
  *   its words, and `rewordSecondDecision` the heading of the seed's second decision
@@ -558,11 +559,18 @@ export interface HeldReads {
 }
 
 /** Holds every request of issue `key`'s tree route the page sends from now on, its views' with
- *  it, until `release`. */
-export async function holdTreeReads(page: Page, key: string): Promise<HeldReads> {
+ *  it, until `release`. With `which`, it holds only each request whose URL `which` takes: every
+ *  other one goes on at once (`route.fallback()`, to any other route of the page) and is not
+ *  counted. */
+export async function holdTreeReads(
+  page: Page,
+  key: string,
+  which?: (url: URL) => boolean
+): Promise<HeldReads> {
   const held: Route[] = [];
   const matches = treeReadRoute(key);
-  const hold = (route: Route): void => {
+  const hold = async (route: Route): Promise<void> => {
+    if (which !== undefined && !which(new URL(route.request().url()))) return route.fallback();
     held.push(route);
   };
   await page.route(matches, hold);
