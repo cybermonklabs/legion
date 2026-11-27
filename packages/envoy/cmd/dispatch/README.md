@@ -5263,8 +5263,10 @@ Each item below names a path with its method and identity, then its purpose.
   `project` narrows every entry by its node's own project, and `issue` or `artifact` keeps the page's rows of that owner and drops every other entry.
   An absent `limit` is every entry, but under `state=dismissed` one page of 200, and a named one is 1–200 from `offset`;
   `cursor`, the `next_cursor` of the page before, resumes after the last entry it answered.
-  An invalid `state`, a `limit` outside 1–200, an `offset` outside 0–9223372036854775807, a `cursor` this route did not return, both `issue` and `artifact`, an `artifact` that is not a document id, or any undeclared key returns `400 INVALID_QUERY`. Identity keys such as `login`, `person`, `assignee`, and `session` are undeclared.
-  Only `state=dismissed` also rejects an `offset` above 9223372036854775806 minus the limit. This keeps `offset + limit + 1` within a signed 64-bit integer.
+  An invalid `state`, a `limit` outside 1–200, an `offset` outside 0–9223372036854775807, a `cursor` this route did not return, both `issue` and `artifact`, an `artifact` that is not a document id, or any undeclared key returns `400 INVALID_QUERY`.
+  Identity keys such as `login`, `person`, `assignee`, and `session` are undeclared.
+  Only `state=dismissed` also rejects an `offset` above 9223372036854775806 minus the limit.
+  This keeps `offset + limit + 1` within a signed 64-bit integer.
   The read is at the event horizon notifications read at, and answers `{person, as_of, horizon, total, limit, offset, next_cursor, entries}`, `total` counting every entry, but under `state=dismissed` the page it answers.
 
 - `/api/v1/me/threads/{id}/read` (PUT; cookie, trusted header, or bearer; needs the `person` scope)
