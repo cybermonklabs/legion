@@ -4157,7 +4157,6 @@ a20_nothing_posted comment-100 ${control} ${replies} && echo quiet || echo poste
       return run(`${rig("said_text")}
 ${rig("a20_nothing_posted")}
 ${rig("a20_writers_because")}
-${rig("a20_writers_skipped_in")}
 ${rig("a20_writers_skipped")}
 ${rig("a20_writers_read")}
 questions_file=${shq(liveQuestions)}
@@ -4259,7 +4258,6 @@ echo "$read_said"`).out;
         writeFileSync(file, JSON.stringify({ comment: { id: "comment-310" }, replies }));
       return run(`${rig("said_text")}
 ${rig("a20_nothing_posted")}
-${rig("a20_dropped_in")}
 ${rig("a20_dropped")}
 ${rig("a20_quiet_read")}
 agent[files:tester.session]=session-tester; agent[files:tester.file]=${shq(options.conversation ?? holding)}
@@ -4784,7 +4782,7 @@ echo "$read_said"`).out;
       ).toMatch(/^held/);
     });
 
-    test("a21_holder_holds reads the first holder's claim of the mentioned role, and a21_holder_settled a delivery no longer pending", () => {
+    test("a21_holder_holds reads the first holder's claim of the mentioned role, and a21_holder_settled delivery records whose one delivery is no longer pending", () => {
       const holds = (claim: string, token: string) =>
         run(
           `${rig("a21_holder_holds")}\nholder_session=holder-session\na21_holder_holds ${claim} ${token}`
@@ -4800,18 +4798,20 @@ echo "$read_said"`).out;
       ).toBe(1);
       expect(holds(`'{"error":"role held"}'`, "legion-alx-alx-11-merger")).toBe(1);
       expect(holds("''", "legion-alx-alx-11-merger")).toBe(1);
-      const settled = (args: string) =>
-        run(`${rig("a21_holder_settled")}\na21_holder_settled ${args}`).code;
-      for (const id of ["comment-111", "comment-110", "comment-90"]) expect(settled(id)).toBe(0);
-      for (const id of ["comment-80", "comment-404", "''"]) expect(settled(id)).toBe(1);
-      // Handed the record the control read once, it judges that record, and reads none now.
-      const given = (read: string, id: string) =>
-        run(
-          `${rig("a21_holder_settled")}\nrecord=$(comment_record ${read}); dispatch_get() { return 22; }; a21_holder_settled ${id} "$record"`
-        ).code;
-      expect(given("comment-111", "comment-111")).toBe(0);
-      expect(given("comment-111", "comment-80")).toBe(0);
-      expect(given("comment-80", "comment-111")).toBe(1);
+      const settled = (records: string) =>
+        run(`${rig("a21_holder_settled")}\na21_holder_settled ${records}`).code;
+      for (const id of ["comment-111", "comment-110", "comment-90"])
+        expect(settled(`"$(comment_delivery_records ${id})"`)).toBe(0);
+      for (const id of ["comment-80", "comment-404", "''"])
+        expect(settled(`"$(comment_delivery_records ${id})"`)).toBe(1);
+      // It judges the records it is handed and reads no comment of its own: two deliveries, none,
+      // no listing, and the id of comment-111, whose one delivery settled, in the records' place
+      // are no one settled delivery.
+      expect(settled(`'[{"state":"queued"},{"state":"sent"}]'`)).toBe(1);
+      expect(settled("'[]'")).toBe(1);
+      expect(settled("null")).toBe(1);
+      expect(settled("''")).toBe(1);
+      expect(settled("comment-111")).not.toBe(0);
     });
 
     test("fails when the mention did not settle queued, or names no marker", () => {
@@ -4993,12 +4993,13 @@ a17_nothing_written && echo quiet || echo "written: $read_said"`)
     expect(run(`legion_state=${running}; tree_is_held_from ALX-1 implementing`).code).toBe(1);
     expect(run(`legion_state='{}'; tree_is_held_from ALX-1 implementing`).code).toBe(1);
     // tree_is_live takes phases alone: a held root stands at `held`, never at the phase it was held
-    // from, wherever `held` stands among its arguments.
+    // from, wherever `held` stands among its arguments and whatever phase comes before it.
     expect(run(`legion_state=${held}; tree_is_live ALX-1 implementing`).code).toBe(1);
     expect(
       run(`legion_state=${held}; tree_is_live ALX-1 implementing awaiting_children`).code
     ).toBe(1);
     expect(run(`legion_state=${held}; tree_is_live ALX-1 held`).code).toBe(0);
+    expect(run(`legion_state=${held}; tree_is_live ALX-1 testing held`).code).toBe(0);
     expect(run(`legion_state=${held}; tree_is_live ALX-1 implementing held`).code).toBe(0);
     expect(run(`legion_state=${lingering}; tree_is_live ALX-1 held`).code).toBe(1);
     expect(run(`legion_state=${running}; tree_is_live ALX-1 held implementing`).code).toBe(0);
@@ -5908,7 +5909,7 @@ control_read_a17`
     );
   });
 
-  test("control_read_a18 counts its legs only over a listing of the pull request's comments and an inbox, and its nothing-posted part over the placed reply", () => {
+  test("control_read_a18 counts its legs only over a listing of the pull request's comments and an inbox, hands both legs that inbox, and counts its nothing-posted part over the placed reply", () => {
     const a18 = (
       name: string,
       inbox: string[] | null,
@@ -5927,13 +5928,17 @@ control[files:A18.event]=event-a18; control[files:A18.marker]=answer-loop-a18-co
 smoke_gh() { ${options.before ?? `jq -ce --arg p "$2" '.[$p]' "$fixtures/github.json"`}; }
 soft_wait() { return 0; }
 ${options.place ?? placeReply}
-a18_restart_read() { read_said=restart; return 1; }
-a18_resume_read() { read_said=resume; return 1; }
+a18_restart_read() { read_said="restart, ${handing(4)}"; return 1; }
+a18_resume_read() { read_said="resume, ${handing(4)}"; return 1; }
 control_read_a18`
       );
-    expect(a18("held", [otherLine])).toMatch(
+    const held = a18("held", [otherLine]);
+    expect(held).toMatch(
       /^A18 control PASS: .*failed: replies on the asker's topic to event-a18: 1$/
     );
+    // Both legs are handed the inbox it read once, after their own arguments.
+    expect(held).toContain("A18's restart leg failed: restart, handed inbox of 1");
+    expect(held).toContain("A18's resume leg failed: resume, handed inbox of 1");
     expect(a18("gone", [otherLine], { before: "return 1" })).toMatch(
       /^A18 control FAIL: .*#41's comments as GitHub listed them, where both legs look for the implementer's comment: no listing at all/
     );
@@ -6249,6 +6254,7 @@ control_suffix() { printf '(control of %s)\\n' "$2"; }
 control_comment() { control[files:A21.$2]=comment-$2; }
 control_ask_marked() { control[files:A21.$6]=event-role; }
 soft_wait() { shift 2; "$@"; }
+comment_delivery_records() { printf 'records of %s\\n' "$1"; }
 a21_holder_settled() { printf 'settled %s\\n' "$1"; }
 a21_holder_claim() { ${claim}; }
 control_send_a21
@@ -6257,7 +6263,8 @@ printf 'claimed: %s\\nunsent: %s\\nwhy: %s\\n' "\${control[files:A21.claim]}" "\
     const landed = send(
       `printf '{"session_id":"holder-session","topics":["notifications.role.%s"]}\\n' "$1"`
     );
-    expect(landed).toContain("settled comment-holder");
+    // Its wait for the mention to settle judges the mention's delivery records, read at each try.
+    expect(landed).toContain("settled records of comment-holder");
     expect(landed).toContain(
       'claimed: {"session_id":"holder-session","topics":["notifications.role.legion-alx-alx-11-merger"]}'
     );
@@ -6422,15 +6429,12 @@ ${call}`);
       );
       const counts = (call: string) =>
         read(`${rig("a20_writers_because")}
-${rig("a20_writers_skipped_in")}
 ${rig("a20_writers_skipped")}
-${rig("a20_dropped_in")}
 ${rig("a20_dropped")}
 ${rig("a8_skipped_count_in")}
 ${rig("a8_question_count_in")}
 ${rig("a8_skipped_count")}
 ${rig("a8_question_count")}
-${rig("a8_delivered_count_in")}
 ${rig("a8_delivered_count")}
 ${rigVariable("a8_resolved_because")}
 ${rigVariable("a8_notice_because")}
@@ -6454,27 +6458,24 @@ ${call}`).text;
       expect(counts("a8_question_count tester_old")).toBe("1");
       expect(counts("a8_question_count architect")).toBe("2");
       expect(counts("a8_delivered_count")).toBe("1");
-      // Each count's listing form, which its plain form and A8's reads count with, counts the
-      // listing it is handed and reads no log of its own: here the log is gone once it is read.
+      // A8's two counts with a listing form, which their plain forms and A8's reads count with,
+      // count the listing they are handed and read no log of their own: here the log is gone once
+      // it is read. Every plain form reads the log now.
       const listed = (call: string) =>
         counts(
           `lines=$(boot_listing); daemon_log=${shq(join(dir, "no-such-daemon.log"))}; ${call}`
         );
-      expect(listed('a20_writers_skipped_in "$lines"')).toBe("1");
-      expect(listed('a20_dropped_in "$lines"')).toBe("1");
       expect(listed('a8_skipped_count_in "$lines" pre_change "$a8_resolved_because"')).toBe("1");
       expect(listed('a8_skipped_count_in "$lines" planner "$a8_notice_because"')).toBe("2");
       expect(listed('a8_question_count_in "$lines" pre_change')).toBe("1");
       expect(listed('a8_question_count_in "$lines" planner posted')).toBe("1");
       expect(listed('a8_question_count_in "$lines" architect')).toBe("2");
-      expect(listed('a8_delivered_count_in "$lines"')).toBe("1");
       expect(listed("a8_question_count architect")).toBe("0");
       expect(listed("a8_delivered_count")).toBe("0");
       expect(listed("a20_writers_skipped")).toBe("0");
-      expect(counts("a20_dropped_in null")).toBe("0");
+      expect(listed("a20_dropped")).toBe("0");
       expect(counts('a8_skipped_count_in null planner "$a8_notice_because"')).toBe("0");
       expect(counts("a8_question_count_in null pre_change")).toBe("0");
-      expect(counts("a8_delivered_count_in null")).toBe("0");
     });
 
     test("a8_resolution_send and a8_notice_send send the legs, naming the words of the row's or the control's own", () => {

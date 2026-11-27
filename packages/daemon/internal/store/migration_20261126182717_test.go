@@ -49,35 +49,48 @@ func TestAClaimsCyberPolicySessionsOutliveEveryWrite(t *testing.T) {
 // content for cyber policy: the claim's abandoned session, whose sentence names the refusal in
 // classifyProviderError's words. It records too the abandoned session of a claim held now, failed
 // or retired, that records no session, which that release's forget-session left behind under the
-// asker's sentence: the retry that ends the hold forgets no session then. A session abandoned for
-// another cause by a claim held for none, a claim that abandoned none, and a claim held now that
-// still records its session record none: the hold covers every conversation of the held claim
-// until the retry that ends it records the session it forgets (supervise's forgetSession).
+// asker's sentence after the failure: the retry that ends the hold forgets no session then. It
+// reads that hold as supervise.DecodeCause does, so a held_for a rollback left beside another
+// cause holds nothing, and it takes only a session abandoned after the failure, as supervise's
+// holdCyberPolicySession does, so a session abandoned before it, or beside a failure whose moment
+// no row recorded, records none. A session abandoned for another cause by a claim held for none, a
+// claim that abandoned none, and a claim held now that still records its session record none: the
+// hold covers every conversation of the held claim until the retry that ends it records the
+// session it forgets (supervise's forgetSession).
 func TestTheMigrationRecordsTheSessionAnEarlierRetryForgotAfterACyberPolicyRefusal(t *testing.T) {
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, claimCyberPolicySessionsVersion-1)
 	const forgotten = `{"session":"ses_forgotten","why":"an operator cleared it with ` + "`legion claims forget-session`" +
 		` or ` + "`legion claims retry --fresh-session`" + `, so this agent starts in a new session","at":"2026-11-25T13:00:00Z"}`
-	seeds := []struct{ token, state, session, failureCause, heldFor, abandoned, want string }{
+	const failed = "2026-11-25T12:00:00Z"
+	seeds := []struct{ token, state, session, failureCause, heldFor, abandoned, failedAt, want string }{
 		{"legion-LEGION-208-implementer", "launching", "", "", "",
 			`{"session":"ses_refused","why":"a provider error that cannot clear ended this claim's turn: OpenAI's cyber_policy refusal of this session's content (HTTP 400)","at":"2026-11-25T12:00:00Z"}`,
-			`(legion-LEGION-208-implementer,{ses_refused})`},
+			"", `(legion-LEGION-208-implementer,{ses_refused})`},
 		{"legion-LEGION-209-implementer", "launching", "", "", "",
 			`{"session":"ses_died","why":"deaths with work outstanding ran out","at":"2026-11-25T12:00:00Z"}`,
-			`(legion-LEGION-209-implementer,{})`},
-		{"legion-LEGION-210-implementer", "idle", "ses_running", "", "", "", `(legion-LEGION-210-implementer,{})`},
-		{"legion-LEGION-211-implementer", "failed", "ses_held", "provider_error", "cyber_policy", "", `(legion-LEGION-211-implementer,{})`},
-		{"legion-LEGION-212-implementer", "failed", "", "provider_error", "cyber_policy", forgotten, `(legion-LEGION-212-implementer,{ses_forgotten})`},
-		{"legion-LEGION-213-implementer", "retired", "", "provider_error", "cyber_policy", forgotten, `(legion-LEGION-213-implementer,{ses_forgotten})`},
-		{"legion-LEGION-214-implementer", "failed", "", "provider_error", "", forgotten, `(legion-LEGION-214-implementer,{})`},
+			"", `(legion-LEGION-209-implementer,{})`},
+		{"legion-LEGION-210-implementer", "idle", "ses_running", "", "", "", "", `(legion-LEGION-210-implementer,{})`},
+		{"legion-LEGION-211-implementer", "failed", "ses_held", "provider_error", "cyber_policy", "", failed, `(legion-LEGION-211-implementer,{})`},
+		{"legion-LEGION-212-implementer", "failed", "", "provider_error", "cyber_policy", forgotten, failed, `(legion-LEGION-212-implementer,{ses_forgotten})`},
+		{"legion-LEGION-213-implementer", "retired", "", "provider_error", "cyber_policy", forgotten, failed, `(legion-LEGION-213-implementer,{ses_forgotten})`},
+		{"legion-LEGION-214-implementer", "failed", "", "provider_error", "", forgotten, failed, `(legion-LEGION-214-implementer,{})`},
+		// A held_for the release before 20261125223008 left standing after a rollback, beside the
+		// cause it wrote for a later failure: no hold (supervise.DecodeCause).
+		{"legion-LEGION-215-implementer", "failed", "", "died", "cyber_policy", forgotten, failed, `(legion-LEGION-215-implementer,{})`},
+		// A session abandoned before the failure, and one beside a failure whose moment no row
+		// recorded: neither is the session refused (supervise's holdCyberPolicySession).
+		{"legion-LEGION-216-implementer", "failed", "", "provider_error", "cyber_policy", forgotten, "2026-11-25T14:00:00Z", `(legion-LEGION-216-implementer,{})`},
+		{"legion-LEGION-217-implementer", "failed", "", "provider_error", "cyber_policy", forgotten, "", `(legion-LEGION-217-implementer,{})`},
 	}
 	for _, seed := range seeds {
 		if _, err := store.Pool().Exec(ctx, `insert into claims (token, project, tree, issue, role, generation,
 			session, session_file, state, failure, launch_failures, prompt_failures, prompt_retires, uncertain_streak,
-			failure_cause, held_for, abandoned_session)
-			values ($1, 'legion', 'LEGION-208', 'LEGION-208', 'implementer', 1, $2, '', $3, '', 0, 0, 0, 0, $4, $5, nullif($6, '')::jsonb)`,
-			seed.token, seed.session, seed.state, seed.failureCause, seed.heldFor, seed.abandoned); err != nil {
+			failure_cause, held_for, abandoned_session, failed_at)
+			values ($1, 'legion', 'LEGION-208', 'LEGION-208', 'implementer', 1, $2, '', $3, '', 0, 0, 0, 0, $4, $5, nullif($6, '')::jsonb,
+			nullif($7, '')::timestamptz)`,
+			seed.token, seed.session, seed.state, seed.failureCause, seed.heldFor, seed.abandoned, seed.failedAt); err != nil {
 			t.Fatalf("record %s before the migration: %v", seed.token, err)
 		}
 	}

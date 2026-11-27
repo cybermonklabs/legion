@@ -23,14 +23,19 @@
 -- claims.abandoned_session), and the sentence names the refusal in the words classifyProviderError
 -- gives it, `OpenAI's cyber_policy refusal of this session's content`.
 --
--- The other is the abandoned session of a claim held now (held_for = 'cyber_policy', failed or
--- retired) that records no session. The release before forgets a session first, under the asker's
--- sentence rather than the failure's (supervise's forgottenBy), for its `legion claims
--- forget-session`, its `legion claims retry --fresh-session` and the controller's fresh_session,
--- and a forget-session alone leaves the claim held. The retry of this release that ends the hold
--- then forgets no session, so the session the claim left behind is recorded here, and the machine
--- records it at that retry too, where the session was left behind after the failure (supervise's
--- holdCyberPolicySession), for a claim forgotten so after this migration ran.
+-- The other is the abandoned session of a claim held now that records no session. The leg reads
+-- the hold as supervise.DecodeCause does: held_for = 'cyber_policy' beside failure_cause =
+-- 'provider_error', on a claim failed or retired, and not held_for alone, since after a rollback
+-- the release before 20261125223008_claim_held_for rewrites the cause and leaves held_for as it
+-- was. The release before forgets a session first, under the asker's sentence rather than the
+-- failure's (supervise's forgottenBy), for its `legion claims forget-session`, its `legion claims
+-- retry --fresh-session` and the controller's fresh_session, and a forget-session alone leaves the
+-- claim held. The retry of this release that ends the hold then forgets no session, so the session
+-- the claim left behind is recorded here, and the machine records it at that retry too (supervise's
+-- holdCyberPolicySession), for a claim forgotten so after this migration ran. Both take only a
+-- session abandoned after the failure (abandoned_session's `at` after failed_at): a session
+-- abandoned before it was not the one refused. This leg records nothing for a row whose failed_at
+-- is null, as 20261111212544_claim_failure_cause left each claim it backfilled.
 --
 -- A claim records one abandoned session, its last, so of a claim that release held and retried
 -- twice the second session alone is recorded. One claim stays unrecorded: a claim whose session
@@ -53,4 +58,5 @@ alter table claims add column cyber_policy_sessions text[] not null default '{}'
 update claims set cyber_policy_sessions = array[abandoned_session->>'session']
 where abandoned_session->>'session' <> ''
   and (strpos(abandoned_session->>'why', 'OpenAI''s cyber_policy refusal of this session''s content') > 0
-    or held_for = 'cyber_policy' and state in ('failed', 'retired') and session = '');
+    or held_for = 'cyber_policy' and failure_cause = 'provider_error' and state in ('failed', 'retired')
+      and session = '' and (abandoned_session->>'at')::timestamptz > failed_at);

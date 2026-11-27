@@ -2464,21 +2464,17 @@ a20_quiet_thread() {
 a20_writers_because() {
   printf 'a reply in a comment thread that session %s answers, as the author of its newest comment before the reply' "$1"
 }
-# a20_writers_skipped_in LINES: how many hand-offs of the tester LINES, this boot's log as one
-# listing (boot_listing), took for no question as the replaced tester's to answer
-# (a20_writers_because), and a20_writers_skipped that over the log read now. A20's leg of two
-# stopped writers and its control both count it before the person's reply, and the leg's read
+# a20_writers_skipped: how many hand-offs of the tester this boot's log, read now, took for no
+# question as the replaced tester's to answer (a20_writers_because). A20's leg of two stopped
+# writers and its control both count it before the person's reply, and the leg's read
 # (a20_writers_read) after it.
-a20_writers_skipped_in() {
-  answers_lines_in "${1:-}" "answers: hand-off is no question; not answered" "${agent[$store:tester.session]}" "" "$(a20_writers_because "${agent[$store:tester_old.session]}")"
+a20_writers_skipped() {
+  answers_lines "answers: hand-off is no question; not answered" "${agent[$store:tester.session]}" "" "$(a20_writers_because "${agent[$store:tester_old.session]}")"
 }
-a20_writers_skipped() { a20_writers_skipped_in "$(boot_listing)"; }
-# a20_dropped_in LINES: how many of the tester's questions LINES, this boot's log as one listing,
-# ended with nothing posted (`answers: question`, state dropped), and a20_dropped that over the log
-# read now. A20's leg of a reply that asks nothing and its control both count it before the
-# person's reply, and the leg's read (a20_quiet_read) after it.
-a20_dropped_in() { answers_lines_in "${1:-}" "answers: question" "${agent[$store:tester.session]}" dropped; }
-a20_dropped() { a20_dropped_in "$(boot_listing)"; }
+# a20_dropped: how many of the tester's questions this boot's log, read now, ended with nothing
+# posted (`answers: question`, state dropped). A20's leg of a reply that asks nothing and its
+# control both count it before the person's reply, and the leg's read (a20_quiet_read) after it.
+a20_dropped() { answers_lines "answers: question" "${agent[$store:tester.session]}" dropped; }
 # a20_quiet_needle TAG is the words that end the person's reply that asks nothing, which the
 # tester's conversation holds once the loop appended its exchange. TAG says whose reply it is (A20,
 # control of A20).
@@ -3149,22 +3145,21 @@ daemon_notice() {
     "$(jq -cn --arg t "session:${agent[$store:$1.session]}" --arg b "$2" '{body: $b, target: $t, delivery: "steer"}')" | jq -r '.id // empty'
 }
 # a8_skipped_count_in LINES NAME BECAUSE: how many hand-offs of NAME's session LINES, this boot's log
-# as one listing (boot_listing), took for no question BECAUSE; a8_question_count_in LINES NAME
-# [STATE]: how many questions of NAME's session LINES logged, in STATE where one is given; and
-# a8_delivered_count_in LINES: how many times LINES says the loop delivered its own answer into the
-# replaced tester's conversation (a8_delivered_msg). a8_skipped_count NAME BECAUSE,
-# a8_question_count NAME [STATE] and a8_delivered_count are each over the log read now. A8's row
-# and its control count the questions before what they send, the row waits on the delivered count,
-# and its legs' reads (a8_taken_read, a8_untaken_read, a8_own_delivered_read,
-# a8_own_unanswered_read, a8_edit_unanswered_read) count each after it: the planner's answers
-# posted, the questions of the replaced tester, the architect, the pre-change reviewer and the
-# planner, and the deliveries into the replaced tester's conversation.
+# as one listing (boot_listing), took for no question BECAUSE, and a8_question_count_in LINES NAME
+# [STATE]: how many questions of NAME's session LINES logged, in STATE where one is given;
+# a8_skipped_count NAME BECAUSE and a8_question_count NAME [STATE] are each that over the log read
+# now. a8_delivered_count: how many times this boot's log, read now, says the loop delivered its
+# own answer into the replaced tester's conversation (a8_delivered_msg). A8's row and its control
+# count the questions before what they send, the row waits on the delivered count, and its legs'
+# reads (a8_taken_read, a8_untaken_read, a8_own_delivered_read, a8_own_unanswered_read,
+# a8_edit_unanswered_read) count each after it: the planner's answers posted, the questions of the
+# replaced tester, the architect, the pre-change reviewer and the planner, and the deliveries into
+# the replaced tester's conversation.
 a8_skipped_count_in() { answers_lines_in "${1:-}" "answers: hand-off is no question; not answered" "${agent[$store:$2.session]}" "" "$3"; }
 a8_question_count_in() { answers_lines_in "${1:-}" "answers: question" "${agent[$store:$2.session]}" "${3:-}"; }
-a8_delivered_count_in() { answers_lines_in "${1:-}" "$a8_delivered_msg" "${agent[$store:tester_old.session]}"; }
 a8_skipped_count() { a8_skipped_count_in "$(boot_listing)" "$@"; }
 a8_question_count() { a8_question_count_in "$(boot_listing)" "$@"; }
-a8_delivered_count() { a8_delivered_count_in "$(boot_listing)"; }
+a8_delivered_count() { answers_lines "$a8_delivered_msg" "${agent[$store:tester_old.session]}"; }
 # a8_resolution_send SUFFIX REASON sends A8's resolution leg, the row's and its control's alike: an
 # ask opened in the pre-change reviewer's own name, asking whether the release still waits on the
 # SBOM under SUFFIX, which the person then resolves with REASON. It prints the ask's id, nothing
@@ -4654,15 +4649,14 @@ a21_holder_body() {
 # a21_holder_kept ID: the mention ID's one delivery settled `queued` naming no session, as Dispatch
 # keeps a mention of a role nobody holds for the role's first holder.
 a21_holder_kept() { one_delivery_for "$(comment_delivery_records "${1:-}")" queued ''; }
-# a21_holder_settled ID [RECORD]: the mention ID's one delivery settled, in any state but `pending`:
-# what A21's control waits for before its first holder claims the mentioned role, as the row waits
-# for its mention to settle queued, whatever state a daemon with answers removed leaves it in, and
-# what it holds the mention's record to before it counts the first holder's leg. RECORD is ID's
-# record as the control read it once (comment_record), read now where not given.
+# a21_holder_settled DELIVERIES: the delivery records of a mention (comment_delivery_records) are
+# one, settled in any state but `pending`: what A21's control waits for before its first holder
+# claims the mentioned role, as the row waits for its mention to settle queued, whatever state a
+# daemon with answers removed leaves it in, and what it holds the mention's record to before it
+# counts the first holder's leg. The wait reads the records now (comment_delivery_records), and the
+# control's read takes them from the record it read once (delivery_records_in).
 a21_holder_settled() {
-  local record=${2:-}
-  [ -n "$record" ] || record=$(comment_record "${1:-}")
-  jq -e 'type == "array" and length == 1 and .[0].state != "pending"' <<<"$(delivery_records_in "$record")" >/dev/null 2>&1
+  jq -e 'type == "array" and length == 1 and .[0].state != "pending"' <<<"${1:-null}" >/dev/null 2>&1
 }
 # a21_holder_holds CLAIM TOKEN: CLAIM, the listener's answer to the first holder's claim
 # (a21_holder_claim), is the claim of role TOKEN that landed for holder_session: the session's
@@ -5882,13 +5876,14 @@ control_read_a19() {
 # topic under a marker of its own. The row's read is run over them. For the first holder's leg it
 # mentions the issue's merger role, which no session of the run took either, under a marker of its
 # own (control[<store>:A21.holder], control[<store>:A21.holder_marker]); waits up to 60 s, as the
-# row waits, for that mention's one delivery to settle (a21_holder_settled); and has the first
-# holder register again and claim that same role (control[<store>:A21.claim]), as the leg's holder
-# claims the role its mention names. A daemon that still answered would have Dispatch keep the
-# mention queued for the role's first holder and the listener relay it to that holder, so the leg's
-# read would hold; with answers removed the mention is kept for nobody, and the read must fail. A
-# claim that did not land for the first holder (a21_holder_holds) is a message not taken, since no
-# marker could reach a holder of no role.
+# row waits, for that mention's one delivery to settle (a21_holder_settled, over its delivery
+# records read at each try, comment_delivery_records); and has the first holder register again and
+# claim that same role (control[<store>:A21.claim]), as the leg's holder claims the role its
+# mention names. A daemon that still answered would have Dispatch keep the mention queued for the
+# role's first holder and the listener relay it to that holder, so the leg's read would hold; with
+# answers removed the mention is kept for nobody, and the read must fail. A claim that did not land
+# for the first holder (a21_holder_holds) is a message not taken, since no marker could reach a
+# holder of no role.
 control_send_a21() {
   local issue=${agent[$store:failed_implementer.issue]:-} token=${agent[$store:failed_implementer.token]:-} reviewer merger claim
   control_sent A21 "A21's issue" "$issue" || return 1
@@ -5902,8 +5897,10 @@ control_send_a21() {
   control_ask_marked A21 role "$token" failed-implementer-role "control of A21, role topic" role_event || true
   control[$store:A21.holder_marker]=answer-loop-a21-holder-control-$run_tag-$store
   control_comment A21 holder "$issue" "$(a21_holder_body merger "$merger" "${control[$store:A21.holder_marker]}")" || true
+  # shellcheck disable=SC2317 # soft_wait below runs it by name
+  a21_holder_mention_settled() { a21_holder_settled "$(comment_delivery_records "${control[$store:A21.holder]}")"; }
   [ -z "${control[$store:A21.holder]}" ] ||
-    soft_wait 60 "the control's mention of the unclaimed role:$merger to settle" a21_holder_settled "${control[$store:A21.holder]}" || true
+    soft_wait 60 "the control's mention of the unclaimed role:$merger to settle" a21_holder_mention_settled || true
   claim=$(a21_holder_claim "$merger") || claim=
   control[$store:A21.claim]=$claim
   if a21_holder_holds "$claim" "$merger"; then
@@ -5917,10 +5914,11 @@ control_send_a21() {
 # for the reply to the control's message to the role's topic and the first holder's leg for the
 # mention's marker, and hands each to the reads that look there. It runs A21's read over them,
 # counted only where the comments hold both mentions and the inbox holds entries. It reads the
-# record of the first holder's mention once, and runs that leg's read over it and the inbox,
-# counted only where the inbox holds entries and the record is the mention's, its one delivery
-# settled, not `pending` (a21_holder_settled, the test control_send_a21's wait for it ends on, so
-# a wait that timed out reads as not taken). Then, where the read's part that the implementer posts
+# record of the first holder's mention once, takes its delivery records from it once
+# (delivery_records_in), and runs that leg's read over them and the inbox, counted only where the
+# inbox holds entries and the record is the mention's, its one delivery settled, not `pending`
+# (a21_holder_settled over those records, the test control_send_a21's wait for it ends on, so a
+# wait that timed out reads as not taken). Then, where the read's part that the implementer posts
 # nothing under the control's mention looks, it places a reply in the failed implementer's name
 # under that mention, carrying the loop's mark, reads the comments again, and that part's read, run
 # over them, counts only where they hold the placed reply. The reply is placed after the main read,
@@ -5937,7 +5935,7 @@ control_read_a21() {
   deliveries=$(delivery_records_in "$record")
   one_delivery_for "$deliveries" queued '' && kept=yes
   what="the record of the control's mention $holder, where the first holder's leg reads it kept once its one delivery settled, not pending"
-  if control_seen A21 "$what" "${record:-null}" '[.comment | objects]' '.id == value' "$holder" && ! a21_holder_settled "$holder" "$record"; then
+  if control_seen A21 "$what" "${record:-null}" '[.comment | objects]' '.id == value' "$holder" && ! a21_holder_settled "$deliveries"; then
     control_unseen A21 "$what" "no one delivery settled (a21_holder_settled): its delivery records $deliveries" || true
   fi
   read_failed A21 "A21's first holder's leg, over the control's mention of role:$(claim_token "$issue" merger) (its delivery records $deliveries), a role its first holder $holder_session claimed once the mention settled" \
