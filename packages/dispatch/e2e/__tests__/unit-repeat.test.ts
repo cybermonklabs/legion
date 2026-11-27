@@ -1834,8 +1834,10 @@ driverRow(
     // The lie: a process that SIGKILL stands for can still adopt orphans until it begins to
     // exit, so a count that ends while one has not begun could miss a child it adopts. Here a
     // stand-in `kill` sends no SIGKILL, so the sleep `count` kills never begins to exit, and
-    // `count` waits its 1 s and says so.
+    // `count` waits its 1 s and says so. The count starts once the child has become `sleep`: CI
+    // run 45940711619 read it still as the forked `bash -c`, before its exec.
     const script = `${leftBehind}sleep 30 & s=$!
+until [ "$(<"/proc/$s/comm")" = sleep ]; do :; done
 kill() { [ "$1" = -KILL ] && return 0; builtin kill "$@"; }
 count
 unset -f kill
