@@ -87,7 +87,7 @@ import { owedUnless, seedEventsLanded, treeReadRoute, treeReads } from "./issue-
 import { focusedRowReadId, lensAct, lensCatalogue, requestedTreeRead } from "./issue-page-w";
 import { pauseClock } from "./page-clock";
 import { settledValue } from "./settled";
-import { expect, type Page, type Route, test } from "./test";
+import { expect, type Page, type Request, type Route, test } from "./test";
 import { type ApiRequests, expectLoadSettled, watchApiRequests } from "./traffic";
 
 /**
@@ -1025,28 +1025,47 @@ interface GraphRead {
   readonly page: "first" | "next";
 }
 
+/** Which page of a read of issue `key`'s Graph outline `request` is - the tree route with no
+ *  `view=`, no `kind=` and no `comments_before=`: a read's first page, with no `cursor`, or a next
+ *  page - or undefined for any other request. */
+function graphReadPage(request: Request, key: string): GraphRead["page"] | undefined {
+  const url = new URL(request.url());
+  const { searchParams } = url;
+  const tree = `/api/v1/issues/${encodeURIComponent(key)}/tree`;
+  if (request.method() !== "GET" || url.pathname !== tree) return undefined;
+  if (["view", "kind", "comments_before"].some((name) => searchParams.has(name))) return undefined;
+  return searchParams.has("cursor") ? "next" : "first";
+}
+
+/** Whether `request` is a `PATCH` of node `id`'s own route of issue `key`: its move, which the
+ *  reads after its answer are counted and held from. */
+function isMoveOf(request: Request, key: string, id: string): boolean {
+  const nodes = `/api/v1/issues/${encodeURIComponent(key)}/nodes/`;
+  const { pathname } = new URL(request.url());
+  return (
+    request.method() === "PATCH" &&
+    pathname.startsWith(nodes) &&
+    decodeURIComponent(pathname.slice(nodes.length)) === id
+  );
+}
+
 /**
- * Keeps each read of issue `key`'s Graph outline the page sends from now on - the tree route with
- * no `view=`, no `kind=` and no `comments_before=` - in the order sent, each marked answered once
- * its answer has loaded or failed. `afterAnswer` answers the reads sent after the answer of the
- * first `PATCH` of node `id` came, undefined until it came: the count is taken in the browser's
- * own order of events, as that answer arrives, so no read the page sent before it is among them.
+ * Keeps each read of issue `key`'s Graph outline the page sends from now on (`graphReadPage`), in
+ * the order sent, each marked answered once its answer has loaded or failed. `afterAnswer`
+ * answers the reads sent after the answer of the first `PATCH` of node `id` came, undefined until
+ * it came: the count is taken in the browser's own order of events, as that answer arrives, so no
+ * read the page sent before it is among them.
  */
 function watchGraphReads(
   page: Page,
   key: string,
   id: string
 ): { readonly afterAnswer: () => readonly GraphRead[] | undefined } {
-  const tree = `/api/v1/issues/${encodeURIComponent(key)}/tree`;
-  const nodes = `/api/v1/issues/${encodeURIComponent(key)}/nodes/`;
   const reads = new Map<object, GraphRead>();
   let answeredAt: number | undefined;
   page.on("request", (request) => {
-    const url = new URL(request.url());
-    const { searchParams } = url;
-    if (request.method() !== "GET" || url.pathname !== tree) return;
-    if (["view", "kind", "comments_before"].some((name) => searchParams.has(name))) return;
-    reads.set(request, { answered: false, page: searchParams.has("cursor") ? "next" : "first" });
+    const read = graphReadPage(request, key);
+    if (read !== undefined) reads.set(request, { answered: false, page: read });
   });
   const answered = (request: object) => {
     const read = reads.get(request);
@@ -1055,16 +1074,41 @@ function watchGraphReads(
   page.on("requestfinished", answered);
   page.on("requestfailed", answered);
   page.on("response", (response) => {
-    const request = response.request();
-    const { pathname } = new URL(request.url());
-    if (answeredAt !== undefined || request.method() !== "PATCH") return;
-    if (!pathname.startsWith(nodes)) return;
-    if (decodeURIComponent(pathname.slice(nodes.length)) === id) answeredAt = reads.size;
+    if (answeredAt === undefined && isMoveOf(response.request(), key, id)) answeredAt = reads.size;
   });
   return {
     afterAnswer: () =>
       answeredAt === undefined ? undefined : [...reads.values()].slice(answeredAt),
   };
+}
+
+/**
+ * Holds R7's re-read of issue `key`'s Graph outline after the move of node `id`: the first read
+ * of the outline from its first page (`graphReadPage`) sent after the answer of a `PATCH` of that
+ * node came, which the flag is set for in the browser's own order of events, as
+ * `watchGraphReads` counts. `held` answers its route once the page has sent it, undefined until
+ * then, for the row to continue it. Every other request of the tree route goes through. Install
+ * it before the move. The route stays installed for the page's life on purpose, as
+ * `holdFirstRequest`'s does (`e2e/editor.ts` says why).
+ */
+async function holdReread(
+  page: Page,
+  key: string,
+  id: string
+): Promise<{ readonly held: () => Route | undefined }> {
+  let answered = false;
+  let held: Route | undefined;
+  page.on("response", (response) => {
+    if (isMoveOf(response.request(), key, id)) answered = true;
+  });
+  await page.route(treeReadRoute(key), async (route) => {
+    if (answered && held === undefined && graphReadPage(route.request(), key) === "first") {
+      held = route;
+      return;
+    }
+    await route.continue();
+  });
+  return { held: () => held };
 }
 
 // c-move, fourth row: a move by key that puts the node past its parent's first 50 drawn children
@@ -1076,11 +1120,15 @@ function watchGraphReads(
 // the node stands where the answer put it. The address names the comment and not the block: the
 // node an address names stays drawn wherever it moves (`address-target.ts` resolves it again on
 // each tree, and `treeRows` draws a `named` node past its parent's drawn children), so a landing
-// on the block could not show the rows drawn up to the node after the move.
+// on the block could not show the rows drawn up to the node after the move. R7's re-read is held
+// at its first page until the moved row has been read drawn with the caret (`holdReread`): let go,
+// it can land before the first poll reads the row, and a page that read no next page before it
+// then fails on the first message, not on the one that says the row left after the re-read.
 // SLOW(>=2s): a seed grown past one page of the tree read - three paragraphs of the issue's own
 // fragment, `SHORT_COMMENTS` short comments and `LONG_COMMENTS` long ones on the issue, about
 // 3,000,000 bytes of the page's JSON before the issue's own blocks - a landing, a move by key
-// answered, the next page and R7's re-read waited out, a letter typed and stored, and a reload.
+// answered, the next page and R7's re-read held and then waited out, a letter typed and stored,
+// and a reload.
 test("a move that puts the node past the drawn rows draws the rows up to it and keeps the caret", async ({
   browser,
 }) => {
@@ -1151,6 +1199,7 @@ test("a move that puts the node past the drawn rows draws the rows up to it and 
       .poll(() => caretRowReadId(page), { message: "Enter puts no caret in the prose block" })
       .toBe(moved.id);
     await page.keyboard.press("End");
+    const reread = await holdReread(page, key, moved.id);
     await page.keyboard.press("Shift+Tab");
     const outdent = await nthWrite(sent, 1, "Shift+Tab sends no PATCH");
     expect((await outdent.answer)?.status, "Shift+Tab's PATCH is refused").toBe(200);
@@ -1164,14 +1213,15 @@ test("a move that puts the node past the drawn rows draws the rows up to it and 
       )
       .toEqual({ caret: moved.id, drawn: true });
 
-    // R7's re-read is a read from the first page; once it is sent, a quiet page has read its
-    // last page, since each next page goes as the page before it lands.
+    // R7's re-read is a read from the first page, held until here; once it is let go, a quiet
+    // page has read its last page, since each next page goes as the page before it lands.
     await expect
-      .poll(() => reads.afterAnswer()?.some((read) => read.page === "first") ?? false, {
+      .poll(() => reread.held() !== undefined, {
         message: "no read of the tree from its first page follows the move",
         timeout: 60_000,
       })
       .toBe(true);
+    await reread.held()?.continue();
     await expectLoadSettled(traffic);
     const afterMove = reads.afterAnswer() ?? [];
     await expect
