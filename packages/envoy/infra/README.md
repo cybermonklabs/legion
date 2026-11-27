@@ -4531,11 +4531,12 @@ the daemon, not to a host or session.
 `DispatchPermissions(machineID)` is the grant of Dispatch's one NATS user, shared by
 `envoy-dispatch` and the listener beside it. It adds to the base entries of
 `ListenerPermissions(machineID)`, the session consumers' and the task bucket's left out, the info,
-filtered create, delete and acknowledgements of Dispatch's `delivery-events` and `delivery-jobs`
-durables; the key-value calls for `envoy_webhook_redelivery`; publication of every session's
-agent-stream control subject; and subscription to every session's agent-stream frames. A
-`gcp:NatsHub` user with `dispatchMachineId` holds it. No session shares the user, so it holds none
-of `SessionPermissions`: it is a direct publish to a session's agent-stream frames, or a read of a session's relay subject, that is refused.
+filtered create, delete and acknowledgements of Dispatch's `delivery-events`, `delivery-jobs` and
+`legion-state-events` durables (`core.DispatchDurables()`; the last is the Legion state intake's,
+on every Legion daemon's state lane); the key-value calls for `envoy_webhook_redelivery`;
+publication of every session's agent-stream control subject; and subscription to every session's
+agent-stream frames. A `gcp:NatsHub` user with `dispatchMachineId` holds it. No session shares the
+user, so it holds none of `SessionPermissions`: it is a direct publish to a session's agent-stream frames, or a read of a session's relay subject, that is refused.
 Its publish deny is the base entries' with Dispatch's lane, `notifications.dispatch.>`, taken
 off, so it still publishes that lane: `envoy-dispatch` publishes every event there. It still
 denies GitHub's lane: Dispatch publishes nothing there, and its redelivery sweep asks GitHub to

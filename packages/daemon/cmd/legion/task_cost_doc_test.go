@@ -220,6 +220,7 @@ var turnCause = regexp.MustCompile(`,"task":\d+`)
 // lines' causes. And a window the log does not reach reads no line and no turn at all, so the
 // figures come from the lines and from no constant.
 func TestDocExampleTaskCost(t *testing.T) {
+	t.Parallel()
 	examples := taskCostExamples(t)
 	sample := readSample(t)
 

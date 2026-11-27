@@ -85,11 +85,12 @@ func sinceMergeBase(t *testing.T, base set, name string) set {
 }
 
 // Every set this package builds is, element for element and in order, the set infra/core built at
-// the merge base, so moving them here rewrites no hub's rendered authorization, with the one entry
-// added since (sinceMergeBase), and but for the Legion daemons' task bucket, which came after that
-// commit: the listener's two sets end their publish list with the bucket's reads
-// (listenerTaskBucketReads), and the daemon's with its calls on the bucket
-// (daemonTaskBucketCalls). Host, Dispatch and the session's set gain nothing of it.
+// the merge base, so moving them here rewrites no hub's rendered authorization, with the entries
+// added since (sinceMergeBase) and the one grant Dispatch gained since (withLegionStateDurable),
+// and but for the Legion daemons' task bucket, which came after that commit: the listener's two
+// sets end their publish list with the bucket's reads (listenerTaskBucketReads), and the daemon's
+// with its calls on the bucket (daemonTaskBucketCalls). Host, Dispatch and the session's set gain
+// nothing of it.
 func TestEachGrantIsTheSetItReplacesPlusTheTaskBucket(t *testing.T) {
 	var base mergeBase
 	readJSON(t, "testdata/merge-base-grants.json", &base)
@@ -101,7 +102,7 @@ func TestEachGrantIsTheSetItReplacesPlusTheTaskBucket(t *testing.T) {
 		}{
 			"Listener":     {withPublish(base.Listener[id], listenerTaskBucketReads), natsgrant.Listener(id)},
 			"ListenerHost": {withPublish(base.ListenerHost[id], listenerTaskBucketReads), natsgrant.ListenerHost(id)},
-			"Dispatch":     {base.Dispatch[id], natsgrant.Dispatch(id)},
+			"Dispatch":     {withLegionStateDurable(t, base.Dispatch[id]), natsgrant.Dispatch(id)},
 			"Host":         {base.Host[id], natsgrant.Host(id)},
 		} {
 			name := name + "(" + strconv.Quote(id) + ")"
@@ -111,7 +112,26 @@ func TestEachGrantIsTheSetItReplacesPlusTheTaskBucket(t *testing.T) {
 	requireSet(t, base.SessionPattern, natsgrant.SessionPattern(), "SessionPattern()")
 	requireSet(t, withPublish(base.Daemon, daemonTaskBucketCalls), natsgrant.Daemon(), "Daemon()")
 	require.NotEmpty(t, base.DispatchDurables)
-	require.Equal(t, base.DispatchDurables, natsgrant.DispatchDurables())
+	require.Equal(t, append(slices.Clone(base.DispatchDurables), "legion-state-events"), natsgrant.DispatchDurables())
+}
+
+// withLegionStateDurable is dispatch, a Dispatch set of the merge-base fixture, with the grant
+// Dispatch gained after the merge base: the Legion state intake's durable legion-state-events
+// (dispatch://INFRA-3931), which DispatchDurables names after the two the fixture holds, so its
+// four calls follow delivery-jobs' in the publish list. Nothing else of any set has moved.
+func withLegionStateDurable(t *testing.T, dispatch set) set {
+	t.Helper()
+	after := slices.Index(dispatch.Publish, "$JS.ACK.ENVOY_NOTIFICATIONS.delivery-jobs.>")
+	require.GreaterOrEqual(t, after, 0, "the fixture's Dispatch set holds no delivery-jobs acknowledgement")
+	return set{
+		Publish: slices.Insert(slices.Clone(dispatch.Publish), after+1,
+			"$JS.API.CONSUMER.INFO.ENVOY_NOTIFICATIONS.legion-state-events",
+			"$JS.API.CONSUMER.CREATE.ENVOY_NOTIFICATIONS.legion-state-events.>",
+			"$JS.API.CONSUMER.DELETE.ENVOY_NOTIFICATIONS.legion-state-events",
+			"$JS.ACK.ENVOY_NOTIFICATIONS.legion-state-events.>",
+		),
+		Subscribe: dispatch.Subscribe,
+	}
 }
 
 // Measure is the measurement user's grant as the deployment renders it once its stream calls and

@@ -49,17 +49,23 @@
 -- (that migration set none), and deletes this migration's version row, so the roll forward runs
 -- this file again. The release before this one, main's build that carries contract entries
 -- 20261125161152 (#4592's gate-basis), 20261125161436 (#4580's role-identities), 20261125170509
--- (#5482's replaces), 20261125170906 (#5332's drop-unserved-state-keys), 20261125174608 (#5505's
--- cyber-policy), 20261125180842 (#5285's launcher-workspace-read), 20261125181047 (#5488's
--- p-0-bound), 20261125181543 (#5463's look-names-its-check), 20261125182642 (#4065's
--- agent-actions), 20261125211005 (#5566's wake-due-earliest-moment) and 20261126071719 (#5646's
--- workspace-init-direct-clone) after contract 275 (the one whose
+-- (#5482's replaces), 20261125170906 (#5332's drop-unserved-state-keys), 20261125174131 (#4432's
+-- state-seq), 20261125174608 (#5505's cyber-policy), 20261125180842 (#5285's
+-- launcher-workspace-read), 20261125181047 (#5488's p-0-bound), 20261125181543 (#5463's
+-- look-names-its-check), 20261125182642 (#4065's agent-actions), 20261125211005 (#5566's
+-- wake-due-earliest-moment) and 20261126071719 (#5646's workspace-init-direct-clone) after contract
+-- 275 (the one whose
 -- internal/api/version.go carries the entry for dispatch://INFRA-4425, cybermonklabs/legion#4392's
 -- daemon that writes to Dispatch as itself under dispatch_token_broker), as main releases it after
--- #4194, whose newest migration is #4065's 20261126110259_merge_holds_changed, carries
+-- #4432, whose newest migration is #4432's 20261126163320_state_events, carries
 -- 20261119203047 and
--- not the task numbers, and then reads the function it wrote; a rollback to a release before #4194
--- runs that release's one statement, which changes no schema version, after the daemon stops and
+-- not the task numbers, and then reads the function it wrote; a rollback to a release before #4432
+-- crosses contract entry 20261125174131 and takes that release's steps (docs/kubernetes.md,
+-- "Rolling out and rolling back the release that publishes the daemon's state events"), which roll
+-- Dispatch back first, to the release before that one, and then the daemon, and this block reads
+-- nothing of that release's 20261126163320_state_events, which carries no way back; one to a
+-- release before #4194 runs that release's one statement, which changes no schema version, after
+-- the daemon stops and
 -- before the earlier image starts (docs/kubernetes.md, "Rolling back idle release"): it strips the
 -- wakeDetail key the earlier release refuses from each queued start, and this block reads nothing
 -- of that key or of that release's 20261120210000_issue_release_committed and

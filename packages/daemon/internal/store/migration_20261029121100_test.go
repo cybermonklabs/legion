@@ -71,6 +71,7 @@ func TestAClaimsTurnOutcomesRoundTrip(t *testing.T) {
 // window back without it would take the repeat for a report it had applied and leave undone what
 // the report says of the claim's task.
 func TestAnUnappliedTurnOutcomeRoundTripsMarked(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := migratedStore(t)
 	c := tmuxClaim("legion-LEGION-209-implementer")
@@ -95,6 +96,7 @@ func TestAnUnappliedTurnOutcomeRoundTripsMarked(t *testing.T) {
 // an older daemon stored without them reads back with none of them, as a report that named no
 // task and no provider error, which is how that daemon read it.
 func TestTaskNumberAndProviderErrorOfAClaimsTurnOutcomesAreKept(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := migratedStore(t)
 	c := tmuxClaim("legion-LEGION-209-implementer")
@@ -127,6 +129,7 @@ func TestTaskNumberAndProviderErrorOfAClaimsTurnOutcomesAreKept(t *testing.T) {
 // reads it back from there; a mark the column holds on any later entry is none, and a window an
 // older daemon stored reads back without one (above).
 func TestTheTurnOutcomeWindowsWatermarkIsKept(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := migratedStore(t)
 	c := tmuxClaim("legion-LEGION-209-implementer")

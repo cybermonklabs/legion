@@ -1391,6 +1391,10 @@ func resolve(file fileConfig, env func(string) string, configDir string) (Config
 	if file.Project == nil || strings.TrimSpace(*file.Project) == "" {
 		return Config{}, errors.New("project is required")
 	}
+	// The key's shape is refused before any other setting is resolved (CheckProjectKey says why).
+	if err := CheckProjectKey(*file.Project); err != nil {
+		return Config{}, err
+	}
 	cfg.Project = *file.Project
 
 	if file.StateDir == nil || strings.TrimSpace(*file.StateDir) == "" {

@@ -40,6 +40,7 @@ var branchOnlyMigrations = []int{taskNumbersVersion, creditAtTurnStartVersion}
 // counts it, the function carries no comment, and the version row is gone, so a second Migrate
 // runs this file again and the credit waits for the turn once more.
 func TestADeliverysCopyCreditsOnlyOnceItsTakesTurnStartedHoweverTheStoreWasMigrated(t *testing.T) {
+	t.Parallel()
 	all, err := migrations.All()
 	if err != nil {
 		t.Fatalf("read the embedded migrations: %v", err)

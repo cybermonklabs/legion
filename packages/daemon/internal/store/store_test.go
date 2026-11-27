@@ -1090,39 +1090,39 @@ func TestTheServingRunBackfillsForARelaunchingClaim(t *testing.T) {
 // outbox_kind_check with a kind of its own belongs in it too, as dispatch://INFRA-3274's
 // 20261114031356, the role-holders publication's 20261116165926, the step record's
 // 20261117000528, the plan record's 20261117023932, dispatch://INFRA-4374's 20261119003157
-// (conflict_confirm and merge_forward), dispatch://INFRA-175's 20261119203047,
-// dispatch://INFRA-3320's 20261122154643 (the two basis seeds) and #4065's 20261126110259
-// (merge_holds_changed) do: the case of a database main migrated applies a version left out of the
-// list before the list's own rewrites of that check, which do not name the later kind, so the row
-// seeded of that kind fails the upgrade. So does one that rewrites another check a version of the
-// list writes, as dispatch://INFRA-3320's 20261114232555 adds awaiting_children to
-// issues_phase_check, which 20261029120700 writes: applied as main's, before that version, its
-// phase would be lost to that rewrite. Its sibling 20261114064234, the basis columns of
-// design_gates and issues.view_of, came in that same change, so it is in the list too: a database
-// that recorded the one and not the other is a shape no deployment has. So does one that builds on
-// a column a version of the list adds, as dispatch://INFRA-2811's 20261113175649_task_numbers drops
-// the prompted column 20261029121000 adds: a database no deployment has, one that recorded it and
-// not the version under it, refuses it. So does one that reads a column a version of the list
-// adds, as t-e-54's 20261116144907 reads
+// (conflict_confirm and merge_forward), dispatch://INFRA-175's 20261119203047 (design_changes),
+// dispatch://INFRA-3320's 20261122154643 (the two basis seeds), #4065's 20261126110259
+// (merge_holds_changed) and dispatch://INFRA-3931's state events' 20261126163320 do: the case of a
+// database main migrated applies a version left out of the list before the list's own rewrites of
+// that check, which do not name the later kind, so the row seeded of that kind fails the upgrade.
+// So does one that rewrites another check a version of the list writes, as dispatch://INFRA-3320's
+// 20261114232555 adds awaiting_children to issues_phase_check, which 20261029120700 writes: applied
+// as main's, before that version, its phase would be lost to that rewrite. Its sibling
+// 20261114064234, the basis columns of design_gates and issues.view_of, came in that same change,
+// so it is in the list too: a database that recorded the one and not the other is a shape no
+// deployment has. So does one that builds on a column a version of the list adds, as
+// dispatch://INFRA-2811's 20261113175649_task_numbers drops the prompted column 20261029121000
+// adds: a database no deployment has, one that recorded it and not the version under it, refuses
+// it. So does one that reads a column a version of the list adds, as t-e-54's 20261116144907 reads
 // claims.abandoned_session (20261029121200) and dispatch://INFRA-5463's 20261123212127 reads
 // claims.last_start_failure (20261029121000): applied before that version, it fails on the missing
 // column; and dispatch://INFRA-2811's 20261122160000 reads pending_task_deliveries.turn_started,
 // which 20261113175649 adds, in the function it writes. So does one that changes a table a version
 // of the list creates, as the givers of a plan version (20261124033010) add a column to
 // 20261117034837's issue_plans: applied as main's, before that table exists, it fails on the
-// missing table. 20261126110259 is the last migration that writes outbox_kind_check: it stands
-// above main's 20261122154643, 20261119203047 and 20261119003157, which write it too, and main's
-// 20261111090000, 20261111091500 and 20261116144907 write none. The cache trimmer's two,
-// 20261111090000 and 20261111091500, read no column a version of the list adds either, so neither
-// is in the list. The project pause's 20261115194357 is in it as well, though it rewrites no kind
-// list: a database migrated before the pause takes it in the upgrade, over a row of every kind the
-// schema admits, and its held_by_pause column on the outbox must take them all. The controller's
-// actions on an agent (#4065) add two more beside 20261126110259, and both are in the list for the
-// reason the release's own versions are: a deployment of the release before has neither, so each
-// runs in its upgrade. 20261115060739 writes claims_suspended_by_check again with `controller`,
-// and 20261115121838 deletes the queued controller notices of the two kinds no release writes now.
-// Any other version left out makes the cases below weaker, never red, which is why the comment
-// says where the list comes from.
+// missing table. 20261126163320 is the last migration that writes outbox_kind_check: it stands
+// above main's 20261126110259, 20261122154643, 20261119203047 and 20261119003157, which write it
+// too, and main's 20261111090000, 20261111091500, 20261116144907 and 20261123212127 write none.
+// The cache trimmer's two, 20261111090000 and 20261111091500, read no column a version of the list
+// adds either, so neither is in the list. The project pause's 20261115194357 is in it as well,
+// though it rewrites no kind list: a database migrated before the pause takes it in the upgrade,
+// over a row of every kind the schema admits, and its held_by_pause column on the outbox must take
+// them all. The controller's actions on an agent (#4065) add two more beside 20261126110259, and
+// both are in the list for the reason the release's own versions are: a deployment of the release
+// before has neither, so each runs in its upgrade. 20261115060739 writes claims_suspended_by_check
+// again with `controller`, and 20261115121838 deletes the queued controller notices of the two
+// kinds no release writes now. Any other version left out makes the cases below weaker, never red,
+// which is why the comment says where the list comes from.
 var thisRelease = map[int]bool{
 	20261029120000: true, 20261029120100: true, 20261029120200: true, 20261029120300: true,
 	20261029120400: true, 20261029120600: true, 20261029120700: true, 20261029120800: true,
@@ -1134,7 +1134,7 @@ var thisRelease = map[int]bool{
 	20261115194357: true, 20261116144907: true, 20261116165926: true, 20261117000528: true,
 	20261117004117: true, 20261117023932: true, 20261117034837: true, 20261117064152: true,
 	20261119003157: true, 20261119203047: true, 20261122154643: true, 20261122160000: true,
-	20261123212127: true, 20261124033010: true, 20261126110259: true,
+	20261123212127: true, 20261124033010: true, 20261126110259: true, 20261126163320: true,
 }
 
 const idleRelease = 20261101222956
@@ -1158,9 +1158,11 @@ var retiredOutboxKinds = []record.OutboxKind{"ready_merge", "auto_merge_disable"
 // fresh database the rewrite with the highest version is the last word, so a kind that only a
 // lower one names is refused there: design_changes would be, had its 20261119203047 stood below
 // the role-holders kind's 20261116165926 or the merge forward's 20261119003157, whose lists leave
-// it out, and step_record, plan_record, conflict_confirm and merge_forward are, unless the design
-// news's list, which runs after the step record's 20261117000528, the plan record's 20261117023932
-// and the merge forward's 20261119003157, names them too.
+// it out, and the three state kinds would be, had the state events' 20261126163320 stood below the
+// merge holds' 20261126110259, whose list leaves them out. step_record, plan_record,
+// conflict_confirm, merge_forward, design_changes, the two basis seeds and merge_holds_changed are
+// refused too, unless the state events' list, which runs after each list that names them, names
+// them too.
 func TestTheOutboxCheckAdmitsEveryKindWhicheverOrderTheMigrationsRan(t *testing.T) {
 	t.Parallel()
 	all, err := migrations.All()

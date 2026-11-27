@@ -1090,6 +1090,7 @@ func TestPodUpdateToldOnceAtTheBoundOfARoundAnOperatorsSuspensionHolds(t *testin
 // The negative control is the notice's old text, "An operator suspended … until the operator
 // resumes each of them" for every hold, which this test refuses.
 func TestPodUpdateNamesTheControllersHoldsInTheNotice(t *testing.T) {
+	t.Parallel()
 	rig := newPodUpdateRig(t,
 		podUpdateRole{role: claim.RoleImplementer, state: supervise.StateSuspended, session: true,
 			contract: api.DaemonAPIVersion(), suspendedBy: supervise.SuspendedByController},

@@ -15,6 +15,7 @@ import (
 // the line says so. The relay to those workers failed, so the daemon charges nobody and writes
 // each value again once per bound: the line is what says the listeners are not relaying.
 func TestPlainStateNamesTheClaimsWhoseTaskValueIsUnseen(t *testing.T) {
+	// Not parallel: its rows change the working directory and set environment variables of the whole process.
 	daemon := `"daemon":{"project":"LEGION","schemaVersion":6,"boots":1,"firstBootAt":"2026-09-23T00:00:00Z","startedAt":"2026-09-23T00:00:00Z"},` +
 		`"admission":{"cap":2,"active":[],"waiting":[]},"issues":{},"pendingStatusWrites":[],"strandedClaims":[]`
 	for _, tc := range []struct {

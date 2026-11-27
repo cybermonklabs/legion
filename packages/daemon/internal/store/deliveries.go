@@ -107,8 +107,8 @@ func (s *Store) PutClaimAndDelivery(ctx context.Context, c supervise.Claim, d su
 
 // PutClaimAndDeliveryTx is PutClaimAndDelivery inside a caller's transaction, for the stop a
 // project's pause makes of a claim that holds a pending delivery (PutClaimTx). The publication of
-// the issue's role sessions the claim's write queues is woken once the caller's transaction
-// commits, as every claim write's is (putClaim).
+// the issue's role sessions and the state event the claim's write queues are woken once the
+// caller's transaction commits, as every claim write's are (putClaim).
 func (s *Store) PutClaimAndDeliveryTx(ctx context.Context, tx pgx.Tx, c supervise.Claim, d supervise.Delivery) error {
 	if err := s.putClaim(ctx, tx, c); err != nil {
 		return err

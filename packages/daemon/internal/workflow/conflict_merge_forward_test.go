@@ -844,6 +844,7 @@ func TestAConflictInImplementingIsToldOnlyWhenNeeded(t *testing.T) {
 // holds it while an earlier ask of the implementer stands (holdStartedWorker). The time is named in RFC
 // 3339 UTC whatever zone the read was dated in.
 func TestAMergeForwardNamesTheReadItRestsOn(t *testing.T) {
+	t.Parallel()
 	east := time.FixedZone("UTC+2", 2*60*60)
 	datedRead := func(rules *record.BaseRules, after time.Duration) intake.PullRequestMergeability {
 		read := conflictingRead(rules)

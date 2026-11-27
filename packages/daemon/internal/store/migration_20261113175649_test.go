@@ -157,6 +157,7 @@ func taskNumbersMoment(minute int) *time.Time {
 // three read marks of the push path are gone, so a reader of this record finds one model and not
 // two.
 func TestMigrationTaskNumbersFillsEachClaimsFirstTask(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, taskNumbersVersion-1)
@@ -454,6 +455,7 @@ func TestMigrationTaskNumbersFillsEachClaimsFirstTask(t *testing.T) {
 // The negative control is the fill without its statement for the handshake, under which the first
 // claim's take stands accepted beside a handshake queued and never confirmed.
 func TestMigrationTaskNumbersConfirmsTheHandshakeOfATakeItFills(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	all, err := migrations.All()
@@ -562,6 +564,7 @@ func atMinute(moment *time.Time, minute int) bool {
 // told and nothing else. The text is stored empty while no take has been accepted, and the
 // records told as none, and two numbers no bigint holds are refused before anything is written.
 func TestTaskNumberSurvivesAStoreRestartWithEveryColumn(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := migratedStore(t)
 	want := tmuxClaim("legion-LEGION-209-implementer")
@@ -739,6 +742,7 @@ func taskNumbersWayBackOfTheGuide(t *testing.T) string {
 // guide, which is where an operator reads it with the daemon stopped. A copy that drifted is a
 // wrong procedure found at a rollback. The header's block is the one the test below runs.
 func TestMigrationTaskNumbersWayBackIsOneTextInTheHeaderAndTheGuide(t *testing.T) {
+	t.Parallel()
 	header := taskNumbersWayBackOfTheHeader(t)
 	taskNumbersWayBack(t, header)
 	guide := taskNumbersWayBackOfTheGuide(t)
@@ -784,6 +788,7 @@ func TestMigrationTaskNumbersWayBackIsOneTextInTheHeaderAndTheGuide(t *testing.T
 // task 1 again, its turn started since a take confirmed it, and the claim that had finished task
 // 4 has finished task 1, in the session it holds.
 func TestMigrationTaskNumbersWayBackLetsTheReleaseBeforeReadAndReArmsTheFill(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := migratedStore(t)
 	taken := tmuxClaim("legion-LEGION-209-implementer")

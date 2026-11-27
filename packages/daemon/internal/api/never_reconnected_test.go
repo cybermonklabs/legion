@@ -212,6 +212,71 @@ func TestACallerBetweenTheTaskTakeAndTheP0StartIsServedTheTakeAndNoP0Key(t *test
 	}
 }
 
+// The task-take entry's rules stand beside the state-seq entry's (dispatch://INFRA-3931), whose
+// band takes the three keys it added to the daemon block and moves no value of an enumerated
+// field, and the task-take entry sorts below it. A caller stating a contract between the two
+// entries, the state-seq entry's less one, is served what the task-take entry added — its
+// `unseenTaskValues`, and `never_reconnected` as it stands in `failure.cause` and `pendingCause` —
+// and none of `daemon.stateSeq`, `daemon.stateId` and `daemon.stateRun`, in the whole state and in
+// the observed view alike. The lines it is written are the bands above it (narrowingsExpected):
+// the state-seq entry's among them, and no row of the task-take entry's. The controls: a caller
+// at the state-seq entry's contract is served the three keys and the take's, and one stating the
+// task-take entry's contract less one is served neither the take's key nor its word, nor the three
+// keys.
+func TestACallerBetweenTheTaskTakeAndTheStateSeqIsServedTheTakeAndNoStateSeq(t *testing.T) {
+	state := narrowingState(t)
+	takeAt, seqAt := TaskTakeContract(), entryNumber(stateSeqContract)
+	if !(takeAt < seqAt) {
+		t.Fatalf("task-take (%d) must sit below state-seq (%d) for this test to prove the step between them", takeAt, seqAt)
+	}
+	if state.Daemon.StateSeq == nil || state.Daemon.StateID == "" || state.Daemon.StateRun == "" {
+		t.Fatalf("the fixture's daemon block %+v carries no stateSeq, stateId or stateRun; this test proves nothing", state.Daemon)
+	}
+	between := seqAt - 1
+	const seqKeys = "daemon.stateSeq, daemon.stateId and daemon.stateRun"
+	seqServed := func(body []byte) bool {
+		_, carried := stateSeqServed(t, body)
+		return carried || stateIDServed(t, body) != "" || stateRunServed(t, body) != ""
+	}
+
+	body, narrowings := stateNarrowedStating(t, state, "192.0.2.1:41000", nil, between)
+	if failure, pending := neverReconnectedCauses(t, body); failure != string(supervise.CauseNeverReconnected) ||
+		pending != string(supervise.CauseNeverReconnected) {
+		t.Errorf("a caller at %d is served failure.cause %q and pendingCause %q, want %q in both", between, failure, pending,
+			supervise.CauseNeverReconnected)
+	}
+	if !servesTopKey(t, body, "unseenTaskValues") {
+		t.Errorf("a caller at %d is served no unseenTaskValues, want the task-take entry's key", between)
+	}
+	if seqServed(body) {
+		t.Errorf("a caller at %d is served %s, want none of the state-seq entry's three keys", between, body)
+	}
+	if observed := observedFor(state, restoreContract(between), stripContract(between)); observed.Daemon.StateSeq != nil ||
+		observed.Daemon.StateID != "" || observed.Daemon.StateRun != "" {
+		t.Errorf("a caller at %d is served the observed daemon block %+v, want none of the state-seq entry's three keys", between, observed.Daemon)
+	}
+	want := narrowingsExpected(state, between)
+	if !slices.Contains(want, seqKeys) {
+		t.Fatalf("a caller at %d expects the lines %v, want the state-seq entry's band among them", between, want)
+	}
+	if slices.Contains(want, "unseenTaskValues") || slices.Contains(want, droppedFailureCause) {
+		t.Fatalf("a caller at %d expects the lines %v, want no row of the task-take entry's", between, want)
+	}
+	wantNarrowings(t, narrowings, between, want)
+
+	at, _ := stateNarrowedStating(t, state, "192.0.2.1:41000", nil, seqAt)
+	if !seqServed(at) || !servesTopKey(t, at, "unseenTaskValues") {
+		t.Errorf("a caller at %d is served %s, want the state-seq entry's three keys and unseenTaskValues", seqAt, at)
+	}
+	below, _ := stateNarrowedStating(t, state, "192.0.2.1:41000", nil, takeAt-1)
+	if failure, _ := neverReconnectedCauses(t, below); failure != string(supervise.CauseNeverRegistered) {
+		t.Errorf("a caller at %d is served failure.cause %q, want %q", takeAt-1, failure, supervise.CauseNeverRegistered)
+	}
+	if servesTopKey(t, below, "unseenTaskValues") || seqServed(below) {
+		t.Errorf("a caller at %d is served %s, want neither unseenTaskValues nor the state-seq entry's three keys", takeAt-1, below)
+	}
+}
+
 // p0KeysServed is which of the P0 start's four keys a state body carries anywhere it is served:
 // `admission.p0Holders`, `admission.p0Bound`, and an issue's `resolvedPriority` or
 // `priorityFrom`, each named once however many issues carry it.

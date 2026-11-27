@@ -272,12 +272,12 @@ listener refuses the same `%` and length at start. The refusal names the field i
 two listeners on one durable and queue group, so the later one is refused, as
 `users[2]: dispatchMachineId gives the same durable name as users[0].machineId` or
 `… as the hub's own listener`. Every `dispatchMachineId` user also binds Dispatch's fixed durables
-`delivery-events` and `delivery-jobs`, so a second one is refused the same way, as
-`users[3]: dispatchMachineId gives the same durable name as users[2].dispatchMachineId`. So a
-machine's credential is rotated in its single entry, never beside it: the consumer declares a new
-secret, empty (see [Making a seed](../README.md#making-a-seed)); `envoy-infra seed generate` writes
-the new seed into it (it refuses a secret that does not exist or already holds a version); the
-entry's `nkey` becomes the key it printed; and the client is pointed at the new secret and
+`delivery-events`, `delivery-jobs` and `legion-state-events`, so a second one is refused the same
+way, as `users[3]: dispatchMachineId gives the same durable name as users[2].dispatchMachineId`.
+So a machine's credential is rotated in its single entry, never beside it: the consumer declares
+a new secret, empty (see [Making a seed](../README.md#making-a-seed)); `envoy-infra seed generate`
+writes the new seed into it (it refuses a secret that does not exist or already holds a version);
+the entry's `nkey` becomes the key it printed; and the client is pointed at the new secret and
 restarted. A change to the hub's users rewrites its user data, which replaces the VM, and from the
 `nkey` change until its own restart the client is refused. A user is refused too for each of the
 authorization's own refusals under [NATS authorization](../README.md#nats-authorization), named as

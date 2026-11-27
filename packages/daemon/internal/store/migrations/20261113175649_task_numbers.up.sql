@@ -202,17 +202,17 @@
 -- statements add them and `add column` on a column that already stands fails; the three marks the
 -- block brought back are dropped again by this file's last statements. The missing row does not
 -- move the number the state read reports while the older image runs (Store.SchemaVersionTx, the
--- highest row recorded): every database this release migrated records
--- 20261126110259_merge_holds_changed, that older daemon's own newest migration, above this version,
--- so the number reads 20261126110259 before the delete and after it, which is the truth about the
--- image that is running. A rollback to a release before #4065 reads 20261126110259 there too:
--- neither that migration nor #4194's 20261120210000 and 20261126001514 nor #4065's 20261115060739
--- and 20261115121838 nor #5487's 20261125021636
+-- highest row recorded): every database this release migrated records 20261126163320_state_events,
+-- that older daemon's own newest migration, above this version, so the number reads 20261126163320
+-- before the delete and after it, which is the truth about the image that is running. A rollback to
+-- a release before #4432, or to one before #4065, reads 20261126163320 there too: neither that
+-- migration nor #4194's 20261120210000 and 20261126001514 nor #4065's 20261126110259,
+-- 20261115060739 and 20261115121838 nor #5487's 20261125021636
 -- nor #5488's 20261125181828 nor #4592's 20261114064234, 20261114232555 and 20261122154643 nor
 -- #5505's 20261125223008 nor #5575's 20261125212800 nor #5398's 20261124130001 nor #4392's
 -- 20261124182040 nor #5372's 20261124143026 nor #5349's 20261124073512 nor #5365's 20261124060500
--- carries a way back, the steps of #4065's, #4592's and #5312's releases and #4194's statement
--- delete no version row, and the way
+-- carries a way back, the steps of #4432's, #4065's, #4592's and #5312's releases and #4194's
+-- statement delete no version row, and the way
 -- back of #5566's 20261125163328 deletes none either, so their rows stand, and the ways back in the
 -- headers of 20261125023100_pod_replacements, which a rollback to a release before #5285 runs, of
 -- 20261125023041_idle_release_declines_told_pod, which a rollback past #4869's 20261123050533 runs
@@ -233,7 +233,7 @@
 --
 -- The re-arm asks nothing of the other rows. What it does need is that no migration recorded
 -- after this one builds on the fourteen columns it drops whose way back has not already run, and
--- at this release forty-nine of the fifty recorded after it touch none of them:
+-- at this release fifty of the fifty-one recorded after it touch none of them:
 -- 20261113181500_architect_stalled_notices adds the table
 -- architect_stalled_notices, 20261113182000_architect_entry_upgrade writes the root architects'
 -- phases rows, their claims' given_entry and served_entry and that table's marks,
@@ -326,18 +326,21 @@
 -- (cybermonklabs/legion#5505) adds claims.held_for at its default, the empty string, writes
 -- provider_error in place of each cyber_policy the two cause columns of claims hold, and rewrites
 -- no kind list, 20261126001514_pod_release_give_ups (cybermonklabs/legion#4194) adds the table
--- pod_release_give_ups, empty, and rewrites no kind list, and 20261126110259_merge_holds_changed
--- (cybermonklabs/legion#4065) rewrites
--- outbox_kind_check an eighth time with merge_holds_changed.
+-- pod_release_give_ups, empty, and rewrites no kind list, 20261126110259_merge_holds_changed
+-- (cybermonklabs/legion#4065) rewrites outbox_kind_check an eighth time with merge_holds_changed,
+-- and 20261126163320_state_events (cybermonklabs/legion#4432) rewrites outbox_kind_check a ninth
+-- time with state_change, state_admission and state_boot, and adds the tables state_publication and
+-- state_admission_blocks, the columns outbox.state_seq, outbox.state_at and outbox.state_tx and the
+-- commit trigger that fills them.
 -- 20261119203047_design_news reads no column this block drops or puts back: its functions read
 -- pending_task_deliveries.confirmed_at, which both releases keep, and its four columns stand
 -- through the block, so this block reverses nothing of it, and the two hold in either order.
 -- The thirtieth, 20261122160000_design_news_credit_at_turn_start, is this release's own: it
 -- writes #3995's function design_news_told_in again, reading pending_task_deliveries.turn_started,
--- which this block drops, so its way back, the last paragraph of its header, runs before this
--- block and writes #3995's text of the function back; every rollback of this release starts with
--- it, after the way back of 20261123224717, the step of 20261123165139 and the way back of
--- 20261123050533 where the rollback crosses those too.
+-- which this block drops, so its way back, the last paragraph of its header, runs right before
+-- this block and writes #3995's text of the function back, after every way back and step of a
+-- later release that the rollback crosses, newest first, as the rollback to contract 87 below
+-- lists them.
 -- 20261123050533_idle_release_keeps_no_workspace, above both, carries a way back of its own, the
 -- last paragraph of its header (docs/kubernetes.md, "Rolling back the release that keeps no saved
 -- workspace"), which makes workspace_bundles again, empty, drops
@@ -399,24 +402,38 @@
 -- them runs that release's one statement instead, which changes no schema version and strips that
 -- key from each queued start, after the daemon stops and before the earlier image starts
 -- (docs/kubernetes.md, "Rolling back idle release"); neither reads what 20261122160000's way back
--- or this block drops or writes back. The release before this one carries the other forty-nine: it
--- is main's build that carries contract entries 20261125161152 (#4592's gate-basis), 20261125161436
--- (#4580's role-identities), 20261125170509 (#5482's replaces), 20261125170906 (#5332's
--- drop-unserved-state-keys), 20261125174608 (#5505's cyber-policy), 20261125180842 (#5285's
--- launcher-workspace-read), 20261125181047 (#5488's p-0-bound), 20261125181543 (#5463's
--- look-names-its-check), 20261125182642 (#4065's agent-actions), 20261125211005 (#5566's
--- wake-due-earliest-moment) and 20261126071719 (#5646's workspace-init-direct-clone), after
--- contract 275, the one whose
+-- or this block drops or writes back. 20261126163320_state_events, #4432's, above the five too,
+-- carries no way back: its kind list, the last on any database, keeps every kind an earlier release
+-- writes, and an earlier daemon boots on the migrated schema and writes no state kind, the only
+-- kinds its commit trigger runs for, so a rollback leaves its tables, its three columns of outbox
+-- and that trigger in place and takes the steps of #4432's release (docs/kubernetes.md, "Rolling
+-- out and rolling back the release that publishes the daemon's state events") instead, which roll
+-- Dispatch back first, to the release before that one, and then the daemon; it reads nothing
+-- 20261122160000's way back or this block drops or writes back. The release before this one carries
+-- the other fifty: it is main's build that carries contract entries 20261125161152 (#4592's
+-- gate-basis), 20261125161436 (#4580's role-identities), 20261125170509 (#5482's replaces),
+-- 20261125170906 (#5332's drop-unserved-state-keys), 20261125174131 (#4432's state-seq),
+-- 20261125174608 (#5505's cyber-policy), 20261125180842 (#5285's launcher-workspace-read),
+-- 20261125181047 (#5488's p-0-bound), 20261125181543 (#5463's look-names-its-check), 20261125182642
+-- (#4065's agent-actions), 20261125211005 (#5566's wake-due-earliest-moment) and 20261126071719
+-- (#5646's workspace-init-direct-clone), after contract 275, the one whose
 -- internal/api/version.go carries the entry for dispatch://INFRA-4425,
 -- cybermonklabs/legion#4392's daemon that writes to Dispatch as itself under dispatch_token_broker,
--- as main releases it after #4194, its newest migration #4065's 20261126110259_merge_holds_changed,
--- so the rollback to it runs 20261122160000's way back and this block and leaves the forty-nine
--- standing.
+-- as main releases it after #4432, its newest migration #4432's 20261126163320_state_events, so the
+-- rollback to it runs 20261122160000's way back and this block and leaves the fifty standing.
 -- A rollback to
 -- contract 275, or to any release before
 -- it, also crosses contract entry 20261125161436, which takes no step of its own beyond
 -- re-pinning the earlier release, except that the operator of a tmux daemon deletes
--- <state_dir>/bin/jj (docs/kubernetes.md). A rollback to a release before #4194 also crosses
+-- <state_dir>/bin/jj (docs/kubernetes.md). A rollback to a release before #4432 also crosses
+-- contract entry 20261125174131 and 20261126163320_state_events, which carries no way back, since
+-- an earlier daemon boots on the migrated schema and the kind check it writes keeps every kind an
+-- earlier release writes, and so takes that release's steps (docs/kubernetes.md, "Rolling out and
+-- rolling back the release that publishes the daemon's state events"): they roll Dispatch back
+-- first, to the release before that one, and then the daemon; a reader of that entry's contract
+-- that an earlier daemon serves takes the three keys the entry adds, daemon.stateSeq, stateId and
+-- stateRun, as absent (internal/api/contract_20261125174131_state-seq.go). A rollback to a release
+-- before #4194 also crosses
 -- 20261120210000_issue_release_committed and 20261126001514_pod_release_give_ups, which carry no
 -- way back, and so runs that release's one statement, which changes no schema version, after the
 -- daemon stops and before the earlier image starts: it strips the wakeDetail key the earlier
@@ -559,7 +576,11 @@
 -- so every database records them before it, and neither touches the fourteen columns. A rollback
 -- past it — to contract 87, across 20261111225552_phase_entry — crosses every release between the
 -- two and runs their ways back newest first, with the daemon stopped, as docs/kubernetes.md lists
--- them: #4194's statement, which strips the wakeDetail key the earlier release refuses from each
+-- them: #4432's 20261126163320_state_events, which carries no way back, with contract entry
+-- 20261125174131 and that release's steps, which roll Dispatch back first, to the release before
+-- that one, and then the daemon (docs/kubernetes.md, "Rolling out and rolling back the release that
+-- publishes the daemon's state events"), #4194's statement, which strips the wakeDetail key the
+-- earlier release refuses from each
 -- queued start, after the daemon stops and before the earlier image starts (docs/kubernetes.md,
 -- "Rolling back idle release"), #5312's step, which deletes each queued merge-forward row of the
 -- project rolled back that is a withdrawn step or a hold or landed row to the planner, and takes
@@ -657,10 +678,10 @@
 -- pull_requests.statuses, and which clears for the roll-forward a list no earlier release keeps
 -- current; the reviewed commit's block, which takes the key roundNamed off each start row
 -- contract 87 decodes strictly; the role-holders publication's outbox delete, which leaves no row
--- of its kind behind; contract 146's block, which reverses the four of those forty-nine that are
--- the root architect's entry (all but the eight kind lists, #4592's
--- 20261122154643_outbox_kinds_with_the_basis_seeds and #4065's 20261126110259_merge_holds_changed
--- among them, the five other migrations of contract
+-- of its kind behind; contract 146's block, which reverses the four of those fifty that are the
+-- root architect's entry (all but the nine kind lists, #4592's
+-- 20261122154643_outbox_kinds_with_the_basis_seeds, #4065's 20261126110259_merge_holds_changed and
+-- #4432's 20261126163320_state_events among them, the five other migrations of contract
 -- 152, contract 160's 20261116144907_claim_sessions, contract 178's 20261115194357_project_pause,
 -- contract 188's 20261120055717_dispatch_issue_value_sequences, contract 189's
 -- 20261120042902_claim_agent_resume_generation, contract 205's
@@ -712,14 +733,17 @@
 -- 20261125181828_p0_bound, whose table and three columns of issues no earlier release reads, nor
 -- #4592's 20261114064234_design_gate_basis, whose columns of design_gates and issues.view_of no
 -- earlier release names, nor #4194's 20261120210000_issue_release_committed, whose
--- issue_releases.committed no earlier release names, nor contract 160's
+-- issue_releases.committed no earlier release names, nor #4432's 20261126163320_state_events, whose
+-- kind list keeps every kind an earlier release writes and whose three columns of outbox no earlier
+-- release names, nor contract 160's
 -- 20261111091500_claim_pod_end, whose claims.pod_end an earlier release leaves
 -- unread and unwritten; the tables pod_volume_notices its 20261111090000_volume_trim_notices adds,
 -- claim_sessions its 20261116144907_claim_sessions adds, the three contract 228's
 -- 20261120144241_intake_failures adds, issue_pod_disks, which #4392's
 -- 20261124182040_issue_pod_disks adds, project_p0_bound_changes, which #5488's
--- 20261125181828_p0_bound adds, and pod_release_give_ups, which #4194's
--- 20261126001514_pod_release_give_ups adds, stand too, read by no earlier release.
+-- 20261125181828_p0_bound adds, pod_release_give_ups, which #4194's
+-- 20261126001514_pod_release_give_ups adds, and state_publication and state_admission_blocks, which
+-- #4432's 20261126163320_state_events adds, stand too, read by no earlier release.
 -- The release before the phase entry reads the three
 -- marks as the release before this one does, and neither
 -- contract 146's block, the step records', the commit statuses', the reviewed commit's nor the

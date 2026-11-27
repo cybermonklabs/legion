@@ -61,6 +61,7 @@ func stopAgainst(t *testing.T, port, wait string, extra ...string) (int, string,
 // naming the task and the bound, and waited out: the command polls the claims until the claim is
 // retired and prints it so, exiting 0.
 func TestClaimsStopSaysAStopHeldForTheReportIsHeldAndWaitsForIt(t *testing.T) {
+	t.Parallel()
 	port, lists := heldStopDaemon(t, heldIdle, heldIdle, stopRetired)
 
 	code, out, errb := stopAgainst(t, port, "10s")
@@ -90,6 +91,7 @@ func TestClaimsStopSaysAStopHeldForTheReportIsHeldAndWaitsForIt(t *testing.T) {
 // Under --json the claim a held stop ended with prints as one JSON line, as every other --json
 // answer does; the word of the hold goes to stderr.
 func TestClaimsStopJSONPrintsTheStoppedClaimAsOneLine(t *testing.T) {
+	t.Parallel()
 	port, _ := heldStopDaemon(t, heldIdle, stopRetired)
 
 	code, out, errb := stopAgainst(t, port, "10s", "--json")
@@ -110,6 +112,7 @@ func TestClaimsStopJSONPrintsTheStoppedClaimAsOneLine(t *testing.T) {
 // was suspended, or the process the stop waited on was let go with the claim not stopped, rather
 // than waiting out --wait.
 func TestClaimsStopStopsAtEveryOtherEndOfAHeldStop(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		seen stopSeen
 		want string
@@ -140,6 +143,7 @@ func TestClaimsStopStopsAtEveryOtherEndOfAHeldStop(t *testing.T) {
 // A stop still held when --wait runs out fails the command, naming the claim's state and why a held
 // stop can outlast it.
 func TestClaimsStopFailsWhenTheHeldStopOutlastsTheWait(t *testing.T) {
+	// Not parallel: its call has 1 s to be refused as still idle, time the load of tests running beside it could use up, which ends the call as unanswered instead.
 	port, _ := heldStopDaemon(t, heldIdle)
 
 	code, out, errb := stopAgainst(t, port, "1s")

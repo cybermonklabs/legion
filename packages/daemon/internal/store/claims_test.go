@@ -1770,6 +1770,7 @@ func TestAStepOfAnUnknownClaimIsNotRecorded(t *testing.T) {
 // it, and the next mark is a new one. A retired claim takes no mark, and a claim loses the one it
 // holds as it retires.
 func TestAMessageMarkOutlivesMachineWritesButStandsOnlyUntilTheNextTurn(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
 	st := migratedStore(t)
 	c := tmuxClaim("legion-LEGION-209-implementer")

@@ -769,7 +769,7 @@ Everything the run takes is its own, so two runs on one box
 
 - `XDG_STATE_HOME=<work>/xdg` — so the legions registry the run writes is its own, never the box's `~/.local/state/legion/legions.json`.
 
-- a per-run project key (`E2E<pid><epoch>`), and `E2E<pid><epoch>R` for the daemon behind the proxy
+- a per-run project key (`E2E` and the sum of the pid and the epoch, modulo 1,000,000), and that key with `R` after it for the daemon behind the proxy, each a Dispatch project key of at most ten characters, which is the one shape the loader takes
   — boots are counted per project, so a fresh key is what makes `boots == 1` true on a store that has served other runs, and the proxied daemon's boot is not counted in it.
 
 - a daemon port the kernel chose, held for the whole run by a keeper ([`lib/rig.sh`](#librigsh)'s `keep_port`, [`lib/held-port.py`](#libheld-portpy)):
@@ -911,7 +911,7 @@ What it stands up, all of it the run's own:
   The daemon resolves the secret at boot and writes it as a daemon-held 0600 file; every pane's shim exports it to OMP alone.
   The run never reads the value; it checks the length in OMP's environment.
 
-- **The daemon**: `legion.yaml` with a fresh project key per run (`S2E<pid><epoch>` — a retired claim is never spawned again, so a reused key would fail on a store that served an earlier run), a port the kernel chose, held for the whole run by a [`lib/held-port.py`](#libheld-portpy) keeper, which each start serves on (`LEGION_LISTEN_FD`;
+- **The daemon**: `legion.yaml` with a fresh project key per run (`S2E` and the sum of the pid and the epoch, modulo 10,000,000, a Dispatch project key of at most ten characters — a retired claim is never spawned again, so a reused key would fail on a store that served an earlier run), a port the kernel chose, held for the whole run by a [`lib/held-port.py`](#libheld-portpy) keeper, which each start serves on (`LEGION_LISTEN_FD`;
   the restart keeps it), as the second daemon's is by a keeper of its own, `probe_interval_seconds: 5`, and the operator token file `legion claims` presents.
   `XDG_STATE_HOME` and `TMUX_TMPDIR` point into the work directory, so the legions registry and the private tmux servers are the run's.
 
@@ -937,7 +937,7 @@ The checks, in order, each printing what it observed (`== <check>` … `ok <chec
 | `suspend-keeps-the-session` | `legion claims suspend`: `suspended`, no locator, the pane gone, the session and its file kept |
 | `resume-on-demand` | `legion claims resume`: `ready` at the next generation in a new pane, same session |
 | `stale-generation-hello-refused` | writes a hello carrying generation 1's boot token to `<state_dir>/worker-stream.sock`: the daemon closes it with nothing written and logs `rejected hello (stale worker generation)` |
-| `unregistered-agent-retired-at-the-deadline` | a second daemon whose `LEGION_OMP_PATH` stub answers the plugin gate and the boot's `config get retry.modelFallback --json`, and otherwise sleeps, with a 10 s registration deadline (5 s × 2): the claim's shim connects and its process lives, the agent never registers, and at the deadline the process is retired and one launch failure counted |
+| `unregistered-agent-retired-at-the-deadline` | a second daemon, with a project key of its own built as the first's is (`S2D` in place of `S2E`), whose `LEGION_OMP_PATH` stub answers the plugin gate and the boot's `config get retry.modelFallback --json`, and otherwise sleeps, with a 10 s registration deadline (5 s × 2): the claim's shim connects and its process lives, the agent never registers, and at the deadline the process is retired and one launch failure counted |
 | `restart-readopts-the-live-panes` | SIGTERM, then start again: `boots` +1, both claims keep their generation, incarnation and pane, no pane opens or closes, the restarted daemon rejects no hello, and a task delivered after the restart runs once, a value the worker takes over the listener's relay or at its next read of the claim's value |
 | `omp-child-environment` | the boot log names the resolved pinned OMP binary for both probes and panes; the pane's process is `/bin/sh -c`; the one process below it that runs that exact executable is the pane's OMP ([`launched`](#libprocess-treesh)), and no process on the line up from it to the pane's shell runs the OMP wrapper that remains first on the ordinary daemon PATH; the pane's shell and that OMP carry all four XDG base directories under `<state_dir>/home` and no `DBUS_SESSION_BUS_ADDRESS` (LEGION-206 P1, with the gateway route in place); OMP carries `GEMINI_API_KEY` (length only) that its shim does not, and no `ANTHROPIC_API_KEY`, `GEMINI_API_KEY_TESTS`, `SOPS_AGE_KEY_FILE` or `SECRETSD_CONFIG` |
 | `stray-pane-reaped-after-the-grace` | opens a window marked as the daemon's (`@legion_owner`) holding no recorded pane, and an unmarked one beside it: the periodic orphan sweep (every 60 s, 120 s grace) reaps the marked one no sooner than 120 s after it opened, and keeps the unmarked window and both claims' panes |
@@ -3210,7 +3210,7 @@ Each item below names a checkpoint, then what it holds; an item that names no ch
   every Sandbox pod whose one `roles` container the pod watch saw ready is judged from the spec the watch recorded for it, deleted pods included:
   gVisor, the operator's ServiceAccount and one projected token, the run's route ConfigMap mounted as every role's profile `models.yml`, no selector or toleration of the retired Legion pool (`legion.dev/pool`), Pod Security restricted, its launcher's `--connect` naming `advertise_host` at the worker-stream port the daemon served when the pod was created (each daemon's from its start, in `worker-streams.jsonl`;
   a move waits out the second the stopped daemon could have created a pod in, since a pod's `creationTimestamp` counts whole seconds;
-  the run assumes, without checking, that the devbox's clock, which dates each start, and the API server's agree within that second, and that by then the Agent Sandbox controller, which creates each pod after the daemon writes its Sandbox, has created the pod of every Sandbox the stopped daemon wrote), six role-private Secrets, split provisioning, and the run's reservations:
+  the run assumes, without checking, that the devbox's clock, which dates each start, and the API server's agree within that second, and that by then the Agent Sandbox controller, which creates each pod after the daemon writes its Sandbox, has created the pod of every Sandbox the stopped daemon wrote), six role-private Secrets, provisioning in `workspace-init` alone, and the run's reservations:
   every container, the init containers included, carries cpu and memory as both request and limit and ephemeral-storage as a request no greater than its limit (the node-disk bound between pods of unrelated trees), all four the issue pod's one reservation:
   the `boot` row's `issue: { cpu: 2950m, memory: 16Gi }` override, the ephemeral-storage limit and request the daemon's defaults;
   each pod is `Guaranteed`, and none carries an affinity (`lib/stage4b-pods.jq` `reservation_problems`).
@@ -4212,7 +4212,7 @@ node of a hosted runner.
 |`launch`|the driver writes the `legion.yaml` and launches two issue roots on `tmux/tmux` through the runtime's `Spawn` under `runtimeClassName: gvisor`; the first creates the repository cache and the second starts once it is Ready|
 |`provision`|each pod has one `workspace-init=0` init-container status|
 |`no-feed`|each pod lacks `/legion/feed`, and no container mounts that path|
-|`refs`|outside `refs/jj/`, the first clone has `refs/heads/master` and `refs/remotes/origin/master` alone, with no tag|
+|`refs`|outside `refs/jj/`, each pod's clone has its issue's `refs/heads/legion/CLONE-<n>`, `refs/heads/master`, `refs/remotes/origin/HEAD` and `refs/remotes/origin/master` alone, so no tag|
 |`clone-config`|the clone has narrow default-and-issue refspecs, `--no-tags`, `gc.auto=0`, `maintenance.auto=false` and jj's `remotes.origin.fetch-tags=~*`|
 |`gvisor-kernel`|the `roles` container's kernel is gVisor's|
 |`fsck`|`git fsck --connectivity-only --no-dangling` of the clone passes|

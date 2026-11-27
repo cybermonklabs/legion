@@ -87,6 +87,7 @@ func askedInTesting(t *testing.T) *pgxpool.Pool {
 // The negative control is no end told at the landing, and no reader at all: the test does not
 // compile at 6ed3e46f, and with putPullRequest's end removed the told list stays empty.
 func TestTakeHoldOfAnOwedMergeForwardEndsAtTheLanding(t *testing.T) {
+	t.Parallel()
 	pool := askedInTesting(t)
 	ended := []string{}
 
@@ -110,6 +111,7 @@ func TestTakeHoldOfAnOwedMergeForwardEndsAtTheLanding(t *testing.T) {
 //
 // The negative control is as the landing's.
 func TestTakeHoldOfAnOwedMergeForwardEndsWhenAMoveBackIntoImplementingClearsIt(t *testing.T) {
+	t.Parallel()
 	pool := askedInTesting(t)
 	ended := []string{}
 
@@ -135,6 +137,7 @@ func TestTakeHoldOfAnOwedMergeForwardEndsWhenAMoveBackIntoImplementingClearsIt(t
 //
 // The negative control is as the landing's.
 func TestTakeHoldOfAnOwedMergeForwardEndsWhenAWriteWithdrawsIt(t *testing.T) {
+	t.Parallel()
 	pool := askedInTesting(t)
 	ended := []string{}
 	engine := endingEngineAt(2*time.Minute, &ended)
@@ -166,6 +169,7 @@ func TestTakeHoldOfAnOwedMergeForwardEndsWhenAWriteWithdrawsIt(t *testing.T) {
 //
 // The negative control is no end told at the move: the told list stays empty.
 func TestTakeHoldOfTheAskOfImplementingEndsWhenAMoveLeavesItOwedToNobody(t *testing.T) {
+	t.Parallel()
 	pool := plannedConflictIssue(t, phase.Implementing, settledGreen("lint"), "implementer")
 	confirmsConflict(t, pool, &record.BaseRules{Unread: "HTTP 502"})
 	wantOwed(t, pool, "in implementing,", claim.RoleImplementer)
@@ -192,6 +196,7 @@ func TestTakeHoldOfTheAskOfImplementingEndsWhenAMoveLeavesItOwedToNobody(t *test
 // the issue does not hold, a pull request it does not hold, and an issue the record does not hold
 // owe nothing.
 func TestTakeHoldReadsTheRecordsAskAsOwedOnlyWhereTheMergeIsOwed(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		at   phase.Phase
@@ -292,6 +297,7 @@ func asksOf(t *testing.T, pool *pgxpool.Pool, step record.MergeForwardStep) []re
 // and the record keeps no launch. With the launch comparison cut from askAgain, the second ready of
 // launch 2 queues a second ask.
 func TestTakeHoldOfAnAskOwedToARelaunchedRoleIsKeptByTheAskSentAgainAtItsReady(t *testing.T) {
+	t.Parallel()
 	pool := askedInTesting(t)
 	askDeliveredTo(t, pool, 1)
 
@@ -331,6 +337,7 @@ func TestTakeHoldOfAnAskOwedToARelaunchedRoleIsKeptByTheAskSentAgainAtItsReady(t
 //
 // The negative control is the ready sending the ask whatever is queued: the outbox holds two asks.
 func TestTakeHoldOfAnAskIsKeptWithoutASecondAskWhileItsRowIsQueued(t *testing.T) {
+	t.Parallel()
 	pool := askedInTesting(t)
 
 	applyRefusingNothing(t, pool, readsAfter(3*time.Minute), implementerReadyAt(2))
@@ -347,6 +354,7 @@ func TestTakeHoldOfAnAskIsKeptWithoutASecondAskWhileItsRowIsQueued(t *testing.T)
 // landed ask and a withdrawn one are sent nothing, a ready of another role is sent nothing, and the
 // control's ask is owed to the implementer and is sent again.
 func TestTakeHoldOfAnAskIsKeptByTheAskSentAgainOnlyWhileTheMergeIsOwed(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name  string
 		seed  func(t *testing.T) *pgxpool.Pool
@@ -411,6 +419,7 @@ func endsAskRow(t *testing.T, pool *pgxpool.Pool, ask record.MergeForwardMessage
 // retired), or the ask is owed to nobody, nothing is sent. The record's ask names only a launch a
 // row was delivered to.
 func TestTakeHoldOfAnAskIsKeptByTheEndOfItsRowTellingALaterLaunch(t *testing.T) {
+	t.Parallel()
 	act := implementerAsked(phase.Testing, record.ConflictCheckNotGreen)
 	for _, tc := range []struct {
 		name       string
@@ -506,6 +515,7 @@ func readUnknown(ask record.MergeForwardMessage) record.MergeForwardMessage {
 // no end of the hold is told; the architect is sent pr-closed-unmerged, whose decision ends the
 // wait.
 func TestTakeHoldOfAnOwedMergeForwardStandsThroughASameHeadClose(t *testing.T) {
+	t.Parallel()
 	pool := askedInTesting(t)
 	ended := []string{}
 
@@ -531,6 +541,7 @@ func TestTakeHoldOfAnOwedMergeForwardStandsThroughASameHeadClose(t *testing.T) {
 // The negative control is the reopen building its row without the ask (pullRequestOpened at
 // 88ed2ae7): the record holds no merge forward after it, and the reopen tells the end of the hold.
 func TestTakeHoldOfAnOwedMergeForwardIsKeptByASameHeadReopen(t *testing.T) {
+	t.Parallel()
 	pool := askedInTesting(t)
 	askDeliveredTo(t, pool, 1)
 	pr := recordedPR(t, pool, "LEGION-208")
@@ -569,6 +580,7 @@ func TestTakeHoldOfAnOwedMergeForwardIsKeptByASameHeadReopen(t *testing.T) {
 //
 // The negative control is the reopen queuing nothing (88ed2ae7): no ask follows the reopen.
 func TestTakeHoldOfAnAskTheCloseKeptFromItsRoleIsSentOnceAtTheReopen(t *testing.T) {
+	t.Parallel()
 	act := implementerAsked(phase.Testing, record.ConflictCheckNotGreen)
 	for _, tc := range []struct {
 		name string
@@ -641,6 +653,7 @@ func TestTakeHoldOfAnAskTheCloseKeptFromItsRoleIsSentOnceAtTheReopen(t *testing.
 // The negative control is a reopen that queues the record's ask whatever is owed: an ask follows
 // the reopen.
 func TestTakeHoldOfTheAskOfImplementingReopenedInItsRetroQueuesNothing(t *testing.T) {
+	t.Parallel()
 	pool := plannedConflictIssue(t, phase.Implementing, settledGreen("lint"), "implementer")
 	confirmsConflict(t, pool, &record.BaseRules{Unread: "HTTP 502"})
 	applyRefusingNothing(t, pool, readsAfter(2*time.Minute), intake.HandoffComplete{Generation: 1, Issue: "LEGION-208",
@@ -679,6 +692,7 @@ func TestTakeHoldOfTheAskOfImplementingReopenedInItsRetroQueuesNothing(t *testin
 // before cybermonklabs/legion#5312's fold): after the refused re-send the record names launch 2,
 // and the reopen's row skips the launch that was never told.
 func TestTakeHoldOfAReSendAtANewLaunchIsToldOnceAcrossALaterClose(t *testing.T) {
+	t.Parallel()
 	t.Run("the re-send delivered while open, then a later close and reopen", func(t *testing.T) {
 		pool := askedInTesting(t)
 		askDeliveredTo(t, pool, 1)
@@ -741,6 +755,7 @@ func TestTakeHoldOfAReSendAtANewLaunchIsToldOnceAcrossALaterClose(t *testing.T) 
 // since are each left as they are (MergeForwardAskEnded's recordAskEnd). So the record names only a
 // launch a row reached, and a close that refused a row leaves the launch it was sent at to be told.
 func TestTakeHoldOfAnAskRowsEndRecordsItsLaunchOnlyWhereItWasDeliveredToTheAskItsOwn(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		ask  record.MergeForwardMessage
@@ -788,6 +803,7 @@ func TestTakeHoldOfAnAskRowsEndRecordsItsLaunchOnlyWhereItWasDeliveredToTheAskIt
 //
 // The negative control is the reopen at 88ed2ae7, which drops the ask with none of them.
 func TestTakeHoldOfAnOwedMergeForwardEndsAtAReopenAtAHeadPushedWhileClosed(t *testing.T) {
+	t.Parallel()
 	pool := seedConflictIssue(t, phase.Merging, "retro", settledGreen("lint"))
 	confirmsConflict(t, pool, &record.BaseRules{Required: []string{"ci"}})
 	wantOwed(t, pool, "after the merger's ask,", claim.RoleMerger)

@@ -75,6 +75,7 @@ func taskCost(t *testing.T, stdin string, args ...string) (int, string, string) 
 // exit status is 0, or 1 for a reading the reader says does not judge every verdict (a claim no
 // line names).
 func TestTaskCostPrintsTheDaemonsOwnReading(t *testing.T) {
+	// Not parallel: it sets the package variable taskCostStdin (taskCost).
 	for _, args := range [][]string{
 		{"--from", "2026-11-14T09:00:00Z", "--to", "2026-11-14T10:00:00Z"},
 		{"--from", "2026-11-14T09:00:00Z", "--to", "2026-11-14T10:00:00Z", "--claim", "legion-infra-infra-2811-tester"},
@@ -119,6 +120,7 @@ func TestTaskCostPrintsTheDaemonsOwnReading(t *testing.T) {
 // and exit 0: the three lines, each verdict a pass, and the same lines with the charge, whose first
 // verdict fails and the other two pass, since a fail does not make a judged window exit 1.
 func TestTaskCostExitsOneWhenTheWindowHoldsNoDaemonLine(t *testing.T) {
+	// Not parallel: it sets the package variable taskCostStdin (taskCost).
 	const noLine = "daemon lines in the window: 0\n"
 	const charged = "verdict: no charge of a worker whose turn began within the second bound after its take: fail\n" +
 		"  legion-infra-infra-2811-tester task 1: taken 2026-11-14T09:00:06.000Z, a turn started 2026-11-14T09:00:40.000Z, charged 2026-11-14T09:01:00.000Z (wait turn-start, bound 25m0s)\n"
@@ -180,6 +182,7 @@ func TestTaskCostExitsOneWhenTheWindowHoldsNoDaemonLine(t *testing.T) {
 // command's help, and no reading is printed; a help flag prints the usage on stdout and exits 0
 // without reading the log.
 func TestTaskCostRefusesArgumentsItCannotRead(t *testing.T) {
+	// Not parallel: it sets the package variable taskCostStdin (taskCost).
 	for _, tc := range []struct {
 		args []string
 		want string
@@ -215,6 +218,7 @@ func TestTaskCostRefusesArgumentsItCannotRead(t *testing.T) {
 // own default: the bound a daemon runs with whose legion.yaml names no
 // worker_take_timeout_seconds, as the shipped example names none.
 func TestTaskCostTakeTimeoutDefaultsToTheSetting(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (stageShippedExample).
 	defaults, err := configpkg.LoadForValidation(stageShippedExample(t, func(example string) string { return example }), nil)
 	if err != nil {
 		t.Fatal(err)
@@ -231,6 +235,7 @@ func TestTaskCostTakeTimeoutDefaultsToTheSetting(t *testing.T) {
 // is the setting's default when not given; nothing else is taken, and a help flag is the command's
 // usage.
 func TestParseTaskCostArgsReadsTheLogWindow(t *testing.T) {
+	t.Parallel()
 	from, to := time.Date(2026, 11, 14, 9, 0, 0, 0, time.UTC), time.Date(2026, 11, 14, 9, 30, 0, 0, time.UTC)
 	for _, tc := range []struct {
 		args []string

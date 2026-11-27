@@ -50,6 +50,7 @@ func startTold(ctx context.Context, tx pgx.Tx, e *Engine, issue record.Issue, ro
 // (internal/daemon) are set where they are built, and tested there. An update round queues no
 // task: its ask is the sweep's Envoy message.
 func TestEveryWorkflowTaskNamesTheOriginItsValueLogCarries(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		origin string

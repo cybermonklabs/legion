@@ -14,6 +14,7 @@ import (
 // worker, since it has no task bucket to hand one its task through. A file that names NATS prints
 // no such line. The check exits 0 either way: the line is a report, and nothing is refused.
 func TestCheckConfigSaysNoNATSLaunchesNoWorker(t *testing.T) {
+	// Not parallel: its rows set environment variables of the whole process (legionState, projectsConfig).
 	for _, row := range []struct {
 		name     string
 		projects string
@@ -54,6 +55,7 @@ const paneSeedLine = "nats: the daemon connects as the pane seed's user (NATS_NK
 // of CheckStart's paneSeed): the first two rows then read Config OK straight into the
 // production-check line.
 func TestCheckConfigSaysADaemonOnThePaneSeedIsRefusedItsBoot(t *testing.T) {
+	// Not parallel: its rows set environment variables of the whole process (legionState, projectsConfig and the two seeds).
 	paneSeed, paneUser := testnkeys.User(t)
 	daemonSeed, daemonUser := testnkeys.User(t)
 	const withNATS, withoutNATS = "nats_urls: [nats://127.0.0.1:4222]\nprojects:\n  DEMO: {}\n", "projects:\n  DEMO: {}\n"

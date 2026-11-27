@@ -302,6 +302,7 @@ func TestShippedLegionYAMLExampleRefusesAWorkerBackgroundAtTheSilenceBound(t *te
 // the same two bounds, so a default changed in the loader and not in the example fails here. The
 // lines stay commented in the file itself, as the silence key's do.
 func TestShippedLegionYAMLExampleCheckConfigReadsTheTwoWaitBoundsItStates(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (checkShippedExample).
 	stated, err := configpkg.LoadForValidation(checkShippedExample(t, func(example string) string {
 		return uncommentExample(t, example,
 			"# worker_take_timeout_seconds: 300",

@@ -234,6 +234,7 @@ func queueTask(t *testing.T, pool *pgxpool.Pool, token claim.Token, number uint6
 // The negative control is this test on the merge base: the ready of every relaunch queues the
 // testing phase's resume task.
 func TestReadyWorkerTaskWritesNothingForAFinishedClaim(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		// relaunch seeds the record the relaunch leaves and answers the launch its ready is of.
@@ -329,6 +330,7 @@ func cancelTheRelease(t *testing.T, pool *pgxpool.Pool, role claim.Role) {
 // operator's fresh-session retry, a relaunch that began one of its own — is given its phase's
 // resume task at its ready: a new session has no reminder state to wake it.
 func TestReadyWorkerTaskGivesAFreshSessionItsResumeTask(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	rec := finishedTester()
 	rec.session = "ses-fresh"
@@ -343,6 +345,7 @@ func TestReadyWorkerTaskGivesAFreshSessionItsResumeTask(t *testing.T) {
 // and replaced by one its relaunch began, is given its phase's resume task at its ready: the
 // replacement has read nothing of the task the abandoned session finished.
 func TestReadyWorkerTaskGivesAnAbandonedSessionReplacedItsResumeTask(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	rec := finishedTester()
 	rec.session = "ses-replacement"
@@ -360,6 +363,7 @@ func TestReadyWorkerTaskGivesAnAbandonedSessionReplacedItsResumeTask(t *testing.
 // A worker to which the record never wrote a task is given its phase's resume task at its ready,
 // as before: it has finished nothing, and the resume is the work of the phase it holds.
 func TestReadyWorkerTaskGivesAClaimNeverWrittenATaskItsResumeTask(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	rec := neverWrittenTester()
 	seedTester(t, pool, rec)
@@ -374,6 +378,7 @@ func TestReadyWorkerTaskGivesAClaimNeverWrittenATaskItsResumeTask(t *testing.T) 
 // of the relaunch that follows — before that row runs and after its task is pending on the claim
 // — queues no second task beside it.
 func TestReadyWorkerTaskStillWritesAPhaseStartAndAWakeTaskOnce(t *testing.T) {
+	t.Parallel()
 	t.Run("a phase start", func(t *testing.T) {
 		pool := migratedPool(t)
 		token := seedTester(t, pool, finishedTester())
@@ -434,6 +439,7 @@ func wantOnlyTask(t *testing.T, pool *pgxpool.Pool, issue, task, origin, what st
 // The negative control is this test on the merge base: the boot gives the finished claim the
 // testing phase's resume task.
 func TestBootedResumesAFinishedClaimWithNoTask(t *testing.T) {
+	t.Parallel()
 	t.Run("in the session it finished its task in", func(t *testing.T) {
 		pool := migratedPool(t)
 		rec := finishedTester()
@@ -503,6 +509,7 @@ const taskNumbersMigration = 20261113175649
 // The negative control is this test on the merge base, where the record holds no task numbers:
 // the ready of the first tester's relaunch queues the testing phase's resume task.
 func TestWaitingWorkerAfterMigrationIsGivenNothingAtItsRelaunch(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
 	dsn := testdb.Database(t, "legion_workflow_migration")
 	pool, err := pgxpool.New(ctx, dsn)
@@ -588,6 +595,7 @@ func TestWaitingWorkerAfterMigrationIsGivenNothingAtItsRelaunch(t *testing.T) {
 // The negative control is this test before the change: the level start names `resume` and the
 // behind start `phase-start`.
 func TestWaitingWorkerSilenceRepairWritesOriginSilenceInBothBranches(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		// given is the entry the silent claim was last given work of (record.RoleClaim.GivenEntry).

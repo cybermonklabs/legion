@@ -501,6 +501,7 @@ func claudeImplementer(role claim.Role) bool { return role == claim.RoleImplemen
 // Claude Code role at the contract that takes tasks, and one still launching, whose recorded
 // contract is its last process's, are each held as any pod behind its image is.
 func TestTheIdleRuleReleasesAnOldPluginsPodOntoTheConfiguredImage(t *testing.T) {
+	t.Parallel()
 	old := pods.IdleClaim{Role: claim.RoleImplementer, PluginContract: api.TaskTakeContract() - 1}
 	for _, tc := range []struct {
 		name  string

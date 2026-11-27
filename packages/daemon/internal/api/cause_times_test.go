@@ -296,7 +296,8 @@ func TestAnOlderContractIsServedNoCauseTimes(t *testing.T) {
 	// above it, and below each entry's band, so it is told of each of those rows, in the table's
 	// order: this band's line, the Dispatch credential's, then the line of each entry's band that
 	// found its keys on the state the entries' own rows carry into the golden (carriedState,
-	// narrowingsExpected), whatever their number (R4 of dispatch://INFRA-1569).
+	// narrowingsExpected), whatever their number (R4 of dispatch://INFRA-1569). It reads
+	// carriedState, as TestAnOlderPluginContractGetsTheStateWithoutIntakeGiveUps does.
 	carried := carriedState(t)
 	_, narrowings := stateNarrowedStating(t, carried, statePodAddr+":41000", podClaims(0), causeTimesContract-1)
 	const dropped = "the claim views' lastDeathAt and lastStartFailureAt"
@@ -304,6 +305,10 @@ func TestAnOlderContractIsServedNoCauseTimes(t *testing.T) {
 	if len(want) < 2 || want[0] != dropped || want[1] != "dispatchCredential" {
 		t.Fatalf("a caller at %d expects the lines %v, want one that dropped %q and then one that dropped %q first",
 			causeTimesContract-1, want, dropped, "dispatchCredential")
+	}
+	if len(narrowings) < 2 || narrowings[0].Dropped != dropped || narrowings[1].Dropped != "dispatchCredential" {
+		t.Errorf("the daemon wrote the narrowing lines %+v for a caller stating %d, want one that dropped %q and one that dropped %q first",
+			narrowings, causeTimesContract-1, dropped, "dispatchCredential")
 	}
 	wantNarrowings(t, narrowings, causeTimesContract-1, want)
 }
