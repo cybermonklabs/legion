@@ -270,8 +270,8 @@ test("the first load reads the tree once and a filter its view once", async ({ b
 
 // c-tree-requests' Decisions clause, owed on the model's decisions view of the tree read
 // (`decisionsViewGate`): the decisions read moves onto the tree read's `view=decisions`, which the
-// load reads once whoever asks, and the Decisions filter reads no blocks at all, since decisions
-// are nodes of the spec.
+// load reads once whoever asks, and the Decisions filter reads the blocks of each document a
+// decision stands in once (`decisions-entries.ts`), the seed's spec alone.
 // SLOW(>=2s): the whole seeded issue, its load waited out to a 1.5 s quiet window, and Decisions
 // pressed on and off twice with each press waited out.
 test("the first load reads the tree once and a filter its view once, and the load reads the Decisions view once @owed", async ({
@@ -295,8 +295,18 @@ test("the first load reads the tree once and a filter its view once, and the loa
         treeReads(pressed, seeded.key, "decisions"),
         "Decisions turned on sends no view read beside the load's"
       ).toBe(0);
+      // The seed's decisions are blocks of its spec alone, so the first press reads the spec's
+      // blocks once, and the second finds them held under the page's freshness (`EVENT_FRESH`).
+      const spec = `/api/v1/artifacts/${seeded.specArtifactId}/blocks`;
       const blocks = blocksReads(pressed);
-      expect(blocks, "Decisions reads no blocks").toEqual([]);
+      if (press === 0) {
+        expect(blocks, `Decisions reads the spec's blocks once: ${spec}`).toEqual([spec]);
+      } else {
+        expect(
+          blocks,
+          `Decisions turned on again reads no blocks, the spec's held: ${spec}`
+        ).toEqual([]);
+      }
       await releaseFilter(page, "decisions");
     }
   });

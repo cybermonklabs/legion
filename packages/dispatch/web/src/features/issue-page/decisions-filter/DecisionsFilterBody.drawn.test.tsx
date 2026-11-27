@@ -348,6 +348,9 @@ function renderBody(
   if (made !== null) client.setQueryData(["decisions", KEY], decisionsRead(made), answered);
   if (asks !== null) client.setQueryData(["asks", KEY, "thread"], asks, answered);
   client.setQueryData(outlineQuery(KEY, "conversation").queryKey, commentsTree(comments), answered);
+  // The spec's blocks, the one document of the issue its decisions stand in: none, so a Change is
+  // placed by its quote alone, and no case makes a request for them.
+  client.setQueryData(["artifact", SPEC_DOCUMENT.id, "blocks"], [], answered);
   // Who is reading, as the page's first read of it left it, where the reads are dated: the page
   // read it as it loaded, before any view was opened.
   if (answered !== undefined) {

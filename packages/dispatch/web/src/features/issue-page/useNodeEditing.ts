@@ -83,18 +83,10 @@ export function abortOnReaderAct(then?: () => void): AbortController {
   return acts;
 }
 
-/**
- * Whether a row takes typing by Enter's own rule, given `place`, its node's place in one of the
- * issue's documents: that place is Enter's own (`documentOfNode`), a block of one of the issue's
- * documents, which Enter puts the caret in (`useNodeEditing`'s `edit`), a statement and a check
- * among them, and it takes typing on an issue that is open. A closed issue's documents take
- * comments by quote and no edit (`ProofDocument`'s `editorAccess`), so none of its blocks takes
- * typing, though Enter still opens the editor there. Every other node has no place - the issue, a
- * child issue, an ask, a comment, a message, a result, a block of another issue's document such
- * as one above it - and takes no caret at all. The outline's rows add their document room's
- * admission each for itself (`TreeRows.tsx`, `NodeRow`'s `useDocumentReadOnly`); `nodeEditable`
- * adds it for a view that reads every admission at once.
- */
+/** Whether a row takes typing by Enter's own rule alone, which `nodeEditable` gives: its node has
+ *  a place in one of the issue's documents (`documentOfNode`), on an issue that is open.
+ *  `nodeEditable` adds what that document's room last admitted the page to; the outline's rows
+ *  add it each for itself (`TreeRows.tsx`, `NodeRow`'s `useDocumentReadOnly`). */
 export function nodeTakesTyping(place: NodeDocument | undefined, isClosed: boolean): boolean {
   return !isClosed && place !== undefined;
 }
@@ -102,10 +94,15 @@ export function nodeTakesTyping(place: NodeDocument | undefined, isClosed: boole
 /**
  * Whether a row takes typing, and so draws the cue that it does (`styles.css`), given `place`,
  * its node's place in one of the issue's documents, and `admissions`, what each document's room
- * last admitted the page to (`document-admission.tsx`): Enter's own rule (`nodeTakesTyping`),
- * unless its document's room admitted the page read-only, as the server does a page whose schema
- * it cannot trust with writes; before any room of that document has answered, Enter's rule alone
- * decides.
+ * last admitted the page to (`document-admission.tsx`). That place is Enter's own rule
+ * (`documentOfNode`): a block of one of the issue's documents, which Enter puts the caret in
+ * (`useNodeEditing`'s `edit`), a statement and a check among them, takes typing on an issue that
+ * is open, unless its document's room admitted the page read-only, as the server does a page whose
+ * schema it cannot trust with writes; before any room of that document has answered, Enter's rule
+ * alone decides. A closed issue's documents take comments by quote and no edit (`ProofDocument`'s
+ * `editorAccess`), so none of its blocks takes typing, though Enter still opens the editor
+ * there. Every other node has no place - the issue, a child issue, an ask, a comment, a message,
+ * a result, a block of another issue's document such as one above it - and takes no caret at all.
  */
 export function nodeEditable(
   place: NodeDocument | undefined,

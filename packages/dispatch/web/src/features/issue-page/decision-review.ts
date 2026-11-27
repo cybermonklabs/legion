@@ -62,9 +62,11 @@ import type { TreeAnswer, TreeAnswerNode } from "./tree-read/tree-read";
  * person wrote that the read hangs under it, made since it last changed and was last kept
  * (`decisionNodeChanges`), and no quote is matched for it. A decision the read holds no node
  * for is found by the decision's block that holds the anchor's block where its document's blocks
- * are given, and by its words alone where they are not, which is how the outline, the Decisions
- * filter (`decisions-entries.ts`) and the header's count read it, since none reads a document's
- * blocks: the change is then the first decision's whose words hold the quote.
+ * are given, and by its words alone where they are not. The Decisions filter
+ * (`decisions-entries.ts`) reads the blocks of the documents its decisions stand in, so it finds
+ * such a decision by its block once they answer; the outline and the header's count read no
+ * document's blocks, so they find it by its words alone: the change is then the first decision's
+ * whose words hold the quote.
  */
 
 /** The fields of a comment this module reads, and when its author last edited it, which the

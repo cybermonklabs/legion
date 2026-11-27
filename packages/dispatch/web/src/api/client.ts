@@ -1327,6 +1327,18 @@ export class DispatchApiClient {
     return this.read("/api/v1/issues/{key}", { key });
   }
 
+  /** `GET /api/v1/issues/{key}/tree`: the issue's tree as the reader may see it, under the view
+   *  `query` names. Every view answers `view_of`: the issue whose spec this issue is a view on, or
+   *  null where it is none. A caller passes the `signal` of the read it is still interested in,
+   *  so a read it gave up is aborted in flight. */
+  getIssueTree(
+    key: string,
+    query: Query<"/api/v1/issues/{key}/tree", "get"> = {},
+    init: { signal?: AbortSignal } = {}
+  ) {
+    return this.read("/api/v1/issues/{key}/tree", { key }, query, init);
+  }
+
   /** The issue whose spec the issue `key` is a view on, as its spec view's tree read answers
    *  `view_of`, or null where it is none. A server of the release before serves no tree read and
    *  holds no view, so a read every attempt of which met no route answers null. */
@@ -1361,19 +1373,6 @@ export class DispatchApiClient {
     query: Query<"/api/v1/issues/{key}/events", "get"> = {}
   ): Promise<DispatchEvent[]> {
     return this.json<DispatchEvent[]>(routeUrl("/api/v1/issues/{key}/events", { key }, query));
-  }
-
-  /** `GET /api/v1/issues/{key}/tree`: one page of the issue's tree as the reader may see it, or of
-   *  one of its views (`view`), from the node `cursor` names on (`IssueTreeRead.cursor`). Every
-   *  view answers `view_of`: the issue whose spec this issue is a view on, or null where it is
-   *  none. A caller passes the `signal` of the read it is still interested in, so a read given up
-   *  ends its page in flight. */
-  getIssueTree(
-    key: string,
-    query: Query<"/api/v1/issues/{key}/tree", "get"> = {},
-    init: { signal?: AbortSignal } = {}
-  ) {
-    return this.read("/api/v1/issues/{key}/tree", { key }, query, init);
   }
 
   /** `GET /api/v1/issues/{key}/results`: the checks of the issue's Verification document in
