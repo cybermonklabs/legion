@@ -5,6 +5,9 @@ body: |-
   that quotes an end-to-end log holds lines that start `- ` and `  - `, as a check line and a
   result line do; such a line no longer reads as one more check or result to a reader who splits
   the output on those prefixes, and a blank line of the text no longer ends the check's block.
+  A line of such a text ends at every break a reader may split at, not `\n` alone: `\r\n`, a lone
+  `\r`, `\v`, `\f`, `\x1c` to `\x1e`, U+0085, U+2028 and U+2029 are each written as `\n` and
+  indented.
 
   A recorded check's head line names the newest result of each role at what the check compared
   with, pass and fail alike, oldest first, in place of the roles a pass stands from:

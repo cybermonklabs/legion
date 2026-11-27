@@ -170,18 +170,13 @@ function checkWordsText(check: CheckBlock, result: CheckResult): string {
     : `The check's words did not move after this result (${versions})`;
 }
 
-/** R5 for one check: whether a pass of it stands, and from which roles. A check CI proves prints
- *  this line (ciCheckLines); a recorded check's head line prints the answer with the newest result
- *  of each role in place of the roles (recordedPassText). */
+/** R5 for one check: Dispatch's answer to whether a pass of it stands, alone. A check CI proves
+ *  names the roles of the passes after it (ciCheckLines); a recorded check's head line names the
+ *  newest result of each role (recordedPassText). */
 function passStandsText(pass: CheckPassStands | undefined): string {
   if (pass === undefined)
     return "Whether a pass stands is not known: this Dispatch server does not say";
-  if (pass.answer === "yes") {
-    const roles = pass.roles ?? [];
-    return roles.length === 0
-      ? "A pass stands: yes"
-      : `A pass stands: yes, from ${roles.join(", ")}`;
-  }
+  if (pass.answer === "yes") return "A pass stands: yes";
   if (pass.answer === "no") return "A pass stands: no";
   return "A pass stands: not known";
 }
@@ -193,8 +188,7 @@ function passStandsText(pass: CheckPassStands | undefined): string {
  *  there, the answer stands alone. What counts as a pass that stands is Dispatch's answer, which
  *  this does not judge. */
 function recordedPassText(check: CheckBlock): string {
-  const pass = check.pass_stands;
-  const answer = passStandsText(pass === undefined ? undefined : { ...pass, roles: [] });
+  const answer = passStandsText(check.pass_stands);
   const newest = newestResultsText(check);
   return newest === undefined ? answer : `${answer}. ${newest}`;
 }
@@ -203,10 +197,14 @@ function recordedPassText(check: CheckBlock): string {
  *  starts at `indent`. Each of its lines after the first starts two spaces further in, and four
  *  spaces in at least. A check line starts `- ` and a result line `  - `, and such a text can hold
  *  either, as an e2e run's log quoted whole does: indented, none of its lines reads as one, and a
- *  blank line of it does not end the check's block, which a blank line does. */
+ *  blank line of it does not end the check's block, which a blank line does. A line ends at every
+ *  break a reader may split at, not `\n` alone: `\r\n`, a lone `\r` (a terminal goes back to the
+ *  line's start), and `\v`, `\f`, `\x1c` to `\x1e`, U+0085, U+2028 and U+2029 (Python's
+ *  str.splitlines). Each is written as `\n`. */
 function quoted(text: string, indent: string): string {
   const continued = `${indent}  `.length < 4 ? "    " : `${indent}  `;
-  return text.replaceAll("\n", `\n${continued}`);
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: \x1c to \x1e are line breaks to str.splitlines
+  return text.replace(/\r\n|[\n\v\f\r\x1c-\x1e\u0085\u2028\u2029]/g, `\n${continued}`);
 }
 
 /** The reading one role recorded, under the line of its result at `indent`. `brief` cuts a reading
@@ -245,11 +243,14 @@ function resultLines(check: CheckBlock, result: CheckResult, brief: boolean): st
  *  `ci`, the run and the conclusion that decided it, and where that commit stands, as a recorded
  *  result's line says it; a check the run did not decide says why, in the sentence Dispatch wrote.
  *  The check's words end the line. Whether a pass stands follows, from the same `pass_stands` and
- *  in the same words as a recorded check's head line, so the gate reads both kinds alike. The
- *  pull-request body line Dispatch wrote for the check follows, which the implementer copies, and
- *  then the run's reading: its conclusion, output and URL. */
+ *  in the same words as a recorded check's head line, so the gate reads both kinds alike, and
+ *  where one stands the roles of its passes, `from ci`. The pull-request body line Dispatch wrote
+ *  for the check follows, which the implementer copies, and then the run's reading: its
+ *  conclusion, output and URL. */
 function ciCheckLines(check: CheckBlock, ci: CheckCI, brief: boolean): string[] {
-  const passStandsLine = `  ${passStandsText(check.pass_stands)}.`;
+  const pass = check.pass_stands;
+  const roles = pass?.answer === "yes" ? (pass.roles ?? []) : [];
+  const passStandsLine = `  ${passStandsText(pass)}${roles.length === 0 ? "" : `, from ${roles.join(", ")}`}.`;
   const pullRequestLine = `  Pull request line: ${ci.line}`;
   const derived = check.results?.[0];
   if (derived === undefined) {
