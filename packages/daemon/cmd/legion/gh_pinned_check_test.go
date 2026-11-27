@@ -360,6 +360,7 @@ func ghGeneratedSpellings() []ghSpelling {
 // that did not answer public fails as what it was, stopped by visibilityAnswerBound after so many
 // seconds or ending with its own status and words, and not as a read missing from gh's count.
 func TestLegionGhReadsOnlyWhatTheSharedCheckReadsAsARead(t *testing.T) {
+	t.Parallel()
 	t.Run("the generated spellings", func(t *testing.T) {
 		spellings := ghGeneratedSpellings()
 		admitted, mismatches := 0, 0

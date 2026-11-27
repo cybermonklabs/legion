@@ -16,7 +16,8 @@ import {
   getIssueArtifactText,
 } from "./api";
 import { documentEditor, openSpec, typeAtEnd } from "./editor";
-import { ONE_PIXEL_PNG, pastePicture } from "./sends";
+import { ONE_PIXEL_PNG } from "./one-pixel-png";
+import { pastePicture } from "./sends";
 import { sessionIds } from "./session-ids";
 import { expect, type Locator, type Page, type Response, test } from "./test";
 import { asUser } from "./users";

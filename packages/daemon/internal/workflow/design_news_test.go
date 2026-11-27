@@ -121,10 +121,10 @@ func firstApprovalHolderNews() News {
 }
 
 // acceptingHolderNews is the news of a child standing in accepting, whose holder is the
-// sub-architect that owns it.
+// sub-architect that owns it, on the default steps.
 func acceptingHolderNews() News {
 	return News{Audience: record.AudienceHolder, Tree: newsTree, Issue: "LEGION-210", Phase: phase.Accepting,
-		Steps: newsSteps, Gates: newsGates(), Items: []NewsChange{specChanges(4)}}
+		Steps: newsSteps, Gates: newsGates(), Items: []NewsChange{specChanges(4)}, Back: phase.Order[:4]}
 }
 
 // plannerHolderNews is the news of a child's planner, which took spec version 4.
@@ -167,11 +167,12 @@ func treeSummaryNews() News {
 			{Issue: newsTree, Phase: phase.AwaitingPerson, State: NewsAwaitingPerson},
 			{Issue: "LEGION-209", Phase: phase.Implementing, State: NewsSentNow, Items: []NewsChange{specChanges(3)}},
 			{Issue: "LEGION-210", Phase: phase.Testing, State: NewsAtNextStart, Items: []NewsChange{specChanges(4)}},
-			{Issue: "LEGION-211", Phase: phase.Accepting, State: NewsYouAnswer, Items: []NewsChange{specChanges(4)}},
+			{Issue: "LEGION-211", Phase: phase.Accepting, State: NewsYouAnswer, Items: []NewsChange{specChanges(4)}, Back: phase.Order[:4]},
 			{Issue: "LEGION-212", Phase: phase.Reviewing, State: NewsWorkUnchanged},
 			{Issue: "LEGION-213", Phase: phase.Planning, State: NewsAlreadyTaken},
 			{Issue: "LEGION-214", Phase: phase.Admitted, State: NewsAdmitted},
 			{Issue: "LEGION-215", Phase: phase.Held, State: NewsStopped},
+			{Issue: "LEGION-217", Phase: phase.AwaitingChildren, State: NewsAwaitingChildren},
 			{Issue: "LEGION-216", Phase: phase.Done, State: NewsDone},
 		}}
 }
@@ -433,13 +434,14 @@ func TestNewsOfAnItemWhoseReviewHistoryCouldNotBeReadSaysSoAndNotAFirstApproval(
 }
 
 // The architect holding a child in accepting answers its news as its prompt says it answers
-// accepting: by its sign-off, or by a move back to planning, implementing or testing.
+// accepting: by its sign-off, or by a move back. The phases the move back names are
+// MoveBackTargets's (TestMoveBackTargetsAreThePhasesOfTheStepsBeforeTheAcceptance).
 func TestNewsToTheArchitectHoldingAnAcceptingIssueEndsWithItsAnswer(t *testing.T) {
 	t.Parallel()
 	text := RenderNews(acceptingHolderNews())
 	t.Logf("the news of an accepting child:\n%s", text)
 	rule := lastParagraph(text)
-	for _, want := range []string{"sign LEGION-210 off with `sign_off`", "`request_backward_move`", "planning, implementing or testing"} {
+	for _, want := range []string{"sign LEGION-210 off with `sign_off`", "`request_backward_move`"} {
 		if !strings.Contains(rule, want) {
 			t.Errorf("the accepting holder's closing rule %q does not say %q", rule, want)
 		}
@@ -610,6 +612,8 @@ func TestTheArchitectsSummaryNamesEveryMemberWithItsStateAndReason(t *testing.T)
 		"- LEGION-214, in admitted: ":        "told nothing: it has not started, and its first phase starts from the approved version.",
 		"- LEGION-215, in held: ":            "told nothing while it is held: the release that moves it back into a phase carries what it is owed then.",
 		"- LEGION-216, in done: ":            "told nothing: its work is done.",
+		"- LEGION-217, in awaiting_children: ": "told nothing while it waits on its open children: the return that moves it back into its phase " +
+			"once no child of it is open carries what it is owed then.",
 	} {
 		if line := newsLine(t, text, opening); !strings.Contains(line, want) {
 			t.Errorf("the summary's line %q does not say %q", line, want)
@@ -662,13 +666,13 @@ func TestTheSummaryGivesTheArchitectTheDutyOfAMergedMember(t *testing.T) {
 }
 
 // A member in accepting that the root architect owns is named as the architect's own to answer:
-// what it is owed, then its sign-off or a move back to planning, implementing or testing.
+// what it is owed, then its sign-off or a move back.
 func TestTheSummaryNamesAnAcceptingMemberTheArchitectAnswersItself(t *testing.T) {
 	t.Parallel()
 	text := RenderNews(treeSummaryNews())
 	line := newsLine(t, text, "- LEGION-211, in accepting: ")
 	for _, want := range []string{"owed version 5 of the spec document, since version 4", "you answer it yourself", "`sign_off`",
-		"`request_backward_move`", "planning, implementing or testing"} {
+		"`request_backward_move`"} {
 		if !strings.Contains(line, want) {
 			t.Errorf("the accepting member's line %q does not say %q", line, want)
 		}

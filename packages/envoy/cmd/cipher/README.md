@@ -164,6 +164,37 @@ list without it and a `rollback_guard: yes|-` line, and `--json` a `rollback_gua
 written in the store's own console carries no guard: the rule for a rollback is in the broker's
 operate guide, "Rolling back past the project tags".
 
+A secret can be served behind the broker's proxy. Its `proxy` tag names a kind of the broker's
+profiles file, one lowercase word such as `github` or `anthropic`. A session then gets a
+placeholder in place of the value, and the broker's proxy puts the credential into the calls the
+kind allows. `agent-secrets secret create --proxy KIND` writes the tag, `secret retag --proxy
+KIND|none` changes it or removes it, `secret show` prints it as a `proxy:` line, and `--json`
+carries it as `proxy`, `""` for a secret without it. This CLI checks only the form of the name: a
+value that is not one lowercase word, and `none` on create, are refused before anything is
+written. Whether the profiles file declares that kind is the broker's to check, each time it loads
+the secret: it refuses a secret whose kind the file does not declare as `proxy-kind-unknown`,
+which the write's reread prints, exiting 1.
+
+`--proxy-narrowed true` marks a secret that is served only through its one profile, whose own
+`allow` narrows the kind's. `agent-secrets secret create --proxy-narrowed true` writes the
+`proxy-narrowed` tag, `secret retag --proxy-narrowed true|none` writes it or removes it, `secret
+show` prints it as a `proxy_narrowed:` line, and `--json` carries it as `proxy_narrowed`, `""`
+for a secret without it. Any other value, and `none` on create, is refused before anything is
+written.
+
+Beside either proxy tag, `create` and `retag` also write the entry `rollback-guard:kinds` into the
+secret's `requesters` tag, after any list it holds and after `rollback-guard:project-tags` where a
+project tag brings that one too, and remove it when neither proxy tag remains. This broker ignores
+the entry. A broker from legion-envoy-v29.23.0, the first to read `requesters`, up to the release
+before the kinds reads no proxy tag, and would release a secret behind the proxy as its value to a
+command; it reads the entry as a requester no deployment can register, and refuses the secret
+(`requesters-malformed`) instead. `secret show` prints the list without the entry and a
+`kinds_rollback_guard: yes|-` line, and `--json` a `kinds_rollback_guard` field: a row whose `proxy`
+or `proxy_narrowed` is not `""` and whose `kinds_rollback_guard` is `false` is a tag written in the
+store's own console, which such a broker would release as its value. On AWS Secrets Manager the
+entry counts toward the 256 characters a tag value holds, so a `requesters` list it would carry
+past 256 is refused before anything is written.
+
 On a machine that runs agents directly, `agent-secrets-helper` (`../cipher-helper`) holds
 each session's key and signs for it; in a container or a Kubernetes pod, the session's key lives in
 `AGENT_SECRETS_KEY_DIR`.
@@ -197,9 +228,9 @@ this order, and needs no registered agent session:
    `GOOGLE_APPLICATION_CREDENTIALS` names, of any `credential_source` (an X.509 certificate's
    among them, whose configuration must name a workload certificate and key), or the Compute
    Engine metadata server (`AGENT_SECRETS_MACHINE_IDENTITY` forces `metadata` or `pool` instead;
-   `kubernetes` is refused, exit 2, since the broker mints no launcher credential for a
-   Kubernetes identity, and a pod enrolls through its launcher or `enroll --pod`). The settings
-   are read only from an `https`
+   `kubernetes` and `github-actions` are refused, exit 2, since the broker mints no launcher
+   credential for a Kubernetes identity or a GitHub Actions run, and a pod enrolls through its
+   launcher or `enroll --pod`). The settings are read only from an `https`
    broker, or an `http` one on loopback. Once an identity is found, and before a token is minted
    for it, the audience is kept in the cache's `google-exchange-audience` (a machine with no
    identity keeps none): a broker that later names another is refused before any token is minted

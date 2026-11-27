@@ -93,7 +93,7 @@ func TestAPausedProjectPromotesNothingUntilItsPauseEnds(t *testing.T) {
 }
 
 // The resume's one admission pass is a fact of its own (intake.ProjectResumed, decision 22 of
-// dispatch://INFRA-3759): admission promotes on it as on every fact that is not a Dispatch issue,
+// dispatch://INFRA-3759): the pass rule (Admission.Apply) runs the pass on it whatever it wrote,
 // so the root the pause kept waiting takes the free slot at once. It is no controller tick: the
 // controller is registered, and no tick notice is queued.
 func TestTheResumesPassPromotesAndQueuesNoTickNotice(t *testing.T) {

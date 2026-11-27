@@ -53,6 +53,10 @@ type intakeTuning struct {
 	// before it releases the hold (heldDurable.finalizeHandBacks), so a test sees that
 	// stopIntakes waits for it. Nil outside tests.
 	beforeRelease atomic.Pointer[func()]
+	// attempted, when set, runs after each of the intake's tries for the hold and the durable
+	// (heldDurable.attempt), so a test waits for the tries it asserts about rather than for a
+	// span of the clock. Nil outside tests.
+	attempted atomic.Pointer[func()]
 	// log is where the intake side writes its lines: both intakes, their deliveries, callNATS,
 	// and the SettingsCache startIntakes builds for them. newIntakeTuning sets the default logger
 	// as it is at that moment, which is what those lines went to before, so a program that sets

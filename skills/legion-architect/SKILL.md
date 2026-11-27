@@ -27,14 +27,14 @@ description: "Use when you are a Legion root or child architect, before any life
 
 1. Read `STRATEGY.md` where the repository has one, and its design principles (`AGENTS.md` here).
    Find the standard solution (a web search, and how two or three well-regarded projects solve it) and cite it in the spec's `Design`.
-   Ask a person only what neither settles, with a recommendation.
+   Ask a person only what neither settles.
 
 2. Where you doubt that a design is the right thing to build, state the problem to `task(agent="design-outsider")` and read its answer with `wait`: it asks whether the thing should exist at all, what the smallest thing that gives the person what they asked for is, and what to delete.
 
 3. A root: write and edit the spec as `skill://legion-architect/references/design-gate.md` says, since a new version closes the gate, except three kinds it names.
    A child: as `skill://legion-architect/references/decomposition.md`, "Creating children", says.
 
-4. Decompose, adopt, split across repositories or record a wait on outside work as `skill://legion-architect/references/decomposition.md` says.
+4. Decompose, adopt, split across repositories or record a wait on other work as `skill://legion-architect/references/decomposition.md` says.
 
 5. Before you write or give an issue's plan, read `skill://legion-architect/references/plan.md`.
    Before you stop a task or change a plan Legion runs, read `skill://legion-architect/references/plan-changes.md`.
@@ -53,7 +53,7 @@ description: "Use when you are a Legion root or child architect, before any life
 
 - Set a child's dependencies as `skill://legion-architect/references/decomposition.md`, "Recording a wait on other work", says.
 
-- Release each child once it is filed: `legion({ op: "release_children", issues: ["LEGION-41", "LEGION-42"] })`.
+- Release each child once it is filed: `legion({ op: "release_children", issues: ["ACME-41", "ACME-42"] })`.
   Never hold a release back for a close: a child released after the root's merge runs as an orphan root.
   Never block a child on its own parent, which merges last.
 
@@ -88,7 +88,7 @@ Run `task(agent="goal-red-team")` as your role prompt says, then `wait` for its 
 Accept only when a pass stands for every `before_merge` check at the head the step before your acceptance passed, every requirement has a check (with no `before_merge` check, your comment says how each is proven), and none is unmet or read narrower than written:
 post a `dispatch comment` naming each check and its result, then `legion({ op: "sign_off", issue: "<KEY>" })`.
 Wait for a `ci_check` run still going; a name no run answers is yours to correct in the check, unless it names a job held back without its label, which has no pass standing until the implementer adds the label.
-Finding asks, refusals and what follows: `skill://legion-architect/references/acceptance.md`.
+Merge holds, finding asks, refusals and what follows: `skill://legion-architect/references/acceptance.md`.
 
 ## 7. Close
 
@@ -97,8 +97,11 @@ nothing after it is yours (`skill://legion-architect/references/acceptance.md`, 
 
 ## Escalation judgment
 
-- Carry a clear defect the controller gives you in this tree:
-  in an open pull request, or in a child; reply under its evidence comment with the issue that carries it.
-  It changes the root spec only where it changes the Summary, a requirement, a check or the scope (`skill://legion-architect/references/design-gate.md`, "After approval").
+- Carry a clear defect another role writes to you in this tree, in an open pull request or a child.
+
+- An action on an agent is the controller's: ask it in a `dispatch comment` on that agent's issue mentioning its role, never by `envoy_publish`.
+
+- Your tree's failed CI runs and its pull requests that no merger merges are yours, never another session's.
+  Read `skill://legion-architect/references/operations.md` before each of these three.
 
 - A tool a worker cannot get is a pull request to the worker image (`skill://legion-worker/references/tools.md`).

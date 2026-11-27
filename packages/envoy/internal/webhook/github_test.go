@@ -620,7 +620,7 @@ func TestADeliveryToAFullStreamIsAnswered503(t *testing.T) {
 		t.Fatalf("start: %v", err)
 	}
 	t.Cleanup(client.Close)
-	bustest.FillStream(t, client, 64)
+	bustest.FillStream(t, client)
 	before, err := client.JS().StreamInfo(bus.Stream)
 	if err != nil {
 		t.Fatalf("read the full stream: %v", err)
@@ -690,7 +690,7 @@ func TestAGitHubDeliveryTheFullStreamRefusedIsStoredOnARedeliveryOnceTheStreamHa
 		return items[0]
 	}
 
-	bustest.FillStream(t, client, 64)
+	bustest.FillStream(t, client)
 
 	var logged bytes.Buffer
 	previous, flags := log.Writer(), log.Flags()

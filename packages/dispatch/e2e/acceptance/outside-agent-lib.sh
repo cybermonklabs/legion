@@ -105,17 +105,30 @@ lacking() {
 
 # real_tools DIR NAME...: a link in DIR to the real program behind each NAME. A version manager's
 # shim (mise's, or a wrapper that calls mise) finds its program through the caller's HOME, and the
-# children a leg starts under a HOME of their own have none, so they run the real programs.
+# children a leg starts under a HOME of their own have none, so they run the real programs. Prints
+# each program it found and could not link, with the reason, or nothing, and fails when it prints:
+# a link it could not make leaves the children to find a shim, or another program, on PATH. A NAME
+# found nowhere is tool_problem's to name.
 real_tools() {
-  local dir=$1 name found
+  local dir=$1 name found why out=''
   shift
-  mkdir -p "$dir" || return
+  if ! why=$(mkdir -p "$dir" 2>&1); then
+    printf 'mkdir -p %s failed, so no program is linked there: %s' "$dir" "$why"
+    return 1
+  fi
   for name in "$@"; do
     found=''
     if command -v mise >/dev/null 2>&1; then found=$(mise which "$name" 2>/dev/null </dev/null); fi
     [ -n "$found" ] || found=$(command -v "$name" 2>/dev/null)
-    case $found in /*) ln -sf "$found" "$dir/$name" ;; esac
+    case $found in
+      /*)
+        why=$(ln -sf "$found" "$dir/$name" 2>&1) ||
+          out="${out:+$out; }$name ($found) was not linked into $dir: ${why:-ln failed}"
+        ;;
+    esac
   done
+  printf '%s' "$out"
+  [ -z "$out" ]
 }
 
 # Every background child a leg starts is started so that `$!` is the child itself: a simple command

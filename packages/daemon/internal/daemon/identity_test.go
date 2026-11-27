@@ -50,8 +50,8 @@ func TestSpawnSpecCarriesTheRoleAppIdentity(t *testing.T) {
 	bot := runtime.GitIdentity{Name: "legion-implementer[bot]", Email: "7+legion-implementer[bot]@users.noreply.github.com"}
 	var asked []string
 	s := specs{stateDir: stateDir, project: "s1", appOwners: noAppOwners,
-		repository: func(context.Context, string) (ghrepo.Repository, string, error) {
-			return ghrepo.MustParse("zeta/tools"), "main", nil
+		repository: func(context.Context, string) (launchRepository, error) {
+			return launchRepository{Repo: ghrepo.MustParse("zeta/tools"), DefaultBranch: "main"}, nil
 		},
 		identity: func(_ context.Context, role claim.Role, repository ghrepo.Repository) (runtime.GitIdentity, error) {
 			asked = append(asked, string(appauth.AppRoleFor(role))+" on "+repository.String())
@@ -113,6 +113,7 @@ func otherApp(role claim.Role) appauth.AppRole {
 // App is asked once, the claim's own first, since every role of an App commits as that App's one
 // identity. The controller's launch carries none.
 func TestEveryLaunchCarriesTheIdentityOfEachRole(t *testing.T) {
+	t.Parallel()
 	composer, err := prompts.New(t.TempDir())
 	if err != nil {
 		t.Fatalf("compose the shipped prompts: %v", err)
@@ -120,7 +121,9 @@ func TestEveryLaunchCarriesTheIdentityOfEachRole(t *testing.T) {
 	repository := ghrepo.MustParse("zeta/tools")
 	var asked []appauth.AppRole
 	s := specs{stateDir: t.TempDir(), project: "s1", prompts: composer, appOwners: noAppOwners,
-		repository: func(context.Context, string) (ghrepo.Repository, string, error) { return repository, "main", nil },
+		repository: func(context.Context, string) (launchRepository, error) {
+			return launchRepository{Repo: repository, DefaultBranch: "main"}, nil
+		},
 		identity: func(_ context.Context, role claim.Role, at ghrepo.Repository) (runtime.GitIdentity, error) {
 			if at != repository {
 				t.Errorf("identity asked for the %s on %s, want the repository the launch works, %s", role, at, repository)
@@ -169,6 +172,7 @@ func TestEveryLaunchCarriesTheIdentityOfEachRole(t *testing.T) {
 // whose trailer names one keeps its author. The other App is asked once rather than once per
 // role, and the daemon logs one warning naming the claim, that App and the mint's error.
 func TestALaunchWhoseOtherAppCannotBeMintedCarriesItsOwnAppsRoles(t *testing.T) {
+	t.Parallel()
 	composer, err := prompts.New(t.TempDir())
 	if err != nil {
 		t.Fatalf("compose the shipped prompts: %v", err)
@@ -235,6 +239,7 @@ func TestALaunchWhoseOtherAppCannotBeMintedCarriesItsOwnAppsRoles(t *testing.T) 
 // naming the claim, as one whose context ends during its own mint does, and logs no warning: an
 // ended context is no failure of the other App, so it is never read as one (roleIdentities).
 func TestALaunchWhoseContextEndsDuringTheOtherAppsMintFails(t *testing.T) {
+	t.Parallel()
 	composer, err := prompts.New(t.TempDir())
 	if err != nil {
 		t.Fatalf("compose the shipped prompts: %v", err)
@@ -330,6 +335,7 @@ func (k *knownLaunchTokens) KnownIdentity(role appauth.AppRole) (runtime.GitIden
 // the source does not know the other App's identity yet, or answers no such read at all, as every
 // other fake does, the other App is minted once, after the claim's own.
 func TestALaunchTakesTheOtherAppsKnownIdentityWithNoMint(t *testing.T) {
+	t.Parallel()
 	composer, err := prompts.New(t.TempDir())
 	if err != nil {
 		t.Fatalf("compose the shipped prompts: %v", err)
@@ -350,8 +356,8 @@ func TestALaunchTakesTheOtherAppsKnownIdentityWithNoMint(t *testing.T) {
 				t.Helper()
 				w := &workflowRuntime{tokens: tokens}
 				s := specs{stateDir: t.TempDir(), project: "s1", prompts: composer, appOwners: noAppOwners,
-					repository: func(context.Context, string) (ghrepo.Repository, string, error) {
-						return ghrepo.MustParse("zeta/tools"), "main", nil
+					repository: func(context.Context, string) (launchRepository, error) {
+						return launchRepository{Repo: ghrepo.MustParse("zeta/tools"), DefaultBranch: "main"}, nil
 					},
 					identity: w.identity, knownIdentity: w.knownIdentity}
 				spec, err := s.SpawnSpec(context.Background(), supervise.Claim{Token: token, Issue: "S1-2", Tree: "S1-1", Role: role})
@@ -395,6 +401,7 @@ func TestALaunchTakesTheOtherAppsKnownIdentityWithNoMint(t *testing.T) {
 // and its failure fails the launch, carrying the mint's error and naming the claim, before the
 // other App is asked anything.
 func TestALaunchWhoseOwnAppCannotBeMintedFails(t *testing.T) {
+	t.Parallel()
 	composer, err := prompts.New(t.TempDir())
 	if err != nil {
 		t.Fatalf("compose the shipped prompts: %v", err)

@@ -14,6 +14,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
 )
 
@@ -114,7 +115,7 @@ func TestTheProjectAccessClientReusesItsConnectionsRoundAfterRound(t *testing.T)
 // of requests.MaySeeAtOnce questions at once, each about projects the client has not asked about,
 // and the second round opens no connection. Built on Go's default client, as a nil client would
 // build it, the second round opens all but two again, and this test fails. With no
-// BROKER_PROJECT_ACCESS_URL there is neither client, as interfaces main compares with nil.
+// BROKER_PROJECT_ACCESS_URL there is neither client: a nil *projectaccess.Client and a nil reader.
 func TestTheBrokerAsksProjectAccessOnTheClientThatKeepsItsConnections(t *testing.T) {
 	tokenFile := filepath.Join(t.TempDir(), "token")
 	if err := os.WriteFile(tokenFile, []byte("the-broker-account-token\n"), 0o600); err != nil {
@@ -144,5 +145,26 @@ func TestTheBrokerAsksProjectAccessOnTheClientThatKeepsItsConnections(t *testing
 	}
 	if second := dispatch.round(t, ask(2)); second != 0 {
 		t.Errorf("the second round opened %d connections; want 0: main's project access must keep requests.MaySeeAtOnce idle connections (projectAccessHTTPClient), where Go's default client keeps two", second)
+	}
+}
+
+// TestEndUnrecordedSignInsFollowsProjectAccess holds the production choice that a trade ends a
+// pre-0047 sign-in only where the broker can ask Dispatch. The setting's project-access client is
+// nil without BROKER_PROJECT_ACCESS_URL and non-nil with it; dropping either half of that choice
+// ends old sign-ins on every broker or on none.
+func TestEndUnrecordedSignInsFollowsProjectAccess(t *testing.T) {
+	for _, c := range []struct {
+		name          string
+		projectAccess projectaccess.Access
+		want          bool
+	}{
+		{name: "without project access", want: false},
+		{name: "with project access", projectAccess: &projectaccess.Client{}, want: true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			if got := endUnrecordedSignIns(c.projectAccess); got != c.want {
+				t.Fatalf("endUnrecordedSignIns(%T) = %t, want %t", c.projectAccess, got, c.want)
+			}
+		})
 	}
 }

@@ -219,7 +219,7 @@ func TestAProductionChecksLookRaisesNoEntry(t *testing.T) {
 // A re-admitted tree's promotion hands its mid-phase member's role the work of its phase again,
 // so it raises that role's entry and writes the resume task as the work of the new entry. The
 // re-admission cleared the task the earlier entry named with the rest of the generation
-// (record.Store.ClearTreeGeneration), so the record would otherwise name an entry whose work
+// (Engine.ClearTreeGeneration), so the record would otherwise name an entry whose work
 // nothing could send again.
 func TestThePromotionsStartRaisesTheEntryAndWritesItsTask(t *testing.T) {
 	t.Parallel()
@@ -235,7 +235,8 @@ func TestThePromotionsStartRaisesTheEntryAndWritesItsTask(t *testing.T) {
 	engine := testEngine(config.DesignGateRootIssues, nil)
 
 	applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
-		return engine.StartPromotedWorker(ctx, tx, issue, claim.RoleImplementer)
+		_, err := engine.StartPromotedWorker(ctx, tx, issue, claim.RoleImplementer, false)
+		return err
 	})
 
 	starts := superviseRowsOf(t, pool, entryIssue, "start")

@@ -10,6 +10,9 @@ The `AGENTS.md` at the root and beside most packages holds the rules for working
 
 - Add the label `full-ci` (every slow suite, which a pull request otherwise leaves to the merge queue) only before the approval of a change to `packages/envoy/internal/dispatch/store/migrations/**` or `packages/envoy/internal/pgmigrate/**`, to check a fix for a slow-suite failure that took the pull request out of the queue, while a `ci_check` of the issue names a held-back job, or when a person asks; a `lane:<output>` label runs one slow suite instead, and `.github/ci-notes/ci.md` says when to take either off.
 
+- A pull request labelled `priority` merges first: the `priority-conflicts` check fails any other pull request, and any merge group, that would conflict with one that is approved or in the merge queue.
+  When it names one, wait for that pull request to merge, then merge `main` and resolve the conflict.
+
 - A change worth a changelog line adds a changie fragment to each package it changes that `.github/changelog-packages` lists, and never edits a `CHANGELOG.md`:
   a release renders the fragments into its notes.
 

@@ -92,6 +92,7 @@ func TestANewIssueAlwaysHasAnAssignee(t *testing.T) {
 // parent in its own project still takes that parent's assignee, in ALPHA and in BETA alike, which
 // is the control.
 func TestAParentInAnotherProjectPassesOnNoAssignee(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	seedPeople(t, database, "carol", "dave")
 	for project, person := range map[string]string{"ALPHA": "dave", "BETA": "carol"} {

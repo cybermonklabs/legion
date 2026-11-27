@@ -9,6 +9,7 @@ GATE = gate("pi_legion_build", "pi-legion-build", reads=reads(
     ("packages/pi-shared/src/**", "packages/pi-legion/tsconfig.json paths @legion/pi-shared/* and include ../pi-shared/src/omp-host.d.ts; the pack's bundle inlines it"),
     ("packages/pi-shared/test/**", "packages/pi-legion/tsconfig.json paths @legion/pi-shared/test/*, and the typecheck compiles `packages/pi-legion/extensions/legion-phase-stall-omp.test.ts#runLegionPane` and `packages/pi-legion/extensions/legion-role-tools-omp.test.ts#toolResultsIn`, which import it"),
     ("packages/envoy-client/test/subscribe-answer.ts", "`packages/pi-shared/test/omp-harness.ts#consumerDelivery` imports it, and the typecheck compiles that harness for the omp tests it includes"),
+    ("packages/envoy-client/test/fake-dispatch.ts", "`packages/pi-legion/src/tools.test.ts#fakeDispatchFetch` imports it from @legion/envoy-client/test/fake-dispatch, and the typecheck compiles the package's src tests"),
     # envoy-client's sources, and cipher-client's with them, are the shared read below.
     (CONTRACTS_SRC, f"{at('pi-legion-build', 'Build contracts for pi-legion')}; tsconfig paths @legion/contracts"),
     (TEST_FIXTURES_SRC, "the typecheck compiles packages/pi-legion's extensions and src tests, which import @legion/test-fixtures"),

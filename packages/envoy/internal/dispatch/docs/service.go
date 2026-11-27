@@ -34,6 +34,8 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
+import "github.com/sjawhar/envoy/internal/clock"
+
 var (
 	// ErrIssueClosed rejects a document mutation after its issue is closed.
 	ErrIssueClosed = errors.New("issue is closed")
@@ -92,6 +94,10 @@ type Deps struct {
 	// EditNoticeQuiet is how long a document stays quiet after a person's last settled version
 	// before its edit notice goes (recordEditNotice, RunEditNotices); zero means 30 s.
 	EditNoticeQuiet time.Duration
+	// Clock is the clock Shutdown's drain budget (ShutdownDrainBudget) runs on; nil means the real
+	// clock. A test hands a clocktest fake and moves it past the moments it means, so how long a
+	// loaded machine takes between them does not spend the budget.
+	Clock clock.Clock
 	// BuildCommit is the commit this process's binary was built from (cmd/dispatch's buildCommit),
 	// the empty string for an unstamped build. The block-index tick keys its build's event cursor
 	// on it, and compares it with the commit of every live server process to report whether
@@ -169,6 +175,8 @@ type Service struct {
 	unrecordedMarkTTL time.Duration
 	// editNoticeQuiet is Deps.EditNoticeQuiet, with its default applied.
 	editNoticeQuiet time.Duration
+	// clock is Deps.Clock, the real clock when that is nil: the clock of Shutdown's drain budget.
+	clock clock.Clock
 	// buildCommit is Deps.BuildCommit.
 	buildCommit string
 	// markingRule is the block index's marking rule this build applies, refs.BlockIndexMarkingRule
@@ -245,6 +253,11 @@ type Service struct {
 	// before the version takes its document lock and reads it. Nil outside tests; tests use it to
 	// evict the warmed room or edit it in that window.
 	afterReadWarm func(room string)
+	// afterMarkMiss runs each time a look of VerifyMark has missed the mark and the call is about
+	// to wait for the room's next update or its wait (markTimer). Nil outside tests; tests use it
+	// to write the mark only once the call has looked and missed, so the call can find it only
+	// through the update's wake.
+	afterMarkMiss func(room string)
 	// afterReadCopy runs once a read of a room has copied the room's document (holdLive) and
 	// before that copy is offered to the room's replica (startFromRead). Nil outside tests;
 	// tests use it to commit into the room, and to leave the room's replica recovered, in the
@@ -452,6 +465,10 @@ type Service struct {
 	// between the mutation's read of it and its write, where a peer's update can land: Apply runs
 	// the mutation outside the document's lock and takes the lock for each transaction alone.
 	inServiceTransaction func(txn *crdt.Transaction)
+	// markTimer arms the wait VerifyMark gives a browser's update, markWait long: a wall timer
+	// (wallMarkTimer), set in New. Tests replace it, as they replace now, to read the duration it
+	// was armed with and to fire it themselves.
+	markTimer func(time.Duration) (<-chan time.Time, func() bool)
 	// now is the clock the unrecorded-mark sweep ages marks by (sweepUnrecordedMarks), and the
 	// block-index tick times its object pass by (objectPassInterval).
 	now      func() time.Time
@@ -900,6 +917,10 @@ func New(deps Deps) *Service {
 	if editNoticeQuiet <= 0 {
 		editNoticeQuiet = defaultEditNoticeQuiet
 	}
+	serviceClock := deps.Clock
+	if serviceClock == nil {
+		serviceClock = clock.Real()
+	}
 	if deps.Events == nil {
 		deps.Events = events.NewBroker()
 	}
@@ -934,9 +955,11 @@ func New(deps Deps) *Service {
 		settle:            settle,
 		markWait:          markWait,
 		now:               time.Now,
+		markTimer:         wallMarkTimer,
 		timers:            make(map[uint64]*time.Timer),
 		unrecordedMarkTTL: unrecordedMarkTTL,
 		editNoticeQuiet:   editNoticeQuiet,
+		clock:             serviceClock,
 		buildCommit:       deps.BuildCommit,
 		markingRule:       refs.BlockIndexMarkingRule,
 		reads:             newDocumentReads(readBudget),
@@ -1176,7 +1199,8 @@ func poolFigures(stat *pgxpool.Stat) PoolFigures {
 // ones already queued - has room to finish: the live durableAppends counter waits for every append
 // a room's writer records, whenever Shutdown's scan found the room, not just the ones it already
 // held. A settlement it cuts short, and the close of its room's editors that follows it, get what
-// is left of the caller's deadline, so a caller's deadline has to exceed it.
+// is left of the caller's deadline, so a caller's deadline has to exceed it. The budget runs on
+// Deps.Clock, the real clock in production.
 const ShutdownDrainBudget = 9 * time.Second
 
 // Shutdown stops queued settlements and runs one worker per loaded room inside the drain budget:
@@ -1239,7 +1263,7 @@ func (s *Service) Shutdown(ctx context.Context) error {
 		return true
 	})
 	s.stopAllSettleTimers()
-	drainCtx, cancelDrain := context.WithTimeout(ctx, ShutdownDrainBudget)
+	drainCtx, cancelDrain := s.clock.WithTimeout(ctx, ShutdownDrainBudget)
 	defer cancelDrain()
 	rooms := make([]string, 0, len(loaded))
 	for _, room := range loaded {

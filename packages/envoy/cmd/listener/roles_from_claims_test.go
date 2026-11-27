@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 	"github.com/sjawhar/envoy/listenerwire"
 )
 
@@ -130,7 +131,7 @@ func TestARoleIsHeldByTheSessionItsClaimNamesWhateverTheRecordsTopics(t *testing
 			t.Fatalf("store %s's claim naming %s: %v", role, session, err)
 		}
 	}
-	waitFor(t, 5*time.Second, "the claims to reach the registry's view", func() bool {
+	waitFor(t, "the claims to reach the registry's view", func() bool {
 		a, errA := registry.RolesHeldBy(holder)
 		b, errB := registry.RolesHeldBy(bare)
 		return errA == nil && errB == nil && slices.Equal(a, []string{"reviewer"}) && slices.Equal(b, []string{"planner"})
@@ -185,10 +186,27 @@ func TestAClaimsViewThatCannotAnswerIsTheBusNotAnsweringOnTheSessionRoutes(t *te
 	if err := client.JS().DeleteKeyValue(bus.RoleClaimBucket); err != nil {
 		t.Fatalf("delete the role bucket: %v", err)
 	}
-	waitFor(t, 30*time.Second, "the role claim view to stop answering", func() bool {
-		_, err := registry.RolesHeldBy(sender)
-		return err != nil
-	})
+	// The longest wait of this package, and the one wait that does not take listenerWaitBound. The
+	// view keeps answering until its watcher has noticed the bucket is gone, and what it waits out
+	// is four of nats.go's ordered-consumer heartbeat interval (orderedHeartbeatsInterval, 5 s):
+	// measured at 20.03 s and 19.98 s over two whole-package runs under load, and 20.4 to 20.5 s
+	// over five runs of its own. An independent reading moved each candidate constant in turn:
+	// multiplying internal/kvwatch's four by five left the row at 20.52 s, while the heartbeat at
+	// 15 s gave 60.47 s and at 25 s gave 100.49 s. So the sum of kvwatch's bounds is not what this
+	// row waits out, and the one constant that is lives in a dependency.
+	//
+	// claimsViewNoticesBucketGone is ten times that need, which is the headroom the package's cap
+	// gives every other wait: the minute cap would be barely three times it, near enough that a
+	// loaded runner could decide the row, and the binary's deadline would let a watcher that stops
+	// noticing at all hold the whole package for half an hour, which is what listenerWaitBound
+	// exists to stop. testwait.Bounded clamps it to what a shorter -timeout leaves, so the row
+	// still reports this wait by name rather than being cut off inside it by the binary.
+	const claimsViewNoticesBucketGone = 4 * time.Minute
+	testwait.WithinPolling(t, testwait.Bounded(t, claimsViewNoticesBucketGone, time.Second), testwait.Poll,
+		"the role claim view to stop answering", func() bool {
+			_, err := registry.RolesHeldBy(sender)
+			return err != nil
+		})
 
 	for _, route := range []struct {
 		path    string
@@ -237,7 +255,7 @@ func refuseRoleClaimView(t *testing.T, registry *store.Registry) func() {
 	return func() {
 		t.Helper()
 		refilling.Start()
-		waitFor(t, 30*time.Second, "the role claim view to answer again", func() bool {
+		waitFor(t, "the role claim view to answer again", func() bool {
 			return registry.RoleViewErr() == nil
 		})
 	}
@@ -407,7 +425,7 @@ func TestARecreatedRoleBucketIsNeverAnsweredAsAHolderWithoutItsRole(t *testing.T
 		return nil
 	}
 	refilling := 0
-	for deadline := time.Now().Add(30 * time.Second); ; {
+	for deadline := time.Now().Add(listenerWaitBound(t)); ; {
 		entry := sessionEntryRoute(t, state, holder)
 		entryAnswered := requireRolesOrUnanswered(t, "GET /v1/registry/"+holder, entry, want, kept, entryRoles)
 		list := httptest.NewRecorder()

@@ -85,7 +85,7 @@ its own workflows; this page covers this repository only.
      goes. It costs the job nothing: `ci-ok` passes when `changes` did not select it and it was
      skipped, and fails when it was selected and did not succeed.
    - **`CI_OK_ALWAYS_RUN`**, for a job no `changes` output gates, which therefore runs on every
-     change (`changes` and `lint` are the two). It costs every change the job's whole run time,
+     change (`changes`, `lint` and `priority-conflicts` are the three). It costs every change the job's whole run time,
      and `ci-ok` passes only when the job succeeded: a skip, a cancellation or an absence from
      the verdict's `needs:` fails the check. Put a job here only when every change must run it;
      anything a filter can select belongs in the first class.

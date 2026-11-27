@@ -316,14 +316,19 @@ generate_step_of() {
   "$script_dir/ci_router_outputs.py" "$workflow" --filters "$filters" --generate-step "$@"
 }
 merge_base=3333333333333333333333333333333333333333
-echo "case: the filter generation measures a dispatched branch against its merge base with main, as a merge group against its base"
+# A pull request event's own base.sha, older than the merge commit's first parent once main has moved.
+event_base=4444444444444444444444444444444444444444
+echo "case: the filter generation measures a change against the commit it lands onto"
 # The generation holds a change to how the filters are computed against the base tree's filters
 # only when it is handed a base (.github/ci-notes/ci.md#the-changes-job-computes-its-filters-when-it-runs):
 # a branch's dispatch handed none would select by its own engine alone, where its merge group does not.
+# A pull request's base is the first parent of its merge commit, which the base step finds, and never
+# the event's base.sha (.github/ci-notes/ci.md#the-commit-a-change-is-measured-against).
 check "a dispatch of a branch: the merge base the base step finds" \
   "$(is "$(generate_step_of "$ci" --event workflow_dispatch --ref refs/heads/feature --base "$merge_base")" "filters-base=$merge_base")"
 check "a merge group: its base" "$(is "$(generate_step_of "$ci" --event merge_group --base "$merge_base")" "filters-base=$merge_base")"
-check "a pull request: its base" "$(is "$(generate_step_of "$ci" --event pull_request --base "$merge_base")" "filters-base=$merge_base")"
+check "a pull request: the first parent the base step finds, not the event's own base" \
+  "$(is "$(generate_step_of "$ci" --event pull_request --base "$merge_base" --pull-base "$event_base")" "filters-base=$merge_base")"
 check "a dispatch of main: none, since it selects every job" \
   "$(is "$(generate_step_of "$ci" --event workflow_dispatch --ref refs/heads/main --base "$merge_base")" "filters-base=")"
 check "every-job: none" \
@@ -392,12 +397,32 @@ broken=$(copy_with "$work/no-dispatch-key" ci.yaml "github.event_name == 'workfl
 check "a dispatch of a branch then keys on its commit" \
   "$(contains "$(concurrency_of "$broken" --event workflow_dispatch --ref refs/heads/feature --sha "$old")" "^group=ci-$old ")"
 
-echo "case: a generation step handed no merge base fails the branch case"
-broken=$(copy_with "$work/no-merge-base" ci.yaml ' || steps.base.outputs.sha' '')
+echo "case: a generation step handed no merge base fails the branch and pull-request cases"
+# The generation step's own line: the restore of the base's cached filters names the same
+# expression in its `if:` and its key.
+broken=$(copy_with "$work/no-merge-base" ci.yaml \
+  'CI_FILTERS_BASE: ${{ github.event.merge_group.base_sha || steps.base.outputs.sha }}' \
+  'CI_FILTERS_BASE: ${{ github.event.merge_group.base_sha }}')
 check "a dispatch of a branch then hands the generation no base" \
   "$(is "$(generate_step_of "$broken" --event workflow_dispatch --ref refs/heads/feature --base "$merge_base")" "filters-base=")"
+check "  nor does a pull request" \
+  "$(is "$(generate_step_of "$broken" --event pull_request --base "$merge_base" --pull-base "$event_base")" "filters-base=")"
 check "  while a merge group still hands its own" \
   "$(is "$(generate_step_of "$broken" --event merge_group --base "$merge_base")" "filters-base=$merge_base")"
+
+echo "case: a generation step that reads the pull request event's base fails the pull-request case"
+broken=$(copy_with "$work/event-base" ci.yaml \
+  'CI_FILTERS_BASE: ${{ github.event.merge_group.base_sha || steps.base.outputs.sha }}' \
+  'CI_FILTERS_BASE: ${{ github.event.merge_group.base_sha || github.event.pull_request.base.sha || steps.base.outputs.sha }}')
+check "a pull request then hands the generation the event's older base" \
+  "$(is "$(generate_step_of "$broken" --event pull_request --base "$merge_base" --pull-base "$event_base")" "filters-base=$event_base")"
+
+echo "case: a base step that runs on no pull request fails the pull-request case"
+broken=$(copy_with "$work/base-no-pull-request" ci.yaml \
+  "if: \${{ github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && !steps.scope.outputs.every_job) }}" \
+  "if: \${{ github.event_name == 'workflow_dispatch' && !steps.scope.outputs.every_job }}")
+check "a pull request then hands the generation no base" \
+  "$(is "$(generate_step_of "$broken" --event pull_request --base "$merge_base" --pull-base "$event_base")" "filters-base=")"
 
 echo "case: a base step that runs on every dispatch fails the dispatch-of-main case"
 # edited-migrations-base.sh exits 2 on a dispatch of main that names no migration-base, which would
@@ -414,10 +439,10 @@ echo "case: a generation step that starts before the base step is handed no merg
 # though the base step runs later. A reader that evaluated the env after every step had run would
 # hand it the merge base here as in ci.yaml's own order; this case fails that reader.
 base_step=$(cat <<'YAML'
-      # why: .github/ci-notes/ci.md#what-a-dispatched-run-of-a-branch-selects-and-when-to-ask-for-every-job
-      - name: Find the merge base with main a dispatch of a branch is measured against
+      # why: .github/ci-notes/ci.md#the-commit-a-change-is-measured-against
+      - name: Find the commit this run's change is measured against
         id: base
-        if: ${{ github.event_name == 'workflow_dispatch' && !steps.scope.outputs.every_job }}
+        if: ${{ github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && !steps.scope.outputs.every_job) }}
         timeout-minutes: 3
         run: |
           sha=$(.github/scripts/edited-migrations-base.sh)

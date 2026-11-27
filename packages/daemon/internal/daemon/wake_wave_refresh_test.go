@@ -348,13 +348,16 @@ func claimsLeftToRefresh(t *testing.T, d *daemon, what string) int {
 	return 0
 }
 
-// awaitLaunchAtItsTurn advances nothing: it waits for the claim's next launch and requires it at
-// the moment the state promised, which is what says a wake ran at its turn and not before or
-// after. before is how many launches of that claim the runtime had already been asked for, since
-// a claim of a fleet's wave can be launched more than once.
-func awaitLaunchAtItsTurn(t *testing.T, rt *waveRuntime, wake api.WakeWaiting, before int) {
+// awaitLaunchAtItsTurn moves the clock to the moment the state named for the claim's wake, and on
+// from there to each next timer until the claim's next launch runs (advanceToLaunch's reading of
+// that moment), and requires the launch at that moment or after it, never before. before is how
+// many launches of that claim the runtime had already been asked for, since a claim of a fleet's
+// wave can be launched more than once. Before the place-based pacing the state named the very
+// moment the limiter handed the wake, and this read the launch run at it exactly.
+func awaitLaunchAtItsTurn(t *testing.T, clock *waveClock, rt *waveRuntime, wake api.WakeWaiting, before int) {
 	t.Helper()
-	testwait.Eventually(t, fmt.Sprintf("the launch of %s at its turn, %s", wake.Claim, wake.DueAt), func() bool {
+	clock.advanceUntil(wake.DueAt, func() bool { return rt.launchesOf(wake.Claim) > before })
+	testwait.Eventually(t, fmt.Sprintf("the launch of %s at its turn, from %s", wake.Claim, wake.DueAt), func() bool {
 		return rt.launchesOf(wake.Claim) > before
 	})
 	launches := rt.launches()
@@ -362,8 +365,8 @@ func awaitLaunchAtItsTurn(t *testing.T, rt *waveRuntime, wake api.WakeWaiting, b
 		if launches[i].claim != wake.Claim {
 			continue
 		}
-		if !launches[i].at.Equal(wake.DueAt) {
-			t.Fatalf("the launch of %s ran at %s, want the turn the state promised it, %s", wake.Claim, launches[i].at, wake.DueAt)
+		if launches[i].at.Before(wake.DueAt) {
+			t.Fatalf("the launch of %s ran at %s, want it no earlier than the turn the state named, %s", wake.Claim, launches[i].at, wake.DueAt)
 		}
 		return
 	}
@@ -670,15 +673,14 @@ func TestTheRefreshLaneHoldsOneMinuteOfThePacingWhileAWholeFleetsWaveDrains(t *t
 		rounds++
 		admitted += len(waiting)
 
-		// The turns of the round: every wake the pacing holds now, of whatever lane, each at the
-		// moment the state promised it. The whole queue rather than this lane's own share of it,
-		// because what check c-bound reads of the roots is when their launches ran, and a clock
-		// advanced straight from one refresh's turn to the next would run every launch between
-		// them at the moment of the jump rather than at its own.
+		// The turns of the round: every wake the pacing holds now, of whatever lane, each at its
+		// own turn, no earlier than the moment the state named for it. The whole queue rather than
+		// this lane's own share of it, because what check c-bound reads of the roots is when their
+		// launches ran, and a clock advanced straight from one refresh's turn to the next would run
+		// every launch between them at the moment of the jump rather than at its own.
 		for _, wake := range waitingWakes(t, d) {
 			before := rt.launchesOf(wake.Claim)
-			clock.advanceTo(wake.DueAt)
-			awaitLaunchAtItsTurn(t, rt, wake, before)
+			awaitLaunchAtItsTurn(t, clock, rt, wake, before)
 			if wake.Kind == supervise.WakePluginRefresh {
 				refreshed[wake.Claim] = true
 			}
@@ -889,13 +891,13 @@ func TestNoMinuteOfAFleetsRefreshWaveHoldsMoreThanTheRateAndTheBurst(t *testing.
 		}
 		return done
 	}
-	// The boot reserves the roots' turns before their launches reach the gate (launchUnfinished,
-	// supervise.RequestSpawn.Turn), so a root can park after the drive has read the queue while
-	// holding a turn earlier than every wake that read held. Advancing the clock past that turn
-	// would fire it in the instant of a later wake, a pile-up the daemon never makes on a clock
-	// that moves on its own; every root is therefore parked or launched before the first advance.
-	// The stale claims reserve at their gates, in the order they park, so none of them can hold a
-	// turn earlier than a wake the drive has read.
+	// The boot places the roots before their launches reach the gate (launchUnfinished,
+	// supervise.RequestSpawn.Place), so a root can park after the drive has read the queue while
+	// holding a place ahead of every wake that read held. Advancing the clock past that place's
+	// turn would fire it in the instant of a later wake, a pile-up the daemon never makes on a
+	// clock that moves on its own; every root is therefore parked or launched before the first
+	// advance. The stale claims join their places at their gates, in the order they park, so none
+	// of them can hold a place ahead of a wake the drive has read.
 	testwait.Eventually(t, "every root's relaunch to park at its turn or launch", func() bool {
 		parked := map[claim.Token]bool{}
 		for _, wake := range waitingWakes(t, d) {
@@ -918,8 +920,7 @@ func TestNoMinuteOfAFleetsRefreshWaveHoldsMoreThanTheRateAndTheBurst(t *testing.
 		}
 		for _, wake := range waiting {
 			before := rt.launchesOf(wake.Claim)
-			clock.advanceTo(wake.DueAt)
-			awaitLaunchAtItsTurn(t, rt, wake, before)
+			awaitLaunchAtItsTurn(t, clock, rt, wake, before)
 		}
 	}
 	if done := launched(); done != len(wave) {

@@ -46,7 +46,7 @@ func TestAProberNeedsNoSupervision(t *testing.T) {
 }
 
 // Every refusal of what the probe itself reads stands for the prober: the namespace, the
-// digest-pinned image, the pool the runtime places every pod on, and each pod's reservation.
+// digest-pinned image, a selector of the retired Legion pool's label, and each pod's reservation.
 func TestAProberRefusesWhatTheFullRuntimeRefusesOfTheProbe(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -56,7 +56,7 @@ func TestAProberRefusesWhatTheFullRuntimeRefusesOfTheProbe(t *testing.T) {
 	}{
 		{"no namespace", func(o *Options) { o.Namespace = "" }, "no namespace"},
 		{"an image by tag", func(o *Options) { o.Image = "ghcr.io/example/legion-worker:latest" }, "is not pinned by digest"},
-		{"the pool selector", func(o *Options) { o.Scheduling.NodeSelector = map[string]string{poolKey: "other"} }, "is the runtime's"},
+		{"the pool selector", func(o *Options) { o.Scheduling.NodeSelector = map[string]string{poolKey: "other"} }, "legion.dev/pool"},
 		{"a missing reservation", func(o *Options) { o.Resources.Issue = corev1.ResourceRequirements{} }, "the issue pod reserves no cpu"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -155,10 +155,8 @@ func TestAProberAndABootingDaemonEachKeepTheirOwnProbeSandbox(t *testing.T) {
 		name := map[bool]string{true: "the daemon's probe in flight", false: "the prober's probe in flight"}[daemonFirst]
 		t.Run(name, func(t *testing.T) {
 			g := newProbeRig(t, nil).succeeds(okLine(3))
-			prober, err := newProber(g.ctx, g.clients, g.opts)
-			if err != nil {
-				t.Fatal(err)
-			}
+			var prober *Prober
+			g.startWatched(func() (err error) { prober, err = newProber(g.ctx, g.clients, g.opts); return err })
 			proberName := probeName(testProject, testDigestHex, prober.r.probeRun)
 			daemon := func() error { _, err := g.r.ProbeImage(g.ctx, probeOptions(t)); return err }
 			probe := func() error { _, err := prober.ProbeImage(g.ctx, probeOptions(t)); return err }
@@ -209,18 +207,21 @@ func TestAProberAndABootingDaemonEachKeepTheirOwnProbeSandbox(t *testing.T) {
 // probe past many ticks and reads no Secret; the control, a runtime that does start one (start),
 // reads them within the same wait.
 func TestAProberRunsNoRefresherPastARefreshTick(t *testing.T) {
-	// Not parallel: it writes the package variable gitHubRefreshInterval, which every runtime's
-	// start reads.
+	t.Parallel()
+	// The rig's own runtime runs no refresher tick (testOptions), so the Secret reads this test
+	// counts are the Prober's or the control's alone.
 	g := newProbeRig(t, nil).succeeds(okLine(3))
 	g.autoStart.Store(true)
 	g.spawn(rootSpec(t))
 	g.autoStart.Store(false)
+	// The Prober and the control are configured to tick every 5 ms (Options.GitHubRefreshInterval).
 	tick := 5 * time.Millisecond
-	defer func(was time.Duration) { gitHubRefreshInterval = was }(gitHubRefreshInterval)
-	gitHubRefreshInterval = tick
-	prober, err := newProber(g.ctx, g.clients, g.opts)
-	if err != nil {
-		t.Fatal(err)
+	opts := g.opts
+	opts.GitHubRefreshInterval = tick
+	var prober *Prober
+	g.startWatched(func() (err error) { prober, err = newProber(g.ctx, g.clients, opts); return err })
+	if prober.r.gitHubRefresh != tick {
+		t.Fatalf("the Prober's refresh interval is %s, want the %s its Options set", prober.r.gitHubRefresh, tick)
 	}
 	proberName := probeName(testProject, testDigestHex, prober.r.probeRun)
 	g.clearActions()
@@ -237,13 +238,16 @@ func TestAProberRunsNoRefresherPastARefreshTick(t *testing.T) {
 	if err := <-done; err != nil {
 		t.Fatalf("ProbeImage = %v, want a pass", err)
 	}
-	control, err := configure(g.opts)
+	control, err := configure(opts)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := control.start(g.ctx, g.clients); err != nil {
-		t.Fatal(err)
+	// Without this, a runtime that ignored the option would pass the wait below on its
+	// one-minute tick, since the wait gives up only near the binary's deadline.
+	if control.gitHubRefresh != tick {
+		t.Fatalf("the control's refresh interval is %s, want the %s its Options set", control.gitHubRefresh, tick)
 	}
+	g.startWatched(func() error { return control.start(g.ctx, g.clients) })
 	g.eventually("the control's refresher to read the issue pod's role Secrets", func() bool { return secretReads(g.rig) > 0 })
 }
 

@@ -98,6 +98,7 @@ func heldRead(t *testing.T, database string, since time.Duration) Warning {
 // so that a later change of any of the three moves the rows with it instead of leaving them to
 // test a boundary that has moved.
 func TestVerdictOfKeysTheWaitOnTheStallWarning(t *testing.T) {
+	t.Parallel()
 	const ownDatabase = "dispatch_test_ab"
 	// A foreign holder: an event write of another database, which a horizon reading that database
 	// reports, and which is no defect of this test's, however long it has stood.
@@ -240,6 +241,7 @@ func TestVerdictOfKeysTheWaitOnTheStallWarning(t *testing.T) {
 // deadline, naming what it waited for and the newest holder it read, and on a holder of the test's
 // own database past OwnHoldBound that its own read found.
 func TestAWatchInTheTestsOwnProcessIsEndedBySilenceNowhere(t *testing.T) {
+	t.Parallel()
 	const ownDatabase = "dispatch_test_ab"
 	const what = "an event of events"
 	none := func() []Warning { return nil }
@@ -418,6 +420,7 @@ func (r readsCounted) QueryRow(ctx context.Context, sql string, args ...any) pgx
 // holding for its own age on the database's clock. A read that answers no row is no holder, and
 // a read that fails is an error.
 func TestReadHolderReadsWhatTheDiagnosisQueryAnswers(t *testing.T) {
+	t.Parallel()
 	held, found, err := readHolder(heldBy{database: "dispatch_test_ab", since: 7 * time.Second})
 	if err != nil || !found {
 		t.Fatalf("readHolder = %+v, %t, %v; want the holder", held, found, err)
@@ -443,6 +446,7 @@ func TestReadHolderReadsWhatTheDiagnosisQueryAnswers(t *testing.T) {
 // match would read a foreign hold as the test's own and fail the wait at once on a database the
 // test does not own.
 func TestFromLineMatchesTheWholeDatabaseField(t *testing.T) {
+	t.Parallel()
 	const ownDatabase = "dispatch_test_ab"
 	for _, row := range []struct {
 		name     string
@@ -492,6 +496,7 @@ func TestFromLineMatchesTheWholeDatabaseField(t *testing.T) {
 // read a value a client chose, opening with a backquote, as a raw literal running across the
 // fields after it.
 func TestFieldTakesAQuotedValueWhole(t *testing.T) {
+	t.Parallel()
 	const ownDatabase = "dispatch_test_ab"
 	const foreignDatabase = "dispatch_test_cd"
 	// The client of the backquote row: an application_name opening with a backquote, which slog

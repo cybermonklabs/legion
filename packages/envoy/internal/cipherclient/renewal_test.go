@@ -84,6 +84,9 @@ func TestABrokerThatIsDownIsWaitedOut(t *testing.T) {
 	if err != nil || held.AccessToken != first.AccessToken {
 		t.Fatalf("Token while the broker is down = %v, %v; want the token in hand, which is still live", held, err)
 	}
+	if trades := len(broker.Requests()); trades != 2 {
+		t.Fatalf("the broker saw %d trades by Token's renewal, want 2: the first, and the renewal it answered 503", trades)
+	}
 
 	// Once it has run out there is no identity to write with, and the client says so rather
 	// than handing its caller a token the broker will refuse.
@@ -132,9 +135,12 @@ func TestABusyBrokerIsAskedAgainRatherThanEndingTheLoop(t *testing.T) {
 	if err != nil || held.AccessToken != first.AccessToken {
 		t.Fatalf("Token while the broker is busy = %v, %v; want the token in hand, which is still live", held, err)
 	}
+	if trades := len(broker.Requests()); trades != 2 {
+		t.Fatalf("the broker saw %d trades by Token's renewal, want 2: the first, and the renewal it refused 429", trades)
+	}
 
 	// And the renewal loop waits the bucket out rather than ending: every wait fires at once,
-	// so the three refusals and the trade that follows them run at the test's speed.
+	// so the two refusals left and the trade that follows them run at the test's speed.
 	client.after = func(time.Duration) <-chan time.Time {
 		fired := make(chan time.Time, 1)
 		fired <- time.Now()
@@ -155,8 +161,8 @@ func TestABusyBrokerIsAskedAgainRatherThanEndingTheLoop(t *testing.T) {
 		t.Fatalf("the loop handed its caller %d tokens; want the one after the 429s", landed.Load())
 	}
 	if trades := len(broker.Requests()); trades != refusals+2 {
-		t.Fatalf("the broker saw %d trades, want %d: Token's first, the loop's %d refused, and the one that landed",
-			trades, refusals+2, refusals)
+		t.Fatalf("the broker saw %d trades, want %d: Token's first and its refused renewal, the loop's %d refused, and the one that landed",
+			trades, refusals+2, refusals-1)
 	}
 }
 
@@ -311,6 +317,40 @@ func TestRunRenewsAtTheMomentWorkedOutAsTheTokenLanded(t *testing.T) {
 	}
 }
 
+// TestTokenReusesAShortTokenUntilHalfwayThroughItsLife: Token reuses a token that lives less than
+// RenewBefore, such as the 270 seconds the broker gives a restricted member's machine login,
+// until halfway through what was left of its life when it landed, as Run renews one
+// (untilRenewal), rather than trading again at every call, which empties the broker's bucket.
+func TestTokenReusesAShortTokenUntilHalfwayThroughItsLife(t *testing.T) {
+	broker := newStubBroker(t, func(n int, _ url.Values) (int, map[string]any) {
+		return 200, map[string]any{"access_token": "token-" + strconv.Itoa(n), "token_type": "DPoP", "expires_in": 300}
+	})
+	now := time.Now()
+	client, err := New(Config{BrokerURL: broker.Address(), Key: testKey(t), Subject: projectedStub(), Now: func() time.Time { return now }})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	ctx := context.Background()
+	first, err := client.Token(ctx)
+	if err != nil {
+		t.Fatalf("Token: %v", err)
+	}
+	now = now.Add(100 * time.Second)
+	if again, err := client.Token(ctx); err != nil || again.AccessToken != first.AccessToken {
+		t.Fatalf("Token 100 s into a token of 300 s = %v, %v; want the token in hand", again, err)
+	}
+	if trades := len(broker.Requests()); trades != 1 {
+		t.Fatalf("the broker saw %d trades by 100 s into a token of 300 s, want 1", trades)
+	}
+	now = now.Add(60 * time.Second)
+	if renewed, err := client.Token(ctx); err != nil || renewed.AccessToken == first.AccessToken {
+		t.Fatalf("Token 160 s into a token of 300 s = %v, %v; want a fresh token past the halfway mark", renewed, err)
+	}
+	if trades := len(broker.Requests()); trades != 2 {
+		t.Fatalf("the broker saw %d trades by 160 s into a token of 300 s, want 2", trades)
+	}
+}
+
 // readRenewalCorpus is testdata/renewal.json, refused where it is not version 1 with rows.
 func readRenewalCorpus(t *testing.T) renewalCorpus {
 	t.Helper()
@@ -392,6 +432,11 @@ func TestARetriedTradeIsLoggedAsWhatHappened(t *testing.T) {
 		{name: "a proof with no nonce", status: 400, code: "use_dpop_nonce",
 			body: map[string]any{"error": "use_dpop_nonce", "error_description": "the broker wants a nonce in the proof"}},
 		{name: "a broker answering 503", status: 503, body: map[string]any{"error": "unavailable"}},
+		// The broker's answer to a machine login's trade while Dispatch cannot be asked what kind
+		// of member the login's approver is, as through a restart of Dispatch: no person acts, and
+		// the loop trades again on its schedule until Dispatch answers.
+		{name: "a broker that cannot ask Dispatch a member kind", status: 503, body: map[string]any{"error": "temporarily_unavailable",
+			"error_description": "Dispatch could not be asked what kind of member the machine login's approver is, so this broker cannot tell whether the token is held to one project; try again."}},
 		{name: "a broker answering nothing", down: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

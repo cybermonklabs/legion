@@ -81,7 +81,11 @@
 # has carried that change since, so `--base-rev main@origin` is no longer a negative control for
 # them. The INFRA-2747 row passes there too: with nothing taken out of its copy, that listener's
 # copy names the restarted holder's role as the claim record does. That row's negative control is
-# SMOKE_DROP_ROLE_FROM_COPY=1 against a scratch build, below.
+# SMOKE_DROP_ROLE_FROM_COPY=1 against a scratch build, below. The revision must be a5f0cf479ba
+# (2026-10-27) or newer: the listener is run with PORT=0 and its port is read from the `addr` of
+# its "envoy-listener listening" line (local-stack.sh's listener_addr), which an older listener
+# logs as the address it was configured with, `127.0.0.1:0`, rather than the one it bound. Such a
+# run waits out the 90 s and refuses with "the listener reported no address it serves on".
 #
 # `--listener-bin <path>` runs that built listener in place of building one, so a control can run
 # a scratch build; natsd is still built from this checkout. A path that is not an executable file
@@ -181,10 +185,8 @@ readonly repo_root
 readonly drivers="${script_dir}/role-takeover"
 readonly channel_server="${repo_root}/packages/claude-envoy/bin/envoy-channel.ts"
 
-# The loopback stack this smoke shares with smoke-registration-stall.sh (--local-stack): the
-# ports, the two builds, what each service is run as and when it is up. `pick_port` reports an
-# exhausted range the way everything else here refuses.
-local_stack_fail=refuse
+# The loopback stack this smoke shares with smoke-registration-stall.sh (--local-stack): the two
+# builds, what each service is run as, when it is up and the ports it reports it bound.
 # shellcheck source=packages/pi-envoy/scripts/local-stack.sh
 source "${script_dir}/local-stack.sh"
 
@@ -247,8 +249,6 @@ done
   refuse "the Claude Code channel server (${channel_server}) is not readable"
 [[ -f "${repo_root}/node_modules/nats/package.json" ]] ||
   refuse "${repo_root}/node_modules has no nats package: run bun install in the checkout"
-
-port_range
 
 # ---- scratch, processes and teardown ----------------------------------------------------------
 work="$(mktemp -d "${TMPDIR:-/tmp}/smoke-role-takeover.XXXXXX")"
@@ -407,24 +407,26 @@ readonly listener_exe listener_under_test
 ((drop_role_from_copy == 0)) ||
   note "SMOKE_DROP_ROLE_FROM_COPY=1: the live restart row drops its role from the listener's copy of the role claims"
 
-pick_port nats_port
-pick_port monitor_port
-pick_port listener_port
-readonly nats_port monitor_port listener_port
-readonly envoy_url="http://127.0.0.1:${listener_port}"
-readonly nats_url="nats://127.0.0.1:${nats_port}"
-
-set_natsd_argv "${work}/bin/natsd" "$nats_port" "$monitor_port" "${work}/nats-store"
+# natsd and the listener each bind ports the kernel chooses and report them, so no port of theirs
+# is one this script picked and another process could have taken first.
+set_natsd_argv "${work}/bin/natsd" "${work}/nats-store" monitor
 (exec env -i PATH="$PATH" HOME="${work}/nats-home" "${natsd_argv[@]}") \
   >"${work}/logs/natsd.log" 2>&1 &
 service_pids+=($!)
 wait_for 60 natsd_serving "${work}/logs/natsd.log" ||
   refuse "natsd did not start: $(tail -n 5 "${work}/logs/natsd.log")"
+nats_port="" monitor_port=""
+if ! natsd_port "${work}/logs/natsd.log" client nats_port ||
+  ! natsd_port "${work}/logs/natsd.log" monitor monitor_port; then
+  refuse "natsd is serving but reported no client or monitoring port: $(tail -n 5 "${work}/logs/natsd.log")"
+fi
+readonly nats_port monitor_port
+readonly nats_url="nats://127.0.0.1:${nats_port}"
 note "natsd serves ${nats_url} (monitoring 127.0.0.1:${monitor_port})"
 
 # The two windows this run's listener carries are appended to the assignments local-stack.sh
 # hands out, so the two smokes that share that file are run exactly as they were.
-set_listener_env "$listener_port" "$nats_url" "smoke-role-takeover-$$"
+set_listener_env "$nats_url" "smoke-role-takeover-$$"
 listener_env+=(
   ENVOY_SESSION_LIVE_WINDOW="$session_live_window"
   ENVOY_ROLE_CLAIM_REAP_INTERVAL="$role_claim_reap_interval"
@@ -432,6 +434,10 @@ listener_env+=(
 (exec env -i PATH="$PATH" HOME="${work}/listener-home" "${listener_env[@]}" \
   "$listener_exe") >"${work}/logs/listener.log" 2>&1 &
 service_pids+=($!)
+wait_for 90 listener_addr "${work}/logs/listener.log" ||
+  refuse "the listener reported no address it serves on: $(tail -n 5 "${work}/logs/listener.log")"
+envoy_url="http://$(listener_addr "${work}/logs/listener.log")"
+readonly envoy_url
 wait_for 90 listener_healthy "$envoy_url" ||
   refuse "the listener did not become healthy: $(tail -n 5 "${work}/logs/listener.log")"
 note "the listener is healthy at ${envoy_url}"

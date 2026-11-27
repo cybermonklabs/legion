@@ -20,9 +20,21 @@
  *  `unchangedByTheMove` is what the map says of every other moved row, and it lives here
  *  beside the exceptions so that one file holds both halves of the claim: the generation
  *  writes it, and `e2e/__tests__/row-map.test.ts` holds a row with a note to carrying its note
- *  and not that sentence. */
+ *  and not that sentence. `newInTheStubbedLayer` is what it says of every row of a spec file
+ *  written in the stubbed layer from the start, keyed by that file: such a row never moved, so
+ *  neither sentence about a move is true of it. */
 export const unchangedByTheMove =
   "unchanged - the move renames the file, lifts the shared seeding into the fixture and adds the lane tag to the title, and touches no line of what the row asserts";
+
+const NEW_IN_THE_STUBBED_LAYER =
+  "new - written in the stubbed layer from the start (dispatch://INFRA-5200), with no real-stack copy that moved";
+
+/** The stubbed spec files whose rows were written there from the start, by file. */
+export const newInTheStubbedLayer: Readonly<Record<string, string>> = {
+  "issue-header-layout.stub.e2e.ts": NEW_IN_THE_STUBBED_LAYER,
+  "layout-measure.stub.e2e.ts": NEW_IN_THE_STUBBED_LAYER,
+  "layout-rule.stub.e2e.ts": NEW_IN_THE_STUBBED_LAYER,
+};
 
 /** The rows the sentence above is false for, keyed by the spec file and the title the listing
  *  gives, joined by ` › `. */

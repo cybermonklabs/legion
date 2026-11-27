@@ -48,6 +48,22 @@ type sizes struct {
 	Events       int
 	Sessions     int
 
+	// WindowDeliveries is the events of a person's words the seed delivers to sessions inside
+	// the agents' answers window (writeDeliveries), one item each. 2,000 is the order of the
+	// 1,817 buffer reads a call that production's answers read made over its window, so a read of
+	// every delivery in the window reads the order of what production's read reads.
+	WindowDeliveries int
+	// WindowSessions is the sessions those deliveries reach beside the old session: the order of
+	// the 383 to 406 sessions that read the answers route in three minutes of production.
+	WindowSessions int
+	// OldDeliveries is the deliveries to the old session over the 60 days that end four days
+	// before the window starts (planDeliveries), and OldSessionWindowDeliveries its deliveries
+	// inside the window. Neither is production's: they make the one session whose many
+	// deliveries before the window the answers read must not read, and give that session a read
+	// of its own in the window.
+	OldDeliveries              int
+	OldSessionWindowDeliveries int
+
 	// Mentions is the 100,000 rows of `refs`, and BlockMentions the 50,000 rows spread over
 	// `block_refs`, `comment_block_refs` and `message_block_refs`. Every mention a document, a
 	// comment or a message writes lies inside one of its blocks, so it writes a row of both
@@ -129,6 +145,11 @@ func newSizes(scale float64) sizes {
 		Components:           at(200),
 		Priorities:           20,
 		Advances:             at(4_000),
+
+		WindowDeliveries:           at(2_000),
+		WindowSessions:             at(400),
+		OldDeliveries:              at(10_000),
+		OldSessionWindowDeliveries: at(20),
 	}
 	// Each issue owns a primary document, so the extra documents are what is left; and a scale
 	// that leaves fewer documents than issues still gives every issue its primary one.
@@ -160,6 +181,19 @@ func newSizes(scale float64) sizes {
 	// whose issues cannot hold the whole figure takes as many pairs as they have.
 	if most := s.Issues * min(s.Priorities, contracts.MaxIssueAdvances); s.Advances > most {
 		s.Advances = most
+	}
+	// The old session's first deliveries in the window take the five types in turn
+	// (planDeliveries), so its own read lists every kind of item at any scale, and the window
+	// holds them. The answers read's three subjects are three sessions: the old one and two of
+	// the others.
+	if s.OldSessionWindowDeliveries < len(deliveryTypes) {
+		s.OldSessionWindowDeliveries = len(deliveryTypes)
+	}
+	if s.WindowDeliveries < s.OldSessionWindowDeliveries {
+		s.WindowDeliveries = s.OldSessionWindowDeliveries
+	}
+	if s.WindowSessions < 2 {
+		s.WindowSessions = 2
 	}
 	return s
 }

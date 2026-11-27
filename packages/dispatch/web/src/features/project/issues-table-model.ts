@@ -421,7 +421,7 @@ export function mergeMembers(issues: readonly IssueSummary[], source: string): s
       while (parent !== null && parent !== source && !seen.has(parent)) {
         seen.add(parent);
         const intermediate = byKey.get(parent);
-        if (!intermediate || intermediate.status !== "done") return false;
+        if (intermediate?.status !== "done") return false;
         parent = intermediate.parent;
       }
       return parent === source;

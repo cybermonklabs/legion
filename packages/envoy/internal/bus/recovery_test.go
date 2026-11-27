@@ -98,16 +98,11 @@ func TestPublishBoundsReconnectWhenNATSUnavailable(t *testing.T) {
 				})
 			}()
 
-			select {
-			case err := <-result:
-				if err == nil {
-					t.Fatal("publish unexpectedly succeeded without NATS")
-				}
-				if elapsed := time.Since(started); elapsed > 6*time.Second {
-					t.Fatalf("publish returned after %s, want a bounded reconnect within 6s", elapsed)
-				}
-			case <-time.After(6 * time.Second):
-				t.Fatal("publish remained blocked after the reconnect deadline")
+			if err := testwait.Receive(t, "the publish without NATS to return", result); err == nil {
+				t.Fatal("publish unexpectedly succeeded without NATS")
+			}
+			if elapsed := time.Since(started); elapsed > 6*time.Second {
+				t.Fatalf("publish returned after %s, want a bounded reconnect within 6s", elapsed)
 			}
 		})
 	}
@@ -265,13 +260,8 @@ func TestReconnectHooksRunWhileTheDurableCannotBind(t *testing.T) {
 			if err := tc.reconnect(client); err != nil {
 				t.Fatalf("reconnect: %v", err)
 			}
-			select {
-			case conn := <-hooked:
-				if conn != client.Conn {
-					t.Fatal("the reconnect hook ran on a connection the client no longer has")
-				}
-			case <-time.After(15 * time.Second):
-				t.Fatal("the reconnect hook never ran while the durable refuses the bind")
+			if conn := testwait.Receive(t, "the reconnect hook to run while the durable refuses the bind", hooked); conn != client.Conn {
+				t.Fatal("the reconnect hook ran on a connection the client no longer has")
 			}
 			if client.SubOK() {
 				t.Fatal("SubOK reports the durable bound while another connection holds it")
@@ -331,19 +321,11 @@ func TestReconnectHooksRunOneAtATimeOnceForEachEventBetweenRuns(t *testing.T) {
 	})
 
 	client.Conn.Close()
-	select {
-	case <-ended:
-	case <-time.After(30 * time.Second):
-		t.Fatal("the hooks never ran on the connection the recovery dialed")
-	}
+	testwait.Receive(t, "the hooks to run on the connection the recovery dialed", ended)
 	if err := client.Conn.ForceReconnect(); err != nil {
 		t.Fatalf("reconnect the replacement in place: %v", err)
 	}
-	select {
-	case <-ended:
-	case <-time.After(30 * time.Second):
-		t.Fatal("the hooks never ran for the in-place reconnect")
-	}
+	testwait.Receive(t, "the hooks to run for the in-place reconnect", ended)
 	// The recovery keeps retrying the refused restore, one attempt at a time, and each attempt asks
 	// rewatch for a run before it logs its failure. An attempt that begins after the reconnect's run
 	// has ended finds what every later attempt finds, both events covered and no event since, and the
@@ -394,16 +376,12 @@ func TestAFailedRunOfTheReconnectHooksRunsAgainWithoutAnotherConnectionEvent(t *
 	}
 	var recoveryGoroutine uint64
 	for run := 1; run <= 2; run++ {
-		select {
-		case got := <-ran:
-			if got.conn != client.Conn {
-				t.Fatalf("run %d of the reconnect hooks was on a connection the client no longer has", run)
-			}
-			if run == 2 {
-				recoveryGoroutine = got.goroutine
-			}
-		case <-time.After(15 * time.Second):
-			t.Fatalf("the reconnect hooks ran %d time(s) after an in-place reconnect whose first run failed; want them run again", run-1)
+		got := testwait.Receive(t, fmt.Sprintf("run %d of the reconnect hooks after an in-place reconnect whose first run failed", run), ran)
+		if got.conn != client.Conn {
+			t.Fatalf("run %d of the reconnect hooks was on a connection the client no longer has", run)
+		}
+		if run == 2 {
+			recoveryGoroutine = got.goroutine
 		}
 	}
 	if reconnects := client.Conn.Stats().Reconnects; reconnects != 1 {
@@ -445,12 +423,7 @@ func TestAConnectionThatClosesAsARecoveryEndsIsRecovered(t *testing.T) {
 	})
 
 	client.Conn.Close()
-	var dialed *natsgo.Conn
-	select {
-	case dialed = <-running:
-	case <-time.After(30 * time.Second):
-		t.Fatal("the recovery never ran the hooks on the connection it dialed")
-	}
+	dialed := testwait.Receive(t, "the recovery to run the hooks on the connection it dialed", running)
 	dialed.Close()
 	// The closed callback runs on the connection's callback goroutine and starts its recovery at
 	// once; a second is ample for that recovery to find the first still running.
@@ -510,26 +483,12 @@ func TestAnInPlaceReconnectDoesNotWaitForABindInFlight(t *testing.T) {
 		}, natsgo.Bind(bus.Stream, consumer), natsgo.ManualAck())
 		bound <- bindResult{err: err, at: time.Now()}
 	}()
-	select {
-	case <-proxy.swallowed:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the bind's consumer lookup never reached the link")
-	}
+	testwait.Receive(t, "the bind's consumer lookup to reach the link", proxy.swallowed)
 	dropped := time.Now()
 	proxy.drop()
 
-	var hookedAt time.Time
-	select {
-	case hookedAt = <-hooked:
-	case <-time.After(30 * time.Second):
-		t.Fatal("the reconnect hooks never ran")
-	}
-	var bind bindResult
-	select {
-	case bind = <-bound:
-	case <-time.After(30 * time.Second):
-		t.Fatal("the bind whose lookup was lost never returned")
-	}
+	hookedAt := testwait.Receive(t, "the reconnect hooks to run", hooked)
+	bind := testwait.Receive(t, "the bind whose lookup was lost to return", bound)
 	if bind.err == nil {
 		t.Fatal("the bind whose lookup the link lost succeeded, so nothing was in flight across the reconnect")
 	}
@@ -854,13 +813,8 @@ func TestReconnectHookRunsAfterReconnect(t *testing.T) {
 	if err := client.Conn.ForceReconnect(); err != nil {
 		t.Fatalf("force reconnect: %v", err)
 	}
-	select {
-	case conn := <-hookRan:
-		if conn != client.Conn {
-			t.Fatal("reconnect hook received a stale connection")
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("reconnect hook did not run")
+	if conn := testwait.Receive(t, "the reconnect hook to run", hookRan); conn != client.Conn {
+		t.Fatal("reconnect hook received a stale connection")
 	}
 }
 
@@ -886,13 +840,8 @@ func TestDisconnectHookRunsBeforeTheReconnectHook(t *testing.T) {
 		t.Fatalf("force reconnect: %v", err)
 	}
 	for _, want := range []string{"disconnected", "reconnected"} {
-		select {
-		case got := <-events:
-			if got != want {
-				t.Fatalf("hook ran %q, want %q next", got, want)
-			}
-		case <-time.After(5 * time.Second):
-			t.Fatalf("the %s hook did not run", want)
+		if got := testwait.Receive(t, "the "+want+" hook to run", events); got != want {
+			t.Fatalf("hook ran %q, want %q next", got, want)
 		}
 	}
 }
@@ -1138,15 +1087,8 @@ func TestARefusedStartLeavesNoConnectionOpen(t *testing.T) {
 	if got := logs.count(name, "envoy nats recovery attempt"); got != 0 {
 		t.Errorf("the recovery the refused start's close began made %d attempt(s), want none", got)
 	}
-	deadline := time.Now().Add(5 * time.Second)
-	for {
+	testwait.UntilPolling(t, 10*time.Millisecond, "the server to hold no connection of the refused start (the last read is the ones it held)", func() ([]uint64, bool) {
 		open := connections()[name]
-		if len(open) == 0 {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the server holds connection(s) %v of the refused start, want none", open)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+		return open, len(open) == 0
+	})
 }

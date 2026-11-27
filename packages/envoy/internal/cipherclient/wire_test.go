@@ -165,12 +165,13 @@ func TestTheWireCorpusHoldsThisClient(t *testing.T) {
 }
 
 // corpusSource is the identity an entry's subject names, built from the real reader wherever one
-// exists: a projected token is read from a file this test writes, and a machine's Google
-// identity token is read from a metadata server this test serves. A person's sign-in is scripted
-// here, its own reader being the device grant, which TestDeviceSignIn drives against a real
-// issuer. A machine login's access token is scripted too: this client trades none of its own,
-// and the TypeScript client's device login (packages/cipher-client/src/device-login.ts) is the
-// reader that suite builds for it, so the entry holds this client to the same request.
+// exists: a projected token is read from a file this test writes, a machine's Google identity
+// token from a metadata server this test serves, and a GitHub Actions run's token from a GitHub
+// endpoint this test serves. A person's sign-in is scripted here, its own reader being the device
+// grant, which TestDeviceSignIn drives against a real issuer. A machine login's access token is
+// scripted too: this client trades none of its own, and the TypeScript client's device login
+// (packages/cipher-client/src/device-login.ts) is the reader that suite builds for it, so the
+// entry holds this client to the same request.
 func corpusSource(t *testing.T, spec corpusToken) Source {
 	t.Helper()
 	switch spec.Kind {
@@ -182,6 +183,8 @@ func corpusSource(t *testing.T, spec corpusToken) Source {
 		return NewProjectedToken(path)
 	case "google-metadata":
 		return metadataSource(t, spec.Token)
+	case "github-actions-run":
+		return actionsSource(t, spec.Token)
 	case "person-device-sign-in":
 		return &scriptedSource{token: spec.Token, tokenType: spec.TokenType, describe: "a person's sign-in"}
 	case "machine-login-access-token":
@@ -209,6 +212,26 @@ func metadataSource(t *testing.T, token string) Source {
 	server := newStubMetadata(t, audience, token)
 	t.Setenv("GCE_METADATA_HOST", server)
 	return NewMetadataIdentity(audience)
+}
+
+// actionsSource serves GitHub's OIDC token endpoint answering token, and the identity of the run
+// that reads it. It refuses a request that does not ask the way the contract says: the request
+// token as its bearer and the audience in its query.
+func actionsSource(t *testing.T, token string) Source {
+	t.Helper()
+	const audience = "https://cipher.example"
+	server := newRawServer(t, func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Header.Get("Authorization") != "bearer "+actionsRequestToken:
+			http.Error(w, "another request token", http.StatusUnauthorized)
+		case r.URL.Query().Get("audience") != audience:
+			http.Error(w, "another audience", http.StatusBadRequest)
+		default:
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]string{"value": token})
+		}
+	})
+	return &GitHubActionsIdentity{RequestURL: server + "/idtoken", RequestToken: actionsRequestToken, Audience: audience, HTTP: HTTPClient()}
 }
 
 // checkRequest holds one trade to the corpus entry: the endpoint, the whole form, and the whole

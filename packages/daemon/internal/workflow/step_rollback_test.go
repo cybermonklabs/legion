@@ -64,7 +64,7 @@ func TestAStepTheEarlierReleaseStartedEndsInARecordOfItsOwn(t *testing.T) {
 					if err != nil {
 						return err
 					}
-					return engine.recordPass(ctx, tx, *issue, w.Task, phase.Testing, phase.Implementing, nil)
+					return engine.recordPass(ctx, tx, *issue, w.Task, phase.Testing, phase.Implementing, nil, false)
 				})
 			}
 			execSQL(t, pool, `update issues set phase = 'testing' where key = 'LEGION-208'`)

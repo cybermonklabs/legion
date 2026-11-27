@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { ROLE_TOPIC_PREFIX } from "@legion/contracts";
+import { BUS_UNANSWERED_PREFIX, ROLE_TOPIC_PREFIX } from "@legion/contracts";
 import { messageFor } from "@legion/envoy-client/errors";
 import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer";
 import {
@@ -18,9 +18,10 @@ import {
   type DialLimit,
   type RegistrationInput,
   type RegistrationState,
-  taskWasAbandoned,
+  type RoleClaimOutcome,
 } from "./registration-state";
 import type { SessionInbound } from "./session-inbound";
+import { taskWasAbandoned } from "./task-queue";
 
 /** The deadline rejection the queue answers with, which the module names through its predicate:
  *  the error class itself is private to it. */
@@ -44,6 +45,13 @@ const interestFor = (sessionID: string): Interest => ({
   machine_id: "machine-1",
   dir: "/w",
   topics: [],
+});
+
+/** The listener's grant of a claim for `sessionID`, with the warnings it answered it with. */
+const grantFor = (sessionID: string, warnings: readonly string[] = []): SetRoleResult => ({
+  claimed: true,
+  interest: interestFor(sessionID),
+  warnings,
 });
 
 // Every registration a listener accepts answers the session's own consumer: this module carries
@@ -82,6 +90,19 @@ const apiError = (status: number): EnvoyApiError =>
     url: "/v1/roles/alpha",
     status,
     responseBody: JSON.stringify({ error: "no live holder" }),
+  });
+
+/** The listener's bus-outage error, answered with `status`: under 503 it is the answer the
+ *  listener gives when its message bus did not answer (here a filter update that met a NATS
+ *  reconnect, after the record was written), and under any other status it is not. */
+const busOutageAnswer = (status: number): EnvoyApiError =>
+  new EnvoyApiError({
+    method: "POST",
+    url: "/v1/interests/unsubscribe",
+    status,
+    responseBody: JSON.stringify({
+      error: `${BUS_UNANSWERED_PREFIX}: set the filter of ses_a's session consumer: bus: NATS is reconnecting`,
+    }),
   });
 
 /** What a test moves while a task is parked: the open session, the deadline, each listener call. */
@@ -124,7 +145,7 @@ interface Harness {
   readonly claims: SetRoleInput[];
   readonly fakeConnection: (name: string) => SessionInbound;
   /** Claims `role` for `id` through a settled role move, as a healthy pass does. */
-  readonly hold: (role: string, id: string) => Promise<boolean | undefined>;
+  readonly hold: (role: string, id: string) => Promise<RoleClaimOutcome | undefined>;
 }
 
 function createHarness(): Harness {
@@ -155,7 +176,7 @@ function createHarness(): Harness {
     open: "",
     deadlineMs: 60_000,
     subscribe: async (input) => subscribeResultFor(input.sessionID),
-    setRole: async () => ({ claimed: true, interest: interestFor("ses_a") }),
+    setRole: async () => grantFor("ses_a"),
     getRole: async (role) => ({ role, holder: "", last_seen: 1, state: "gone" }),
     getInterest: async (sessionID) => interestFor(sessionID),
     unsubscribe: async () => {},
@@ -197,6 +218,9 @@ function createHarness(): Harness {
   const state = createRegistrationState({
     client: () => client,
     sessionOpen: (id) => id === control.open,
+    // No row here stops the session: the extension's rows drive a stop
+    // (`extensions/stopping-registration.test.ts`).
+    stopping: () => false,
     deadlineMs: () => control.deadlineMs,
     notify: (message, level) => notices.push({ message, level }),
     log: { warn: (message, context) => warnings.push({ message, context }) },
@@ -605,7 +629,10 @@ describe("the serial queues", () => {
     const running = state.passes.run(async (handle) => {
       handle.actFor("ses_a");
       await handle.readInterest("ses_a");
-      await handle.unregisterTopics("ses_a", ["notifications.slack.channel.C1"], "envoy: nope");
+      await handle.unregisterTopics("ses_a", ["notifications.slack.channel.C1"], {
+        failed: "envoy: nope",
+        busUnanswered: "envoy: nope",
+      });
       return true;
     });
     await read.promise;
@@ -620,19 +647,17 @@ describe("the serial queues", () => {
     control.open = "ses_a";
     const unregistered = await state.passes.run(async (handle) => {
       handle.actFor("ses_a");
-      await handle.unregisterTopics(
-        "ses_a",
-        ["notifications.slack.channel.C1"],
-        "envoy: could not unregister a resumed controller's retired Slack topics"
-      );
+      await handle.unregisterTopics("ses_a", ["notifications.slack.channel.C1"], {
+        failed: "envoy: could not unregister a resumed controller's retired Slack topics",
+        busUnanswered: "envoy: the bus did not answer",
+      });
       control.unsubscribe = async () => {
         throw apiError(503);
       };
-      await handle.unregisterTopics(
-        "ses_a",
-        ["notifications.slack.channel.C2"],
-        "envoy: could not unregister a resumed controller's retired Slack topics"
-      );
+      await handle.unregisterTopics("ses_a", ["notifications.slack.channel.C2"], {
+        failed: "envoy: could not unregister a resumed controller's retired Slack topics",
+        busUnanswered: "envoy: the bus did not answer",
+      });
       return true;
     });
     expect(unregistered).toBe(true);
@@ -647,6 +672,72 @@ describe("the serial queues", () => {
           sessionID: "ses_a",
           topics: ["notifications.slack.channel.C2"],
           error: messageFor(apiError(503)),
+        },
+      },
+    ]);
+  });
+
+  // The listener answers a bus outage after it wrote the record, when only the filter update met
+  // a NATS reconnect, so the warning that says the topics stayed registered is for every other
+  // failure: another 503, the same words under a 500, and no answer at all.
+  test("an unregister the listener's message bus did not answer warns in the caller's words for that outage, and any other failure in its words for a failure", async () => {
+    const { state, control, warnings } = createHarness();
+    control.open = "ses_a";
+    const words = {
+      failed: "envoy: the topics were not unregistered",
+      busUnanswered: "envoy: the bus did not answer the unregister",
+    };
+    const unanswered = busOutageAnswer(503);
+    const starting = apiError(503);
+    const broken = busOutageAnswer(500);
+    const unreachable = new TypeError("fetch failed");
+    await state.passes.run(async (handle) => {
+      handle.actFor("ses_a");
+      for (const [topic, error] of [
+        ["notifications.slack.channel.C1", unanswered],
+        ["notifications.slack.channel.C2", starting],
+        ["notifications.slack.channel.C3", broken],
+        ["notifications.slack.channel.C4", unreachable],
+      ] as const) {
+        control.unsubscribe = async () => {
+          throw error;
+        };
+        await handle.unregisterTopics("ses_a", [topic], words);
+      }
+      return true;
+    });
+
+    expect(warnings).toEqual([
+      {
+        message: words.busUnanswered,
+        context: {
+          sessionID: "ses_a",
+          topics: ["notifications.slack.channel.C1"],
+          error: messageFor(unanswered),
+        },
+      },
+      {
+        message: words.failed,
+        context: {
+          sessionID: "ses_a",
+          topics: ["notifications.slack.channel.C2"],
+          error: messageFor(starting),
+        },
+      },
+      {
+        message: words.failed,
+        context: {
+          sessionID: "ses_a",
+          topics: ["notifications.slack.channel.C3"],
+          error: messageFor(broken),
+        },
+      },
+      {
+        message: words.failed,
+        context: {
+          sessionID: "ses_a",
+          topics: ["notifications.slack.channel.C4"],
+          error: messageFor(unreachable),
         },
       },
     ]);
@@ -786,6 +877,147 @@ describe("deregister", () => {
   });
 });
 
+describe("handBackAllHolds", () => {
+  // The stop's own lines for a hand-back that failed (`HandBackLedger.handBackAll`).
+  const STOP_NOT_HANDED_BACK = "envoy: the stop did not hand back a role this process held";
+  const STOP_HAND_BACK_UNANSWERED =
+    "envoy: the listener's message bus did not answer the stop's hand-back of a role this process held. The listener may already have freed the claim. The registry may already be without the role's topic.";
+  /** The stop's own writer, which the host hands the hand-back: the host's logger, with no
+   *  tell gate. */
+  const stopLog = () => {
+    const lines: { readonly message: string; readonly context: unknown }[] = [];
+    return {
+      lines,
+      log: { warn: (message: string, context?: unknown) => void lines.push({ message, context }) },
+    };
+  };
+
+  test("hands back the role held and every hold given up, each naming this process, and changes no state", async () => {
+    const harness = createHarness();
+    const { state, control, releases } = harness;
+    await harness.hold("alpha", "ses_a");
+    // A move to beta whose hand-back of alpha the listener refused: alpha under ses_a is
+    // abandoned.
+    control.unsubscribe = async () => {
+      throw new Error("listener failed");
+    };
+    await state.adoptClaimAfterSessionMoved(BETA, "ses_b", ALPHA, "ses_a");
+    // A claim the listener granted after its task's deadline: gamma under ses_c is pending.
+    const gamma = `${ROLE_TOPIC_PREFIX}gamma`;
+    state.recordClaimAfterDeadline(gamma, "ses_c");
+    control.unsubscribe = async () => {};
+    releases.length = 0;
+
+    await state.handBackAllHolds(stopLog().log);
+
+    expect(
+      releases.map(({ sessionID, topics, clientInstanceID }) => ({
+        sessionID,
+        topics,
+        clientInstanceID,
+      }))
+    ).toEqual(
+      expect.arrayContaining([
+        { sessionID: "ses_b", topics: [BETA], clientInstanceID: state.clientInstanceID },
+        { sessionID: "ses_c", topics: [gamma], clientInstanceID: state.clientInstanceID },
+        { sessionID: "ses_a", topics: [ALPHA], clientInstanceID: state.clientInstanceID },
+      ])
+    );
+    expect(releases).toHaveLength(3);
+    // Nothing runs after a stop, so nothing is recorded either.
+    expect(state.heldRole()).toBe("beta");
+    expect(state.holdSessionID()).toBe("ses_b");
+  });
+
+  test("sends the releases side by side, and one the listener refuses is warned about and stops none of the others", async () => {
+    const harness = createHarness();
+    const { state, control, releases, warnings } = harness;
+    await harness.hold("alpha", "ses_a");
+    state.recordClaimAfterDeadline(BETA, "ses_b");
+    const held = Promise.withResolvers<void>();
+    control.unsubscribe = async (input) => {
+      if (input.sessionID === "ses_a") throw new Error("listener failed");
+      await held.promise;
+    };
+
+    const stop = stopLog();
+    const handingBack = state.handBackAllHolds(stop.log);
+    // Both are on the wire while the second is still unanswered.
+    await Promise.resolve();
+    expect(releases.map((release) => release.sessionID).sort()).toEqual(["ses_a", "ses_b"]);
+    held.resolve();
+    await handingBack;
+
+    // The stop's own words, on the stop's own writer: none goes to the module's log, which the
+    // host's tell gate drops once the stop has begun.
+    expect(stop.lines).toEqual([
+      {
+        message: STOP_NOT_HANDED_BACK,
+        context: { topic: ALPHA, sessionID: "ses_a", error: "listener failed" },
+      },
+    ]);
+    expect(warnings).toEqual([]);
+  });
+
+  // Before it answers, the listener frees the claim and takes the role's topic out of the
+  // registry, and its bus can fail to answer after either, so that outage is not warned as a
+  // role not handed back. Every other failure is: another 503, the same words under a 500, and
+  // no answer at all.
+  test("a hand-back the listener's message bus did not answer is warned as that outage, and any other failure as a role not handed back", async () => {
+    const harness = createHarness();
+    const { state, control, warnings } = harness;
+    await harness.hold("alpha", "ses_a");
+    const gamma = `${ROLE_TOPIC_PREFIX}gamma`;
+    const delta = `${ROLE_TOPIC_PREFIX}delta`;
+    state.recordClaimAfterDeadline(BETA, "ses_b");
+    state.recordClaimAfterDeadline(gamma, "ses_c");
+    state.recordClaimAfterDeadline(delta, "ses_d");
+    const failures: Record<string, unknown> = {
+      ses_a: busOutageAnswer(503),
+      ses_b: apiError(503),
+      ses_c: busOutageAnswer(500),
+      ses_d: new TypeError("fetch failed"),
+    };
+    control.unsubscribe = async (input) => {
+      throw failures[input.sessionID];
+    };
+
+    const stop = stopLog();
+    await state.handBackAllHolds(stop.log);
+
+    // The hand-backs go side by side, so the warnings come in no set order.
+    const notHandedBack = STOP_NOT_HANDED_BACK;
+    expect(warnings).toEqual([]);
+    expect(stop.lines).toHaveLength(4);
+    expect(stop.lines).toEqual(
+      expect.arrayContaining([
+        {
+          message: STOP_HAND_BACK_UNANSWERED,
+          context: { topic: ALPHA, sessionID: "ses_a", error: messageFor(failures.ses_a) },
+        },
+        {
+          message: notHandedBack,
+          context: { topic: BETA, sessionID: "ses_b", error: messageFor(failures.ses_b) },
+        },
+        {
+          message: notHandedBack,
+          context: { topic: gamma, sessionID: "ses_c", error: messageFor(failures.ses_c) },
+        },
+        {
+          message: notHandedBack,
+          context: { topic: delta, sessionID: "ses_d", error: messageFor(failures.ses_d) },
+        },
+      ])
+    );
+  });
+
+  test("sends nothing for a process that holds no role and owes no hand-back", async () => {
+    const { state, releases } = createHarness();
+    await state.handBackAllHolds(stopLog().log);
+    expect(releases).toEqual([]);
+  });
+});
+
 describe("clearRefusal", () => {
   test("forgets the role the listener refused to that session", async () => {
     const { state, control } = createHarness();
@@ -795,7 +1027,7 @@ describe("clearRefusal", () => {
       handle.actFor("ses_a");
       return handle.claimRole("alpha", { soft: true });
     });
-    expect(claimed).toBe(false);
+    expect(claimed).toEqual({ claimed: false });
     expect(state.refusalFor("ses_a")).toBe("alpha");
     state.clearRefusal("ses_a");
     expect(state.refusalFor("ses_a")).toBeUndefined();
@@ -921,7 +1153,7 @@ describe("recordClaimAfterDeadline", () => {
     control.setRole = async () => {
       claiming.resolve();
       await release.promise;
-      return { claimed: true, interest: interestFor("ses_a") };
+      return grantFor("ses_a");
     };
     const running = state.roleMoves.run(async (handle) => {
       handle.actFor("ses_a");
@@ -980,7 +1212,7 @@ describe("adoptClaimAfterSessionMoved", () => {
     control.setRole = async () => {
       claiming.resolve();
       await release.promise;
-      return { claimed: true, interest: interestFor("ses_a") };
+      return grantFor("ses_a");
     };
     const refusals: boolean[] = [];
     const running = state.roleMoves.run(
@@ -1160,7 +1392,7 @@ describe("claimRole", () => {
     };
     // The claim of beta landed, so it supersedes the hold of alpha: the claim stands whatever
     // became of that hold's release, and the hold it left behind is abandoned, not forgotten.
-    expect(await harness.hold("beta", "ses_a")).toBe(true);
+    expect(await harness.hold("beta", "ses_a")).toEqual({ claimed: true, warnings: [] });
     expect(state.heldRole()).toBe("beta");
     expect(handBacks).toEqual([`${ALPHA}@ses_a`]);
     expect(warnings).toEqual([
@@ -1224,7 +1456,7 @@ describe("claimRole", () => {
       handle.actFor("ses_a");
       return handle.claimRole("alpha", { soft: true });
     });
-    expect(claimed).toBe(false);
+    expect(claimed).toEqual({ claimed: false });
     expect(state.heldRole()).toBeUndefined();
     expect(state.refusalFor("ses_a")).toBe("alpha");
     expect(warnings.at(-1)?.message).toBe(
@@ -1315,7 +1547,7 @@ describe("claimRole", () => {
     expect(state.refusalFor("ses_a")).toBe("alpha");
     // A hold of the same role this process gave up earlier.
     state.recordClaimAfterDeadline(ALPHA, "ses_a");
-    control.setRole = async () => ({ claimed: true, interest: interestFor("ses_a") });
+    control.setRole = async () => grantFor("ses_a");
     await state.roleMoves.run(async (handle) => {
       handle.actFor("ses_a");
       return handle.claimRole("alpha", { soft: true });
@@ -1337,6 +1569,35 @@ describe("claimRole", () => {
     await expect(state.roleMoves.run(async (handle) => handle.claimRole("alpha"))).rejects.toThrow(
       "has not named the session it acts for"
     );
+  });
+
+  // A claim that names the session it replaces can land and still hand over none of that
+  // session's messages; the listener says so in a warning. Every caller of `claimRole` (a pass, the
+  // Legion plugin's claim, `envoy_role_set`) gets it logged here, and the tool repeats what this
+  // answers to the agent.
+  test("a claim that landed logs each of the listener's warnings with the role and the session, and answers them", async () => {
+    const { state, control, warnings } = createHarness();
+    const handover =
+      "no message of ses_old is handed over to this session: the claim's credential and ses_old's last registration name different principals";
+    const edge =
+      "this edge listener hands over no messages: the unread messages of ses_old stay on its own subject, and a claim through a shared listener hands them to this session";
+    control.open = "ses_a";
+    control.setRole = async () => grantFor("ses_a", [handover, edge]);
+    const claimed = await state.roleMoves.run(async (handle) => {
+      handle.actFor("ses_a");
+      return handle.claimRole("alpha", { previousSessionID: "ses_old" });
+    });
+    expect(claimed).toEqual({ claimed: true, warnings: [handover, edge] });
+    expect(warnings).toEqual([
+      {
+        message: "envoy: the listener warned about a role claim",
+        context: { role: "alpha", sessionID: "ses_a", warning: handover },
+      },
+      {
+        message: "envoy: the listener warned about a role claim",
+        context: { role: "alpha", sessionID: "ses_a", warning: edge },
+      },
+    ]);
   });
 });
 
@@ -1389,6 +1650,19 @@ describe("reassertRole", () => {
       },
     ]);
     expect(harness.state.heldRole()).toBe("alpha");
+  });
+
+  test("a re-assertion that landed logs each of the listener's warnings with the role and the session", async () => {
+    const harness = createHarness();
+    await harness.hold("alpha", "ses_a");
+    const legacy = "alpha is the old form of ACME.alpha; claim ACME.alpha";
+    harness.control.setRole = async () => grantFor("ses_a", [legacy]);
+    harness.warnings.length = 0;
+    expect(await reassert(harness, false)).toEqual({ decided: true, regain: "reclaimed" });
+    expect(harness.warnings[0]).toEqual({
+      message: "envoy: the listener warned about a role claim",
+      context: { role: "alpha", sessionID: "ses_a", warning: legacy },
+    });
   });
 
   // The other half of the same rule: the listener refuses that claim while the other process
@@ -1622,7 +1896,7 @@ describe("a claim the listener refuses", () => {
     expect(harness.warnings).toEqual([]);
     expect(harness.notices).toEqual([]);
     // That process stops renewing, and the very next claim is granted without a session event.
-    harness.control.setRole = async () => ({ claimed: true, interest: interestFor("ses_a") });
+    harness.control.setRole = async () => grantFor("ses_a");
     await harness.state.roleMoves.run(async (handle) => {
       handle.actFor("ses_a");
       return handle.claimRole("alpha", { soft: true });

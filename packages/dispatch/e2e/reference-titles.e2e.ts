@@ -249,10 +249,9 @@ for (const kind of KINDS) {
       await expect(past).not.toContainText("A second version.");
       await expectDrawnTitles(past, kind, target);
 
-      // The reply itself, where a reader meets it on the Inbox: below the reading column's
-      // width a Reply row is the card that draws its thread whole, with live links
-      // (`refresh-freshness.e2e.ts` reads the same row), so each form is a link reading as the
-      // title.
+      // The reply itself, where a reader meets it on the Inbox: in the drawer a Reply row is the
+      // card that draws its thread whole, with live links (`refresh-freshness.e2e.ts` reads the
+      // same row), so each form is a link reading as the title.
       await openInboxReplies(page);
       for (const text of [target.address, `[${target.address}](${target.address})`]) {
         const where = seeded.written.get(text);

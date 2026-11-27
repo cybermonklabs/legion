@@ -82,7 +82,12 @@ import { APPROVAL_FOOT, inboxAt, seedApprovalPlace } from "./inbox-pane-scroll";
 import { withIssuePage } from "./issue-page-option";
 import { pendingWrites } from "./keyed-writes";
 import { expectConversationInFront } from "./live-view-cost";
-import { type ReviewedRoute, reviewRoutes, waitForRouteSettled } from "./review-routes";
+import {
+  listedRequests,
+  type ReviewedRoute,
+  reviewRoutes,
+  waitForRouteSettled,
+} from "./review-routes";
 import { seedReviewRoutes } from "./review-seed";
 import { type Browser, expect, type Page, test } from "./test";
 import { asUser } from "./users";
@@ -275,7 +280,7 @@ for (const routes of routeRows()) {
         await openWithFloats(page, refused.key, route.path(seed));
         for (const size of ROUTE_SIZES) {
           await page.setViewportSize(size);
-          await waitForRouteSettled(page, route);
+          await waitForRouteSettled(page, route, listedRequests(page));
           await expectFootClear(page, cellName(route.name, size, ["pending", "banner"]));
         }
         await dismissBanner(page);
@@ -620,7 +625,7 @@ test("the floats leave the foot of the new issue page's frame clear in every com
     const page = await context.newPage();
     await sweepSurface(page, refused.key, {
       name: "issue-frame",
-      path: `/issues/${reviewed}`,
+      path: `/issues/${reviewed}/conversation`,
       ready: async () => {
         await expect(page.locator("[data-issue-page]")).toHaveCount(1);
         await expect(page.locator("[data-issue-page]")).toContainText(MARGIN_WORDS.at(-1) ?? "");

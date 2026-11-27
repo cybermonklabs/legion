@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/sjawhar/legion/daemon/internal/execfile"
 )
 
 // The image probe's settings hold a contract below one to be none: the probe refuses 0 and a
@@ -16,6 +18,7 @@ import (
 // shows where the line is. internal/api's test of this name drives the daemon's two other readings
 // of a number below one.
 func TestANumberBelowOneIsNoContract(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		contract int
 		refused  bool
@@ -23,7 +26,7 @@ func TestANumberBelowOneIsNoContract(t *testing.T) {
 		t.Run(strconv.Itoa(tc.contract), func(t *testing.T) {
 			g := newProbeRig(t, nil)
 			g.succeeds(okLine(tc.contract) + "\n")
-			p := probeOptions(t)
+			p := probeOptionsToDeadline(t)
 			p.Contract = tc.contract
 
 			err := g.probe(p)
@@ -54,6 +57,7 @@ func TestANumberBelowOneIsNoContract(t *testing.T) {
 // ran nothing. Each run is the wrapper the daemon renders (runStart), with a stand-in bun that
 // leaves the manifest where `bun add` installs pi-legion, and the real node running the check.
 func TestTheKeptPodPluginCheckRefusesAManifestOfAnotherContract(t *testing.T) {
+	t.Parallel()
 	if _, err := exec.LookPath("node"); err != nil {
 		t.Skip("no node in this environment: the install's contract check runs on it")
 	}
@@ -70,7 +74,7 @@ func TestTheKeptPodPluginCheckRefusesAManifestOfAnotherContract(t *testing.T) {
 			dir := t.TempDir()
 			manifest := fmt.Sprintf(`{"name":"@sjawhar/pi-legion","version":%q,"legion":{"daemonApiVersion":%d}}`, plugins.PiLegion, tc.declared)
 			bun := "#!/bin/sh\nmkdir -p node_modules/@sjawhar/pi-legion\nprintf '%s\\n' " + shellQuote(manifest) + " >node_modules/@sjawhar/pi-legion/package.json\n"
-			if err := os.WriteFile(filepath.Join(dir, "bun"), []byte(bun), 0o700); err != nil {
+			if err := execfile.Write(filepath.Join(dir, "bun"), []byte(bun), 0o700); err != nil {
 				t.Fatal(err)
 			}
 			agentLog := filepath.Join(dir, "agent.log")

@@ -8,10 +8,11 @@
 # check refuses a numbered entry added after the cutover. This script is the one round each such
 # branch pays, once.
 #
-# It runs on the current branch against the branch's merge base with main, which must be a commit
-# from before the cutover (one whose version.go declares `const DaemonAPIVersion`): a branch that
-# has already merged the cutover is refused. It reads the branch at HEAD and that base out of git,
-# and does the six steps of the design ("The cutover and open pull requests"):
+# It runs on the current branch against the branch's merge base with main (or with the base branch
+# that --base names), which must be a commit from before the cutover (one whose version.go declares
+# `const DaemonAPIVersion`): a branch that has already merged the cutover is refused. It reads the
+# branch at HEAD and that base out of git, and does the six steps of the design ("The cutover and
+# open pull requests"):
 #
 #   1. Each numbered entry the branch adds, a `// <n>: ` paragraph of version.go that the base does
 #      not hold, becomes a new entry file, packages/daemon/internal/api/contract_<id>_<slug>.go,
@@ -64,22 +65,66 @@
 # before the merge fails. Where the merge conflicts, the conversion alone is committed and the
 # conflicting files are named; the author merges main and runs the `-update` of step 5 by hand.
 #
-#   --main <ref>  main after the cutover, default refs/remotes/origin/main.
+#   --base <ref>  the ref the branch merges, its pull request's base branch: main after the cutover,
+#                 default refs/remotes/origin/main, which messages call main. A branch stacked on
+#                 another branch names that branch, and it takes main's place in each step above:
+#                 the script converts only the entries the branch adds over its merge base with
+#                 that branch, so no entry the base branch converted is converted again under
+#                 another id. A ref whose version.go git cannot read, or that still declares
+#                 `const DaemonAPIVersion`, is refused, naming it: the entry files call
+#                 registerEntry, which a tree from before the cutover does not define. Where it is
+#                 main, fetch main. Where it is the base branch, that branch has not merged the
+#                 cutover yet: convert it if it adds a numbered entry, else merge main into it, then
+#                 run this with --base naming it. A branch stacked on a base branch that main then
+#                 took as a squash, which GitHub retargets to main, still carries that branch's
+#                 entries, and main holds them as entry files: an entry whose text opens an entry
+#                 file of the ref is refused, naming that file; run this with --base naming the base
+#                 branch's last commit before the squash, then merge main. An entry whose constant
+#                 an entry file of the ref declares is refused too, since two declarations of it do
+#                 not compile: the constant it declares, which an edit of its text after the
+#                 conversion leaves as it was, or for an entry that declares none, the one this
+#                 script names it. The refusal names both causes: either it is such an entry, or
+#                 another change took that name, and then the author renames the entry's constant,
+#                 or gives one to an entry that declares none. Not caught: an entry whose text
+#                 changed after its conversion and whose constant is not the one the entry file
+#                 declares, renamed, or named otherwise than at its first conversion (after a
+#                 renumber, or with a `-2` suffix). A branch with more than one merge base with a
+#                 ref that holds the cutover, which merged a commit of the ref's history apart from
+#                 the ref, is refused, naming them: which entries are the branch's own would hang on
+#                 the one git picks. Merge into the branch the ref as it was before it merged the
+#                 cutover. Where that leaves more than one merge base, make the branch that commit
+#                 and its own commits, which leaves that commit the one merge base: `git rebase -i
+#                 <that commit>` and drop each commit that the ref holds (`git merge-base
+#                 --is-ancestor <commit> <ref>` tells one), or cherry-pick the branch's own commits
+#                 onto a branch made at that commit. A commit of a branch the ref does not hold is
+#                 the branch's own work, and stays. A plain `git rebase` replays the commits the ref
+#                 holds too, and their numbered entries would read as the branch's own. A ref that
+#                 has not merged the cutover is refused for that first.
 #   --report      steps 1 to 4 read and nothing done: no file written, no merge, no Go toolchain,
-#                 and no git read but of commits, trees and the blobs of the files the branch
-#                 changed, so it runs in a blobless clone. It prints, for <rev> (default HEAD):
+#                 and no git read but of commits, trees, the blobs of the files the branch changed
+#                 and those of the ref's entry files, so it runs in a blobless clone. It prints, for
+#                 <rev> (default HEAD):
 #                   base <sha> contract <n>                     the merge base and its number
+#                   onmain <n> <number>                         entry <n>, which the ref holds as its
+#                                                               numbered entry <number>
+#                   onmain <n> <file>                           entry <n>, whose text the ref's entry
+#                                                               file <file> opens with, or whose
+#                                                               constant it declares
 #                   entry <n> <constant> <slug> <file:line|->   each entry it would convert
 #                   move <file>:<line> <field> <constant>       each row it would move
 #                   undo <file>                                 each derived copy it would undo
 #                   <file>:<line>: <text>                       each line it would leave
+#                 The entries an onmain line names are refused by the conversion, and the report
+#                 leaves them out of the lines after it. An entry that a file holds by its constant
+#                 can be the branch's own, whose name another change took, so where the report
+#                 leaves out such an entry it does not say the branch adds no entry of its own.
 #
 # Exits 0 when the branch is converted (or adds no numbered entry), and also where a row of a
 # frozen table left for the author keeps step 5 from writing an entry's fixture, which records that
 # row: the author runs the `-update` once the row has moved. Non-zero on a failure.
 #
-# Run from anywhere in the checkout: scripts/daemon-contract-convert.sh [--main <ref>]
-#   or: scripts/daemon-contract-convert.sh --report [--main <ref>] [<rev>]
+# Run from anywhere in the checkout: scripts/daemon-contract-convert.sh [--base <ref>]
+#   or: scripts/daemon-contract-convert.sh --report [--base <ref>] [<rev>]
 # Its test: scripts/daemon-contract-convert.test.sh.
 set -euo pipefail
 
@@ -93,13 +138,15 @@ die() {
 }
 
 report=0
-main=refs/remotes/origin/main
+# The ref the branch merges, and the name messages give it: main, or the ref --base names.
+onto=refs/remotes/origin/main
+onto_name=main
 rev=
 while [ $# -gt 0 ]; do
   case $1 in
   --report) report=1 ;;
-  --main) main=${2:?--main needs a ref}; shift ;;
-  --main=*) main=${1#--main=} ;;
+  --base) onto=${2:?--base needs a ref}; onto_name=$onto; shift ;;
+  --base=*) onto=${1#--base=}; onto_name=$onto ;;
   -h | --help) sed -n '2,/^set -euo/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//'; exit 0 ;;
   -*) die "unknown option $1" ;;
   *) [ -z "$rev" ] || die "one revision at most"; rev=$1 ;;
@@ -112,15 +159,16 @@ fi
 
 root=$(git rev-parse --show-toplevel) || die "not in a git checkout"
 cd "$root"
-main_sha=$(git rev-parse --verify -q "$main^{commit}") || die "cannot read main at $main"
+onto_sha=$(git rev-parse --verify -q "$onto^{commit}") || die "cannot read $onto"
 head_sha=$(git rev-parse --verify -q "${rev:-HEAD}^{commit}") || die "cannot read ${rev:-HEAD}"
-base=$(git merge-base "$head_sha" "$main_sha") || die "${rev:-HEAD} and $main share no commit"
 
 # convert_py runs the conversion's reading and writing, one phase per call:
-#   analyze report|convert BASE HEAD MAIN STATE REQUESTS REQUESTS_AT
-#                                                  steps 1 to 4 (convert writes them, STATE, and
-#                                                  the entries' request parts at REQUESTS, which
-#                                                  is `git rev-parse --git-path REQUESTS_AT`)
+#   analyze report|convert HEAD MAIN NAME STATE REQUESTS REQUESTS_AT
+#                                                  steps 1 to 4 over the merge base of HEAD and
+#                                                  MAIN, the ref the branch merges, which messages
+#                                                  call NAME (convert writes them, STATE, and the
+#                                                  entries' request parts at REQUESTS, which is
+#                                                  `git rev-parse --git-path REQUESTS_AT`)
 #   finish STATE                                   step 6 and the commit message, after the merge
 convert_py() {
   python3 - "$@" <<'PY'
@@ -143,10 +191,16 @@ STATE_GOLDENS = (f"{FIXTURES}/state.json", f"{FIXTURES}/state-narrowed-repositor
 REQUEST_SHAPES = f"{FIXTURES}/request-shapes.json"
 WHOLE_COPIES = tuple(f"{FIXTURES}/{name}" for name in (
     "version.json", "contract-shapes.json", "request-shapes.json", "answers.json", "enumerated-fields.json"))
-ENTRY_FILE = re.compile(r"(?:^|/)contract_\d{14}_[a-z0-9]+(?:-[a-z0-9]+)*(?:_test)?\.go$")
+# An entry's slug: words of lowercase letters and digits joined by hyphens.
+SLUG_WORDS = r"[a-z0-9]+(?:-[a-z0-9]+)*"
+SLUG = re.compile(rf"^{SLUG_WORDS}$")
+ENTRY_FILE = re.compile(rf"(?:^|/)contract_\d{{14}}_{SLUG_WORDS}(?:_test)?\.go$")
 HEADER = re.compile(r"^// (\d+): (.*)$")
+# The first line of an entry file's text, as entry_file and scripts/daemon-contract-entry.sh write it.
+ENTRY_HEADER = re.compile(rf"^// \d{{14}} {SLUG_WORDS}:(?: (.*))?$")
+# An entry file's declaration of its entry's constant, whose value is the entry's id.
+ENTRY_CONST = re.compile(r"^const (\w+) = \d{14}$", re.M)
 CONST_LINE = re.compile(r"^const DaemonAPIVersion = (\d+)\s*$", re.M)
-SLUG = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 
 # Each frozen table of the base, by the variable it is (or, for the rows enumeratedFields()
 # appends, the function), and the field of contractEntry its rows move to. valueStrips' rows name
@@ -527,10 +581,116 @@ def numbered(text):
     return lines, const, entries
 
 
+def joined(parts):
+    return re.sub(r"\s+", " ", " ".join(parts)).strip()
+
+
 def summary(entry):
     """An entry's first three lines without its number: what a renumber leaves as it was."""
-    text = " ".join([HEADER.match(entry["lines"][0]).group(2)] + [line[2:] for line in entry["lines"][1:3]])
-    return re.sub(r"\s+", " ", text).strip()
+    return joined([HEADER.match(entry["lines"][0]).group(2)] + [line[2:] for line in entry["lines"][1:3]])
+
+
+def entry_files(ref):
+    """Each entry file of ref, as (path, the text it opens with, the constants it declares)."""
+    paths = [p for p in git("ls-tree", "--name-only", ref, f"{API}/").decode().split("\n")
+             if ENTRY_FILE.search(p) and not p.endswith("_test.go")]
+    texts = read_blobs([f"{ref}:{p}" for p in paths])
+    files = []
+    for path in paths:
+        text = texts[f"{ref}:{path}"]
+        if text is None:
+            die(f"cannot read {path} at {ref[:10]}")
+        lines = text.split("\n")
+        first = next((i for i, line in enumerate(lines) if ENTRY_HEADER.match(line)), None)
+        opening = None
+        if first is not None:
+            rest = []
+            for line in lines[first + 1:]:
+                if not line.startswith("//"):
+                    break
+                rest.append(line[2:])
+            opening = joined([ENTRY_HEADER.match(lines[first]).group(1) or ""] + rest)
+        files.append((path, opening, set(ENTRY_CONST.findall(text))))
+    return files
+
+
+def held_by_text(files, entries):
+    """The entry file of files whose text opens with each entry's summary, by the entry's number: an
+    entry file writes the entry's text verbatim after `// <id> <slug>: `."""
+    held = {}
+    for e in entries:
+        want = summary(e)
+        path = next((p for p, opening, _ in files
+                     if opening is not None and (opening == want or opening.startswith(want + " "))), None)
+        if path:
+            held[e["number"]] = path
+    return held
+
+
+def held_by_constant(files, entries):
+    """The entry file of files that declares each entry's constant, by the entry's number: the
+    constant the entry declares, whose name an edit of the text after the conversion leaves as it
+    was, or the one name_entries gives an entry that declares none. A second declaration of it would
+    not compile."""
+    held = {}
+    for e in entries:
+        path = next((p for p, _, consts in files if e["const"] in consts), None)
+        if path:
+            held[e["number"]] = path
+    return held
+
+
+def name_entries(entries):
+    """Each entry's slug, and the constant of each that declares none, as the conversion names them:
+    the slug from the constant the entry declares, else from the issue key its text opens with, else
+    from its number, a later entry of a slug taken getting -2, -3; the constant from the slug."""
+    taken = set()
+    for e in entries:
+        if e["const_path"]:
+            e["slug"] = kebab(re.sub(r"[Cc]ontract$", "", e["const"]))
+        else:
+            key = re.match(r"(?:dispatch://)?([A-Z][A-Z0-9]*-\d+)\b", HEADER.match(e["lines"][0]).group(2))
+            e["slug"] = key.group(1).lower() if key else f"entry-{e['number']}"
+        if not SLUG.match(e["slug"]):
+            e["slug"] = f"entry-{e['number']}"
+        slug, n = e["slug"], 2
+        while e["slug"] in taken:
+            e["slug"], n = f"{slug}-{n}", n + 1
+        taken.add(e["slug"])
+        if not e["const_path"]:
+            e["const"] = lower_camel(e["slug"]) + "Contract"
+
+
+def held_refusal(by_text, by_constant, entries, ref_name):
+    """The refusal of the entries that entry files of the ref, which messages call ref_name, hold: an
+    entry held by its text is a base branch's that the ref took as a squash; an entry held by its
+    constant is that, or the branch's own, whose name another change took, and two declarations of
+    the constant do not compile either way."""
+    squash = f"with --base naming the base branch's last commit before the squash, then merge {ref_name}"
+    either = (": two declarations of one constant in package api do not compile. Either "
+              f"{ref_name} took that entry from a base branch as a squash after the cutover: run this "
+              f"{squash}. Or another change took that name: ")
+    by_number = {e["number"]: e for e in entries}
+    text = [f"entry {n} of this branch is {path} of {ref_name}" for n, path in sorted(by_text.items())]
+    declared, named = [], []
+    for n, path in sorted(by_constant.items()):
+        const = by_number[n]["const"]
+        if by_number[n]["const_path"]:
+            declared.append(f"entry {n} of this branch declares {const}, which {path} of {ref_name} declares too")
+        else:
+            named.append(f"entry {n} of this branch declares no constant, and the one this script names it, "
+                         f"{const}, {path} of {ref_name} declares")
+    refusals = []
+    if text:
+        refusals.append("; ".join(text) + f": the branch carries the entries of a base branch that {ref_name} took "
+                        f"as a squash after the cutover, and would convert them again under other ids. Run this {squash}")
+    if declared:
+        refusals.append("; ".join(declared) + either + "rename the entry's constant in the branch, its declaration "
+                        "and each line that names it, then run this again")
+    if named:
+        refusals.append("; ".join(named) + either + "give the entry a constant of another name in the branch, "
+                        "`const <name>Contract = <its number>` beside the others, then run this again")
+    return ". ".join(refusals)
 
 
 def kebab(name):
@@ -645,12 +805,56 @@ class Edits:
         return text
 
 
-def analyze(mode, base, head, main, state_path, requests_path="", requests_at=""):
-    version_specs = read_blobs([f"{base}:{VERSION_GO}", f"{head}:{VERSION_GO}", f"{main}:{VERSION_GO}"])
-    base_version, head_version = version_specs[f"{base}:{VERSION_GO}"], version_specs[f"{head}:{VERSION_GO}"]
+def merge_bases(head, ref):
+    """Each merge base of head and ref, as `git merge-base --all` prints them: none where the two share
+    no commit, where git exits 1 and prints nothing."""
+    result = subprocess.run(["git", "merge-base", "--all", head, ref], capture_output=True)
+    if result.returncode and (result.returncode != 1 or result.stdout.strip() or result.stderr.strip()):
+        die(f"git merge-base --all {head} {ref}: {result.stderr.decode(errors='replace').strip()}")
+    return result.stdout.decode().split()
+
+
+def before_cutover(name):
+    """The commit a refusal tells the author to merge or rebase onto: name as it was before it merged
+    the cutover."""
+    return (f"{name} as it was before it merged the cutover (the first parent of the commit that took "
+            f"`const DaemonAPIVersion` out of its {VERSION_GO})")
+
+
+def analyze(mode, head, main, main_name, state_path, requests_path="", requests_at=""):
+    bases = merge_bases(head, main)
+    version_specs = read_blobs([f"{rev}:{VERSION_GO}" for rev in (head, main, *bases[:1])])
+    head_version, main_version = (version_specs[f"{rev}:{VERSION_GO}"] for rev in (head, main))
+    # The entry files call registerEntry, which a tree from before the cutover does not define, so the
+    # ref the branch merges must hold the cutover; a version.go that git cannot read shows no cutover,
+    # and is refused too.
+    if main_version is None:
+        die(f"{main_name} ({main[:10]}) holds no {VERSION_GO} that git can read")
+    if CONST_LINE.search(main_version):
+        die(f"{main_name} ({main[:10]}) declares `const DaemonAPIVersion` in {VERSION_GO}: it has not merged the "
+            "cutover, and the entry files would call registerEntry, which it does not define. Where it is main, "
+            "fetch main. Where it is the base branch of a stacked branch, that branch has not merged the cutover "
+            "yet: convert it if it adds a numbered entry, else merge main into it, then run this with --base naming it")
+    # Which entries are the branch's own is read over its merge base with the ref. Where they have more
+    # than one, git picks which it prints, so the branch is refused. That comes after the check of the
+    # cutover above: before_cutover names a commit only a ref that has merged the cutover holds.
+    if not bases:
+        die(f"{head[:10]} and {main_name} share no commit")
+    if len(bases) > 1:
+        die(f"{head[:10]} and {main_name} have {len(bases)} merge bases, {', '.join(b[:10] for b in bases)}: the "
+            f"branch merged a commit of the history of {main_name} apart from {main_name} itself, and which entries "
+            f"are its own would hang on the one git picks. Merge {before_cutover(main_name)} into the branch, then "
+            "run this again. Where that leaves more than one merge base, make the branch that commit and its own "
+            "commits, which leaves that commit the one merge base: `git rebase -i <that commit>` and drop each commit "
+            f"that {main_name} holds (`git merge-base --is-ancestor <commit> {main_name}` tells one), or cherry-pick "
+            "the branch's own commits onto a branch made at that commit. A commit of a branch "
+            f"{main_name} does not hold is the branch's own work, and stays. A plain `git rebase` replays the "
+            f"commits {main_name} holds too, and their numbered entries would read as the branch's own")
+    base = bases[0]
+    base_version = version_specs[f"{base}:{VERSION_GO}"]
     if base_version is None or not CONST_LINE.search(base_version):
-        die(f"the merge base {base[:10]} of {head[:10]} and main declares no `const DaemonAPIVersion` in "
-            f"{VERSION_GO}: the branch has merged main after the cutover, and this script converts a branch "
+        die(f"the merge base {base[:10]} of {head[:10]} and {main_name} declares no `const DaemonAPIVersion` in "
+            f"{VERSION_GO}: the branch has merged {main_name} after the cutover, and this script converts a branch "
             "made before it")
     base_number = int(CONST_LINE.search(base_version).group(1))
     print(f"base {base} contract {base_number}")
@@ -660,22 +864,6 @@ def analyze(mode, base, head, main, state_path, requests_path="", requests_at=""
     head_lines, head_const, head_entries = numbered(head_version)
     entries = [e for e in head_entries if e["number"] not in base_heads and e["number"] > base_number]
     entries.sort(key=lambda e: e["number"])
-    # An entry whose text main holds under a number of its own is main's change, which this branch
-    # carries from another branch it was stacked on and main took as a squash: the branch has to
-    # merge main as it was before the cutover first, and then it adds only its own entries.
-    on_main = {summary(e): e["number"] for e in numbered(version_specs[f"{main}:{VERSION_GO}"] or "")[2]}
-    stale = [(e["number"], on_main[summary(e)]) for e in entries if summary(e) in on_main]
-    for number, theirs in stale:
-        print(f"onmain {number} {theirs}")
-    if stale and mode == "convert":
-        die("; ".join(f"entry {n} of this branch is main's entry {m}" for n, m in stale) +
-            ": the branch carries a change main already holds. Merge main as it was before the cutover "
-            "(the first parent of the commit that took `const DaemonAPIVersion` out of version.go) into the "
-            "branch first, then convert it")
-    entries = [e for e in entries if summary(e) not in on_main]
-    if not entries:
-        print(f"{head[:10]} adds no numbered entry of its own to {VERSION_GO}: nothing to convert")
-        return None
 
     go_paths = [p for p in changed_paths(base, head, "packages/daemon") if p.endswith(".go")]
     copies = changed_paths(base, head, *MANIFESTS, *STATE_GOLDENS, *WHOLE_COPIES)
@@ -689,7 +877,6 @@ def analyze(mode, base, head, main, state_path, requests_path="", requests_at=""
     edits = {p: Edits(s.text) for p, s in head_src.items()}
 
     # Step 2's constants: each `const <x>Contract = <n>` of package api the base does not declare.
-    numbers = {e["number"]: e for e in entries}
     for e in entries:
         e.update(const=None, const_path=None, const_line=None, doc=[], rows={f: [] for f, _ in FIELDS},
                  decls=[], imports=set())
@@ -719,10 +906,9 @@ def analyze(mode, base, head, main, state_path, requests_path="", requests_at=""
             for first, last in specs:
                 code = src.code_between(first, last)
                 if len(code) == 3 and code[0][0] == "ident" and code[1][1] == "=" and code[2][0] == "number" \
-                        and code[2][1].isdigit() and int(code[2][1]) in numbers \
-                        and re.search(r"[Cc]ontract$", code[0][1]):
-                    entry = numbers[int(code[2][1])]
-                    if entry["const"] is not None:
+                        and code[2][1].isdigit() and re.search(r"[Cc]ontract$", code[0][1]):
+                    entry = next((e for e in entries if e["number"] == int(code[2][1])), None)
+                    if entry is None or entry["const"] is not None:
                         continue
                     if decl.block:
                         lead = src.lead_comments(first, decl.kw)
@@ -732,23 +918,51 @@ def analyze(mode, base, head, main, state_path, requests_path="", requests_at=""
                     else:
                         start, end, doc = decl.start, decl.end, decl.doc_lines()
                     entry.update(const=code[0][1], const_path=path, const_line=src.line(src.tokens[first][2]),
-                                 doc=[re.sub(r"^\s*", "", line) for line in doc])
-                    edits[path].replace(start, end)
-    taken = set()
+                                 const_span=(start, end), doc=[re.sub(r"^\s*", "", line) for line in doc])
+    # Which entries are the branch's own: no check below writes anything, and a convert refuses what
+    # any finds. An entry whose text main holds under a number of its own is main's change, which this
+    # branch carries from another branch it was stacked on and main took as a squash before the
+    # cutover: the branch has to merge main as it was before the cutover first. An entry whose text
+    # opens an entry file of main is such a change main took after the cutover, after which GitHub
+    # retargets the branch to main: over its merge base with main the branch would convert it again
+    # under another id, as a second entry file of one change. The entries left are named, and an entry
+    # file of main that declares an entry's constant holds it too: such an entry is main's change, or
+    # the branch's own, whose name another change took. An entry held so takes no name from the ones
+    # after it, so the entries left are named again, until a naming finds no more held.
+    on_main = {summary(e): e["number"] for e in numbered(main_version)[2]}
+    stale = {e["number"]: on_main[summary(e)] for e in entries if summary(e) in on_main}
+    for number, theirs in sorted(stale.items()):
+        print(f"onmain {number} {theirs}")
+    if stale and mode == "convert":
+        die("; ".join(f"entry {n} of this branch is entry {m} of {main_name}" for n, m in sorted(stale.items())) +
+            f": the branch carries a change {main_name} already holds. Merge {before_cutover(main_name)} into the "
+            "branch first, then convert it")
+    own = [e for e in entries if e["number"] not in stale]
+    files = entry_files(main) if own else []
+    by_text = held_by_text(files, own)
+    own = [e for e in own if e["number"] not in by_text]
+    by_constant = {}
+    while True:
+        name_entries(own)
+        found = held_by_constant(files, own)
+        if not found:
+            break
+        by_constant |= found
+        own = [e for e in own if e["number"] not in found]
+    for number, path in sorted({**by_text, **by_constant}.items()):
+        print(f"onmain {number} {path}")
+    if (by_text or by_constant) and mode == "convert":
+        die(held_refusal(by_text, by_constant, entries, main_name))
+    entries = own
+    if not entries:
+        # An entry held by its constant can be the branch's own, whose name another change took.
+        if not by_constant:
+            print(f"{head[:10]} adds no numbered entry of its own to {VERSION_GO}: nothing to convert")
+        return None
+    numbers = {e["number"]: e for e in entries}
     for e in entries:
-        if e["const"]:
-            e["slug"] = kebab(re.sub(r"[Cc]ontract$", "", e["const"]))
-        else:
-            key = re.match(r"(?:dispatch://)?([A-Z][A-Z0-9]*-\d+)\b", HEADER.match(e["lines"][0]).group(2))
-            e["slug"] = key.group(1).lower() if key else f"entry-{e['number']}"
-        if not SLUG.match(e["slug"]):
-            e["slug"] = f"entry-{e['number']}"
-        slug, n = e["slug"], 2
-        while e["slug"] in taken:
-            e["slug"], n = f"{slug}-{n}", n + 1
-        taken.add(e["slug"])
-        if not e["const"]:
-            e["const"] = lower_camel(e["slug"]) + "Contract"
+        if e["const_path"]:
+            edits[e["const_path"]].replace(*e["const_span"])
     owner = {e["const"]: e for e in entries if e["const_path"]}
 
     # Step 3: the rows of the frozen tables that name an entry's constant.
@@ -999,7 +1213,7 @@ def analyze(mode, base, head, main, state_path, requests_path="", requests_at=""
     for path, what in undo:
         print(f"undid {path}: {what}")
     state = {
-        "base": base, "head": head, "main": main, "baseNumber": base_number,
+        "base": base, "head": head, "main": main, "mainName": main_name, "baseNumber": base_number,
         "entries": [{k: e[k] for k in ("number", "id", "slug", "const", "file")} for e in entries],
         "moves": moves, "undo": undo, "touched": sorted(set(touched)), "requestsAt": requests_at,
         "left": [[path, line, text, (path, line) in rows] for (path, line), text in sorted(left.items())],
@@ -1061,7 +1275,7 @@ def finish(state_path):
     """Step 6 after the merge: each left line at its line in the merged tree, then the message."""
     with open(state_path) as f:
         state = json.load(f)
-    main = state["main"]
+    main, main_name = state["main"], state["mainName"]
     changed = [p for p in git("diff", "--name-only", "--no-renames", main, "--", "packages/daemon").decode().split("\n")
                if p.endswith(".go") and os.path.exists(p) and not ENTRY_FILE.search(p)]
     added = added_lines(main, None, changed)
@@ -1085,9 +1299,9 @@ def finish(state_path):
             left.setdefault((path, line), src.line_text(line).strip())
     entries = state["entries"]
     subject = "chore(daemon): convert contract " + ", ".join(
-        f"entry {e['number']} to entry {e['id']} {e['slug']}" for e in entries) + ", and merge main"
+        f"entry {e['number']} to entry {e['id']} {e['slug']}" for e in entries) + f", and merge {main_name}"
     body = ["scripts/daemon-contract-convert.sh moved each numbered entry this branch added to",
-            f"{VERSION_GO} into an entry file (dispatch://INFRA-1569, R8), and merged main",
+            f"{VERSION_GO} into an entry file (dispatch://INFRA-1569, R8), and merged {main_name}",
             f"({main}) into the branch.", ""]
     body += [f"- entry {e['number']}: {e['file']} ({e['const']})" for e in entries]
     body += [f"- moved {path}:{line} ({field}) into the entry file of {const}" for path, line, field, const in state["moves"]]
@@ -1128,7 +1342,7 @@ PY
 }
 
 if [ "$report" = 1 ]; then
-  convert_py analyze report "$base" "$head_sha" "$main_sha" ""
+  convert_py analyze report "$head_sha" "$onto_sha" "$onto_name" ""
   exit 0
 fi
 
@@ -1143,8 +1357,8 @@ state=$work/state.json
 requests_at=daemon-contract-convert/$branch/entry-requests.json
 requests=$(git rev-parse --path-format=absolute --git-path "$requests_at")
 
-echo "== steps 1 to 4: $branch at ${head_sha:0:10}, merge base ${base:0:10}"
-convert_py analyze convert "$base" "$head_sha" "$main_sha" "$state" "$requests" "$requests_at"
+echo "== steps 1 to 4: $branch at ${head_sha:0:10}"
+convert_py analyze convert "$head_sha" "$onto_sha" "$onto_name" "$state" "$requests" "$requests_at"
 [ -f "$state" ] || exit 0
 mapfile -t touched < <(python3 -c 'import json, sys; print("\n".join(json.load(open(sys.argv[1]))["touched"]))' "$state")
 mapfile -t gofiles < <(printf '%s\n' "${touched[@]}" | grep '\.go$' || true)
@@ -1155,13 +1369,13 @@ git add -A -- "${touched[@]}"
 converted=$(git commit-tree "$(git write-tree)" -p "$head_sha" \
   -m "chore(daemon): convert the numbered contract entries of $branch to entry files")
 
-echo "== step 5: merge ${main} (${main_sha:0:10})"
-if ! merged=$(git merge-tree --write-tree --no-messages --name-only "$converted" "$main_sha"); then
+echo "== step 5: merge $onto_name (${onto_sha:0:10})"
+if ! merged=$(git merge-tree --write-tree --no-messages --name-only "$converted" "$onto_sha"); then
   git update-ref -m "daemon-contract-convert: conversion" "refs/heads/$branch" "$converted" "$head_sha"
   git reset -q
-  echo "the merge of $main conflicts in:" >&2
+  echo "the merge of $onto_name conflicts in:" >&2
   sed 1d <<<"$merged" | sort -u | sed 's/^/  /' >&2
-  die "the conversion is committed as ${converted:0:10}; merge $main by hand, then run go test ./internal/api -run '$UPDATE_RUN' -update -entry-requests=$requests in packages/daemon"
+  die "the conversion is committed as ${converted:0:10}; merge $onto (${onto_sha:0:10}) by hand, then run go test ./internal/api -run '$UPDATE_RUN' -update -entry-requests=$requests in packages/daemon"
 fi
 tree=$(head -1 <<<"$merged")
 git read-tree -m -u "$converted" "$tree"
@@ -1174,8 +1388,8 @@ git add -u
 [ "${#fixtures[@]}" -eq 0 ] || git add -- "${fixtures[@]}"
 convert_py fixtures "$state" "${fixtures[@]}"
 convert_py finish "$state"
-final=$(git commit-tree "$(git write-tree)" -p "$head_sha" -p "$main_sha" -F "$state.message")
-git update-ref -m "daemon-contract-convert: conversion and merge of $main" "refs/heads/$branch" "$final" "$head_sha"
+final=$(git commit-tree "$(git write-tree)" -p "$head_sha" -p "$onto_sha" -F "$state.message")
+git update-ref -m "daemon-contract-convert: conversion and merge of $onto_name" "refs/heads/$branch" "$final" "$head_sha"
 git reset -q
 for f in "${fixtures[@]}"; do echo "wrote $f"; done
 echo "committed ${final:0:10}: $(head -1 "$state.message")"

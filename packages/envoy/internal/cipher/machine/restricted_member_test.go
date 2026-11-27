@@ -11,6 +11,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess/projectaccesstest"
 	"github.com/sjawhar/envoy/internal/cipher/record"
+	"github.com/sjawhar/envoy/internal/cipher/store"
 )
 
 // TestARestrictedMemberDeniesNoServicesLogin: a service's login a broker from before token logins
@@ -47,7 +48,7 @@ func TestARestrictedMemberDeniesNoServicesLogin(t *testing.T) {
 		svc := newFixture(t)
 		recordID, code, _ := insertServiceRecord(t, svc, record.AnyoneApprover)
 		asking(svc, projectaccesstest.NewServer(t, nil, kinds))
-		state, _, err := svc.ApplyDecision(ctx, recordID, false, guest, code)
+		state, _, err := svc.ApplyDecision(ctx, recordID, false, guest, code, store.IssuerSubject{}, nil)
 		if !errors.Is(err, record.ErrNotApprover) || !strings.HasPrefix(err.Error(), "a person Dispatch calls a restricted member is no approver of") || !strings.Contains(err.Error(), "deny") {
 			t.Fatalf("ApplyDecision(deny) by %s = %q, %v; want record.ErrNotApprover, opening by saying they are a restricted member and saying they deny none", guest, state, err)
 		}
@@ -60,7 +61,7 @@ func TestARestrictedMemberDeniesNoServicesLogin(t *testing.T) {
 		svc := newFixture(t)
 		recordID, code, _ := insertServiceRecordFor(t, svc, record.AnyoneApprover, testAudience+"/")
 		asking(svc, projectaccesstest.NewServer(t, nil, kinds))
-		state, _, err := svc.ApplyDecision(ctx, recordID, false, guest, code)
+		state, _, err := svc.ApplyDecision(ctx, recordID, false, guest, code, store.IssuerSubject{}, nil)
 		if !errors.Is(err, record.ErrNotApprover) || !strings.HasPrefix(err.Error(), "a person Dispatch calls a restricted member is no approver of") {
 			t.Fatalf("ApplyDecision(deny) by %s of a login naming %s/ = %q, %v; want record.ErrNotApprover, opening by saying they are a restricted member", guest, testAudience, state, err)
 		}
@@ -68,7 +69,7 @@ func TestARestrictedMemberDeniesNoServicesLogin(t *testing.T) {
 			t.Fatalf("the refused deny wrote %d decisions; want none, the login still pending", n)
 		}
 		// The control: the same login is a service's to everyone else, and a full member denies it.
-		if state, _, err := svc.ApplyDecision(ctx, recordID, false, member, code); err != nil || state != "denied" {
+		if state, _, err := svc.ApplyDecision(ctx, recordID, false, member, code, store.IssuerSubject{}, nil); err != nil || state != "denied" {
 			t.Fatalf("ApplyDecision(deny) by %s of the same login = %q, %v; want denied", member, state, err)
 		}
 	})
@@ -77,7 +78,7 @@ func TestARestrictedMemberDeniesNoServicesLogin(t *testing.T) {
 		svc := newFixture(t)
 		recordID, code, _ := insertServiceRecord(t, svc, record.AnyoneApprover)
 		asking(svc, projectaccesstest.NewServer(t, nil, kinds))
-		if state, credentialID, err := svc.ApplyDecision(ctx, recordID, false, member, code); err != nil || state != "denied" || credentialID != "" {
+		if state, credentialID, err := svc.ApplyDecision(ctx, recordID, false, member, code, store.IssuerSubject{}, nil); err != nil || state != "denied" || credentialID != "" {
 			t.Fatalf("ApplyDecision(deny) by %s = %q, %q, %v; want denied", member, state, credentialID, err)
 		}
 	})
@@ -88,7 +89,7 @@ func TestARestrictedMemberDeniesNoServicesLogin(t *testing.T) {
 		down := projectaccesstest.NewServer(t, nil, kinds)
 		down.SetDown(true)
 		asking(svc, down)
-		_, _, err := svc.ApplyDecision(ctx, recordID, false, member, code)
+		_, _, err := svc.ApplyDecision(ctx, recordID, false, member, code, store.IssuerSubject{}, nil)
 		var uncheckable *projectaccess.MemberKindUncheckable
 		if !errors.As(err, &uncheckable) || uncheckable.Person != member {
 			t.Fatalf("ApplyDecision(deny) by %s while Dispatch is down = %v; want MemberKindUncheckable naming them", member, err)
@@ -106,7 +107,7 @@ func TestARestrictedMemberDeniesNoServicesLogin(t *testing.T) {
 		recordID, code, _ := insertServiceRecord(t, svc, record.AnyoneApprover)
 		stalled := &stalledKind{}
 		svc.Enroll.Projects = stalled
-		_, _, err := svc.ApplyDecision(ctx, recordID, false, member, code)
+		_, _, err := svc.ApplyDecision(ctx, recordID, false, member, code, store.IssuerSubject{}, nil)
 		var uncheckable *projectaccess.MemberKindUncheckable
 		if !errors.As(err, &uncheckable) || uncheckable.Person != member {
 			t.Fatalf("ApplyDecision(deny) by %s while Dispatch does not answer = %v; want MemberKindUncheckable naming them", member, err)
@@ -130,7 +131,7 @@ func TestARestrictedMemberDeniesNoServicesLogin(t *testing.T) {
 		down := projectaccesstest.NewServer(t, nil, kinds)
 		down.SetDown(true)
 		asking(svc, down)
-		if state, _, err := svc.ApplyDecision(ctx, view.RecordID, false, guest, code); err != nil || state != "denied" {
+		if state, _, err := svc.ApplyDecision(ctx, view.RecordID, false, guest, code, store.IssuerSubject{}, nil); err != nil || state != "denied" {
 			t.Fatalf("ApplyDecision(deny) of their own machine login by %s = %q, %v; want denied", guest, state, err)
 		}
 		if n := down.Calls(); n != 0 {

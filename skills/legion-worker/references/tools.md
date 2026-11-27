@@ -8,8 +8,8 @@
 ## The disk your pod works on
 
 - One volume at `/legion` holds the clone, every workspace, `$TMPDIR` and the caches, shared by the issue's roles. Your home and `/tmp` are on the node's small disk, whose limit evicts the pod. Read free space with `df -h /legion`.
-- `$TMPDIR` is yours to clean: nothing else deletes what you leave there, and it fills the volume for every role. Delete the paths you made, each by its exact path.
-- Chain a command that enters a scratch directory with `&&` (`cd -- "$TMPDIR/probe" && ./run.sh`): after a failed `cd`, `;` runs the command where the shell last stood, often the shared workspace.
+- `$TMPDIR` is yours to clean: nothing else deletes what you leave there, and it fills the volume for every role.
+- Chain a command that enters a scratch directory with `&&`: after a failed `cd`, `;` runs the command where the shell last stood, often the shared workspace.
 
 ## The database your tests use
 
@@ -21,7 +21,7 @@
 
 ## Reading a shared database
 
-Read a database outside your pod through the read-only login whose URL is in the file `SESSION_READER_DSN_FILE` names. Never read it through the session URL the file `OMP_SESSION_SQL_DSN_FILE` names. Keep read-only inside one transaction (`BEGIN READ ONLY; … COMMIT;`, or `psql "$URL" --single-transaction -q -X -v ON_ERROR_STOP=1 -c 'SET TRANSACTION READ ONLY' -f <file>` with no `COMMIT` in the file): a session-wide setting stays on the pooled backend and fails the next client's writes. With no reader URL, report it as a fault of the deployment.
+Read a database outside your pod through the read-only login whose URL is in the file `SESSION_READER_DSN_FILE` names. Never read it through the session URL the file `OMP_SESSION_SQL_DSN_FILE` names. Put no URL on a command line, which any process of the pod can read: pipe its parts to psql as a service file, with the command in `skill://legion-worker/references/tools-steps.md#reading-a-shared-database`. Put no `COMMIT` in `<file>`, so the read stays in one read-only transaction: a session-wide setting stays on the pooled backend and fails the next client's writes. With no reader URL, report it as a fault of the deployment.
 
 ## What the image carries
 

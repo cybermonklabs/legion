@@ -38,14 +38,14 @@ func TestOneProcessServesEachPeriod(t *testing.T) {
 		{name: "the period after it", due: due.Add(Interval), first: other, second: h.reconciler},
 	} {
 		before := h.github.count()
-		if ran := duty.Exclusive(h.ctx, leases, Lease, period.due, Interval, period.first.Pass); !ran {
+		if ran := duty.Exclusive(h.ctx, nil, leases, Lease, period.due, Interval, period.first.Pass); !ran {
 			t.Fatalf("%s: the process that took the lease ran no pass", period.name)
 		}
 		served := h.github.count()
 		if served == before {
 			t.Fatalf("%s: the process that served it sent GitHub nothing", period.name)
 		}
-		if ran := duty.Exclusive(h.ctx, leases, Lease, period.due, Interval, period.second.Pass); ran {
+		if ran := duty.Exclusive(h.ctx, nil, leases, Lease, period.due, Interval, period.second.Pass); ran {
 			t.Fatalf("%s: both processes ran a pass", period.name)
 		}
 		if sent := h.github.count(); sent != served {

@@ -248,13 +248,15 @@ func TestAClearedGenerationKeepsTheCountOfStarts(t *testing.T) {
 					}
 					want[seed.key] = StepStart{Starts: int64(seed.count), Agent: seed.agent, StartedAt: seed.at, Run: seed.run}
 				}
+				// The clear is required to be handed a forget (KeptForget), which runs here over no
+				// decision and no queued request: no issue keeps or queues one.
 				cleared := []string{"LEGION-1"}
 				if clear == "the issue's" {
-					if err := store.ClearGeneration(t.Context(), tx, "LEGION-1", at); err != nil {
+					if _, err := store.ClearGeneration(t.Context(), tx, Issue{Key: "LEGION-1", Tree: "LEGION-1"}, forgetNothing); err != nil {
 						t.Fatalf("ClearGeneration: %v", err)
 					}
 				} else {
-					if err := store.ClearTreeGeneration(t.Context(), tx, "LEGION-1", at); err != nil {
+					if _, err := store.ClearTreeGeneration(t.Context(), tx, "LEGION-1", forgetNothing); err != nil {
 						t.Fatalf("ClearTreeGeneration: %v", err)
 					}
 					cleared = append(cleared, "LEGION-2")

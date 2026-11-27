@@ -93,10 +93,24 @@ func modelTokenFlags(t *testing.T, endpoint string) [][2]string {
 	}
 }
 
+// modelToken runs `legion model-token` with flags as a process of its own (legionIn) and answers
+// its exit status and what it printed. The command clears SSL_CERT_FILE and SSL_CERT_DIR from its
+// own process's environment before it signs in (modeltoken's httpClient), which in this process
+// would be every test's environment; in a process of its own the run is its test's alone.
+func modelToken(t *testing.T, flags [][2]string) (code int, stdout, stderr string) {
+	t.Helper()
+	args := []string{"model-token"}
+	for _, flag := range flags {
+		args = append(args, "--"+flag[0], flag[1])
+	}
+	return legionIn(t, t.TempDir(), nil, "", args...)
+}
+
 // `legion model-token` is what Oh My Pi runs as the model apiKey: it prints the access token alone
 // on success, and on a refused sign-in prints nothing to stdout and exits 1 with Cognito's error
 // code, never the endpoint's own text, which can echo the pod's token.
 func TestModelTokenPrintsTheAccessTokenOrExitsWithTheReason(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		refuse bool
@@ -108,19 +122,14 @@ func TestModelTokenPrintsTheAccessTokenOrExitsWithTheReason(t *testing.T) {
 		{name: "refused", refuse: true, code: 1, stderr: "NotAuthorizedException"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			server, _ := modelTokenCognito(t, tc.refuse)
-			args := []string{"legion", "model-token"}
-			for _, flag := range modelTokenFlags(t, server.URL) {
-				args = append(args, "--"+flag[0], flag[1])
+			code, stdout, stderr := modelToken(t, modelTokenFlags(t, server.URL))
+			if code != tc.code || stdout != tc.stdout || !strings.Contains(stderr, tc.stderr) {
+				t.Fatalf("exit %d stdout %q stderr %q; want %d, %q, and %q", code, stdout, stderr, tc.code, tc.stdout, tc.stderr)
 			}
-
-			var stdout, stderr bytes.Buffer
-			code := run(context.Background(), args, &stdout, &stderr)
-			if code != tc.code || stdout.String() != tc.stdout || !strings.Contains(stderr.String(), tc.stderr) {
-				t.Fatalf("exit %d stdout %q stderr %q; want %d, %q, and %q", code, stdout.String(), stderr.String(), tc.code, tc.stdout, tc.stderr)
-			}
-			if strings.Contains(stderr.String(), "pod-token") {
-				t.Fatalf("stderr %q repeats the endpoint's echo of the pod's token", stderr.String())
+			if strings.Contains(stderr, "pod-token") {
+				t.Fatalf("stderr %q repeats the endpoint's echo of the pod's token", stderr)
 			}
 		})
 	}
@@ -129,6 +138,7 @@ func TestModelTokenPrintsTheAccessTokenOrExitsWithTheReason(t *testing.T) {
 // A malformed HTTP answer can quote the challenge answer in net/http's error, so the command must
 // replace it with its own fixed error before it reaches stderr.
 func TestModelTokenHidesTokenFromMalformedHTTPAnswer(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name      string
 		malformed func(answer string) string
@@ -144,21 +154,16 @@ func TestModelTokenHidesTokenFromMalformedHTTPAnswer(t *testing.T) {
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			args := []string{"legion", "model-token"}
-			for _, flag := range modelTokenFlags(t, rawModelTokenCognito(t, tc.malformed)) {
-				args = append(args, "--"+flag[0], flag[1])
+			t.Parallel()
+			code, stdout, stderr := modelToken(t, modelTokenFlags(t, rawModelTokenCognito(t, tc.malformed)))
+			if code != 1 || stdout != "" {
+				t.Fatalf("exit %d stdout %q; want 1 and nothing on stdout", code, stdout)
 			}
-
-			var stdout, stderr bytes.Buffer
-			code := run(context.Background(), args, &stdout, &stderr)
-			if code != 1 || stdout.String() != "" {
-				t.Fatalf("exit %d stdout %q; want 1 and nothing on stdout", code, stdout.String())
+			if !strings.Contains(stderr, "the endpoint's answer is not an HTTP response") {
+				t.Fatalf("stderr %q; want the fixed malformed-response error", stderr)
 			}
-			if !strings.Contains(stderr.String(), "the endpoint's answer is not an HTTP response") {
-				t.Fatalf("stderr %q; want the fixed malformed-response error", stderr.String())
-			}
-			if strings.Contains(stderr.String(), "pod-token") {
-				t.Fatalf("stderr %q repeats the endpoint's malformed answer", stderr.String())
+			if strings.Contains(stderr, "pod-token") {
+				t.Fatalf("stderr %q repeats the endpoint's malformed answer", stderr)
 			}
 		})
 	}
@@ -166,6 +171,7 @@ func TestModelTokenHidesTokenFromMalformedHTTPAnswer(t *testing.T) {
 
 // A required flag left out, or given empty, is refused by name before Cognito is called.
 func TestModelTokenRefusesAMissingFlagBeforeCallingCognito(t *testing.T) {
+	t.Parallel()
 	for _, missing := range []string{"region", "client-id", "username", "service-account-token-file"} {
 		for _, form := range []string{"absent", "empty"} {
 			t.Run(missing+"/"+form, func(t *testing.T) {

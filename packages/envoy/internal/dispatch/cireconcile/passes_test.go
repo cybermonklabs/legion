@@ -118,7 +118,7 @@ func holdLease(t *testing.T, pool *store.Pool, body func(ctx context.Context)) (
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		duty.Exclusive(t.Context(), leases, Lease, time.Time{}, 0, func(ctx context.Context) {
+		duty.Exclusive(t.Context(), nil, leases, Lease, time.Time{}, 0, func(ctx context.Context) {
 			close(held)
 			if body != nil {
 				body(ctx)

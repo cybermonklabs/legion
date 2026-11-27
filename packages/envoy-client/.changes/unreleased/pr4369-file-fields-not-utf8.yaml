@@ -1,0 +1,24 @@
+kind: Fixed
+custom:
+  Issue: pr4369
+body: |-
+  The `dispatch` command refuses a file or stdin field holding bytes that are not UTF-8, for every
+  command, where it stored U+FFFD in place of each such byte before: `--content-file`,
+  `--body-file` and every other `--<field>-file` and `--<field>-json-file`, from a file or from
+  stdin (`-`), are read as bytes and decoded strictly, and bytes that are not UTF-8 refuse the
+  command, its dry run and its call alike, with exit 1 and nothing sent, in Dispatch's own refusal
+  of the first U+0000 or byte that is not UTF-8 among them, whichever comes first:
+  `NUL_CHARACTER: <field> holds a NUL character (U+0000) at character N, which Dispatch cannot
+  store` or `INVALID_UTF8: <field> holds a byte that is not UTF-8 (0xFF) at character N, which
+  Dispatch cannot store`, naming the field the flag sets and where the character stands, counted
+  from 1 in UTF-16 units. UTF-8 holding a U+0000 still goes to Dispatch, as before, but for one field.
+  `dispatch artifact`'s `content`, read from `--content-file` or stdin, is a Markdown document's
+  text, so its bytes, UTF-8 or not, are refused as a Markdown `--path` file of the same bytes is,
+  once the flags are read, with Dispatch on or off, in that upload's order: text past 1 MiB with
+  `CAP_EXCEEDED` first, then the first U+0000 or byte that is not UTF-8. So UTF-8 holding a U+0000
+  is refused there too, which only Dispatch refused before. A Markdown `--path` file past 1 MiB or
+  whose bytes hold a U+0000 or a byte that is not UTF-8 is now refused in the same place, once the
+  flags are read, before the arguments are checked and before anything that needs Dispatch, in the
+  same words under `file`, so its call and its dry run refuse it alike with Dispatch off too. A
+  byte order mark is kept as U+FEFF, as before. Each `--<field>-file` and
+  `--<field>-json-file` flag's help says that bytes that are not UTF-8 are refused.

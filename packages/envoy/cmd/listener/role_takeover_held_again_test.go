@@ -38,7 +38,7 @@ func TestATakeoverRecordWhoseHolderTookTheRoleBackCopiesOnlyWhatItDidNotRead(t *
 	rig.claim(rig.away, b, role)
 	// The claim's handover runs in a goroutine of its own, so the control waits for its pass's
 	// write rather than for the role's guard, which that goroutine may not hold yet.
-	waitFor(t, crashWatch, "a takeover record of "+a+" that moved its sequence after "+b+" took the role", func() bool {
+	waitFor(t, "a takeover record of "+a+" that moved its sequence after "+b+" took the role", func() bool {
 		for _, record := range rig.records(role, a) {
 			if record.Next != 0 {
 				return true
@@ -51,7 +51,7 @@ func TestATakeoverRecordWhoseHolderTookTheRoleBackCopiesOnlyWhatItDidNotRead(t *
 	rig.claim(rig.mux, a, role)
 	// The handover of A's claim runs a pass of the record while A holds the role, which sets the
 	// record back to reading A's floor anew.
-	waitFor(t, crashWatch, "the takeover record of "+a+" set back while "+a+" holds the role", func() bool {
+	waitFor(t, "the takeover record of "+a+" set back while "+a+" holds the role", func() bool {
 		for _, record := range rig.records(role, a) {
 			if record.Next != 0 {
 				return false

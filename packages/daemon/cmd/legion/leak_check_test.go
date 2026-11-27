@@ -11,10 +11,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/execfile"
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
+	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
@@ -118,6 +120,7 @@ func says(t *testing.T, printed string, wants []string) {
 // that names no shared check (no leakguard.CheckerVar) a push with no check is not refused for its
 // absence, and the deployment's rules still read it.
 func TestLeakCheckPrePushRunsTheGuardOverGitsUpdateLines(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process; it changes the whole process's working directory; it sets the package variable leakCheckStdin (leakCheck).
 	for _, tc := range []struct {
 		name    string
 		message string
@@ -216,13 +219,14 @@ func legionLeakCheckPrePush(t *testing.T, dir string, env map[string]string, lin
 // it, leaving the repository gh created empty. The command runs as its own process, so the
 // fixture's rule file is named in that process's environment.
 func TestLeakCheckPrePushUnderTheRealGhsVariableReadsTheVisibility(t *testing.T) {
+	t.Parallel()
 	root, defaultDir := gitCredentialBundle(t)
 	help, err := filepath.Abs(ghHelpDir)
 	if err != nil {
 		t.Fatal(err)
 	}
 	stub := filepath.Join(t.TempDir(), "gh")
-	if err := os.WriteFile(stub, []byte(ghStandInPrefix(help)+"exit 0\n"), 0o700); err != nil {
+	if err := execfile.Write(stub, []byte(ghStandInPrefix(help)+"exit 0\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	record := filepath.Join(t.TempDir(), "gh")
@@ -259,6 +263,7 @@ func TestLeakCheckPrePushUnderTheRealGhsVariableReadsTheVisibility(t *testing.T)
 // handed its shape another context leaves each SIGINT row's command running until the row gives up
 // on it, by name, before the test binary's deadline (signalWhileHeld).
 func TestASignalToLeakChecksGroupStopsTheSharedCheck(t *testing.T) {
+	t.Parallel()
 	if _, err := os.ReadFile("/proc/self/cmdline"); err != nil {
 		t.Fatalf("/proc does not answer (%v): this row reads from it whether the stand-in is still running", err)
 	}
@@ -309,6 +314,7 @@ func TestASignalToLeakChecksGroupStopsTheSharedCheck(t *testing.T) {
 // leakguard.CheckerVar) a text with no check is not refused for its absence, and the deployment's
 // rules still read it.
 func TestLeakCheckTextRunsTheGuardOverWhatItIsPiped(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process; it sets the package variable leakCheckStdin (leakCheck).
 	const kind = "the pull request body"
 	for _, tc := range []struct {
 		name, text string
@@ -378,6 +384,7 @@ func TestLeakCheckTextRunsTheGuardOverWhatItIsPiped(t *testing.T) {
 // rule; the text the rule matched, the fixture's host and the space after it; and the line of the
 // message it stands on, its third, whole. The report is the whole of what the command prints.
 func TestLeakCheckPrePushRefusalShowsMatch(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process; it changes the whole process's working directory; it sets the package variable leakCheckStdin (leakCheck).
 	const line = "moved the run to " + leakguardtest.RulesHost + " this morning"
 	dir, update := aPushFixture(t, "a subject of no interest\n\n"+line)
 	t.Chdir(dir)
@@ -396,6 +403,7 @@ func TestLeakCheckPrePushRefusalShowsMatch(t *testing.T) {
 // the rule's description; the fixture's host and the space after it; and the body's second
 // line, on which it stands.
 func TestLeakCheckTextRefusalShowsMatch(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process; it sets the package variable leakCheckStdin (leakCheck).
 	const (
 		kind = "the pull request body"
 		line = "the runner answers at " + leakguardtest.RulesHost + " today"
@@ -417,6 +425,7 @@ func TestLeakCheckTextRefusalShowsMatch(t *testing.T) {
 // answer alone, and the daemon's boot has said once, in its own log, that the deployment names no
 // rule file.
 func TestLeakCheckWithNoRuleFileRunsNoRuleSilently(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process; it changes the whole process's working directory; it sets the package variable leakCheckStdin (leakCheck).
 	t.Run("pre-push", func(t *testing.T) {
 		dir, update := aPushFixture(t, "moved the run to "+leakguardtest.RulesHost+" this morning")
 		t.Chdir(dir)
@@ -439,6 +448,7 @@ func TestLeakCheckWithNoRuleFileRunsNoRuleSilently(t *testing.T) {
 // or a script that called it wrongly has cleared nothing. A help request is the one call that
 // prints the usage, on standard output, and exits 0.
 func TestLeakCheckRefusesACallItCannotRead(t *testing.T) {
+	// Not parallel: it sets the package variable leakCheckStdin (leakCheck).
 	for _, tc := range []struct {
 		name string
 		args []string
@@ -476,9 +486,10 @@ func TestLeakCheckRefusesACallItCannotRead(t *testing.T) {
 // (newRoot), and these rows hold the two together; leakguard's
 // TestNoAnswerPrintsACredentialThePushsNameCarries holds the first alone.
 func TestLeakCheckPrePushPrintsNoCredentialItsRemoteCarries(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process; it changes the whole process's working directory; it sets the package variables forkReadBound (pushVisibilityReadEnv), leakCheckStdin (leakCheck) and leakguardCurl (pushVisibilityReadEnv).
 	const token = "FAKEtok3nZQ9x"
 	remote := "https://" + token + "@github.com/" + noSuchRepo + ".git"
-	shown := "the push to https://github.com/" + noSuchRepo + ".git"
+	shown := "the push to https://" + redact.URLWithCredentials + "/" + noSuchRepo + ".git"
 	root, defaultDir := gitCredentialBundle(t)
 	refusedPush := func(t *testing.T, check, message string) (int, string) {
 		dir, line := aPushFixture(t, message)
@@ -559,6 +570,7 @@ func TestLeakCheckPrePushPrintsNoCredentialItsRemoteCarries(t *testing.T) {
 // by the real gh, as before, and git never runs. The fixture rule file is named
 // (LEGION_PRIVATE_NAME_RULES_FILE): with no rule file the guard reads no destination's visibility.
 func TestLeakCheckPrePushReadsAnUnservedOwnersVisibilityWithNoCredential(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process; it changes the whole process's working directory; it sets the package variable leakCheckStdin (leakCheck).
 	root, defaultDir := gitCredentialBundle(t)
 	help, err := filepath.Abs(ghHelpDir)
 	if err != nil {
@@ -598,10 +610,10 @@ func TestLeakCheckPrePushReadsAnUnservedOwnersVisibilityWithNoCredential(t *test
 			script := ghStandInHelp(help) +
 				"echo rest >> \"$GH_STANDIN_RECORD\"\n" +
 				"printf '%s\\r\\n' 'HTTP/2.0 200 OK' 'X-Ratelimit-Remaining: 4999' ''\nprintf '%s\\n' private\nexit 0\n"
-			if err := os.WriteFile(stub, []byte(script), 0o700); err != nil {
+			if err := execfile.Write(stub, []byte(script), 0o700); err != nil {
 				t.Fatal(err)
 			}
-			if err := os.WriteFile(filepath.Join(bin, "git"), []byte("#!/bin/sh\necho git >> \"$GH_STANDIN_RECORD\"\n"+tc.git), 0o700); err != nil {
+			if err := execfile.Write(filepath.Join(bin, "git"), []byte("#!/bin/sh\necho git >> \"$GH_STANDIN_RECORD\"\n"+tc.git), 0o700); err != nil {
 				t.Fatal(err)
 			}
 			t.Chdir(t.TempDir())

@@ -155,6 +155,8 @@ func TestAStreamReadTheServerNeverAnswersIsGivenUpOn(t *testing.T) {
 	js := streamTestJetStream(t)
 	lost := &unansweredJetStream{JetStreamContext: js, unansweredReads: 1 << 30}
 	cfg := parseConnectOptions([]ConnectOption(nil)).streamConfig()
+	// A window, not a wait: the server never answers the read, and the start must give up when this
+	// second ends, with context.DeadlineExceeded.
 	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
 	defer cancel()
 

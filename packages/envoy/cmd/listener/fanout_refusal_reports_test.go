@@ -103,7 +103,7 @@ func TestTheFanoutReportsItsOwnRefusalsForTheSessionsItDeliversTo(t *testing.T) 
 				// turns on the entry this path read -- an attempt record is left only for a
 				// session whose entry it read and nothing reaches (fanoutDelivery) -- so the
 				// message goes to the handler once that read answers, never on the write alone.
-				waitFor(t, 10*time.Second, "the seeded entry of "+sessionID+" to be readable", func() bool {
+				waitFor(t, "the seeded entry of "+sessionID+" to be readable", func() bool {
 					_, err := harness.sessions.Get(sessionID)
 					return err == nil
 				})
@@ -171,7 +171,7 @@ func TestTheFanoutRecordsARecipientItCannotReachBeforeItsException(t *testing.T)
 	// The attempt record this test is about is left only for a session whose entry the fan-out
 	// read, so the message goes to the handler once that read answers rather than on the write
 	// alone (the wait above the table).
-	waitFor(t, 10*time.Second, "the seeded entry of "+sessionID+" to be readable", func() bool {
+	waitFor(t, "the seeded entry of "+sessionID+" to be readable", func() bool {
 		_, err := harness.sessions.Get(sessionID)
 		return err == nil
 	})

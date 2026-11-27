@@ -6,6 +6,19 @@ import (
 	"testing"
 )
 
+// IsName is the character rule Parse holds a name to, and no more: a name as gh reads it, `.git`
+// and dots included, passes, and one holding a character GitHub serves no name with does not.
+func TestIsName(t *testing.T) {
+	for name, want := range map[string]bool{
+		"widgets": true, "widgets.git": true, "my_repo-2.x": true, ".": true,
+		"": false, "a b": false, "x%zz": false, "x?t=1": false, "x#f": false, "x@y": false, "x:y": false, strings.Repeat("a", 101): false,
+	} {
+		if got := IsName(name); got != want {
+			t.Errorf("IsName(%q) = %v, want %v", name, got, want)
+		}
+	}
+}
+
 // Parse holds every input to one rule: exactly `<owner>/<name>`, both non-empty, no whitespace,
 // no `.` or `..` segment, and GitHub's own grammar for each name, and each refusal names the input
 // and the value. The names GitHub allows parse, dotted and underscored ones included.
@@ -103,5 +116,16 @@ func TestRepositoryExportsNoField(t *testing.T) {
 	}
 	if !(Repository{}).IsZero() || MustParse("acme/widgets").IsZero() {
 		t.Errorf("IsZero: the zero Repository must be zero and a parsed one must not")
+	}
+}
+
+// The zero Repository is named "", which a column or a log line holds for no repository, and not
+// String's "/"; a parsed one is named as String names it.
+func TestStringOrEmptyNamesNoRepositoryEmpty(t *testing.T) {
+	if got := (Repository{}).StringOrEmpty(); got != "" {
+		t.Errorf("Repository{}.StringOrEmpty() = %q, want %q", got, "")
+	}
+	if got := MustParse("acme/widgets").StringOrEmpty(); got != "acme/widgets" {
+		t.Errorf("StringOrEmpty of acme/widgets = %q, want %q", got, "acme/widgets")
 	}
 }

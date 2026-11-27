@@ -249,24 +249,31 @@ func (l *lossyConns) dial(ctx context.Context, network, address string) (net.Con
 // is sent once the statement has committed, and it then closes the connection with none of the
 // held answer read; one that does not - the round trip that prepares the statement - is handed
 // on, and it waits for the execution's.
+//
+// Write and Read run on different goroutines: pgx writes on the caller's, and its background
+// reader (pgconn's bgreader, which a write still in flight after a moment starts) reads while that
+// write goes on. So dropping, which Write sets and Read reads, is atomic; every other field is
+// Read's alone, and pgx hands reading from one goroutine to the other only under the background
+// reader's lock.
 type lossyConn struct {
 	net.Conn
-	lossy                     *lossyConns
-	dropping, answersAnUpdate bool
-	in, out, held             []byte
+	lossy           *lossyConns
+	dropping        atomic.Bool
+	answersAnUpdate bool
+	in, out, held   []byte
 }
 
 var errLostAfterCommit = errors.New("the connection dropped after the statement committed")
 
 func (c *lossyConn) Write(p []byte) (int, error) {
-	if !c.dropping && bytes.Contains(p, lossyRefreshSQL) && c.lossy.armed.CompareAndSwap(true, false) {
-		c.dropping = true
+	if !c.dropping.Load() && bytes.Contains(p, lossyRefreshSQL) && c.lossy.armed.CompareAndSwap(true, false) {
+		c.dropping.Store(true)
 	}
 	return c.Conn.Write(p)
 }
 
 func (c *lossyConn) Read(p []byte) (int, error) {
-	if !c.dropping && len(c.out) == 0 {
+	if !c.dropping.Load() && len(c.out) == 0 {
 		return c.Conn.Read(p)
 	}
 	for len(c.out) == 0 {

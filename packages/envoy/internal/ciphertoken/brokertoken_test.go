@@ -109,7 +109,7 @@ func newRig(t *testing.T, options ...func(*ciphertoken.Options)) *rig {
 	tick := newClock()
 	opts := ciphertoken.Options{
 		BrokerURL: broker.Server.URL,
-		Account:   ciphertoken.NewAccountToken(accountTokenFile(t, accountToken)),
+		Account:   ciphertoken.NewAccountToken("DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE", accountTokenFile(t, accountToken)),
 		Origins:   []string{dispatchOrigin},
 		Replay:    store.NewDPoPProofs(database.Pool),
 		Address:   sourceAddress,
@@ -181,6 +181,27 @@ func serviceToken(jkt string, life time.Duration) ciphertoken.Introspection {
 	return answer
 }
 
+// jobService is the service a job's token names: the identity its job entry lists, here a pod's
+// Kubernetes service account as the exchange spells its subject.
+const jobService = "system:serviceaccount:example-jobs:example-job"
+
+// jobToken is the answer a job's token gets: what the exchange mints from a job entry, which
+// names the entry's identity as its service and no person, the entry's project scope — named
+// with its one project, or public with its private projects — and its whole list, and no OAuth
+// scope. The projects are carried as given, so a test can hand it a list no exchange mints.
+func jobToken(jkt string, life time.Duration, scope string, projects ...string) ciphertoken.Introspection {
+	return ciphertoken.Introspection{
+		Active:       true,
+		Session:      "ses_job",
+		Service:      jobService,
+		ProjectScope: scope,
+		Projects:     projects,
+		ExpiresAt:    time.Now().Add(life).Unix(),
+		ClientID:     ciphertoken.ExchangeClientID,
+		Thumbprint:   jkt,
+	}
+}
+
 // readOnlyToken is the answer a token a read entry minted gets (BROKER_EXCHANGE_READ_ACCOUNTS):
 // the one scope read, the project scope none, the entry's service and the session it fixes, and
 // no person and no project. It is the answer the broker's own test holds an exchanged read token
@@ -203,18 +224,20 @@ func readOnlyToken(jkt string, life time.Duration) ciphertoken.Introspection {
 // refused with an outcome of its own rather than handed back as a Caller for whoever mounts
 // this check to fill in. Each leg of the rule is its own token: a machine login's own, one the
 // exchange issued that names neither a person nor a service, one that names a session and a
-// person but comes from another client, and the ten whose project scope or list this package
+// person but comes from another client, and each one whose project scope or list this package
 // cannot read — an answer carrying no project scope at all, one carrying a word it does not know,
-// a named scope naming no person and no project and a service that is no whole account subject (a
-// fleet, the bare account prefix, an account with no name, an upper-case account), a named scope
-// naming an account and a project, a named scope with two projects, and a list no exchange could
-// have minted. Those are refused rather than read as a token that names no project, which would
-// hand their caller every project the person may write; the one naming a project under no scope
-// would otherwise be the louder of the two, since the project beside the scope is then read under
-// nothing at all. A named scope naming no person is minted only by an account entry naming no
-// person, whose service is the account (TestANamedAnswerNamingNoPersonIsItsAccount), so the same
-// answer naming any other service is no token the broker mints. The proof-checked Verify and the
-// answer-only Live refuse every one, so an open connection cannot keep one alive either.
+// a named scope naming no person, no project and no OAuth scope and a service that is no whole
+// account subject (a fleet, the bare account prefix, an account with no name, an upper-case
+// account, an account with text after it or before it), a named scope with two projects, and a
+// list no exchange could have minted. Those are refused rather than read as a token that names no
+// project, which would hand their caller every project the person may write; the one naming a
+// project under no scope would otherwise be the louder of the two, since the project beside the
+// scope is then read under nothing at all. A named scope naming no person and no project is
+// minted only by an account entry naming no person, whose service is the account
+// (TestANamedAnswerNamingNoPersonIsItsAccount), so the same answer naming any other service is
+// no token the broker mints; each such row holds no OAuth scope, so the service alone refuses
+// it. The proof-checked Verify and the answer-only Live refuse every one, so an open connection
+// cannot keep one alive either.
 func TestATokenThatIsNoSessionsCredentialIsRefused(t *testing.T) {
 	rig := newRig(t)
 	caller := newSigner(t)
@@ -226,43 +249,42 @@ func TestATokenThatIsNoSessionsCredentialIsRefused(t *testing.T) {
 	noScope.ProjectScope = ""
 	unknownScope := liveToken(caller.jkt, time.Hour)
 	unknownScope.ProjectScope = "organisation"
-	namedFleet := liveToken(caller.jkt, time.Hour)
-	namedFleet.Person, namedFleet.Service, namedFleet.Projects = "", "example-fleet", nil
+	// personlessNamed is a named answer naming no person, no project and no OAuth scope, as the
+	// broker mints that shape, and the service given, so the service is the one reason each row
+	// built from it is refused (shapeOf refuses a scope word on its own).
+	personlessNamed := func(service string) ciphertoken.Introspection {
+		answer := liveToken(caller.jkt, time.Hour)
+		answer.Person, answer.Service, answer.Projects, answer.Scope = "", service, nil, ""
+		return answer
+	}
+	namedFleet := personlessNamed("example-fleet")
 	// Services that open like an account and are no whole account subject, which no account
 	// entry can hold (exchange.NewSet holds each to oauthwire.AccountSubject).
-	namedPrefixOnly := liveToken(caller.jkt, time.Hour)
-	namedPrefixOnly.Person, namedPrefixOnly.Service, namedPrefixOnly.Projects = "", "system:serviceaccount:", nil
-	namedNoName := liveToken(caller.jkt, time.Hour)
-	namedNoName.Person, namedNoName.Service, namedNoName.Projects = "", "system:serviceaccount:ns", nil
-	namedUpperCase := liveToken(caller.jkt, time.Hour)
-	namedUpperCase.Person, namedUpperCase.Service, namedUpperCase.Projects = "", "system:serviceaccount:NS:Name", nil
+	namedPrefixOnly := personlessNamed("system:serviceaccount:")
+	namedNoName := personlessNamed("system:serviceaccount:ns")
+	namedUpperCase := personlessNamed("system:serviceaccount:NS:Name")
 	// An account with text after it, and an account with text before it: the grammar is anchored
 	// at both ends, so neither is the account it holds.
-	namedTrailing := liveToken(caller.jkt, time.Hour)
-	namedTrailing.Person, namedTrailing.Service, namedTrailing.Projects = "", "system:serviceaccount:example-ns:example-public===x", nil
-	namedLeading := liveToken(caller.jkt, time.Hour)
-	namedLeading.Person, namedLeading.Service, namedLeading.Projects = "", "xsystem:serviceaccount:example-ns:example-public", nil
-	namedServiceProject := liveToken(caller.jkt, time.Hour)
-	namedServiceProject.Person, namedServiceProject.Service = "", "system:serviceaccount:example-ns:example-public"
+	namedTrailing := personlessNamed("system:serviceaccount:example-ns:example-public===x")
+	namedLeading := personlessNamed("xsystem:serviceaccount:example-ns:example-public")
 	namedTwo := liveToken(caller.jkt, time.Hour)
 	namedTwo.Projects = []string{"INFRA", "PRIV"}
 	unsorted := liveToken(caller.jkt, time.Hour)
 	unsorted.ProjectScope, unsorted.Projects = ciphertoken.ProjectScopePerson, []string{"PUB", "PRIV"}
 	for name, answer := range map[string]ciphertoken.Introspection{
-		"a machine login's own token":                   machineLoginToken(caller.jkt, time.Hour),
-		"a token naming neither a person nor service":   noOwner,
-		"a token of another client":                     anotherClient,
-		"a token naming no project scope":               noScope,
-		"a token of an unknown project scope":           unknownScope,
-		"a named scope naming a fleet and no person":    namedFleet,
-		"a named scope naming the bare account prefix":  namedPrefixOnly,
-		"a named scope naming an account with no name":  namedNoName,
-		"a named scope naming an upper-case account":    namedUpperCase,
-		"a named scope naming an account and more":      namedTrailing,
-		"a named scope naming text and an account":      namedLeading,
-		"a named scope naming an account and a project": namedServiceProject,
-		"a named scope naming two projects":             namedTwo,
-		"a list no exchange mints":                      unsorted,
+		"a machine login's own token":                  machineLoginToken(caller.jkt, time.Hour),
+		"a token naming neither a person nor service":  noOwner,
+		"a token of another client":                    anotherClient,
+		"a token naming no project scope":              noScope,
+		"a token of an unknown project scope":          unknownScope,
+		"a named scope naming a fleet and no person":   namedFleet,
+		"a named scope naming the bare account prefix": namedPrefixOnly,
+		"a named scope naming an account with no name": namedNoName,
+		"a named scope naming an upper-case account":   namedUpperCase,
+		"a named scope naming an account and more":     namedTrailing,
+		"a named scope naming text and an account":     namedLeading,
+		"a named scope naming two projects":            namedTwo,
+		"a list no exchange mints":                     unsorted,
 	} {
 		t.Run(name, func(t *testing.T) {
 			token := "a-token-that-is-" + strings.ReplaceAll(name, " ", "-")
@@ -372,17 +394,18 @@ func TestANamedAnswerNamingNoProjectIsAPublicSession(t *testing.T) {
 }
 
 // TestANamedAnswerNamingNoPersonIsItsAccount: an account entry naming no person and no project
-// mints a named token naming no person and no project, whose service is the account it acts as;
-// its answer is that caller, under Verify, Live and the NATS auth service's SessionCaller alike,
-// and so is the answer of such an entry that fixes its session (<service account>===<session>),
-// whose service is the same account. The same answer naming a project, or naming no service, is
-// no token the exchange mints.
+// mints a named token naming no person, no project and no OAuth scope, whose service is the
+// account it acts as; its answer is that caller, under Verify, Live and the NATS auth service's
+// SessionCaller alike, and so is the answer of such an entry that fixes its session (<service
+// account>===<session>), whose service is the same account. The same answer naming no service,
+// or holding an OAuth scope word, is no token the exchange mints. The same answer naming one
+// project is a job's named token (TestSessionCallerIsTheVerifyRule).
 func TestANamedAnswerNamingNoPersonIsItsAccount(t *testing.T) {
 	const account = "system:serviceaccount:example-ns:example-public"
 	rig := newRig(t)
 	caller := newSigner(t)
 	answer := liveToken(caller.jkt, time.Hour)
-	answer.Person, answer.Service, answer.Projects = "", account, nil
+	answer.Person, answer.Service, answer.Projects, answer.Scope = "", account, nil, ""
 	const token = "a-personless-account-token"
 	rig.broker.Says(token, answer)
 	want := ciphertoken.Caller{Session: "ses_a1b2c3", Service: account, ProjectScope: ciphertoken.ProjectScopeNamed}
@@ -405,20 +428,21 @@ func TestANamedAnswerNamingNoPersonIsItsAccount(t *testing.T) {
 	if decided, err := ciphertoken.SessionCaller(fixed); err != nil || !reflect.DeepEqual(decided, ciphertoken.Caller{Session: fixed.Session, Service: account, ProjectScope: ciphertoken.ProjectScopeNamed}) {
 		t.Errorf("SessionCaller of the answer of an entry naming no person that fixes its session = %+v, %v; want that session acting for %s", decided, err, account)
 	}
-	withProject := answer
-	withProject.Projects = []string{"INFRA"}
 	noService := answer
 	noService.Service = ""
-	for name, refused := range map[string]ciphertoken.Introspection{"naming a project": withProject, "naming no service": noService} {
+	scoped := answer
+	scoped.Scope = "person"
+	for name, refused := range map[string]ciphertoken.Introspection{"naming no service": noService, "holding the scope person": scoped} {
 		if _, err := ciphertoken.SessionCaller(refused); !errors.Is(err, ciphertoken.ErrNotASession) {
 			t.Errorf("SessionCaller of a named answer naming no person and %s = %v, want ErrNotASession", name, err)
 		}
 	}
 }
 
-// TestLiveRefusesAServiceAnswerWithProjects: a token that names a service and no person names no
-// project (the exchange refuses a machine's trade naming one), so an answer that does is no token
-// the exchange minted.
+// TestLiveRefusesAServiceAnswerWithProjects: a token that names a service and no person under the
+// project scope person names no project (the exchange refuses a machine's trade naming one), so an
+// answer that does is no token the exchange minted. A job's token names its service and its
+// projects under the scope named or public, which TestSessionCallerIsTheVerifyRule holds.
 func TestLiveRefusesAServiceAnswerWithProjects(t *testing.T) {
 	rig := newRig(t)
 	caller := newSigner(t)
@@ -431,8 +455,9 @@ func TestLiveRefusesAServiceAnswerWithProjects(t *testing.T) {
 	}
 }
 
-// TestCallerCarriesTheProjects: the token's list reaches the Caller whole, under either scope, as
-// the caller's own copy: a named token's one project and a person token's list alike.
+// TestCallerCarriesTheProjects: the token's list reaches the Caller whole, under each scope, as
+// the caller's own copy: a named token's one project and a person token's list alike, and a job
+// token's service beside its named project or its public list.
 func TestCallerCarriesTheProjects(t *testing.T) {
 	rig := newRig(t)
 	caller := newSigner(t)
@@ -444,6 +469,10 @@ func TestCallerCarriesTheProjects(t *testing.T) {
 	}{
 		"named":  {liveToken(caller.jkt, time.Hour), ciphertoken.Caller{Session: "ses_a1b2c3", Person: "sjawhar", Projects: []string{"INFRA"}, ProjectScope: ciphertoken.ProjectScopeNamed}},
 		"person": {person, ciphertoken.Caller{Session: "ses_a1b2c3", Person: "sjawhar", Projects: []string{"PRIV", "PUB"}, ProjectScope: ciphertoken.ProjectScopePerson}},
+		"job-named": {jobToken(caller.jkt, time.Hour, ciphertoken.ProjectScopeNamed, "ACME"),
+			ciphertoken.Caller{Session: "ses_job", Service: jobService, Projects: []string{"ACME"}, ProjectScope: ciphertoken.ProjectScopeNamed}},
+		"job-public": {jobToken(caller.jkt, time.Hour, ciphertoken.ProjectScopePublic, "ACME", "PRIV"),
+			ciphertoken.Caller{Session: "ses_job", Service: jobService, Projects: []string{"ACME", "PRIV"}, ProjectScope: ciphertoken.ProjectScopePublic}},
 	} {
 		token := "a-" + name + "-token-with-projects"
 		rig.broker.Says(token, c.answer)
@@ -1049,16 +1078,47 @@ func TestABrokerThatCannotBeReachedIsTheUnreachableOutcome(t *testing.T) {
 	}
 }
 
+// A broker URL holding a made-up token, as the user name or in the query, that cannot be reached:
+// the unreachable outcome holds no part of the token, though net/http's error quotes the request's
+// URL with only a password masked. Boot refuses such a DISPATCH_AGENT_SECRETS_URL; the verifier
+// prints none of it all the same.
+func TestAnUnreachableBrokerURLWithACredentialPrintsNoneOfIt(t *testing.T) {
+	const token = "madeUpBrokerToken0123"
+	refused := testport.Refused(t)
+	for name, brokerURL := range map[string]string{
+		"a token as the user name": "http://" + token + "@" + refused,
+		"a token in the query":     "http://" + refused + "?token=" + token,
+	} {
+		t.Run(name, func(t *testing.T) {
+			rig := newRig(t, func(o *ciphertoken.Options) { o.BrokerURL = brokerURL })
+			_, err := rig.verifier.Verify(t.Context(), newSigner(t).at(resourcePath, "a-token-nobody-can-be-asked-about"))
+			if !errors.Is(err, ciphertoken.ErrBrokerUnreachable) {
+				t.Fatalf("Verify = %v, want ErrBrokerUnreachable", err)
+			}
+			if strings.Contains(err.Error(), token[:10]) {
+				t.Errorf("Verify = %v, which holds part of the broker URL's token", err)
+			}
+		})
+	}
+}
+
 // TestAnAccountTokenDispatchCannotReadAsksTheBrokerNothing: Dispatch's own missing credential is
-// its deployment's failure, so it is the unreachable outcome and the error names the file.
+// its deployment's failure, so it is the unreachable outcome and the error names the setting that
+// holds the file and why it could not be read, never the path, which here is a made-up token, as
+// one pasted where the path goes is.
 func TestAnAccountTokenDispatchCannotReadAsksTheBrokerNothing(t *testing.T) {
-	missing := filepath.Join(t.TempDir(), "nothing-here")
-	rig := newRig(t, func(o *ciphertoken.Options) { o.Account = ciphertoken.NewAccountToken(missing) })
+	const pasted = "madeUpAccountTokenPath0123456789"
+	missing := filepath.Join(t.TempDir(), pasted)
+	rig := newRig(t, func(o *ciphertoken.Options) {
+		o.Account = ciphertoken.NewAccountToken("DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE", missing)
+	})
 	caller := newSigner(t)
 
 	_, err := rig.verifier.Verify(t.Context(), caller.at(resourcePath, "a-token-never-asked-about"))
-	if !errors.Is(err, ciphertoken.ErrBrokerUnreachable) || !strings.Contains(err.Error(), missing) {
-		t.Fatalf("an unreadable account token answered %v, want ErrBrokerUnreachable naming %s", err, missing)
+	if !errors.Is(err, ciphertoken.ErrBrokerUnreachable) ||
+		!strings.Contains(err.Error(), "read the ServiceAccount token DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE names: its file cannot be read: it does not exist") ||
+		strings.Contains(err.Error(), pasted[:10]) {
+		t.Fatalf("an unreadable account token answered %v, want ErrBrokerUnreachable naming the setting and why, and not the path", err)
 	}
 	var unreadable *ciphertoken.AccountTokenError
 	if !errors.As(err, &unreadable) {
@@ -1140,7 +1200,7 @@ func TestNewRefusesAnOriginItCannotCheckAProofAgainst(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			_, err := ciphertoken.New(ciphertoken.Options{
 				BrokerURL: "https://broker.test",
-				Account:   ciphertoken.NewAccountToken(accountTokenFile(t, accountToken)),
+				Account:   ciphertoken.NewAccountToken("DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE", accountTokenFile(t, accountToken)),
 				Origins:   origins,
 				Replay:    store.NewDPoPProofs(database.Pool),
 				Address:   sourceAddress,
@@ -1161,7 +1221,7 @@ func TestNewRefusesAVerifierWithNoSourceAddress(t *testing.T) {
 	options := func() ciphertoken.Options {
 		return ciphertoken.Options{
 			BrokerURL: "https://broker.test",
-			Account:   ciphertoken.NewAccountToken(accountTokenFile(t, accountToken)),
+			Account:   ciphertoken.NewAccountToken("DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE", accountTokenFile(t, accountToken)),
 			Origins:   []string{dispatchOrigin},
 			Replay:    store.NewDPoPProofs(database.Pool),
 		}

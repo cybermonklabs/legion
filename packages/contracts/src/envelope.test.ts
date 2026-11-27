@@ -476,9 +476,10 @@ describe("githubJobSubject", () => {
 // the stream's MsgId and every host's dedupe answer one question, so a key either side misjudges is
 // a repeat one of them drops and the other does not, or a distinct event both lose.
 describe("dedupeKeyNamesItsEvent", () => {
-  test.each(
-    dedupeKeys.keys.map((row) => [row.name, row.envelope, row.names] as const)
-  )("%s", (_name, envelope, names) => {
-    expect(dedupeKeyNamesItsEvent(envelope)).toBe(names);
-  });
+  test.each(dedupeKeys.keys.map((row) => [row.name, row.envelope, row.names] as const))(
+    "%s",
+    (_name, envelope, names) => {
+      expect(dedupeKeyNamesItsEvent(envelope)).toBe(names);
+    }
+  );
 });

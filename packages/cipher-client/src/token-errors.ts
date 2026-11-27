@@ -7,7 +7,7 @@
 // broker and NATS credentials, and every test read them without owning the retry loop.
 
 import { scrub } from "@legion/contracts/held-secrets";
-import { outage } from "./oauth-refusal";
+import { outage } from "@legion/contracts/http-status";
 import {
   isKnownBrokerRefusal,
   KNOWN_OAUTH_ERROR_CODES,
@@ -135,10 +135,11 @@ export class BrokerRefusedError extends Error {
    * succeeds.
    *
    * `membership_held`: Dispatch holds the person this identity names, because Google refused
-   * their Dispatch sign-in, or no refresh has confirmed them for 24 hours. A hold revokes nothing,
-   * and the person's next Dispatch sign-in, or the next refresh that confirms them, ends it, so
-   * the identity this client trades is served again then with no new credential. A client that
-   * dropped it would need a restart after every hold.
+   * their Dispatch sign-in, or no refresh has confirmed them for 24 hours, or, behind
+   * Identity-Aware Proxy, the Workspace Directory no longer confirms their account. A hold revokes
+   * nothing, and the person's next Dispatch sign-in, the next refresh that confirms them, or the
+   * Directory's next active answer ends it, so the identity this client trades is served again then
+   * with no new credential. A client that dropped it would need a restart after every hold.
    */
   get permanent(): boolean {
     return (

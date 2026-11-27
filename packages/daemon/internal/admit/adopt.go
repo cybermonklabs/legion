@@ -27,7 +27,8 @@ type adoption struct {
 // adoptChildren applies an architect's release of children recorded outside its tree: each root
 // that queued in admission before a person made it a child of fact.Tree joins that tree with every
 // record of its own (workflow's Engine.Adopt), under the Dispatch parent the release read, and the
-// line is promoted as after any other fact; it reports the slots that promotion's roots returned.
+// line is promoted by the pass rule (Apply), as after any other fact; it reports the slots that
+// promotion's roots returned.
 // A child already recorded in fact.Tree needs nothing, and a member of another child's queued tree
 // joins with that child.
 //
@@ -124,7 +125,7 @@ func (a *Admission) adoptChildren(ctx context.Context, tx pgx.Tx, fact intake.Ch
 			return nil, nil, fmt.Errorf("adopt %s into the tree of %s: %w", child.issue.Key, fact.Tree, err)
 		}
 	}
-	_, returned, err := a.promote(ctx, tx)
+	_, returned, err := a.promoteWritten(ctx, tx)
 	return returned, nil, err
 }
 
@@ -146,31 +147,25 @@ func (a *Admission) adoptChildren(ctx context.Context, tx pgx.Tx, fact intake.Ch
 // workflow's Engine.AdoptMember), and until one releases it the member stands in admission.held
 // with the reason tree_closed.
 //
-// It loops until a pass adopts nothing, and returns the issues, slots and line facts that pass
-// read: it wrote nothing, so they are the record as it stands, and promotion reuses them rather
-// than reading the tree lifecycles, the gates and the owed starts a second time. Each adoption
-// makes a root a member, never a root again, so the roots bound the passes. A candidate whose
-// target root is itself a candidate waits for the next pass, so nested queued roots join the
-// live tree at the top once each, rather than passing through the queued tree between;
-// candidates whose parents form a cycle are each other's targets and stay roots of their own.
+// It loops until a pass adopts nothing, and returns the read that pass took (readPass, with the
+// transaction's count of the rows a judgement reads): it wrote nothing, so the issues, slots and
+// line facts are the record as it stands, and promotion reuses them rather than reading the tree
+// lifecycles, the gates and the owed starts a second time. Each adoption makes a root a member,
+// never a root again, so the roots bound the passes. A candidate whose target root is itself a
+// candidate waits for the next pass, so nested queued roots join the live tree at the top once
+// each, rather than passing through the queued tree between; candidates whose parents form a
+// cycle are each other's targets and stay roots of their own.
 //
 // It reads the project's live records (record.Store.LiveIssues). A candidate's parent may be a
 // finished child of a live tree, which that read leaves out, so the parents it does not hold are
 // read by key (record.Store.IssuesOf); a target is a live tree's root, which it always holds.
-func (a *Admission) adoptQueuedRoots(ctx context.Context, tx pgx.Tx, respectHolds bool) ([]record.Issue, []record.Slot, record.LineFacts, error) {
+func (a *Admission) adoptQueuedRoots(ctx context.Context, tx pgx.Tx, respectHolds bool) (passRead, error) {
 	for {
-		issues, err := a.store.LiveIssues(ctx, tx, a.project)
+		read, err := a.readPass(ctx, tx)
 		if err != nil {
-			return nil, nil, record.LineFacts{}, fmt.Errorf("list admission issues: %w", err)
+			return passRead{}, err
 		}
-		slots, err := a.store.Slots(ctx, tx)
-		if err != nil {
-			return nil, nil, record.LineFacts{}, fmt.Errorf("list admission slots: %w", err)
-		}
-		facts, err := record.ReadLineFacts(ctx, tx, a.store, a.project, issues, a.engine.GatedSteps())
-		if err != nil {
-			return nil, nil, record.LineFacts{}, err
-		}
+		issues, facts := read.issues, read.facts
 		// A target whose tree is not live is skipped here, so every target asked about is live.
 		live := record.LiveRoots(issues, facts)
 		recorded := make(map[string]record.Issue, len(issues))
@@ -190,7 +185,7 @@ func (a *Admission) adoptQueuedRoots(ctx context.Context, tx pgx.Tx, respectHold
 		}
 		parents, err := a.store.IssuesOf(ctx, tx, a.project, unread)
 		if err != nil {
-			return nil, nil, record.LineFacts{}, fmt.Errorf("read the parents of the queued roots: %w", err)
+			return passRead{}, fmt.Errorf("read the parents of the queued roots: %w", err)
 		}
 		for _, parent := range parents {
 			recorded[parent.Key] = parent
@@ -210,7 +205,7 @@ func (a *Admission) adoptQueuedRoots(ctx context.Context, tx pgx.Tx, respectHold
 			}
 			refusal, err := a.engine.AdoptionRefusal(ctx, tx, issue, target.Key)
 			if err != nil {
-				return nil, nil, record.LineFacts{}, fmt.Errorf("read whether %s joins the tree of %s: %w", issue.Key, target.Key, err)
+				return passRead{}, fmt.Errorf("read whether %s joins the tree of %s: %w", issue.Key, target.Key, err)
 			}
 			if refusal == nil {
 				// The sweep reads no Dispatch, so a candidate it adopts carries only its
@@ -224,12 +219,12 @@ func (a *Admission) adoptQueuedRoots(ctx context.Context, tx pgx.Tx, respectHold
 				continue
 			}
 			if err := a.engine.Adopt(ctx, tx, candidate.issue, candidate.target, candidate.child); err != nil {
-				return nil, nil, record.LineFacts{}, fmt.Errorf("adopt %s into the tree of %s: %w", candidate.issue.Key, candidate.target.Key, err)
+				return passRead{}, fmt.Errorf("adopt %s into the tree of %s: %w", candidate.issue.Key, candidate.target.Key, err)
 			}
 			adopted = true
 		}
 		if !adopted {
-			return issues, slots, facts, nil
+			return read, nil
 		}
 	}
 }
