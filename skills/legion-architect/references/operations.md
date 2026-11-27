@@ -23,7 +23,7 @@ EOF
 
 ## A clear defect another role writes to you
 
-A clear defect another role writes to you comes as a Dispatch comment that mentions your role, its first line `Clear defect from <role>` (`skill://legion-architect/SKILL.md`, "Escalation judgment").
+A clear defect another role writes to you comes as a Dispatch comment that mentions your role, its first line `Clear defect from <role>`, or as the controller's reply under one, `Not filed: dispatch://<KEY>; role:<token> is mentioned here` (`skill://legion-architect/SKILL.md`, "Escalation judgment").
 Carry it in this tree: in an open pull request, or in a child.
 Reply under its evidence comment with the issue that carries it.
 It changes the root spec only where it changes the Summary, a requirement, a check or the scope (`skill://legion-architect/references/design-gate.md`, "After approval").

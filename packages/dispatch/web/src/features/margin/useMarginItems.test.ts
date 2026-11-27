@@ -25,6 +25,7 @@ import type {
 } from "../../api/types";
 import { answerOpenAsks } from "../inbox/inbox-fixture";
 import type { DecisionsRead } from "../issue/decision-entries";
+import type { DecisionDocuments } from "../issue-page/decision-review";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import {
@@ -1132,7 +1133,7 @@ test("an open and a declined ask are no decision beside the spec, and an answere
   try {
     await waitFor(() =>
       expect(JSON.parse(screen.getByLabelText("Margin decisions").textContent ?? "")).toEqual({
-        decisions: [["p-a", "answered-ask", false]],
+        decisions: [["p-a", "answered-ask", false, "choices-md-id"]],
         items: ["decision:answered-ask:CORE-1/spec#p-a"],
       })
     );
@@ -1142,7 +1143,7 @@ test("an open and a declined ask are no decision beside the spec, and an answere
   }
 });
 
-function DecisionItems({ document }: { document: Artifact }) {
+function DecisionItems({ document, issue }: { document: Artifact; issue?: DecisionDocuments }) {
   const { decisions, items } = useMarginItems(
     { key: "CORE-1", kind: "issue" },
     "comments",
@@ -1153,7 +1154,7 @@ function DecisionItems({ document }: { document: Artifact }) {
       ["p-a", { pos: 12, top: 72 }],
     ]),
     undefined,
-    { documentShown: true }
+    { documentShown: true, issue }
   );
   return createElement(
     "output",
@@ -1163,13 +1164,14 @@ function DecisionItems({ document }: { document: Artifact }) {
         item.blockId,
         item.decision.node.id,
         item.decision.uncertainty === "high",
+        item.documentId ?? null,
       ]),
       items: items.map(marginItemId),
     })
   );
 }
 
-function renderDecisionItems(document: Artifact) {
+function renderDecisionItems(document: Artifact, issue?: DecisionDocuments) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
   });
@@ -1184,7 +1186,7 @@ function renderDecisionItems(document: Artifact) {
       createElement(
         QueryClientProvider,
         { client: queryClient },
-        createElement(DecisionItems, { document })
+        createElement(DecisionItems, { document, issue })
       )
     )
   );
@@ -1197,11 +1199,11 @@ test("each decision is a margin item beside every spec block it links, in the sp
     await waitFor(() =>
       expect(JSON.parse(screen.getByLabelText("Margin decisions").textContent ?? "")).toEqual({
         decisions: [
-          ["p-b", "CORE-1/choices-md#d-1", false],
-          ["p-b", "CORE-1/choices-md#d-2", true],
-          ["p-b", "CORE-1/notes-md#d-2", false],
-          ["p-a", "CORE-1/choices-md#d-1", false],
-          ["p-c", "CORE-1/choices-md#d-4", false],
+          ["p-b", "CORE-1/choices-md#d-1", false, "choices-md-id"],
+          ["p-b", "CORE-1/choices-md#d-2", true, "choices-md-id"],
+          ["p-b", "CORE-1/notes-md#d-2", false, "notes-md-id"],
+          ["p-a", "CORE-1/choices-md#d-1", false, "choices-md-id"],
+          ["p-c", "CORE-1/choices-md#d-4", false, "choices-md-id"],
         ],
         items: [
           "decision:CORE-1/choices-md#d-1:CORE-1/spec#p-b",
@@ -1239,7 +1241,9 @@ test("an issue document that is not its spec reads no decisions and shows none",
 // A server of the release before answers the Decisions read with no `entries`: its decisions are
 // the sections of the issue's decisions document, an agent's or, where a section cites an ask, a
 // person's, each with the links it shaped. During a roll a page of this build can reach one, and
-// the margin still draws each beside the spec blocks it links, as it draws an entry.
+// the margin still draws each beside the spec blocks it links, as it draws an entry. Such an entry
+// names no document, so its card's text resolves against the issue's document its address names,
+// found among the documents the issue read lists, as every other view finds it.
 test("a Decisions read of the release before, with no entries, still draws its decisions beside the spec", async () => {
   const section = (
     block: string,
@@ -1274,15 +1278,19 @@ test("a Decisions read of the release before, with no entries, still draws its d
   const getIssueDecisions = spyOn(api, "getIssueDecisions").mockResolvedValue(
     before as IssueDecisions
   );
-  const view = renderDecisionItems(artifact);
+  const view = renderDecisionItems(artifact, {
+    artifacts: [artifact, { id: "decisions-md-id", slug: "decisions-md" }],
+    key: "CORE-1",
+    primary_artifact_id: artifact.id,
+  });
   try {
     const agent = "dispatch://CORE-1/artifact/decisions-md#b-h-agent";
     const person = "dispatch://CORE-1/artifact/decisions-md#b-h-person";
     await waitFor(() =>
       expect(JSON.parse(screen.getByLabelText("Margin decisions").textContent ?? "")).toEqual({
         decisions: [
-          ["p-b", person, true],
-          ["p-a", agent, false],
+          ["p-b", person, true, "decisions-md-id"],
+          ["p-a", agent, false, "decisions-md-id"],
         ],
         items: [`decision:${person}:CORE-1/spec#p-b`, `decision:${agent}:CORE-1/spec#p-a`],
       })

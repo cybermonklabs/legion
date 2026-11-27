@@ -114,23 +114,26 @@ func readPaneEnv(value *yaml.Node, key string) (map[string]string, error) {
 	for i := 0; i+1 < len(value.Content); i += 2 {
 		nameNode, valueNode := value.Content[i], value.Content[i+1]
 		name := nameNode.Value
+		// The refusals below name the entry by its position, never its name, as envNameRefusal
+		// does: a credential made only of letters, digits and underscores passes envVarName, and
+		// these refusals are printed as they are.
 		switch {
 		case nameNode.Kind != yaml.ScalarNode || !envVarName.MatchString(name):
-			return nil, fmt.Errorf("%s key %q %s", key, name, envNameRule)
+			return nil, envNameRefusal(key, i/2+1)
 		case name == "PATH":
 			return nil, fmt.Errorf("%s names PATH, which the runtime composes for every pane (the daemon's own PATH behind its launcher directory)", key)
 		case runtime.HoldsSecretValue(name):
-			return nil, fmt.Errorf("%s names %s, a credential-shaped name: a secret reaches a pane as a file (provider_keys), never as a value on tmux's command line", key, name)
+			return nil, fmt.Errorf("%s entry %d names a credential-shaped variable: a secret reaches a pane as a file (provider_keys), never as a value on tmux's command line", key, i/2+1)
 		}
 		if _, seen := env[name]; seen {
-			return nil, fmt.Errorf("%s names %s twice", key, name)
+			return nil, fmt.Errorf("%s entry %d names a variable an earlier entry names", key, i/2+1)
 		}
 		var read string
 		if valueNode.Kind != yaml.ScalarNode || valueNode.Tag == "!!null" || valueNode.Decode(&read) != nil {
-			return nil, fmt.Errorf("%s.%s must be a string", key, name)
+			return nil, fmt.Errorf("%s entry %d: its value must be a string", key, i/2+1)
 		}
 		if why := runtime.PaneVariableRefusal(name, read); why != "" {
-			return nil, fmt.Errorf("%s names %s: %s", key, name, why)
+			return nil, fmt.Errorf("%s entry %d: %s", key, i/2+1, why)
 		}
 		if name == runtime.SpendAttributesVariable {
 			if why := runtime.SpendAttributesRefusal(read); why != "" {

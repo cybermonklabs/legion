@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/decisionread"
 	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
+	"github.com/sjawhar/envoy/internal/dispatch/inboxwrite"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -429,10 +430,28 @@ func (s *Service) restoreIssueDecisions(ctx context.Context, tx pgx.Tx, issue st
 		r.decisions = &decisions
 	}
 	// The issue's owner lock first, as every writer of its documents takes it (lockArtifactOwner),
-	// then the rows of its asks, then each document's live write: the decisions document's first,
-	// which the read of its room's removals opens (holdDecisionsRoomRemovals), then the spec's and
-	// each other document's.
+	// then, where the issue's asks fall through to its project's default assignee (the issue is one
+	// nobody holds), that project's owner lock shared (inboxwrite.HoldDefault), then the rows of its
+	// asks, then each document's live write: the decisions document's first, which the read of its
+	// room's removals opens (holdDecisionsRoomRemovals), then the spec's and each other document's.
+	//
+	// The project's lock comes before the first asks row this pass locks, as every writer that
+	// decides who an ask waits on takes it (api/inbox_read.go's markInboxReadThreads). This pass
+	// writes at once (joinAtOnce), so each asks row it locks is locked where the pass reaches it,
+	// and stays locked to its commit: the issue's question asks (readState), the ask blocks of each
+	// document it versions (askBlocksWithAnAsk, lockAskBlocksForWrite) and the approval request
+	// such a version moves (moveApprovalAsk). The carry's answer of that request holds the
+	// project's lock shared (answerApprovalAsk, inboxwrite.HoldAskDefault), and a move of the
+	// default (putProjectDefaultAssignee) takes it exclusive and then locks, in ascending id, every
+	// open asks row that falls through to the default. Were the lock first taken at the answer,
+	// this pass would hold those rows while it waited for the move, and the move would hold the
+	// lock while it waited for those rows. Taken here, a move either committed before this pass read
+	// any ask or waits for this pass to commit, and the answer's hold is one this transaction holds
+	// already.
 	if _, _, err := lockArtifactOwner(ctx, tx, spec.id); err != nil {
+		return result, err
+	}
+	if err := inboxwrite.HoldDefault(ctx, tx, &issue, nil); err != nil {
 		return result, err
 	}
 	var owing string

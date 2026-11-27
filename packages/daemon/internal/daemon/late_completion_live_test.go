@@ -36,7 +36,7 @@
 // tool reads it back through Dispatch's `/handoffs/<word>/latest`, and the daemon reads the
 // record a completion names through `/handoffs/<id>` and holds it to that session.
 //
-// The daemon is the whole daemon (run, through startDaemonWithin). What the proof reads is the
+// The daemon is the whole daemon (run, through startDaemonLogging). What the proof reads is the
 // tool's answer, the daemon's own line for each completion it answers (api's handoffComplete,
 // `api: handoff completion answered`, which names the record and the commit the call carried and
 // the status and code it was answered with), and GET /legion/v1/state. GitHub is the harness's
@@ -180,6 +180,7 @@ type lateAnswer struct {
 // approval moved the issue to accepting, each call made by the `legion` tool the panes load; then
 // judges the three late answers.
 func TestLateCompletionsThroughTheRealLegionToolLive(t *testing.T) {
+	// Not parallel: it gives the process back the operator's own environment, as t.Setenv does (fixtureenv.Live).
 	fixtureenv.Live(t)
 	r := newLateCompletionLive(t)
 	r.step("step1-the-implementer-pane-completes-implementing-through-the-real-tool-at-its-pushed-head", r.implementerCompletes)
@@ -278,7 +279,7 @@ func newLateCompletionLive(t *testing.T) *lateCompletionLive {
 
 	r.seed()
 	r.daemon = newRecordingLog(r.log())
-	r.d = startDaemonWithin(t, r.cfg, r.overrides(), slog.New(r.daemon), 2*time.Minute)
+	r.d = startDaemonLogging(t, r.cfg, r.overrides(), slog.New(r.daemon))
 	r.note("Dispatch %s (database of its own, NATS off), project %s with default repository %s, issue %s; daemon at dispatch_url %s, each pane told it as DISPATCH_URL",
 		r.dispatch.base, r.cfg.Project, liveRepo, r.key, r.cfg.DispatchURL)
 	return r

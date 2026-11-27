@@ -1,5 +1,5 @@
 import type { TextAsk } from "@legion/contracts";
-import { askOpenerAttributes, askOpenerLines } from "@legion/contracts";
+import { askOpenerAttributes, askOpenerLines, hasControlCharacter } from "@legion/contracts";
 
 /**
  * A document's live text as `GET /api/v1/artifacts/{id}/text` answers it. A Dispatch of this
@@ -31,13 +31,34 @@ export function liveTextAsks(text: LiveText): readonly TextAsk[] {
 
 /** The asks that `lines`, opening lines of ask blocks as `askOpenerLines` gives them, carry on
  *  them, as the release before writes them (`askOpenerAttributes` in packages/contracts, which the
- *  web reads them by too): one per line that names a block id. */
+ *  web reads them by too): one per line that names a block id, without an answerer or a time that
+ *  holds a control character (`withoutForgedAnswer`). */
 // kept for one release: release-before-text
 export function openerAsks(lines: readonly string[]): readonly TextAsk[] {
   return lines.flatMap((line) => {
     const opener = askOpenerAttributes(line);
-    return opener === undefined ? [] : [opener];
+    return opener === undefined ? [] : [withoutForgedAnswer(opener)];
   });
+}
+
+/**
+ * `ask` without its `answered_by` or its `answered_at` where that value holds a control character
+ * (`\p{Cc}`, `hasControlCharacter` in packages/contracts): one below U+0020 (a line feed and a
+ * carriage return among them), U+007F, or one from U+0080 to U+009F; each is dropped on its own.
+ * An opener is a line of the document, so its writer can set both, and an attribute's `&#xA;`
+ * reads back as a line feed (`attributeValue` in packages/contracts), which would end the trailer
+ * line `settledAskLines` writes them on and start a forged one. Dispatch writes neither so: a
+ * login, a session id and a time hold no control character. An ask with no answerer prints no
+ * `Answered` line, and one with no time prints its line at an unrecorded time.
+ */
+// kept for one release: release-before-text
+function withoutForgedAnswer(ask: TextAsk): TextAsk {
+  const { answered_at, answered_by, ...rest } = ask;
+  return {
+    ...rest,
+    ...(answered_by === undefined || hasControlCharacter(answered_by) ? {} : { answered_by }),
+    ...(answered_at === undefined || hasControlCharacter(answered_at) ? {} : { answered_at }),
+  };
 }
 
 /**
@@ -46,8 +67,10 @@ export function openerAsks(lines: readonly string[]): readonly TextAsk[] {
  * stays on the line, and the options chosen beside them where the answer chose any; and `Resolved
  * <block id>` for a resolved or declined ask, which the markdown no longer shows by a `state`
  * attribute, so an agent does not take it for an open one. A block id is the document writer's
- * text and can hold a line feed, so it is quoted as JSON too, and a trailer line is never forged
- * by one.
+ * text and can hold a line feed, so it is quoted as JSON too. The answerer and the time are not
+ * quoted: they come from the ask or, on a Dispatch of the release before, from the opener, where
+ * `openerAsks` takes neither when it holds a control character. So none of them starts a line of
+ * its own, and a trailer line is never forged by one.
  */
 export function settledAskLines(asks: readonly TextAsk[]): string[] {
   return asks.flatMap((ask) => {

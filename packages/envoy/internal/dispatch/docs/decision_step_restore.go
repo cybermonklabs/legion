@@ -30,43 +30,67 @@ type DecisionIssueFailure struct {
 	Err   error
 }
 
+// DecisionPass is what a pass of the third phase did (thirdPhase): each issue it touched (Done);
+// each it left with nothing written because a document of it owes its block index (Left,
+// errBlockIndexOwed), which a later pass takes once the block-index reconciliation has indexed
+// that document; and each whose transaction failed (Failed).
+//
+// kept for one release: decisions-step
+type DecisionPass struct {
+	Done   []DecisionIssue
+	Left   []DecisionIssueFailure
+	Failed []DecisionIssueFailure
+}
+
 // RestoreAndConvert is the decisions step's third phase over the issues of project, or of every
-// project for "", on a fleet of this one build: ErrAnotherBuildLive otherwise, with nothing done.
+// project for "" (thirdPhase), as a tick runs it: it answers each issue it touched and each issue
+// that failed. An issue it left for its block index is in neither: thirdPhase logs it, and a later
+// tick takes it.
+//
+// kept for one release: decisions-step
+func (s *DecisionStep) RestoreAndConvert(ctx context.Context, project string, convert, dryRun bool) ([]DecisionIssue, []DecisionIssueFailure, error) {
+	pass, err := s.thirdPhase(ctx, project, convert, dryRun)
+	return pass.Done, pass.Failed, err
+}
+
+// thirdPhase is the decisions step's third phase over the issues of project, or of every project
+// for "", on a fleet of this one build: ErrAnotherBuildLive otherwise, with nothing done.
 // Where convert, it first rewrites each list of gated steps that holds `decisions` without it, a
 // list of `decisions` alone becoming `[spec]` (F6; no design_gates row is deleted), and then, for
 // each issue that holds a decisions document (decisions_documents()) or an answered ask the
 // restore owes its spec (graphcensus.ReadRestoreWork), oldest issue first, restores those asks and
 // converts the document's sections, in one transaction for each issue (restoreIssueDecisions).
 // Without convert it restores the asks alone, for each issue the restore owes. dryRun does all of
-// it and rolls each transaction back. It answers each issue it touched and each issue that failed,
-// whose transaction rolled back and which the next pass tries again; its error is one that stops
-// the whole phase. An issue a document of which owes its block index is neither: it is left, with
-// nothing written, for a later pass (errBlockIndexOwed). A process of another build that goes live
+// it and rolls each transaction back. It answers each issue it touched, each issue it left, with
+// nothing written, because a document of it owes its block index (errBlockIndexOwed), for a later
+// pass, and each issue that failed, whose transaction rolled back and which the next pass tries
+// again; its error is one that stops the whole phase. A process of another build that goes live
 // during the pass stops it at the next issue's transaction, which reads the fleet again
-// (restoreIssue): it answers the issues it touched before that one with ErrAnotherBuildLive, and
-// converts nothing more until a later pass finds the fleet one build. It writes through the
-// document service the step was given (UseDocuments).
+// (restoreIssue): it answers the issues it touched and left before that one with
+// ErrAnotherBuildLive, and converts nothing more until a later pass finds the fleet one build. It
+// writes through the document service the step was given (UseDocuments).
 //
 // kept for one release: decisions-step
-func (s *DecisionStep) RestoreAndConvert(ctx context.Context, project string, convert, dryRun bool) ([]DecisionIssue, []DecisionIssueFailure, error) {
+func (s *DecisionStep) thirdPhase(ctx context.Context, project string, convert, dryRun bool) (DecisionPass, error) {
+	var pass DecisionPass
 	if s.documents == nil {
-		return nil, nil, errors.New("docs: the decisions step's third phase has no document service to write through")
+		return pass, errors.New("docs: the decisions step's third phase has no document service to write through")
 	}
 	other, err := s.anotherBuildLive(ctx, s.database.Pool)
 	if err != nil {
-		return nil, nil, err
+		return pass, err
 	}
 	if other {
-		return nil, nil, ErrAnotherBuildLive
+		return pass, ErrAnotherBuildLive
 	}
 	if convert {
 		if err := s.rewriteGatedSteps(ctx, project, dryRun); err != nil {
-			return nil, nil, err
+			return pass, err
 		}
 	}
 	work, err := graphcensus.ReadRestoreWork(ctx, s.database.Pool)
 	if err != nil {
-		return nil, nil, err
+		return pass, err
 	}
 	keys := make([]string, 0, len(work))
 	byIssue := map[string][]graphcensus.RestoreWork{}
@@ -80,11 +104,11 @@ func (s *DecisionStep) RestoreAndConvert(ctx context.Context, project string, co
 		// kept for one release: decisions-documents-fn
 		rows, err := s.database.Pool.Query(ctx, `select distinct issue_key from decisions_documents()`)
 		if err != nil {
-			return nil, nil, fmt.Errorf("list the decisions documents: %w", err)
+			return pass, fmt.Errorf("list the decisions documents: %w", err)
 		}
 		documents, err := pgx.CollectRows(rows, pgx.RowTo[string])
 		if err != nil {
-			return nil, nil, fmt.Errorf("list the decisions documents: %w", err)
+			return pass, fmt.Errorf("list the decisions documents: %w", err)
 		}
 		for _, issue := range documents {
 			if _, listed := byIssue[issue]; !listed {
@@ -97,30 +121,29 @@ func (s *DecisionStep) RestoreAndConvert(ctx context.Context, project string, co
 		order by created_at, key
 	`, keys, project)
 	if err != nil {
-		return nil, nil, fmt.Errorf("order the issues the decisions step owes: %w", err)
+		return pass, fmt.Errorf("order the issues the decisions step owes: %w", err)
 	}
 	issues, err := pgx.CollectRows(rows, pgx.RowTo[string])
 	if err != nil {
-		return nil, nil, fmt.Errorf("order the issues the decisions step owes: %w", err)
+		return pass, fmt.Errorf("order the issues the decisions step owes: %w", err)
 	}
-	var done []DecisionIssue
-	var failed []DecisionIssueFailure
 	for _, issue := range issues {
 		if err := ctx.Err(); err != nil {
-			return done, failed, err
+			return pass, err
 		}
 		result, err := s.restoreIssue(ctx, issue, byIssue[issue], convert, dryRun)
 		if errors.Is(err, ErrAnotherBuildLive) {
 			s.logger.Info("dispatch: decisions step stopped its third phase: a process of another build went live during the pass",
-				"issue", issue, "touched", len(done), "dry_run", dryRun)
-			return done, failed, err
+				"issue", issue, "touched", len(pass.Done), "dry_run", dryRun)
+			return pass, err
 		}
 		if errors.Is(err, errBlockIndexOwed) {
 			s.logger.Info("dispatch: decisions step left an issue for a later pass", "issue", issue, "reason", err, "dry_run", dryRun)
+			pass.Left = append(pass.Left, DecisionIssueFailure{Issue: issue, Err: err})
 			continue
 		}
 		if err != nil {
-			failed = append(failed, DecisionIssueFailure{Issue: issue, Err: err})
+			pass.Failed = append(pass.Failed, DecisionIssueFailure{Issue: issue, Err: err})
 			continue
 		}
 		s.logger.Info("dispatch: decisions step restored and converted an issue",
@@ -140,9 +163,9 @@ func (s *DecisionStep) RestoreAndConvert(ctx context.Context, project string, co
 				"issue", issue, "document", superseded.Document, "review", superseded.Approval.ReviewID,
 				"approved_version", superseded.Approval.ApprovedVersion, "asks", superseded.Asks, "nodes", superseded.Nodes)
 		}
-		done = append(done, result)
+		pass.Done = append(pass.Done, result)
 	}
-	return done, failed, nil
+	return pass, nil
 }
 
 // restoreIssue runs the third phase on one issue in a transaction of its own, which it commits,
@@ -222,9 +245,11 @@ var ErrDryRunOwesBackfill = errors.New("docs: the decisions step's first phase o
 // `convert-decisions`): it waits for the step's lock, so no process's tick runs the first two
 // phases beside it, runs phase 1 where a row stands unmarked and phase 2 once, then releases that
 // lock and waits for phase 3's (takeRestoreLock), so no tick runs phase 3 beside it and no booting
-// process waits behind it, and runs phase 3 over the issues of project (RestoreAndConvert),
+// process waits behind it, and runs phase 3 over the issues of project (thirdPhase),
 // whatever DISPATCH_TEST_HOLD_DECISIONS_STEP says, since that setting holds a server's boot and
-// tick alone. Phase 3 still waits for a fleet of the step's own build (ErrAnotherBuildLive).
+// tick alone. Phase 3 still waits for a fleet of the step's own build (ErrAnotherBuildLive). It
+// answers what phase 3 did (DecisionPass), the issues it left for their block index among it, so
+// the command reports an issue it still owes.
 //
 // dryRun writes nothing: it refuses a database phase 1 owes a row of (ErrDryRunOwesBackfill), since
 // phase 1 commits, runs no phase 2, which commits each ask it catches up, and runs phase 3 with
@@ -233,38 +258,38 @@ var ErrDryRunOwesBackfill = errors.New("docs: the decisions step's first phase o
 // is marked for the pool's nested-acquire guard, as Boot's and Tick's are.
 //
 // kept for one release: decisions-step
-func (s *DecisionStep) RunByHand(ctx context.Context, project string, convert, dryRun bool) ([]DecisionIssue, []DecisionIssueFailure, error) {
+func (s *DecisionStep) RunByHand(ctx context.Context, project string, convert, dryRun bool) (DecisionPass, error) {
 	ctx = store.WithTransactionTracking(ctx)
 	conn, err := s.acquireStepConn(ctx)
 	if err != nil {
-		return nil, nil, err
+		return DecisionPass{}, err
 	}
 	defer conn.release(s.logger)
 	if _, err := conn.lock(ctx, decisionStepLock, true); err != nil {
-		return nil, nil, fmt.Errorf("take the decision step's lock: %w", err)
+		return DecisionPass{}, fmt.Errorf("take the decision step's lock: %w", err)
 	}
 	owed, err := graphcensus.AsksOwed(ctx, s.database)
 	if err != nil {
-		return nil, nil, err
+		return DecisionPass{}, err
 	}
 	if owed && dryRun {
-		return nil, nil, ErrDryRunOwesBackfill
+		return DecisionPass{}, ErrDryRunOwesBackfill
 	}
 	if owed {
 		if err := s.backfill(ctx); err != nil {
-			return nil, nil, err
+			return DecisionPass{}, err
 		}
 	}
 	// kept for one release: catch-up
 	if !dryRun {
 		if failed, err := s.catchUp(ctx); err != nil {
-			return nil, nil, err
+			return DecisionPass{}, err
 		} else if failed {
-			return nil, nil, errors.New("docs: the decisions step's catch-up failed on an ask; run the command again")
+			return DecisionPass{}, errors.New("docs: the decisions step's catch-up failed on an ask; run the command again")
 		}
 	}
 	if _, err := conn.takeRestoreLock(ctx, true); err != nil {
-		return nil, nil, err
+		return DecisionPass{}, err
 	}
-	return s.RestoreAndConvert(ctx, project, convert, dryRun)
+	return s.thirdPhase(ctx, project, convert, dryRun)
 }

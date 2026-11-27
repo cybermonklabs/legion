@@ -181,6 +181,7 @@ func closureStatementRows(t *testing.T, database *store.Store, statement string,
 // two to ten, are no member. It reads as somebody who proves no author, and no node of this data
 // is reserved for one, so the predicates it binds leave every row main answered.
 func TestTheClosureAnswersWhatMainsStatementDid(t *testing.T) {
+	t.Parallel()
 	fixture := newClosureFixture(t)
 	wantMembers := mainsDepthOneMembers(t, fixture.database, "CORE-1")
 	references, err := Closure(context.Background(), fixture.database.Pool, model.Actor{}, "CORE-1", "")
@@ -205,6 +206,7 @@ func TestTheClosureAnswersWhatMainsStatementDid(t *testing.T) {
 // build its hash and cannot use that index at all; the lateral join is what keeps the probe a
 // keyed one. Every read of refs is keyed too.
 func TestTheClosureProbesDocumentBlocksThroughItsNodeIndex(t *testing.T) {
+	t.Parallel()
 	fixture := newClosureFixture(t)
 	ctx := context.Background()
 	tx, err := fixture.database.Pool.Begin(ctx)
@@ -343,6 +345,7 @@ func membersDiff(members, want []Member, wantName string) (string, []Member) {
 // shows the fixture is as hard as the real graph. Every count of every statement, and of main's,
 // is printed.
 func TestTheReferencesReadReadsOnlyTheIssuesOwnLinks(t *testing.T) {
+	t.Parallel()
 	fixture := newOneHopFixture(t, true)
 	ctx := context.Background()
 	sizes := fixture.sizes(t)
@@ -560,6 +563,7 @@ func insertItemWithID(t *testing.T, tx pgx.Tx, kind ItemKind, id, issueKey strin
 // is first checked to answer at depth 1, and each named fixture also holds a second hop, which a
 // read past one hop answers. None holds a typed pointer, which main's statement does not read.
 func TestTheReferencesReadAnswersMainsDepthOneMembers(t *testing.T) {
+	t.Parallel()
 	// The out side of TestTheReferencesReadReadsOnlyTheIssuesOwnLinks' graph, its pointer a
 	// plain mention.
 	t.Run("the out side of the one-hop fixture", func(t *testing.T) {

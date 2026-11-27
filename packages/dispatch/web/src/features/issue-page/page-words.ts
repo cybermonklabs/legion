@@ -1241,6 +1241,7 @@ export const BLOCK_ATTRIBUTE_LABELS = joinWords("BLOCK_ATTRIBUTE_LABELS", {
   multiple: "more than one answer",
   needs: "needs",
   negative_control: "negative control",
+  program: "program",
   /** Whether a newer decision stands in this one's place. */
   replaced: "replaced",
   run: "run",
@@ -1252,6 +1253,7 @@ export const BLOCK_ATTRIBUTE_LABELS = joinWords("BLOCK_ATTRIBUTE_LABELS", {
   state: "state",
   /** The steps of Legion a plan task runs, in their order. */
   steps: "steps",
+  subject: "subject",
   surface: "surface",
   title: "title",
   /** How unsure the agent was of a decision, and in the next one why. */

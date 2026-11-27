@@ -254,6 +254,7 @@ func shotReadPaths(c shotCorpus) map[string]string {
 		"/api/v1/settings/delivery":                   "/api/v1/settings/delivery",
 		"/api/v1/settings/project-default-assignees":  "/api/v1/settings/project-default-assignees",
 		"/api/v1/signins":                             "/api/v1/signins",
+		"/api/v1/whoami":                              "/api/v1/whoami",
 	}
 }
 
@@ -478,6 +479,7 @@ func liveAnswer(t *testing.T, client *socketClient, sub string) {
 // table, and a person's edit in the room, by the room and the table it appends to - so a tracer
 // that saw nothing, or a check that names nothing, cannot pass.
 func TestTheVisualShotReadsWriteOnlyTheirCaches(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	statements := &shotStatements{}
 	traced := storetest.TracedStore(t, database, statements)

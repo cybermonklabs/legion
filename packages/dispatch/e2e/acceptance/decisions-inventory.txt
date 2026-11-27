@@ -1882,6 +1882,7 @@ packages/daemon/internal/prompts/roles_test.go	no
 packages/daemon/internal/repocache/fakegcs/testdata/README.md	no
 packages/dispatch/AGENTS.md	no
 packages/dispatch/README.md	no
+packages/dispatch/web/src/AGENTS.md	no
 packages/envoy-client/README.md	no
 packages/envoy/AGENTS.md	no
 packages/envoy/README.md	no

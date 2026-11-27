@@ -18,6 +18,7 @@ import (
 // row and the mention its block holds - carries the id of the event appended right before the
 // stamp, not of an event the same batch appends after it, and an edge stamped before keeps its own.
 func TestDerivedStampSourceSeqIsTheStampingEventsID(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	database := storetest.Open(t)
 	const server = "https://dispatch.example"

@@ -124,7 +124,21 @@ func TestAnElementThisBuildReadsButCannotCreateIsReadAndNeverCreated(t *testing.
 		}
 	}
 
-	shipped, shippedCreatable := SchemaVersion(), SchemaCreatable()
+	shipped := SchemaVersion()
+	// The build that stages future reads one version above the shipped manifest, so it also creates
+	// each element the shipped manifest reads and creates only from that version. Its R where future
+	// is not creatable is so the R of the shipped manifest with its version raised by one, which
+	// future, read only, leaves as it is.
+	raised, err := json.Marshal(storeManifestAhead(t, func(*BlockSchema, int) {}))
+	if err != nil {
+		t.Fatalf("encode the shipped manifest raised to version %d: %v", shipped+1, err)
+	}
+	restoreRaised, err := UseManifestForTest(raised)
+	if err != nil {
+		t.Fatalf("install the shipped manifest raised to version %d: %v", shipped+1, err)
+	}
+	raisedCreatable := SchemaCreatable()
+	restoreRaised()
 	restoreCreatable, err := UseStagedBlockForTest("future", true)
 	if err != nil {
 		t.Fatalf("stage the future block as creatable: %v", err)
@@ -153,10 +167,8 @@ func TestAnElementThisBuildReadsButCannotCreateIsReadAndNeverCreated(t *testing.
 	if got, want := SchemaVersion(), shipped+1; got != want {
 		t.Fatalf("SchemaVersion() = %d, want %d", got, want)
 	}
-	// This build creates every element it reads, so the staged future, read from the next version
-	// and not creatable there, leaves R where the shipped manifest has it.
-	if got := SchemaCreatable(); got != shippedCreatable {
-		t.Fatalf("SchemaCreatable() where future is not creatable = %d, want the shipped manifest's %d", got, shippedCreatable)
+	if got := SchemaCreatable(); got != raisedCreatable {
+		t.Fatalf("SchemaCreatable() where future is not creatable = %d, want the shipped manifest's raised to version %d, %d", got, shipped+1, raisedCreatable)
 	}
 	versions, declared := Element{Kind: TypedBlockElement, Name: "future"}.Versions()
 	if !declared || versions != (BlockElementVersions{Since: shipped + 1, CreatableSince: shipped + 2}) {
@@ -282,9 +294,10 @@ func manifestAsOf(t *testing.T, version int) []byte {
 // (ErrUnknownElement), which the document service answers 409 DOC_NEWER_CONTENT for rather than
 // repairing or rebuilding the document. The name says "this version" from when version 3 was the
 // manifest's; the Verification document's check names the row, so it keeps its name, and the
-// elements versions 4 and 5 add each have a row of their own
+// elements versions 4, 5 and 6 add each have a row of their own
 // (TestTheAttributeVersionFourAddsIsUnknownToABuildAtVersionThree,
-// TestTheAttributeVersionFiveAddsIsUnknownToABuildAtVersionFour).
+// TestTheAttributeVersionFiveAddsIsUnknownToABuildAtVersionFour,
+// TestTheCheckMarksAreReadFromNAndCreatedOnlyFromTheirCreatableVersion).
 func TestTheTypedBlocksThisVersionAddsAreUnknownToABuildAtTheVersionBefore(t *testing.T) {
 	const adds = 3
 	added := []string{"requirement", "plan_task", "check"}
@@ -417,6 +430,75 @@ func TestTheAttributeVersionFiveAddsIsUnknownToABuildAtVersionFour(t *testing.T)
 	}
 	if err := stored.Validate(); !errors.Is(err, ErrUnknownElement) {
 		t.Errorf("a build at version %d reading a stored plan task carrying steps = %v, want ErrUnknownElement", before, err)
+	}
+}
+
+// The check block's marks, subject and program (what a check reads - code, production or the
+// graph - and which deployed program it reads), are read from manifest version 6, N, and created
+// from version 9, creatable: #5416 declared them created from N+1, and the block schema bump to
+// version 8 moved that to 9, since the release after #5416 that records real deploys has not
+// shipped. A build at N, and every build below creatable, reads a check carrying either, and
+// writes one only into a document that already holds that mark, so no write of it puts one into a
+// document that holds none; a build at N-1, the release before, declares the check block but
+// neither mark, so it creates none and reads a stored check carrying one as an element it does not
+// know (ErrUnknownElement, answered 409 DOC_NEWER_CONTENT). Each build is the embedded manifest as
+// of its version (manifestAsOf), so each assertion holds whatever this build's version is.
+func TestTheCheckMarksAreReadFromNAndCreatedOnlyFromTheirCreatableVersion(t *testing.T) {
+	const n, creatable = 6, 9
+	const withoutIt = ":::check{#b-c1}\nBody.\n:::\n"
+	for _, mark := range []struct{ name, markdown string }{
+		{name: "subject", markdown: ":::check{#b-c1 subject=\"production\"}\nBody.\n:::\n"},
+		{name: "program", markdown: ":::check{#b-c1 program=\"dispatch\"}\nBody.\n:::\n"},
+	} {
+		t.Run(mark.name, func(t *testing.T) {
+			element := Element{Kind: AttributeElement, Block: "check", Name: mark.name}
+			if versions, declared := element.Versions(); !declared || versions.Since != n || versions.CreatableSince != creatable {
+				t.Errorf("attribute %s of check = %+v, %t; want since %d and creatable_since %d", mark.name, versions, declared, n, creatable)
+			}
+
+			var stored *Node
+			for version := n; version < creatable; version++ {
+				restoreVersion, err := UseManifestForTest(manifestAsOf(t, version))
+				if err != nil {
+					t.Fatalf("install the manifest as of version %d: %v", version, err)
+				}
+				t.Cleanup(restoreVersion)
+				stored, err = Parse(mark.markdown)
+				if err != nil {
+					t.Fatalf("a build at version %d reading a stored check carrying %s: %v", version, mark.name, err)
+				}
+				refusal := "this Dispatch build reads " + element.String() + " but cannot write it yet"
+				if _, err := ParseForWrite(mark.markdown, nil); !errors.Is(err, ErrSchema) || !strings.Contains(err.Error(), refusal) {
+					t.Errorf("a build at version %d writing a check carrying %s into a document that holds none = %v, want ErrSchema saying %q", version, mark.name, err, refusal)
+				}
+				if _, err := ParseForWrite(mark.markdown+"\nMore.\n", stored); err != nil {
+					t.Errorf("a build at version %d writing a document that already holds %s = %v, want it written", version, mark.name, err)
+				}
+				restoreVersion()
+			}
+
+			before := n - 1
+			restore, err := UseManifestForTest(manifestAsOf(t, before))
+			if err != nil {
+				t.Fatalf("install the manifest as of version %d: %v", before, err)
+			}
+			t.Cleanup(restore)
+			if !IsTypedBlock("check") {
+				t.Fatalf("a build at version %d does not declare the check block, which version 3 adds", before)
+			}
+			if _, err := Parse(withoutIt); err != nil {
+				t.Errorf("a build at version %d reading a check without %s = %v, want no error", before, mark.name, err)
+			}
+			if _, err := ParseForWrite(withoutIt, nil); err != nil {
+				t.Errorf("a build at version %d writing a check without %s = %v, want no error", before, mark.name, err)
+			}
+			if _, err := ParseForWrite(mark.markdown, nil); !errors.Is(err, ErrUnknownElement) || !strings.Contains(err.Error(), mark.name) {
+				t.Errorf("a build at version %d writing a check carrying %s = %v, want ErrUnknownElement naming it", before, mark.name, err)
+			}
+			if err := stored.Validate(); !errors.Is(err, ErrUnknownElement) {
+				t.Errorf("a build at version %d reading a stored check carrying %s = %v, want ErrUnknownElement", before, mark.name, err)
+			}
+		})
 	}
 }
 

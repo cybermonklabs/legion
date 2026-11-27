@@ -814,8 +814,12 @@ func approvedVersion(ctx context.Context, q Queryer, artifactID string, number i
 // reads, inboxwrite.AskDefaultProject, and holds nothing for a request handed to somebody), as
 // every writer into an ask's thread takes it before it reads who takes part: a move of the default
 // either committed first, and the answer reaches the person it moved the request to, or waits for
-// the answer, and then finds the request answered and moves nothing of it. The carry's writes are
-// queued, so no asks row is locked before the hold.
+// the answer, and then finds the request answered and moves nothing of it. A carry whose writes
+// are queued has locked no asks row before the hold. The decisions step's restore runs its writes
+// at once (joinAtOnce), so by the time its version reaches this carry it has locked asks rows
+// already - its issue's question asks, the version's ask blocks and this request, which the
+// version's move rewrote; it takes the hold itself before it locks any asks row
+// (restoreIssueDecisions), so on that path this hold is one the transaction already holds.
 func answerApprovalAsk(ctx context.Context, tx pgx.Tx, broker *events.Broker, artifactID string, ask *model.Ask, actor model.Actor, reason, serverURL string, sink func(model.Event)) error {
 	answeredAt, err := transactionNow(ctx, tx)
 	if err != nil {
@@ -900,23 +904,9 @@ func answerApprovalAsk(ctx context.Context, tx pgx.Tx, broker *events.Broker, ar
 // a reader that compares two versions apart from their ask blocks, as the change set of two
 // versions does (GET /api/v1/artifacts/{id}/changes). A container the cut empties - a blockquote
 // or a callout that held only ask blocks - is left holding one empty paragraph, which is what both
-// parsers read an empty container as. Each container on the way is a fresh node with its own
-// children; the nodes below the last container - text, inline nodes, leaves - are the parsed
-// tree's own, which nothing here changes.
+// parsers read an empty container as (withoutBlocksFilled). Each container on the way to an ask
+// block is a fresh node; every other node is the parsed tree's own, which nothing here changes.
 func WithoutAskBlocks(node *pmdoc.Node) *pmdoc.Node {
-	if node.Type == "text" || len(node.Children) == 0 {
-		return node
-	}
-	copied := *node
-	copied.Children = make([]*pmdoc.Node, 0, len(node.Children))
-	for _, child := range node.Children {
-		if child.Type == "ask" {
-			continue
-		}
-		copied.Children = append(copied.Children, WithoutAskBlocks(child))
-	}
-	if len(copied.Children) == 0 {
-		copied.Children = append(copied.Children, &pmdoc.Node{Type: "paragraph", Attrs: pmdoc.Attrs{}})
-	}
-	return &copied
+	cut, _ := withoutBlocksFilled(node, func(child *pmdoc.Node) bool { return child.Type == "ask" })
+	return cut
 }

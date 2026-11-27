@@ -14,10 +14,10 @@ import (
 // workflowTestParallelism is how many of this package's tests run at once when the command line
 // names no -parallel. Every test calls t.Parallel: each clones a database of its own
 // (migratedPool) and drives an engine over it, and none changes anything the whole process shares
-// (the environment, the default logger, a package variable, flags). Each pool holds up to
-// testdb.PoolConns connections, and go test's default of GOMAXPROCS would run as many tests at
-// once as the machine has cores: four on CI's runner, hundreds on a dev box, where it would open
-// more connections than the test server allows. Four is the runner's own count.
+// (the environment, the default logger, a package variable, flags). Each pool keeps the
+// pool_max_conns LEGION_TEST_PG_DSN names, or testpool.PoolConns where it names none. Four
+// concurrent tests is the CI runner's own count and stays below the test server's connection limit
+// on a large dev box.
 //
 // go test parses its flags inside m.Run, so a -parallel on the command line still wins.
 const workflowTestParallelism = 4

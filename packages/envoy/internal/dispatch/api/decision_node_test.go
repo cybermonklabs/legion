@@ -502,7 +502,7 @@ func TestDecisionNodeCarriesItsTuplesAndItsCertainty(t *testing.T) {
 	requireValue(t, database, browser.address("b1"), refs.ValueUncertainty, "")
 	// The store held no author, Keep or kept sum of b1 when the settlement read it, so none of the
 	// forged values stands in the live tree.
-	requireLiveDecision(t, database, peer, browser.id, "b1", map[string]any{})
+	requireLiveDecisionAttributes(t, database, peer, browser.id, "b1", map[string]any{})
 	before := latestVersion(t, database, browser.id).Number
 	peer.edit(t, func(tree *pmdoc.Node) error {
 		for index, child := range tree.Children {
@@ -520,13 +520,13 @@ func TestDecisionNodeCarriesItsTuplesAndItsCertainty(t *testing.T) {
 	requireDecidedBy(t, database, "a browser's settlement claiming carol", browser.address("b1"), "alice")
 	// The store holds alice as b1's author and no Keep, so the live tree reads alice and no
 	// kept_by.
-	requireLiveDecision(t, database, peer, browser.id, "b1", map[string]any{"decided_by": "alice"})
+	requireLiveDecisionAttributes(t, database, peer, browser.id, "b1", map[string]any{"decided_by": "alice"})
 }
 
-// requireLiveDecision fails unless the decision block id carries exactly want of its
+// requireLiveDecisionAttributes fails unless the decision block id carries exactly want of its
 // server-owned attributes, decided_by, kept_by and kept_text_sum, in the live document: as its
 // stored history holds it (docs.StoredTreeForTest) and as the browser's editor holds it.
-func requireLiveDecision(t *testing.T, database *store.Store, peer *syncedPeer, artifactID, id string, want map[string]any) {
+func requireLiveDecisionAttributes(t *testing.T, database *store.Store, peer *syncedPeer, artifactID, id string, want map[string]any) {
 	t.Helper()
 	stored, err := docs.StoredTreeForTest(context.Background(), database, artifactID)
 	if err != nil {

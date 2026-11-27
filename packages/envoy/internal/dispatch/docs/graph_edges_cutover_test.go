@@ -1877,6 +1877,7 @@ func scanGraphEdgeFixture(t *testing.T, database *store.Store, what, statement s
 // `node_kind is null` answers a marked row beside the tuple arm, and a tuple arm without its join
 // to asks or ask_followers answers a deleted row.
 func TestTheAsksArmsAnswerEachRowOnce(t *testing.T) {
+	t.Parallel()
 	database, service := blockIndexService(t)
 	ctx := context.Background()
 

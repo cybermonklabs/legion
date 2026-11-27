@@ -231,6 +231,8 @@ func TestTwoCreditedWritersBothSurviveACrashRestart(t *testing.T) {
 // pool tracks as one caller holding at most one connection. Every closing document still records
 // its latest edit source and releases its state, however many documents the issue has.
 func TestClosingAnIssueOnATrackedContextPersistsEveryDocumentsCredit(t *testing.T) {
+	// Not parallel: it sets the whole process's GOMAXPROCS to 4 and then to 16 for its subtests
+	// (runtime.GOMAXPROCS).
 	for _, procs := range []int{4, 16} {
 		t.Run(fmt.Sprintf("GOMAXPROCS=%d", procs), func(t *testing.T) {
 			defer runtime.GOMAXPROCS(runtime.GOMAXPROCS(procs))

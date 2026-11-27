@@ -1209,8 +1209,12 @@ const priorityLineAtCap: Mount = {
       />
     );
   },
-  settle: async (view) => {
+  settle: async (view, user) => {
     await within(view.container).findByRole("alert");
+    // Outside `NoTooltips` the chips show ten, then a "+N" that shows the rest (INFRA-5200's
+    // `CappedGroup`); each of the twenty sets its title once shown.
+    const more = within(view.container).queryByRole("button", { name: /^\+10, show all/ });
+    if (more !== null) await user.click(more);
   },
 };
 
@@ -1572,7 +1576,12 @@ const MAIN_TITLES: ReadonlyMap<Mount, readonly string[]> = new Map([
   ],
   [
     mountNamed("GitHubLink, a pull request, a plain link and an unsafe one"),
-    ["owner/repository#7: Ship it", "https://example.com/notes", "Unsafe external link"],
+    [
+      "owner/repository#7: Ship it",
+      "https://example.com/notes",
+      // The whole address, and why it is no link (INFRA-5200, c-review F4).
+      "Unsafe external link, not opened: javascript:alert(1)",
+    ],
   ],
   [
     githubUnread,
@@ -1594,13 +1603,19 @@ const MAIN_TITLES: ReadonlyMap<Mount, readonly string[]> = new Map([
     // The default is now the shared list's, from #3729: outside `NoTooltips` each repository,
     // in a row of Details or not, is the list's badge, whose `title` says what it shows - the
     // issue's own repository, that an inherited one is inherited or the project's default, and
-    // an empty one where no repository resolves - and no clear control is drawn.
+    // an empty one where no repository resolves - and no clear control is drawn. The badge's
+    // name ends in an ellipsis where its row is too narrow for it, so the badge's own `title`
+    // gives back the whole name with what it means; "No repository" draws none.
     [
       "acme/api",
+      "acme/api",
       "Inherited or the project's default",
+      "acme/web, inherited or the project's default",
       "",
       "acme/app",
+      "acme/app",
       "Inherited or the project's default",
+      "acme/site, inherited or the project's default",
     ],
   ],
   // The default is now the shared list's, from #3729: the badge of an issue with no repository

@@ -206,7 +206,17 @@ const legionIssueJourney: Walkthrough<Seeded> = {
       open: async (page, seeded) => {
         await linkPullRequest(seeded.next, DELIVERY_DATE);
         await page.goto(`/issues/${seeded.next.key}`);
-        await expect(header(page).getByText(`#${DELIVERY_DATE.pullRequest.number}`)).toBeVisible();
+        // The pull request is a row of the header's Details, which is closed until the reader
+        // opens it.
+        const details = header(page).getByRole("button", { exact: true, name: "Details" });
+        await expect(details).toHaveAttribute("aria-expanded", "false");
+        await details.click();
+        await expect(details).toHaveAttribute("aria-expanded", "true");
+        await expect(
+          header(page)
+            .getByTestId("issue-details")
+            .getByText(`#${DELIVERY_DATE.pullRequest.number}`)
+        ).toBeVisible();
         await expect(page.getByRole("heading", { name: "Acceptance criteria" })).toBeVisible();
       },
       act: async (page, seeded, cue) => {

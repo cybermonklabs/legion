@@ -57,6 +57,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
+	"github.com/sjawhar/envoy/testpool"
 )
 
 const (
@@ -137,7 +138,7 @@ func startCostArms(t *testing.T, envoyURL string) (*costArm, *costArm) {
 func startCostArm(t *testing.T, name string, head bool, options dispatchOptions) *costArm {
 	t.Helper()
 	databaseURL := censusDatabase(t)
-	pool, err := pgxpool.New(context.Background(), databaseURL)
+	pool, err := testpool.NewPool(context.Background(), databaseURL)
 	if err != nil {
 		t.Fatalf("open %s's own connections: %v", name, err)
 	}

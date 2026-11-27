@@ -29,6 +29,7 @@ import {
   pinnedConversations,
   pinnedEventIds,
 } from "../issue/pins";
+import { type DecisionDocuments, decisionDocumentId } from "../issue-page/decision-review";
 import { type PostDeletion, postDeletion } from "../refs/post-marks";
 import { useNewIssuePageFreshness } from "../refs/reference-target";
 import { parseIssuePath, parseProjectPath } from "../refs/routes";
@@ -77,9 +78,11 @@ export type MarginItemAction = CommentAction;
 export interface DecisionMarginItem {
   readonly blockId: string;
   readonly decision: DecisionEntry;
-  /** The artifact id of the document the decision is written in (`DecisionEntry.document`), the
-   *  record its text is, which a `#id` in that text names a question block of; undefined for an
-   *  entry that names no document. */
+  /** The artifact id of the document the decision is written in (`decisionDocumentId`), the
+   *  record its text is, which a `#id` in that text names a question block of: the one the entry
+   *  names (`DecisionEntry.document`), or, for an entry of a server of the release before, which
+   *  names none, the issue's document its address names. Undefined for an entry that names no
+   *  document and whose document the issue read has not listed. */
   readonly documentId: string | undefined;
   /** `decision:<node id>:<spec node id>`: the node that holds the entry, and the spec node it
    *  shaped, so two documents' decisions under one block id are two items. */
@@ -330,6 +333,7 @@ export function useMarginItems(
   {
     documentShown = false,
     held = NO_THREADS,
+    issue,
   }: {
     /** Whether the document whose margin this is has reported its layout: the issue page keeps
      *  its Spec editor mounted while the Conversation covers it, so without this the decisions
@@ -339,6 +343,11 @@ export function useMarginItems(
      *  in the list it was in, open or resolved, whoever resolves or reopens it meanwhile: moving
      *  it between them would remount its card, and the composer and what it holds with it. */
     readonly held?: ReadonlySet<string>;
+    /** The fields of the margin's issue read by which `decisionDocumentId` finds the document of
+     *  a decision the Decisions read names none for, as only a server of the release before
+     *  answers one; undefined until the read answers. */
+    // kept for one release: compat-objects
+    readonly issue?: DecisionDocuments;
   } = {}
 ) {
   const queryClient = useQueryClient();
@@ -531,12 +540,15 @@ export function useMarginItems(
           nodes.set(link.to.id, blockId);
         }
       }
+      // `issue` finds the document of an entry a server of the release before names none for.
+      // kept for one release: compat-objects
+      const documentId = decisionDocumentId(issue, decision);
       return [...nodes]
         .filter(([, blockId]) => blockFilterId === undefined || blockId === blockFilterId)
         .map(([node, blockId]) => ({
           blockId,
           decision,
-          documentId: decision.document?.artifact_id,
+          documentId,
           id: `decision:${decision.node.id}:${node}`,
           kind: "decision" as const,
         }));
@@ -551,6 +563,7 @@ export function useMarginItems(
     blockFilterId,
     blockPlacements,
     decisionsView.data,
+    issue,
     markPlacements,
     showsDecisions,
     specRefKey,

@@ -397,6 +397,34 @@ test("RepoControl refuses a value that is not owner/name without writing it", as
   }
 });
 
+// Today's Repository line wraps, so the refusal it draws beside the badge - the server's, with
+// its Retry - moves whole onto the next line under the badge rather than squeezing it, and the
+// badge narrows to the line (dispatch://INFRA-5200, c-review F3). A name that is no `owner/name`
+// is refused in the open list, under its options. `e2e/issue.e2e.ts` measures the line at 360 px
+// in an open Details.
+test("RepoControl's line wraps, and the server's refusal is an item of its own beside a badge that narrows to the line", async () => {
+  const patchIssue = answerIssuePatches().mockRejectedValue(
+    new ApiError(400, { code: "INVALID_ISSUE", error: "repo refused by the server" })
+  );
+  const { unmount, user } = renderControl({ repo: null, resolvedRepo: "acme/widgets" });
+  try {
+    await giveTyped(user, "acme/gadgets");
+    const refusal = await screen.findByText("repo refused by the server");
+    const place = trigger().parentElement;
+    const line = place?.parentElement;
+    if (place == null || line == null) throw new Error("expected the trigger in a line");
+    expect(line.contains(refusal)).toBe(true);
+    expect(line.classList.contains("flex-wrap")).toBe(true);
+    expect(line.classList.contains("w-full")).toBe(true);
+    expect(place.contains(refusal)).toBe(false);
+    expect(place.classList.contains("max-w-full")).toBe(true);
+    expect(place.classList.contains("min-w-0")).toBe(true);
+  } finally {
+    unmount();
+    patchIssue.mockRestore();
+  }
+});
+
 // The list holds what is typed to GitHub's own grammar, which is what the server holds it to:
 // a name GitHub could hold no repository at reaches the list's refusal rather than a round trip,
 // and a name GitHub does hold is written as typed, whatever its case, its leading dot or its
@@ -520,7 +548,8 @@ test("RepoControl says No repository when nothing resolves", async () => {
   );
   try {
     expect(await screen.findByText("No repository", { selector: badge })).toBeTruthy();
-    expect(screen.getByText("Repository:")).toBeTruthy();
+    // The control is the value of the Repository row of the header's Details, which names it.
+    expect(screen.queryByText("Repository:")).toBeNull();
     expect(trigger()).toHaveAccessibleName(`${REPOSITORY} No repository`);
     await waitFor(() => expect(listProjects).toHaveBeenCalledTimes(1));
   } finally {
@@ -529,7 +558,7 @@ test("RepoControl says No repository when nothing resolves", async () => {
 });
 
 // A project with no default repository has nothing to suggest, and its issues take a repository
-// all the same, so the rail carries the item, and its list offers Inherit and a typed repository.
+// all the same, so Details carries the item, and its list offers Inherit and a typed repository.
 test("RepoControl shows the item for an issue whose project has no default repository", async () => {
   const patchIssue = answerIssuePatches().mockResolvedValue({
     ...issue,
@@ -547,7 +576,8 @@ test("RepoControl shows the item for an issue whose project has no default repos
       expect(queryClient.getQueryData<Project[]>(["projects"])).toEqual(noCoreDefault)
     );
     await act(async () => {});
-    expect(screen.getByText("Repository:")).toBeTruthy();
+    // The control is the value of the Repository row of the header's Details, which names it.
+    expect(screen.queryByText("Repository:")).toBeNull();
     expect(screen.getByText("No repository", { selector: badge })).toBeTruthy();
     expect(rows(await openList(user, REPOSITORY))).toEqual(["✓Inherit"]);
     await chooseTyped(user, "zed/elsewhere");
@@ -570,7 +600,6 @@ test("RepoControl shows a failed project list read with a retry instead of hidin
   );
   try {
     expect(await screen.findByText("Could not load projects.")).toBeTruthy();
-    expect(screen.getByText("Repository:")).toBeTruthy();
     expect(screen.getByText("No repository", { selector: badge })).toBeTruthy();
     await user.click(screen.getByRole("button", { name: "Retry" }));
     await waitFor(() => expect(listProjects).toHaveBeenCalledTimes(2));
@@ -711,7 +740,7 @@ test("the issue header's Repository list says the repositories are loading where
   }
 });
 
-// INFRA-3135, round 12: a list whose read failed says so. Beside a resolved repository the rail
+// INFRA-3135, round 12: a list whose read failed says so. Beside a resolved repository the line
 // shows the failure with a Retry, and the list the reader opens says it too, over the Inherit it
 // still offers. It still takes a typed repository, and the refusal of a typed text stands in the
 // failure's place until the text changes.
@@ -770,20 +799,31 @@ test("the issue header's Repository trigger ends in the shared chevron, as every
 // The badge's tooltip says what the badge means rather than the picked row's text, which is
 // Inherit for every issue with no repository of its own: an inherited repository is inherited or
 // the project's default, an issue's own repository is itself, and "No repository" says all there
-// is, so it shows none.
+// is, so it shows none. The name inside the badge ends in an ellipsis where the row is too
+// narrow for it, so its own title gives back the whole name with what it means.
 test("the issue header's Repository badge's tooltip says what the badge means, never the Inherit row's text", async () => {
-  for (const [own, want] of [
-    [{ repo: null, resolvedRepo: "acme/widgets" }, "Inherited or the project's default"],
-    [{ repo: "acme/gadgets", resolvedRepo: "acme/gadgets" }, "acme/gadgets"],
-    [{ repo: null, resolvedRepo: null }, ""],
+  for (const [own, want, name] of [
+    [
+      { repo: null, resolvedRepo: "acme/widgets" },
+      "Inherited or the project's default",
+      "acme/widgets, inherited or the project's default",
+    ],
+    [{ repo: "acme/gadgets", resolvedRepo: "acme/gadgets" }, "acme/gadgets", "acme/gadgets"],
+    [{ repo: null, resolvedRepo: null }, "", null],
   ] as const) {
     const { unmount } = renderControl({ ...own });
     try {
       const shown = await screen.findByRole("button", { name: pickNamed(REPOSITORY) });
-      expect(
-        shown.querySelector(".truncate"),
-        `${own.repo ?? (own.resolvedRepo === null ? "no repository" : "inherited")}: the trigger's text`
-      ).toHaveAttribute("title", want);
+      const which = own.repo ?? (own.resolvedRepo === null ? "no repository" : "inherited");
+      expect(shown.querySelector(".truncate"), `${which}: the trigger's text`).toHaveAttribute(
+        "title",
+        want
+      );
+      const named = shown.querySelector(badge);
+      expect(named?.textContent, `${which}: the badge's name`).toBe(
+        own.resolvedRepo ?? "No repository"
+      );
+      expect(named?.getAttribute("title") ?? null, `${which}: the badge's name's title`).toBe(name);
     } finally {
       unmount();
     }

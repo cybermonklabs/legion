@@ -18,6 +18,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/pgmigrate"
+	"github.com/sjawhar/envoy/pgdsn"
 )
 
 // Store is the shared Dispatch database handle.
@@ -69,13 +70,22 @@ const poolSizeParam = "pool_max_conns"
 // kept for one release: older-writer-unmark
 const StoreMarkerWriterSetting = "dispatch.store_marker_writer"
 
+// DSNSetting names the setting Dispatch's DSN comes from, as the store's refusals name it (pgdsn).
+const DSNSetting = "DATABASE_URL"
+
 // Open connects to databaseURL and verifies the database is reachable. The pool's size is
 // sharedPoolSize: how many connections Dispatch may hold is a property of Dispatch, not of the
 // string that names its database. Every connection it opens scans timestamptz in UTC
 // (scanTimestampsInUTC), carries StoreMarkerWriterSetting and gives back a large statement's
 // encoded arguments when it returns to its pool (argumentReleaser), as do the pools Pool.separate
-// copies from its configuration.
+// copies from its configuration. A URL holding an "@" after its user part, where a password
+// holding an "@" or a "/" leaves part of itself, is refused by DSNSetting alone before anything
+// connects (pgdsn.Refusal), and every failure to parse, open or reach the database is named
+// without the URL's password (pgdsn.ConnectError), since Dispatch logs it.
 func Open(ctx context.Context, databaseURL string) (*Store, error) {
+	if err := pgdsn.Refusal(DSNSetting, databaseURL); err != nil {
+		return nil, err
+	}
 	declared, err := declaresPoolSize(databaseURL)
 	if err != nil {
 		return nil, err
@@ -87,7 +97,7 @@ func Open(ctx context.Context, databaseURL string) (*Store, error) {
 	}
 	config, err := pgxpool.ParseConfig(databaseURL)
 	if err != nil {
-		return nil, fmt.Errorf("parse Postgres URL: %w", err)
+		return nil, pgdsn.ConnectError(DSNSetting, databaseURL, err)
 	}
 	config.MaxConns = sharedPoolSize
 	config.AfterConnect = scanTimestampsInUTC
@@ -96,11 +106,11 @@ func Open(ctx context.Context, databaseURL string) (*Store, error) {
 	config.ConnConfig.Tracer = withArgumentRelease(config.ConnConfig.Tracer)
 	pool, err := pgxpool.NewWithConfig(ctx, config)
 	if err != nil {
-		return nil, fmt.Errorf("open Postgres pool: %w", err)
+		return nil, pgdsn.ConnectError(DSNSetting, databaseURL, err)
 	}
 	if err := pool.Ping(ctx); err != nil {
 		pool.Close()
-		return nil, fmt.Errorf("ping Postgres: %w", err)
+		return nil, pgdsn.ConnectError(DSNSetting, databaseURL, err)
 	}
 	return &Store{Pool: NewPool(pool)}, nil
 }
@@ -149,7 +159,7 @@ func scanTimestampsInUTC(_ context.Context, conn *pgx.Conn) error {
 func declaresPoolSize(databaseURL string) (bool, error) {
 	config, err := pgx.ParseConfig(databaseURL)
 	if err != nil {
-		return false, fmt.Errorf("parse Postgres URL: %w", err)
+		return false, pgdsn.ConnectError(DSNSetting, databaseURL, err)
 	}
 	_, declared := config.RuntimeParams[poolSizeParam]
 	return declared, nil

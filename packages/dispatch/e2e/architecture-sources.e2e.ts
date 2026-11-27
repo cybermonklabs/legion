@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 
 import { createIssue, createProject, getIssue } from "./api";
 import { seedFakeGithub } from "./fake-github-helpers";
+import { openIssueDetails } from "./issue-details";
 import { navigateInApp } from "./sends";
 import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
@@ -146,6 +147,7 @@ test("a project with two architecture sources shows both in Settings, on its Arc
 
     // Step 5: an issue's Components picker offers both sources' components; one of each saves.
     await navigateInApp(page, `/issues/${issue.key}`);
+    await openIssueDetails(page);
     const line = page.getByTestId("issue-components");
     await expect(line).toContainText("Not attached");
     await line.getByRole("button", { name: `Edit components of ${issue.key}` }).click();

@@ -27,16 +27,82 @@ import { NOT_OWNER_NAME, wholeValue } from "../settings/classes";
 import { focusOnDocument } from "../shell/roving";
 import {
   badgeReachHandlers,
-  badgeSelectBadge,
-  badgeSelectRailTrigger,
-  badgeSelectRailWrapper,
+  badgeSelectPageTrigger,
+  badgeSelectPageWrapper,
+  badgeSelectTruncatedBadge,
 } from "./badge-select";
+import { useDetailsRefusal } from "./HeaderDetails";
 import { pickLook } from "./issue-field-looks";
 import { useIssueRepo } from "./useIssueRepo";
 
 /** The option of the shared list that clears the issue's own repository, so it resolves to its
  *  nearest ancestor's in its own project, else to the project's default, again. */
 const INHERIT = "";
+
+/** Where the control is drawn, which decides how its parts lay out. */
+type RepoLayoutMode = "page-details" | "page-inline" | "today";
+
+/** The classes of the control's four parts in one mode. */
+interface RepoLayout {
+  /** The box's width, and in a row of Details the room it gives a name. */
+  readonly box: string;
+  /** Where the clear control sits. */
+  readonly clear: string;
+  /** The line that holds the box, the inheritance words and a refusal. */
+  readonly line: string;
+  /** The box's own wrapper while it is a box. */
+  readonly place: string;
+  /** The same wrapper while the new page draws the repository as text in its place. */
+  readonly placeText: string;
+}
+
+/**
+ * The control's layout in each place it is drawn.
+ *
+ * - `today`: the value of the Repository row of today's issue header's Details. The line is as
+ *   wide as its row and wraps, so a refusal - the local one for a name that is no `owner/name`,
+ *   or the server's with its Retry - moves whole onto the next line under the box rather than
+ *   squeezing it (dispatch://INFRA-5200). The box takes the row's width up to 28 rem, with an
+ *   ellipsis for a name longer still, and keeps `pr-8` beside the clear control laid over its
+ *   right end. On this branch the box is drawn inside `NoTooltips` alone (`RepoControl`), so of
+ *   this mode only `line` is read, by the shared list (`RepositoryList`) that today's header
+ *   draws in that row; its other fields are `main`'s, for a box outside `NoTooltips`.
+ * - `page-details`: the value of a row of the new issue page's Details (`NoTooltips`, `inRow`).
+ *   The line is as wide as the row's value, which is a flex row, in which a line of no width of
+ *   its own is only as wide as what it holds, so the place's `w-full` and the box's would fill no
+ *   more than that, and the box would fall back to a text box's own width, which cuts a name the
+ *   value has room for. The box draws no datalist arrow (Chromium's
+ *   `::-webkit-calendar-picker-indicator`, some 22 px of a narrow row's box), so a name that fits
+ *   the row's value shows whole; the list stays bound, and Chromium still opens its suggestions
+ *   on a click in the box, on ArrowDown and as the reader types. Its padding is `pl-1.5 pr-1.5`
+ *   whether or not the issue has a repository of its own, since the clear control is on the
+ *   line under it.
+ * - `page-inline`: elsewhere on the new issue page. The line narrows to its row and wraps; the
+ *   box takes its place's width.
+ */
+const REPO_LAYOUTS: Readonly<Record<RepoLayoutMode, RepoLayout>> = {
+  today: {
+    box: "w-full min-w-0 max-w-md text-ellipsis",
+    clear: "absolute inset-y-0 right-0 inline-flex w-8",
+    line: "w-full min-w-0 flex-wrap",
+    place: "inline-flex w-full min-w-0",
+    placeText: "inline-flex w-full min-w-0",
+  },
+  "page-details": {
+    box: "w-full min-w-0 [&::-webkit-calendar-picker-indicator]:hidden",
+    clear: "inline-flex min-h-11 min-w-11 md:min-h-7 md:min-w-8",
+    line: "w-full min-w-0 max-w-full flex-wrap",
+    place: "flex w-full min-w-0 max-w-full flex-wrap gap-y-1",
+    placeText: "inline-flex min-w-0 max-w-full",
+  },
+  "page-inline": {
+    box: "w-full min-w-0",
+    clear: "absolute inset-y-0 right-0 inline-flex w-8",
+    line: "min-w-0 max-w-full flex-wrap",
+    place: "inline-flex w-[200px] min-w-0 max-w-full",
+    placeText: "inline-flex min-w-0 max-w-full",
+  },
+};
 
 /** The grammar a repository GitHub could hold is written in, which is the grammar the server
  *  holds an issue's repository to (`parseIssueRepo`, `issue_repo.go`, through
@@ -164,15 +230,23 @@ export function RepoControl({
 }
 
 /**
- * The issue's repository in the details rail: `Repository:` and a badge naming the repository the
- * issue resolves to (its own, else its nearest ancestor's in its own project, else the project's
- * default, muted when not its own; "No repository" when none resolves), which is the trigger of
- * the shared list's single pick (`MultiSelect`), laid over the badge as `AssigneeControl`'s is,
- * and ends in the
- * shared chevron, since the control it replaced was a visible text box. Labelled
- * `Repository of <KEY>`. The badge is hidden from assistive technology; the trigger's name goes on
- * from its label to the words that read what it shows: the repository,
+ * The issue's repository as the value of the Repository row of today's issue header's Details
+ * (`HeaderDetails`), which names it, so it draws no `Repository:` of its own: a badge naming the
+ * repository the issue resolves to (its own, else its nearest ancestor's in its own project, else
+ * the project's default, muted when not its own; "No repository" when none resolves), which is the
+ * trigger of the shared list's single pick (`MultiSelect`), laid over the badge as
+ * `AssigneeControl`'s is, and ends in the shared chevron, since the control it replaced was a
+ * visible text box. Labelled `Repository of <KEY>`. The badge is hidden from assistive technology;
+ * the trigger's name goes on from its label to the words that read what it shows: the repository,
  * `, inherited or the project's default` when it is not the issue's own, or `No repository`.
+ *
+ * The line is the box's in that row (`REPO_LAYOUTS.today`): as wide as the row, and it wraps, so
+ * a refusal moves whole onto the next line under the badge rather than squeezing it. The badge
+ * narrows to the row and ends a name longer than the row in an ellipsis; its title gives back
+ * the whole name with what it means (`, inherited or the project's default` where it is not the
+ * issue's own), since the trigger's own title says only what it means. A write Dispatch refused
+ * is said to Details as well (`useDetailsRefusal`), which says it under the header while it is
+ * closed.
  *
  * The list holds Inherit first, which clears the issue's own repository, then the project's
  * default repository (Settings → Projects), then the issue's own repository where it is another;
@@ -212,6 +286,13 @@ function RepositoryList({
 }): ReactNode {
   const [wanted, setWanted] = useState(false);
   const write = useIssueRepo(issueKey, hostRepo);
+  // A name that is no `owner/name` is refused in the open list alone, which Details cannot be
+  // closed over, so the write Dispatch refused is the one refusal Details is told.
+  useDetailsRefusal(
+    write.failed && write.stopped === undefined
+      ? (write.error ?? `Could not update the repository of ${issueKey}.`)
+      : null
+  );
   // The issue's own repository and the one it resolves to, as every part of the control draws
   // them: the write's `shown` (`IssueFieldWrite.shown`), and while that is a pick the host does
   // not pass, the repository the pick resolves to as the caches draw it (`pickLook`), which for
@@ -264,10 +345,11 @@ function RepositoryList({
     return true;
   };
   return (
-    <div className={`flex shrink-0 items-center gap-2 text-sm ${textSecondaryOnSurface}`}>
-      <span className="font-medium">Repository:</span>
+    <div
+      className={`flex ${REPO_LAYOUTS.today.line} items-center gap-2 text-sm ${textSecondaryOnSurface}`}
+    >
       <span
-        className={`${badgeSelectRailWrapper} ${disabled ? "opacity-50" : ""}`}
+        className={`${badgeSelectPageWrapper} ${disabled ? "opacity-50" : ""}`}
         {...badgeReachHandlers(() => setWanted(true))}
       >
         <MultiSelect
@@ -292,7 +374,7 @@ function RepositoryList({
           optionLabel={(candidate) => (candidate === INHERIT ? "Inherit" : candidate)}
           options={[INHERIT, ...options]}
           searchLabel="Search repositories"
-          triggerClassName={badgeSelectRailTrigger}
+          triggerClassName={badgeSelectPageTrigger}
           triggerTitle={title}
           value={value}
         >
@@ -301,7 +383,8 @@ function RepositoryList({
               target as well as Inherit. */}
           <span
             aria-hidden="true"
-            className={`${badgeSelectBadge} font-mono ${tone.bg} ${tone.text}`}
+            className={`${badgeSelectTruncatedBadge} font-mono ${tone.bg} ${tone.text}`}
+            title={resolvedRepo === null ? undefined : spoken}
           >
             {resolvedRepo ?? "No repository"}
           </span>
@@ -327,11 +410,11 @@ function RepositoryList({
 }
 
 /**
- * The issue's repository in the details rail: `Repository:` and one combobox, labelled
- * `Repository of <KEY>`, holding the issue's own repository, with a `<datalist>` that suggests
- * the project's default repository. The suggestion is not the set of values: any `owner/name`
- * may be typed, which is what the server takes, and that is why this is a text box with a list
- * and not a `<select>`, which cannot hold a value its options lack.
+ * The issue's repository: one combobox, labelled `Repository of <KEY>`, holding the issue's own
+ * repository, with a `<datalist>` that suggests the project's default repository. The suggestion
+ * is not the set of values: any `owner/name` may be typed, which is what the server takes, and
+ * that is why this is a text box with a list and not a `<select>`, which cannot hold a value its
+ * options lack.
  *
  * The box shows the issue's own repository and nothing else, so the repository it resolves to -
  * its nearest ancestor's in its own project, else the project's default - is its placeholder,
@@ -400,7 +483,12 @@ function RepositoryList({
  * out. Whichever of the text and the box takes the other's place takes the focus the other held,
  * the clear control's included, where that focus fell to the document with it. Outside a row of
  * Details the box is drawn whether or not a repository resolves, and its description says
- * `No repository` when none does.
+ * `No repository` when none does. Outside `NoTooltips` the control is the value of the Repository
+ * row of today's issue header's Details, which names it, so it draws no `Repository:` of its own;
+ * the box fills the row up to 28 rem and ends a longer name, the project's default it shows as a
+ * placeholder among them, with an ellipsis. Its groups, in this order: the box (or the text in
+ * its place) with its clear control, one group; the words that say the repository is inherited;
+ * then the line that says a refusal (`owner/name`, or Dispatch's).
  */
 function RepositoryBox({
   disabled = false,
@@ -448,6 +536,12 @@ function RepositoryBox({
    *  pressed Escape in it or made a write from it. */
   const [opened, setOpened] = useState(false);
   const write = useIssueRepo(issueKey, hostRepo);
+  const refusal = refused
+    ? NOT_OWNER_NAME
+    : write.failed && write.stopped === undefined
+      ? (write.error ?? `Could not update the repository of ${issueKey}.`)
+      : null;
+  useDetailsRefusal(refusal);
   // The issue's own repository and the one it resolves to, as every part of the control draws
   // them: the write's `shown` (`IssueFieldWrite.shown`), and while that is a pick the host does
   // not pass, the repository the pick resolves to as the caches draw it (`pickLook`), which for
@@ -560,59 +654,13 @@ function RepositoryBox({
       focusHeld.current = true;
     },
   };
-  // The place the box is drawn in, its width and its flow: `main`'s keeps its 200 px; inside
-  // `NoTooltips` nothing keeps its width, the box at most 200 px and narrowing to its line, and in
-  // a row of Details as wide as the row, or the repository's text as wide as its words. In a row
-  // of Details the place wraps, so the box's clear control, drawn after the box at the place's
-  // full width, goes onto the line under it.
-  const placeLayout =
-    page === null
-      ? "inline-flex shrink-0"
-      : showsText
-        ? "inline-flex min-w-0 max-w-full"
-        : inDetails
-          ? "flex w-full min-w-0 max-w-full flex-wrap gap-y-1"
-          : "inline-flex w-[200px] min-w-0 max-w-full";
-  // The line's layout: `main`'s keeps its width; inside `NoTooltips` it narrows to its row and
-  // wraps, and in a row of Details it is as wide as the row's value as well. That value is a flex
-  // row, in which a line of no width of its own is only as wide as what it holds, so the place's
-  // `w-full` and the box's would fill no more than that, and the box would fall back to a text
-  // box's own width, which cuts a name the value has room for.
-  const lineLayout =
-    page === null
-      ? "shrink-0"
-      : inDetails
-        ? "w-full min-w-0 max-w-full flex-wrap"
-        : "min-w-0 max-w-full flex-wrap";
-  // The box's width, and in a row of Details the room it gives a name: `main`'s 200 px, and
-  // inside `NoTooltips` its place's width. In a row of Details the box draws no datalist arrow
-  // (Chromium's `::-webkit-calendar-picker-indicator`, some 22 px of a narrow row's box), so a
-  // name that fits the row's value shows whole; the list stays bound, and Chromium still opens
-  // its suggestions on a click in the box, on ArrowDown and as the reader types. Its padding is
-  // `pl-1.5 pr-1.5` there whether or not the issue has a repository of its own, since the clear
-  // control is on the line under it (`clearPlace`). Elsewhere the box keeps `pr-8` beside the
-  // clear control, which keeps the name off the × laid over the box's right end.
-  const boxWidth =
-    page === null
-      ? "w-[200px]"
-      : inDetails
-        ? "w-full min-w-0 [&::-webkit-calendar-picker-indicator]:hidden"
-        : "w-full min-w-0";
-  // Where the clear control is drawn: `main`'s, and the one outside a row of Details, over the
-  // box's right end, 32 px wide and as tall as the box. In a row of Details it is in the flow after
-  // the box, on the line under it at the line's start: below 1280 px `styles.css` sets every input
-  // in 16 px and gives every button a 44 px minimum width, so a control over the box takes 44 px
-  // of a row's box and leaves a name that fits the row's value no room beside it. There it keeps
-  // a 44 px target below `md`, as that minimum makes it anyway, and from `md` the size it has over
-  // the box: 32 px wide and the box's 28 px tall where that minimum no longer holds.
-  const clearPlace = inDetails
-    ? "inline-flex min-h-11 min-w-11 md:min-h-7 md:min-w-8"
-    : "absolute inset-y-0 right-0 inline-flex w-8";
+  const layout = REPO_LAYOUTS[page === null ? "today" : inDetails ? "page-details" : "page-inline"];
+  const placeLayout = page !== null && showsText ? layout.placeText : layout.place;
   return (
-    <div className={`flex ${lineLayout} items-center gap-2 text-sm ${lineText}`}>
-      {inDetails ? null : (
-        <span className="font-medium" {...page?.pageChrome}>
-          {`${page?.PROPERTY_LABELS.repository ?? "Repository"}:`}
+    <div className={`flex ${layout.line} items-center gap-2 text-sm ${lineText}`}>
+      {page === null || inDetails ? null : (
+        <span className="font-medium" {...page.pageChrome}>
+          {`${page.PROPERTY_LABELS.repository}:`}
         </span>
       )}
       {showsNone ? (
@@ -681,7 +729,7 @@ function RepositoryBox({
                 aria-invalid={refused || undefined}
                 aria-label={repoControlName(issueKey)}
                 autoComplete="off"
-                className={`min-h-11 ${boxWidth} rounded-sm border py-0.5 pl-1.5 font-mono text-xs outline-none focus-visible:ring-2 disabled:opacity-50 md:min-h-7 ${repo === null || inDetails ? "pr-1.5" : "pr-8"} ${page === null ? inputClasses(false) : ON_PAGE.box} ${focusVisibleRing}`}
+                className={`min-h-11 ${layout.box} rounded-sm border py-0.5 pl-1.5 font-mono text-xs outline-none focus-visible:ring-2 disabled:opacity-50 md:min-h-7 ${repo === null || inDetails ? "pr-1.5" : "pr-8"} ${page === null ? inputClasses(false) : ON_PAGE.box} ${focusVisibleRing}`}
                 disabled={disabled}
                 list={suggestionsId}
                 onBlur={(event) => {
@@ -733,7 +781,7 @@ function RepositoryBox({
                 <button
                   aria-describedby={page === null ? undefined : clearDescriptionId}
                   aria-label={`Clear the repository of ${issueKey}`}
-                  className={`${clearPlace} items-center justify-center rounded-sm text-base outline-none focus-visible:ring-2 disabled:opacity-50 ${page === null ? textSecondaryHoverToPrimary : ON_PAGE.clear} ${focusVisibleRing}`}
+                  className={`${layout.clear} items-center justify-center rounded-sm text-base outline-none focus-visible:ring-2 disabled:opacity-50 ${page === null ? textSecondaryHoverToPrimary : ON_PAGE.clear} ${focusVisibleRing}`}
                   disabled={disabled}
                   // Inside `NoTooltips` the control holds the focus as the box does: a focus
                   // moved back into the box, or a blur while the document itself has no focus,

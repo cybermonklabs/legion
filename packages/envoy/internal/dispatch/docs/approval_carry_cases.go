@@ -47,7 +47,7 @@ var answerCase = carryCase{
 		if len(input.approverAnswered) == 0 {
 			return tree, false
 		}
-		return withoutBlocks(tree, func(node *pmdoc.Node) bool {
+		return withoutBlocksFilled(tree, func(node *pmdoc.Node) bool {
 			id, _ := node.Attrs[pmdoc.BlockIDAttr].(string)
 			return node.Type == "ask" && input.approverAnswered[id]
 		})
@@ -101,7 +101,7 @@ var restoreCase = carryCase{
 		if !input.steps.restore {
 			return tree, false
 		}
-		tree, took := withoutBlocks(tree, func(node *pmdoc.Node) bool {
+		tree, took := withoutBlocksFilled(tree, func(node *pmdoc.Node) bool {
 			id, _ := node.Attrs[pmdoc.BlockIDAttr].(string)
 			return node.Type == "ask" && input.restored[id]
 		})
@@ -323,10 +323,34 @@ func withoutReadings(tree *pmdoc.Node, answered map[string]bool) (*pmdoc.Node, b
 }
 
 // withoutBlocks is a copy of tree without each block drop names, wherever it stands, and whether
-// it took one out. Each container on the way to one is a fresh node; every other node is tree's
-// own, which nothing here changes. The answer case takes the blocks the approver answered out
-// through it (answerCase), and the restore's case the blocks the restore wrote (restoreCase).
+// it took one out, leaving a container the drop empties with no children (cutBlocks). The
+// conversion calls it (planSection) for what a decisions document's section holds once the ask
+// blocks that move are out: a section whose whole body was those blocks holds nothing, which it
+// reads as no words to write under the restored ask, where a paragraph left there would be
+// written as an empty reading. The write of the decisions document calls it too
+// (writeDecisionsDocument), for whether the document still holds an ask block once the dropped
+// blocks are out, and for the live document it writes without them.
 func withoutBlocks(tree *pmdoc.Node, drop func(*pmdoc.Node) bool) (*pmdoc.Node, bool) {
+	return cutBlocks(tree, drop, false)
+}
+
+// withoutBlocksFilled is withoutBlocks with each container the drop empties - a blockquote, a
+// footnote definition, a typed container or the document, which held only blocks drop names - left
+// holding one empty paragraph, at every depth, which is what both parsers read an empty container
+// as. The carry cases that cut blocks call it, the answer case (answerCase) and the restore's
+// (restoreCase), since carryVerdict renders the trees they leave, and the renderer refuses a
+// container with no block children (pmdoc.Render): without the paragraph the two trees would not
+// render at all, and the carry would fail where an answered block stood alone in its container.
+// WithoutAskBlocks calls it for the same reason: the change set renders the tree it leaves.
+func withoutBlocksFilled(tree *pmdoc.Node, drop func(*pmdoc.Node) bool) (*pmdoc.Node, bool) {
+	return cutBlocks(tree, drop, true)
+}
+
+// cutBlocks is a copy of tree without each block drop names, wherever it stands, and whether it
+// took one out. Each container on the way to one is a fresh node; every other node is tree's own,
+// which nothing here changes. Where fill holds, a container the drop empties holds one empty
+// paragraph (withoutBlocksFilled); otherwise it is left with no children (withoutBlocks).
+func cutBlocks(tree *pmdoc.Node, drop func(*pmdoc.Node) bool, fill bool) (*pmdoc.Node, bool) {
 	if tree.Type == "text" || len(tree.Children) == 0 {
 		return tree, false
 	}
@@ -340,7 +364,7 @@ func withoutBlocks(tree *pmdoc.Node, drop func(*pmdoc.Node) bool) (*pmdoc.Node, 
 			took = true
 			continue
 		}
-		next, tookBelow := withoutBlocks(child, drop)
+		next, tookBelow := cutBlocks(child, drop, fill)
 		if tookBelow && children == nil {
 			children = slices.Clone(tree.Children[:index])
 		}
@@ -351,6 +375,9 @@ func withoutBlocks(tree *pmdoc.Node, drop func(*pmdoc.Node) bool) (*pmdoc.Node, 
 	}
 	if !took {
 		return tree, false
+	}
+	if fill && len(children) == 0 {
+		children = append(children, &pmdoc.Node{Type: "paragraph", Attrs: pmdoc.Attrs{}})
 	}
 	copied := *tree
 	copied.Children = children

@@ -20,7 +20,12 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
-func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }
+// TestMain runs the package's tests storetest.DefaultParallel at a time (SetDefaultParallel), under
+// storetest.Main.
+func TestMain(m *testing.M) {
+	storetest.SetDefaultParallel()
+	os.Exit(storetest.Main(m))
+}
 
 // replaceRefs reconciles the Dispatch references written by one source with found, for a test that
 // writes a source's references itself: targets no longer mentioned are deleted, new ones inserted
@@ -113,6 +118,7 @@ func insertReference(t *testing.T, tx pgx.Tx, fromKind, fromID, toKind, toID str
 }
 
 func TestReplaceWritesRefKeysAndSkipsExternalURLs(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	tx, err := database.Pool.Begin(ctx)
@@ -190,6 +196,7 @@ func TestReplaceWritesRefKeysAndSkipsExternalURLs(t *testing.T) {
 // text.MaxBlockIDBytes long, the widest key either table has, each to_id exactly the bound. The
 // slug and the citing block's id are incompressible, so no index holds them by compressing them.
 func TestABlockTargetAtTheGrammarsBoundIsStoredWhole(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	random := func(t *testing.T, length int) string {
@@ -244,6 +251,7 @@ func TestABlockTargetAtTheGrammarsBoundIsStoredWhole(t *testing.T) {
 // uuid) beside the widest target kind, `component`, and to block_refs from a block whose id is
 // text.MaxBlockIDBytes long. Each run is incompressible, so no index holds it by compressing it.
 func TestEveryTargetAtTheGrammarsBoundIsStoredWhole(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	random := func(t *testing.T, length int) string {
@@ -323,6 +331,7 @@ func TestEveryTargetAtTheGrammarsBoundIsStoredWhole(t *testing.T) {
 // node id), a pin making none; a component's `<project>/<id>` as graph_edges spells it; and an
 // ask's, a comment's or a message's id, decoded.
 func TestEveryTargetIDIsTheNodeIDTheGraphStores(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	tx, err := database.Pool.Begin(ctx)
@@ -446,6 +455,7 @@ func replaceAndStamp(t *testing.T, database *store.Store, fromKind, fromID, body
 // the moment the pair first appeared and source_seq the event that introduced it, while a
 // dropped target is deleted and a new one is stamped with the current event only.
 func TestReplaceReconcilesAndStampPreservesSurvivingProvenance(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	replaceAndStamp(t, database, "comment", "c1", "see dispatch://CORE-1 and dispatch://CORE-1/ask/keep and dispatch://CORE-1/ask/keep", 7)
 	first := readProvenance(t, database, "comment", "c1")
@@ -481,6 +491,7 @@ func TestReplaceReconcilesAndStampPreservesSurvivingProvenance(t *testing.T) {
 // same sources during a release. A rewrite here reconciles the targets of the kinds this build
 // knows and keeps the newer build's edge, which this build cannot read back out of the body.
 func TestReplaceKeepsAnEdgeOfANodeKindThisBuildDoesNotKnow(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	tx, err := database.Pool.Begin(ctx)
@@ -508,6 +519,7 @@ func TestReplaceKeepsAnEdgeOfANodeKindThisBuildDoesNotKnow(t *testing.T) {
 // reads one hop, so no document past the first is a member, where the eight-hop walk this test
 // was named for answered eight of them and marked the ninth hop truncated.
 func TestClosureFollowsArtifactLinksToDepthEightAndReportsTruncation(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	tx, err := database.Pool.Begin(ctx)
@@ -546,6 +558,7 @@ func TestClosureFollowsArtifactLinksToDepthEightAndReportsTruncation(t *testing.
 }
 
 func TestReferencedByIncludesArtifactSources(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	tx, err := database.Pool.Begin(ctx)
@@ -584,6 +597,7 @@ func TestReferencedByIncludesArtifactSources(t *testing.T) {
 // read lists it by its item as it lists a comment citing from a block. Two parts citing the
 // document list the ask once.
 func TestReferencedByListsAnAskCitingFromItsParts(t *testing.T) {
+	t.Parallel()
 	tx := askPartFixture(t)
 	ctx := context.Background()
 	_, refKey := createReferenceArtifact(t, tx, "CORE-1", "CORE", "spec")
@@ -609,6 +623,7 @@ func TestReferencedByListsAnAskCitingFromItsParts(t *testing.T) {
 // it can address and skips the rest, a node cited only by such an edge reads as empty rather than
 // failing, and the count beside it agrees with the list behind it.
 func TestGraphReadsSkipANodeKindThisBuildCannotAddress(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	tx, err := database.Pool.Begin(ctx)
@@ -677,6 +692,7 @@ func TestGraphReadsSkipANodeKindThisBuildCannotAddress(t *testing.T) {
 // event names none of them, says documents were cut and still names the issue and the block,
 // with the truncated flag an older reader falls back on set.
 func TestCountedChangesNamesCitedDocumentsWithinTheCap(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	tx, err := database.Pool.Begin(ctx)
@@ -764,6 +780,7 @@ func TestCountedChangesNamesCitedDocumentsWithinTheCap(t *testing.T) {
 // which no issue holds, names no issue. A write that moves the content of more issues than
 // CountedChangeLimit names none of them and lists issue in TruncatedKinds.
 func TestCountedChangesNameTheIssueOfAChangedContentTarget(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	tx, err := database.Pool.Begin(ctx)
@@ -881,6 +898,7 @@ func changedLines(references []model.ChangedReference) []string {
 // Two counted parts of one write merge into what one CountedChanges over both would name: each
 // target once, a kind either part truncated named by neither, and the cap applied to the sum.
 func TestMergeChangesNamesEachTargetOnceWithinTheCap(t *testing.T) {
+	t.Parallel()
 	issue := func(key string) model.ChangedReference { return model.ChangedReference{Kind: "issue", ID: key} }
 	ask := model.ChangedReference{Kind: "ask", ID: "ask-1"}
 	merged := MergeChanges(

@@ -280,6 +280,7 @@ func mainConnection(output string) (lostAtDrain, remade bool) {
 // mainConnection reads the main connection's state from the bus's records alone: the error a
 // disconnect carries, the order of the lines and the client's name, not a line's text elsewhere.
 func TestTheShutdownTestReadsTheMainConnectionAtTheDrain(t *testing.T) {
+	t.Parallel()
 	const (
 		mainLost   = `2026/11/18 07:00:01 INFO envoy nats disconnected name=envoy error="nats: stale connection"`
 		mainClosed = `2026/11/18 07:00:02 INFO envoy nats disconnected name=envoy`
