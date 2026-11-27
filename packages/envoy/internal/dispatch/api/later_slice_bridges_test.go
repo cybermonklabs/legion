@@ -179,3 +179,22 @@ var answerMasks = []struct {
 	{regexp.MustCompile(`[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}`), "<uuid>"},
 	{regexp.MustCompile(`"(\w+_ms)":\d+`), `"$1":<ms>`},
 }
+
+// laterSliceIssueReads are the reads of TestAnIssueOfAPrivateProjectAnswersAsMissing (issueReads,
+// by method and the read as that test writes it) that answer an issue its caller does not see as
+// they answer an issue it sees until a later slice's file binds the caller's reader, each with that
+// slice, the route, its file and the filter it brings. The test holds none of these reads to the
+// answer of a key nobody holds, and it fails on a row here that every caller who does not see the
+// issue's project is already answered as missing, so the slice that brings the filter deletes the row.
+var laterSliceIssueReads = map[string]string{
+	"GET /api/v1/issues/{key}/handoffs": "S4: route GET /api/v1/issues/{key}/handoffs; handoffs.go's listHandoffs reads " +
+		"every handoff of the key on requireAuthenticated; S4's reads as the caller (readerOf, access.IssueProjectClause)",
+	"GET /api/v1/issues/{key}/handoffs/plan/latest": "S4: route GET /api/v1/issues/{key}/handoffs/{phase}/latest; " +
+		"handoffs.go's getLatestHandoff reads the newest handoff of the key on requireAuthenticated; S4's reads as the " +
+		"caller (readerOf, access.IssueProjectClause)",
+	"GET /api/v1/handoffs/{handoff}": "S4: route GET /api/v1/handoffs/{id}; handoffs.go's getHandoff reads the handoff " +
+		"by id on requireAuthenticated; S4's reads as the caller (readerOf, access.IssueProjectClause on its issue)",
+	"GET /api/v1/issues/{key}/subscribers": "S4: route GET /api/v1/issues/{key}/subscribers; subscribers.go's " +
+		"listIssueSubscribers lists every session subscribed to the key's topics; S4's leaves out a topic scoped to an " +
+		"issue its caller does not see (keyScoped) and a session its caller may not see (seenSessions)",
+}

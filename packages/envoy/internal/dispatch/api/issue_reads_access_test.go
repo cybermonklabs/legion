@@ -43,6 +43,11 @@ var issueReads = []string{
 // Each issue carries what makes a read of it differ from a read of a key nobody holds: a handoff,
 // a decisions.md, and a session subscribed to the issue's own topic beside one subscribed to every
 // topic, on a stand-in listener.
+//
+// A read laterSliceIssueReads names is not held to a key nobody holds for a caller that does not
+// see the issue's project, since the file that binds its reader is a later slice's; every other
+// arm holds it. Such a row fails the test once no caller that does not see the project is answered
+// otherwise than as missing, so the slice that binds the reader deletes it.
 func TestAnIssueOfAPrivateProjectAnswersAsMissing(t *testing.T) {
 	// The listener names each issue's key before the seed creates it: a project's first issue is
 	// its number 1.
@@ -68,6 +73,9 @@ func TestAnIssueOfAPrivateProjectAnswersAsMissing(t *testing.T) {
 		}, http.StatusCreated)
 	}
 
+	// leaked is each read laterSliceIssueReads names that answered a caller who does not see the
+	// issue's project otherwise than a key nobody holds: its row is still needed.
+	leaked := map[string]bool{}
 	for _, caller := range privateCallers {
 		t.Run(string(caller), func(t *testing.T) {
 			for _, project := range []string{seedPublic, seedPrivate} {
@@ -83,10 +91,13 @@ func TestAnIssueOfAPrivateProjectAnswersAsMissing(t *testing.T) {
 					// A route that refuses the caller's credential before it reads anything answers a
 					// key nobody holds that way too, and so must every key, seen or not.
 					refused := missing.Code == http.StatusUnauthorized || missing.Code == http.StatusForbidden
+					_, bridged := laterSliceIssueReads[http.MethodGet+" "+read]
 					switch {
 					case refused && !same:
 						t.Errorf("GET %s: the route refuses %s, as GET %s answers %d %s, so it must refuse it alike for %s; it answered %d %s",
 							read, caller, asked, missing.Code, want, project, got.Code, got.Body.String())
+					case !refused && !sees && !same && bridged:
+						leaked[read] = true
 					case !refused && !sees && !same:
 						t.Errorf("GET %s: %s sees no %s, so it must answer as GET %s does, %d %s; it answered %d %s",
 							read, caller, project, asked, missing.Code, want, got.Code, got.Body.String())
@@ -113,6 +124,16 @@ func TestAnIssueOfAPrivateProjectAnswersAsMissing(t *testing.T) {
 				t.Errorf("GET /api/v1/issues: %s lists %v, want the issues of the projects it sees, %v", caller, keys, want)
 			}
 		})
+	}
+	for name, reason := range laterSliceIssueReads {
+		read, isGet := strings.CutPrefix(name, http.MethodGet+" ")
+		switch {
+		case !isGet || !slices.Contains(issueReads, read):
+			t.Errorf("laterSliceIssueReads names %s, which is no read of issueReads, so the row holds nothing", name)
+		case !leaked[read]:
+			t.Errorf("%s answered every caller that does not see the issue's project as a key nobody holds: delete its row "+
+				"from laterSliceIssueReads (%s)", name, reason)
+		}
 	}
 
 	// A create reads its body's project as its creator does, its near-copy gate included: alice's
