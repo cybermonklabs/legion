@@ -676,14 +676,13 @@ func TestAReadASignalEndedKeepsWhatItPrinted(t *testing.T) {
 // row reads the figures the guard made, never a count of seconds the test supposes. The caller's
 // deadline is due 2 s after the call, and the guard must have started the program by then
 // (startedBeforeDue), as a deadline of 2 s requires of the guard's own work before the child, the
-// shared check among it. The deadline passes when due, but not before the stand-in program has
-// started (deadlinePassedOnceStarted): a program the guard started in time may, on a loaded
-// machine, run its first line later, and a guard that started it late is named as one rather than
-// read as a stop of something else. The line is held to the stop beneath it, and the stop to the
-// caller's deadline (stopSaid), never to the two seconds whole. The same 2 s also bounds the
-// guard's work from the start it counted to the kernel's fork of the program (forkedWithin), read
-// from the start mark the stand-in writes as its first act: a guard that stalled after its own
-// start spent the bound before the program existed, which the start it counted cannot show.
+// shared check among it: both the start the guard counted and the kernel's fork of the program,
+// which the stand-in's start mark, written as its first act, records. The deadline passes when
+// due, but not before the stand-in program has started (deadlinePassedOnceStarted): a program the
+// guard started in time may, on a loaded machine, run its first line later, and a guard that
+// started it late is named as one rather than read as a stop of something else. The line is held
+// to the stop beneath it, and the stop to the caller's deadline (stopSaid), never to the two
+// seconds whole.
 func TestAReadStoppedByItsBoundNamesItsProgramItsTimeAndItsBound(t *testing.T) {
 	const theBound = 2 * time.Second
 	// neverAnswers is the PATH entry of a directory whose one program is name, which writes its
@@ -714,8 +713,7 @@ func TestAReadStoppedByItsBoundNamesItsProgramItsTimeAndItsBound(t *testing.T) {
 			err = guard.Text(ctx, TextRequest{Repo: "invented-org/invented-repo", Text: "a clean title\n"})
 		})
 		says(t, setupFailure(t, err), "could not be read: "+stopSaid(t, ctx, err, "gh", began))
-		startedBeforeDue(t, ctx, err, "gh")
-		forkedWithin(t, ctx, err, "gh", mark, began, called, theBound)
+		startedBeforeDue(t, ctx, err, "gh", mark, began, called)
 	})
 	t.Run("a git read of the push's records", func(t *testing.T) {
 		started := filepath.Join(t.TempDir(), "started")
@@ -736,8 +734,7 @@ func TestAReadStoppedByItsBoundNamesItsProgramItsTimeAndItsBound(t *testing.T) {
 		called := testexec.SinceBoot(t)
 		answered(t, "the push whose git read never answers", func() { err = guard.Push(ctx, req) })
 		says(t, setupFailure(t, err), "the push's commits could not be read: "+stopSaid(t, ctx, err, "git", began))
-		startedBeforeDue(t, ctx, err, "git")
-		forkedWithin(t, ctx, err, "git", mark, began, called, theBound)
+		startedBeforeDue(t, ctx, err, "git", mark, began, called)
 	})
 }
 
@@ -762,9 +759,16 @@ func deadlinePassedOnceStarted(t *testing.T, bound time.Duration, started string
 // startedBeforeDue fails the test unless the stop beneath err is of program and the guard started
 // program before ctx's deadline was due: the bound a deadline that passes when due sets on the
 // guard's own work before its child, which deadlinePassedOnceStarted, passing no sooner than the
-// child's first line, does not set by itself. The start is the one the guard counted (Guard.run),
-// as stopSaid reads it: the deadline the guard read, less the bound it gave program.
-func startedBeforeDue(t *testing.T, ctx dueDeadline, err error, program string) {
+// child's first line, does not set by itself. Two starts are held to it. One is the start the
+// guard counted (Guard.run, Guard.readOutput), as stopSaid reads it: the deadline the guard read,
+// less the bound it gave program. The other is the kernel's fork of program's process, which the
+// stand-in wrote to mark as its first act (testexec.MarkStart): a guard that stalled after the
+// start it counted spent the bound before its child existed, which that start cannot show. No
+// product code writes or moves the fork, and a loaded machine that brings the stand-in to its
+// first line late does not move it. The fork is counted from the call, as the deadline is: calledAt
+// and called are one moment, on the test's clock and on the clock since boot the mark counts on,
+// read just before the call, and they put the fork and the due moment on one clock.
+func startedBeforeDue(t *testing.T, ctx dueDeadline, err error, program, mark string, calledAt time.Time, called time.Duration) {
 	t.Helper()
 	var stopped *stoppedError
 	if !errors.As(err, &stopped) || stopped.program != program {
@@ -775,31 +779,12 @@ func startedBeforeDue(t *testing.T, ctx dueDeadline, err error, program string) 
 		t.Errorf("the guard started %s %s after the caller's deadline was due, want it started before: its own work before %s took longer than the bound",
 			program, began.Sub(ctx.due).Round(time.Millisecond), program)
 	}
-}
-
-// forkedWithin fails the test unless the stop beneath err is of program and the kernel made
-// program's process less than bound after the start the guard counted (Guard.run,
-// Guard.readOutput): the bound the caller's deadline sets on the guard's own work between its
-// start and its child's fork, which startedBeforeDue, reading that start, cannot see. The fork is
-// the kernel's record of the process's start, which the stand-in wrote to mark as its first act
-// (testexec.MarkStart): no product code writes or moves it, and a loaded machine that brings the
-// stand-in to its first line late does not move it. The guard's start is the deadline the guard
-// read less the bound it gave program, as stopSaid reads it. calledAt and called are one moment,
-// on the test's clock and on the clock since boot the mark counts on, read just before the call;
-// they put the two on one clock, and the bound counts from the guard's start, never from the call.
-func forkedWithin(t *testing.T, ctx dueDeadline, err error, program, mark string, calledAt time.Time, called, bound time.Duration) {
-	t.Helper()
-	var stopped *stoppedError
-	if !errors.As(err, &stopped) || stopped.program != program {
-		t.Fatalf("%v carries no stop of %s beneath it", err, program)
-	}
-	deadline, _ := ctx.Deadline()
-	counted := deadline.Add(-stopped.bound).Sub(calledAt)
-	forked := testexec.StartedAfter(t, mark, called) - counted
-	t.Logf("the kernel made %s %s after the start the guard counted; the bound is %s", program, forked.Round(time.Millisecond), bound)
-	if forked >= bound {
-		t.Errorf("the kernel made %s %s after the start the guard counted, want it made within the caller's bound of %s: the guard's own work between its start and the fork of %s took the whole bound",
-			program, forked.Round(time.Millisecond), bound, program)
+	due := ctx.due.Sub(calledAt)
+	forked := testexec.StartedAfter(t, mark, called)
+	t.Logf("the kernel made %s %s after the call; the caller's deadline was due %s after it", program, forked.Round(time.Millisecond), due.Round(time.Millisecond))
+	if forked >= due {
+		t.Errorf("the kernel made %s %s after the call, want it made before the caller's deadline was due %s after it: the guard's own work before the fork of %s took longer than the bound",
+			program, forked.Round(time.Millisecond), due.Round(time.Millisecond), program)
 	}
 }
 
