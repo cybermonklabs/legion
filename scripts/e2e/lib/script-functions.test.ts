@@ -1,13 +1,14 @@
 import { beforeAll, describe, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
-import { readFileSync, rmSync, writeFileSync } from "node:fs";
-import { join, relative } from "node:path";
+import { mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { dirname, join, relative } from "node:path";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import {
+  controlPlantMark,
   expectNoMissingHelpers,
   nameMissingHelpers,
   scriptFunctions,
-  sourcedLibraries,
+  sourcedLibrariesIn,
   unreadableSources,
 } from "./script-functions";
 
@@ -131,19 +132,43 @@ describe("every helper a stage script defines is called", () => {
 // checkout for `$root` and against the script's own directory for any other variable. Reading
 // such a path by its last segments names a different file where the path holds `..`, and a
 // library read under the wrong name hides what the real one holds.
-const checkout = join(import.meta.dir, "..", "..", "..");
+//
+// The rows read their scripts in a tree of their own, laid out as the checkout is and holding the
+// libraries they source as stand-ins. A control written in the checkout sits in scripts/e2e/lib
+// for as long as its row runs, and every scan of that directory on another worker reads it as a
+// script of the tree: start-settings.test.ts reports its deliberately unreadable source as a real
+// one, and a scan that listed it before it was removed fails reading it. A name of this run alone
+// does not keep a directory scan from reading it.
+const tree = temporaryDirectory("script-functions-sources");
+const libraries = [
+  "scripts/e2e/lib/port-file.sh",
+  "packages/envoy/scripts/lib/pg-url.sh",
+  "packages/envoy/scripts/lib/exec-env.sh",
+];
+beforeAll(() => {
+  for (const library of libraries) {
+    mkdirSync(dirname(join(tree, library)), { recursive: true });
+    writeFileSync(join(tree, library), `#!/usr/bin/env bash\n${controlPlantMark}\n`);
+  }
+  // A link to a library is the library: the stricter file check must still read it.
+  symlinkSync("port-file.sh", join(tree, "scripts", "e2e", "lib", "port-file-link.sh"));
+});
 
-/** The libraries a script holding `lines` sources, as paths under the checkout. The script is
- *  written in the checkout's own scripts/e2e/lib, so a path written against the script's own
- *  directory lands where it would in the checkout, and under a name of this run alone, so two
- *  runs never read each other's. */
+/** Writes a control script holding `lines` in the tree's scripts/e2e/lib, so a path written
+ *  against the script's own directory lands where it would in the checkout, and answers its path. */
+function controlScript(lines: readonly string[]): string {
+  const script = join(tree, "scripts", "e2e", "lib", `source-control-${randomUUID()}.sh`);
+  writeFileSync(script, `#!/usr/bin/env bash\n${lines.join("\n")}\n${controlPlantMark}\n`);
+  return script;
+}
+
+/** The libraries a script holding `lines` sources, as paths under the tree. */
 function sourcedBy(...lines: string[]): string[] {
-  const script = join(checkout, "scripts", "e2e", "lib", `sourced-path-control-${randomUUID()}.sh`);
+  const script = controlScript(lines);
   try {
-    writeFileSync(script, `#!/usr/bin/env bash\n${lines.join("\n")}\n`);
-    return sourcedLibraries(script)
+    return sourcedLibrariesIn(tree, [script])
       .filter((path) => path !== script)
-      .map((path) => relative(checkout, path));
+      .map((path) => relative(tree, path));
   } finally {
     rmSync(script, { force: true });
   }
@@ -151,10 +176,9 @@ function sourcedBy(...lines: string[]): string[] {
 
 /** The source lines of a script holding `lines` that the reader refuses, each as it is written. */
 function refusedBy(...lines: string[]): string[] {
-  const script = join(checkout, "scripts", "e2e", "lib", `refused-path-control-${randomUUID()}.sh`);
+  const script = controlScript(lines);
   try {
-    writeFileSync(script, `#!/usr/bin/env bash\n${lines.join("\n")}\n`);
-    return unreadableSources(script).map((found) => found.replace(/^[^:]*:\d+: /, ""));
+    return unreadableSources(script, tree).map((found) => found.replace(/^[^:]*:\d+: /, ""));
   } finally {
     rmSync(script, { force: true });
   }
@@ -229,4 +253,59 @@ test("a sourced path that reaches no file of the tree is refused, not passed ove
     ". ${envoy_lib}/pg-url.sh",
     '. "$root/scripts/e2e/lib/no-such-library.sh"',
   ]);
+});
+
+// A control's script is written in a tree of its own, laid out as the checkout is. Written in the
+// checkout, it sat in scripts/e2e/lib for as long as its row ran, and a scan of that directory on
+// another worker read it as a script of the tree: a deliberately unreadable source reported as a
+// real one, or a file gone between the scan's listing and its read.
+test("a control's script is read in a tree of its own, not in the checkout", () => {
+  expect(sourcedBy('. "$root/scripts/e2e/lib/rig.sh"')).toEqual([]);
+});
+
+// Bash joins a quoted part and whatever touches it into one word, so `"$lib/port-file.sh"x` is
+// the file port-file.shx. Read to its closing quote alone, the word named port-file.sh, a file
+// the shell never sources. A quote ends the word only where a space, the line's end or one of
+// `;&|<>()` follows it; any other continuation is refused.
+test("a quoted part with more of the word after it is refused, not read as the part", () => {
+  const lines = [
+    '. "$lib/port-file.sh"x',
+    `. "$root/packages/envoy/scripts/lib/exec-env.sh"'.bak'`,
+  ];
+  expect(refusedBy(...lines)).toEqual(lines);
+});
+
+// The stricter end must refuse nothing the shell reads as the file: the own-directory forms the
+// tree's scripts write, whose substitutions hold quotes of their own, and a quote that a `;`, a
+// space or the line's end follows.
+test("control: a quoted word the shell ends at its quote still reads the file it names", () => {
+  const lines = [
+    '. "$(dirname "$0")/port-file.sh"',
+    '. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/port-file.sh"',
+    '. "$lib/port-file.sh";',
+    '. "$lib/port-file.sh" # a comment',
+  ];
+  expect(lines.map((line) => sourcedBy(line))).toEqual(
+    lines.map(() => ["scripts/e2e/lib/port-file.sh"])
+  );
+  expect(refusedBy(...lines)).toEqual([]);
+});
+
+// A path that reaches a directory is no library: bash's `.` refuses one, and the walk, taking it
+// for a file, threw on reading it rather than naming the line. It is refused like a path that
+// reaches nothing, and the walk reads on past it.
+test("a sourced path that reaches a directory is refused, and the walk reads on", () => {
+  expect(refusedBy('. "$root/packages/envoy/scripts/lib"', ". ../lib")).toEqual([
+    '. "$root/packages/envoy/scripts/lib"',
+    ". ../lib",
+  ]);
+  expect(sourcedBy('. "$root/packages/envoy/scripts/lib"', '. "$lib/port-file.sh"')).toEqual([
+    "scripts/e2e/lib/port-file.sh",
+  ]);
+});
+
+// The file check's own control: a link to a library is read as the library it links to.
+test("control: a sourced path that is a link to a file is read", () => {
+  expect(sourcedBy('. "$lib/port-file-link.sh"')).toEqual(["scripts/e2e/lib/port-file-link.sh"]);
+  expect(refusedBy('. "$lib/port-file-link.sh"')).toEqual([]);
 });

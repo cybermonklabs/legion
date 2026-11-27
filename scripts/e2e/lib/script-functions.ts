@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 
 /**
@@ -52,13 +52,16 @@ const definition = /^([A-Za-z_][A-Za-z0-9_]*)\(\) \{/gm;
 // not at the last quote on the line: read to the last one, a trailing comment holding a quoted
 // word named a path that does not exist, and the library behind it was neither read nor refused.
 // Inside double quotes a `$(` opens a substitution whose own quotes do not close the word, so the
-// `$(dirname …)` forms still end at their own closing quote. A word no quote closes keeps its
-// opening quote, and `resolvedSource` refuses any word that still holds one. An unquoted word
-// runs to the first space, as the shell reads it.
+// `$(dirname …)` forms still end at their own closing quote. That quote ends the shell word only
+// where a space, the line's end or one of `;&|<>()` follows it: bash joins a quoted part and
+// whatever touches it into one word, so `"$lib/x.sh"y` is the file x.shy, and read to the quote
+// it would name x.sh, a file the shell never sources. A word no quote closes, or one that goes on
+// past its closing quote, keeps its opening quote, and `resolvedSource` refuses any word that
+// still holds one. An unquoted word runs to the first space, as the shell reads it.
 const sourceLine = /^[ \t]*(?:\.|source)[ \t]+(\S.*)$/;
 
 /** The text of the quoted word `rest` starts with, up to the quote that closes it at the top
- *  level, or `undefined` when no quote closes it. */
+ *  level, or `undefined` when no quote closes it or the word goes on past that quote. */
 function closedWord(rest: string, quote: string): string | undefined {
   let depth = 0;
   for (let index = 1; index < rest.length; index++) {
@@ -72,14 +75,16 @@ function closedWord(rest: string, quote: string): string | undefined {
       if (char === ")") depth--;
       continue;
     }
-    if (char === quote) return rest.slice(1, index);
+    if (char !== quote) continue;
+    return /^(?:$|[\s;&|<>()])/.test(rest.slice(index + 1)) ? rest.slice(1, index) : undefined;
   }
   return undefined;
 }
 
 /** The word each `.` or `source` line of `text` names, with the line it is on (counting from 1)
- *  and the line itself, in order. A quoted word is given without its quotes; one no quote closes
- *  is given with its opening quote, so `resolvedSource` refuses it. */
+ *  and the line itself, in order. A quoted word is given without its quotes; one no quote closes,
+ *  or one that goes on past its closing quote, is given with its opening quote, so
+ *  `resolvedSource` refuses it. */
 function sourceWords(text: string): { word: string; at: number; line: string }[] {
   const found: { word: string; at: number; line: string }[] = [];
   const lines = text.split("\n");
@@ -98,22 +103,28 @@ function sourceWords(text: string): { word: string; at: number; line: string }[]
 /** The checkout, from this file in scripts/e2e/lib. */
 const checkout = join(import.meta.dir, "..", "..", "..");
 
+/** A line every planted control script carries, so a scan of the checkout can tell a test's
+ *  plant from a script of the tree: a control left behind there by a run that was killed, or
+ *  written there by a later test, is then refused by name rather than read as a real script. */
+export const controlPlantMark = "# legion-scan-control: planted by a test, no script of the tree";
+
 /** A path a script writes for its own directory: `$(dirname "$0")` and the `BASH_SOURCE` form
  *  beside it, which every script here uses for that and nothing else. */
 const ownDirectory =
   /^(?:\$\(dirname "\$0"\)|\$\(cd "\$\(dirname "\$\{BASH_SOURCE\[0\]\}"\)" && pwd -P\))\/(.+)$/;
 
-/** The file `written` reaches from the script at `from`, or `undefined` when this reader cannot
- *  name one: a word that is a variable whole (`. "$lib"`), a glob, any other command substitution,
- *  a word that still holds a quote, which is one no quote closed, or a path that names no file of
- *  the tree. A path built on a variable other than `$root` is tried beside the script and under
- *  the checkout, and a variable that names some other directory, as `. "$drivers/clients.sh"`
- *  does, reaches neither: only the running shell knows that directory, so the line is refused
- *  rather than read as a file the script makes as it runs. Such a line is named by
- *  `unreadableSources`, and the walk reads only a path this returns. */
-function resolvedSource(from: string, written: string): string | undefined {
+/** The file `written` reaches from the script at `from` in the checkout `tree`, or `undefined`
+ *  when this reader cannot name one: a word that is a variable whole (`. "$lib"`), a glob, any
+ *  other command substitution, a word that still holds a quote, which is one no quote closed or
+ *  one that goes on past its quote, or a path that names no file of the tree, a directory among
+ *  them. A path built on a variable other than `$root` is tried beside the script and under the
+ *  tree, and a variable that names some other directory, as `. "$drivers/clients.sh"` does,
+ *  reaches neither: only the running shell knows that directory, so the line is refused rather
+ *  than read as a file the script makes as it runs. Such a line is named by `unreadableSources`,
+ *  and the walk reads only a path this returns. */
+function resolvedSource(from: string, written: string, tree: string): string | undefined {
   const own = ownDirectory.exec(written);
-  if (own !== null) return existing(resolve(dirname(from), own[1] ?? ""));
+  if (own !== null) return regularFile(resolve(dirname(from), own[1] ?? ""));
   // The own-directory forms hold quotes inside their substitution and are read above; any other
   // word that holds a quote is one sourceWords could not close, so it names no file this reads.
   if (written.includes('"') || written.includes("'")) return undefined;
@@ -121,27 +132,34 @@ function resolvedSource(from: string, written: string): string | undefined {
   const against = /^\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?\/(.+)$/.exec(written);
   if (against === null) {
     if (written.includes("$")) return undefined;
-    return existing(isAbsolute(written) ? written : resolve(dirname(from), written));
+    return regularFile(isAbsolute(written) ? written : resolve(dirname(from), written));
   }
   const [, name, rest = ""] = against;
   if (rest.includes("$")) return undefined;
-  if (name === "root") return existing(resolve(checkout, rest));
-  return existing(resolve(dirname(from), rest)) ?? existing(resolve(checkout, rest));
+  if (name === "root") return regularFile(resolve(tree, rest));
+  return regularFile(resolve(dirname(from), rest)) ?? regularFile(resolve(tree, rest));
 }
 
-/** `path` where it names a file, else `undefined`. */
-function existing(path: string): string | undefined {
-  return existsSync(path) ? path : undefined;
+/** `path` where it names a regular file, or a link to one, else `undefined`. A directory is no
+ *  library: bash's `.` refuses one, and the walk would throw on reading it rather than name the
+ *  line. A path this process cannot stat is no file it can read either. */
+function regularFile(path: string): string | undefined {
+  try {
+    return statSync(path).isFile() ? path : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /** Every line of the script at `path` that sources a library this file cannot name, as
- *  `<path under the checkout>:<line>: <the line>`. A scan that walks what a script sources must
- *  fail on these: the file behind such a line is never read, so anything in it is unseen. */
-export function unreadableSources(path: string): string[] {
+ *  `<path under tree>:<line>: <the line>`, where `tree` is the checkout the script is read in.
+ *  A scan that walks what a script sources must fail on these: the file behind such a line is
+ *  never read, so anything in it is unseen. */
+export function unreadableSources(path: string, tree: string = checkout): string[] {
   const found: string[] = [];
   for (const { word, at, line } of sourceWords(readFileSync(path, "utf8"))) {
-    if (resolvedSource(path, word) !== undefined) continue;
-    found.push(`${relative(checkout, path)}:${at}: ${line.trim()}`);
+    if (resolvedSource(path, word, tree) !== undefined) continue;
+    found.push(`${relative(tree, path)}:${at}: ${line.trim()}`);
   }
   return found;
 }
@@ -152,13 +170,19 @@ export function unreadableSources(path: string): string[] {
  * reads the functions a script reaches through it, and a test the libraries a script runs with.
  */
 export function sourcedLibraries(...paths: string[]): string[] {
+  return sourcedLibrariesIn(checkout, paths);
+}
+
+/** {@link sourcedLibraries} for scripts read in the checkout `tree`, where `$root` names `tree`:
+ *  the form a test takes for a tree of its own, laid out as the checkout is. */
+export function sourcedLibrariesIn(tree: string, paths: readonly string[]): string[] {
   const read = new Set<string>();
   const pending = [...paths];
   for (let path = pending.pop(); path !== undefined; path = pending.pop()) {
     if (read.has(path) || !existsSync(path)) continue;
     read.add(path);
     for (const { word } of sourceWords(readFileSync(path, "utf8"))) {
-      const reaches = resolvedSource(path, word);
+      const reaches = resolvedSource(path, word, tree);
       // A line this reader cannot resolve, a path that names no file among them, is named by
       // unreadableSources, which reads the same lines this walk does, so no line falls between
       // the two; the walk goes on rather than ending on it.

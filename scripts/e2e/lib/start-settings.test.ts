@@ -23,7 +23,6 @@
 
 import { describe, expect, test } from "bun:test";
 import { execFileSync, spawnSync } from "node:child_process";
-import { randomUUID } from "node:crypto";
 import {
   chmodSync,
   mkdirSync,
@@ -34,13 +33,11 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, relative } from "node:path";
+import { dirname, join, relative } from "node:path";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
+import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { libRowBoundMs, rowWaits } from "./row-waits";
-import { sourcedLibraries, unreadableSources } from "./script-functions";
-
-/** A name of this run alone, so two runs never read each other's planted scripts. */
-const run = randomUUID();
+import { controlPlantMark, sourcedLibrariesIn, unreadableSources } from "./script-functions";
 
 rowWaits(libRowBoundMs);
 
@@ -278,16 +275,17 @@ function logicalLine(lines: string[], from: number): { text: string; last: numbe
   return { text, last: index };
 }
 
-/** Every script of scripts/e2e, and every library one of them sources, wherever in the checkout
- *  that reaches: a start that leaks lives as readily in a sourced library as in the script, so
- *  the scan reads what the scripts reach and not only the scripts. */
-function scanned(): string[] {
+/** Every script of `tree`'s scripts/e2e, and every library one of them sources, wherever in the
+ *  tree that reaches: a start that leaks lives as readily in a sourced library as in the script,
+ *  so the scan reads what the scripts reach and not only the scripts. The tree is the checkout
+ *  unless a control names one of its own. */
+function scanned(tree: string = repoRoot): string[] {
   // The files that are there, not the tracked ones: a script added and not yet committed runs
   // like any other, so the scan reads it too.
-  const scripts = [join(repoRoot, "scripts", "e2e"), join(repoRoot, "scripts", "e2e", "lib")]
+  const scripts = [join(tree, "scripts", "e2e"), join(tree, "scripts", "e2e", "lib")]
     .flatMap((dir) => readdirSync(dir).map((name) => join(dir, name)))
     .filter((path) => path.endsWith(".sh"));
-  return sourcedLibraries(...scripts);
+  return sourcedLibrariesIn(tree, scripts);
 }
 
 /** Every line of a scanned file that sources a library the scan cannot name a file of the tree
@@ -295,16 +293,16 @@ function scanned(): string[] {
  *  unseen: the scan refuses these rather than passing over them. A variable in place of a path,
  *  or a directory only the running shell knows, is the shape that would quiet the scan, so it is
  *  a refusal and not a skip. */
-function unreadable(): string[] {
-  return scanned().flatMap((path) => unreadableSources(path));
+function unreadable(tree: string = repoRoot): string[] {
+  return scanned(tree).flatMap((path) => unreadableSources(path, tree));
 }
 
 /** Every start among the scanned files whose own arguments carry a setting named for a secret,
  *  as `file:line: NAMES`. */
-function startsWithSecretArguments(): string[] {
+function startsWithSecretArguments(tree: string = repoRoot): string[] {
   const found: string[] = [];
-  for (const path of scanned()) {
-    const name = relative(repoRoot, path);
+  for (const path of scanned(tree)) {
+    const name = relative(tree, path);
     const lines = readFileSync(path, "utf8").split("\n");
     for (let index = 0; index < lines.length; index++) {
       const first = index;
@@ -317,18 +315,26 @@ function startsWithSecretArguments(): string[] {
   return found;
 }
 
-/** Runs `body` with `script` written in scripts/e2e and `library` in the checkout, both under
- *  names of this run alone, and removes them after. */
-function withScripts(
+/** A fresh tree for each control, laid out as the checkout is. A control written in the checkout
+ *  is read by every scan of it that runs beside it on another worker, as a script of the tree: the
+ *  rows above would report its planted leak or its refused source as real ones, or fail on a file
+ *  removed between their listing and their read. A name of this run alone does not keep a
+ *  directory scan from reading it. */
+const controlTree = temporaryDirectories("start-settings-scan");
+
+/** Writes `files`, each a path under a fresh tree and the text of a script, with the mark every
+ *  plant carries, and runs `body` on that tree. */
+function inTree(
   files: readonly { readonly path: string; readonly text: string }[],
-  body: () => void
+  body: (tree: string) => void
 ): void {
-  try {
-    for (const { path, text } of files) writeFileSync(path, `#!/usr/bin/env bash\n${text}\n`);
-    body();
-  } finally {
-    for (const { path } of files) rmSync(path, { force: true });
+  const tree = controlTree();
+  mkdirSync(join(tree, "scripts", "e2e", "lib"), { recursive: true });
+  for (const { path, text } of files) {
+    mkdirSync(dirname(join(tree, path)), { recursive: true });
+    writeFileSync(join(tree, path), `#!/usr/bin/env bash\n${text}\n${controlPlantMark}\n`);
   }
+  body(tree);
 }
 
 describe("every start of an e2e script keeps its secrets out of its arguments", () => {
@@ -350,6 +356,18 @@ describe("every start of an e2e script keeps its secrets out of its arguments", 
     expect(read.length).toBeGreaterThan(80);
   });
 
+  // Each control writes its scripts in a tree of its own and marks every one, so a marked file in
+  // the checkout is a plant: one a killed run left behind, or one a later test wrote there. It is
+  // named here as a plant, rather than read as a script of the tree whose start or source the rows
+  // below then report as real.
+  test("no file the scan reads in the checkout is a test's planted control", () => {
+    expect(
+      scanned()
+        .filter((path) => readFileSync(path, "utf8").includes(controlPlantMark))
+        .map((path) => relative(repoRoot, path))
+    ).toEqual([]);
+  });
+
   test("no start writes a secret-named setting in the arguments it gives", () => {
     expect(startsWithSecretArguments()).toEqual([]);
   });
@@ -361,19 +379,20 @@ describe("every start of an e2e script keeps its secrets out of its arguments", 
   // The first direction: a library sourced by a path the scan resolves is read, so a start that
   // leaks inside it is named. The library is the one #4296 sources, written as it will be there.
   test("a start in a sourced library of another package is scanned and named", () => {
-    const library = join(repoRoot, "packages", "envoy", "scripts", "lib", `pg-url-${run}.sh`);
-    const script = join(repoRoot, "scripts", "e2e", `sourced-scan-${run}.sh`);
-    withScripts(
+    inTree(
       [
         {
-          path: library,
+          path: "packages/envoy/scripts/lib/pg-url.sh",
           text: 'start_process dispatch env -i PATH="$PATH" DATABASE_URL="$url" "$bin"',
         },
-        { path: script, text: `. "$root/packages/envoy/scripts/lib/pg-url-${run}.sh"` },
+        {
+          path: "scripts/e2e/sourced-scan.sh",
+          text: '. "$root/packages/envoy/scripts/lib/pg-url.sh"',
+        },
       ],
-      () => {
-        expect(startsWithSecretArguments()).toEqual([
-          `packages/envoy/scripts/lib/pg-url-${run}.sh:2: DATABASE_URL`,
+      (tree) => {
+        expect(startsWithSecretArguments(tree)).toEqual([
+          "packages/envoy/scripts/lib/pg-url.sh:2: DATABASE_URL",
         ]);
       }
     );
@@ -383,29 +402,51 @@ describe("every start of an e2e script keeps its secrets out of its arguments", 
   // through a variable is a refusal naming the file and line, never a silent skip. The leak
   // planted behind it is unseen, which is why the line itself must fail.
   test("a library sourced through a variable fails the scan by name, rather than being skipped", () => {
-    const library = join(repoRoot, "packages", "envoy", "scripts", "lib", `pg-url-${run}.sh`);
-    const script = join(repoRoot, "scripts", "e2e", `sourced-scan-${run}.sh`);
-    withScripts(
+    inTree(
       [
         {
-          path: library,
+          path: "packages/envoy/scripts/lib/pg-url.sh",
           text: 'start_process dispatch env -i PATH="$PATH" DATABASE_URL="$url" "$bin"',
         },
         {
-          path: script,
-          text: `pg_url_lib=$root/packages/envoy/scripts/lib/pg-url-${run}.sh\n. "$pg_url_lib"`,
+          path: "scripts/e2e/sourced-scan.sh",
+          text: 'pg_url_lib=$root/packages/envoy/scripts/lib/pg-url.sh\n. "$pg_url_lib"',
         },
       ],
-      () => {
-        // The control reads its own planted script's lines alone, so a refusal elsewhere in the
-        // tree, which the row above holds, neither hides this one nor fails it for another reason.
-        const planted = `scripts/e2e/sourced-scan-${run}.sh:`;
-        expect(unreadable().filter((found) => found.startsWith(planted))).toEqual([
-          `scripts/e2e/sourced-scan-${run}.sh:3: . "$pg_url_lib"`,
-        ]);
+      (tree) => {
+        expect(unreadable(tree)).toEqual(['scripts/e2e/sourced-scan.sh:3: . "$pg_url_lib"']);
+        expect(startsWithSecretArguments(tree)).toEqual([]);
+      }
+    );
+  });
+
+  // A path that reaches a directory is not a file the scan read. Taken for one, the walk queued
+  // the directory and its read threw, so each of the scan's rows failed on that throw and none
+  // named the line. It is refused by name, and the scan reads on past it.
+  test("a library sourced as a directory is refused by name, and the scan reads on", () => {
+    inTree(
+      [
+        {
+          path: "packages/envoy/scripts/lib/pg-url.sh",
+          text: 'start_process dispatch env -i PATH="$PATH" DATABASE_URL="$url" "$bin"',
+        },
+        {
+          path: "scripts/e2e/sourced-scan.sh",
+          text: '. "$root/packages/envoy/scripts/lib"\n. "$root/packages/envoy/scripts/lib/pg-url.sh"',
+        },
+      ],
+      (tree) => {
         expect(
-          startsWithSecretArguments().filter((found) => found.includes(`pg-url-${run}.sh`))
-        ).toEqual([]);
+          scanned(tree)
+            .map((path) => relative(tree, path))
+            .sort()
+        ).toEqual(["packages/envoy/scripts/lib/pg-url.sh", "scripts/e2e/sourced-scan.sh"]);
+        expect(unreadable(tree)).toEqual([
+          'scripts/e2e/sourced-scan.sh:2: . "$root/packages/envoy/scripts/lib"',
+        ]);
+        expect(startsWithSecretArguments(tree)).toEqual([
+          "packages/envoy/scripts/lib/pg-url.sh:2: DATABASE_URL",
+        ]);
       }
     );
   });
