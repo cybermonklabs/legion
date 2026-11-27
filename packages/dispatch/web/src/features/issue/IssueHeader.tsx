@@ -1,6 +1,6 @@
 import { ISSUE_TITLE_MAX } from "@legion/contracts";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { type KeyboardEvent, type ReactNode, useId, useState } from "react";
+import { type KeyboardEvent, type ReactNode, useId, useRef, useState } from "react";
 
 import {
   AGENT_LIST_REFILLING,
@@ -22,12 +22,13 @@ import type {
   UserState,
 } from "../../api/types";
 import { CappedGroup } from "../../components/CappedGroup";
-import { focusOnMount } from "../../components/focus-place";
+import { focusableIn, focusOnMount } from "../../components/focus-place";
 import { heldPress } from "../../components/held-press";
 import { MultiSelect } from "../../components/MultiSelect";
 import { PinButton } from "../../components/PinButton";
 import { QueryError } from "../../components/QueryError";
 import { useFocusBack } from "../../hooks/useFocusBack";
+import { useFocusHandOff } from "../../hooks/useFocusHandOff";
 import { useReleaseWhenLate, useSubmitGuard } from "../../hooks/useSubmitGuard";
 import { inputMethodKey } from "../../lib/input-method-key";
 import {
@@ -207,6 +208,34 @@ export function IssueHeader({
     },
   });
   const releasing = releaseClaim.isPending && !releaseClaim.late;
+  // Release is drawn beside the claim only while the issue has one, so the release its press
+  // makes takes the claim's box off the page as it lands, with the focus Release holds. The focus
+  // goes on, with no scroll, to the control now at Release's place in the header's order: the
+  // first after the State and Attention groups (`stateActions`), the first of the header's last
+  // line - the labels' own, or Details where they take no press (`useFocusHandOff`). Only a
+  // release of the reader's own hands it on (`released`, which the press sets and its refusal
+  // clears): the box taken away by a release made elsewhere leaves the focus on the page's body,
+  // as the new issue page's claim does (`IssueClaimControl`).
+  const headerElement = useRef<HTMLElement>(null);
+  const stateActions = useRef<HTMLDivElement>(null);
+  const released = useRef(false);
+  const claimLeft = useFocusHandOff(() => {
+    const groups = stateActions.current;
+    if (groups === null || headerElement.current === null) return null;
+    return focusableIn(headerElement.current).find(
+      (control) =>
+        !groups.contains(control) &&
+        (groups.compareDocumentPosition(control) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0
+    );
+  }, released);
+  const pressRelease = () => {
+    released.current = true;
+    releaseClaim.mutate(undefined, {
+      onError: () => {
+        released.current = false;
+      },
+    });
+  };
   // Every status write of the header - the status list, Close, Reopen and the palette's rows -
   // goes through the rule's question (`useIssueStatusMove`): a dry run first for an issue with a
   // parent or an open child, then the write below, or the question where Dispatch's rule would
@@ -266,6 +295,26 @@ export function IssueHeader({
   const requestStatus = (status: string) => {
     statusMove.move(status, () => drafts.requestStatusSubmit(status));
   };
+  // Close issue is drawn only while the issue is open and Reopen only while it is closed, so the
+  // status write each one asks for takes it off the page as it lands, with the focus it holds.
+  // Each press asks for the focus back (`useFocusBack`), and the commit that draws the other one
+  // in its place gives it the focus with no scroll, from the page's body alone, where the going
+  // left it: Reopen after a close (`closeFocus`), Close issue after a reopen (`reopenFocus`). The
+  // command bar's rows of the two ask the same: the bar runs one once it has given the focus
+  // back, to the page's body where nothing held it as the bar opened, and the focus goes on from
+  // there. A write refused, or a question of the rule's left unanswered, keeps the ask until the
+  // issue does close or reopen, as a refused save keeps an editor's (`useFocusBack`): a control
+  // the reader put the focus on meanwhile keeps it.
+  const closeFocus = useFocusBack(!isClosed);
+  const reopenFocus = useFocusBack(isClosed);
+  const closeIssue = () => {
+    closeFocus.handBack();
+    requestStatus("done");
+  };
+  const reopenIssue = () => {
+    reopenFocus.handBack();
+    requestStatus("backlog");
+  };
   // While a field write is out within its deadline every header control that writes the issue is
   // held rather than disabled: it keeps the focus the press gave it (`heldPress`). Past the
   // deadline (`KeyedWriteResult.late`) it holds none of them, and a status pressed then is a write
@@ -287,14 +336,14 @@ export function IssueHeader({
   useKeymap("issue", [
     {
       action: "issue.close",
-      run: () => requestStatus("done"),
+      run: closeIssue,
       // The button is held while `statusBusy`, and `isClosed` decides whether it is rendered at
       // all; a row offered while a status write is in flight would submit a second one.
       when: () => !isClosed && !statusBusy,
     },
     {
       action: "issue.reopen",
-      run: () => requestStatus("backlog"),
+      run: reopenIssue,
       when: () => isClosed && !statusBusy,
     },
     ...([0, 1, 2, 3] as const).map((level) => ({
@@ -640,6 +689,7 @@ export function IssueHeader({
       className={`mb-3 min-w-0 rounded-xl border p-3 ${card}`}
       data-issue-header=""
       data-testid="issue-header"
+      ref={headerElement}
     >
       {isClosed ? (
         <div
@@ -651,8 +701,9 @@ export function IssueHeader({
             className={`min-h-11 rounded-lg px-3 py-2 text-sm font-medium ${secondaryButtonBorder} ${secondaryButtonHoverBorder} ${secondaryButtonDisabledText}`}
             // Held, not disabled, while a write of the header's fields within its deadline or the
             // rule's question is out (`statusBusy`): the pressed Reopen keeps the keyboard focus,
-            // and a second press sends nothing.
-            {...heldPress(statusBusy, () => requestStatus("backlog"))}
+            // and a second press sends nothing. A close hands the focus on to it (`closeFocus`).
+            {...heldPress(statusBusy, reopenIssue)}
+            ref={closeFocus.opener}
             title="Reopen into Backlog"
             type="button"
           >
@@ -758,6 +809,7 @@ export function IssueHeader({
         <div
           className="flex w-full min-w-0 flex-wrap items-center gap-x-4 gap-y-2 md:w-auto"
           data-testid="issue-state-actions"
+          ref={stateActions}
         >
           <div className={headerGroup} data-testid="issue-state">
             {/* The Status is the shared list's single pick, whose text box narrows the statuses
@@ -865,12 +917,15 @@ export function IssueHeader({
               </>
             ) : null}
             {issue.claim === null ? null : (
-              <span className="flex min-w-0 max-w-full grow basis-64 items-center gap-2">
+              <span
+                className="flex min-w-0 max-w-full grow basis-64 items-center gap-2"
+                ref={claimLeft}
+              >
                 <ClaimChip claim={issue.claim} liveness={issue} />
                 <button
                   aria-label={`Release the claim on ${issue.key}`}
                   className={`min-h-11 shrink-0 rounded-lg px-2 py-2 text-sm font-medium sm:px-3 md:min-h-8 md:py-1 xl:px-2 ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder} ${secondaryButtonDisabledText}`}
-                  {...heldPress(releasing, () => releaseClaim.mutate())}
+                  {...heldPress(releasing, pressRelease)}
                   title="Release this claim so another agent can take the issue"
                   type="button"
                 >
@@ -920,8 +975,10 @@ export function IssueHeader({
                 className={`min-h-11 shrink-0 rounded-lg px-2 py-2 text-sm font-medium sm:px-3 md:min-h-8 md:py-1 xl:px-2 ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder} ${secondaryButtonDisabledText}`}
                 // Held, not disabled, while a write of the header's fields within its deadline
                 // or the rule's question is out (`statusBusy`): the pressed Close keeps the
-                // keyboard focus, and a second press sends nothing.
-                {...heldPress(statusBusy, () => requestStatus("done"))}
+                // keyboard focus, and a second press sends nothing. A reopen hands the focus on
+                // to it (`reopenFocus`).
+                {...heldPress(statusBusy, closeIssue)}
+                ref={reopenFocus.opener}
                 type="button"
               >
                 {statusBusy && pendingStatus === "done" ? (

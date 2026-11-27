@@ -110,14 +110,14 @@ const closedDetails: IssueDetails = {
 type Patches = Mock<(key: string, input: UpdateIssueInput, bounds: WriteBounds) => Promise<Issue>>;
 
 /** The header of the issue the cache holds, drawn again from each answer a write of it merges
- *  there, as `IssuePage` draws it. */
-function CachedHeader({ isClosed }: { isClosed: boolean }): ReactNode {
+ *  there, and closed while that issue is (`closed_at`), as `IssuePage` draws it. */
+function CachedHeader(): ReactNode {
   const issue = useQuery({ ...issueQuery(base.key), staleTime: Infinity }).data;
   if (issue === undefined) return null;
   return (
     <IssueHeader
       documentArtifact={undefined}
-      isClosed={isClosed}
+      isClosed={issue.closed_at !== null}
       issue={issue}
       priorityWrite={idlePriorityWrite}
       state={stateForIssue(undefined, issue.key)}
@@ -125,14 +125,17 @@ function CachedHeader({ isClosed }: { isClosed: boolean }): ReactNode {
   );
 }
 
-/** The header of `details` in the main content, with the page's text after it, and the title
- *  writes it makes answered as Dispatch answers them. With `isClosed`, the issue is
- *  `closedDetails`. */
-function header(isClosed = false): { patches: Patches; unmount: () => void; user: UserEvent } {
+/** The header of `shown` in the main content, with the page's text after it, and the title
+ *  writes it makes answered as Dispatch answers them. */
+function header(shown: IssueDetails = details): {
+  patches: Patches;
+  unmount: () => void;
+  user: UserEvent;
+} {
   const client = new QueryClient({
     defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
   });
-  client.setQueryData(issueQuery(base.key).queryKey, isClosed ? closedDetails : details);
+  client.setQueryData(issueQuery(base.key).queryKey, shown);
   // The header reads the project list, the project's architecture sources and the issue's
   // subscribers at once; none of them is what these rows are about.
   const restoreReads = mockHeaderReads();
@@ -148,7 +151,7 @@ function header(isClosed = false): { patches: Patches; unmount: () => void; user
       <QueryClientProvider client={client}>
         <MarginProvider>
           <main>
-            <CachedHeader isClosed={isClosed} />
+            <CachedHeader />
             <p>{PAGE_TEXT}</p>
           </main>
         </MarginProvider>
@@ -575,7 +578,7 @@ test("Escape, Cancel and a save in the message route's and the parent's editors 
 // A closed issue's title edits nothing: it is the heading alone, with no Edit title button, no
 // Tab stop and nothing that a press on it opens.
 test("a closed issue's title is its heading alone, with no Edit title button", async () => {
-  const { unmount, user } = header(true);
+  const { unmount, user } = header(closedDetails);
   try {
     const heading = await screen.findByRole("heading", { level: 1, name: base.title });
     expect(heading).not.toHaveAttribute("tabindex");
@@ -585,6 +588,91 @@ test("a closed issue's title is its heading alone, with no Edit title button", a
     expect(screen.queryByRole("textbox", { name: "Issue title" })).not.toBeInTheDocument();
   } finally {
     unmount();
+  }
+});
+
+// Today's header draws Close issue only while the issue is open and Reopen only while it is
+// closed, so the status write each one makes takes it off the page, with the focus it holds, once
+// it lands. The one drawn in its place takes the focus, with no scroll, never the page's body
+// (`useFocusBack`; dispatch://INFRA-2160, H1). The command bar runs its row of either
+// (`issue.close`, `issue.reopen`) once it has given the focus back, to the page's body where
+// nothing held it as the bar opened, and the row hands the focus on the same way.
+
+/** Dispatch's answer to the header's status write of `shown`: Done is closed, any other open. */
+function statusAnswer(shown: IssueDetails, input: UpdateIssueInput): Issue {
+  return {
+    ...patchAnswer(shown, input),
+    closed_at: input.status === "done" ? "2026-09-24T08:00:00Z" : null,
+    updated_at: "2026-09-24T08:00:00Z",
+  };
+}
+
+for (const { from, shown, status, to, writes } of [
+  { from: "Close issue", shown: details, status: "done", to: "Reopen issue", writes: "closes" },
+  {
+    from: "Reopen issue",
+    shown: closedDetails,
+    status: "backlog",
+    to: "Close issue",
+    writes: "reopens",
+  },
+] as const) {
+  for (const by of ["Enter", "the command bar"] as const) {
+    const press =
+      by === "Enter" ? `Enter on ${from}` : `the command bar's ${from}, run from the page's body,`;
+    test(`${press} ${writes} the issue with the focus on ${to}`, async () => {
+      const { patches, unmount, user } = header(shown);
+      patches.mockImplementation(async (_key, input) => statusAnswer(shown, input));
+      const scope = render(<IssueScope />);
+      try {
+        const control = await screen.findByRole("button", { name: from });
+        if (by === "Enter") {
+          act(() => control.focus());
+          await user.keyboard("{Enter}");
+        } else {
+          expect(document.activeElement).toBe(document.body);
+          const row = appKeymap.actions().find((action) => action.label === from);
+          if (row === undefined) throw new Error(`The command bar offers no ${from}.`);
+          await act(async () => {
+            row.run();
+          });
+        }
+        await waitFor(() => expect(screen.queryByRole("button", { name: from })).toBeNull());
+        expect(patches).toHaveBeenCalledWith("CORE-1", { status }, keyedAttempt);
+        expect(screen.getByRole("button", { name: to })).toHaveFocus();
+      } finally {
+        scope.unmount();
+        unmount();
+      }
+    });
+  }
+}
+
+// Today's header draws Release beside the claim only while the issue has one, so the release its
+// press makes takes it off the page, with the focus it holds, once it lands. The focus goes on,
+// with no scroll, to the control now at its place in the header's order - the labels' control,
+// first on the header's last line - never to the page's body (`useFocusHandOff`;
+// dispatch://INFRA-2160, H1).
+test("Enter on Release frees the claim with the focus on the control now at its place, the labels' control", async () => {
+  const agents = spyOn(api, "listAgents").mockResolvedValue([]);
+  const release = spyOn(api, "releaseIssueClaim").mockResolvedValue({
+    ...base,
+    updated_at: "2026-09-24T08:00:00Z",
+  });
+  const { unmount, user } = header({ ...details, claim: sessionClaim });
+  try {
+    const control = await screen.findByRole("button", { name: "Release the claim on CORE-1" });
+    act(() => control.focus());
+    await user.keyboard("{Enter}");
+    await waitFor(() =>
+      expect(screen.queryByRole("button", { name: "Release the claim on CORE-1" })).toBeNull()
+    );
+    expect(release).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("button", { name: "Edit labels" })).toHaveFocus();
+  } finally {
+    unmount();
+    release.mockRestore();
+    agents.mockRestore();
   }
 });
 

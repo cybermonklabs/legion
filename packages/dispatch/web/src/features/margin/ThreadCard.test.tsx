@@ -893,6 +893,47 @@ test("an edit held open by a refused save that ends after the reader moved the f
   }
 });
 
+// Save in a reply's editor, and Ctrl+Enter in its field, end the edit once the save lands, and
+// take the editor away with the focus it holds: the reply's Edit, drawn again in the editor's
+// place, takes the focus back, as after a second Escape over Discard draft? (`useFocusBack`;
+// dispatch://INFRA-2160, S1).
+for (const saves of ["Save", "Ctrl+Enter"] as const) {
+  test(`${saves} in a margin comment's edit composer gives the focus back to the comment's Edit once the save lands`, async () => {
+    const user = userEvent.setup();
+    // This comment is not indexed, so a save carries no block ids.
+    const commentBlocks = spyOn(api, "commentBlocks").mockResolvedValue({
+      blocks: [],
+      indexed: false,
+      item: graphNode({ id: reply.id, issue_key: "CORE-1", kind: "comment" }),
+    });
+    const saved = "First reply, and a second thought";
+    const onEdit = jest.fn(async (): Promise<Comment> => ({ ...reply, body: saved }));
+    const view = renderCard(undefined, { onEdit });
+    const card = screen.getByTestId(`margin-comment-${root.id}`);
+    try {
+      const replyRow = card.querySelector<HTMLElement>("[data-reply]");
+      if (replyRow === null) throw new Error("The card draws no reply.");
+      await user.click(within(replyRow).getByRole("button", { name: "Edit" }));
+      await user.click(within(replyRow).getByRole("textbox", { name: "Edit comment" }));
+      await user.keyboard("{Control>}a{/Control}");
+      await user.paste(saved);
+      if (saves === "Save") {
+        await user.click(within(replyRow).getByRole("button", { name: "Save" }));
+      } else {
+        await user.keyboard("{Control>}{Enter}{/Control}");
+      }
+      await waitFor(() =>
+        expect(within(replyRow).queryByRole("textbox", { name: "Edit comment" })).toBeNull()
+      );
+      expect(onEdit).toHaveBeenCalledWith(reply.id, saved, undefined, keyedAttempt);
+      expect(within(replyRow).getByRole("button", { name: "Edit" })).toHaveFocus();
+    } finally {
+      view.unmount();
+      commentBlocks.mockRestore();
+    }
+  });
+}
+
 test("a terminal suggestion shows its disposition and has no Reopen control", () => {
   const accepted = comment("root-1", "Suggested replacement.", "2026-09-10T00:00:00Z", {
     resolved: true,

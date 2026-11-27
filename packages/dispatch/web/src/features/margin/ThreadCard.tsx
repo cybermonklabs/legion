@@ -458,27 +458,31 @@ export function ThreadCard({
     postDeletion(comment) === null &&
     (editingId === comment.id || heldEdits.some((held) => held.request.edit?.id === comment.id));
   // The comment whose editor a key or a button inside it ended last - a second Escape over
-  // `Discard draft?`, its Discard - and whose Edit takes the focus back once that editor has left
-  // the page, whatever other editor of the card stays open (`useFocusBack`, which reads that
-  // editor alone): the root's Edit stands beside its open editor, and a reply's is drawn again
-  // in the editor's place. Save hands nothing back: its editor stays until the saved words are
-  // read, by when the reader may be elsewhere.
+  // `Discard draft?`, its Discard, and Save or Ctrl+Enter once the save lands (`onSent`) - and
+  // whose Edit takes the focus back once that editor has left the page, whatever other editor of
+  // the card stays open (`useFocusBack`, which reads that editor alone): the root's Edit stands
+  // beside its open editor, and a reply's is drawn again in the editor's place. A saved edit's
+  // editor stays until the saved words are read, and the focus goes back only from the page's
+  // body, where the editor's going left it (`useFocusBack`): a reader who moved the focus on
+  // meanwhile keeps it where they put it.
   const [editHandedBack, setEditHandedBack] = useState<string>();
   const editFocus = useFocusBack(
     threadItems.some((comment) => comment.id === editHandedBack && editing(comment))
   );
+  /** Ends the edit of `comment` with the focus back on its Edit (`editHandedBack`). */
+  const endEdit = (comment: ThreadComment) => {
+    setEditHandedBack(comment.id);
+    editFocus.handBack();
+    setEditingId(undefined);
+  };
   const renderEditor = (comment: ThreadComment) => (
     <MentionComposer
       box="margin-comment-edit"
       edit={{ body: comment.body, id: comment.id }}
       kind="comment"
       mutationKey={[...COMMENT_EDIT_SEND_KEY, comment.id]}
-      onClose={() => {
-        setEditHandedBack(comment.id);
-        editFocus.handBack();
-        setEditingId(undefined);
-      }}
-      onSent={() => setEditingId(undefined)}
+      onClose={() => endEdit(comment)}
+      onSent={() => endEdit(comment)}
       owner={composerOwner(owner)}
       saveEdit={onEdit}
     />

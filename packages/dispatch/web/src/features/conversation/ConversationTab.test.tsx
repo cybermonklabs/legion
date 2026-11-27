@@ -3998,6 +3998,51 @@ test("a second Escape over Discard draft? in a Conversation comment's edit compo
   }
 });
 
+// Save in a comment's edit composer, and Ctrl+Enter in its field, end the edit once the save
+// lands and the comments are read again with the saved words, and take the editor away with the
+// focus it holds: the focus goes back to the comment's Edit, which opened it (`ThreadCard`,
+// `useFocusBack`; dispatch://INFRA-2160, S1).
+for (const saves of ["Save", "Ctrl+Enter"] as const) {
+  test(`${saves} in a Conversation comment's edit composer gives the focus back to the comment's Edit`, async () => {
+    const user = userEvent.setup();
+    const stub = stubLists({
+      comments: [comment("comment-1", { body: "Why is the clock shared?" })],
+    });
+    const saved = "Why is the clock shared, and since when?";
+    const editComment = spyOn(api, "editComment").mockImplementation(async (id, { body }) => {
+      const edited = comment(id, { body, edited_at: "2026-09-10T00:05:00Z" });
+      stub.lists.comments = [edited];
+      return edited;
+    });
+    const queryClient = newQueryClient();
+    queryClient.setQueryData(["whoami"], { kind: "user", login: "alice" });
+    const view = render(tab({ "CORE-1": issueState() }, true, queryClient));
+    try {
+      const card = await screen.findByTestId("margin-comment-comment-1");
+      await user.click(screen.getByRole("button", { name: "Expand thread" }));
+      await user.click(await within(card).findByRole("button", { name: "Edit" }));
+      await user.click(within(card).getByRole("textbox", { name: "Edit comment" }));
+      await user.keyboard("{Control>}a{/Control}");
+      await user.paste(saved);
+      if (saves === "Save") {
+        await user.click(within(card).getByRole("button", { name: "Save" }));
+      } else {
+        await user.keyboard("{Control>}{Enter}{/Control}");
+      }
+      await waitFor(() =>
+        expect(within(card).queryByRole("textbox", { name: "Edit comment" })).toBeNull()
+      );
+      expect(editComment).toHaveBeenCalledWith("comment-1", { body: saved }, keyedAttempt);
+      expect(card).toHaveTextContent(saved);
+      expect(within(card).getByRole("button", { name: "Edit" })).toHaveFocus();
+    } finally {
+      view.unmount();
+      editComment.mockRestore();
+      stub.restore();
+    }
+  });
+}
+
 // A thread Expand thread opened, not the tab's `r`: Escape in its reply box ends the reply and
 // closes the thread, which takes the box away with the focus it holds. The focus goes to the
 // turn's Expand thread, which opened the thread (`CommentTurn`, `useFocusBack`).
