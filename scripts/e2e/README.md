@@ -6675,7 +6675,8 @@ The release's version bump (its "Set release version" step) is not a step: the t
 
 The tarball holds the bytes an in-place pack of the same tree held, but for one kind of line: above each module it inlines, `bun build` writes a `//` comment naming the module's path relative to the directory it builds in, and the run's tree resolves `node_modules` and the other workspace packages through links to the checkout's real paths, so those comments name the same files by a longer path.
 No code, manifest, notice, skill or mode differs.
-Runs in one checkout never wait on each other, and the run's tree goes with its temp directory on every way out.
+Runs in one checkout never wait on each other.
+The run's tree goes with its temp directory on every way out: an error, `SIGHUP`/`SIGINT`/`SIGTERM` (each routed through `exit`), and a reader of its stderr that has gone (the script ignores SIGPIPE, so bash's `Terminated` notice for an interrupted pack cannot kill it before its `EXIT` trap runs).
 
 ## lib/install-plugin-profile.sh
 

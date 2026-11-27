@@ -76,6 +76,10 @@ trap 'rm -rf "$work"' EXIT
 trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
+# A TERM once whoever reads stderr has gone would otherwise leave the run's tree behind: bash writes
+# its Terminated notice for the interrupted pack to the dead stderr, and dies of SIGPIPE before the
+# EXIT trap removes it.
+trap '' PIPE
 
 # The run's tree. .git and .jj are left out: a pack reads no version control, and a link to a
 # worktree's .git file would name a tree that is not this one.
