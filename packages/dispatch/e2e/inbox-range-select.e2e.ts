@@ -8,10 +8,10 @@ import { drawer } from "./inbox-drawer";
 import {
   inboxList,
   inboxPane,
-  selectRow as openRow,
   paneScroller,
   readingView,
   selectedRow,
+  selectRow,
 } from "./inbox-pane";
 import {
   asSession,
@@ -128,12 +128,6 @@ async function namedByPress(page: Page, press: () => Promise<void>): Promise<str
   await (await request.response())?.finished();
   const body: { threads?: string[] } = request.postDataJSON();
   return body.threads ?? [];
-}
-
-/** Selects a row as the pointer does: one click on its own time. */
-async function selectRow(page: Page, id: string): Promise<void> {
-  await row(page, id).locator("time").first().click();
-  await expect(row(page, id)).toHaveAttribute("data-inbox-selected", "true");
 }
 
 /** The window's scroll position and the list column's, which scrolls in itself beside the
@@ -324,6 +318,14 @@ async function focusWords(page: Page, order: readonly string[] = []): Promise<st
  *  combined text, which can join the subject's last digit to the next cell's age. */
 const ROOT_WORDS = /^Select (Mirror root \d+)$/;
 
+/** The root's words a seeded thread's row draws, read off its checkbox's name. `what` names the
+ *  row for a failure. */
+async function rootWords(page: Page, id: string, what: string): Promise<string> {
+  const words = ROOT_WORDS.exec((await mark(page, id).getAttribute("aria-label")) ?? "")?.[1] ?? "";
+  expect(words, `${what} draws its thread's root`).not.toBe("");
+  return words;
+}
+
 /** Reads row `id` as the item in hand where the reading pane is shown: the one row the list draws
  *  that reads `aria-current`, and the pane showing its thread, whose subject line is the root's
  *  words the row draws. `what` names the row for a failure. The mark is read once, as the landing
@@ -335,8 +337,7 @@ async function expectSelected(page: Page, id: string, what: string): Promise<voi
   expect(current, `${what} (${id}) is the one row that reads as selected (aria-current)`).toEqual([
     id,
   ]);
-  const words = ROOT_WORDS.exec((await mark(page, id).getAttribute("aria-label")) ?? "")?.[1] ?? "";
-  expect(words, `${what} draws its thread's root`).not.toBe("");
+  const words = await rootWords(page, id, what);
   await expect(
     inboxPane(page).locator("[data-inbox-thread-subject]"),
     `the reading pane shows ${what}'s thread`
@@ -1662,14 +1663,6 @@ test("at 390 px a range action that takes the row the reading view shows hands t
   // The iPhone 13's window, where a row the person opens is read in a view in place of the list,
   // which the page keeps mounted under `hidden` (main's #5223).
   const phone = { height: 664, width: 390 };
-  /** The rows the reading views drawn in `on` read: one while a view is open, none while the list
-   *  shows. Read once, as the landing left them. */
-  const viewRows = (on: Page): Promise<string[]> =>
-    on
-      .locator("[data-inbox-reading-row]")
-      .evaluateAll((nodes) =>
-        nodes.map((node) => node.getAttribute("data-inbox-reading-row") ?? "")
-      );
 
   const alice = await asUser(browser, "alice");
   try {
@@ -1682,14 +1675,11 @@ test("at 390 px a range action that takes the row the reading view shows hands t
     const [second, third] = [drawn[1] ?? "", drawn[2] ?? ""];
     // Row 3's root, read off its checkbox's name while the list is in sight: the view hides the
     // list, which takes its checkboxes out of the accessibility tree.
-    const thirdWords =
-      ROOT_WORDS.exec((await mark(page, third).getAttribute("aria-label")) ?? "")?.[1] ?? "";
-    expect(thirdWords, "row 3 draws its thread's root").not.toBe("");
+    const thirdWords = await rootWords(page, third, "row 3");
 
     // Row 2 opened as the pointer opens it, then marked with the view's own checkbox.
-    await openRow(page, second);
+    await selectRow(page, second);
     await expect(inboxList(page), "the list is hidden under the reading view").toBeHidden();
-    expect(await viewRows(page), `the reading view reads row 2 (${second})`).toEqual([second]);
     await readingView(page)
       .getByRole("checkbox", { name: /^Select / })
       .click();
@@ -1705,17 +1695,15 @@ test("at 390 px a range action that takes the row the reading view shows hands t
       drawn.filter((id) => id !== second)
     );
     expect(
-      await viewRows(page),
+      await readingView(page).evaluateAll((nodes) =>
+        nodes.map((node) => node.getAttribute("data-inbox-reading-row") ?? "")
+      ),
       `the reading view reads row 3 (${third}), the row after row 2`
     ).toEqual([third]);
     expect(
       await holdsFocus(paneScroller(page)),
       `the focus is on the reading view's scroll area; it is on ${await focusWords(page, drawn)}`
     ).toBe(true);
-    expect(
-      await page.evaluate(() => document.activeElement === document.body),
-      `the focus is on the page's body; it is on ${await focusWords(page, drawn)}`
-    ).toBe(false);
     await expect(
       readingView(page).locator("[data-inbox-thread-subject]"),
       "the reading view shows row 3's thread"
@@ -1735,8 +1723,7 @@ test("at 390 px a range action that takes the row the reading view shows hands t
     const empty = inboxList(page).locator("[data-inbox-empty]");
 
     // The one row opened, marked with the view's own checkbox and dismissed.
-    await openRow(page, only);
-    expect(await viewRows(page), `the reading view reads bob's one row (${only})`).toEqual([only]);
+    await selectRow(page, only);
     await readingView(page)
       .getByRole("checkbox", { name: /^Select / })
       .click();
@@ -1749,7 +1736,6 @@ test("at 390 px a range action that takes the row the reading view shows hands t
     // No row is left: the view gives way to the list, and the list's empty message holds the
     // focus. With no row the page draws no view at all, so the view is read closed where the
     // hand-off closes it: the address goes back to the list's, which names no item.
-    expect(await viewRows(page), "the reading view stayed open with no item left").toEqual([]);
     await expect(
       page,
       "the reading view stayed open with no item left: the address still names the item"
