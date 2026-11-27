@@ -10,10 +10,14 @@ body: |-
   request across a change of parent. A chain stops at its project's boundary, as Dispatch's own
   walk does: a parent of another project is no issue above, so an issue right under one is a root
   of its own, its own architect's, and a child of another project holds no wait of its parent's.
-  Where the copy does not hold an issue's chain up to its top, the chain is unknown: the daemon
-  starts nothing new on it, refuses an architect's call on it with
-  `CHAIN_UNKNOWN`, lists the issue held `chain_unknown` when it has not started, and reads the
-  chain again until it is known. The adoption of a closed tree's members, orphan roots, the stored
+  Where the copy does not hold an issue's chain up to its top, the chain is unknown. On an unknown
+  chain, an issue that holds no admission slot starts nothing. The daemon lists it held
+  `chain_unknown` while it is in Legion's work. A stopped issue that returns to work also starts
+  nothing: its stop gave its slot back. An issue that already holds a slot continues its work.
+  The daemon refuses an architect's call on an unknown chain with `CHAIN_UNKNOWN` and reads the
+  chain again until it is known. The `reparented` notices of a change of parent wait until the
+  new parent's chain is known. They wait even if the issue's work stops before then. The adoption
+  of a closed tree's members, orphan roots, the stored
   ancestry and the hand-over of a lingering tree's children go. This release replaces #5303's
   return of a re-admitted root's members: a root's leave stops only its own claims and its return
   resumes its own phase, so no member waits for its root's re-admission; #5303's
