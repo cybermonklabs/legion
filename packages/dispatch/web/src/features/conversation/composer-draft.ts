@@ -90,6 +90,25 @@ export function seededDraft(
   return writtenInFront(owed, body);
 }
 
+/** What a new reply to `replyTo` starts with: the parties its parent was delivered to, each
+ *  mentioned once, as the links that name them, and the one space after them that a seed ends
+ *  with (`writtenInFront`). The reply's own mentions are its words, and the reader edits them as
+ *  words. A mention the parent was delivered to twice is one party, and the draft they are
+ *  written into is empty, which is what a channel's own seed is written into (`seededDraft`). */
+export function replyPrefill(replyTo: ReplyTarget): Draft {
+  const carried = replyTo.mentions ?? [];
+  const deduplicated = carried.filter(
+    (mention, index) =>
+      carried.findIndex((candidate) => candidate.target === mention.target) === index
+  );
+  return {
+    body: writtenInFront(
+      deduplicated.flatMap((mention) => partyMention(mention.target, mention.title) ?? []),
+      ""
+    ),
+  };
+}
+
 /** A mention the issue page's box wrote into a reply's draft: the party, and the link written for
  *  it (`partyMention`), as its send keeps it (`SentRequest.seeds`). */
 export type SeededMention = { readonly target: string; readonly text: string };
@@ -106,19 +125,6 @@ export function prefillMentions(replyTo: ReplyTarget): readonly SeededMention[] 
     const text = partyMention(mention.target, mention.title);
     return text === undefined ? [] : [{ target: mention.target, text }];
   });
-}
-
-/** What a new reply to `replyTo` starts with: its mentions (`prefillMentions`), as the links that
- *  name them, and the one space after them that a seed ends with (`writtenInFront`). The reply's
- *  own mentions are its words, and the reader edits them as words. The draft they are written
- *  into is empty, which is what a channel's own seed is written into (`seededDraft`). */
-export function replyPrefill(replyTo: ReplyTarget): Draft {
-  return {
-    body: writtenInFront(
-      prefillMentions(replyTo).map((seed) => seed.text),
-      ""
-    ),
-  };
 }
 
 /** What is left of `body`, which `seed` opens, once that seed is taken out: its link as the box
