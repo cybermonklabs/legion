@@ -192,7 +192,7 @@ func CloseWaitDocument(issue Issue) (string, error) {
 		section("Unapproved")
 		fmt.Fprintf(&doc, "A person must approve the current Verification document. Since %s, these checks changed:\n\n", waitTime(wait.Unapproved.Since))
 		for _, check := range wait.Unapproved.Checks {
-			fmt.Fprintf(&doc, "- `%s`\n", check)
+			fmt.Fprintf(&doc, "- %s\n", codeSpan(check))
 		}
 	}
 	if len(wait.Checks) > 0 {
@@ -202,7 +202,7 @@ func CloseWaitDocument(issue Issue) (string, error) {
 			if check.Reason != "" {
 				state += ", " + check.Reason
 			}
-			fmt.Fprintf(&doc, "- `%s` (%s): %s, since %s\n", check.ID, check.When, state, waitTime(check.Since))
+			fmt.Fprintf(&doc, "- %s (%s): %s, since %s\n", codeSpan(check.ID), check.When, state, waitTime(check.Since))
 		}
 	}
 	if production := wait.Production; production != nil {
