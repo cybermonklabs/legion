@@ -57,6 +57,9 @@ var serverReads = map[string]string{
 		"drops the words of every project's keys (readLineWords), as every line did before projects could be private",
 	"parent_status_fix.go:call": "R25's fix of a parent's status runs at boot for no caller: it writes the status the rule owes and " +
 		"answers no one",
+	"system_message.go:postSystemMessage": "Dispatch's outbox posts a system message on an issue with no request, as its own " +
+		"system actor: it answers no caller, and the body names only events of that issue's role, each with a post or a " +
+		"document of that issue, whose readers the issue's own read gates by its project",
 	"event_stream_relay.go:page": "the relay reads one page of the event log for every subscriber at once; at this slice every " +
 		"events subscription is sent every event, as main sends it, and S4 gates each live socket by its own viewer where it " +
 		"sends an event on",

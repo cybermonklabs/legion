@@ -138,6 +138,9 @@ func leakCheckWaited(t *testing.T, output []byte) time.Duration {
 // TestLeakCheckChild is the child of TestTheLeakCheckWaitsForAShutDownServiceAndFailsOneNeverShutDown:
 // it builds one service and leaves it to the end-of-run check as its case says.
 func TestLeakCheckChild(t *testing.T) {
+	// Not parallel: as the child process of
+	// TestTheLeakCheckWaitsForAShutDownServiceAndFailsOneNeverShutDown it writes the package
+	// variable leakCheckHeld, which the end-of-run leak check reads.
 	child := os.Getenv(leakCheckChildEnv)
 	if child == "" {
 		t.Skip(leakCheckChildEnv + " is not set: this test is the child of TestTheLeakCheckWaitsForAShutDownServiceAndFailsOneNeverShutDown")

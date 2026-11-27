@@ -116,7 +116,11 @@ const (
 	// what every such secret minted before the tag existed. The names are short because the
 	// broker's AWS store keeps its annotations as AWS tags, an AWS tag value holds at most 256
 	// characters, and five full scope URLs are longer than that. The tag on a secret of any
-	// other type is refused (ReasonScopesType), since no other minter reads it.
+	// other type is refused (ReasonScopesType), since no other minter reads it. It is in the
+	// fingerprint of every name that mints at it (Secret.ProfileDigest): the secret by its own name
+	// and each profile of it with no google block of its own; so a change of it, the tag added or
+	// taken off among them, ends each grant decided under the old one, which would otherwise mint at
+	// the new scopes at its next release.
 	TagScopes = "scopes"
 	// TagAdmin marks a secret whose grant is an administrator's: "true" is the only value the
 	// loader accepts, and anything else is refused (ReasonAdminMalformed). The broker cannot tell
@@ -739,15 +743,18 @@ type Secret struct {
 	// is not in Version: it tells the judge how to decide requests to come and changes nothing a
 	// live grant may do, so writing it ends no grant.
 	Guidance string
-	// ProfileDigest is the fingerprint of what a name behind the proxy, or a profile, is served as:
+	// ProfileDigest is the fingerprint of what a name is served as, for each name a grant of which
+	// a tag or the profiles file can widen:
 	// a profile's entry's, with the kind it is behind, its source's proxy-narrowed tag and, behind
-	// the proxy, its source's judge seconds (Profiles.servedDigest); a stored secret's served by its
-	// own name behind the proxy, its proxy and proxy-narrowed tags (proxyDigest); and "" for a
-	// stored secret served by its own name behind no proxy. A string, not a pointer, for the same
-	// reason as MaxGrant. A request records it (request_secrets.airlock_digest), and a release ends
-	// a grant whose name's fingerprint moved (requests.Machine's checkRelease), so an edit of one
-	// profile's entry, or a change of the proxy, proxy-narrowed or judge tag it reads, ends the
-	// grants of that name and no others, across a restart too. It is in Version.
+	// the proxy, its source's judge seconds, and its source's scopes tag where it has no google
+	// block of its own (Profiles.servedDigest); a stored secret's served by its own name behind the
+	// proxy, its proxy, proxy-narrowed and scopes tags (proxyDigest); a stored secret's served by
+	// its own name behind no proxy, its scopes tag (scopesDigest); and "" for such a secret with no
+	// scopes tag. A string, not a pointer, for the same reason as MaxGrant. A request records it
+	// (request_secrets.airlock_digest), and a release ends a grant whose name's fingerprint moved
+	// (requests.Machine's checkRelease), so an edit of one profile's entry, or a change of the
+	// proxy, proxy-narrowed, judge or scopes tag it reads, ends the grants of that name and no
+	// others, across a restart too. It is in Version.
 	ProfileDigest string
 	// Profile is the profiles file's entry this secret is served as, and nil for a stored secret
 	// served by its own name. It points into the one Profiles the boot read, which never changes,
@@ -982,6 +989,8 @@ func setOf(profiles Profiles, secrets map[string]Secret, refused map[string]Refu
 // adds one line more, "<Name>\tprofile=<digest>\n" (Secret.ProfileDigest), rather than a field of
 // the line above it, so every line a stored secret served by its own name behind no proxy writes
 // is byte-identical to the one it wrote before profiles existed, and its Version does not shift.
+// Such a secret's own fingerprint, which a scopes tag gives it (scopesDigest), is written nowhere:
+// it holds the scopes tag alone, which the line above holds already.
 // Entries are ascending by the secret's name in the store
 // (the slug) — the exact order Load wrote before NewSet existed, so deployed plain-secret digests
 // do not shift. (Sorting by the uppercased Name would NOT be equivalent: '-' is 0x2D, '_' is
@@ -1031,7 +1040,7 @@ func NewSet(secrets map[string]Secret) *Set {
 		default:
 			fmt.Fprintf(digest, "%s\t%s\t%s\t%s\t%s\t%s%s%s%s%s%s\n", s.secret.Name, s.secret.Owner, s.secret.Tier, s.secret.Source, s.secret.MaxGrant, s.secret.GitHubOwners, requesters, scopes, admin, projectTags, judge)
 		}
-		if s.secret.ProfileDigest != "" {
+		if s.secret.ProfileDigest != "" && (s.secret.Profile != nil || s.secret.Proxy != "") {
 			fmt.Fprintf(digest, "%s\tprofile=%s\n", s.secret.Name, s.secret.ProfileDigest)
 		}
 	}

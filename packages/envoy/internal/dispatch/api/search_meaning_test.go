@@ -334,13 +334,13 @@ func askPartID(t *testing.T, database *store.Store, askID string, position int) 
 	return id
 }
 
-// TestSearchStaysNonDegradedWhileEmbedqueueIsThrottled proves a live
-// query embedding priority over background work: cmd/dispatch wires embedqueue's own Embedder
-// behind embed.RateLimitedEmbedder and never wraps the one api.Deps holds, so a live search
-// request's own query embedding is never paced or blocked by that limiter, however deep into
-// backoff it currently is. This drives that exact scenario with one shared fake embedder whose
-// errFor discriminates by InputType, matching how the two callers actually differ in production
-// (embedqueue always calls with InputDocument, search's embedQuery always calls with
+// TestSearchStaysNonDegradedWhileEmbedqueueIsThrottled proves a live query embedding priority over
+// background work: cmd/dispatch paces every call embedqueue makes (embedqueue.Deps.Paced keeps an
+// embed.RateLimitedEmbedder as the queue's pace) and never wraps the client api.Deps holds, so a
+// live search request's own query embedding is never paced or blocked by that limiter, however
+// deep into backoff it currently is. This drives that exact scenario with one shared fake embedder
+// whose errFor discriminates by InputType, matching how the two callers actually differ in
+// production (embedqueue always calls with InputDocument, search's embedQuery always calls with
 // InputQuery): a background goroutine keeps embedqueue's own ProcessBatch throttled and backing
 // off for the whole test, simulating a backlog saturating the model service's quota for bulk
 // document traffic, while concurrent live search requests keep succeeding non-degraded, because
@@ -376,9 +376,8 @@ func TestSearchStaysNonDegradedWhileEmbedqueueIsThrottled(t *testing.T) {
 
 	bgCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	backgroundEmbedder := embed.NewRateLimitedEmbedder(embedder)
-	floor := backgroundEmbedder.Interval()
-	backgroundDeps := embedqueue.Deps{Store: database, Embedder: backgroundEmbedder}
+	backgroundDeps := embedqueue.Deps{Store: database, Embedder: embedder}.Paced()
+	floor := backgroundDeps.PaceIntervalForTest()
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -399,7 +398,7 @@ func TestSearchStaysNonDegradedWhileEmbedqueueIsThrottled(t *testing.T) {
 			t.Fatal("the background drain stopped before any call of it was throttled")
 		default:
 		}
-		interval := backgroundEmbedder.Interval()
+		interval := backgroundDeps.PaceIntervalForTest()
 		return interval, interval > floor
 	})
 
@@ -1629,6 +1628,7 @@ func TestAProjectScopedSearchAnswersWhenTheFillsProgressRowCannotBeScanned(t *te
 // read that gave up at its lock bound fails with lock_not_available (SQLSTATE 55P03), and one that
 // waited the statement bound out with query_canceled (57014), however loaded the server is.
 func TestAProjectScopedSearchDoesNotWaitOutTheStatementBoundForALockedProgressRow(t *testing.T) {
+	// Not parallel: it swaps the default logger (logtest.SetDefault).
 	const project = "LCKD"
 	handler, database, _, issueKey, commentID := unlabelledFillWindow(t, project)
 	ctx := context.Background()

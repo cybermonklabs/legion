@@ -1338,9 +1338,16 @@ func waitForPersistedUpdates(t *testing.T, service *Service, artifactID string, 
 	}
 }
 
-func waitFor(t *testing.T, timeout time.Duration, description string, condition func() bool) {
+// waitFor waits until condition holds, failing the test naming description. It waits for the
+// fact, not for a span: its one bound is the test binary's deadline less testwait's margin
+// (testwait.Until), so a loaded machine slows the wait and does not fail it. The span a caller
+// passes is not read.
+func waitFor(t *testing.T, _ time.Duration, description string, condition func() bool) {
 	t.Helper()
-	testwait.WithinPolling(t, timeout, 5*time.Millisecond, description, condition)
+	testwait.Until(t, description, func() (bool, bool) {
+		held := condition()
+		return held, held
+	})
 }
 
 // askTree parses markdown and gives its ask blocks the ids named, in document order, repeats
@@ -1662,6 +1669,8 @@ func TestAcceptSuggestionRefusesCodeWithAPipeAfterABackslashInATableCell(t *test
 // repeat as they found it. The upload stores what the base did: the id repair every upload runs
 // keeps the id for the first block in document order.
 func TestWritesBesideALiveRepeatedBlockIDAreTaken(t *testing.T) {
+	// Not parallel: it sets pmdoc's block ID generator, which every parse in the process draws from
+	// (pmdoc.SetBlockIDGenerator in installCounterIDs).
 	const seed = ":::callout{#note}\nOriginal.\n:::\n\n:::callout{kind=\"warning\"}\nCopy.\n:::\n\nThe quick brown fox\n"
 	alice := model.Actor{Kind: "user", ID: "alice"}
 	accept := func(quote, replacement string) func(*testing.T, *Service, string) error {

@@ -45,6 +45,7 @@ func indexItemAsAWriteDoes(t *testing.T, tx pgx.Tx, kind ItemKind, itemID, body,
 // so a target cited twice in one block is one pair and cited from two blocks is two, and an
 // external link writes none.
 func TestItemBlockPairsStartAtTheBlockHoldingEachMention(t *testing.T) {
+	t.Parallel()
 	body := "Intro cites dispatch://CORE-1 and dispatch://CORE-1 again.\n\n" +
 		"See https://example.com.\n\n" +
 		"- dispatch://CORE-2\n- dispatch://CORE-1"
@@ -68,6 +69,7 @@ func TestItemBlockPairsStartAtTheBlockHoldingEachMention(t *testing.T) {
 }
 
 func TestBlockNumberReadsAMintedID(t *testing.T) {
+	t.Parallel()
 	for id, want := range map[string]int{"b1": 1, "b12": 12} {
 		if got, ok := blockNumber(id); !ok || got != want {
 			t.Errorf("blockNumber(%q) = %d, %v, want %d", id, got, ok, want)

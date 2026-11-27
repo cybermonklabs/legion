@@ -84,6 +84,7 @@ func storedRefs(t *testing.T, q Queryer, fromKind, fromID string) []Target {
 // a target that does not exist is. A bare key is an edge to its issue while that issue exists,
 // and no row at all otherwise.
 func TestMentionsStoreTheWholeIdOfAShortReferenceAndTheKeysThatExist(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	tx, err := database.Pool.Begin(ctx)
@@ -166,6 +167,7 @@ func TestMentionsStoreTheWholeIdOfAShortReferenceAndTheKeysThatExist(t *testing.
 // by an item of another document of the project, or by one of an issue, names nothing there and
 // is stored as the text writes it.
 func TestMentionsStoreTheWholeIdOfAProjectDocumentsShortReference(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	tx, err := database.Pool.Begin(ctx)
@@ -242,6 +244,7 @@ func TestMentionsStoreTheWholeIdOfAProjectDocumentsShortReference(t *testing.T) 
 // questions, and one on an issue and no document its issue's spec. A `#id` the text's own
 // document does not declare names nothing and is stored as no edge.
 func TestQuestionReferencesResolveAgainstTheTextsOwnDocument(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	tx, err := database.Pool.Begin(ctx)
@@ -310,6 +313,7 @@ func TestQuestionReferencesResolveAgainstTheTextsOwnDocument(t *testing.T) {
 // Every mention keeps the offset it was written at, the bare ones among them, so a block mention
 // written after a bare key is still paired to the block holding it.
 func TestABareKeyLeavesALaterBlockMentionInItsOwnBlock(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	tx, err := database.Pool.Begin(ctx)
@@ -379,6 +383,7 @@ func rebuildFixture(t *testing.T, database *store.Store, source, body string) st
 // rebuild-refs reads every source with this build's whole grammar, so text stored before it
 // gains the edges of the bare keys, `#id`s and short ids it writes, with no edit.
 func TestRebuildAllReadsTheWholeGrammarOfStoredText(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	source := resolverSource(1)
@@ -442,6 +447,8 @@ func (h *countingHandler) WithGroup(string) slog.Handler      { return h }
 // failure naming the source, and leaves the write storing what the text writes: the short id as
 // written, and no edge for a bare key or a `#id`, which only the database could have resolved.
 func TestAFailedResolverLeavesTheWriteStoringTheTextAsWritten(t *testing.T) {
+	// Not parallel: it replaces the process's default logger (logtest.SetDefault), which
+	// Reader.failed writes to.
 	database := storetest.Open(t)
 	ctx := context.Background()
 	tx, err := database.Pool.Begin(ctx)
@@ -517,6 +524,8 @@ func (*failingRows) Err() error        { return nil }
 // decode fails with a text that names neither its kind nor its id, whose head is the prefix a
 // reference wrote.
 func TestAFailedPrefixReadQuotesNothingAReferenceWrote(t *testing.T) {
+	// Not parallel: it swaps the process's default logger (logtest.Swap, in loggedErrors), which
+	// Reader.failed writes to.
 	ctx := context.Background()
 	databases := []struct {
 		name string
@@ -666,6 +675,8 @@ func requireQuotesNone(t *testing.T, err error, written []string) {
 // none. ResolvePrefix still refuses the shared prefix with ErrPrefixAmbiguous naming both asks,
 // the answer the API's 409 lists.
 func TestAnAmbiguousShortIDReadsAsWrittenAndLogsNothing(t *testing.T) {
+	// Not parallel: it replaces the process's default logger (logtest.SetDefault), and its claim
+	// is that the read logs nothing there.
 	database := storetest.Open(t)
 	ctx := context.Background()
 	tx, err := database.Pool.Begin(ctx)
@@ -731,6 +742,7 @@ func (q countingQueryer) QueryRow(ctx context.Context, sql string, args ...any) 
 // One resolver resolves each distinct (kind, owner, prefix) once however many times the texts it
 // reads write it, so an ask whose question and options cite the same short id asks once.
 func TestAResolverResolvesEachPrefixOnce(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	tx, err := database.Pool.Begin(ctx)

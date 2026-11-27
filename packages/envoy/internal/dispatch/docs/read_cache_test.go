@@ -568,6 +568,8 @@ func TestPanickingColdLoadFailsTheRoomAndRecovers(t *testing.T) {
 }
 
 func TestColdLoadTimeoutIsServiceUnavailable(t *testing.T) {
+	// Not parallel: it writes the package variable coldReadTimeout, 20 ms here, which bounds every
+	// cold read in the process.
 	database := storetest.Open(t)
 	persistence := &timeoutLoadStore{VersionedStore: NewPgVersioned(database), started: make(chan struct{}, 1)}
 	artifactID := createDocument(t, database, "before")

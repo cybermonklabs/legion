@@ -183,6 +183,9 @@ func TestARoomThatFailsWhileItIsLoadingRecovers(t *testing.T) {
 // between the write's commit and its publish, so the publish finds the room loading and waits for
 // that load (Server.Apply), which meets the failure.
 func TestAPublishRefusedByAFailedRoomLeavesTheReplacementAlone(t *testing.T) {
+	// Not parallel: it reads every goroutine's stack in the process (goroutinetest.Traces, in
+	// publishWaitsForALoadingRoom) for a publish parked on a loading room, where another test's
+	// publish would count as its own.
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "")
 	persist := &failRoomDuringLoadStore{

@@ -856,14 +856,15 @@ func TestAFactOfTheResumedSpawnOfAnotherProjectsIssueTouchesNoRowOfThatProject(t
 	}
 }
 
-// A role-holder change of an operator's spawn of another project's issue — its agent's ready, and
-// the pause's stop of it — touches no role_holders_publish row of that issue. That row is keyed by
-// the issue, which the other project's daemon records, so only that daemon's outbox runs it and
-// this daemon's never does (record's DueRows reads the rows of its own project's keys): a row this
+// A role-holder change of an operator's spawn of another project's issue — its agent's ready — and
+// the pause's stop of it touch no role_holders_publish row of that issue. That row is keyed by the
+// issue, which the other project's daemon records, so only that daemon's outbox runs it and this
+// daemon's never does (record's DueRows reads the rows of its own project's keys): a row this
 // daemon writes there is a row of another project's issue, and a write that meets that daemon's
-// own row while that daemon runs it changes the lease that daemon holds. The spawn's stop by the
-// pause is a claim write that changes the role's holder (the store's putClaim), so it is where the
-// pause meets this row.
+// own row while that daemon runs it changes the lease that daemon holds. The pause's stop
+// suspends the spawn as released, which keeps its session and its role (supervise.HoldsRole), so
+// its claim write changes no holder and queues no publication of any issue; the test holds that
+// the stop leaves that daemon's row and its lease as they stood.
 func TestThePausesStopOfASpawnOfAnotherProjectsIssueTouchesNoRoleHoldersRowOfThatProject(t *testing.T) {
 	t.Parallel()
 	r := newPauseDaemonRig(t, nil)
@@ -921,8 +922,8 @@ func TestThePausesStopOfASpawnOfAnotherProjectsIssueTouchesNoRoleHoldersRowOfTha
 	before := r.outboxRows(issue)
 	r.pauseProject()
 	r.awaitState(token, supervise.StateSuspended, "the pause stops the ready spawn")
-	// The stop's claim write and its publication are one transaction, committed before the claim
-	// reads suspended; a second of settling is for nothing else.
+	// The stop's claim write, which changes no holder and so queues no publication, is committed
+	// before the claim reads suspended; a second of settling is for nothing else.
 	time.Sleep(time.Second)
 
 	if n, lease := holderRows(); n != 1 || lease != theirLease {
