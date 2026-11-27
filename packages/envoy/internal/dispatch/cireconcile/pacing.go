@@ -42,9 +42,9 @@ const (
 // arithmetic spreads over the bound is each repository's identity alone, and nine tenths of a
 // bound of a second or more over one request is above the ceiling: the gap would be Pace. A pass
 // at Pace under a short bound can reach no head either and learn nothing again, so every pass
-// after it would end on its bound at Pace and no cycle would close. At the floor a pass reads as
-// fast as this package ever lets it, so it reaches a head wherever the bound holds one head's
-// requests at the floor, learns that head's pages, and the pass after it paces itself by them.
+// after it would end on its bound at Pace and no cycle would close. A pass at the floor, or Pace
+// where Pace is shorter, reaches a head whenever the bound holds one head's requests at that
+// pace. It learns the head's pages, and the next pass paces itself by them.
 // Later, the Reconciler holds the pages of the heads earlier cycles read, and a pass its bound
 // cut in a head's status read keeps that head's other pages (readHead), so the arithmetic can
 // answer faster than Pace there; the floor is then only the faster answer, never a slower one,
@@ -62,13 +62,13 @@ func (r *Reconciler) gap(rows int) time.Duration {
 	}
 	if r.starved {
 		// Never slower than the pause the deployment configured, as the clamp below never is.
-		return min(FastestRequestPace, r.Pace)
+		return r.clampGap(0)
 	}
 	work := r.restWork()
 	if r.known() == 0 && work == 0 {
 		// The first pass knows of no work yet, so it uses the floor capped by Pace. The next pass
 		// knows the real count and paces itself by it.
-		return min(FastestRequestPace, r.Pace)
+		return r.clampGap(0)
 	}
 	expected := work + rows
 	if expected == 0 {
@@ -79,9 +79,13 @@ func (r *Reconciler) gap(rows int) time.Duration {
 		// is the answer to no expected work, as it is above, and the arithmetic below would
 		// divide by zero: nothing recovers a panic of the pass's goroutine, so it would take the
 		// process down.
-		return min(FastestRequestPace, r.Pace)
+		return r.clampGap(0)
 	}
-	return min(max(r.PassTimeout*9/10/time.Duration(expected), FastestRequestPace), r.Pace)
+	return r.clampGap(r.PassTimeout * 9 / 10 / time.Duration(expected))
+}
+
+func (r *Reconciler) clampGap(share time.Duration) time.Duration {
+	return min(max(share, FastestRequestPace), r.Pace)
 }
 
 // restWork is the REST requests the last pass learned this one will make: every head a query
