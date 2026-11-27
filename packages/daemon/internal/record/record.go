@@ -2751,6 +2751,15 @@ type Store interface {
 	// claim (claim = '', a conflict the boot logs) is no session of the tree. It reads a claim's
 	// hold under that claim's own project, so it takes no project, in one statement that reads by
 	// claims_tree, claim_sessions' primary key and claims' own. An empty session is none.
+	//
+	// It answers whose claim stands on an issue, and two readers ask that: the claim release
+	// executor, which may release a left session's claim as the tree's own leftover, and
+	// workflow.Unresumable, which keeps a waiting root whose claim such a session holds. A reader
+	// that asks whether an act carries the tree's authority (sessionStatusWrite,
+	// owningArchitectsMove, the ask mirror's dispatchAskOpened, closer and replyToAsk) reads
+	// SessionClaimsTree instead: a left session works no claim of the tree now, and the session that
+	// replaced it holds that authority, so a status write or an ask of a left session is an
+	// outsider's (dispatch://INFRA-3144/comment/5e38193d-eb7b-4eef-b740-e4b42c1f96ed).
 	SessionOfTree(ctx context.Context, tx pgx.Tx, tree, session string) (TreeSession, error)
 	// SessionClaim is the claim of project that claim_sessions holds the agent session's name for
 	// (kind session), with that claim's tree, role and current session, and whether there is one:
