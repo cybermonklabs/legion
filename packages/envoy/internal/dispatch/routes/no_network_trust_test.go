@@ -123,15 +123,19 @@ func newProcessWalk(t *testing.T) processWalk {
 		}
 		// The origin is answered as itself, so the walk at the outside origin is not the canonical
 		// origin walked again: a sign-in started at a canonical origin comes back to its own
-		// callback, and the outside origin serves no Google sign-in, its start answering 404.
-		start := at.send(t, "GET /auth/start", nil)
-		location := start.Header().Get("Location")
+		// callback, and a browser write at the outside origin naming the canonical one is refused.
 		if at.host == outsideHost {
-			if start.Code != http.StatusNotFound || location != "" {
-				t.Fatalf("GET /auth/start %s answered %d to %q, want the 404 of a path no route serves", at.name, start.Code, location)
+			write := at.send(t, "POST /auth/logout", func(r *http.Request) {
+				r.Header.Set("Origin", "https://"+canonicalHost)
+				r.AddCookie(&http.Cookie{Name: "dsession", Value: "a-session"})
+			})
+			if write.Code != http.StatusForbidden || !strings.Contains(write.Body.String(), "invalid request origin") {
+				t.Fatalf("POST /auth/logout %s naming the canonical origin answered %d %s, want 403 invalid request origin", at.name, write.Code, firstLine(write.Body.String()))
 			}
 			continue
 		}
+		start := at.send(t, "GET /auth/start", nil)
+		location := start.Header().Get("Location")
 		target, err := url.Parse(location)
 		if want := "https://" + at.host + "/auth/callback"; err != nil || target.Query().Get("redirect_uri") != want {
 			t.Fatalf("GET /auth/start %s answered %d to %q, want a sign-in that comes back to %s", at.name, start.Code, location, want)
@@ -262,10 +266,8 @@ func asMethod(method string) func(*http.Request) {
 // TestEveryRouteNeedsACredentialButTheNamedOnes (c-no-route-trusts-the-network): every route the
 // processes serve, but the ones noCredentialNeeded names, sent with no cookie and no Authorization
 // at each origin of the walk, is refused for the credential it does not carry
-// (refusedForNoCredential), with the same refusal at every origin. The one difference allowed is
-// the outside origin's GET /auth/whoami naming its sign-in page's way in, "sign_in":"passkey"
-// (whoamiSignIn), which no other route or origin carries. Sent as HEAD and as OPTIONS, it is
-// refused for the credential too, or answered 404 or 405, and never served.
+// (refusedForNoCredential), with the same refusal at every origin. Sent as HEAD and as OPTIONS, it
+// is refused for the credential too, or answered 404 or 405, and never served.
 func TestEveryRouteNeedsACredentialButTheNamedOnes(t *testing.T) {
 	walk := newProcessWalk(t)
 	first := walk.at[0]
@@ -278,9 +280,6 @@ func TestEveryRouteNeedsACredentialButTheNamedOnes(t *testing.T) {
 			response := at.send(t, route, nil)
 			answer, signIn := withoutSignIn(answerOf(response))
 			wantSignIn := ""
-			if at.host == outsideHost && route == "GET /auth/whoami" {
-				wantSignIn = "passkey"
-			}
 			if !refusedForNoCredential(response) {
 				t.Errorf("%s %s answers a caller with no credential %d %s, want it refused for the credential it does not carry", route, at.name, response.Code, firstLine(response.Body.String()))
 			} else if response.Code != want.Code || answer != answerOf(want) || signIn != wantSignIn {

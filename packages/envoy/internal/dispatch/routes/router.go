@@ -75,9 +75,8 @@ type AppContext struct {
 	Store      *store.Store
 	ServerURL  string
 	// OutsideOrigin is the second origin the server answers at (DISPATCH_OUTSIDE_ORIGIN; empty for
-	// none): a request whose Host is its host is answered as that origin (publicOrigin), except
-	// /auth/start and /auth/callback, which answer 404 there (googleSignInHere), and /auth/whoami
-	// names it after ServerURL's.
+	// none): a request whose Host is its host is answered as that origin (publicOrigin), and
+	// /auth/whoami names it after ServerURL's.
 	OutsideOrigin string
 	// SignIn is the sign-in issuer's authorization code flow and SignInRule who it admits: the
 	// members of a Cognito pool's group, or the people of a Google Workspace domain. A nil SignIn
@@ -487,7 +486,7 @@ func mount(ctx *AppContext, mux api.RouteMux) (*router, api.Background) {
 // ───── auth ─────────────────────────────────────────────────────────────────
 
 // authStart sends the browser to the issuer to sign in, to come back to the canonical origin's
-// callback (callbackURL), the only origin that serves Google's sign-in (googleSignInHere). The
+// callback (callbackURL), whichever origin it started at. The
 // sign-in in flight (its state, its nonce, the page it returns to and when it lapses) travels in
 // the browser's dispatch_oauth_state cookie, signed under a key
 // derived from the current signing key (signOAuthState), and no process keeps it: whichever process
@@ -1149,7 +1148,7 @@ func contentType(path string) string {
 // ───── helpers ──────────────────────────────────────────────────────────────
 
 // callbackURL is the sign-in callback of the canonical origin (publicOrigin with no outside
-// origin), the only origin that serves Google's sign-in (googleSignInHere).
+// origin), the one callback the issuer's client lists.
 func callbackURL(serverURL string, req *http.Request) string {
 	return publicOrigin(serverURL, "", req) + "/auth/callback"
 }

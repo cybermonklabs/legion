@@ -47,23 +47,13 @@ unset NATS_NKEY_SEED NATS_NKEY_SEED_FILE
 # the first request the other answers.
 #
 # Sign-in (DISPATCH_E2E_SIGNIN, e2e/harness-signin.ts): unset (or empty), the
-# server mounts its dev sign-in route (DISPATCH_DEV_SIGNIN=1, below). `oidc` and
-# `google` are the production sign-in instead, at the dev OIDC issuer the harness
-# started (e2e/run-signin-issuer.sh) on DISPATCH_E2E_SIGNIN_ISSUER_PORT: the
-# server takes it as DISPATCH_SIGNIN_ISSUER, with DISPATCH_E2E_SIGNIN_CLIENT_ID
-# and DISPATCH_E2E_SIGNIN_CLIENT_SECRET as its client and DISPATCH_E2E_SIGNING_KEY
-# as DISPATCH_SIGNING_KEY, one key for every process of the run, and no dev
-# sign-in. Under `oidc` it admits the sign-in pool group DISPATCH_E2E_SIGNIN_GROUP.
-# Under `google` the issuer stands in for Google: the server admits the Workspace
-# domain DISPATCH_E2E_SIGNIN_DOMAIN (DISPATCH_SIGNIN_DOMAIN, which
-# DISPATCH_TEST_SIGNIN_DOMAIN_ISSUER=1 lets it take from an issuer other than
-# Google's, under the DISPATCH_TEST_HOOKS=1 below), and no Google account outside
-# it; it answers at a second origin, DISPATCH_OUTSIDE_ORIGIN, the dashboard
-# origin's scheme and port under the host DISPATCH_E2E_SIGNIN_OUTSIDE_HOST; and
-# there, with passkey sign-in on (DISPATCH_SIGNIN_PASSKEY=1), a person from outside
-# the domain whom a project's access list names enrolls a passkey through the
-# owner's link and signs in with it as a restricted member. Every input a mode
-# names is required.
+# server mounts its dev sign-in route (DISPATCH_DEV_SIGNIN=1, below). `oidc` is
+# the production sign-in instead, at the dev OIDC issuer the harness started
+# (e2e/run-signin-issuer.sh) on DISPATCH_E2E_SIGNIN_ISSUER_PORT: the server takes
+# it as DISPATCH_SIGNIN_ISSUER, with DISPATCH_E2E_SIGNIN_CLIENT_ID,
+# DISPATCH_E2E_SIGNIN_CLIENT_SECRET and DISPATCH_E2E_SIGNIN_GROUP as its client
+# and the group it admits, and DISPATCH_E2E_SIGNING_KEY as DISPATCH_SIGNING_KEY,
+# one key for every process of the run, all required, and no dev sign-in.
 case "${DISPATCH_E2E_PROCESSES:-1}" in
   1)
     own_port_variable=DISPATCH_E2E_PORT
@@ -95,23 +85,18 @@ if [ -n "$own_port" ] && [ -n "${DISPATCH_E2E_LISTEN_FROM:-}" ]; then
   echo "run-server.sh: set $own_port_variable or DISPATCH_E2E_LISTEN_FROM, not both" >&2
   exit 2
 fi
-# The dashboard origin, DISPATCH_SERVER_URL, also kept as server_origin, whose scheme and port
-# the sign-in below gives the second origin under google.
 if [ -n "$own_port" ]; then
   listen=()
-  server_origin="${dashboard_origin:-http://127.0.0.1:$own_port}"
-  port_env=(DISPATCH_PORT="$own_port" DISPATCH_SERVER_URL="$server_origin")
+  port_env=(DISPATCH_PORT="$own_port" DISPATCH_SERVER_URL="${dashboard_origin:-http://127.0.0.1:$own_port}")
 else
   listen=(python3 "$held_port" exec)
   if [ -n "${DISPATCH_E2E_LISTEN_FROM:-}" ]; then
     listen+=(--from "$DISPATCH_E2E_LISTEN_FROM")
   fi
-  # held-port.py writes the port it holds in for {port}, in each --env value and in every
-  # argument of the command it execs, the `env` below included.
+  # held-port.py writes the port it holds in for {port}.
   own_origin='http://127.0.0.1:{port}'
-  server_origin="${dashboard_origin:-$own_origin}"
   listen+=(--fd-env DISPATCH_LISTEN_FD
-    --env 'DISPATCH_PORT={port}' --env "DISPATCH_SERVER_URL=$server_origin" --)
+    --env 'DISPATCH_PORT={port}' --env "DISPATCH_SERVER_URL=${dashboard_origin:-$own_origin}" --)
   port_env=()
 fi
 
@@ -146,48 +131,24 @@ case "${DISPATCH_E2E_SIGNIN:-}" in
       signin_secret_env+=(DISPATCH_DEV_SIGNIN_SHARED_KEY="$DISPATCH_E2E_DEV_SIGNIN_SHARED_KEY")
     fi
     ;;
-  oidc | google)
-    : "${DISPATCH_E2E_SIGNIN_ISSUER_PORT:?DISPATCH_E2E_SIGNIN_ISSUER_PORT must name the dev OIDC issuer (e2e/run-signin-issuer.sh) DISPATCH_E2E_SIGNIN=$DISPATCH_E2E_SIGNIN signs in at}"
+  oidc)
+    : "${DISPATCH_E2E_SIGNIN_ISSUER_PORT:?DISPATCH_E2E_SIGNIN_ISSUER_PORT must name the dev OIDC issuer (e2e/run-signin-issuer.sh) DISPATCH_E2E_SIGNIN=oidc signs in at}"
     : "${DISPATCH_E2E_SIGNIN_CLIENT_ID:?DISPATCH_E2E_SIGNIN_CLIENT_ID must name the Dispatch client at the dev OIDC issuer}"
     : "${DISPATCH_E2E_SIGNIN_CLIENT_SECRET:?DISPATCH_E2E_SIGNIN_CLIENT_SECRET must give the secret of that client}"
+    : "${DISPATCH_E2E_SIGNIN_GROUP:?DISPATCH_E2E_SIGNIN_GROUP must name the sign-in pool group the server admits}"
+    : "${DISPATCH_E2E_SIGNING_KEY:?DISPATCH_E2E_SIGNING_KEY must give every process of DISPATCH_E2E_SIGNIN=oidc one cookie key}"
     signin_env=(
       DISPATCH_SIGNIN_ISSUER="http://127.0.0.1:$DISPATCH_E2E_SIGNIN_ISSUER_PORT"
       DISPATCH_SIGNIN_CLIENT_ID="$DISPATCH_E2E_SIGNIN_CLIENT_ID"
+      DISPATCH_SIGNIN_GROUP="$DISPATCH_E2E_SIGNIN_GROUP"
     )
     signin_secret_env=(
       DISPATCH_SIGNIN_CLIENT_SECRET="$DISPATCH_E2E_SIGNIN_CLIENT_SECRET"
+      DISPATCH_SIGNING_KEY="$DISPATCH_E2E_SIGNING_KEY"
     )
-    case "$DISPATCH_E2E_SIGNIN" in
-      oidc)
-        : "${DISPATCH_E2E_SIGNIN_GROUP:?DISPATCH_E2E_SIGNIN_GROUP must name the sign-in pool group the server admits}"
-        signin_env+=(DISPATCH_SIGNIN_GROUP="$DISPATCH_E2E_SIGNIN_GROUP")
-        ;;
-      google)
-        : "${DISPATCH_E2E_SIGNIN_DOMAIN:?DISPATCH_E2E_SIGNIN_DOMAIN must name the Google Workspace domain the server admits}"
-        : "${DISPATCH_E2E_SIGNIN_OUTSIDE_HOST:?DISPATCH_E2E_SIGNIN_OUTSIDE_HOST must name the host of the second origin the server answers at}"
-        # The second origin has the dashboard origin's scheme and port: the round-robin proxy's
-        # port in two-process mode, or `{port}` on a held one, which held-port.py writes in.
-        # Passkey sign-in needs DISPATCH_TRUSTED_PROXY_RANGES, the front doors whose
-        # X-Forwarded-For its begins' bound reads. The harness has none: each page talks to the
-        # server from loopback, or through the round-robin proxy, which writes no X-Forwarded-For.
-        # So the range is TEST-NET-1 (RFC 5737), where no peer of the harness is, and each begin
-        # is bounded by its connection's own address.
-        signin_env+=(
-          DISPATCH_SIGNIN_DOMAIN="$DISPATCH_E2E_SIGNIN_DOMAIN"
-          DISPATCH_SIGNIN_PASSKEY=1
-          DISPATCH_TRUSTED_PROXY_RANGES=192.0.2.0/24
-          DISPATCH_TEST_SIGNIN_DOMAIN_ISSUER=1
-          DISPATCH_OUTSIDE_ORIGIN="${server_origin%%://*}://$DISPATCH_E2E_SIGNIN_OUTSIDE_HOST:${server_origin##*:}"
-        )
-        ;;
-    esac
-    # Asked for after each mode's own inputs, so a run that also lacks one of those is refused
-    # naming that one.
-    : "${DISPATCH_E2E_SIGNING_KEY:?DISPATCH_E2E_SIGNING_KEY must give every process of DISPATCH_E2E_SIGNIN=$DISPATCH_E2E_SIGNIN one cookie key}"
-    signin_secret_env+=(DISPATCH_SIGNING_KEY="$DISPATCH_E2E_SIGNING_KEY")
     ;;
   *)
-    echo "DISPATCH_E2E_SIGNIN must be oidc, google or unset, not '$DISPATCH_E2E_SIGNIN'" >&2
+    echo "DISPATCH_E2E_SIGNIN must be oidc or unset, not '$DISPATCH_E2E_SIGNIN'" >&2
     exit 1
     ;;
 esac
@@ -383,9 +344,9 @@ fi
 # (DISPATCH_E2E_EMBEDDER=fake), whose own rows read back the calls the server made. The default
 # follows that build rather than making each of them say it twice, and for the dev embedder it
 # follows the build rather than the request for it, since the server reads that one beside dev
-# sign-in alone: a run that asks for it under DISPATCH_E2E_SIGNIN=oidc or google gets no
-# embedder, and defaulting on the request there would leave it building Bedrock's client on the
-# file store's static keys, which is the one thing this setting exists to stop.
+# sign-in alone: a run that asks for it under DISPATCH_E2E_SIGNIN=oidc gets no embedder, and
+# defaulting on the request there would leave it building Bedrock's client on the file store's
+# static keys, which is the one thing this setting exists to stop.
 if [ "$dev_embedder" = "1" ] || [ "$fake_embedder" = "1" ]; then
   embedder_off="${DISPATCH_TEST_EMBEDDER_OFF:-0}"
 else
@@ -450,18 +411,16 @@ done
 # (DISPATCH_DEV_SIGNIN=1) with a signing key it generates for this process
 # alone, or in two-process mode derives from the shared key above, so no
 # signing key is passed and nothing reaches the caller's persistent data dir;
-# under DISPATCH_E2E_SIGNIN=oidc or google it mints it at /auth/callback, signed
-# with the run's DISPATCH_SIGNING_KEY, which keeps the data dir out of it too.
+# under DISPATCH_E2E_SIGNIN=oidc it mints it at /auth/callback, signed with the
+# run's DISPATCH_SIGNING_KEY, which keeps the data dir out of it too.
 # DISPATCH_INSECURE_COOKIE=1 keeps the cookie usable over plain HTTP in every
 # engine. DISPATCH_SERVER_URL is the dashboard origin above,
 # http://127.0.0.1:<port> of the port the server serves on, or in two-process
 # mode the round-robin proxy's: it is the origin the CSRF guard compares writes
 # against, the only Host the router serves under dev sign-in, the origin of the
-# sign-in's /auth/callback, and the Playwright config's baseURL. Under google
-# DISPATCH_OUTSIDE_ORIGIN is the second one, and a request whose Host is its host
-# is answered as that origin: the Origin its writes must carry is that origin's,
-# and it serves no Google sign-in. Dev sign-in also refuses a DATABASE_URL whose host is not
-# loopback or a unix socket, and any DISPATCH_SIGNIN_* setting.
+# sign-in's /auth/callback, and the Playwright config's baseURL. Dev sign-in
+# also refuses a DATABASE_URL whose host is not loopback or a unix socket, and
+# any DISPATCH_SIGNIN_* setting.
 app_pem="$(openssl genrsa 2048 2>/dev/null)"
 
 cd "$(dirname "$0")/../../envoy"

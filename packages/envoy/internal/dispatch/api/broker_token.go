@@ -59,20 +59,12 @@ func (s *server) decideBrokerToken(handler http.HandlerFunc) http.HandlerFunc {
 // proof that opened the connection, and that proof is spent: checking it again would be the
 // replay it looks like and would close a sound socket on its first heartbeat. It authenticated
 // the upgrade, so what is left to ask is whether the broker still holds the token live, which is
-// ciphertoken.Verifier.Live, and, for a token naming a person, whether that person may still act
-// and the token's account is still theirs (brokerPersonAdmitted), as every request under the
-// token asks: so a socket a replaced account's broker token opened closes at its next heartbeat
-// after the replacing sign-in commits. Then, as brokerTokenActor, a held introspection answer
-// (ciphertoken.Caller.Held) is 401 MEMBERSHIP_HELD (brokerTokenHeld), so a socket closes at its
-// next heartbeat after the broker answers its person held, and a not-held answer past its deadline
-// (ciphertoken.Verifier.Lapsed) is 503 BROKER_UNAVAILABLE, so a socket closes at its next heartbeat
-// after that deadline. It answers the person the token names as the caller's owner,
-// and, as the caller's viewer, only whether that person is a restricted member, which its admission
-// read in its one statement (broker true: a broker-issued token names its one project, or none,
-// for its whole life, so no grant is compared). The heartbeat holds the connection to that
-// (memberKindPerson, personRestricted), with no read of its own, so a socket a demoted member's
-// broker token opened closes too. A token naming no person, a read-only one among them, answers
-// no caller. Nothing is admitted through this, only kept.
+// ciphertoken.Verifier.Live. It answers the person the token names as the caller's owner, and the
+// heartbeat reads whether that person is a restricted member (memberKindPerson,
+// personRestricted), so a socket a demoted member's broker token opened closes too (broker true:
+// a broker-issued token names its one project, or none, for its whole life, so no grant is
+// compared). A token naming no person, a read-only one among them, answers no caller. Nothing is
+// admitted through this, only kept.
 func (s *server) callerStillResolves(r *http.Request) (caller model.Actor, broker bool, err error) {
 	if _, presented := ciphertoken.Presented(r); presented {
 		if s.deps.BrokerTokens == nil {

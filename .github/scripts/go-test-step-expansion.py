@@ -114,8 +114,7 @@ How it reads a step:
     `include`, an `exclude` or a matrix an expression computes is refused, as is a key no row
     has;
   * a step whose run: is the path of a script AUDITED_SCRIPTS names
-    (`packages/envoy/scripts/database-skips.sh`, then `packages/envoy/scripts/backend-count.sh` and
-    `packages/envoy/scripts/named-tests.sh`), alone
+    (`packages/envoy/scripts/database-skips.sh` and `packages/envoy/scripts/backend-count.sh`), alone
     or followed by one of the argument lists
     its entry reads, is read as the `go test` command that entry gives for those arguments, in
     the module it names. A step whose run: holds that script's file name anywhere else, or with
@@ -387,23 +386,11 @@ BACKEND_COUNT_TESTS = (
     "TestSettingsNameTheGoogleExchangeAudienceOnEitherStore",
 )
 
-# The tests envoy-go's "Test the leaver hold's real-time bounds" names, in the order its run:
-# passes them to named-tests.sh; ci_job_reads.LEAVER_BOUND_TESTS, which that run: and the unit
-# step's skip of them are built from, holds the same names. A step whose arguments differ from
-# these is one this script refuses, which go-test-step-expansion.test.sh's step-reader case fails on.
-LEAVER_BOUND_TESTS = (
-    "TestIAPLeaverHoldThroughTheRealBroker",
-    "TestLeaverHoldBound",
-    "TestLeaverHoldBoundByThePass",
-    "TestLeaverHoldRelease",
-)
-
 # envoy-go's unit step's -skip and --module-except, as ci_job_reads.UNIT_TEST_RUN writes them: the
-# web display fixture's two tests, BACKEND_COUNT_TESTS and LEAVER_BOUND_TESTS, and the race lane's
-# packages but those whose skips the step counts, the text checks, internal/integration and the
-# packages envoy-go-build runs.
-UNIT_SKIP = ("'^(TestEverySecretFormNamesTheSourceItUses|TestIAPLeaverHoldThroughTheRealBroker|TestLeaverHoldBound|"
-             "TestLeaverHoldBoundByThePass|TestLeaverHoldRelease|TestNoSecretFormAsksTheBrokerForACredential|"
+# web display fixture's two tests and BACKEND_COUNT_TESTS, and the race lane's packages but those
+# whose skips the step counts, the text checks, internal/integration and the packages
+# envoy-go-build runs.
+UNIT_SKIP = ("'^(TestEverySecretFormNamesTheSourceItUses|TestNoSecretFormAsksTheBrokerForACredential|"
              "TestSettingsNameTheGoogleExchangeAudienceOnEitherStore|TestTheChainSkipsAbsenceAndStopsOnABrokenSource|"
              "TestTheWebFixtureFindsItsFilesFromAnyDirectory|TestUseCommandOutsideASessionReachesTheMachineSource|"
              "TestWebDisplayFixture)$'")
@@ -470,19 +457,6 @@ AUDITED_SCRIPTS = {
             "run": "go list ./... | grep -Ev '/internal/textcheck$' | xargs go test -count=1 -race",
         },
         sha256="3e9946d3482859bdab444ee99341955f982e70e86cb6e93c2138040cd015753b",
-    ),
-    # It moves into packages/envoy (`cd "$(dirname "$0")/.."`) and runs one `go test -json
-    # -count=1 -timeout D -run '^(TEST|…)$'` over the packages before its `--`, D its `--timeout`
-    # (15m without one) and the -run built from the test names after the `--` in their order, then
-    # counts each test's top-level runs and passes. It reads no variable. envoy-go's leaver hold
-    # step passes the argument list below.
-    "packages/envoy/scripts/named-tests.sh": AuditedScript(
-        module="packages/envoy",
-        commands={
-            "--timeout 15m ./cmd/dispatch/ -- " + " ".join(LEAVER_BOUND_TESTS):
-                f"go test -json -count=1 -timeout 15m -run '^({'|'.join(LEAVER_BOUND_TESTS)})$' ./cmd/dispatch/",
-        },
-        sha256="0e7100736f906ada7d43d42a1742da9633c726d32d6f17cdc88a688b13a81d82",
     ),
 }
 # A variable a step sets before its command, as the steps write it: GODEBUG=checkfinalizers=1.

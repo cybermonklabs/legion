@@ -38,9 +38,9 @@
  *  In two-process mode (`e2e/harness-processes.ts`) both processes must answer, each asked pinned
  *  rather than whichever the round-robin proxy picks, and a person signed in on A must be signed
  *  in on B: without one cookie key (run-server.sh's DISPATCH_DEV_SIGNIN_SHARED_KEY) every page
- *  would sign its person out at the first request B answers. Under DISPATCH_E2E_SIGNIN=oidc or
- *  google (`e2e/harness-signin.ts`) the servers have no dev sign-in to check that with; there the
- *  specs each mode runs sign their people in through the issuer and ask who they are.
+ *  would sign its person out at the first request B answers. Under DISPATCH_E2E_SIGNIN=oidc
+ *  (`e2e/harness-signin.ts`) the servers have no dev sign-in to check that with; there the one
+ *  spec it runs signs a person in through the issuer and asks both processes who they are.
  */
 import { existsSync } from "node:fs";
 import { chromium, type FullConfig, type FullProject, firefox, webkit } from "@playwright/test";
@@ -225,7 +225,6 @@ export default async function globalSetup(config: FullConfig): Promise<void> {
     env: process.env,
     processes: harnessProcessCount,
     projects: stubProjectNames,
-    signIn: harnessSignIn,
   });
   // The stubbed layer alone returns first, before the refusal below: it reaches no server, no
   // database and no listener of this harness, so no number of workers can make two of its rows

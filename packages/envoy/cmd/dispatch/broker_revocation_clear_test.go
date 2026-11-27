@@ -11,9 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
-	"time"
 
-	"github.com/sjawhar/envoy/internal/ciphertoken/ciphertokentest"
 	"github.com/sjawhar/envoy/internal/dispatch/api"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -100,12 +98,8 @@ func runClearBrokerRevocation(t *testing.T, database *store.Store, args ...strin
 // the first holder's revocation is
 // owed again under generation 2. The command given what the operator's list printed settles
 // nothing then, exits 1 and says so; given the generations owed now it settles them, without
-// telling the broker anything. A broker token of the address recording no account, its machine
-// login made before the third holder's sign-in recorded its account, is refused 401
-// BROKER_TOKEN_RECORDS_NO_ACCOUNT while they are owed and still once they are cleared: the clear
-// changes nothing Dispatch admits, which holds each token to its own account or creation time.
-// Listed again it finds nothing owed and exits 1, and it exits 2 for anything but one address and
-// well-formed names.
+// telling the broker anything. Listed again it finds nothing owed and exits 1, and it exits 2 for
+// anything but one address and well-formed names.
 func TestClearBrokerRevocationSettlesOnlyWhatTheOperatorSaw(t *testing.T) {
 	s := newOutsideSignIn(t, nil)
 	broker := newFakeBroker(t)
@@ -140,12 +134,6 @@ func TestClearBrokerRevocationSettlesOnlyWhatTheOperatorSaw(t *testing.T) {
 		t.Fatalf("after a clear of the generation the operator saw, the list of %s answered exit %d, want %s:1 and %s:2 both still owed:\n%s",
 			reassignedEmail, code, secondHolder, firstHolder, out)
 	}
-	machine := ciphertokentest.NewCaller(t)
-	const machineToken = "token-of-a-machine-recording-no-account"
-	broker.holds(&fakeCredential{id: "login-unnamed", person: reassignedEmail, tokens: []string{machineToken}, createdAt: time.Now().Add(-time.Hour)}, machine)
-	requireBrokerTokenRecordsNoAccount(t, "GET /api/v1/whoami with a broker token recording no account made before the recording, the revocations owed",
-		brokerTokenRequest(t, handler, machine, http.MethodGet, "/api/v1/whoami", "", machineToken))
-
 	code, out = runClearBrokerRevocation(t, s.database, reassignedEmail, secondHolder+":1", firstHolder+":2")
 	if code != 0 || !strings.Contains(out, reassignedEmail+" "+secondHolder+":1 cleared") || !strings.Contains(out, reassignedEmail+" "+firstHolder+":2 cleared") {
 		t.Fatalf("clear-broker-revocation of the generations owed now: exit %d, want 0 and both cleared:\n%s", code, out)
@@ -156,9 +144,6 @@ func TestClearBrokerRevocationSettlesOnlyWhatTheOperatorSaw(t *testing.T) {
 	if got := broker.calls(); len(got) != 0 {
 		t.Fatalf("clear-broker-revocation told the broker %q, want nothing: it settles without the broker", got)
 	}
-	s.settledAgo(t, reassignedEmail, time.Hour)
-	requireBrokerTokenRecordsNoAccount(t, "GET /api/v1/whoami with the broker token recording no account, the revocations cleared an hour ago",
-		brokerTokenRequest(t, handler, machine, http.MethodGet, "/api/v1/whoami", "", machineToken))
 
 	if code, out := runClearBrokerRevocation(t, s.database, reassignedEmail); code != 1 || !strings.Contains(out, "no broker revocation of "+reassignedEmail+" is owed") {
 		t.Fatalf("clear-broker-revocation listing an address with nothing owed: exit %d, want 1 and nothing owed named:\n%s", code, out)

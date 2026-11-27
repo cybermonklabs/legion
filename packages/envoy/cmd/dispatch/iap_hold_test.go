@@ -150,32 +150,27 @@ func wantAnswer(t *testing.T, what string, response *httptest.ResponseRecorder, 
 	}
 }
 
-// The IAP refusals of a personal token (api.personalTokenHeld): a Directory hold in the
-// Directory's words, and an owner no Active answer confirmed in 24 hours unavailable.
-const (
-	iapHeldText        = "Google's Workspace Directory no longer confirms this token's owner; the token works again once it does"
-	iapUnavailableText = "whether this token's owner may still act could not be read; try again in a minute"
-)
-
 // TestIAPReleaseNeedsNoAssertion (c-iap-directory): under IAP a held person's dsp_ token is served
 // again after the membership pass's Active outcome, with no request from the person. The person
 // mints a token through IAP, the Directory answers their account active, then suspended, then
 // active again; between the last two passes the person sends nothing.
 //
-// Control: a pass that skips held rows; the hold stays, and the token is still refused.
+// Control: a pass that skips held rows; the hold stays, and the test fails naming it.
 func TestIAPReleaseNeedsNoAssertion(t *testing.T) {
 	r := newIAPHoldRig(t)
 	r.directory(false)
 	token := r.mintToken()
 	wantAnswer(t, "the person's token, their account active", r.use(token), http.StatusOK, "", "")
-	// The reader the boot built signs through DISPATCH_DIRECTORY_ACCOUNT for DISPATCH_DIRECTORY_ADMIN.
-	if signs := r.google.Signs(); len(signs) == 0 || signs[0].Principal != directoryCheckSigner || signs[0].Subject != directoryCheckAdmin {
-		t.Fatalf("the token's Directory check asked signJwt %+v; want it on %s for %s, the boot's two settings", signs, directoryCheckSigner, directoryCheckAdmin)
-	}
 
 	r.directory(true)
 	r.pass()
-	wantAnswer(t, "the person's token once the pass finds their account suspended", r.use(token), http.StatusUnauthorized, "MEMBERSHIP_HELD", iapHeldText)
+	// The reader the boot built signs through DISPATCH_DIRECTORY_ACCOUNT for DISPATCH_DIRECTORY_ADMIN.
+	if signs := r.google.Signs(); len(signs) == 0 || signs[0].Principal != directoryCheckSigner || signs[0].Subject != directoryCheckAdmin {
+		t.Fatalf("the pass's Directory check asked signJwt %+v; want it on %s for %s, the boot's two settings", signs, directoryCheckSigner, directoryCheckAdmin)
+	}
+	if held := r.heldSince(); held == nil {
+		t.Fatal("the pass did not hold the person whose account is suspended")
+	}
 
 	r.directory(false)
 	r.pass()
@@ -187,21 +182,20 @@ func TestIAPReleaseNeedsNoAssertion(t *testing.T) {
 
 // TestIAPAssertionAloneReleasesNothing (c-iap-directory): under IAP a valid assertion of a held
 // person, on a read and on a write, releases nothing: IAP's sign-in records the person and nothing
-// more, so the hold Directory recorded stands and the person's dsp_ token stays refused.
+// more, so the hold Directory recorded stands.
 //
-// Control: let an IAP assertion release a hold (an IAP sign-in that clears held_since); the token
-// is served after the assertions, and the test fails.
+// Control: let an IAP assertion release a hold (an IAP sign-in that clears held_since); the row
+// reads released after the assertions, and the test fails.
 func TestIAPAssertionAloneReleasesNothing(t *testing.T) {
 	r := newIAPHoldRig(t)
 	r.directory(false)
-	token := r.mintToken()
+	r.mintToken()
 	r.directory(true)
 	r.pass()
 	held := r.heldSince()
 	if held == nil {
 		t.Fatal("the pass did not hold the person whose account is suspended")
 	}
-	wantAnswer(t, "the held person's token", r.use(token), http.StatusUnauthorized, "MEMBERSHIP_HELD", iapHeldText)
 
 	if whoami := r.browser(http.MethodGet, "/auth/whoami", ""); whoami.Code != http.StatusOK {
 		t.Fatalf("GET /auth/whoami with the held person's valid assertion answered %d %s, want 200: IAP admits them", whoami.Code, whoami.Body.String())
@@ -210,45 +204,6 @@ func TestIAPAssertionAloneReleasesNothing(t *testing.T) {
 	if after := r.heldSince(); after == nil || !after.Equal(*held) {
 		t.Fatalf("the held person's row after two valid assertions is held since %v; want %s, as before", after, held)
 	}
-	wantAnswer(t, "the held person's token after their valid assertions", r.use(token), http.StatusUnauthorized, "MEMBERSHIP_HELD", iapHeldText)
-}
-
-// TestIAPPersonalTokenFollowsTheDirectory (c-iap-directory, K11): under IAP a personal token's owner
-// has no refresh token, so the token asks Standing at every use (api.personalTokenHeld), and its
-// Directory deadline decides it while the Directory fails: served just before not_held_until, 503
-// IDENTITY_UNAVAILABLE at it and after it, never 401 MEMBERSHIP_HELD. A hold the Directory recorded
-// is 401 MEMBERSHIP_HELD in the Directory's words, also after a valid IAP assertion.
-//
-// Control: put the fast path for an owner with no stored refresh token back ahead of the read of
-// Standing; the token is served at and after its deadline, and the test fails.
-func TestIAPPersonalTokenFollowsTheDirectory(t *testing.T) {
-	r := newIAPHoldRig(t)
-	r.directory(false)
-	token := r.mintToken()
-	wantAnswer(t, "the token, its owner's account active", r.use(token), http.StatusOK, "", "")
-	var stored bool
-	if err := r.database.Pool.QueryRow(context.Background(), `select refresh_token is not null from people where email = $1`, iapPerson).Scan(&stored); err != nil || stored {
-		t.Fatalf("the IAP owner's row stores a refresh token %t (%v); want none", stored, err)
-	}
-
-	// The Directory fails from here on, and the owner's last Active answer is two hours old.
-	r.google.AnswerUser(iapPerson, directorytest.Answer{Status: http.StatusInternalServerError, Body: `{"error":{"code":500}}`})
-	deadline := func(at string) {
-		r.exec(`update people set directory_confirmed_at = now() - interval '2 hours', not_held_until = `+at+` where email = $1`, iapPerson)
-	}
-	deadline(`clock_timestamp() + interval '30 seconds'`)
-	wantAnswer(t, "the token just before its owner's deadline", r.use(token), http.StatusOK, "", "")
-	deadline(`clock_timestamp()`)
-	wantAnswer(t, "the token at its owner's deadline", r.use(token), http.StatusServiceUnavailable, "IDENTITY_UNAVAILABLE", iapUnavailableText)
-	deadline(`now() - interval '1 minute'`)
-	wantAnswer(t, "the token after its owner's deadline", r.use(token), http.StatusServiceUnavailable, "IDENTITY_UNAVAILABLE", iapUnavailableText)
-
-	r.directory(true)
-	r.pass()
-	if whoami := r.browser(http.MethodGet, "/auth/whoami", ""); whoami.Code != http.StatusOK {
-		t.Fatalf("GET /auth/whoami with the held owner's valid assertion answered %d, want 200", whoami.Code)
-	}
-	wantAnswer(t, "the token of an owner the Directory holds, after their valid assertion", r.use(token), http.StatusUnauthorized, "MEMBERSHIP_HELD", iapHeldText)
 }
 
 // TestIAPRecreatedAddressConfirmsThroughTheRoutersCheck: under IAP, the Membership the router's
@@ -269,7 +224,9 @@ func TestIAPRecreatedAddressConfirmsThroughTheRoutersCheck(t *testing.T) {
 
 	r.google.SetUser(iapPerson, directorytest.User{ID: "u-person-2", PrimaryEmail: iapPerson})
 	r.pass()
-	wantAnswer(t, "the earlier person's token once the address answers another account", r.use(earlier), http.StatusUnauthorized, "MEMBERSHIP_HELD", iapHeldText)
+	if held := r.heldSince(); held == nil {
+		t.Fatal("the pass did not hold the row once the address answered another account, while the earlier person's token is unrevoked")
+	}
 
 	r.exec(`update agent_tokens set revoked_at = now() where canonical_login(owner) = $1 and revoked_at is null`, iapPerson)
 	r.pass()

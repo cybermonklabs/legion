@@ -166,8 +166,7 @@ type Standing struct {
 // Unavailable reports an answer under IAP identity that is neither held nor served: no Active
 // Directory answer is younger than 24 hours. Standing writes it as NotHeldUntil equal to AsOf, and
 // a not-held answer always carries a NotHeldUntil later than its AsOf, so it is judged on the
-// database's clock, as every confirmation is. A personal token is then 503 IDENTITY_UNAVAILABLE,
-// never served and never 401 MEMBERSHIP_HELD.
+// database's clock, as every confirmation is.
 func (s Standing) Unavailable() bool {
 	return !s.Held && !s.NotHeldUntil.IsZero() && !s.NotHeldUntil.After(s.AsOf)
 }

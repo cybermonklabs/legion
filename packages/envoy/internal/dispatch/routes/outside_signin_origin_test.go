@@ -5,8 +5,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -47,20 +45,11 @@ func newOriginRig(t *testing.T, rule identity.SignInRule, outside string) *signI
 	return rig
 }
 
-// Google's sign-in starts at the canonical origin alone: on the outside origin's Host, in any case,
-// GET /auth/start and GET /auth/callback answer the 404 a path no route serves answers, with no
-// state cookie, though this router has no passkey sign-in; on the canonical Host the start comes
-// back to the canonical callback and asks Google for hd, the domain whose people alone sign in with
-// Google. With no outside origin, the canonical Host's redirect is byte for byte today's.
+// Google's sign-in starts at the canonical origin: on the canonical Host the start comes back to
+// the canonical callback and asks Google for hd, the domain whose people alone sign in with Google.
+// With no outside origin, the canonical Host's redirect is byte for byte today's.
 func TestGoogleSignInStartsAtTheCanonicalOriginAlone(t *testing.T) {
 	rig := newOriginRig(t, outsideRuleListingEveryone(), outsideOrigin)
-	for _, target := range []string{"http://outside.test/auth/start", "http://OUTSIDE.test/auth/start", "http://outside.test/auth/callback?code=c&state=s"} {
-		response := httptest.NewRecorder()
-		rig.handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, target, nil))
-		if response.Code != http.StatusNotFound || len(response.Result().Cookies()) != 0 {
-			t.Errorf("GET %s: %d %v %s, want the 404 of a path no route serves, with no cookie", target, response.Code, response.Header(), response.Body.String())
-		}
-	}
 	location, _ := rig.start(t, "http://canon.test/auth/start")
 	if got := location.Query().Get("redirect_uri"); got != canonicalOrigin+"/auth/callback" {
 		t.Errorf("GET http://canon.test/auth/start: redirect_uri %q, want %q", got, canonicalOrigin+"/auth/callback")
@@ -83,8 +72,7 @@ func TestGoogleSignInStartsAtTheCanonicalOriginAlone(t *testing.T) {
 // A browser write carrying a session cookie passes the origin check only when its Origin is the
 // origin of its own Host: the outside origin on the outside Host (in any case), the canonical
 // origin on the canonical Host, and nothing across them or from elsewhere. The write is a sign-out,
-// so each case signs in afresh. A browser holds a host's cookie under that origin's name, which at
-// the outside origin is `__Host-dsession` (the rig is Secure), so the session is sent there so.
+// so each case signs in afresh.
 func TestOutsideSignInCookieOriginCheckTakesEachOriginOnItsOwnHost(t *testing.T) {
 	rig := newOriginRig(t, outsideRuleListingEveryone(), outsideOrigin)
 	for _, test := range []struct {
@@ -101,9 +89,6 @@ func TestOutsideSignInCookieOriginCheckTakesEachOriginOnItsOwnHost(t *testing.T)
 		cookie := sessionCookie(rig.signIn(t, googleClaims("google-subject")))
 		if cookie == nil {
 			t.Fatal("the sign-in issued no session cookie")
-		}
-		if !strings.EqualFold(test.host, "canon.test") {
-			cookie = &http.Cookie{Name: "__Host-dsession", Value: cookie.Value}
 		}
 		request := httptest.NewRequest(http.MethodPost, "http://"+test.host+"/auth/logout", nil)
 		request.Header.Set("Origin", test.origin)
@@ -152,59 +137,6 @@ func TestOutsideSignInWhoamiAnswersBothOrigins(t *testing.T) {
 	}
 	if status, body := whoamiAt(t, ""); status != http.StatusOK || body != `{"event_head":"0","kind":"user","login":"alice@example.com"}` {
 		t.Errorf("whoami with no outside origin = %d %s, want today's three keys and no origins", status, body)
-	}
-}
-
-// The outside origin's pages - the enrollment page an owner's link opens, the passkey sign-in at
-// its root - say no page may frame them, in both headers a browser reads that from, and that they
-// load no plugin object and take no <base>. The policy is written out here rather than read from
-// the constant, so a change to it fails this row. The canonical origin's same pages carry neither
-// header, as before: the control that the reading tells the two origins apart.
-func TestTheOutsideOriginsPagesRefuseEveryFrame(t *testing.T) {
-	rig := newOriginRig(t, outsideRuleListingEveryone(), outsideOrigin)
-	webDist := t.TempDir()
-	if err := os.WriteFile(filepath.Join(webDist, "index.html"), []byte("<!doctype html>"), 0o600); err != nil {
-		t.Fatalf("write dashboard index: %v", err)
-	}
-	rig.ctx.WebDistDir = webDist
-	for _, path := range []string{"/enroll", "/", "/projects/PRIV"} {
-		for origin, want := range map[string]struct{ policy, frameOptions string }{
-			outsideOrigin:   {policy: "frame-ancestors 'none'; object-src 'none'; base-uri 'none'", frameOptions: "DENY"},
-			canonicalOrigin: {},
-		} {
-			response := httptest.NewRecorder()
-			rig.handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, origin+path, nil))
-			policy, frameOptions := response.Header().Get("Content-Security-Policy"), response.Header().Get("X-Frame-Options")
-			if response.Code != http.StatusOK || policy != want.policy || frameOptions != want.frameOptions {
-				t.Errorf("GET %s%s = %d, Content-Security-Policy %q, X-Frame-Options %q; want 200, %q, %q",
-					origin, path, response.Code, policy, frameOptions, want.policy, want.frameOptions)
-			}
-		}
-	}
-}
-
-// A signed-out GET /auth/whoami at the outside origin names the passkey sign-in under every rule,
-// the domain rule and the rule that admits restricted members by their listing alike, since that
-// origin serves no Google sign-in under any (googleSignInHere): its page offers no Google link that
-// answers 404 there. The canonical origin's 401 names none under either rule.
-func TestTheOutsideOriginsWhoamiNamesTheSignInItServes(t *testing.T) {
-	const plain = `{"code":"NO_IDENTITY","error":"unauthorized"}`
-	const passkey = `{"code":"NO_IDENTITY","error":"unauthorized","sign_in":"passkey"}`
-	for _, test := range []struct {
-		name string
-		rule identity.SignInRule
-	}{
-		{"the rule that admits by listing", outsideRuleListingEveryone()},
-		{"the domain rule", identity.DomainRule{Domain: rigDomain}},
-	} {
-		rig := newOriginRig(t, test.rule, outsideOrigin)
-		for origin, want := range map[string]string{outsideOrigin: passkey, canonicalOrigin: plain} {
-			response := httptest.NewRecorder()
-			rig.handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, origin+"/auth/whoami", nil))
-			if body := strings.TrimSpace(response.Body.String()); response.Code != http.StatusUnauthorized || body != want {
-				t.Errorf("GET %s/auth/whoami signed out under %s = %d %s, want 401 %s", origin, test.name, response.Code, body, want)
-			}
-		}
 	}
 }
 

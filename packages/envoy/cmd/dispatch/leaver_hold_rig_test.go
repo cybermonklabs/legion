@@ -37,8 +37,7 @@ import (
 // signs people in with Google, the fake Google (signInPool) standing in for it, under
 // DISPATCH_SIGNIN_DOMAIN=example.com, which signs in the Workspace domain's people alone, keeps
 // its sessions in its database (store.PgSessionStore), relays machine-login decisions to the
-// broker and checks broker-issued tokens against it (DISPATCH_AGENT_SECRETS_URL), and answers the
-// broker's own service account on its person route (DISPATCH_ACCESS_ACCOUNTS). A person the rig
+// broker and checks broker-issued tokens against it (DISPATCH_AGENT_SECRETS_URL). A person the rig
 // signs in holds the credentials of the measurement table a leaver's hold is read on (person). A
 // rig built withIAP runs Dispatch as an Identity-Aware Proxy deployment runs it instead (R9).
 
@@ -381,16 +380,6 @@ func newLeaverRig(t *testing.T, opts ...leaverOption) *leaverRig {
 	r.handler, r.background = routes.New(r.app)
 	t.Cleanup(r.background.Wait)
 	r.outside.handler = r.handler
-
-	// The broker's account reads the person answer, which a broker pointed at this Dispatch asks:
-	// a rig whose service-account settings did not take fails here, saying so.
-	asked := httptest.NewRequest(http.MethodGet, brokerOrigin+"/api/v1/access/person?person="+url.QueryEscape(privOwner), nil)
-	asked.Header.Set("Authorization", "Bearer "+r.brokerAccountToken(t))
-	answered := httptest.NewRecorder()
-	r.handler.ServeHTTP(answered, asked)
-	if answered.Code != http.StatusOK {
-		t.Fatalf("GET /api/v1/access/person as the broker's account %s answered %d %s, want 200", leaverBrokerAccount, answered.Code, answered.Body.String())
-	}
 
 	for _, hook := range config.built {
 		hook(t, r)

@@ -1655,32 +1655,9 @@ for backend_package in BACKEND_COUNT_TESTS:
         raise ValueError(f"the backend count's tests of {backend_package} are skipped by the unit step, whose "
                          f"`grep -Ev` takes that package out, so the -skip below skips nothing; name the step "
                          f"that runs that package now and move the skip to it")
-# The four tests of cmd/dispatch that hold the leaver hold to bounds of real time: a refresh Google
-# answers slowly, the membership pass's schedule, the broker's cache, and the release a day later.
-# Each waits out its bound on the wall clock, about 245, 128, 64 and 40 seconds of a dev box, which
-# took cmd/dispatch past the unit step's 20-minute -timeout on CI's runner (job 136860339963 timed
-# out at 1200 s, where the same package took 642.9 s before they joined it, job 136853209152). The
-# leaver hold's step runs them in parallel with one another, each on a rig of its own, through
-# named-tests.sh, which fails unless each named test ran and passed: a -run that matches nothing is
-# a pass to go test, so a renamed test would otherwise leave that step green while it runs fewer
-# tests than it names. The unit step skips them by name. Both step texts are built from this one
-# list, and check-ci-filters.sh pins each step's whole script, so the -skip and the names the
-# script runs cannot come to differ.
-LEAVER_BOUND_PACKAGE = "cmd/dispatch"
-LEAVER_BOUND_TESTS = ["TestLeaverHoldBound", "TestLeaverHoldBoundByThePass", "TestLeaverHoldRelease",
-                      "TestIAPLeaverHoldThroughTheRealBroker"]
-LEAVER_BOUND_STEP = "Test the leaver hold's real-time bounds"
-NAMED_TESTS_SCRIPT = "packages/envoy/scripts/named-tests.sh"
-LEAVER_BOUND_TIMEOUT = "15m"
-LEAVER_BOUND_RUN = (f"{NAMED_TESTS_SCRIPT} --timeout {LEAVER_BOUND_TIMEOUT} ./{LEAVER_BOUND_PACKAGE}/ -- "
-                    + " ".join(sorted(LEAVER_BOUND_TESTS)))
-if re.search(UNIT_TEST_PATTERN, f"/{LEAVER_BOUND_PACKAGE}"):
-    raise ValueError(f"the leaver hold's tests of {LEAVER_BOUND_PACKAGE} are skipped by the unit step, whose "
-                     f"`grep -Ev` takes that package out, so the -skip below skips nothing; name the step that "
-                     f"runs that package now and move the skip to it")
 # One go test of the module through the skip counter (DATABASE_SKIPS_PKGS above says why one).
 UNIT_TEST_RUN = (f"{DATABASE_SKIPS_SCRIPT} --timeout {UNIT_TEST_TIMEOUT} "
-                 f"--skip {names_pattern(WEB_FIXTURE_TESTS + [t for ts in BACKEND_COUNT_TESTS.values() for t in ts] + LEAVER_BOUND_TESTS)} "
+                 f"--skip {names_pattern(WEB_FIXTURE_TESTS + [t for ts in BACKEND_COUNT_TESTS.values() for t in ts])} "
                  f"--module-except '{UNIT_TEST_PATTERN}'")
 
 

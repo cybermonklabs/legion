@@ -276,53 +276,6 @@ func TestOutsideSignInAnApproveHeldPastTheRevocationIsNotRelayed(t *testing.T) {
 	}
 }
 
-// A broker token recording no account is held to when its credential was made against when the
-// address's account was recorded, and approves nothing whenever it was made: the token's machine
-// login was made after the first holder's account was recorded and past brokerCredentialMargin, so
-// it acts, while its approve, sent before and held across the second holder's sign-in, is refused
-// 403 OAUTH_SCOPE_REQUIRED (no broker token holds approve) and the broker is told no approve. The
-// second holder's sign-in records the address's account again, after the login was made, so the
-// token's next request is refused 401 BROKER_TOKEN_RECORDS_NO_ACCOUNT.
-//
-// Control: brokerAccountReplaced without its time arm; the token's request after the second
-// holder's sign-in acts.
-func TestOutsideSignInAnApproveHeldByATokenRecordingNoAccountIsRefusedOnceAnotherAccountSignsIn(t *testing.T) {
-	ctx := context.Background()
-	s := newOutsideSignIn(t, nil)
-	broker := newFakeBroker(t)
-	handler, _ := s.brokerRouter(t, broker)
-	s.workspaceSignIn(t, handler, reassignedEmail, firstHolder)
-	storetest.TestOnlyClearAccount(t, s.database, reassignedEmail)
-	machine := ciphertokentest.NewCaller(t)
-	const token = "token-of-the-first-holders-machine"
-	broker.holds(&fakeCredential{id: "login-first", person: reassignedEmail, tokens: []string{token}, createdAt: time.Now()}, machine)
-	if _, err := s.database.Pool.Exec(ctx, `update people set sub = $2 where email = $1`, reassignedEmail, firstHolder); err != nil {
-		t.Fatal(err)
-	}
-	var twentyMinutesAgo time.Time
-	if err := s.database.Pool.QueryRow(ctx, `select now() - interval '20 minutes'`).Scan(&twentyMinutesAgo); err != nil {
-		t.Fatal(err)
-	}
-	storetest.SetRecordingTime(t, s.database, reassignedEmail, twentyMinutesAgo)
-	whoami := func() *httptest.ResponseRecorder {
-		return brokerTokenRequest(t, handler, machine, http.MethodGet, "/api/v1/whoami", "", token)
-	}
-	requireTokenActs(t, "GET /api/v1/whoami with a broker token recording no account, its login made 20 minutes after the address's account was recorded", whoami())
-	body := newHeldBody(approveBody)
-	approve := httptest.NewRequest(http.MethodPost, brokerOrigin+approvePath, body)
-	approve.ContentLength = int64(len(approveBody))
-	approve.Header.Set("Content-Type", "application/json")
-	signed := machine.Signed(t, http.MethodPost, brokerOrigin+approvePath, token)
-	approve.Header.Set("Authorization", signed.Header.Get("Authorization"))
-	approve.Header.Set("DPoP", signed.Header.Get("DPoP"))
-	recorder := serveHeld(t, handler, approve, body, func() {
-		s.workspaceSignIn(t, handler, reassignedEmail, secondHolder)
-	})
-	requireNoApproveScope(t, "the approve by a broker token recording no account, held across the second holder's sign-in", recorder)
-	requireCalls(t, broker, "after the approve by a broker token recording no account")
-	requireBrokerTokenRecordsNoAccount(t, "GET /api/v1/whoami with that token once the second holder signed in", whoami())
-}
-
 // A personal token records the Google account of the credential that minted it, and acts only while
 // Dispatch records that account for its address. The first holder mints a token on its cookie and
 // a second token with that token: each records the first holder's account; its machine's broker

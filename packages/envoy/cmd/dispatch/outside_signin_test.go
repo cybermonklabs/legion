@@ -426,10 +426,10 @@ func TestOutsideSignInOriginHostRuleIsTheComponents(t *testing.T) {
 
 // outsideOriginReachesItsReaders hands DISPATCH_OUTSIDE_ORIGIN, through the settings read alone, to
 // each reader: the router, which answers a request whose Host is the outside origin's as that
-// origin (where Google's sign-in start answers 404) and every other request as the canonical origin
-// (whose start comes back to its own callback); the document service, which reads a dashboard link
-// of either origin as a reference; and rebuild-refs, which reindexes those links and refuses an
-// outside origin the server would refuse.
+// origin (a browser write there naming the canonical origin is refused) and every other request as
+// the canonical origin (whose sign-in start comes back to its own callback); the document service,
+// which reads a dashboard link of either origin as a reference; and rebuild-refs, which reindexes
+// those links and refuses an outside origin the server would refuse.
 func outsideOriginReachesItsReaders(t *testing.T) {
 	t.Helper()
 	pool := signInPool(t, "dispatch-client", "client-secret")
@@ -438,18 +438,21 @@ func outsideOriginReachesItsReaders(t *testing.T) {
 		t.Fatalf("OutsideOrigin = %q, want https://outside.example", boot.OutsideOrigin)
 	}
 	handler := routerFor(t, boot, routes.AppContextOptions{SignIn: signInFlow(boot), ServerURL: "https://dispatch.example"})
-	for _, host := range []string{"outside.example", "OUTSIDE.example"} {
-		recorder := httptest.NewRecorder()
-		handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "http://"+host+"/auth/start", nil))
-		if recorder.Code != http.StatusNotFound {
-			t.Errorf("GET /auth/start with Host %s: %d, Location %q; want 404, the outside origin's", host, recorder.Code, recorder.Header().Get("Location"))
-		}
-	}
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "http://dispatch.example/auth/start", nil))
 	location, err := url.Parse(recorder.Header().Get("Location"))
 	if recorder.Code != http.StatusFound || err != nil || location.Query().Get("redirect_uri") != "https://dispatch.example/auth/callback" {
 		t.Errorf("GET /auth/start with Host dispatch.example: %d, Location %q (%v); want a redirect_uri of https://dispatch.example/auth/callback", recorder.Code, recorder.Header().Get("Location"), err)
+	}
+	// A browser write at the outside origin's Host is held to that origin: the router answers that
+	// Host as the outside origin, so a write there naming the canonical origin is refused.
+	write := httptest.NewRequest(http.MethodPost, "http://outside.example/auth/logout", nil)
+	write.Header.Set("Origin", "https://dispatch.example")
+	write.AddCookie(&http.Cookie{Name: "dsession", Value: "a-session"})
+	refused := httptest.NewRecorder()
+	handler.ServeHTTP(refused, write)
+	if refused.Code != http.StatusForbidden || !strings.Contains(refused.Body.String(), "invalid request origin") {
+		t.Errorf("POST /auth/logout with Host outside.example and the canonical Origin: %d %s; want 403 invalid request origin, the outside origin's", refused.Code, refused.Body.String())
 	}
 	deps := documentDeps(boot, "https://dispatch.example", docs.Deps{})
 	for _, page := range []string{"https://dispatch.example/issues/ABC-1", "https://outside.example/issues/ABC-1"} {

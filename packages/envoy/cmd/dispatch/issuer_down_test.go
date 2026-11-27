@@ -143,7 +143,7 @@ func errorCodeOf(body string) string {
 	return answer.Code
 }
 
-// ───── shared with multiprocess_test.go, membership_pass_test.go and twobuild_hold_test.go ─────
+// ───── shared with multiprocess_test.go and membership_pass_test.go ─────
 
 // The sign-in client the fake issuer serves, the group it admits, and the callback the client
 // registers there for a process with no DISPATCH_SERVER_URL: such a process builds its callback

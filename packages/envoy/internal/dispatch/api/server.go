@@ -90,8 +90,7 @@ type AgentPublisher interface {
 // until they sign in again, or until a refresh confirms them: *identity.Membership is the one
 // Dispatch serves with (identity.Membership.Standing). Its error is no answer. ChecksDirectory
 // reports whether it follows the Workspace Directory (IAP identity), where no refresh token or
-// sign-in confirmation is kept, so a personal token's own read of those columns answers nothing
-// and personalTokenHeld asks Standing at every use.
+// sign-in confirmation is kept.
 type PersonStanding interface {
 	Standing(ctx context.Context, email string) (identity.Standing, error)
 	ChecksDirectory() bool
