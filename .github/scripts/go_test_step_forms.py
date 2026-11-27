@@ -457,28 +457,47 @@ def ran_test(lines: list[str]) -> bool:
                for words in (line.split() for line in lines))
 
 
-def gated(variant: str, keeps: str, texts: list[str]) -> bool:
-    """Whether a step's go test waits at the gate for the runner (runs()): a kept step, of a form
-    rule 8 reads (an UNSEEN form carries no claim about its events, so its label is not held to
-    the boundary), whose run: or a script of its form holds what can put a command in the
-    background (CAN_DETACH). The test is on the form's text and not its label, so a label that
-    calls a backgrounding form keeps, or one that cannot detach detached, is measured all the
-    same, and MISLABELLED names it."""
-    return variant == "kept" and keeps != UNSEEN and any(CAN_DETACH.search(text) for text in texts)
+def gated(variant: str, texts: list[str]) -> bool:
+    """Whether a step's go test waits at the gate for the runner (runs()): a kept step whose run: or
+    a script of its form holds what can put a command in the background (CAN_DETACH). The test is on
+    the form's text and not its label, so a label that calls a backgrounding form keeps, or one that
+    cannot detach detached, is measured all the same, and MISLABELLED names it. An UNSEEN form is
+    gated too: its label is not held to the boundary, but its verdict reads the boundary, and an
+    ungated one raced, flipping between two misses the list names from one run to the next."""
+    return variant == "kept" and any(CAN_DETACH.search(text) for text in texts)
+
+
+def pipe_ends(pid: int, fds: tuple) -> set:
+    """The pipes a process holds as the given fds (`pipe:[inode]`), those it holds at all."""
+    ends = set()
+    for fd in fds:
+        try:
+            end = os.readlink(f"/proc/{pid}/fd/{fd}")
+        except OSError:
+            continue
+        if end.startswith("pipe:"):
+            ends.add(end)
+    return ends
 
 
 def tree_state(shell: int, gate: str, waits: frozenset) -> tuple | None:
     """One reading of a step's process tree, from its shell down: each process's id, the call it
-    sleeps in and its context-switch counts, when every process is asleep in a call of `waits` and
-    the go test's flock on the gate is among them; None when one runs, waits on disk, is a zombie
-    its parent has yet to reap, sleeps on a timer or in a call `waits` does not name, or cannot be
-    read, or when no process is held at the gate."""
-    seen, held, pending = [], False, [shell]
+    sleeps in and its context-switch counts, when every process is asleep in a call of `waits`, the
+    go test's flock on the gate is among them, and every other process is an ancestor of that flock
+    (its chain, read from each process's own parent in /proc) or a reader of the chain's own output:
+    one whose standard input is a pipe a process of the chain writes as its standard output or
+    error (`x | cat`, `{ x; } 2>&1 | tee`), which waits on the held go test as the chain does. The
+    shell is then waiting on the held go test and on nothing beside it. None when one runs, waits on
+    disk, is a zombie its parent has yet to reap, sleeps on a timer or in a call `waits` does not
+    name, or cannot be read; when no process is held at the gate; and when a process beside the
+    chain reads no pipe of it - another child the shell may be waiting on instead (a process
+    substitution's `wait $!`), which can end and let the shell return without the go test."""
+    seen, parents, held, pending = {}, {}, [], [shell]
     try:
         while pending:
             pid = pending.pop()
             with open(f"/proc/{pid}/stat") as file:
-                state = file.read().rsplit(")", 1)[1].split()[0]
+                state, parent = file.read().rsplit(")", 1)[1].split()[:2]
             with open(f"/proc/{pid}/syscall") as file:
                 call = file.read().split()[0]
             if state != "S" or not call.isdigit() or int(call) not in waits:
@@ -486,23 +505,40 @@ def tree_state(shell: int, gate: str, waits: frozenset) -> tuple | None:
             with open(f"/proc/{pid}/status") as file:
                 switches = tuple(line.split()[1] for line in file if "ctxt_switches:" in line)
             with open(f"/proc/{pid}/cmdline", "rb") as file:
-                held = held or file.read().split(b"\0")[:2] == [b"flock", gate.encode()]
-            seen.append((pid, int(call), switches))
+                if file.read().split(b"\0")[:2] == [b"flock", gate.encode()]:
+                    held.append(pid)
+            seen[pid], parents[pid] = (int(call), switches), int(parent)
             for task in os.listdir(f"/proc/{pid}/task"):
                 with open(f"/proc/{pid}/task/{task}/children") as file:
                     pending += [int(child) for child in file.read().split()]
     except (OSError, ValueError, IndexError):
         return None
-    return tuple(sorted(seen)) if held else None
+    chain = set()
+    for pid in held:
+        while pid != shell:
+            if pid not in seen:
+                return None
+            chain.add(pid)
+            pid = parents[pid]
+    chain.add(shell)
+    if not held:
+        return None
+    beside = set(seen) - chain
+    if beside:
+        written = set().union(*(pipe_ends(pid, (1, 2)) for pid in chain))
+        if any(not pipe_ends(pid, (0,)) or not pipe_ends(pid, (0,)) <= written for pid in beside):
+            return None
+    return tuple(sorted((pid, *reading) for pid, reading in seen.items()))
 
 
 def quiescent(shell: int, gate: str, waits: frozenset) -> bool:
     """Whether a step's shell is asleep and nothing of its process tree can wake it but the go test
     held at the gate: two readings of the tree, one after the other (tree_state), find every process
     asleep in a call only another process of the tree or the gate can end, the held flock among
-    them, and the same processes in the same calls having run not once between the readings (the
-    same context-switch counts). One reading could miss a process woken while it read the rest; a
-    process that woke shows in the second as running or as switched."""
+    them, every other process its ancestor or a reader of its output, and the same processes in the
+    same calls having run not once between the readings (the same context-switch counts). One
+    reading could miss a process woken while it read the rest; a process that woke shows in the
+    second as running or as switched."""
     first = tree_state(shell, gate, waits)
     return first is not None and tree_state(shell, gate, waits) == first
 
@@ -569,18 +605,21 @@ def runs(tree: Path, env: dict, text: str, variant: str, scratch: Path, gate_it:
 
 def probe(scratch: Path) -> tuple[frozenset | None, str]:
     """The calls of WAITS_ON_THE_STEP this machine's kernel uses, held to the kernel itself before
-    any step runs: a process blocked reading a pipe and a shell waiting on a child must read as
-    waiting on the step, a process asleep on a timer must not, and a shell waiting on a go test
-    held at a gate must read as quiescent while one with a timer's sleep beside it must not. This is
-    the detector's control, and it fails for the reasons the detector would be blind - a machine
-    the table does not name, a call the table misnumbers, process files this cannot read - so the
-    generator stops by name (exit 2) rather than hold every gated step to its deadline or open a
-    gate early. (the calls, "") when every check holds, else (None, what failed)."""
+    any step runs: a process blocked reading a pipe must read as waiting on the step, and a process
+    asleep on a timer must not. Then the detector itself, on shells that hold a go test at a gate:
+    one waiting on that go test must read as quiescent, and so must one whose go test's output a
+    pipeline's reader waits on beside it; one with a timer's sleep beside the held go test must not,
+    and neither must one waiting on another child it started beside it (a process substitution's
+    `wait $!`), which an earlier detector took for a shell waiting on the go test. This is the
+    detector's control, and it fails for the reasons the detector would be blind - a machine the
+    table does not name, a call the table misnumbers, process files this cannot read, a waited-for
+    child taken for the go test - so the generator stops by name (exit 2) rather than hold every
+    gated step to its deadline or open a gate early. (the calls, "") when every check holds, else
+    (None, what failed)."""
     waits = WAITS_ON_THE_STEP.get(os.uname().machine)
     if waits is None:
         return None, f"WAITS_ON_THE_STEP names no calls for this machine ({os.uname().machine})"
     scratch.mkdir(parents=True)
-    gate = scratch / "gate"
 
     def call(pid: int) -> int | None:
         """The call a process sleeps in, once it sleeps, to a 10-second deadline."""
@@ -598,59 +637,79 @@ def probe(scratch: Path) -> tuple[frozenset | None, str]:
             time.sleep(0.001)
         return None
 
-    def shell_with(line: str) -> tuple:
+    def asleep(shell: int, names: tuple) -> bool:
+        """Whether a process of each name has started under the shell and sleeps, to a deadline."""
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            found, pending = {}, [shell]
+            try:
+                while pending:
+                    pid = pending.pop()
+                    with open(f"/proc/{pid}/comm") as file:
+                        found.setdefault(file.read().strip(), pid)
+                    for task in os.listdir(f"/proc/{pid}/task"):
+                        with open(f"/proc/{pid}/task/{task}/children") as file:
+                            pending += [int(child) for child in file.read().split()]
+            except OSError:
+                found = {}
+            if all(name in found for name in names):
+                return all(call(found[name]) is not None for name in names)
+            time.sleep(0.001)
+        return False
+
+    def check(name: str, line: str, quiet: bool, sleepers: tuple = ()) -> str | None:
+        """A shell running `line`, with {gate} its held gate: it must read as quiescent (`quiet`),
+        to a deadline, or, once each of `sleepers` sleeps, must not. What failed, or None."""
+        gate = scratch / f"gate-{name}"
         lock = os.open(gate, os.O_CREAT | os.O_RDWR, 0o644)
         fcntl.flock(lock, fcntl.LOCK_EX)
-        return lock, subprocess.Popen(["bash", "--noprofile", "--norc", "-c", line], stdin=subprocess.DEVNULL,
-                                      start_new_session=True)
+        shell = subprocess.Popen(["bash", "--noprofile", "--norc", "-c", line.format(gate=sq(str(gate)))],
+                                 stdin=subprocess.DEVNULL, start_new_session=True)
+        try:
+            if quiet:
+                deadline = time.monotonic() + 10
+                while not quiescent(shell.pid, str(gate), waits):
+                    if time.monotonic() >= deadline:
+                        return f"{name}: a shell running `{line}` never reads as quiescent"
+                    time.sleep(0.001)
+            elif not asleep(shell.pid, sleepers + ("flock",)):
+                return f"{name}: under a shell running `{line}`, {' and '.join(sleepers + ('flock',))} never sleep"
+            elif quiescent(shell.pid, str(gate), waits):
+                return f"{name}: a shell running `{line}` reads as quiescent"
+            return None
+        finally:
+            os.close(lock)
+            try:
+                os.killpg(shell.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            shell.wait()
 
     reader, writer = os.pipe()
+    fifo = scratch / "fifo"
+    os.mkfifo(fifo)
+    # A writer held open, so a `cat` of the fifo opens it at once and sleeps in its read.
+    held_open = os.open(fifo, os.O_RDWR)
     timer = subprocess.Popen(["sleep", "30"])
     cat = subprocess.Popen(["cat"], stdin=reader, stdout=subprocess.DEVNULL)
-    lock, held = shell_with(f"flock {sq(str(gate))} true & wait")
-    other_lock, beside = None, None
     try:
         problems = [f"`{name}` sleeps in call {number}, which WAITS_ON_THE_STEP[{os.uname().machine!r}] "
                     f"{'does not name' if want else 'names'}"
                     for name, number, want in (("cat", call(cat.pid), True), ("sleep", call(timer.pid), False))
                     if number is None or (number in waits) != want]
-        deadline = time.monotonic() + 10
-        while not quiescent(held.pid, str(gate), waits) and time.monotonic() < deadline:
-            time.sleep(0.001)
-        if time.monotonic() >= deadline:
-            problems.append("a shell waiting on a go test held at the gate never reads as quiescent")
-        os.close(lock)
-        lock = None
-        held.wait(timeout=10)
-        other_lock, beside = shell_with(f"flock {sq(str(gate))} true & sleep 30 & wait")
-        deadline = time.monotonic() + 10
-        while time.monotonic() < deadline:
-            try:
-                children = [int(c) for task in os.listdir(f"/proc/{beside.pid}/task")
-                            for c in open(f"/proc/{beside.pid}/task/{task}/children").read().split()]
-                if any(open(f"/proc/{c}/comm").read().strip() == "sleep" and call(c) is not None for c in children):
-                    break
-            except OSError:
-                pass
-            time.sleep(0.001)
-        if quiescent(beside.pid, str(gate), waits):
-            problems.append("a shell with a timer's sleep beside the held go test reads as quiescent")
+        problems += [found for found in (
+            check("waits-on-the-go-test", "flock {gate} true & wait", quiet=True),
+            check("pipeline-reads-the-go-test", "{{ flock {gate} true | cat; }} & wait", quiet=True),
+            check("timer-beside", "flock {gate} true & sleep 30 & wait", quiet=False, sleepers=("sleep",)),
+            check("waits-on-another-child", f"flock {{gate}} true & : <(cat {sq(str(fifo))}); wait $!", quiet=False,
+                  sleepers=("cat",)),
+        ) if found]
     finally:
-        for handle in (lock, other_lock):
-            if handle is not None:
-                os.close(handle)
-        os.close(writer)
         for process in (timer, cat):
             process.kill()
             process.wait()
-        for shell in (held, beside):
-            if shell is not None:
-                try:
-                    os.killpg(shell.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
-                shell.wait()
-        os.close(reader)
+        for handle in (writer, reader, held_open):
+            os.close(handle)
     return (None, "; ".join(problems)) if problems else (waits, "")
 
 
@@ -777,7 +836,7 @@ def main() -> int:
         env.update(PATH=path, GO=str(stand_in), GOROOT=str(goroot))
         units = [(form, variant, index, text) for form, variants in generated.items()
                  for variant, (_, steps) in variants.items() for index, text in enumerate(steps)]
-        gates = {(form, variant): gated(variant, classes[form], steps + list(scripts.values()))
+        gates = {(form, variant): gated(variant, steps + list(scripts.values()))
                  for form, variants in generated.items() for variant, (scripts, steps) in variants.items()}
         with ThreadPoolExecutor(max_workers=len(os.sched_getaffinity(0))) as pool:
             measured = list(pool.map(lambda unit: runs(tree, env, unit[3], unit[1], work / "runs" / str(unit[4]),
