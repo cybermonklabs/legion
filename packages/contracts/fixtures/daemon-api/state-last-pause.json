@@ -5,7 +5,8 @@
     "boots": 2,
     "firstBootAt": "2026-11-02T14:03:27Z",
     "startedAt": "2026-11-15T08:30:00Z",
-    "stateSeq": 0,
+    "stateSeq": 43,
+    "stateId": "7c1e9a4d-3b52-4f08-a6d1-2e9b0c5f8a37",
     "stateRun": "5f0c7a3e-2b9d-4e61-8c47-1d3a9b6e2f80"
   },
   "admission": {

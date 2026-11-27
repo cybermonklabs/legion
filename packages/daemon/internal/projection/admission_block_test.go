@@ -41,7 +41,7 @@ func (s routeRecords) Issues(ctx context.Context, tx pgx.Tx) ([]record.Issue, er
 // its judgement (blockers.JudgeAdmission) and the admission pass's state event carries, both
 // judged from the pass's own read: the project's live records and its own slots. It holds the
 // block the state serves (Project) to the judgement's block as the event carries it
-// (record.AdmissionBlock), over the store the controller-claim golden projects and over one
+// (record.AdmissionBlock), over the store TestTheControllersClaimIsOnNoIssue projects and over one
 // holding what the two reads part on: done issues — a child, a child holding a slot still, a
 // parent on a member's chain, a root whose linger ran out — another project's slot, and a
 // lingering tree with a member still in the workflow.
@@ -56,7 +56,7 @@ func TestTheJudgedAdmissionBlockIsTheBlockTheStateServes(t *testing.T) {
 		cap    int
 		filled bool
 	}{
-		{name: "the controller-claim golden's store", store: controllerClaimStore(architect, time.Date(2026, 10, 6, 18, 2, 11, 0, time.UTC)), cap: 2},
+		{name: "the store of the controller's claim on no issue", store: controllerClaimStore(architect, time.Date(2026, 10, 6, 18, 2, 11, 0, time.UTC)), cap: 2},
 		{name: "done issues, another project's slot and a lingering tree", store: partingStore(), cap: 3, filled: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

@@ -270,9 +270,14 @@ func (s *seeding) served(c composition) []byte {
 	engineCfg := engineConfig(cfg, "", nil)
 	engineCfg.Clock = clock.Now
 	admission := workflowAdmission(records, workflow.New(records, engineCfg, log), cfg, clock.Now, log)
-	// The source serves the run stateTestRun as `daemon.stateRun`, as a daemon with a workflow
-	// serves its own run (workflowRuntime.stateRun).
-	view := stateSource(cfg, s.st, records, c.startedAt, supervising, p, admission.ArchitectStallArms, nil, stateTestRun)
+	// A daemon with a workflow serves its own run as `daemon.stateRun` (workflowRuntime.stateRun),
+	// here stateTestRun; one with no `dispatch_url` runs no workflow, publishes no state event and
+	// serves no run, as the boot decides it (openWorkflow).
+	stateRun := ""
+	if cfg.DispatchURL != "" {
+		stateRun = stateTestRun
+	}
+	view := stateSource(cfg, s.st, records, c.startedAt, supervising, p, admission.ArchitectStallArms, nil, stateRun)
 	view.wakes = func() []supervise.WaitingWake { return c.wakes }
 	if c.dispatchTokens != nil {
 		if !cfg.DispatchTokenBroker {
@@ -383,6 +388,23 @@ func (s *seeding) in(what string, write func(ctx context.Context, tx pgx.Tx) err
 	if err := store.Transact(s.ctx, s.st.Pool(), write); err != nil {
 		s.t.Fatalf("seed %s: %v", what, err)
 	}
+}
+
+// published writes project's state counter row as a daemon that has published 43 state events
+// leaves it, which the daemon block serves as `stateSeq` and `stateId`
+// (record.Store.StatePublication). A daemon with a workflow commits its boot event before it
+// serves, so it never serves a store with no state event. The commit trigger of migration
+// 20261126163320_state_events writes that row for each transaction that queued state events, and
+// no seed queues one, so the seed of each daemon with a workflow writes the row itself. The store
+// id is a fixed one in place of the random one the row's default makes, so each fixture holds the
+// same id at every run.
+func (s *seeding) published(project string, at time.Time) {
+	s.t.Helper()
+	s.in("the state publication", func(ctx context.Context, tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `insert into state_publication (project, last_seq, last_at, store_id) values ($1, 43, $2, $3)`,
+			project, at, "7c1e9a4d-3b52-4f08-a6d1-2e9b0c5f8a37")
+		return err
+	})
 }
 
 // must fails the seed where a writer of the store refused what it was given.

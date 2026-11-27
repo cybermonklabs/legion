@@ -51,10 +51,12 @@ func goldenAdmission(t *testing.T, body []byte) map[string]json.RawMessage {
 }
 
 // TestTheDecodeReadsTheStateDocumentTheDaemonWrote: a whole read's decode reads the daemon's own
-// goldens of its state document, which `packages/daemon/internal/api/state_golden_test.go` writes
-// from the daemon's populated state: state.json, the whole state, which a daemon of an earlier
-// build serves to a whole read, and observed-state.json, the observed view (`?view=observed`) a
-// whole read asks for (stateView). dispatch://INFRA-1077's acceptance A4 asks for a test
+// goldens of its state document: state.json, the whole state, which
+// `packages/daemon/internal/daemon`'s TestTheStateFixturesAreTheDaemonsCompositionOfTheirSeeds
+// composes over a seeded database and which a daemon of an earlier build serves to a whole read,
+// and observed-state.json, the observed view (`?view=observed`) a whole read asks for
+// (stateView), which `packages/daemon/internal/api`'s TestObservedStateGolden writes from
+// state.json. dispatch://INFRA-1077's acceptance A4 asks for a test
 // on this side that reads such a document, because a Dispatch-side decoder held only to
 // hand-written literals cannot tell when the daemon's own shape moves. Of each golden, every field
 // the Legion board and the four metrics take from a read survives the decode — the settings the

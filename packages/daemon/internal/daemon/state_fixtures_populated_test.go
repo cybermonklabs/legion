@@ -691,17 +691,8 @@ func seedPopulatedRecord(s *seeding) (composition, populatedRows) {
 			Reason: "the P0 issues outran the gateway", At: at(22, 9, 10, 0)})
 		return err
 	})
-	// The project's state counter row as a daemon that has published 43 state events leaves it,
-	// which the daemon block serves as `stateSeq` and `stateId` (record.Store.StatePublication).
-	// The commit trigger of migration 20261126163320_state_events writes that row for each
-	// transaction that queued state events, and the seed queues none, so it writes the row itself.
-	// The store id is a fixed one in place of the random one the row's default makes, so the
-	// fixture holds the same id at every run.
-	s.in("the state publication", func(ctx context.Context, tx pgx.Tx) error {
-		_, err := tx.Exec(ctx, `insert into state_publication (project, last_seq, last_at, store_id) values ($1, 43, $2, $3)`,
-			c.cfg.Project, at(22, 9, 17, 30), "7c1e9a4d-3b52-4f08-a6d1-2e9b0c5f8a37")
-		return err
-	})
+	// The daemon runs a workflow, so its store holds state events (seeding.published).
+	s.published(c.cfg.Project, at(22, 9, 17, 30))
 	return c, rows
 }
 
