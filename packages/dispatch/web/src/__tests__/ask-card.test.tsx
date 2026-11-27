@@ -141,6 +141,32 @@ function renderCard(node: ReactNode) {
   return { queryClient, view };
 }
 
+/** One document of CORE-1 as a header reads it, with the approval the row gives it: its slug and
+ *  its reference key come from its name, and `spec.md` is the issue's primary document. The rows
+ *  below differ in the approval alone, so the rest of a document stands here once. */
+function reviewedDocument(document: {
+  id: string;
+  name: string;
+  approval: ArtifactApproval;
+}): Artifact {
+  const slug = document.name.replaceAll(".", "-");
+  return {
+    approval: document.approval,
+    created_at: "2026-09-09T00:00:00Z",
+    created_by: { id: "alice", kind: "user" },
+    id: document.id,
+    issue_key: "CORE-1",
+    kind: "doc",
+    name: document.name,
+    primary: document.name === "spec.md",
+    project: "CORE",
+    ref_key: `CORE-1/${slug}`,
+    session_id: null,
+    slug,
+    versions: [],
+  };
+}
+
 /** The element a forward Tab reaches from `from`: the next enabled, unhidden focusable element in
  *  document order (nothing these cards render sets a positive tabindex). */
 function nextTabStop(from: Element): HTMLElement | undefined {
@@ -1464,21 +1490,11 @@ for (const pressed of ["header", "card"] as const) {
       kind: "approval",
       options: [{ label: "Approve" }, { label: "Request changes" }],
     });
-    const document: Artifact = {
+    const document = reviewedDocument({
       approval: { ask_id: "ask-1", latest_version: 12, state: "awaiting" } as ArtifactApproval,
-      created_at: "2026-09-09T00:00:00Z",
-      created_by: { id: "alice", kind: "user" },
       id: "artifact-1",
-      issue_key: "CORE-1",
-      kind: "doc",
       name: "spec.md",
-      primary: true,
-      project: "CORE",
-      ref_key: "CORE-1/spec-md",
-      session_id: null,
-      slug: "spec-md",
-      versions: [],
-    };
+    });
     const { view } = renderCard(
       <>
         <div data-testid="header">
@@ -1553,26 +1569,16 @@ function twoDocumentRequest(verification: number): { input: OwnedAsk; document: 
       kind: "approval",
       options: [{ label: "Approve" }, { label: "Request changes" }],
     }),
-    document: {
+    document: reviewedDocument({
       approval: {
         ask_id: "ask-1",
         documents,
         latest_version: verification,
         state: "awaiting",
       } as ArtifactApproval,
-      created_at: "2026-09-09T00:00:00Z",
-      created_by: { id: "alice", kind: "user" },
       id: "artifact-2",
-      issue_key: "CORE-1",
-      kind: "doc",
       name: "verification.md",
-      primary: false,
-      project: "CORE",
-      ref_key: "CORE-1/verification-md",
-      session_id: null,
-      slug: "verification-md",
-      versions: [],
-    },
+    }),
   };
 }
 
@@ -1720,26 +1726,16 @@ test("a form refusal of the header's Approve with no request open does not reach
     ["Request changes"],
     "Name each term."
   );
-  const document: Artifact = {
+  const document = reviewedDocument({
     approval: {
       ask_id: "ask-1",
       latest_version: 12,
       state: "changes_requested",
       version: 12,
     } as ArtifactApproval,
-    created_at: "2026-09-09T00:00:00Z",
-    created_by: { id: "alice", kind: "user" },
     id: "artifact-1",
-    issue_key: "CORE-1",
-    kind: "doc",
     name: "spec.md",
-    primary: true,
-    project: "CORE",
-    ref_key: "CORE-1/spec-md",
-    session_id: null,
-    slug: "spec-md",
-    versions: [],
-  };
+  });
   const { view } = renderCard(
     <>
       <div data-testid="header">
