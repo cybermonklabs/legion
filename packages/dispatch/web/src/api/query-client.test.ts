@@ -864,6 +864,56 @@ test("an invalidation made while a search is out asks again once it settles, but
   expect(asked).toEqual({ busy: 2, timedOut: 1 });
 });
 
+// A search whose refetch answered `503 SEARCH_TIMEOUT` over its hits is held
+// (`heldAfterSearchTimeout`) until the reader asks again. A post's correction put over the
+// reader's read (`replaceQueryData`) cancels it, and the cancel puts the timeout back with the
+// state from before that read; the reader asked all the same, so the search is asked once more,
+// and its answer lands.
+test("a search the reader asks again after 503 SEARCH_TIMEOUT is asked once more when a value is put over that read, and its answer lands", async () => {
+  const queryClient = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
+  const out: { resolve: (hits: string) => void; reject: (error: ApiError) => void }[] = [];
+  const observer = new QueryObserver(queryClient, {
+    queryFn: () => {
+      const read = Promise.withResolvers<string>();
+      out.push(read);
+      return read.promise;
+    },
+    queryKey: ["search", "astrolabe"],
+  });
+  const unsubscribe = observer.subscribe(() => {});
+  try {
+    await settle();
+    out[0]?.resolve("hits");
+    await settle();
+    void queryClient.invalidateQueries({ queryKey: ["search"] });
+    await settle();
+    out[1]?.reject(searchTimedOut);
+    await settle();
+    expect(queryClient.getQueryState(["search", "astrolabe"])?.fetchFailureReason).toBe(
+      searchTimedOut
+    );
+
+    // The reader asks again, and a post in the hits is edited while that read is out.
+    void observer.refetch();
+    await settle();
+    expect(out).toHaveLength(3);
+    replaceQueryData<string>(queryClient, ["search", "astrolabe"], "hits, one edited");
+    expect(queryClient.getQueryData<string>(["search", "astrolabe"])).toBe("hits, one edited");
+    await settle();
+    expect(out).toHaveLength(4);
+
+    // The cancelled read's answer is dropped, and the one asked after the edit lands.
+    out[2]?.resolve("hits before the edit");
+    out[3]?.resolve("hits after the edit");
+    await settle();
+    expect(queryClient.getQueryData<string>(["search", "astrolabe"])).toBe("hits after the edit");
+    expect(out).toHaveLength(4);
+  } finally {
+    unsubscribe();
+    queryClient.clear();
+  }
+});
+
 /**
  * When each request of one read went out, in ms after the first, through main.tsx's retry options
  * and the real API client, with every response a 503 refusal carrying `headers`. The clock is

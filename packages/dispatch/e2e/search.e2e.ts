@@ -635,10 +635,12 @@ test("a project-document hit is grouped under the document and opens it; a messa
 // A search statement that runs past the server's 15 s bound answers `503 SEARCH_TIMEOUT`, and
 // sending it again on its own costs the database the bound again and finds nothing more, so the
 // app never does: the query retry policy skips automatic retry for it (`isSearchTimeout`, which
-// `isRetryableQueryError` exempts, web/src/api/client.ts), where any other 5xx is retried
-// automatically twice, and no focus of the tab, return of the network, interval or refresh of
-// the live feed sends it either (`heldAfterSearchTimeout`, web/src/api/query-client.ts). A
-// reader's Retry, a palette reopened, the words typed again or a changed query is a new search.
+// `isRetryableQueryError` exempts, web/src/api/client.ts), where it retries every other failure
+// that function counts retryable twice, or `503 EVENT_HEAD_UNAVAILABLE` for as long as it lasts
+// (`queryRetry`), and no focus of the tab, return of the network, interval or refresh of the live
+// feed sends it either (`heldAfterSearchTimeout`, both in web/src/api/query-client.ts). A reader's
+// Retry, a palette reopened and the words typed, the words typed again or a changed query is a
+// new search.
 //
 // The route answers every search of the term itself: no seeding makes a statement run 15 s. The
 // bar sends two searches of it (`useTieredSearch`): the keystroke's, which asks for the keyword

@@ -75,12 +75,13 @@ export function queryRetryDelay(
  * or not anything renders it, and so does every refresh of the live feed (`refreshQueries` in
  * `query-refresh.ts`), which only marks it stale. Its `staleTime` is left as it was given, and a
  * failed fetch marks a query invalidated (TanStack's `error` action), so the query is stale and
- * what the reader does still asks: the bar's Retry, the palette opened again, which mounts a new
- * observer, and the same words typed again, which bring the observer back to the query. New words
- * or filters are another query. The last answer is TanStack's `fetchFailureReason`: a fetch's
- * start and its success clear it, and a write of the answer the query keeps leaves it, as a post's
- * correction does, which the live feed writes into each search answer that holds a copy of the
- * post (`markCorrectedPost`).
+ * what the reader does still asks: the bar's Retry, the palette opened again and the words typed,
+ * which bring a new observer to the query, and the same words typed again, which bring the
+ * observer back to it. New words or filters are another query. The last answer is TanStack's
+ * `fetchFailureReason`: a fetch's start and its success clear it, and a write of the answer the
+ * query keeps leaves it, as a post's correction does, which the live feed writes into each search
+ * answer that holds a copy of the post (`markCorrectedPost`), unless that write cancels a read out
+ * of a query something shows (`replaceQueryData`).
  */
 export function heldAfterSearchTimeout(query: {
   readonly state: { readonly fetchFailureReason: unknown };
@@ -290,9 +291,13 @@ export async function askSignInAgain(client: QueryClient): Promise<void> {
  * replaces. A read it cancels was asked for a reason - news of another change, a view mounting -
  * and its answer would have brought that news beside the old value, so once the write is in the
  * query is read again, if anything still shows it: the read asked then is asked after the write,
- * and answers both. A write made before Dispatch has taken it may hold its query's reads first
- * (`holdBackReads`), and then that read waits for the hold to end too. Answers what
- * `setQueryData` answers.
+ * and answers both. The state the cancel puts back can be a search's answer that it ran past the
+ * server's bound, which no invalidation reads again (`heldAfterSearchTimeout`), though the read
+ * cancelled was asked over that answer, as only the reader asks one. So where something shows the
+ * query, that answer is cleared before the invalidation: the hold stands on a failure the server
+ * answered, not on one a cancel put back. A write made before Dispatch has taken it may hold its
+ * query's reads first (`holdBackReads`), and then that read waits for the hold to end too.
+ * Answers what `setQueryData` answers.
  */
 export function replaceQueryData<T>(
   client: QueryClient,
@@ -303,6 +308,10 @@ export function replaceQueryData<T>(
   void client.cancelQueries({ exact: true, queryKey });
   const written = client.setQueryData<T>(queryKey, updater);
   if (fetchStatus !== "idle") {
+    const query = client.getQueryCache().find({ exact: true, queryKey });
+    if (query?.isActive() && heldAfterSearchTimeout(query)) {
+      query.setState({ fetchFailureReason: null });
+    }
     void client.invalidateQueries({ exact: true, queryKey, refetchType: "active" });
   }
   return written;
