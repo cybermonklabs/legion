@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -31,7 +32,7 @@ import (
 // rows in one state (source, one of the list route's own myRepliesUnread, myRepliesInbox and
 // myRepliesDismissed, with that route's parameters $1 login, $2 issue, $3 document) whose mark -
 // the column that state is ordered by, named by mark - is at or before $4, of the priorities ($5,
-// null for every one, with $6 for a thread whose issue carries none) and the projects ($7, null
+// null for every one, with $6 for a thread whose issue resolves none) and the projects ($7, null
 // for every one) the request names. It answers each thread's id, the owner this transaction locks
 // before it writes - its issue or its document - and the row's own version (user_threads.version,
 // migration 20261105093500), which is what a filtered dismissal holds the row to, the server
@@ -39,6 +40,12 @@ import (
 // answers it and ignores it, since one read serves both routes. The project whose event announces
 // the write is not read here: the update answers the project of every row it moved, and those are
 // the projects this transaction locks, after the rows (lockInboxReadOwners).
+//
+// A priority is the one the thread's issue resolves to (refs.IssuePriorityTerms: its own, else the
+// nearest issue's above it), which is the priority the Inbox shows the row at and groups it by, so
+// the narrowing reaches the rows the person sees under it. The walk climbs from the issues of the
+// rows the other narrowings keep (`subjects`), once for the request, and only when the request
+// names a priority: a request that names none climbs from no issue.
 //
 // One builder rather than a statement per state and route: the mark-all reads the caller's unread
 // rows and the dismiss route the Inbox's own or the dismissed ones (api/inbox_dismiss.go), and the
@@ -54,26 +61,36 @@ import (
 // that id, fenced from the planner as the list route's page read is (myRepliesPageRows,
 // api/replies.go): a one-step match reads the owner columns too, and the cheapest way to read a
 // few columns of a thousand rows out of a table one login owns is a scan of the whole table, which
-// at INFRA-450's a14 seed is 101,540 rows read to mark 1,300.
+// at INFRA-450's a14 seed is 101,540 rows read to mark 1,300. The owners are a term of their own
+// (`owned`), so the walk's `subjects` and the answer read them once.
 func inboxReplyMatchQuery(source, mark string) string {
 	return `
-	with matched as materialized (
+	with recursive matched as materialized (
 		select u.thread_id, u.` + mark + `
 		` + source + `
-	)
-	select m.thread_id::text, owner.issue_key, owner.artifact_id::text, owner.version
-	from matched m
-	join lateral (
-		select u.issue_key, u.artifact_id, u.project_key, u.version
-		from user_threads u
-		where u.login = $1 and u.thread_id = m.thread_id
-		offset 0
-	) owner on true
-	left join issues i on i.key = owner.issue_key
-	where m.` + mark + ` <= least($4::text::timestamptz, now())
-	  and ($5::int[] is null or i.priority = any($5::int[]) or ($6::boolean and i.priority is null))
-	  and ($7::text[] is null or owner.project_key = any($7::text[]))
-	order by m.thread_id`
+	), owned as materialized (
+		select m.thread_id, owner.issue_key, owner.artifact_id, owner.version
+		from matched m
+		join lateral (
+			select u.issue_key, u.artifact_id, u.project_key, u.version
+			from user_threads u
+			where u.login = $1 and u.thread_id = m.thread_id
+			offset 0
+		) owner on true
+		where m.` + mark + ` <= least($4::text::timestamptz, now())
+		  and ($7::text[] is null or owner.project_key = any($7::text[]))
+	), subjects as (
+		select distinct o.issue_key as key
+		from owned o
+		where $5::int[] is not null and o.issue_key is not null
+	), ` + refs.IssuePriorityTerms + `
+	select o.thread_id::text, o.issue_key, o.artifact_id::text, o.version
+	from owned o
+	left join issues i on i.key = o.issue_key
+	` + refs.IssuePriorityJoin + `
+	where $5::int[] is null or priority_resolved.priority = any($5::int[])
+	   or ($6::boolean and priority_resolved.priority is null)
+	order by o.thread_id`
 }
 
 // inboxReadReplyThreads reads the Reply threads one request marks: the caller's unread rows
@@ -190,9 +207,10 @@ func (s *server) boundInboxStatements() string {
 }
 
 // inboxReadPriorityLevels are the priorities a request names, as the Inbox's filter writes them,
-// against the issues.priority each stands for. inboxReadNone is the value that stands for the
-// absence of one: a thread whose issue carries no priority, a thread on a project document, which
-// has no issue at all, and every Agent row, which has neither issue nor project.
+// against the priority each stands for, the one a thread's issue resolves to. inboxReadNone is the
+// value that stands for the absence of one: a thread whose issue resolves no priority, a thread on
+// a project document, which has no issue at all, and every Agent row, which has neither issue nor
+// project.
 var inboxReadPriorityLevels = map[string]int32{"P0": 0, "P1": 1, "P2": 2, "P3": 3}
 
 const inboxReadNone = "none"

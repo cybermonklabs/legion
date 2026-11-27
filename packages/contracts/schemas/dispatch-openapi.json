@@ -4869,7 +4869,7 @@
     },
     "/api/v1/delivery/timeline": {
       "get": {
-        "description": "The delivery timeline within [from, to) (default the last 7 days), the search q (title or PR id) and the given facets (repeatable repo, parent_agent, session, issue, priority (P0-P3), component (a parent includes its children), author, rework, deployed; __no_issue__, __no_priority__, __no_component__ and __no_session__ select by cause): merges with each PR's issue title, priority and effective components, successful production deploys with every window PR they shipped first, pipeline failures with each run's production job and failing step, and merged work waiting to deploy, each PR's deployed_status (deployed, waiting, not_tracked) computed from stored facts; facet_counts (each facet counted with every other facet applied and its own ignored), color_counts (with none applied), the components and issue titles the window names, data freshness, and measures (what GET /api/v1/delivery/measures answers for the same window, search and facets); 404 DELIVERY_NOT_CONFIGURED without a delivery_settings row.",
+        "description": "The delivery timeline within [from, to) (default the last 7 days), the search q (title or PR id) and the given facets (repeatable repo, parent_agent, session, issue, priority (P0-P3, the priority the PR's issue resolves to: its own, else that of the nearest issue above it that has one), component (a parent includes its children), author, rework, deployed; __no_issue__, __no_priority__, __no_component__ and __no_session__ select by cause): merges with each PR's issue title, priority (that resolved priority's label) with priority_from (the key of the issue it comes from, null where it is the issue's own) and effective components, successful production deploys with every window PR they shipped first, pipeline failures with each run's production job and failing step, and merged work waiting to deploy, each PR's deployed_status (deployed, waiting, not_tracked) computed from stored facts; facet_counts (each facet counted with every other facet applied and its own ignored), color_counts (with none applied), the components and issue titles the window names, data freshness, and measures (what GET /api/v1/delivery/measures answers for the same window, search and facets); 404 DELIVERY_NOT_CONFIGURED without a delivery_settings row.",
         "operationId": "getApiV1DeliveryTimeline",
         "parameters": [
           {
@@ -5501,7 +5501,7 @@
     },
     "/api/v1/issues": {
       "get": {
-        "description": "List issues; filters project, status (repeatable: the issues standing in any of those statuses; a blank value names none, and a value is matched as written, so a status the lifecycle does not hold matches no issue: alone it answers none, and beside another status it adds nothing), parent, label, priority (repeatable: 0-3, or none for unset), advances (repeatable: a priority id, none for the work that advances no live priority or any for the work that advances one, own or inherited; several are a union), own (true keeps, of the issues the advances values answer, those whose own row names a priority a value matches and no issue above them carries it, so a child that only inherits a priority or restates one an issue above it carries is left out and none keeps nothing; without an advances value it filters nothing; advances=any\u0026own=true over backlog and icebox is the second fault of GET /api/v1/priorities), open, updated_since, closed_since and closed_before (RFC3339; the issues closed at or after closed_since and before closed_before, so an open issue matches neither), route_status (live, no_holder or unknown; open issues only); ?pinned=true needs the person scope, since the pins are one person's. A malformed updated_since, closed_since or closed_before is 400 INVALID_UPDATED_SINCE, INVALID_CLOSED_SINCE or INVALID_CLOSED_BEFORE, and a closed_before at or before closed_since 400 INVALID_CLOSED_WINDOW. Each issue carries closed_at, when it was closed or null while it is open, and progress: {tasks, children}, its spec's task-list items and its direct children as {done, total}, each null when it has none. ?moved=true adds moved_at and moved_by to each issue standing in backlog or icebox: when it was moved there and who moved it, read from its newest issue.updated event that set one of the two statuses, as the second fault of GET /api/v1/priorities reads them; an issue standing elsewhere, or whose events do not reach back to the move, carries neither, and a listing without moved=true carries neither on any issue. Pages with limit (1-250) and offset (0 or more; alone it pages 50): a paged answer is {issues, total, limit, offset}, total counting every issue the filters match; without either it is every matching issue as an array. cursor is 400 INVALID_QUERY.",
+        "description": "List issues; filters project, status (repeatable: the issues standing in any of those statuses; a blank value names none, and a value is matched as written, so a status the lifecycle does not hold matches no issue: alone it answers none, and beside another status it adds nothing), parent, label, priority (repeatable: 0-3, or none; a value matches the priority each issue resolves to, its resolved_priority, so a child with no priority of its own under a P0 issue is listed under 0, and none lists the issues that resolve none), advances (repeatable: a priority id, none for the work that advances no live priority or any for the work that advances one, own or inherited; several are a union), own (true keeps, of the issues the advances values answer, those whose own row names a priority a value matches and no issue above them carries it, so a child that only inherits a priority or restates one an issue above it carries is left out and none keeps nothing; without an advances value it filters nothing; advances=any\u0026own=true over backlog and icebox is the second fault of GET /api/v1/priorities), open, updated_since, closed_since and closed_before (RFC3339; the issues closed at or after closed_since and before closed_before, so an open issue matches neither), route_status (live, no_holder or unknown; open issues only); ?pinned=true needs the person scope, since the pins are one person's. A malformed updated_since, closed_since or closed_before is 400 INVALID_UPDATED_SINCE, INVALID_CLOSED_SINCE or INVALID_CLOSED_BEFORE, and a closed_before at or before closed_since 400 INVALID_CLOSED_WINDOW. Each issue carries closed_at, when it was closed or null while it is open, and progress: {tasks, children}, its spec's task-list items and its direct children as {done, total}, each null when it has none. Each issue carries priority, the issue's own, null where it sets none; resolved_priority, the priority it works at: its own, else that of the nearest issue above it on its parent chain that has one, in any project and within 32 links, else null; and priority_from, the key of the issue resolved_priority comes from, null where it is the issue's own or there is none. resolved_priority and priority_from are always present, null included, as GET /api/v1/issues/{key} answers them. ?moved=true adds moved_at and moved_by to each issue standing in backlog or icebox: when it was moved there and who moved it, read from its newest issue.updated event that set one of the two statuses, as the second fault of GET /api/v1/priorities reads them; an issue standing elsewhere, or whose events do not reach back to the move, carries neither, and a listing without moved=true carries neither on any issue. Pages with limit (1-250) and offset (0 or more; alone it pages 50): a paged answer is {issues, total, limit, offset}, total counting every issue the filters match; without either it is every matching issue as an array. cursor is 400 INVALID_QUERY.",
         "operationId": "getApiV1Issues",
         "parameters": [
           {
@@ -5810,7 +5810,7 @@
     },
     "/api/v1/issues/{key}": {
       "get": {
-        "description": "Read an issue with its open asks, primary document, children, and progress: {tasks, children}, its spec's task-list items (`- [ ]` / `- [x]`, nested lists included) and its direct children as {done, total}, each null when it has none. blocks is the keys of the issues whose blocked_by names this one, sorted, [] when none; GET /api/v1/issues lists no blocks. comment_count is how many comments GET /api/v1/issues/{key}/comments lists, left out when the issue holds none.",
+        "description": "Read an issue with its open asks, primary document, children, and progress: {tasks, children}, its spec's task-list items (`- [ ]` / `- [x]`, nested lists included) and its direct children as {done, total}, each null when it has none. It carries priority, the issue's own, null where it sets none; resolved_priority, the priority it works at: its own, else that of the nearest issue above it on its parent chain that has one, in any project and within 32 links, else null; and priority_from, the key of the issue resolved_priority comes from, null where it is the issue's own or there is none. resolved_priority and priority_from are always present, null included. blocks is the keys of the issues whose blocked_by names this one, sorted, [] when none; GET /api/v1/issues lists no blocks. comment_count is how many comments GET /api/v1/issues/{key}/comments lists, left out when the issue holds none.",
         "operationId": "getApiV1IssuesByKey",
         "parameters": [
           {
@@ -9560,7 +9560,7 @@
     },
     "/api/v1/me/inbox/read": {
       "post": {
-        "description": "Mark every unread Inbox thread read in one write: {read_through} (RFC3339, required; stored as no later than now; missing, unparsable or more than a minute ahead of the server is 400 INVALID_STATE), with the Inbox's own narrowing - kind (reply, agent; both by default), priority (P0, P1, P2, P3 and none), urgency (low, med, high, blocking and none), project (a project key and none), and issue or artifact - each absent list meaning every value. It marks exactly the threads GET /api/v1/me/replies?state=unread answers under that narrowing whose newest reply is at or before read_through: a thread written in since stays unread, and one already read past the mark keeps its later mark. Marking read takes no thread out of the Inbox; POST /api/v1/me/inbox/dismiss does. An Agent row has no issue, document, project, priority or urgency, so any of those narrowings leaves it out; a Reply row has no urgency either, so an urgency list without none marks nothing. An agent reply is marked read by its id, so no session's own read mark moves and the live conversation keeps what it had. issue with artifact, an unknown kind, priority or urgency value, and an artifact that is not a document id are 400 INVALID_QUERY. Answers {marked}, the number of threads marked; a request that moves nothing answers 0 and appends no event.",
+        "description": "Mark every unread Inbox thread read in one write: {read_through} (RFC3339, required; stored as no later than now; missing, unparsable or more than a minute ahead of the server is 400 INVALID_STATE), with the Inbox's own narrowing - kind (reply, agent; both by default), priority (P0, P1, P2, P3 and none, each matched against the priority the thread's issue resolves to: its own, else that of the nearest issue above it that has one, as the row's resolved_priority says), urgency (low, med, high, blocking and none), project (a project key and none), and issue or artifact - each absent list meaning every value. It marks exactly the threads GET /api/v1/me/replies?state=unread answers under that narrowing whose newest reply is at or before read_through: a thread written in since stays unread, and one already read past the mark keeps its later mark. Marking read takes no thread out of the Inbox; POST /api/v1/me/inbox/dismiss does. An Agent row has no issue, document, project, priority or urgency, so any of those narrowings leaves it out; a Reply row has no urgency either, so an urgency list without none marks nothing. An agent reply is marked read by its id, so no session's own read mark moves and the live conversation keeps what it had. issue with artifact, an unknown kind, priority or urgency value, and an artifact that is not a document id are 400 INVALID_QUERY. Answers {marked}, the number of threads marked; a request that moves nothing answers 0 and appends no event.",
         "operationId": "postApiV1MeInboxRead",
         "parameters": [
           {
@@ -9691,7 +9691,7 @@
     },
     "/api/v1/me/replies": {
       "get": {
-        "description": "The caller's Inbox threads, of the kinds ?kind= names: reply (the default) lists the threads they wrote in - an ask, a comment thread, an issue message thread - that somebody else has written in, less an open ask on an open issue that waits on them, which the Inbox already lists; agent lists their one-off messages to an agent session (a BTW, a broadcast's copy, or a Send or Aside the session did not take as a turn of its live conversation) holding a reply from that session; reply,agent lists both in one order. ?state= is unread (the default), which lists the rows somebody else has written in since they read them, newest reply first; inbox, every row in their Inbox, read or not, dismissed ones aside, newest reply first; or dismissed, what they have dismissed out of it, newest dismissal first, 200 rows at a time from ?cursor= (the next_cursor of the page before it; limit and offset are 400 INVALID_QUERY there, and cursor is 400 INVALID_QUERY under any other state). Each row names the thread, its owner, its issue's priority, its project, the thread's subject, its root's deep link (an agent row's is the session's live view), the newest reply's author, first line and time, the caller's read mark, whether it is unread and how many writes in it they have not read, the root's document anchor when it has one, its dismissal mark when it has been dismissed, and, on an agent row, the session and the ids of its unread replies. ?issue= or ?artifact= narrows to one owner (both is 400 INVALID_QUERY), and an agent row, which has neither, is then in no answer. An absent limit answers every row, as the Inbox reads them; a named limit is 1-200 (limit=0 is 400 INVALID_QUERY) from ?offset=. {rows, total (both kinds, and under state=dismissed the page the read answers rather than the whole pile, which nothing counts), limit (0 when none was named), offset, as_of, next_cursor (a dismissed page that filled)}: as_of is the database time of the one read-only repeatable-read snapshot every row was read in, which is what a mark-all passes back as its read mark.",
+        "description": "The caller's Inbox threads, of the kinds ?kind= names: reply (the default) lists the threads they wrote in - an ask, a comment thread, an issue message thread - that somebody else has written in, less an open ask on an open issue that waits on them, which the Inbox already lists; agent lists their one-off messages to an agent session (a BTW, a broadcast's copy, or a Send or Aside the session did not take as a turn of its live conversation) holding a reply from that session; reply,agent lists both in one order. ?state= is unread (the default), which lists the rows somebody else has written in since they read them, newest reply first; inbox, every row in their Inbox, read or not, dismissed ones aside, newest reply first; or dismissed, what they have dismissed out of it, newest dismissal first, 200 rows at a time from ?cursor= (the next_cursor of the page before it; limit and offset are 400 INVALID_QUERY there, and cursor is 400 INVALID_QUERY under any other state). Each row names the thread, its owner, its issue's own priority (priority, left out where it sets none), the priority that issue resolves to (resolved_priority: its own, else that of the nearest issue above it that has one) and the key of the issue that comes from (priority_from, null where it is the issue's own), those two always present and null on a row with no issue, its project, the thread's subject, its root's deep link (an agent row's is the session's live view), the newest reply's author, first line and time, the caller's read mark, whether it is unread and how many writes in it they have not read, the root's document anchor when it has one, its dismissal mark when it has been dismissed, and, on an agent row, the session and the ids of its unread replies. ?issue= or ?artifact= narrows to one owner (both is 400 INVALID_QUERY), and an agent row, which has neither, is then in no answer. An absent limit answers every row, as the Inbox reads them; a named limit is 1-200 (limit=0 is 400 INVALID_QUERY) from ?offset=. {rows, total (both kinds, and under state=dismissed the page the read answers rather than the whole pile, which nothing counts), limit (0 when none was named), offset, as_of, next_cursor (a dismissed page that filled)}: as_of is the database time of the one read-only repeatable-read snapshot every row was read in, which is what a mark-all passes back as its read mark.",
         "operationId": "getApiV1MeReplies",
         "parameters": [
           {
@@ -12184,7 +12184,7 @@
     },
     "/api/v1/projects/{key}/legion/board": {
       "get": {
-        "description": "The Legion board of the project its path names, from what Dispatch recorded of that project's daemon: twelve columns (queue, design, planning, implementing, testing, reviewing, accepting, retro, merging, awaiting_children, awaiting_person, held), each card naming its issue's key, title, priority, phase and when that phase began, the slot it holds, the roles in a turn now, the issues a blocker link holds it on, what it waits on from a person, its tree root and the children of its tree that have not started; and a header with the slots in use, the slot cap, the daemon's own number of P0 holders (p0_holders, which hold their slots outside the cap; null, never 0, where the daemon's newest recorded state gives none), the queue's length and the last read of the daemon with its failure. 404 LEGION_NOT_CONFIGURED when the project names no daemon, 400 INVALID_PROJECT for a key that is not a project key, 404 PROJECT_NOT_FOUND for a project that does not exist.",
+        "description": "The Legion board of the project its path names, from what Dispatch recorded of that project's daemon: twelve columns (queue, design, planning, implementing, testing, reviewing, accepting, retro, merging, awaiting_children, awaiting_person, held), each card naming its issue's key, title, own priority, the priority it resolves to (resolved_priority: its own, else that of the nearest issue above it that has one) with the key of the issue that comes from (priority_from, null where it is the issue's own), phase and when that phase began, the slot it holds, the roles in a turn now, the issues a blocker link holds it on, what it waits on from a person, its tree root and the children of its tree that have not started; and a header with the slots in use, the slot cap, the daemon's own number of P0 holders (p0_holders, which hold their slots outside the cap; null, never 0, where the daemon's newest recorded state gives none), the queue's length and the last read of the daemon with its failure. 404 LEGION_NOT_CONFIGURED when the project names no daemon, 400 INVALID_PROJECT for a key that is not a project key, 404 PROJECT_NOT_FOUND for a project that does not exist.",
         "operationId": "getApiV1ProjectsByKeyLegionBoard",
         "parameters": [
           {
@@ -14945,6 +14945,18 @@
               "integer"
             ]
           },
+          "priority_from": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "resolved_priority": {
+            "type": [
+              "null",
+              "integer"
+            ]
+          },
           "status": {
             "type": "string"
           },
@@ -14964,6 +14976,8 @@
           "title",
           "status",
           "priority",
+          "resolved_priority",
+          "priority_from",
           "parent",
           "external_links",
           "updated_at",
@@ -18150,6 +18164,12 @@
               "integer"
             ]
           },
+          "priority_from": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
           "project": {
             "type": "string"
           },
@@ -18160,6 +18180,12 @@
             "type": [
               "null",
               "string"
+            ]
+          },
+          "resolved_priority": {
+            "type": [
+              "null",
+              "integer"
             ]
           },
           "resolved_repo": {
@@ -18195,6 +18221,8 @@
           "title",
           "status",
           "priority",
+          "resolved_priority",
+          "priority_from",
           "rank",
           "labels",
           "parent",
@@ -20677,6 +20705,12 @@
               "string"
             ]
           },
+          "priority_from": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
           "repo": {
             "type": "string"
           },
@@ -20722,6 +20756,7 @@
           "issue",
           "issue_title",
           "priority",
+          "priority_from",
           "components",
           "sessions",
           "parent_agent",
@@ -23471,6 +23506,12 @@
               "integer"
             ]
           },
+          "priority_from": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
           "question": {
             "type": "string"
           },
@@ -23492,6 +23533,12 @@
           },
           "resolution": {
             "$ref": "#/components/schemas/AskResolutionWithTrees"
+          },
+          "resolved_priority": {
+            "type": [
+              "null",
+              "integer"
+            ]
           },
           "revision": {
             "type": "integer"
@@ -23538,6 +23585,8 @@
           "asked_of_by",
           "asked_of_at",
           "priority",
+          "resolved_priority",
+          "priority_from",
           "last_reply",
           "snoozed_until",
           "thread"
@@ -23656,6 +23705,12 @@
               "integer"
             ]
           },
+          "priority_from": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
           "project": {
             "type": "string"
           },
@@ -23666,6 +23721,12 @@
             "type": [
               "null",
               "string"
+            ]
+          },
+          "resolved_priority": {
+            "type": [
+              "null",
+              "integer"
             ]
           },
           "resolved_repo": {
@@ -23701,6 +23762,8 @@
           "title",
           "status",
           "priority",
+          "resolved_priority",
+          "priority_from",
           "rank",
           "labels",
           "parent",
@@ -24647,6 +24710,12 @@
               "integer"
             ]
           },
+          "priority_from": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
           "progress": {
             "$ref": "#/components/schemas/IssueProgress"
           },
@@ -24663,6 +24732,12 @@
             "type": [
               "null",
               "string"
+            ]
+          },
+          "resolved_priority": {
+            "type": [
+              "null",
+              "integer"
             ]
           },
           "resolved_repo": {
@@ -24723,6 +24798,8 @@
           "title",
           "status",
           "priority",
+          "resolved_priority",
+          "priority_from",
           "rank",
           "labels",
           "parent",
@@ -25356,6 +25433,12 @@
               "integer"
             ]
           },
+          "priority_from": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
           "progress": {
             "$ref": "#/components/schemas/IssueProgress"
           },
@@ -25366,6 +25449,12 @@
             "type": [
               "null",
               "string"
+            ]
+          },
+          "resolved_priority": {
+            "type": [
+              "null",
+              "integer"
             ]
           },
           "resolved_repo": {
@@ -25414,6 +25503,8 @@
           "title",
           "status",
           "priority",
+          "resolved_priority",
+          "priority_from",
           "rank",
           "labels",
           "parent",
@@ -25755,6 +25846,18 @@
               "integer"
             ]
           },
+          "priority_from": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "resolved_priority": {
+            "type": [
+              "null",
+              "integer"
+            ]
+          },
           "roles": {
             "items": {
               "type": "string"
@@ -25791,6 +25894,8 @@
           "key",
           "title",
           "priority",
+          "resolved_priority",
+          "priority_from",
           "phase",
           "phase_since",
           "slot",
@@ -27093,6 +27198,12 @@
           "priority": {
             "type": "integer"
           },
+          "priority_from": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
           "project": {
             "type": "string"
           },
@@ -27105,6 +27216,12 @@
           },
           "reply": {
             "$ref": "#/components/schemas/MyReplyReply"
+          },
+          "resolved_priority": {
+            "type": [
+              "null",
+              "integer"
+            ]
           },
           "session": {
             "$ref": "#/components/schemas/MyReplySession"
@@ -27148,6 +27265,8 @@
           "thread_id",
           "kind",
           "ref",
+          "resolved_priority",
+          "priority_from",
           "subject",
           "reply",
           "unread",
@@ -27431,11 +27550,23 @@
               "integer"
             ]
           },
+          "priority_from": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
           "question": {
             "type": "string"
           },
           "ref": {
             "type": "string"
+          },
+          "resolved_priority": {
+            "type": [
+              "null",
+              "integer"
+            ]
           },
           "urgency": {
             "type": "string"
@@ -27456,6 +27587,8 @@
           "created_at",
           "age_seconds",
           "priority",
+          "resolved_priority",
+          "priority_from",
           "owner",
           "human_replied",
           "last_reply",

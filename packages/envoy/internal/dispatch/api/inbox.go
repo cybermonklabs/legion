@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 type inboxIssue struct {
@@ -111,11 +112,23 @@ func (s *server) listInbox(w http.ResponseWriter, r *http.Request) {
 	// i, its own document as ar and their project as p - so this read joins none of them itself
 	// and reads the document's columns off the shared join. `unassigned` is left standing for
 	// the caller that sends it: every question reaches a person now, so it answers nothing.
+	//
+	// The rows are ordered by the priority each ask's issue resolves to (refs.IssuePriorityTerms:
+	// its own, else the nearest issue's above it), so an ask on a child that takes P0 from a parent
+	// stands with the P0 asks. `subjects` is the issues of the open asks this read can list, an
+	// open issue of the named project or of any, so the walk climbs once for the page rather than
+	// once per row, and from no issue the read cannot answer.
 	rows, err := s.deps.Store.Pool.Query(r.Context(), `
+		with recursive subjects as (
+			select distinct i.key
+			from asks a join issues i on i.key = a.issue_key
+			where a.state = 'open' and i.closed_at is null and ($1 = '' or i.project_key = $1)
+		), `+refs.IssuePriorityTerms+`
 		select `+askReadColumns+`,
-		       i.key, i.title, i.assignee, i.priority, ar.project_key, ar.slug, ar.name,
-		       sn.snoozed_until
+		       i.key, i.title, i.assignee, i.priority, `+refs.IssuePriorityColumns+`,
+		       ar.project_key, ar.slug, ar.name, sn.snoozed_until
 		`+askReadFrom+`
+		`+refs.IssuePriorityJoin+`
 		left join user_ask_snooze sn on sn.ask_id = a.id and sn.login = $4
 		where a.state = 'open'
 		  and (i.key is null or i.closed_at is null)
@@ -123,7 +136,7 @@ func (s *server) listInbox(w http.ResponseWriter, r *http.Request) {
 		  and ($2 = ''
 		       or ($2 = 'unassigned' and `+askedOfPersonExpression+` is null)
 		       or ($2 = 'login' and `+askedOfPersonExpression+` = $3))
-		order by i.priority asc nulls last, waiting_on desc,
+		order by priority_resolved.priority asc nulls last, waiting_on desc,
 		         coalesce(lr.created_at, a.created_at) desc, a.id desc
 	`, project, assigneeMode, assigneeLogin, model.CanonicalLogin(caller.ID))
 	if err != nil {
@@ -136,7 +149,7 @@ func (s *server) listInbox(w http.ResponseWriter, r *http.Request) {
 		var ask inboxAsk
 		var issueKey, issueTitle, issueAssignee, documentProject, documentSlug, documentName *string
 		var snoozedUntil *time.Time
-		row, reply, err := scanAskRead(rows, &issueKey, &issueTitle, &issueAssignee, &ask.Priority, &documentProject, &documentSlug, &documentName, &snoozedUntil)
+		row, reply, err := scanAskRead(rows, &issueKey, &issueTitle, &issueAssignee, &ask.Priority, &ask.ResolvedPriority, &ask.PriorityFrom, &documentProject, &documentSlug, &documentName, &snoozedUntil)
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return

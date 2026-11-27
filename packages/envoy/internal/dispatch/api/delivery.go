@@ -17,6 +17,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -550,7 +551,7 @@ func (p deliveryPopulation) derive(settings delivery.DeliverySettings) deliveryD
 				view.Components = issue.components
 				if issue.priority != nil {
 					label := "P" + strconv.Itoa(*issue.priority)
-					view.Priority = &label
+					view.Priority, view.PriorityFrom = &label, issue.priorityFrom
 				}
 			}
 		}
@@ -851,24 +852,31 @@ func (s *server) firstToWarn(ctx context.Context, key warnedProductionRun, jobNa
 }
 
 // deliveryIssue is what the timeline reads of one issue a pull request names: its project, title,
-// priority, and effective components (qualified `<project>/<id>`, resolved as every issue read
-// resolves them: the nearest issue on its parent chain that chose, through issueComponentsTerms).
+// the priority it resolves to and the issue that priority comes from (refs.IssuePriorityTerms:
+// its own, else the nearest issue's above it, with that issue's key), and its effective components
+// (qualified `<project>/<id>`, resolved as every issue read resolves them: the nearest issue on
+// its parent chain that chose, through issueComponentsTerms). The priority is the resolved one
+// because it is what the priority facet labels, selects and counts a pull request by: work under
+// a P0 issue is P0 work.
 type deliveryIssue struct {
-	project    string
-	title      string
-	priority   *int
-	components []string
+	project      string
+	title        string
+	priority     *int
+	priorityFrom *string
+	components   []string
 }
 
 // deliveryIssueFactsQuery is the pull-request timeline's read of the issues a delivery names,
-// with their components. The text is built once, at start, for the reason issueRowStatement
-// gives.
+// with their components and resolved priorities. The text is built once, at start, for the reason
+// issueRowStatement gives.
 var deliveryIssueFactsQuery = `
 		with recursive subjects as (select i.key from issues i where i.key = any($1)),
-		` + issueComponentsTerms + `
-		select i.key, i.project_key, i.title, i.priority, coalesce(comp.ids, '{}'::text[])
+		` + issueComponentsTerms + `,
+		` + refs.IssuePriorityTerms + `
+		select i.key, i.project_key, i.title, ` + refs.IssuePriorityColumns + `, coalesce(comp.ids, '{}'::text[])
 		from issues i
 		` + issueComponentsJoin + `
+		` + refs.IssuePriorityJoin + `
 		where i.key = any($1)
 	`
 
@@ -886,7 +894,7 @@ func (s *server) deliveryIssueFacts(ctx context.Context, keys []string) (map[str
 		var key string
 		var issue deliveryIssue
 		var ids []string
-		if err := rows.Scan(&key, &issue.project, &issue.title, &issue.priority, &ids); err != nil {
+		if err := rows.Scan(&key, &issue.project, &issue.title, &issue.priority, &issue.priorityFrom, &ids); err != nil {
 			return nil, err
 		}
 		issue.components = make([]string, len(ids))

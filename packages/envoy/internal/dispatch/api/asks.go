@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/texttrees"
 )
@@ -703,12 +704,13 @@ type openAsksResponse struct {
 	Asks           []openAsk `json:"asks"`
 }
 
-// listOpenAsks returns every active open ask in one scope, oldest first: authored by one host
-// session (?author_session=) across issues and unlinked project documents, or every open ask on
-// one project's issues and documents (?project=) regardless of author -- issue-owned via
-// issues.project_key, document-owned via artifacts.project_key. Exactly one of the two query
-// parameters selects the scope. A human clarification leaves an ask open but makes the author
-// responsible for the next reply.
+// listOpenAsks returns every active open ask in one scope, by the priority its issue resolves to
+// (refs.IssuePriorityTerms: its own, else the nearest issue's above it) and then oldest first:
+// authored by one host session (?author_session=) across issues and unlinked project documents,
+// or every open ask on one project's issues and documents (?project=) regardless of author --
+// issue-owned via issues.project_key, document-owned via artifacts.project_key. Exactly one of the
+// two query parameters selects the scope. A human clarification leaves an ask open but makes the
+// author responsible for the next reply.
 func (s *server) listOpenAsks(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
@@ -741,14 +743,19 @@ func (s *server) listOpenAsks(w http.ResponseWriter, r *http.Request) {
 	var openedSince bool
 	var rawAsks []byte
 	err := s.deps.Store.Pool.QueryRow(r.Context(), `
-		with mine as (
+		with recursive mine as (
 			select a.* from asks a
 			left join issues i on i.key = a.issue_key
 			left join artifacts ar on ar.id = a.artifact_id
 			where
 				($1 <> '' and a.author->>'kind' = 'session' and a.author->>'id' = $1)
 				or ($3 <> '' and coalesce(i.project_key, ar.project_key) = $3)
-		), active as (
+		), subjects as (
+			-- The issues of the scope's open asks, which the priority walk climbs from once for
+			-- the whole answer.
+			select distinct a.issue_key as key from mine a
+			where a.state = 'open' and a.issue_key is not null
+		), `+refs.IssuePriorityTerms+`, active as (
 			select
 				a.id::text,
 				`+askItemRefExpression+` as ref,
@@ -758,6 +765,8 @@ func (s *server) listOpenAsks(w http.ResponseWriter, r *http.Request) {
 				a.created_at,
 				greatest(0, floor(extract(epoch from (statement_timestamp() - a.created_at))))::bigint as age_seconds,
 				i.priority,
+				priority_resolved.priority as resolved_priority,
+				priority_resolved.source as priority_from,
 				-- The issue's own assignee beside its key and title, which is not the person the
 				-- question reaches: a question on an issue nobody holds carries a null assignee
 				-- here and the project's default in waiting_on_person below. The Inbox's rows
@@ -776,13 +785,14 @@ func (s *server) listOpenAsks(w http.ResponseWriter, r *http.Request) {
 				) end as last_reply,
 				`+waitingOnExpression+` as waiting_on,
 				`+askedOfPersonExpression+` as waiting_on_person
-			from mine a`+askedOfPersonJoins+lastReplyJoin+`
+			from mine a`+askedOfPersonJoins+`
+			`+refs.IssuePriorityJoin+lastReplyJoin+`
 			where a.state = 'open' and (i.key is null or i.closed_at is null)
 		)
 		select
 			statement_timestamp(),
 			exists (select 1 from mine where $2::timestamptz is not null and created_at >= $2),
-			coalesce((select jsonb_agg(to_jsonb(active) order by priority asc nulls last, created_at asc, id) from active), '[]'::jsonb)
+			coalesce((select jsonb_agg(to_jsonb(active) order by resolved_priority asc nulls last, created_at asc, id) from active), '[]'::jsonb)
 	`, sessionID, since, project).Scan(&asOf, &openedSince, &rawAsks)
 	if err != nil {
 		s.writeHandlerError(w, err)
