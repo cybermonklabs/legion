@@ -1,7 +1,9 @@
 package api
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/url"
 	"reflect"
@@ -11,6 +13,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
@@ -814,6 +817,72 @@ func TestAPinnedReferenceShowsItsVersionsText(t *testing.T) {
 	if len(cited) != 1 || cited[0].Node.Text != "" || cited[0].Excerpt == nil || *cited[0].Excerpt != (model.GraphExcerpt{BlockID: paragraphID, Text: refs.BlockExcerpt(changed, testServerURL)}) {
 		t.Fatalf("the comment's link = %#v, want the block with its 480-rune excerpt", cited)
 	}
+}
+
+// The reference graph's read answers a document block's `[^label]` as the document reads it, for
+// a caller that asked for trees, as the batched reference read does: a footnote reference where
+// the document defines the label outside the block, right after the words before it, in the
+// tree of the node's own text and in the tree of an edge's excerpt of the block. The block's
+// stored text, which each of them is read from, holds no definition the document writes outside
+// it, so that text read alone reads every call as text. An excerpt is a cut, and a fenced code
+// block's past the runes an excerpt holds stops before its closing fence, so the stand-in
+// definitions read after it would stand inside the code: that excerpt carries the tree of its text
+// alone, as every excerpt with a text carries one. A pin reads its calls as the version it pins
+// reads them: after a version that drops the definition, the text the pin recorded of the version
+// that held it still holds the reference.
+func TestTheReferencesReadCarriesTheFootnoteReferencesTheDocumentHolds(t *testing.T) {
+	t.Parallel()
+	handler, database := blockIndexHandler(t)
+	createReferenceAPIProject(t, handler, "CORE")
+	issue := createReferenceAPIIssue(t, handler, "CORE")
+	const paragraph = "A plain paragraph reads the note[^k1] too."
+	code := "```\nThe call [^k1] in code.\n" + strings.Repeat("Then ship it.\n", 40) + "```"
+	notes := uploadIssueDocument(t, handler, issue.Key, "notes.md",
+		"Intro paragraph.\n\n"+paragraph+"\n\n"+code+"\n\n"+footnoteDefinedOutside)
+	blocks := blockIDsByText(t, handler, notes.ID)
+	paragraphID, codeID := blocks[paragraph], blocks[code]
+	if paragraphID == "" || codeID == "" {
+		t.Fatalf("the notes list the blocks %v, want their paragraph %q and their code block", blocks, paragraph)
+	}
+	if stored := storedBlockText(t, database, notes.ID, paragraphID); strings.Contains(stored, "]:") {
+		t.Fatalf("the paragraph's stored text %q holds a footnote definition, want the call alone", stored)
+	}
+	notesRef := "dispatch://" + issue.Key + "/artifact/" + notes.Slug
+	paragraphRef := refs.BlockRef(notesRef, paragraphID)
+	comment := createReferenceAPIComment(t, handler, issue.Key, "Read "+paragraphRef+".")
+	reference := &footnotedReference{label: "k1", follows: "A plain paragraph reads the note"}
+	around := []string{"A plain paragraph reads the note", " too."}
+
+	requireFootnotedTree(t, "the node's text_tree",
+		treeAt(t, handler, "/api/v1/references?"+url.Values{"to": {paragraphRef}}.Encode(), "node.text_tree"),
+		reference, around...)
+	requireFootnotedTree(t, "the comment's edge's excerpt",
+		treeAt(t, handler, "/api/v1/references?"+url.Values{
+			"from": {"dispatch://" + issue.Key + "/comment/" + comment.ID}, "kind": {"mentions"},
+		}.Encode(), "edges.0.excerpt.text_tree"),
+		reference, around...)
+
+	cutter := createReferenceAPIComment(t, handler, issue.Key, "Read "+refs.BlockRef(notesRef, codeID)+".")
+	cut := decodeBody[struct {
+		Edges []struct {
+			Excerpt *graphExcerptRead `json:"excerpt"`
+		} `json:"edges"`
+	}](t, treesRequest(t, handler, "/api/v1/references?"+url.Values{
+		"from": {"dispatch://" + issue.Key + "/comment/" + cutter.ID}, "kind": {"mentions"},
+	}.Encode(), true)).Edges
+	if len(cut) != 1 || cut[0].Excerpt == nil || !strings.Contains(cut[0].Excerpt.Text, "[^k1]") ||
+		strings.HasSuffix(cut[0].Excerpt.Text, "```") {
+		t.Fatalf("the code block's edges = %#v, want one whose excerpt writes the call and stops before the closing fence", cut)
+	}
+	if excerpt := cut[0].Excerpt; excerpt.TextTree == nil || !bytes.Equal(sameShape(t, json.RawMessage(excerpt.TextTree)),
+		sameShape(t, pmdoc.DisplayJSON(excerpt.Text, pmdoc.DisplayLatest))) {
+		t.Errorf("the code block's excerpt %q carries the tree %s, want the tree of its text alone", excerpt.Text, excerpt.TextTree)
+	}
+
+	uploadIssueDocument(t, handler, issue.Key, "notes.md", "Intro paragraph.\n\n"+paragraph+"\n")
+	requireFootnotedTree(t, "the pin's text_tree",
+		treeAt(t, handler, "/api/v1/references?"+url.Values{"to": {paragraphRef + "@v1"}}.Encode(), "node.pin.text_tree"),
+		reference, around...)
 }
 
 // "Changed" compares the current text with the pinned version's, not the history between: a text
