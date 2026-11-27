@@ -414,12 +414,14 @@ type child struct {
 	dir string
 	// env is what the child's environment carries beyond the guard's own (Guard.env).
 	env []string
-	// inherit, where it is not nil, is which entries of the base environment the child keeps,
-	// each read as its name and its value, which Guard.env splits once; the guard's own names and
-	// env go on top either way. Nil keeps the whole base, which is what every child keeps but the
-	// visibility read made with no credential (Guard.lsRemote) and the read through curl
-	// (Guard.CurlGet).
-	inherit func(name, value string) bool
+	// inherit, where it is not nil, makes from the base environment Guard.command reads for this
+	// child which of that base's entries the child keeps, each read as its name and its value,
+	// which Guard.env splits once. It is made from the whole base because what one entry may keep
+	// can depend on another, as ALL_PROXY does on what HTTPS_PROXY names (TokenChildKeeps). The
+	// guard's own names and env go on top either way. Nil keeps the whole base, which is what
+	// every child keeps but the visibility read made with no credential (Guard.lsRemote) and the
+	// read through curl (Guard.CurlGet).
+	inherit func(base []string) func(name, value string) bool
 	// stdin is the child's standard input, nil for none.
 	stdin io.Reader
 	// files are the child's descriptors from 3 up, as exec.Cmd.ExtraFiles takes them.
@@ -474,8 +476,8 @@ func (g *Guard) run(ctx context.Context, c child) (int, string, error) {
 // killed answer of procgroup.Configure for it: whether the end of ctx stopped it. Its standard
 // output and error are the caller's to set.
 func (g *Guard) command(ctx context.Context, c child) (*exec.Cmd, func() bool) {
-	// One read of the base environment for the child, which both the program lookup and the
-	// child's own environment are built from.
+	// One read of the base environment for the child, which the program lookup, the child's
+	// inherit predicate and the child's own environment are all built from.
 	base := g.base()
 	cmd := exec.CommandContext(ctx, program(base, c.argv[0]), c.argv[1:]...)
 	cmd.Dir = c.dir

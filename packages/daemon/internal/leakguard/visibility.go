@@ -733,7 +733,7 @@ func (g *Guard) lsRemote(ctx context.Context, origin, slug string) (Visibility, 
 			"-c", "http.proactiveAuth=none", "-c", "http."+url+"//.proactiveAuth=none",
 			"ls-remote", url, "HEAD"),
 		dir:     "/",
-		inherit: lsRemoteInherits,
+		inherit: func([]string) func(name, value string) bool { return lsRemoteInherits },
 		env:     []string{"HOME=" + home, "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null", "LC_ALL=C"},
 	})
 	if err != nil {

@@ -339,8 +339,10 @@ gh keeps the airlock's proxy, which alone puts the real token in its place: that
 the machine's trust store holds the airlock's roots and fails verifying the airlock where it does
 not. The airlock is known by its URL's user, `agent-secrets` (`cipheraddr.NamesAirlockProxy`), a
 convention and no proof: any proxy URL with that user is left out the same way. Two limits
-follow. A deployment whose only route to GitHub is a proxy has none inside such a command, since
-`agent-secrets` replaced that proxy: gh's reads with a directory's token fail to connect there.
+follow. A deployment whose only route to GitHub is a proxy has none for a read with a directory's
+token inside such a command, for one of two causes: `agent-secrets` replaced a proxy named in
+`HTTPS_PROXY` or `https_proxy` with the airlock's, and the guard itself leaves out a proxy named
+in `ALL_PROXY` or `all_proxy`, which `agent-secrets` does not touch. Such a read fails to connect.
 And where the machine's trust store does hold the airlock's roots, a read with a directory's token
 still leaves the airlock out, which would read that token, rather than take the route that works.
 The git gh runs reads no global

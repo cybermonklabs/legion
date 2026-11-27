@@ -263,14 +263,14 @@ func (g *Guard) curlVisibility(ctx context.Context, slug string) (Visibility, er
 	if err := g.curlMissing(); err != nil {
 		return "", err
 	}
-	token, source, err := g.ghToken(bounded, slug)
+	token, err := g.ghToken(bounded, slug)
 	switch {
 	case err != nil && ctx.Err() != nil:
 		return "", err
 	case err != nil:
 		return "", fmt.Errorf("%w: %w", errNoCurlRead, err)
 	}
-	response, err := g.CurlGet(bounded, "repos/"+slug, token, source)
+	response, err := g.CurlGet(bounded, "repos/"+slug, token, TokenOf(g.base()))
 	if err != nil {
 		if stopped, own := stoppedByItsOwnBound(ctx, err); own {
 			return "", &transportError{program: "curl", said: stopped.Error()}
@@ -299,13 +299,15 @@ func (g *Guard) curlMissing() error {
 // The token goes to curl on its standard input, as the `Authorization` header that `--header @-`
 // reads, and never in its argv, which any process of the machine can read. curl keeps of the
 // caller's environment only what TokenChildKeeps keeps for source, which holds neither GH_TOKEN
-// nor GITHUB_TOKEN: its proxy, which then sees only a TLS tunnel, and no trust store, so the CAs
-// curl trusts are the system's own and no proxy the caller names can read the token; no
-// SSLKEYLOGFILE, a file OpenSSL writes the connection's TLS keys to; and no name a later curl
-// learns to read. That predicate is made from the whole of the base environment, which it reads
-// once more for this child, since whether curl keeps ALL_PROXY depends on what HTTPS_PROXY names.
-// curl runs in a process group of its own (Guard.run), which the end of ctx stops whole, with
-// anything curl started. Its options are these:
+// nor GITHUB_TOKEN, no trust store, so the CAs curl trusts are the system's own, no SSLKEYLOGFILE,
+// a file OpenSSL writes the connection's TLS keys to, and no name a later curl learns to read. A
+// proxy the caller names then sees only the TLS tunnel curl opens through it, with one exception:
+// for the caller's own token inside an `agent-secrets` command, curl keeps the secrets broker's
+// airlock proxy, which reads inside that TLS session to swap the caller's placeholder for the real
+// token, where the machine's store trusts it. The predicate is made from the one base environment
+// Guard.command reads for this child, since whether curl keeps ALL_PROXY depends on what
+// HTTPS_PROXY names. curl runs in a process group of its own (Guard.run), which the end of ctx
+// stops whole, with anything curl started. Its options are these:
 //
 //   - `-q`, first as curl requires, so curl reads no .curlrc, and `--no-netrc`, so it reads no
 //     netrc: the token is the one credential the request carries;
@@ -347,7 +349,7 @@ func (g *Guard) CurlGet(ctx context.Context, path, token string, source TokenSou
 			"--globoff", "--proto", "=https", "--max-time", strconv.FormatFloat(maxTime.Seconds(), 'f', 1, 64),
 			"--header", "@-", "--header", "Accept: application/vnd.github+json", "--header", "X-GitHub-Api-Version: 2022-11-28",
 			gitHubAPI + "/" + path},
-		inherit: TokenChildKeeps(g.base(), source),
+		inherit: func(base []string) func(name, value string) bool { return TokenChildKeeps(base, source) },
 		stdin:   strings.NewReader("Authorization: Bearer " + token + "\n"),
 		stderr:  &stderr,
 	})
@@ -412,8 +414,9 @@ const (
 
 // TokenOf is whose token a program run with environ sends to GitHub: the caller's where environ
 // sets GH_TOKEN or GITHUB_TOKEN to a value, as gh reads them (each where exec would read it, the
-// last entry of its name), and the gh directory's otherwise. It is the rule Guard.ghToken picks
-// the curl read's token by.
+// last entry of its name), and the gh directory's otherwise. It is the one place that decides
+// whose token it is: Guard.ghToken reads the caller's variables only where it answers CallersToken,
+// and curlVisibility hands CurlGet its answer for the same environment.
 func TokenOf(environ []string) TokenSource {
 	if value(environ, "GH_TOKEN") != "" || value(environ, "GITHUB_TOKEN") != "" {
 		return CallersToken
@@ -445,15 +448,17 @@ func TokenOf(environ []string) TokenSource {
 // that user too, and then loses that proxy here. What is kept depends on source:
 //
 //   - For a gh directory's token, where HTTPS_PROXY or https_proxy names the airlock, no variable
-//     that names the airlock is kept, and neither is ALL_PROXY or all_proxy. The program cannot
-//     verify the airlock, since it is given no trust store, so every call through it failed, the
-//     guard's visibility read of a push's target among them; and where the machine's store does
-//     hold the airlock's roots, the airlock would read that token. Without the airlock curl
-//     would fall back to ALL_PROXY, checked against the NO_PROXY agent-secrets rewrote to send
-//     GitHub to the airlock, which is a route the caller's own NO_PROXY may have kept GitHub off.
-//     So the program connects to GitHub directly, or through an https proxy variable that names
-//     another proxy, and where the deployment's only route out was the proxy agent-secrets
-//     replaced, the call fails on its connection.
+//     that names the airlock is kept, and neither is ALL_PROXY or all_proxy. Where the machine's
+//     store does not hold the airlock's roots, and agent-secrets writes a trust bundle the
+//     program is not given, the program cannot verify the airlock, so every call through it
+//     failed, the guard's visibility read of a push's target among them; where the store does
+//     hold them, the airlock would read that token. Without the airlock curl would fall back to
+//     ALL_PROXY, checked against the NO_PROXY agent-secrets rewrote to send GitHub to the
+//     airlock, which is a route the caller's own NO_PROXY may have kept GitHub off. So the
+//     program connects to GitHub directly, or through an https proxy variable that names another
+//     proxy. Where the deployment's only route out was a proxy, in HTTPS_PROXY, which
+//     agent-secrets replaced, or in ALL_PROXY, which this leaves out, the call fails on its
+//     connection.
 //   - For the caller's own token everything above is kept, the airlock's proxy included. The
 //     token is the caller's, and under `agent-secrets GH_TOKEN` it is the airlock's placeholder,
 //     which only the airlock swaps for the real token; a placeholder sent past it is a token
@@ -544,10 +549,10 @@ func curlAnswer(status int, stdout, stderr, slug string) (Visibility, error) {
 }
 
 // ghToken is the token that gh sends with its reads of slug, which the curl read sends in gh's
-// place, and whose token it is (TokenOf). It is the caller's GH_TOKEN, else its GITHUB_TOKEN: gh
-// sends either one first, in that order, and `legion gh` runs the guard's reads under it
-// (cmd/legion's ghVisibilityRead); that is CallersToken. Else it is the password that `gh auth
-// git-credential get` answers for the repository's URL, DirectoryToken.
+// place. Where the caller's own token is the one gh sends (TokenOf), it is the caller's GH_TOKEN,
+// else its GITHUB_TOKEN: gh sends either one first, in that order, and `legion gh` runs the
+// guard's reads under it (cmd/legion's ghVisibilityRead). Else it is the password that `gh auth
+// git-credential get` answers for the repository's URL.
 //
 // In a pod, that gh is `legion gh`. It answers this request before anything else (cmd/legion's
 // runGh) with runGitCredential: it reads the hosts.yml of the bundle's directory for the repository
@@ -564,17 +569,18 @@ func curlAnswer(status int, stdout, stderr, slug string) (Visibility, error) {
 // error, and no error quotes it. A token that holds a line break, a carriage return included, is
 // refused wherever it comes from: curl reads the header on its standard input a line at a time, so
 // the token would put a header of its own on the request.
-func (g *Guard) ghToken(ctx context.Context, slug string) (string, TokenSource, error) {
+func (g *Guard) ghToken(ctx context.Context, slug string) (string, error) {
 	base := g.base()
-	for _, name := range []string{"GH_TOKEN", "GITHUB_TOKEN"} {
-		token := value(base, name)
-		switch {
-		case token == "":
-			continue
-		case strings.ContainsAny(token, "\r\n"):
-			return "", CallersToken, fmt.Errorf("%s holds a line break", name)
+	if TokenOf(base) == CallersToken {
+		for _, name := range []string{"GH_TOKEN", "GITHUB_TOKEN"} {
+			switch token := value(base, name); {
+			case token == "":
+			case strings.ContainsAny(token, "\r\n"):
+				return "", fmt.Errorf("%s holds a line break", name)
+			default:
+				return token, nil
+			}
 		}
-		return token, CallersToken, nil
 	}
 	var stderr bytes.Buffer
 	status, printed, err := g.run(ctx, child{
@@ -583,10 +589,10 @@ func (g *Guard) ghToken(ctx context.Context, slug string) (string, TokenSource, 
 		stderr: &stderr,
 	})
 	if err != nil {
-		return "", DirectoryToken, procgroup.Said(err, stderr.String())
+		return "", procgroup.Said(err, stderr.String())
 	}
 	if status != 0 {
-		return "", DirectoryToken, fmt.Errorf("gh auth git-credential get exited %d: %s", status, said("", stderr.String()))
+		return "", fmt.Errorf("gh auth git-credential get exited %d: %s", status, said("", stderr.String()))
 	}
 	// git's credential protocol takes the last value of a key, as git itself reads gh's answer.
 	token := ""
@@ -597,9 +603,9 @@ func (g *Guard) ghToken(ctx context.Context, slug string) (string, TokenSource, 
 	}
 	switch {
 	case token == "":
-		return "", DirectoryToken, errors.New("gh auth git-credential get answered no password")
+		return "", errors.New("gh auth git-credential get answered no password")
 	case strings.ContainsAny(token, "\r\n"):
-		return "", DirectoryToken, errors.New("gh auth git-credential get answered a password that holds a line break")
+		return "", errors.New("gh auth git-credential get answered a password that holds a line break")
 	}
-	return token, DirectoryToken, nil
+	return token, nil
 }
