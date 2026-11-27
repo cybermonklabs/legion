@@ -7,10 +7,11 @@ import (
 	"strconv"
 	"sync"
 	"testing"
-	"time"
 
 	natsserver "github.com/nats-io/nats-server/v2/server"
 	natsgo "github.com/nats-io/nats.go"
+
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // wrongLastSequenceReplicated is JetStream's wrong last sequence as the leader of a stream of more
@@ -22,14 +23,16 @@ var wrongLastSequenceReplicated = &natsgo.APIError{Code: 400, ErrorCode: natsgo.
 // cluster, and returns once the stream reports member i as its leader with every copy current. It
 // asks the leader to step down with member i preferred ($JS.API.STREAM.LEADER.STEPDOWN with a
 // placement), and asks again while another member leads: the stream's group elects the preferred
-// member when it can, and an election lost to another member is asked again. A test moves a
-// stream's leader to the member its client is connected to, so a write that client sends reaches
-// the leader without a route (HoldReplicatingWrite).
+// member when it can, and an election lost to another member is asked again. Each read and each
+// ask waits readWait for its answer, as awaitInfo's reads do, so one sent across a leader change
+// that draws no answer is sent again. A test moves a stream's leader to the member its client is
+// connected to, so a write that client sends reaches the leader without a route
+// (HoldReplicatingWrite).
 func (c *Cluster) MoveStreamLeader(t testing.TB, stream string, i int) {
 	t.Helper()
 	conn := Connect(t, c.URL())
 	defer conn.Close()
-	js, err := conn.JetStream(natsgo.MaxWait(jetStreamWait))
+	js, err := conn.JetStream(MaxWait(t))
 	if err != nil {
 		t.Fatalf("open JetStream: %v", err)
 	}
@@ -38,13 +41,13 @@ func (c *Cluster) MoveStreamLeader(t testing.TB, stream string, i int) {
 	if err != nil {
 		t.Fatalf("encode the step-down request: %v", err)
 	}
-	awaitInfo(t, fmt.Sprintf("stream %s was not led by %s", stream, want),
+	awaitInfo(t, fmt.Sprintf("stream %s to be led by %s with every copy current", stream, want),
 		func() (*natsgo.StreamInfo, error) {
-			info, err := js.StreamInfo(stream)
+			info, err := js.StreamInfo(stream, natsgo.MaxWait(readWait))
 			if err != nil || info.Cluster == nil || info.Cluster.Leader == want || info.Cluster.Leader == "" {
 				return info, err
 			}
-			if _, err := conn.Request("$JS.API.STREAM.LEADER.STEPDOWN."+stream, request, jetStreamWait); err != nil {
+			if _, err := conn.Request("$JS.API.STREAM.LEADER.STEPDOWN."+stream, request, readWait); err != nil {
 				return info, fmt.Errorf("ask %s to step down: %w", info.Cluster.Leader, err)
 			}
 			return info, nil
@@ -119,38 +122,43 @@ func (c *Cluster) HoldReplicatingWrite(t testing.TB, stream, subject string) fun
 		thaw()
 		t.Fatalf("send the held write of %s: %v", subject, err)
 	}
-	release := sync.OnceFunc(func() {
-		thaw()
-		bound := boundOf(t)
-		deadline, cancel := bound.stepContext(noDeadline)
-		defer cancel()
-		select {
-		case <-ack.Ok():
-		case err := <-ack.Err():
-			t.Errorf("the held write of %s in %s did not land: %v", subject, stream, err)
-			return
-		case <-deadline.Done():
-			t.Errorf("the held write of %s in %s was not answered after its release, by %s, short of the test's deadline", subject, stream, bound)
-			return
-		}
-		c.awaitApplied(t, stream, info.Cluster.RaftGroup, leader)
-	})
+	// release runs its body once through a sync.Once's Do, not sync.OnceFunc: a give-up in either
+	// wait below fails t through t.Fatalf, which ends the goroutine with runtime.Goexit. Once.Do
+	// lets that Goexit through, so the row fails by name, where OnceFunc's recover reads nil and
+	// calls panic(nil) (sync/oncefunc.go:23-31), which ends the whole test binary.
+	var once sync.Once
+	release := func() {
+		once.Do(func() {
+			thaw()
+			var refused error
+			testwait.Until(t, fmt.Sprintf("the held write of %s in %s to be answered once released", subject, stream), func() (string, bool) {
+				select {
+				case <-ack.Ok():
+					return "acknowledged", true
+				case refused = <-ack.Err():
+					return fmt.Sprintf("refused: %v", refused), true
+				default:
+					return "no answer yet", false
+				}
+			})
+			if refused != nil {
+				t.Errorf("the held write of %s in %s did not land: %v", subject, stream, refused)
+				return
+			}
+			c.awaitApplied(t, stream, info.Cluster.RaftGroup, leader)
+		})
+	}
 	t.Cleanup(release)
 
 	// A probe names a sequence the subject does not hold, so the leader never proposes it: it is
-	// answered 10071 until the held write is in process, and 10164 from then on.
-	bound := boundOf(t)
-	for {
-		_, err := js.Publish(subject, last.Data, natsgo.ExpectLastSequencePerSubject(last.Sequence+1))
-		if errors.Is(err, wrongLastSequenceReplicated) {
-			return release
-		}
-		if bound.over() {
-			release()
-			t.Fatalf("the leader of %s did not hold the write of %s in process by %s, short of the test's deadline: a probe was answered %v", stream, subject, bound, err)
-		}
-		bound.pause()
-	}
+	// answered 10071 until the held write is in process, and 10164 from then on. Each probe waits
+	// readWait for its answer, so one that draws none is sent again. A hold the shared wait gives
+	// up on is released by the cleanup registered above.
+	testwait.Until(t, fmt.Sprintf("the leader of %s to hold the write of %s in process (a probe answered 10164)", stream, subject), func() (error, bool) {
+		_, err := js.Publish(subject, last.Data, natsgo.ExpectLastSequencePerSubject(last.Sequence+1), natsgo.AckWait(readWait))
+		return err, errors.Is(err, wrongLastSequenceReplicated)
+	})
+	return release
 }
 
 // heldRecordHeaders are the headers of a stored KV record that make it the record it is, which
@@ -164,8 +172,8 @@ func (c *Cluster) HoldReplicatingWrite(t testing.TB, stream, subject string) fun
 var heldRecordHeaders = []string{"KV-Operation", natsgo.MsgRollup}
 
 // AwaitReplicated waits until every copy of stream, a stream of more than one copy on the cluster,
-// has applied every write its leader has committed (awaitApplied), and fails the test when one has
-// not by the test's deadline (testDeadline). A test calls it between a write and a read of what the
+// has applied every write its leader has committed (awaitApplied), and fails the test when the
+// shared wait gives up (testwait.Until). A test calls it between a write and a read of what the
 // write left: the leader answers a write once a quorum holds it, and the direct get every bucket
 // read sends may be answered by the copy outside that quorum, which then answers the record the
 // write replaced.
@@ -180,12 +188,14 @@ func (c *Cluster) AwaitReplicated(t testing.TB, stream string) {
 }
 
 // awaitApplied waits until every running member has applied, in stream's Raft group named group,
-// every entry the group's leader, member leader, has committed, and fails the test when one has not
-// by the test's deadline (testDeadline). Any copy may answer a direct get, and the leader answers a
-// write once a quorum holds it, so a copy outside that quorum can answer a read of a record the
-// write replaced; once every copy has applied the write, none does. The stream is the global
-// account's, as a stream of a cluster StartCluster started is: nats-server lists a stream's Raft
-// group under the account that holds the stream (Server.Raftz).
+// every entry the group's leader, member leader, has committed, and fails the test when the shared
+// wait gives up (testwait.Until), whose failure prints the member's Raft group as it last read it,
+// or that the member listed no Raft group of that name.
+// Any copy may answer a direct get, and the leader answers a write once a quorum holds it, so a
+// copy outside that quorum can answer a read of a record the write replaced; once every copy has
+// applied the write, none does. The stream is the global account's, as a stream of a cluster
+// StartCluster started is: nats-server lists a stream's Raft group under the account that holds the
+// stream (Server.Raftz).
 func (c *Cluster) awaitApplied(t testing.TB, stream, group string, leader int) {
 	t.Helper()
 	raft := func(i int) *natsserver.RaftzGroup {
@@ -209,19 +219,15 @@ func (c *Cluster) awaitApplied(t testing.TB, stream, group string, leader int) {
 		t.Errorf("member %s holds no Raft group %s of stream %s", c.Name(leader), group, stream)
 		return
 	}
-	bound := boundOf(t)
 	for i := range c.Servers {
-		for {
+		testwait.Until(t, fmt.Sprintf("member %s to apply stream %s's entries up to %d", c.Name(i), stream, led.Committed), func() (string, bool) {
 			g := raft(i)
-			if c.Servers[i].natsServer() == nil || g != nil && g.Applied >= led.Committed {
-				break
+			reading := fmt.Sprintf("member %s lists no Raft group %s", c.Name(i), group)
+			if g != nil {
+				reading = fmt.Sprintf("%+v", *g)
 			}
-			if bound.over() {
-				t.Errorf("member %s did not apply stream %s's entries up to %d by %s, short of the test's deadline: %+v", c.Name(i), stream, led.Committed, bound, g)
-				return
-			}
-			time.Sleep(time.Millisecond)
-		}
+			return reading, c.Servers[i].natsServer() == nil || g != nil && g.Applied >= led.Committed
+		})
 	}
 }
 

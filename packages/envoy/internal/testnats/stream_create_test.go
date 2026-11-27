@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"maps"
 	"os"
-	"os/exec"
 	"strings"
 	"sync"
 	"testing"
@@ -31,13 +30,10 @@ func cutStream(name string) natsgo.StreamConfig {
 // so the create's answer cannot exist before the drop; it is then sent while the creating client
 // is connected nowhere and its subscription for the answer is gone, so it reaches no one. member
 // sees the create on its own, as a client's publish reaches the member it is connected to without
-// a route. The wait for the stream to be answered ends on it, bounded only by the test binary's
-// deadline (testwait.Context); it runs in the watcher's handler, on nats.go's goroutine, where a
-// Fatal would end the handler rather than the test, so a wait that gives up fails the test by Errorf.
+// a route.
 func dropAtCreate(t *testing.T, cluster *Cluster, member *Server, stream string) func() int {
 	t.Helper()
 	thawRoutes := cluster.FreezeRoutes(t)
-	settle := testwait.Context(t)
 	var mu sync.Mutex
 	creates := 0
 	watch := func(*natsgo.Msg) {
@@ -62,15 +58,15 @@ func dropAtCreate(t *testing.T, cluster *Cluster, member *Server, stream string)
 			}
 		}
 		thawRoutes()
-		for !streamAnswered(cluster, stream) {
-			if settle.Err() != nil {
-				t.Errorf("no member led stream %s with every member current after the drop, by the test binary's deadline less testwait's margin", stream)
-				return
-			}
-			time.Sleep(testwait.Poll)
+		// The watcher runs on nats.go's goroutine, where no method of t that ends the test may
+		// run, so the wait is the shared wait's helper form, whose give-up is an error.
+		if err := testwait.InHelper("testnats", fmt.Sprintf("a member to lead stream %s with every member current after the drop", stream), func() bool {
+			return streamAnswered(cluster, stream)
+		}); err != nil {
+			t.Error(err)
 		}
 	}
-	watcher, err := natsgo.Connect(member.URL(), natsgo.Name("create-watcher"))
+	watcher, err := AwaitConnectSeed(t, member.URL(), "", natsgo.Name("create-watcher"))
 	if err != nil {
 		t.Fatalf("watch member %s's creates: %v", member.Name(), err)
 	}
@@ -78,7 +74,7 @@ func dropAtCreate(t *testing.T, cluster *Cluster, member *Server, stream string)
 	if _, err := watcher.Subscribe("$JS.API.STREAM.CREATE."+stream, watch); err != nil {
 		t.Fatalf("watch member %s's creates: %v", member.Name(), err)
 	}
-	if err := watcher.Flush(); err != nil {
+	if err := watcher.FlushWithContext(Context(t)); err != nil {
 		t.Fatalf("watch member %s's creates: %v", member.Name(), err)
 	}
 	t.Cleanup(thawRoutes)
@@ -127,6 +123,38 @@ func holdsStream(srv *natsserver.Server, stream string) bool {
 	return false
 }
 
+// heldStreams names, member by member, the streams each member's global account holds, read
+// from the server's own state (Jsz) as holdsStream reads it: a wait's reading of what the members
+// held while the stream it waits for was not yet answered. A member with no name of its own (a
+// cluster's single server) is named by its place among the members.
+func heldStreams(cluster *Cluster) string {
+	var members []string
+	for i, member := range cluster.Servers {
+		label := member.Name()
+		if label == "" {
+			label = fmt.Sprintf("member %d", i)
+		}
+		srv := member.natsServer()
+		if srv == nil {
+			members = append(members, label+" runs no server")
+			continue
+		}
+		info, err := srv.Jsz(&natsserver.JSzOptions{Account: natsserver.DEFAULT_GLOBAL_ACCOUNT, Streams: true})
+		if err != nil {
+			members = append(members, fmt.Sprintf("%s: %v", label, err))
+			continue
+		}
+		var names []string
+		for _, account := range info.AccountDetails {
+			for _, held := range account.Streams {
+				names = append(names, held.Name)
+			}
+		}
+		members = append(members, fmt.Sprintf("%s holds %v", label, names))
+	}
+	return strings.Join(members, "; ")
+}
+
 // A create whose answer the cluster never delivers, because the connection it was sent on dropped
 // before the stream's first leader could answer, is sent again on the connection's reconnect, and
 // the cluster answers it with the stream the first send made: the create ends after at least two
@@ -147,10 +175,12 @@ func TestACreateWhoseAnswerADropLostIsSentAgainAndAnswered(t *testing.T) {
 	creates := dropAtCreate(t, cluster, cluster.Servers[leader], "CUT")
 	(&Cluster{Servers: []*Server{cluster.Servers[leader]}}).CreateStream(t, cutStream("CUT"))
 	// The watcher hears the answered send as it reaches the member, before the answer, but on a
-	// goroutine of its own.
-	if !testwait.Holds(connectTimeout, testwait.Poll, func() bool { return creates() >= 2 }) {
-		t.Fatalf("the create ended after %d sends, want the one whose answer was lost and at least one more", creates())
-	}
+	// goroutine of its own, so the count is waited for: a create that ended after one send never
+	// reaches two, and the wait fails naming the sends it saw.
+	testwait.Until(t, "the create to have been sent twice: the send whose answer was lost, and at least one more", func() (int, bool) {
+		sends := creates()
+		return sends, sends >= 2
+	})
 	info := AwaitStreamCopies(t, cluster.JetStream(t), "CUT", 3)
 	if info.Config.MaxAge != time.Hour {
 		t.Fatalf("stream CUT has max age %s, want the create's hour", info.Config.MaxAge)
@@ -175,7 +205,7 @@ func TestACreateOfANameTheClusterHoldsOtherwiseFailsNamingTheDifference(t *testi
 		defer close(done)
 		cluster.CreateStream(recorder, asked)
 	}()
-	<-done
+	testwait.Receive(t, "the create of a name the cluster holds otherwise to fail", done)
 	for _, want := range []string{
 		"create stream HELD: the cluster holds a stream of that name with another configuration: ",
 		fmt.Sprintf("max_age holds %d, asked %d", time.Hour, time.Minute),
@@ -210,7 +240,7 @@ func TestACreateOfANameHeldOtherwiseOnlyInAFieldItLeavesUnsetNamesTheWholeStream
 		defer close(done)
 		cluster.CreateStream(recorder, asked)
 	}()
-	<-done
+	testwait.Receive(t, "the create of a name held otherwise only in a field it leaves unset to fail", done)
 	for _, want := range []string{
 		"create stream WINDOW: the cluster holds a stream of that name with another configuration: every field the create sets matches the stream held, which is ",
 		fmt.Sprintf(`"duplicate_window":%d`, 30*time.Minute),
@@ -222,7 +252,8 @@ func TestACreateOfANameHeldOtherwiseOnlyInAFieldItLeavesUnsetNamesTheWholeStream
 }
 
 // A create whose connection's first dials draw no handshake, as a member too loaded to answer
-// within dialTimeout leaves them, waits for the connection, which retries its dial, and is
+// within its dial's handshake timeout (createConnectOptions) leaves them, waits for the
+// connection, which retries its dial, and is
 // answered once the member answers. The server stays frozen until its relay has joined two dials
 // of the create's connection (dialsSince): the second comes only once the first handshake has run
 // out of time and the connection has dialled again, and the create must still be waiting then. No
@@ -261,13 +292,15 @@ func TestACreateWhoseFirstDialsDrawNoHandshakeWaitsForTheConnection(t *testing.T
 	default:
 	}
 	thaw()
-	<-done
+	testwait.Receive(t, "the create to end once the member answers its dials", done)
 	if recorder.message != "" {
 		t.Fatalf("the create failed once the server answered: %s", recorder.message)
 	}
-	testwait.Until(t, "the server to hold stream LATE, which the create made", func() (bool, bool) {
-		held := streamAnswered(cluster, "LATE")
-		return held, held
+	testwait.Until(t, "the server to hold stream LATE, which the create made", func() (string, bool) {
+		if streamAnswered(cluster, "LATE") {
+			return "LATE answered", true
+		}
+		return "LATE not answered; " + heldStreams(cluster), false
 	})
 }
 
@@ -298,71 +331,100 @@ func dialsSince(server *Server) func() int {
 
 const (
 	// unansweredBucketChildEnv has TestAnUnansweredBucketCreateFailsByNameBeforeTheTestBinarysDeadline
-	// run as its own child, which makes the create under a deadline of unansweredBucketDeadline.
+	// run as its own child (testwait.RunChild), which makes the create on the server the parent
+	// started, whose URL the variable holds.
 	unansweredBucketChildEnv = "TESTNATS_UNANSWERED_BUCKET_CHILD"
 
-	// unansweredBucketDeadline is the child's go test -timeout, and accountInfoDelay how late the
-	// child's stand-in for JetStream answers the account information a bucket's create reads first.
-	// One send of the create then takes accountInfoDelay and createSendWait, as nothing answers the
-	// create of the bucket's stream: 18 s of the child's 32. A margin that covers one request a
-	// send (2*createSendWait+1s) leaves the wait a bound of about 11 s, less the child's start: the
-	// first send runs past it, and the one more send the shared wait makes then would end at about
-	// 36 s, so go test's timeout panic comes first. Under the bucket's own margin the bound has
-	// passed before the first send ends, and that send's failure names it: three child runs took
-	// 18.27 to 18.42 s of the 32.
-	unansweredBucketDeadline = 32 * time.Second
-	accountInfoDelay         = 8 * time.Second
+	// unansweredBucketGuard is the child's -timeout (testwait.RunChild): a hang guard only, which a
+	// child whose create never gives up runs into, and never what decides the row. The child's
+	// whole run measured 0.03 s beside two busy loops (a builds Job at the commit that made this
+	// form) and 0.04 s in an issue pod; two minutes is over a thousand times the slower, and a
+	// setup held 25 s still passes inside it.
+	unansweredBucketGuard = 2 * time.Minute
+
+	// accountInfoDelay is how late the child's stand-in for JetStream answers the account
+	// information a bucket's create reads first, on the clock the waits read (testwait.Pause),
+	// when the stand-in reads that request before the send's bound has passed on the child's step
+	// clock.
+	accountInfoDelay = 8 * time.Second
 )
 
 // A bucket create that nothing answers fails the test naming its sends before the test binary's
-// deadline, though one send of it makes two requests, each bounded by createSendWait, and the
-// first is answered late.
+// deadline: a send under way as the shared wait gives up is its last, and ends inside the margin.
+// The child sets up the stand-in and the creating client on the wall clock, under the shared
+// wait's own bound, and then takes the give-up as a step of its own (testwait.SetUpDone), so the
+// create's wait asks once and its one send runs on the child's step clock, bounded there as a
+// whole by createSendWait (sendOnTheWaitsClock). The step clock fires that bound's timer once a
+// wait is blocked on it and no earlier timer is armed, and the send's first request reaches the
+// stand-in over a socket, so the bound can pass before the stand-in has read the request: the
+// send then ends createSendWait into the step with nats.go's timeout, 20 s before the deadline on
+// that clock, and the stand-in's late answer never comes. When the stand-in reads the request
+// first, its answer comes accountInfoDelay into the step, the create of the bucket's stream never,
+// and the send ends at the same moment. Either way nothing answers the create, and the row reads
+// only the give-up's text. A send held past the 30 s margin would end the child at the deadline,
+// as go test's alarm does, and the row fails. The
+// parent starts the server under its own deadline and passes its URL to the child, so a server
+// whose start is slow costs the parent time and not the child. Under a fixed -timeout of 48 s the
+// child's waits gave up 18 s in, and a setup still running then failed the child with a wait of
+// its setup's own rather than the create's.
 func TestAnUnansweredBucketCreateFailsByNameBeforeTheTestBinarysDeadline(t *testing.T) {
-	if os.Getenv(unansweredBucketChildEnv) != "" {
-		createUnansweredBucket(t)
+	if uri := os.Getenv(unansweredBucketChildEnv); uri != "" {
+		createUnansweredBucket(t, uri)
 		return
 	}
-	child := exec.Command(os.Args[0], "-test.run", "^"+t.Name()+"$", "-test.count=1", "-test.timeout="+unansweredBucketDeadline.String())
-	child.Env = append(os.Environ(), unansweredBucketChildEnv+"=1")
-	output, _ := child.CombinedOutput() // the child fails by design: its create draws no answer
-	if strings.Contains(string(output), "panic: test timed out") ||
-		!strings.Contains(string(output), "create KV bucket UNANSWERED: ") ||
-		!strings.Contains(string(output), " drew no answer within ") {
-		t.Fatalf("the child's create of a bucket nothing answers did not fail naming its sends before its %s deadline:\n%s", unansweredBucketDeadline, output)
+	server := start(t, "", nil)
+	// The child fails by design: its create draws no answer.
+	stdout, stderr, _ := testwait.RunChild(t, unansweredBucketGuard, "^"+t.Name()+"$", unansweredBucketChildEnv+"="+server.URL())
+	output := stdout + stderr
+	if strings.Contains(output, "panic: test timed out") ||
+		!strings.Contains(output, "gave up waiting for create KV bucket UNANSWERED: an answer to one of its sends") ||
+		!strings.Contains(output, " sends drew no answer, the last ") {
+		t.Fatalf("the child's create of a bucket nothing answers did not fail naming its sends before its deadline:\n%s", output)
 	}
 }
 
 // createUnansweredBucket is the child of
-// TestAnUnansweredBucketCreateFailsByNameBeforeTheTestBinarysDeadline: a bucket create on a server
-// without JetStream, whose stand-in answers each read of the account's JetStream information
-// accountInfoDelay late and never answers the create of the bucket's stream.
-func createUnansweredBucket(t *testing.T) {
-	server := start(t, "", nil)
-	standIn, err := natsgo.Connect(server.URL())
-	if err != nil {
-		t.Fatalf("connect the stand-in for JetStream: %v", err)
-	}
-	t.Cleanup(standIn.Close)
+// TestAnUnansweredBucketCreateFailsByNameBeforeTheTestBinarysDeadline: a bucket create on the server
+// without JetStream the parent started at uri, whose stand-in answers a read of the account's
+// JetStream information accountInfoDelay late when it reads that request in time, and never
+// answers the create of the bucket's stream.
+// Everything before the create is its setup, and the give-up is its next step (testwait.SetUpDone).
+func createUnansweredBucket(t *testing.T, uri string) {
+	standIn := connectWithoutJetStream(t, uri, "the stand-in for JetStream")
 	if _, err := standIn.Subscribe("$JS.API.INFO", func(msg *natsgo.Msg) {
-		time.AfterFunc(accountInfoDelay, func() {
+		go func() {
+			testwait.Pause(accountInfoDelay)
 			_ = msg.Respond([]byte(`{"type":"io.nats.jetstream.api.v1.account_info_response"}`))
-		})
+		}()
 	}); err != nil {
 		t.Fatalf("answer account information reads: %v", err)
 	}
 	if _, err := standIn.Subscribe("$JS.API.STREAM.CREATE.KV_UNANSWERED", func(*natsgo.Msg) {}); err != nil {
 		t.Fatalf("take the bucket's create: %v", err)
 	}
-	if err := standIn.Flush(); err != nil {
+	if err := standIn.FlushWithContext(Context(t)); err != nil {
 		t.Fatalf("flush the stand-in's subscriptions: %v", err)
 	}
-	conn, err := natsgo.Connect(server.URL())
-	if err != nil {
-		t.Fatalf("connect the creating client: %v", err)
-	}
-	t.Cleanup(conn.Close)
+	conn := connectWithoutJetStream(t, uri, "the creating client")
+	testwait.SetUpDone(t)
 	(&Cluster{}).CreateKeyValue(t, conn, &natsgo.KeyValueConfig{Bucket: "UNANSWERED"})
 	t.Fatal("the create of a bucket nothing answers returned")
+}
+
+// connectWithoutJetStream connects who to the server at uri through the shared wait, as Connect
+// does, each dial carrying the wait's give-up (giveUpDial), and closes the connection when the test
+// ends. Unlike Connect it waits for no JetStream: the unanswered-bucket child's server has none,
+// and its stand-in answers JetStream's account reads late on purpose. A connect whose 2 s of
+// nats.go's own ran out on a loaded machine is made again, where a bare connect would fail the
+// child's setup.
+func connectWithoutJetStream(t testing.TB, uri, who string) *natsgo.Conn {
+	t.Helper()
+	dial := testwait.Until(t, fmt.Sprintf("a connection of %s to the NATS server at %s", who, uri), func() (dialAttempt, bool) {
+		conn, err := natsgo.Connect(uri, natsgo.NoReconnect(), giveUpDial(t))
+		return dialAttempt{conn: conn, err: err}, err == nil
+	})
+	t.Cleanup(dial.conn.Close)
+	return dial.conn
 }
 
 // A bucket create the connection's grant refuses fails the test naming the server's refusal after
@@ -371,7 +433,7 @@ func createUnansweredBucket(t *testing.T) {
 func TestARefusedBucketCreateFailsNamingTheRefusalAfterItsOneSend(t *testing.T) {
 	seed, public := User(t)
 	uri := StartNkeyDenied(t, public, "$JS.API.STREAM.CREATE.>")
-	conn, err := ConnectSeed(t, uri, seed)
+	conn, err := AwaitConnectSeed(t, uri, seed)
 	if err != nil {
 		t.Fatalf("connect as the refused user: %v", err)
 	}
@@ -382,13 +444,9 @@ func TestARefusedBucketCreateFailsNamingTheRefusalAfterItsOneSend(t *testing.T) 
 		defer close(done)
 		(&Cluster{}).CreateKeyValue(recorder, conn, &natsgo.KeyValueConfig{Bucket: "DENIED"})
 	}()
-	// A refusal read as no answer is sent again until the test's deadline; the refusal read as the
-	// answer ends the create within its one send, which takes at most bucketSendWait.
-	select {
-	case <-done:
-	case <-time.After(bucketSendWait + createSendWait):
-		t.Fatalf("the refused create was still being sent after %s", bucketSendWait+createSendWait)
-	}
+	// A refusal read as no answer is sent again until the shared wait gives up, and the create then
+	// fails naming that give-up; the refusal read as the answer ends the create after its one send.
+	testwait.Receive(t, "the refused create to fail", done)
 	for _, want := range []string{"create KV bucket DENIED: ", `Permissions Violation for Publish to "$JS.API.STREAM.CREATE.KV_DENIED"`} {
 		if !strings.Contains(recorder.message, want) {
 			t.Errorf("the refused create failed with %q, want it to name %q", recorder.message, want)

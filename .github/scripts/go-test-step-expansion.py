@@ -413,7 +413,7 @@ BACKEND_COUNT_TESTS = (
 # fixture's two tests, BACKEND_COUNT_TESTS and the rows whose bound is on time, which
 # envoy-go-alone runs (ci_job_reads.UNIT_ALONE_TESTS). Which packages each leg runs is
 # go_legs.py's, which the legs step's lister runs.
-UNIT_SKIP = ("'^(TestABatchCutOffInFlightKeepsItsOrder|TestABucketWaitWhoseLookupsAreHeldFailsByNameInTime|"
+UNIT_SKIP = ("'^(TestABatchCutOffInFlightKeepsItsOrder|"
              "TestAClaimLeftByAnotherProcessIsTakenWhenItLapses|TestADeletedBucketFailsAWriteWithinTheBudget|"
              "TestAHolderWhoseRecordFindsTheHoldAnothersStopsItsRenewal|"
              "TestAProcessReportsASilentNATSCutWithinSeconds|"
