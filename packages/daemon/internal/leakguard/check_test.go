@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/testexec"
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
@@ -679,37 +680,48 @@ func TestAReadASignalEndedKeepsWhatItPrinted(t *testing.T) {
 // started (deadlinePassedOnceStarted): a program the guard started in time may, on a loaded
 // machine, run its first line later, and a guard that started it late is named as one rather than
 // read as a stop of something else. The line is held to the stop beneath it, and the stop to the
-// caller's deadline (stopSaid), never to the two seconds whole.
+// caller's deadline (stopSaid), never to the two seconds whole. The same 2 s also bounds the
+// guard's work from the start it counted to the kernel's fork of the program (forkedWithin), read
+// from the start mark the stand-in writes as its first act: a guard that stalled after its own
+// start spent the bound before the program existed, which the start it counted cannot show.
 func TestAReadStoppedByItsBoundNamesItsProgramItsTimeAndItsBound(t *testing.T) {
-	// neverAnswers is the PATH entry of a directory whose one program is name, which marks started
-	// and sleeps past any test binary's deadline, in front of the test's own PATH: the guard's
-	// lookup finds it before the real one, and the check's bash still finds everything else.
-	neverAnswers := func(t *testing.T, name, started string) string {
+	const theBound = 2 * time.Second
+	// neverAnswers is the PATH entry of a directory whose one program is name, which writes its
+	// start mark to mark, then marks started, and sleeps past any test binary's deadline, in front
+	// of the test's own PATH: the guard's lookup finds it before the real one, and the check's
+	// bash still finds everything else. The mark is whole before started is there, so the
+	// deadline, which passes no sooner than started, cannot stop the program while it writes it.
+	neverAnswers := func(t *testing.T, name, started, mark string) string {
 		dir := t.TempDir()
-		if err := os.WriteFile(filepath.Join(dir, name), []byte("#!/bin/sh\n: >"+shQuote(started)+"\nexec sleep 86400\n"), 0o700); err != nil {
+		script := "#!/bin/sh\n" + testexec.MarkStart(shQuote(mark)) + "\n: >" + shQuote(started) + "\nexec sleep 86400\n"
+		if err := testexec.WriteFile(filepath.Join(dir, name), []byte(script), 0o700); err != nil {
 			t.Fatal(err)
 		}
 		return "PATH=" + dir + string(os.PathListSeparator) + os.Getenv("PATH")
 	}
 	t.Run("the gh visibility read", func(t *testing.T) {
 		started := filepath.Join(t.TempDir(), "started")
+		mark := filepath.Join(t.TempDir(), "mark")
 		guard := New(Options{
 			Check: leakguardtest.Write(t, t.TempDir(), passes),
-			Env:   withRules(t, append(fixtureenv.Isolated(t.TempDir()), neverAnswers(t, "gh", started))),
+			Env:   withRules(t, append(fixtureenv.Isolated(t.TempDir()), neverAnswers(t, "gh", started, mark))),
 		})
-		ctx := deadlinePassedOnceStarted(t, 2*time.Second, started)
+		ctx := deadlinePassedOnceStarted(t, theBound, started)
 		var err error
 		began := time.Now()
+		called := testexec.SinceBoot(t)
 		answered(t, "the text whose gh visibility read never answers", func() {
 			err = guard.Text(ctx, TextRequest{Repo: "invented-org/invented-repo", Text: "a clean title\n"})
 		})
 		says(t, setupFailure(t, err), "could not be read: "+stopSaid(t, ctx, err, "gh", began))
 		startedBeforeDue(t, ctx, err, "gh")
+		forkedWithin(t, ctx, err, "gh", mark, began, called, theBound)
 	})
 	t.Run("a git read of the push's records", func(t *testing.T) {
 		started := filepath.Join(t.TempDir(), "started")
-		guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public, neverAnswers(t, "git", started))
-		ctx := deadlinePassedOnceStarted(t, 2*time.Second, started)
+		mark := filepath.Join(t.TempDir(), "mark")
+		guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public, neverAnswers(t, "git", started, mark))
+		ctx := deadlinePassedOnceStarted(t, theBound, started)
 		// A local commit and a ref the destination does not hold yet: the guard asks git for the
 		// repository's remotes and then for the commits the push would add, which are reads the
 		// stand-in git never answers.
@@ -721,9 +733,11 @@ func TestAReadStoppedByItsBoundNamesItsProgramItsTimeAndItsBound(t *testing.T) {
 		}
 		var err error
 		began := time.Now()
+		called := testexec.SinceBoot(t)
 		answered(t, "the push whose git read never answers", func() { err = guard.Push(ctx, req) })
 		says(t, setupFailure(t, err), "the push's commits could not be read: "+stopSaid(t, ctx, err, "git", began))
 		startedBeforeDue(t, ctx, err, "git")
+		forkedWithin(t, ctx, err, "git", mark, began, called, theBound)
 	})
 }
 
@@ -760,6 +774,32 @@ func startedBeforeDue(t *testing.T, ctx dueDeadline, err error, program string) 
 	if began := deadline.Add(-stopped.bound); !began.Before(ctx.due) {
 		t.Errorf("the guard started %s %s after the caller's deadline was due, want it started before: its own work before %s took longer than the bound",
 			program, began.Sub(ctx.due).Round(time.Millisecond), program)
+	}
+}
+
+// forkedWithin fails the test unless the stop beneath err is of program and the kernel made
+// program's process less than bound after the start the guard counted (Guard.run,
+// Guard.readOutput): the bound the caller's deadline sets on the guard's own work between its
+// start and its child's fork, which startedBeforeDue, reading that start, cannot see. The fork is
+// the kernel's record of the process's start, which the stand-in wrote to mark as its first act
+// (testexec.MarkStart): no product code writes or moves it, and a loaded machine that brings the
+// stand-in to its first line late does not move it. The guard's start is the deadline the guard
+// read less the bound it gave program, as stopSaid reads it. calledAt and called are one moment,
+// on the test's clock and on the clock since boot the mark counts on, read just before the call;
+// they put the two on one clock, and the bound counts from the guard's start, never from the call.
+func forkedWithin(t *testing.T, ctx dueDeadline, err error, program, mark string, calledAt time.Time, called, bound time.Duration) {
+	t.Helper()
+	var stopped *stoppedError
+	if !errors.As(err, &stopped) || stopped.program != program {
+		t.Fatalf("%v carries no stop of %s beneath it", err, program)
+	}
+	deadline, _ := ctx.Deadline()
+	counted := deadline.Add(-stopped.bound).Sub(calledAt)
+	forked := testexec.StartedAfter(t, mark, called) - counted
+	t.Logf("the kernel made %s %s after the start the guard counted; the bound is %s", program, forked.Round(time.Millisecond), bound)
+	if forked >= bound {
+		t.Errorf("the kernel made %s %s after the start the guard counted, want it made within the caller's bound of %s: the guard's own work between its start and the fork of %s took the whole bound",
+			program, forked.Round(time.Millisecond), bound, program)
 	}
 }
 
