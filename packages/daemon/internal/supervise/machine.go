@@ -1264,6 +1264,17 @@ type Deps struct {
 	// retired rather than sent. It is asked only about a delivery that carries news, and nil leaves
 	// every task as it was queued.
 	DesignNews func(ctx context.Context, c Claim, d Delivery) (task string, news []byte, err error)
+	// TaskText is what a phase worker's held task says of its task's text now: the task with the
+	// owner's part it ends with holding the text of the task's block as the plan in force gives it,
+	// re-read from the record at the moment the task is about to be sent, and the news it carries
+	// with the start's own text (record.DeliveryNews.Task) rewritten the same way. A later version of
+	// the plan can change the text of a running task while its task waits, or after a turn of it was
+	// cut off and taken back (interrupted), and the task sent again, a fresh session's first among
+	// them, carries the text the plan holds then. A task that holds no owner's part, or the text
+	// already, is answered as it is. It is asked about a delivery that names a phase and a run, and
+	// never about the daemon's own delivery of a relaunch's record; nil leaves every task as it was
+	// queued.
+	TaskText func(ctx context.Context, c Claim, d Delivery) (task string, news []byte, err error)
 	// WorkingCopy is what a phase worker's held task (a delivery that names a phase) says now of
 	// the working copy its role works: its text and the news it carries (Delivery.News), with the
 	// task's working copy line written again, at the moment the task is about to be sent, from the
@@ -2137,6 +2148,11 @@ type Machine struct {
 	// ended them, for the daemon to read across a decision (TurnsEnded). It is atomic so that read
 	// never waits on mu.
 	turnsEnded atomic.Uint64
+	// launchWritten is the channel of the decision HandleStart runs, which the first try of a
+	// launch that decision writes closes once the store took the claim launching (writeTry), and
+	// nil for every other decision. It is set and read under mu, by that one decision alone, so no
+	// other decision's launch can close it.
+	launchWritten chan struct{}
 }
 
 // sending is the send in flight (startSend): its delivery id and generation, and whether an answer
@@ -2306,7 +2322,7 @@ func NewMachine(ctx context.Context, deps Deps, c Claim) (*Machine, error) {
 //
 // Handle gives ev through the store's rule first; the comment that opens handle's body says why.
 func (m *Machine) Handle(ctx context.Context, ev Event) error {
-	return m.handle(ctx, ev, nil)
+	return m.handle(ctx, ev, nil, nil)
 }
 
 // TurnOutcomeAnswer is what one turn-outcome report's decision left, read under that decision's
@@ -2329,16 +2345,38 @@ func (m *Machine) HandleTurnOutcome(ctx context.Context, r RequestTurnOutcome) (
 	err := m.handle(ctx, r, func() {
 		answer = TurnOutcomeAnswer{RefusedRun: m.claim.RefusedRun(), Failed: m.turnOutcomeFailed}
 		m.turnOutcomeFailed = false
-	})
+	}, nil)
 	if m.turnOutcomeDecided != nil {
 		m.turnOutcomeDecided()
 	}
 	return answer, err
 }
 
+// HandleStart is Handle on a goroutine of its own for a request that starts the claim — a resume,
+// an operator's retry, an operator's task that revives a suspended claim — so its caller can
+// answer once the start is under way rather than when it ends: a start under Kubernetes waits
+// minutes on a pod, and a caller that waited all of it timed out (dispatch://INFRA-5649 R4).
+// launched is closed once this decision writes the claim launching and the store has taken that
+// write (writeTry), which is the moment the published view shows the launch (View); it is never
+// closed for a decision that writes no launch — one refused, one whose launch the wake pacing
+// parks, one that fails its write. done receives what Handle answers once the decision ends, the
+// start included, and is buffered, so a caller that answered at launched and never reads it holds
+// nothing up.
+//
+// The decision runs on ctx, the caller's: a context that outlives the caller's request, ends at
+// the daemon's drain and carries a store mark of its own, since the goroutine runs beside the
+// caller (api's startUnderWay). A suspension cancels the start the decision runs, as it cancels
+// every start (stopStart).
+func (m *Machine) HandleStart(ctx context.Context, ev Event) (launched <-chan struct{}, done <-chan error) {
+	written, answer := make(chan struct{}), make(chan error, 1)
+	go func() { answer <- m.handle(ctx, ev, nil, written) }()
+	return written, answer
+}
+
 // handle is Handle, and calls read, when it is given, at the end of the decision with the lock
-// still held, whatever the decision returned.
-func (m *Machine) handle(ctx context.Context, ev Event, read func()) error {
+// still held, whatever the decision returned. launched is the channel a HandleStart caller waits
+// on for the launch written, nil for every other caller.
+func (m *Machine) handle(ctx context.Context, ev Event, read func(), launched chan struct{}) error {
 	// An event is a far side's or an agent's words — a session id, a task, an update round's id
 	// and reasons, a worker's head — and the claim keeps each text as the store keeps it, so the
 	// claim in memory, the store and a restart agree. So the event is given through the store's
@@ -2353,6 +2391,8 @@ func (m *Machine) handle(ctx context.Context, ev Event, read func()) error {
 	if read != nil {
 		defer read()
 	}
+	m.launchWritten = launched
+	defer func() { m.launchWritten = nil }()
 	// A refresh post carries a credit of the gate, and this decision is the last place that credit
 	// can come back if the machine does not take it: a state whose row ignores the post, a settle
 	// or fence that returns first, or a post for another claim (RefreshGate, the rule of return).
@@ -3747,7 +3787,8 @@ func (m *Machine) stopLetGo(ctx context.Context, waitsFor string) {
 // new boot token, written launching with no failure, then the backoff of a charged try. It
 // answers the boot token, or the error the launch ends with at this try, which launchTries
 // returns: a write the store did not take, which is tried again at the probe interval unless the
-// try's own context ended (relaunchAtProbe), or a backoff cut short.
+// try's own context ended (relaunchAtProbe), or a backoff cut short. A write the store took is
+// the moment a HandleStart caller answers at, so it tells that caller, once (launchWritten).
 func (m *Machine) writeTry(starting context.Context, l launchTry) (token string, err error) {
 	m.claim.Generation++
 	token = rand.Text()
@@ -3765,6 +3806,10 @@ func (m *Machine) writeTry(starting context.Context, l launchTry) (token string,
 			m.relaunchAtProbe(l)
 		}
 		return "", err
+	}
+	if m.launchWritten != nil {
+		close(m.launchWritten)
+		m.launchWritten = nil
 	}
 	if l.charged {
 		if err = m.backOff(starting); err != nil {

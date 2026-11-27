@@ -11,6 +11,7 @@ Your role prompt gives the workspace, the push, the handoff, `handoff_complete`,
 
 1. Read the issue, then your task, then each earlier phase's handoff (`dispatch handoff-read --issue <issue> --phase <plan|implement|test|review>`).
    Your architect's decisions for you come in your task, and in a reply in the thread of the plan task they concern, which its message links.
+   Read no list for your work, even one naming you.
    A record beats your memory.
 
 2. Commit only your phase's paths: `jj -R "$LEGION_WORKSPACE" split -m "<message>" <paths…>`.
@@ -87,12 +88,6 @@ Your role prompt gives the workspace, the push, the handoff, `handoff_complete`,
 - End every pull-request comment you post with `<!-- legion: {"session":"<session-id>","phase":"<phase>"} -->`, and no Dispatch comment or message:
   Dispatch records the session that wrote it.
 
-- Never run `gh config set` or `gh alias set`, and leave `GH_TOKEN`, `GITHUB_TOKEN` and `GH_HOST` unset:
-  a set variable outranks the gh directory the daemon refreshes.
-
-- Before you report a resource unreachable, or read a GitHub `404` as no access, try the call through `skill://agent-secrets` and read the profiles in `AWS_CONFIG_FILE`.
-  Request a secret only for your issue's work.
-
 - A comment on a pull request in a repository the implement App is installed on and your App is not takes the broker's implement App token, narrowed to that repository (`skill://legion-architect/references/operations.md#the-token-the-secrets-broker-lends`).
   It is the one write the token is lent to you for.
   A branch that your App cannot create is the implementer's work: send it to the architect as a cross-phase decision.
@@ -125,6 +120,8 @@ and the production check after the merge.
 
 - Builds, tests, tools or a database in the pod:
   `skill://legion-worker/references/tools.md`; before you unpack or install what the image lacks: `skill://legion-worker/references/withheld-capability.md`.
+
+- gh's variables, a credential, a resource that looks unreachable: `skill://legion-worker/references/gh-and-credentials.md`.
 
 - A problem outside your issue, a to-do only a person may do, another agent that needs an action, or a failed production check: `skill://legion-worker/references/findings.md`.
 

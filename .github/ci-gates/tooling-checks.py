@@ -17,6 +17,12 @@ GATE = gate("tooling_checks", TOOLING_JOB, reads=CLAUDE_ENVOY_BUILD + reads(
     ("scripts/e2e/lib/**", f"{at(TOOLING_JOB, 'Typecheck the plan ratings read test')}: scripts/e2e/lib/tsconfig.json"),
     ("packages/envoy-client/test/fake-dispatch.ts", f"`scripts/e2e/lib/agent-replay.test.ts#startFakeDispatch` imports it by path, and "
                                                     f"{at(TOOLING_JOB, 'Typecheck the plan ratings read test')} compiles that test"),
+    ("packages/envoy-client/test/keyed-layer.ts", "`scripts/dispatch/__tests__/moved-approval-production-check.test.ts#keyedLayer` "
+                                                  f"imports it by path, and {at(TOOLING_JOB, 'Typecheck the Dispatch census script')} "
+                                                  "compiles that test"),
+    ("packages/envoy-client/test/route-answers.ts", "`scripts/dispatch/__tests__/moved-approval-production-check.test.ts#routeAnswer` "
+                                                    f"imports it by path, and {at(TOOLING_JOB, 'Typecheck the Dispatch census script')} "
+                                                    "compiles that test"),
     ("packages/pi-shared/src/**", "packages/claude-envoy's build bundles it; scripts/sessions and scripts/dispatch typecheck against it"),
     (".github/actions/install-changie/**", at(TOOLING_JOB, "./.github/actions/install-changie")),
     (".github/ci-tools.yaml", "`.github/actions/install-changie/action.yml#ci_tools_field` and `.github/actions/install-changie/action.yml#ci_tools_fetch` installs the tarball of the changie row, "

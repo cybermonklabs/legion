@@ -18,7 +18,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/intake"
-	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
@@ -319,8 +318,9 @@ func TestALateChangesRequestLeavesTheNewerParkedDecision(t *testing.T) {
 }
 
 // The parked-decision notice goes where every controller notice goes: the outbox's next run
-// publishes it on the project's controller topic, as "parked-decision on <issue>".
-func TestAParkedDecisionIsPublishedOnTheControllerTopic(t *testing.T) {
+// publishes it on the controller's role topic, once the registered controller session holds the
+// role live, as "parked-decision on <issue>".
+func TestAParkedDecisionIsPublishedOnTheControllersRoleTopic(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
@@ -328,7 +328,9 @@ func TestAParkedDecisionIsPublishedOnTheControllerTopic(t *testing.T) {
 	noticeTree(t, pool, records, true)
 	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
 	architectClaim(t, sup, "LEGION-1", supervise.StateSuspended)
+	registerProjectControllerAs(t, pool.Config().ConnString(), "legion", "ses_controller")
 	publisher := &holderPublisher{}
+	publisher.holds(legionController, "ses_controller")
 	runner := &outbox{log: quietLogger(), pool: pool, dispatchProject: "LEGION", records: records, notices: publisher, supervisor: sup, project: "legion", now: time.Now}
 	decision := record.Notice{Kind: "design-approved", Version: 3, Actor: "user:alice", Ref: "dispatch://LEGION-1/spec"}
 	enqueueOutbox(t, pool, records, mustOutboxRow(t, "LEGION-1", decision, time.Now()))
@@ -339,9 +341,9 @@ func TestAParkedDecisionIsPublishedOnTheControllerTopic(t *testing.T) {
 	}
 	_, delivered := publisher.snapshot()
 	want := record.Notice{Kind: record.ParkedDecisionNotice, Decision: record.DecisionDesignApproved, Root: "LEGION-1", Ref: "dispatch://LEGION-1/spec", Actor: "user:alice", Version: 3}
-	if len(delivered) != 1 || delivered[0].topic != notify.ControllerTopic("legion") || delivered[0].message != "parked-decision on LEGION-1" ||
+	if len(delivered) != 1 || delivered[0].topic != controllerRoleTopic || delivered[0].message != "parked-decision on LEGION-1" ||
 		!reflect.DeepEqual(delivered[0].payload, want) {
-		t.Fatalf("delivered %+v, want one %#v on %s as parked-decision on LEGION-1", delivered, want, notify.ControllerTopic("legion"))
+		t.Fatalf("delivered %+v, want one %#v on %s as parked-decision on LEGION-1", delivered, want, controllerRoleTopic)
 	}
 }
 

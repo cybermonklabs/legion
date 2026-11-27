@@ -123,7 +123,7 @@ func (a *Admission) quietTrees(ctx context.Context, tx pgx.Tx, issues []record.I
 //     counts at work are built (workingTrees), which reads the runs of the project's phase
 //     workers in ready once, in one batched record.Store.RoleRuns read, and only where the
 //     deployment sets `worker_silence_minutes`; a pass with no such tree builds nothing here;
-//  3. whether a controller is registered (record.Store.ControllerRegistered, one read). It is a
+//  3. whether a controller is registered (record.Store.ControllerSession, one read). It is a
 //     refusal wakeController makes below, and one that answers for every root of this pass at
 //     once, so a project with no controller registered builds no membership and judges no tree
 //     for a notice that could not be queued;
@@ -218,9 +218,10 @@ func (a *Admission) tellStalledTrees(ctx context.Context, tx pgx.Tx, issues []re
 	// Step 3: the refusal that answers for every root of this pass at once, asked before
 	// anything is built for a notice it would refuse. A controller that is not registered
 	// refuses the whole pass with one read, so nothing below is gathered or judged for a notice
-	// nothing would read.
-	registered, err := a.store.ControllerRegistered(ctx, tx, a.project)
-	if err != nil || !registered {
+	// wakeController would not queue: the controller that registers next reads the project's
+	// state at its start.
+	session, err := a.store.ControllerSession(ctx, tx, a.project)
+	if err != nil || session == "" {
 		return err
 	}
 	// Step 4: the tree is its root and the issues under it the workflow still runs

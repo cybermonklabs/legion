@@ -1077,12 +1077,12 @@ func TestTheArchitectWakeOpensTheEntrySweepsGateUntilItIsTold(t *testing.T) {
 
 // An arm read while no controller is registered is marked for nobody and queued for nobody, as
 // every wake of the daemon that keeps a mark is (admit's wakeController, tellStalledTrees). A
-// controller that registers later reads its notices from the end of the stream, so a wake queued
-// before it would reach nobody, and a mark written with it would keep the arm from being told
-// again in that run. So the pass leaves the stall as it found it, and the sweep's gate answers no
-// for a stall alone while nobody would hear of it: a gate that answered yes would apply an entry
-// sweep's fact every minute for as long as no controller runs. The first pass after a controller
-// registers tells it, once.
+// controller that registers later reads the project's state at its start (`legion state` and
+// Dispatch), so a wake queued before it would wait in the outbox and repeat what it reads, and
+// the mark written beside it would keep the arm from being told again in that run. So the pass
+// leaves the stall as it found it, and the sweep's gate answers no for a stall alone while nobody
+// would hear of it: a gate that answered yes would apply an entry sweep's fact every minute for
+// as long as no controller runs. The first pass after a controller registers tells it, once.
 func TestAnArchitectWakeWaitsForARegisteredController(t *testing.T) {
 	pool := migratedPool(t)
 	admission := quiet(t, 1)
