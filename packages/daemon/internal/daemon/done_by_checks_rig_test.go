@@ -227,7 +227,9 @@ func (r *doneByChecksRig) documents(key string, issue doneByChecksIssueSpec) {
 // issue says, as newStepRecordsRigWith seeds a walk (seed): its gate approved and its architect's
 // launch unfinished, on its pull request open at its head. A root at its review stands in reviewing
 // at generation 1 with every column of this release at its default, as the migration leaves a row
-// of the release before; every other root stands at admitted.
+// of the release before, and its reviewer's launch is one that release began and never recorded,
+// which the boot relaunches as it relaunches the architect's: the boot starts no role of a phase
+// the record already stands in. Every other root stands at admitted.
 func (r *doneByChecksRig) seedIssue(issue doneByChecksIssueSpec, created createdIssue) {
 	t := r.t
 	t.Helper()
@@ -250,6 +252,17 @@ func (r *doneByChecksRig) seedIssue(issue doneByChecksIssueSpec, created created
 	}); err != nil {
 		t.Fatalf("seed %s: %v", r.key, err)
 	}
+	if !issue.reviewing {
+		return
+	}
+	reviewer := r.token(claim.RoleReviewer)
+	if _, err := r.st.AdmitClaim(ctx, supervise.Claim{
+		Token: reviewer, Project: r.project, Tree: r.key, Issue: r.key, Role: claim.RoleReviewer,
+		Generation: 1, State: supervise.StateLaunching, BootTokenHash: supervise.HashBootToken("interrupted-" + randomSuffix(t)),
+	}); err != nil {
+		t.Fatalf("record the reviewer's unfinished launch on %s: %v", r.key, err)
+	}
+	writePrompt(t, r.cfg, reviewer)
 }
 
 // childInReviewing files child, an issue of the walk's issue, a running root, as
