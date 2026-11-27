@@ -764,14 +764,7 @@ func replaceInput(dir string, head Window, name string, lines []json.RawMessage)
 		return fmt.Errorf("write the window to %s: %w", dir, err)
 	}
 	sum := sha256.Sum256(data)
-	files := make(map[string]string, len(head.Files)+1)
-	maps.Copy(files, head.Files)
-	files[name] = hex.EncodeToString(sum[:])
-	head.Files = files
-	if err := head.checkSignals(heldInputs(head.Files)); err != nil {
-		return fmt.Errorf("write the window to %s: %w", dir, err)
-	}
-	window, err := marshalWindow(head)
+	_, window, err := recordedHead(head, name, hex.EncodeToString(sum[:]))
 	if err != nil {
 		return fmt.Errorf("write the window to %s: %w", dir, err)
 	}
@@ -784,6 +777,37 @@ func replaceInput(dir string, head Window, name string, lines []json.RawMessage)
 		}
 	}
 	return nil
+}
+
+// recordInput writes the window.json of the window in dir that records sum as the sha256 of its
+// input name, whose file it leaves as it is, and is that window: head, the window as
+// readWindowHead read it, with sum in its files, written as replaceInput writes it.
+func recordInput(dir string, head Window, name, sum string) (Window, error) {
+	head, window, err := recordedHead(head, name, sum)
+	if err == nil {
+		err = replaceFile(filepath.Join(dir, windowFile), window)
+	}
+	if err != nil {
+		return Window{}, fmt.Errorf("write the window to %s: %w", dir, err)
+	}
+	return head, nil
+}
+
+// recordedHead is head with sum as the sha256 of its input name, and its window.json as Write
+// writes it, once its record of the signals is checked (checkSignals).
+func recordedHead(head Window, name, sum string) (Window, []byte, error) {
+	files := make(map[string]string, len(head.Files)+1)
+	maps.Copy(files, head.Files)
+	files[name] = sum
+	head.Files = files
+	if err := head.checkSignals(heldInputs(head.Files)); err != nil {
+		return Window{}, nil, err
+	}
+	window, err := marshalWindow(head)
+	if err != nil {
+		return Window{}, nil, err
+	}
+	return head, window, nil
 }
 
 // replaceFile writes data as file, whose directory it creates where it is missing, through a

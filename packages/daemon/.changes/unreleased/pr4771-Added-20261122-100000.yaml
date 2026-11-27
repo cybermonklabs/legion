@@ -12,7 +12,11 @@ body: |-
     estimates separately, and writes each commit's committer's time beside it as `committed`.
     `collect-git` adds, for each pull request of the window, its heads, the paths each head changes
     and git's own verdict of merging each head with each later commit of its base that changes one
-    of those paths, and names each input it could not get with its reason. Its `--fetch-only`
+    of those paths, with the count of the paths in conflict but not the paths, and names each
+    input it could not get with its reason. Its file grows by appending each pull request's block,
+    ended by a done line, as a phase finishes it, so a run goes on from a file that a kill stopped,
+    or from a copy of the file taken at any moment, writes only the blocks that the file does not
+    hold, and ends with the bytes of one whole run. Its `--fetch-only`
     runs only the git phase's fetches, where the git credential is, and its `--merge-only` runs
     only the reads and merges, on a copy of that clone, and opens no connection to the remote, so
     a private repository's merges run on a machine that holds no credential. Its `--parallel`

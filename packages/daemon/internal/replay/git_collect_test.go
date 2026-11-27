@@ -67,7 +67,7 @@ func (r *gitRemote) gitInput(stdin string, args ...string) string {
 
 // mergedAlone is git's verdict at base of head merged alone, as git merge-tree --write-tree
 // --no-messages --name-only -z <base> <head> in the repository gives it: clean on exit 0, and a
-// conflict in the paths it names after the merged tree, sorted, on exit 1.
+// conflict in the distinct paths it names after the merged tree, counted, on exit 1.
 func (r *gitRemote) mergedAlone(base, head string) GitVerdict {
 	r.t.Helper()
 	cmd := exec.Command("git", "merge-tree", "--write-tree", "--no-messages", "--name-only", "-z", base, head)
@@ -81,7 +81,7 @@ func (r *gitRemote) mergedAlone(base, head string) GitVerdict {
 	}
 	paths := strings.Split(strings.TrimSuffix(string(out), "\x00"), "\x00")[1:]
 	slices.Sort(paths)
-	return GitVerdict{Base: base, Conflict: conflict, Paths: paths}
+	return GitVerdict{Base: base, Conflict: conflict, PathCount: len(slices.Compact(paths))}
 }
 
 // commit writes files, by name, on the branch checked out and commits them as message, and is the
@@ -351,42 +351,49 @@ func gitFileLines(t *testing.T, dir, prefix string) []string {
 const fetchFailed = "git fetch of the commit alone: git exits 128: "
 
 // wantLines is the case's git file as one run of both phases writes it, or, with gitPhase false, as
-// the GitHub phase alone writes it.
+// the GitHub phase alone writes it: the GitHub phase's block of #12 and of #13, each ended by its
+// done line; then git's: the commits' block, #12's block of the readings of its three heads, and
+// #13's of the missing input of its one head.
 func (c *gitCase) wantLines(gitPhase bool) []string {
-	var lines []string
-	if gitPhase {
-		for _, commit := range []struct{ sha, path string }{{c.m1, "f.txt"}, {c.m2, "other.txt"}, {c.m3, "f.txt"}, {c.m4, "f.txt"}, {c.m5, "f.txt"},
-			{c.m6, "f.txt"}, {c.c1, "g.txt"}} {
-			lines = append(lines, fmt.Sprintf(`{"kind":"commit","sha":%q,"paths":[%q]}`, commit.sha, commit.path))
-		}
+	head := func(pr int, sha, at, from string) string {
+		return fmt.Sprintf(`{"kind":"head","pr":%d,"sha":%q,"at":"2001-03-05T%sZ","from":%q}`, pr, sha, at, from)
+	}
+	lines := []string{
+		fmt.Sprintf(`{"kind":"pull","pr":12,"merge":%q,"base":"main","baseChanges":["2001-03-05T10:03:00Z"],"heads":3}`, c.m5),
+		head(12, c.p1, "07:30:00", "commit"),
+		head(12, c.p1b, "09:30:00", "read"),
+		head(12, c.p2, "10:00:00", "force-push"),
+		`{"kind":"done","pr":12}`,
+		`{"kind":"pull","pr":13,"merge":"","base":"main","baseChanges":[],"heads":1}`,
+		head(13, unreachableHead, "09:15:00", "commit"),
+		`{"kind":"done","pr":13}`,
+	}
+	if !gitPhase {
+		return lines
+	}
+	for _, commit := range []struct{ sha, path string }{{c.m1, "f.txt"}, {c.m2, "other.txt"}, {c.m3, "f.txt"}, {c.m4, "f.txt"}, {c.m5, "f.txt"},
+		{c.m6, "f.txt"}, {c.c1, "g.txt"}} {
+		lines = append(lines, fmt.Sprintf(`{"kind":"commit","sha":%q,"paths":[%q]}`, commit.sha, commit.path))
 	}
 	verdict := func(base string, conflict bool) string {
 		if conflict {
-			return fmt.Sprintf(`{"base":%q,"conflict":true,"paths":["f.txt"]}`, base)
+			return fmt.Sprintf(`{"base":%q,"conflict":true,"pathCount":1}`, base)
 		}
-		return fmt.Sprintf(`{"base":%q,"conflict":false,"paths":[]}`, base)
+		return fmt.Sprintf(`{"base":%q,"conflict":false,"pathCount":0}`, base)
 	}
-	head := func(pr int, sha, at, from, read string) string {
-		line := fmt.Sprintf(`{"kind":"head","pr":%d,"sha":%q,"at":"2001-03-05T%sZ","from":%q`, pr, sha, at, from)
-		if gitPhase && read != "" {
-			line += "," + read
-		}
-		return line + "}"
+	reading := func(sha, mergeBase, paths string, verdicts ...string) string {
+		return fmt.Sprintf(`{"kind":"reading","pr":12,"sha":%q,"tip":%q,"mergeBase":%q,"paths":%s,"verdicts":[%s]}`, sha, c.m4, mergeBase, paths,
+			strings.Join(verdicts, ","))
 	}
-	fromC1 := fmt.Sprintf(`"tip":%q,"mergeBase":%q,"paths":%%s,"verdicts":[%s,%s,%s]`, c.m4, c.c1, verdict(c.m1, false), verdict(c.m3, true), verdict(c.m4, true))
-	lines = append(lines,
-		fmt.Sprintf(`{"kind":"pull","pr":12,"merge":%q,"base":"main","baseChanges":["2001-03-05T10:03:00Z"],"heads":3}`, c.m5),
-		head(12, c.p1, "07:30:00", "commit", fmt.Sprintf(fromC1, `["f.txt"]`)),
-		head(12, c.p1b, "09:30:00", "read", fmt.Sprintf(fromC1, `["f.txt","h.txt"]`)),
-		head(12, c.p2, "10:00:00", "force-push", fmt.Sprintf(`"tip":%q,"mergeBase":%q,"paths":["f.txt"],"verdicts":[%s,%s]`, c.m4, c.m1,
-			verdict(c.m3, true), verdict(c.m4, true))),
-		`{"kind":"pull","pr":13,"merge":"","base":"main","baseChanges":[],"heads":1}`,
-		head(13, unreachableHead, "09:15:00", "commit", ""))
-	if gitPhase {
-		lines = append(lines, fmt.Sprintf(`{"kind":"missing","pr":13,"head":%q,"base":"","reason":"head-unreachable","detail":"%s%s"}`,
-			unreachableHead, fetchFailed, gitDetailOfGit))
-	}
-	return lines
+	fromC1 := []string{verdict(c.m1, false), verdict(c.m3, true), verdict(c.m4, true)}
+	return append(lines, `{"kind":"done","pr":0}`,
+		reading(c.p1, c.c1, `["f.txt"]`, fromC1...),
+		reading(c.p1b, c.c1, `["f.txt","h.txt"]`, fromC1...),
+		reading(c.p2, c.m1, `["f.txt"]`, verdict(c.m3, true), verdict(c.m4, true)),
+		`{"kind":"done","pr":12}`,
+		fmt.Sprintf(`{"kind":"missing","pr":13,"head":%q,"base":"","reason":"head-unreachable","detail":"%s%s"}`, unreachableHead, fetchFailed,
+			gitDetailOfGit),
+		`{"kind":"done","pr":13}`)
 }
 
 // describeLines is lines, one to a line, for a failure's message.
@@ -479,9 +486,10 @@ func TestCollectGitWritesEachHeadsVerdictsAndSendsGetAlone(t *testing.T) {
 // files changed (githubTooManyFiles), is a pull-unread missing input, as one GitHub has no record of
 // is a pull-not-found one, and the collection goes on to the next pull request. Every read of #12
 // answers so, retryAttempts reads, and #12's timeline is not read; the git file holds no pull or
-// head line of #12 but its missing line, which the git phase keeps, beside #13 as one run writes it
-// (gitCase), and the run counts it. It fails where the refusal fails the collection, where #12's
-// timeline is read, or where the missing line is dropped.
+// head line of #12 but its missing line, the GitHub phase's block of #12, which the git phase
+// keeps and writes no block of, beside #13 as one run writes it (gitCase), and the run counts it.
+// It fails where the refusal fails the collection, where #12's timeline is read, or where the
+// missing line is dropped.
 func TestCollectGitWritesAPullRequestGitHubWillNotReadAsPullUnread(t *testing.T) {
 	t.Parallel()
 	c := newGitCase(t)
@@ -504,9 +512,11 @@ func TestCollectGitWritesAPullRequestGitHubWillNotReadAsPullUnread(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := slices.DeleteFunc(c.wantLines(true), func(line string) bool { return strings.Contains(line, `"pr":12,`) })
-	// #12's missing line sorts before #13's, the file's last.
-	want = slices.Insert(want, len(want)-1, fmt.Sprintf(`{"kind":"missing","pr":12,"head":"","base":"","reason":"pull-unread","detail":%s}`, detail))
+	want := slices.DeleteFunc(c.wantLines(true), func(line string) bool {
+		return strings.Contains(line, `"pr":12,`) || line == `{"kind":"done","pr":12}`
+	})
+	want = slices.Insert(want, 0, fmt.Sprintf(`{"kind":"missing","pr":12,"head":"","base":"","reason":"pull-unread","detail":%s}`, detail),
+		`{"kind":"done","pr":12}`)
 	if got := gitFileLines(t, dir, fetchFailed); !slices.Equal(got, want) {
 		t.Errorf("the git file holds%s\nwant%s", describeLines(got), describeLines(want))
 	}
@@ -915,10 +925,10 @@ func TestCollectGitReadsAHeadTwoPullRequestsShareOnce(t *testing.T) {
 // pair, and the merge writes nothing into the clone. Here the git file alone gives #13, which did
 // not merge, the one head q, off c1, which changes f.txt's fifth line as p1 does and other.txt, so q
 // reads against m6, and each of m1 to m6 changes one of its paths. git runs one merge-tree, and q's
-// verdicts are those git gives each pair merged alone: clean at m1, a conflict in other.txt at m2,
-// in f.txt and other.txt at m3 and m4, and in other.txt alone at m5 and m6, which change f.txt's
-// fifth line as q does. The clone's objects directory holds after the run the files it held as the
-// merge-tree was about to run, and the clone no directory of the merges' objects
+// verdicts are those git gives each pair merged alone: clean at m1, a conflict in one path, other.txt,
+// at m2, in two, f.txt and other.txt, at m3 and m4, and in other.txt alone at m5 and m6, which
+// change f.txt's fifth line as q does. The clone's objects directory holds after the run the files
+// it held as the merge-tree was about to run, and the clone no directory of the merges' objects
 // (checkMergesWroteNothing). It fails where git runs a merge-tree for each pair, where a verdict is
 // not the one of its pair merged alone, or where the merge-tree wrote its trees and blobs into the
 // clone or left its object directory there.
@@ -941,11 +951,10 @@ func TestCollectGitMergesAHeadWithItsBasesInOneMergeTree(t *testing.T) {
 	if got, want := callsOf(calls.take(), "merge-tree"), [][]string{batchMergeTree}; !slices.EqualFunc(got, want, slices.Equal[[]string]) {
 		t.Errorf("git ran the merge-trees %q, want the one %q of q's six bases", got, want)
 	}
-	conflict := func(base string, paths ...string) GitVerdict {
-		return GitVerdict{Base: base, Conflict: true, Paths: paths}
+	conflict := func(base string, paths int) GitVerdict {
+		return GitVerdict{Base: base, Conflict: true, PathCount: paths}
 	}
-	want := []GitVerdict{{Base: c.m1, Paths: []string{}}, conflict(c.m2, "other.txt"), conflict(c.m3, "f.txt", "other.txt"),
-		conflict(c.m4, "f.txt", "other.txt"), conflict(c.m5, "other.txt"), conflict(c.m6, "other.txt")}
+	want := []GitVerdict{{Base: c.m1}, conflict(c.m2, 1), conflict(c.m3, 2), conflict(c.m4, 2), conflict(c.m5, 1), conflict(c.m6, 1)}
 	alone := make([]GitVerdict, len(want))
 	for i, verdict := range want {
 		alone[i] = c.remote.mergedAlone(verdict.Base, q)
@@ -1034,9 +1043,8 @@ func TestCollectGitMergesAloneWhatItsMergeTreeStdinDidNotGive(t *testing.T) {
 	if !held || len(pull.Heads) != 1 {
 		t.Fatalf("the git file holds #13 as %+v (%v), want its head p1", pull, held)
 	}
-	clean := func(base string) GitVerdict { return GitVerdict{Base: base, Paths: []string{}} }
-	want := []GitVerdict{clean(c.m1), {Base: c.m3, Conflict: true, Paths: []string{"f.txt"}}, {Base: c.m4, Conflict: true, Paths: []string{"f.txt"}},
-		clean(c.m5), clean(c.m6)}
+	clean := func(base string) GitVerdict { return GitVerdict{Base: base} }
+	want := []GitVerdict{clean(c.m1), {Base: c.m3, Conflict: true, PathCount: 1}, {Base: c.m4, Conflict: true, PathCount: 1}, clean(c.m5), clean(c.m6)}
 	if h := pull.Heads[0]; h.Tip != y || h.MergeBase != c.c1 || !sameReading(h.Verdicts, want) {
 		t.Errorf("the git file holds p1 as %s, want it read against y from c1 with the verdicts %s", describeReading(h), describeReading(want))
 	}
@@ -1245,7 +1253,8 @@ func TestCollectGitMergingAloneOpensNoConnectionToTheRemote(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := c.wantLines(true)
-	want[len(want)-1] = fmt.Sprintf(`{"kind":"missing","pr":13,"head":%q,"base":"","reason":"head-unreachable","detail":%q}`, unreachableHead, notInClone)
+	// #13's missing line, before the done line that ends git's block of #13, the file's last.
+	want[len(want)-2] = fmt.Sprintf(`{"kind":"missing","pr":13,"head":%q,"base":"","reason":"head-unreachable","detail":%q}`, unreachableHead, notInClone)
 	if got := gitFileLines(t, dir, fetchFailed); !slices.Equal(got, want) {
 		t.Errorf("the merging alone wrote%s\nwant%s", describeLines(got), describeLines(want))
 	}
@@ -1730,5 +1739,202 @@ func TestCollectGitRefusesAParallelCountWhereNoMergeRuns(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, "git")); !errors.Is(err, fs.ErrNotExist) {
 		t.Errorf("a refused run left the window's git directory (%v)", err)
+	}
+}
+
+// gitFileOf is the path of the window's git file of acme/widgets, in dir.
+func gitFileOf(dir string) string {
+	return filepath.Join(dir, "git", "acme__widgets.jsonl")
+}
+
+// The git file grows by appending: as a phase finishes each pull request it adds the pull
+// request's block at the file's end, and changes no byte the file held before. Here one run of
+// both phases of the case (gitCase), and a run of the git phase alone with Parallel 4 on the file
+// the GitHub phase wrote of five pull requests (parallelPulls), read the file before the run and
+// as Finished is told of each pull request: each reading begins with the one before and is longer,
+// and the file the run leaves begins with the last. It fails where a pull request's lines go
+// anywhere but the file's end, or where the file is written again whole with other bytes.
+func TestTheGitFileGrowsByAppendingEachPullRequest(t *testing.T) {
+	t.Parallel()
+	for _, run := range []struct {
+		name     string
+		gitOnly  bool
+		parallel int
+	}{{"one run of both phases", false, 1}, {"the git phase alone with Parallel 4", true, 4}} {
+		t.Run(run.name, func(t *testing.T) {
+			t.Parallel()
+			c := newGitCase(t)
+			if run.gitOnly {
+				c.parallelPulls(t)
+			}
+			dir, clones := c.windowDir(t), filepath.Join(t.TempDir(), "clones")
+			config := c.config(dir, clones, &gitCalls{})
+			if run.gitOnly {
+				config = c.gitOnly(dir, clones, &gitCalls{})
+			}
+			var grown [][]byte
+			when := []string{"the run's start"}
+			read := func() {
+				data, err := os.ReadFile(gitFileOf(dir))
+				if err != nil && !errors.Is(err, fs.ErrNotExist) {
+					t.Error(err)
+				}
+				grown = append(grown, data)
+			}
+			read()
+			config.Parallel, config.Finished = run.parallel, func(done GitPullFinished) {
+				when = append(when, fmt.Sprintf("the %s phase finished #%d", done.Phase, done.PR))
+				read()
+			}
+			if _, err := CollectGit(context.Background(), config); err != nil {
+				t.Fatalf("CollectGit: %v", err)
+			}
+			when = append(when, "the run ended")
+			read()
+			for i := 1; i < len(grown); i++ {
+				switch {
+				case !bytes.HasPrefix(grown[i], grown[i-1]):
+					t.Errorf("as %s the git file holds\n%s\nwhich does not begin with what it held as %s:\n%s", when[i], grown[i], when[i-1], grown[i-1])
+				case i < len(grown)-1 && len(grown[i]) == len(grown[i-1]):
+					t.Errorf("as %s the git file holds what it held as %s, with no block of the pull request", when[i], when[i-1])
+				}
+			}
+		})
+	}
+}
+
+// A run stopped as it finishes its first pull request of a phase leaves a file that a run again
+// goes on from to the bytes one whole run writes. Here a run of both phases of the case (gitCase)
+// is stopped as Finished is told of #12, of the GitHub phase and of the git phase, with Parallel 1
+// and with Parallel 4; the run ends with the context's error, and a run again with the same
+// Parallel writes the git file and window.json one run with Parallel 1 writes, byte for byte. It
+// fails where a stopped run leaves a file a run again cannot go on from, or where the run again
+// writes other bytes.
+func TestTheGitFileOfAStoppedRunGoesOnToTheBytesOfOneRun(t *testing.T) {
+	t.Parallel()
+	c := newGitCase(t)
+	whole := c.windowDir(t)
+	if _, err := CollectGit(context.Background(), c.config(whole, filepath.Join(t.TempDir(), "clones"), &gitCalls{})); err != nil {
+		t.Fatalf("CollectGit: %v", err)
+	}
+	want := windowBytes(t, whole)
+	for _, parallel := range []int{1, 4} {
+		for _, phase := range []string{GitPhaseGitHub, GitPhaseGit} {
+			dir, clones := c.windowDir(t), filepath.Join(t.TempDir(), "clones")
+			ctx, cancel := context.WithCancel(context.Background())
+			config := c.config(dir, clones, &gitCalls{})
+			config.Parallel, config.Finished = parallel, func(done GitPullFinished) {
+				if done.Phase == phase && done.PR == 12 {
+					cancel()
+				}
+			}
+			_, err := CollectGit(ctx, config)
+			cancel()
+			if !errors.Is(err, context.Canceled) {
+				t.Errorf("CollectGit with Parallel %d, stopped as the %s phase finished #12 = %v, want the context's cancellation", parallel, phase, err)
+				continue
+			}
+			config = c.config(dir, clones, &gitCalls{})
+			config.Parallel = parallel
+			if _, err := CollectGit(context.Background(), config); err != nil {
+				t.Errorf("CollectGit with Parallel %d again, after a run stopped as the %s phase finished #12: %v", parallel, phase, err)
+				continue
+			}
+			checkSameBytes(t, fmt.Sprintf("the window a run with Parallel %d again wrote after a run stopped as the %s phase finished #12", parallel, phase),
+				windowBytes(t, dir), want)
+		}
+	}
+}
+
+// A run goes on from a copy of the git file taken at any moment, whatever window.json, which such a
+// copy does not come with, says of the file. Here one run of both phases of the case (gitCase)
+// writes the file F and window.json J; then, for each line of F, a window as collect wrote it,
+// whose window.json names no git file, is given F cut in the middle of that line, and F cut after
+// it, and a run of both phases writes F and J byte for byte: the block a stopped write left short,
+// its last line whole or not, is cut off and its pull request read again. So does a run on F whole
+// beside the window.json the GitHub phase alone wrote, which names another sha256 of the file, and
+// on F cut to nothing. It fails where a run refuses such a file or window.json, or writes other
+// bytes.
+func TestTheGitFileGoesOnFromACopyCutAnywhere(t *testing.T) {
+	t.Parallel()
+	c := newGitCase(t)
+	whole, clones := c.windowDir(t), filepath.Join(t.TempDir(), "clones")
+	if _, err := CollectGit(context.Background(), c.config(whole, clones, &gitCalls{})); err != nil {
+		t.Fatalf("CollectGit: %v", err)
+	}
+	want := windowBytes(t, whole)
+	file := want["git/acme__widgets.jsonl"]
+	goOn := func(what, dir string, data []byte) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Dir(gitFileOf(dir)), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(gitFileOf(dir), data, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := CollectGit(context.Background(), c.config(dir, clones, &gitCalls{})); err != nil {
+			t.Errorf("CollectGit on %s: %v", what, err)
+			return
+		}
+		checkSameBytes(t, "the window a run wrote on "+what, windowBytes(t, dir), want)
+	}
+	goOn("the file cut to nothing", c.windowDir(t), nil)
+	for at, number := 0, 1; at < len(file); number++ {
+		end := at + bytes.IndexByte(file[at:], '\n') + 1
+		goOn(fmt.Sprintf("the file cut in the middle of its line %d", number), c.windowDir(t), file[:at+(end-at)/2])
+		goOn(fmt.Sprintf("the file cut after its line %d", number), c.windowDir(t), file[:end])
+		at = end
+	}
+	stale := c.windowDir(t)
+	config := c.config(stale, clones, &gitCalls{})
+	config.GitHubOnly = true
+	if _, err := CollectGit(context.Background(), config); err != nil {
+		t.Fatalf("CollectGit --github-only: %v", err)
+	}
+	goOn("the whole file beside the window.json of the GitHub phase alone", stale, file)
+}
+
+// A run refuses, before any read of GitHub or git and with nothing written, a git file whose lines
+// after its last done line are no stopped write's: here, beside a window.json that names no git
+// file, a file of the older form, its commit line, pull line and a head line that holds the head's
+// reading and a verdict that lists its paths, none of them a done line; and the file one run of the
+// case writes (gitCase) with a line that is no JSON object after it. It fails where a run cuts such
+// lines away or reads the file on.
+func TestTheGitFileOfAnOlderFormIsRefusedAndKept(t *testing.T) {
+	t.Parallel()
+	c := newGitCase(t)
+	whole, clones := c.windowDir(t), filepath.Join(t.TempDir(), "clones")
+	if _, err := CollectGit(context.Background(), c.config(whole, clones, &gitCalls{})); err != nil {
+		t.Fatalf("CollectGit: %v", err)
+	}
+	file := windowBytes(t, whole)["git/acme__widgets.jsonl"]
+	older := []string{
+		fmt.Sprintf(`{"kind":"commit","sha":%q,"paths":["f.txt"]}`, c.m1),
+		`{"kind":"pull","pr":13,"merge":"","base":"main","baseChanges":[],"heads":1}`,
+		fmt.Sprintf(`{"kind":"head","pr":13,"sha":%q,"at":"2001-03-05T09:15:00Z","from":"commit","tip":%q,"mergeBase":%q,"paths":["f.txt"],`+
+			`"verdicts":[{"base":%q,"conflict":true,"paths":["f.txt"]}]}`, c.p1, c.m6, c.c1, c.m3),
+	}
+	for _, test := range []struct {
+		name, data, want string
+	}{
+		{"a git file of the older form", strings.Join(older, "\n") + "\n", "lines of more than one block after the last done line"},
+		{"a git file with a line that is no JSON object after its last done line", string(file) + "no JSON object\n", "git/acme__widgets.jsonl line"},
+	} {
+		dir := c.windowDir(t)
+		if err := os.MkdirAll(filepath.Dir(gitFileOf(dir)), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(gitFileOf(dir), []byte(test.data), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		before := windowBytes(t, dir)
+		calls, requests := &gitCalls{}, len(c.seen.all())
+		if _, err := CollectGit(context.Background(), c.config(dir, clones, calls)); err == nil || !strings.Contains(err.Error(), test.want) {
+			t.Errorf("CollectGit on %s = %v, want a refusal that says %q", test.name, err, test.want)
+		}
+		if ran, sent := calls.take(), c.seen.all()[requests:]; len(ran) != 0 || len(sent) != 0 {
+			t.Errorf("the refused run on %s ran git %q and sent GitHub %v, want nothing", test.name, ran, sent)
+		}
+		checkSameBytes(t, "the window after the refused run on "+test.name, windowBytes(t, dir), before)
 	}
 }
