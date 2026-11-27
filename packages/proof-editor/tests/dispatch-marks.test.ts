@@ -80,15 +80,15 @@ test("an ask span nested inside another reads back from markdown as both asks", 
 const ask = (id: string) => `<span data-dispatch="ask" data-id="${id}" data-by="user:${id}">`;
 /** Markdown of `lines`, each a block of its own. */
 const blocks = (...lines: string[]) => `${lines.join("\n\n")}\n`;
-/** A document of `paragraphs`, each the JSON main printed for it. */
-const docJson = (...paragraphs: string[]) => `{"type":"doc","content":[${paragraphs.join(",")}]}`;
+/** A document of the top-level `nodes`, each the JSON main printed for it. */
+const docJson = (...nodes: string[]) => `{"type":"doc","content":[${nodes.join(",")}]}`;
 
 // Asks nested inline and across blocks. An ask's opening and closing tags each on a line of their
 // own are blocks of HTML, which `normalizeSplitDispatchSpans` pairs into one ask holding whole
 // paragraphs, and Milkdown's parser drops every open mark each time a paragraph closes. Each
 // expected document is main's: the same markdown parsed by `createHeadlessProof()` at 8a9540682d
 // (main before #4437), in both modes, and printed as `JSON.stringify(doc.toJSON())` with each
-// random `blockId` written as "<id>", one paragraph a line here. The runner #4437 had at
+// random `blockId` written as "<id>", one block a line here. The runner #4437 had at
 // 1c711353dc gave `after` in the first row no mark, and `b2` and `a2` in the third none. The last
 // two rows put an empty code block and an image after an inner ask, neither of which holds a mark
 // in the document. Their documents are main's runner's: 8a9540682d's `parseMarkdown.runner` put in

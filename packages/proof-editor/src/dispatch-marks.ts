@@ -94,16 +94,15 @@ type DispatchMarkNode = {
 
 export const dispatchAskAttr = $markAttr('dispatchAsk', () => ({}));
 
-/** The asks the markdown parser has open on one parser state: their attrs, outermost first; those
- *  of them no equal ask around them holds (`distinct`: a mark set keeps one of two equal marks, so
- *  these are the ask marks the open asks give); how many of each id and author; whether the ask
- *  marks the state holds are still those of every open ask (`intact`), which a node closing ends,
- *  since `closeNode` resets the state's open marks to none (@milkdown/transformer's
- *  `#closeNodeAndPush`); and whether the state owes the marks of every open ask (`owed`): an ask
- *  ended after a node closed inside it, so the ask marks are to be those of the asks around it,
- *  and the state holds none of them yet. */
+/** The asks the markdown parser has open on one parser state: the attrs of those no equal ask
+ *  around them holds, outermost first (`distinct`: a mark set keeps one of two equal marks, so
+ *  these are the ask marks the open asks give, and it is empty when no ask is open); how many of
+ *  each id and author are open; whether the ask marks the state holds are still those of every
+ *  open ask (`intact`), which a node closing ends, since `closeNode` resets the state's open marks
+ *  to none (@milkdown/transformer's `#closeNodeAndPush`); and whether the state owes the marks of
+ *  every open ask (`owed`): an ask ended after a node closed inside it, so the ask marks are to be
+ *  those of the asks around it, and the state holds none of them yet. */
 interface OpenAsks {
-  readonly attrs: Attrs[];
   readonly distinct: Attrs[];
   readonly counts: Map<string, number>;
   intact: boolean;
@@ -126,7 +125,7 @@ const openAskSpans = new WeakMap<ParserState, OpenAsks>();
 function openAsksOf(state: ParserState, markType: MarkType): OpenAsks {
   const known = openAskSpans.get(state);
   if (known !== undefined) return known;
-  const asks: OpenAsks = { attrs: [], distinct: [], counts: new Map(), intact: true, owed: false };
+  const asks: OpenAsks = { distinct: [], counts: new Map(), intact: true, owed: false };
   const { addNode, addText, closeNode, openMark } = state;
   const pay = () => {
     asks.owed = false;
@@ -194,20 +193,18 @@ export const dispatchAskSchema = $markSchema('dispatchAsk', (ctx) => ({
       // the state holds no ask mark, and an ask opening adds its own to what is owed.
       const asks = openAsksOf(state, markType);
       // No ask open: no ask mark is either, whatever closed since the last one, and none is owed.
-      if (asks.attrs.length === 0) {
+      if (asks.distinct.length === 0) {
         asks.intact = true;
         asks.owed = false;
       }
       const key = JSON.stringify([askAttrs.id, askAttrs.by]);
       const around = asks.counts.get(key) ?? 0;
       if (!asks.owed) state.openMark(markType, askAttrs);
-      asks.attrs.push(askAttrs);
       if (around === 0) asks.distinct.push(askAttrs);
       asks.counts.set(key, around + 1);
       try {
         state.next((n.children as never[]) || []);
       } finally {
-        asks.attrs.pop();
         if (around === 0) {
           asks.distinct.pop();
           asks.counts.delete(key);
