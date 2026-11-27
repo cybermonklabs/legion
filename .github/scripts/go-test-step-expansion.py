@@ -92,18 +92,7 @@ How it reads a step:
     and a function that step is the only one to compile;
   * `-run "$pattern"` assigned from a `$(…)` call of `.github/scripts/go-tagged-tests.sh` is run,
     in the step's own directory, and its output used; a step looping over packages
-    (`for pkg in core seed gcp`) is one `go test` per package, each with its own call. An
-    assignment to an array element (`pattern[$pkg]=$(…)`) is read the same way, and
-    `${pattern[$pkg]}` reads it back, so a step that reads every pattern before it starts any run
-    is read as the one `go test` per package it runs;
-  * a step that runs its packages at once rather than one after another is read as those same
-    `go test` commands: a `go test … > FILE 2>&1 &` line is the `go test` before its redirect and
-    its `&`, a `while` loop's body is read once, as a `for` loop's body is read per value, and
-    the lines that only keep house around them are skipped - `declare`, a plain assignment, an
-    array element set from a variable, `unset`, `wait`, `echo`, `cat`, `[ … ] || name+=(…)`,
-    `if`/`then`/`else`/`fi` and `exit`. None of them can run a test: a bookkeeping line holding
-    `$(` or `go test` is refused rather than skipped, as is any other line
-    (`BOOKKEEPING_LINES`);
+    (`for pkg in ./core ./seed ./gcp`) is one `go test` per package, each with its own call;
   * a `-skip '^(Name|Name|…)$'` names tests the step leaves out, which are subtracted from what
     the step runs and left in what it compiles, since the binary holds a skipped test and never
     runs it; every other `-skip` pattern is refused rather than read (SKIP_ALTERNATION says why);
@@ -125,7 +114,8 @@ How it reads a step:
     `include`, an `exclude` or a matrix an expression computes is refused, as is a key no row
     has;
   * a step whose run: is the path of a script AUDITED_SCRIPTS names
-    (`packages/envoy/scripts/database-skips.sh` and `packages/envoy/scripts/backend-count.sh`), alone
+    (`packages/envoy/scripts/database-skips.sh`, `packages/envoy/scripts/backend-count.sh`,
+    `packages/envoy/infra/scripts/race-unit.sh` and `packages/envoy/infra/scripts/natslive.sh`), alone
     or followed by one of the argument lists
     its entry reads, is read as the `go test` command that entry gives for those arguments, in
     the module it names; a legs step whose run: is `set -o pipefail` and a lister piped to `xargs
@@ -379,35 +369,6 @@ STATUS = re.compile(r"^(ok|FAIL|\?)\s+(\S+)")
 SHELL_VAR = re.compile(r"\$(?:([A-Za-z_][A-Za-z0-9_]*)|\{([A-Za-z_][A-Za-z0-9_]*)\})")
 FOR_LINE = re.compile(r"^for\s+([A-Za-z_][A-Za-z0-9_]*)\s+in\s+(.+?)\s*;\s*do$")
 ASSIGNMENT = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)=\$\((.+)\)$")
-# An array element read back: ${pattern[$pkg]}, which expand resolves through the key
-# `pattern[<the index's value>]` an ARRAY_ASSIGNMENT wrote.
-ARRAY_READ = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\[(\$?[A-Za-z_][A-Za-z0-9_]*)\]\}")
-# An assignment to an array element from a $(…) call: pattern[$pkg]=$(…). The step that runs its
-# packages at once reads every pattern into one of these before it starts any run.
-ARRAY_ASSIGNMENT = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)\[(\$?[A-Za-z_][A-Za-z0-9_]*)\]=\$\((.+)\)$")
-# A `while`/`until` loop's head. Its body is read once: a go test inside it is the same pair
-# however many times the loop goes round.
-WHILE_LINE = re.compile(r"^(while|until)\s+.+;\s*do$")
-# A command sent to the background with its output in a file: `go test … > FILE 2>&1 &`. What it
-# runs is the command before the redirect, and neither the file nor the `&` changes which tests
-# run.
-BACKGROUND = re.compile(r"^(?P<command>.+?)\s*>\s*(?P<file>\"[^\"]+\"|\S+)\s+2>&1\s*&$")
-# The lines that only keep house around the runs of a step that runs its packages at once. None
-# of them can run a test, and read_block refuses one that holds `$(` or `go test` rather than
-# skipping it, so a go test can never hide behind one.
-BOOKKEEPING_LINES = (
-    re.compile(r"^declare\s+-A\s+[A-Za-z_][A-Za-z0-9_]*=\(\)(\s+[A-Za-z_][A-Za-z0-9_]*=\(\))*$"),
-    re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=\(\)$"),                       # failed=()
-    re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=[^=]*$"),                      # status=0, pkg=${running[$ended]}
-    re.compile(r"^[A-Za-z_][A-Za-z0-9_]*\[[^]]+\]=\S*$"),               # running[$!]=$pkg
-    re.compile(r"^unset\s+.+$"),
-    re.compile(r"^wait\b.*$"),
-    re.compile(r"^(echo|cat)\s+.*$"),
-    re.compile(r"^\[\s.+\s\]\s*\|\|\s*[A-Za-z_][A-Za-z0-9_]*\+=\(.*\)$"),  # [ … ] || failed+=(…)
-    re.compile(r"^if\s+.+;\s*then$"),
-    re.compile(r"^(then|else|fi|done)$"),
-    re.compile(r"^exit\s+\d+$"),
-)
 # `… | xargs <command>`: the command is resolved through AUDITED_SCRIPTS where it is a script the
 # table names (the API's legs: `xargs scripts/database-skips.sh …`), then read as any other line
 # is (go_command below), and refused unless what is left is a go test. So a step that pipes a
@@ -542,6 +503,24 @@ AUDITED_SCRIPTS = {
         },
         sha256="3e9946d3482859bdab444ee99341955f982e70e86cb6e93c2138040cd015753b",
     ),
+    # It moves into packages/envoy/infra (`cd "$(dirname "$0")/.."`), takes no argument, reads the
+    # -run of each of ./core, ./seed and ./gcp from go-tagged-tests.sh's natslive list before any
+    # run starts, then runs one `go test -count=1 -timeout 25m -tags natslive -run <that list>
+    # ./<package>` per package, the three at once in the background, and waits for each by process
+    # id. What runs is the three go tests below, one per package with its own list, exactly as the
+    # step ran them one after another before it ran them at once: the reader reads them as it
+    # reads a step's `for` loop, and nothing of the script's own bookkeeping widens what it reads
+    # elsewhere. envoy-infra-go's natslive step runs it alone.
+    "packages/envoy/infra/scripts/natslive.sh": AuditedScript(
+        module="packages/envoy/infra",
+        commands={
+            "": "for pkg in ./core ./seed ./gcp; do\n"
+                "  pattern=$(../../../.github/scripts/go-tagged-tests.sh natslive \"$pkg\")\n"
+                "  go test -count=1 -timeout 25m -tags natslive -run \"$pattern\" \"$pkg\"\n"
+                "done",
+        },
+        sha256="02b74f5aba83950c0a97ebb25c20836d67a80fb7b9379c78bdcf4f1ae249d214",
+    ),
 }
 # A variable a step sets before its command, as the steps write it: GODEBUG=checkfinalizers=1.
 # A value holding `$` is left for the caller to refuse, since what it expands to is the shell's.
@@ -641,21 +620,13 @@ def indent(text: str) -> str:
 
 
 def expand(text: str, variables: dict[str, str]) -> str:
-    def element(match: re.Match[str]) -> str:
-        # ${pattern[$pkg]}: the index is a value of the loop the assignment ran in, so it is
-        # expanded first and the element read under the key the assignment wrote.
-        key = f"{match.group(1)}[{expand(match.group(2), variables)}]"
-        if key not in variables:
-            raise Refused(f"the shell array element ${{{key}}} is set outside the step, or not at all")
-        return variables[key]
-
     def one(match: re.Match[str]) -> str:
         name = match.group(1) or match.group(2)
         if name not in variables:
             raise Refused(f"the shell variable ${name} is set outside the step, or not at all")
         return variables[name]
 
-    return SHELL_VAR.sub(one, ARRAY_READ.sub(element, text))
+    return SHELL_VAR.sub(one, text)
 
 
 def documents() -> dict:
@@ -839,40 +810,9 @@ def read_block(step: Step, lines: list[str], variables: dict[str, str],
         loop = FOR_LINE.match(line)
         if loop:
             body, index = loop_body(step, lines, index)
-            # The loop's variable is set and put back around each pass, in the one dictionary, as
-            # the shell holds it: what a pass assigns (a pattern read into an array element) is
-            # there for the lines after the loop, which is what a step that reads every pattern
-            # first and then starts its runs depends on.
-            before, had = variables.get(loop.group(1)), loop.group(1) in variables
             for value in shlex.split(expand(loop.group(2), variables)):
-                variables[loop.group(1)] = value
-                read_block(step, body, variables, found)
-            if had:
-                variables[loop.group(1)] = before  # type: ignore[assignment]
-            else:
-                variables.pop(loop.group(1), None)
+                read_block(step, body, {**variables, loop.group(1): value}, found)
             continue
-
-        while_loop = WHILE_LINE.match(line)
-        if while_loop:
-            # Once: a `go test` inside the loop is the same pair however many times it runs, and
-            # the values its condition turns on are the shell's, not this reader's.
-            body, index = loop_body(step, lines, index)
-            read_block(step, body, variables, found)
-            continue
-
-        element = ARRAY_ASSIGNMENT.match(line)
-        if element:
-            name, key, inner = element.group(1), expand(element.group(2), variables), expand(element.group(3), variables)
-            if TAGGED_TESTS not in inner:
-                raise Refused(f"{step.label}: this script runs only a $(…) call of "
-                              f"{TAGGED_TESTS}, not `{inner}`")
-            variables[f"{name}[{key}]"] = shell(inner, step.directory, f"{step.label}: {inner}").strip()
-            continue
-
-        background = BACKGROUND.match(line)
-        if background:
-            line = background.group("command").strip()
 
         assignment = ASSIGNMENT.match(line)
         if assignment:
@@ -904,16 +844,6 @@ def read_block(step: Step, lines: list[str], variables: dict[str, str],
             continue
         if len(words) > 1 and words[0] == "go" and words[1] == "test":
             found.append(parse_go_test(step, expand(command, variables), []))
-            continue
-
-        if any(shape.match(line) for shape in BOOKKEEPING_LINES):
-            # Read last, so that a line one of these shapes also fits - a `pattern=$(…)` is an
-            # assignment before it is a plain one - is read as what it runs. What is left only
-            # keeps house, and a line that holds `$(` or a `go test` is refused rather than
-            # skipped, since skipping a go test would hide a pair.
-            if "$(" in line or re.search(r"\bgo\s+test\b", line):
-                raise Refused(f"{step.label}: `{line}` keeps house and runs a command: "
-                              "this script reads a go test only where it stands on its own line")
             continue
         raise Refused(f"{step.label}: this script cannot read `{line}`")
 

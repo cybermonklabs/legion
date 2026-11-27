@@ -2790,15 +2790,18 @@ the tests the tag adds, one call per package: envoy-infra-build's "Unit test env
 runs every untagged test of core, seed and gcp, so each call takes its -run from
 .github/scripts/go-tagged-tests.sh, which reads the names off the source at run time, and
 ci_job_reads.py's TAG_RUNS holds envoy-infra-build's filter to every file the natslive step
-reads, so a change that starts the tagged run starts the untagged one with it. The three calls
-run at once: each package waits on real servers rather than computing (core 0.44 of one core,
-gcp 0.66 of one, of the runner's four), so in series they took 239, 1 and 400 seconds with three
-cores idle (run 45950904157, job 140346269806), and together the step takes about 457 (run
-45961370168, job 140379968057). Each pattern is read before any run starts, so a refused list
-fails the step with no run to orphan; each run's output is printed whole under its own heading
-as that run ends, and the step fails naming each package that failed. Each go test's -timeout is
-25m, which fires before the runner cancels this job at its 32 minutes, so a hung test prints the
-dump that names it. The gcp natslive tests pull no image: they install helm,
+reads, so a change that starts the tagged run starts the untagged one with it. The step runs
+packages/envoy/infra/scripts/natslive.sh, which runs the three calls at once: each package waits
+on real servers rather than computing (core 0.44 of one core, gcp 0.66 of one, of the runner's
+four), so in series they took 239, 1 and 400 seconds with three cores idle (run 45950904157, job
+140346269806), and together the step takes about 443 (run 45974613720, job 140423592989). Every
+pattern is read before any run starts, so a refused list fails the step with no run to orphan;
+each run's output is printed whole under its own heading as that run ends, and the script fails
+naming each package that failed. Each go test's -timeout is 25m, which fires before the runner
+cancels this job at its 32 minutes, so a hung test prints the dump that names it. The script and
+not a run: block, so that go-test-step-expansion.py reads the step through its AUDITED_SCRIPTS
+entry, pinned by the script's SHA-256, as it reads envoy-infra-build's race-unit.sh, and its
+reader stays as strict for every other step. The gcp natslive tests pull no image: they install helm,
 nats-server, the config reloader and the exporter with go install, at the versions the clustered
 hub runs, and render the vendored chart in gcp/testdata. The per-target compile runs in the lint
 job's notices step.
