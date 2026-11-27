@@ -750,10 +750,14 @@ question_occurrences() { occurrences "$1" "$(question_suffix "$2" "$3" "$4")"; }
 # ---- the asker's inbox -------------------------------------------------------------------------------
 # inbox_listing prints the inbox, every envelope the run's stand-in sessions were relayed, as one
 # JSON array of {at, session, text}, oldest first, and `null` where the run recorded no inbox: the
-# listing a control reads once, checks (listing_fault) and hands to the read it counts. The reads
-# below that a control counts take it as INBOX after their own arguments, and read the inbox as it
-# stands now where it is not given. inbox_jq INBOX ARG... runs jq ARG... over INBOX, or over the
-# inbox file read as one array, and fails where neither is.
+# listing a control reads once, checks (listing_fault) and hands to the read it counts, and a row
+# hands to a read that requires one. A read that takes it, here or in the rig, takes it as INBOX,
+# its last argument, after its own. A read that takes a list of its own before it (replies_to
+# EVENT... INBOX, and the rig's a8_once_read and a10_gpt_read) requires it and fails on an INBOX
+# that is no listing (inbox_listing_fault), since an INBOX left out would leave the list's last
+# entry in its place, read as an inbox that holds no reply. The others read the inbox as it stands
+# now where it is not given. inbox_jq INBOX ARG... runs jq ARG... over INBOX, or over the inbox
+# file read as one array, and fails where neither is.
 inbox_listing() {
   local inbox=null
   if [ -f "$evidence/inbox.jsonl" ]; then inbox=$(jq -s -c . "$evidence/inbox.jsonl" 2>/dev/null) || inbox=null; fi
@@ -768,6 +772,20 @@ inbox_jq() {
     [ -f "$evidence/inbox.jsonl" ] || return 1
     jq -s "$@" "$evidence/inbox.jsonl"
   fi
+}
+# inbox_listing_fault INBOX prints why INBOX is no listing inbox_listing prints, a JSON array or
+# `null`, and fails; it prints nothing for a listing. Nothing at all, and an event or any other text
+# in a listing's place, is no listing.
+inbox_listing_fault() {
+  if jq -e -s 'length == 1 and (.[0] | . == null or type == "array")' <<<"${1:-}" >/dev/null 2>&1; then
+    return 0
+  fi
+  if [ -z "${1:-}" ]; then
+    printf 'handed no inbox listing (inbox_listing), and nothing in its place\n'
+  else
+    printf 'handed no inbox listing (inbox_listing), but "%s" in its place\n' "${1:0:80}"
+  fi
+  return 1
 }
 # inbox_reply EVENT [INBOX] prints the text the asker received in reply to EVENT, or fails;
 # inbox_replies EVENT [INBOX] counts them. A reply that never came prints nothing rather than jq's
@@ -823,16 +841,18 @@ replied_with_keys() {
 # running agent, which the loop posts nothing for). An empty EVENT is no send at all, and shows
 # nothing.
 no_reply_to() { [ -n "${1:-}" ] && [ "$(inbox_replies "$1" "${2:-}")" = 0 ]; }
-# replies_to INBOX EVENT...: the replies the asker received to the sends whose answers named EVENT...,
+# replies_to EVENT... INBOX: the replies the asker received to the sends whose answers named EVENT...,
 # each event's replies counted once. The listener answers a sender's own repeat under one key with
 # its first copy's event (cmd/listener's answerHandedOff), so every send of one envelope can name
 # one event, and a sum over the sends would count that event's one reply once a send (proof run
-# 45136574601, A8: one reply read as 3). INBOX is the inbox as A8's control read it once
-# (inbox_listing), empty to read it now.
+# 45136574601, A8: one reply read as 3). INBOX is the inbox as A8's row or its control read it once
+# (inbox_listing), and is required: handed none, replies_to says why on stderr and fails
+# (inbox_listing_fault), where an event in its place would count no reply at all.
 replies_to() {
-  local inbox=$1 event total=0
-  shift
-  for event in $(printf '%s\n' "$@" | sort -u); do
+  local inbox='' event total=0
+  [ "$#" = 0 ] || inbox=${!#}
+  inbox_listing_fault "$inbox" >&2 || return 1
+  for event in $(printf '%s\n' "${@:1:$#-1}" | sort -u); do
     total=$((total + $(inbox_replies "$event" "$inbox")))
   done
   printf '%s\n' "$total"
@@ -1631,23 +1651,29 @@ review_round_undecided() {
 review_round_ended() {
   jq -e --arg id "$2" 'type == "object" and .phase != "reviewing" and ((.review_seen // 0) | tostring) == $id' <<<"${1:-null}" >/dev/null 2>&1
 }
-# tree_is_live ROOT PHASE [PHASE|held]...: the daemon's own state says ROOT's tree is live and does
-# not linger — admission.trees is record.LiveRoots, the very set admission's release pass judges a
-# root against (admit's releaseUnslotted) — and ROOT still stands at PHASE, which that release would
-# have left at `done`. Each further argument widens what stands: another phase ROOT may stand at
-# (A6's seeded parent, which a daemon with a parent waiting for its open children takes from
-# `implementing` to `awaiting_children` at boot and keeps live), or `held`, which lets a root the
-# workflow holds out of PHASE stand there too: `phase` held and `heldFrom` PHASE (api.Issue.HeldFrom).
-# The daemon holds an issue whose worker failed with work outstanding, and a held issue is still in
-# the workflow and in its tree. A root outside admission.trees, whatever its phase, is not live.
+# live_root defines live_root(ROOT) for the two reads below: the daemon's own state says ROOT's tree
+# is live and does not linger — admission.trees is record.LiveRoots, the very set admission's
+# release pass judges a root against (admit's releaseUnslotted). A root outside admission.trees,
+# whatever its phase, is not live.
+live_root='def live_root(root): (.admission.trees | index(root)) != null; '
+# tree_is_live ROOT PHASE...: ROOT's tree is live (live_root) and ROOT still stands at one of
+# PHASE..., which that release would have left at `done`. A further PHASE is another phase ROOT may
+# stand at (A6's seeded parent, which a daemon with a parent waiting for its open children takes
+# from `implementing` to `awaiting_children` at boot and keeps live). Each PHASE is a phase and
+# nothing else: `held` is the phase a held issue stands at, whatever phase it was held from.
 tree_is_live() {
-  local root=$1 phase=$2
-  shift 2
+  local root=$1
+  shift
   legion_cmd state --json |
-    jq -e --arg root "$root" --arg phase "$phase" '(.admission.trees | index($root)) != null
-      and (.issues[$root] | .phase == $phase
-        or (.phase | IN($ARGS.positional[] | select(. != "held")))
-        or (.phase == "held" and .heldFrom == $phase and ($ARGS.positional | index("held")) != null))' --args "$@" >/dev/null
+    jq -e --arg root "$root" "$live_root"'live_root($root) and (.issues[$root].phase | IN($ARGS.positional[]))' --args "$@" >/dev/null
+}
+# tree_is_held_from ROOT PHASE: ROOT's tree is live (live_root) and the workflow holds ROOT out of
+# PHASE: `phase` held and `heldFrom` PHASE (api.Issue.HeldFrom). The daemon holds an issue whose
+# worker failed with work outstanding, and a held issue is still in the workflow and in its tree
+# (A21, whose issue stands at `implementing` or is held from it: tree_is_live or this).
+tree_is_held_from() {
+  legion_cmd state --json |
+    jq -e --arg root "$1" --arg phase "$2" "$live_root"'live_root($root) and (.issues[$root] | .phase == "held" and .heldFrom == $phase)' >/dev/null
 }
 # passed_to_controller EVENT REASON: legion state lists a question passed on for REASON whose id or
 # reference names EVENT.

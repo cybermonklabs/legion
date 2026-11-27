@@ -1803,24 +1803,103 @@ describe("the asker's inbox", () => {
   test("replies_to counts each answered event's replies once, however many sends name it", () => {
     // The listener answers a sender's own repeat under one key with its first copy's event, so
     // the sends of one envelope can all name one event: its replies count once, not once a send.
-    expect(read("replies_to '' event-two event-two event-two").text).toBe("2");
-    expect(read("replies_to '' event-one event-two").text).toBe("3");
-    expect(read("replies_to '' event-one event-never event-one").text).toBe("1");
-    expect(read("replies_to '' event-never").text).toBe("0");
-    expect(read("evidence=$empty_evidence; replies_to '' event-one event-one")).toEqual({
+    const inbox = "inbox=$(inbox_listing); replies_to";
+    expect(read(`${inbox} event-two event-two event-two "$inbox"`).text).toBe("2");
+    expect(read(`${inbox} event-one event-two "$inbox"`).text).toBe("3");
+    expect(read(`${inbox} event-one event-never event-one "$inbox"`).text).toBe("1");
+    expect(read(`${inbox} event-never "$inbox"`).text).toBe("0");
+    expect(read(`evidence=$empty_evidence; ${inbox} event-one event-one "$inbox"`)).toEqual({
       code: 0,
       text: "0",
     });
-    expect(read("evidence=$bare_evidence; replies_to '' event-one")).toEqual({
+    expect(read(`evidence=$bare_evidence; ${inbox} event-one "$inbox"`)).toEqual({
       code: 0,
       text: "0",
     });
-    // Given the listing a control read once, it counts that and not the file, which is gone.
+    // Given the listing the row or the control read once, it counts that and not the file, which
+    // is gone.
     expect(
       read(
-        'inbox=$(inbox_listing); evidence=$bare_evidence; replies_to "$inbox" event-one event-two'
+        'inbox=$(inbox_listing); evidence=$bare_evidence; replies_to event-one event-two "$inbox"'
       ).text
     ).toBe("3");
+  });
+
+  // A read that takes a list of events before the listing would read an event left in the
+  // listing's place as an inbox holding no reply, and a leg that wants none would pass on it.
+  test("replies_to requires the inbox listing after its events, and fails saying so when handed none", () => {
+    for (const call of [
+      "replies_to event-one event-two",
+      "replies_to event-two ''",
+      "replies_to",
+      "replies_to '' event-one",
+    ]) {
+      const result = run(call);
+      expect(result.code, call).toBe(1);
+      expect(result.out, call).toBe("");
+      expect(result.err, call).toContain("handed no inbox listing (inbox_listing)");
+    }
+    expect(run("replies_to event-one event-two").err).toContain('but "event-two" in its place');
+    expect(run("replies_to event-two ''").err).toContain("and nothing in its place");
+    // `null`, an inbox the run never recorded, is a listing, and holds no reply.
+    expect(read("replies_to event-one null")).toEqual({ code: 0, text: "0" });
+    expect(read("replies_to null")).toEqual({ code: 0, text: "0" });
+  });
+
+  test("a8_once_read and a10_gpt_read take the inbox listing after their sends, and fail saying so when handed none", () => {
+    const once = (args: string) =>
+      run(`${rig("a8_once_read")}
+agent[files:planner.session]=session-planner
+daemon_log=$empty_log; boot_offset=0
+inbox=$(inbox_listing)
+if a8_once_read ${args}; then echo held; else echo failed; fi
+echo "$read_said"`).out;
+    // The planner's one stored hand-off (the listener's log) and the one reply to its event.
+    expect(once('0 "200 event-one" "200 event-one" "$inbox"')).toMatch(
+      /^held\none envelope 2 time\(s\) \(listener 200 200, answered events event-one event-one\): hand-offs the stream stored for them 1; replies on the asker's topic 1;/
+    );
+    // An inbox the run never recorded is a listing, and holds no reply.
+    expect(once('0 "200 event-one" "200 event-one" null')).toMatch(
+      /^failed\n.*replies on the asker's topic 0;/
+    );
+    // No listing at all, the listing left out, and the listing where the read took it before.
+    expect(once('0 "200 event-one" "200 event-one"')).toBe(
+      'failed\nhanded no inbox listing (inbox_listing), but "200 event-one" in its place\n'
+    );
+    expect(once('0 "$inbox" "200 event-one"')).toBe(
+      'failed\nhanded no inbox listing (inbox_listing), but "200 event-one" in its place\n'
+    );
+    expect(once('0 "" "200 event-one"')).toBe(
+      'failed\nhanded no inbox listing (inbox_listing), but "200 event-one" in its place\n'
+    );
+    expect(once("0")).toBe(
+      "failed\nhanded no inbox listing (inbox_listing), and nothing in its place\n"
+    );
+
+    const gpt = (args: string) =>
+      run(`${rig("said_text")}
+${rig("a10_gpt_read")}
+gpt_model=openai/gpt-6.1-sol; gpt_model_id=gpt-6.1-sol
+inbox=$(inbox_listing); evidence=$gpt_evidence
+if a10_gpt_read ${args}; then echo held; else echo failed; fi
+echo "$read_said"`);
+    // Handed the listing last, it reads each ID=EVENT's reply from that listing, not the file.
+    const judged = gpt('A10-gpt 0 gpt-repository-module=event-one "$inbox"');
+    expect(judged.out).toMatch(/^failed\nGPT-6\.1: /);
+    expect(judged.err).toContain("GPT-6.1: A10-gpt-1 (gpt-repository-module): event event-one;");
+    expect(judged.err).toContain("reply: In Reply To: event-one Message: The write-through cache");
+    for (const args of [
+      "A10-gpt 0 gpt-repository-module=event-one",
+      'A10-gpt 0 "$inbox" gpt-repository-module=event-one',
+      "A10-gpt 0 '' gpt-repository-module=event-one",
+    ]) {
+      expect(gpt(args).out, args).toBe(
+        'failed\nhanded no inbox listing (inbox_listing), but "gpt-repository-module=event-one" in its place\n'
+      );
+    }
+    expect(gpt("A10-gpt 0").out).toBe(
+      "failed\nhanded no inbox listing (inbox_listing), and nothing in its place\n"
+    );
   });
 
   test("first_reply_of reads which answer reached the asker first, not which was asked first", () => {
@@ -1858,7 +1937,7 @@ describe("the asker's inbox", () => {
     expect(read('inbox_reply ""')).toEqual({ code: 1, text: "" });
     expect(read('inbox_message ""').text).toBe("");
     expect(read('inbox_replies ""')).toEqual({ code: 0, text: "0" });
-    expect(read("replies_to '' ''")).toEqual({ code: 0, text: "0" });
+    expect(read("replies_to '' \"$(inbox_listing)\"")).toEqual({ code: 0, text: "0" });
     expect(read('first_reply_of "" event-one')).toEqual({ code: 1, text: "" });
     expect(read('first_reply_of event-one ""')).toEqual({ code: 1, text: "" });
     expect(read('controller_notices agent-decision ""')).toEqual({ code: 0, text: "0" });
@@ -4078,6 +4157,8 @@ a20_nothing_posted comment-100 ${control} ${replies} && echo quiet || echo poste
       return run(`${rig("said_text")}
 ${rig("a20_nothing_posted")}
 ${rig("a20_writers_because")}
+${rig("a20_writers_skipped_in")}
+${rig("a20_writers_skipped")}
 ${rig("a20_writers_read")}
 questions_file=${shq(liveQuestions)}
 agent[files:tester.session]=session-tester; agent[files:tester_old.session]=session-tester-old
@@ -4178,6 +4259,8 @@ echo "$read_said"`).out;
         writeFileSync(file, JSON.stringify({ comment: { id: "comment-310" }, replies }));
       return run(`${rig("said_text")}
 ${rig("a20_nothing_posted")}
+${rig("a20_dropped_in")}
+${rig("a20_dropped")}
 ${rig("a20_quiet_read")}
 agent[files:tester.session]=session-tester; agent[files:tester.file]=${shq(options.conversation ?? holding)}
 daemon_log=${options.log ?? shq(droppedLog)}; boot_offset=0
@@ -4248,6 +4331,8 @@ echo "$read_said"`).out;
 ${rig("control_question")}
 ${rig("control_mark")}
 ${rig("place_log_line")}
+${rig("a8_skipped_count_in")}
+${rig("a8_question_count_in")}
 ${rig("a8_untaken_read")}
 ${rig("a8_taken_read")}
 ${rig("a8_quiet_read")}
@@ -4715,10 +4800,18 @@ echo "$read_said"`).out;
       ).toBe(1);
       expect(holds(`'{"error":"role held"}'`, "legion-alx-alx-11-merger")).toBe(1);
       expect(holds("''", "legion-alx-alx-11-merger")).toBe(1);
-      const settled = (id: string) =>
-        run(`${rig("a21_holder_settled")}\na21_holder_settled ${id}`).code;
+      const settled = (args: string) =>
+        run(`${rig("a21_holder_settled")}\na21_holder_settled ${args}`).code;
       for (const id of ["comment-111", "comment-110", "comment-90"]) expect(settled(id)).toBe(0);
       for (const id of ["comment-80", "comment-404", "''"]) expect(settled(id)).toBe(1);
+      // Handed the record the control read once, it judges that record, and reads none now.
+      const given = (read: string, id: string) =>
+        run(
+          `${rig("a21_holder_settled")}\nrecord=$(comment_record ${read}); dispatch_get() { return 22; }; a21_holder_settled ${id} "$record"`
+        ).code;
+      expect(given("comment-111", "comment-111")).toBe(0);
+      expect(given("comment-111", "comment-80")).toBe(0);
+      expect(given("comment-80", "comment-111")).toBe(1);
     });
 
     test("fails when the mention did not settle queued, or names no marker", () => {
@@ -4886,18 +4979,30 @@ a17_nothing_written && echo quiet || echo "written: $read_said"`)
     });
   });
 
-  test("tree_is_live accepts an issue held from the phase when asked to, and A6's use of it as before", () => {
+  test("tree_is_held_from reads a live root the workflow holds out of the phase, and tree_is_live reads `held` as the phase it is", () => {
     const held = `'{"admission":{"trees":["ALX-1"]},"issues":{"ALX-1":{"phase":"held","heldFrom":"implementing"}}}'`;
-    expect(run(`legion_state=${held}; tree_is_live ALX-1 implementing`).code).toBe(1);
-    expect(run(`legion_state=${held}; tree_is_live ALX-1 implementing held`).code).toBe(0);
-    expect(run(`legion_state=${held}; tree_is_live ALX-1 testing held`).code).toBe(1);
-    expect(run(`legion_state=${held}; tree_is_live ALX-1 done held`).code).toBe(1);
-    // A held issue that is no live root of the daemon's, and a live root still at the phase.
+    expect(run(`legion_state=${held}; tree_is_held_from ALX-1 implementing`).code).toBe(0);
+    expect(run(`legion_state=${held}; tree_is_held_from ALX-1 testing`).code).toBe(1);
+    expect(run(`legion_state=${held}; tree_is_held_from ALX-1 done`).code).toBe(1);
+    expect(run(`legion_state=${held}; tree_is_held_from ALX-1 held`).code).toBe(1);
+    // A held issue that is no live root of the daemon's, a live root still at the phase, which no
+    // workflow holds, and no state at all.
     const lingering = `'{"admission":{"trees":[]},"issues":{"ALX-1":{"phase":"held","heldFrom":"implementing"}}}'`;
-    expect(run(`legion_state=${lingering}; tree_is_live ALX-1 implementing held`).code).toBe(1);
+    expect(run(`legion_state=${lingering}; tree_is_held_from ALX-1 implementing`).code).toBe(1);
     const running = `'{"admission":{"trees":["ALX-1"]},"issues":{"ALX-1":{"phase":"implementing"}}}'`;
-    expect(run(`legion_state=${running}; tree_is_live ALX-1 implementing held`).code).toBe(0);
-    expect(run(`legion_state=${running}; tree_is_live ALX-1 implementing`).code).toBe(0);
+    expect(run(`legion_state=${running}; tree_is_held_from ALX-1 implementing`).code).toBe(1);
+    expect(run(`legion_state='{}'; tree_is_held_from ALX-1 implementing`).code).toBe(1);
+    // tree_is_live takes phases alone: a held root stands at `held`, never at the phase it was held
+    // from, wherever `held` stands among its arguments.
+    expect(run(`legion_state=${held}; tree_is_live ALX-1 implementing`).code).toBe(1);
+    expect(
+      run(`legion_state=${held}; tree_is_live ALX-1 implementing awaiting_children`).code
+    ).toBe(1);
+    expect(run(`legion_state=${held}; tree_is_live ALX-1 held`).code).toBe(0);
+    expect(run(`legion_state=${held}; tree_is_live ALX-1 implementing held`).code).toBe(0);
+    expect(run(`legion_state=${lingering}; tree_is_live ALX-1 held`).code).toBe(1);
+    expect(run(`legion_state=${running}; tree_is_live ALX-1 held implementing`).code).toBe(0);
+    expect(run(`legion_state=${running}; tree_is_live ALX-1 held`).code).toBe(1);
   });
 
   // A6's seeded parent has an open child, so a daemon whose parent waits for its open children
@@ -4924,20 +5029,6 @@ a17_nothing_written && echo quiet || echo "written: $read_said"`)
     expect(run(`legion_state='{}'; tree_is_live ALX-1 implementing awaiting_children`).code).toBe(
       1
     );
-    // `held` still means held from the phase, wherever it stands among the arguments.
-    const held = `'{"admission":{"trees":["ALX-1"]},"issues":{"ALX-1":{"phase":"held","heldFrom":"implementing"}}}'`;
-    expect(
-      run(`legion_state=${held}; tree_is_live ALX-1 implementing awaiting_children`).code
-    ).toBe(1);
-    expect(
-      run(`legion_state=${held}; tree_is_live ALX-1 implementing awaiting_children held`).code
-    ).toBe(0);
-    expect(
-      run(`legion_state=${held}; tree_is_live ALX-1 implementing held awaiting_children`).code
-    ).toBe(0);
-    expect(run(`legion_state=${held}; tree_is_live ALX-1 awaiting_children held`).code).toBe(1);
-    // A6 asks for both phases of the tree it seeded.
-    expect(rig("check_a6")).toContain('tree_is_live "$root6" implementing awaiting_children');
   });
 
   test("reply_message prints the message of a reply, and nothing for none", () => {
@@ -5039,6 +5130,7 @@ ${rig("read_failed")}
 ${rig("control_not_taken")}
 ${rig("control_sent")}
 ${rig("control_seen")}
+${rig("control_unseen")}
 ${rig("control_inbox_seen")}
 ${rig("control_log_seen")}
 ${rig("control_result")}
@@ -5262,13 +5354,7 @@ echo "$read_said"`).out;
   // entries.
   /** What a stand-in read says of the listing its Nth argument handed it. */
   const handing = (n: number) => `handed inbox of $(jq length <<<"$${n}")`;
-  const inboxControls: {
-    row: string;
-    call: string;
-    body: string;
-    /** How many times the control reads the inbox: once for its read, and again after a placement. */
-    listings?: number;
-  }[] = [
+  const inboxControls: { row: string; call: string; body: string }[] = [
     {
       row: "A2",
       call: "control_read_a2",
@@ -5301,9 +5387,20 @@ a9_read() { read_said="no reply to $1; ${handing(6)}"; return 1; }`,
 a10_compaction_read() { read_said="no reply to $1; ${handing(4)}"; return 1; }`,
     },
     {
+      row: "A10",
+      call: "control_resumed_a10 pre_change",
+      body: `control[files:A10.e1]=e1; control[files:A10.e2]=e2; control[files:pre_change.m]=0
+a10_claude_read() { read_said="no reply to $1; ${handing(8)}"; return 1; }`,
+    },
+    {
+      row: "A10",
+      call: "control_resumed_a10 gpt",
+      body: `control[files:A10.gpt]='gpt-repository-module=g1 gpt-repository-go=g2'; control[files:gpt.m]=0
+a10_gpt_read() { read_said="no reply to $3; handed inbox of $(jq length <<<"\${!#}")"; return 1; }`,
+    },
+    {
       row: "A12",
       call: "control_window_a12",
-      listings: 2,
       body: `${rig("control_reply_placed")}
 ${rig("a12_not_posted_read")}
 ${rig("a12_not_posted")}
@@ -5339,7 +5436,7 @@ a23_fourth_read() { read_said="no reply to $1; ${handing(2)}"; return 1; }`,
     },
   ];
   for (const [n, control] of inboxControls.entries()) {
-    test(`${control.call} counts its read only over an inbox the run recorded and that holds entries, which it reads once and hands to the read`, () => {
+    test(`${control.call} counts its read only over an inbox the run recorded and that holds entries, and hands that inbox to the read`, () => {
       const name = control.call.split(" ")[0];
       const body = (evidenceDir: string) =>
         `${rig(name)}\n${control.body}\nevidence=${shq(evidenceDir)}\n${control.call}`;
@@ -5352,21 +5449,25 @@ a23_fourth_read() { read_said="no reply to $1; ${handing(2)}"; return 1; }`,
       const held = verdict(control.row, body(caseEvidence(`inbox-${n}-held`, [otherLine])));
       expect(held).toMatch(new RegExp(`^${control.row} control PASS: with answers removed, `));
       expect(held).toContain("handed inbox of 1");
-      // The listing it checked is the one it read once and handed on: no second read of the inbox.
-      const counter = join(dir, `inbox-listings-${n}`);
-      writeFileSync(counter, "");
-      run(`${controls}
-${body(caseEvidence(`inbox-${n}-counted`, [otherLine])).replace(`\n${control.call}`, "")}
-eval "real_$(declare -f inbox_listing)"
-inbox_listing() { printf x >>${shq(counter)}; real_inbox_listing; }
-${control.call}`);
-      expect(readFileSync(counter, "utf8")).toHaveLength(control.listings ?? 1);
     });
   }
 
   // A daemon with answers removed writes no line of the control's question: a control whose read
   // looks in this boot's log counts it only over a log that was read and holds entries.
   const logControls: { row: string; call: string; body: string }[] = [
+    {
+      row: "A7",
+      call: "control_replay_a7",
+      body: `agent[files:architect.token]=token-architect; agent[files:architect.session]=session-architect
+held_count() { printf '0\\n'; }
+hold_at() { :; }
+release() { :; }
+claims_cmd() { :; }
+soft_wait() { return 1; }
+control_ask() { control[files:A7.event]=e7; }
+control_reply_placed() { :; }
+a7_forwarded_read() { read_said="a log of $(jq length <<<"$4") lines handed"; return 1; }`,
+    },
     {
       row: "A14",
       call: "control_read_a14",
@@ -5380,7 +5481,7 @@ a23_tools_leg() { read_said="tools line handed: $(jq -c '.tools // "none"' <<<"\
     },
   ];
   for (const control of logControls) {
-    test(`${control.call} counts its read only over this boot's daemon log holding entries`, () => {
+    test(`${control.call} counts its read only over this boot's daemon log holding entries, and hands that log to the read`, () => {
       const body = (log: string) =>
         `${rig(control.call)}\n${control.body}\n${log}\n${control.call}`;
       expect(
@@ -5395,7 +5496,9 @@ a23_tools_leg() { read_said="tools line handed: $(jq -c '.tools // "none"' <<<"\
           `^${control.row} control FAIL: .*this boot's daemon log, where [^:]*: an empty listing`
         )
       );
-      expect(verdict(control.row, body(""))).toMatch(new RegExp(`^${control.row} control PASS`));
+      const passed = verdict(control.row, body(""));
+      expect(passed).toMatch(new RegExp(`^${control.row} control PASS`));
+      expect(passed).toContain("handed");
     });
   }
 
@@ -5643,6 +5746,8 @@ ${rig("a8_own_unanswered_read")}
 ${rig("a8_edit_unanswered_read")}
 ${rig("a8_taken_read")}
 ${rig("a8_untaken_read")}
+${rig("a8_skipped_count_in")}
+${rig("a8_question_count_in")}
 ${rigVariable("a8_resolved_because")}
 ${rigVariable("a8_notice_because")}
 ${rig("place_log_line").replace("place_log_line()", "place_real()")}
@@ -5657,8 +5762,8 @@ agent[files:pre_change.session]=session-reviewer
 control[files:A8.stored]=0; control[files:A8.sent]='200 event-a8'; control[files:A8.posted]=0; control[files:A8.handed]=0
 control[files:A8.appended]=0; control[files:A8.own]=0; control[files:A8.edit]=0; control[files:A8.refused]=0
 control[files:A8.resolved_skipped]=0; control[files:A8.resolved_questions]=0; control[files:A8.notice_skipped]=0; control[files:A8.notice_questions]=0
-a8_once_read() { read_said=once; return 1; }
-a8_kill_read() { read_said=kill; return 1; }
+a8_once_read() { read_said="once, sent $2, ${handing(3)}"; return 1; }
+a8_kill_read() { read_said="kill, ${handing(2)}"; return 1; }
 a8_own_delivered_read() { read_said=delivered; return 1; }
 ${stubs}
 control_read_a8`
@@ -5667,6 +5772,9 @@ control_read_a8`
     test("reads PASS where every read failed over the log before the placement and over the four lines placed", () => {
       const held = a8("held", boot, sessions);
       expect(held).toMatch(/^A8 control PASS: /);
+      // Its first two legs are handed the inbox it read once, after their own arguments.
+      expect(held).toContain("A8's first leg failed: once, sent 200 event-a8, handed inbox of 1");
+      expect(held).toContain("A8's second leg failed: kill, handed inbox of 1");
       expect(held).toContain("failed: questions for the replaced tester 0 → 1, answers of it 0");
       expect(held).toContain("failed: questions for the architect 0 → 1");
       expect(held).toContain(
@@ -6014,6 +6122,14 @@ control_read_a20`
     // The control's own mention of the merger role as a daemon with answers removed leaves it:
     // kept for nobody, failed `no holder for role`.
     const holder = `printf '%s\\n' '{"comment":{"id":"comment-112","deliveries":[{"target":"role:legion-alx-alx-11-merger","state":"failed","session_id":null,"error":"no holder for role legion-alx-alx-11-merger"}]},"replies":[]}'`;
+    // The mention's marker, relayed to the first holder only once A21's read has run: the first
+    // holder's leg judges the inbox the control read once, before that read, so even a mention kept
+    // `queued` (settled-queued below) reaches no holder there, and the leg fails.
+    const late = JSON.stringify({
+      at: "2026-11-24T12:00:05.000Z",
+      session: "holder-session",
+      text: "Message:\n@merger A message for the role's first holder (answer-loop-a21-holder-control-4242-files)\n\nTopic: notifications.role.legion-alx-alx-11-merger",
+    });
     const a21 = (
       name: string,
       inbox: string[] | null,
@@ -6022,6 +6138,7 @@ control_read_a20`
       verdict(
         "A21",
         `${rig("control_read_a21")}
+${rig("a21_holder_settled")}
 ${rig("a21_holder_read")}
 ${rig("a21_nothing_posted")}
 evidence=${shq(caseEvidence(`a21-${name}`, inbox))}
@@ -6039,12 +6156,19 @@ dispatch_get() {
   esac
 }
 place_comment() { touch "$flag"; printf 'comment-113\\n'; }
-a21_read() { read_said="handed $(jq -c '[.[]?.id]' <<<"$6")"; return 1; }
+late=${shq(late)}
+a21_read() {
+  read_said="handed $(jq -c '[.[]?.id]' <<<"$6") and an inbox of $(jq length <<<"$7")"
+  printf '%s\\n' "$late" >>"$evidence/inbox.jsonl"
+  return 1
+}
 control_read_a21`
       );
     const held = a21("held", [otherLine]);
     expect(held).toMatch(/^A21 control PASS: /);
-    expect(held).toContain(`A21's read failed: handed ["comment-110","comment-111"]`);
+    expect(held).toContain(
+      `A21's read failed: handed ["comment-110","comment-111"] and an inbox of 1`
+    );
     expect(held).toContain(
       `A21's first holder's leg, over the control's mention of role:legion-alx-alx-11-merger (its delivery records [{"target":"role:legion-alx-alx-11-merger","state":"failed","session_id":null,"error":"no holder for role legion-alx-alx-11-merger"}]), a role its first holder holder-session claimed once the mention settled failed: a mention of role:legion-alx-alx-11-merger`
     );
@@ -6065,10 +6189,10 @@ control_read_a21`
       /^A21 control FAIL: .*the record of the control's mention comment-112, where the first holder's leg reads it kept once its one delivery settled, not pending: no listing at all/
     );
     expect(a21("missing", null)).toMatch(
-      /^A21 control FAIL: .*the inbox, where its read looks for the reply to the control's message to the role's topic: no listing at all/
+      /^A21 control FAIL: .*the inbox, where its read looks for the reply to the control's message to the role's topic, and its first holder's leg for the mention's marker: no listing at all/
     );
     expect(a21("empty", [])).toMatch(
-      /^A21 control FAIL: .*the inbox, where the first holder's leg looks for the mention's marker: an empty listing/
+      /^A21 control FAIL: .*the inbox, where its read looks for the reply to the control's message to the role's topic, and its first holder's leg for the mention's marker: an empty listing/
     );
     expect(a21("gone-after", [otherLine], { after: "return 22" })).toMatch(
       /^A21 control FAIL: .*ALX-11's comments as that read is handed them: no listing at all/
@@ -6082,17 +6206,28 @@ control_read_a21`
     const delivery = (state: string) =>
       `printf '%s\\n' '{"comment":{"id":"comment-112","deliveries":[{"target":"role:legion-alx-alx-11-merger","state":"${state}","session_id":null,"error":null}]},"replies":[]}'`;
     expect(a21("pending", [otherLine], { holder: delivery("pending") })).toMatch(
-      /^A21 control FAIL: .*the record of the control's mention comment-112, where the first holder's leg reads it kept once its one delivery settled, not pending: a listing of 1 entry holding no comment-112/
+      /^A21 control FAIL: .*the record of the control's mention comment-112, where the first holder's leg reads it kept once its one delivery settled, not pending: no one delivery settled \(a21_holder_settled\): its delivery records \[\{"target":"role:legion-alx-alx-11-merger","state":"pending","session_id":null,"error":null\}\]/
     );
     expect(
       a21("no-delivery", [otherLine], {
         holder: `printf '%s\\n' '{"comment":{"id":"comment-112","deliveries":[]},"replies":[]}'`,
       })
+    ).toMatch(
+      /^A21 control FAIL: .*not pending: no one delivery settled \(a21_holder_settled\): its delivery records \[\]/
+    );
+    // A record of another comment is no record of the mention, whatever its delivery.
+    expect(
+      a21("other-record", [otherLine], {
+        holder: `printf '%s\\n' '{"comment":{"id":"comment-90","deliveries":[{"target":"role:x","state":"failed","session_id":null,"error":null}]},"replies":[]}'`,
+      })
     ).toMatch(/^A21 control FAIL: .*not pending: a listing of 1 entry holding no comment-112/);
     for (const state of ["queued", "sent", "failed"]) {
-      expect(a21(`settled-${state}`, [otherLine], { holder: delivery(state) })).toMatch(
-        /^A21 control PASS: /
+      const settled = a21(`settled-${state}`, [otherLine], { holder: delivery(state) });
+      expect(settled).toMatch(/^A21 control PASS: /);
+      expect(settled).toContain(
+        `settled queued naming no session: ${state === "queued" ? "yes" : "no"}; `
       );
+      expect(settled).toContain("its inbox holds answer-loop-a21-holder-control-4242-files: no");
     }
   }, 30_000);
 
@@ -6200,60 +6335,6 @@ control_read_a22`
   // and A20's two last legs are sent and counted by helpers the row and its control share, each
   // taking the words of its own that tell the two apart.
   describe("the legs a row and its control share are sent and counted by one helper each", () => {
-    test("the A8 row and its control send and count the resolution and notice legs by the same helpers", () => {
-      for (const fn of ["check_a8", "control_send_a8"]) {
-        const text = rig(fn);
-        for (const helper of [
-          "a8_resolution_send",
-          "a8_notice_send",
-          "a8_skipped_count",
-          "a8_question_count",
-        ]) {
-          expect(text, `${fn} calls ${helper}`).toContain(helper);
-        }
-        for (const own of ["agent_ask", "daemon_notice", "person_resolves"]) {
-          expect(text, `${fn} sends by ${own} itself`).not.toContain(own);
-        }
-      }
-      // The lines the control places in the log come after the first part has been read over the log
-      // before them, so the control's send places none.
-      expect(rig("control_send_a8")).not.toContain("place_log_line");
-      expect(rig("control_read_a8")).toContain("place_log_line");
-    });
-
-    test("the A20 row and its control make the two last legs and count them by the same helpers", () => {
-      for (const fn of ["check_a20", "control_send_a20"]) {
-        const text = rig(fn);
-        for (const helper of [
-          "a20_writers_leg",
-          "a20_quiet_leg",
-          "a20_writers_skipped",
-          "a20_dropped",
-          "a20_quiet_needle",
-        ]) {
-          expect(text, `${fn} calls ${helper}`).toContain(helper);
-        }
-        expect(text, `${fn} makes a thread itself`).not.toMatch(/a20_(writers|quiet)_thread "/);
-        expect(text, `${fn} posts a reply itself`).not.toMatch(
-          /person_comment "|control_comment A20 (wreply|qreply)/
-        );
-      }
-    });
-
-    test("no control checks the inbox or the log it read and then hands its read nothing", () => {
-      const source = readFileSync(join(e2e, "answer-loop.sh"), "utf8");
-      let checked = 0;
-      for (const found of source.matchAll(/^(control_\w+)\(\) \{(?:.*\}$|[\s\S]*?\n\}$)/gm)) {
-        const [text, name] = found;
-        for (const seen of text.matchAll(/control_(?:inbox|log)_seen \w+ "[^"]*" ("\$\w+")/g)) {
-          checked++;
-          const after = text.slice((seen.index ?? 0) + seen[0].length);
-          expect(after, `${name} hands ${seen[1]} to no read`).toContain(seen[1]);
-        }
-      }
-      expect(checked).toBeGreaterThanOrEqual(16);
-    });
-
     test("a20_writers_leg and a20_quiet_leg make the thread and the person's reply, naming the words of the row's or the control's own", () => {
       const bodies = join(dir, "a20-person-bodies");
       writeFileSync(bodies, "");
@@ -6307,7 +6388,7 @@ ${call}`);
       });
     });
 
-    test("the counts of the A20 and A8 legs read the tester's, the reviewer's and the planner's lines each by its own reason", () => {
+    test("the counts of the A20 and A8 legs read each session's lines by its own reason and state", () => {
       const log = join(dir, "shared-legs.log");
       const line = (fields: Record<string, unknown>) =>
         `${JSON.stringify({ time: "2026-11-24T12:00:00.000Z", level: "INFO", ...fields })}\n`;
@@ -6329,18 +6410,34 @@ ${call}`);
           }) +
           line({ msg: "answers: question", session: "session-reviewer", state: "received" }) +
           line({ msg: skippedMsg, session: "session-planner", because: "the daemon's own post" }) +
-          line({ msg: skippedMsg, session: "session-planner", because: "the daemon's own post" })
+          line({ msg: skippedMsg, session: "session-planner", because: "the daemon's own post" }) +
+          line({ msg: "answers: question", session: "session-planner", state: "posted" }) +
+          line({ msg: "answers: question", session: "session-tester-old", state: "received" }) +
+          line({ msg: "answers: question", session: "session-architect", state: "received" }) +
+          line({ msg: "answers: question", session: "session-architect", state: "handed_off" }) +
+          line({
+            msg: "answers: the loop's own answer is delivered into the asking agent's conversation",
+            session: "session-tester-old",
+          })
       );
       const counts = (call: string) =>
         read(`${rig("a20_writers_because")}
+${rig("a20_writers_skipped_in")}
 ${rig("a20_writers_skipped")}
+${rig("a20_dropped_in")}
 ${rig("a20_dropped")}
+${rig("a8_skipped_count_in")}
+${rig("a8_question_count_in")}
 ${rig("a8_skipped_count")}
 ${rig("a8_question_count")}
+${rig("a8_delivered_count_in")}
+${rig("a8_delivered_count")}
 ${rigVariable("a8_resolved_because")}
 ${rigVariable("a8_notice_because")}
+${rigVariable("a8_delivered_msg")}
 agent[files:tester.session]=session-tester; agent[files:tester_old.session]=session-tester-old
 agent[files:pre_change.session]=session-reviewer; agent[files:planner.session]=session-planner
+agent[files:architect.session]=session-architect
 daemon_log=${shq(log)}; boot_offset=0
 ${call}`).text;
       expect(counts("a20_writers_skipped")).toBe("1");
@@ -6349,7 +6446,35 @@ ${call}`).text;
       expect(counts('a8_skipped_count pre_change "$a8_notice_because"')).toBe("0");
       expect(counts('a8_skipped_count planner "$a8_notice_because"')).toBe("2");
       expect(counts("a8_question_count pre_change")).toBe("1");
-      expect(counts("a8_question_count planner")).toBe("0");
+      // A8's third and fourth legs: the planner's posted answers, the replaced tester's and the
+      // architect's questions in any state, and the loop's deliveries into the replaced tester.
+      expect(counts("a8_question_count planner")).toBe("1");
+      expect(counts("a8_question_count planner posted")).toBe("1");
+      expect(counts("a8_question_count planner received")).toBe("0");
+      expect(counts("a8_question_count tester_old")).toBe("1");
+      expect(counts("a8_question_count architect")).toBe("2");
+      expect(counts("a8_delivered_count")).toBe("1");
+      // Each count's listing form, which its plain form and A8's reads count with, counts the
+      // listing it is handed and reads no log of its own: here the log is gone once it is read.
+      const listed = (call: string) =>
+        counts(
+          `lines=$(boot_listing); daemon_log=${shq(join(dir, "no-such-daemon.log"))}; ${call}`
+        );
+      expect(listed('a20_writers_skipped_in "$lines"')).toBe("1");
+      expect(listed('a20_dropped_in "$lines"')).toBe("1");
+      expect(listed('a8_skipped_count_in "$lines" pre_change "$a8_resolved_because"')).toBe("1");
+      expect(listed('a8_skipped_count_in "$lines" planner "$a8_notice_because"')).toBe("2");
+      expect(listed('a8_question_count_in "$lines" pre_change')).toBe("1");
+      expect(listed('a8_question_count_in "$lines" planner posted')).toBe("1");
+      expect(listed('a8_question_count_in "$lines" architect')).toBe("2");
+      expect(listed('a8_delivered_count_in "$lines"')).toBe("1");
+      expect(listed("a8_question_count architect")).toBe("0");
+      expect(listed("a8_delivered_count")).toBe("0");
+      expect(listed("a20_writers_skipped")).toBe("0");
+      expect(counts("a20_dropped_in null")).toBe("0");
+      expect(counts('a8_skipped_count_in null planner "$a8_notice_because"')).toBe("0");
+      expect(counts("a8_question_count_in null pre_change")).toBe("0");
+      expect(counts("a8_delivered_count_in null")).toBe("0");
     });
 
     test("a8_resolution_send and a8_notice_send send the legs, naming the words of the row's or the control's own", () => {

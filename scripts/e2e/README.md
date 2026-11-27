@@ -1952,7 +1952,7 @@ The answers to the asker and the controller notices land in `inbox.jsonl` under 
   **Departure:** with the daemon stopped the run writes the issue into the daemon's record in `implementing`, its tree's lifecycle open under the workflow as A6's is, and writes the implementer's claim `failed` as the supervisor fails a claim whose deaths ran out (cause `died` with its sentence and time, no locator, `suspended_by` empty), since no `legion claims` command fails a claim.
   The daemon boots on that record and relaunches nothing of it: a failed claim waits for an operator, and an operator's suspension holds against the boot's resume.
   It also holds the issue, as it holds any issue whose worker failed with work outstanding (`phase` `held`, `heldFrom` the phase it was held from, `api.Issue.HeldFrom`), and a held issue is still in the workflow and in its tree.
-  The question is asked only once `legion state` keeps the tree live with the issue in `implementing` or held from `implementing` (`tree_is_live … held`), the claim still stands `failed`, and the listener's registry entry for the implementer's session (`GET /v1/legion/agents/sessions/<session>`), the role's newest, reads under the role's token:
+  The question is asked only once `legion state` keeps the tree live with the issue in `implementing` (`tree_is_live`) or held from `implementing` (`tree_is_held_from`), the claim still stands `failed`, and the listener's registry entry for the implementer's session (`GET /v1/legion/agents/sessions/<session>`), the role's newest, reads under the role's token:
   the case of a role with no live holder whose issue has not left the workflow.
   Then a person's comment on the issue mentions `role:<token>`, as A3's does;
   its one delivery must be `sent` to the implementer's session, and that session's reply to the comment must hold the question's keys.
@@ -2042,7 +2042,7 @@ What a row's read needs besides the message, the control does as the row does:
 - A21: the control sends what the row sends: the person's mention of the failed implementer's role, the mention of the reviewer's role that no session of the run took (its id is the one the read takes), and a message to the failed role's topic under a marker of its own.
   For the first holder's leg it mentions the issue's `merger` role, which no session of the run took either, under a marker of its own, waits up to 60 s for that mention's one delivery to settle, as the row waits, and has the first holder register again and claim that same role (`a21_holder_claim`), as the row's first holder claims the role its mention names.
   A claim that did not land for the first holder reads as a message not taken, since no marker could reach a holder of no role (`a21_holder_holds`).
-  The leg's read (`a21_holder_read`) is run over that mention's record and the inbox, each read once, and counted only where the record's one delivery settled, not `pending`:
+  The control reads the inbox once for A21's read and this leg's, and the leg's read (`a21_holder_read`) is run over that inbox and the mention's record, read once, and counted only where the record's one delivery settled, not `pending` (`a21_holder_settled`, the test the control's wait for the mention ends on):
   a wait for the mention to settle that timed out leaves the control a FAIL, since the read then fails with `answers` on or off.
   With `answers` on, Dispatch would keep the mention `queued` for the role's first holder and the listener would relay its marker to that holder, so the read could hold;
   with `answers` removed the mention settles `failed` (`no holder for role …`), kept for nobody, and the marker reaches no inbox of the holder, so the read must fail, and the control's detail quotes the mention's delivery records.
@@ -2082,7 +2082,7 @@ a read that is wrong reports a pass over evidence that holds nothing, and each r
 So [`lib/answer-loop-reads.test.ts`](lib/answer-loop-reads.test.ts) runs every one of them, the same functions under the rig's own `set -Eeuo pipefail`, over fixtures of the shapes a run writes ([`lib/testdata/answer-loop`](lib/testdata/answer-loop), small and synthetic, taken from a real run's evidence).
 Each read is given three things: evidence that must pass, evidence that must fail, and an empty input, which it must judge rather than end the run on under `pipefail`.
 The test needs no model, no network, no Postgres and no NATS, runs in seconds with `bun test scripts/e2e/lib` (the `typescript` job of `ci.yaml`), and fails if a read is put back to a bug it names:
-the reachability preflight counted as a model call, the agent's own words counted as the loop's append, an asks body read as an object, a review id compared as a number, a duplicate under one dedupe key counted as one.
+the reachability preflight counted as a model call, the agent's own words counted as the loop's append, an asks body read as an object, a review id compared as a number, a duplicate under one dedupe key counted as one, an event in the place of the inbox listing a read requires read as an inbox that holds no reply.
 
 **Every write of every answer.**
 Every row that asks the loop a question also reads every tool call of each answer it caused, in `record_result`, the one place every row's result goes, so no row can leave the read out.

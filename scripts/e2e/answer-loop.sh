@@ -2464,16 +2464,21 @@ a20_quiet_thread() {
 a20_writers_because() {
   printf 'a reply in a comment thread that session %s answers, as the author of its newest comment before the reply' "$1"
 }
-# a20_writers_skipped: how many hand-offs of the tester this boot took for no question as the
-# replaced tester's to answer (a20_writers_because). A20's leg of two stopped writers and its
-# control both count it before the person's reply and after it.
-a20_writers_skipped() {
-  answers_lines "answers: hand-off is no question; not answered" "${agent[$store:tester.session]}" "" "$(a20_writers_because "${agent[$store:tester_old.session]}")"
+# a20_writers_skipped_in LINES: how many hand-offs of the tester LINES, this boot's log as one
+# listing (boot_listing), took for no question as the replaced tester's to answer
+# (a20_writers_because), and a20_writers_skipped that over the log read now. A20's leg of two
+# stopped writers and its control both count it before the person's reply, and the leg's read
+# (a20_writers_read) after it.
+a20_writers_skipped_in() {
+  answers_lines_in "${1:-}" "answers: hand-off is no question; not answered" "${agent[$store:tester.session]}" "" "$(a20_writers_because "${agent[$store:tester_old.session]}")"
 }
-# a20_dropped: how many of the tester's questions this boot ended with nothing posted (`answers:
-# question`, state dropped), which A20's leg of a reply that asks nothing and its control both count
-# before the person's reply and after it.
-a20_dropped() { answers_lines "answers: question" "${agent[$store:tester.session]}" dropped; }
+a20_writers_skipped() { a20_writers_skipped_in "$(boot_listing)"; }
+# a20_dropped_in LINES: how many of the tester's questions LINES, this boot's log as one listing,
+# ended with nothing posted (`answers: question`, state dropped), and a20_dropped that over the log
+# read now. A20's leg of a reply that asks nothing and its control both count it before the
+# person's reply, and the leg's read (a20_quiet_read) after it.
+a20_dropped_in() { answers_lines_in "${1:-}" "answers: question" "${agent[$store:tester.session]}" dropped; }
+a20_dropped() { a20_dropped_in "$(boot_listing)"; }
 # a20_quiet_needle TAG is the words that end the person's reply that asks nothing, which the
 # tester's conversation holds once the loop appended its exchange. TAG says whose reply it is (A20,
 # control of A20).
@@ -2518,7 +2523,7 @@ a20_writers_read() {
   fi
   a20_nothing_posted "$1" "${2:-}" "$(thread_replies_in "$record" "${agent[$store:tester.session]}")" && nothing=yes
   said=$read_said
-  skipped=$(($(answers_lines "answers: hand-off is no question; not answered" "${agent[$store:tester.session]}" "" "$(a20_writers_because "$old")") - ${3:-0}))
+  skipped=$(($(a20_writers_skipped) - ${3:-0}))
   read_said="the replaced tester $old's answer under the person's reply ${2:-(no reply)} in the thread of ${1:-(no thread)} $(if [ -z "$answer" ]; then printf none; elif [ "$held" = yes ]; then printf 'holds the keys'; else printf 'lacks "%s"' "$missing"; fi); $said; the tester's hand-offs taken for no question as the replaced tester's to answer: $skipped"
   [ "$held" = yes ] && [ "$nothing" = yes ] && [ "$skipped" -gt 0 ]
 }
@@ -2538,7 +2543,7 @@ a20_quiet_read() {
   [ -n "${2:-}" ] && jq -e --arg w "$2" 'any(.[]?; .id == $w)' <<<"$replies" >/dev/null 2>&1 && wrote=yes
   a20_nothing_posted "$1" "${3:-}" "$replies" && nothing=yes
   said=$read_said
-  dropped=$(($(answers_lines "answers: question" "$session" dropped) - ${4:-0}))
+  dropped=$(($(a20_dropped) - ${4:-0}))
   [ -n "${5:-}" ] && conversation_holds tester "$5" && held=yes
   read_said="the thread of ${1:-(no thread)} holds the tester's comment ${2:-(none)}: $wrote; $said; the tester's questions ended with nothing posted: $dropped; its conversation holds \"${5:-}\": $held"
   [ "$wrote" = yes ] && [ "$nothing" = yes ] && [ "$dropped" -gt 0 ] && [ "$held" = yes ]
@@ -2988,16 +2993,20 @@ check_a7() {
   suspend_agent architect || true
 }
 
-# a8_once_read STORED INBOX SENT... is the read of A8's first leg: SENT..., the listener's answers
+# a8_once_read STORED SENT... INBOX is the read of A8's first leg: SENT..., the listener's answers
 # (`<status> <event>`) to one envelope sent under one key, are each 200 and each name the first
 # send's event; the stream stored one copy of them beyond STORED; one reply to that event reached
 # the asker; and this boot named the reply's question in no line, a second hand-off of it among
 # them: the daemon was handed the question once and answered it once. INBOX is the inbox as A8's
-# control read it once (inbox_listing), empty to read it now.
+# row or its control read it once (inbox_listing), and is required: handed none, the read fails
+# saying so (inbox_listing_fault), where a send in its place would read as no reply.
 a8_once_read() {
-  local stored_before=$1 inbox=$2 planner=${agent[$store:planner.session]} sent event codes='' answered_events='' want='' same='' qid stored replies taken again
-  shift 2
-  event=${1#* }
+  local stored_before=${1:-} inbox='' planner=${agent[$store:planner.session]} sent event codes='' answered_events='' want='' same='' qid stored replies taken again
+  [ "$#" -lt 2 ] || inbox=${!#}
+  read_said=$(inbox_listing_fault "$inbox") || return 1
+  set -- "${@:2:$#-2}"
+  sent=${1:-}
+  event=${sent#* }
   for sent in "$@"; do
     codes+="${codes:+ }${sent%% *}"
     answered_events+="${answered_events:+ }${sent#* }"
@@ -3009,7 +3018,7 @@ a8_once_read() {
   taken=$(question_lines "$qid")
   stored=$(($(listener_stored_handoffs_to "$planner") - stored_before))
   # shellcheck disable=SC2086 # each answered event is a word of its own, and an empty one none
-  replies=$(replies_to "$inbox" $answered_events)
+  replies=$(replies_to $answered_events "$inbox")
   read_said="one envelope $# time(s) (listener $codes, answered events $answered_events): hand-offs the stream stored for them $stored; replies on the asker's topic $replies; this boot's lines naming the question ${qid:-(none)}: $taken, of them handed off again $again"
   [ "$codes" = "$want" ] && [ -n "$event" ] && [ "$answered_events" = "$same" ] && [ "$stored" = 1 ] && [ "$replies" = 1 ] &&
     [ -n "$qid" ] && [ "$taken" = 0 ] && [ "$again" = 0 ]
@@ -3031,9 +3040,9 @@ a8_delivered_msg="answers: the loop's own answer is delivered into the asking ag
 # APPENDED, which holds the answer's own marker once.
 a8_own_delivered_read() {
   local tester_old=${agent[$store:tester_old.session]} posted handed delivered appended marker
-  posted=$(answers_lines "answers: question" "${agent[$store:planner.session]}" posted)
+  posted=$(a8_question_count planner posted)
   handed=$(listener_handoffs_to "$tester_old")
-  delivered=$(answers_lines "$a8_delivered_msg" "$tester_old")
+  delivered=$(a8_delivered_count)
   appended=$(appended_exchanges tester_old)
   marker=0
   [ -z "$4" ] || marker=$(occurrences "$(conversation_text tester_old 2>/dev/null || true)" "legion-answer:$4")
@@ -3049,7 +3058,7 @@ a8_own_delivered_read() {
 a8_own_unanswered_read() {
   local tester_old=${agent[$store:tester_old.session]} lines=${4:-} questions answers request=null refused
   [ -n "$lines" ] || lines=$(boot_listing)
-  questions=$(answers_lines_in "$lines" "answers: question" "$tester_old")
+  questions=$(a8_question_count_in "$lines" tester_old)
   answers=$(answers_lines_in "$lines" "answers: answered" "$tester_old")
   [ -z "$3" ] || request=$(daemon_request_for "legion-answer:$3")
   refused=$(controller_questions post_refused) || refused=unread
@@ -3062,7 +3071,7 @@ a8_own_unanswered_read() {
 a8_edit_unanswered_read() {
   local lines=${2:-} questions
   [ -n "$lines" ] || lines=$(boot_listing)
-  questions=$(answers_lines_in "$lines" "answers: question" "${agent[$store:architect.session]}")
+  questions=$(a8_question_count_in "$lines" architect)
   read_said="questions for the architect $1 → $questions"
   [ "$questions" = "$1" ]
 }
@@ -3087,7 +3096,7 @@ a8_notice_because="the daemon's own post"
 a8_untaken_read() {
   local lines=${3:-} questions
   [ -n "$lines" ] || lines=$(boot_listing)
-  questions=$(answers_lines_in "$lines" "answers: question" "${agent[$store:$1.session]}") || questions=0
+  questions=$(a8_question_count_in "$lines" "$1") || questions=0
   read_said="this boot's log: $(jq -r 'if type == "array" then "\(length) lines" else "no listing at all" end' <<<"${lines:-null}" 2>/dev/null || printf 'no listing at all'); questions of the $1's session ${agent[$store:$1.session]} $2 → $questions"
   jq -e 'type == "array" and length > 0' <<<"${lines:-null}" >/dev/null 2>&1 && [ "$questions" = "$2" ]
 }
@@ -3100,7 +3109,7 @@ a8_untaken_read() {
 a8_taken_read() {
   local lines=${4:-} skipped
   [ -n "$lines" ] || lines=$(boot_listing)
-  skipped=$(answers_lines_in "$lines" "answers: hand-off is no question; not answered" "${agent[$store:$1.session]}" "" "$2") || skipped=0
+  skipped=$(a8_skipped_count_in "$lines" "$1" "$2") || skipped=0
   read_said="taken for no question as \"$2\" $3 → $skipped"
   [ "$skipped" -gt "$3" ]
 }
@@ -3139,11 +3148,23 @@ daemon_notice() {
   dispatch_agent POST "issues/${agent[$store:$1.issue]}/messages" \
     "$(jq -cn --arg t "session:${agent[$store:$1.session]}" --arg b "$2" '{body: $b, target: $t, delivery: "steer"}')" | jq -r '.id // empty'
 }
-# a8_skipped_count NAME BECAUSE: how many hand-offs of NAME's session this boot took for no question
-# BECAUSE, and a8_question_count NAME: how many questions of NAME's session it logged. A8's
-# resolution and notice legs and their control both count them before what they send and after it.
-a8_skipped_count() { answers_lines "answers: hand-off is no question; not answered" "${agent[$store:$1.session]}" "" "$2"; }
-a8_question_count() { answers_lines "answers: question" "${agent[$store:$1.session]}"; }
+# a8_skipped_count_in LINES NAME BECAUSE: how many hand-offs of NAME's session LINES, this boot's log
+# as one listing (boot_listing), took for no question BECAUSE; a8_question_count_in LINES NAME
+# [STATE]: how many questions of NAME's session LINES logged, in STATE where one is given; and
+# a8_delivered_count_in LINES: how many times LINES says the loop delivered its own answer into the
+# replaced tester's conversation (a8_delivered_msg). a8_skipped_count NAME BECAUSE,
+# a8_question_count NAME [STATE] and a8_delivered_count are each over the log read now. A8's row
+# and its control count the questions before what they send, the row waits on the delivered count,
+# and its legs' reads (a8_taken_read, a8_untaken_read, a8_own_delivered_read,
+# a8_own_unanswered_read, a8_edit_unanswered_read) count each after it: the planner's answers
+# posted, the questions of the replaced tester, the architect, the pre-change reviewer and the
+# planner, and the deliveries into the replaced tester's conversation.
+a8_skipped_count_in() { answers_lines_in "${1:-}" "answers: hand-off is no question; not answered" "${agent[$store:$2.session]}" "" "$3"; }
+a8_question_count_in() { answers_lines_in "${1:-}" "answers: question" "${agent[$store:$2.session]}" "${3:-}"; }
+a8_delivered_count_in() { answers_lines_in "${1:-}" "$a8_delivered_msg" "${agent[$store:tester_old.session]}"; }
+a8_skipped_count() { a8_skipped_count_in "$(boot_listing)" "$@"; }
+a8_question_count() { a8_question_count_in "$(boot_listing)" "$@"; }
+a8_delivered_count() { a8_delivered_count_in "$(boot_listing)"; }
 # a8_resolution_send SUFFIX REASON sends A8's resolution leg, the row's and its control's alike: an
 # ask opened in the pre-change reviewer's own name, asking whether the release still waits on the
 # SBOM under SUFFIX, which the person then resolves with REASON. It prints the ask's id, nothing
@@ -3180,7 +3201,7 @@ check_a8() {
   start_daemon "$daemon_bin" "$daemon_config" "$daemon_log" "$daemon_home" "$daemon_profile" "$daemon_plugin_dir"
   resent=$(envoy_ask session "$planner" unanswerable "$key")
   sleep 60
-  a8_once_read "$stored_before" "" "$sent" "$resend" "$resent" && ok_twice=1
+  a8_once_read "$stored_before" "$sent" "$resend" "$resent" "$(inbox_listing)" && ok_twice=1
   note "the third across a restart: $read_said"
   said+="$read_said; "
   # A kill just after the answer posted: the asker's inbox is polled every tenth of a second and the
@@ -3210,16 +3231,16 @@ check_a8() {
   # entry the append ends with (appended_exchanges) and by the answer's own
   # `legion-answer:<question>` marker inside the entry, which only the delivered message carries.
   tester_old=${agent[$store:tester_old.session]}
-  posted_before=$(answers_lines "answers: question" "$planner" posted)
-  own_before=$(answers_lines "answers: question" "$tester_old")
+  posted_before=$(a8_question_count planner posted)
+  own_before=$(a8_question_count tester_old)
   handed_before=$(listener_handoffs_to "$tester_old")
   appended_before=$(appended_exchanges tester_old)
   calls_before=$(proxy_count "daemon-$store")
   refused_before=$(controller_questions post_refused)
   a8_own_send "$(question_text repository-file) (question own-answer of run $run_tag)" >/dev/null
-  soft_wait 300 "the planner's answer to the tester's session to post" more_than "$posted_before" answers_lines "answers: question" "$planner" posted || true
+  soft_wait 300 "the planner's answer to the tester's session to post" more_than "$posted_before" a8_question_count planner posted || true
   own_qid=$(newest_question "$planner" posted)
-  own_delivered() { [ "$(answers_lines "$a8_delivered_msg" "$tester_old")" -ge 1 ]; }
+  own_delivered() { [ "$(a8_delivered_count)" -ge 1 ]; }
   soft_wait 300 "the planner's answer to reach the stopped tester's conversation" own_delivered || true
   sleep 60
   if a8_own_delivered_read "$posted_before" "$handed_before" "$appended_before" "$own_qid"; then
@@ -3232,7 +3253,7 @@ check_a8() {
   # An edit: the person edits the comment A1's question was, on the open root issue. A closed
   # issue refuses every comment edit (409 ISSUE_CLOSED, comment_actions.go:19-31 lockedComment).
   if [ -n "${agent[$store:a1.comment]:-}" ]; then
-    edit_before=$(answers_lines "answers: question" "${agent[$store:architect.session]}")
+    edit_before=$(a8_question_count architect)
     dispatch_human PATCH "comments/${agent[$store:a1.comment]}" "$(jq -cn --arg b "$(question_text architect-decision) (edited)" '{body: $b}')" >/dev/null
     sleep 60
     a8_edit_unanswered_read "$edit_before" && ok_edit=1
@@ -3422,28 +3443,31 @@ a10_gpt() {
   deliver_task "$token" "While you were stopped you were asked $n questions about go.mod. What did you answer each time?" || true
   soft_wait 300 "the resumed GPT-6.1 merger's first model call" more_than "$m" proxy_count agents-gpt || true
   soft_wait 600 "the resumed merger's turn" claim_is "$token" '.state == "idle" and .pending == null' || true
-  if a10_gpt_read A10-gpt "$m" "" "${pairs[@]}"; then
+  if a10_gpt_read A10-gpt "$m" "${pairs[@]}" "$(inbox_listing)"; then
     record_result A10 PASS "$read_pass_said; $gpt_bound_said"
   else
     record_result A10 FAIL "$read_said"
   fi
   suspend_agent gpt || true
 }
-# a10_gpt_read PREFIX M INBOX ID=EVENT... is the read of A10's GPT-6.1 clause over the answers to the
+# a10_gpt_read PREFIX M ID=EVENT... INBOX is the read of A10's GPT-6.1 clause over the answers to the
 # questions ID..., asked in that order under the markers PREFIX-1), PREFIX-2), … (question_suffix)
 # and answered to EVENT...: (a) to (f) above, from the conversations the two cache answers'
 # first requests replayed, kept as sessions/<store>/gpt-before-<PREFIX>-1.jsonl and -2.jsonl, and
 # from the merger's first request after its first M model calls on agents-gpt. Every answer's calls
 # are read now that the last is posted, so that none is judged short of a call the proxy had not
 # yet recorded when the leg decided whether to ask again. It sets read_said to what went wrong and
-# read_pass_said to the row's PASS. INBOX is the inbox as A10's control read it once (inbox_listing),
-# empty to read it now.
+# read_pass_said to the row's PASS. INBOX is the inbox as A10's row or its control read it once
+# (inbox_listing), and is required: handed none, the read fails saying so (inbox_listing_fault),
+# where an ID=EVENT in its place would read as no reply.
 a10_gpt_read() {
-  local prefix=$1 m=$2 inbox=$3 slug k pair id event transcript='' second='' summary level want calls line reply missing request
+  local prefix=${1:-} m=${2:-} inbox='' slug k pair id event transcript='' second='' summary level want calls line reply missing request
   local replay1 replay2 rgot1 rof1 rmiss1 rgot2 rof2 rmiss2 carried owed cached1 cached2 counts='' want_counts='' exercised=''
   local unexercised='' uncarried='' unreplayed='' unkeyed='' ok_tools=0 ok_model=1 ok_effort=1 ok_replay=0 ok_carried=0 ok_cache=0 ok_keys=1 ok_resume=0
   local -a ids=() answers=() lines=() carries=()
-  shift 3
+  [ "$#" -lt 3 ] || inbox=${!#}
+  read_said=$(inbox_listing_fault "$inbox") || return 1
+  set -- "${@:3:$#-3}"
   slug=${prefix// /-}
   [ ! -f "$evidence/sessions/$store/gpt-before-$slug-1.jsonl" ] || transcript=$(<"$evidence/sessions/$store/gpt-before-$slug-1.jsonl")
   [ ! -f "$evidence/sessions/$store/gpt-before-$slug-2.jsonl" ] || second=$(<"$evidence/sessions/$store/gpt-before-$slug-2.jsonl")
@@ -4442,10 +4466,10 @@ a19_read() {
 # against the boot's resume of a phase's owner. It also holds the issue, as it holds any issue whose
 # worker failed with work outstanding (api.Issue.HeldFrom names the phase it was held from), and a
 # held issue is still in the workflow and in its tree. The mention is asked only once the daemon's
-# own state keeps the tree live with the issue in implementing or held from implementing
-# (tree_is_live ... held), the claim still stands failed, and the listener's registry entry for the
-# implementer's session, the role's one and so its newest, reads under the role's token
-# (registry_entry_of): the daemon's state is what makes this an issue that has not left the
+# own state keeps the tree live with the issue in implementing (tree_is_live) or held from
+# implementing (tree_is_held_from), the claim still stands failed, and the listener's registry
+# entry for the implementer's session, the role's one and so its newest, reads under the role's
+# token (registry_entry_of): the daemon's state is what makes this an issue that has not left the
 # workflow, and that entry what makes it a role with no live holder whose newest entry the listener
 # hands to its daemon. Then the proof person comments on the issue with a picker mention of the role
 # (`role:<token>`), as A3 does. A resolution that names a role's newest entry only once that entry's
@@ -4504,7 +4528,8 @@ check_a21() {
   start_daemon "$work/branch/legion" "$work/answers-$store.yaml" "$daemon_log" "$branch_home" "$branch_profile" "$branch_plugin"
   a21_entry() { envoy "$(listener_url "/v1/legion/agents/sessions/$session")" 2>/dev/null || true; }
   a21_registered() { registry_entry_of "$(a21_entry)" "$session" "$token"; }
-  if ! soft_wait 300 "the daemon to keep the seeded tree $issue live in implementing, or held from it" tree_is_live "$issue" implementing held; then
+  a21_tree_live() { tree_is_live "$issue" implementing || tree_is_held_from "$issue" implementing; }
+  if ! soft_wait 300 "the daemon to keep the seeded tree $issue live in implementing, or held from it" a21_tree_live; then
     why="the seeded tree $issue was not live in implementing, nor held from it, in the daemon's own state ($(legion_cmd state --json | jq -c --arg i "$issue" '{trees: .admission.trees, phase: .issues[$i].phase, heldFrom: .issues[$i].heldFrom}' || true))"
   fi
   if [ -z "$why" ] && ! claim_is "$token" '.state == "failed"'; then
@@ -4629,11 +4654,15 @@ a21_holder_body() {
 # a21_holder_kept ID: the mention ID's one delivery settled `queued` naming no session, as Dispatch
 # keeps a mention of a role nobody holds for the role's first holder.
 a21_holder_kept() { one_delivery_for "$(comment_delivery_records "${1:-}")" queued ''; }
-# a21_holder_settled ID: the mention ID's one delivery settled, in any state but `pending`: what
-# A21's control waits for before its first holder claims the mentioned role, as the row waits for
-# its mention to settle queued, whatever state a daemon with answers removed leaves it in.
+# a21_holder_settled ID [RECORD]: the mention ID's one delivery settled, in any state but `pending`:
+# what A21's control waits for before its first holder claims the mentioned role, as the row waits
+# for its mention to settle queued, whatever state a daemon with answers removed leaves it in, and
+# what it holds the mention's record to before it counts the first holder's leg. RECORD is ID's
+# record as the control read it once (comment_record), read now where not given.
 a21_holder_settled() {
-  jq -e 'type == "array" and length == 1 and .[0].state != "pending"' <<<"$(comment_delivery_records "${1:-}")" >/dev/null 2>&1
+  local record=${2:-}
+  [ -n "$record" ] || record=$(comment_record "${1:-}")
+  jq -e 'type == "array" and length == 1 and .[0].state != "pending"' <<<"$(delivery_records_in "$record")" >/dev/null 2>&1
 }
 # a21_holder_holds CLAIM TOKEN: CLAIM, the listener's answer to the first holder's claim
 # (a21_holder_claim), is the claim of role TOKEN that landed for holder_session: the session's
@@ -5124,19 +5153,25 @@ control_sent() {
 }
 # control_seen ROW WHAT LISTING ENTRIES [MATCH [VALUE...]] checks LISTING, the listing a read of
 # ROW's control is handed (WHAT names it), for what the control sent or placed there
-# (listing_fault). Where it does not show that, it notes why, keeps it and marks the control unseen,
-# so that it reads FAIL however that read ends, and fails. control_inbox_seen ROW WHAT INBOX and
-# control_log_seen ROW WHAT LOG are its check of the inbox (inbox_listing) and of this boot's daemon
-# log (boot_listing), each read once by the caller, where the control's own question cannot stand:
-# each must have been read and hold entries. WHAT says what the read looks for there. The caller
-# hands that same listing to the read it counts, so that no read reads the listing again.
+# (listing_fault). Where it does not show that, it is control_unseen ROW WHAT FAULT, FAULT what
+# listing_fault said: that notes why, keeps it and marks the control unseen, so that it reads FAIL
+# however that read ends, and fails. A21's control calls control_unseen itself for a fault of its
+# own, a mention's record whose one delivery has not settled (a21_holder_settled).
+# control_inbox_seen ROW WHAT INBOX and control_log_seen ROW WHAT LOG are control_seen's check of
+# the inbox (inbox_listing) and of this boot's daemon log (boot_listing), each read once by the
+# caller, where the control's own question cannot stand: each must have been read and hold
+# entries. WHAT says what the read looks for there. The caller hands that same listing to the read
+# it counts, so that no read reads the listing again.
 control_seen() {
   local row=$1 what=$2 fault
   shift 2
   fault=$(listing_fault "$@") && return 0
-  note "$row control: $what: $fault"
-  control[$store:$row.why]+="${control[$store:$row.why]:+; }$what: $fault"
-  control[$store:$row.unseen]=1
+  control_unseen "$row" "$what" "$fault"
+}
+control_unseen() {
+  note "$1 control: $2: $3"
+  control[$store:$1.why]+="${control[$store:$1.why]:+; }$2: $3"
+  control[$store:$1.unseen]=1
   return 1
 }
 control_inbox_seen() { control_seen "$1" "the inbox, where $2" "$3" .; }
@@ -5506,8 +5541,8 @@ control_send_a8() {
   sent=$(envoy_ask_text session "$planner" "$(question_text unanswerable) $(control_suffix unanswerable A8)" "a8-control-$run_tag-$store")
   control[$store:A8.sent]=$sent
   control_sent A8 "unanswerable to the planner (listener ${sent%% *})" "${sent#* }" || true
-  control[$store:A8.posted]=$(answers_lines "answers: question" "$planner" posted)
-  control[$store:A8.own]=$(answers_lines "answers: question" "$tester_old")
+  control[$store:A8.posted]=$(a8_question_count planner posted)
+  control[$store:A8.own]=$(a8_question_count tester_old)
   control[$store:A8.handed]=$(listener_handoffs_to "$tester_old")
   control[$store:A8.appended]=$(appended_exchanges tester_old)
   control[$store:A8.refused]=$(controller_questions post_refused)
@@ -5517,7 +5552,7 @@ control_send_a8() {
   else
     control_not_taken A8 "the planner's question sent as the replaced tester (listener $code)" || true
   fi
-  control[$store:A8.edit]=$(answers_lines "answers: question" "${agent[$store:architect.session]}")
+  control[$store:A8.edit]=$(a8_question_count architect)
   if [ -n "${agent[$store:a1.comment]:-}" ]; then
     dispatch_human PATCH "comments/${agent[$store:a1.comment]}" "$(jq -cn --arg b "$(question_text architect-decision) (edited, control of A8)" '{body: $b}')" >/dev/null ||
       control_not_taken A8 "the person's edit of comment ${agent[$store:a1.comment]}" || true
@@ -5553,7 +5588,7 @@ control_read_a8() {
   local tester_old=${agent[$store:tester_old.session]} architect=${agent[$store:architect.session]} reviewer=${agent[$store:pre_change.session]} planner=${agent[$store:planner.session]} inbox unplaced log
   inbox=$(inbox_listing)
   control_inbox_seen A8 "its first two legs look for the planner's replies" "$inbox" || true
-  read_failed A8 "A8's first leg" a8_once_read "${control[$store:A8.stored]}" "$inbox" "${control[$store:A8.sent]}"
+  read_failed A8 "A8's first leg" a8_once_read "${control[$store:A8.stored]}" "${control[$store:A8.sent]}" "$inbox"
   read_failed A8 "A8's second leg" a8_kill_read "${control[$store:A8.sent]#* }" "$inbox"
   unplaced=$(boot_listing)
   control_log_seen A8 "its resolution and notice legs look for the hand-off taken for no question, in the log as it stands before the control places a line in it" "$unplaced" || true
@@ -5644,7 +5679,7 @@ control_resumed_a10() {
       ;;
     gpt)
       # shellcheck disable=SC2086 # each id=event is a word of its own
-      read_failed A10 "A10's GPT-6.1 clause" a10_gpt_read "control of A10-gpt" "${control[$store:gpt.m]}" "$inbox" ${control[$store:A10.gpt]}
+      read_failed A10 "A10's GPT-6.1 clause" a10_gpt_read "control of A10-gpt" "${control[$store:gpt.m]}" ${control[$store:A10.gpt]} "$inbox"
       ;;
   esac
 }
@@ -5878,32 +5913,34 @@ control_send_a21() {
   fi
 }
 # control_read_a21 reads the issue's comments once, where A21's read looks for the failed
-# implementer's replies to the control's two mentions, and runs that read over them, counted only
-# where they hold both mentions and the inbox, where it looks for the reply to the control's message
-# to the role's topic, holds entries; the inbox is read once and handed to that read. It reads the
-# record of the first holder's mention and the inbox once, and runs that leg's read over them,
-# counted only where the record is the mention's and its one delivery left `pending` (a wait for it
-# to settle that timed out reads as not taken) and the inbox holds entries. Then, where the read's
-# part that the implementer posts nothing under
-# the control's mention looks, it places a reply in the failed implementer's name under that
-# mention, carrying the loop's mark, reads the comments again, and that part's read, run over them,
-# counts only where they hold the placed reply. The reply is placed after the main read, which holds
-# that part too.
+# implementer's replies to the control's two mentions, and the inbox once, where that read looks
+# for the reply to the control's message to the role's topic and the first holder's leg for the
+# mention's marker, and hands each to the reads that look there. It runs A21's read over them,
+# counted only where the comments hold both mentions and the inbox holds entries. It reads the
+# record of the first holder's mention once, and runs that leg's read over it and the inbox,
+# counted only where the inbox holds entries and the record is the mention's, its one delivery
+# settled, not `pending` (a21_holder_settled, the test control_send_a21's wait for it ends on, so
+# a wait that timed out reads as not taken). Then, where the read's part that the implementer posts
+# nothing under the control's mention looks, it places a reply in the failed implementer's name
+# under that mention, carrying the loop's mark, reads the comments again, and that part's read, run
+# over them, counts only where they hold the placed reply. The reply is placed after the main read,
+# which holds that part too.
 control_read_a21() {
   local issue=${agent[$store:failed_implementer.issue]} session=${agent[$store:failed_implementer.session]} mention=${control[$store:A21.control]} holder=${control[$store:A21.holder]}
-  local comments record kept=no inbox placed role_inbox
+  local comments inbox record deliveries kept=no what placed
   comments=$(dispatch_get "issues/$issue/comments" 2>/dev/null) || comments=null
   control_seen A21 "$issue's comments, where its read looks for the failed implementer's replies to the control's mentions" "$comments" . '.id == value' "${control[$store:A21.comment]}" "$mention" || true
-  role_inbox=$(inbox_listing)
-  control_inbox_seen A21 "its read looks for the reply to the control's message to the role's topic" "$role_inbox" || true
-  read_failed A21 "A21's read" a21_read "$issue" "${control[$store:A21.comment]}" "$mention" "${control[$store:A21.panes]}" "${control[$store:A21.role_event]}" "$comments" "$role_inbox"
-  record=$(comment_record "$holder")
-  one_delivery_for "$(delivery_records_in "$record")" queued '' && kept=yes
   inbox=$(inbox_listing)
-  control_seen A21 "the record of the control's mention $holder, where the first holder's leg reads it kept once its one delivery settled, not pending" "${record:-null}" '[.comment | objects]' \
-    '.id == value and ((.deliveries // []) | length == 1 and .[0].state != "pending")' "$holder" || true
-  control_seen A21 "the inbox, where the first holder's leg looks for the mention's marker" "$inbox" . || true
-  read_failed A21 "A21's first holder's leg, over the control's mention of role:$(claim_token "$issue" merger) (its delivery records $(delivery_records_in "$record")), a role its first holder $holder_session claimed once the mention settled" \
+  control_inbox_seen A21 "its read looks for the reply to the control's message to the role's topic, and its first holder's leg for the mention's marker" "$inbox" || true
+  read_failed A21 "A21's read" a21_read "$issue" "${control[$store:A21.comment]}" "$mention" "${control[$store:A21.panes]}" "${control[$store:A21.role_event]}" "$comments" "$inbox"
+  record=$(comment_record "$holder")
+  deliveries=$(delivery_records_in "$record")
+  one_delivery_for "$deliveries" queued '' && kept=yes
+  what="the record of the control's mention $holder, where the first holder's leg reads it kept once its one delivery settled, not pending"
+  if control_seen A21 "$what" "${record:-null}" '[.comment | objects]' '.id == value' "$holder" && ! a21_holder_settled "$holder" "$record"; then
+    control_unseen A21 "$what" "no one delivery settled (a21_holder_settled): its delivery records $deliveries" || true
+  fi
+  read_failed A21 "A21's first holder's leg, over the control's mention of role:$(claim_token "$issue" merger) (its delivery records $deliveries), a role its first holder $holder_session claimed once the mention settled" \
     a21_holder_read "$(claim_token "$issue" merger)" "$holder" "${control[$store:A21.holder_marker]}" "${control[$store:A21.claim]}" "$kept" "$inbox"
   placed=$(place_comment "$session" "$issue" "Placed by the control of A21 in the failed implementer's name, as a reply of the loop's would stand: $(control_mark A21)" "$mention") || placed=
   control_sent A21 "the reply carrying the loop's mark placed in $session's name under $mention" "$placed" || true
