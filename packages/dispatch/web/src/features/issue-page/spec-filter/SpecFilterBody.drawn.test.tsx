@@ -205,14 +205,16 @@ beforeAll(async () => {
  *  is answered unless a case says so; `verification` and `plan`, where a case names them, give
  *  the issue that document, whose blocks read stands so, and `decisionBlocks` says how the
  *  decisions document's blocks read stands; `names` is what the page's batched reference read
- *  named; `staleTime` is how long an answer stays fresh, which the shell sets to 30 s; `stage`
- *  draws the body inside the stage the page draws every view in (`ViewStage`), which places the
- *  focus on a view's load and moves it on as a failed read's line that held it leaves. The
- *  page's provider of the Contents list's requests stands above the body, so `request` is taken
- *  as the page takes it; `redraw(false)` takes the body off the page and `redraw(true)` draws a
- *  new one under the same provider and reads, as the view turned off and on again does, and
+ *  named; `query` is the reader's filter by words, which leaves the view as the slot's does
+ *  (`presetView`); `staleTime` is how long an answer stays fresh, which the shell sets to 30 s;
+ *  `stage` draws the body inside the stage the page draws every view in (`ViewStage`), which
+ *  places the focus on a view's load and moves it on as a failed read's line that held it leaves.
+ *  The page's provider of the Contents list's requests stands above the body, so `request` is
+ *  taken as the page takes it; `redraw(false)` takes the body off the page and `redraw(true)`
+ *  draws a new one under the same provider and reads, as the view turned off and on again does;
  *  `redraw(true, issue)` draws the body and the reads over `issue` from then on, as the page
- *  does once the issue read answers anew. */
+ *  does once the issue read answers anew; and `reread(tree)` draws the body over `tree` from
+ *  then on, as the page does once a read the tree is built from answers anew. */
 function drawBody(
   tree: TreeNode,
   made: readonly Decision[] = [],
@@ -230,6 +232,7 @@ function drawBody(
     names,
     onEditing = () => {},
     plan,
+    query = "",
     reader = READER,
     request,
     results = "answered",
@@ -251,6 +254,7 @@ function drawBody(
     names?: ReadonlyMap<string, string>;
     onEditing?: OnEditing;
     plan?: ReadState;
+    query?: string;
     reader?: string;
     request?: OutlineRequest;
     results?: ReadState;
@@ -263,6 +267,7 @@ function drawBody(
   client: QueryClient;
   read: Reads;
   redraw: (drawn: boolean, issue?: IssueDetails) => void;
+  reread: (tree: TreeNode) => void;
   view: RenderResult;
 } {
   const base = issueDetails();
@@ -340,6 +345,8 @@ function drawBody(
   // What the page publishes of its names read, which the store holds and the body hands its rows
   // (`PublishedReferenceNames`): one value, as the page's tree makes one.
   const published = publishedNames(names ?? new Map());
+  // The tree the body is drawn over, which `reread` gives anew.
+  let drawnTree = tree;
   const bodyOf = (over: IssueDetails): ReactNode => (
     <SpecFilterBody
       context={context}
@@ -355,8 +362,8 @@ function drawBody(
       readsSettled
       {...(request === undefined ? {} : { request })}
       {...(reveal === undefined ? {} : { reveal })}
-      root={tree}
-      view={presetView(tree, "spec", "", new Set(named)).root}
+      root={drawnTree}
+      view={presetView(drawnTree, "spec", query, new Set(named)).root}
     />
   );
   let shown: IssueDetails = issue;
@@ -397,6 +404,11 @@ function drawBody(
         body = bodyOf(other);
       }
       view.rerender(page(drawn));
+    },
+    reread: (next) => {
+      drawnTree = next;
+      body = bodyOf(shown);
+      view.rerender(page(true));
     },
     view,
   };
@@ -2299,6 +2311,99 @@ test("a press on a statement's words passes its point to the outline's editing",
   } finally {
     if (original === undefined) Reflect.deleteProperty(document, "caretPositionFromPoint");
     else Object.defineProperty(document, "caretPositionFromPoint", original);
+    view.unmount();
+    editorView.destroy();
+    read.mockRestore();
+  }
+});
+
+// The reader's own edit in a statement's editor never passes through the page's store of writes:
+// it comes back as the spec's blocks read again. Under a filter by words, an edit that takes the
+// filter's words out of the statement drops its row once that read draws the view, and the row
+// leaves the tree with the focus. The drop is the reader's own doing, as the outline counts it
+// (`IssueTree.tsx`'s `heldRow`), so the statement now in its place takes the focus, and the page's
+// body does not.
+test("an edit in a statement's editor that takes the words filter's match out of it hands the focus to the statement now in its place once a read drops its row", async () => {
+  const user = userEvent.setup();
+  // The hold goes on a ProseMirror view of the statement's block, found by its block id, and the
+  // reader's edit is made in that view; a plain editable on the stage stands in for its drawing.
+  const schema = new Schema({
+    nodes: {
+      doc: { content: "paragraph+" },
+      paragraph: { attrs: { blockId: { default: null } }, content: "text*", toDOM: () => ["p", 0] },
+      text: {},
+    },
+  });
+  const editorView = new EditorView(null, {
+    state: EditorState.create({
+      doc: schema.node("doc", null, [
+        schema.node("paragraph", { blockId: "r2" }, schema.text("R2. The page draws r2.")),
+      ]),
+    }),
+  });
+  const onEditing = mock<OnEditing>((artifactId, onEditor) => {
+    if (artifactId !== undefined) onEditor?.({ view: editorView });
+  });
+  const editor = (
+    <DocumentStage artifactId="artifact-spec">
+      <div contentEditable suppressContentEditableWarning>
+        <section data-block-id="r2">
+          <p>R2. The page draws r2.</p>
+        </section>
+      </div>
+    </DocumentStage>
+  );
+  const { read, reread, view } = drawBody(
+    issueTree([statement("r1"), statement("r2"), statement("r3")]),
+    [],
+    { editor, onEditing, query: "draws" }
+  );
+  try {
+    const row = rowOf(view, "spec#b-r2");
+    act(() => row.focus());
+    await user.keyboard("{Enter}");
+    // The caret goes in once the editor's hold is on the statement's block.
+    await waitFor(() => {
+      const text = row.querySelector('[data-block-id="r2"] p')?.firstChild;
+      expect(text, "the stage drew no words of the statement's block").toBeInstanceOf(Text);
+      expect(window.getSelection()?.anchorNode, "Enter put no caret in the statement").toBe(text);
+    });
+
+    // The reader types over the filter's word.
+    act(() => {
+      const { state } = editorView;
+      const from = 1 + state.doc.textContent.indexOf("draws");
+      editorView.dispatch(state.tr.insertText("shows", from, from + "draws".length));
+    });
+    expect(editorView.state.doc.textContent, "the reader's edit did not go in").toBe(
+      "R2. The page shows r2."
+    );
+
+    // The spec's blocks read again draw the statement with the words the edit left.
+    await act(async () =>
+      reread(
+        issueTree([
+          statement("r1"),
+          statement("r2", { text: "**R2.** The page shows r2." }),
+          statement("r3"),
+        ])
+      )
+    );
+    expect(
+      view.container.querySelector(nodeRowSelectorOf("spec#b-r2")),
+      "the read did not drop the statement the edit took out of the filter"
+    ).toBeNull();
+    expect(
+      onEditing.mock.calls.at(-1)?.[0],
+      "the editing of the statement the read dropped went on"
+    ).toBeUndefined();
+    // The frame the editing's end asks for comes.
+    await nextFrame();
+    expect(
+      document.activeElement,
+      "the read that dropped the statement the reader's edit took out of their filter left the focus on the page's body, or not on the statement now in its place"
+    ).toBe(rowOf(view, "spec#b-r3"));
+  } finally {
     view.unmount();
     editorView.destroy();
     read.mockRestore();
