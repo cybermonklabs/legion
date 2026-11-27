@@ -810,7 +810,7 @@ func TestAJobWhoseNameEndsInParenthesesWritesItsOwnCheck(t *testing.T) {
 // value unit makes a check run named `test (unit)` for that leg, and a plain job named
 // `test (unit)` makes a check run of that same name. So the name does not say which of the two
 // jobs ran, and a check run of that name is refused the check that names the job `test (unit)`,
-// 409 CHECK_NOT_THIS_JOBS, saying which matrix job makes the name. The control is the same file
+// 409 CHECK_NOT_THIS_JOBS, saying which matrix job can make the name. The control is the same file
 // with the matrix job renamed tests, whose legs make no check run of that name: the plain job's
 // check run writes the check, with no leg.
 func TestAnExactNameThatALegOfAMatrixJobMakesSaysNoJob(t *testing.T) {
@@ -834,7 +834,7 @@ func TestAnExactNameThatALegOfAMatrixJobMakesSaysNoJob(t *testing.T) {
 	t.Run("a matrix job test beside the plain job test (unit)", func(t *testing.T) {
 		rig := rigWith(t, "test")
 		refusal := rig.refusedWith(t, rig.post(t, specResultsProject, rig.checkRunNamed(71, "test (unit)"), passOf(check)), http.StatusConflict, "CHECK_NOT_THIS_JOBS")
-		if says := `the matrix job "test" in ` + specResultsWorkflowPath + " at " + specResultsCommit + ` makes a check run of that name for its leg "unit"`; !strings.Contains(refusal.Error, says) {
+		if says := `the matrix job "test" in ` + specResultsWorkflowPath + " at " + specResultsCommit + ` can make a check run of that name for its leg "unit"`; !strings.Contains(refusal.Error, says) {
 			t.Fatalf("the refusal %q does not say %q", refusal.Error, says)
 		}
 	})

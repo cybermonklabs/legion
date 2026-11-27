@@ -500,10 +500,11 @@ func (e *proxyEntry) checkBlock(name, source string, refuse func(field, why stri
 // and a block of another kind would serve the capability's name as a kind of its own. That result
 // entries need the profile at all is the start check's (config.ResultsEntryRules).
 func (e profileEntry) checkMinted(refuse func(field, why string) error) error {
-	if e.Name == oauthwire.AirlockResultsName && (e.Proxy == nil || e.Proxy.block == nil || e.Proxy.block.Kind != proxyrules.WayDPoP) {
+	dpop := e.Proxy != nil && e.Proxy.block != nil && e.Proxy.block.Kind == proxyrules.WayDPoP
+	if e.Name == oauthwire.AirlockResultsName && !dpop {
 		return refuse("proxy", "must be a proxy block of kind "+proxyrules.WayDPoP+": "+e.Name+" is the results capability the broker mints and holds for a CI run's result grant, a name and a proxy block of kind "+proxyrules.WayDPoP)
 	}
-	if e.Proxy == nil || e.Proxy.block == nil || e.Proxy.block.Kind != proxyrules.WayDPoP {
+	if !dpop {
 		return nil
 	}
 	for _, f := range []struct {

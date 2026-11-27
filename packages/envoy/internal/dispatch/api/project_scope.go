@@ -51,10 +51,10 @@ package api
 //
 // A credential that names one project writes every project's objects that a credential naming
 // none may write. The one exception is a private project that the credential does not name.
-// access.CredentialCovers holds that test. A results token is held narrower than both, by this
-// check rather than by that test: the broker minted it for one CI run of one project, so it
-// writes that project's results and nothing of any other project, private or not
-// (withinProjectScope, routeDecl.ResultsScope). Each resolver reads the visibility of the target's
+// access.CredentialCovers holds that test. A results token is held narrower than both by that same
+// test: withinProjectScope builds its credential with Restricted, since the broker minted it for
+// one CI run of one project, so it writes that project's results and nothing of any other
+// project, private or not (routeDecl.ResultsScope). Each resolver reads the visibility of the target's
 // project in the statement that reads that project, and the check passes it to the test. A
 // target of a private project that the credential does not name gets the refusal of a target
 // that resolves to nothing: an object that the caller cannot see answers as one that does not

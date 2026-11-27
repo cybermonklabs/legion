@@ -185,8 +185,6 @@ export interface JobRun {
   readonly runAttempt: number;
   /** The job's check run, which Dispatch reads the job's name from. */
   readonly checkRunId: number;
-  /** The matrix values of the job's leg, which its check run's name carries in parentheses. */
-  readonly legName?: string;
   /** Whether the run's tokens are signed by a key the stand-in's issuer does not publish. */
   readonly forged?: boolean;
 }
@@ -705,7 +703,7 @@ export async function startCIResultsStack(options: CIResultsStackOptions): Promi
           runId,
           runAttempt: run.runAttempt,
           checkRunId: run.checkRunId,
-          checkRunName: run.legName === undefined ? run.job : `${run.job} (${run.legName})`,
+          checkRunName: run.job,
           forged: run.forged === true,
         });
         return {

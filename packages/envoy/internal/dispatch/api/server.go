@@ -1010,7 +1010,7 @@ func (s *server) routeHandler(route apiRoute, keyed keyedRoute) http.HandlerFunc
 	// an id prefix's lookup, the project and session checks and the Idempotency-Key, none of which
 	// it reaches, so it claims no key. It is inside the drain, as the scope gate is, so a client
 	// that asked to be told to continue is handled as for every other early answer.
-	handler = s.refuseLimitedToken(route.Method+" "+route.Pattern, route.Read, route.ResultsScope, route.ApproveOnly, handler)
+	handler = s.refuseLimitedToken(route.routeDecl, handler)
 	// One place for the whole table: every answer says its body depends on Dispatch-Trees
 	// (varyOnDisplayTrees), so no cache between a browser and Dispatch hands a reader with
 	// trees an answer written for a reader without them. It is outside the scope gate and the
@@ -1072,15 +1072,16 @@ const liveSocketPattern = "/ws/live"
 //
 // The limited-token gate sits just inside decideBrokerToken, whose decision it reads, and ahead
 // of the upgrade. The socket is no row of the table and no read, since a socket delivers whatever
-// its views carry, so the gate takes the zero entry, which classes nothing, and the socket is no
-// route that states ResultsScope or ApproveOnly: a read-only token of every kind is answered 403
-// READ_ONLY_TOKEN, a results token 403 RESULTS_ONLY_TOKEN and an approve-only token 403
-// APPROVE_ONLY_TOKEN, before a socket is ever opened for it. The socket is admitted by whichever
-// credential optionalActor resolves - a bearer, a broker-issued token or a sign-in cookie - so its
-// heartbeat resolves that same credential again (callerStillResolves).
+// its views carry, so the gate takes a declaration of the socket's method and pattern alone: its
+// zero read entry classes nothing, and it states neither ResultsScope nor ApproveOnly. A
+// read-only token of every kind is answered 403 READ_ONLY_TOKEN, a results token 403
+// RESULTS_ONLY_TOKEN and an approve-only token 403 APPROVE_ONLY_TOKEN, before a socket is ever
+// opened for it. The socket is admitted by whichever credential optionalActor resolves - a
+// bearer, a broker-issued token or a sign-in cookie - so its heartbeat resolves that same
+// credential again (callerStillResolves).
 func (s *server) liveSocketHandler(serve http.HandlerFunc) http.Handler {
 	return accesslog.HandlerOn(liveSocketPattern, s.whileCallerResolves(s.callerStillResolves, s.decideBrokerToken(
-		s.refuseLimitedToken(http.MethodGet+" "+liveSocketPattern, readEntry{}, false, false,
+		s.refuseLimitedToken(routeDecl{Method: http.MethodGet, Pattern: liveSocketPattern},
 			trackTransactions(s.refuseUnstorableParameters(liveSocketPattern, serve))))), s.clock())
 }
 
@@ -1693,11 +1694,10 @@ func (s *server) gateRouteScopes(scopes []string, handler http.HandlerFunc) http
 // read-only credential (model.Credential.ReadOnly) to the read class, a results-only one
 // (model.Credential.ResultsOnly) to the routes that state ResultsScope, and an approve-only one
 // (model.Credential.ApproveOnly) to the routes that state ApproveOnly. register wraps every route
-// of the table in it, name being the route's "<method> <pattern>", entry the read class its
-// declaration states (apiRoute.Read), resultsListed whether its declaration states ResultsScope
-// (routeDecl.ResultsScope) and approveListed whether it states ApproveOnly
-// (routeDecl.ApproveOnly), and GET /ws/live with the zero entry, which classes nothing, and
-// resultsListed and approveListed false. It reads every credential that can be limited:
+// of the table in it, with the route's own declaration, which states all three (routeDecl.Read,
+// routeDecl.ResultsScope, routeDecl.ApproveOnly), and GET /ws/live with a declaration of its
+// method and pattern alone, which classes nothing as a read and states neither. It reads every
+// credential that can be limited:
 //
 //   - A broker-issued token is already decided by decideBrokerToken, which runs outside it and
 //     carries its decision on the context (resolvedCallerKey); verifying it again would present
@@ -1732,16 +1732,16 @@ func (s *server) gateRouteScopes(scopes []string, handler http.HandlerFunc) http
 // and no scope makes such a route the token's to call. Their codes are the contract a client
 // reads, and the results and approve refusals' messages are the routes that state each in words
 // (resultsOnlyRefusal, approveOnlyRefusal).
-func (s *server) refuseLimitedToken(name string, entry readEntry, resultsListed, approveListed bool, next http.HandlerFunc) http.HandlerFunc {
-	read := entry.Writes == readWritesNothing
-	answersACut := name == whoamiRoute
+func (s *server) refuseLimitedToken(route routeDecl, next http.HandlerFunc) http.HandlerFunc {
+	read := route.Read.Writes == readWritesNothing
+	answersACut := route.Method+" "+route.Pattern == whoamiRoute
 	return func(w http.ResponseWriter, r *http.Request) {
 		r = s.resolvePersonalToken(r)
-		if !resultsListed && resultsOnlyRequest(r) {
+		if !route.ResultsScope && resultsOnlyRequest(r) {
 			writeError(w, codeResultsOnlyToken, http.StatusForbidden, resultsOnlyRefusal())
 			return
 		}
-		if !approveListed && approveOnlyRequest(r) {
+		if !route.ApproveOnly && approveOnlyRequest(r) {
 			writeError(w, contracts.DispatchApproveOnlyToken, http.StatusForbidden, approveOnlyRefusal())
 			return
 		}
