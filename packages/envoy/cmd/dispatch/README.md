@@ -6787,7 +6787,8 @@ Each item below names a path with its method and identity, then its purpose.
       A handle takes the characters of a word after it, and a character of a word before its `@` makes it no handle.
       A key of Dispatch, an id, a number, and the owner and the repository on GitHub are ASCII.
       So a letter of another script in one of them makes it no form.
-      A colour made only of digits, such as `#123` or `#000000`, has the form of a number of a pull request.
+
+    - When a form is beside the writing of another script, or a format character: a colour made only of digits, such as `#123` or `#000000`, has the form of a number of a pull request.
       So write such a colour in words.
       A form right beside a letter of a script that writes no space between words, as in `见#12`, is part of a longer word.
       So it names nothing, and R49 leaves such a text to the reviewer of R25.
