@@ -450,11 +450,13 @@ func (e *Engine) mergedEntry(ctx context.Context, tx pgx.Tx, issue record.Issue,
 // the change's moment has come (changeDue), the change starts in place (StartNextChange). Where
 // the merger's completion is what holds the change, the checks are read again when the hour after
 // the merge falls due, so the change starts then with no other event. In a tree that lingers the
-// reason is recorded and no change starts: it waits until the tree runs again (D10). It answers
-// whether a change started.
+// reason is recorded and no change starts: it waits until the tree runs again (D10). An issue
+// whose change is already open is refused by StartNextChange's one guard, which this function
+// does not repeat: a rule written twice has no control that can fail. It answers whether a
+// change started.
 func (e *Engine) startChangeIfDue(ctx context.Context, tx pgx.Tx, key string) (bool, error) {
 	issue, err := e.store.Issue(ctx, tx, key)
-	if err != nil || issue == nil || issue.Phase != phase.Verifying || issue.NextChange != 0 {
+	if err != nil || issue == nil || issue.Phase != phase.Verifying {
 		return false, err
 	}
 	view, err := e.closeWait(ctx, tx, *issue)
