@@ -73,6 +73,46 @@ func TestAnUnresolvedMembershipHoldsTheTestHandoffOverAnOldPass(t *testing.T) {
 	wantHandoff(t, rig, "once H1 is accepted and its states published", rig.issue, http.StatusCreated)
 }
 
+// TestACauseNoRetryFixesHoldsNoTestHandoff: as in the test above, H1 is #70's candidate and no
+// answer has decided it, but GitHub cannot answer for #70 and no retry changes that: the
+// deployment has no App key, or GitHub refuses the installation's token the repository (403). The
+// settle then keeps no mark for the read, so the test handoff is recorded within the fence's
+// wait, and H1 stays a candidate, no former head, until a later settle of the issue reads it once
+// access returns. The control is the 404 of the test above, which a retry can change, and which
+// holds the handoff.
+func TestACauseNoRetryFixesHoldsNoTestHandoff(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		cut  func(rig *checkStatesRig)
+	}{
+		{"a deployment with no App key", func(rig *checkStatesRig) { rig.served.deps.GitHub = nil }},
+		{"a repository GitHub refuses the installation", func(rig *checkStatesRig) { rig.github.refusePulls(true) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rig := newCheckStatesRig(t, checkStatesTwoChecks)
+			upsertHead(t, rig, 70, eachHeadH1, rig.issue, "A change")
+			eachHeadResult(t, rig.handler, rig.issue, "k1", "tester", "pass", eachHeadH1)
+			eachHeadResult(t, rig.handler, rig.issue, "k2", "tester", "pass", eachHeadH1)
+			settleOwed(t, rig)
+			upsertHead(t, rig, 70, eachHeadH2, rig.issue, "A change")
+			eachHeadResult(t, rig.handler, rig.issue, "k2", "tester", "fail", eachHeadH1)
+			forgetCandidates(t, rig)
+			settleOwed(t, rig)
+			tc.cut(rig)
+			seedInstallCandidates(t, rig, eachHeadH1)
+			settleOwed(t, rig)
+			if got := candidatesOf(t, rig); len(got) != 1 || got[eachHeadH1] {
+				t.Fatalf("#70 holds the former heads %v after the read GitHub cannot answer, want H1 unverified", got)
+			}
+			if marks := fenceMarksOf(t, rig, rig.issue); len(marks) != 0 {
+				t.Fatalf("the settle kept the marks %v in the fence's wait, want none: no retry reads #70's commits", marks)
+			}
+			rig.served.checkStatesSchedule.fenceWait = time.Second
+			wantHandoff(t, rig, "while GitHub cannot answer for #70 and no retry changes that", rig.issue, http.StatusCreated)
+		})
+	}
+}
+
 // TestTheBootstrapObligationLastsUntilItsCandidatesAreVerified: before the install, the tester
 // recorded k1 passing at H1 while #70 stood there, and #70 moved on to H2; the install leaves H1
 // as #70's candidate and the issue owed. After the install, the other issue's tester records k2

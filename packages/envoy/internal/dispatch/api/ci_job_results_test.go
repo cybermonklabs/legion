@@ -98,9 +98,11 @@ type ciJobGitHub struct {
 	// pulls is GitHub's answer for each pull request itself, by number: its head commit, its base
 	// branch and the commit that branch is at. A pull request it holds none for stands at the last
 	// commit pullCommits lists for it, onto main at ciJobBaseSHA, and one with neither is 404.
-	// pullReads counts those reads.
-	pulls     map[int]ciJobPull
-	pullReads map[int]int
+	// pullReads counts those reads. pullsRefused, when set, answers every read of a pull request
+	// itself 403, as GitHub refuses a token the repository it may not read (refusePulls).
+	pulls        map[int]ciJobPull
+	pullReads    map[int]int
+	pullsRefused bool
 	// ranges is GitHub's comparison of two commits, by "base...head": the commits head holds and
 	// base does not (git log base..head), oldest first, whatever any pull request stands at now,
 	// since a comparison names its two commits (setRange). A pull request whose base revision and
@@ -409,6 +411,14 @@ func (g *ciJobGitHub) failPullCommits(status int) {
 	g.pullCommitsStatus = status
 }
 
+// refusePulls has GitHub refuse every read of a pull request itself with 403, as it refuses an
+// installation token the repository it may not read; false ends it.
+func (g *ciJobGitHub) refusePulls(refused bool) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.pullsRefused = refused
+}
+
 // pullCommitReadsOf is how many times GitHub was asked for the commits of pull request number.
 func (g *ciJobGitHub) pullCommitReadsOf(number int) int {
 	g.mu.Lock()
@@ -530,6 +540,11 @@ func (g *ciJobGitHub) serve(t *testing.T) string {
 		var number int
 		fmt.Sscan(r.PathValue("number"), &number)
 		g.pullReads[number]++
+		if g.pullsRefused {
+			w.WriteHeader(http.StatusForbidden)
+			fmt.Fprint(w, `{"message":"Resource not accessible by integration"}`)
+			return
+		}
 		pull, held := g.pullOf(number)
 		if !held {
 			w.WriteHeader(http.StatusNotFound)
