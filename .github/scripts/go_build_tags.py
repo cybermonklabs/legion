@@ -99,6 +99,30 @@ def go(module: Path, args: list, **env) -> str:
     return result.stdout
 
 
+_TOOLCHAINS: dict = {}
+
+
+def toolchain_go(module: Path) -> str:
+    """The go binary of the toolchain the module selects, by its path, resolved once per module.
+
+    A go command of this repository runs under go_environment(), which drops the caller's
+    GOTOOLCHAIN, so a go older than go.work's switches to the toolchain go.work names. That switch
+    needs the toolchain in the module cache or a proxy to fetch it from, and a command that sets
+    GOPROXY=off for its own listing forbids the fetch and dies with `toolchain not available`. So
+    the toolchain is resolved first, by a `go env GOROOT` that writes nothing and runs under this
+    machine's own cache and proxy (go(), which sets neither), and the caller then runs its listing
+    with the binary this names under GOTOOLCHAIN=local: no switch, no fetch, and the listing may
+    set GOPROXY=off. ci_filter_coverage.Session.toolchain() does the same for the engine's go
+    commands. Where the answer is no file, the plain `go` is given back, as that function does.
+    """
+    key = str(module.resolve())
+    if key not in _TOOLCHAINS:
+        root = go(module, ["env", "GOROOT"]).strip()
+        exe = Path(root) / "bin" / "go" if root else None
+        _TOOLCHAINS[key] = str(exe) if exe and exe.is_file() else "go"
+    return _TOOLCHAINS[key]
+
+
 def platforms(module: Path) -> tuple:
     """(every GOOS, every GOARCH) go/build knows: `go tool dist list`'s ports, with the module's
     own toolchain, and the extra names above."""
