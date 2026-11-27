@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -28,6 +29,8 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime/tmux"
 	"github.com/sjawhar/legion/daemon/internal/runtime/workerbin"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
 // TestRigLaunch is the label's own code for the skill-scenario rig's launches
@@ -314,7 +317,6 @@ func rigLaunch(t *testing.T, req rigLaunchRequest) rigLaunchAnswer {
 	if len(req.Notices) > 0 && role != claim.RoleArchitect {
 		t.Fatalf("the launch request gives %d notices to the %s: a notice reaches an architect alone", len(req.Notices), role)
 	}
-	publisher := notify.New(req.EnvoyURL, envoyToken)
 	for _, queued := range req.Notices {
 		decoded, err := record.DecodeOutboxPayload(record.OutboxRow{ID: queued.Row, Kind: record.Notice{}.OutboxKind(), Issue: queued.Issue, Payload: queued.Payload})
 		if err != nil {
@@ -326,12 +328,59 @@ func rigLaunch(t *testing.T, req rigLaunchRequest) rigLaunchAnswer {
 		}
 		published, key := notice.Published(queued.Row)
 		topic, message := notify.RoleTopicPrefix+string(token), noticeSummary(notice.Kind, queued.Issue)
-		if _, err := publisher.PublishKept(ctx, topic, message, published, key); err != nil {
+		if err := rigPublishKept(ctx, req.EnvoyURL, envoyToken, topic, message, published, key); err != nil {
 			t.Fatalf("publish notice row %d: %v", queued.Row, err)
 		}
 		answer.Published = append(answer.Published, rigLaunchPublish{Topic: topic, Message: message, Key: key})
 	}
 	return answer
+}
+
+// rigLaunchSession is the session the rig's launch publishes its notices as. The listener keeps a
+// copy for a role nobody holds yet only for a publish that names its source session, since the
+// dead letter of a copy that expires goes to that session alone (#5412,
+// packages/envoy/listenerwire PublishRequest). The daemon's own kept role messages name none and
+// wait for a holder instead (publishKeptToRole), which a rig whose notice must already be waiting
+// when the owner's session starts cannot do: the owner is launched after this publish.
+const rigLaunchSession = "rig-launch"
+
+// rigPublishKept publishes one notice to a role's topic with keep, as notify.HTTPPublisher does,
+// and with the rig's own source session (rigLaunchSession). 200 and 202 are both taken: the first
+// is a live holder's, the second the listener's keep for the holder to come.
+func rigPublishKept(ctx context.Context, envoyURL, envoyToken, topic, message string, payload any, key string) error {
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("encode the notice payload for %s: %w", topic, err)
+	}
+	text := string(encoded)
+	keep := true
+	body, err := json.Marshal(listenerwire.PublishRequest{
+		MessageBody: listenerwire.MessageBody{Message: message, Payload: &text, DedupeKey: key, SourceSession: rigLaunchSession},
+		Topic:       topic,
+		Keep:        &keep,
+	})
+	if err != nil {
+		return fmt.Errorf("encode the notice for %s: %w", topic, err)
+	}
+	route := strings.TrimRight(envoyURL, "/") + "/v1/messages/publish"
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, route, bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("build the publish of %s: %w", topic, err)
+	}
+	request.Header.Set("Content-Type", "application/json")
+	if envoyToken != "" {
+		request.Header.Set("Authorization", "Bearer "+envoyToken)
+	}
+	answer, err := (&http.Client{Timeout: time.Minute}).Do(request)
+	if err != nil {
+		return fmt.Errorf("publish %s: %w", topic, err)
+	}
+	defer answer.Body.Close()
+	if answer.StatusCode != http.StatusOK && answer.StatusCode != http.StatusAccepted {
+		said, _ := io.ReadAll(io.LimitReader(answer.Body, 2048))
+		return fmt.Errorf("publish %s: listener returned %s: %s", topic, answer.Status, strings.TrimSpace(string(said)))
+	}
+	return nil
 }
 
 // launchListener stands in for an Envoy listener's publish route, keeping each message it is given.

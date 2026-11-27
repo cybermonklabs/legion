@@ -1,7 +1,8 @@
 import { beforeAll, describe, expect, test } from "bun:test";
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import {
   appendFileSync,
+  chmodSync,
   cpSync,
   existsSync,
   mkdirSync,
@@ -9,10 +10,12 @@ import {
   readFileSync,
   realpathSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
 import { memoryRoot, temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { argMaxForceHolds } from "../../../../scripts/e2e/lib/arg-max-force";
@@ -106,13 +109,15 @@ const miseData =
  * the operator's two directories for the processes it starts for the same reason, and base_env
  * passes MISE_DATA_DIR to every agent. A caller that names neither variable gets neither: the
  * developer's own home decides nothing here. It is the one place this file builds that
- * environment, and its `cwd` is the only one in the file but the omp turn's below, so a child that
- * gets the test's HOME gets childCwd with it. Every child of this file starts through it but five,
- * and none of those gets the test's HOME: the key command, the libpq probe and the model stand-in
- * pass no environment, so they run under the caller's own HOME, where mise reads the caller's
- * config as its global config. runProcess's child gets PATH and SKILL_SCENARIO_RUN alone, and
- * runs sleep, not a mise shim. The model stand-in row's omp turn gets its profile's HOME and the
- * system's PATH alone, in a workspace under this file's work directory. */
+ * environment, and its `cwd` is the only one in the file but the omp turn's and the kept-notice
+ * row's below, so a child that gets the test's HOME gets childCwd with it. Every child of this
+ * file starts through it but six, and none of those gets the test's HOME: the key command, the
+ * libpq probe and the model stand-in pass no environment, so they run under the caller's own HOME,
+ * where mise reads the caller's config as its global config. runProcess's child gets PATH and
+ * SKILL_SCENARIO_RUN alone, and runs sleep, not a mise shim. The model stand-in row's omp turn gets
+ * its profile's HOME and the system's PATH alone, in a workspace under this file's work directory.
+ * The kept-notice row's rig.sh runs take the caller's whole environment, in this checkout's root,
+ * since the label's build needs the caller's Go and Bun caches. */
 function childSpawn(argv: string[], env: Record<string, string> = {}) {
   return Bun.spawnSync(argv, {
     env: {
@@ -697,7 +702,8 @@ describe("safe_url", () => {
   // server the operator gave, in a Postgres URL's user info as libpq reads it (to the first `@`,
   // a `?` in the password included), in its `password=` or `sslpassword=` parameter (its key
   // percent-decoded, as libpq reads `%70assword=`), or in a NATS
-  // URL's user info as Go's net/url reads it (to the last `@`); a query left with a dangling `?`
+  // URL's user info as Go's net/url reads it (to the last `@`), or the whole of a NATS token (user
+  // info with no `:`, which nats.go sends as the token); a query left with a dangling `?`
   // or `&`; a safe_url that changes a URL with no password in it; and a URL pg-url.sh refuses (a
   // raw `@` in its hosts) printed as it is, where safe_url prints a placeholder.
   test("safe_url drops the password of a URL and keeps the rest", () => {
@@ -713,6 +719,7 @@ describe("safe_url", () => {
         "postgres://u:p@127.0.0.1:5433/d?password=p&sslmode=disable",
         "nats://u:p@ss@127.0.0.1:4222",
         "postgres://u@127.0.0.1:5433/d?%70assword=p&sslmode=disable",
+        "nats://tok3n@127.0.0.1:4222/p?q",
       ])
     ).toEqual({
       code: 0,
@@ -724,7 +731,8 @@ describe("safe_url", () => {
         "postgresql://u@127.0.0.1:5433/d\n" +
         "postgres://u@127.0.0.1:5433/d?sslmode=disable\n" +
         "nats://u@127.0.0.1:4222\n" +
-        "postgres://u@127.0.0.1:5433/d?sslmode=disable\n",
+        "postgres://u@127.0.0.1:5433/d?sslmode=disable\n" +
+        "nats://127.0.0.1:4222/p?q\n",
       stderr: "-: refused a Postgres URL: a host holds a raw @ (the URL is not printed)\n",
     });
   });
@@ -1580,10 +1588,9 @@ printf 'eyJhbGciOiJub25lIn0.%s.c2ln\\n' "$payload"
       const top = freshDir("judge-root");
       const scripts = path.join(top, "packages/pi-legion/scripts/skill-scenarios");
       mkdirSync(scripts, { recursive: true });
-      writeFileSync(
-        path.join(scripts, "rig.sh"),
-        readFileSync(path.join(import.meta.dir, "rig.sh"))
-      );
+      // rig.sh sources rpc.sh beside it.
+      for (const file of ["rig.sh", "rpc.sh"])
+        writeFileSync(path.join(scripts, file), readFileSync(path.join(import.meta.dir, file)));
       for (const file of [
         ".omp-pin",
         "skills/asd-ste100/SKILL.md",
@@ -1669,6 +1676,83 @@ sleep() { command sleep 0.05; }`;
     );
   });
 });
+
+describe("launch environment", () => {
+  // Catches: a pane variable in a process's arguments, where every user of the machine reads it:
+  // a tester's pane carries the batch's NATS URL, credential included, and launch once handed the
+  // pane to `env -i` as arguments. Every `env` launch runs after the pane's PATH is set records
+  // its arguments here. The clean re-exec starts with no PATH, so it calls the system `env`, and a
+  // command named by its absolute path is no stand-in's either: so launch.sh itself must give the
+  // pane's lines (`vars`) to nothing but `export`, the mapfile that reads them and the loop alone.
+  test("the pane's variables reach the launcher, mise, in its environment alone, never in an argument", () => {
+    const run = freshDir("launch-env-run");
+    const bin = freshDir("launch-env-bin");
+    for (const dir of ["cwd", "sessions"]) mkdirSync(path.join(run, dir));
+    const realEnv = Bun.which("env", { PATH: callerPath });
+    const token = fixtureSecret("tok");
+    const url = new URL("nats://127.0.0.1:4222");
+    url.username = token;
+    const pane = [`PATH=${bin}:${callerPath}`, `ENVOY_NATS_URL=${url.href}`, "NOTE=two words"];
+    writeFileSync(path.join(run, "prompt.txt"), "Test it.\n");
+    writeFileSync(path.join(run, "pane.env"), `${pane.join("\n")}\n`);
+    mkdirSync(path.join(bin, "pin", "bin"), { recursive: true });
+    writeFileSync(path.join(bin, "pin", "bin", "omp"), "#!/bin/sh\n", { mode: 0o755 });
+    writeFileSync(
+      path.join(bin, "env"),
+      `#!/bin/sh\nprintf '%s\n' "$@" >>${JSON.stringify(path.join(run, "argv.log"))}\nexec ${JSON.stringify(realEnv)} "$@"\n`,
+      { mode: 0o755 }
+    );
+    writeFileSync(
+      path.join(bin, "mise"),
+      `#!/bin/sh\nif [ "$1" = where ]; then echo "${bin}/pin"; exit 0; fi\n${JSON.stringify(realEnv)} >${JSON.stringify(path.join(run, "launcher-env"))}\n`,
+      { mode: 0o755 }
+    );
+    const standIns = `
+tmux() { case $1 in new-session) (command sleep 0.3 && bash -c "\${@: -1}") & ;; esac; }
+sleep() { command sleep 0.05; }`;
+    const result = bash(
+      `${fn("fail")}\n${fn("pinned_omp")}\n${fn("rig_omp")}\n${fn("launch")}\n${standIns}\nR=$1 tag=t pin=omp@pin\nlaunch tester-proof-s1-1`,
+      [run],
+      { PATH: `${bin}:${callerPath}` }
+    );
+    const argv = existsSync(path.join(run, "argv.log"))
+      ? readFileSync(path.join(run, "argv.log"), "utf8")
+      : "";
+    const launcherEnv = existsSync(path.join(run, "launcher-env"))
+      ? readFileSync(path.join(run, "launcher-env"), "utf8")
+          .trim()
+          .split("\n")
+          .filter((line) => !line.startsWith("PWD="))
+          .sort()
+      : [];
+    const launcher = readFileSync(path.join(run, "launch.sh"), "utf8");
+    expect({
+      code: result.code,
+      envRan: argv.length > 0,
+      leaked: argv
+        .split("\n")
+        .filter((line) => line.includes(token))
+        .map((line) => line.replaceAll(token, "<token>")),
+      paneUses: paneUses(launcher),
+      launcherEnv,
+    }).toEqual({
+      code: 0,
+      envRan: true,
+      leaked: [],
+      paneUses: PANE_USES,
+      launcherEnv: [...pane].sort(),
+    });
+  });
+});
+
+/** What a launch file may do with the pane's lines, `vars`: read them, and export each one. */
+const PANE_USES = ["mapfile -t vars <PANE", `for var in "\${vars[@]}"; do export "$var"; done`];
+/** Each line of a launch file that names the pane's lines, the pane file's path as PANE. */
+const paneUses = (launcher: string) =>
+  launcher
+    .split("\n")
+    .filter((line) => /\bvars\b/.test(line))
+    .map((line) => line.replace(/^mapfile -t vars <\S+$/, "mapfile -t vars <PANE"));
 
 // The tester-proof world's gh routes (worker_routes), answered by the run's gh stand-in. A tester
 // finds its pull request with the worker prompt's lookup, `gh pr list --repo <the issue's
@@ -2056,6 +2140,34 @@ describe("label_tree", () => {
     }
   });
 
+  // Catches: a change of this checkout that deletes a text E takes out (the skills trim deleted
+  // the bullet E dropped), which the Job meets only when it builds E's tree from a label's HEAD.
+  // The repository holds this checkout's own two files, so CI's pi-legion job, which a change of
+  // skills/** or the prompts runs, fails here first.
+  test("E's manifest applies to this checkout's own two files", () => {
+    const repo = freshDir("own-two-files");
+    git(repo, "init", "-q");
+    for (const [, file] of PR_4902_FILES) {
+      mkdirSync(path.dirname(path.join(repo, file)), { recursive: true });
+      cpSync(path.join(root, file), path.join(repo, file));
+    }
+    git(repo, "add", "-A");
+    git(repo, "commit", "-qm", "this checkout's two files");
+    const head = git(repo, "rev-parse", "HEAD").trim();
+    const made = labelTree(
+      repo,
+      scenarios,
+      freshDir("own-ctl-e"),
+      "ctl-e",
+      head,
+      path.join(controls, "owner-walk-E.txt")
+    );
+    expect({ code: made.code, stderr: made.code === 0 ? "" : made.stderr }).toEqual({
+      code: 0,
+      stderr: "",
+    });
+  });
+
   // Catches: a D whose tree takes out more than #4902's own lines (a manifest line too many, a
   // patch of another file), which would make D's control a control of something else.
   test("D's tree differs from its commit in the patch's lines alone, at #4902's head's two files", () => {
@@ -2221,30 +2333,285 @@ describe("a label older than its entry", () => {
 });
 
 describe("launch_env", () => {
+  let answers = 0;
+  const answer = (dir: string, env: Record<string, string>) => {
+    const file = path.join(dir, `answer-${++answers}.json`);
+    writeFileSync(file, JSON.stringify({ systemPromptFile: "/rig/system.md", env, published: [] }));
+    return file;
+  };
+  const run = (file: string) => bash(`${defs("fail", "launch_env")}\nlaunch_env "$1"`, [file]);
+
   // Catches: a run that inherits a deployment's stall limits, so its end waits on another clock
   // than the plugin's defaults.
   test("a launch whose environment holds a LEGION_STALL_ variable is refused, naming it", () => {
     const dir = freshDir("launch-env");
-    let answers = 0;
-    const answer = (env: Record<string, string>) => {
-      const file = path.join(dir, `answer-${++answers}.json`);
-      writeFileSync(
-        file,
-        JSON.stringify({ systemPromptFile: "/rig/system.md", env, published: [] })
-      );
-      return file;
-    };
-    const run = (file: string) => bash(`${defs("fail", "launch_env")}\nlaunch_env "$1"`, [file]);
-    expect(run(answer({ ENVOY_URL: "http://127.0.0.1:1", LEGION_ROLE: "architect" }))).toEqual({
-      code: 0,
-      stdout: "ENVOY_URL=http://127.0.0.1:1\nLEGION_ROLE=architect\n",
-      stderr: "",
-    });
+    expect(run(answer(dir, { ENVOY_URL: "http://127.0.0.1:1", LEGION_ROLE: "architect" }))).toEqual(
+      {
+        code: 0,
+        stdout: "ENVOY_URL=http://127.0.0.1:1\nLEGION_ROLE=architect\n",
+        stderr: "",
+      }
+    );
     const stalled = run(
-      answer({ ENVOY_URL: "http://127.0.0.1:1", LEGION_STALL_REMINDER_MS: "1000" })
+      answer(dir, { ENVOY_URL: "http://127.0.0.1:1", LEGION_STALL_REMINDER_MS: "1000" })
     );
     expect({ code: stalled.code, stdout: stalled.stdout }).toEqual({ code: 1, stdout: "" });
     expect(stalled.stderr).toContain("the launch's environment holds LEGION_STALL_REMINDER_MS");
+  });
+
+  // Catches: a name the launch file cannot export, which bash refuses with a message nobody reads
+  // and goes on without, so the agent runs without that variable while the run is scored.
+  test("a launch whose environment holds a name that is no shell variable's is refused, naming it", () => {
+    const dir = freshDir("launch-env-names");
+    for (const name of ["BAD-NAME", "1LEAD", "A B", "A\nB", ""]) {
+      const refused = run(answer(dir, { ENVOY_URL: "http://127.0.0.1:1", [name]: "x" }));
+      expect({ name, code: refused.code, stdout: refused.stdout }).toEqual({
+        name,
+        code: 1,
+        stdout: "",
+      });
+      expect(refused.stderr).toContain(
+        `the launch's environment holds ${JSON.stringify(name)}, which is no shell variable's name`
+      );
+    }
+    expect(run(answer(dir, { _UNDER: "a", Mixed_9: "b" }))).toEqual({
+      code: 0,
+      stdout: "_UNDER=a\nMixed_9=b\n",
+      stderr: "",
+    });
+  });
+});
+
+/** An owner-walk world request with one owner issue, and its world answer, in DIR. */
+function ownerWorld(dir: string) {
+  writeFileSync(
+    path.join(dir, "world-request.json"),
+    JSON.stringify({
+      project: "LWEVAL",
+      repository: "example/csv-importer",
+      defaultBranch: "main",
+      issues: [{ key: "LWEVAL-4", tree: "LWEVAL-4" }],
+      subject: "LWEVAL-4",
+      role: "architect",
+    })
+  );
+  writeFileSync(path.join(dir, "world-answer.json"), JSON.stringify({ starts: [], notices: [] }));
+}
+
+/** A NATS URL whose user info is a fixture token, and that token, for the rows that look for it. */
+function natsWithToken() {
+  const token = fixtureSecret("tok");
+  const url = new URL("nats://127.0.0.1:4222");
+  url.username = token;
+  return { token, url: url.href };
+}
+
+describe("launch_request", () => {
+  // Catches: the batch's NATS URL, credential included, in jq's arguments, where every user of the
+  // machine reads it: launch_request once handed it to jq as `--arg nats`. A stand-in jq first on
+  // PATH records every argument and runs the real one.
+  test("the batch's NATS URL reaches the launch request through jq's environment, never an argument", () => {
+    const R = freshDir("launch-request");
+    const bin = freshDir("launch-request-bin");
+    const argvLog = path.join(R, "argv.log");
+    const realJq = Bun.which("jq", { PATH: callerPath });
+    writeFileSync(
+      path.join(bin, "jq"),
+      `#!/bin/sh\nprintf '%s\n' "$@" >>${JSON.stringify(argvLog)}\nexec ${JSON.stringify(realJq)} "$@"\n`,
+      { mode: 0o755 }
+    );
+    const { token, url } = natsWithToken();
+    const services = path.join(R, "services-env");
+    writeFileSync(
+      services,
+      `ENVOY_URL=http://127.0.0.1:1\nENVOY_NATS_URL=${url}\nENVOY_TOKEN_FILE=/rig/envoy-token\n`
+    );
+    ownerWorld(R);
+    const result = bash(
+      `${defs("service_value", "launch_request")}\nR=$1 services_env=$2\nlaunch_request "$R/world-request.json" "$R/world-answer.json" http://127.0.0.1:1`,
+      [R, services],
+      { PATH: `${bin}:${callerPath}` }
+    );
+    const argv = existsSync(argvLog) ? readFileSync(argvLog, "utf8") : "";
+    expect({
+      code: result.code,
+      stderr: result.stderr.replaceAll(token, "<token>"),
+      jqRan: argv.length > 0,
+      leaked: argv
+        .split("\n")
+        .filter((line) => line.includes(token))
+        .map((line) => line.replaceAll(token, "<token>")),
+      natsUrls: result.code === 0 ? JSON.parse(result.stdout).natsUrls : [],
+    }).toEqual({ code: 0, stderr: "", jqRan: true, leaked: [], natsUrls: [url] });
+  });
+
+  // Catches: a launch request that drops the world's notices by default, so a child owner, whose
+  // turn only a notice starts, gets none; and a knob that takes any value, so a misspelling runs a
+  // world with no notices and reads as a pass. `none` is the rig's own control setting
+  // (SKILL_SCENARIOS_LAUNCH_NOTICES, rig.sh's header); production never sets it.
+  test("the launch request carries the world's notices, none with SKILL_SCENARIOS_LAUNCH_NOTICES=none, and refuses another value", () => {
+    const R = freshDir("launch-notices");
+    const services = path.join(R, "services-env");
+    writeFileSync(
+      services,
+      "ENVOY_URL=http://127.0.0.1:1\nENVOY_NATS_URL=nats://127.0.0.1:4222\nENVOY_TOKEN_FILE=/rig/envoy-token\n"
+    );
+    ownerWorld(R);
+    const notice = {
+      topic: "notifications.role.legion-lweval-architect",
+      message: "LWEVAL-5 merged",
+    };
+    writeFileSync(
+      path.join(R, "world-answer.json"),
+      JSON.stringify({ starts: [], notices: [notice] })
+    );
+    const request = (env: Record<string, string>) =>
+      bash(
+        `${defs("fail", "service_value", "launch_request")}\nR=$1 services_env=$2\nlaunch_request "$R/world-request.json" "$R/world-answer.json" http://127.0.0.1:1`,
+        [R, services],
+        env
+      );
+    const notices = (env: Record<string, string>) => {
+      const ran = request(env);
+      return {
+        code: ran.code,
+        stderr: ran.stderr,
+        notices: ran.code === 0 ? JSON.parse(ran.stdout).notices : null,
+      };
+    };
+    expect(notices({})).toEqual({ code: 0, stderr: "", notices: [notice] });
+    expect(notices({ SKILL_SCENARIOS_LAUNCH_NOTICES: "world" })).toEqual({
+      code: 0,
+      stderr: "",
+      notices: [notice],
+    });
+    expect(notices({ SKILL_SCENARIOS_LAUNCH_NOTICES: "none" })).toEqual({
+      code: 0,
+      stderr: "",
+      notices: [],
+    });
+    const refused = request({ SKILL_SCENARIOS_LAUNCH_NOTICES: "nothing" });
+    expect({ code: refused.code, stdout: refused.stdout }).toEqual({ code: 1, stdout: "" });
+    expect(refused.stderr).toContain(
+      "SKILL_SCENARIOS_LAUNCH_NOTICES is 'nothing', not world or none"
+    );
+  });
+});
+
+describe("owner_launch", () => {
+  // Catches: the request, answer or pane readable by other users while it names the batch's NATS
+  // URL. Each starts as a file from an earlier run at 0644. The row runs under umask 022: the label
+  // removes and recreates the answer, so a mode set before that write would prove nothing.
+  test("the launch request, the launch answer and the pane are their owner's alone", () => {
+    const R = freshDir("owner-launch");
+    const co = freshDir("owner-launch-label");
+    const work = freshDir("owner-launch-work");
+    const entry = path.join(co, "packages/pi-legion/scripts/skill-scenarios/label-texts.sh");
+    mkdirSync(path.dirname(entry), { recursive: true });
+    writeFileSync(
+      entry,
+      [
+        "#!/usr/bin/env bash",
+        '[ "$1" = launch ] || exit 1',
+        'rm -f -- "$3"',
+        `jq '{systemPromptFile: "/rig/system.md", env: {ENVOY_NATS_URL: .natsUrls[0], LEGION_ROLE: "architect"}, published: []}' "$2" >"$3"`,
+        "",
+      ].join("\n"),
+      { mode: 0o755 }
+    );
+    const { token, url } = natsWithToken();
+    const services = path.join(work, "services-env");
+    writeFileSync(
+      services,
+      `ENVOY_URL=http://127.0.0.1:1\nENVOY_NATS_URL=${url}\nENVOY_TOKEN_FILE=/rig/envoy-token\n`
+    );
+    mkdirSync(path.join(work, "profiles/head/home"), { recursive: true });
+    for (const dir of ["texts", "logs"]) mkdirSync(path.join(R, dir));
+    writeFileSync(path.join(R, "logs/proxy.log"), "listening on http://127.0.0.1:2\n");
+    ownerWorld(path.join(R, "texts"));
+    const files = ["texts/launch-request.json", "texts/launch-answer.json", "pane.env"];
+    for (const file of files) {
+      writeFileSync(path.join(R, file), "an earlier run's\n");
+      chmodSync(path.join(R, file), 0o644);
+    }
+    const result = bash(
+      [
+        "umask 022",
+        defs(
+          "fail",
+          "owner_only",
+          "base_env",
+          "service_value",
+          "launch_request",
+          "label_texts",
+          "launch_env",
+          "owner_launch"
+        ),
+        "R=$1 co=$2 work=$3 P=$3/profiles/head services_env=$4 pg_url=postgres://127.0.0.1:1/postgres profile=skills-head",
+        "base_env",
+        "owner_launch http://127.0.0.1:1",
+      ].join("\n"),
+      [R, co, work, services],
+      { USER: "rig" }
+    );
+    expect({
+      code: result.code,
+      stderr: result.stderr.replaceAll(token, "<token>"),
+      files: Object.fromEntries(
+        files.map((file) => [
+          file,
+          {
+            mode: (statSync(path.join(R, file)).mode & 0o777).toString(8),
+            namesTheURL: readFileSync(path.join(R, file), "utf8").includes(token),
+          },
+        ])
+      ),
+    }).toEqual({
+      code: 0,
+      stderr: "",
+      files: {
+        "texts/launch-request.json": { mode: "600", namesTheURL: true },
+        "texts/launch-answer.json": { mode: "600", namesTheURL: true },
+        "pane.env": { mode: "600", namesTheURL: true },
+      },
+    });
+  });
+});
+
+describe("tester_pane", () => {
+  // Catches: a tester's pane readable by other users while it names the batch's NATS URL, which
+  // the services file gives it. The pane starts as an earlier run's file at 0644, under umask 022.
+  test("the tester's pane is its owner's alone, and carries the services' NATS URL", () => {
+    const R = freshDir("tester-pane");
+    const { token, url } = natsWithToken();
+    const services = path.join(R, "services-env");
+    writeFileSync(services, `ENVOY_NATS_URL=${url}\n`);
+    writeFileSync(path.join(R, "worker.env"), "LEGION_ROLE=tester\n");
+    writeFileSync(path.join(R, "pane.env"), "an earlier run's\n");
+    chmodSync(path.join(R, "pane.env"), 0o644);
+    const result = bash(
+      [
+        "umask 022",
+        defs("owner_only", "tester_pane"),
+        "R=$1 services_env=$2 dispatch_port=1 work=/rig/work worker_repo=example/widgets",
+        "tester_pane",
+      ].join("\n"),
+      [R, services]
+    );
+    const pane = readFileSync(path.join(R, "pane.env"), "utf8");
+    expect({
+      code: result.code,
+      stderr: result.stderr.replaceAll(token, "<token>"),
+      mode: (statSync(path.join(R, "pane.env")).mode & 0o777).toString(8),
+      namesTheURL: pane.includes(token),
+      first: pane.split("\n")[0],
+    }).toEqual({
+      code: 0,
+      stderr: "",
+      mode: "600",
+      namesTheURL: true,
+      first: "LEGION_ROLE=tester",
+    });
   });
 });
 
@@ -2275,7 +2642,16 @@ describe.skipIf(withoutPython || withoutLibpq)("a batch given its Postgres and N
       "set -euo pipefail",
       '. "$1"',
       '. "$2"',
-      defs("fail", "note", "given_services", "safe_url", "pg_sql", "services_up", "own_dispatch"),
+      defs(
+        "fail",
+        "note",
+        "given_services",
+        "safe_url",
+        "pg_sql",
+        "owner_only",
+        "services_up",
+        "own_dispatch"
+      ),
       'until_true() { shift 2; "$@"; }',
       "connections_needed() { per_run=117; needs=$((per_run * parallel + 20)); }",
       'nats_ready() { echo "nats_ready $1" >>"$calls"; }',
@@ -2284,7 +2660,11 @@ describe.skipIf(withoutPython || withoutLibpq)("a batch given its Postgres and N
       "root=$3 here=$3/packages/pi-legion/scripts/skill-scenarios S=$4/services calls=$4/calls tag=t",
       'mkdir -p "$S"',
       "services_env=$S/env services_postgres=$S/postgres-url",
+      // The services file names the batch's NATS URL, which can hold a credential: an earlier
+      // batch's at 0644, under umask 022, must end its owner's alone.
+      'umask 022 && echo "an earlier batch\'s" >"$services_env" && chmod 0644 "$services_env"',
       'if [ $# -ge 5 ]; then services_up "$5"; else services_up; fi',
+      'echo "services mode $(stat -c %a "$services_env")" >>"$calls"',
       'for R in "$4/runs/owner-walk-root-B-claude-head-1" "$4/runs/owner-walk-root-B-claude-head-2"; do',
       '  mkdir -p "$R"',
       "  pg_url=''",
@@ -2311,6 +2691,7 @@ describe.skipIf(withoutPython || withoutLibpq)("a batch given its Postgres and N
     const seen = readFileSync(calls, "utf8").trimEnd().split("\n");
     expect(seen.filter((line) => line.startsWith("docker "))).toEqual([]);
     expect(seen).toContain("nats_ready nats://127.0.0.1:4999");
+    expect(seen).toContain("services mode 600");
     const runs = ["run_owner_walk_root_b_claude_head_1", "run_owner_walk_root_b_claude_head_2"];
     for (const run of runs) {
       expect(seen.filter((line) => line.endsWith(` -c CREATE DATABASE ${run}`))).toEqual([
@@ -2680,15 +3061,11 @@ describe("rig.sh cell", () => {
     plantControl(work, "ctl-d-strict", (owner) => [0, 1, 2, 3, 6, 9].includes(owner));
     const five = line(work, "ctl-d", "root-D-claude", 3);
     const six = line(work, "ctl-d-strict", "root-D-claude", 3);
-    expect([five, six].map((text) => text.slice(text.lastIndexOf(" verdict ") + 9))).toEqual([
-      "pass",
-      "fail",
-    ]);
     expect(five).toBe(
-      "cell owner-walk ctl-d root-D-claude: the control guidance/D over every owner: 12 runs, 12 scored, 0 rig errors, count 12; read 5 of 12; it passes when fewer than 6 pass read; verdict pass"
+      "cell owner-walk ctl-d root-D-claude: the control guidance/D over every owner: 12 runs, 12 scored, 0 rig errors, count 12, 3 of each case; read 5 of 12; it passes when fewer than 6 pass read; verdict pass"
     );
     expect(six).toBe(
-      "cell owner-walk ctl-d-strict root-D-claude: the control guidance/D over every owner: 12 runs, 12 scored, 0 rig errors, count 12; read 6 of 12; it passes when fewer than 6 pass read; verdict fail"
+      "cell owner-walk ctl-d-strict root-D-claude: the control guidance/D over every owner: 12 runs, 12 scored, 0 rig errors, count 12, 3 of each case; read 6 of 12; it passes when fewer than 6 pass read; verdict fail"
     );
 
     // A case form's cell is its case's runs at the count given, and passes when each passes.
@@ -2790,6 +3167,7 @@ describe("the recorded plans answer", () => {
 const FAKE_OMP = String.raw`#!/usr/bin/env bash
 if [ "$1" = --version ]; then echo omp/1.2.3; exit 0; fi
 run=$SKILL_SCENARIO_RUN plan=$FAKE_OMP_PLAN
+env >"$run/fake-omp.env"
 note() { jq -cn --argjson at "$(date +%s%3N)" --argjson e "$1" '{at: $at} + $e' >>"$run/fake-omp.jsonl"; }
 now() { date -u +%Y-%m-%dT%H:%M:%S.%3NZ; }
 seconds() { jq -rn --argjson ms "$1" '$ms / 1000'; }
@@ -2853,15 +3231,21 @@ interface FakeOmpPlan {
 }
 
 /** launch_rpc BOUND START... -- THEN... on the fake Oh My Pi with PLAN, its rpc_poll 0.3 s, in a
- * run directory of its own; TRANSCRIPT, when given, is the session's transcript beforehand. */
+ * run directory of its own; TRANSCRIPT, when given, is the session's transcript beforehand. PANE's
+ * lines, when given, go into the pane after the run's own, and its bin goes first on the pane's
+ * PATH and on the rig's. The row sources rpc.sh itself, the RPC session rig.sh runs, inside its own
+ * bash: a rig without it fails that row alone. Only Oh My Pi (the fake) and the run's processes are
+ * the row's own. */
 function rpcRun(
   name: string,
   plan: FakeOmpPlan,
   starts: string[],
   thens: string[] = [],
   bound = 30,
-  transcript?: object[]
+  transcript?: object[],
+  pane: { bin?: string; lines?: string[] } = {}
 ) {
+  const panePath = pane.bin === undefined ? callerPath : `${pane.bin}:${callerPath}`;
   const R = freshDir(name);
   const bin = path.join(R, "omp-install/bin");
   mkdirSync(bin, { recursive: true });
@@ -2878,9 +3262,10 @@ function rpcRun(
     path.join(R, "pane.env"),
     [
       `HOME=${R}`,
-      `PATH=${callerPath}`,
+      `PATH=${panePath}`,
       `SKILL_SCENARIO_RUN=${R}`,
       `FAKE_OMP_PLAN=${path.join(R, "plan.json")}`,
+      ...(pane.lines ?? []),
       "",
     ].join("\n")
   );
@@ -2894,25 +3279,8 @@ function rpcRun(
     "root=$1 R=$2 evidence=$2 work=$2/work timeout_hook=",
     defs("fail", "note"),
     '. "$root/scripts/e2e/lib/rig.sh"',
-    defs(
-      "pinned_omp",
-      "rig_omp",
-      "rpc_now",
-      "rpc_send",
-      "rpc_answer",
-      "rpc_state",
-      "rpc_turn",
-      "rpc_activity",
-      "rpc_settled",
-      "rpc_ready",
-      "rpc_prompt",
-      "rpc_wait",
-      "rpc_reminders",
-      "rpc_bound",
-      "rpc_end",
-      "launch_rpc"
-    ),
-    assignment("rpc_ms"),
+    defs("pinned_omp", "rig_omp"),
+    `. ${JSON.stringify(path.join(scenarios, "rpc.sh"))}`,
     "rpc_poll=0.3 rpc_ready_bound=10 omp_pid='' rpc_fd='' pin=github:example/oh-my-pi@1.2.3-4",
     "bound=$3",
     "shift 3",
@@ -2923,6 +3291,7 @@ function rpcRun(
     [root, R, String(bound), ...files("start", starts), "--", ...files("then", thens)],
     {
       SKILL_SCENARIOS_OMP: path.join(bin, "omp"),
+      ...(pane.bin === undefined ? {} : { PATH: panePath }),
     }
   );
   const events = jsonLines(path.join(R, "fake-omp.jsonl"));
@@ -2962,6 +3331,62 @@ describe("launch_rpc", () => {
     ).toEqual([task]);
     expect(run.at("ready", true)).toBeLessThan(run.prompts[0]?.at as number);
     expect(jsonLines(path.join(run.R, "rpc.jsonl")).length).toBeGreaterThan(run.sent.length);
+  });
+
+  // Catches: a pane variable in a process's arguments, where every user of the machine reads it:
+  // an owner's pane carries its launch answer's NATS URL, credential included, and the RPC launch
+  // file once handed the pane to `env -i` as arguments. Every `env` the run starts on PATH records
+  // its arguments here, and Oh My Pi's environment must be the pane's lines and nothing else. A
+  // command named by its absolute path is no stand-in's, so launch-rpc.sh itself must give the
+  // pane's lines to nothing but `export` (paneUses). The session's stdin, which carries every
+  // prompt, is its owner's alone.
+  test("the pane's variables reach Oh My Pi in its environment alone, never in an argument", () => {
+    const bin = freshDir("rpc-env-bin");
+    const argvLog = path.join(bin, "argv.log");
+    const realEnv = Bun.which("env", { PATH: callerPath });
+    writeFileSync(
+      path.join(bin, "env"),
+      `#!/bin/sh\nprintf '%s\n' "$@" >>${JSON.stringify(argvLog)}\nexec ${JSON.stringify(realEnv)} "$@"\n`,
+      { mode: 0o755 }
+    );
+    const { token, url } = natsWithToken();
+    const run = rpcRun(
+      "rpc-env",
+      { reports: [{ running: false }] },
+      ["Do the work.\n"],
+      [],
+      30,
+      undefined,
+      { bin, lines: [`ENVOY_NATS_URL=${url}`, "NOTE=two words"] }
+    );
+    const argvLines = existsSync(argvLog)
+      ? readFileSync(argvLog, "utf8").trimEnd().split("\n")
+      : [];
+    const fakeOmp = path.join(run.R, "fake-omp.env");
+    const fakeOmpLines = existsSync(fakeOmp)
+      ? readFileSync(fakeOmp, "utf8").trimEnd().split("\n")
+      : [];
+    const paneLines = readFileSync(path.join(run.R, "pane.env"), "utf8").trimEnd().split("\n");
+    const ompEnv = fakeOmpLines.filter((line) => !/^(PWD|OLDPWD|SHLVL|_)=/.test(line)).sort();
+    expect({
+      code: run.code,
+      out: run.out,
+      envRan: existsSync(argvLog),
+      leaked: argvLines
+        .filter((line) => line.includes(token))
+        .map((line) => line.replaceAll(token, "<token>")),
+      ompEnv: ompEnv.map((line) => line.replaceAll(token, "<token>")),
+      paneUses: paneUses(readFileSync(path.join(run.R, "launch-rpc.sh"), "utf8")),
+      stdinMode: (statSync(path.join(run.R, "rpc.in")).mode & 0o777).toString(8),
+    }).toEqual({
+      code: 0,
+      out: "exit=0\n",
+      envRan: true,
+      leaked: [],
+      ompEnv: paneLines.sort().map((line) => line.replaceAll(token, "<token>")),
+      paneUses: PANE_USES,
+      stdinMode: "600",
+    });
   });
 
   // Catches: a run ended while the session's own job runs: in RPC mode that job's end starts a
@@ -3271,6 +3696,277 @@ describe("the model line of a stand-in label", () => {
   );
 });
 
+describe("a kept notice", () => {
+  // The whole run of a child owner, whose turn only a notice starts, on the model stand-in: the
+  // label's profile, a batch with its services, the run's own Dispatch, the label's launch and the
+  // label's Oh My Pi in RPC mode. It needs the pinned Oh My Pi (LEGION_TEST_OMP) and a Postgres and
+  // NATS: the pod's own (LEGION_TEST_PG_DSN and LEGION_TEST_NATS_URL), or the containers rig.sh
+  // starts itself with Docker, as on GitHub's runners. Where it has neither, it says so and runs
+  // nothing.
+  const omp = process.env.LEGION_TEST_OMP;
+  const podServices =
+    process.env.LEGION_TEST_PG_DSN !== undefined && process.env.LEGION_TEST_NATS_URL !== undefined;
+  const docker =
+    !podServices &&
+    Bun.which("docker") !== null &&
+    Bun.spawnSync(["docker", "info"], { stdout: "ignore", stderr: "ignore" }).exitCode === 0;
+  const missing = [
+    omp === undefined ? "the pinned Oh My Pi (LEGION_TEST_OMP)" : undefined,
+    podServices || docker
+      ? undefined
+      : "a Postgres and NATS (LEGION_TEST_PG_DSN and LEGION_TEST_NATS_URL) or Docker for rig.sh's own",
+  ].filter((need): need is string => need !== undefined);
+  if (missing.length > 0)
+    console.error(
+      `UNKNOWN: rig.test.ts's kept-notice row runs a child owner's whole run and needs ${missing.join(" and ")}; it does not run here`
+    );
+  // The batch's work directory, on the disk TMPDIR names: a label's profile, its build and a run
+  // hold some hundreds of megabytes, which the file's own tmpfs work directory has no room for
+  // (memoryRoot's need is 32 MiB). The row removes what it made before this directory's afterAll.
+  const noticeRoot = temporaryDirectory("rig-kept-notice");
+
+  /** An entry of a run's transcripts, as far as this row reads one. */
+  interface Entry {
+    type?: string;
+    customType?: string;
+    content?: unknown;
+    message?: { role?: string };
+  }
+  /** The entries of RUN's transcripts, in the order their files and lines hold them. */
+  const entriesOf = (run: string): Entry[] =>
+    existsSync(path.join(run, "sessions"))
+      ? (readdirSync(path.join(run, "sessions"), { recursive: true }) as string[])
+          .filter((file) => file.endsWith(".jsonl"))
+          .sort()
+          .flatMap((file) => jsonLines(path.join(run, "sessions", file)) as Entry[])
+      : [];
+  /** What a run shows of a notice MESSAGE: its out.txt's last line, the notices its launch
+   * published, the index of the first Envoy card naming MESSAGE, and of the first answer. */
+  const seen = (run: string, message: string) => {
+    const entries = entriesOf(run);
+    const card = entries.findIndex(
+      (entry) =>
+        entry.type === "custom_message" &&
+        entry.customType === "envoy-message" &&
+        JSON.stringify(entry.content ?? "").includes(`summary: ${message}`)
+    );
+    const answer = entries.findIndex(
+      (entry) => entry.type === "message" && entry.message?.role === "assistant"
+    );
+    const out = existsSync(path.join(run, "out.txt"))
+      ? readFileSync(path.join(run, "out.txt"), "utf8").trimEnd().split("\n").at(-1)
+      : undefined;
+    const answerFile = path.join(run, "texts", "launch-answer.json");
+    const published: { topic: string; message: string }[] = existsSync(answerFile)
+      ? JSON.parse(readFileSync(answerFile, "utf8")).published
+      : [];
+    return { out, published, card, answer };
+  };
+
+  // Catches: a notice the launch keeps on the owner's role topic that never reaches the RPC
+  // session, or reaches it as a card that starts no turn, which a child owner's run would score
+  // as an agent that did nothing. Its control: the launch keeps no notice (the rig's
+  // SKILL_SCENARIOS_LAUNCH_NOTICES=none) and the same message is kept on another role's topic of
+  // the same issue; each run must end at its bound with no card of it and no turn. The publish
+  // must be kept (202), or the control proves nothing.
+  test.skipIf(missing.length > 0)(
+    "a notice kept before the launch reaches a child owner's RPC session as a card and starts its turn, and one kept for another role does not",
+    async () => {
+      if (omp === undefined) throw new Error("LEGION_TEST_OMP is unset");
+      const rigWork = path.join(noticeRoot, "work");
+      mkdirSync(rigWork);
+      const spawned: { control?: ReturnType<typeof Bun.spawn> } = {};
+      try {
+        await keptNotice(rigWork, omp, (control) => {
+          spawned.control = control;
+        });
+      } finally {
+        // A control batch left running by a failed expect would hold the services' lock and ports.
+        spawned.control?.kill();
+        await spawned.control?.exited;
+        dropRunDatabases(rigWork);
+        rmSync(rigWork, { recursive: true, force: true });
+      }
+    },
+    1_200_000
+  );
+
+  /** On a given Postgres each run's database stays after the batch (services_down): the row drops
+   * the ones its runs made, as own_dispatch names them. The password goes to psql in its
+   * environment, never in its arguments. */
+  function dropRunDatabases(rigWork: string) {
+    const dsn = process.env.LEGION_TEST_PG_DSN;
+    const runsDir = path.join(rigWork, "runs");
+    if (!podServices || dsn === undefined || !existsSync(runsDir)) return;
+    const login = new URL(dsn);
+    const password = decodeURIComponent(login.password);
+    login.password = "";
+    for (const name of readdirSync(runsDir)) {
+      const database = `run_${name}`.replaceAll("-", "_").toLowerCase();
+      const drop = `DROP DATABASE IF EXISTS "${database}" WITH (FORCE)`;
+      Bun.spawnSync(["psql", login.href, "-v", "ON_ERROR_STOP=1", "-qc", drop], {
+        env: { ...process.env, PGPASSWORD: password },
+        stdout: "ignore",
+        stderr: "ignore",
+      });
+    }
+  }
+
+  /** The row's body, in RIGWORK: the positive run, then the control batch, which it hands to
+   * STARTED as soon as it starts. */
+  async function keptNotice(
+    rigWork: string,
+    omp: string,
+    started: (control: ReturnType<typeof Bun.spawn>) => void
+  ) {
+    const plans = path.join(rigWork, "plans-in");
+    mkdirSync(plans);
+    // The recorded plans answer, planted: two finished issues of another project. Its source
+    // is the one plans_source writes for a capture.
+    writeFileSync(
+      path.join(plans, "plans-answer.json"),
+      `${JSON.stringify({
+        project: "SRX1",
+        issues: [
+          { issue: "SRX1-2", title: "A second change rates its plan", ratings: [] },
+          { issue: "SRX1-1", title: "One issue walks to done", ratings: [] },
+        ],
+      })}\n`
+    );
+    const source = bash(
+      `${assignment("owner_walk_project")}\n${defs("plans_source")}\nplans_source "$1" "$2"`,
+      [path.join(plans, "plans-answer.json"), "a".repeat(40)]
+    );
+    expect({ code: source.code, stderr: source.stderr }).toEqual({ code: 0, stderr: "" });
+    writeFileSync(path.join(plans, "plans-answer.source"), source.stdout);
+    // The caller's environment, not the test's own: the label's build needs the caller's Go and
+    // Bun caches.
+    const env: Record<string, string | undefined> = {
+      ...process.env,
+      SKILL_SCENARIOS_WORK: rigWork,
+      SKILL_SCENARIOS_MODEL: "standin",
+      SKILL_SCENARIOS_PLANS_ANSWER: plans,
+      SKILL_SCENARIOS_OMP: omp,
+      SKILL_SCENARIOS_OWNER_WALK_CASE: "child-B-claude",
+      // Each turn's bound: a notice turn and the questions on the stand-in take seconds, and a run
+      // whose notice never comes must end here, not at the 1,500 s default, three times.
+      SKILL_SCENARIOS_TIMEOUT: "120",
+      ...(podServices
+        ? {
+            SKILL_SCENARIOS_POSTGRES_URL: process.env.LEGION_TEST_PG_DSN,
+            SKILL_SCENARIOS_NATS_URL: process.env.LEGION_TEST_NATS_URL,
+          }
+        : { SKILL_SCENARIOS_POSTGRES_URL: undefined, SKILL_SCENARIOS_NATS_URL: undefined }),
+    };
+    const rigSh = path.join(scenarios, "rig.sh");
+    // Each step is bounded too: a sync spawn holds the event loop, so the row's own timeout
+    // could not stop it.
+    const step = (argv: string[]) => {
+      const ran = Bun.spawnSync(["bash", rigSh, ...argv], { env, cwd: root, timeout: 900_000 });
+      return { code: ran.exitCode, out: `${ran.stdout}${ran.stderr}` };
+    };
+    // Labels of this execution alone. A run's database is named after the run, and the label is
+    // in its name; a run on a given Postgres leaves its database there (services_down), so a second
+    // execution of this row on the same server, with fixed labels, failed its first run's CREATE
+    // DATABASE and read no notice.
+    const suffix = randomBytes(4).toString("hex");
+    const positiveLabel = `notice-${suffix}`;
+    const controlLabel = `notice-control-${suffix}`;
+    for (const label of [positiveLabel, controlLabel]) {
+      const profiled = step(["profile", label, root]);
+      expect({
+        label,
+        code: profiled.code,
+        out: profiled.code === 0 ? "" : profiled.out,
+      }).toEqual({ label, code: 0, out: "" });
+    }
+
+    const positive = step(["batch-scored", "owner-walk", "1", positiveLabel]);
+    expect({ code: positive.code, out: positive.code === 0 ? "" : positive.out }).toEqual({
+      code: 0,
+      out: "",
+    });
+    const headRun = path.join(rigWork, "runs", `owner-walk-child-B-claude-${positiveLabel}-1`);
+    const notice = seen(headRun, "").published[0];
+    // A batch that ends with no notice published says why in its output: a rig error's reason.
+    if (notice === undefined)
+      throw new Error(
+        `the child owner's launch published no notice; the batch's last lines:\n${positive.out.trimEnd().split("\n").slice(-15).join("\n")}`
+      );
+    const kept = seen(headRun, notice.message);
+    expect({
+      out: kept.out,
+      published: kept.published.length,
+      topic: notice.topic.endsWith("-architect"),
+      card: kept.card >= 0,
+      answer: kept.answer > kept.card,
+    }).toEqual({ out: "exit=0", published: 1, topic: true, card: true, answer: true });
+
+    // The control. The publish goes in once the control batch's listener answers, before its
+    // first run's launch, as the label's launch keeps a notice; the reviewer's role of the same
+    // issue has no holder in the run, so the listener keeps it.
+    const servicesEnv = path.join(rigWork, "services", "env");
+    const before = existsSync(servicesEnv) ? readFileSync(servicesEnv, "utf8") : "";
+    const other = `${notice.topic.slice(0, -"architect".length)}reviewer`;
+    // Its output goes to files: a pipe nobody reads while it runs would fill and stop it.
+    const controlLog = path.join(rigWork, "control");
+    const control = Bun.spawn(["bash", rigSh, "batch-scored", "owner-walk", "1", controlLabel], {
+      env: { ...env, SKILL_SCENARIOS_LAUNCH_NOTICES: "none", SKILL_SCENARIOS_TIMEOUT: "60" },
+      cwd: root,
+      stdout: Bun.file(`${controlLog}.out`),
+      stderr: Bun.file(`${controlLog}.err`),
+    });
+    started(control);
+    // A real wait: the batch is another process, and its services file is the one signal that
+    // its listener answers; nothing in this process can be awaited for it. At most five minutes.
+    let publish: { status: number; body: string } | undefined;
+    for (let tries = 0; tries < 1200 && publish === undefined; tries++) {
+      const now = existsSync(servicesEnv) ? readFileSync(servicesEnv, "utf8") : "";
+      const url = /^ENVOY_URL=(.*)$/m.exec(now)?.[1];
+      const tokenFile = /^ENVOY_TOKEN_FILE=(.*)$/m.exec(now)?.[1];
+      if (now !== before && url !== undefined && tokenFile !== undefined && existsSync(tokenFile)) {
+        const answered = await fetch(`${url}/v1/messages/publish`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${readFileSync(tokenFile, "utf8").trim()}`,
+          },
+          // The listener keeps a copy for a role nobody holds only for a publish that names its
+          // source session (#5412): the dead letter of a copy that expires goes to that session.
+          body: JSON.stringify({
+            topic: other,
+            message: notice.message,
+            dedupe_key: "rig-notice-control",
+            source_session: "rig-notice-control",
+            keep: true,
+          }),
+        });
+        publish = { status: answered.status, body: (await answered.text()).slice(0, 300) };
+      } else await Bun.sleep(250);
+    }
+    const ended = await control.exited;
+    const controlOut = ["out", "err"]
+      .map((stream) => readFileSync(`${controlLog}.${stream}`, "utf8"))
+      .join("");
+    expect({ code: ended, out: ended === 0 ? "" : controlOut }).toEqual({ code: 0, out: "" });
+    expect(publish).toEqual({ status: 202, body: expect.stringContaining(other) });
+    const runs = readdirSync(path.join(rigWork, "runs"))
+      .filter((name) => name.startsWith(`owner-walk-child-B-claude-${controlLabel}-`))
+      .sort();
+    expect(runs.length).toBeGreaterThan(0);
+    for (const name of runs) {
+      const shown = seen(path.join(rigWork, "runs", name), notice.message);
+      expect({ name, ...shown }).toEqual({
+        name,
+        out: "exit=bound",
+        published: [],
+        card: -1,
+        answer: -1,
+      });
+    }
+  }
+});
+
 describe("the reach lines", () => {
   // Catches: a reach entry a Job's log leaves out, or a line printed for a run that reached
   // nothing. scored-job.sh prints its reach lines with `rig.sh rows`, and `rig.sh score` with the
@@ -3349,6 +4045,7 @@ batch-scored)
   echo '{"outcome":"rig-error"}' >"$work/runs/owner-walk-$SKILL_SCENARIOS_OWNER_WALK_CASE-$4-2/row.json"
   echo 'the planted daemon line' >"$work/runs/owner-walk-$SKILL_SCENARIOS_OWNER_WALK_CASE-$4-2/logs/daemon.log"
   ;;
+label-tree) mkdir -p "$work/label-trees/$2/tree" ;;
 rows) echo 'row {"outcome":"scored","run":"owner-walk-root-B-claude-head-1"}' && echo 'reach owner-walk-root-B-claude-head-1: bash names storage.googleapis.com (session s, message 1)' ;;
 cell) echo "cell owner-walk head root-B-claude: 2 runs, 1 scored, 1 rig errors, count $5; each clause: read 0 of 1; runs passed 0 of 1; verdict fail" ;;
 esac
@@ -3362,28 +4059,23 @@ esac
       path.join(bin, "bun"),
       String.raw`#!/bin/sh
 case "$1 $2" in
-"install --frozen-lockfile") exit 0 ;;
-*"/owner-walk.ts cases") printf 'root-A-claude 3\nroot-B-claude 3\nchild-B-claude 3\n' ;;
+"install --frozen-lockfile") printf 'install %s\n' "$PWD" >>"$SKILL_SCENARIOS_WORK/rig-calls" ;;
+*"/owner-walk.ts cases") printf 'root-A-claude 3\nroot-B-claude 3\nchild-B-claude 3\nroot-D-claude 3\nroot-E-claude 3\n' ;;
 *) echo "the planted bun has no answer to $*" >&2; exit 9 ;;
 esac
 `,
       { mode: 0o755 }
     );
     const work = freshDir("job-work");
-    const run = (env: Record<string, string>) => {
-      const result = childSpawn(
-        [
-          "bash",
-          path.join(here, "scored-job.sh"),
-          "owner-walk",
-          "head",
-          "--case",
-          "root-B-claude",
-          "--count",
-          "1",
-        ],
-        { PATH: `${bin}:${callerPath}`, SKILL_SCENARIOS_WORK: work, ...env }
-      );
+    const run = (
+      env: Record<string, string>,
+      args = ["owner-walk", "head", "--case", "root-B-claude", "--count", "1"]
+    ) => {
+      const result = childSpawn(["bash", path.join(here, "scored-job.sh"), ...args], {
+        PATH: `${bin}:${callerPath}`,
+        SKILL_SCENARIOS_WORK: work,
+        ...env,
+      });
       const read = (file: string) =>
         existsSync(path.join(work, file)) ? readFileSync(path.join(work, file), "utf8") : "";
       return {
@@ -3410,6 +4102,7 @@ esac
     expect({ code: job.code, stderr: job.stderr }).toEqual({ code: 0, stderr: "" });
     expect(job.calls).toBe(
       [
+        `install ${repo}`,
         `plans-capture ${repo} ${work}/plans`,
         `profile head ${repo}`,
         "batch-scored owner-walk 1 head",
@@ -3442,6 +4135,61 @@ esac
     const refused = plantedJob().run({ ...pod, SKILL_SCENARIOS_MODEL: "standin-report" });
     expect({ code: refused.code, calls: refused.calls }).toEqual({ code: 2, calls: "" });
     expect(refused.stderr).toContain("standin-report is the path check's model, and owner-walk has none");
+  });
+
+  // Catches: a Job that builds a label its cases do not run on, so a form-E Job stops on ctl-d's
+  // tree wherever D's patch does not apply; and a control tree profiled before its packages are
+  // installed, or with none installed, whose plugin pack has no node_modules to build through.
+  // The installs are in the same log as the rig's calls, so their order is read with it.
+  test("scored-job.sh controls --case builds that case's label alone: its tree, its packages, then its profile", () => {
+    const standin = { ...pod, SKILL_SCENARIOS_MODEL: "standin" };
+    const builds = (form: string) => {
+      const { repo, work, run } = plantedJob();
+      const job = run(standin, [
+        "owner-walk",
+        "controls",
+        "--case",
+        `root-${form}-claude`,
+        "--count",
+        "1",
+      ]);
+      return {
+        code: job.code,
+        stderr: job.stderr,
+        calls: job.calls
+          .split("\n")
+          .filter((call) => /^(label-tree|unpatch-holds|install|profile|batch-scored) /.test(call)),
+        repo,
+        commit: git(repo, "rev-parse", "HEAD").trim(),
+        controls: path.join(repo, "packages/pi-legion/scripts/skill-scenarios/controls"),
+        trees: path.join(work, "label-trees"),
+      };
+    };
+    const e = builds("E");
+    expect({ code: e.code, stderr: e.stderr, calls: e.calls }).toEqual({
+      code: 0,
+      stderr: "",
+      calls: [
+        `install ${e.repo}`,
+        `label-tree ctl-e ${e.commit} ${e.controls}/owner-walk-E.txt`,
+        `install ${e.trees}/ctl-e/tree`,
+        `profile ctl-e ${e.trees}/ctl-e/tree`,
+        "batch-scored owner-walk 1 ctl-e",
+      ],
+    });
+    const d = builds("D");
+    expect({ code: d.code, stderr: d.stderr, calls: d.calls }).toEqual({
+      code: 0,
+      stderr: "",
+      calls: [
+        `install ${d.repo}`,
+        `label-tree ctl-d ${d.commit} ${d.controls}/owner-walk-D.txt`,
+        `unpatch-holds ctl-d ${d.controls}/patches/owner-walk-D.patch`,
+        `install ${d.trees}/ctl-d/tree`,
+        `profile ctl-d ${d.trees}/ctl-d/tree`,
+        "batch-scored owner-walk 1 ctl-d",
+      ],
+    });
   });
 
   // Catches: a Job with no stand-in that runs on whatever route the pod gives, or with no gateway

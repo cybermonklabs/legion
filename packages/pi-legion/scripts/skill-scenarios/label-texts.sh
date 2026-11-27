@@ -223,9 +223,11 @@ run_daemon() {
 
 # compile <dir> compiles the three test binaries into <dir>, in the label's daemon module, with the
 # e2e tag, which TestRigDaemonLive's file carries; the workflow and api packages hold no file the
-# tag adds. The go command stands alone on its line: CI's filter check holds a script's go command
-# exact only then (the label-texts.sh row of .github/ci-gates/pi-legion.py), and reads any other as
-# reading every Go file of the repository.
+# tag adds. The go command stands alone on its line because the label-texts.sh row of
+# .github/ci-gates/pi-legion.py names it. CI's filter check fails that row when the script no
+# longer holds its text; when the line holding it holds more than the text alone, or continues, the
+# check reads every Go file of the repository for the row (ci_filter_coverage.py, check_table). It
+# reads no go command a script runs that no row names.
 compile() {
   local bin=$1
   cd "$daemon" || return 1
