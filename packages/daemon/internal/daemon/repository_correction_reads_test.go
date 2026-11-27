@@ -405,14 +405,14 @@ func TestAFollowOwedForOneIssueReadsAnotherAskedForWhileItIsOwed(t *testing.T) {
 }
 
 // An issue a follow is owed for, whose reads GitHub still does not answer, starts no follow pass
-// when it is asked for again (requestFollowOf), as each event or hand-over of it asks: the pass
-// that left it owed armed the follow's own clock (reads().retry's first wait, 30 s in production,
-// productionRepositoryReads), and the issue waits for that. Each pass reads the records,
-// Dispatch's whole listing and GitHub, so through a GitHub outage a pass at each ask would cost
-// that much per event. The ask is counted all the same, and an issue no pass owes yet is followed
-// at once. A pass is counted by its read of strangerRepo's implement App, which every pass here
-// makes once and nothing else makes. Control: with every ask waking the refresher, the second ask
-// of the owed issue starts a pass at once.
+// when it is asked for again (requestFollowOf), as each event or other preparation of it asks
+// (prepareIssue): the pass that left it owed armed the follow's own clock (reads().retry's first
+// wait, 30 s in production, productionRepositoryReads), and the issue waits for that. Each pass
+// reads the records, Dispatch's whole listing and GitHub, so through a GitHub outage a pass at
+// each ask would cost that much per event. The ask is counted all the same, and an issue no pass
+// owes yet is followed at once. A pass is counted by its read of strangerRepo's implement App,
+// which every pass here makes once and nothing else makes. Control: with every ask waking the
+// refresher, the second ask of the owed issue starts a pass at once.
 func TestAnAskOfAnIssueAFollowIsOwedForWaitsTheFollowsClock(t *testing.T) {
 	t.Parallel()
 	const owed, added = "LEGION-1096", "LEGION-1097"

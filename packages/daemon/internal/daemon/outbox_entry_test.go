@@ -121,9 +121,10 @@ func entryEngine(t *testing.T) *workflow.Engine {
 		Steps: config.DesignGateRootIssues.Steps()}, quietLogger())
 }
 
-// startPromoted raises role's entry on issue as the promotion of a re-admitted tree does
-// (workflow.Engine.StartPromotedWorker), in a transaction of its own that settles the runs its
-// start ends, as a fact's does (workflow.Engine.OpenFact).
+// startPromoted raises role's entry on issue as the promotion of a root a hand-over of the release
+// before carried in does (workflow.Engine.StartPromotedWorker, through StartCarriedRun), in a
+// transaction of its own that settles the runs its start ends, as a fact's does
+// (workflow.Engine.OpenFact).
 func startPromoted(ctx context.Context, db store.TxPool, engine *workflow.Engine, issue record.Issue, role claim.Role) error {
 	ctx = engine.OpenFact(ctx)
 	return store.Transact(ctx, db, func(ctx context.Context, tx pgx.Tx) error {
@@ -159,9 +160,9 @@ func TestAnAppendOnlyStartRowBelowItsRolesEntryDeliversNothingAndStartsNoRole(t 
 		t.Fatalf("lease the implementer's start row as the lane does: %v", err)
 	}
 
-	// The promotion of a re-admitted tree's member is a later entry of the same phase: it raises
-	// the number, writes that entry's task on the phases row and writes its own start
-	// (workflow.Engine.StartPromotedWorker).
+	// The promotion of a root a hand-over of the release before carried in is a later entry of the
+	// same phase: it raises the number, writes that entry's task on the phases row and writes its
+	// own start (workflow.Engine.StartPromotedWorker).
 	issue := readIssue(t, rig.pool, rig.issue.Key)
 	if err := startPromoted(ctx, rig.pool, entryEngine(t), *issue, claim.RoleImplementer); err != nil {
 		t.Fatalf("raise the implementer's second entry: %v", err)
@@ -268,9 +269,9 @@ func TestAppendOnlyStartRowsLoseNoWorkWhenOneIsDeletedBeforeTheLaneRunsIt(t *tes
 // the two a held-back start meets.
 //
 // The sequence each stands in is the one the record writes: a start queues an entry's task, and
-// the promotion of a re-admitted tree's member raises the next entry with the phase's resume task
-// (workflow.Engine.StartPromotedWorker, record.SuperviseRequest.ResumeTask), which a worker
-// already at work needs no second prompt for.
+// the promotion of a root a hand-over of the release before carried in raises the next entry with
+// the phase's resume task (workflow.Engine.StartPromotedWorker, record.SuperviseRequest.ResumeTask),
+// which a worker already at work needs no second prompt for.
 func TestAnAppendOnlyStartThatDeliversNothingRecordsOnlyTheEntryItsClaimHolds(t *testing.T) {
 	t.Parallel()
 	t.Run("a start of the entry whose task the claim holds records that entry", func(t *testing.T) {
@@ -384,11 +385,11 @@ func TestAnAppendOnlyStartThatDeliversNothingRecordsOnlyTheEntryItsClaimHolds(t 
 // has been handed on this issue and nothing of a new run unhands one (record.PhaseRow.Entry and
 // EntryTask).
 //
-// What writes the work again is the promotion of the issue
+// What writes the work again is the role's next start, here the promotion's
 // (workflow.Engine.StartPromotedWorker): it raises the entry, writes that entry's task beside the
 // number in the same transaction and writes the start that carries both, so the worker is started
 // under an entry above every entry a completion still in flight could name.
-func TestAReadmissionLeavesTheEntryColumnsAndThePromotionWritesTheWorkAgain(t *testing.T) {
+func TestANewRunLeavesTheEntryColumnsAndThePromotionWritesTheWorkAgain(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	rig := newOneStartRig(t)
@@ -405,22 +406,22 @@ func TestAReadmissionLeavesTheEntryColumnsAndThePromotionWritesTheWorkAgain(t *t
 	if err := store.Transact(ctx, rig.pool, func(ctx context.Context, tx pgx.Tx) error {
 		return rig.engine.ClearGeneration(ctx, tx, rig.issue, time.Now().UTC())
 	}); err != nil {
-		t.Fatalf("clear the generation the re-admission ends: %v", err)
+		t.Fatalf("clear the generation the new run ends: %v", err)
 	}
 
-	readmitted := rolePhaseRow(t, rig.pool, rig.issue.Key, claim.RoleImplementer)
-	if readmitted.Entry != before.Entry || !readmitted.EntryRaisedAt.Equal(before.EntryRaisedAt) {
-		t.Fatalf("the implementer's phases row after the re-admission = entry %d raised at %s, want the entry %d raised at %s it stood on",
-			readmitted.Entry, readmitted.EntryRaisedAt, before.Entry, before.EntryRaisedAt)
+	cleared := rolePhaseRow(t, rig.pool, rig.issue.Key, claim.RoleImplementer)
+	if cleared.Entry != before.Entry || !cleared.EntryRaisedAt.Equal(before.EntryRaisedAt) {
+		t.Fatalf("the implementer's phases row after the new run's clear = entry %d raised at %s, want the entry %d raised at %s it stood on",
+			cleared.Entry, cleared.EntryRaisedAt, before.Entry, before.EntryRaisedAt)
 	}
-	if readmitted.EntryTask != "" {
+	if cleared.EntryTask != "" {
 		t.Fatalf("the implementer's phases row still names the work %q of the generation that ended, want none: its promotion writes the task it is given",
-			readmitted.EntryTask)
+			cleared.EntryTask)
 	}
 
 	issue := readIssue(t, rig.pool, rig.issue.Key)
 	if err := startPromoted(ctx, rig.pool, entryEngine(t), *issue, claim.RoleImplementer); err != nil {
-		t.Fatalf("promote the re-admitted tree's implementer: %v", err)
+		t.Fatalf("promote the implementer of the cleared issue: %v", err)
 	}
 
 	promoted := rolePhaseRow(t, rig.pool, rig.issue.Key, claim.RoleImplementer)
@@ -428,9 +429,9 @@ func TestAReadmissionLeavesTheEntryColumnsAndThePromotionWritesTheWorkAgain(t *t
 		t.Fatalf("the implementer's phases row after the promotion = entry %d with task %q, want entry %d carrying the work it is owed",
 			promoted.Entry, promoted.EntryTask, before.Entry+1)
 	}
-	// The promotion's start takes out the start the issue still owed, whose task the re-admission
-	// cleared, and writes its own in its place (record.Store.EnqueueStart), so one start stands
-	// and it is the one the phases row names.
+	// The promotion's start takes out the start the issue still owed, whose task went with the
+	// clear, and writes its own in its place (record.Store.EnqueueStart), so one start stands and
+	// it is the one the phases row names.
 	rows = entryStartRows(t, rig.pool, rig.issue.Key)
 	if len(rows) != 1 || rows[0].request.Entry != promoted.Entry || rows[0].request.Task != promoted.EntryTask {
 		t.Fatalf("the start rows after the promotion = %+v, want the one row of entry %d carrying the task %q its phases row names",
@@ -525,10 +526,10 @@ func TestAHeldPhasesRetryReachesAWorkerThatFinishedTheEntrysTask(t *testing.T) {
 //
 // The sequence is the record's. The implementer's completion hands testing to the tester, whose
 // phases row is raised to entry 1 with that entry's task and whose claim takes it and begins a
-// turn on it. The promotion of a re-admitted tree's member then raises entry 2 with the phase's
-// resume task (workflow.Engine.StartPromotedWorker): the runner holds that task back, since the
-// claim is working entry 1's (keepsStartTask), and records nothing, so the claim stands below its
-// row.
+// turn on it. The promotion of a root a hand-over of the release before carried in then raises
+// entry 2 with the phase's resume task (workflow.Engine.StartPromotedWorker): the runner holds that
+// task back, since the claim is working entry 1's (keepsStartTask), and records nothing, so the
+// claim stands below its row.
 //
 // What the claim standing below its row then gives the worker is the rest of this case. The
 // tester's completion of entry 1 is refused 409 HANDOFF_STALE_ENTRY with nothing recorded,

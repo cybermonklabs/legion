@@ -18,8 +18,9 @@ import (
 // (publishEmptied). issue is the record as tx holds it.
 //
 // It is the only caller that clears a generation, one issue's at a time, for a new run of the
-// issue (NewRun). The record owns the statements, and the clear takes the one forget as an input
-// it requires (forgetSuperseded),
+// issue (NewRun) and for the first boot's finish of a hand-over of the release before that carries
+// no run (the daemon's finishHandOver). The record owns the statements, and the clear takes the
+// one forget as an input it requires (forgetSuperseded),
 // which it runs over every decision kept on a cleared issue and every changes request the outbox
 // holds on one while the issue's gates still stand, so each one that is no longer the person's
 // word is deleted before the clear deletes the gate that records what took its place. Asked after

@@ -185,20 +185,31 @@ func OwnerWalkOver(ctx context.Context, store Store, tx pgx.Tx, project string, 
 }
 
 // ReadOwnerWalk reads in tx, once, what the owner walk from each of keys weighs: the Dispatch
-// chains of keys (ReadChainsOf: the walk asks of each key its links, the issues above it in
+// chains of keys (Store.ChainRowsOf: the walk asks of each key its links, the issues above it in
 // Legion's work and, once its chain is known, the state tree of the key or of its first such
-// issue, each a question of the key's own chain) and the architect claims on them as the store
-// records them (OwnerWalkOver).
+// issue, each a question of the key's own chain), the daemon's record of each issue on them, and
+// the architect claims on them as the store records them (OwnerWalkOver). No answer of the walk
+// reads a child of a key, so it reads none, nor its record (ReadChainsOf's Store.DispatchChildren):
+// what it reads grows with the chains of keys alone, which Dispatch bounds (MaxChainLinks).
 func ReadOwnerWalk(ctx context.Context, store Store, tx pgx.Tx, dispatchProject string, keys []string) (OwnerWalk, error) {
 	project, err := claim.ProjectToken(dispatchProject)
 	if err != nil {
 		return OwnerWalk{}, err
 	}
-	chains, err := ReadChainsOf(ctx, tx, store, dispatchProject, keys)
+	rows, err := store.ChainRowsOf(ctx, tx, keys)
 	if err != nil {
 		return OwnerWalk{}, err
 	}
-	return OwnerWalkOver(ctx, store, tx, project, chains, keys)
+	// The walk answers each key it reached once (chainRows), so onChains names no key twice.
+	onChains := make([]string, 0, len(rows))
+	for _, row := range rows {
+		onChains = append(onChains, row.Key)
+	}
+	records, err := store.IssuesByKey(ctx, tx, onChains)
+	if err != nil {
+		return OwnerWalk{}, fmt.Errorf("read the records on the chains of %v: %w", keys, err)
+	}
+	return OwnerWalkOver(ctx, store, tx, project, newChains(rows, nil, records), keys)
 }
 
 // Owner is the key of the issue whose architect owns key, one of the keys the walk was read for

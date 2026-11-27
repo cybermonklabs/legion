@@ -121,6 +121,22 @@ func (r *newsReconcileRig) inTx(write func(pgx.Tx) error) {
 	}
 }
 
+// treeMembers is the root architect's summary of the rig's tree as tx finds the record, read as a
+// send reads it for the root's own architect (readNewsAtSend): the root's record and one reading of
+// the Dispatch chains named from it, over which the summary names every member and its holder
+// (newsClaims, readTreeMembers).
+func (r *newsReconcileRig) treeMembers(tx pgx.Tx) ([]memberDraft, error) {
+	root, err := r.records.Issue(r.ctx, tx, reconcileRoot)
+	if err != nil {
+		return nil, err
+	}
+	chains, err := record.ReadChains(r.ctx, tx, r.records, root.Project, []string{root.Key})
+	if err != nil {
+		return nil, err
+	}
+	return readTreeMembers(r.ctx, tx, r.records, config.DesignGateRootIssues.Steps(), newNewsClaims(*root, chains))
+}
+
 // member records key in the tree in phase at, the tree's root when it is reconcileRoot, the child
 // of parent otherwise, with its row of the copy of Dispatch's issues (putChainIssue): the tree is
 // the gate root's on the Dispatch chain (record.Chains.GateTree), which the news reads.

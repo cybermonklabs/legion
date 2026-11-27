@@ -130,8 +130,8 @@ func (d *gatePublishDispatch) PutGatedSteps(context.Context, string, []string) e
 // gatePublishRig is the daemon over a database of its own: the workflow engine and the admission
 // every gate path runs through, and the board lane that takes the project's design-gate
 // publications to Dispatch. Nothing here stands in for a gate write — the tests drive the facts
-// the architect's registration, a person's review, an adoption, a re-admission and a child's
-// re-entry arrive as, and read what Dispatch was told.
+// the architect's registration, a person's review and a person's todo that opens a new run arrive
+// as, and read what Dispatch was told.
 type gatePublishRig struct {
 	t         *testing.T
 	ctx       context.Context

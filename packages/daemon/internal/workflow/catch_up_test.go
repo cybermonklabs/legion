@@ -188,8 +188,7 @@ func TestARelaunchedArchitectsCatchUpNamesTheDecisionsKeptForIt(t *testing.T) {
 // architect's start alike: each composes the decisions over the gate holder's own key
 // (ParkedDecisionTask) and claims them over that same key (EnqueueNaming), never over the tree its
 // record stores (R15 and R18 of dispatch://INFRA-3320). The start keeps the stored tree in its
-// payload (decision 13 of dispatch://INFRA-4730), and a held task narrowed to that decision, written
-// again over the gate holder's own key (KeptDecisionsTask), names the gate holder's own tree.
+// payload (decision 13 of dispatch://INFRA-4730).
 //
 // Negative control, run when this was written: with EnqueueNaming claiming over the stored tree,
 // the claim names a decision none of that tree's members holds, and the ready's transaction fails.
@@ -236,10 +235,6 @@ func TestAGateHolderStoredUnderAnotherTreeIsToldWhatWasKeptForIt(t *testing.T) {
 		!strings.Contains(start.Task, told) {
 		t.Fatalf("the architect's start = tree %q, kept %#v, task %q; want the stored tree %s and the task naming %q", start.Tree, start.Kept,
 			start.Task, oldRoot, told)
-	}
-	decided, _ := KeptDecisionsTask(KeptGates{}, engine.GatedSteps(), gateHolder.Key, *start.Kept)
-	if narrowed := NarrowRootTask(ArchitectStart{Root: gateHolder}, 0, decided); !strings.Contains(narrowed, told) {
-		t.Fatalf("the held task narrowed to the decision = %q, want it to name %q", narrowed, told)
 	}
 }
 

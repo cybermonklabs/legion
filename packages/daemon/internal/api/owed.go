@@ -139,10 +139,11 @@ func (s *server) claimOwed(w http.ResponseWriter, r *http.Request) {
 // gate root's. A walk that meets a chain the copy cannot show to its top (record.ErrChainUnknown)
 // names the issue's own architect, where it starts, as that reader does. Nothing of the stored
 // tree is read: the route reads the issue's chain once per ask (record.ReadOwnerWalk: the copy's
-// rows of the chain, the records they name and the architect claims on it), in the same
-// statements whatever the chain, the tree or the deployment, so only their rows grow, and with the
-// chain alone, which Dispatch bounds (record.MaxChainLinks). It reads in a read-only transaction
-// of its own, which the completion route, sharing handoffPosition, does not pay for.
+// rows of the chain, the records they name and the architect claims on it, and no child of the
+// issue), in the same statements whatever the chain, the tree or the deployment, so only their
+// rows grow, and with the chain alone, which Dispatch bounds (record.MaxChainLinks). It reads in
+// a read-only transaction of its own, which the completion route, sharing handoffPosition, does
+// not pay for.
 func (s *server) owningArchitect(ctx context.Context, issue record.Issue) (claim.Token, error) {
 	var owner claim.Token
 	err := store.TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {

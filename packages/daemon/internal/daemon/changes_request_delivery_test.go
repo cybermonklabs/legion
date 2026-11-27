@@ -87,7 +87,11 @@ func TestAQueuedChangesNoticeAnApprovalFollowedIsNotPublished(t *testing.T) {
 			wantQueued := record.Notice{Kind: "design-changes-requested", Version: 3,
 				Reason: changes.Reason, Actor: "user:alice", Ref: "dispatch://LEGION-1/spec",
 				Review: changes.Mark, Artifact: "artifact-1"}
-			if !reflect.DeepEqual(request.notice, wantQueued) {
+			// The run and the phase entry the row names are its fence (record.Fence), which
+			// TestALateEffectOfAnEarlierRunOrPhaseEntryDoesNothing reads; this case reads what it says.
+			got := request.notice
+			got.Generation, got.Entry = 0, 0
+			if !reflect.DeepEqual(got, wantQueued) {
 				t.Fatalf("the workflow queued %#v, want the changes request %#v",
 					request.notice, wantQueued)
 			}

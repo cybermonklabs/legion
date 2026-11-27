@@ -8,7 +8,6 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
-	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
@@ -136,15 +135,8 @@ func TestTheRootArchitectsSummarySaysItAnswersAMemberInAcceptingItOwns(t *testin
 
 	var drafts []memberDraft
 	r.inTx(func(tx pgx.Tx) error {
-		root, err := r.records.Issue(r.ctx, tx, reconcileRoot)
-		if err != nil {
-			return err
-		}
-		chains, err := record.ReadChains(r.ctx, tx, r.records, "LEGION", []string{reconcileRoot})
-		if err != nil {
-			return err
-		}
-		drafts, err = readTreeMembers(r.ctx, tx, r.records, config.DesignGateRootIssues.Steps(), newNewsClaims(*root, chains))
+		var err error
+		drafts, err = r.treeMembers(tx)
 		return err
 	})
 	for _, draft := range drafts {

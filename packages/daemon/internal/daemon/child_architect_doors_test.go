@@ -402,6 +402,13 @@ func TestAChildsStartTellsTheArchitectAboveItOnce(t *testing.T) {
 			rig := newChildArchitectRig(t)
 			rig.put(rig.member(parent, doorRoot, phase.Implementing, "in_progress", "T"))
 			holdSlot(t, rig.pool, parent)
+			// Admission opened the parent's own lifecycle when it started the parent (admit's
+			// OpenIssueLifecycle), and its architect's claim binds it (store.Store.AdmitClaim).
+			if err := store.Transact(rig.ctx, rig.pool, func(ctx context.Context, tx pgx.Tx) error {
+				return openIssueTx(ctx, tx, "legion", parent, treelifecycle.AuthorityWorkflow)
+			}); err != nil {
+				t.Fatalf("open the lifecycle of %s: %v", parent, err)
+			}
 			held, _, err := rig.sup.Create(rig.ctx, supervise.Claim{Token: mustClaimToken(t, parent, claim.RoleArchitect), Project: "legion",
 				Tree: doorRoot, Issue: parent, Role: claim.RoleArchitect, Generation: 1, ServingGeneration: 1,
 				State: tc.state, SuspendedBy: tc.by, Session: "ses-parent-architect", SessionFile: doorSessionFile("ses-parent-architect")}, "")

@@ -145,6 +145,9 @@ func TestAClearHandsItsForgetTheDecisionsKeptOnTheIssueItClears(t *testing.T) {
 			inTx(t, st, func(tx pgx.Tx) {
 				for i, issue := range issues {
 					must(t, records.PutIssue(ctx, tx, issue))
+					// Each issue has its row of the copy, so the child stands under its parent on
+					// the Dispatch chain and a clear that walked that chain would reach the other.
+					putCopy(t, ctx, tx, issue)
 					must(t, records.PutGate(ctx, tx, DesignGate{Issue: issue.Key, ArtifactID: "artifact-" + issue.Key, LatestVersion: 3,
 						ApprovedVersion: &approved}))
 					must(t, records.AddParkedDecision(ctx, tx, kept[i]))

@@ -150,9 +150,9 @@ export interface PhaseReminder {
  * real handler over the test PostgreSQL, with 2,300 issues and 300 live claims seeded, 600
  * requests answered at a median of 1.9 ms to 2.0 ms and a maximum of 9.7 ms to 25.8 ms over two
  * runs. The route has since also come to read, for the architect that owns the claim, the issue's
- * Dispatch chain once per ask, the records it names and their architect claims (`owningArchitect`
- * in `owed.go`, `record.ReadOwnerWalk`), which grow with the chain, which Dispatch bounds, and
- * not with the deployment; that read was not part of the measurement.
+ * Dispatch chain once per ask, the records it names and their architect claims, and no child of
+ * the issue (`owningArchitect` in `owed.go`, `record.ReadOwnerWalk`), which grow with the chain,
+ * which Dispatch bounds, and not with the deployment; that read was not part of the measurement.
  *
  * The worst answer those numbers predict is about 1.03 s: a first connection of 1.0 s, INFRA's
  * network of about 5 ms, and the route's own 26 ms. 3 s is about three times that, which leaves

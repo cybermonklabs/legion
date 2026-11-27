@@ -363,7 +363,9 @@ func TestRepositoryCorrectionFollowsAReturnToWork(t *testing.T) {
 			tc.returns(r)
 
 			issue := r.issue()
-			r.correctedOn(issue, "acme/tools", "release/v7.1", "acme/tools", "acme/widgets")
+			// A return is no new run and moves no phase (R20), so the corrected root stands in
+			// the run and the phase it was stopped in.
+			r.corrected(issue, "acme/tools", "release/v7.1", "acme/tools", "acme/widgets")
 			if !record.InLegionsWork(issue) {
 				t.Fatalf("the root after its todo = %#v, want it back in Legion's work", issue)
 			}

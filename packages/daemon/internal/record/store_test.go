@@ -1242,8 +1242,8 @@ var forgetNothing KeptForget = func(context.Context, pgx.Tx, string, KeptDecisio
 // The reviewer's row keeps the commit its newest recorded review read (PhaseRow.ReviewedHead),
 // which the task of a later review round names. A row the release before wrote names no such
 // column and reads back with none. A new generation clears it with the rest of the generation's
-// facts, of one issue at a time (ClearGeneration: the rerun of a child, an adoption, and the
-// re-admission of a root, which clears each issue of its tree), so the first review of a new
+// facts, of one issue at a time (ClearGeneration, which a new run makes: workflow's Engine.NewRun,
+// and the first boot's finish of a hand-over that carries no run), so the first review of a new
 // generation is told no commit. The issue keeps no decision, so the forget each clear is required
 // to be handed (KeptForget) is run over nothing.
 func TestAPhaseRowKeepsTheReviewedCommitUntilANewGeneration(t *testing.T) {

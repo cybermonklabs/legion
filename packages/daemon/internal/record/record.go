@@ -2607,7 +2607,7 @@ type Store interface {
 	// ChainRowsOf is ChainRows for a walk that starts from keys alone and no other issue, in one
 	// query whatever the chains' depth: the rows of each key's chain and no others, so a decision
 	// about one issue reads its own chain whatever the number of issues the project has at work.
-	// ReadChainsOf is its one reader.
+	// ReadChainsOf and ReadOwnerWalk are its readers.
 	ChainRowsOf(ctx context.Context, tx pgx.Tx, keys []string) ([]ChainRow, error)
 	// HasDispatchChildren is whether the mirror holds an issue of the Dispatch project key project
 	// whose parent is parent, of any status: one row's existence, read without the rows

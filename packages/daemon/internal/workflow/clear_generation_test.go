@@ -133,17 +133,15 @@ func TestClearGenerationClearsTheHandoffRecordAndKeepsTheLastNamed(t *testing.T)
 	}
 }
 
-// A re-admission clears the work a role's phase entry named and leaves the number where it
-// stands. The task goes because it is the old generation's, cleared with that generation's
-// handoffs (ClearGeneration): the tree runs again, and what the role is owed is whatever its
-// promotion hands it, not the task of a run that ended. The number stays because it counts the
-// entries the role has been handed on this issue and nothing of a re-admission unhands one: the
-// promotion raises it again (StartPromotedWorker), so the entry the new work is sent under is
-// above every entry a completion still in flight could name. The task the role was last given for
-// an entry, with that entry and the issue's generation it was given in (record.PhaseRow.Given,
-// record.GivenTask), is read back as it was written, and goes with the entry's task: it was the old
-// run's. The generation alone would not retire it on a member of a re-admitted tree, which keeps
-// its own generation.
+// A new run clears the work a role's phase entry named and leaves the number where it stands. The
+// task goes because it is the old generation's, cleared with that generation's handoffs
+// (ClearGeneration, which NewRun runs): the issue runs again, and what the role is owed is whatever
+// its next start hands it, not the task of a run that ended. The number stays because it counts the
+// entries the role has been handed on this issue and nothing of a new run unhands one: the role's
+// next start raises it again, so the entry the new work is sent under is above every entry a
+// completion still in flight could name. The task the role was last given for an entry, with that
+// entry and the issue's generation it was given in (record.PhaseRow.Given, record.GivenTask), is
+// read back as it was written, and goes with the entry's task: it was the old run's.
 func TestClearGenerationClearsTheEntryTaskAndLeavesTheEntry(t *testing.T) {
 	t.Parallel()
 	pool := migratedPool(t)

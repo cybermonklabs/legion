@@ -1459,9 +1459,10 @@ func (w *workflowRuntime) rootHears(ctx context.Context, c supervise.Claim, _ su
 // the chain no longer shows under the claim's issue lose this delivery's hold
 // (record.Store.ReleasedHeldIssues), which leaves each KEPT for its own gate root to name, and
 // the architect of each gate root they are now owed to is written a fresh catch-up naming them
-// at once, exactly as a hand-over writes one (workflow.CatchUpTheTreesOwed). The decisions whose
-// issue the chain still shows under the claim's issue stay, in the order the task named them, and
-// the text is written again from them by the wording the start that queued the task used
+// at once, exactly as a finish that hands kept decisions over writes one (workflow.HandOverKept,
+// workflow.CatchUpTheTreesOwed). The decisions whose issue the chain still shows under the
+// claim's issue stay, in the order the task named them, and the text is written again from them
+// by the wording the start that queued the task used
 // (workflow.KeptDecisionsTask), behind the root's own first task where the task carried it
 // (workflow.NarrowRootTask). An issue the record does not hold is kept rather than dropped: a
 // person's decision is never lost, and this answer drops one only where the chain says another
@@ -1479,11 +1480,12 @@ func (w *workflowRuntime) rootHears(ctx context.Context, c supervise.Claim, _ su
 // (narrowedNews, designNews, renderNews). So the news it carries is exactly what its text names,
 // and no later send renders the text the start wrote, which still names the released decision.
 //
-// It is the machine that asks, because the machine owns the pending delivery: the hand-over that
-// moved the issue commits in a transaction of its own, with no lock on this claim, and a task
-// rewritten there would be overwritten by the machine's next write of what memory still held. The
-// write here serializes with every fact (intake.SerializeFacts), since it writes the catch-up a
-// ready would write, and takes no lock of the daemon's: the machine asks it holding its own.
+// It is the machine that asks, because the machine owns the pending delivery: the fact that moved
+// the issue, a change of its parent in Dispatch, commits in a transaction of its own, with no lock
+// on this claim, and a task rewritten there would be overwritten by the machine's next write of
+// what memory still held. The write here serializes with every fact (intake.SerializeFacts),
+// since it writes the catch-up a ready would write, and takes no lock of the daemon's: the machine
+// asks it holding its own.
 //
 // A resume task of a root a person answered (supervise.Delivery.Resume) is written here as well,
 // and at every send of it, not where it was queued: the wait it answers is decoded from the

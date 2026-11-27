@@ -56,22 +56,36 @@ func (c *statementCount) TraceBatchQuery(context.Context, *pgx.Conn, pgx.TraceBa
 
 func (*statementCount) TraceBatchEnd(context.Context, *pgx.Conn, pgx.TraceBatchEndData) {}
 
-// chainReads is a record store that counts the walks of the copy of Dispatch's issues its reader
-// makes (Store.ChainRows and Store.ChainRowsOf, each one read of the Dispatch chains), so a test
-// holds the owed route to its one read of the chain per ask.
+// chainReads is a record store that counts what its reader reads of the Dispatch chains: the
+// walks of the copy of Dispatch's issues from the keys it names (Store.ChainRowsOf), the walks of
+// every chain of the project (Store.ChainRows), and the records it asks for by key
+// (Store.IssuesByKey), so a test holds the owed route to one read of the asking issue's own chain
+// per ask and to the records of that chain's issues alone.
 type chainReads struct {
 	record.Store
-	walks atomic.Int64
+	walks, projectWalks, records atomic.Int64
 }
 
 func (c *chainReads) ChainRows(ctx context.Context, tx pgx.Tx, project string, extra []string) ([]record.ChainRow, error) {
-	c.walks.Add(1)
+	c.projectWalks.Add(1)
 	return c.Store.ChainRows(ctx, tx, project, extra)
 }
 
 func (c *chainReads) ChainRowsOf(ctx context.Context, tx pgx.Tx, keys []string) ([]record.ChainRow, error) {
 	c.walks.Add(1)
 	return c.Store.ChainRowsOf(ctx, tx, keys)
+}
+
+func (c *chainReads) IssuesByKey(ctx context.Context, tx pgx.Tx, keys []string) ([]record.Issue, error) {
+	c.records.Add(int64(len(keys)))
+	return c.Store.IssuesByKey(ctx, tx, keys)
+}
+
+// reset sets each count back to zero, for the next ask.
+func (c *chainReads) reset() {
+	c.walks.Store(0)
+	c.projectWalks.Store(0)
+	c.records.Store(0)
 }
 
 // serveOwedOver has h's server read the records through records over pool, with the workflow's
@@ -87,14 +101,16 @@ func serveOwedOver(h *harness, pool *store.Pool, records record.Store) {
 // walk weighs on it: the root's architect, which holds its role, an architect the daemon retired
 // on every issue of that chain below the root, as a child's architect is once the child closes,
 // and the planner of the issue at the chain's bottom, which asks what it owes. Every other issue
-// of the tree is a child of the root.
+// of the tree is a child of that asking issue.
 //
 // The chain is the shape on which the walk does the most (record.OwningIssue, which
 // OwnerWalk.Architect ends): the walk climbs the Dispatch chain one parent at a time from the
 // asking issue and stops at the first architect that holds its role, else at the gate root. From
 // the bottom of a chain whose architects below the root are all retired, it asks about every link
 // and passes each over, and the read of their claims (record.ArchitectRuns) answers a row for
-// each. The rest of the tree stands on no link of that chain, so the walk reads none of it.
+// each. The rest of the tree stands under the asking issue and on no link of its chain: no answer
+// of the walk asks of an issue below the one it starts from, so the walk reads none of it, and a
+// read of the asking issue's children would read the rest of the tree.
 type owedTree struct {
 	size, links int
 	architect   liveClaim
@@ -103,9 +119,9 @@ type owedTree struct {
 
 // seedOwedTree records a tree of size issues numbered from LEGION-<first>, its root: a chain of
 // links issues below the root, each the child of the one before, each with a retired architect,
-// and every other issue a child of the root. Each issue has its row of the copy of Dispatch's
-// issues, where the daemon reads each chain (R15 of dispatch://INFRA-3320), and all of it is
-// written in one transaction. It then launches the root's architect and the planner of the
+// and every other issue a child of the chain's bottom issue. Each issue has its row of the copy of
+// Dispatch's issues, where the daemon reads each chain (R15 of dispatch://INFRA-3320), and all of
+// it is written in one transaction. It then launches the root's architect and the planner of the
 // chain's bottom issue.
 func seedOwedTree(t *testing.T, h *harness, first, size, links int) owedTree {
 	t.Helper()
@@ -119,10 +135,12 @@ func seedOwedTree(t *testing.T, h *harness, first, size, links int) owedTree {
 			case n <= first+links:
 				parent = fmt.Sprintf("LEGION-%d", n-1)
 			default:
-				parent = root
+				parent = bottom
 			}
+			// The record names the Dispatch project its copy rows name, as the daemon records an
+			// issue, so a read of the copy's children of the asking issue finds the rest of the tree.
 			issue := record.Issue{Key: key, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: root,
-				Project: testProject, Title: key, Phase: phase.Planning, Status: "in_progress"}
+				Project: testDispatchProject, Title: key, Phase: phase.Planning, Status: "in_progress"}
 			if parent != "" {
 				issue.Parent = &parent
 			}
@@ -181,13 +199,15 @@ func milliseconds(d time.Duration) float64 {
 // with "could not read the record" (packages/pi-shared/src/phase-reminder.ts), so a read that grew
 // with the tree would nudge at every turn's end on a large one. The owner walk reads the claim's
 // Dispatch chain and no stored tree (R15 and R18 of dispatch://INFRA-3320): one read of the chain
-// per ask and the architect claims on its links (record.ReadOwnerWalk), so an ask sends the same
-// statements whatever the chain's length and the tree's size, and only their rows grow. Asked
-// from the bottom of a chain (owedTree), the route names the root's architect over a chain of one
-// link in a tree of 16 issues and over one of record.MaxChainLinks, the longest Dispatch lets an
-// issue stand below the top of its chain, in a tree of 1024, twice INFRA's largest. The store
-// counts one walk of the chains for each ask, and the pool the server reads through counts as
-// many statements for the one ask as for the other.
+// per ask, the records of its issues and the architect claims on its links (record.ReadOwnerWalk),
+// so an ask sends the same statements whatever the chain's length and the tree's size, and only
+// their rows grow. Asked from the bottom of a chain (owedTree), the route names the root's
+// architect over a chain of one link in a tree of 16 issues and over one of record.MaxChainLinks,
+// the longest Dispatch lets an issue stand below the top of its chain, in a tree of 1024, twice
+// INFRA's largest, the rest of each tree standing under the asking issue. The store counts one
+// walk of the asking issue's chain for each ask, no walk of every chain of the project, and the
+// records of that chain's issues alone, none of the asking issue's children; and the pool the
+// server reads through counts as many statements for the one ask as for the other.
 //
 // The suite holds the counts and not a time. It runs on a pod that other work loads, where a
 // wall-clock bound fails on that load and not on the code, while a read per issue changes the
@@ -210,14 +230,22 @@ func TestClaimOwedSendsAsManyStatementsOnATreeOf1024IssuesAsOn16(t *testing.T) {
 	sent := make([]int64, len(trees))
 	for i, tree := range trees {
 		counted.sent.Store(0)
-		walks.walks.Store(0)
+		walks.reset()
 		elapsed := tree.ask(t)
 		sent[i] = counted.sent.Load()
 		t.Logf("owed on a chain of %d links in a tree of %d issues: %d statements, answered in %.1f ms",
 			tree.links, tree.size, sent[i], milliseconds(elapsed))
 		if read := walks.walks.Load(); read != 1 {
-			t.Errorf("an ask on a chain of %d links in a tree of %d issues read the Dispatch chains %d times, want once",
+			t.Errorf("an ask on a chain of %d links in a tree of %d issues read the Dispatch chains of the asking issue %d times, want once",
 				tree.links, tree.size, read)
+		}
+		if read := walks.projectWalks.Load(); read != 0 {
+			t.Errorf("an ask on a chain of %d links in a tree of %d issues read every Dispatch chain of the project %d times, want none: "+
+				"the owner walk asks of the asking issue's own chain alone", tree.links, tree.size, read)
+		}
+		if read, chain := walks.records.Load(), int64(tree.links+1); read != chain {
+			t.Errorf("an ask on a chain of %d links in a tree of %d issues read %d records, want the %d of the asking issue and its links: "+
+				"no answer of the owner walk reads the asking issue's %d children", tree.links, tree.size, read, chain, int64(tree.size)-chain)
 		}
 	}
 	if sent[0] != sent[1] {
