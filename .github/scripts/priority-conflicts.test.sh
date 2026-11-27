@@ -12,8 +12,8 @@
 # it merges both run as they do in CI. The fixture's commits have the real shapes: a pull request's
 # run commit is a merge of its head into main's tip with main first, a merge group is squash
 # commits whose subjects end with (#<number>) on the group's base, and priority pull requests fork
-# from main before later commits of main that conflict with them. The titles hold a percent sign,
-# which an ::error:: line must escape.
+# from main before later commits of main that conflict with them. The path where #15 adds a
+# directory and a change adds a file holds a percent sign, which an ::error:: line must escape.
 #
 # Every case writes the event it runs on (run_pr, run_group), and run_check sets the label read's
 # answer back to the standard one after every run, so a case reads no other case's fixture.
@@ -153,7 +153,7 @@ p11=$(on "$main" "priority edits s5" put s.txt "$(body s 5 's5 priority')")
 p12=$(on "$root" "stale priority edits t2 and t5" put t.txt "$(body t 2 't2 stale' 5 't5 stale')")
 p13=$(on "$main" "unapproved priority edits o5" put o.txt "$(body o 5 'o5 unapproved')")
 p14=$(on "$main" "queued priority edits q5" put q.txt "$(body q 5 'q5 queued')")
-p15=$(on "$main" "priority adds a directory d" put d/inner.txt "inner")
+p15=$(on "$main" "priority adds a directory d%" put 'd%/inner.txt' "inner")
 # #16 forked there too, edits t2, and sets w5 as main does, which merges cleanly with main.
 p16=$(on "$root" "stale priority edits t2" put t.txt "$(body t 2 't2 sixteen')")
 p16=$(on "$p16" "stale priority sets w5" put w.txt "$(body w 5 'w5 shared')")
@@ -189,7 +189,7 @@ m_inside=$(merge_of "$main" "$(on "$main" "edit t5" put t.txt "$(body t 2 't2 ma
 m_moved=$(merge_of "$main" "$(on "$main" "take #12's t2, edit t5" put t.txt "$(body t 2 't2 stale' 5 't5 mine')")")
 m_shared=$(merge_of "$main" "$(on "$main" "edit w5" put w.txt "$(body w 5 'w5 mine')")")
 m_rename=$(merge_of "$main" "$(on "$main" "rename t to u" git_fixture mv t.txt u.txt)")
-m_file=$(merge_of "$main" "$(on "$main" "add a file d" put d "a file")")
+m_file=$(merge_of "$main" "$(on "$main" "add a file d%" put 'd%' "a file")")
 m_unapproved=$(merge_of "$main" "$(on "$main" "edit o5" put o.txt "$(body o 5 'o5 mine')")")
 m_queue=$(merge_of "$main" "$(on "$main" "edit q5" put q.txt "$(body q 5 'q5 mine')")")
 m_samename=$(merge_of "$main" "$(on "$main" "rename r to g, as #17 does" git_fixture mv r.txt g.txt)")
@@ -236,7 +236,14 @@ cat "$work/answer-\$(jq -r '.variables.after // "first"' "\$4").json"
 GH
 chmod +x "$work/bin/gh"
 
-# pull <number> <head> <reviewDecision as JSON> <isInMergeQueue>: one node of the label read.
+# The marker, which a case puts where another party's words would carry a credential: no run of
+# eight of its characters, the run the redaction rule's gate reads, may be in what the check prints
+# (prints_no_marker).
+marker=not-a-secret-token
+
+# pull <number> <head> <reviewDecision as JSON> <isInMergeQueue>: one node of the label read, with
+# a title, which the read does not ask for and the check prints nowhere: what answers in GitHub's
+# place can send one all the same.
 pull() {
   jq -n --argjson number "$1" --arg head "$2" --argjson decision "$3" --argjson queued "$4" \
     '{number: $number, title: "priority work \($number) at 100%", headRefOid: $head,
@@ -310,11 +317,20 @@ remedy_pr="A priority pull request merges first: wait for #%s to merge, then mer
 # conflict_line <priority number> <files>: the error a conflict of pull request #20 writes.
 conflict_line() {
   # shellcheck disable=SC2059 # the remedy is the format
-  echo "::error::pull request #20 conflicts with priority pull request #$1 (priority work $1 at 100%25) in $2. $(printf "$remedy_pr" "$1")"
+  echo "::error::pull request #20 conflicts with priority pull request #$1 in $2. $(printf "$remedy_pr" "$1")"
 }
 # group_line <priority number> <files>: the error a conflict of the merge group of #20 writes.
 group_line() {
-  echo "::error::the merge group of #20 conflicts with priority pull request #$1 (priority work $1 at 100%25) in $2. A priority pull request merges first: wait for #$1 to merge, then merge main into #20's branch, resolve the conflict and queue #20 again."
+  echo "::error::the merge group of #20 conflicts with priority pull request #$1 in $2. A priority pull request merges first: wait for #$1 to merge, then merge main into #20's branch, resolve the conflict and queue #20 again."
+}
+# prints_no_marker <text>: whether <text> holds no run of eight characters of the marker, the run
+# the redaction rule's gate reads.
+prints_no_marker() {
+  local at
+  for ((at = 0; at + 8 <= ${#marker}; at++)); do
+    [[ "$1" == *"${marker:at:8}"* ]] && { echo false; return; }
+  done
+  echo true
 }
 
 echo "case: a dispatched run lands nothing, so it reads nothing"
@@ -335,7 +351,7 @@ check "it says the stale one already conflicts with the base" \
   "$(has_line "$out" "#12 already conflicts with the base of pull request #20 in 1 file(s): those are its own to resolve, and count against pull request #20 only where pull request #20 adds a conflict.")"
 check "and that it is no conflict of the pull request's" "$(contains "$out" "$(clean_line 12 "pull request #20")")"
 check "it does not check the one that is neither approved nor queued" "$(is "$(contains "$out$err" "#13")" false)"
-check "it writes no title on stdout" "$(is "$(contains "$out" "priority work")" false)"
+check "it writes no title" "$(is "$(contains "$out$err" "priority work")" false)"
 
 echo "case: a pull request that edits no file a priority pull request edits passes"
 run_pr "$m_new"
@@ -459,8 +475,8 @@ check "and #50" "$(has_line "$err" "$(group_line 50 x.txt)")"
 echo "case: a file where a priority pull request adds a directory fails"
 run_pr "$m_file"
 check "it fails" "$(is "$status" 1)"
-check "it names #15 and the path, without the name git moves the file aside to" \
-  "$(has_line "$err" "$(conflict_line 15 d)")"
+check "it names #15 and the path, its percent sign escaped, without the name git moves the file aside to" \
+  "$(has_line "$err" "$(conflict_line 15 'd%25')")"
 
 echo "case: a priority pull request that is neither approved nor queued is not checked against"
 run_pr "$m_unapproved"
@@ -521,6 +537,19 @@ run_pr "$x_conflict"
 check "it fails" "$(is "$status" 1)"
 check "it says why" "$(contains "$err" "^::error::GITHUB_SHA $x_conflict is no merge commit")"
 
+echo "case: a priority pull request whose title holds the marker is named by its number alone"
+# A title is free text of the label read's answer, and whatever answers in GitHub's place holds the
+# job's token, so the case puts the marker in #11's title: no run of it may be in what the check
+# prints. The twin: the answer the stand-in serves holds it.
+answer "$(pull 11 "$p11" '"APPROVED"' false |
+  jq -c --arg title "priority work 11 at https://x-access-token:$marker@github.com" '.title = $title')" \
+  "${standard[@]:1}"
+check "twin: the label read's answer holds the marker" "$(contains "$(< "$work/answer-first.json")" "$marker")"
+run_pr "$m_conflict"
+check "it fails" "$(is "$status" 1)"
+check "it names #11 by its number, and the file" "$(has_line "$err" "$(conflict_line 11 s.txt)")"
+check "it prints no run of the marker" "$(prints_no_marker "$out$err")"
+
 echo "case: a merge group that edits an approved priority pull request's lines fails"
 run_group 20 "$main" "$g20"
 check "it fails" "$(is "$status" 1)"
@@ -545,14 +574,14 @@ echo "case: an approved priority pull request that is not queued is held against
 # The same group, with #11 approved and out of the queue: the leftover branch decides nothing.
 run_group 21 "$q11" "$g21"
 check "it fails" "$(is "$status" 1)"
-check "it names #11" "$(contains "$err" "^::error::the merge group of #21 conflicts with priority pull request #11 (priority work 11 at 100%25) in s.txt. ")"
+check "it names #11" "$(contains "$err" "^::error::the merge group of #21 conflicts with priority pull request #11 in s.txt. ")"
 
 echo "case: a group of two pull requests, one of them labelled priority, is checked"
 answer "${standard[@]}" "$(pull 30 "$g30" null false)"
 run_group 31 "$main" "$g31"
 check "it fails" "$(is "$status" 1)"
 check "it names the group by the pull request its branch names" \
-  "$(contains "$err" "^::error::the merge group of #31 conflicts with priority pull request #11 (priority work 11 at 100%25) in s.txt. ")"
+  "$(contains "$err" "^::error::the merge group of #31 conflicts with priority pull request #11 in s.txt. ")"
 
 echo "case: a group of two pull requests, both labelled priority, passes"
 answer "${standard[@]}" "$(pull 30 "$g30" null false)" "$(pull 31 "$g31" null false)"

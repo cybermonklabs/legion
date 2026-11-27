@@ -85,9 +85,9 @@
 #   GITHUB_REPOSITORY, GITHUB_SERVER_URL  as Actions sets them: the repository read and fetched.
 #   RUNNER_TEMP        where the fetch's repository is made.
 #
-# Every ::error:: line goes to stderr, every other line to stdout. A pull request's title is
-# written in an ::error:: line alone, escaped, and every other line names a pull request by its
-# number, so no title can start a line of the log.
+# Every ::error:: line goes to stderr, every other line to stdout. A line names a pull request by
+# its number alone, never its title, free text of GitHub's answer, which the label read does not
+# ask for.
 #
 # Run from anywhere: .github/scripts/priority-conflicts.sh
 # Its tests are in priority-conflicts.test.sh, which ci.yaml's test job runs.
@@ -98,8 +98,8 @@ export LC_ALL=C
 # shellcheck source=.github/scripts/gh-read.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/gh-read.sh"
 
-# error <text>: one ::error:: line, escaped as a workflow command's data must be, since a title or
-# a path can hold a percent sign.
+# error <text>: one ::error:: line, escaped as a workflow command's data must be, since a path can
+# hold a percent sign.
 error() {
   local text=$1
   text=${text//'%'/%25}
@@ -160,14 +160,14 @@ query PriorityPulls($owner: String!, $repo: String!, $after: String) {
   repository(owner: $owner, name: $repo) {
     pullRequests(states: OPEN, labels: ["priority"], first: 100, after: $after) {
       pageInfo { hasNextPage endCursor }
-      nodes { number title headRefOid reviewDecision isInMergeQueue }
+      nodes { number headRefOid reviewDecision isInMergeQueue }
     }
   }
 }
 GRAPHQL
 shape='.data.repository.pullRequests
   | (.pageInfo.hasNextPage | type == "boolean") and (.nodes | type == "array")
-    and all(.nodes[]; (.number | type == "number") and (.title | type == "string")
+    and all(.nodes[]; (.number | type == "number")
       and (.headRefOid | type == "string" and test("^[0-9a-f]{40}$"))
       and (.reviewDecision == null or (.reviewDecision | type == "string"))
       and (.isInMergeQueue | type == "boolean"))'
@@ -193,15 +193,14 @@ while :; do
   after=$next
 done
 # Each priority pull request, once, though a page boundary that moved between two reads lists it
-# twice: its number, title and head, whether it is in the merge queue, and whether it is approved
-# or queued.
+# twice: its number and head, whether it is in the merge queue, and whether it is approved or
+# queued.
 pulls=$(jq -s -c 'unique_by(.number)
-  | map({number, title, head: .headRefOid, queued: .isInMergeQueue,
+  | map({number, head: .headRefOid, queued: .isInMergeQueue,
          landing: (.reviewDecision == "APPROVED" or .isInMergeQueue)})' \
   "$work/nodes")
 
 is_priority() { jq -e --argjson number "$1" 'any(.[]; .number == $number)' <<<"$pulls" > /dev/null; }
-title_of() { jq -r --argjson number "$1" 'first(.[] | select(.number == $number) | .title)' <<<"$pulls"; }
 
 if [ "$event_name" = pull_request ] && is_priority "$number"; then
   echo "#$number carries the label priority, and priority pull requests are not held to each other: nothing to check."
@@ -531,7 +530,7 @@ for candidate in "${candidates[@]}"; do
   else
     where="in a conflict git names no file for"
   fi
-  error "$change conflicts with priority pull request #$pull ($(title_of "$pull")) $where. A priority pull request merges first: wait for #$pull to merge, then $remedy."
+  error "$change conflicts with priority pull request #$pull $where. A priority pull request merges first: wait for #$pull to merge, then $remedy."
 done
 
 [ "$conflicts" -eq 0 ] || exit 1
