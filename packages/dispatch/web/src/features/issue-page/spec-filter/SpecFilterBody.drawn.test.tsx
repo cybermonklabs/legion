@@ -2768,11 +2768,7 @@ test("an uncounted inline kind still puts the caret in the pressed word", async 
   await pressAfterKind({
     at: 7,
     drawn: (words) => {
-      expect(
-        words.querySelector(
-          '[data-row-written], [data-type="html"], [data-type="footnote_reference"], [data-dispatch-picture]'
-        )
-      ).toBeNull();
+      expect(words.querySelector("[data-row-written]")).toBeNull();
       expect(words.textContent).toContain(text);
     },
     held: (

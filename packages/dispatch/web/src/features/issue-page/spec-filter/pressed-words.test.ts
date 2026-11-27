@@ -57,11 +57,11 @@ function pressAt(
   }
 }
 
-/** What `run` answers while every element draws `boxes` as its client rects, in the order of the
- *  text, one box or several on a line, as the browser draws an atom in one box for each run of one
- *  direction. happy-dom lays nothing out and gives each element a box of no size at the page's
- *  corner, which the press at (1, 2) is past, so a case of a press inside an atom gives the atom a
- *  line that holds the press. */
+/** What `run` answers while every element draws `boxes` as its client rects: one box or several
+ *  on a line, each line's boxes left to right on the screen, as Chromium gives them. happy-dom
+ *  lays nothing out and gives each element a box of no size at the page's corner, which the press
+ *  at (1, 2) is past, so a case of a press inside an atom gives the atom a line that holds the
+ *  press. */
 function withLines<Answer>(boxes: readonly DOMRect[], run: () => Answer): Answer {
   const lines = spyOn(HTMLElement.prototype, "getClientRects").mockImplementation(
     () => boxes as unknown as DOMRectList
@@ -83,25 +83,32 @@ const HTML_ATOM = '<span data-row-written="" data-type="html">&lt;name&gt;</span
 const KEPT = `<p>Kept by ${HTML_ATOM}${AFTER}</p>`;
 const BROKEN = "<p>Line one.<br>Line two, then the rest.</p>";
 
+const CITED = "dispatch://CORE-2";
+/** A reference drawn by its target's key and title, and words that it ends. */
+const REFERENCE = `<a data-row-reference="${CITED}" data-row-written="${CITED}" href="/CORE-2"><span>CORE-2</span> The other issue</a>`;
+const ENDS_IN_REFERENCE = `<p>Read ${REFERENCE}</p>`;
+const MENTIONED = "dispatch://CORE-1/spec#b-r2";
+/** A mention drawn as a chip by its block's words, and words that it ends. */
+const MENTION = `<a data-row-chip="" data-row-reference="${MENTIONED}" data-row-written="${MENTIONED}" href="/CORE-1/spec#b-r2">The other statement</a>`;
+const ENDS_IN_MENTION = `<p>Read ${MENTION}</p>`;
+
 test("a press after a reference counts it as its text wrote it, once for all its words", () => {
-  const cited = "dispatch://CORE-2";
-  const html = `<p>Read <a data-row-reference="${cited}" data-row-written="${cited}" href="/CORE-2"><span>CORE-2</span> The other issue</a>${AFTER}</p>`;
+  const html = `<p>Read ${REFERENCE}${AFTER}</p>`;
   expect(pressIn(html, AFTER, 3)).toEqual({
     x: 1,
     y: 2,
-    offset: "Read ".length + cited.length + 3,
-    word: [`${cited} `, "first,", " then", 2],
+    offset: "Read ".length + CITED.length + 3,
+    word: [`${CITED} `, "first,", " then", 2],
   });
 });
 
 test("a press after a mention counts it as its text wrote it", () => {
-  const cited = "dispatch://CORE-1/spec#b-r2";
-  const html = `<p>Read <a data-row-chip="" data-row-reference="${cited}" data-row-written="${cited}" href="/CORE-1/spec#b-r2">The other statement</a>${AFTER}</p>`;
+  const html = `<p>Read ${MENTION}${AFTER}</p>`;
   expect(pressIn(html, AFTER, 3)).toEqual({
     x: 1,
     y: 2,
-    offset: "Read ".length + cited.length + 3,
-    word: [`${cited} `, "first,", " then", 2],
+    offset: "Read ".length + MENTIONED.length + 3,
+    word: [`${MENTIONED} `, "first,", " then", 2],
   });
 });
 
@@ -200,9 +207,10 @@ function noteAndHtml(direction?: "ltr" | "rtl"): string {
   return `<p${style}>${NOTE}${HTML_ATOM}</p>`;
 }
 
-/** A press at `at`, (1, 2) where none is given, that the browser answers `offset` characters into
- *  the text of the last atom `paragraph` draws. */
-function pressInLastAtom(
+/** A press at `at`, (1, 2) where none is given, that the browser answers in the last marked
+ *  element `paragraph` draws, at `offset` into its last text: a place inside an atom, or inside a
+ *  reference's link. */
+function pressInLastMark(
   paragraph: string,
   offset: number,
   at?: readonly [number, number]
@@ -210,8 +218,12 @@ function pressInLastAtom(
   return pressAt(
     paragraph,
     (words) => {
-      const atom = words.firstElementChild?.lastElementChild ?? words;
-      return [atom.firstChild ?? atom, offset];
+      const marks = words.querySelectorAll("[data-row-written]");
+      const mark = marks[marks.length - 1] ?? words;
+      const walker = document.createTreeWalker(mark, NodeFilter.SHOW_TEXT);
+      let text: Node | null = null;
+      for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) text = node;
+      return [text ?? mark, offset];
     },
     at
   );
@@ -228,14 +240,12 @@ test("a press past an atom that ends the words says the caret goes after it", ()
       pastAtom: true,
     });
   }
-  const cited = "dispatch://CORE-2";
-  const reference = `<a data-row-reference="${cited}" data-row-written="${cited}" href="/CORE-2"><span>CORE-2</span> The other issue</a>`;
-  const past = pressAt(`<p>Read ${reference}</p>`, paragraphEnd);
+  const past = pressAt(ENDS_IN_REFERENCE, paragraphEnd);
   expect(past).toEqual({
     x: 1,
     y: 2,
-    offset: "Read ".length + cited.length,
-    word: ["Read ", cited, "", cited.length],
+    offset: "Read ".length + CITED.length,
+    word: ["Read ", CITED, "", CITED.length],
   });
   expect(past.next).toBeUndefined();
 });
@@ -259,15 +269,16 @@ test("a press inside an atom that ends the words goes before it", () => {
 // words does, or at the start of the text after it where text follows on the next line. A point on
 // that line's end, inside the line or on a line of the atom before its last stays inside the atom,
 // at its start. The end is the line's right edge where the atom runs left to right, and its left
-// edge where it runs right to left. A reference is text the editor holds, so a place inside one
-// stays there, and neither that place nor one in the text after an atom reads a line of the atom.
+// edge where it runs right to left. A reference is text the editor holds, and a place inside one
+// is read by its last line too: a point past the end of that line goes after the reference's
+// words as the editor holds them. A place in the text after an atom reads no line of the atom.
 // happy-dom lays nothing out, so each case gives the atom's lines, placed from the press at
 // (1, 2).
 test("a press the browser answers inside an atom, past the end of its last line, says the caret goes after it", () => {
   const after: CaretAt = { ...AT_NOTE_END, pastAtom: true };
   // A press the browser answers at the end of the text of the last atom `paragraph` draws, as
   // Chromium answers a point past inline HTML that ends a line.
-  const pressPast = (paragraph: string) => pressInLastAtom(paragraph, "<name>".length);
+  const pressPast = (paragraph: string) => pressInLastMark(paragraph, "<name>".length);
   let line = new DOMRect();
   let earlier: DOMRect | undefined;
   const lines = spyOn(HTMLElement.prototype, "getClientRects").mockImplementation(
@@ -313,14 +324,12 @@ test("a press the browser answers inside an atom, past the end of its last line,
     // reference's link, goes after the reference's words as the editor holds them; a place in the
     // text after an atom reads no line of the atom.
     line = new DOMRect(-60, -8, 60, 20);
-    const cited = "dispatch://CORE-2";
     const title = " The other issue";
-    const reference = `<a data-row-reference="${cited}" data-row-written="${cited}" href="/CORE-2"><span>CORE-2</span>${title}</a>`;
-    expect(pressIn(`<p>Read ${reference}</p>`, title, title.length)).toEqual({
+    expect(pressIn(ENDS_IN_REFERENCE, title, title.length)).toEqual({
       x: 1,
       y: 2,
-      offset: "Read ".length + cited.length,
-      word: ["Read ", cited, "", cited.length],
+      offset: "Read ".length + CITED.length,
+      word: ["Read ", CITED, "", CITED.length],
     });
     lines.mockClear();
     expect(pressIn(KEPT, AFTER, 3)).toEqual({
@@ -341,33 +350,6 @@ function noteEnd(x: number, y: number, pastAtom?: true): CaretAt {
   return pastAtom === undefined ? { ...AT_NOTE_END, x, y } : { ...AT_NOTE_END, pastAtom, x, y };
 }
 
-/** A press at `at` that the browser answers in the last marked element `paragraph` draws, at
- *  `offset` into its last text: a place inside an atom, or inside a reference's link. */
-function pressInLastMark(
-  paragraph: string,
-  offset: number,
-  at: readonly [number, number]
-): CaretAt {
-  return pressAt(
-    paragraph,
-    (words) => {
-      const marks = words.querySelectorAll("[data-row-written]");
-      const mark = marks[marks.length - 1] ?? words;
-      const walker = document.createTreeWalker(mark, NodeFilter.SHOW_TEXT);
-      let text: Node | null = null;
-      for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) text = node;
-      return [text ?? mark, offset];
-    },
-    at
-  );
-}
-
-const CITED = "dispatch://CORE-2";
-/** A reference that ends the words, drawn by its target's key and title. */
-const ENDS_IN_REFERENCE = `<p>Read <a data-row-reference="${CITED}" data-row-written="${CITED}" href="/CORE-2"><span>CORE-2</span> The other issue</a></p>`;
-const MENTIONED = "dispatch://CORE-1/spec#b-r2";
-/** A mention that ends the words, drawn as a chip by its block's words. */
-const ENDS_IN_MENTION = `<p>Read <a data-row-chip="" data-row-reference="${MENTIONED}" data-row-written="${MENTIONED}" href="/CORE-1/spec#b-r2">The other statement</a></p>`;
 /** A press past a reference or a mention that ends the words: after its words as written. */
 function afterWritten(written: string, x: number, y: number): CaretAt {
   return {
@@ -400,19 +382,19 @@ test("a press around each inline kind is read by the line it is on, in the boxes
     [
       "inline HTML, inside it, at 1440 px",
       [new DOMRect(578, 447, 58, 19)],
-      () => pressInLastAtom(html, 2, [607, 457]),
+      () => pressInLastMark(html, 2, [607, 457]),
       noteEnd(607, 457),
     ],
     [
       "inline HTML, past the end of the words, at 1440 px",
       [new DOMRect(678, 495, 58, 19)],
-      () => pressInLastAtom(html, end, [756, 505]),
+      () => pressInLastMark(html, end, [756, 505]),
       noteEnd(756, 505, true),
     ],
     [
       "inline HTML, past the end of the words, at 390 px",
       [new DOMRect(170, 489, 58, 19)],
-      () => pressInLastAtom(html, end, [248, 499]),
+      () => pressInLastMark(html, end, [248, 499]),
       noteEnd(248, 499, true),
     ],
     [
