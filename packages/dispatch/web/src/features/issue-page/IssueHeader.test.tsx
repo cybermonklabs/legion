@@ -24,7 +24,7 @@ import { answerIssuePatches } from "../../__tests__/send-answers";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api, NetworkError } from "../../api/client";
-import { issueQuery } from "../../api/queries";
+import { issueQuery, issueTreeKey } from "../../api/queries";
 import type {
   ArtifactReview,
   Ask,
@@ -457,6 +457,19 @@ test("the header's count carries + over Conversation's paged read, and counts th
   const count = () => screen.getByTestId("issue-whose-turn").textContent;
 
   try {
+    // The count is read over Conversation's answer, so the case waits until that read has
+    // answered and the header has drawn it: before it does, the count carries "+" for the read
+    // it does not hold yet (decision 586 (C)), whatever it counts.
+    await waitFor(() =>
+      expect(
+        queryClient
+          .getQueryCache()
+          .findAll({ queryKey: issueTreeKey(issue.key) })
+          .some((query) => query.state.data !== undefined),
+        "Conversation's read of the issue answered"
+      ).toBe(true)
+    );
+    await waitInAct(20);
     await waitFor(() =>
       expect(count(), "the count over a read that names a next page").toBe("Waiting on you (1+)")
     );
