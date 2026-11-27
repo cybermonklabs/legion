@@ -15,7 +15,7 @@ import { useEventFeed, WHOLE_CACHE_REFRESH_MS } from "../api/event-feed";
 import { liveSocketFor } from "../api/live-socket";
 import { DispatchQueryClient } from "../api/query-client";
 import type { AuthenticatedUser, DispatchEvent, LiveServerFrame } from "../api/types";
-import { credentialGrantsQuery } from "../features/credentials/grants";
+import { credentialGrantsQuery } from "../features/credentials/logic/grants";
 import { credentialPendingQuery } from "../features/credentials/pending";
 import { quietConsoleError } from "./act-warnings";
 import { realClock, tick } from "./fake-clock";

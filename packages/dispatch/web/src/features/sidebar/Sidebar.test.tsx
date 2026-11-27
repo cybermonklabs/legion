@@ -124,7 +124,14 @@ function renderRail({
 
 /** A project Dispatch lists, with no open ask. */
 function project(key: string): Project {
-  return { created_at: "2026-11-01T00:00:00Z", gated_steps: null, key, name: key, open_asks: 0 };
+  return {
+    created_at: "2026-11-01T00:00:00Z",
+    gated_steps: null,
+    key,
+    name: key,
+    open_asks: 0,
+    proven_sessions: false,
+  };
 }
 
 /** Where each of the rail's links goes, in the order the rail draws them. */

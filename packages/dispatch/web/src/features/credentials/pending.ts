@@ -3,7 +3,7 @@ import { type Query, type QueryClient, queryOptions, useQuery } from "@tanstack/
 import { api, isCredentialFeatureOff, isDeploymentReadRefused } from "../../api/client";
 import type { CredentialPendingResponse, CredentialPendingRow } from "../../api/types";
 import { useRestrictedMember } from "../../hooks/useRestrictedMember";
-import { credentialGrantsQuery } from "./grants";
+import { credentialGrantsQuery } from "./logic/grants";
 
 /** How long a credential request may sit unseen on an open tab before the poll below notices it:
  *  short enough that an approver waiting on it never feels the wait, long enough that one GET a
