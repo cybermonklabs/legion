@@ -363,11 +363,10 @@ func firstWorkerEvent(issue *Issue) (time.Time, bool) {
 // the work time in phase time (dispatch://INFRA-1077/spec#b-8b535995-9f2e-415e-9db6-ce1ff5977645):
 // "An hour that work time to merge leaves out is on no bar of phase time ... So the bars of an
 // issue add up to its work time, and the two cards agree"). Each bar takes the phases it holds, so
-// the seven are a partition of the work time: the
-// timeline leaves no hour between two phases (the spec's "Phase boundaries before observations"),
-// and every phase an issue can be in is on one of the seven bars but `queued` and `done`, the
-// queue and the time out of the workflow before the close, whose hours the work time leaves out
-// (queuedSpans, outOfWorkflowSpans).
+// the seven are a partition of the work time: the timeline leaves no hour between two phases (the
+// spec's "Phase boundaries before observations"), and every phase an issue can be in is on one of
+// the seven bars but `queued` and `done`, the queue and the time out of the workflow before the
+// close, whose hours the work time leaves out (queuedSpans, outOfWorkflowSpans).
 //
 // A bar's spans are the issue's bar spans (barSpansOf) in the phases the bar holds. HoldsHours
 // is whether there are any, which is what a bar's issue count counts, kept apart from Hours
@@ -406,9 +405,9 @@ func (c *computation) reworkOf(issue *Issue) reworkRow {
 	return row
 }
 
-// slotWaitHours is the issue's slot wait (dispatch://INFRA-2916, D3): "the hours of the issue's
+// slotWaitHours is the issue's slot wait (dispatch://INFRA-2916, D3): the hours of the issue's
 // observed life in which its phase is `admitted` and it holds no slot, over the whole life, with
-// hours in backlog or icebox left out".
+// the hours in backlog or icebox left out.
 //
 // The phase is the observed one alone, the timeline the sampler's own `phase` observations draw
 // (sampledPhases), whose `queued` stretches are the admitted hours in which the issue held no
@@ -423,10 +422,11 @@ func (c *computation) slotWaitHours(issue *Issue, sampled []PhaseSpan) float64 {
 	return hours(totalOf(subtract(waited, c.population.backlogSpans(issue))))
 }
 
-// idleByRole is the issue's idle hours by role (dispatch://INFRA-2916, D3): for role R, "the hours
-// of the issue's worked spans (life − backlog or icebox − queued) in which the issue holds its own slot, its
-// observed phase is in R's bar ..., and R's newest observed claim state is not `working` (no claim
-// counts as not working)". Each of the six roles has an entry, zero where no hour qualifies.
+// idleByRole is the issue's idle hours by role (dispatch://INFRA-2916, D3): for role R, the hours
+// of the issue's worked spans (life, less the hours in backlog or icebox and the hours queued) in
+// which the issue holds its own slot, its observed phase is in R's bar, and R's newest observed
+// claim state is not `working` (no claim counts as not working). Each of the six roles has an
+// entry, zero where no hour qualifies.
 //
 // The worked spans are the ones the work time counts (workedSpansOf), which leave out the hours
 // out of the workflow before the close as well (outOfWorkflowSpans). The slot is the issue's own

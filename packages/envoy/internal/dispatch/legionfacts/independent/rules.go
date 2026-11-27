@@ -61,7 +61,7 @@ const (
 	fieldTree      = "tree"
 )
 
-// backlogStatuses are the statuses for backlog or icebox, whose time the work time leaves out.
+// backlogStatuses are backlog and icebox, the statuses whose time the work time leaves out.
 var backlogStatuses = []string{"backlog", "icebox"}
 
 // The parts an issue's hours are shared out over beside the phase table: the hours an ask held,
@@ -224,11 +224,12 @@ func (r *reading) personStretches(key string) []span {
 }
 
 // childrenStretches is when the issue was waiting on its children: "the issue is a root with a
-// child in a phase from planning to awaiting merge", each child counted "only during its own
-// work time, as work time to merge defines it: not while it is in backlog or icebox, back in the queue, or
-// before its first worker event". The child's work time leaves out its hours out of the workflow
-// as well, so a root waits on a child through none of them (9f994275a7). An issue that is not its
-// tree's root waits on no children.
+// child in a phase from planning to awaiting merge", each child counted only during its own work
+// time as work time to merge defines it, so never while it is in backlog or icebox, back in the
+// queue, or before its first worker event (the spec's rule of when a child makes its root wait on
+// children, dispatch://INFRA-1077/spec#b-b9aae78c-0d9c-4a57-aa0c-9015502f0a51). The child's work
+// time leaves out its hours out of the workflow as well, so a root waits on a child through none
+// of them (9f994275a7). An issue that is not its tree's root waits on no children.
 func (r *reading) childrenStretches(key string) []span {
 	if r.rootOf(key) != key {
 		return nil
@@ -264,10 +265,10 @@ func (r *reading) reviewRounds(key string) int {
 	return rounds
 }
 
-// workedOf is the issue's work time: its life from its first worker event to its close — or to
-// the moment of the computation while it is open — less the time it sat in backlog or icebox, the time it sat
-// in the queue and the time it was out of the workflow (outOfWorkflow). An issue no Legion role
-// ever worked has no work time at all.
+// workedOf is the issue's work time: its life from its first worker event to its close — or to the
+// moment of the computation while it is open — less the time it sat in backlog or icebox, the time
+// it sat in the queue and the time it was out of the workflow (outOfWorkflow). An issue no Legion
+// role ever worked has no work time at all.
 func (r *reading) workedOf(key string) []span {
 	if held, measured := r.worked[key]; measured {
 		return held
@@ -290,13 +291,14 @@ func (r *reading) workedOf(key string) []span {
 }
 
 // outOfWorkflow is when the issue was out of the workflow before its close, which the work time
-// leaves out as it leaves out time in backlog or icebox, so no part holds it (dispatch://INFRA-1077's spec version 50,
-// "Out of the workflow before the close", 9f994275a7): "With observations, that is every stretch
-// whose observed phase is `done` before the close ... Before observations, it is the stretch from
-// an `issue.closed` that a reopen follows, or from a `triage` status write, to the next status
-// write." The sampler's part of the timeline gives the first, and the statuses its event log's
-// part covers give the second. The close is the issue's last move to `done`, so the `done` its
-// status history ends with, and any snapshot of it after, is the close and no stretch.
+// leaves out as it leaves out time in backlog or icebox, so no part holds it
+// (dispatch://INFRA-1077's spec version 50, "Out of the workflow before the close", 9f994275a7):
+// "With observations, that is every stretch whose observed phase is `done` before the close ...
+// Before observations, it is the stretch from an `issue.closed` that a reopen follows, or from a
+// `triage` status write, to the next status write." The sampler's part of the timeline gives the
+// first, and the statuses its event log's part covers give the second. The close is the issue's
+// last move to `done`, so the `done` its status history ends with, and any snapshot of it after,
+// is the close and no stretch.
 func (r *reading) outOfWorkflow(key string) []span {
 	held := r.population.issues[key]
 	end := held.end(r.population.window)
@@ -423,9 +425,9 @@ func (r *reading) observedPhases(key string) []phaseSpan {
 // read that no longer carried the issue's phase, which the sampler writes when the daemon stops
 // reporting the issue: it names no phase and ends none, so the phase before it runs on through it
 // to the next row that names one, or to the issue's end (the spec's rule on hours out of the work
-// time in phase time, dispatch://INFRA-1077/spec#b-8b535995-9f2e-415e-9db6-ce1ff5977645, which
-// the base reads so since 22bd759ecb). Both readers of the rows take them from
-// here, the timeline (observedPhases) and the recorded wait on a person (personStretches).
+// time in phase time, dispatch://INFRA-1077/spec#b-8b535995-9f2e-415e-9db6-ce1ff5977645, which the
+// base reads so since 22bd759ecb). Both readers of the rows take them from here, the timeline
+// (observedPhases) and the recorded wait on a person (personStretches).
 func phaseMarks(marks []mark) []mark {
 	var named []mark
 	for _, recorded := range marks {

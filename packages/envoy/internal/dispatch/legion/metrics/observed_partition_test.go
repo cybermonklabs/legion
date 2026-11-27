@@ -9,9 +9,9 @@ import (
 
 // TestTheSevenBarsPartitionTheWorkTimeOnAnObservedTimeline: the spec's rule on hours out of the
 // work time in phase time (dispatch://INFRA-1077/spec#b-8b535995-9f2e-415e-9db6-ce1ff5977645) ends
-// "So the bars of an issue add up to its work time, and the two cards agree",
-// and the whole of metric 2 rests on it — a reader of legion-phase-time reads the seven bars
-// beside legion-work-time's work time.
+// "So the bars of an issue add up to its work time, and the two cards agree", and the whole of
+// metric 2 rests on it — a reader of legion-phase-time reads the seven bars beside
+// legion-work-time's work time.
 //
 // dispatch://INFRA-979's corpus cannot check that invariant on the observed timeline. Every one of
 // its 289 finished issues carries a single trailing `done` mark, so every timeline the A2
@@ -134,7 +134,7 @@ func TestTheSevenBarsPartitionTheWorkTimeOnTheFallbackTimeline(t *testing.T) {
 				statusAt(hour(12), "done"),
 		},
 		{
-			name: "moved to backlog twice",
+			name: "moved to backlog, then to icebox",
 			issue: newIssue("INFRA-4").worked("implementer", hour(0)).closedAt(hour(12)).
 				statusAt(hour(0), "in_progress").statusAt(hour(2), "backlog").
 				statusAt(hour(4), "in_progress").statusAt(hour(7), "icebox").

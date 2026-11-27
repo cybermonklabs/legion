@@ -7,12 +7,12 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/legion"
 )
 
-// TestSlotWaitCountsTheObservedAdmittedHoursWithNoSlotOverTheWholeLife: slot wait is "the hours of
-// the issue's observed life in which its phase is `admitted` and it holds no slot, over the whole
-// life, with hours in backlog or icebox left out" (dispatch://INFRA-2916, D3). Each issue below
-// stands admitted for a while: one with no slot through the first part of it and in backlog for an
-// hour of that part,
-// before its first worker event; one holding a slot the whole time; and one the sampler never saw.
+// TestSlotWaitCountsTheObservedAdmittedHoursWithNoSlotOverTheWholeLife: slot wait
+// (dispatch://INFRA-2916, D3) is the hours of the issue's observed life in which its phase is
+// `admitted` and it holds no slot, over the whole life, with the hours in backlog or icebox left
+// out. Each issue below stands admitted for a while: one with no slot through the first part of it
+// and in backlog for an hour of that part, before its first worker event; one holding a slot the
+// whole time; and one the sampler never saw.
 func TestSlotWaitCountsTheObservedAdmittedHoursWithNoSlotOverTheWholeLife(t *testing.T) {
 	// Created at hour -4, admitted from hour -3 with no slot until it takes one at hour 1, in
 	// backlog from hour -2 to hour -1, its architect's first event at hour 0, planning from hour 5.
@@ -64,9 +64,10 @@ func TestSlotWaitCountsTheObservedAdmittedHoursWithNoSlotOverTheWholeLife(t *tes
 }
 
 // TestIdleByRoleCountsTheHoursAnIssueHeldItsOwnSlotInARolesBarWithThatRoleOutOfATurn: for role R,
-// idle time is "the hours of the issue's worked spans (life − backlog or icebox − queued) in which the issue
-// holds its own slot, its observed phase is in R's bar ..., and R's newest observed claim state
-// is not `working` (no claim counts as not working)" (dispatch://INFRA-2916, D3).
+// idle time (dispatch://INFRA-2916, D3) is the hours of the issue's worked spans (life, less the
+// hours in backlog or icebox and the hours queued) in which the issue holds its own slot, its
+// observed phase is in R's bar, and R's newest observed claim state is not `working` (no claim
+// counts as not working).
 //
 // The root holds its own slot through its whole life and walks through four bars. Each role's
 // claim history is one of the cases the rule names: the architect works an hour of its two of
