@@ -16,7 +16,7 @@ const scanned = scannedRoutes.length;
 const snapshots = shotRoutes.length * 2;
 
 describe("the review layers' route list", () => {
-  // `/issues/:key/*` is one router route that nine entries stand for, so a router route needs
+  // `/issues/:key/*` is one router route that ten entries stand for, so a router route needs
   // one entry and not one each, which is why this counts the patterns covered rather than the
   // entries written.
   test("covers every route of the router, reviewed or excluded with a reason", () => {

@@ -60,10 +60,12 @@
 # restore-stored), so each cell skips the run, counts it among its scored runs and its launches,
 # and numbers its next run after it. A run the store does not hold is not counted, so a Job that
 # restarts can launch more than three times a cell's count in all. A restore that fails ends the
-# Job. At download, `rig.sh check-stored <the download> <the Job's logs>...` compares each object
-# with the sha256 the logs and its row name: a run whose object differs, is missing, or holds a
-# member that is no regular file or directory is a rig error naming the object. Without RT_STORE,
-# the Job prints each run's row in its log and keeps no run after the pod.
+# Job. At download, `rig.sh check-stored <the download> <the Job's logs>...`
+# compares each object with the sha256 the logs and its row name: a run whose object differs, is
+# missing, or holds a member that is no regular file or directory is a rig error naming the
+# object, an entry of the download that is no run's object is named, and a cell short of the count
+# the Job's own cell line names for that case reads UNKNOWN; each exits 1. Without RT_STORE, the Job prints each run's row in its
+# log and keeps no run after the pod.
 set -euo pipefail
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
 root=$(cd "$here/../../../.." && pwd -P)

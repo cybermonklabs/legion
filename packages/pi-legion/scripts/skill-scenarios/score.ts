@@ -28,9 +28,11 @@
 //     rig error), which it also prints as one line of JSON. A rig error takes away the run's
 //     score.json and judge-input.md. Run it again once judgment.json is written: it reads the
 //     verdicts. Exit 0 for either row; 2 for a name of no scored scenario's run.
-//   score.ts cells <runs dir> <scenario>
+//   score.ts cells <runs dir> <scenario> [<counts json>]
 //     Each cell of the scenario's runs (scored-runs.ts cells), one CellLine of JSON a line, from
-//     each run's row.json and world.json; stderr names each run that is in no cell.
+//     each run's row.json and world.json; stderr names each run that is in no cell. The counts are
+//     an object of `<label>\t<case>` to the count that batch ran that cell to; a control form's
+//     cell keeps its own.
 //   score.ts cell <runs dir> <scenario> <stage> <label> <case> <count>
 //     The one line of the cell of <case> under <label> (scored-runs.ts caseCell), which rig.sh cell
 //     prints: a case form's at <count>, and a control form's the control's own over every owner,
@@ -3845,6 +3847,23 @@ function scoreScoredRun(runsDir: string, name: string): void {
   console.log(text);
 }
 
+/** Every scenario score.ts scores: the name a run's directory starts with. The scorers map below
+ * is keyed by this list, so the two cannot drift, and the command line refuses any other name
+ * rather than printing an empty table of it. */
+const SCENARIOS = [
+  "ask-on-message",
+  "measure-before-ask",
+  "tester-proof",
+  "brainstorm",
+  "askgate",
+  "spec-writing",
+  "spec-rewrite",
+  "reviewer-own-head",
+  "reviewer-pass-and-fail",
+  "architect-pass-and-fail",
+  "ci-pass-and-fail",
+] as const;
+
 function scoreRuns(runsDir: string, only: string | undefined) {
   const rows: Row[] = [];
   const errors: { run: string; key: string; reason: string }[] = [];
@@ -3863,34 +3882,36 @@ function scoreRuns(runsDir: string, only: string | undefined) {
   const reach = checkouts(path.dirname(runsDir));
   // Each scenario's scorer, keyed by the name its runs' directories start with. An askgate, a
   // reviewer-own-head or a ci-pass-and-fail run's case comes from its directory (CASED_RUNS).
-  const scorers: Record<string, (dir: string, run: string, label: string, dirCase: string) => Row> =
-    {
-      "ask-on-message": askOnMessage,
-      "measure-before-ask": measureBeforeAsk,
-      "tester-proof": (dir, run, label) => testerProof(dir, run, label, heads),
-      brainstorm: brainstormSurface,
-      askgate: askgateReview,
-      "spec-writing": (dir, run, label) => specRow(dir, run, "spec-writing", label, reach),
-      "spec-rewrite": (dir, run, label) => specRow(dir, run, "spec-rewrite", label, reach),
-      "reviewer-own-head": (dir, run, label, dirCase) =>
-        headsReview(dir, run, label, dirCase, "reviewer-own-head"),
-      "reviewer-pass-and-fail": (dir, run, label) =>
-        headsReview(dir, run, label, "", "reviewer-pass-and-fail"),
-      "architect-pass-and-fail": (dir, run, label) =>
-        headsArchitect(dir, run, label, "architect-pass-and-fail"),
-      "ci-pass-and-fail": (dir, run, label, role) =>
-        role === "reviewer"
-          ? headsReview(dir, run, label, "", "ci-pass-and-fail")
-          : role === "tester"
-            ? headsTester(dir, run, label)
-            : headsArchitect(dir, run, label, "ci-pass-and-fail:architect"),
-    };
+  const scorers: Record<
+    (typeof SCENARIOS)[number],
+    (dir: string, run: string, label: string, dirCase: string) => Row
+  > = {
+    "ask-on-message": askOnMessage,
+    "measure-before-ask": measureBeforeAsk,
+    "tester-proof": (dir, run, label) => testerProof(dir, run, label, heads),
+    brainstorm: brainstormSurface,
+    askgate: askgateReview,
+    "spec-writing": (dir, run, label) => specRow(dir, run, "spec-writing", label, reach),
+    "spec-rewrite": (dir, run, label) => specRow(dir, run, "spec-rewrite", label, reach),
+    "reviewer-own-head": (dir, run, label, dirCase) =>
+      headsReview(dir, run, label, dirCase, "reviewer-own-head"),
+    "reviewer-pass-and-fail": (dir, run, label) =>
+      headsReview(dir, run, label, "", "reviewer-pass-and-fail"),
+    "architect-pass-and-fail": (dir, run, label) =>
+      headsArchitect(dir, run, label, "architect-pass-and-fail"),
+    "ci-pass-and-fail": (dir, run, label, role) =>
+      role === "reviewer"
+        ? headsReview(dir, run, label, "", "ci-pass-and-fail")
+        : role === "tester"
+          ? headsTester(dir, run, label)
+          : headsArchitect(dir, run, label, "ci-pass-and-fail:architect"),
+  };
   const name = new RegExp(`^(${Object.keys(scorers).join("|")})-(.+)-(\\d+)$`);
   // Runs SKILL_SCENARIOS_FIXTURE_ONLY stopped before their agent: built, and not scored.
   const fixtureOnly: string[] = [];
   for (const run of existsSync(runsDir) ? readdirSync(runsDir).sort() : []) {
     const match = name.exec(run);
-    const score = scorers[match?.[1] ?? ""];
+    const score = scorers[(match?.[1] ?? "") as (typeof SCENARIOS)[number]];
     if (!match || !score) continue;
     const [, scenario = "", named = ""] = match;
     if (only && scenario !== only) continue;
@@ -4030,13 +4051,62 @@ if (import.meta.main) {
   const [command, ...rest] = Bun.argv.slice(2);
   if (command === "live-read" && rest.length === 3) {
     liveRead(rest[0] ?? "", rest[1] ?? "", rest[2] ?? "");
-  } else if (command === "runs" && rest.length === 3 && rest[1] === "--run") {
+  } else if (command === "runs" && rest[1] === "--run") {
+    // `--run` with no name read the whole directory and printed an empty table at exit 0, as an
+    // unknown scenario and a surplus argument did: `cell` refuses each of those, and these are
+    // its siblings, so they refuse too.
+    if (rest.length !== 3 || (rest[2] ?? "") === "") {
+      console.error("score.ts: runs --run takes one run's name: runs <runs dir> --run <name>");
+      process.exit(2);
+    }
     scoreScoredRun(rest[0] ?? "", rest[2] ?? "");
   } else if (command === "runs" && rest.length >= 1) {
+    if (rest.length > 2) {
+      console.error(
+        `score.ts: runs takes a runs directory and at most one scenario, not ${rest.length} arguments`
+      );
+      process.exit(2);
+    }
+    if (rest[1] !== undefined && !SCENARIOS.includes(rest[1] as (typeof SCENARIOS)[number])) {
+      console.error(
+        `score.ts: '${rest[1]}' is no scenario score.ts scores (${SCENARIOS.join(", ")})`
+      );
+      process.exit(2);
+    }
     scoreRuns(rest[0] ?? "", rest[1]);
-  } else if (command === "cells" && rest.length === 2) {
+  } else if (command === "cells" && (rest.length === 2 || rest.length === 3)) {
+    // The counts of `<label>\t<case>` keys, as JSON: rig.sh check-stored reads them from the Job's
+    // own cell lines, one count a case, since a Job runs each case to its form's runs. Anything
+    // else is refused with exit 2, as `cell`'s count is: a number, a list, null or the old
+    // `cells <dir> <scenario> <count>` form would otherwise be read as no counts at all, and every
+    // cell would fall back to its stage's runs with nothing said.
+    let counts: Record<string, number> | undefined;
+    if (rest.length === 3) {
+      let given: unknown;
+      try {
+        given = JSON.parse(rest[2] ?? "");
+      } catch {
+        given = undefined;
+      }
+      const ok =
+        typeof given === "object" &&
+        given !== null &&
+        !Array.isArray(given) &&
+        // isSafeInteger, which is CellLine's own bound: isInteger takes 1e300 and
+        // 9007199254740993, and the cell would then fail that bound with a zod dump and exit 1 in
+        // place of this refusal.
+        Object.values(given).every((value) => Number.isSafeInteger(value) && (value as number) > 0);
+      if (!ok) {
+        console.error(
+          `score.ts: the counts ${rest[2]} are no object of <label>\\t<case> to a positive whole number`
+        );
+        process.exit(2);
+      }
+      counts = given as Record<string, number>;
+    }
     try {
-      for (const cell of cells(rest[0] ?? "", rest[1] ?? "")) console.log(JSON.stringify(cell));
+      for (const cell of cells(rest[0] ?? "", rest[1] ?? "", counts))
+        console.log(JSON.stringify(cell));
     } catch (error) {
       console.error(`score.ts: ${error instanceof Error ? error.message : String(error)}`);
       process.exit(1);
@@ -4051,7 +4121,7 @@ if (import.meta.main) {
     }
   } else {
     console.error(
-      "usage: score.ts live-read <run dir> <skills dir> <omp logs dir> | runs <runs dir> [<scenario>] | runs <runs dir> --run <name> | cells <runs dir> <scenario> | cell <runs dir> <scenario> <stage> <label> <case> <count>"
+      "usage: score.ts live-read <run dir> <skills dir> <omp logs dir> | runs <runs dir> [<scenario>] | runs <runs dir> --run <name> | cells <runs dir> <scenario> [<counts json>] | cell <runs dir> <scenario> <stage> <label> <case> <count>"
     );
     process.exit(2);
   }

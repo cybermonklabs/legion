@@ -33,8 +33,8 @@
 # plants the whole list in one world: each right on a ServiceAccount of its own (plant_rights), or
 # each permission through a role of its own on one member (plant_permissions), and holds one run a
 # world to each right's line (want_planted); row bf is two worlds. The rows are in eight files of
-# operator-token-minters/, by concern, each sourced below after the world and its helpers, and
-# each listing its rows in its header:
+# operator-token-minters/, by concern, each listing its rows in its header. After the world and its
+# helpers, each file's rows run in a process of their own, beside the other files' (run_row_file):
 #
 #   - test-rows-run.sh: the run as a whole: a clean world, the permission names, reads that saw
 #     nothing, each step's witness, a refused identity, the admin tag, the report and its fixture,
@@ -60,17 +60,23 @@
 # OPERATOR_MINTERS_SCRIPT names another copy of the script to run them against; a copy keeps the
 # directory operator-token-minters/ beside it, whose parts it sources (the rows files are this
 # test's own, beside it). A row of one plant per item runs up to 8 items at a time, each in a world
-# of its own (each).
+# of its own (each). Up to one row file a core runs at a time, longest first;
+# OPERATOR_MINTERS_TEST_SLOTS names another count. Each file's rows print in the order of the list
+# above once every file has ended, with the seconds the file took.
 # CI runs it in envoy-go-checks (.github/workflows/ci-job-envoy-go-checks.yaml).
 set -euo pipefail
 shopt -s inherit_errexit
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly check="${OPERATOR_MINTERS_SCRIPT:-$script_dir/operator-token-minters.sh}"
-temporary_dir="$(mktemp -d "${TMPDIR:-/tmp}/operator-token-minters-test.XXXXXX")"
-readonly temporary_dir
-trap 'rm -rf "$temporary_dir"' EXIT
-readonly fake_bin="$temporary_dir/bin"
+# test_root holds what every row reads (the fakes, the world each row starts from, the fence's copy
+# of the check) and a directory for each row file's process. temporary_dir is where the running rows
+# write: test_root until the rows start, then each row file's own (run_row_file).
+test_root="$(mktemp -d "${TMPDIR:-/tmp}/operator-token-minters-test.XXXXXX")"
+readonly test_root
+trap 'rm -rf "$test_root"' EXIT
+temporary_dir="$test_root"
+readonly fake_bin="$test_root/bin"
 # world is the world the current row plants in; a row run beside others has one of its own.
 world="$temporary_dir/world"
 mkdir -p "$fake_bin"
@@ -657,23 +663,90 @@ each() {
   [ "$failed" -eq 0 ] || { echo "FAIL: $failed of the $# items of $fn failed" >&2; exit 1; }
 }
 
-# The rows, one file of operator-token-minters/ per concern, as the header lists them.
-# shellcheck source=packages/envoy/infra/scripts/operator-token-minters/test-rows-run.sh
-. "$script_dir/operator-token-minters/test-rows-run.sh"
-# shellcheck source=packages/envoy/infra/scripts/operator-token-minters/test-rows-code.sh
-. "$script_dir/operator-token-minters/test-rows-code.sh"
-# shellcheck source=packages/envoy/infra/scripts/operator-token-minters/test-rows-rbac.sh
-. "$script_dir/operator-token-minters/test-rows-rbac.sh"
-# shellcheck source=packages/envoy/infra/scripts/operator-token-minters/test-rows-iam.sh
-. "$script_dir/operator-token-minters/test-rows-iam.sh"
-# shellcheck source=packages/envoy/infra/scripts/operator-token-minters/test-rows-pool.sh
-. "$script_dir/operator-token-minters/test-rows-pool.sh"
-# shellcheck source=packages/envoy/infra/scripts/operator-token-minters/test-rows-admission.sh
-. "$script_dir/operator-token-minters/test-rows-admission.sh"
-# shellcheck source=packages/envoy/infra/scripts/operator-token-minters/test-rows-become.sh
-. "$script_dir/operator-token-minters/test-rows-become.sh"
-# shellcheck source=packages/envoy/infra/scripts/operator-token-minters/test-rows-fence.sh
-. "$script_dir/operator-token-minters/test-rows-fence.sh"
+# --- The rows. ---
 
+# The row files of operator-token-minters/, test-rows-<name>.sh, in the header's reading order, which
+# is the order their rows print in.
+readonly row_files=(run code rbac iam pool admission become fence)
+# The same files longest first, the order their processes start in, so a file started last is not
+# the one the run waits for. The seconds are what each file's rows took in envoy-go-checks job
+# 140612446150 (artifact harness-times-140612446150), where the whole test took 475.0 s in one
+# process: rbac 109, run 101, iam 88, pool 58, fence 47, admission 45, code 17, become 9.
+readonly row_file_schedule=(rbac run iam pool fence admission code become)
+on_disk=("$script_dir"/operator-token-minters/test-rows-*.sh)
+on_disk=("${on_disk[@]##*/test-rows-}")
+on_disk=("${on_disk[@]%.sh}")
+if [ "$(printf '%s\n' "${row_files[@]}" | sort)" != "$(printf '%s\n' "${row_file_schedule[@]}" | sort)" ] ||
+  [ "$(printf '%s\n' "${row_files[@]}" | sort)" != "$(printf '%s\n' "${on_disk[@]}" | sort)" ]; then
+  echo "FAIL: the row files in reading order (${row_files[*]}), in start order (${row_file_schedule[*]}) and on disk (${on_disk[*]}) differ" >&2
+  exit 1
+fi
+slots="${OPERATOR_MINTERS_TEST_SLOTS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)}"
+[[ $slots =~ ^[1-9][0-9]*$ ]] || {
+  echo "FAIL: OPERATOR_MINTERS_TEST_SLOTS is $slots, which is no count of row files to run at a time" >&2
+  exit 2
+}
+
+# now_ms: the clock in milliseconds. A `date` with no %N, which is BSD's, gives whole seconds, so a
+# file's time is read in seconds there rather than failing the arithmetic below.
+now_ms() {
+  local now
+  now=$(date +%s%3N)
+  [[ $now =~ ^[0-9]+$ ]] || now=$(($(date +%s) * 1000))
+  printf '%s\n' "$now"
+}
+# run_row_file NAME: test-rows-NAME.sh's rows in a process of their own, which writes only under a
+# directory of its own (its temporary_dir, holding its world), so no row reads a file another
+# file's rows wrote; what they print, how many passed, the process's exit and its milliseconds go to
+# files of its own under test_root. The process runs under set -e, as `each` runs an item: a
+# subshell an `||` tested would run with it off. A row file's rows set variables of any name at its
+# top level (test-rows-rbac.sh reads a `name` there), so the file the count goes to is named, and
+# made readonly, before they run.
+run_row_file() {
+  local name="$1" started
+  started=$(now_ms)
+  set +e
+  (
+    set -e
+    readonly passed_file="$test_root/rows-$name.passed"
+    temporary_dir="$test_root/rows-$name"
+    world="$temporary_dir/world"
+    rows=0
+    mkdir "$temporary_dir"
+    # shellcheck source=/dev/null # operator-token-minters/test-rows-NAME.sh, one of row_files
+    . "$script_dir/operator-token-minters/test-rows-$name.sh"
+    echo "$rows" >"$passed_file"
+  ) >"$test_root/rows-$name.out" 2>"$test_root/rows-$name.err"
+  echo "$?" >"$test_root/rows-$name.status"
+  echo "$(($(now_ms) - started))" >"$test_root/rows-$name.ms"
+}
+running=0
+for name in "${row_file_schedule[@]}"; do
+  if [ "$running" -ge "$slots" ]; then
+    wait -n || true
+    running=$((running - 1))
+  fi
+  run_row_file "$name" &
+  running=$((running + 1))
+done
+wait
+
+# Each file's output whole, in reading order. A file's process that did not exit 0 with its count
+# of passed rows written as its last act failed, whatever it printed.
+failed=()
+for name in "${row_files[@]}"; do
+  cat "$test_root/rows-$name.out"
+  cat "$test_root/rows-$name.err" >&2
+  exited="$(cat "$test_root/rows-$name.status" 2>/dev/null || echo none)"
+  file_rows="$(cat "$test_root/rows-$name.passed" 2>/dev/null || true)"
+  milliseconds="$(cat "$test_root/rows-$name.ms" 2>/dev/null || echo 0)"
+  if [ "$exited" != 0 ] || [[ ! $file_rows =~ ^(0|[1-9][0-9]*)$ ]]; then
+    failed+=("test-rows-$name.sh (exit $exited)")
+    continue
+  fi
+  rows=$((rows + file_rows))
+  echo "rows of test-rows-$name.sh: $file_rows passed, $((milliseconds / 1000)).$(((milliseconds % 1000) / 100)) s"
+done
+[ "${#failed[@]}" -eq 0 ] || { echo "FAIL: the rows of ${failed[*]} failed" >&2; exit 1; }
 [ "$rows" -gt 0 ] || { echo "FAIL: OPERATOR_MINTERS_TEST_ROWS=${OPERATOR_MINTERS_TEST_ROWS:-} names no row" >&2; exit 1; }
 echo "all $rows rows passed"
