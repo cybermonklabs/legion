@@ -241,7 +241,7 @@ func (s *server) loadInboxAskReplyChains(ctx context.Context, q queryer, who mod
 	for _, askID := range askIDs {
 		replies[askID] = []model.Comment{}
 	}
-	rows, err := q.Query(ctx, inboxAskReplyChainsQuery, askIDs)
+	rows, err := q.Query(ctx, inboxAskReplyChainsQuery, askIDs, refs.VisibilityArg(who))
 	if err != nil {
 		return nil, fmt.Errorf("load inbox ask replies: %w", err)
 	}

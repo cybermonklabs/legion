@@ -73,8 +73,10 @@ const uninstalledRepository = "acme/uninstalled"
 //
 // alice, a full member no private list names, reads acme/pub, acme/none, acme/both, which PUB-2
 // names beside PRIV-5, and acme/newname, which no issue names; bob, a restricted member PRIV's list
-// names, reads every acme/priv* repository, acme/privparent among them through PRIV-3's parent, and
-// acme/both and acme/oldname; carol, on PRIV's and PRIV2's lists, reads all nine. With every project
+// names, reads every acme/priv* repository but acme/privparent, and acme/both and acme/oldname:
+// PRIV-3 is under PRIV2-1, which names acme/privparent, and an issue inherits no repository across a
+// project edge (main's #4896: refs.IssueRepoTerms joins a parent of the same project only), so bob
+// reads that one as hidden; carol, on PRIV's and PRIV2's lists, reads all nine. With every project
 // public, dave, a restricted member no list names, reads none of them (R2/R3 in every state). The
 // rename row shows the rule reads no rename: alice reads acme/newname and not acme/oldname, and bob
 // reads acme/oldname and not acme/newname. Each readable repository is read through a pull request path
@@ -82,9 +84,8 @@ const uninstalledRepository = "acme/uninstalled"
 //
 // Four controls, each run on its own, and each time the test fails naming the repository: show
 // every repository to an open viewer (alice reads acme/priv); count open issues only (alice reads
-// acme/privdone); resolve an issue's own repository only (alice reads acme/privdefault and bob loses
-// acme/privparent); compare names through refs.CanonicalRepoSQL (bob reads acme/newname and alice
-// loses it).
+// acme/privdone); resolve an issue's own repository only (alice reads acme/privdefault); compare
+// names through refs.CanonicalRepoSQL (bob reads acme/newname and alice loses it).
 func TestTheGitHubProxyShowsARepositoryByItsIssues(t *testing.T) {
 	database := seedProxyGate(t)
 	fake := &gateGitHub{installed: proxiedRepositories}
@@ -94,7 +95,7 @@ func TestTheGitHubProxyShowsARepositoryByItsIssues(t *testing.T) {
 		reads []string
 	}{
 		{"alice@example.com", []string{"acme/pub", "acme/none", "acme/both", "acme/newname"}},
-		{"bob@example.com", []string{"acme/priv", "acme/privdone", "acme/privparent", "acme/privdefault", "acme/both", "acme/oldname"}},
+		{"bob@example.com", []string{"acme/priv", "acme/privdone", "acme/privdefault", "acme/both", "acme/oldname"}},
 		{"carol@example.com", proxiedRepositories},
 	} {
 		for _, path := range []struct{ name, suffix string }{
@@ -145,8 +146,8 @@ func TestTheGitHubProxyShowsARepositoryByItsIssues(t *testing.T) {
 // carol, full members, bob, a restricted member, and olga, every project's owner; PUB, public;
 // PRIV, private, whose list names bob and carol; and PRIV2, private, whose list names carol and not
 // bob. PUB-1 names acme/pub; PRIV-1 names acme/priv; PRIV-2 names acme/privdone and is done; PRIV-3
-// names none and is a child of PRIV2-1, which names acme/privparent, so only the parent walk gives
-// bob that repository; PRIV-4 names none and resolves to PRIV's default repository,
+// names none and is a child of PRIV2-1, which names acme/privparent, so only a parent walk across
+// the project edge, which main's #4896 does not make, would give bob that repository; PRIV-4 names none and resolves to PRIV's default repository,
 // acme/privdefault; PUB-2 and PRIV-5 both name acme/both; PRIV-6 names acme/oldname. No issue names
 // acme/none or acme/newname. seedRepositoryRecords stores the default and the rename.
 func seedProxyGate(t *testing.T) *store.Store {

@@ -67,7 +67,7 @@ func TestAReferenceFromAHiddenDocumentAnswersAsAMissingOne(t *testing.T) {
 						return slices.Contains(missingStatements, statement)
 					})
 					for index, statement := range extra {
-						extra[index] = oneLine(statement)[:min(len(oneLine(statement)), 160)]
+						extra[index] = censusOneLine(statement)[:min(len(censusOneLine(statement)), 160)]
 					}
 					t.Errorf("%s: ?from= the hidden document sent %d statements and ?from= a slug nobody holds %d; want the same ones. The hidden one's own: %q",
 						caller, len(hiddenStatements), len(missingStatements), extra)

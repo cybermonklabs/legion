@@ -38,7 +38,7 @@ func (r *existenceTrace) start(ctx context.Context, sql string) context.Context 
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.statements = append(r.statements, oneLine(sql))
+	r.statements = append(r.statements, censusOneLine(sql))
 	return context.WithValue(ctx, existenceEntryKey{}, existenceEntry{generation: r.generation, index: len(r.statements) - 1})
 }
 
@@ -80,7 +80,7 @@ func (r *existenceTrace) TraceBatchQuery(ctx context.Context, _ *pgx.Conn, data 
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.statements = append(r.statements, oneLine(data.SQL)+" => "+outcome)
+	r.statements = append(r.statements, censusOneLine(data.SQL)+" => "+outcome)
 }
 
 func (r *existenceTrace) TraceBatchEnd(context.Context, *pgx.Conn, pgx.TraceBatchEndData) {}

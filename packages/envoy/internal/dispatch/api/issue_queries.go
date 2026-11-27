@@ -199,12 +199,13 @@ const issueClaimColumns = `i.claimed_by, i.claimed_at`
 const issueProgressColumns = `i.tasks_done, i.tasks_total, coalesce(progress.children_done, 0), coalesce(progress.children_total, 0)`
 
 // issueProgressLateral counts one issue's direct children in one pass over the partial
-// issues_parent_key index, for the single-issue read; a listing counts the children of its whole
-// page in one grouped read instead (issueSummaryJoins).
-const issueProgressLateral = `
+// issues_parent_key index, for the single-issue read, whose reader's viewer is $2; a listing counts
+// the children of its whole page in one grouped read instead (issueSummaryJoins). A child may be
+// of another project than its parent (main's #4896), so only a child the reader sees is counted.
+var issueProgressLateral = `
 	left join lateral (
 		select count(*) filter (where c.status = 'done') as children_done, count(*) as children_total
-		from issues c where c.parent_key = i.key
+		from issues c where c.parent_key = i.key and ` + access.ProjectClause("c.project_key", "$2") + `
 	) progress on true`
 
 // issueAdvancesColumns are the three values every issue read answers for its `advances`
@@ -412,14 +413,15 @@ var issueMovedJoin = backlogMoveLateral("i", `$14::boolean and i.status in (`+sq
 // state = 'open' index instead of scanning asks, and the closed-issue rule stays in the select
 // list: a closed issue reports 0 open asks however many it has. The `advances` join is the one a
 // text may leave out (issueSummaryQuery's readAdvances), since nothing else reads its terms. A
-// blocker is another issue, so the listing names one only where the caller, its viewer at $15,
-// sees it (the rule of references, references_seen.go).
+// blocker and a child are other issues, and either may be of another project (main's #4896), so
+// the listing names a blocker, and counts a child in its parent's progress, only where the caller,
+// its viewer at $18, sees it (the rule of references, references_seen.go).
 func issueSummaryJoins(readAdvances bool) string {
 	joins := `left join (
 		select l.issue_key, array_agg(l.target_key order by l.target_key) as keys
 		from issue_links l
 		where l.kind = 'blocked_by' and l.issue_key in (select key from subjects)
-			and ` + access.IssueProjectClause("l.target_key", "$15") + `
+			and ` + access.IssueProjectClause("l.target_key", "$18") + `
 		group by l.issue_key
 	) blockers on blockers.issue_key = i.key
 	left join (
@@ -437,6 +439,7 @@ func issueSummaryJoins(readAdvances bool) string {
 		select c.parent_key, count(*) filter (where c.status = 'done') as children_done, count(*) as children_total
 		from issues c
 		where c.parent_key in (select key from subjects)
+			and ` + access.ProjectClause("c.project_key", "$18") + `
 		group by c.parent_key
 	) progress on progress.parent_key = i.key
 	`
@@ -1484,11 +1487,12 @@ func (s *server) loadIssueWithProgress(ctx context.Context, q queryer, who model
 // child's own row, which this statement already reads, so it costs no join at all.
 var issueChildrenStatement = `
 		with recursive subtree as (
-			select key as root, key, 1 as depth, status, updated_at from issues where parent_key = $1
+			select key as root, key, 1 as depth, status, updated_at from issues
+			where parent_key = $1 and ` + access.ProjectClause("project_key", "$2") + `
 			union
 			select s.root, i.key, s.depth + 1, i.status, i.updated_at
 			from issues i join subtree s on i.parent_key = s.key
-			where s.depth < ` + parentDepthCapSQL + `
+			where s.depth < ` + parentDepthCapSQL + ` and ` + access.ProjectClause("i.project_key", "$2") + `
 		), rollup as (
 			select s.root,
 			       count(distinct s.key) as total,

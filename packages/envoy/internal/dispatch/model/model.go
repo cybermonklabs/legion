@@ -146,9 +146,9 @@ type Credential struct {
 	// writes are recorded under its account — and is refused every write under any other
 	// (writeNeedsASignedInPerson).
 	ProjectScope string
-	// Projects is the credential's list, sorted: a broker token's ciphertoken.Caller.Projects, and
-	// nil for every other credential until a later slice sets a personal token's
-	// agent_tokens.projects. Empty is a credential that names none. What a list decides is
+	// Projects is the credential's list, sorted: a broker token's ciphertoken.Caller.Projects, or a
+	// personal token's agent_tokens.projects (personalTokenActor); a read-only token
+	// (agent_read_tokens) lists none. Empty is a credential that names none. What a list decides is
 	// access.CredentialCovers': for a full member's credential, and one that names no person, only
 	// which private projects it reaches; for a restricted member's, every project it reaches.
 	Projects []string
