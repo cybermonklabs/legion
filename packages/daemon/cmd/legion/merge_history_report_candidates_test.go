@@ -63,6 +63,19 @@ func newCensusStandIns(t *testing.T) *censusStandIns {
 			http.Error(w, `{"message":"Server Error"}`, http.StatusBadGateway)
 			return
 		}
+		// What a token-mode App mint asks of GitHub before any read of its own: the bot login its
+		// token acts as, the App whose id is checked against the file's, and that bot user.
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/graphql":
+			_, _ = w.Write([]byte(`{"data":{"viewer":{"login":"legion-implementer[bot]"}}}`))
+			return
+		case r.URL.Path == "/apps/legion-implementer":
+			_, _ = w.Write([]byte(`{"id":1,"slug":"legion-implementer"}`))
+			return
+		case r.URL.Path == "/users/legion-implementer[bot]":
+			_, _ = w.Write([]byte(`{"id":99,"login":"legion-implementer[bot]"}`))
+			return
+		}
 		if pull, ok := pulls[r.URL.Path]; ok {
 			_ = json.NewEncoder(w).Encode(pull)
 			return
