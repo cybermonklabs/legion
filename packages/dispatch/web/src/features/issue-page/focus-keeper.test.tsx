@@ -375,20 +375,23 @@ test.each([
   ["the contextmenu of a right press", 2, () => fireEvent.contextMenu(document.body)],
   // The reader leaves the window mid-press; user-event has no form for a blur of the window.
   ["the window's blur", 0, () => fireEvent.blur(window)],
-] as const)("a press is over at %s, and done hears where the focus was as it began", (_ending, pressed, end) => {
-  const { begin, done, stop } = hearOnPage();
-  try {
-    // A bare pointerdown, so that the ending alone is what ends the press.
-    fireEvent.pointerDown(document.body, { button: pressed });
-    expect(begin).toHaveBeenCalledTimes(1);
-    expect(done).not.toHaveBeenCalled();
-    end();
-    expect(done).toHaveBeenCalledTimes(1);
-    expect(done).toHaveBeenCalledWith(button("Before"), "begun");
-  } finally {
-    stop();
+] as const)(
+  "a press is over at %s, and done hears where the focus was as it began",
+  (_ending, pressed, end) => {
+    const { begin, done, stop } = hearOnPage();
+    try {
+      // A bare pointerdown, so that the ending alone is what ends the press.
+      fireEvent.pointerDown(document.body, { button: pressed });
+      expect(begin).toHaveBeenCalledTimes(1);
+      expect(done).not.toHaveBeenCalled();
+      end();
+      expect(done).toHaveBeenCalledTimes(1);
+      expect(done).toHaveBeenCalledWith(button("Before"), "begun");
+    } finally {
+      stop();
+    }
   }
-});
+);
 
 // A press with no ending yet: `done` hears nothing of it, and its click then ends it as one press.
 test.each([
@@ -1140,25 +1143,28 @@ function PlaceLayerRegion({
 test.each([
   ["alone", false],
   ["inside a wrapper that goes with it", true],
-] as const)("a layer that closes after a write removed its opener, %s, hands the focus to the control beside where it stood", async (_where, wrapped) => {
-  const places: (HTMLElement | null)[] = [];
-  const view = render(<PlaceLayerRegion places={places} wrapped={wrapped} />);
-  try {
-    await onFakeClock(async () => {
-      const box = document.querySelector<HTMLElement>("[data-box]");
-      await openLayer();
-      view.rerender(<PlaceLayerRegion opener={false} places={places} wrapped={wrapped} />);
-      await jump(1);
-      view.rerender(
-        <PlaceLayerRegion layer="removed" opener={false} places={places} wrapped={wrapped} />
-      );
-      await jump(1);
-      // The place is the box the Opener, or the wrapper it went with, was taken out of.
-      expect(places).toHaveLength(1);
-      expect(places[0]).toBe(box);
-      expect(button("Chip")).toHaveFocus();
-    });
-  } finally {
-    view.unmount();
+] as const)(
+  "a layer that closes after a write removed its opener, %s, hands the focus to the control beside where it stood",
+  async (_where, wrapped) => {
+    const places: (HTMLElement | null)[] = [];
+    const view = render(<PlaceLayerRegion places={places} wrapped={wrapped} />);
+    try {
+      await onFakeClock(async () => {
+        const box = document.querySelector<HTMLElement>("[data-box]");
+        await openLayer();
+        view.rerender(<PlaceLayerRegion opener={false} places={places} wrapped={wrapped} />);
+        await jump(1);
+        view.rerender(
+          <PlaceLayerRegion layer="removed" opener={false} places={places} wrapped={wrapped} />
+        );
+        await jump(1);
+        // The place is the box the Opener, or the wrapper it went with, was taken out of.
+        expect(places).toHaveLength(1);
+        expect(places[0]).toBe(box);
+        expect(button("Chip")).toHaveFocus();
+      });
+    } finally {
+      view.unmount();
+    }
   }
-});
+);
