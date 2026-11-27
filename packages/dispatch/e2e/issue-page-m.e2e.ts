@@ -369,7 +369,7 @@ test("the conversation is the outline and the history is in the panel", async ({
     // is waited out until its reads settle before the branches they draw are opened.
     const settling = watchApiRequests(page);
     const outlineReads = watchOutlineReads(page, seeded.key);
-    await gotoIssue(page, `/issues/${seeded.key}`);
+    await gotoIssue(page, `/issues/${seeded.key}/conversation`);
     await expectLoadSettled(settling);
     const outlineRead = await outlineReads.stop();
     await expectIssuePageDrawn(page);
@@ -1382,7 +1382,7 @@ test("entries made before the reader's midnight are found in the day the history
     const page = await context.newPage();
     // The page's own clock, from the real time, so the row can move it once the seeds are made.
     await page.clock.install();
-    await gotoIssue(page, `/issues/${issue.key}`);
+    await gotoIssue(page, `/issues/${issue.key}/conversation`);
     // Every write of this issue is a message of the Legion daemon, which the outline draws no
     // row for, so the tree is drawn with no row in it.
     await expectIssuePageDrawn(page);
@@ -3480,7 +3480,7 @@ test("the focused node's facts follow the focus, and Details reads nothing more 
         if (!isReadMarkRead(url, seeded.key)) read.push(url.pathname);
       });
       const settling = watchApiRequests(page);
-      await gotoIssue(page, `/issues/${seeded.key}`);
+      await gotoIssue(page, `/issues/${seeded.key}/conversation`);
       await expect(tree(page)).toBeVisible();
       // The comments arrive by a read of their own after the tree, so the load's reads settle
       // before the branches they draw are opened.
@@ -3618,7 +3618,7 @@ test("t v and t o open Details at the history and at the collaborators, and an a
   // One seed and ten loads of the issue, each address's landing waited for.
   test.setTimeout(120_000);
   await phase(browser, seedAgentsThread, async (page, seeded) => {
-    await gotoIssue(page, `/issues/${seeded.key}`);
+    await gotoIssue(page, `/issues/${seeded.key}/conversation`);
     await expect(tree(page)).toBeVisible();
     await expect(marginShell(page)).toBeHidden();
     await expectOpeningLanded(page);
@@ -3677,7 +3677,7 @@ test("t v and t o open Details at the history and at the collaborators, and an a
     // And so does `t o`, from the issue with People closed again.
     await people.click();
     await expect(people).toHaveAttribute("aria-expanded", "false");
-    await gotoIssue(page, `/issues/${seeded.key}`);
+    await gotoIssue(page, `/issues/${seeded.key}/conversation`);
     await expect(marginShell(page)).toBeHidden();
     await expectOpeningLanded(page);
     await focusThePage(page);
@@ -3908,7 +3908,7 @@ test("a pin's link to an agents' turn lands the outline on its nearest drawn anc
     }
 
     const address = `/issues/${seeded.key}/messages/${seeded.message}`;
-    await gotoIssue(page, `/issues/${seeded.key}`);
+    await gotoIssue(page, `/issues/${seeded.key}/conversation`);
     await expect(tree(page)).toBeVisible();
     await openDetails(page);
     const link = pinsList(page).locator(`[data-pin="message:${seeded.message}"]`).getByRole("link");
@@ -4023,7 +4023,7 @@ test("t o and a load of /collaborators keep the focused Collaborators control in
       ).toBe(true);
     };
 
-    await gotoIssue(page, `/issues/${issue.key}`);
+    await gotoIssue(page, `/issues/${issue.key}/conversation`);
     // The issue holds no node, so its tree is drawn empty: the page is drawn once it is there.
     await expectIssuePageDrawn(page);
     await expect(marginShell(page)).toBeHidden();
@@ -4120,7 +4120,7 @@ async function afterTo(
     await (refs.some((ref) => blockers.has(ref)) ? held.titles : (held.waiting ?? held.titles));
     await route.continue();
   });
-  await gotoIssue(page, `/issues/${key}`);
+  await gotoIssue(page, `/issues/${key}/conversation`);
   // The issue holds no node, so its tree is drawn empty: the page is drawn once it is there.
   await expectIssuePageDrawn(page);
   await expect(marginShell(page)).toBeHidden();
@@ -4765,7 +4765,7 @@ test("t v from a load with Details shut opens Details with the history's heading
       await held.promise;
       await route.continue();
     });
-    await gotoIssue(page, `/issues/${seeded.key}`);
+    await gotoIssue(page, `/issues/${seeded.key}/conversation`);
     await expect(tree(page)).toBeVisible();
     await expect(marginShell(page)).toBeHidden();
     await expectOpeningLanded(page);
@@ -5346,7 +5346,7 @@ test("what references the focused row opens from its facts, and each row leads t
 
       // The issue itself draws no control: Details' "Referenced by" row holds its list. The
       // focus is on no row, so the facts are the issue's.
-      await gotoIssue(page, `/issues/${seeded.key}`);
+      await gotoIssue(page, `/issues/${seeded.key}/conversation`);
       await expect(tree(page)).toBeVisible();
       await expectOpeningLanded(page);
       await focusThePage(page);
@@ -5529,7 +5529,7 @@ test("a reply sent by keyboard from the box to an agent's comment in the history
 }) => {
   await phase(browser, seedHistoryTurns, async (page, seeded) => {
     await page.setViewportSize(DESKTOP);
-    await gotoIssue(page, `/issues/${seeded.key}`);
+    await gotoIssue(page, `/issues/${seeded.key}/conversation`);
     await expectIssuePageDrawn(page);
     await expect(
       nodeRow(page, seeded.agent.id),
@@ -5972,7 +5972,7 @@ test("the facts of a focused ask hold its edit history, its recipients and its c
       // The row is focused and read by the focus alone, as a page that draws a row's facts on
       // its face draws the focused row no body.
       const shut = watchApiRequests(page);
-      await gotoIssue(page, `/issues/${seeded.key}`);
+      await gotoIssue(page, `/issues/${seeded.key}/conversation`);
       await expect(tree(page)).toBeVisible();
       await expectLoadSettled(shut);
       const row = nodeRow(page, seeded.ask).first();
@@ -6192,7 +6192,7 @@ async function showEveryEntry(
 test("each list of Details shows 20 entries and a control for the next 20", async ({ browser }) => {
   test.setTimeout(180_000);
   await phase(browser, seedLongLists, async (page, seeded) => {
-    await gotoIssue(page, `/issues/${seeded.key}`);
+    await gotoIssue(page, `/issues/${seeded.key}/conversation`);
     await openDetails(page);
 
     const blocks = detailsRow(page, PROPERTY_LABELS.blocks);
@@ -6403,7 +6403,7 @@ async function afterOpener(
     await titles;
     await route.continue();
   });
-  await gotoIssue(page, `/issues/${key}`);
+  await gotoIssue(page, `/issues/${key}/conversation`);
   await expectIssuePageDrawn(page);
   await expect(marginShell(page)).toBeHidden();
   await focusThePage(page);
@@ -7290,7 +7290,7 @@ test("a row's chip whose target is gone wraps inside the page at 390 px", async 
       // The names of what the words cite arrive by a read of their own after the tree, so the
       // load is waited out until its reads settle: the chip is then drawn as that read left it.
       const settling = watchApiRequests(page);
-      await gotoIssue(page, `/issues/${seeded.key}`);
+      await gotoIssue(page, `/issues/${seeded.key}/conversation`);
       await expectLoadSettled(settling);
       await expectIssuePageDrawn(page);
       const chip = rowWords(nodeRow(page, seeded.comment)).locator("a[data-row-chip]");
@@ -7398,7 +7398,11 @@ async function pressLinkToItself(
     await expect(page, `${pressed} loaded the issue's address without the parameter`).toHaveURL(
       opened
     );
-    await expectIssuePageDrawn(page);
+    await expect(issuePage(page), `${pressed} left the new page`).toHaveCount(1);
+    await expect(
+      page.locator("[data-dashboard]"),
+      `${pressed} did not keep Dashboard drawn`
+    ).toBeVisible();
     // A press that starts a load returns once that load has committed (Playwright's click waits
     // for the navigation it began), so this read is of the document the press left the reader in.
     expect(
@@ -7584,7 +7588,11 @@ test("an issue address with ?issue_page=new opens the new page with the setting 
     const page = await alice.newPage();
     await page.setViewportSize(DESKTOP);
     await page.goto(opened);
-    await expectIssuePageDrawn(page);
+    await expect(issuePage(page), `${opened} drew no [data-issue-page]`).toHaveCount(1);
+    await expect(
+      page.locator("[data-dashboard]"),
+      `${opened} drew no Dashboard on the new page`
+    ).toBeVisible();
     await expect(iconRail(page), "the new page's frame draws no icon rail").toHaveCount(1);
     await issueRead(page);
 
@@ -7604,7 +7612,11 @@ test("an issue address with ?issue_page=new opens the new page with the setting 
 
     await page.goBack();
     await expect(page).toHaveURL(opened);
-    await expectIssuePageDrawn(page);
+    await expect(issuePage(page), "Back from the view drew today's page").toHaveCount(1);
+    await expect(
+      page.locator("[data-dashboard]"),
+      "Back from the view drew no Dashboard on the new page"
+    ).toBeVisible();
     await expect(iconRail(page)).toHaveCount(1);
 
     await page.goto(`/issues/${issue.key}`);
@@ -7686,7 +7698,11 @@ test("a link in the Reviews dialog, pressed at ?issue_page=new with the setting 
     });
     await link.click();
     await expect(page, "the press lost the parameter").toHaveURL(opened);
-    await expectIssuePageDrawn(page);
+    await expect(issuePage(page), "the press drew today's page").toHaveCount(1);
+    await expect(
+      page.locator("[data-dashboard]"),
+      "the press drew no Dashboard on the new page"
+    ).toBeVisible();
     await expect(reviews, "the Reviews dialog stayed over the page").toHaveCount(0);
     // A press that starts a load returns once that load has committed, so this read is of the
     // document the press left the reader in.
