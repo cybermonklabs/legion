@@ -3133,7 +3133,7 @@ esac
       String.raw`#!/usr/bin/env bash
 # run <scenario> <label> <n> <index> <start>
 dir=$SKILL_SCENARIOS_WORK/runs/$2-$SKILL_SCENARIOS_OWNER_WALK_CASE-$3-$4
-mkdir -p "$dir/home/.omp" "$dir/texts" "$dir/cwd" "$dir/secrets" "$dir/state/secrets"
+mkdir -p "$dir/home/.omp" "$dir/texts" "$dir/cwd" "$dir/secrets" "$dir/state/secrets" "$dir/state/home/.local"
 printf '%s\n' "$4" >>"$SKILL_SCENARIOS_WORK/launches"
 printf '{"launch":%s}\n' "$4" >"$dir/world.json"
 echo 'NATS_URLS=nats://user:secret@nats.invalid:4222' >"$dir/pane.env"
@@ -3143,6 +3143,7 @@ echo '{"project":"LWEVAL"}' >"$dir/texts/world-request.json"
 echo 'a profile' >"$dir/home/.omp/config.yml"
 echo 'a boot token' >"$dir/secrets/boot"
 echo 'an Envoy token' >"$dir/state/secrets/owner-envoy_token"
+echo '{"title":"the owner'"'"'s session"}' >"$dir/state/home/.local/title"
 ln -s /etc "$dir/cwd/link"
 mkfifo "$dir/rpc.in"
 echo 'one file' >"$dir/cwd/a"
@@ -3492,9 +3493,10 @@ writeFileSync(path.join(runs, name, "row.json"), JSON.stringify({ outcome: "scor
     );
     const fault = `runs/${run(2)}.row.json differs from the Job's log: logged ${logged}, downloaded ${sha256(at(changed, 2, "row.json"))}`;
     const differs = check(changed);
-    expect({ code: differs.code, line: differs.stdout[1] }).toEqual({
-      code: 0,
+    expect({ code: differs.code, line: differs.stdout[1], last: differs.stdout.at(-1) }).toEqual({
+      code: 1,
       line: `checked ${run(2)}: rig error: ${fault}`,
+      last: "check-stored: 1 of 2 runs are rig errors of the store, and 0 files of the download were left out",
     });
     const row = JSON.parse(readFileSync(path.join(changed, "checked", run(2), "row.json"), "utf8"));
     expect(row).toEqual({
@@ -3507,7 +3509,7 @@ writeFileSync(path.join(runs, name, "row.json"), JSON.stringify({ outcome: "scor
     });
     expect(RunRow.safeParse(row).success).toBe(true);
     expect(differs.stderr).toContain(`${run(2)}: no world.json, so it is in no cell`);
-    expect(scored(differs.stdout)).toBe(1);
+    expect(scored(differs.stdout.slice(0, -1))).toBe(1);
 
     // Run 1's pack in place of run 2's, as when two Jobs share a key: run 2's row names another.
     const swapped = download((dir) => cpSync(at(dir, 1, "tar.gz"), at(dir, 2, "tar.gz")));
@@ -3527,13 +3529,50 @@ writeFileSync(path.join(runs, name, "row.json"), JSON.stringify({ outcome: "scor
       `checked ${run(1)}: rig error: runs/${run(1)}.row.json was stored with sha256 ${sha256(at(store.bucket, 1, "row.json"))} and later got with sha256 ${"0".repeat(64)}`
     );
 
-    const missing = check(download((dir) => rmSync(at(dir, 1, "tar.gz"))));
-    expect(missing.stdout[0]).toBe(
-      `checked ${run(1)}: rig error: runs/${run(1)}.tar.gz is not in the download`
-    );
+    // A later pod's log alone: each object it got, no log given stores. A run put into the store
+    // by anything but a pod reads the same way, and both are refused.
+    const gotOnly = path.join(pod, "got-only.log");
+    writeFileSync(gotOnly, readFileSync(log, "utf8").replace(/^stored /gm, "got "));
+    const alone = check(download(), gotOnly);
+    expect({ code: alone.code, first: alone.stdout[0] }).toEqual({
+      code: 1,
+      first: `checked ${run(1)}: rig error: runs/${run(1)}.row.json was got with sha256 ${sha256(at(store.bucket, 1, "row.json"))}, and no log given stores it: give every pod's log; runs/${run(1)}.tar.gz was got with sha256 ${sha256(at(store.bucket, 1, "tar.gz"))}, and no log given stores it: give every pod's log`,
+    });
 
-    // Packs whose links would write into run 1 or outside the download, each logged as stored.
+    // Run 1's row stored a second time, with another sha256, after it was stored once: a stored
+    // run is never stored again.
+    const twice = path.join(pod, "twice.log");
+    writeFileSync(
+      twice,
+      `${readFileSync(log, "utf8")}stored runs/${run(1)}.row.json sha256 ${"1".repeat(64)}\n`
+    );
+    expect(check(download(), twice).stdout[0]).toBe(
+      `checked ${run(1)}: rig error: runs/${run(1)}.row.json was stored again after its run's row was stored: first with sha256 ${sha256(at(store.bucket, 1, "row.json"))}, then with sha256 ${"1".repeat(64)}`
+    );
+    // A pack stored twice before its run's row, as when a pod stopped between the two puts and the
+    // next pod ran the run again: no fault.
+    const repacked = path.join(pod, "repacked.log");
+    writeFileSync(
+      repacked,
+      `stored runs/${run(2)}.tar.gz sha256 ${"2".repeat(64)}\n${readFileSync(log, "utf8")}`
+    );
+    const again = check(download(), repacked);
+    expect({ code: again.code, lines: again.stdout.slice(0, 2) }).toEqual({
+      code: 0,
+      lines: [`checked ${run(1)}: as stored`, `checked ${run(2)}: as stored`],
+    });
+
+    const missing = check(download((dir) => rmSync(at(dir, 1, "tar.gz"))));
+    expect({ code: missing.code, first: missing.stdout[0] }).toEqual({
+      code: 1,
+      first: `checked ${run(1)}: rig error: runs/${run(1)}.tar.gz is not in the download`,
+    });
+
+    // Packs whose links would write into run 1 or outside the download, each logged as stored. The
+    // file outside exists first: cp refuses a symlink that points nowhere, so without it a check
+    // that writes through links would pass for that reason.
     const outside = path.join(freshDir("outside"), "written-through-a-link");
+    writeFileSync(outside, "the outside file's own\n");
     const planted: [string, string, string][] = [
       [
         "a symlink to run 1, then a file under it",
@@ -3561,7 +3600,7 @@ writeFileSync(path.join(runs, name, "row.json"), JSON.stringify({ outcome: "scor
       const checked = check(dir, plantedLog);
       expect({ what, code: checked.code, line: checked.stdout[2] }).toEqual({
         what,
-        code: 0,
+        code: 1,
         line: `checked ${run(3)}: rig error: runs/${run(3)}.tar.gz ${refusal}: a pack holds its run's regular files and directories alone`,
       });
       expect({
@@ -3571,7 +3610,10 @@ writeFileSync(path.join(runs, name, "row.json"), JSON.stringify({ outcome: "scor
         what,
         world: readFileSync(path.join(pod, "runs", run(1), "world.json"), "utf8"),
       });
-      expect({ what, outside: existsSync(outside) }).toEqual({ what, outside: false });
+      expect({ what, outside: readFileSync(outside, "utf8") }).toEqual({
+        what,
+        outside: "the outside file's own\n",
+      });
     }
 
     // A file of the download whose name holds a line break is no run's name.
@@ -3580,7 +3622,7 @@ writeFileSync(path.join(runs, name, "row.json"), JSON.stringify({ outcome: "scor
     );
     const odd = check(broken);
     expect({ code: odd.code, lines: odd.stdout.slice(0, 3) }).toEqual({
-      code: 0,
+      code: 1,
       lines: [
         `UNKNOWN: $'${run(1)}\\n${run(2)}.row.json' in ${broken}/runs is no run's object: it is left out`,
         `checked ${run(1)}: as stored`,
