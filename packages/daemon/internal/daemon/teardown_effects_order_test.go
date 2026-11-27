@@ -182,24 +182,39 @@ type teardownEffectsPush struct {
 	Ref, Old, New string
 }
 
-// teardownEffectsGitHubRow is one row of calls.jsonl (gh-standin.ts). `Done`, when the call ended,
-// and `Pull`, the change gh-standin kept to a pull request, are absent from captures made before
-// gh-standin recorded them.
+// teardownEffectsGitHubRow is one row of calls.jsonl (gh-standin.ts): when the call began (`at`)
+// and ended (`done`), the request gh makes for it as gh-standin read its arguments (`request`), and
+// the change it made to a pull request or a review (`pull`), which gh-standin writes for every call
+// it took that made one and for no other. What a call did is read from `pull` alone.
 type teardownEffectsGitHubRow struct {
-	At    time.Time                    `json:"at"`
-	Done  *time.Time                   `json:"done"`
-	As    string                       `json:"as"`
-	Argv  []string                     `json:"argv"`
-	Files map[string]string            `json:"files"`
-	Stdin *string                      `json:"stdin"`
-	Body  *string                      `json:"body"`
-	Exit  int                          `json:"exit"`
-	Pull  *teardownEffectsPullMutation `json:"pull"`
+	At      time.Time                    `json:"at"`
+	Done    *time.Time                   `json:"done"`
+	As      string                       `json:"as"`
+	Argv    []string                     `json:"argv"`
+	Files   map[string]string            `json:"files"`
+	Stdin   *string                      `json:"stdin"`
+	Body    *string                      `json:"body"`
+	Exit    int                          `json:"exit"`
+	Request *teardownEffectsGitHubAsk    `json:"request"`
+	Pull    *teardownEffectsPullMutation `json:"pull"`
 }
 
-// teardownEffectsPullMutation is the change gh-standin kept to a pull request: `open` (the number,
-// branch, base and head commit it gave the new one), `edit` (the body it gave each pull request it
-// answers with) or `review` (the review it added).
+// teardownEffectsGitHubAsk is the request a gh call makes, as gh-standin read its arguments: a gh
+// subcommand (`gh pr merge`), or a `gh api` call's method and path, and its fields.
+type teardownEffectsGitHubAsk struct {
+	Command string         `json:"command"`
+	Method  string         `json:"method"`
+	Path    string         `json:"path"`
+	Fields  map[string]any `json:"fields"`
+}
+
+// teardownEffectsPullMutation is the change gh-standin kept to a pull request or a review, each
+// naming the pull request it changed: `open` (the number, branch, base and head commit it gave the
+// new one), `edit` (the pull request in `numbers`, the body it has after the edit, and the title the
+// edit set), `review` (the review it added), `review-comment`, `comment`, `merge` (its method, and
+// `auto` for one that waits for the requirements), `disable-auto`, `close`, `reopen`, `ready`,
+// `draft`, `enqueue` and `dequeue` (the pull request's node `id`), and, by their own names, any
+// other `gh pr` command, GraphQL `mutation` (its `name`) or REST `request` (its method and path).
 type teardownEffectsPullMutation struct {
 	Action      string `json:"action"`
 	Number      int    `json:"number"`
@@ -213,6 +228,12 @@ type teardownEffectsPullMutation struct {
 	State       string `json:"state"`
 	Commit      string `json:"commit"`
 	SubmittedAt string `json:"submittedAt"`
+	Method      string `json:"method"`
+	Auto        bool   `json:"auto"`
+	Comment     string `json:"comment"`
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Path        string `json:"path"`
 }
 
 // teardownEffectsChange is one recorded change to Git, GitHub, Dispatch or the role's workspace:
@@ -295,8 +316,13 @@ func teardownEffectsOrder(dir string, calls []teardownEffectsCall, clock, launch
 	if err := teardownEffectsDecode(filepath.Join(dir, "dispatch-readback.json"), &plan.Readback); err != nil {
 		return plan, err
 	}
+	// outcome.json's actions, and the Dispatch writes of actors other than the role, which it keeps
+	// apart (`otherWrites`, absent from a record written before it did).
 	var outcome struct {
-		Actions []teardownEffectsOutcomeAction `json:"actions"`
+		Actions     []teardownEffectsOutcomeAction `json:"actions"`
+		OtherWrites []struct {
+			At time.Time `json:"at"`
+		} `json:"otherWrites"`
 	}
 	if err := teardownEffectsDecode(filepath.Join(dir, "outcome.json"), &outcome); err != nil {
 		return plan, err
@@ -320,7 +346,8 @@ func teardownEffectsOrder(dir string, calls []teardownEffectsCall, clock, launch
 		plan.Steps = append(plan.Steps, teardownEffectsStep{Call: call})
 	}
 
-	// Each outcome.json action is taken once, by kind and case time, in its own order.
+	// Each outcome.json action is taken once, by kind and case time, in its own order; a Dispatch
+	// write no action records is taken from the other actors' writes, with no action of its own.
 	type key struct {
 		kind string
 		at   int64
@@ -330,10 +357,18 @@ func teardownEffectsOrder(dir string, calls []teardownEffectsCall, clock, launch
 		k := key{action.Kind, action.At.UnixNano()}
 		pending[k] = append(pending[k], action)
 	}
+	others := map[int64]int{}
+	for _, write := range outcome.OtherWrites {
+		others[write.At.UnixNano()]++
+	}
 	take := func(kind string, at time.Time) (int, bool) {
 		k := key{kind, caseAt(at).UnixNano()}
 		actions := pending[k]
 		if len(actions) == 0 {
+			if kind == "dispatch" && others[k.at] > 0 {
+				others[k.at]--
+				return 0, true
+			}
 			return 0, false
 		}
 		pending[k] = actions[1:]
@@ -355,10 +390,7 @@ func teardownEffectsOrder(dir string, calls []teardownEffectsCall, clock, launch
 		if action == "" {
 			continue
 		}
-		c := teardownEffectsChange{Kind: "github", Source: fmt.Sprintf("calls.jsonl:%d", n+1), What: action + ": gh " + strings.Join(row.Argv, " "), from: row.At, github: &row}
-		if row.Done != nil {
-			c.to = *row.Done
-		}
+		c := teardownEffectsChange{Kind: "github", Source: fmt.Sprintf("calls.jsonl:%d", n+1), What: action + ": gh " + strings.Join(row.Argv, " "), from: row.At, to: *row.Done, github: &row}
 		if row.Exit != 0 {
 			if row.Pull == nil {
 				continue
@@ -388,7 +420,8 @@ func teardownEffectsOrder(dir string, calls []teardownEffectsCall, clock, launch
 		}
 		if e.Actor.Kind == "system" {
 			// Dispatch's own write: the replayed write that called for it makes it again. outcome.json
-			// holds it too, so it is taken here.
+			// holds it too, among the other actors' writes (or, in a record written before it kept
+			// them apart, among the actions), so it is taken here.
 			if _, ok := take("dispatch", e.CreatedAt); !ok {
 				return plan, fmt.Errorf("%s (%s) has no action in outcome.json: the records disagree", c.Source, e.Type)
 			}
@@ -421,13 +454,6 @@ func teardownEffectsOrder(dir string, calls []teardownEffectsCall, clock, launch
 	var applied []*teardownEffectsChange
 	for i := range changes {
 		c := &changes[i]
-		if c.to.IsZero() {
-			if len(calls) > 0 && !c.from.After(calls[len(calls)-1].ResultAt) {
-				return plan, fmt.Errorf("%s (%s) records when the call began and not when it ended, so the legion calls after it cannot be placed against it", c.Source, c.What)
-			}
-			plan.After = append(plan.After, *c)
-			continue
-		}
 		place := -1
 		for n, call := range calls {
 			if !c.from.After(call.ResultAt) && !c.to.Before(call.At) {
@@ -694,34 +720,18 @@ var (
 	teardownEffectsMergePath   = regexp.MustCompile(`^repos/[^/]+/[^/]+/pulls/\d+/merge$`)
 )
 
-// teardownEffectsGitHubAction is the change a gh call made to the GitHub lane R kept: `open`,
-// `edit`, `review`, `merge` or `close`, and "" for a call that changed nothing it kept (a read, a
-// comment, a call gh-standin answered from a fixed route). A row that names its end is
-// gh-standin's newer record, whose `pull` is the change it kept; an older row is read from its
-// arguments. A merge or a close is read from its arguments in both, as the daemon stand-in reads it.
+// teardownEffectsGitHubAction is the change a gh call made to the GitHub lane R kept, as gh-standin
+// recorded it (`pull`: `open`, `edit`, `review`, `merge`, `close` and the rest it names), and ""
+// for a call that changed nothing. Nothing reads the call's arguments again. A row that records no
+// end is from a gh-standin that recorded neither its end nor its change, so what it did is unknown.
 func teardownEffectsGitHubAction(row teardownEffectsGitHubRow) (string, error) {
-	if row.Pull != nil {
-		return row.Pull.Action, nil
+	if row.Done == nil {
+		return "", fmt.Errorf("gh %s records when the call began and not when it ended: gh-standin records both and the change each call made (`done`, `pull`), so this row is from before it did, and what the call did is unknown", strings.Join(row.Argv, " "))
 	}
-	command, method, path, fields, err := teardownEffectsGitHubRequest(row)
-	if err != nil {
-		return "", err
-	}
-	switch {
-	case command == "gh pr merge" || method == "PUT" && teardownEffectsMergePath.MatchString(path):
-		return "merge", nil
-	case command == "gh pr close":
-		return "close", nil
-	case row.Done != nil:
+	if row.Pull == nil {
 		return "", nil
-	case command == "gh pr create" || method == "POST" && teardownEffectsPullsPath.MatchString(path):
-		return "open", nil
-	case (command == "gh pr edit" || method == "PATCH" && teardownEffectsPullPath.MatchString(path)) && fields["body"] != nil:
-		return "edit", nil
-	case command == "gh pr review" || method == "POST" && teardownEffectsReviewsPath.MatchString(path):
-		return "review", nil
 	}
-	return "", nil
+	return row.Pull.Action, nil
 }
 
 // teardownEffectsGitHubRequest reads a gh call's arguments as the request it makes: a `gh pr`
@@ -1356,18 +1366,23 @@ func TestTeardownEffectsGitHubRequest(t *testing.T) {
 		fields                map[string]any
 		action                string
 	}{
-		{"a pull request opened with gh pr create", teardownEffectsGitHubRow{Argv: []string{"pr", "create", "-H", "legion/ACME-12", "-B", "main", "-t", "T", "--fill", "-b", "B"}}, "gh pr create", "", "", map[string]any{"head": "legion/ACME-12", "base": "main", "title": "T", "body": "B"}, "open"},
-		{"a pull request opened through gh api fields", teardownEffectsGitHubRow{Argv: []string{"api", "repos/acme/widgets/pulls", "-f", "head=acme:legion/ACME-13", "-f", "base=main", "--jq", ".number"}}, "", "POST", "repos/acme/widgets/pulls", map[string]any{"head": "acme:legion/ACME-13", "base": "main"}, "open"},
-		{"a body edited through gh api", teardownEffectsGitHubRow{Argv: []string{"api", "-XPATCH", "/repos/acme/widgets/pulls/3", "-F", "body=@body.md"}, Files: map[string]string{"body.md": "new"}}, "", "PATCH", "repos/acme/widgets/pulls/3", map[string]any{"body": "new"}, "edit"},
-		{"an approval", teardownEffectsGitHubRow{Argv: []string{"pr", "review", "73", "--approve", "--body", "Fine at B."}}, "gh pr review", "", "", map[string]any{"number": float64(73), "event": "APPROVE", "body": "Fine at B."}, "review"},
-		{"a merge by URL", teardownEffectsGitHubRow{Argv: []string{"pr", "merge", "https://github.com/acme/widgets/pull/9", "--squash", "--delete-branch"}, Done: &done}, "gh pr merge", "", "", map[string]any{"number": float64(9)}, "merge"},
-		{"a read", teardownEffectsGitHubRow{Argv: []string{"pr", "view", "--json", "number"}}, "gh pr view", "", "", map[string]any{}, ""},
+		{"a pull request opened with gh pr create", teardownEffectsGitHubRow{Argv: []string{"pr", "create", "-H", "legion/ACME-12", "-B", "main", "-t", "T", "--fill", "-b", "B"}}, "gh pr create", "", "", map[string]any{"head": "legion/ACME-12", "base": "main", "title": "T", "body": "B"}, "unknown"},
+		{"a pull request opened through gh api fields", teardownEffectsGitHubRow{Argv: []string{"api", "repos/acme/widgets/pulls", "-f", "head=acme:legion/ACME-13", "-f", "base=main", "--jq", ".number"}}, "", "POST", "repos/acme/widgets/pulls", map[string]any{"head": "acme:legion/ACME-13", "base": "main"}, "unknown"},
+		{"a body edited through gh api", teardownEffectsGitHubRow{Argv: []string{"api", "-XPATCH", "/repos/acme/widgets/pulls/3", "-F", "body=@body.md"}, Files: map[string]string{"body.md": "new"}}, "", "PATCH", "repos/acme/widgets/pulls/3", map[string]any{"body": "new"}, "unknown"},
+		{"an approval", teardownEffectsGitHubRow{Argv: []string{"pr", "review", "73", "--approve", "--body", "Fine at B."}}, "gh pr review", "", "", map[string]any{"number": float64(73), "event": "APPROVE", "body": "Fine at B."}, "unknown"},
+		{"a merge by URL gh-standin kept nothing of", teardownEffectsGitHubRow{Argv: []string{"pr", "merge", "https://github.com/acme/widgets/pull/9", "--squash", "--delete-branch"}, Done: &done}, "gh pr merge", "", "", map[string]any{"number": float64(9)}, ""},
+		{"a merge gh-standin kept", teardownEffectsGitHubRow{Argv: []string{"pr", "merge", "-s"}, Done: &done, Pull: &teardownEffectsPullMutation{Action: "merge", Number: 9, Method: "squash"}}, "gh pr merge", "", "", map[string]any{}, "merge"},
+		{"a read", teardownEffectsGitHubRow{Argv: []string{"pr", "view", "--json", "number"}}, "gh pr view", "", "", map[string]any{}, "unknown"},
 		{"a creation gh-standin kept nothing of", teardownEffectsGitHubRow{Argv: []string{"pr", "create", "--title", "T"}, Done: &done}, "gh pr create", "", "", map[string]any{"title": "T"}, ""},
 	} {
 		command, method, path, fields, err := teardownEffectsGitHubRequest(row.row)
 		action, actionErr := teardownEffectsGitHubAction(row.row)
-		if err != nil || actionErr != nil || command != row.command || method != row.method || path != row.path || !reflect.DeepEqual(fields, row.fields) || action != row.action {
-			t.Errorf("%s: %q %q %q %v %v, action %q %v; want %q %q %q %v, action %q", row.name, command, method, path, fields, err, action, actionErr, row.command, row.method, row.path, row.fields, row.action)
+		// A row with no end is refused: what its call did is unknown, and no argument says it.
+		if (actionErr != nil) != (row.action == "unknown") || actionErr == nil && action != row.action {
+			t.Errorf("%s: action %q %v, want %q", row.name, action, actionErr, row.action)
+		}
+		if err != nil || command != row.command || method != row.method || path != row.path || !reflect.DeepEqual(fields, row.fields) {
+			t.Errorf("%s: %q %q %q %v %v; want %q %q %q %v", row.name, command, method, path, fields, err, row.command, row.method, row.path, row.fields)
 		}
 	}
 }

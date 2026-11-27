@@ -378,13 +378,18 @@ const WorldPart = z
 
 // The outcome record: every scored action of a run in one ordered list, and what the run read.
 
+/** A Dispatch actor: its kind (`session`, `user`, `system`) and its id. */
+const Actor = z.strictObject({ kind: Name, id: Text });
 /** The fields of each kind of scored action beside `kind`, `seq` and `at`:
  * - daemon: a `legion` tool request, its op and arguments, and the daemon's answer (`code` null
  *   when it took the request);
- * - dispatch: a Dispatch write, its command or event type, the issue or reference it targets and
- *   its key fields;
+ * - dispatch: a Dispatch write, its command or event type, the issue or reference it targets, its
+ *   key fields, and the actor Dispatch names as its writer (`actor`, absent from a record written
+ *   before outcome.ts kept it);
  * - github: a GitHub call, either `method` and `path` (a `gh api` call) or `command` (a `gh`
- *   subcommand such as `gh pr create`), and its key fields;
+ *   subcommand such as `gh pr create`), its key fields, and, where the GitHub stand-in took a call
+ *   that changes a pull request or a review, that change as it kept it (`change`: its `action`, as
+ *   gh-standin.ts names them, and that action's members);
  * - push: a ref the run pushed and the commit it pushed there;
  * - staging: a staged build Job, its snapshot's tree hash and its files. */
 const DETAILS = {
@@ -393,12 +398,13 @@ const DETAILS = {
     args: Fields,
     answer: z.strictObject({ code: Code.nullable(), body: z.json() }),
   },
-  dispatch: { command: Name, target: Text, fields: Fields },
+  dispatch: { command: Name, target: Text, fields: Fields, actor: Actor.optional() },
   github: {
     method: z.enum(["GET", "POST", "PATCH", "PUT", "DELETE"]).optional(),
     path: Text.optional(),
     command: Text.optional(),
     fields: Fields,
+    change: z.object({ action: Name }).catchall(z.json()).optional(),
   },
   push: { ref: Text, commit: Commit },
   staging: { tree: TreeHash, files: z.array(Text).min(1) },
@@ -437,11 +443,17 @@ const SkillRead = z.strictObject({
 
 /** What a run did, as outcome.json records it, and the shape of every trace. `id` is a fresh UUID
  * that names neither the case nor the arm; no field holds prompt text, an arm, a route or a token
- * count. `seq` rises strictly along `actions`. `agentReport` is an A case's returned report. */
+ * count. `seq` rises strictly along `actions`. `agentReport` is an A case's returned report.
+ * `otherWrites` are the Dispatch writes after the seed that an actor other than the role made
+ * (Dispatch itself, a seeded person, another session), each in the shape of a dispatch action with
+ * its writer: no action of the role's, so none is scored, and each is kept, in time order. */
 export const OutcomeRecord = z
   .strictObject({
     id: z.uuid(),
     actions: z.array(OutcomeAction),
+    otherWrites: z
+      .array(z.strictObject({ at: Instant, ...DETAILS.dispatch, actor: Actor }))
+      .optional(),
     agentReport: z.string().optional(),
     skillReads: z.array(SkillRead),
     dispatchFirstInjected: z.boolean(),

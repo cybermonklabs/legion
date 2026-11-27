@@ -307,12 +307,26 @@ test("a tester's fail names a step before the one it stands at, from the world's
 });
 
 // The implementer's completion of implementing needs the pull request the issue's branch is open
-// on: the world's, or one a successful call in the run's calls.jsonl opened and none has closed.
+// on: the world's, or one gh-standin recorded opening on the branch (a line's `pull`, which it
+// writes only for a call it took) and recorded no close or merge of since. What a call did is read
+// from that record alone, never from its arguments: a POST gh makes for its fields alone opens one,
+// and a line that kept nothing opens none, whatever its arguments say.
 test("an implementer's completion needs an open pull request on its branch: the world's or one the run opened", async () => {
   const calls = path.join(work, "calls-implementer.jsonl");
-  const call = (argv: string[], exit = 0, files: Record<string, string> = {}) =>
-    `${JSON.stringify({ at: "2030-01-07T15:00:00Z", as: "gh", argv, files, route: null, exit })}\n`;
-  writeFileSync(calls, call(["pr", "view", "1"]));
+  const call = (argv: string[], exit: number, pull?: Record<string, unknown>) =>
+    `${JSON.stringify({ at: "2030-01-07T15:00:00Z", as: "gh", argv, files: {}, route: null, exit, pull })}\n`;
+  const append = (line: string) => writeFileSync(calls, `${readFileSync(calls, "utf8")}${line}`);
+  const opened = (number: number, head = "legion/ACME-12") => ({
+    action: "open",
+    number,
+    head,
+    base: "main",
+    sha: "a".repeat(40),
+    title: "t",
+    body: "",
+    draft: false,
+  });
+  writeFileSync(calls, call(["pr", "view", "1"], 0));
   const daemon = boot({
     role: "implementer",
     phase: "implementing",
@@ -328,28 +342,40 @@ test("an implementer's completion needs an open pull request on its branch: the 
     handoffId: "h",
     handoffVersion: 1,
   };
+  const status = async () => (await daemon.call("POST", COMPLETE, complete)).status;
   expect(await daemon.call("POST", COMPLETE, complete)).toMatchObject({
     status: 409,
     body: { code: "HANDOFF_NO_PULL_REQUEST" },
   });
-  const failed = call(["pr", "create", "--head", "legion/ACME-12", "--base", "main"], 1);
-  writeFileSync(calls, `${readFileSync(calls, "utf8")}${failed}`);
-  expect((await daemon.call("POST", COMPLETE, complete)).status).toBe(409);
-  const created = call(["pr", "create", "--head", "legion/ACME-12", "--base", "main"]);
-  writeFileSync(calls, `${readFileSync(calls, "utf8")}${created}`);
+  // A creation gh-standin refused, and one it answered from a route and kept nothing of.
+  append(call(["pr", "create", "--head", "legion/ACME-12", "--base", "main"], 1));
+  append(call(["pr", "create", "--head", "legion/ACME-12", "--base", "main"], 0));
+  expect(await status()).toBe(409);
+  // Another branch's.
+  append(call(["pr", "create", "--head", "legion/ACME-13"], 0, opened(1, "legion/ACME-13")));
+  expect(await status()).toBe(409);
+  append(
+    call(["api", "repos/cybermonklabs/legion/pulls", "-f", "head=legion/ACME-12"], 0, opened(2))
+  );
   expect(await daemon.call("POST", COMPLETE, complete)).toMatchObject({ status: 200, body: {} });
-  writeFileSync(calls, `${readFileSync(calls, "utf8")}${call(["pr", "close", "7"])}`);
-  expect((await daemon.call("POST", COMPLETE, complete)).status).toBe(409);
-  const posted = call([
-    "api",
-    "-X",
-    "POST",
-    "repos/cybermonklabs/legion/pulls",
-    "-f",
-    "head=legion/ACME-12",
-  ]);
-  writeFileSync(calls, `${readFileSync(calls, "utf8")}${posted}`);
-  expect((await daemon.call("POST", COMPLETE, complete)).status).toBe(200);
+  // A close of another pull request leaves it open; its own close or merge closes it, a reopen
+  // opens it again, and a merge that waits for the requirements (`auto`) leaves it open.
+  append(call(["pr", "close", "1"], 0, { action: "close", number: 1 }));
+  expect(await status()).toBe(200);
+  append(call(["pr", "close", "2"], 0, { action: "close", number: 2 }));
+  expect(await status()).toBe(409);
+  append(call(["pr", "reopen", "2"], 0, { action: "reopen", number: 2 }));
+  expect(await status()).toBe(200);
+  append(call(["pr", "merge", "2", "--auto"], 0, { action: "merge", number: 2, auto: true }));
+  expect(await status()).toBe(200);
+  append(
+    call(["api", "-X", "PUT", "repos/cybermonklabs/legion/pulls/2/merge"], 0, {
+      action: "merge",
+      number: 2,
+      auto: false,
+    })
+  );
+  expect(await status()).toBe(409);
   // A pull request the world holds open counts without any call.
   const open = worldOf("P05");
   const holds = boot({
@@ -497,7 +523,10 @@ test("a production check's look: the record shows the world's check, a report is
   ).toMatchObject({ status: 409, body: { code: "CHECK_ROLE_MISMATCH" } });
 });
 
-test("a look that is the check's last takes a pending with no time, and refuses one with a time", async () => {
+// The last look's pending carries no time and closes the check as not run (workflow's
+// endLookPending): the record shows no check, and each report after it finds none open. A
+// recorded answer captured on a look that was not the last does not hold here.
+test("a look that is the check's last takes a pending with no time, which closes the check, and refuses one with a time", async () => {
   const world = worldOf("P10");
   const last = {
     ...world,
@@ -509,6 +538,7 @@ test("a look that is the check's last takes a pending with no time, and refuses 
     issue: "ACME-21",
     tree: "ACME-21",
     role: "tester",
+    answers: readAnswers(path.join(import.meta.dir, "testdata", "daemon-answers.json")),
   });
   expect((await daemon.call("GET", RECORD("ACME-21"))).body).toMatchObject({
     check: { last: true, lastWake: { kind: "bound" } },
@@ -526,7 +556,89 @@ test("a look that is the check's last takes a pending with no time, and refuses 
     status: 400,
     body: { code: "CHECK_WAKE_UNEXPECTED" },
   });
-  expect(await daemon.call("POST", COMPLETE, report)).toMatchObject({ status: 200 });
+  expect(await daemon.call("POST", COMPLETE, report)).toEqual({
+    status: 200,
+    headers: expect.anything(),
+    body: {},
+  });
+  expect((await daemon.call("GET", RECORD("ACME-21"))).body).not.toHaveProperty("check");
+  expect((await daemon.call("GET", "/legion/v1/state")).body).not.toHaveProperty(
+    "issues.ACME-21.check"
+  );
+  for (const verdict of ["pending", "pass", "fail"])
+    expect(await daemon.call("POST", COMPLETE, { ...report, verdict })).toMatchObject({
+      status: 409,
+      body: { code: "CHECK_NOT_OPEN" },
+    });
+});
+
+// A pending on a look before the last ends that look and names the next: the record shows the look
+// closed and the next look due at the time the report named, moved as the daemon's clampWake moves
+// it (no sooner than a minute after the case's now; the bound where it falls at or past the bound).
+test("a pending before the last look ends the look, and the next look is due when the report says, clamped as the daemon clamps it", async () => {
+  const lookAfter = async (wakeAt: string) => {
+    const daemon = boot({
+      world: worldOf("P10"),
+      phase: "done",
+      issue: "ACME-21",
+      tree: "ACME-21",
+      role: "tester",
+    });
+    const { grantId } = await daemon.grant();
+    const pending = {
+      grantId,
+      summary: "not in production yet",
+      verdict: "pending",
+      checkOpenedAt: "2030-01-08T11:58:00Z",
+      wakeAt,
+    };
+    expect(await daemon.call("POST", COMPLETE, pending)).toMatchObject({ status: 200, body: {} });
+    const record = await daemon.call("GET", RECORD("ACME-21"));
+    expect(record.body).toMatchObject({ check: { looks: 1, lookOpen: false, last: false } });
+    const check = (record.body as { check?: { nextWakeAt?: unknown } } | null)?.check;
+    return String(check?.nextWakeAt);
+  };
+  expect(await lookAfter("2030-01-08T12:30:00.123456789Z")).toBe("2030-01-08T12:30:00.123456Z");
+  expect(await lookAfter("2030-01-09T12:00:00Z")).toBe("2030-01-09T12:00:00Z");
+  expect(await lookAfter("2030-01-10T00:00:00+02:00")).toBe("2030-01-09T12:00:00Z");
+  // The P10 world's clock is 12:00:00, so the floor is 12:01:00 and a few seconds of the test.
+  const floored = Date.parse(await lookAfter("2030-01-08T12:00:30Z"));
+  expect(floored).toBeGreaterThanOrEqual(Date.parse("2030-01-08T12:01:00Z"));
+  expect(floored).toBeLessThan(Date.parse("2030-01-08T12:02:00Z"));
+});
+
+// The two production-check answers of testdata/daemon-answers.json (F3) are the real daemon's to
+// the P10 look before any report: the stand-in, given no answers file, answers the same requests
+// with the same status and body. Given that file, it still answers each look report from the check
+// it holds, so a report the file holds as accepted is recorded once, and its repeat refused.
+test("a look report is answered from the check the stand-in holds: as the daemon answered F3, and once", async () => {
+  const captured = readAnswers(path.join(import.meta.dir, "testdata", "daemon-answers.json"));
+  const looks = captured.filter((entry) => "checkOpenedAt" in entry.match);
+  expect(looks.map((entry) => entry.name)).toEqual(["check-wake-required", "pending-accepted"]);
+  const run = (answers: AnswerEntry[]) =>
+    boot({ world: worldOf("P10"), phase: "done", issue: "ACME-21", tree: "ACME-21", answers });
+  const bare = run([]);
+  const { grantId } = await bare.grant();
+  for (const entry of looks) {
+    const request = Object.fromEntries(
+      Object.entries(entry.match).filter(([, value]) => value !== null)
+    );
+    expect(
+      await bare.call("POST", COMPLETE, { grantId, summary: "not yet", ...request })
+    ).toMatchObject({ status: entry.status, body: entry.body ?? {} });
+  }
+  const filed = run(captured);
+  const filedGrant = await filed.grant();
+  const accepted = looks.find((entry) => entry.status === 200)?.match ?? {};
+  const report = { grantId: filedGrant.grantId, summary: "not yet", ...accepted };
+  expect(await filed.call("POST", COMPLETE, report)).toMatchObject({ status: 200 });
+  expect((await filed.call("GET", RECORD("ACME-21"))).body).toMatchObject({
+    check: { lookOpen: false, nextWakeAt: "2030-01-08T12:30:00Z" },
+  });
+  expect(await filed.call("POST", COMPLETE, report)).toMatchObject({
+    status: 409,
+    body: { code: "HANDOFF_ALREADY_RECORDED" },
+  });
 });
 
 test("serves an architect's operations, and refuses a child's design gate and a worker's move of another issue", async () => {

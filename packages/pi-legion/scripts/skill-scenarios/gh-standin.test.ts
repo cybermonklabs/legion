@@ -11,6 +11,8 @@ import path from "node:path";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { z } from "zod";
 import { githubFixtures } from "./case-world";
+import { GH_FLAGS } from "./gh-standin";
+import type { World } from "./heldout-case";
 
 // Every row runs gh-standin.ts as a scenario's agent does, a process of its own, against a run
 // directory holding the row's own fixtures.json.
@@ -27,9 +29,17 @@ function runWith(routes: object[]): string {
 
 /** `gh <args>`, answered by the stand-in from the fixtures of `run`. */
 function gh(run: string, ...args: string[]) {
+  return ghWith(run, args);
+}
+
+/** `gh <args>` with `stdin` on its standard input. */
+function ghWith(run: string, args: string[], stdin?: string) {
   const result = Bun.spawnSync(
     [process.execPath, path.join(import.meta.dir, "gh-standin.ts"), "gh", ...args],
-    { env: { PATH: process.env.PATH ?? "", SKILL_SCENARIO_RUN: run } }
+    {
+      env: { PATH: process.env.PATH ?? "", SKILL_SCENARIO_RUN: run },
+      stdin: stdin === undefined ? "ignore" : new TextEncoder().encode(stdin),
+    }
   );
   return {
     code: result.exitCode,
@@ -66,29 +76,156 @@ test("--json picks the named fields of each object of a list answer and of an ob
   );
 });
 
-// A pull request body edit reaches every object that has a body, in a list answer as in an object
-// answer, so the next `gh pr list --json body` reads the new body, as GitHub's would; a list whose
-// objects have no body is answered as it was.
-test("a body edit gives each object of a list answer that has a body the new body", () => {
+/** A pull request of the case world (heldout-case.ts `World`). */
+type WorldPull = NonNullable<World["github"]>["pullRequests"][number];
+
+/** A pull request of the case world, open on `ref`. */
+function worldPull(number: number, ref: string, body = "old"): WorldPull {
+  return {
+    number,
+    state: "open" as const,
+    draft: false,
+    head: { ref, sha: "b".repeat(40) },
+    base: "main",
+    title: `T${number}`,
+    body,
+    mergeCommit: null,
+    reviews: [],
+    reviewThreads: [],
+    checks: [],
+  };
+}
+
+/** A run of the case world whose GitHub holds `pulls` on acme/widgets, as rig.sh builds it, and
+ * whose issue is ACME-12 (its branch `legion/ACME-12`); `world: false` gives it no world.json. */
+function worldRun(pulls: WorldPull[], more: object[] = [], world = true) {
   const run = runWith([
-    { match: "^gh pr edit", stdout: "https://example.invalid/7" },
-    { match: "^gh pr list", stdout: [{ number: 7, body: "old" }] },
-    { match: "^gh pr view", stdout: { number: 7, body: "old" } },
-    { match: "^gh api .*comments", stdout: [{ id: 1 }] },
+    ...githubFixtures(
+      {
+        repository: "acme/widgets",
+        pullRequests: pulls,
+        mergeQueue: [
+          { pullRequest: 7, request: "enqueuePullRequest", answer: "queued", detail: "" },
+          { pullRequest: 7, request: "dequeuePullRequest", answer: "removed", detail: "" },
+        ],
+      },
+      "main",
+      "ACME-12"
+    ).routes,
+    ...more,
   ]);
-  expect(gh(run, "pr", "edit", "7", "--body", "new").code).toBe(0);
-  expect(gh(run, "pr", "list", "--json", "number,body").stdout).toBe(
-    '[{"number":7,"body":"new"}]\n'
-  );
-  expect(gh(run, "pr", "view", "7", "--json", "body").stdout).toBe('{"body":"new"}\n');
-  expect(gh(run, "api", "repos/example/widgets/issues/7/comments").stdout).toBe('[{"id":1}]\n');
-  const [edit] = readFileSync(path.join(run, "calls.jsonl"), "utf8").trimEnd().split("\n");
-  expect(JSON.parse(edit ?? "{}")).toMatchObject({
-    argv: ["pr", "edit", "7", "--body", "new"],
-    body: "new",
-    exit: 0,
+  if (world)
+    writeFileSync(
+      path.join(run, "world.json"),
+      JSON.stringify({ dispatch: { issue: { key: "ACME-12" } } })
+    );
+  return run;
+}
+
+/** The body of each pull request a read answers with, by number. */
+function bodies(stdout: string): Record<number, string> {
+  const each = (value: unknown): [number, string][] =>
+    Array.isArray(value)
+      ? value.flatMap(each)
+      : typeof value === "object" && value !== null && "number" in value && "body" in value
+        ? [[Number(value.number), String(value.body)]]
+        : [];
+  return Object.fromEntries(each(JSON.parse(stdout)));
+}
+
+// A body edit is kept on the pull request it names alone, in every route that answers with it (its
+// view, its REST read, each list, the issue it is), so GitHub's next read of it holds the new body
+// and the next read of any other pull request its own. With no selector it is the issue branch's
+// open pull request. One that names a pull request GitHub holds none of, or none where the branch
+// has no open one, fails with gh's words and changes nothing.
+test("a body edit changes the pull request it names alone, in each route that answers with it", () => {
+  const issue = [
+    { match: "^gh api .*repos/acme/widgets/issues/8(?: |$)", stdout: { number: 8, body: "old" } },
+  ];
+  const run = worldRun([worldPull(7, "legion/ACME-12"), worldPull(8, "legion/ACME-13")], issue);
+  const reads = () => ({
+    list: bodies(gh(run, "pr", "list", "--json", "number,body").stdout),
+    seven: bodies(gh(run, "pr", "view", "7", "--json", "number,body").stdout),
+    eight: bodies(gh(run, "api", "repos/acme/widgets/pulls/8").stdout),
+    issue: bodies(gh(run, "api", "repos/acme/widgets/issues/8").stdout),
   });
+  expect(gh(run, "pr", "edit", "8", "-b", "new eight").code).toBe(0);
+  expect(reads()).toEqual({
+    list: { 7: "old", 8: "new eight" },
+    seven: { 7: "old" },
+    eight: { 8: "new eight" },
+    issue: { 8: "new eight" },
+  });
+  // No selector: the issue branch's open pull request, #7.
+  expect(gh(run, "pr", "edit", "--body", "new seven").code).toBe(0);
+  expect(reads().list).toEqual({ 7: "new seven", 8: "new eight" });
+  expect(gh(run, "pr", "edit", "99", "-b", "x")).toEqual({
+    code: 1,
+    stdout: "",
+    stderr:
+      "GraphQL: Could not resolve to a PullRequest with the number of 99. (repository.pullRequest)\n",
+  });
+  expect(pullChanges(run)).toEqual([
+    { action: "edit", numbers: [8], body: "new eight" },
+    { action: "edit", numbers: [7], body: "new seven" },
+  ]);
+  const none = worldRun([worldPull(8, "legion/ACME-13")]);
+  expect(gh(none, "pr", "edit", "-b", "x")).toEqual({
+    code: 1,
+    stdout: "",
+    stderr: 'no pull requests found for branch "legion/ACME-12"\n',
+  });
+  expect(bodies(gh(none, "pr", "list", "--json", "number,body").stdout)).toEqual({ 8: "old" });
+  expect(pullChanges(none)).toEqual([]);
 });
+
+// A review is kept on the one pull request the call names, or, where it names none, on the issue
+// branch's one open pull request, however many routes answer with it. With no such pull request,
+// or without exactly one of --approve, --request-changes and --comment (the last two with a body),
+// the call fails with gh's words and keeps no review.
+test("gh pr review saves its review on the one pull request it names, or on the branch's, or fails as gh does", () => {
+  const run = worldRun([worldPull(7, "legion/ACME-12"), worldPull(8, "legion/ACME-13")]);
+  const reviews = (number: number) =>
+    JSON.parse(gh(run, "api", `repos/acme/widgets/pulls/${number}/reviews`).stdout).map(
+      (each: { state: string; body: string }) => [each.state, each.body]
+    );
+  expect(gh(run, "pr", "review", "-a")).toMatchObject({ code: 0 });
+  expect(gh(run, "pr", "review", "8", "-cb", "A note.")).toMatchObject({ code: 0 });
+  expect(reviews(7)).toEqual([["APPROVED", ""]]);
+  expect(reviews(8)).toEqual([["COMMENTED", "A note."]]);
+  expect(JSON.parse(gh(run, "pr", "view", "7", "--json", "reviewDecision").stdout)).toEqual({
+    reviewDecision: "APPROVED",
+  });
+  const usage = readFileSync(testdata("f9-gh-requests.json"), "utf8");
+  const refusal = (argv: string[]): string => {
+    const found = z
+      .array(z.looseObject({ argv: z.array(z.string()), stderr: z.string() }))
+      .parse(JSON.parse(usage))
+      .find((each) => each.argv.join(" ") === argv.join(" "));
+    if (found === undefined) throw new Error(`no captured refusal for gh ${argv.join(" ")}`);
+    return found.stderr;
+  };
+  for (const argv of [
+    ["pr", "review", "7"],
+    ["pr", "review", "7", "-a", "-r"],
+    ["pr", "review", "7", "-a", "-r", "-b", "x"],
+    ["pr", "review", "7", "-c"],
+  ]) {
+    expect(gh(run, ...argv)).toEqual({ code: 1, stdout: "", stderr: refusal(argv) });
+  }
+  expect(pullChanges(run).map((change) => [change.action, change.number, change.state])).toEqual([
+    ["review", 7, "APPROVED"],
+    ["review", 8, "COMMENTED"],
+  ]);
+  const none = worldRun([worldPull(8, "legion/ACME-13")]);
+  expect(gh(none, "pr", "review", "-a")).toEqual({
+    code: 1,
+    stdout: "",
+    stderr: 'no pull requests found for branch "legion/ACME-12"\n',
+  });
+  expect(JSON.parse(gh(none, "api", "repos/acme/widgets/pulls/8/reviews").stdout)).toEqual([]);
+  expect(pullChanges(none)).toEqual([]);
+}, 60_000);
 
 // A review submission answers as GitHub does: the POST with the review it created, and every later
 // read of the pull request and of its review list holds that review, its decision following. A
@@ -185,19 +322,26 @@ test("a review POST answers with the created review, and the pull request's read
 });
 
 /** The pull request change each row of the run's calls.jsonl kept, in order, once every row is
- * held to say when its call ended, no earlier than it began. */
-function pullChanges(run: string): unknown[] {
+ * held to say when its call ended, no earlier than it began, and a row that exited other than 0 to
+ * keep none. */
+function pullChanges(run: string): Record<string, unknown>[] {
   const Row = z.looseObject({
     at: z.string(),
     done: z.string(),
     exit: z.number(),
     pull: z.record(z.string(), z.unknown()).optional(),
   });
-  const rows = readFileSync(path.join(run, "calls.jsonl"), "utf8")
-    .trimEnd()
-    .split("\n")
-    .map((line) => Row.parse(JSON.parse(line)));
-  for (const row of rows) expect(Date.parse(row.done)).toBeGreaterThanOrEqual(Date.parse(row.at));
+  const file = path.join(run, "calls.jsonl");
+  const rows = existsSync(file)
+    ? readFileSync(file, "utf8")
+        .trimEnd()
+        .split("\n")
+        .map((line) => Row.parse(JSON.parse(line)))
+    : [];
+  for (const row of rows) {
+    expect(Date.parse(row.done)).toBeGreaterThanOrEqual(Date.parse(row.at));
+    if (row.exit !== 0) expect(row.pull).toBeUndefined();
+  }
   return rows.flatMap((row) => (row.pull === undefined ? [] : [row.pull]));
 }
 
@@ -676,3 +820,253 @@ test("help and the version are the real gh's answers and no call of the record",
   ]);
   expect(local("pr", "view", "1").code).toBe(1);
 }, 60_000);
+
+// The stand-in reads each command's flags as gh 2.98.0's help lists them (testdata/f9-gh-help.json,
+// captured as f9-gh.command says): each flag, its one-letter form, and whether it takes a value.
+test("the flags the stand-in reads are the ones gh 2.98.0's help lists for each command", () => {
+  const help = z.record(z.string(), z.string()).parse(JSON.parse(captured("f9-gh-help.json")));
+  const listed = Object.fromEntries(
+    Object.entries(help).map(([command, text]) => {
+      let section = "";
+      const flags: string[] = [];
+      for (const line of text.split("\n")) {
+        if (/^[A-Z][A-Z ]+$/.test(line)) section = line;
+        const flag = /^\s+(?:-(\w), )?--([\w-]+)(?: (\S+))?\s{2,}/.exec(line);
+        if (flag && (section === "FLAGS" || section === "INHERITED FLAGS"))
+          flags.push(`${flag[1] ? `${flag[1]} ` : ""}${flag[2]}${flag[3] ? "=" : ""}`);
+      }
+      return [command, flags];
+    })
+  );
+  expect(GH_FLAGS).toEqual(listed);
+});
+
+/** One call of the real gh in testdata/f9-gh-requests.json, and the requests it sent. */
+const Capture = z.object({
+  argv: z.array(z.string()),
+  stdin: z.string().optional(),
+  branch: z.enum(["one", "none", "detached"]),
+  exit: z.number(),
+  stderr: z.string(),
+  requests: z.array(
+    z.object({
+      method: z.string(),
+      path: z.string(),
+      body: z.unknown().optional(),
+      operation: z.string().optional(),
+      variables: z.record(z.string(), z.unknown()).nullish(),
+    })
+  ),
+});
+type Capture = z.infer<typeof Capture>;
+const Fields = z.record(z.string(), z.unknown());
+
+/** The change gh asked GitHub to make for `capture`, in the words of gh-standin's `pull`, or
+ * undefined where it asked none. */
+function changeAsked(capture: Capture): Record<string, unknown> | undefined {
+  const variables = (operation: string) =>
+    capture.requests.find((request) => request.operation === `mutation ${operation}`)?.variables;
+  const input = (operation: string) => Fields.safeParse(variables(operation)?.input).data;
+  const number = (id: unknown) => Number(/^PR_node(\d+)$/.exec(String(id))?.[1]);
+  const review = input("PullRequestReviewAdd");
+  if (review !== undefined) {
+    const states: Record<string, string> = {
+      APPROVE: "APPROVED",
+      REQUEST_CHANGES: "CHANGES_REQUESTED",
+      COMMENT: "COMMENTED",
+    };
+    const event = String(review.event);
+    return {
+      action: "review",
+      number: number(review.pullRequestId),
+      state: states[event],
+      body: review.body,
+    };
+  }
+  const create = input("PullRequestCreate");
+  if (create !== undefined)
+    return {
+      action: "open",
+      head: create.headRefName,
+      base: create.baseRefName,
+      title: create.title,
+      body: create.body,
+      draft: create.draft,
+    };
+  const update = input("PullRequestUpdate");
+  if (update !== undefined)
+    return {
+      action: "edit",
+      numbers: [number(update.pullRequestId)],
+      body: update.body,
+      ...(update.title === undefined ? {} : { title: update.title }),
+    };
+  const merge = input("PullRequestMerge");
+  if (merge !== undefined)
+    return {
+      action: "merge",
+      number: number(merge.pullRequestId),
+      method: String(merge.mergeMethod).toLowerCase(),
+    };
+  const disable = variables("PullRequestAutoMergeDisable");
+  if (disable) return { action: "disable-auto", number: number(disable.prID) };
+  const comment = input("CommentCreate");
+  const close = input("PullRequestClose");
+  if (close !== undefined)
+    return {
+      action: "close",
+      number: number(close.pullRequestId),
+      ...(comment === undefined ? {} : { comment: comment.body }),
+    };
+  const draft = input("ConvertPullRequestToDraft");
+  if (draft !== undefined) return { action: "draft", number: number(draft.pullRequestId) };
+  if (comment !== undefined)
+    return { action: "comment", number: number(comment.subjectId), body: comment.body };
+  const [sent] = capture.requests;
+  const body = Fields.safeParse(sent?.body).data ?? {};
+  if (sent?.path === "/graphql" && /^mutation/.test(String(body.query))) {
+    const name = /\{(\w+)\(/.exec(String(body.query))?.[1];
+    const named: Record<string, string> = {
+      enqueuePullRequest: "enqueue",
+      dequeuePullRequest: "dequeue",
+    };
+    return { action: named[name ?? ""], id: Fields.parse(body.variables).pr };
+  }
+  if (sent === undefined || sent.method === "GET" || sent.path === "/graphql") return undefined;
+  const rest = `${sent.method} ${sent.path}`;
+  const asked: [RegExp, Record<string, unknown>][] = [
+    [
+      /^POST \/repos\/acme\/widgets\/pulls$/,
+      { action: "open", head: "legion/ACME-13", base: body.base },
+    ],
+    [
+      /^POST .*\/pulls\/7\/reviews$/,
+      { action: "review", number: 7, state: "APPROVED", body: body.body },
+    ],
+    [
+      /^PATCH .*\/pulls\/7$/,
+      body.state === "closed"
+        ? { action: "close", number: 7 }
+        : { action: "edit", numbers: [7], body: body.body },
+    ],
+    [/^PUT .*\/pulls\/7\/merge$/, { action: "merge", number: 7, method: body.merge_method }],
+    [/^POST .*\/pulls\/7\/comments$/, { action: "review-comment", number: 7, body: body.body }],
+    [/^POST .*\/issues\/7\/comments$/, { action: "comment", number: 7, body: body.body }],
+    [/^POST .*\/pulls\/7$/, { action: "request", number: 7, method: "POST" }],
+  ];
+  return asked.find(([pattern]) => pattern.test(rest))?.[1];
+}
+
+// gh's arguments are read as gh 2.98.0 reads them, on calls of the real gh (testdata/f9-gh-requests.json,
+// f9-gh.command): each row runs the call against a world that holds the pull requests gh's GitHub
+// held (#7 open on the issue's branch, legion/ACME-12, and #77; for a row whose branch is "none", #77
+// alone; for "detached", no issue branch). The stand-in records the request gh sent for a `gh api`
+// call (its method, path and fields, `-H` a header and no head) and the pull request a `gh pr` call
+// read; it keeps the change gh asked GitHub to make, as gh asked it; and it refuses each call gh
+// refused before it asked anything, with gh's own words.
+test("each captured call of the real gh is read, kept and refused as gh did", () => {
+  const Row = z.looseObject({
+    request: z.object({
+      method: z.string().optional(),
+      path: z.string().optional(),
+      fields: Fields,
+    }),
+    pull: Fields.optional(),
+  });
+  const captures = z.array(Capture).parse(JSON.parse(captured("f9-gh-requests.json")));
+  expect(captures.length).toBeGreaterThan(40);
+  for (const capture of captures) {
+    const name = `gh ${capture.argv.join(" ")} (${capture.branch})`;
+    const run = worldRun(
+      capture.branch === "none"
+        ? [worldPull(77, "legion/ACME-21")]
+        : [worldPull(7, "legion/ACME-12"), worldPull(77, "legion/ACME-21")],
+      [{ match: "^gh ", stdout: "" }],
+      capture.branch !== "detached"
+    );
+    // A pull request opens on a branch the run's remote holds.
+    if (capture.argv[1] === "create" || capture.argv[1] === "repos/acme/widgets/pulls")
+      pushed(run, "legion/ACME-13");
+    const answered = ghWith(run, capture.argv, capture.stdin);
+    const [line = "{}"] = readFileSync(path.join(run, "calls.jsonl"), "utf8").trimEnd().split("\n");
+    const row = Row.parse(JSON.parse(line));
+    const asked = changeAsked(capture);
+    const [first] = capture.requests;
+    if (capture.argv[0] === "api" && first !== undefined) {
+      const body = Fields.safeParse(first.body).data ?? {};
+      expect({ name, method: row.request.method, path: row.request.path }).toEqual({
+        name,
+        method: first.method,
+        path: first.path.replace(/^\//, "").replace(/\?.*$/, ""),
+      });
+      if (first.method !== "GET")
+        expect({ name, fields: row.request.fields }).toMatchObject({
+          name,
+          fields:
+            first.path === "/graphql"
+              ? { query: body.query, ...Fields.parse(body.variables ?? {}) }
+              : body,
+        });
+      expect(row.request.fields).not.toHaveProperty("head", "Accept: application/vnd.github+json");
+    }
+    const byNumber = capture.requests.find(
+      (request) => request.operation === "query PullRequestByNumber"
+    );
+    if (byNumber !== undefined)
+      expect({ name, number: row.request.fields.number }).toEqual({
+        name,
+        number: byNumber.variables?.pr_number,
+      });
+    const listed = capture.requests.find(
+      (request) => request.operation === "fragment pr on PullRequest"
+    );
+    if (listed?.variables?.headBranch !== undefined)
+      expect({ name, head: row.request.fields.head }).toEqual({
+        name,
+        head: listed.variables.headBranch,
+      });
+    if (asked !== undefined) {
+      expect({ name, pull: row.pull }).toMatchObject({ name, pull: asked });
+    } else if (capture.exit === 1) {
+      expect({ name, ...answered, pull: row.pull }).toEqual({
+        name,
+        code: 1,
+        stdout: "",
+        stderr: capture.stderr,
+        pull: undefined,
+      });
+    } else if (capture.argv.slice(0, 2).join(" ") === "pr reopen") {
+      // gh read #7 open and asked nothing; the stand-in holds no pull request's state across a
+      // close, so it takes the reopen.
+      expect(row.pull).toEqual({ action: "reopen", number: 7 });
+    } else expect({ name, pull: row.pull }).toEqual({ name, pull: undefined });
+  }
+}, 300_000);
+
+// A call the stand-in refused keeps no change and leaves every answer as it was: an enqueue the
+// merge queue refuses, and a body edit whose --jq filter fails.
+test("a refused call keeps no change and changes no answer", () => {
+  const run = runWith(
+    githubFixtures(
+      {
+        repository: "acme/widgets",
+        pullRequests: [worldPull(7, "legion/ACME-12")],
+        mergeQueue: [
+          { pullRequest: 7, request: "enqueuePullRequest", answer: "refused", detail: "refused" },
+        ],
+      },
+      "main",
+      "ACME-12"
+    ).routes
+  );
+  const enqueue =
+    "query=mutation($pr:ID!){enqueuePullRequest(input:{pullRequestId:$pr}){mergeQueueEntry{position}}}";
+  expect(gh(run, "api", "graphql", "-f", enqueue, "-f", "pr=PR_7").code).toBe(1);
+  const edit = ["api", "-X", "PATCH", "repos/acme/widgets/pulls/7", "-f", "body=new"];
+  expect(gh(run, ...edit, "--jq", ".[").code).toBe(1);
+  expect(gh(run, "pr", "view", "7", "--json", "body").stdout).toBe('{"body":"old"}\n');
+  expect(pullChanges(run)).toEqual([]);
+  expect(gh(run, ...edit).code).toBe(0);
+  expect(gh(run, "pr", "view", "7", "--json", "body").stdout).toBe('{"body":"new"}\n');
+  expect(pullChanges(run)).toEqual([{ action: "edit", numbers: [7], body: "new" }]);
+});

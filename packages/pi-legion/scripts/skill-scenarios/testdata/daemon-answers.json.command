@@ -2,4 +2,4 @@ Captured 2026-11-26T10:56:05Z from the real daemon through the real Oh My Pi Leg
 
 bash scripts/e2e/teardown-effects.sh --controls --cases packages/pi-legion/scripts/skill-scenarios/testdata/heldout-case-example.json
 
-The implementer entries are exact request-keyed control evidence, not general GitHub-independent rules: the daemon stand-in decides HANDOFF_NO_PULL_REQUEST and the ordinary accepted implementer completion from its own world and gh calls. The two production-check entries are reusable by request match; a null wakeAt matches an absent wakeAt.
+The implementer entries are exact request-keyed control evidence, not general GitHub-independent rules: the daemon stand-in decides HANDOFF_NO_PULL_REQUEST and the ordinary accepted implementer completion from its own world and gh calls. The two production-check entries are the real daemon's answers to the T0 example's P10 look before any report on it: the daemon stand-in answers every look report from the check it holds, never from this file, and daemon-standin.test.ts holds its answers to these two requests to the captured ones (a null wakeAt is an absent wakeAt).

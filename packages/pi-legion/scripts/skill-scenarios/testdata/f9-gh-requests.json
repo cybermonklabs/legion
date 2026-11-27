@@ -1,0 +1,1463 @@
+[
+  {
+    "argv": [
+      "pr",
+      "edit",
+      "77",
+      "-R",
+      "acme/widgets",
+      "--body-file",
+      "-"
+    ],
+    "stdin": "New body.\n",
+    "branch": "one",
+    "exit": 0,
+    "stderr": "",
+    "requests": [
+      {
+        "method": "POST",
+        "path": "/graphql",
+        "operation": "query PullRequestByNumber",
+        "variables": {
+          "owner": "acme",
+          "pr_number": 77,
+          "repo": "widgets"
+        }
+      },
+      {
+        "method": "POST",
+        "path": "/graphql",
+        "operation": "query PullRequestProjectItems",
+        "variables": {
+          "endCursor": null,
+          "name": "widgets",
+          "number": 77,
+          "owner": "acme"
+        }
+      },
+      {
+        "method": "POST",
+        "path": "/graphql",
+        "operation": "mutation PullRequestUpdate",
+        "variables": {
+          "input": {
+            "pullRequestId": "PR_node77",
+            "body": "New body.\n"
+          }
+        }
+      }
+    ]
+  },
+  {
+    "argv": [
+      "pr",
+      "view",
+      "77",
+      "-R",
+      "acme/widgets",
+      "--json",
+      "number,state,mergeCommit,headRefOid,body,mergedAt,url"
+    ],
+    "branch": "one",
+    "exit": 0,
+    "stderr": "",
+    "requests": [
+      {
+        "method": "POST",
+        "path": "/graphql",
+        "operation": "query PullRequestByNumber",
+        "variables": {
+          "owner": "acme",
+          "pr_number": 77,
+          "repo": "widgets"
+        }
+      }
+    ]
+  },
+  {
+    "argv": [
+      "pr",
+      "view",
+      "77",
+      "-R",
+      "acme/widgets",
+      "--json",
+      "body",
+      "--jq",
+      ".body"
+    ],
+    "branch": "one",
+    "exit": 0,
+    "stderr": "",
+    "requests": [
+      {
+        "method": "POST",
+        "path": "/graphql",
+        "operation": "query PullRequestByNumber",
+        "variables": {
+          "owner": "acme",
+          "pr_number": 77,
+          "repo": "widgets"
+        }
+      }
+    ]
+  },
+  {
+    "argv": [
+      "pr",
+      "view",
+      "7",
+      "-R",
+      "acme/widgets",
+      "--json",
+      "id",
+      "-q",
+      ".id"
+    ],
+    "branch": "one",
+    "exit": 0,
+    "stderr": "",
+    "requests": [
+      {
+        "method": "POST",
+        "path": "/graphql",
+        "operation": "query PullRequestByNumber",
+        "variables": {
+          "owner": "acme",
+          "pr_number": 7,
+          "repo": "widgets"
+        }
+      }
+    ]
+  },
+  {
+    "argv": [
+      "api",
+      "graphql",
+      "-F",
+      "number=7",
+      "-f",
+      "owner=acme",
+      "-f",
+      "name=widgets",
+      "-f",
+      "query=query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){state mergedAt isInMergeQueue mergeStateStatus headRefOid mergeQueueEntry{state position}}}}"
+    ],
+    "branch": "one",
+    "exit": 0,
+    "stderr": "",
+    "requests": [
+      {
+        "method": "POST",
+        "path": "/graphql",
+        "body": {
+          "query": "query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){state mergedAt isInMergeQueue mergeStateStatus headRefOid mergeQueueEntry{state position}}}}",
+          "variables": {
+            "name": "widgets",
+            "number": 7,
+            "owner": "acme"
+          }
+        }
+      }
+    ]
+  },
+  {
+    "argv": [
+      "api",
+      "graphql",
+      "-f",
+      "query=mutation($pr:ID!,$head:GitObjectID!){enqueuePullRequest(input:{pullRequestId:$pr,expectedHeadOid:$head}){mergeQueueEntry{position}}}",
+      "-f",
+      "pr=PR_node7",
+      "-f",
+      "head=cccccccccccccccccccccccccccccccccccccccc"
+    ],
+    "branch": "one",
+    "exit": 0,
+    "stderr": "",
+    "requests": [
+      {
+        "method": "POST",
+        "path": "/graphql",
+        "body": {
+          "query": "mutation($pr:ID!,$head:GitObjectID!){enqueuePullRequest(input:{pullRequestId:$pr,expectedHeadOid:$head}){mergeQueueEntry{position}}}",
+          "variables": {
+            "head": "cccccccccccccccccccccccccccccccccccccccc",
+            "pr": "PR_node7"
+          }
+        }
+      }
+    ]
+  },
+  {
+    "argv": [
+      "api",
+      "graphql",
+      "-f",
+      "query=mutation($pr:ID!){dequeuePullRequest(input:{id:$pr}){mergeQueueEntry{position}}}",
+      "-f",
+      "pr=PR_node7"
+    ],
+    "branch": "one",
+    "exit": 0,
+    "stderr": "",
+    "requests": [
+      {
+        "method": "POST",
+        "path": "/graphql",
+        "body": {
+          "query": "mutation($pr:ID!){dequeuePullRequest(input:{id:$pr}){mergeQueueEntry{position}}}",
+          "variables": {
+            "pr": "PR_node7"
+          }
+        }
+      }
+    ]
+  },
+  {
+    "argv": [
+      "api",
+      "--paginate",
+      "repos/acme/widgets/rules/branches/main"
+    ],
+    "branch": "one",
+    "exit": 0,
+    "stderr": "",
+    "requests": [
+      {
+        "method": "GET",
+        "path": "/repos/acme/widgets/rules/branches/main?per_page=100",
+        "body": null
+      }
+    ]
+  },
+  {
+    "argv": [
+      "api",
+      "repos/acme/widgets",
+      "--jq",
+      "{default_branch, allow_merge_commit}"
+    ],
+    "branch": "one",
+    "exit": 0,
+    "stderr": "",
+    "requests": [
+      {
+        "method": "GET",
+        "path": "/repos/acme/widgets",
+        "body": null
+      }
+    ]
+  },
+  {
+    "argv": [
+      "api",
+      "repos/acme/widgets/pulls",
+      "-f",
+      "head=acme:legion/ACME-13",
+      "-f",
+      "base=main"
+    ],
+    "branch": "one",
+    "exit": 0,
+    "stderr": "",
+    "requests": [
+      {
+        "method": "POST",
+        "path": "/repos/acme/widgets/pulls",
+        "body": {
+          "base": "main",
+          "head": "acme:legion/ACME-13"
+        }
+      }
+    ]
+  },
+  {
+    "argv": [
+      "api",
+      "--method=POST",
+      "repos/acme/widgets/pulls/7/reviews",
+      "-f",
+      "event=APPROVE",
+      "-f",
+      "body=Fine."
+    ],
+    "branch": "one",
+    "exit": 0,
+    "stderr": "",
+    "requests": [
+      {
+        "method": "POST",
+        "path": "/repos/acme/widgets/pulls/7/reviews",
+        "body": {
+          "body": "Fine.",
+          "event": "APPROVE"
+        }
+      }
+    ]
+  },
+  {
+    "argv": [
+      "api",
+      "-XPATCH",
+      "repos/acme/widgets/pulls/7",
+      "-f",
+      "body=new"
+    ],
+    "branch": "one",
+    "exit": 0,
+    "stderr": "",
+    "requests": [
+      {
+        "method": "PATCH",
+        "path": "/repos/acme/widgets/pulls/7",
+        "body": {
+          "body": "new"
+        }
+      }
+    ]
+  },
+  {
+    "argv": [
+      "api",
+      "-X",
+      "PATCH",
+      "repos/acme/widgets/pulls/7",
+      "-f",
+      "state=closed"
+    ],
+    "branch": "one",
+    "exit": 0,
+    "stderr": "",
+    "requests": [
+      {
+        "method": "PATCH",
+        "path": "/repos/acme/widgets/pulls/7",
+        "body": {
+          "state": "closed"
+        }
+      }
+    ]
+  },
+  {
+    "argv": [
+      "api",
+      "-H",
+      "Accept: application/vnd.github+json",
+      "repos/acme/widgets/pulls/7",
+      "-f",
+      "body=new"
+    ],
+    "branch": "one",
+    "exit": 0,
+    "stderr": "",
+    "requests": [
+      {
+        "method": "POST",
+        "path": "/repos/acme/widgets/pulls/7",
+        "body": {
+          "body": "new"
+        }
+      }
+    ]
+  },
+  {
+    "argv": [
+      "api",
+      "-X",
+      "PUT",
+      "repos/acme/widgets/pulls/7/merge",
+      "-f",
+      "merge_method=squash"
+    ],
+    "branch": "one",
+    "exit": 0,
+    "stderr": "",
+    "requests": [
+      {
+        "method": "PUT",
+        "path": "/repos/acme/widgets/pulls/7/merge",
+        "body": {
+          "merge_method": "squash"
+        }
+      }
+    ]
+  },
+  {
+    "argv": [
+      "api",
+      "repos/acme/widgets/pulls/7/comments",
+      "-f",
+      "body=Why?",
+      "-f",
+      "path=a.go",
+      "-F",
+      "line=3"
+    ],
+    "branch": "one",
+    "exit": 0,
+    "stderr": "",
+    "requests": [
+      {
+        "method": "POST",
+        "path": "/repos/acme/widgets/pulls/7/comments",
+        "body": {
+          "body": "Why?",
+          "line": 3,
+          "path": "a.go"
+        }
+      }
+    ]
+  },
+  {
+    "argv": [
+      "api",
+      "repos/acme/widgets/issues/7/comments",
+      "-F",
+      "body=@-"
+    ],
+    "stdin": "A comment.\n",
+    "branch": "one",
+    "exit": 0,
+    "stderr": "",
+    "requests": [
+      {
+        "method": "POST",
+        "path": "/repos/acme/widgets/issues/7/comments",
+        "body": {
+          "body": "A comment.\n"
+        }
+      }
+    ]
+  },
+  {
+    "argv": [
+      "pr",
+      "review",
+      "-a"
+    ],
+    "branch": "one",
+    "exit": 0,
+    "stderr": "",
+    "requests": [
+      {
+        "method": "POST",
+        "path": "/graphql",
+        "operation": "query PullRequestForBranch",
+        "variables": {
+          "headRefName": "legion/ACME-12",
+          "owner": "acme",
+          "repo": "widgets",
+          "states": null
+        }
+      },
+      {
+        "method": "POST",
+        "path": "/graphql",
+        "operation": "mutation PullRequestReviewAdd",
+        "variables": {
+          "input": {
+            "pullRequestId": "PR_node7",
+            "body": "",
+            "event": "APPROVE"
+          }
+        }
+      }
+    ]
+  },
+  {
+    "argv": [
+      "pr",
+      "review",
+      "-a"
+    ],
+    "branch": "none",
+    "exit": 1,
+    "stderr": "no pull requests found for branch \"legion/ACME-12\"\n",
+    "requests": [
+      {
+        "method": "POST",
+        "path": "/graphql",
+        "operation": "query PullRequestForBranch",
+        "variables": {
+          "headRefName": "legion/ACME-12",
+          "owner": "acme",
+          "repo": "widgets",
+          "states": null
+        }
+      }
+    ]
+  },
+  {
+    "argv": [
+      "pr",
+      "review",
+      "-a"
+    ],
+    "branch": "detached",
+    "exit": 1,
+    "stderr": "could not determine current branch: failed to run git: not on any branch\n",
+    "requests": []
+  },
+  {
+    "argv": [
+      "pr",
+      "review",
+      "7",
+      "-r",
+      "-b",
+      "Changes."
+    ],
+    "branch": "one",
+    "exit": 0,
+    "stderr": "",
+    "requests": [
+      {
+        "method": "POST",
+        "path": "/graphql",
+        "operation": "query PullRequestByNumber",
+        "variables": {
+          "owner": "acme",
+          "pr_number": 7,
+          "repo": "widgets"
+        }
+      },
+      {
+        "method": "POST",
+        "path": "/graphql",
+        "operation": "mutation PullRequestReviewAdd",
+        "variables": {
+          "input": {
+            "pullRequestId": "PR_node7",
+            "body": "Changes.",
+            "event": "REQUEST_CHANGES"
+          }
+        }
+      }
+    ]
+  },
+  {
+    "argv": [
+      "pr",
+      "review",
+      "-c",
+      "-b",
+      "A note.",
+      "7"
+    ],
+    "branch": "one",
+    "exit": 0,
+    "stderr": "",
+    "requests": [
+      {
+        "method": "POST",
+        "path": "/graphql",
+        "operation": "query PullRequestByNumber",
+        "variables": {
+          "owner": "acme",
+          "pr_number": 7,
+          "repo": "widgets"
+        }
+      },
+      {
+        "method": "POST",
+        "path": "/graphql",
+        "operation": "mutation PullRequestReviewAdd",
+        "variables": {
+          "input": {
+            "pullRequestId": "PR_node7",
+            "body": "A note.",
+            "event": "COMMENT"
+          }
+        }
+      }
+    ]
+  },
+  {
+    "argv": [
+      "pr",
+      "review",
+      "7",
+      "--approve",
+      "--body=Fine at B."
+    ],
+    "branch": "one",
+    "exit": 0,
+    "stderr": "",
+    "requests": [
+      {
+        "method": "POST",
+        "path": "/graphql",
+        "operation": "query PullRequestByNumber",
+        "variables": {
+          "owner": "acme",
+          "pr_number": 7,
+          "repo": "widgets"
+        }
+      },
+      {
+        "method": "POST",
+        "path": "/graphql",
+        "operation": "mutation PullRequestReviewAdd",
+        "variables": {
+          "input": {
+            "pullRequestId": "PR_node7",
+            "body": "Fine at B.",
+            "event": "APPROVE"
+          }
+        }
+      }
+    ]
+  },
+  {
+    "argv": [
+      "pr",
+      "review",
+      "7",
+      "-cb",
+      "Joined."
+    ],
+    "branch": "one",
+    "exit": 0,
+    "stderr": "",
+    "requests": [
+      {
+        "method": "POST",
+        "path": "/graphql",
+        "operation": "query PullRequestByNumber",
+        "variables": {
+          "owner": "acme",
+          "pr_number": 7,
+          "repo": "widgets"
+        }
+      },
+      {
+        "method": "POST",
+        "path": "/graphql",
+        "operation": "mutation PullRequestReviewAdd",
+        "variables": {
+          "input": {
+            "pullRequestId": "PR_node7",
+            "body": "Joined.",
+            "event": "COMMENT"
+          }
+        }
+      }
+    ]
+  },
+  {
+    "argv": [
+      "pr",
+      "review",
+      "https://github.localhost/acme/widgets/pull/7",
+      "-a"
+    ],
+    "branch": "one",
+    "exit": 0,
+    "stderr": "",
+    "requests": [
+      {
+        "method": "POST",
+        "path": "/graphql",
+        "operation": "query PullRequestByNumber",
+        "variables": {
+          "owner": "acme",
+          "pr_number": 7,
+          "repo": "widgets"
+        }
+      },
+      {
+        "method": "POST",
+        "path": "/graphql",
+        "operation": "mutation PullRequestReviewAdd",
+        "variables": {
+          "input": {
+            "pullRequestId": "PR_node7",
+            "body": "",
+            "event": "APPROVE"
+          }
+        }
+      }
+    ]
+  },
+  {
+    "argv": [
+      "pr",
+      "review",
+      "legion/ACME-12",
+      "-a"
+    ],
+    "branch": "one",
+    "exit": 0,
+    "stderr": "",
+    "requests": [
+      {
+        "method": "POST",
+        "path": "/graphql",
+        "operation": "query PullRequestForBranch",
+        "variables": {
+          "headRefName": "legion/ACME-12",
+          "owner": "acme",
+          "repo": "widgets",
+          "states": null
+        }
+      },
+      {
+        "method": "POST",
+        "path": "/graphql",
+        "operation": "mutation PullRequestReviewAdd",
+        "variables": {
+          "input": {
+            "pullRequestId": "PR_node7",
+            "body": "",
+            "event": "APPROVE"
+          }
+        }
+      }
+    ]
+  },
+  {
+    "argv": [
+      "pr",
+      "review",
+      "7"
+    ],
+    "branch": "one",
+    "exit": 1,
+    "stderr": "--approve, --request-changes, or --comment required when not running interactively\n\nUsage:  gh pr review [<number> | <url> | <branch>] [flags]\n\nFlags:\n  -a, --approve           Approve pull request\n  -b, --body string       Specify the body of a review\n  -F, --body-file file    Read body text from file (use \"-\" to read from standard input)\n  -c, --comment           Comment on a pull request\n  -r, --request-changes   Request changes on a pull request\n  \n",
+    "requests": []
+  },
+  {
+    "argv": [
+      "pr",
+      "review",
+      "7",
+      "-a",
+      "-r"
+    ],
+    "branch": "one",
+    "exit": 1,
+    "stderr": "body cannot be blank for request-changes review\n\nUsage:  gh pr review [<number> | <url> | <branch>] [flags]\n\nFlags:\n  -a, --approve           Approve pull request\n  -b, --body string       Specify the body of a review\n  -F, --body-file file    Read body text from file (use \"-\" to read from standard input)\n  -c, --comment           Comment on a pull request\n  -r, --request-changes   Request changes on a pull request\n  \n",
+    "requests": []
+  },
+  {
+    "argv": [
+      "pr",
+      "review",
+      "7",
+      "-a",
+      "-r",
+      "-b",
+      "x"
+    ],
+    "branch": "one",
+    "exit": 1,
+    "stderr": "need exactly one of --approve, --request-changes, or --comment\n\nUsage:  gh pr review [<number> | <url> | <branch>] [flags]\n\nFlags:\n  -a, --approve           Approve pull request\n  -b, --body string       Specify the body of a review\n  -F, --body-file file    Read body text from file (use \"-\" to read from standard input)\n  -c, --comment           Comment on a pull request\n  -r, --request-changes   Request changes on a pull request\n  \n",
+    "requests": []
+  },
+  {
+    "argv": [
+      "pr",
+      "review",
+      "7",
+      "-c"
+    ],
+    "branch": "one",
+    "exit": 1,
+    "stderr": "body cannot be blank for comment review\n\nUsage:  gh pr review [<number> | <url> | <branch>] [flags]\n\nFlags:\n  -a, --approve           Approve pull request\n  -b, --body string       Specify the body of a review\n  -F, --body-file file    Read body text from file (use \"-\" to read from standard input)\n  -c, --comment           Comment on a pull request\n  -r, --request-changes   Request changes on a pull request\n  \n",
+    "requests": []
+  },
+  {
+    "argv": [
+      "pr",
+      "review",
+      "99",
+      "-a"
+    ],
+    "branch": "one",
+    "exit": 1,
+    "stderr": "GraphQL: Could not resolve to a PullRequest with the number of 99. (repository.pullRequest)\n",
+    "requests": [
+      {
+        "method": "POST",
+        "path": "/graphql",
+        "operation": "query PullRequestByNumber",
+        "variables": {
+          "owner": "acme",
+          "pr_number": 99,
+          "repo": "widgets"
+        }
+      }
+    ]
+  },
+  {
+    "argv": [
+      "pr",
+      "create",
+      "-d",
+      "-H",
+      "legion/ACME-13",
+      "-B",
+      "main",
+      "-t",
+      "T",
+      "-b",
+      "B"
+    ],
+    "branch": "none",
+    "exit": 0,
+    "stderr": "",
+    "requests": [
+      {
+        "method": "POST",
+        "path": "/graphql",
+        "operation": "fragment repo on Repository",
+        "variables": {
+          "name": "widgets",
+          "owner": "acme"
+        }
+      },
+      {
+        "method": "POST",
+        "path": "/graphql",
+        "operation": "query PullRequestForBranch",
+        "variables": {
+          "headRefName": "legion/ACME-13",
+          "owner": "acme",
+          "repo": "widgets",
+          "states": [
+            "OPEN"
+          ]
+        }
+      },
+      {
+        "method": "POST",
+        "path": "/graphql",
+        "operation": "mutation PullRequestCreate",
+        "variables": {
+          "input": {
+            "baseRefName": "main",
+            "body": "B",
+            "draft": true,
+            "headRefName": "legion/ACME-13",
+            "maintainerCanModify": true,
+            "repositoryId": "R_1",
+            "title": "T"
+          }
+        }
+      }
+    ]
+  },
+  {
+    "argv": [
+      "pr",
+      "create",
+      "--head=legion/ACME-13",
+      "--base",
+      "main",
+      "-t",
+      "T",
+      "--body-file",
+      "-"
+    ],
+    "stdin": "Body.\n",
+    "branch": "none",
+    "exit": 0,
+    "stderr": "",
+    "requests": [
+      {
+        "method": "POST",
+        "path": "/graphql",
+        "operation": "fragment repo on Repository",
+        "variables": {
+          "name": "widgets",
+          "owner": "acme"
+        }
+      },
+      {
+        "method": "POST",
+        "path": "/graphql",
+        "operation": "query PullRequestForBranch",
+        "variables": {
+          "headRefName": "legion/ACME-13",
+          "owner": "acme",
+          "repo": "widgets",
+          "states": [
+            "OPEN"
+          ]
+        }
+      },
+      {
+        "method": "POST",
+        "path": "/graphql",
+        "operation": "mutation PullRequestCreate",
+        "variables": {
+          "input": {
+            "baseRefName": "main",
+            "body": "Body.\n",
+            "draft": false,
+            "headRefName": "legion/ACME-13",
+            "maintainerCanModify": true,
+            "repositoryId": "R_1",
+            "title": "T"
+          }
+        }
+      }
+    ]
+  },
+  {
+    "argv": [
+      "pr",
+      "edit",
+      "7",
+      "-b",
+      "new",
+      "-t",
+      "New title"
+    ],
+    "branch": "one",
+    "exit": 0,
+    "stderr": "",
+    "requests": [
+      {
+        "method": "POST",
+        "path": "/graphql",
+        "operation": "query PullRequestByNumber",
+        "variables": {
+          "owner": "acme",
+          "pr_number": 7,
+          "repo": "widgets"
+        }
+      },
+      {
+        "method": "POST",
+        "path": "/graphql",
+        "operation": "query PullRequestProjectItems",
+        "variables": {
+          "endCursor": null,
+          "name": "widgets",
+          "number": 7,
+          "owner": "acme"
+        }
+      },
+      {
+        "method": "POST",
+        "path": "/graphql",
+        "operation": "mutation PullRequestUpdate",
+        "variables": {
+          "input": {
+            "pullRequestId": "PR_node7",
+            "title": "New title",
+            "body": "new"
+          }
+        }
+      }
+    ]
+  },
+  {
+    "argv": [
+      "pr",
+      "edit",
+      "-b",
+      "branch body"
+    ],
+    "branch": "one",
+    "exit": 0,
+    "stderr": "",
+    "requests": [
+      {
+        "method": "POST",
+        "path": "/graphql",
+        "operation": "query PullRequestForBranch",
+        "variables": {
+          "headRefName": "legion/ACME-12",
+          "owner": "acme",
+          "repo": "widgets",
+          "states": null
+        }
+      },
+      {
+        "method": "POST",
+        "path": "/graphql",
+        "operation": "query PullRequestProjectItems",
+        "variables": {
+          "endCursor": null,
+          "name": "widgets",
+          "number": 7,
+          "owner": "acme"
+        }
+      },
+      {
+        "method": "POST",
+        "path": "/graphql",
+        "operation": "mutation PullRequestUpdate",
+        "variables": {
+          "input": {
+            "pullRequestId": "PR_node7",
+            "body": "branch body"
+          }
+        }
+      }
+    ]
+  },
+  {
+    "argv": [
+      "pr",
+      "edit",
+      "-b",
+      "branch body"
+    ],
+    "branch": "none",
+    "exit": 1,
+    "stderr": "no pull requests found for branch \"legion/ACME-12\"\n",
+    "requests": [
+      {
+        "method": "POST",
+        "path": "/graphql",
+        "operation": "query PullRequestForBranch",
+        "variables": {
+          "headRefName": "legion/ACME-12",
+          "owner": "acme",
+          "repo": "widgets",
+          "states": null
+        }
+      }
+    ]
+  },
+  {
+    "argv": [
+      "pr",
+      "edit",
+      "99",
+      "-b",
+      "x"
+    ],
+    "branch": "one",
+    "exit": 1,
+    "stderr": "GraphQL: Could not resolve to a PullRequest with the number of 99. (repository.pullRequest)\n",
+    "requests": [
+      {
+        "method": "POST",
+        "path": "/graphql",
+        "operation": "query PullRequestByNumber",
+        "variables": {
+          "owner": "acme",
+          "pr_number": 99,
+          "repo": "widgets"
+        }
+      }
+    ]
+  },
+  {
+    "argv": [
+      "pr",
+      "merge",
+      "7",
+      "-s",
+      "-d"
+    ],
+    "branch": "one",
+    "exit": 1,
+    "stderr": "failed to run git: fatal: 'origin/main' is not a commit and a branch 'main' cannot be created from it\n\n",
+    "requests": [
+      {
+        "method": "POST",
+        "path": "/graphql",
+        "operation": "query PullRequest_fields"
+      },
+      {
+        "method": "POST",
+        "path": "/graphql",
+        "operation": "query PullRequest_fields2"
+      },
+      {
+        "method": "POST",
+        "path": "/graphql",
+        "operation": "query PullRequestByNumber",
+        "variables": {
+          "owner": "acme",
+          "pr_number": 7,
+          "repo": "widgets"
+        }
+      },
+      {
+        "method": "POST",
+        "path": "/graphql",
+        "operation": "mutation PullRequestMerge",
+        "variables": {
+          "input": {
+            "pullRequestId": "PR_node7",
+            "mergeMethod": "SQUASH"
+          }
+        }
+      }
+    ]
+  },
+  {
+    "argv": [
+      "pr",
+      "merge",
+      "--auto",
+      "--squash"
+    ],
+    "branch": "one",
+    "exit": 0,
+    "stderr": "! Pull request acme/widgets#7 (T) has diverged from local branch\n",
+    "requests": [
+      {
+        "method": "POST",
+        "path": "/graphql",
+        "operation": "query PullRequest_fields2"
+      },
+      {
+        "method": "POST",
+        "path": "/graphql",
+        "operation": "query PullRequest_fields"
+      },
+      {
+        "method": "POST",
+        "path": "/graphql",
+        "operation": "query PullRequestForBranch",
+        "variables": {
+          "headRefName": "legion/ACME-12",
+          "owner": "acme",
+          "repo": "widgets",
+          "states": null
+        }
+      },
+      {
+        "method": "POST",
+        "path": "/graphql",
+        "operation": "mutation PullRequestMerge",
+        "variables": {
+          "input": {
+            "pullRequestId": "PR_node7",
+            "mergeMethod": "SQUASH"
+          }
+        }
+      }
+    ]
+  },
+  {
+    "argv": [
+      "pr",
+      "merge",
+      "7",
+      "--disable-auto"
+    ],
+    "branch": "one",
+    "exit": 0,
+    "stderr": "",
+    "requests": [
+      {
+        "method": "POST",
+        "path": "/graphql",
+        "operation": "query PullRequest_fields"
+      },
+      {
+        "method": "POST",
+        "path": "/graphql",
+        "operation": "query PullRequest_fields2"
+      },
+      {
+        "method": "POST",
+        "path": "/graphql",
+        "operation": "query PullRequestByNumber",
+        "variables": {
+          "owner": "acme",
+          "pr_number": 7,
+          "repo": "widgets"
+        }
+      },
+      {
+        "method": "POST",
+        "path": "/graphql",
+        "operation": "mutation PullRequestAutoMergeDisable",
+        "variables": {
+          "prID": "PR_node7"
+        }
+      }
+    ]
+  },
+  {
+    "argv": [
+      "pr",
+      "close",
+      "-d",
+      "7"
+    ],
+    "branch": "one",
+    "exit": 1,
+    "stderr": "✓ Closed pull request acme/widgets#7 (T)\nfailed to run git: error: pathspec 'main' did not match any file(s) known to git\n\n",
+    "requests": [
+      {
+        "method": "POST",
+        "path": "/graphql",
+        "operation": "query PullRequestByNumber",
+        "variables": {
+          "owner": "acme",
+          "pr_number": 7,
+          "repo": "widgets"
+        }
+      },
+      {
+        "method": "POST",
+        "path": "/graphql",
+        "operation": "mutation PullRequestClose",
+        "variables": {
+          "input": {
+            "pullRequestId": "PR_node7"
+          }
+        }
+      },
+      {
+        "method": "POST",
+        "path": "/graphql",
+        "operation": "fragment repo on Repository",
+        "variables": {
+          "name": "widgets",
+          "owner": "acme"
+        }
+      }
+    ]
+  },
+  {
+    "argv": [
+      "pr",
+      "close",
+      "7",
+      "-c",
+      "Superseded."
+    ],
+    "branch": "one",
+    "exit": 0,
+    "stderr": "✓ Closed pull request acme/widgets#7 (T)\n",
+    "requests": [
+      {
+        "method": "POST",
+        "path": "/graphql",
+        "operation": "query PullRequestByNumber",
+        "variables": {
+          "owner": "acme",
+          "pr_number": 7,
+          "repo": "widgets"
+        }
+      },
+      {
+        "method": "POST",
+        "path": "/graphql",
+        "operation": "mutation CommentCreate",
+        "variables": {
+          "input": {
+            "subjectId": "PR_node7",
+            "body": "Superseded."
+          }
+        }
+      },
+      {
+        "method": "POST",
+        "path": "/graphql",
+        "operation": "mutation PullRequestClose",
+        "variables": {
+          "input": {
+            "pullRequestId": "PR_node7"
+          }
+        }
+      }
+    ]
+  },
+  {
+    "argv": [
+      "pr",
+      "reopen",
+      "7"
+    ],
+    "branch": "one",
+    "exit": 0,
+    "stderr": "! Pull request acme/widgets#7 (T) is already open\n",
+    "requests": [
+      {
+        "method": "POST",
+        "path": "/graphql",
+        "operation": "query PullRequestByNumber",
+        "variables": {
+          "owner": "acme",
+          "pr_number": 7,
+          "repo": "widgets"
+        }
+      }
+    ]
+  },
+  {
+    "argv": [
+      "pr",
+      "ready",
+      "7",
+      "--undo"
+    ],
+    "branch": "one",
+    "exit": 0,
+    "stderr": "✓ Pull request acme/widgets#7 is converted to \"draft\"\n",
+    "requests": [
+      {
+        "method": "POST",
+        "path": "/graphql",
+        "operation": "query PullRequestByNumber",
+        "variables": {
+          "owner": "acme",
+          "pr_number": 7,
+          "repo": "widgets"
+        }
+      },
+      {
+        "method": "POST",
+        "path": "/graphql",
+        "operation": "mutation ConvertPullRequestToDraft",
+        "variables": {
+          "input": {
+            "pullRequestId": "PR_node7"
+          }
+        }
+      }
+    ]
+  },
+  {
+    "argv": [
+      "pr",
+      "comment",
+      "7",
+      "-b",
+      "A comment."
+    ],
+    "branch": "one",
+    "exit": 0,
+    "stderr": "",
+    "requests": [
+      {
+        "method": "POST",
+        "path": "/graphql",
+        "operation": "query PullRequestByNumber",
+        "variables": {
+          "owner": "acme",
+          "pr_number": 7,
+          "repo": "widgets"
+        }
+      },
+      {
+        "method": "POST",
+        "path": "/graphql",
+        "operation": "mutation CommentCreate",
+        "variables": {
+          "input": {
+            "subjectId": "PR_node7",
+            "body": "A comment."
+          }
+        }
+      }
+    ]
+  },
+  {
+    "argv": [
+      "pr",
+      "checks",
+      "7"
+    ],
+    "branch": "one",
+    "exit": 8,
+    "stderr": "",
+    "requests": [
+      {
+        "method": "POST",
+        "path": "/graphql",
+        "operation": "query PullRequestByNumber",
+        "variables": {
+          "owner": "acme",
+          "pr_number": 7,
+          "repo": "widgets"
+        }
+      },
+      {
+        "method": "POST",
+        "path": "/graphql",
+        "operation": "query PullRequest_fields"
+      },
+      {
+        "method": "POST",
+        "path": "/graphql",
+        "operation": "query PullRequest_fields2"
+      },
+      {
+        "method": "POST",
+        "path": "/graphql",
+        "operation": "query PullRequestStatusChecks",
+        "variables": {
+          "id": "PR_node7"
+        }
+      }
+    ]
+  },
+  {
+    "argv": [
+      "pr",
+      "list",
+      "-H",
+      "legion/ACME-12",
+      "-s",
+      "all",
+      "--json",
+      "number"
+    ],
+    "branch": "one",
+    "exit": 0,
+    "stderr": "",
+    "requests": [
+      {
+        "method": "POST",
+        "path": "/graphql",
+        "operation": "fragment pr on PullRequest",
+        "variables": {
+          "headBranch": "legion/ACME-12",
+          "limit": 30,
+          "owner": "acme",
+          "repo": "widgets",
+          "state": [
+            "OPEN",
+            "CLOSED",
+            "MERGED"
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "argv": [
+      "pr",
+      "list",
+      "-a",
+      "@me",
+      "-d",
+      "--json",
+      "number"
+    ],
+    "branch": "one",
+    "exit": 0,
+    "stderr": "",
+    "requests": [
+      {
+        "method": "POST",
+        "path": "/graphql",
+        "operation": "query SearchType_enumValues"
+      },
+      {
+        "method": "POST",
+        "path": "/graphql",
+        "operation": "fragment pr on PullRequest",
+        "variables": {
+          "limit": 30,
+          "q": "assignee:@me draft:true repo:acme/widgets state:open type:pr",
+          "type": "ISSUE"
+        }
+      }
+    ]
+  }
+]

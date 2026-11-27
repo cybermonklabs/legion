@@ -12,6 +12,7 @@ import {
   type SessionEntry,
   session,
   sessionCalls,
+  sessionId,
   skillReads,
   subagentSessions,
 } from "./transcript";
@@ -20,7 +21,6 @@ type Action = OutcomeRecord["actions"][number];
 type Unnumbered<T> = T extends Action ? Omit<T, "seq"> : never;
 type Pending = Unnumbered<Action>;
 const Fields = z.record(z.string(), z.json());
-type Fields = z.infer<typeof Fields>;
 const DaemonLine = z.object({
   at: z.string(),
   method: z.string(),
@@ -29,13 +29,21 @@ const DaemonLine = z.object({
   body: z.json(),
   answer: z.json(),
 });
+/** One line of calls.jsonl: gh-standin.ts's record of a gh call, with the request gh makes for it
+ * as gh reads its arguments (`request`) and the change it kept to a pull request or a review
+ * (`pull`), which it writes only for a call it took; or a line of rig.sh's other stand-ins. */
 const Call = z.object({
   at: z.string(),
   as: z.string(),
-  argv: z.array(z.string()),
-  files: z.record(z.string(), z.string()).default({}),
-  stdin: z.string().optional(),
-  body: z.string().optional(),
+  request: z
+    .object({
+      command: z.string().optional(),
+      method: z.string().optional(),
+      path: z.string().optional(),
+      fields: Fields,
+    })
+    .optional(),
+  pull: z.object({ action: z.string() }).catchall(z.json()).optional(),
 });
 const StageLine = z.object({ at: z.string(), tree: z.string(), files: z.array(z.string()) });
 const Readback = z.object({
@@ -46,6 +54,7 @@ const Readback = z.object({
       created_at: z.string(),
       type: z.string(),
       issue_key: z.string(),
+      actor: z.object({ kind: z.string(), id: z.string() }),
       payload: Fields,
     })
   ),
@@ -179,6 +188,10 @@ function daemonReadActions(
   });
 }
 
+// Each Dispatch event the server writes (packages/envoy/internal/dispatch), by the command that
+// makes it. A new version of a document is `artifact.version` (docs.ArtifactVersionEventPayload),
+// whether `dispatch doc-edit` or a new upload under the document's name made it; a person's edit
+// in the browser is `artifact.human_edited` (docs/edit_notices.go), which no command makes.
 const commands = new Map(
   Object.entries({
     "issue.created": "issue",
@@ -197,13 +210,23 @@ const commands = new Map(
     "message.edited": "edit-message",
     "message.deleted": "delete-message",
     "artifact.created": "artifact",
-    "artifact.human_edited": "doc-edit",
+    "artifact.version": "doc-edit",
     "handoff.recorded": "handoff-write",
     "result.recorded": "result",
   })
 );
 
-function dispatchActions(readback: z.infer<typeof Readback>): Pending[] {
+type DispatchWrite = Omit<Extract<Pending, { kind: "dispatch" }>, "kind"> & {
+  actor: { kind: string; id: string };
+};
+
+/** The Dispatch writes after the seed, each with the actor Dispatch names as its writer: those of
+ * the role's own sessions (`own`) are its actions, and every other actor's (Dispatch itself, a
+ * seeded person, another session) is kept apart, as no action of the role's. */
+function dispatchWrites(
+  readback: z.infer<typeof Readback>,
+  own: ReadonlySet<string>
+): { actions: Pending[]; others: DispatchWrite[] } {
   const handoffs = new Map(readback.handoffs.map(({ id, body }) => [id, body]));
   const results = new Map(
     (readback.results.checks ?? [])
@@ -213,9 +236,9 @@ function dispatchActions(readback: z.infer<typeof Readback>): Pending[] {
   // A `*.delivery` event is Dispatch's own attempt to hand a comment or an ask to its target
   // through Envoy, and a run's Dispatch has no Envoy (start_dispatch's FAKE_ENVOY_PORT), so each
   // one failed there: no write of the role's. The write it delivers keeps its targets.
-  return readback.events
+  const writes = readback.events
     .filter((event) => event.seq > readback.seedThrough && !event.type.endsWith(".delivery"))
-    .map((event) => {
+    .map((event): DispatchWrite => {
       const payload = event.payload;
       let fields = payload;
       let target = event.issue_key;
@@ -242,99 +265,51 @@ function dispatchActions(readback: z.infer<typeof Readback>): Pending[] {
           break;
         }
       }
+      const { kind, id } = event.actor;
       return {
-        kind: "dispatch",
         command: commands.get(event.type) ?? event.type,
         target,
         fields,
+        actor: { kind, id },
         at: event.created_at,
       };
     });
+  const ours = (write: DispatchWrite) => write.actor.kind === "session" && own.has(write.actor.id);
+  return {
+    actions: writes.filter(ours).map((write) => ({ kind: "dispatch", ...write })),
+    others: writes.filter((write) => !ours(write)),
+  };
 }
 
 const Method = z.enum(["GET", "POST", "PATCH", "PUT", "DELETE"]);
-const aliases = new Map(
-  Object.entries({ "-b": "body", "-B": "base", "-H": "head", "-t": "title", "-R": "repo" })
-);
 
+/** A gh call as gh-standin.ts recorded it: the request, as gh reads its arguments (gh-standin's
+ * readGhArgs, the one reading of them), and the change the stand-in kept, which is what the call
+ * did. Nothing here reads the arguments again. */
 function githubAction(call: z.infer<typeof Call>): Pending[] {
-  if (call.as !== "gh" || !call.argv[0]) return [];
-  const [verb, sub] = call.argv;
-  const fields: Fields = {};
-  let method: string | undefined;
-  let hasData = false;
-  let endpoint: string | undefined;
-  let number: number | undefined;
-  for (let i = verb === "api" ? 1 : 2; i < call.argv.length; i += 1) {
-    const arg = call.argv[i] ?? "";
-    const equals = arg.indexOf("=");
-    const flag = equals >= 0 ? arg.slice(0, equals) : arg;
-    const name = aliases.get(flag) ?? flag.replace(/^--/, "");
-    if (!arg.startsWith("-")) {
-      if (endpoint === undefined) endpoint = arg;
-      const match = /^(?:https?:\/\/[^/]+\/[^/]+\/[^/]+\/pull\/)?([1-9]\d*)$/.exec(arg);
-      if (match) number = Number(match[1]);
-      continue;
-    }
-    if (
-      [
-        "--paginate",
-        "--slurp",
-        "--draft",
-        "--fill",
-        "--approve",
-        "--request-changes",
-        "--auto",
-        "--merge",
-        "--squash",
-        "--rebase",
-        "--admin",
-        "--delete-branch",
-      ].includes(flag)
-    ) {
-      fields[name] = true;
-      continue;
-    }
-    const value = equals >= 0 ? arg.slice(equals + 1) : call.argv[i + 1];
-    if (value === undefined) continue;
-    if (equals < 0) i += 1;
-    if (verb === "api" && ["-X", "--method"].includes(flag)) method = value.toUpperCase();
-    else if (["-f", "-F", "--field", "--raw-field"].includes(flag) && verb === "api") {
-      const [key, ...parts] = value.split("=");
-      const raw = parts.join("=");
-      if (key && parts.length) {
-        hasData = true;
-        const typed = flag === "-F" || flag === "--field";
-        const valueFromFile = typed && raw.startsWith("@") ? call.files[raw.slice(1)] : undefined;
-        fields[key] =
-          valueFromFile ??
-          (typed && /^(?:true|false|null|-?(?:0|[1-9]\d*))$/.test(raw) ? JSON.parse(raw) : raw);
-      }
-    } else if (flag === "--input") {
-      hasData = true;
-      const text = call.files[value] ?? (value === "-" ? call.stdin : undefined);
-      if (text !== undefined) Object.assign(fields, Fields.parse(JSON.parse(text)));
-    } else if (flag === "--body-file" || (flag === "-F" && verb !== "api")) {
-      const text = call.files[value] ?? (value === "-" ? call.stdin : undefined);
-      if (text !== undefined) fields.body = text;
-    } else if (!["json", "jq", "-q", "header", "-H"].includes(name)) fields[name] = value;
-  }
-  if (call.body !== undefined) fields.body = call.body;
-  if (number !== undefined) fields.number = number;
-  const common = { kind: "github" as const, at: call.at, fields };
+  if (call.as !== "gh") return [];
+  const { request, pull } = call;
+  if (request === undefined)
+    throw new Error(`calls.jsonl's gh call at ${call.at} records no request`);
+  const common = {
+    kind: "github" as const,
+    at: call.at,
+    fields: request.fields,
+    ...(pull === undefined ? {} : { change: pull }),
+  };
   // Reads are recorded as writes are: a case can score the read that anchors a wait (a pull
   // request's head, its approval). GraphQL reads use POST, so only a mutation is recorded, and
   // gh's own login and dashboard are no GitHub action.
-  if (verb === "api") {
-    const explicit = method ?? (hasData ? "POST" : "GET");
-    const query = fields.query;
-    if (endpoint === "graphql" && (typeof query !== "string" || !/\bmutation\b/.test(query)))
+  if (request.method !== undefined) {
+    const query = request.fields.query;
+    if (request.path === "graphql" && (typeof query !== "string" || !/\bmutation\b/.test(query)))
       return [];
-    if (!endpoint) return [];
-    return [{ ...common, method: Method.parse(explicit), path: endpoint.replace(/^\//, "") }];
+    if (!request.path) return [];
+    return [{ ...common, method: Method.parse(request.method), path: request.path }];
   }
-  if (["auth", "status"].includes(verb)) return [];
-  return [{ ...common, command: ["gh", verb, sub].filter(Boolean).join(" ") }];
+  const command = request.command ?? "";
+  if (command.trim() === "gh" || /^gh (auth|status)( |$)/.test(command)) return [];
+  return [{ ...common, command }];
 }
 
 function nanos(at: string): bigint {
@@ -350,22 +325,36 @@ function shifted(at: bigint, offset: bigint): string {
 }
 
 /** Raw logs use the same host clock. Compare full precision, breaking exact ties by input order,
- * then move actions onto the fixture's timeline. No seeded write is scored. */
+ * then move actions onto the fixture's timeline. No seeded write is scored, and of the Dispatch
+ * writes after the seed only those of the role's own sessions are its actions: the run's session
+ * and each subagent it started, by the session id each transcript's header names. */
 export function writeOutcome(dir: string, agent?: string): OutcomeRecord {
   const file = (name: string) => path.join(dir, name);
   const parent = session(dir);
   if (parent.length === 0) throw new Error(`${dir}: no session transcript`);
+  const subagents = subagentSessions(dir);
   const role =
     agent === undefined
       ? parent
-      : (subagentSessions(dir).find(({ name }) => name === agent)?.entries ?? parent);
+      : (subagents.find(({ name }) => name === agent)?.entries ?? parent);
+  const own = new Set(
+    [parent, ...subagents.map(({ entries }) => entries)].flatMap(
+      (entries) => sessionId(entries) ?? []
+    )
+  );
+  if (sessionId(parent) === undefined)
+    throw new Error(
+      `${dir}: the session transcript names no session, so the role's own writes are unknown`
+    );
+  const dispatch = dispatchWrites(
+    Readback.parse(JSON.parse(readFileSync(file("dispatch-readback.json"), "utf8"))),
+    own
+  );
   const daemonLog = jsonLines(file("daemon.log"), DaemonLine);
   const actions: Pending[] = [
     ...daemonLog.flatMap(daemonAction),
     ...daemonReadActions(parent, daemonLog),
-    ...dispatchActions(
-      Readback.parse(JSON.parse(readFileSync(file("dispatch-readback.json"), "utf8")))
-    ),
+    ...dispatch.actions,
     ...jsonLines(file("calls.jsonl"), Call).flatMap(githubAction),
     ...lines(file("pushes.log")).map((line): Pending => {
       const hit = /^(\S+) (\S+) [0-9a-f]{40} ([0-9a-f]{40})$/.exec(line);
@@ -445,6 +434,10 @@ export function writeOutcome(dir: string, agent?: string): OutcomeRecord {
     .map((action) => ({ action, ns: nanos(action.at) }))
     .sort((a, b) => (a.ns < b.ns ? -1 : a.ns > b.ns ? 1 : 0))
     .map(({ action, ns }, i) => ({ ...action, at: shifted(ns, offset), seq: i + 1 }));
+  const others = dispatch.others
+    .map((write) => ({ write, ns: nanos(write.at) }))
+    .sort((a, b) => (a.ns < b.ns ? -1 : a.ns > b.ns ? 1 : 0))
+    .map(({ write, ns }) => ({ ...write, at: shifted(ns, offset) }));
   const deployments = file("deployments.jsonl");
   const onWire =
     existsSync(deployments) &&
@@ -455,6 +448,7 @@ export function writeOutcome(dir: string, agent?: string): OutcomeRecord {
     JSON.stringify({
       id: randomUUID(),
       actions: translateCommits(ordered, inverse),
+      ...(others.length === 0 ? {} : { otherWrites: translateCommits(others, inverse) }),
       ...(agentReport === undefined ? {} : { agentReport: translateCommits(agentReport, inverse) }),
       skillReads: skillReads(role),
       dispatchFirstInjected: dispatchFirstInjected(role, onWire),

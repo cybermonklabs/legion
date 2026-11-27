@@ -36,7 +36,9 @@
  *      every `match` value equals the request's at its dot path (`args.wake_at`, `issues.0`; a
  *      `null` holds where the request has no value there) answers it with its `status` and `body`
  *      (a 204 answers no body). A file or an entry with a member this schema does not name is
- *      refused when the stand-in starts.
+ *      refused when the stand-in starts. A production check's look report is never answered from
+ *      a file: each entry was captured against one state of a check, and the stand-in holds the
+ *      check, whose state each report moves.
  *   2. the built-in answer: the daemon's own refusals the case's world makes (below), then `{}`.
  *
  * The built-in refusals of `handoff/complete`, each the daemon's own code and status
@@ -52,8 +54,8 @@
  * fail and no other role's names one; a tester's fail names a step before the one it stands at
  * (RETURN_REFUSED, from the world's `daemon.step`); the implementer's completion of implementing
  * needs an open pull request on `legion/<issue>` (HANDOFF_NO_PULL_REQUEST: one the world holds, or
- * one a successful `gh pr create` or POST of `repos/<o>/<r>/pulls` in `--gh-calls` opened and no
- * `gh pr close` or `gh pr merge` since closed). The daemon's other refusals depend on state this
+ * one gh-standin recorded opening on the branch, `open` in a line's `pull` in `--gh-calls`, and no
+ * recorded close or merge of it since). The daemon's other refusals depend on state this
  * stand-in does not hold (the claim's serving run and entry, Dispatch's records, GitHub): a
  * recorded answer (`--answers`) stands for each. `request_backward_move` of another issue than a
  * phase worker's own is refused 400 ISSUE_NOT_GRANTS, `register_gate` of a child 403
@@ -79,9 +81,10 @@
  * is the text of the worker's task, which the daemon sends and its state does not carry, so the
  * rig writes it into the prompt. `--tree` is the root of the issue's tree when the issue is a
  * child's (default: the issue is a root), `--gh-calls` the run's `calls.jsonl`, which gh-standin.ts
- * writes. The document is the world as the run starts: a backward move sets its phase and
- * `set_status` its status, and nothing else moves it. Prints `listening on
- * http://127.0.0.1:<port>` once the socket is open (port 0: the kernel's pick).
+ * writes. The document is the world as the run starts: a backward move sets its phase, `set_status`
+ * its status, and each look report its check, as the daemon's workflow does (`checkReport` below);
+ * nothing else moves it. Prints `listening on http://127.0.0.1:<port>` once the socket is open
+ * (port 0: the kernel's pick).
  */
 import { randomUUID } from "node:crypto";
 import { appendFileSync, existsSync, readFileSync } from "node:fs";
@@ -117,6 +120,7 @@ import { z } from "zod";
 import pkg from "../../package.json";
 import { DAEMON_MODULE, runDaemonPane } from "./daemon-pane";
 import { World } from "./heldout-case";
+import { parseInstant } from "./production-dispatch";
 
 const GRANT_TTL_MS = 60_000;
 
@@ -223,6 +227,14 @@ function numberField(body: unknown, key: string): number | undefined {
   return typeof value === "number" ? value : undefined;
 }
 
+/** `nanos` since the epoch as Go's RFC3339Nano writes it in UTC: no trailing zero of a fraction. */
+function rfc3339(nanos: bigint): string {
+  const fraction = (nanos % 1_000_000_000n).toString().padStart(9, "0").replace(/0+$/, "");
+  return new Date(Number(nanos / 1_000_000n))
+    .toISOString()
+    .replace(/\.\d{3}Z$/, fraction === "" ? "Z" : `.${fraction}Z`);
+}
+
 /** An answer: its status, and its JSON body where it has one. */
 interface Reply {
   readonly status: number;
@@ -243,8 +255,11 @@ interface Grant {
   readonly controller: boolean;
 }
 
-/** A route's answer, or the refusal it gave before any answer was due. */
-type Prepared = { readonly refusal: Reply } | { readonly answer: () => Reply };
+/** A route's answer, or the refusal it gave before any answer was due. An answer of the stand-in's
+ * own state (`own`) is never one an answers file holds. */
+type Prepared =
+  | { readonly refusal: Reply }
+  | { readonly answer: () => Reply; readonly own?: boolean };
 type Route = (body: unknown) => Prepared;
 
 /** `handoff/complete`'s body, held to the contract's shape and types and no further: the
@@ -287,50 +302,48 @@ export interface Standin {
   stop(): void;
 }
 
-/** One line of the run's `calls.jsonl` (gh-standin.ts): the call's arguments, what each file or
- * stdin it was handed held, and the status it exited with. */
+/** One line of the run's `calls.jsonl` (gh-standin.ts): its exit status, and the change it made
+ * to a pull request, which gh-standin records only for a call it took. A line of another stand-in
+ * (rig.sh's `bun`) names no change. */
 const CallLine = z.looseObject({
-  argv: z.array(z.string()),
-  files: z.record(z.string(), z.string()).default({}),
   exit: z.number(),
+  pull: z
+    .looseObject({
+      action: z.string(),
+      number: z.number().optional(),
+      head: z.string().optional(),
+      auto: z.boolean().optional(),
+    })
+    .optional(),
 });
 
-/** Whether `legion/<issue>` has an open pull request: the world's, then each successful call of
- * `calls` that opened one (`gh pr create`, a POST of `repos/<o>/<r>/pulls`) or ended one (`gh pr
- * close`, `gh pr merge`), in order. A `gh pr create` that names no head opens the branch the
- * workspace is on. */
+/** Whether `legion/<issue>` has an open pull request: one the world holds open on the branch, then
+ * each change gh-standin recorded in `calls`, in order: a pull request opened on the branch, and a
+ * close, a merge that waits for nothing (no `auto`) and a reopen of one of the branch's. */
 function openPullRequest(
   issue: string,
   world: World | undefined,
   calls: string | undefined
 ): boolean {
   const branch = `legion/${issue}`;
-  const names = (head: string) =>
-    head === branch || head.endsWith(`:${branch}`) || head === `refs/heads/${branch}`;
-  let open =
-    world?.github?.pullRequests.some((pr) => pr.state === "open" && pr.head.ref === branch) ??
-    false;
-  if (calls === undefined || !existsSync(calls)) return open;
+  const pulls = world?.github?.pullRequests.filter((pr) => pr.head.ref === branch) ?? [];
+  const ours = new Set(pulls.map((pr) => pr.number));
+  const open = new Set(pulls.filter((pr) => pr.state === "open").map((pr) => pr.number));
+  if (calls === undefined || !existsSync(calls)) return open.size > 0;
   for (const line of readFileSync(calls, "utf8").split("\n")) {
     if (line === "") continue;
-    const { argv, files, exit } = CallLine.parse(JSON.parse(line));
-    if (exit !== 0) continue;
-    if (argv[0] === "pr" && argv[1] === "create") {
-      const head = argv.findIndex((arg) => arg === "--head" || arg === "-H");
-      const named = argv.find((arg) => arg.startsWith("--head="));
-      if (head >= 0) open = names(argv[head + 1] ?? "") || open;
-      else if (named !== undefined) open = names(named.slice("--head=".length)) || open;
-      else open = true;
-    } else if (argv[0] === "pr" && (argv[1] === "close" || argv[1] === "merge")) open = false;
-    else if (argv[0] === "api" && /(^|\s)(-X|--method)\s?POST(\s|$)/.test(argv.join(" "))) {
-      const pulls = argv.some((arg) => /^\/?repos\/[^/]+\/[^/]+\/pulls$/.test(arg));
-      const fields = argv.filter((arg) => arg.startsWith("head=")).map((arg) => arg.slice(5));
-      const input = files[argv[argv.indexOf("--input") + 1] ?? ""];
-      if (input !== undefined) fields.push(stringField(JSON.parse(input), "head") ?? "");
-      if (pulls && fields.some(names)) open = true;
-    }
+    const { exit, pull } = CallLine.parse(JSON.parse(line));
+    const number = pull?.number;
+    if (exit !== 0 || pull === undefined || number === undefined) continue;
+    if (pull.action === "open" && pull.head === branch) {
+      ours.add(number);
+      open.add(number);
+    } else if (!ours.has(number)) continue;
+    else if (pull.action === "close" || (pull.action === "merge" && pull.auto !== true))
+      open.delete(number);
+    else if (pull.action === "reopen") open.add(number);
   }
-  return open;
+  return open.size > 0;
 }
 
 /** Starts the stand-in daemon for one run. */
@@ -338,6 +351,12 @@ export function startDaemonStandin(options: StandinOptions): Standin {
   const { project, issue, tree, role, repository, defaultBranch, world } = options;
   const answers = options.answers ?? [];
   const startedAt = new Date().toISOString();
+  /** The case's clock now: the world's clock, moved on by the time since the stand-in started, as
+   * lane D's daemon's clock starts at the run's start. */
+  const startedMs = Date.now();
+  const clockAt = world === undefined ? undefined : parseInstant(world.clock);
+  const caseNow = () =>
+    (clockAt ?? BigInt(startedMs) * 1_000_000n) + BigInt(Date.now() - startedMs) * 1_000_000n;
   /** Encoded exactly as the daemon encodes it (`legion-<project>-<key>-<role>`, lower-cased),
    * since the worker claims this token on the real Envoy and Envoy rejects uppercase. */
   const roleTokenValue =
@@ -349,17 +368,20 @@ export function startDaemonStandin(options: StandinOptions): Standin {
 
   const daemonWorld = world?.daemon ?? null;
   /** What moves while the run goes on: the phase a backward move sets, the status `set_status`
-   * writes, whether the production check is still open and the looks reported on it. */
+   * writes, whether the production check is still open, whether its look is, when its next look
+   * is due, and the looks reported on it. */
   const held = {
     phase: options.phase,
     status: world?.dispatch.issue.status ?? "in_progress",
     checkOpen: daemonWorld?.productionCheck != null,
+    lookOpen: true,
+    nextWakeAt: daemonWorld?.productionCheck?.boundAt ?? "",
     reported: new Set<string>(),
   };
 
   /** The open production check as `GET .../record` shows it (`api.CheckView`): the look the role
-   * works is open, and the next look is due at the check's bound, as the daemon's is where the
-   * checking agent has named no time. */
+   * works, open until a report ends it, and the next look, due at the time a pending report named
+   * or else at the check's bound, as the daemon's is. */
   const checkView = () => {
     const check = daemonWorld?.productionCheck;
     if (check === null || check === undefined || !held.checkOpen) return undefined;
@@ -372,12 +394,12 @@ export function startDaemonStandin(options: StandinOptions): Standin {
       openedAt: check.openedAt,
       role: "tester",
       looks: check.look,
-      lookOpen: true,
+      lookOpen: held.lookOpen,
       lastWake: {
         kind: check.last ? "bound" : check.look === 1 ? "merge" : "check wake",
         ...(check.look === 1 ? { at: check.openedAt } : {}),
       },
-      nextWakeAt: check.boundAt,
+      nextWakeAt: held.nextWakeAt,
       last: check.last,
     };
   };
@@ -462,11 +484,12 @@ export function startDaemonStandin(options: StandinOptions): Standin {
 
   /** A route: its request is parsed with `schema` (refused 400 when it does not parse), held to a
    * live grant when `grantOf` names the request's, and then answered by `handle`, unless an
-   * answers file answers it first. */
+   * answers file answers it first; a request `own` names is answered by `handle` alone. */
   function route<S extends z.ZodType>(
     schema: S,
     handle: (request: z.output<S>, grant: Grant | undefined) => Reply,
-    grantOf?: (request: z.output<S>) => string
+    grantOf?: (request: z.output<S>) => string,
+    own?: (request: z.output<S>) => boolean
   ): Route {
     return (body) => {
       const parsed = schema.safeParse(body);
@@ -478,7 +501,7 @@ export function startDaemonStandin(options: StandinOptions): Standin {
           return { refusal: forbidden("Invalid or expired grant") };
         }
       }
-      return { answer: () => handle(parsed.data, grant) };
+      return { answer: () => handle(parsed.data, grant), own: own?.(parsed.data) ?? false };
     };
   }
   const grantId = (request: { grantId: string }) => request.grantId;
@@ -487,7 +510,12 @@ export function startDaemonStandin(options: StandinOptions): Standin {
   const isRoot = issue === tree;
 
   /** `handoff/complete` for a production check's look report: the daemon's `checkReport`, against
-   * the check the world holds open. */
+   * the check the world holds open, and the state the daemon's workflow leaves (workflow's
+   * `checkReported`): a pass or a fail closes the check, and so does a pending on its last look
+   * (`endLookPending`: it closes as not run); a pending on any other look ends the look, and the
+   * next look is due at the time it names, as `clampWake` moves it: a minute after the case's now
+   * at the earliest (`CheckWakeFloor`), the bound where it falls at or past the bound, to the
+   * microsecond. */
   const checkReport = (request: HandoffComplete): Reply => {
     const check = daemonWorld?.productionCheck;
     const opened = request.checkOpenedAt ?? "";
@@ -573,7 +601,15 @@ export function startDaemonStandin(options: StandinOptions): Standin {
       );
     }
     held.reported.add(reported);
-    if (verdict !== "pending") held.checkOpen = false;
+    if (verdict !== "pending" || check.last) held.checkOpen = false;
+    else {
+      held.lookOpen = false;
+      const bound = parseInstant(check.boundAt) ?? 0n;
+      const floor = caseNow() + 60_000_000_000n;
+      const named = parseInstant(request.wakeAt ?? "") ?? floor;
+      const wake = named < floor ? floor : named;
+      held.nextWakeAt = wake >= bound ? check.boundAt : rfc3339(wake - (wake % 1000n));
+    }
     return answered();
   };
 
@@ -728,7 +764,14 @@ export function startDaemonStandin(options: StandinOptions): Standin {
         },
       };
     },
-    "POST /legion/v1/handoff/complete": route(HandoffCompleteBody, complete, grantId),
+    // A look report is answered from the check this stand-in holds, whose state each report
+    // moves: an answer recorded against one state of a check is no answer to another.
+    "POST /legion/v1/handoff/complete": route(
+      HandoffCompleteBody,
+      complete,
+      grantId,
+      (request) => request.checkOpenedAt !== undefined
+    ),
     "POST /legion/v1/phase/backward": route(
       LegionPhaseBackwardRequest,
       (request) => {
@@ -799,11 +842,12 @@ export function startDaemonStandin(options: StandinOptions): Standin {
   };
 
   /** The answer to one request: the route's refusal where the request does not parse or holds no
-   * live grant, else a recorded answer, else the route's own. */
+   * live grant, else a recorded answer, unless the route answers it from the stand-in's own state,
+   * else the route's own. */
   const respond = (method: string, path: string, body: unknown): Reply => {
     const prepared = resolve(method, path)?.(body);
     if (prepared !== undefined && "refusal" in prepared) return prepared.refusal;
-    const recorded = recordedAnswer(answers, method, path, body);
+    const recorded = prepared?.own ? undefined : recordedAnswer(answers, method, path, body);
     if (recorded !== undefined) {
       return recorded.status === 204
         ? { status: 204 }
