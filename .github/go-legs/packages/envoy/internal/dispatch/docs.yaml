@@ -831,7 +831,6 @@
   - TestADocumentCopiedOnItsIssueShowsItsSourcesAsksAndOpensNone  # 0.9 s
   - TestADocumentEndingInABackslashRendersAsItWasStored  # 0.8 s
   - TestADocumentLoadsAPendingSettlementRowNamingAnotherLastActor  # 0.8 s
-  - TestADocumentReadWeighsAboutTheHeapItHolds  # 8.0 s
   - TestADocumentSocketAnnouncesNoMoreAwarenessClientsThanItsBound  # 0.0 s
   - TestADocumentThePreviousReleaseCreatesBeforeThisBuildsFirstTickReachesTheStore  # 2.1 s
   - TestAFailedRoomsEvictionWaitsForTheStampsCommitAndReloadsIt  # 0.9 s

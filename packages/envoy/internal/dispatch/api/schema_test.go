@@ -57,11 +57,13 @@ func TestBlockSchemaRouteServesEmbeddedSchema(t *testing.T) {
 	if steps, declared := schema.Types[3].Attributes.Lookup("steps"); !declared || steps.Kind != pmdoc.BlockAttributeString || steps.Since != 5 || steps.CreatableSince != 5 {
 		t.Fatalf("plan_task attribute steps = %+v (declared %v), want a string read and created from version 5", steps, declared)
 	}
+	// check's subject and program are read from version 6 and created from version 8: this build
+	// reads them and creates neither, as it does decision and reading.
 	if subject, declared := schema.Types[4].Attributes.Lookup("subject"); !declared || subject.Kind != pmdoc.BlockAttributeEnum ||
-		!slices.Equal(subject.Choices, []string{"code", "production", "graph"}) || subject.Since != 6 || subject.CreatableSince != 7 {
-		t.Fatalf("check attribute subject = %+v (declared %v), want an enum of code, production and graph, read from version 6 and created from 7", subject, declared)
+		!slices.Equal(subject.Choices, []string{"code", "production", "graph"}) || subject.Since != 6 || subject.CreatableSince != 8 {
+		t.Fatalf("check attribute subject = %+v (declared %v), want an enum of code, production and graph, read from version 6 and created from 8", subject, declared)
 	}
-	if program, declared := schema.Types[4].Attributes.Lookup("program"); !declared || program.Kind != pmdoc.BlockAttributeString || program.Since != 6 || program.CreatableSince != 7 {
-		t.Fatalf("check attribute program = %+v (declared %v), want a string read from version 6 and created from 7", program, declared)
+	if program, declared := schema.Types[4].Attributes.Lookup("program"); !declared || program.Kind != pmdoc.BlockAttributeString || program.Since != 6 || program.CreatableSince != 8 {
+		t.Fatalf("check attribute program = %+v (declared %v), want a string read from version 6 and created from 8", program, declared)
 	}
 }

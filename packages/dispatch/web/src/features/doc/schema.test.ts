@@ -52,12 +52,12 @@ function withoutAttributes(schema: BlockSchema, type: string, names: string[]): 
 // The page presents the manifest it was built with: its version V, and R, the highest `since`
 // among the elements it may create (`creatable_since` V or less), as Go's `pmdoc.SchemaCreatable`
 // computes it. Schema 7 stages the decision and reading blocks and the ask block's `shaped`: it
-// reads them from its version and creates them only from the next. So they leave R where the same
-// manifest without them has it, below V, and they count toward R in the manifest at the next
-// version. The check block's `subject` and `program` are read from version 6 and created from
-// version 7, so this manifest creates them, and they count toward R: the last version whose
-// elements the page may introduce is 6.
-test("the compiled manifest is the page's own: it reads the new blocks before it creates them, and creates check.subject and check.program", () => {
+// reads them from its version and creates them only from the next. It reads the check block's
+// `subject` and `program` from the version before its own, and creates them only from the next
+// too. So none of them counts toward R, which stays where the same manifest without them has it,
+// below the version before V, and each counts toward R in the manifest at the next version. The
+// numbers come from the manifest, never from a literal here.
+test("the compiled manifest is the page's own: it reads the new blocks, check.subject and check.program before it creates them", () => {
   expect(compiledBlockSchema.nodes?.map(({ name }) => name)).toContain("paragraph");
   expect(compiledBlockSchema.types.map(({ name }) => name)).toEqual([
     "callout",
@@ -68,9 +68,8 @@ test("the compiled manifest is the page's own: it reads the new blocks before it
     "decision",
     "reading",
   ]);
-  expect(compiledBlockSchema.version).toBe(7);
-  expect(schemaCreatable(compiledBlockSchema)).toBe(6);
   const version = compiledBlockSchema.version;
+  expect(schemaCreatable(compiledBlockSchema)).toBeLessThan(version - 1);
   const ask = compiledBlockSchema.types.find(({ name }) => name === "ask");
   const decision = compiledBlockSchema.types.find(({ name }) => name === "decision");
   const reading = compiledBlockSchema.types.find(({ name }) => name === "reading");
@@ -108,10 +107,15 @@ test("the compiled manifest is the page's own: it reads the new blocks before it
   }
   for (const attribute of [subject, program]) {
     expect(attribute.since).toBe(version - 1);
-    expect(attribute.creatable_since).toBe(version);
+    expect(attribute.creatable_since).toBe(version + 1);
   }
-  expect(
+  expect(schemaCreatable(compiledBlockSchema)).toBe(
     schemaCreatable(withoutAttributes(compiledBlockSchema, "check", ["subject", "program"]))
+  );
+  const raisedWithoutTheNewBlocks = withoutTheNewBlocks(raisedByOne(compiledBlockSchema));
+  expect(schemaCreatable(raisedWithoutTheNewBlocks)).toBe(version - 1);
+  expect(
+    schemaCreatable(withoutAttributes(raisedWithoutTheNewBlocks, "check", ["subject", "program"]))
   ).toBeLessThan(version - 1);
 });
 

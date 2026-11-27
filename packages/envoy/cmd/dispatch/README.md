@@ -1534,9 +1534,8 @@ So for each surface the two builds share, this is what build N+1 may change whil
   A new element is readable one release before it is creatable, unless the page admission below gates it: `legion-envoy-v29.1.0` first declares `requirement`, `plan_task` and `check`, at manifest version 3, and this build gives them `since` 3 and `creatable_since` 3 (Generations and holds, below).
   A server-side write (an agent's edit, a settlement, an import) is bound by this build's manifest alone, so one can still add such an element during a roll; a build of this manifest at an earlier version then answers `409 DOC_NEWER_CONTENT` for that document (the release before the manifest: Generations and holds, below).
   Every write path refuses an element this build reads but may not create yet (`pmdoc`, `refuseUncreatable`), unless the document already holds it, and the editor offers only the elements it may create.
-  This build reads `decision`, `reading` and `ask`'s `shaped` from manifest version 7 and creates them from version 8.
+  This build reads `decision`, `reading` and `ask`'s `shaped` from manifest version 7, and `check`'s `subject` and `program` from version 6; it creates all five from version 8.
   It refuses a write that adds any of them to a document not already holding that element.
-  It reads and creates `check`'s `subject` and `program`, which version 6 reads and version 7 creates.
   An element stays readable while stored documents may hold it: no release removes a readable element from the manifest.
   A build that still meets an element it does not know answers `409 DOC_NEWER_CONTENT` for that document, and its document socket closes with `4425` (Document errors, below).
   No route repairs, replaces or rebuilds such a document, since each of those would delete the element;
@@ -1764,9 +1763,10 @@ The four that run passes (`duty.RunWoken`) start two passes no closer together t
   It is the first type change written after the store's backfill (`backfill-graph-store`), which the releases from legion-envoy v34.11.0 on may have run over `graph_nodes` and `graph_tuples`, so it writes both tables by bounded writes alone (below): literal rows, and each block type's supertag node by its primary key, to the whole attributes the earlier type migrations left with the version moved (`TestATypeMigrationAfterTheBackfillIsAdmittedAndLeavesTheFilesSchema`).
   Migration `20261125125701` adds `check`'s `subject` and `program` attribute nodes.
   It sorts below `20261125125703_btree_gin` on purpose: a pending `create extension` takes the census's size exemptions from every later pending migration, and this migration needs them.
-  Each is read from version 6 and created from version 7.
+  Each is read from version 6, and this migration gives each `creatable_since` 7.
   It moves every block type to version 6.
   Migration `20261125163555` makes `decision` and `reading` block types and adds their attribute nodes and `ask`'s `shaped`, each read from version 7 and created from version 8.
+  It moves `check`'s `subject` and `program` to `creatable_since` 8, so this build reads them and creates neither.
   It moves every block type to version 7, which `pmdoc/schema/blocks.json` declares.
   Like `20261123080000`, both use bounded writes alone.
   Each read runs in one read-only transaction at repeatable read, so a migration that commits while it reads is read whole by the next read, never half.

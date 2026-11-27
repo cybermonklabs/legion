@@ -173,12 +173,12 @@
           "kind": "enum",
           "choices": ["code", "production", "graph"],
           "since": 6,
-          "creatable_since": 7
+          "creatable_since": 8
         },
         "program": {
           "kind": "string",
           "since": 6,
-          "creatable_since": 7
+          "creatable_since": 8
         }
       },
       "since": 3,

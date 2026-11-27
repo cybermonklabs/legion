@@ -813,6 +813,7 @@ async function documentIdOf(
 const OPEN_BLOCKS_UNDER_A_BASIS = {
   call: "legion register_gate",
   blocks: "decision block",
+  // kept for one release: stored-ask-state
   decidedBy: "version",
   effect:
     "A basis opens the step with no person's review of this document, so its open question would go unanswered, and answering one writes a new version, which this registration does not name.",
