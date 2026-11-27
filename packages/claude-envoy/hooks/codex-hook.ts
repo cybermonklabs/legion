@@ -40,7 +40,7 @@ import {
   writeCodexSessionRecord,
   writeSharedCodexRecord,
 } from "../src/codex/codex-session-record"
-import { spawnCodexEnvoyStandby } from "../src/codex/codex-standby"
+import { codexStandbyLogFile, spawnCodexEnvoyStandby } from "../src/codex/codex-standby"
 import { sessionHandoffFile, writeSessionHandoff } from "../src/session-identity"
 
 /** How long the open-asks read may take before the summary says it is unavailable. */
@@ -65,10 +65,17 @@ const SessionEndInput = z.object({ session_id: z.string().min(1) })
 
 /**
  * `SessionEnd`, which Codex runs when it unloads a thread (`thread_unload_delay`, 60 s by default,
- * after the thread is idle with no subscriber) or at exit: leaves the session's ended marker when the
- * process's record names it, so the server delivers nothing more to it until the next
- * `SessionStart` names the session that follows. It writes a file of its own and never the record,
- * which a `SessionStart` may be writing at that moment. The end of a fork leaves nothing.
+ * after the thread is idle with no subscriber) or at exit, and stops after 3 s whatever timeout the
+ * hook asks for. It leaves the ended marker of the session the record names, and only then:
+ *
+ * - In a process of its own, the marker is the process's, so the server delivers nothing more to
+ *   the session until the next `SessionStart` names the session that follows.
+ * - In a shared app server, each thread has its own record, and the marker (`<thread>.json.ended`)
+ *   holds the generation of the load that ended, so the owner ends that thread's session alone,
+ *   and a resume that has already written a new generation is never taken for ended.
+ *
+ * It writes a file of its own and never the record, which a `SessionStart` may be writing at that
+ * moment. The end of a fork leaves nothing.
  */
 async function sessionEnd(raw: unknown): Promise<void> {
   const input = SessionEndInput.parse(raw)
@@ -131,9 +138,16 @@ async function sessionStart(raw: unknown): Promise<void> {
           })
           // Codex can leave its MCP subprocess lazy for a new thread even after its first
           // prompt. A trusted hook can start the owner when no existing MCP process can.
-          if ((await acceptingCodexOwner(codexServersDirectory(pluginData, pid))) === undefined) {
+          const servers = codexServersDirectory(pluginData, pid)
+          if ((await acceptingCodexOwner(servers)) === undefined) {
             const bundle = join(dirname(fileURLToPath(import.meta.url)), "envoy-channel.js")
-            const child = spawnCodexEnvoyStandby(bundle, pid, started, pluginData)
+            const child = spawnCodexEnvoyStandby(
+              bundle,
+              pid,
+              started,
+              codexStandbyLogFile(servers),
+              pluginData,
+            )
             child.once("error", (error) => {
               process.stderr.write(
                 `envoy: could not start the Codex Envoy standby — ${messageFor(error)}\n`,

@@ -79,7 +79,8 @@ import {
   sharedCodexRecordFile,
   watchRecord,
 } from "./codex-session-record"
-import { spawnCodexEnvoyStandby } from "./codex-standby"
+import { codexStandbyLogFile, spawnCodexEnvoyStandby } from "./codex-standby"
+import { ThreadStartBackoff } from "./codex-start-backoff"
 import { threadIdShape } from "./codex-thread-id"
 import { callSharedCodexTool, serveSharedCodexTools } from "./codex-tool-link"
 import {
@@ -135,6 +136,20 @@ const DispatchToolArguments = z.object({
   args: z.array(z.string()),
   stdin: z.string().optional(),
 })
+
+/**
+ * The call a shared app server's MCP server forwards to the owner, for an Envoy tool of `thread`.
+ * A call Codex sent with no thread is refused: under the shared app server one process serves
+ * several threads, and a call that names none could only act as the wrong one.
+ */
+export function sharedToolCall(
+  thread: string | undefined,
+  name: string,
+  args: unknown,
+): { readonly thread: string; readonly name: string; readonly args: unknown } {
+  if (thread === undefined) throw new Error("Codex did not identify the calling thread")
+  return { args, name, thread }
+}
 
 /** Why a standby server's Envoy tools do not run (`./codex-owner`). */
 const STANDBY_NOTE =
@@ -249,15 +264,18 @@ function waitForRecord(
 ): Promise<CodexSessionRecord | undefined> {
   return new Promise((done) => {
     const look = (): void => {
-      void readCodexSessionRecord(file).then(async (record) => {
-        // A record an earlier process with the same id left behind names no session of this one,
-        // and a session that has ended is not registered again (a takeover after `/new`, before
-        // the new thread's first prompt).
-        if (record === undefined || !recordOfProcess(record, pid)) return
-        if (await ended(record.session_id)) return
-        unwatchFile(file, look)
-        done(record)
-      })
+      void readCodexSessionRecord(file)
+        .then(async (record) => {
+          // A record an earlier process with the same id left behind names no session of this
+          // one, and a session that has ended is not registered again (a takeover after `/new`,
+          // before the new thread's first prompt).
+          if (record === undefined || !recordOfProcess(record, pid)) return
+          if (await ended(record.session_id)) return
+          unwatchFile(file, look)
+          done(record)
+        })
+        // A read that failed is tried again at the next poll.
+        .catch(() => undefined)
     }
     watchFile(file, { interval: RECORD_POLL_MS }, look)
     signal.addEventListener("abort", () => {
@@ -310,11 +328,10 @@ export async function runCodexEnvoyServer(): Promise<void> {
     }
     const { name, arguments: args } = request.params
     if (shared) {
-      if (thread === undefined) throw new Error("Codex did not identify the calling thread")
       return mcpResult(
         await callSharedCodexTool(
           serversDirectory,
-          { thread, name, args },
+          sharedToolCall(thread, name, args),
           AbortSignal.any([stopping.signal, signal]),
         ),
       )
@@ -573,14 +590,17 @@ async function runSharedCodexOwner(
     creatingStandby ??= (async () => {
       if (await hasStandbyServer(serversDirectory, owner)) return
       if (processStarted(codexPid) !== started) return
-      const child = spawnCodexEnvoyStandby(options.bundlePath, codexPid, started)
+      const log = codexStandbyLogFile(serversDirectory)
+      const child = spawnCodexEnvoyStandby(options.bundlePath, codexPid, started, log)
       standby = child
       child.once("error", (error) => {
         standby = undefined
         warn(`could not start the Codex Envoy standby: ${messageFor(error)}`)
       })
-      child.once("exit", () => {
+      child.once("exit", (code, signal) => {
         if (standby === child) standby = undefined
+        if (code !== 0 && signal === null)
+          warn(`the Codex Envoy standby exited ${code}; its log is ${log}`)
       })
     })().finally(() => {
       creatingStandby = undefined
@@ -623,6 +643,7 @@ async function runSharedCodexOwner(
       })
     }
   }
+  const backoff = new ThreadStartBackoff()
   let cleanup: Promise<void> | undefined
   signal.addEventListener("abort", stopThreads, { once: true })
   try {
@@ -638,16 +659,25 @@ async function runSharedCodexOwner(
         for (const [thread, slot] of threads) {
           if (state.live.get(thread)?.generation !== slot.generation) slot.runtime.stop()
         }
+        backoff.forgetChanged(state.live)
         for (const [thread, record] of state.live) {
           // A new load of the same id waits until the old runtime releases its relay and inbox.
           if (threads.has(thread)) continue
+          if (!backoff.mayStart(thread)) continue
+          const startedAt = performance.now()
           const runtime = startCodexThreadRuntime(record, options)
           const slot = { generation: record.generation, runtime }
           threads.set(thread, slot)
           void runtime.done
-            .catch((error: unknown) => {
-              warn(`Codex thread ${thread}: ${messageFor(error)}`)
-            })
+            .then(
+              () => backoff.ended(thread),
+              (error: unknown) => {
+                const wait = backoff.failed(thread, record.generation, startedAt)
+                warn(
+                  `Codex thread ${thread}: ${messageFor(error)}; trying again in ${Math.round(wait / 1000)} s`,
+                )
+              },
+            )
             .finally(() => threads.delete(thread))
         }
         if (standbyFor === undefined && state.live.size > 1) {

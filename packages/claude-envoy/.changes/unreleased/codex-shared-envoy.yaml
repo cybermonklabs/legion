@@ -1,7 +1,9 @@
 kind: Added
-custom:
-  Issue: codex-shared-envoy
 body: |-
   Codex threads in the shared app server now register with Envoy at their first prompt.
   Each thread appears on the Agents page and receives its own messages through Codex's queue and hooks.
   When Codex unloads a thread, its registration ends. Resuming the thread restores its registration.
+  Codex 0.170.0 and later run every session in one shared app server; each of its threads is its own Envoy session.
+time: 2026-11-27T19:30:00Z
+custom:
+    Issue: codex-shared-envoy

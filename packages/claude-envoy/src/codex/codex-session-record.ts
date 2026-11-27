@@ -179,10 +179,13 @@ export function watchRecord(
   intervalMs: number,
 ): () => void {
   const look = (): void => {
-    void readCodexSessionRecord(file).then(async (record) => {
-      if (record === undefined || !recordOfProcess(record, pid)) return
-      changed(record, await ended(record.session_id))
-    })
+    void readCodexSessionRecord(file)
+      .then(async (record) => {
+        if (record === undefined || !recordOfProcess(record, pid)) return
+        changed(record, await ended(record.session_id))
+      })
+      // A read that failed changes nothing: the next look, at the next stat change, reads again.
+      .catch(() => undefined)
   }
   watchFile(file, { interval: intervalMs }, look)
   look()
@@ -214,10 +217,21 @@ export async function writeCodexSessionRecord(
 export async function readCodexSessionRecord(
   file: string,
 ): Promise<CodexSessionRecord | undefined> {
+  let text: string
   try {
-    const parsed = CodexSessionRecord.safeParse(JSON.parse(await readFile(file, "utf8")))
+    text = await readFile(file, "utf8")
+  } catch (error) {
+    // No record is an answer. Any other failure (a permission, an I/O error, too many open files)
+    // says nothing about the session, so it is thrown: read as "no record", it would end a live
+    // thread's session, which a shared app server's owner then deregisters and starts again.
+    if (hasErrnoCode(error, "ENOENT")) return undefined
+    throw error
+  }
+  try {
+    const parsed = CodexSessionRecord.safeParse(JSON.parse(text))
     return parsed.success ? parsed.data : undefined
   } catch {
+    // A record that is not JSON was not written by this plugin's hook: it names no session.
     return undefined
   }
 }

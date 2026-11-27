@@ -379,8 +379,17 @@ async function hooks(control: ControlClient, home: Home) {
     .filter((hook) => hook.pluginId?.includes("codex-envoy"))
 }
 
+/** A title the shared app server's environment carries and no thread may show. A thread's title is
+ *  its own (its directory and id), so a build that took the title from the environment of the
+ *  process that runs every thread fails `listed`'s title check. */
+const SHARED_SERVER_TITLE_DECOY = "title of the shared app server, which no thread takes"
+
 async function daemon(home: Home) {
-  await checked([home.codex, "app-server", "daemon", "start"], home)
+  // The daemon and the plugin servers it starts inherit this command's environment.
+  await checked([home.codex, "app-server", "daemon", "start"], {
+    ...home,
+    env: { ...home.env, ENVOY_SESSION_TITLE: SHARED_SERVER_TITLE_DECOY },
+  })
   // Codex's local daemon speaks WebSocket on a Unix socket. The loopback bridge lets Bun's
   // WebSocket client make one independent Unix connection per test client.
   const path = join(home.codexHome, "app-server-control", "app-server-control.sock")
@@ -487,6 +496,7 @@ async function listed(id: string, promptAt: number, sharedDirectory?: string) {
   }
   expect(rows.envoyRow).toMatchObject({ ...expected, plugin: "@sjawhar/codex-envoy" })
   expect(rows.dispatchRow).toMatchObject(expected)
+  expect(JSON.stringify(rows)).not.toContain(SHARED_SERVER_TITLE_DECOY)
   console.log(`${id} listed after ${elapsed(promptAt)} s ${JSON.stringify(rows)}`)
 }
 
