@@ -1025,8 +1025,9 @@ export function createLegionTool(deps: {
         "fresh_session (issue, role) starts one agent again in a new session, leaving behind the session it ran in: the daemon " +
         "stops the agent if it runs, forgets the session, and starts the agent, which loses everything that session held. A " +
         "phase worker that comes back owing no task is started through its issue's current phase, so it has that phase's work. " +
-        "The answer is empty when the agent came back and its start is under way: the daemon answers once it has written the " +
-        "agent's claim launching, and read_state shows how the start ended, running or failed with the start's failure. " +
+        "The answer is empty when the agent came back and its start is under way or queued: the daemon answers once it has " +
+        "written the agent's claim launching, or once it has queued the start of the agent's phase, which runs at once while " +
+        "the issue holds its admission slot, and read_state shows how the start ended, running or failed with the start's failure. " +
         "phaseNotRestarted says why nothing " +
         "restarted the agent's phase, where the agent came back owing no task and the workflow refused that restart: the " +
         "agent is running, and no work was handed to it. It names a start that waits for an admission slot, where the issue " +
@@ -1092,7 +1093,8 @@ export function createLegionTool(deps: {
         "keeps that turn until it ends, or until the stop timeout, which cuts the turn off, and the answer " +
         "shows suspensionHeld until then. Your suspension holds: no rule of the daemon's starts the agent " +
         "again until your resume_agent or the operator's legion claims resume. " +
-        "resume_agent starts a suspended agent again in the session its claim recorded, and sends it the task it owes. " +
+        "resume_agent starts a suspended agent again in the session its claim recorded, and sends it the task it owes; " +
+        "it answers once that start is under way, with the claim launching, and read_state shows how the start ended. " +
         "The daemon refuses resume_agent for an agent whose claim is stored working (CLAIM_IN_A_TURN). " +
         "The daemon refuses resume_agent, suspend, stop, retry and fresh_session for an agent the operator suspended, or whose " +
         "suspension by the operator waits for a turn to end (SUSPENDED_BY_OPERATOR), before any refusal of its " +

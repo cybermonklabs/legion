@@ -267,9 +267,12 @@ func (s *server) postClaimEvent(w http.ResponseWriter, r *http.Request, m *super
 	return true, m.Handle(ctx, ev)
 }
 
-// startUnderWay posts ev, a request that starts a claim that runs nothing — a resume, or the
-// machine's own retry of a failed or retired claim — and reports once that start is under way
-// rather than once it has ended (dispatch://INFRA-5649 R4). A start under Kubernetes waits minutes
+// startUnderWay posts ev, a request that can start a claim that runs nothing — the operator's
+// resume and deliver (startedStatus), the controller's resume_agent (agentEventAction), a fresh
+// session's resume (freshSession), and the machine's own retry of a failed or retired claim
+// (machineRetry) — and reports once that start is under way rather than once it has ended
+// (dispatch://INFRA-5649 R4). A request that starts nothing, such as a deliver to a running
+// claim, writes no launch and reports what the machine answered. A start under Kubernetes waits minutes
 // on a pod, and a route that waited for all of it held its caller past the caller's own timeout:
 // the controller's fresh_session timed out 45 times of 138 calls on 2026-11-12, after 142 to 356 s
 // (dispatch://INFRA-3439, folded into dispatch://INFRA-5649).

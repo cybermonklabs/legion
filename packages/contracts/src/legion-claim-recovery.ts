@@ -106,9 +106,10 @@ export const LegionClaimRequest = z.strictObject({
 });
 
 /** `api.FreshSessionResponse`, what became of a fresh session. It is empty wherever the claim
- * came back and its start is under way: the daemon answers once it has written the claim
- * `launching`, and `read_state` shows how the start ended — running, or failed with the start's
- * failure. `phaseNotRestarted` carries one of four sentences. The first is the workflow's
+ * came back and its start is under way or queued: the daemon answers once it has written the
+ * claim `launching`, or once it has queued the start of the claim's phase, which runs at once
+ * while the issue holds its admission slot, and `read_state` shows how the start ended — running,
+ * or failed with the start's failure. `phaseNotRestarted` carries one of four sentences. The first is the workflow's
  * refusal: the claim came back in a new session owing no task, and the workflow refused the
  * restart that would have handed it one, so the claim is running and holds no work. The second is
  * a start that waits for an admission slot: the issue holds none while its phase keeps one, so the

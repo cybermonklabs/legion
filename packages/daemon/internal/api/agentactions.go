@@ -20,7 +20,9 @@ import (
 // surface that names a suspender. The state does not, and must not: a session parses the state
 // with the schema of its own plugin's contract, and a key added there refuses the whole state in
 // every pod whose plugin predates the stranded-claim reading (StrandedClaim). Only a plugin at the
-// contract that added these routes calls them, so no reader of this body predates its keys.
+// contract that added these routes calls them, so no reader of this body predates the keys that
+// contract gave it; `phaseNotRestarted` came later, with the claim start entry, and a plugin below
+// that entry is served the body without it (shapeAnswer).
 type AgentActionResponse struct {
 	// State is the claim's state after the request: retired after a stop; suspended after a
 	// suspension that landed, and still working or launching after one held for the agent's
@@ -64,7 +66,9 @@ const suspendedByOperator = "SUSPENDED_BY_OPERATOR"
 // state is suspended, by the holder, with the session it recorded; and the agent's session left
 // behind and nothing more, for the fresh session of an agent it found suspended whose resume such
 // a suspension refused after the forget had dropped that session, after which the claim's state
-// is suspended, by the holder, with no session to resume (freshSession). Each reads after
+// is suspended, by the holder, with no session to resume (freshSession). That last refusal is
+// served to a caller below claimStartContract alone: a caller at or above it is answered 200 with
+// the hold in phaseNotRestarted (refusedAfterTheForget, dispatch://INFRA-5649 R2). Each reads after
 // "so <operation> by <caller>", or after "so it" in the daemon's sentence.
 const (
 	nothingChanged         = "is refused and nothing of the claim changed"

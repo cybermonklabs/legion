@@ -23,8 +23,8 @@ type FreshSessionResponse struct {
 	//   - the claim is back in a new session, and its phase's task waits for its issue's
 	//     admission slot, which the issue does not hold (slotWait.runs);
 	//   - the claim runs nothing, failed or retired with its session left behind, and its start
-	//     waits for that slot (slotWait.stays), or was refused after the session was left behind
-	//     (refusedAfterTheForget);
+	//     waits for that slot (slotWait.stays), or, failed, retired or suspended with no session,
+	//     its start was refused after the session was left behind (refusedAfterTheForget);
 	//   - this request stopped the claim, and the machine refused a step that would have
 	//     brought it back — the forget of the session it recorded, or the start of it in a
 	//     new session — and the sentence names that refusal and the state the claim stands in
@@ -216,9 +216,11 @@ func outcomeOf(started bool) freshOutcome {
 // who wanted that session can read it there. A forget that loses the race to the lane, by
 // contrast, leaves no way at all to drop the session the request was for. Since the forget has
 // changed the claim, a start refused after it — the workflow's refusal of the restart, the
-// machine's of its retry — is answered 200 with the refusal and the state it leaves the claim in,
-// failed or retired with no session (refusedAfterTheForget, dispatch://INFRA-5649 R2): an error
-// would tell the caller nothing of the claim changed.
+// machine's of its retry, the machine's or a hold's of the resume of a claim suspended before the
+// request — is answered 200 with the refusal and the state it leaves the claim in, failed, retired
+// or suspended with no session (refusedAfterTheForget, dispatch://INFRA-5649 R2): an error would
+// tell the caller nothing of the claim changed. A failure of the daemon's own after the forget
+// stays an error, and says the session was left behind (failedAfterTheForget).
 //
 // The resume goes before the phase's restart, so the agent is back in its new session before
 // anything the workflow may refuse is asked for. Only a suspension that holds, the operator's or
@@ -459,6 +461,9 @@ func (s *server) freshSession(w http.ResponseWriter, r *http.Request, m *supervi
 		status, notRestarted, _, ok := s.refusedAfterTheForget(w, r, m, token, forgot, "it is "+heldBy+". "+lifts,
 			func() { s.refuseHold(w, r, token, freshSessionOp, by, err, outcome) })
 		return status, notRestarted, freshLeft, ok
+	case err != nil && !refusedByTheMachine(err):
+		s.operationFailure(w, r, by, "resume", token, failedAfterTheForget(err, token, forgot))
+		return 0, "", freshLeft, false
 	case err != nil:
 		status, notRestarted, _, ok := s.refusedAfterTheForget(w, r, m, token, forgot, err.Error(),
 			func() { s.operationFailure(w, r, by, "resume", token, err) })

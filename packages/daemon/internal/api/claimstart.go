@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/wait"
 )
 
 // retryStart starts an agent that is running nothing: one that failed or retired, whatever retired
@@ -46,6 +47,11 @@ func (s *server) retryStart(w http.ResponseWriter, r *http.Request, m *supervise
 	if supervise.FailedOrRetired(c.State) {
 		if status, refusal, waits, restarted := s.restartWorkedPhase(r, token, c, fresh); restarted {
 			switch {
+			case refusal != "" && status == http.StatusInternalServerError:
+				// The daemon failed to read or apply the restart: no refusal, so it stays the
+				// failure it is, saying the session was left behind where the forget ran first.
+				s.refuse(w, r, status, refusal+leftBehind(token, forgot))
+				return 0, "", false, false
 			case refusal != "":
 				return s.refusedAfterTheForget(w, r, m, token, forgot, refusal, func() { s.refuse(w, r, status, refusal) })
 			case waits != nil:
@@ -243,10 +249,44 @@ func (s *server) machineRetry(w http.ResponseWriter, r *http.Request, m *supervi
 		return s.refusedAfterTheForget(w, r, m, token, forgot, stopping, func() { s.refuse(w, r, http.StatusServiceUnavailable, stopping) })
 	case underWay, errors.Is(err, supervise.ErrSuspendHeld):
 		return http.StatusAccepted, "", true, true
+	case err != nil && !refusedByTheMachine(err):
+		s.operationFailure(w, r, by, "retry", token, failedAfterTheForget(err, token, forgot))
+		return 0, "", false, false
 	case err != nil:
 		return s.refusedAfterTheForget(w, r, m, token, forgot, err.Error(), func() { s.operationFailure(w, r, by, "retry", token, err) })
 	}
 	return http.StatusOK, "", true, true
+}
+
+// refusedByTheMachine is whether err is the machine declining a start it was asked for: a state
+// that does not allow it (supervise.RefusedError), a suspension that holds the agent
+// (holdRefusal), or a wait, such as a tree whose cleanup is reserved (wait.ErrWaiting). Anything
+// else is the daemon failing to carry the start out, a launch write the store did not take among
+// them, after which the claim may stand launching and try again. Only a refusal is answered as what
+// a fresh session did after its forget (refusedAfterTheForget, dispatch://INFRA-5649 R2), which
+// names the workflow's, the machine's and the hold's; a failure stays the failure it is.
+func refusedByTheMachine(err error) bool {
+	var refused *supervise.RefusedError
+	return errors.As(err, &refused) || holdRefusal(err) || errors.Is(err, wait.ErrWaiting)
+}
+
+// failedAfterTheForget is err with leftBehind's words, for a failure the daemon answers as an
+// error after a fresh session's forget ran: the claim changed, so the error says so.
+func failedAfterTheForget(err error, token claim.Token, forgot string) error {
+	if forgot == "" {
+		return err
+	}
+	return fmt.Errorf("%w%s", err, leftBehind(token, forgot))
+}
+
+// leftBehind is what a failure after a fresh session's forget adds to its error: the session the
+// claim recorded is gone, so the agent starts in a new one (dispatch://INFRA-5649 R2). It is ""
+// where no forget ran.
+func leftBehind(token claim.Token, forgot string) string {
+	if forgot == "" {
+		return ""
+	}
+	return fmt.Sprintf("; %s had already left its recorded session %s behind for a fresh session, so the agent starts in a new session once it is started", token, forgot)
 }
 
 // refusedAfterTheForget answers a start of an agent that runs nothing which was refused — the
@@ -255,8 +295,9 @@ func (s *server) machineRetry(w http.ResponseWriter, r *http.Request, m *supervi
 // gives. Where nothing of the claim changed before it, forgot is "" and the refusal is the
 // caller's answer, as before (asBefore writes it). Where a fresh session had left the claim's
 // session behind first, the claim has changed, and the answer says so: 200, at both doors, with
-// the refusal and the state the claim stands in, failed or retired with no session, in
-// phaseNotRestarted (dispatch://INFRA-5649 R2). The operator's door already answered that way for
+// the refusal and the state the claim stands in, failed, retired or suspended with no session, in
+// phaseNotRestarted (dispatch://INFRA-5649 R2). Its callers send it refusals alone: a failure of
+// the daemon's own stays an error, which says the session was left behind (failedAfterTheForget). The operator's door already answered that way for
 // every other refusal phaseNotRestarted carries, and the contract reads a changed claim as a 200.
 // A caller below claimStartContract is answered as before, with the refusal (answersAsBefore).
 func (s *server) refusedAfterTheForget(w http.ResponseWriter, r *http.Request, m *supervise.Machine, token claim.Token, forgot,

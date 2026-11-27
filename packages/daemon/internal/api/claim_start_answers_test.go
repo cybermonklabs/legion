@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
@@ -139,9 +140,7 @@ func TestAFreshSessionWhoseStartWaitsForASlotNamesTheWait(t *testing.T) {
 
 			recorder := door.ask(t, h, "LEGION-209", claim.RoleTester, nil)
 
-			if recorder.Code != http.StatusOK && recorder.Code != http.StatusAccepted {
-				t.Fatalf("the fresh session = %d, want 200 or 202; body %s", recorder.Code, recorder.Body)
-			}
+			door.wantStartAnswered(t, recorder)
 			want := string(token) + " stays failed with its recorded session ses_tester left behind, and the start of its phase testing " +
 				"waits for an admission slot of LEGION-209, which holds none; `read_state` (`legion claims list`) shows its state"
 			if got := freshSessionNote(t, recorder); got != want {
@@ -160,9 +159,7 @@ func TestAFreshSessionWhoseStartWaitsForASlotNamesTheWait(t *testing.T) {
 
 			recorder := door.ask(t, h, "LEGION-209", claim.RoleTester, stating(slotBaseContract()))
 
-			if recorder.Code != http.StatusOK && recorder.Code != http.StatusAccepted {
-				t.Fatalf("the fresh session = %d, want 200 or 202; body %s", recorder.Code, recorder.Body)
-			}
+			door.wantStartAnswered(t, recorder)
 			if got := freshSessionNote(t, recorder); got != "" {
 				t.Errorf("the answer to a caller at %d says %q, want nothing, as before", slotBaseContract(), got)
 			}
@@ -238,9 +235,7 @@ func TestAFreshSessionWhoseStartWaitsNamesTheIssueItWaitsOn(t *testing.T) {
 
 			recorder := door.ask(t, h, "LEGION-209", claim.RoleImplementer, nil)
 
-			if recorder.Code != http.StatusOK && recorder.Code != http.StatusAccepted {
-				t.Fatalf("the fresh session = %d, want 200 or 202; body %s", recorder.Code, recorder.Body)
-			}
+			door.wantStartAnswered(t, recorder)
 			want := string(token) + " stays failed with its recorded session ses_implementer left behind, and the start of its phase implementing " +
 				"waits for an admission slot of LEGION-209, which holds none and waits on LEGION-300; `read_state` (`legion claims list`) shows its state"
 			if got := freshSessionNote(t, recorder); got != want {
@@ -263,9 +258,7 @@ func TestAFreshSessionOfASuspendedWorkerWhoseTaskWaitsForASlotSaysItRuns(t *test
 
 			recorder := door.ask(t, h, "LEGION-209", claim.RoleImplementer, nil)
 
-			if recorder.Code != http.StatusOK && recorder.Code != http.StatusAccepted {
-				t.Fatalf("the fresh session = %d, want 200 or 202; body %s", recorder.Code, recorder.Body)
-			}
+			door.wantStartAnswered(t, recorder)
 			want := string(token) + " is back in a new session, and the task of its phase implementing " +
 				"waits for an admission slot of LEGION-209, which holds none; `read_state` (`legion claims list`) shows its state"
 			if got := freshSessionNote(t, recorder); got != want {
@@ -289,9 +282,7 @@ func TestAFreshSessionOfAWorkerWhoseIssueHoldsItsSlotNamesNoWait(t *testing.T) {
 
 			recorder := door.ask(t, h, "LEGION-209", claim.RoleTester, nil)
 
-			if recorder.Code != http.StatusOK && recorder.Code != http.StatusAccepted {
-				t.Fatalf("the fresh session = %d, want 200 or 202; body %s", recorder.Code, recorder.Body)
-			}
+			door.wantStartAnswered(t, recorder)
 			if got := freshSessionNote(t, recorder); got != "" {
 				t.Errorf("the answer says %q, want nothing: the issue holds its slot", got)
 			}
@@ -332,6 +323,44 @@ func TestARestartRefusedAfterTheForgetAnswersTheRefusal(t *testing.T) {
 			}
 			if after := h.stored(token); after.State != supervise.StateRetired || after.Session != "" || after.SessionFile != "" {
 				t.Errorf("the claim is %s recording session %q (%q), want it retired with no session", after.State, after.Session, after.SessionFile)
+			}
+		})
+	}
+}
+
+// failingRestarter fails the restart of a phase as a store failure would: the fact's apply answers
+// an error, which restartWorkedPhase answers 500. Every fact is recorded first.
+type failingRestarter struct{ factRecorder }
+
+func (r *failingRestarter) Apply(ctx context.Context, tx pgx.Tx, fact intake.Fact) (intake.Result, error) {
+	result, err := r.factRecorder.Apply(ctx, tx, fact)
+	if _, restart := fact.(intake.RestartPhase); restart && err == nil {
+		return intake.Result{}, errors.New("the store took no write")
+	}
+	return result, err
+}
+
+// R2 names refusals: a failure of the daemon's own after the forget is none, so the restart the
+// store did not take stays a 500 at both doors, and its error says the session was left behind,
+// since the claim changed. Answered 200 as "its start was refused", the caller would read a start
+// the workflow refused where the daemon only failed to record it.
+func TestARestartThatFailsAfterTheForgetStaysAFailure(t *testing.T) {
+	for _, door := range freshSessionDoors() {
+		t.Run(door.name, func(t *testing.T) {
+			h, token := stoppedImplementer(t, &failingRestarter{})
+
+			recorder := door.ask(t, h, "LEGION-209", claim.RoleImplementer, nil)
+
+			if recorder.Code != http.StatusInternalServerError {
+				t.Fatalf("the fresh session = %d, want 500: the store took no write; body %s", recorder.Code, recorder.Body)
+			}
+			for _, want := range []string{"the store took no write", string(token) + " had already left its recorded session ses_implementer behind for a fresh session"} {
+				if !strings.Contains(recorder.Body.String(), want) {
+					t.Errorf("the error says %s, want it to say %q", recorder.Body, want)
+				}
+			}
+			if after := h.stored(token); after.Session != "" {
+				t.Errorf("the claim records session %q, want none: the forget ran before the failure", after.Session)
 			}
 		})
 	}
@@ -435,9 +464,7 @@ func TestACallerBelowTheNewContractIsAnsweredAsBefore(t *testing.T) {
 
 				recorder := door.ask(t, h, "LEGION-209", claim.RoleTester, stating(contract))
 
-				if recorder.Code != http.StatusOK && recorder.Code != http.StatusAccepted {
-					t.Fatalf("the fresh session = %d, want 200 or 202; body %s", recorder.Code, recorder.Body)
-				}
+				door.wantStartAnswered(t, recorder)
 				note := freshSessionNote(t, recorder)
 				if contract == slotBaseContract() && note != "" {
 					t.Errorf("the answer to a caller at %d says %q, want nothing, as before", contract, note)
@@ -474,19 +501,14 @@ func TestACallerBelowTheNewContractIsAnsweredAsBefore(t *testing.T) {
 // under Kubernetes that waits minutes on a pod. fail is what each start answers once let go, nil
 // for a start that comes up.
 type hungStart struct {
-	entered chan struct{}
-	gate    chan struct{}
-	once    sync.Once
+	gate chan struct{}
+	once sync.Once
 }
 
 func hangStarts(t *testing.T, h *harness, fail error) *hungStart {
 	t.Helper()
-	hung := &hungStart{entered: make(chan struct{}, 64), gate: make(chan struct{})}
+	hung := &hungStart{gate: make(chan struct{})}
 	hook := func(ctx context.Context) error {
-		select {
-		case hung.entered <- struct{}{}:
-		default:
-		}
 		select {
 		case <-hung.gate:
 			return fail
@@ -618,10 +640,7 @@ func TestTheControllersResumeOfASuspendedArchitectAnswersWhileItsStartRuns(t *te
 // doors and both of its starts: the retry of a failed one, and the resume of an idle one the
 // request suspended itself.
 func TestAFreshSessionOfAnArchitectAnswersWhileItsStartRuns(t *testing.T) {
-	idle := freshSessionCases()[4]
-	if idle.role != claim.RoleArchitect {
-		t.Fatalf("the fifth fresh-session case is %q, want the idle root architect", idle.name)
-	}
+	idle := freshSessionCaseNamed(t, "an idle root architect")
 	for _, door := range freshSessionDoors() {
 		for _, arm := range []struct {
 			name  string
@@ -640,9 +659,7 @@ func TestAFreshSessionOfAnArchitectAnswersWhileItsStartRuns(t *testing.T) {
 					return door.ask(t, h, "LEGION-208", claim.RoleArchitect, nil)
 				})
 
-				if recorder.Code != http.StatusOK && recorder.Code != http.StatusAccepted {
-					t.Fatalf("the fresh session = %d, want 200 or 202; body %s", recorder.Code, recorder.Body)
-				}
+				door.wantStartAnswered(t, recorder)
 				if note := freshSessionNote(t, recorder); note != "" {
 					t.Errorf("the answer says %q, want nothing: the start is under way", note)
 				}
@@ -729,4 +746,32 @@ func TestAStartThatFailsAfterTheAnswerReachesTheClaimsState(t *testing.T) {
 		return
 	}
 	t.Fatalf("the list holds no claim %s: %s", token, listed.Body)
+}
+
+// freshSessionCaseNamed is the case of freshSessionCases with that name, so a test that reuses one
+// case's start holds no position in that table.
+func freshSessionCaseNamed(t *testing.T, name string) freshSessionCase {
+	t.Helper()
+	for _, c := range freshSessionCases() {
+		if c.name == name {
+			return c
+		}
+	}
+	t.Fatalf("freshSessionCases has no case %q", name)
+	return freshSessionCase{}
+}
+
+// wantStartAnswered holds the status of a fresh session that started the agent, or queued its
+// phase's start, at this door: the controller's fresh_session answers 200, as its route answers
+// every success (AnswerFreshSession), and the operator's retry route 202, the start under way or
+// queued (dispatch://INFRA-5649 R1, R4), so a regression at either door fails here.
+func (d freshSessionDoor) wantStartAnswered(t *testing.T, recorder *httptest.ResponseRecorder) {
+	t.Helper()
+	want := http.StatusAccepted
+	if d.by == supervise.SuspendedByController {
+		want = http.StatusOK
+	}
+	if recorder.Code != want {
+		t.Fatalf("the fresh session through %s = %d, want %d; body %s", d.name, recorder.Code, want, recorder.Body)
+	}
 }
