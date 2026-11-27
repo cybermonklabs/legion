@@ -139,7 +139,7 @@ func TestStillAllowedAdmitsAGroupMemberAndRefusesANonMember(t *testing.T) {
 	set := current.Get()
 	source := set.Secrets["TEAM_KEY"].Source
 	asker := policy.Requester{Operator: groupAsker}
-	if err := stillAllowed(set, "TEAM_KEY", source, policy.Approval, groupMember, nil, asker); err != nil {
+	if err := stillAllowed(set, sourceRule{}, "TEAM_KEY", source, policy.Approval, groupMember, nil, asker); err != nil {
 		t.Fatalf("stillAllowed(approved by a member) = %v, want nil", err)
 	}
 	for _, c := range []struct {
@@ -152,7 +152,7 @@ func TestStillAllowedAdmitsAGroupMemberAndRefusesANonMember(t *testing.T) {
 		if c.stale {
 			directory.MarkStale(approversGroup)
 		}
-		err := stillAllowed(set, "TEAM_KEY", source, policy.Approval, c.decider, nil, asker)
+		err := stillAllowed(set, sourceRule{}, "TEAM_KEY", source, policy.Approval, c.decider, nil, asker)
 		var lapsed record.ApproverNotAdmittedError
 		if !errors.Is(err, ErrGrantNotLive) || errors.As(err, &lapsed) {
 			t.Fatalf("%s: stillAllowed = %v; want ErrGrantNotLive and no lapse of the record's group", c.name, err)
