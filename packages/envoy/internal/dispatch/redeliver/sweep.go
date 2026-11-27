@@ -323,11 +323,14 @@ func (s *Sweeper) run(ctx context.Context, interval time.Duration, leases duty.L
 // the GitHub client notes on it each request and each failure no caller takes as data, and the
 // sweep notes the failures only it can tell, a listing or a redelivery request GitHub refused
 // (Sweep, decide) and a rate limit that stopped the sweep (below). ctx is the context the lease
-// handed the pass, so a sweep this process's shutdown cut short records nothing.
+// handed the pass, so a sweep this process's shutdown cut short records nothing. Begin also names
+// the read as the caller kind of the sweep's calls, which the rate reading would count them under
+// were any made with an installation token; the sweep's are the App's JWT's alone, which no
+// installation pays for.
 func (s *Sweeper) sweepAndReport(ctx context.Context) {
 	caller := ctx
-	ctx, attempt := githubreads.Begin(ctx)
-	defer githubreads.Finish(caller, githubreads.WebhookRedelivery, attempt, s.GitHubReads, s.Logger)
+	ctx, attempt := githubreads.Begin(ctx, githubreads.WebhookRedelivery)
+	defer githubreads.Finish(caller, attempt, s.GitHubReads, s.Logger)
 	report, err := s.Sweep(ctx, Options{})
 	if err != nil {
 		s.Logger.Warn("webhook redelivery sweep failed", "error", err)

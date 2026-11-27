@@ -35,7 +35,8 @@ const redeliveryPace = time.Second
 // store it is given here. The server gives it the background one: the sweep is a periodic loop
 // under a lease, so its statements belong where every other loop's are and no request may queue
 // behind one of them for a connection. The operator command below has the one pool it opened for
-// itself, which serves nothing else.
+// itself, which serves nothing else. The client counts no call for the rate reading: every call the
+// sweep makes is the App's JWT's, which GitHub charges to no installation.
 func webhookSweeper(natsClient *bus.Client, background *store.Store, app *auth.AppConfig, apiBase string, replicas int) (*redeliver.Sweeper, error) {
 	if natsClient == nil {
 		return nil, nil

@@ -27,6 +27,7 @@ import (
 
 	natsgo "github.com/nats-io/nats.go"
 
+	"github.com/sjawhar/envoy/githubrate"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
@@ -43,6 +44,11 @@ var ompSessionTrailer = regexp.MustCompile(`(?m)^Omp-Session:\s*(\S+)\s*$`)
 // packages/envoy/internal/dispatch/text/refs.go) -- duplicated here rather than imported because
 // both are unexported in their own packages and this package does not depend on either.
 var issueKeyCandidate = regexp.MustCompile(`\b[A-Z][A-Z0-9]{1,9}-[1-9][0-9]*\b`)
+
+// intakeCaller is the caller kind of every call to GitHub the two intakes make for a webhook
+// event (githubrate.WithCaller), which the rate reading counts the process's own calls by: the
+// GitHub intake's handler (Intake.deliver) and the job intake's reads (JobIntake.Run).
+const intakeCaller = "webhook_intake"
 
 // Intake wires the NATS consumer to the database, the GitHub App client, the event broker the
 // issue.deployed events go through (RecordDeployedEvents) and the importer a push of a branch is
@@ -440,7 +446,7 @@ func (in *Intake) deliver(d *intakeDelivery, message intakeMessage) {
 		}
 		d.acknowledge(msg)
 	}()
-	ctx, cancel := context.WithTimeout(handling, in.tuning.messageTimeout)
+	ctx, cancel := context.WithTimeout(githubrate.WithCaller(handling, intakeCaller), in.tuning.messageTimeout)
 	defer cancel()
 
 	envelope := message.envelope

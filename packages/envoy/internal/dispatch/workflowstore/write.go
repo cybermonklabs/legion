@@ -21,14 +21,15 @@ import (
 )
 
 // The forms of a step's names. A task id is a plan's slug, `default` for an issue whose owner gave
-// no plan (taskRule); a role and a type are a word of lowercase letters, digits and hyphens
-// (roleRule), and so is the role a plan's step names before its key. The agent, the session and
-// the model are printable ASCII with no space, at most 128 characters
-// (contracts.StepAgentTextPattern), since `dispatch steps` joins a record's fields with spaces. An
-// experiment and its variant are a name the daemon's settings declare, under the daemon's rule for
-// those names.
+// no plan (contracts.StepTaskPattern, the form the Legion daemon's plan read holds a `plan_task`
+// block's id to as well, through github.com/sjawhar/envoy/steprecord); a role and a type are a
+// word of lowercase letters, digits and hyphens (roleRule), and so is the role a plan's step names
+// before its key. The agent, the session and the model are printable ASCII with no space, at most
+// 128 characters (contracts.StepAgentTextPattern), since `dispatch steps` joins a record's fields
+// with spaces. An experiment and its variant are a name the daemon's settings declare, under the
+// daemon's rule for those names.
 var (
-	taskForm      = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,63}$`)
+	taskForm      = regexp.MustCompile(contracts.StepTaskPattern)
 	roleForm      = regexp.MustCompile(`^[a-z][a-z0-9-]{0,31}$`)
 	agentTextForm = regexp.MustCompile(contracts.StepAgentTextPattern)
 	nameForm      = regexp.MustCompile(`^[a-z0-9-]{1,32}$`)
@@ -36,7 +37,7 @@ var (
 
 // taskRule and roleRule are taskForm and roleForm as a refusal states them.
 const (
-	taskRule = "lowercase letters, digits and hyphens, starting with a letter or a digit, at most 64"
+	taskRule = contracts.StepTaskRule
 	roleRule = "a lowercase letter, then lowercase letters, digits and hyphens, at most 32"
 )
 
