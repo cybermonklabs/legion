@@ -184,6 +184,8 @@ var referenceDispositions = map[string]referenceDisposition{
 	"route_roster.sessions":                     {internalColumn, "the listener's stored session list, which every read filters as its own sessions"},
 	"search_term_queue.artifact_id":             {internalColumn, "a search index queue"},
 	"search_term_queue.issue_key":               {internalColumn, "a search index queue"},
+	"outbox_role_undelivered_notes.artifact_id": {internalColumn, "the outbox's note of a role copy it could not deliver, which only the outbox reads (outbox.role_undelivered_notes.go) and which it posts as a system message on the note's own issue"},
+	"outbox_role_undelivered_notes.issue_key":   {internalColumn, "the issue of the outbox's note of a role copy it could not deliver, which only the outbox reads"},
 	"search_term_stats.project_key":             {internalColumn, "a project's search statistics"},
 	"search_term_totals.project_key":            {internalColumn, "a project's search statistics"},
 	"search_text_versions.issue_key":            {internalColumn, keywordVersionsReadByNoRoute},
