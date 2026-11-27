@@ -111,8 +111,10 @@ func (r IssueRun) StartOf(issue string, role claim.Role) uint64 {
 // suspension (ReleaseSuspendedClaim), and that record can fail, or the daemon can stop before it.
 // A wake of such a role reads as a wake of a role outside the set, which cancels the release
 // (releaseOvertaken), and its start is the role's one start, in the pod that stayed: the cancel
-// queues no resume of a role whose start is queued for the issue's generation (startQueued, as a
-// wake reads it before it takes anything). A role of this kind with no start queued, as where no
+// queues no resume of a role whose start is queued at the generation that role's start serves
+// (startQueued over IssueRun.StartOf: the tree's run for a root's architect, the issue's own for
+// every other role, as a wake reads it before it takes anything). A role of this kind with no
+// start queued, as where no
 // wake of it was taken, is resumed as a role of the set is, or recorded stopped by the pause while
 // the project is paused (below): nothing else brings it back, since its stop's row, run again,
 // reads the release over, and a pod that stayed arms no backstop. While the claim is still
@@ -427,7 +429,8 @@ type ReleaseCancelled struct {
 // owes it one (openPodResume); on the first record of its stop, the pod's hold, whatever the
 // pod's other roles do, as the stop transaction holds it while its pause stands: an update round
 // past its bound or an idle rule would otherwise take a pod that holds the stopped roles'
-// unpushed work; and, for the worker of the issue's open phase serving the issue's generation, its
+// unpushed work; and, for the worker of the issue's open phase serving the generation its own
+// start serves (IssueRun.StartOf, the tree's run for a root's architect), its
 // backstop, which the record arms only where the stop owes no launch. A wake taken since is left
 // open: it is the launch the role is owed, and its start row runs at the resume. The caller holds
 // the issue's lock and held's row for share.

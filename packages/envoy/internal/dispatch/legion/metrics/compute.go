@@ -25,7 +25,10 @@ const (
 // to those two alone — a handoff starts the next phase, so no hour falls between two phases for
 // it to hold. `awaiting_children`, which dispatch://INFRA-3320 added after that spec, is a third
 // phase no role works (RoleFor in packages/daemon/internal/phase gives it none), a parent
-// waiting on its open children, so it is on that bar too. Time in the queue is on no bar, and
+// waiting on its open children, so it is on that bar too, and `verifying`, which
+// cybermonklabs/legion#5558 added, is a fourth: a merged issue whose close waits for the checks
+// of its Verification document, which no role works and which, unlike `done`, is still in the
+// workflow and so inside the work time. Time in the queue is on no bar, and
 // neither is an hour the work time leaves out, so the seven bars of an issue add up to its work
 // time (barPartsOf).
 const barNoRole = "no_role"
@@ -47,7 +50,7 @@ var bars = []struct {
 	{"tester", []string{legion.PhaseTesting}},
 	{"reviewer", []string{legion.PhaseReviewing}},
 	{"merger", mergerPhases},
-	{barNoRole, []string{legion.PhaseAwaitingPerson, legion.PhaseAwaitingChildren, legion.PhaseHeld}},
+	{barNoRole, []string{legion.PhaseAwaitingPerson, legion.PhaseAwaitingChildren, legion.PhaseVerifying, legion.PhaseHeld}},
 }
 
 // The four classes of issue a Legion session filed (metric 4).

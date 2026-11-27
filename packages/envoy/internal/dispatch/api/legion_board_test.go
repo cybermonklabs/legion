@@ -187,9 +187,9 @@ func TestTheLegionBoardPutsEachIssueInOneColumn(t *testing.T) {
 	if board.Project != "INFRA" {
 		t.Fatalf("the board names project %q, want INFRA", board.Project)
 	}
-	// The twelve columns the board answers, left to right, each with the label the view draws over
-	// it, written out rather than read from legion.Columns and legionBoardColumnLabels, which the
-	// route is built from: a reorder, a lost column or a changed label fails here.
+	// The thirteen columns the board answers, left to right, each with the label the view draws
+	// over it, written out rather than read from legion.Columns and legionBoardColumnLabels, which
+	// the route is built from: a reorder, a lost column or a changed label fails here.
 	wantColumns := []struct{ id, label string }{
 		{"queue", "Queue"},
 		{"design", "Design"},
@@ -200,6 +200,7 @@ func TestTheLegionBoardPutsEachIssueInOneColumn(t *testing.T) {
 		{"accepting", "Accepting"},
 		{"retro", "Retro"},
 		{"merging", "Merging"},
+		{"verifying", "Verifying"},
 		{"awaiting_children", "Waiting on children"},
 		{"awaiting_person", "Waiting on a person"},
 		{"held", "Held"},
@@ -239,6 +240,7 @@ func TestTheLegionBoardPutsEachIssueInOneColumn(t *testing.T) {
 		legion.ColumnAccepting:        {},
 		legion.ColumnRetro:            {},
 		legion.ColumnMerging:          {},
+		"verifying":                   {},
 	} {
 		if got := legionColumnKeys(t, board, id); !slices.Equal(got, want) {
 			t.Errorf("the %s column holds %v, want %v", id, got, want)
@@ -319,6 +321,48 @@ func TestTheMergingColumnHoldsMergingAndAwaitingMerge(t *testing.T) {
 	}
 	if got := legionColumnKeys(t, board, legion.ColumnMerging); !slices.Equal(got, []string{"INFRA-2", "INFRA-3"}) {
 		t.Errorf("the Merging column holds %v, want the issues in merging and awaiting_merge", got)
+	}
+}
+
+// TestAMergedIssueWaitingForItsChecksStandsInTheVerifyingColumn: a merged issue whose close
+// waits for the checks of its Verification document stands in `verifying`
+// (cybermonklabs/legion#5558), and its card is in the Verifying column of its own, between
+// Merging and Waiting on children, for the whole wait. The merge no longer closes the issue, so
+// this is where an operator sees the work that waits after it: a card under Merging would say
+// the merger still holds it, and before this column such an issue was on no card at all, its
+// wait counted in no column of the board.
+func TestAMergedIssueWaitingForItsChecksStandsInTheVerifyingColumn(t *testing.T) {
+	t.Parallel()
+	handler, database := newTestHandlerWithStore(t)
+	seedLegionProjects(t, handler, "INFRA")
+	nameLegionDaemon(t, handler, "INFRA", "http://legion-infra.internal:13370")
+	now := time.Now().UTC()
+	for index, phase := range []string{legion.PhaseMerging, "verifying"} {
+		key := seedLegionIssue(t, database, "INFRA", index+1, "An issue in "+phase, string(rune('a'+index)), nil, "")
+		seedLegionObservation(t, database, "INFRA", key, legion.FieldPhase, `"`+phase+`"`, now.Add(-time.Hour))
+	}
+	seedLegionRead(t, database, "INFRA", now.Add(-time.Minute), "")
+
+	board := legionBoardOf(t, handler, "INFRA")
+	ids := make([]string, len(board.Columns))
+	for index, column := range board.Columns {
+		ids[index] = column.ID
+	}
+	at := slices.Index(ids, "verifying")
+	if at < 1 || at+1 >= len(ids) || ids[at-1] != legion.ColumnMerging || ids[at+1] != legion.ColumnAwaitingChildren {
+		t.Fatalf("the columns are %v, want verifying between merging and awaiting_children", ids)
+	}
+	if label := board.Columns[at].Label; label != "Verifying" {
+		t.Errorf("the verifying column is labelled %q, want %q", label, "Verifying")
+	}
+	if got := legionColumnKeys(t, board, "verifying"); !slices.Equal(got, []string{"INFRA-2"}) {
+		t.Errorf("the Verifying column holds %v, want the merged issue waiting for its checks", got)
+	}
+	if got := legionColumnKeys(t, board, legion.ColumnMerging); !slices.Equal(got, []string{"INFRA-1"}) {
+		t.Errorf("the Merging column holds %v, want the issue in merging alone", got)
+	}
+	if card := legionCard(t, board, "INFRA-2"); card.Phase != "verifying" || card.PhaseSince == nil {
+		t.Errorf("the merged issue's card = %+v, want its phase and the moment the wait began", card)
 	}
 }
 

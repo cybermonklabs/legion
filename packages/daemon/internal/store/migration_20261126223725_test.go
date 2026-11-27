@@ -467,34 +467,38 @@ func TestTheWayBackRunsForEachProjectInAnyOrder(t *testing.T) {
 	})
 }
 
-// mainsNewestAtTheLastMerge is the newest migration main carried at this branch's last forward
-// merge (main dc18a1fe, 2026-11-27): the state events' kind list.
-const mainsNewestAtTheLastMerge = 20261126163320
+// mainsNewestMigration is the newest migration main carries: `20261126163320_state_events`, the
+// state events' kind list, which cybermonklabs/legion#4432 landed on main and the merge of main
+// `dc18a1fe` brought here. It names that migration and the change that wrote it, not whichever
+// merge of main was this branch's last: a later merge that brings no migration leaves this line
+// true, and the line goes stale only when main lands a migration above this one, which is the
+// one event that asks the reader to act.
+const mainsNewestMigration = 20261126163320
 
-// This migration stands above every migration main carried at that merge. Migrate applies every
+// This migration stands above every migration main carries. Migrate applies every
 // unrecorded migration in version order, so on a database main migrated, a migration of main
 // above this one is already recorded when this one runs; this one would then write
 // outbox_kind_check, issues_phase_check and its four functions over main's, and a list that leaves
 // out the kind of a waiting row fails its ADD CONSTRAINT (SQLSTATE 23514). This test holds the
-// stamp against mainsNewestAtTheLastMerge, a constant, so a forward merge that brings a newer
-// migration of main does not turn it red. What does is
+// stamp against mainsNewestMigration, a constant, so a merge of main that brings no migration
+// does not turn it red. What does is
 // TestADatabaseMainMigratedEndsAtTheSchemaOfAFreshDatabase, where that migration rewrites a list or
 // a function this one writes (its control, this branch at the old stamp below main's
 // 20261126110259, failed), and store_test.go's "a database main migrated with the merge holds",
-// which fails 23514 on a waiting row of a kind left out. At such a merge, renumber this file above
-// main's newest and move this constant with it.
+// which fails 23514 on a waiting row of a kind left out. At a merge that brings a newer migration
+// of main, renumber this file above main's newest and move this constant and its comment with it.
 func TestTheDoneByChecksMigrationStandsAboveEveryMigrationMainCarries(t *testing.T) {
 	t.Parallel()
 	all, err := migrations.All()
 	if err != nil {
 		t.Fatalf("read the embedded migrations: %v", err)
 	}
-	if !slices.ContainsFunc(all, func(migration migrations.Migration) bool { return migration.Version == mainsNewestAtTheLastMerge }) {
-		t.Fatalf("no embedded migration is %d: mainsNewestAtTheLastMerge names the newest migration main carried at the merge", mainsNewestAtTheLastMerge)
+	if !slices.ContainsFunc(all, func(migration migrations.Migration) bool { return migration.Version == mainsNewestMigration }) {
+		t.Fatalf("no embedded migration is %d: mainsNewestMigration names the newest migration main carries", mainsNewestMigration)
 	}
-	if doneByChecksVersion <= mainsNewestAtTheLastMerge {
+	if doneByChecksVersion <= mainsNewestMigration {
 		t.Fatalf("the done-by-checks migration is %d, which stands below main's newest, %d: rename the file and this one above it, and move every reference with it",
-			doneByChecksVersion, mainsNewestAtTheLastMerge)
+			doneByChecksVersion, mainsNewestMigration)
 	}
 }
 

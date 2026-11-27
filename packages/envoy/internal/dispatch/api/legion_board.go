@@ -17,12 +17,13 @@
 //     slot holder for a root: a card's tree is the daemon's own `tree` where a read carried one
 //     (dispatch://INFRA-980 adds it) and the parent chain otherwise.
 //   - The columns are the spec's, with Waiting on children for the phase dispatch://INFRA-3320
-//     added, in one ordered list (legion.Columns), and a phase maps to exactly one of them. The
+//     added and Verifying for the phase cybermonklabs/legion#5558 added, in one ordered list
+//     (legion.Columns), and a phase maps to exactly one of them. The
 //     board and the Legion facts both read legion.Columns: the board draws the columns in its
 //     order and places a card through legion.PhaseColumns, which is read off it.
-//     `awaiting_children`, `awaiting_person` and
+//     `verifying`, `awaiting_children`, `awaiting_person` and
 //     `held` each have a column of their own here, and metric 2's "no role" bar holds those same
-//     three phases (legion/metrics' bars, which list them themselves; the plan's D11).
+//     four phases (legion/metrics' bars, which list them themselves; the plan's D11).
 package api
 
 import (
@@ -54,6 +55,7 @@ var legionBoardColumnLabels = map[string]string{
 	legion.ColumnAccepting:        "Accepting",
 	legion.ColumnRetro:            "Retro",
 	legion.ColumnMerging:          "Merging",
+	legion.ColumnVerifying:        "Verifying",
 	legion.ColumnAwaitingChildren: "Waiting on children",
 	legion.ColumnAwaiting:         "Waiting on a person",
 	legion.ColumnHeld:             "Held",
@@ -105,10 +107,10 @@ type legionBoardHeader struct {
 }
 
 // legionBoardColumn is one column: its id, the label the view shows, and its cards in the order
-// the view draws them. ID is one of the twelve columns, in the order legion.Columns lists them;
+// the view draws them. ID is one of the thirteen columns, in the order legion.Columns lists them;
 // the enum is what makes the generated type carry that set rather than a bare string.
 type legionBoardColumn struct {
-	ID    string            `json:"id" enum:"queue,design,planning,implementing,testing,reviewing,accepting,retro,merging,awaiting_children,awaiting_person,held"`
+	ID    string            `json:"id" enum:"queue,design,planning,implementing,testing,reviewing,accepting,retro,merging,verifying,awaiting_children,awaiting_person,held"`
 	Label string            `json:"label"`
 	Cards []legionBoardCard `json:"cards"`
 }

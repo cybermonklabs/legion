@@ -53,6 +53,24 @@ func TestTheFactsShareOutEachIssuesBarHours(t *testing.T) {
 	}
 }
 
+// TestAMergedIssuesWaitForItsChecksIsAPartOfItsOwn: the parts an issue's hours are shared out
+// over are the board's columns (partsOf over legion.Columns), so the hours a merged issue waits
+// in `verifying` while its close waits for the checks of its Verification document
+// (cybermonklabs/legion#5558) stand under that column's own part. With no column for the phase
+// they fell to `other`, the part that holds the hours no other part took, where no reader could
+// tell a wait for checks from any other hour the parts do not name.
+func TestAMergedIssuesWaitForItsChecksIsAPartOfItsOwn(t *testing.T) {
+	issue := newIssue("INFRA-1").worked("implementer", hour(0)).closedAt(hour(6)).
+		observeString(legion.FieldPhase, hour(0), "implementing").
+		observeString(legion.FieldPhase, hour(3), "verifying").
+		observeString(legion.FieldPhase, hour(6), "done")
+	got := factsAt(fixture(hour(-24), hour(24), issue), nil)["INFRA-1"]
+	if got.PhaseHours["verifying"] != 3 || got.PhaseHours[breakdownOther] != 0 {
+		t.Errorf("the merged issue holds %g h under `verifying` and %g h under `other`, want its three hours of waiting for its checks under its own part: %v",
+			got.PhaseHours["verifying"], got.PhaseHours[breakdownOther], got.PhaseHours)
+	}
+}
+
 // TestEveryIssueWithPhaseWorkHasFactsWhateverItsHoursAre: an open issue's hours run to the
 // population's end, an issue whose work took no measured time keeps an entry with no part, and an
 // issue no Legion role worked has no entry at all.

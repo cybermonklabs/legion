@@ -160,7 +160,10 @@ const (
 // `awaiting_merge` and one at 86 or later never does (packages/daemon/internal/api/version.go,
 // 86), so the board and the metrics read PhaseAwaitingMerge in what the sampler observed of such
 // an earlier daemon. PhaseAwaitingChildren is a parent that an open Dispatch child of it holds
-// (dispatch://INFRA-3320, R11): no worker of it works, and it keeps no slot.
+// (dispatch://INFRA-3320, R11): no worker of it works, and it keeps no slot. PhaseVerifying is a
+// merged issue whose close waits for the checks of its Verification document
+// (cybermonklabs/legion#5558): no worker of it works and it keeps no slot either, and unlike
+// `done` it is still in the workflow, so its hours are inside the work time.
 const (
 	PhaseAdmitted         = "admitted"
 	PhaseAwaitingPerson   = "awaiting_person"
@@ -173,6 +176,7 @@ const (
 	PhaseRetro            = "retro"
 	PhaseMerging          = "merging"
 	PhaseAwaitingMerge    = "awaiting_merge"
+	PhaseVerifying        = "verifying"
 	PhaseDone             = "done"
 	PhaseHeld             = "held"
 )
