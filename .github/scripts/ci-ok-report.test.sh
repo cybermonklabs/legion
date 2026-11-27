@@ -55,7 +55,7 @@ case "\$*" in
     cat "$work/tip" ;;
   *"repos/o/r/git/ref/heads/release"*)
     cat "$work/tip-release" ;;
-  *"/actions/runs/41/jobs?per_page=100"*)
+  *"/actions/runs/41/jobs?per_page=30"*)
     if [ ! -e "$work/jobs" ]; then echo "HTTP 502" >&2; exit 1; fi
     cat "$work/jobs" ;;
   *"repos/o/r/actions/runs/41 --jq .created_at"*)
