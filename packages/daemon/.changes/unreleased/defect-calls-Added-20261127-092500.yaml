@@ -1,0 +1,20 @@
+kind: Added
+body: |-
+  A role reports a defect of its issue's change once the task's last step passed, and the daemon
+  records it for the issue's next change and moves no phase. `POST /legion/v1/defects/report`
+  (`issue`, `defect`, `head`, and an optional `check`) is the implementer's in retro, the
+  merger's in merging and in verifying until its completion lands, and the owning architect's
+  from retro on; before the last step it is refused `DEFECT_BEFORE_LAST_STEP`. A report of an
+  open defect's text is that defect (`same`), and one naming a check that is already a reason
+  joins it (`joined`). `POST /legion/v1/defects/withdraw` ends a reported defect for the owning
+  architect, with a reason that close-wait.md names once. close-wait.md names each reported
+  defect with the role that reported it and the head it was seen at, from the report on, before
+  the merge too. `GET /legion/v1/state` serves each issue in verifying, and each in retro or
+  merging that holds a reported defect, with `closeWait`, what its close waits for, and an issue
+  in verifying reads `why` `waiting`. An implementer's completion that arrives after the merge,
+  in verifying, is of its retro, as it is in merging. The daemon API's defect-calls entry: a
+  caller below it is served no `closeWait`, and an issue in verifying at `merging`, the phase
+  its strict enumeration knows.
+time: 2026-11-27T09:25:00Z
+custom:
+    Issue: defect-calls
