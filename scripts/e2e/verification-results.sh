@@ -101,7 +101,7 @@
 #     [VERIFICATION_RESULTS_E2E_ONLY=<case>] [VERIFICATION_RESULTS_E2E_OLD_BUILD=1] \
 #     [VERIFICATION_RESULTS_E2E_TIP_CONTROL=1] \
 #     [VERIFICATION_RESULTS_E2E_NO_SETTINGS_CONTROL=1] \
-#     [VERIFICATION_RESULTS_E2E_FROM_GITHUB_CONTROL=state|head] \
+#     [VERIFICATION_RESULTS_E2E_FROM_GITHUB_CONTROL=state|head|listener] \
 #     [VERIFICATION_RESULTS_E2E_OUTAGE_CONTROL=1] \
 #     [VERIFICATION_RESULTS_E2E_RELEASE_BEFORE=<commit>] \
 #     [VERIFICATION_RESULTS_E2E_RELEASE_BEFORE_BIN=<envoy-dispatch of that commit>] \
@@ -146,13 +146,15 @@
 # VERIFICATION_RESULTS_E2E_NO_SETTINGS_CONTROL=1 builds main at 1af8393264, before the fix of the
 # intake on main and before this change, whose intake writes no head with no delivery settings:
 # S1 finds no pull request 45 seconds after the event. VERIFICATION_RESULTS_E2E_FROM_GITHUB_CONTROL
-# names one of two builds of this checkout, each with one fault, which `go build -overlay` lays from
-# scripts/e2e/fixtures/head-from-github-<value>.diff over pull_request_heads.go: `state` takes the
-# state from the event's action, so the labeled event of the closed #48 opens it again and F2's
-# forged close closes #62; `head` takes the head from the event, so F1's and F6's forged envelopes
-# move a head. VERIFICATION_RESULTS_E2E_OUTAGE_CONTROL=1 builds 4b2d1e83f85c, whose #2001 has no
-# head 10 minutes after GitHub answers again. A build of a commit takes git and tar, as the release
-# before's does; the overlay takes patch.
+# names one of three builds of this checkout, each with one fault, which `go build -overlay` lays from
+# scripts/e2e/fixtures/head-from-github-<value>.diff: `state` and `head` on pull_request_heads.go,
+# the case's server, and `listener` on the envoy-listener's api.go. `state` takes the state from the
+# event's action, so the labeled event of the closed #48 opens it again and F2's forged close closes
+# #62; `head` takes the head from the event, so F1's and F6's forged envelopes move a head;
+# `listener` publishes on GitHub's lane, as the listener did before main's #4194, so each forged
+# envelope the listener takes reaches the bus. VERIFICATION_RESULTS_E2E_OUTAGE_CONTROL=1 builds
+# 4b2d1e83f85c, whose #2001 has no head 10 minutes after GitHub answers again. A build of a commit
+# takes git and tar, as the release before's does; the overlay takes patch.
 # VERIFICATION_RESULTS_E2E_RELEASE_BEFORE names the commit of the release before this change, whose
 # build writes older-rows' database. Unset, it is the newest commit of main without this change,
 # read from git at each run (release_before_of_head): on a branch that has not merged, main at the
@@ -275,9 +277,11 @@ listener_url=''
 # cleanup removes at the end: one store exists at a time.
 nats_store=''
 # The build a head check's negative control names (control_build), and the server of each start
-# of a head check: that build, else the run's own.
+# of a head check: that build, else the run's own. listener_built is set where the control built
+# the envoy-listener itself (VERIFICATION_RESULTS_E2E_FROM_GITHUB_CONTROL=listener).
 control_bin=''
 case_bin=''
+listener_built=''
 
 # cleanup stops what the run started and prints the run's last line through lib/run-verdict.sh,
 # which exits with rc: the script's own status for EXIT, 128 plus the signal's number for INT and
@@ -367,7 +371,7 @@ control_switch() {
     fail "VERIFICATION_RESULTS_E2E_$name names $case_name's server, so DISPATCH_BIN names nothing the run starts"
 }
 control_switch NO_SETTINGS_CONTROL "$no_settings_control" head-no-settings 1
-control_switch FROM_GITHUB_CONTROL "$from_github_control" head-from-github state head
+control_switch FROM_GITHUB_CONTROL "$from_github_control" head-from-github state head listener
 control_switch OUTAGE_CONTROL "$outage_control" github-outage 1
 if [ -n "$no_settings_control" ] || [ -n "$outage_control" ]; then
   for tool in git tar; do
@@ -463,27 +467,37 @@ commit_tree() {
     fail "could not take the tree of $tree_sha"
 }
 
-# control_build builds the server a head check's negative control names, to
-# $work/bin/envoy-dispatch-control, and sets control_bin. VERIFICATION_RESULTS_E2E_NO_SETTINGS_CONTROL
-# and VERIFICATION_RESULTS_E2E_OUTAGE_CONTROL each name a commit, whose tree commit_tree takes.
+# control_build builds what a head check's negative control names. VERIFICATION_RESULTS_E2E_
+# NO_SETTINGS_CONTROL and VERIFICATION_RESULTS_E2E_OUTAGE_CONTROL each name a commit, whose tree
+# commit_tree takes, and its server is built to $work/bin/envoy-dispatch-control (control_bin).
 # VERIFICATION_RESULTS_E2E_FROM_GITHUB_CONTROL names a fault of this checkout's own build: its
-# fixture, scripts/e2e/fixtures/head-from-github-<value>.diff, is laid with patch on a copy of
-# pull_request_heads.go in $work/control, and `go build -overlay` builds this checkout with the
-# copy in place of the file, so the working copy is never touched. A diff whose lines no longer
-# match the file is refused (--fuzz=0), and the run stops there, UNKNOWN.
+# fixture, scripts/e2e/fixtures/head-from-github-<value>.diff, is laid with patch on a copy of the
+# file it names in $work/control, and `go build -overlay` builds this checkout with the copy in
+# place of the file, so the working copy is never touched: `state` and `head` lay it on
+# pull_request_heads.go and build the server (control_bin); `listener` lays it on the listener's
+# api.go and builds the envoy-listener, and the server is this checkout's (listener_built). A diff
+# whose lines no longer match the file is refused (--fuzz=0), and the run stops there, UNKNOWN.
 control_build() {
   local commit what file=internal/dispatch/delivery/pull_request_heads.go
+  local copy=pull_request_heads.go command=./cmd/dispatch out=envoy-dispatch-control
+  if [ "$from_github_control" = listener ]; then
+    file=cmd/listener/api.go copy=api.go command=./cmd/listener out=envoy-listener
+  fi
   if [ -n "$from_github_control" ]; then
     mkdir -p "$work/control"
-    patch -s --fuzz=0 --no-backup-if-mismatch -o "$work/control/pull_request_heads.go" \
+    patch -s --fuzz=0 --no-backup-if-mismatch -o "$work/control/$copy" \
       "$root/packages/envoy/$file" <"$root/scripts/e2e/fixtures/head-from-github-$from_github_control.diff" ||
       fail "scripts/e2e/fixtures/head-from-github-$from_github_control.diff does not apply to $file"
-    printf '{"Replace":{"%s":"%s"}}\n' "$root/packages/envoy/$file" "$work/control/pull_request_heads.go" \
+    printf '{"Replace":{"%s":"%s"}}\n' "$root/packages/envoy/$file" "$work/control/$copy" \
       >"$work/control/overlay.json"
     go -C "$root/packages/envoy" build -overlay "$work/control/overlay.json" \
-      -o "$work/bin/envoy-dispatch-control" ./cmd/dispatch ||
-      fail "./cmd/dispatch with head-from-github-$from_github_control.diff did not build"
-    note "the negative control's envoy-dispatch is this checkout's with head-from-github-$from_github_control.diff laid on $file"
+      -o "$work/bin/$out" "$command" ||
+      fail "$command with head-from-github-$from_github_control.diff did not build"
+    note "the negative control's ${out%-control} is this checkout's with head-from-github-$from_github_control.diff laid on $file"
+    if [ "$from_github_control" = listener ]; then
+      listener_built=1
+      return 0
+    fi
   else
     if [ -n "$no_settings_control" ]; then
       commit=1af83932649d138124b4f1691da1521e2a2ff768
@@ -536,7 +550,7 @@ if [ -n "$no_settings_control$from_github_control$outage_control" ]; then
   control_build
 fi
 case_bin=${control_bin:-$dispatch_bin}
-if [ -n "$head_from_github" ]; then
+if [ -n "$head_from_github" ] && [ -z "$listener_built" ]; then
   go -C "$root/packages/envoy" build -o "$work/bin/envoy-listener" ./cmd/listener ||
     fail "./cmd/listener did not build"
 fi

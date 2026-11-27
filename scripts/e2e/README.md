@@ -4402,6 +4402,7 @@ Each item below names an input and its default, then what it means.
   the negative controls of the three head checks, each refused without `VERIFICATION_RESULTS_E2E_ONLY` naming its case, and beside a `DISPATCH_BIN`: the switch names the build the case's server runs (`control_build`).
   `VERIFICATION_RESULTS_E2E_NO_SETTINGS_CONTROL=1` builds main at `1af8393264`, before the fix of the intake on main and before this change, for `head-no-settings`.
   `VERIFICATION_RESULTS_E2E_FROM_GITHUB_CONTROL=state` or `head`, for `head-from-github`, builds this checkout with one fault: `go build -overlay` puts a copy of `pull_request_heads.go` with [`fixtures/head-from-github-<value>.diff`](fixtures/head-from-github-state.diff) laid on it in place of the file, so the working copy is never touched; `state` takes the state from the event's action, and `head` takes the head from the event.
+  `VERIFICATION_RESULTS_E2E_FROM_GITHUB_CONTROL=listener` lays [`fixtures/head-from-github-listener.diff`](fixtures/head-from-github-listener.diff) the same way on the listener's `cmd/listener/api.go` and builds the `envoy-listener` with it, while the server is this checkout's: the listener then publishes on GitHub's lane, as it did before main's #4194, and the listener half of each of F1 to F6 fails.
   A diff whose lines no longer match the file is refused (`patch --fuzz=0`), and the run reads `UNKNOWN`.
   `VERIFICATION_RESULTS_E2E_OUTAGE_CONTROL=1` builds `4b2d1e83f85c`, for `github-outage`.
   A commit's tree comes out of this checkout's repository with `git archive`, or out of a bare repository of the run's own that fetches that one commit from `origin`, as the release before's does.
@@ -4813,6 +4814,13 @@ DATABASE_URL=… VERIFICATION_RESULTS_E2E_ONLY=head-from-github VERIFICATION_RES
   bash scripts/e2e/verification-results.sh
 # → FAIL head-from-github: F1: a forged synchronize back to an older commit that carries a pass moves
 #   no head, and that pass does not stand: … F6: …
+# This checkout's server with a listener that publishes on GitHub's lane, as before main's #4194:
+DATABASE_URL=… VERIFICATION_RESULTS_E2E_ONLY=head-from-github VERIFICATION_RESULTS_E2E_FROM_GITHUB_CONTROL=listener \
+  bash scripts/e2e/verification-results.sh
+# → FAIL head-from-github: F1: the listener refuses the forged synchronize of acme/default#61 on
+#   GitHub's lane, and it reaches no bus: it answered 200 {…}; notifications.github.acme.default.pr.61
+#   carried 1 message(s) in the second after, and 1 once the copy went straight onto the bus, want 0
+#   and 1 … F6: …
 # The build of 4b2d1e83f85c, about 16 minutes:
 DATABASE_URL=… VERIFICATION_RESULTS_E2E_ONLY=github-outage VERIFICATION_RESULTS_E2E_OUTAGE_CONTROL=1 \
   bash scripts/e2e/verification-results.sh
