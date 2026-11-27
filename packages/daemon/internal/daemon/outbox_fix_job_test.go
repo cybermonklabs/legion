@@ -309,7 +309,7 @@ func newFixJobRig(t *testing.T, read record.FixJobRead, answer func(n int) (int,
 		_, _ = io.WriteString(w, body)
 	}))
 	t.Cleanup(server.Close)
-	rig.runner = &outbox{pool: rig.pool, dispatchProject: "LEGION", records: record.NewStore(), dispatch: dispatch.New(server.URL, "agent-token"),
+	rig.runner = &outbox{pool: rig.pool, dispatchProject: "LEGION", records: record.NewStore(), dispatch: dispatch.New(server.URL, dispatch.BearerTransport("agent-token", nil)),
 		handlers: []intake.Handler{rig.facts}, log: slog.New(slog.NewJSONHandler(rig.logs, nil)), now: rig.clock.Now}
 	row := mustOutboxRow(t, stepIssue, read, rig.clock.Now())
 	row.CreatedAt = rig.clock.Now()
