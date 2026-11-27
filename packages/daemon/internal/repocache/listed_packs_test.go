@@ -6,9 +6,11 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"io/fs"
 	"maps"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -1770,6 +1772,96 @@ func TestAPacksAnswerWhoseCacheWentUnreadyWhileItSignedIsRefused(t *testing.T) {
 	}
 	requireNoManifest(t, body, "/packs whose cache went unready while it signed:")
 }
+
+// A /packs reader that stops reading holds packsGate no longer than its answer's write deadline:
+// the answer's write and flush run under a deadline of their own (packsWriteBound), so once it
+// passes the write fails, the answer lets the gate go, and a publication waiting at the gate goes
+// on. Here the answer goes over a connection with no buffer (net.Pipe), whose reader sends its
+// request and never reads; the answer, past its last check, waits until a refresh that brings a
+// commit has reached the gate with its publication of the new set (packsGateBlocked), and only then
+// writes, under a 300 ms deadline. The publication goes on within that deadline and a margin, the
+// next answer lists the clone with the new commit's pack, and the stalled reader received no byte of
+// the abandoned answer. Before the deadline, the publication stayed blocked at the gate until the
+// reader's connection closed, the request's context ending did not free it.
+func TestAStalledPacksReaderHoldsTheGateNoLongerThanItsWriteDeadline(t *testing.T) {
+	r := newPacksRig(t)
+	r.refresh(t)
+	r.c.packsWrite = 300 * time.Millisecond
+	checked, blocked := make(chan struct{}), make(chan struct{})
+	var checkedOnce, blockedOnce sync.Once
+	r.c.packsChecked = func() {
+		checkedOnce.Do(func() {
+			close(checked)
+			<-blocked
+		})
+	}
+	r.c.packsGateBlocked = func() { blockedOnce.Do(func() { close(blocked) }) }
+
+	serverEnd, reader := net.Pipe()
+	t.Cleanup(func() { _ = reader.Close() })
+	server := &http.Server{Handler: r.c.handler(), ReadHeaderTimeout: 10 * time.Second}
+	go func() { _ = server.Serve(newPipeListener(serverEnd)) }()
+	t.Cleanup(func() { _ = server.Close() })
+	go func() {
+		_, _ = reader.Write([]byte("GET /packs HTTP/1.1\r\nHost: cache\r\nAuthorization: Bearer " + testCacheToken + "\r\n\r\n"))
+	}()
+	testwait.Receive(t, "the stalled reader's answer to pass its last check", checked)
+
+	advance(t, r.remote, "moved")
+	ctx := testwait.Context(t)
+	done := make(chan error, 1)
+	go func() { done <- r.c.refresh(ctx) }()
+	testwait.Receive(t, "the publication of the new set to stop at the gate behind the stalled answer", blocked)
+	err := testwait.ReceiveWithin(t, r.c.packsWrite+10*time.Second, "the refresh's publication",
+		"the stalled reader's answer still holds the gate, its write bounded by no deadline", done)
+	if err != nil {
+		t.Fatalf("the refresh that published behind the stalled answer: %v; log %q", err, r.log.all())
+	}
+	requireListing(t, listingOf(t, r.requirePacks(t)), cloneListing(t, r.c.dir), "after the publication the stalled answer held up,")
+
+	// The server closes the connection whose write failed; the deadline, which a closed pipe
+	// refuses, only bounds the read where it did not.
+	_ = reader.SetReadDeadline(time.Now().Add(5 * time.Second))
+	if n, err := reader.Read(make([]byte, 1)); n != 0 || !errors.Is(err, io.EOF) {
+		t.Errorf("the stalled reader read %d bytes (%v) after the answer's write failed, want none and the connection closed", n, err)
+	}
+}
+
+// pipeListener hands an http.Server one connection, the server's end of a net.Pipe, then answers
+// net.ErrClosed once it is closed.
+type pipeListener struct {
+	conns  chan net.Conn
+	closed chan struct{}
+	once   sync.Once
+}
+
+func newPipeListener(conn net.Conn) *pipeListener {
+	l := &pipeListener{conns: make(chan net.Conn, 1), closed: make(chan struct{})}
+	l.conns <- conn
+	return l
+}
+
+func (l *pipeListener) Accept() (net.Conn, error) {
+	select {
+	case conn := <-l.conns:
+		return conn, nil
+	case <-l.closed:
+		return nil, net.ErrClosed
+	}
+}
+
+func (l *pipeListener) Close() error {
+	l.once.Do(func() { close(l.closed) })
+	return nil
+}
+
+func (l *pipeListener) Addr() net.Addr { return pipeAddr{} }
+
+// pipeAddr is a pipeListener's address, which names no network.
+type pipeAddr struct{}
+
+func (pipeAddr) Network() string { return "pipe" }
+func (pipeAddr) String() string  { return "pipe" }
 
 // requireNoPacks fails the test unless /packs answers 503 with no manifest, naming what held then.
 func (r *packsRig) requireNoPacks(t *testing.T, what string) {

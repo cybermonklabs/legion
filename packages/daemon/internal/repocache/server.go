@@ -334,9 +334,11 @@ func (opts Options) check() error {
 // holds its read side from its last check of health and listed through its write (servePacks), and
 // the cache going unready and the listed set dropped or replaced take its write side (lockPacks).
 // It is no lock /tar or a refresh holds otherwise, so /packs answers 503 during a repack rather
-// than wait for it. packsChecked and packsGateBlocked are a test's seams, nil outside tests: the
-// first runs in an answer after its last check, holding the read side; the second runs where a
-// change finds the gate held.
+// than wait for it. packsWrite is the write deadline of each /packs answer (packsWriteBound, a
+// test's shorter one), which bounds how long an answer holds the read side. packsChecked and
+// packsGateBlocked are a test's seams, nil outside tests: the first runs in an answer after its
+// last check, holding the read side, before its write; the second runs where a change finds the
+// gate held.
 type cache struct {
 	opts             Options
 	dir              string
@@ -357,6 +359,7 @@ type cache struct {
 	lone             map[string]bool
 	clock            clock.Clock
 	packsGate        sync.RWMutex
+	packsWrite       time.Duration
 	packsChecked     func()
 	packsGateBlocked func()
 }
@@ -397,7 +400,7 @@ func newCache(opts Options, dir string) *cache {
 	return &cache{
 		opts: opts, dir: dir, streams: make(chan struct{}, maxStreams),
 		digests: map[string]packDigest{}, absent: map[string]absence{}, foreign: map[string]bool{}, lone: map[string]bool{},
-		clock: clock.Real(),
+		clock: clock.Real(), packsWrite: packsWriteBound,
 	}
 }
 
