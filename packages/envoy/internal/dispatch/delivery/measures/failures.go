@@ -7,9 +7,12 @@ import (
 // The three failure measures (dispatch://INFRA-978, D7): change-fail-rate, failed-deploy-recovery
 // and deployment-rework-rate, built from the record of deploys and failed changes
 // (production_events) for one project and one UTC day. A failure is a fact about its deploy: it
-// counts on the day its deploy finished, for each project its deploy counts for whose failure
-// sources include its signal, and not at all once rejected. The builders take the rows their caller
-// already counted for the project, so they read no project and no source.
+// counts on the day its deploy finished, and not at all once rejected. An automatic signal's
+// failure (check_fail, revert, incident_issue) counts for each project its deploy counts for whose
+// failure sources include its signal; a failure posted to a project's route, a system's (api) or a
+// person's flag, counts for that project alone, a system's where its sources include events and a
+// person's flag under any source. The builders take the rows their caller already counted for the
+// project, so they read no project and no source.
 
 // SeriesReworkDeploys is deployment-rework-rate's: the deploys that restored a counted failure over
 // every deploy of the day (a share). It is spelled as deploy-frequency's sum is, since each eval

@@ -595,37 +595,54 @@ func postedDayAs(day time.Time, prs []delivery.DeliveryPullRequest, posted poste
 	return read
 }
 
-// firstShipped keeps each pull request's lead times to production in one deploy repository's
-// rows of days, one day's reads of the deploy repositories: those of the first deploy to ship it,
-// a GitHub deploy of its own repository or a posted deploy that names it, the GitHub one where
-// both finish at once (and of two posted ones the events repository first by name). So a pull
-// request shipped by both counts its merge-to-production once, from its merge to that deploy. A
-// GitHub repository's day keeps a pull request another deploy ships first as one no deploy of it
-// ships, and an events repository's day drops it.
+// Shipping is one deploy that ships a pull request, as the first deploy to ship it is chosen
+// (Before): the moment it finished (its production apply's completion, or a posted deploy's
+// finished_at), whether a system posted it, and the deploy repository its rows are kept under
+// (deploy_repos.go: a source repository, or the events repository of the project it was posted to).
+type Shipping struct {
+	At     time.Time
+	Posted bool
+	Repo   string
+}
+
+// Before reports whether s ships its pull request before other: it finished first, or, where both
+// finished at once, s is a GitHub deploy and other a posted one, or, of two of one kind, s's deploy
+// repository is the first by name. The day rows time a pull request to the deploy that ships it
+// first (firstShipped), and its items name that deploy (api's evals items).
+func (s Shipping) Before(other Shipping) bool {
+	switch {
+	case !s.At.Equal(other.At):
+		return s.At.Before(other.At)
+	case s.Posted != other.Posted:
+		return !s.Posted
+	}
+	return s.Repo < other.Repo
+}
+
+// firstShipped keeps each pull request's lead times to production, in days, one day's reads of the
+// deploy repositories, at the first deploy to ship it (Shipping.Before) for each project or owner
+// key the rows count it for (dispatch://INFRA-978, R12): a GitHub deploy of its own repository,
+// which ships it for what its attribution counts it for, or a deploy posted to a project's route
+// that names it, which ships it for that project alone. So a pull request that a project's GitHub
+// rows and a deploy posted to that project both ship counts its merge-to-production once in that
+// project, from its merge to the first of the two; a deploy posted to one project moves no other
+// project's timing of it, and no other project's deploy takes it out of the posting project's
+// rows. An owner key is a key of its own, which no posted deploy ships for, since several projects
+// read its rows. A GitHub repository's day keeps a pull request another deploy ships first for the
+// same key as one no deploy of it ships, and an events repository's day drops it.
 func firstShipped(days []DeliveryDay) {
-	type shipping struct {
-		at     time.Time
-		posted bool
-		repo   string
+	type shipped struct {
+		member, project string
 	}
-	before := func(a, b shipping) bool {
-		switch {
-		case !a.at.Equal(b.at):
-			return a.at.Before(b.at)
-		case a.posted != b.posted:
-			return !a.posted
-		}
-		return a.repo < b.repo
-	}
-	first := map[string]shipping{}
+	first := map[shipped]Shipping{}
 	for _, day := range days {
 		for _, pr := range day.prs {
 			if pr.pr.DeployedAt == nil {
 				continue
 			}
-			one := shipping{at: *pr.pr.DeployedAt, posted: day.posted, repo: day.deployRepo}
-			if held, found := first[pr.member]; !found || before(one, held) {
-				first[pr.member] = one
+			key, one := shipped{member: pr.member, project: pr.project}, Shipping{At: *pr.pr.DeployedAt, Posted: day.posted, Repo: day.deployRepo}
+			if held, found := first[key]; !found || one.Before(held) {
+				first[key] = one
 			}
 		}
 	}
@@ -633,7 +650,7 @@ func firstShipped(days []DeliveryDay) {
 		day := &days[i]
 		kept := make([]dayPR, 0, len(day.prs))
 		for _, pr := range day.prs {
-			if pr.pr.DeployedAt == nil || first[pr.member].repo == day.deployRepo {
+			if pr.pr.DeployedAt == nil || first[shipped{member: pr.member, project: pr.project}].Repo == day.deployRepo {
 				kept = append(kept, pr)
 				continue
 			}

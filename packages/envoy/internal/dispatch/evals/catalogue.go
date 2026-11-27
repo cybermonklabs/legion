@@ -2,6 +2,7 @@ package evals
 
 import (
 	"embed"
+	"io/fs"
 	"strings"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
@@ -47,11 +48,14 @@ const SlugDeploymentReworkRate = "deployment-rework-rate"
 
 // catalogueEntry is one computed eval of the catalogue: the fields its version 1 holds in every
 // project (all but its id, its project, its doc block, its state and its writer, which Ensure
-// sets), its series, and the body of its method block (methods/<slug>.md).
+// sets), its series, the body of its method block (methods/<slug>.md), and each method text an
+// earlier release's seed wrote into its section (methods/earlier/<slug>/), which the seed replaces
+// with the catalogue's where no one has edited it since (ensure).
 type catalogueEntry struct {
 	definition Definition
 	series     []Series
 	body       string
+	earlier    []string
 }
 
 // methods holds the body of each eval's method block, one file per slug: how the eval is
@@ -61,6 +65,15 @@ type catalogueEntry struct {
 //go:embed methods/*.md
 var methods embed.FS
 
+// earlierMethods holds each method text an earlier release's catalogue wrote into an eval's
+// section, whole, as that release's catalogueEntry.method built it: one file per text, in a
+// directory per slug (methods/earlier/<slug>/<n>.md, 1 the oldest). A release that changes a
+// method the releases before it seeded adds the text they wrote, so a section that still holds it
+// gets the new one.
+//
+//go:embed methods/earlier
+var earlierMethods embed.FS
+
 // methodBody is the embedded body of slug's method block. A slug with no file is a catalogue
 // written without its prose, which this package's tests read at their start, so it panics.
 func methodBody(slug string) string {
@@ -69,6 +82,24 @@ func methodBody(slug string) string {
 		panic("evals: the catalogue eval " + slug + " has no method: " + err.Error())
 	}
 	return string(text)
+}
+
+// earlierMethodsOf is each embedded earlier method text of slug (earlierMethods), in the order of
+// their names; none for an eval whose method no release has changed.
+func earlierMethodsOf(slug string) []string {
+	files, err := fs.Glob(earlierMethods, "methods/earlier/"+slug+"/*.md")
+	if err != nil {
+		panic("evals: read the earlier methods of " + slug + ": " + err.Error())
+	}
+	texts := make([]string, len(files))
+	for i, file := range files {
+		text, err := earlierMethods.ReadFile(file)
+		if err != nil {
+			panic("evals: read the earlier method " + file + ": " + err.Error())
+		}
+		texts[i] = string(text)
+	}
+	return texts
 }
 
 // method is the text of the eval's method block: its question and the decision it changes, the
@@ -496,10 +527,11 @@ var catalogue = []catalogueEntry{
 	},
 }
 
-// The bodies are read once, when the package starts, so a catalogue entry with no method file
-// fails every test of the package and every binary that links it.
+// The bodies and the earlier methods are read once, when the package starts, so a catalogue entry
+// with no method file fails every test of the package and every binary that links it.
 func init() {
 	for i := range catalogue {
-		catalogue[i].body = methodBody(catalogue[i].definition.Slug)
+		slug := catalogue[i].definition.Slug
+		catalogue[i].body, catalogue[i].earlier = methodBody(slug), earlierMethodsOf(slug)
 	}
 }

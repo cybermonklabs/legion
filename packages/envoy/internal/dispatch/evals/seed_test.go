@@ -204,9 +204,15 @@ func TestEnsureAddsTheSectionsAProjectsDocumentLacks(t *testing.T) {
 	t.Logf("sections added to the found document: %d; the deleted block %s came back as %s at version %d, target %v carried", seeded.Sections, block, newest[0].DocBlock, newest[0].Version, *newest[0].Target)
 }
 
-// deleteBlock deletes the block id names from the document artifactID as alice, in a transaction
-// the document service joins, as the edit route writes a person's edit.
+// deleteBlock deletes the block id names from the document artifactID as alice (editAsAlice).
 func (r rig) deleteBlock(t *testing.T, artifactID, id string) {
+	t.Helper()
+	r.editAsAlice(t, artifactID, model.EditOp{Op: "delete", Block: id})
+}
+
+// editAsAlice applies op to the document artifactID as alice, in a transaction the document
+// service joins, as the edit route writes a person's edit.
+func (r rig) editAsAlice(t *testing.T, artifactID string, op model.EditOp) {
 	t.Helper()
 	ctx := t.Context()
 	tx, err := r.database.Pool.Begin(ctx)
@@ -216,9 +222,9 @@ func (r rig) deleteBlock(t *testing.T, artifactID, id string) {
 	defer tx.Rollback(ctx)
 	joined, ledger := r.documents.Join(ctx, tx)
 	defer ledger.Discard()
-	edit, err := r.documents.ApplyOps(joined, artifactID, []model.EditOp{{Op: "delete", Block: id}}, alice, nil)
+	edit, err := r.documents.ApplyOps(joined, artifactID, []model.EditOp{op}, alice, nil)
 	if err != nil || edit.Applied == 0 {
-		t.Fatalf("delete block %s: %+v, %v", id, edit, err)
+		t.Fatalf("edit %+v: %+v, %v", op, edit, err)
 	}
 	if err := ledger.Commit(ctx); err != nil {
 		t.Fatalf("commit the edit: %v", err)
@@ -408,6 +414,99 @@ func TestAReleaseThatDropsASeriesUnlistsIt(t *testing.T) {
 	}
 	if kept.Version != 1 || !kept.Listed || !kept.IsPrimary {
 		t.Errorf("%s's %s is %+v, want version 1, listed and primary, untouched", SlugDeployFrequency, measures.SeriesDeploys, kept)
+	}
+	again, err := r.registry.Ensure(ctx, r.project)
+	if err != nil || again != (Seeded{}) {
+		t.Fatalf("a second seed of the later release's catalogue wrote %+v, %v, want nothing", again, err)
+	}
+}
+
+// TestASeedWritesItsMethodOverAnEarlierReleasesThatNoOneEdited
+// (dispatch://INFRA-978/comment/e6c99e06-0589-4692-b30f-ed64684bd33a, point 5): an earlier release
+// seeds the sections of deploy-frequency, merge-to-production and pr-open-to-merge with methods of
+// its own. Alice then edits merge-to-production's method in the document, and writes
+// pr-open-to-merge's, as its section holds it, through the register write, which records the
+// method as hers. A later release whose catalogue lists each earlier method as one it wrote
+// (catalogueEntry.earlier) writes its own method over deploy-frequency's alone, whose section no
+// one edited: a block of a new id in the old one's place, which deploy-frequency's next version,
+// the seed's, names. Alice's two methods stand in the blocks they were in, and their evals get no
+// version. A second seed writes nothing.
+func TestASeedWritesItsMethodOverAnEarlierReleasesThatNoOneEdited(t *testing.T) {
+	// Not parallel: it changes the catalogue the whole process reads (withCatalogue).
+	r := newRig(t)
+	ctx := t.Context()
+	slugs := []string{SlugDeployFrequency, SlugMergeToProduction, SlugPROpenToMerge}
+	earlier := map[string]string{}
+	withCatalogue(t, func(entries []catalogueEntry) {
+		for i := range entries {
+			if slug := entries[i].definition.Slug; slices.Contains(slugs, slug) {
+				entries[i].body = "**How it is measured.** As the earlier release measured " + slug + "."
+				earlier[slug] = entries[i].method()
+			}
+		}
+	})
+	if _, err := r.registry.Ensure(ctx, r.project); err != nil {
+		t.Fatalf("seed %s with the earlier release's catalogue: %v", r.project, err)
+	}
+	const edited = "As alice measures merge-to-production."
+	r.editAsAlice(t, r.documentID(t, r.project), model.EditOp{
+		Op: "replace", Find: "As the earlier release measured " + SlugMergeToProduction + ".", With: edited,
+	})
+	if written, err := r.registry.Register(ctx, Registration{
+		Project: r.project, Slug: SlugPROpenToMerge, Caller: alice, DocText: Set(earlier[SlugPROpenToMerge]),
+	}); err != nil || !written.Wrote {
+		t.Fatalf("alice's write of the method %s holds wrote %t, %v; want a version recording it as hers", SlugPROpenToMerge, written.Wrote, err)
+	}
+	before := map[string]Definition{}
+	for _, slug := range slugs {
+		before[slug], _ = r.currentOf(t, slug)
+	}
+
+	withCatalogue(t, func(entries []catalogueEntry) {
+		for i := range entries {
+			if slug := entries[i].definition.Slug; slices.Contains(slugs, slug) {
+				entries[i].body, entries[i].earlier = methodBody(slug), []string{earlier[slug]}
+			}
+		}
+	})
+	released, err := r.registry.Ensure(ctx, r.project)
+	if err != nil {
+		t.Fatalf("seed %s with the later release's catalogue: %v", r.project, err)
+	}
+	text, blocks := r.document(t)
+	t.Logf("the later release's seed wrote %+v", released)
+	if released != (Seeded{Versions: 1, Sections: 1}) {
+		t.Errorf("the later release's seed wrote %+v, want one version and one method of %s", released, SlugDeployFrequency)
+	}
+	method := func(definition Definition) string {
+		t.Helper()
+		held, found, err := r.registry.Method(ctx, r.project, definition.DocBlock)
+		if err != nil || !found {
+			t.Fatalf("read the method of %s: found %t, %v", definition.EvalID, found, err)
+		}
+		return held
+	}
+	was := before[SlugDeployFrequency]
+	rewritten, _ := r.currentOf(t, SlugDeployFrequency)
+	t.Logf("%s: version %d naming block %s, was version %d naming %s", SlugDeployFrequency, rewritten.Version, rewritten.DocBlock, was.Version, was.DocBlock)
+	if rewritten.Version != was.Version+1 || rewritten.WrittenVia != ViaSeed || rewritten.DocBlock == was.DocBlock ||
+		hasBlock(blocks, was.DocBlock) || headings(text, SlugDeployFrequency) != 1 {
+		t.Errorf("%s is version %d by %s naming block %s (the earlier block held: %t, %d sections); want version %d by the seed naming a new block in the earlier one's place",
+			SlugDeployFrequency, rewritten.Version, rewritten.WrittenVia, rewritten.DocBlock, hasBlock(blocks, was.DocBlock), headings(text, SlugDeployFrequency), was.Version+1)
+	}
+	if held := method(rewritten); !sameMethod(held, entryOf(t, SlugDeployFrequency).method()) {
+		t.Errorf("%s's section holds %q, want the later release's method", SlugDeployFrequency, held)
+	}
+	for _, slug := range []string{SlugMergeToProduction, SlugPROpenToMerge} {
+		if kept, _ := r.currentOf(t, slug); kept.Version != before[slug].Version || kept.DocBlock != before[slug].DocBlock {
+			t.Errorf("%s, whose method alice wrote, is version %d naming block %s after the seed; want version %d naming %s", slug, kept.Version, kept.DocBlock, before[slug].Version, before[slug].DocBlock)
+		}
+	}
+	if held := method(before[SlugMergeToProduction]); !strings.Contains(held, edited) {
+		t.Errorf("%s's section, whose method alice edited, holds %q after the seed; want her edit", SlugMergeToProduction, held)
+	}
+	if held := method(before[SlugPROpenToMerge]); !sameMethod(held, earlier[SlugPROpenToMerge]) {
+		t.Errorf("%s's section, whose method alice wrote, holds %q after the seed; want hers, %q", SlugPROpenToMerge, held, earlier[SlugPROpenToMerge])
 	}
 	again, err := r.registry.Ensure(ctx, r.project)
 	if err != nil || again != (Seeded{}) {

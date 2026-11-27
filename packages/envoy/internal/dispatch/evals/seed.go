@@ -30,18 +30,24 @@ import (
 //
 // A seed that finds an eval of the catalogue already written writes a new version of it only
 // where the release changed what the catalogue states of it, its Computation or its series'
-// SeriesComputation, or where its section is gone. The change is read against the version the
-// seed last wrote, which holds every field the catalogue owns as that seed's build stated it, so
-// every version the seed writes takes all of them from the catalogue. A person cannot set one of
-// them on a computed eval (the register write refuses it, computationField). Every field a person
-// sets is carried forward from the newest version, so no such write is accepted and then lost at
-// the next boot (R5): the target, its inclusiveness and its judges, the owner role and the person,
-// the issue, the links, the state and what replaced it, and the doc block. A series is read and
-// written the same way, each on its own, its min_n carried forward: the catalogue states a series'
-// min_n for its first version alone, as it states the target. A method block that exists is never
-// written: a person's edit of it stands. An eval whose doc block the document no longer holds (no
-// version yet, the block deleted, or the document gone) gets a section at the end of the
-// document, and a version naming that section's block.
+// SeriesComputation, where its section is gone, or where its method block holds an earlier
+// release's method (below). The change is read against the version the seed last wrote, which
+// holds every field the catalogue owns as that seed's build stated it, so every version the seed
+// writes takes all of them from the catalogue. A person cannot set one of them on a computed eval
+// (the register write refuses it, computationField). Every field a person sets is carried forward
+// from the newest version, so no such write is accepted and then lost at the next boot (R5): the
+// target, its inclusiveness and its judges, the owner role and the person, the issue, the links,
+// the state and what replaced it, and the doc block. A series is read and written the same way,
+// each on its own, its min_n carried forward: the catalogue states a series' min_n for its first
+// version alone, as it states the target. A method block a person edited is never written: a
+// person's edit of it stands. A block whose text is still exactly a method an earlier release's
+// catalogue wrote for its eval (catalogueEntry.earlier), on an eval whose method no person's
+// register write named (Definition.SetByPerson), no one has edited since, and the seed writes the
+// catalogue's method in its place, a block of a new id that the version it writes names; so the
+// method reads as this release states it whichever release seeded it first
+// (dispatch://INFRA-978/comment/e6c99e06-0589-4692-b30f-ed64684bd33a, point 5). An eval whose doc
+// block the document no longer holds (no version yet, the block deleted, or the document gone)
+// gets a section at the end of the document, and a version naming that section's block.
 //
 // An eval the seed takes over, one of the catalogue's slugs a reading or a register write
 // registered before any seed of its project (a project made by SQL, or a slug a later release adds
@@ -258,10 +264,11 @@ type seedWrite struct {
 // owner lock of the project's `evals-md` (lockDocument), as every other registry write of the
 // document takes it after its eval locks, and reads the newest version of each eval, the version
 // the seed last wrote, the current series and the series as the seed last wrote them, the first
-// version of an eval it takes over, and the blocks of `evals-md`. All of that, and the document
-// work of the missing sections and the methods it takes over, one write of the document, runs in
-// the transaction's read phase, holding no transaction id; the document's writes and then the
-// versions are queued on the write's ledger, whose Commit sends them as one batch: a project's
+// version of an eval it takes over, and the text and blocks of `evals-md`. All of that, and the
+// document work of the missing sections and of the methods no one has edited (the registration's
+// sentence of an eval it takes over, or an earlier release's method), one write of the document,
+// runs in the transaction's read phase, holding no transaction id; the document's writes and then
+// the versions are queued on the write's ledger, whose Commit sends them as one batch: a project's
 // first seed writes 21 versions and 94 of series, which one round trip each would make 115.
 func (s *Store) ensure(ctx context.Context, w *writeTx) (Seeded, error) {
 	ids := make([]string, len(catalogue))
@@ -315,14 +322,9 @@ func (s *Store) ensure(ctx context.Context, w *writeTx) (Seeded, error) {
 	}
 	var markdown string
 	var blocks []model.ArtifactBlock
-	switch {
-	case found && len(taken) > 0:
+	if found {
 		if markdown, blocks, err = s.documents.TextWithBlocks(ctx, document.id); err != nil {
 			return Seeded{}, fmt.Errorf("read the %s document of %s: %w", DocumentSlug, w.project, err)
-		}
-	case found:
-		if blocks, err = s.documents.Blocks(ctx, document.id); err != nil {
-			return Seeded{}, fmt.Errorf("read the blocks of the %s document of %s: %w", DocumentSlug, w.project, err)
 		}
 	}
 
@@ -334,10 +336,14 @@ func (s *Store) ensure(ctx context.Context, w *writeTx) (Seeded, error) {
 		last, seeded := lastSeeded[ids[i]]
 		missing := !has || !hasBlock(blocks, existing.DocBlock)
 		first, takeover := taken[ids[i]]
-		unwritten := takeover && !missing && !setByPerson(existing.SetByPerson, fieldDocText, fieldDocBlock) &&
-			holdsRegistrationSentence(markdown, blocks, existing.DocBlock, first)
+		// unedited is a method block no one has written since the registry did: the sentence an
+		// eval the seed takes over was registered with, or a method an earlier release's catalogue
+		// wrote, on an eval whose method no person's register write named.
+		unedited := !missing && !setByPerson(existing.SetByPerson, fieldDocText, fieldDocBlock) &&
+			(takeover && holdsRegistrationSentence(markdown, blocks, existing.DocBlock, first) ||
+				holdsEarlierMethod(markdown, blocks, existing.DocBlock, entry.earlier))
 		series := seriesToWrite(ids[i], entry.series, current[ids[i]], seededSeries[ids[i]])
-		if has && seeded && !missing && len(series) == 0 && entry.definition.Computation.same(last.Computation) {
+		if has && seeded && !missing && !unedited && len(series) == 0 && entry.definition.Computation.same(last.Computation) {
 			continue
 		}
 		next := existing
@@ -350,7 +356,7 @@ func (s *Store) ensure(ctx context.Context, w *writeTx) (Seeded, error) {
 		case missing:
 			next.DocBlock = uuid.NewString()
 			sections = append(sections, sectionMarkdown(entry.definition.Slug, next.DocBlock, entry.method()))
-		case unwritten:
+		case unedited:
 			next.DocBlock = uuid.NewString()
 			replaced = append(replaced,
 				model.EditOp{Op: "insert", After: "block:" + existing.DocBlock, Markdown: methodBlock(next.DocBlock, entry.method())},
@@ -479,6 +485,18 @@ func readTakeovers(ctx context.Context, w *writeTx, newest, lastSeeded map[strin
 func holdsRegistrationSentence(markdown string, blocks []model.ArtifactBlock, id string, first Definition) bool {
 	held, found := blockMethod(markdown, blocks, id)
 	return found && sameMethod(held, registrationSentence(first.WrittenVia, first.WrittenBy, first.CreatedAt))
+}
+
+// holdsEarlierMethod reports whether the block id of the document whose markdown and blocks these
+// are holds exactly one of earlier, the methods earlier releases' catalogues wrote for its eval
+// (catalogueEntry.earlier), as the document keeps a method (sameMethod): no one has edited it since
+// such a release's seed wrote it.
+func holdsEarlierMethod(markdown string, blocks []model.ArtifactBlock, id string, earlier []string) bool {
+	if len(earlier) == 0 {
+		return false
+	}
+	held, found := blockMethod(markdown, blocks, id)
+	return found && slices.ContainsFunc(earlier, func(text string) bool { return sameMethod(held, text) })
 }
 
 // seriesToWrite is the versions of the series of eval id a seed writes: version 1 of each series

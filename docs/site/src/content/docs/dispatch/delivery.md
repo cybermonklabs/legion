@@ -333,7 +333,8 @@ The failure measures and their items use the same deploy attribution, including 
   Such runs follow the source: once the refresher's next pass has recorded a source moved to another repository, or a repository's source moved to another project, they count for the project whose source reads their repository then, and while no delivery-on source reads it they count for no project.
 
 - A posted deploy counts for the project of the route it was posted to, and for no other project.
-  While that project has delivery on and an `events` source, the deploy adds one to its `deploy-frequency` on the UTC day the deploy finished, and each population pull request it names adds its time from merge to the deploy's finish to `merge-to-production`, where no earlier deploy shipped it.
+  While that project has delivery on and an `events` source, the deploy adds one to its `deploy-frequency` on the UTC day the deploy finished, and each population pull request it names adds its time from merge to the deploy's finish to that project's `merge-to-production`, unless a GitHub deploy that counts the pull request for that project through its issue shipped it earlier.
+  The post moves no other project's numbers: a project whose GitHub deploy ships the same pull request times it to that deploy, whichever finished first.
   That pull request's row in the eval's items carries the posted deploy's finish as `deployed_at` and no `deploy_run_id`, since a posted deploy is no GitHub run.
   A deploy posted to any other project stays in the record and counts in no eval.
 

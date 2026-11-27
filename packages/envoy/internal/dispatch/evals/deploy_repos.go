@@ -42,9 +42,10 @@ import (
 // delivery on and the source: they are kept under a deploy repository of the project's own
 // (EventsRepo), whose deploy-frequency counts each posted deploy on the day it finished and whose
 // merge-to-production times each pull request a posted deploy names from its merge to the deploy
-// (postedDayAs), where that deploy ships it before any GitHub deploy does: a pull request's lead
-// times count once, at the first deploy that ships it (firstShipped). It is kept, recorded and
-// selected as a source repository is, under no job name.
+// (postedDayAs), where that deploy ships it before a GitHub deploy that counts it for that project
+// does: a pull request's lead times count once for each project, at the first deploy that ships it
+// for that project, and a posted deploy moves no other project's timing (firstShipped). It is kept,
+// recorded and selected as a source repository is, under no job name.
 //
 // The repositories kept are the repositories that hold a delivery run and a rule, one a source reads
 // now or one recorded with the rows (readDeployRepos, refresh.keptRepos), and the events repository
@@ -421,7 +422,16 @@ func (p postedRecord) shipping(pr delivery.DeliveryPullRequest, merged time.Time
 
 // PostedMember is a posted deploy's row key in eval_day_members: `production_event:<id>`.
 func PostedMember(id string) string {
-	return "production_event:" + id
+	return postedPrefix + id
+}
+
+// postedPrefix is what every posted deploy's row key (PostedMember) starts with.
+const postedPrefix = "production_event:"
+
+// IsPostedMember reports whether member is a posted deploy's row key (PostedMember) rather than a
+// run's or a pull request's.
+func IsPostedMember(member string) bool {
+	return strings.HasPrefix(member, postedPrefix)
 }
 
 // keptRules is each of repos' rule, its DeployRepo the repository as its rows are keyed, in their

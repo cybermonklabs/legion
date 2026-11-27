@@ -178,13 +178,14 @@ func TestTheItemsOfAProjectWithTwoSourcesReadEachUnderItsOwnRule(t *testing.T) {
 	}
 }
 
-// TestAPullRequestItemIsTimedToTheDeployItsDayRowsName: acme/alpha-app#1 and #2, of ALPHA's issue,
-// merge at 09:00, and ALPHA's GitHub deploy 101 ships both at 10:29; a deploy posted to OMEGA's
-// route at 09:30, which OMEGA's events source reads, names #1, so OMEGA's merge-to-production
-// times #1 to the post. OMEGA's merge-to-production items time #1 as its day rows do: to the
-// post's finish, with no run id, 30 minutes from the merge, 90 from the opening and 120 from the
-// first commit, and the same with ALPHA's repository named as without. ALPHA's time #2, which no
-// post names, to run 101, 89 minutes. Each project's items' minutes are the samples its day rows
+// TestAPullRequestItemIsTimedToTheDeployItsDayRowsName (dispatch://INFRA-978, R12):
+// acme/alpha-app#1 and #2, of ALPHA's issue, merge at 09:00, and ALPHA's GitHub deploy 101 ships
+// both at 10:29; a deploy posted to OMEGA's route at 09:30, which OMEGA's events source reads,
+// names #1, so OMEGA's merge-to-production times #1 to the post. OMEGA's merge-to-production items
+// time #1 as its day rows do: to the post's finish, with no run id, 30 minutes from the merge, 90
+// from the opening and 120 from the first commit, and the same with ALPHA's repository named as
+// without. The post counts for OMEGA alone, so it moves none of ALPHA's timing: ALPHA's items time
+// #1 and #2 to run 101, 89 minutes each. Each project's items' minutes are the samples its day rows
 // of the day hold.
 func TestAPullRequestItemIsTimedToTheDeployItsDayRowsName(t *testing.T) {
 	t.Parallel()
@@ -262,7 +263,12 @@ func TestAPullRequestItemIsTimedToTheDeployItsDayRowsName(t *testing.T) {
 		t.Errorf("OMEGA's merge-to-production items of %s are %v, want those of every repository, %v", app, cut, omega)
 	}
 	alpha := items("ALPHA", "")
-	shipped("ALPHA", app+"#2", alpha[app+"#2"], 101.0, at(10, 29), map[string]float64{"merge_to_production_minutes": 89})
+	if len(alpha) != 2 {
+		t.Errorf("ALPHA's merge-to-production items list %v, want %s#1 and #2", slices.Sorted(maps.Keys(alpha)), app)
+	}
+	for _, number := range []string{"#1", "#2"} {
+		shipped("ALPHA", app+number, alpha[app+number], 101.0, at(10, 29), map[string]float64{"merge_to_production_minutes": 89})
+	}
 	for project, rows := range map[string]map[string]map[string]any{"ALPHA": alpha, "OMEGA": omega} {
 		listed := []float64{}
 		for _, row := range rows {
