@@ -499,6 +499,9 @@ func LockOpenPauseTx(ctx context.Context, tx pgx.Tx, project string) (Pause, boo
 // and a cancel of an idle release reads it to record the roles it would resume as stopped by the
 // pause (decision 12, CancelIssueRelease). The resume's end of that pause then waits for the
 // caller to commit, and sets the stuck clock of a held wake it wrote (SetProjectResumeClocksTx).
+// A release's record locks it too, before it writes the wakes taken under its mark and their
+// starts, so that the record and the resume do not write those rows in opposite orders at once
+// (Store.RecordPodRelease).
 func LockOpenPauseByTokenTx(ctx context.Context, tx pgx.Tx, token string) (Pause, bool, error) {
 	return readOpenPauseByToken(ctx, tx, token, " for share")
 }

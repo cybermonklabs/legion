@@ -71,14 +71,16 @@
 # thing that check measures is the latency from a SIGKILL to `gone`, and ten minutes of waiting
 # would measure the same boundary no better.
 #
-# The session bucket's maximum age is 2h for the whole run but check 8. At the shipping five
-# minutes JetStream removes a stalled session's key at five minutes — before the gone horizon can
-# be reached — so no stalled session could ever read `unresponsive` and nothing above could be
+# The session bucket's maximum age is 2h for the whole run but check 8. At the 5 minutes of a
+# bucket an older listener created, which the live bucket keeps until ENVOY_SESSION_MAX_AGE raises
+# it, JetStream removes a stalled session's key at five minutes — before the gone horizon can be
+# reached — so no stalled session could ever read `unresponsive` and nothing above could be
 # proved at all. Raising it is the rollout this issue's sibling carries (dispatch://INFRA-887), and
 # check 8 is its proof: the two running listeners leave ENVOY_SESSION_MAX_AGE unset, so neither
 # writes the bucket's age and both adopt what the bucket carries (applyMaxAge, on every reaper
-# pass), and a listener of the run's own writes it — 2h at setup, then in check 8 the shipping 5m,
-# the raise back to 2h, and the rollback to 5m.
+# pass). The run's store is new, so listener A creates the bucket at 2h (session.BucketMaxAge),
+# and the setup checks that both listeners read that age. Only in check 8 does a listener of the
+# run's own write the age: the older 5m, the raise back to 2h, and the rollback to 5m.
 #
 # ---- the named checks ---------------------------------------------------------------------------
 # Each prints `PASS <name>` or `FAIL <name>: <reason>`, every selected check runs whatever the one
@@ -304,8 +306,11 @@ role_reap_interval=20s
 heartbeat_ms=5000
 max_age=2h
 max_age_shown=2h0m0s
-shipping_max_age=5m
-shipping_max_age_shown=5m0s
+# older_bucket_max_age is the 5m maximum age of a bucket an older listener created. The live
+# bucket keeps that age until ENVOY_SESSION_MAX_AGE raises it. A listener of this build creates a
+# bucket at 2h.
+older_bucket_max_age=5m
+older_bucket_max_age_shown=5m0s
 
 # own_session PIDFILE COMMAND… runs COMMAND in a session of its own and writes its pid and its start
 # time to PIDFILE (record_pid_sh, lib/process-tree.sh, before it execs COMMAND, so both are
@@ -477,11 +482,13 @@ api() { # api PORT METHOD PATH [BODY]
 # names a port (sjawhar/legion#2674), and a session receives what its own consumer holds and
 # nothing else, so the registration below names no port.
 # It asks for the session consumer, as every plugin's registration does (dispatch://INFRA-771):
-# whatever else a registration says, one that asks for no consumer is refused 409 not_requested
-# and writes nothing (`consumerFor`), so a session registered without it would exist for no check
-# to read. It says `self_subscribed` as every plugin's registration does, and that field decides
-# no delivery any more: it records what a session says of itself, which a check reads back, and
-# nothing follows from it, which is why no caller chooses it.
+# a registration that asks for no consumer is refused 409 not_requested and writes nothing
+# (`consumerFor`), unless it comes from @sjawhar/pi-envoy 14.1.0 or later, which the listener gives
+# a consumer whether or not it asks (`readsUnaskedRelay`, R21 of dispatch://INFRA-3589). This rig's
+# registration names no plugin, so without the ask it would be refused, and the session would
+# exist for no check to read. It says `self_subscribed` as every plugin's registration does, and
+# that field decides no delivery: it records what a session says of itself, which a check
+# reads back, and nothing follows from it, which is why no caller chooses it.
 registered() {
   local session=$1 body
   shift
@@ -774,12 +781,13 @@ set_max_age() {
   maxage_pid=
 }
 
-set_max_age "$max_age"
-until_true 120 "both listeners to read the bucket's $max_age maximum age" \
+# The run's store is new, so listener A created the session bucket, at the 2h a listener of this
+# build gives a new bucket. Both listeners must read that age before any check runs.
+until_true 120 "listener A to read the new bucket's $max_age maximum age" \
   healthz_max_age_is "$port_a" "$max_age_shown"
-until_true 120 "listener B to read the bucket's $max_age maximum age" \
+until_true 120 "listener B to read the new bucket's $max_age maximum age" \
   healthz_max_age_is "$port_b" "$max_age_shown"
-note "the session bucket's maximum age is $max_age, written by a listener of the run's own"
+note "the session bucket's maximum age is $max_age, the age listener A created it with"
 watch_exceptions
 
 if [ -n "$needs_dispatch" ]; then
@@ -1018,6 +1026,16 @@ stored_cards_landed() {
   [ "$(delivery_cards "$1" "mention $2")" -ge 1 ] && [ "$(delivery_cards "$1" "direct $2")" -ge 1 ]
 }
 
+# agent_wakes_reported SESSION counts the `listener agent wake reported` lines listener A logged
+# for SESSION. It counts rather than asks `grep -q`: under pipefail, a `grep -q` that exits at its
+# first match can cut the first grep off mid-write, and the pipe would then read as no match.
+agent_wakes_reported() {
+  local count
+  count=$(grep -F -e 'listener agent wake reported' -- "$evidence/logs/listener_a.log" |
+    grep -c -F -e "\"session_id\":\"$1\"") || count=0
+  printf '%s\n' "$count"
+}
+
 # kept_role_card_landed FILE MARKER: the role publish naming MARKER, which the listener kept on the
 # role's kept lane while its holder was unresponsive, has reached that session file.
 kept_role_card_landed() { [ "$(delivery_cards "$1" "role $2")" -ge 1 ]; }
@@ -1216,13 +1234,13 @@ check_send_to_stalled_session_is_stored() {
 # ---- 3b. every stored delivery reaches the session once ------------------------------------------------------
 # Writes on a stalled session's routes — a mention and a direct message on its own route, a publish
 # on a role route it holds — are stored while it is stalled and arrive when it answers again. Each
-# must show exactly once in the session's own transcript, no delivery may be reported failed,
-# deferred or given up, and nothing may land on the exceptions topic: a stored delivery is not a
-# failed one. The role publish is kept on the role's kept lane for one hour and answered 202 with
-# kept_reason holder_lapsed. The holder keeps its claim through the stall, so no claim follows to
-# hand the lane over: the registration that makes the holder live again after SIGCONT hands the
-# copy over (subscribeHandler), and the listener's sweep, every five minutes (main.go), is only the
-# backstop behind that handover.
+# must show exactly once in the session's own transcript, the listener may report no wake for the
+# session, which has a record throughout, and nothing may land on the exceptions topic: a stored
+# delivery is not a failed one. The role publish is kept on the role's kept lane for one hour and
+# answered 202 with kept_reason holder_lapsed. The holder keeps its claim through the stall, so no
+# claim follows to hand the lane over: the registration that makes the holder live again after
+# SIGCONT hands the copy over (subscribeHandler), and the listener's sweep, every five minutes
+# (main.go), is only the backstop behind that handover.
 check_stored_deliveries_arrive_once() {
   local role=ess-stored-$$ issue marker transcript mention direct published record claimed_at
   [ -n "$omp_pid" ] || omp_start || return 1
@@ -1293,8 +1311,8 @@ check_stored_deliveries_arrive_once() {
     refuse "the session's transcript holds $mention delivery cards for the mention naming $marker and $direct for the direct message; each stored delivery arrives exactly once" || return 1
   [ "$published" -eq 1 ] ||
     refuse "the transcript holds $published delivery cards for the role publish naming $marker, which the listener kept for its unresponsive holder; the kept copy arrives exactly once" || return 1
-  ! grep -qE 'agent delivery failed|deferred|given up' "$evidence/logs/listener_a.log" ||
-    refuse "the listener's log names a failed, deferred or given-up delivery for a stored message" || return 1
+  [ "$(agent_wakes_reported "$omp_session")" -eq 0 ] ||
+    refuse "the listener's log reports a wake for $omp_session, which has a record, for a stored message" || return 1
   [ ! -s "$work/exceptions.jsonl" ] ||
     refuse "an exception landed on notifications.envoy.exceptions.*: $(head -c 200 "$work/exceptions.jsonl")" || return 1
   note "the mention and the direct message each arrived once after SIGCONT; the role publish was kept 202 for the unresponsive holder with the claim standing, and the registration that made the holder live again handed it over once"
@@ -1474,13 +1492,14 @@ check_role_route_reaches_its_holder() {
   outbox_event_is "$issue" "stalled $marker" "$reached" 'true true' ||
     refuse "after SIGCONT the event reads published and role-route-reached '$(outbox_event "$issue" "stalled $marker" "$reached")', not 'true true'" || return 1
   # Nothing anywhere calls the hold a failure: the outbox never gave the event up (its attempts
-  # stayed under retry.DeadLetterAttempts, the tenth), neither log names a failed or given-up
-  # delivery, and nothing landed on the exceptions topic.
+  # stayed under retry.DeadLetterAttempts, the tenth), the listener reports no wake for the holder,
+  # which has a record throughout, Dispatch's log names no failed or given-up delivery, and nothing
+  # landed on the exceptions topic.
   attempts=$(outbox_event "$issue" "stalled $marker" attempt_count)
   [ "$attempts" -lt 10 ] ||
     refuse "the held event was tried $attempts times, the dead-letter threshold the outbox gives an event up at" || return 1
-  ! grep -qE 'agent delivery failed|deferred|given up' "$evidence/logs/listener_a.log" ||
-    refuse "the listener's log names a failed, deferred or given-up delivery for a held role forward" || return 1
+  [ "$(agent_wakes_reported "$omp_session")" -eq 0 ] ||
+    refuse "the listener's log reports a wake for $omp_session, which has a record, for a held role forward" || return 1
   # Dispatch's own log, in the words that code writes (internal/dispatch/outbox): the held event's
   # back-off is `dispatch outbox: event waits for its role's holder` at INFO, naming the holder it
   # waits on and that holder's state (waitForHolders, publisher.go), and nothing of this event is
@@ -1761,12 +1780,12 @@ check_every_plugin_shows_the_state() {
 # JetStream has already removed. That restatement is this issue's architect's.
 check_max_age_change_reaches_both_listeners() {
   local late=ses_ess_maxage_$$ stall=420
-  set_max_age "$shipping_max_age"
-  wait_until 120 "listener A to read the shipping $shipping_max_age maximum age" \
-    healthz_max_age_is "$port_a" "$shipping_max_age_shown" || return 1
-  wait_until 120 "listener B to read the shipping $shipping_max_age maximum age" \
-    healthz_max_age_is "$port_b" "$shipping_max_age_shown" || return 1
-  note "the bucket is at the shipping maximum age, which both listeners now report"
+  set_max_age "$older_bucket_max_age"
+  wait_until 120 "listener A to read the older bucket's $older_bucket_max_age maximum age" \
+    healthz_max_age_is "$port_a" "$older_bucket_max_age_shown" || return 1
+  wait_until 120 "listener B to read the older bucket's $older_bucket_max_age maximum age" \
+    healthz_max_age_is "$port_b" "$older_bucket_max_age_shown" || return 1
+  note "the bucket is at the older bucket's maximum age, which both listeners now report"
   set_max_age "$max_age"
   wait_until 120 "listener A to read the raised $max_age maximum age" \
     healthz_max_age_is "$port_a" "$max_age_shown" || return 1
@@ -1774,21 +1793,21 @@ check_max_age_change_reaches_both_listeners() {
     healthz_max_age_is "$port_b" "$max_age_shown" || return 1
   note "the raise to $max_age reached both running listeners' /healthz"
   registered "$late" "notifications.agent.$late" || return 1
-  note "registered $late after the raise; stalling it ${stall}s, past the shipping maximum age"
+  note "registered $late after the raise; stalling it ${stall}s, past the older bucket's maximum age"
   sleep "$stall"
   state_is "$port_a" "$late" unresponsive unresponsive ||
-    refuse "a session stalled ${stall}s after the raise reads '$state', not unresponsive; at the shipping maximum age its key would be gone by now" || return 1
+    refuse "a session stalled ${stall}s after the raise reads '$state', not unresponsive; at the older bucket's maximum age its key would be gone by now" || return 1
   state_is "$port_b" "$late" unresponsive unresponsive ||
     refuse "listener B reads the stalled session '$state', not unresponsive" || return 1
-  set_max_age "$shipping_max_age"
-  wait_until 120 "listener A to read the rolled-back $shipping_max_age maximum age" \
-    healthz_max_age_is "$port_a" "$shipping_max_age_shown" || return 1
-  wait_until 120 "listener B to read the rolled-back $shipping_max_age maximum age" \
-    healthz_max_age_is "$port_b" "$shipping_max_age_shown" || return 1
+  set_max_age "$older_bucket_max_age"
+  wait_until 120 "listener A to read the rolled-back $older_bucket_max_age maximum age" \
+    healthz_max_age_is "$port_a" "$older_bucket_max_age_shown" || return 1
+  wait_until 120 "listener B to read the rolled-back $older_bucket_max_age maximum age" \
+    healthz_max_age_is "$port_b" "$older_bucket_max_age_shown" || return 1
   wait_until 300 "the stalled session to be gone under the rolled-back maximum age" \
     state_is "$port_a" "$late" unresponsive gone || return 1
   wait_until 120 "listener B to read it gone too" state_is "$port_b" "$late" unresponsive gone || return 1
-  note "the rollback to $shipping_max_age reached both listeners, and the session stalled past it then reads gone"
+  note "the rollback to $older_bucket_max_age reached both listeners, and the session stalled past it then reads gone"
 }
 
 # ---- the run -----------------------------------------------------------------------------------------
