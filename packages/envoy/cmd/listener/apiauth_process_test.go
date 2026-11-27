@@ -4,13 +4,10 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"fmt"
 	"net/http"
 	"os/exec"
 	"strconv"
 	"strings"
-	"sync/atomic"
-	"syscall"
 	"testing"
 	"time"
 
@@ -42,7 +39,7 @@ func TestTheListenerBinaryRefusesAnAccountListThatNamesNoAccount(t *testing.T) {
 		}
 		var output bytes.Buffer
 		cmd.Stdout, cmd.Stderr = &output, &output
-		overran, err := runFromItsStart(t, cmd, refusedStartLimit)
+		overran, err := testexec.RunFromStart(t, cmd, refusedStartLimit)
 		cancel()
 		if overran {
 			t.Fatalf("ENVOY_OIDC_ACCOUNTS=%q: the start did not end within %s of when the kernel made its process and was killed, want exit 1 naming the setting:\n%s", value, refusedStartLimit, output.Bytes())
@@ -60,44 +57,6 @@ func TestTheListenerBinaryRefusesAnAccountListThatNamesNoAccount(t *testing.T) {
 // refusedStartLimit bounds a start that refuses its settings, from when the kernel made the
 // listener's process to its exit: the listener reads its settings before it serves anything.
 const refusedStartLimit = 30 * time.Second
-
-// runFromItsStart starts cmd and waits for it, and kills it once it has run bound from when the
-// kernel made its process, read right after Start (testexec.ProcStart), not from this call. That
-// start reads up to a tick early, since starttime counts whole ticks, and the time since boot the
-// kill is set from reads up to a tick off, since Linux's /proc/uptime truncates to the tick and
-// gVisor's rounds to it, so the kill waits two ticks more: no run is killed before it has run bound.
-// overran says the bound ended the run: the kill had been sent, and the run's own exit status says
-// a SIGKILL ended it, so a run that exited before the kill reached it did not overrun. A start the
-// kernel dates more than two ticks before the call is no start at all, and the row says it cannot
-// read when its run started, as testexec.StartedAfter does, rather than judge it.
-func runFromItsStart(t *testing.T, cmd *exec.Cmd, bound time.Duration) (overran bool, err error) {
-	t.Helper()
-	called := testexec.SinceBoot(t)
-	if err := cmd.Start(); err != nil {
-		return false, err
-	}
-	started, err := testexec.ProcStart(cmd.Process.Pid)
-	if err == nil && started < called-2*testexec.ClockTick {
-		err = fmt.Errorf("the kernel made it %s before the call, which no start can be: this machine's /proc/uptime and its processes' start times are not one clock", called-started)
-	}
-	if err != nil {
-		_ = cmd.Process.Kill()
-		_ = cmd.Wait()
-		t.Fatalf("read when the kernel made the process of %s: %v", cmd.Path, err)
-	}
-	var sent atomic.Bool
-	kill := time.AfterFunc(started+bound+2*testexec.ClockTick-testexec.SinceBoot(t), func() {
-		sent.Store(true)
-		_ = cmd.Process.Kill()
-	})
-	err = cmd.Wait()
-	kill.Stop()
-	if !sent.Load() || cmd.ProcessState == nil {
-		return false, err
-	}
-	status, ok := cmd.ProcessState.Sys().(syscall.WaitStatus)
-	return ok && status.Signaled() && status.Signal() == syscall.SIGKILL, err
-}
 
 // The settings reach the handler the listener binary serves, which the handler's own tests, each
 // building its configuration by hand, cannot show: started with ENVOY_OIDC_ACCOUNTS beside a

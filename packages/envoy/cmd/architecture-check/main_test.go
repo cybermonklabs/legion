@@ -11,12 +11,10 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -271,7 +269,7 @@ func runBinary(t *testing.T, binary, dir string, args ...string) result {
 	cmd.Env = append(os.Environ(), "GOMAXPROCS=1")
 	var stdout, stderr strings.Builder
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
-	overran, err := runFromItsStart(t, cmd, binaryLimit)
+	overran, err := testexec.RunFromStart(t, cmd, binaryLimit)
 	if overran {
 		t.Fatalf("architecture-check %q did not exit within %s of when the kernel made its process and was killed: stdout %q, stderr %q", args, binaryLimit, stdout.String(), stderr.String())
 	}
@@ -283,44 +281,6 @@ func runBinary(t *testing.T, binary, dir string, args ...string) result {
 		t.Fatalf("run architecture-check %q: %v", args, err)
 	}
 	return result{code: cmd.ProcessState.ExitCode(), stdout: stdout.String(), stderr: stderr.String()}
-}
-
-// runFromItsStart starts cmd and waits for it, and kills it once it has run bound from when the
-// kernel made its process, read right after Start (testexec.ProcStart), not from this call. That
-// start reads up to a tick early, since starttime counts whole ticks, and the time since boot the
-// kill is set from reads up to a tick off, since Linux's /proc/uptime truncates to the tick and
-// gVisor's rounds to it, so the kill waits two ticks more: no run is killed before it has run bound.
-// overran says the bound ended the run: the kill had been sent, and the run's own exit status says
-// a SIGKILL ended it, so a run that exited before the kill reached it did not overrun. A start the
-// kernel dates more than two ticks before the call is no start at all, and the row says it cannot
-// read when its run started, as testexec.StartedAfter does, rather than judge it.
-func runFromItsStart(t *testing.T, cmd *exec.Cmd, bound time.Duration) (overran bool, err error) {
-	t.Helper()
-	called := testexec.SinceBoot(t)
-	if err := cmd.Start(); err != nil {
-		return false, err
-	}
-	started, err := testexec.ProcStart(cmd.Process.Pid)
-	if err == nil && started < called-2*testexec.ClockTick {
-		err = fmt.Errorf("the kernel made it %s before the call, which no start can be: this machine's /proc/uptime and its processes' start times are not one clock", called-started)
-	}
-	if err != nil {
-		_ = cmd.Process.Kill()
-		_ = cmd.Wait()
-		t.Fatalf("read when the kernel made the process of %s: %v", cmd.Path, err)
-	}
-	var sent atomic.Bool
-	kill := time.AfterFunc(started+bound+2*testexec.ClockTick-testexec.SinceBoot(t), func() {
-		sent.Store(true)
-		_ = cmd.Process.Kill()
-	})
-	err = cmd.Wait()
-	kill.Stop()
-	if !sent.Load() || cmd.ProcessState == nil {
-		return false, err
-	}
-	status, ok := cmd.ProcessState.Sys().(syscall.WaitStatus)
-	return ok && status.Signaled() && status.Signal() == syscall.SIGKILL, err
 }
 
 // expect fails the test unless got is want.
