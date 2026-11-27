@@ -523,10 +523,13 @@ func TestClaimOwedIsOwedOnlyWhereTheCompletionRouteTakesACompletion(t *testing.T
 	})
 
 	// A person moves the child out of the workflow in Dispatch, to each status besides done that
-	// takes an issue out of it (record.OutOfWorkflowStatuses): the workflow puts the child's phase
-	// in done (workflow's leave), where phase.RoleFor names no role, so the tester owes nothing and
-	// its completion is refused.
-	for _, status := range []string{"triage", "icebox", "backlog"} {
+	// takes an issue out of it (record.OutOfWorkflowStatuses, read here so a status added to that
+	// list gets its row): the workflow puts the child's phase in done (workflow's leave), where
+	// phase.RoleFor names no role, so the tester owes nothing and its completion is refused.
+	for _, status := range record.OutOfWorkflowStatuses {
+		if status == record.DoneStatus {
+			continue
+		}
 		t.Run("moved out of the workflow to "+status, func(t *testing.T) {
 			h, engine, _ := newEntryHarness(t)
 			parent := "LEGION-208"

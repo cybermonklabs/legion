@@ -3651,15 +3651,15 @@ func EntriesDiffer(entry, rowEntry int64) bool {
 // session whether it owes its phase; the idle release's reminder hold (workflow's IdleRelease,
 // IdleHoldReminder), which keeps a pod for a reminder only of a claim that owes its phase; and
 // the backstop of a released or pause-stopped worker (internal/daemon's getsBackstop, read by
-// armBackstops, projectPause.stopTx and the paused cancel of a release), which arms no wake for
-// a claim that owes nothing but for two kinds of claim. The other two read the owed answer's rule
-// because a claim that owes nothing is reminded of nothing and mostly waits on nothing a backstop
-// stands in for: the silence sweep does not nudge a role whose completion stands, so a hold on
-// such a claim's reported wake would never end, and a backstop would wake it every
-// backstop_minutes to do nothing where any work it gets later comes as a task or a message of the
-// daemon's, which wakes the pod once it is sent. The two kinds the backstop keeps each hold a task
-// of the issue's run and phase that no turn has confirmed and that nothing else would bring the
-// pod back for; getsBackstop is their one statement (with internal/daemon's
+// armBackstops, projectPause.stopTx, and the paused cancel and the paused decline of a release),
+// which arms no wake for a claim that owes nothing but for two kinds of claim. The other two read
+// the owed answer's rule because a claim that owes nothing is reminded of nothing and mostly waits
+// on nothing a backstop stands in for: the silence sweep does not nudge a role whose completion
+// stands, so a hold on such a claim's reported wake would never end, and a backstop would wake it
+// every backstop_minutes to do nothing where any work it gets later comes as a task or a message
+// of the daemon's, which wakes the pod once it is sent. The two kinds the backstop keeps each hold
+// a task of the issue's run and phase that no turn has confirmed and that nothing else would bring
+// the pod back for; getsBackstop is their one statement (with internal/daemon's
 // holdsUndeliveredEntryTask and holdsUndeliveredNewsTask).
 func PhaseOwed(serving, generation uint64, entry, rowEntry int64, completed, mergeForwardHeld, merged bool) bool {
 	return serving != 0 && serving == generation && !EntriesDiffer(entry, rowEntry) && !completed && !mergeForwardHeld && !merged

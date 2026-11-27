@@ -19,12 +19,13 @@ body: |-
   whose pull request is merged holds no pod, and one of a fresh claim whose first task is not yet
   delivered holds it.
   By the same rule a released claim that owes its phase nothing gets no idle backstop: the release
-  of its pod, a project's pause that stops it, and the cancel of its release while the project is
-  paused arm none, since any work such a claim gets later comes as a task or a message of the
-  daemon's, which wakes the pod once it is sent. A task of news alone whose send failed before any
-  turn is the exception, since nothing sends it again. Each of the three reads the run the claim
-  serves by that rule and no run filter of its own, so a fresh claim whose first task is not yet
-  delivered gets the backstop because it owes its phase. Two kinds of such claim still get the
+  of its pod, a project's pause that stops it, the cancel of its release while the project is
+  paused, and a workspace check's decline of its release while the project is paused arm none,
+  since any work such a claim gets later comes as a task or a message of the daemon's, which wakes
+  the pod once it is sent. A task of news alone whose send failed before any turn is the
+  exception, since nothing sends it again. Each of the four reads the run the claim serves by that
+  rule and no run filter of its own, so a fresh claim whose first task is not yet delivered gets
+  the backstop because it owes its phase. Two kinds of such claim still get the
   backstop. The first is a claim that holds a task of the issue's run and phase that no turn has
   confirmed, of its entry, of an earlier one or of no entry, such as a task whose send failed
   before any turn, the task of an earlier entry a relaunch kept or a resume task of no entry,

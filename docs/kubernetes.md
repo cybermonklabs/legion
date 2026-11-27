@@ -4367,7 +4367,7 @@ That architect is the issue's own architect while its claim holds its role, else
 The reminder's architect notice and the stall watch's notice of a stuck call go to the architect it names.
 The claim owes work only while the record holds that work open for the claim's role, and only where the completion route would take the claim's completion of it (`owedBy`, `packages/daemon/internal/api/owed.go`).
 So a role whose completion stands owes nothing.
-A tester, reviewer or merger that the daemon told to wait while another role merges the base forward owes nothing until that merge lands.
+A planner, tester, reviewer or merger that the daemon told to wait while another role merges the base forward owes nothing until that merge lands, the pull request closes, or the implementer is told the merge is no longer its work.
 A merger that the daemon asked to merge the base forward in `merging` owes that phase, since the merge is its own work (cybermonklabs/legion#4979).
 A claim behind the entry its phase is on, or serving no run of the issue's current generation, owes nothing until the task of that entry reaches it.
 The end-of-turn reminder of both harnesses asks this route at each turn's end and keeps no phase of its own ([Idle release](#idle-release) says when a reminder is due).
@@ -9629,7 +9629,7 @@ The wakes are these:
   Once a send of it fails before any turn, no news reconcile, repair or silence sweep sends it again, so for such a worker the backstop is the one wake that delivers it.
   A worker also gets no backstop when a wake of it came while the release ran, since that wake already brings the worker back in the new pod.
 
-The run and the entry a worker serves are the ones the daemon's answer of what a claim owes reads (`Claim.ServingAt`, `internal/supervise/machine.go`), and the release, a pause's stop, a paused cancel of a release and the reminder hold read them the same way.
+The run and the entry a worker serves are the ones the daemon's answer of what a claim owes reads (`Claim.ServingAt`, `internal/supervise/machine.go`), and the release, a pause's stop, a paused cancel of a release, a workspace check's paused decline of a release and the reminder hold read them the same way.
 A fresh claim whose first task is not yet delivered serves that task's run and entry, so it owes its phase: it gets the backstop, and a past-due reminder wake it reported holds its pod.
 A claim that still serves an earlier run is a live claim kept across a new generation of its issue whose first task of the new run is not yet delivered: it serves the run it was left serving (`ServingGeneration`), so it owes nothing and gets the backstop as the first kind.
 Once a turn confirms that task, the claim serves the task's run and entry and owes its phase.
