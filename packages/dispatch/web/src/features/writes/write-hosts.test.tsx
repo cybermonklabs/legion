@@ -480,6 +480,43 @@ test("the line in a pending-writes indicator's place stays, and counts a write p
   }
 });
 
+// The reader's focus is on the Reload of the line in the indicator's place when a write pressed
+// after the chunk failed online draws the indicator afresh (`reset`). The boundary then swaps what
+// it drew for the failure (`NotLoaded`) for the indicator asking for its chunk again, and the row
+// holds that download, so the indicator's loading fallback stays drawn (`IndicatorLoading`). The
+// host draws the line itself, at one place apart from both (`pendingWritesHost`), so the line
+// stays mounted through the swap and counts the new write, and its Reload is the same button, the
+// focus still on it. A line drawn by either would be drawn afresh, and the focus would drop to the
+// page's body.
+test("the Reload of the line in a pending-writes indicator's place keeps the focus while a write pressed after the chunk failed online asks for the chunk again", async () => {
+  const { downloads, end, logged, view, writes } = await failTheIndicatorOverAHeldWrite();
+  try {
+    const reload = screen.getByRole("button", { name: "Reload" });
+    act(() => reload.focus());
+    expect(reload).toHaveFocus();
+
+    pressARefusedWrite(writes, "CORE-2 set to done");
+    expect(downloads, "the write pressed after the failure did not ask for the chunk").toHaveLength(
+      2
+    );
+    expect(
+      screen.queryByRole("status")?.textContent,
+      "the line left the indicator's place while the next download was out"
+    ).toBe("2 changes not sent");
+    expect(
+      document.activeElement,
+      "the focus left the line's Reload as the chunk was asked for again"
+    ).toBe(reload);
+    expect(reload, "the line's Reload was drawn afresh as the chunk was asked for again").toBe(
+      screen.getByRole("button", { name: "Reload" })
+    );
+  } finally {
+    logged.mockRestore();
+    view.unmount();
+    end();
+  }
+});
+
 // The same failure online, and then the browser goes offline, and Dispatch refuses the held write
 // as it goes out. The refusal draws the indicator afresh (`reset`), and its ask for the chunk
 // fails offline, so it waits for the network (`importWhenOnline`). The line stays in the

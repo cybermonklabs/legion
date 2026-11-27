@@ -36,11 +36,8 @@ import {
   type Write,
 } from "./write-store";
 
-/** No record of what a reload kept: the line's inside the indicator's boundary while it does not
- *  stand for the indicator, when the standalone line beside it counts those records. */
-const NO_RECORDS: readonly KeptWrite[] = [];
-
-/** No row of the indicator's: the standalone line's when the indicator draws its own rows. */
+/** No row of the indicator's: the line's while it does not stand for the indicator, which then
+ *  draws its own rows, and the line counts only the kept records beside it. */
 const NO_WRITES: readonly Write[] = [];
 
 /**
@@ -88,26 +85,27 @@ const pendingWritesChunk = chunk<object>(() =>
 );
 
 /**
- * What the indicator draws while its chunk is on its way, which its host hands down
- * (`pendingWritesHost`): nothing, as it would with no write to show, until a download of the
- * chunk has failed online, and from then on the line in its place (`ChangesNotSent`). Each change
- * of `reset` draws the indicator afresh, and it asks for its chunk again as it mounts
- * (`chunkComponent`), which offline waits for the network (`importWhenOnline`). With nothing
- * drawn meanwhile, the line would go at each such change, and stay away for a whole outage, which
- * is when the reader needs it. So it stays through every later ask of the chunk, until the chunk
- * draws the indicator or neither a write nor a record it counts is left.
+ * What the indicator's loading fallback (`IndicatorLoading`) reads from its host
+ * (`pendingWritesHost`): the host's `checkLoaded`, which the fallback calls as it unmounts. The
+ * fallback is the indicator's own (`chunkComponent`), made with it outside the host's render, so
+ * this is how it reaches the host that mounts it. Once a download of the chunk has failed online,
+ * the host draws the line in the indicator's place (`ChangesNotSent`) until the chunk draws the
+ * indicator. Each change of `reset` draws the indicator afresh, and it asks for its chunk again
+ * as it mounts (`chunkComponent`), which offline waits for the network (`importWhenOnline`). With
+ * nothing drawn meanwhile, the line would go at each such change, and stay away for a whole
+ * outage, which is when the reader needs it. So it stays through every later ask of the chunk,
+ * until the fallback goes with the chunk landed or neither a write nor a record it counts is
+ * left.
  */
-const WhileIndicatorLoads = createContext<{
-  readonly checkLoaded: () => void;
-  readonly line: ReactNode;
-}>({ checkLoaded: () => {}, line: null });
+const WhileIndicatorLoads = createContext<() => void>(() => {});
 
-/** The indicator's loading fallback: what its host hands down (`WhileIndicatorLoads`), telling the
- *  host as it unmounts whether the indicator's chunk has landed (`checkLoaded`). */
+/** The indicator's loading fallback. It draws nothing itself: the host draws the line beside the
+ *  boundary (`pendingWritesHost`). It tells the host as it unmounts whether the indicator's chunk
+ *  has landed (`checkLoaded`, which `WhileIndicatorLoads` hands down). */
 function IndicatorLoading(): ReactNode {
-  const { checkLoaded, line } = useContext(WhileIndicatorLoads);
+  const checkLoaded = useContext(WhileIndicatorLoads);
   useLayoutEffect(() => checkLoaded, [checkLoaded]);
-  return line;
+  return null;
 }
 
 /**
@@ -141,10 +139,12 @@ function CouldNotShow({ className, list }: { className: string; list: string }):
  * where they press Retry or Discard. The leave prompt shows only as the reader leaves the page,
  * and the next write draws the indicator again only for a reader who makes one. So the failure is
  * never silent: the line stays until the chunk draws the indicator, through every later ask of
- * the chunk, online or offline (`WhileIndicatorLoads`). The line is in the entry and reads the
- * host's rows and the records it is handed (below), so it needs no chunk. It draws nothing once
- * neither holds a write. It stands where the indicator stands, in the indicator's frame and
- * status line (`pending-writes-frame.tsx`), with a border of its own.
+ * the chunk, online or offline (`WhileIndicatorLoads`). Its host draws it, at one place that
+ * stays mounted through those asks (`pendingWritesHost`), so its Reload keeps a reader's focus.
+ * The line is in the entry and reads the host's rows and the records it is handed (below), so it
+ * needs no chunk. It draws nothing once neither holds a write. It stands where the indicator
+ * stands, in the indicator's frame and status line (`pending-writes-frame.tsx`), with a border
+ * of its own.
  *
  * It counts `records` too: what the reload kept that the store has not taken up, while the
  * take-up waits for kinds of write whose load failed online (`Writes.kindsFailed`). Those are no
@@ -175,26 +175,23 @@ function ChangesNotSent({
   );
 }
 
-/** The line, as the indicator's boundary draws it once a download of the indicator's chunk has
- *  failed online (`notLoaded`). It tells the host so before paint (`failed`), so the standalone
- *  line gives way without ever painting two boxes, and tells the host as it unmounts whether the
- *  indicator's chunk has landed (`checkLoaded`). */
+/** What the indicator's boundary draws once a download of the indicator's chunk has failed online
+ *  (`notLoaded`). It draws nothing itself: the host draws the line beside the boundary
+ *  (`pendingWritesHost`). It tells the host so before paint (`failed`), so the line counts the
+ *  indicator's rows from the first commit painted after the failure, and tells the host as it
+ *  unmounts whether the indicator's chunk has landed (`checkLoaded`). */
 function NotLoaded({
   checkLoaded,
   failed,
-  records,
-  rows,
 }: {
   checkLoaded: () => void;
   failed: (failed: boolean) => void;
-  records: readonly KeptWrite[];
-  rows: readonly Write[];
 }): ReactNode {
   useLayoutEffect(() => {
     failed(true);
     return checkLoaded;
   }, [checkLoaded, failed]);
-  return <ChangesNotSent records={records} rows={rows} />;
+  return null;
 }
 
 /**
@@ -274,14 +271,14 @@ export function pendingWritesHost(source: Chunk<object>): () => ReactNode {
     // page's body. Set in the render that sees the change, so that render draws it already.
     const [reset, setReset] = useState("");
     if (shown !== "" && shown !== reset) setReset(shown);
-    // Whether the line inside the boundary (`NotLoaded`, `WhileIndicatorLoads`) stands for the
-    // indicator: from a download of the indicator's chunk failing online under this host
-    // (`NotLoaded`) until the chunk has landed (`source.loaded()`, which `checkLoaded` reads).
-    // While it does, that line counts both the indicator's rows and the kept records waiting on
-    // failed kinds as one box. Once the chunk lands (or while it has never failed), the indicator
-    // draws its own rows - or nothing once they land - and a standalone line draws any kept
-    // records waiting on failed kinds beside it, so mounting the indicator never hides them for
-    // the life of the page.
+    // Whether the line (`ChangesNotSent`) stands for the indicator: from a download of the
+    // indicator's chunk failing online under this host (`NotLoaded`) until the chunk has landed
+    // (`source.loaded()`, which `checkLoaded` reads as `NotLoaded` or the indicator's loading
+    // fallback unmounts, `WhileIndicatorLoads`). While it does, the line counts both the
+    // indicator's rows and the kept records waiting on failed kinds as one box. Once the chunk
+    // lands (or while it has never failed), the indicator draws its own rows - or nothing once
+    // they land - and the line counts only the kept records waiting on failed kinds, beside it,
+    // so mounting the indicator never hides them for the life of the page.
     const [indicatorDrawingLine, setIndicatorDrawingLine] = useState(false);
     const checkLoaded = useCallback(() => {
       if (source.loaded() !== undefined) setIndicatorDrawingLine(false);
@@ -293,13 +290,6 @@ export function pendingWritesHost(source: Chunk<object>): () => ReactNode {
     // draws this host nothing.
     const notTakenUp = useNotTakenUpWhileKindsFailed();
     const waiting = useMemo(() => keptRecords(notTakenUp), [notTakenUp]);
-    const whileLoading = useMemo(
-      () => ({
-        checkLoaded,
-        line: indicatorDrawingLine ? <ChangesNotSent records={waiting} rows={rows} /> : null,
-      }),
-      [checkLoaded, indicatorDrawingLine, rows, waiting]
-    );
     // The indicator's chunk is started here, after the page has drawn
     // (`features/shell/content-drawn.ts`): an effect runs after the commit it belongs to, so a
     // landing does not ask for it before its first paint, and a landing that draws a live
@@ -324,37 +314,32 @@ export function pendingWritesHost(source: Chunk<object>): () => ReactNode {
     // changes too, and then while the indicator drawn afresh asks for its chunk again, until the
     // chunk draws the indicator. The line goes with the last write and the last kept record it
     // counts while the kinds cannot load: with neither left, no change is out (`ChangesNotSent`).
-    if (reset === "") {
-      return waiting.length === 0 ? null : <ChangesNotSent records={waiting} rows={rows} />;
-    }
+    // The line is drawn here alone, first, whether the indicator is mounted or not, so it stays
+    // mounted for as long as it holds a write: the boundary's next ask for the chunk swaps what it
+    // drew for the failure (`NotLoaded`) for the indicator's loading fallback
+    // (`IndicatorLoading`), and a line either drew would be drawn afresh, the focus of a reader
+    // on its Reload dropping to the page's body.
     return (
       <>
-        {!indicatorDrawingLine && waiting.length > 0 ? (
-          <ChangesNotSent records={waiting} rows={NO_WRITES} />
-        ) : null}
-        <WhileIndicatorLoads value={whileLoading}>
-          <ChunkBoundary
-            fallback={
-              shown === "" ? null : (
-                <CouldNotShow
-                  className={`${PENDING_WRITES_PLACE} ${surfaceBg}`}
-                  list="the changes waiting to save"
-                />
-              )
-            }
-            notLoaded={
-              <NotLoaded
-                checkLoaded={checkLoaded}
-                failed={setIndicatorDrawingLine}
-                records={indicatorDrawingLine ? waiting : NO_RECORDS}
-                rows={rows}
-              />
-            }
-            reset={reset}
-          >
-            <PendingWritesIndicator />
-          </ChunkBoundary>
-        </WhileIndicatorLoads>
+        <ChangesNotSent records={waiting} rows={indicatorDrawingLine ? rows : NO_WRITES} />
+        {reset === "" ? null : (
+          <WhileIndicatorLoads value={checkLoaded}>
+            <ChunkBoundary
+              fallback={
+                shown === "" ? null : (
+                  <CouldNotShow
+                    className={`${PENDING_WRITES_PLACE} ${surfaceBg}`}
+                    list="the changes waiting to save"
+                  />
+                )
+              }
+              notLoaded={<NotLoaded checkLoaded={checkLoaded} failed={setIndicatorDrawingLine} />}
+              reset={reset}
+            >
+              <PendingWritesIndicator />
+            </ChunkBoundary>
+          </WhileIndicatorLoads>
+        )}
       </>
     );
   };
