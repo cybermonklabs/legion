@@ -45,7 +45,10 @@ import type {
   MessageDeliveryEventPayload,
   MessageEventPayload,
 } from "./dispatch-api-messages";
-import type { SubscriptionRemovedEventPayload } from "./dispatch-api-sessions";
+import type {
+  RoleUndeliveredEventPayload,
+  SubscriptionRemovedEventPayload,
+} from "./dispatch-api-sessions";
 import type {
   GoingPlanUpdatedEventPayload,
   UserAgentStateUpdatedEventPayload,
@@ -328,6 +331,12 @@ export type DispatchEvent =
       readonly type: "message.accepted";
       readonly payload: MessageAcceptedEventPayload;
     })
+  /** Appended by Dispatch's outbox, as a system actor, on the owner of the event whose copy for a
+   *  role reached no session: an issue, a project document or a project. It wakes nobody. */
+  | (DispatchEventBase & {
+      readonly type: "role.undelivered";
+      readonly payload: RoleUndeliveredEventPayload;
+    })
   | (DispatchEventBase & {
       readonly type: "message.answered";
       readonly payload: MessageEventPayload;
@@ -434,6 +443,7 @@ const EVENT_TYPE_MEMBERS: Record<EventType, true> = {
   "project.updated": true,
   "result.recorded": true,
   "result.retracted": true,
+  "role.undelivered": true,
   "settings.architecture_source.updated": true,
   "settings.project_default_assignee.updated": true,
   "settings.repo_project.updated": true,

@@ -120,6 +120,7 @@ var unchangingTypes = map[string]string{
 	"suggestion.rejected":                       "the comment's body does not change",
 	"message.delivery":                          "a message's delivery carries no text",
 	"message.accepted":                          "a message's acceptance carries no text",
+	"role.undelivered":                          "a role's delivery carries no text",
 	"block.repaired":                            "the document's own version carries the change",
 	"block.invalid":                             "the document's own version carries the change",
 	"result.recorded":                           "a result is not an issue, comment, message or ask",
