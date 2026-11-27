@@ -538,6 +538,17 @@
 #     round 38 it read the option, or `busybox`, as the program that runs and so the fetch behind
 #     it as none (odd_command; dispatch://INFRA-1545, round 38); a wrapper is read by its name
 #     whatever directory names it, so `/usr/bin/env -S` is `env -S` (program_name; round 42);
+#   - an option of `timeout` other than those TIMEOUT_OPTIONS and TIMEOUT_JOINED read, `--kill 5`
+#     or `-vk 5` among them; an option of `xargs` other than those XARGS_OPTIONS and
+#     XARGS_PLACEHOLDERS read, `-rn 1` or `--max-args 1` among them; and a shell's group of short
+#     options holding `o` or `O`, `bash -eo pipefail`, wherever written and whatever the command
+#     holds, in the same places: this check cannot tell the duration, the command xargs runs, or
+#     the file or the text the shell runs, after one of them. Until round 74 each was stepped past
+#     as an option taking no value, and the word after it read as the duration, the command or
+#     the shell's operand, so `xargs -rn 1 bash` passed a shell that runs each word xargs reads
+#     (timeout_option, xargs_command, shell_operand, odd_command; dispatch://INFRA-1545, round
+#     74). The tree writes none: its `timeout` options are `-k <duration>`, `--kill-after=`,
+#     `--signal=` and `--foreground`, its `xargs` options `-r` and `-0`, and its shells' `-c`;
 #   - a setting that changes how bash expands a word, a `shopt`, a `set`, a shell's options, a
 #     variable such as GLOBIGNORE, BASH_ENV or ENV, an `env:` or a `shell:`, written in a step, a
 #     composite action, a script, or the text of a shell's `-c` or a `trap`'s action where that
@@ -1249,8 +1260,12 @@
 #      what lets that fetch's last attempt name itself rather than GitHub's bare timeout line
 #      cutting it. What it does not cover:
 #      two separate fault windows in one build, on two hosts at different times, each needing a ladder of its own.
-#      The check reads only the ladder. The build step's limit also includes the observed time
-#      for its other work. For the job's limit, use .github/ci-budgets.md#the-budgets-note.
+#      The check reads only the ladder, and each refusal advises on the key it refuses. Where
+#      the build step writes its own `timeout-minutes`, the refusal of that key says to write
+#      the build's measured duration plus that ladder, rounded up to the next whole minute
+#      strictly above. The refusal of the job's key cites .github/ci-budgets.md#the-budgets-note,
+#      which derives the job's limit, and says nothing of the step's, which the step need not
+#      write (dispatch://INFRA-1545, round 74).
 #      Rule 8 still sums every ladder of a workflow step's own calls and charges a
 #      Dockerfile's to none. A composite action's step is read for its file and not for a key,
 #      since GitHub takes none there.
@@ -1789,6 +1804,35 @@ WRAPPER_OPTIONS = {
     # command is the one that runs (dispatch://INFRA-1545, round 65).
     "setsid": {"--wait": ()},
 }
+# The options of `timeout` this check reads, each with the words after it that it takes, as
+# TIMEOUT_OPTION's refusal names them; and the two of them it reads joined to their value by an
+# `=`, TIMEOUT_JOINED. Each is an option GNU timeout(1) documents, written as a word of its own:
+# the tree writes `-k <duration>`, `--kill-after=<duration>`, `--signal=<signal>` and
+# `--foreground`, and the rest are their other spellings and timeout's two other options,
+# `--preserve-status` and `-v` or `--verbose`, which take no word.
+# Any other option word, a cluster such as `-vk`, an abbreviation such as `--kill` or one joined
+# to its value such as `-k5`, is refused by name wherever it is written (timeout_option,
+# odd_command): until round 74 reduce_words and odd_command each stepped past such a word as an
+# option taking no value, so `timeout --kill 5 60 curl …` read 5 as the duration and 60 as the
+# command, and the fetch behind it as none (dispatch://INFRA-1545, round 74).
+TIMEOUT_OPTIONS = {"-k": ("<duration>",), "--kill-after": ("<duration>",), "-s": ("<signal>",),
+                   "--signal": ("<signal>",), "--foreground": (), "--preserve-status": (),
+                   "-v": (), "--verbose": ()}
+TIMEOUT_JOINED = ("--kill-after=", "--signal=")
+# The options of `xargs` this check reads, each with the words after it that it takes, as
+# XARGS_OPTION's refusal names them: `-r` and `-0`, which the tree writes, and the options that
+# take a word of their own that this reading has listed since round 37. Besides them it reads the
+# placeholder forms `-i`, `-i<placeholder>`, `-I<placeholder>`, `--replace` and
+# `--replace=<placeholder>`, and a `--` that ends the options (xargs_command). Any other option
+# word, a cluster such as `-rn` or a long option such as `--max-args`, is refused by name wherever
+# it is written (odd_command): until round 74 it was stepped past as an option taking no value,
+# so `xargs -rn 1 bash` read `1` as the command xargs runs, and passed a shell that runs each
+# word xargs reads (dispatch://INFRA-1545, round 74).
+XARGS_OPTIONS = {"-r": (), "-0": (), "-I": ("<placeholder>",), "-n": ("<max-args>",),
+                 "-L": ("<max-lines>",), "-P": ("<max-procs>",), "-d": ("<delimiter>",),
+                 "-a": ("<file>",), "-E": ("<eof-str>",), "-s": ("<max-chars>",)}
+XARGS_PLACEHOLDERS = ("-i", "-i<placeholder>", "-I<placeholder>", "--replace",
+                      "--replace=<placeholder>")
 # Transparent, but the command they run is inside the script string behind `-c`, which rule 8
 # reads in one form, `bash -c '<text>'` (sites_of_command). The one list of shells this check
 # reads, here and in unread_heredocs's pipe into a shell. `ksh` is one of them since round 37 and
@@ -3429,9 +3473,8 @@ SHELL_TEXT_REFUSAL = (
 # What the refusal of a command `odd_command` names says after naming the step or the script
 # (dispatch://INFRA-1545, round 37): a `retry_fetch` behind a wrapper, which this check does not
 # read as a call of the helper, and one outside its signature, which the helper refuses with no
-# attempt made, both charged nothing; a `timeout` whose short options end in one that takes the
-# next word, which hides the command behind it; a definition of the helper's own name; and a
-# command after the `}` that closes a function, on a line its body holds a command of. None is
+# attempt made, both charged nothing; a definition of the helper's own name; and a command after
+# the `}` that closes a function, on a line its body holds a command of. None is
 # written in this tree. `.github/scripts/gh-read.sh#gh_wait_reset`, a shell function itself, runs
 # the helper, and `gh_wait_reset [--stderr <file>] retry_fetch …` is no such form (rule 6;
 # dispatch://INFRA-1545, round 55). The refusal is chosen by the wrapper nearest the
@@ -3466,15 +3509,10 @@ RETRY_UNSIGNED = (
     "<command…>` with the seconds a whole number above 0: the helper refuses such a call with "
     "no attempt made, so nothing is retried or bounded, and this check charges it nothing. "
     "Write the call in that form")
-TIMEOUT_CLUSTER = (
-    "runs `timeout` with `{option}`, a cluster of short options whose last takes the next word as "
-    "its value, a form this check does not read: it takes that word for the duration and the "
-    "duration for the command, so what `timeout` runs is read as no fetch. Write each option as "
-    "a word of its own, such as `-v -k 5`")
-# An option of a wrapper this check does not read, and `busybox`, each refused by name whatever
-# the command holds (odd_command; dispatch://INFRA-1545, round 38): this check reads no command
-# after either, so a fetch or a run of a script written there would be held to no floor and
-# charged to no budget. The tree writes neither.
+# An option of a wrapper, of `timeout`, of `xargs` or of a shell this check does not read, and
+# `busybox`, each refused by name whatever the command holds (odd_command; dispatch://INFRA-1545,
+# rounds 38 and 74): this check reads no command after any of them, so a fetch or a run of a
+# script written there would be held to no floor and charged to no budget. The tree writes none.
 WRAPPER_OPTION = (
     "runs `{wrapper}` with `{option}`, an option of it this check does not read: it reads "
     + ticked([" ".join([wrapper, option, *(taken or ())])
@@ -3484,6 +3522,31 @@ WRAPPER_OPTION = (
     "held to no floor and charged to no budget. Write the wrapper with none of its options but "
     "those, and set a variable the command needs as an assignment before it, "
     "`NAME=value curl …`, rather than through `env -S` or another option")
+TIMEOUT_OPTION = (
+    "runs `timeout` with `{option}`, an option of timeout that this check does not read. This "
+    "check reads "
+    + ticked([" ".join(["timeout", option, *taken]) for option, taken in TIMEOUT_OPTIONS.items()]
+             + [f"timeout {joined}{TIMEOUT_OPTIONS[joined[:-1]][0]}" for joined in TIMEOUT_JOINED]
+             + ["timeout --"], "and")
+    + ", each written as a word of its own. After any other option it cannot tell the duration "
+    "from the command, so a fetch or a script that `timeout` runs there is held to no floor and "
+    "charged to no budget. Write each option of `timeout` as a word of its own, from that list: "
+    "`-v -k 5`, not `-vk 5`")
+XARGS_OPTION = (
+    "runs `xargs` with `{option}`, an option of xargs that this check does not read. This check "
+    "reads "
+    + ticked([" ".join(["xargs", option, *taken]) for option, taken in XARGS_OPTIONS.items()]
+             + [f"xargs {form}" for form in XARGS_PLACEHOLDERS] + ["xargs --"], "and")
+    + ", each written as a word of its own. After any other option it reads no command, so a "
+    "fetch or a script that `xargs` runs there is held to no floor and charged to no budget. "
+    "Write each option of `xargs` as a word of its own, from that list: `-r -n 1`, not `-rn 1`")
+SHELL_OPTION = (
+    "runs `{shell}` with `{option}`, a group of the shell's short options that holds `o` or `O`. "
+    "Each of those two letters takes the next word as its value, and this check reads `-o`, "
+    "`+o`, `-O` and `+O` only as words of their own. After this group it cannot tell which word "
+    "is the file or the text the shell runs, so a fetch or a script there is held to no floor "
+    "and charged to no budget. Write `-o` and `-O` each as a word of its own: `-e -o pipefail`, "
+    "not `-eo pipefail`")
 BUSYBOX_RUN = (
     "runs `{program}`, a program named by an argument of `busybox`, a form this check does "
     "not read: it reads no fetch and no run of a script there, so a `busybox wget` or a `busybox "
@@ -3776,6 +3839,64 @@ def wrapper_option(wrapper: str, rest: list[str]) -> str | None:
     return None
 
 
+def timeout_option(rest: list[str]) -> str | None:
+    """Takes off the front of `rest`, the words after `timeout`, each option of it TIMEOUT_OPTIONS
+    reads with the words that option takes, and each `--kill-after=<duration>` or
+    `--signal=<signal>` (TIMEOUT_JOINED), up to a `--`, which is left in place, or to its duration,
+    the first word that is no option; and returns the first option word it does not read, left in
+    place, or None. The one reading of timeout's options, which reduce_words and odd_command share:
+    an option it does not read is refused by name (odd_command), as wrapper_option's is. Until
+    round 74 each of those two stepped past such a word as an option taking no value, so
+    `timeout --kill 5 60 curl …` read 5 as the duration and 60 as the command, and the fetch
+    behind it as none (dispatch://INFRA-1545, round 74)."""
+    while rest and rest[0].startswith("-") and rest[0] != "--":
+        if rest[0].startswith(TIMEOUT_JOINED):
+            del rest[:1]
+        elif rest[0] in TIMEOUT_OPTIONS:
+            del rest[:1 + len(TIMEOUT_OPTIONS[rest[0]])]
+        else:
+            return rest[0]
+    return None
+
+
+def xargs_command(reduced: list[str]) -> tuple[int, str | None, str | None]:
+    """Where the command an `xargs` runs begins among `reduced`, the xargs command's words as
+    reduce_words leaves them; the placeholder its `-I`, `-i` or `--replace` sets, or None; and the
+    first option word of xargs's this check does not read, or None. Its options are read as
+    XARGS_OPTIONS lists them, each with the word it takes, with the placeholder forms
+    XARGS_PLACEHOLDERS lists, up to a `--`, which ends them. Any other option word is returned
+    with the place it stands at, and the command after it is not read: odd_command refuses the
+    word by name, as it refuses an option wrapper_option does not read. Until round 74 such a word
+    was stepped past as an option taking no value, so `xargs -rn 1 bash` and `xargs --max-args 1
+    bash` read `1` as the command xargs runs, passed a shell that runs each word xargs reads, and
+    read the file in `xargs -rn 1 .github/scripts/x.py` as an argument of `1`
+    (dispatch://INFRA-1545, round 74). The one reading of xargs's options: odd_command refuses
+    what it does not read, unnamed_runs reads the command xargs runs from here, and unread_uses
+    that command's word (dispatch://INFRA-1545, round 37, and the forward merge of main's
+    #5583)."""
+    placeholder = None
+    at = 1
+    while at < len(reduced) and reduced[at].startswith("-"):
+        word = reduced[at]
+        if word == "--":
+            return at + 1, placeholder, None
+        if word in XARGS_OPTIONS:
+            if word == "-I" and at + 1 < len(reduced):
+                placeholder = reduced[at + 1]
+            at += 1 + len(XARGS_OPTIONS[word])
+            continue
+        if word == "--replace" or word.startswith("--replace="):
+            placeholder = word.partition("=")[2] or "{}"
+        elif word.startswith("-i"):
+            placeholder = word[2:] or "{}"
+        elif word.startswith("-I"):
+            placeholder = word[2:]
+        else:
+            return at, placeholder, word
+        at += 1
+    return at, placeholder, None
+
+
 def reduce_words(words: list[str]) -> tuple[list[str], str | None, bool, int | None]:
     """The words of the command that actually runs, the retry wrapping it (`retry_fetch`, the one
     helper, or `retry`, a Dockerfile's inline definition), whether something bounds it, and the
@@ -3798,17 +3919,18 @@ def reduce_words(words: list[str]) -> tuple[list[str], str | None, bool, int | N
             wrapper_option(name, words)
             continue
         if name == "timeout":
-            # timeout(1)'s options, `-k <duration>` and `-s <signal>` taking the word after them,
-            # then its duration, which is the word after the options whatever it is. A duration
-            # this check cannot read as a whole number of seconds above 0 — a `0`, which is no
-            # limit at all, a decimal, a variable — bounds nothing here, and the command behind
-            # it stays the command the rules read: until round 37 an option's value or such a
-            # duration was read as the command, so the fetch behind it was no fetch at all, and
-            # `timeout 0` read as a bound of 0 s (dispatch://INFRA-1545, round 37).
+            # timeout(1)'s options as timeout_option reads them, then its duration, which is the
+            # word after the options whatever it is. A duration this check cannot read as a whole
+            # number of seconds above 0 — a `0`, which is no limit at all, a decimal, a variable —
+            # bounds nothing here, and the command behind it stays the command the rules read:
+            # until round 37 an option's value or such a duration was read as the command, so the
+            # fetch behind it was no fetch at all, and `timeout 0` read as a bound of 0 s
+            # (dispatch://INFRA-1545, round 37). After an option timeout_option does not read, the
+            # words are left as they stand, a command named by that option, which odd_command
+            # refuses by name (dispatch://INFRA-1545, round 74).
             words.pop(0)
-            while words and words[0].startswith("-") and words[0] != "--":
-                if words.pop(0) in ("-k", "-s", "--kill-after", "--signal") and words:
-                    words.pop(0)
+            if timeout_option(words) is not None:
+                break
             if words and words[0] == "--":
                 words.pop(0)
             duration = words.pop(0) if words else ""
@@ -3843,23 +3965,31 @@ def reduce_words(words: list[str]) -> tuple[list[str], str | None, bool, int | N
 
 
 def odd_command(words: list[str]) -> tuple[str, bool, bool] | None:
-    """What the refusal of this command says, where it writes `retry_fetch` or `timeout` in a
-    form this check does not read, and whether that form is a call of the helper, which then
-    fetches nothing; None where it writes neither (dispatch://INFRA-1545, round 37). The wrappers
-    are read as reduce_words reads them. A `retry_fetch` behind `timeout`, another retry, or any
-    wrapper but `time` is refused: one that runs an executable cannot run the helper, a shell
-    function, and ci-log-guard.sh's two guards, which can, only hide the call (LOG_GUARDS). One
-    form passes: `gh_wait_reset [--stderr <file>] retry_fetch …`, gh-read.sh's shell function
-    alone in front of it, which runs the helper (rule 6; dispatch://INFRA-1545, round 55). One
-    whose `--` is not its third word, or whose seconds are written as no whole number above 0
-    and as no variable, is refused by the helper with no attempt made; and a `timeout` whose
-    short options are a cluster ending in `-k` or `-s`, such as `-vk 5`, takes the next word as
-    that option's value, where reduce_words takes it for the duration.
+    """What the refusal of this command says, where it writes `retry_fetch`, `timeout`, `xargs`,
+    a shell or a wrapper in a form this check does not read, and whether that form is a call of
+    the helper, which then fetches nothing; None where it writes none (dispatch://INFRA-1545,
+    round 37). The wrappers are read as reduce_words reads them. A `retry_fetch` behind
+    `timeout`, another retry, or any wrapper but `time` is refused: one that runs an executable
+    cannot run the helper, a shell function, and ci-log-guard.sh's two guards, which can, only
+    hide the call (LOG_GUARDS). One form passes: `gh_wait_reset [--stderr <file>] retry_fetch …`,
+    gh-read.sh's shell function alone in front of it, which runs the helper (rule 6;
+    dispatch://INFRA-1545, round 55). One whose `--` is not its third word, or whose seconds are
+    written as no whole number above 0 and as no variable, is refused by the helper with no
+    attempt made.
 
     The third answer is whether the form is refused whatever the command holds: an option of a
     PASSTHROUGH wrapper wrapper_option does not read, and `busybox`, whose first argument names
     the program it runs. After either, reduce_words reads no command at all, so this check
-    cannot tell whether a fetch or a script runs there (dispatch://INFRA-1545, round 38)."""
+    cannot tell whether a fetch or a script runs there (dispatch://INFRA-1545, round 38). So is
+    an option of `timeout` timeout_option does not read, one of `xargs` xargs_command does not
+    read, and a shell's group of short options holding `o` or `O` (shell_operand): after one of
+    them this check cannot tell the duration, the command xargs runs, or the file or the text the
+    shell runs, from the words around them. Until round 74 each of those readings stepped past
+    such a word as an option taking no value and read the word after it as the duration, the
+    command or the shell's operand: `xargs -rn 1 bash` passed, and so did `timeout --kill 5 60
+    curl …`, its fetch read as none, while a `timeout` option cluster ending in `-k` or `-s`,
+    such as `-vk`, was refused alone, and only where a fetch was written (dispatch://INFRA-1545,
+    round 74)."""
     rest = list(words)
     wrapper: str | None = None
     # Every wrapper in front of the command, as written, `time` aside: the one that may stand
@@ -3903,12 +4033,9 @@ def odd_command(words: list[str]) -> tuple[str, bool, bool] | None:
             continue
         if name == "timeout":
             rest.pop(0)
-            while rest and rest[0].startswith("-") and rest[0] != "--":
-                option = rest.pop(0)
-                if re.fullmatch(r"-[vfp]+[ks]", option):
-                    return TIMEOUT_CLUSTER.format(option=option), False, False
-                if option in ("-k", "-s", "--kill-after", "--signal") and rest:
-                    rest.pop(0)
+            option = timeout_option(rest)
+            if option is not None:
+                return TIMEOUT_OPTION.format(option=option), False, True
             if rest and rest[0] == "--":
                 rest.pop(0)
             del rest[:1]
@@ -3920,6 +4047,13 @@ def odd_command(words: list[str]) -> tuple[str, bool, bool] | None:
             behind.append(wrapper)
             del rest[:3]
             continue
+        if name == "xargs":
+            option = xargs_command(rest)[2]
+            return None if option is None else (XARGS_OPTION.format(option=option), False, True)
+        if name in INTERPRETERS:
+            kind, option = shell_operand(rest)
+            if kind == "option":
+                return SHELL_OPTION.format(shell=first, option=option), False, True
         return None
     return None
 
@@ -4695,9 +4829,17 @@ def expansions_in(word: str) -> list[tuple[int, int]]:
 
 def shell_operand(words: list[str]) -> tuple[str, str]:
     """What a shell, `.` or `source`, its words once the wrappers are gone, runs: ("script",
-    the operand), ("text", the text a `-c` names), or ("stdin", "") where it reads its standard
-    input. A shell's options before the operand are skipped, `-o`, `+o`, `-O`, `+O`, `--rcfile`
-    and `--init-file` with their values, and `--` or `-` ends them."""
+    the operand), ("text", the text a `-c` names), ("stdin", "") where it reads its standard
+    input, or ("option", the word) for a group of a shell's short options holding `o` or `O`,
+    such as `-eo`, which this check does not read. A shell's options before the operand are
+    skipped, `-o`, `+o`, `-O`, `+O`, `--rcfile` and `--init-file` with their values, any other
+    long option and any other group of short options as taking no value, and `--` or `-` ends
+    them. `o` and `O` take the next word as their value inside a group too, so after such a
+    group this reading cannot tell the operand from that value: odd_command refuses the group by
+    name, and no reading takes a word after it for the file or the text the shell runs. Until
+    round 74 such a group was stepped past as one taking no value, so `bash -eo pipefail "$s"`
+    read `pipefail` as the script and passed the script built from data (dispatch://INFRA-1545,
+    round 74)."""
     if PROGRAM.sub("", words[0]).rsplit("/", 1)[-1] in (".", "source"):
         return ("script", words[1]) if len(words) > 1 else ("stdin", "")
     at = 1
@@ -4709,6 +4851,8 @@ def shell_operand(words: list[str]) -> tuple[str, str]:
         if word in ("-o", "+o", "-O", "+O", "--rcfile", "--init-file"):
             at += 2
         elif word.startswith(("-", "+")):
+            if not word.startswith("--") and {"o", "O"} & set(word[1:]):
+                return "option", word
             if not word.startswith("--") and "c" in word[1:]:
                 return "text", words[at + 1] if at + 1 < len(words) else ""
             if not word.startswith("--") and "s" in word[1:]:
@@ -5904,9 +6048,10 @@ scripts = [
 # and its import of ci_filter_coverage.py and workflow_paths.py leaves two such files there; a
 # documented run must not turn a dev box red. Any other file under a `__pycache__` is refused
 # like any file. A top-level file of SCRIPT_DATA whose `#!` line names any program but an
-# interpreter OWN_INTERPRETERS gives its suffix, by any path or through `env` with or without
-# options (interpreter_of), is refused by name at its line 1 too, whatever runs it: run as a
-# command word, it runs as that program's text, which no rule reads. And so is a `.pyc` there
+# interpreter OWN_INTERPRETERS gives its suffix, by any path or through `env` with or without the
+# options of env interpreter_of reads, or names one only behind another option of env, is refused
+# by name at its line 1 too, whatever runs it: run as a command word, it runs as that program's
+# text, which no rule reads (dispatch://INFRA-1545, rounds 38 and 74). And so is a `.pyc` there
 # that opens `#!`, which no bytecode Python writes does. Until round 38 the first was refused
 # only where the `#!` line named a shell this check listed, so `#!/bin/busybox sh` and
 # `#!/usr/bin/env mksh` passed in a `.py`, and the second was not refused
@@ -5924,8 +6069,16 @@ scripts = [
 
 def interpreter_of(path: str) -> tuple[str, str | None]:
     """The first line of the file at `path`, and the program its `#!` line runs, by its name,
-    read through `env` with or without options, `#!/bin/sh` and `#!/usr/bin/env -S bash -e`
-    alike, or None where the file opens with no `#!` (dispatch://INFRA-1545, round 38)."""
+    read through `env` with or without the options of env this reading reads, `#!/bin/sh` and
+    `#!/usr/bin/env -S bash -e` alike, or None where the file opens with no `#!`
+    (dispatch://INFRA-1545, round 38). Those options are `-u <name>`, `--unset <name>`, `-C
+    <dir>` and `--chdir <dir>`, each with its word, and `-S`, alone or joined to its words, and
+    `--split-string=<words>`, which split the rest of the line into words. Any other option of
+    env is answered as `env <option>`, the program the line runs as far as this check reads it,
+    which is no interpreter OWN_INTERPRETERS gives a suffix, so the file is refused by name at
+    its line 1 and as a command word. Until round 74 such an option was stepped past as one
+    taking no value, so `#!/usr/bin/env -S -a python3 bash` read as python3, where an env that
+    takes `-a <zeroth argument>` runs bash (dispatch://INFRA-1545, round 74)."""
     with open(path, "rb") as handle:
         first = handle.readline(4096).decode("utf-8", "replace").strip()
     if not first.startswith("#!"):
@@ -5935,12 +6088,14 @@ def interpreter_of(path: str) -> tuple[str, str | None]:
         words.pop(0)
         while words and (words[0].startswith("-") or ASSIGNMENT.match(words[0])):
             option = words.pop(0)
-            if option in ("-u", "--unset", "-C", "--chdir") and words:
-                words.pop(0)
+            if option in ("-u", "--unset", "-C", "--chdir"):
+                del words[:1]
             elif option.startswith("-S") and len(option) > 2:
                 words.insert(0, option[2:])
             elif option.startswith("--split-string="):
                 words.insert(0, option.partition("=")[2])
+            elif option != "-S" and not ASSIGNMENT.match(option):
+                return first, f"env {option}"
     return first, words[0].rsplit("/", 1)[-1] if words else ""
 
 
@@ -6563,9 +6718,10 @@ for path in DOCKERFILES:
             rest = rest[match.end():]
         found, run_loops = sites_of(path, rest, line, "-")
         # A form odd_command names hides a fetch from every rule here as it does in a step: an
-        # option of a wrapper this check does not read, `busybox`, a `timeout` option cluster
-        # around a fetch. Until round 38 a Dockerfile's were read and dropped
-        # (dispatch://INFRA-1545, round 38). The four Dockerfiles write none.
+        # option of a wrapper, of `timeout` or of `xargs` this check does not read, a shell's
+        # group of short options holding `o` or `O`, `busybox`. Until round 38 a Dockerfile's
+        # were read and dropped (dispatch://INFRA-1545, rounds 38 and 74). The four Dockerfiles
+        # write none.
         for _at, sentence, waits, _helper in run_loops.odd_commands:
             if waits:
                 problem(path, line, f"this RUN {sentence} (dispatch://INFRA-1545, round 38).")
@@ -6590,7 +6746,18 @@ for path in DOCKERFILES:
 # Rule 10, the key that holds a build: above the longest single ladder of the Dockerfile it
 # builds. A build runs its fetches one after another, so a fault window is paid once, through
 # the first fetch that meets it, and one ladder is what the build can wait for above its measured
-# duration, which no figure here reads; the header's rule 10 says what this does not cover.
+# duration, which no figure here reads; the header's rule 10 says what this does not cover. The
+# advice of each refusal is the refused key's own. A step's key, where the step writes one, is
+# the build's measured duration plus that ladder, rounded up to the next whole minute strictly
+# above (STEP_BUILD_ADVICE). The job's key is derived by the Budgets note (JOB_BUILD_ADVICE), and
+# its refusal says nothing of the step's limit, which the step may not write at all. Until round
+# 74 both refusals told the author to allow time in the step's limit (dispatch://INFRA-1545,
+# round 74).
+STEP_BUILD_ADVICE = ("Set the step limit to the next whole minute strictly above "
+                     "the measured build duration plus {ladder} s.")
+JOB_BUILD_ADVICE = "Derive the job's limit from .github/ci-budgets.md#the-budgets-note."
+
+
 def ladder_of(site: Site) -> int:
     """One ladder of a Dockerfile's fetch, read once whatever runs it: a `retry` call's
     5 x <bound> + 150 s, or the ladder of a curl making its own attempts."""
@@ -6611,11 +6778,12 @@ for path, who, target, step, job, holder in dockerfile_built:
     ladder, longest = longest_ladder[target]
     keys = []
     if written_minutes(step) is not None:
-        keys.append((written_minutes(step), step.lines["timeout-minutes"], who, "it"))
+        keys.append((written_minutes(step), step.lines["timeout-minutes"], who, "it",
+                     STEP_BUILD_ADVICE.format(ladder=ladder)))
     keys.append((written_minutes(holder) or JOB_DEFAULT_MINUTES,
                  holder.lines.get("timeout-minutes", min(holder.lines.values(), default=0)),
-                 f"job '{job}'", who))
-    for minutes, key_line, owner, builder in keys:
+                 f"job '{job}'", who, JOB_BUILD_ADVICE))
+    for minutes, key_line, owner, builder, advice in keys:
         if 60 * minutes > ladder or (path, key_line) in held_keys:
             continue
         held_keys.add((path, key_line))
@@ -6626,8 +6794,7 @@ for path, who, target, step, job, holder in dockerfile_built:
                 "fetches one after another, so a fault window is paid once, through the first "
                 "fetch that meets it, and that one ladder is what the build can wait for above "
                 "its measured duration: a key at or under it cuts that fetch before its last "
-                "attempt can name it (rule 10). Allow time for the rest of the build in "
-                "the step's limit. Derive the job's limit from .github/ci-budgets.md#the-budgets-note.")
+                f"attempt can name it (rule 10). {advice}")
 
 # ---------------------------------------------------------------- the verdict
 
@@ -8043,32 +8210,6 @@ def unread_file(word: str, elsewhere: bool) -> list[str]:
     return []
 
 
-def xargs_command(reduced: list[str]) -> tuple[int, str | None]:
-    """Where the command an `xargs` runs begins among `reduced`, the xargs command's words as
-    reduce_words leaves them, and the placeholder its `-I`, `-i` or `--replace` sets, or None.
-    Its options are read past, each of `-I`, `-n`, `-L`, `-P`, `-d`, `-a`, `-E` and `-s` with the
-    word it takes. The one reading of xargs's options: unnamed_runs reads the command xargs runs
-    from here, and unread_uses that command's word (dispatch://INFRA-1545, round 37, and the
-    forward merge of main's #5583)."""
-    placeholder = None
-    at = 1
-    while at < len(reduced) and reduced[at].startswith("-"):
-        word = reduced[at]
-        if word in ("-I", "-n", "-L", "-P", "-d", "-a", "-E", "-s"):
-            placeholder = reduced[at + 1] if word == "-I" and at + 1 < len(reduced) else (
-                placeholder)
-            at += 2
-            continue
-        if word.startswith("--replace"):
-            placeholder = word.partition("=")[2] or "{}"
-        elif word.startswith("-i"):
-            placeholder = word[2:] or "{}"
-        elif word.startswith("-I"):
-            placeholder = word[2:]
-        at += 1
-    return at, placeholder
-
-
 def unread_place(words: list[str], at: int | None, start: int, files: list[str],
                  maybe: str | None) -> str | None:
     """Where the word at `at` of a command's words, naming `files` or maybe one ending as
@@ -8141,7 +8282,11 @@ def unread_uses(text: str, first_line: int, action: str | None, elsewhere: bool,
         reduced = reduce_words(words)[0]
         start = len(words) - len(reduced)
         if reduced and program_name(reduced[0]) == "xargs":
-            handed = reduce_words(reduced[xargs_command(reduced)[0]:])[0]
+            # After an option xargs_command does not read, the command xargs runs is not read,
+            # and every word after `xargs` is one of its arguments: odd_command refuses the
+            # option by name (dispatch://INFRA-1545, round 74).
+            at, _placeholder, unread = xargs_command(reduced)
+            handed = reduce_words(reduced[at:])[0] if unread is None else []
             if handed:
                 start = len(words) - len(handed)
         for at, word in [*enumerate(words), *((None, word) for word in command.redirected)]:
@@ -8774,7 +8919,12 @@ def expansion_settings(text: str, first_line: int, within: str = "",
         kind, target = shell_operand(reduced) if head in INTERPRETERS else ("", "")
         settings = variable_settings(words, start)
         unread = None
-        if index in reads and (head in ("shopt", "set") or kind in ("text", "script")):
+        # A shell whose options hold a group shell_operand does not read, `-eo`, is read for its
+        # settings too: option_settings reads `o` and `O` inside a group, and odd_command refuses
+        # the group by name where it is run text, but a `shell:` key reaches no such refusal
+        # (dispatch://INFRA-1545, round 74).
+        if index in reads and (head in ("shopt", "set")
+                               or kind in ("text", "script", "option")):
             options, unread = option_settings(reduced, command.plain[start:])
             settings = options + settings
         if settings or unread is not None:
@@ -8783,8 +8933,8 @@ def expansion_settings(text: str, first_line: int, within: str = "",
                 said += (" and " if said else "") + (
                     f"sets options named by `{unread}`, a word this check cannot read")
             # A shell's words are shown up to its operand, which may be a whole text.
-            shown = (words[:start + reduced.index(target, 1)] + ["…"] if target in reduced[1:]
-                     else words)
+            shown = (words[:start + reduced.index(target, 1)] + ["…"]
+                     if kind != "option" and target in reduced[1:] else words)
             ends = [span[1] for span in command.spans if span]
             last_line = first_line + text.count("\n", 0, max(ends)) if ends else command.line
             # A startup file may hold such a setting or none (STARTUP_VARIABLES).
@@ -9321,8 +9471,11 @@ def unnamed_runs(path: str, loops: Loops, sees_fetching: bool,
                         does = f"runs `find` with `{word}`"
                         break
         elif head == "xargs":
-            at, placeholder = xargs_command(reduced)
-            does, why = "runs `xargs`", handed(reduced[at:], placeholder, "each word it reads")
+            # After an option xargs_command does not read, no word is taken for the command xargs
+            # runs: odd_command refuses the option by name (dispatch://INFRA-1545, round 74).
+            at, placeholder, unread = xargs_command(reduced)
+            if unread is None:
+                does, why = "runs `xargs`", handed(reduced[at:], placeholder, "each word it reads")
         elif head in INTERPRETERS | {".", "source"} and not expansions_in(reduced[0]):
             kind, target = shell_operand(reduced)
             at = len(command.words) - len(reduced) + reduced.index(target) if target else 0

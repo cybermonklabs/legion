@@ -7,9 +7,9 @@
  *  - `step_minutes`: the deadline, the 60 s of `timeout --kill-after` and 60 s of slack, in whole
  *    minutes, up;
  *  - `job_minutes`: `step_minutes`, twice `other_steps_seconds` and `retry_seconds`, the retry
- *    arithmetic of the job's single slowest retried step by dispatch-browser.yaml's rule, in whole
- *    minutes, up; `retry_seconds` is the setup-bun step's figure, as the comment above that step's
- *    key writes it.
+ *    arithmetic of the job's single slowest retried step, the term
+ *    .github/ci-budgets.md#the-budgets-note adds, in whole minutes, up; `retry_seconds` is the
+ *    setup-bun step's figure, as the comment above that step's key writes it.
  *
  *  This file reads no Bun run: it parses the workflow and holds each budget to exactly its rule,
  *  so a budget raised or cut with no new measurement fails, and so does a measurement written

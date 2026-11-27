@@ -91,7 +91,7 @@ One call on its own — an action that sources the helper once — is 1708 s.
 A script a `run:` reaches is one call for each `ci_tools_fetch` it runs:
 rule 8 charges it once, as its header's list of what it miscounts says, so a script that loops over rows is sized by hand.
 
-A step that holds a retried download carries its own `timeout-minutes`, and that budget is the next whole minute strictly above the sum of its calls plus whatever unretried work it holds.
+A step that holds a retried download carries its own `timeout-minutes`, and that budget is at least the next whole minute strictly above the sum of its calls plus whatever unretried work it holds.
 Its calls are every retried download the step waits for:
 the ones its own `run:` writes, the ones the scripts under .github/scripts/ that `run:` invokes write, and so on through every script those invoke in turn, and for a `uses:` step of one of this repository's composite actions the ones that action and the actions and scripts it reaches write.
 A step whose `run:` is one call of a script carries that script's whole arithmetic, which is what the `pr-title` and `ci-ok` steps below each say beside their own budget.
@@ -99,7 +99,9 @@ Equal is not enough, and the reason is measured:
 in run 42386541065's job 128445139635 a `gh api` read bounded at 30 s sat under `timeout-minutes: 5`, its own arithmetic of 5 x 30 + 150 = 300 s against a budget of 300 s, and the helper's `::error::` line beat the runner's kill by four milliseconds
 — 17:22:16.7444966Z against 17:22:16.7483230Z.
 A run whose attempts drift later loses that race, and the step then reports GitHub's bare `The action '<step name>' has timed out after <N> minutes.` instead of naming the download that failed and the attempts it made, which is the loud failure the retry exists to give.
-GitHub reads this budget in whole minutes, so its margin over the sum of its calls and its unretried work is more than 0 s and at most 60 s: a `go mod download`'s 1050 s takes 18 minutes, 1080 s, a margin of 30 s. .github/scripts/check-download-retry.sh's rule 8 refuses a step whose budget does not strictly exceed its calls' arithmetic, which is the part of that sum it can read, and a step that carries none at all:
+GitHub reads this budget in whole minutes, so the least budget this rule gives a step is the next whole minute strictly above the sum of its calls and its unretried work: a `go mod download`'s 1050 s takes at least 18 minutes, 1080 s.
+A step may carry more than that least budget: the ci-ok report step does, for the reason the paragraph that opens "The ci-ok report allows", further down this section, gives.
+.github/scripts/check-download-retry.sh's rule 8 refuses a step whose budget does not strictly exceed its calls' arithmetic, which is the part of that sum it can read, and a step that carries none at all:
 a budget nobody wrote is a budget nothing judges, which is how this file's `airlock-lean` held the 8 x 60 + 127 = 607 s curl ladder .github/actions/install-elan carried before that action moved to `ci_tools_fetch`, with no term for it anywhere.
 It holds for every retried step of this repository's workflows, and the browser suite's install steps in .github/workflows/dispatch-browser.yaml derive theirs the same way.
 

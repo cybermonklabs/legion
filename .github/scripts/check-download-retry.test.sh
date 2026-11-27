@@ -1439,8 +1439,12 @@ check "counts the four refusals" "$(contains "$out" '4 download(s) outside the o
 
 # The browser image's shape: one installing RUN whose longest ladder is the package set's
 # `apt-get install`, 5 x 300 + 150 = 1650 s, built by a step under the 2-minute key it carried.
+# An empty <step_minutes> writes no key on the build step, so the job's key holds the build alone.
 build_key_fixture() {
-  local root=$1 step_minutes=$2 job_minutes=$3
+  local root=$1 step_minutes=$2 job_minutes=$3 step_key=""
+  if [ -n "$step_minutes" ]; then
+    step_key=$'\n'"        timeout-minutes: $step_minutes"
+  fi
   {
     echo 'FROM debian:trixie-slim AS build'
     printf '%s\n' "$CANONICAL"
@@ -1458,8 +1462,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: $job_minutes
     steps:
-      - name: Build and push
-        timeout-minutes: $step_minutes
+      - name: Build and push$step_key
         uses: docker/build-push-action@$PIN
         with:
           context: .github/docker
@@ -1476,7 +1479,30 @@ check "names the step's key and the ladder" \
   "$(contains "$out" "file=.github/workflows/image.yaml,line=9::step 'Build and push' of job 'image' carries .timeout-minutes: 2., 120 s, and it builds .github/docker/browser.Dockerfile, whose longest single ladder is 1650 s, the .apt-get install. at .github/docker/browser.Dockerfile[:]7")"
 check "names the job's key, at the ladder's own minute, and the ladder" \
   "$(contains "$out" "file=.github/workflows/image.yaml,line=6::job 'image' carries .timeout-minutes: 27., 1620 s, and step 'Build and push' of job 'image' builds .github/docker/browser.Dockerfile, whose longest single ladder is 1650 s")"
+# Each refusal advises on the key it refuses (dispatch://INFRA-1545, round 74): the step's names
+# the step's limit, and the job's names the Budgets note and not the step's limit.
+check "advises the step's key with the ladder's seconds in the calculation" \
+  "$(names_at "$out" '::error file=.github/workflows/image.yaml,line=9::' \
+    'step limit' '1650 s' '1650 s')"
+check "advises the job's key from the Budgets note alone" \
+  "$(names_at "$out" '::error file=.github/workflows/image.yaml,line=6::' \
+    '.github/ci-budgets.md#the-budgets-note' --not 'step limit' "the step's limit")"
 check "counts the two refusals" "$(contains "$out" '2 download(s) outside the one retry rule')"
+
+# A build step that writes no key of its own leaves the job's key to hold the build, and the
+# job's refusal advises on that key alone (dispatch://INFRA-1545, round 74): until round 74 it
+# told the author to allow time in the step's limit, which this step does not write.
+echo "case: a job keyed at or under the Dockerfile's longest single ladder, whose build step writes no key, is refused at the job's key alone"
+root=$(fixture build-key-job-only)
+build_key_fixture "$root" "" 27
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
+check "refuses the job's key at line 6, naming the job, its key, the ladder and the Budgets note, and not the step's limit" \
+  "$(names_at "$out" '::error file=.github/workflows/image.yaml,line=6::' "job 'image'" \
+    '`timeout-minutes: 27`' '1650 s' '.github/ci-budgets.md#the-budgets-note' \
+    --not 'step limit' "the step's limit")"
+check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 1)"
 
 echo "case: a build step and its job keyed above the Dockerfile's longest single ladder pass"
 root=$(fixture build-key-above-ladder)
@@ -3993,8 +4019,12 @@ for refusal in "10	A shell written as an absolute path	/bin/bash" \
   check "refuses '$step' at its operator, naming $consumer" \
     "$(contains "$out" "::error file=.github/workflows/case.yaml,line=$line::step '$step' of job 'build' feeds a heredoc to .$consumer., and the body holds a fetch")"
 done
-check "each of the four is one refusal" \
-  "$(contains "$out" '4 download(s) outside the one retry rule')"
+# `-euo` is a group of the shell's options holding `o`, which takes the next word as its value, a
+# form shell_operand does not read, so it is refused by name too (dispatch://INFRA-1545, round 74).
+check "refuses the group -euo at line 16 by name" \
+  "$(names_at "$out" '::error file=.github/workflows/case.yaml,line=16::' '`bash`' '`-euo`')"
+check "each of the four is one refusal, and the group -euo one more" \
+  "$(contains "$out" '5 download(s) outside the one retry rule')"
 
 # A shell whose script is somewhere else reads its body as that script's input, but the shell is
 # no consumer this tree writes, so the heredoc is refused all the same where its body names a
@@ -8328,7 +8358,11 @@ for refusal in "9	Run it through /bin/bash	an argument of .bash." \
   check "refuses '$step' by name as $form" \
     "$(contains "$out" "::error file=.github/workflows/case.yaml,line=$line::step '$step' of job 'build' names .github/scripts/zz-c.sh in $form, a place this check does not read as a call")"
 done
-check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 6)"
+# `-eo` is a group of bash's options holding `o`, which takes the next word as its value, a form
+# shell_operand does not read, so it is refused by name too (dispatch://INFRA-1545, round 74).
+check "refuses the group -eo at line 21 by name" \
+  "$(names_at "$out" '::error file=.github/workflows/case.yaml,line=21::' '`bash`' '`-eo`')"
+check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 7)"
 
 # A path that is only a comment or text a command prints or searches is no call, whatever sits
 # around it (dispatch://INFRA-1545, round 37): a comment on a body's first line, a comment that
@@ -15704,6 +15738,108 @@ check "refuses at line 16 the program with no first line as the command word xar
     'Hand a program with no first line to xargs behind env' build .github/scripts/zz-plain.py \
     .github/scripts/zz-plain.py '#!')"
 check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 3)"
+
+# R74 xargs. An option of xargs that xargs_command does not read is refused by name, wherever it is
+# written and whatever xargs runs (dispatch://INFRA-1545, round 74): review 6085108423's three
+# inputs, a cluster before a literal program, the same cluster before a shell that runs each word
+# xargs reads, and a long option whose value is a word of its own before that shell. Until round
+# 74 each such option was stepped past as one taking no value, so `1` read as the command xargs
+# runs: both shells passed, and the program was refused as an argument of `1`. Now the program is
+# an argument of `xargs`, the one place this check reads it in after an option it does not read.
+# The same options as words of their own are read: the program, whose first line names python3,
+# passes, and the shell is refused for the run it makes, which the gate read before round 74 too.
+# Each refusal row is checked by its line, the program it names and the option, never by the
+# words of the refusal, and each fails where the option is stepped past again.
+echo "case: r74 an option of xargs this check does not read is refused by name, and the same options as words of their own are read"
+root=$(fixture r74-xargs-options)
+printf '%s\nprint("quiet")\n' '#!/usr/bin/env python3' > "$root/.github/scripts/zz-r74.py"
+chmod +x "$root/.github/scripts/zz-r74.py"
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: A cluster before a literal program
+        run: printf '%s\n' a b | xargs -rn 1 .github/scripts/zz-r74.py
+      - name: A cluster before a shell
+        run: xargs -rn 1 bash < names.txt
+      - name: A long option and its value before a shell
+        run: xargs --max-args 1 bash < names.txt
+      - name: Separate options before a literal program
+        run: printf '%s\n' a b | xargs -r -n 1 .github/scripts/zz-r74.py
+      - name: Separate options before a shell
+        run: xargs -r -n 1 bash < names.txt
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
+for refusal in "8	-rn" "10	-rn" "12	--max-args"; do
+  IFS=$'\t' read -r line option <<<"$refusal"
+  check "refuses the option $option of xargs at line $line by name" \
+    "$(names_at "$out" "::error file=.github/workflows/case.yaml,line=$line::" '`xargs`' "\`$option\`")"
+done
+check "refuses the program at line 8 as an argument of xargs, not of the option's value" \
+  "$(names_at "$out" '::error file=.github/workflows/case.yaml,line=8::' \
+    '`.github/scripts/zz-r74.py`' '`xargs`' --not '`-rn`' '`1`')"
+check "passes the program after the options written as words of their own, at line 14" \
+  "$(is "$(contains "$out" 'case.yaml,line=14::')" false)"
+check "reads the shell after the options written as words of their own, and refuses its run at line 16" \
+  "$(names_at "$out" '::error file=.github/workflows/case.yaml,line=16::' '`xargs`' '`bash`')"
+check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 5)"
+
+# R74 class. The other readings that stepped past an option they did not know before the command,
+# the operand or the interpreter they look for fail closed the same way, each refused by name
+# (dispatch://INFRA-1545, round 74). timeout_option, the one reading of timeout's options that
+# reduce_words and odd_command now share: `--kill`, an abbreviation of `--kill-after` that takes
+# the next word, read 5 as the duration and 60 as the command, so the bare curl behind it was no
+# fetch. shell_operand: `-eo` holds `o`, which takes the next word, so `pipefail` read as the
+# script and the path built from data passed. interpreter_of: `-a` is an option of env that takes
+# the next word, its zeroth argument, so the first line read as python3 where such an env runs
+# bash. Each control is the form the reading reads: the joined `--signal=` and `--kill-after=`
+# and `--foreground` the tree writes, read through to the curl, which is refused at the floor
+# alone; `-o` as a word of its own, read through to the built path, which is refused as the run
+# it is; and `-u <name>` before python3, which passes.
+echo "case: r74 an option of timeout, a shell's group holding o and an option of env in a first line, each unread, are refused by name"
+root=$(fixture r74-option-readers)
+printf '%s\nprint("quiet")\n' '#!/usr/bin/env -S -a python3 bash' > "$root/.github/scripts/zz-r74-argv0.py"
+printf '%s\nprint("quiet")\n' '#!/usr/bin/env -u HOME python3' > "$root/.github/scripts/zz-r74-unset.py"
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Fetch behind an abbreviated option that takes a value
+        run: timeout --kill 5 60 curl -fsSL -o a https://example.com/a
+      - name: Fetch behind the joined options the tree writes
+        timeout-minutes: 11
+        run: timeout --foreground --signal=TERM --kill-after=5 60 curl -fsSL -o a https://example.com/a
+      - name: Run a built path after a group holding o
+        run: bash -eo pipefail "$SCRIPT"
+      - name: Run a built path after o as a word of its own
+        run: bash -e -o pipefail "$SCRIPT"
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
+check "refuses the option --kill of timeout at line 8 by name" \
+  "$(names_at "$out" '::error file=.github/workflows/case.yaml,line=8::' '`timeout`' '`--kill`')"
+check "reads the curl at line 11 through the options the tree writes, and refuses it at the floor" \
+  "$(names_at "$out" '::error file=.github/workflows/case.yaml,line=11::' '`curl`' '`--retry 7`')"
+check "refuses no option of timeout at line 11" \
+  "$(is "$(names_at "$out" '::error file=.github/workflows/case.yaml,line=11::' '`timeout`')" false)"
+check "refuses the group -eo of bash at line 13 by name" \
+  "$(names_at "$out" '::error file=.github/workflows/case.yaml,line=13::' '`bash`' '`-eo`')"
+check "reads the built path after -o written apart at line 15, and refuses its run" \
+  "$(names_at "$out" '::error file=.github/workflows/case.yaml,line=15::' '`$SCRIPT`' '`bash`')"
+check "refuses zz-r74-argv0.py at its line 1, naming env and its option -a" \
+  "$(names_at "$out" '::error file=.github/scripts/zz-r74-argv0.py,line=1::' '`env -a`')"
+check "passes zz-r74-unset.py, whose env option it reads" \
+  "$(is "$(contains "$out" 'zz-r74-unset.py')" false)"
+check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 5)"
 
 # W17. Six glob shapes the Spec draft's review drove past the gate at bd06b2a2, each exit 0 under
 # a one-minute key (dispatch://INFRA-1545, round 38): a glob or a brace expansion in a run's
