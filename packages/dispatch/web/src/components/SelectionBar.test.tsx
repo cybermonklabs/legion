@@ -1079,6 +1079,48 @@ test("the hand-off owes its landing while the press's rows are still listed, and
   }
 });
 
+// The park is the hand-off's own move of the focus, so the landing still comes after it, from the
+// mark the park put the focus on. Here the press moves the row marked last, as the Inbox's Snooze
+// moves an ask into an open Later band, rather than taking it away, so that mark is still drawn
+// once the press's rows have gone, and the target the page names (`land`'s `to`, R8's row of the
+// Inbox) takes the focus then.
+test("a landing on the page's named target, with the focus parked on the row marked last, which the press then moves, is made on that target once the rows have gone", () => {
+  const laidOut = layRowsOut("[data-row]", 9);
+  const view = render(
+    <PlacedList
+      count={2}
+      last="CORE-13"
+      leaving={["CORE-12", "CORE-13"]}
+      listed={PLACED_KEYS}
+      to="CORE-14"
+    />
+  );
+  let answered: () => void = () => undefined;
+  try {
+    pressInBar("Dismiss");
+    answered = holdHandOff();
+    view.rerender(
+      <PlacedList
+        count={0}
+        last="CORE-13"
+        leaving={["CORE-12", "CORE-13"]}
+        listed={PLACED_KEYS}
+        to="CORE-14"
+      />
+    );
+    expect(rowBox("CORE-13")).toHaveFocus();
+    view.rerender(
+      <PlacedList count={0} last="CORE-13" listed={without(PLACED_KEYS, "CORE-12")} to="CORE-14" />
+    );
+    expect(document.querySelector('[data-row="CORE-14"]')).toHaveFocus();
+  } finally {
+    answered();
+    disarm();
+    view.unmount();
+    laidOut();
+  }
+});
+
 // INFRA-3135, round 29 (the architect's condition (b) of 2026-11-26 05:5xZ): the park puts the
 // focus on the mark of the row marked last, and a mark the reader cannot see would be a checkbox
 // their Space toggles out of their sight. The reader marked a row near the list's top and scrolled
@@ -1244,6 +1286,52 @@ test("j from the parked mark into another leaving row leaves the landing owed, a
     expect(moves.scrolled).toEqual([]);
   } finally {
     moves.restore();
+    keys();
+    answered();
+    disarm();
+    view.unmount();
+    laidOut();
+  }
+});
+
+// The reader's own key is read by the Cancelled rule, not as the page moving the focus on: `k`
+// from the parked mark into another leaving row ends what is owed as it comes, and the read once it
+// has been answered owes the landing again from where the key left the focus. Here the press moves
+// both rows rather than taking them away, so the mark the key moved to is still drawn once they
+// stop leaving, and the landing is made then, on the target the page names (`land`'s `to`).
+test("k from the parked mark into another leaving row owes the landing again from that mark, and it is made on the page's named target once the rows stop leaving", async () => {
+  const user = userEvent.setup();
+  const laidOut = layRowsOut("[data-row]", 9);
+  const view = render(
+    <PlacedList
+      count={2}
+      last="CORE-13"
+      leaving={["CORE-12", "CORE-13"]}
+      listed={PLACED_KEYS}
+      to="CORE-14"
+    />
+  );
+  const keys = stepKeys();
+  let answered: () => void = () => undefined;
+  try {
+    pressInBar("Dismiss");
+    answered = holdHandOff();
+    view.rerender(
+      <PlacedList
+        count={0}
+        last="CORE-13"
+        leaving={["CORE-12", "CORE-13"]}
+        listed={PLACED_KEYS}
+        to="CORE-14"
+      />
+    );
+    expect(focusedName()).toBe("Select CORE-13");
+    await user.keyboard("k");
+    await act(afterTask);
+    expect(focusedName()).toBe("Select CORE-12");
+    view.rerender(<PlacedList count={0} last="CORE-13" listed={PLACED_KEYS} to="CORE-14" />);
+    expect(document.querySelector('[data-row="CORE-14"]')).toHaveFocus();
+  } finally {
     keys();
     answered();
     disarm();
@@ -2154,6 +2242,82 @@ test.each([
     expect(moves.scrolled).toEqual([]);
   } finally {
     moves.restore();
+    view.unmount();
+    laidOut();
+  }
+});
+
+// INFRA-2160, round 23 (builds Job `infra-2160-diag2-8prkh`): in the Inbox's drawer, `b` and a
+// pick snooze two selected asks, and the commit that moves the row marked last into the open Later
+// band takes the bar away with the focus on that row's mark, which the list still names as
+// leaving, so the hand-off owes the landing itself. The Inbox's own hand-off then puts the focus on
+// the row of the item after them, a row that stays, and the landing, made once the foot's pass had
+// run, took it to the moved row's mark. The page's own move of the focus to a control that stays
+// ends what is owed (`useLastMarkedPlace`'s Handed on), whether it comes before the commit that
+// lets the press's rows go or after it, while the landing waits for the foot's pass.
+test.each([
+  ["before the commit that lets the press's rows go", true],
+  ["after that commit, while the landing waits for the foot's pass", false],
+] as const)("a landing the bar's going owed with the focus in a leaving row lands nothing once the page has moved the focus to a row that stays, %s", async (_when, handOnFirst) => {
+  const laidOut = layRowsOut("[data-row]", 9);
+  // The foot's pass reads the screen under the float (`clearScrollers`); happy-dom has no hit
+  // test, and no scroller stands there.
+  Object.defineProperty(document, "elementsFromPoint", { configurable: true, value: () => [] });
+  const view = render(<PlacedList count={2} last="CORE-13" listed={PLACED_KEYS} />);
+  // A float at the foot keeps the foot's pass still to come as the bar goes.
+  const float = render(<FootFloat />);
+  const moves = watchMoves();
+  try {
+    await act(nextFrame);
+    const marked = rowBox("CORE-13");
+    act(() => marked.focus());
+    view.rerender(
+      <PlacedList count={0} last="CORE-13" leaving={["CORE-12", "CORE-13"]} listed={PLACED_KEYS} />
+    );
+    expect(screen.queryByRole("toolbar")).not.toBeInTheDocument();
+    expect(marked).toHaveFocus();
+    const from = moves.focused.length;
+    const next = rowBox("CORE-14");
+    // The page's own hand-off, to the row of the item after the press's rows.
+    if (handOnFirst) act(() => next.focus());
+    // The press takes CORE-12 away and keeps CORE-13, which it moves, as the snooze moved the ask.
+    view.rerender(<PlacedList count={0} last="CORE-13" listed={without(PLACED_KEYS, "CORE-12")} />);
+    if (!handOnFirst) act(() => next.focus());
+    await act(nextFrame);
+    expect(focusedName()).toBe("Select CORE-14");
+    expect(moves.focused.slice(from).map((move) => move.target.getAttribute("aria-label"))).toEqual(
+      ["Select CORE-14"]
+    );
+  } finally {
+    moves.restore();
+    float.unmount();
+    view.unmount();
+    Reflect.deleteProperty(document, "elementsFromPoint");
+    laidOut();
+  }
+});
+
+// The same landing is still made where the focus has moved to no control that stays: where the
+// leaving row's going drops it onto the page's body, as after the reader's untick of the last mark
+// with the focus on it, and where the page has moved it into another leaving row, which goes too.
+// CORE-14 stands at the place of the rows the press took away.
+test.each([
+  ["the leaving row's going drops it onto the page's body", false],
+  ["the page has moved it into another leaving row, which goes too", true],
+] as const)("a landing the bar's going owed with the focus in a leaving row is made once the rows go, where %s", (_how, intoLeaving) => {
+  const laidOut = layRowsOut("[data-row]", 9);
+  const view = render(<PlacedList count={2} last="CORE-13" listed={PLACED_KEYS} />);
+  try {
+    act(() => rowBox("CORE-13").focus());
+    view.rerender(
+      <PlacedList count={0} last="CORE-13" leaving={["CORE-12", "CORE-13"]} listed={PLACED_KEYS} />
+    );
+    if (intoLeaving) act(() => rowBox("CORE-12").focus());
+    view.rerender(
+      <PlacedList count={0} last="CORE-13" listed={without(PLACED_KEYS, "CORE-12", "CORE-13")} />
+    );
+    expect(focusedName()).toBe("Select CORE-14");
+  } finally {
     view.unmount();
     laidOut();
   }
