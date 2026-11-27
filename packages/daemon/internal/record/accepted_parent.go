@@ -7,6 +7,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/phase"
 )
 
 // Beneath is the members of issue's tree that lie under it. For a tree root that is every other
@@ -99,9 +100,18 @@ func OpenBeneath(issue Issue, members []Issue) []string {
 // WorkBeneath is the issues beneath issue whose work has still to happen: OpenBeneath less the
 // issues whose close waits in verifying, whose work merged and is on the base already (D10). It
 // is what the acceptance of an issue waits for — the architect's sign-off and the issue's own
-// first phase — where its close waits for OpenBeneath whole, a child in verifying included.
+// first phase — where its close waits for OpenBeneath whole, a child in verifying included: the
+// parent's head should carry that child's fix, and its own close waits until the child closes.
 func WorkBeneath(issue Issue, members []Issue) []string {
-	return OpenBeneath(issue, members)
+	work := []string{}
+	byKey := byKey(members)
+	for _, key := range OpenBeneath(issue, members) {
+		if byKey[key].Phase == phase.Verifying {
+			continue
+		}
+		work = append(work, key)
+	}
+	return work
 }
 
 // AcceptedAncestorOf is the issue above key, in key's own tree, that the daemon has already

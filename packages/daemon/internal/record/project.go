@@ -147,6 +147,17 @@ func RunsAgain(issue Issue) bool {
 	return InWorkflow(issue) && issue.Phase != phase.Verifying
 }
 
+// OnNextChange says whether the generation an issue stands on is a next change of it: one the
+// judge of its close started after its work merged (Issue.NextChange, workflow's
+// StartNextChange), still open. The branch row of such a generation starts at the merge snapshot
+// (IssueBranchOf), its first start moves the working copy to that branch (workflow's
+// firstStartAt), its first step takes no plan of an earlier generation (workflow's
+// planFirstStep), and neither the hold under an accepted ancestor nor another tree's release
+// takes it (acceptedAncestorHolding, workflow's closedTreesMember).
+func OnNextChange(issue Issue) bool {
+	return issue.NextChange != 0 && issue.NextChange == issue.Generation
+}
+
 // Stopped is whether the issue's own record says its work has stopped: it is out of the
 // workflow, or its tree lingers. It is the one statement of that rule, and the readers that
 // must agree — the boot's claim release pass and the row it queues — both call it.
@@ -461,6 +472,12 @@ func HeldUnderAccepted(issue Issue, byKey map[string]Issue) bool {
 // records the chain is walked over (Ancestors).
 func acceptedAncestorHolding(issue Issue, byKey map[string]Issue) string {
 	if issue.Phase != phase.Admitted {
+		return ""
+	}
+	// A child's next change follows a merge that is on the base already (D10), so the hold that
+	// keeps an ancestor from merging a head without its children's work does not hold it: it
+	// starts under that ancestor, and that ancestor's own close waits for it (OpenBeneath).
+	if OnNextChange(issue) {
 		return ""
 	}
 	return AcceptedAncestor(issue, byKey)

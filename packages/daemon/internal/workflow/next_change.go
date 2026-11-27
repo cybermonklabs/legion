@@ -112,7 +112,9 @@ func (e *Engine) StartNextChange(ctx context.Context, tx pgx.Tx, issue record.Is
 	if err != nil {
 		return err
 	}
-	if err := putStoredWait(&started, e.waitOf(started, view, old, now)); err != nil {
+	stored := e.waitOf(started, view, old, now)
+	stored.Withdrawn = heldWithdrawals(old, nil)
+	if err := putStoredWait(&started, stored); err != nil {
 		return err
 	}
 	if err := e.WriteIssue(ctx, tx, started); err != nil {
@@ -332,7 +334,7 @@ func changeResolved(issue record.Issue, view closeView) bool {
 // is queued, and a production check of this generation opens at the retained merge where the
 // project runs one and nothing beneath it is in the workflow. A start row of the change's phases
 // is stale from then on, since the phase changed.
-func (e *Engine) endChange(ctx context.Context, tx pgx.Tx, issue record.Issue, view closeView) error {
+func (e *Engine) endChange(ctx context.Context, tx pgx.Tx, issue record.Issue, withdrawn []record.WaitWithdrawal) error {
 	now := e.now()
 	ended := issue
 	ended.NextChange = 0
@@ -362,6 +364,7 @@ func (e *Engine) endChange(ctx context.Context, tx pgx.Tx, issue record.Issue, v
 	stored := e.waitOf(ended, after, old, now)
 	stored.Entered = now
 	stored.Ended = &record.WaitChangeEnd{Generation: issue.NextChange, At: now}
+	stored.Withdrawn = heldWithdrawals(old, withdrawn)
 	if err := putStoredWait(&ended, stored); err != nil {
 		return err
 	}
@@ -411,4 +414,223 @@ func (e *Engine) changeMerged(ctx context.Context, tx pgx.Tx, issue record.Issue
 	}
 	e.logOnCommit(ctx, "workflow: a next change merged its pull request", "issue", issue.Key, "generation", carried, "pullRequest", number)
 	return issue, &record.WaitChangeEnd{Generation: carried, PullRequest: number, At: at}, nil
+}
+
+// mergedEntry is issue as its merge leaves it entering verifying: the change it merged ended
+// (changeMerged), at GitHub's merged_at where the snapshot holds it and at now otherwise, and
+// whether the merger's completion of the generation that merged is still owed
+// (Issue.MergerCompletionOwed): the merger was started on its step (an entry's task stands on its
+// phases row) and its completion has not landed. Both entries into verifying from a merge take
+// it, the table's (enterVerifying) and a lingering tree's (closeMerged).
+func (e *Engine) mergedEntry(ctx context.Context, tx pgx.Tx, issue record.Issue, pr *record.PullRequest, now time.Time) (record.Issue, *record.WaitChangeEnd, error) {
+	at := issue.Merge.MergedAt
+	if at.IsZero() {
+		at = now
+	}
+	issue, ended, err := e.changeMerged(ctx, tx, issue, pr, at)
+	if err != nil {
+		return issue, nil, err
+	}
+	merger, err := e.phaseRow(ctx, tx, issue.Key, claim.RoleMerger)
+	if err != nil {
+		return issue, nil, err
+	}
+	issue.MergerCompletionOwed = merger.EntryTask != "" && !merger.Completed()
+	return issue, ended, nil
+}
+
+// startChangeIfDue is the judge's start of a next change of issue, which waits in verifying with
+// view, its close's reading, holding something: each check Dispatch now computes as a fail is
+// recorded as a reason (recordCheckReasons), and where a reason waits that no change carries and
+// the change's moment has come (changeDue), the change starts in place (StartNextChange). Where
+// the merger's completion is what holds the change, the checks are read again when the hour after
+// the merge falls due, so the change starts then with no other event. In a tree that lingers the
+// reason is recorded and no change starts: it waits until the tree runs again (D10). It answers
+// whether a change started.
+func (e *Engine) startChangeIfDue(ctx context.Context, tx pgx.Tx, key string) (bool, error) {
+	issue, err := e.store.Issue(ctx, tx, key)
+	if err != nil || issue == nil || issue.Phase != phase.Verifying || issue.NextChange != 0 {
+		return false, err
+	}
+	view, err := e.closeWait(ctx, tx, *issue)
+	if err != nil {
+		return false, err
+	}
+	if err := e.recordCheckReasons(ctx, tx, *issue, view); err != nil {
+		return false, err
+	}
+	if view, err = e.closeWait(ctx, tx, *issue); err != nil {
+		return false, err
+	}
+	reasons := changeReasons(view)
+	if len(reasons) == 0 {
+		return false, nil
+	}
+	at, due := e.changeDue(*issue, view)
+	if !due {
+		if !at.IsZero() {
+			return false, e.askCloseReadAt(ctx, tx, *issue, at)
+		}
+		return false, nil
+	}
+	if lingers, err := record.TreeLingers(ctx, e.store, tx, issue.Tree); err != nil || lingers {
+		return false, err
+	}
+	return true, e.StartNextChange(ctx, tx, *issue, reasons, ChangeInPlace(*issue))
+}
+
+// judgeOpenChange is the judge of an issue whose next change is open (Issue.NextChange), which
+// stands in a phase of that change and not in verifying: a read of its checks, a withdrawal and a
+// result's event reach it. A check now failed is recorded as a reason (recordCheckReasons) and
+// joins the change where the change has not passed its last step, so the change's work takes it;
+// one that comes later waits for the change after it. Where the change opened no pull request of
+// its own and each reason it carries is resolved, the change ends (endChange). Otherwise the
+// stored wait is written again, with the withdrawals a version has still to say (heldWithdrawals),
+// and close-wait.md's row is queued where it changed.
+func (e *Engine) judgeOpenChange(ctx context.Context, tx pgx.Tx, issue record.Issue, withdrawn []record.WaitWithdrawal) error {
+	view, err := e.closeWait(ctx, tx, issue)
+	if err != nil {
+		return err
+	}
+	if err := e.recordCheckReasons(ctx, tx, issue, view); err != nil {
+		return err
+	}
+	if !record.AcceptedPhase(record.StandsAt(issue)) {
+		if joined := changeReasons(view); len(joined) > 0 {
+			if err := e.joinReasons(ctx, tx, issue, joined); err != nil {
+				return err
+			}
+		}
+	}
+	if view, err = e.closeWait(ctx, tx, issue); err != nil {
+		return err
+	}
+	none, err := e.changeOpenedNoPullRequest(ctx, tx, issue)
+	if err != nil {
+		return err
+	}
+	if none && changeResolved(issue, view) {
+		return e.endChange(ctx, tx, issue, withdrawn)
+	}
+	old, err := storedWaitOf(issue)
+	if err != nil {
+		return err
+	}
+	stored := e.waitOf(issue, view, old, e.now())
+	stored.Withdrawn = heldWithdrawals(old, withdrawn)
+	if err := e.tellAtOnce(ctx, tx, issue, old, stored, view.wait); err != nil {
+		return err
+	}
+	before, err := json.Marshal(old)
+	if err != nil {
+		return err
+	}
+	after, err := json.Marshal(stored)
+	if err != nil {
+		return err
+	}
+	if string(before) == string(after) {
+		return nil
+	}
+	issue.CloseWait = after
+	if err := e.WriteIssue(ctx, tx, issue); err != nil {
+		return err
+	}
+	return e.publishWait(ctx, tx, issue)
+}
+
+// joinReasons is reasons joining the issue's open change, which has not passed its last step
+// (D7): each is carried by the change's generation, so the change's work takes it and its merge
+// ends it, and the owning architect is told, naming each.
+func (e *Engine) joinReasons(ctx context.Context, tx pgx.Tx, issue record.Issue, reasons []record.Defect) error {
+	ids := make([]int64, 0, len(reasons))
+	for _, reason := range reasons {
+		ids = append(ids, reason.ID)
+	}
+	if err := e.store.CarryDefects(ctx, tx, issue.Key, issue.NextChange, ids); err != nil {
+		return err
+	}
+	e.logOnCommit(ctx, "workflow: a reason joins the open next change", "issue", issue.Key, "generation", issue.NextChange, "reasons", ids)
+	return e.notice(ctx, tx, issue.Key, record.Notice{Kind: "next-change", Role: claim.RoleArchitect, Reason: fmt.Sprintf(
+		"These reasons joined the open next change %d of %s, which carries them:%s\nIts later steps take them.",
+		issue.NextChange, issue.Key, bulleted(reasonLines(reasons)))})
+}
+
+// mergerCompleted is the merger's completion of the generation that merged, landing while its
+// issue waits in verifying (leftItsPhase took it): the record no longer owes it
+// (Issue.MergerCompletionOwed), so the merger reports no defect any more (mayReportDefect), and
+// the close is judged again, since a next change waits for this completion (changeDue).
+func (e *Engine) mergerCompleted(ctx context.Context, tx pgx.Tx, key string) error {
+	issue, err := e.store.Issue(ctx, tx, key)
+	if err != nil || issue == nil || !issue.MergerCompletionOwed {
+		return err
+	}
+	issue.MergerCompletionOwed = false
+	if err := e.WriteIssue(ctx, tx, *issue); err != nil {
+		return err
+	}
+	e.logOnCommit(ctx, "workflow: the merger's completion of the merged generation landed in verifying", "issue", issue.Key,
+		"generation", issue.Generation)
+	return e.judgeClose(ctx, tx, *issue)
+}
+
+// carryReturn is the carry of a return (D7): a role returns its task for a cause that stays, out
+// of its retro or its merge, and each open defect reported in this generation that no change
+// carries yet is carried by this generation, so the returned work takes it and its merge starts no
+// second change for it. It answers the defects it carried, which the start task of the phase the
+// return reaches names.
+func (e *Engine) carryReturn(ctx context.Context, tx pgx.Tx, issue record.Issue) ([]record.Defect, error) {
+	open, err := e.store.OpenDefects(ctx, tx, issue.Key)
+	if err != nil {
+		return nil, err
+	}
+	var carried []record.Defect
+	var ids []int64
+	for _, defect := range open {
+		if defect.CarriedBy != 0 || defect.Generation != issue.Generation || defect.Kind != record.DefectKindDefect {
+			continue
+		}
+		carried, ids = append(carried, defect), append(ids, defect.ID)
+	}
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	if err := e.store.CarryDefects(ctx, tx, issue.Key, issue.Generation, ids); err != nil {
+		return nil, err
+	}
+	e.logOnCommit(ctx, "workflow: a return carries the defects of its generation", "issue", issue.Key, "generation", issue.Generation, "defects", ids)
+	return carried, nil
+}
+
+// withCarried is reason, the move's own words for the start task, followed by what that task says
+// of the defects the return carried (carryReturn): each by id with what it says, which this
+// generation's work takes. The words reach the task alone: the move posts reason on the issue as it
+// was (moveReason), so no role's defect text is posted there.
+func withCarried(reason string, carried []record.Defect) string {
+	if len(carried) == 0 {
+		return reason
+	}
+	named := "This return carries these defects of the change, which your work takes:" + bulleted(reasonLines(carried))
+	if reason == "" {
+		return named
+	}
+	return sentence(reason) + " " + named
+}
+
+// firstStartAt is where the working copy of issue's first start of a next change starts
+// (record.StartAt): the issue's branch, legion/<KEY>, and the base its last pull request merged
+// into, or its recorded default branch where the snapshot names none. Only the gate's opening of a
+// generation that is a next change (record.OnNextChange) names one; every other move names none.
+func firstStartAt(trigger TriggerKind, issue record.Issue) *record.StartAt {
+	if trigger != TriggerGateOpened || !record.OnNextChange(issue) {
+		return nil
+	}
+	base := issue.Merge.Base
+	if base == "" {
+		base = issue.DefaultBranch
+	}
+	if base == "" {
+		return nil
+	}
+	return &record.StartAt{Bookmark: claim.IssueBranch(issue.Key), Base: base}
 }
