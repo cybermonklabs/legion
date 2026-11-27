@@ -280,10 +280,7 @@ type wake struct {
 // the wake's turn for one that waits (wakeNow) — and of the wait as the decision that began it
 // ends (tellWakeQueue), never of a moment at the join.
 func (m *Machine) reserveWake(ctx context.Context, exempt bool, carried *wakepace.Place, run, again func(context.Context) error) error {
-	kind := WakeLaunch
-	if intent := m.pluginRelaunch; intent != nil {
-		kind = intent.kind
-	}
+	kind := m.pluginRelaunch.waitsUnder()
 	if pause, holds := m.pauseHolds(); holds {
 		return m.pauseGate(ctx, &wake{joined: m.deps.Clock.Now(), kind: kind, state: m.claim.State, run: run, again: again,
 			pluginMark: m.takePluginRelaunch()}, pause)
@@ -543,7 +540,7 @@ func (m *Machine) runWake(ctx context.Context, waiting *wake, paced bool) error 
 	if StartsProcess(waiting.kind) {
 		if err := m.checkLaunch(ctx); err != nil {
 			m.watchAgain()
-			return m.relaunchRefused(ctx, m.retryHolding(waiting.pluginMark, waiting.again), err)
+			return m.relaunchRefused(ctx, waiting.kind, m.retryHolding(waiting.pluginMark, waiting.again), err)
 		}
 		if m.claim.Locator != nil {
 			if err := m.interrupted(ctx, "the process this launch replaces is let go now that its turn has come", ordinaryEnd); err != nil {

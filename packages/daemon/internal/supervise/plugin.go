@@ -323,6 +323,19 @@ type pluginIntent struct {
 	kind     WakeKind
 }
 
+// waitsUnder is the wake kind the launch this intent names waits under: the lane's own kind, and
+// WakeLaunch for a nil intent, which is every launch no stale-plugin relaunch raised. It is the
+// one read of that kind: by the wake gate (reserveWake), by a try a gate holds (heldTryWake), and
+// by the retry a launch that still carries its intent arms (launchAfter, relaunchAtProbe,
+// relaunchLater). So the kind a launch waits under and the kind its refresh credit is held for
+// come from the same intent and cannot disagree (laneLaunchOwed).
+func (i *pluginIntent) waitsUnder() WakeKind {
+	if i == nil {
+		return WakeLaunch
+	}
+	return i.kind
+}
+
 // markPluginRelaunch records that the launch this decision is raising is a stale-plugin relaunch
 // for this daemon's contract, waiting under kind. It writes nothing of the claim:
 // PluginRelaunchFor is written where that launch starts the process the stale one is replaced

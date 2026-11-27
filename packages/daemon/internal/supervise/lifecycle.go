@@ -61,7 +61,9 @@ func (m *Machine) checkLaunch(ctx context.Context) error {
 }
 
 // relaunchRefused is a relaunch checkLaunch refused, relaunch the call that made it
-// (relaunchAfterFailure, launchAfter, runWake) and so the one to try again. A claim that records
+// (relaunchAfterFailure, launchAfter, runWake) and so the one to try again, and kind the wake kind
+// the refused launch waits under, which the retry records with it (relaunchLater): the lane's own
+// kind for a launch of the stale-plugin lane, WakeLaunch for every other. A claim that records
 // its process, or runs none — a spawn, a resume, a retry — is left exactly as it was: the error
 // goes back to whoever asked for it, and this writes nothing, arms nothing and starts nothing.
 //
@@ -74,18 +76,20 @@ func (m *Machine) checkLaunch(ctx context.Context) error {
 //
 // The credit of the refresh gate a machine may hold goes back at the end of the decision this
 // refusal belongs to, which is where every credit of this lane goes back (endRefreshLane,
-// dispatch://INFRA-2712 R1). This is the refusal of every launch there is, so a refused launch
-// of the stale-plugin lane loses its credit wherever the refusal came from — the launch path's
-// own pre-check, the recheck the wake's turn makes and the relaunch a failure raises
-// (launchAfter, runWake, relaunchAfterFailure) — and the one shape the reader has to hold is
-// that a refused launch raises no wake, so nothing of that refresh waits in the pacing past
-// this line.
+// dispatch://INFRA-2712 R1), unless a launch of the lane is still owed there (laneLaunchOwed).
+// This is the refusal of every launch there is, wherever it came from — the launch path's own
+// pre-check, the recheck the wake's turn makes and the relaunch a failure raises (launchAfter,
+// runWake, relaunchAfterFailure) — and a refused launch raises no wake. So a refused launch of
+// the stale-plugin lane keeps its credit only through the retry this arms, which records the
+// lane's kind and owes the launch that credit was admitted on; a refusal that arms no retry, or
+// that suspends the claim, owes the lane nothing, and the credit goes back as the decision ends.
 //
 // No refresh wake can be waiting on the machine when this runs, and the refusal parks none, so
-// the credit of a refused launch of this lane is one nothing is left waiting for: a credit is
-// taken over a claim that holds no wake at all (refreshPlugin's own guard), the turn of a parked
-// wake takes it off the machine before anything is rechecked (wakeNow, runParkedLaunchNow), and
-// no decision of this package raises a launch over one still waiting (endRefreshLane lists them).
+// the retry is the one thing the credit of a refused launch of this lane can be held for: a
+// credit is taken over a claim that holds no wake at all (refreshPlugin's own guard), the turn of
+// a parked wake takes it off the machine before anything is rechecked (wakeNow,
+// runParkedLaunchNow), and no decision of this package raises a launch over one still waiting
+// (endRefreshLane lists them).
 //
 // Why the retry such a refusal may arm carries the intent, and what it costs the gate, is where
 // retryHolding and the gate state it (retryHolding, RefreshGate, Correct): the launch that retry
@@ -130,7 +134,7 @@ func (m *Machine) checkLaunch(ctx context.Context) error {
 // it. A reserved cleanup suspends it for the daemon, its session kept, for the tree's close to
 // retire. Any other failure is not the tree's — a store that did not answer — and ends nothing:
 // the relaunch waits (relaunchLater), as a stop that fails does.
-func (m *Machine) relaunchRefused(ctx context.Context, relaunch func(context.Context) error, err error) error {
+func (m *Machine) relaunchRefused(ctx context.Context, kind WakeKind, relaunch func(context.Context) error, err error) error {
 	if m.claim.Locator != nil || !slices.Contains(live, m.claim.State) {
 		return err
 	}
@@ -139,7 +143,7 @@ func (m *Machine) relaunchRefused(ctx context.Context, relaunch func(context.Con
 		return errors.Join(err, m.suspended(ctx, SuspendedByDaemon, nil))
 	}
 	m.log.Warn("supervise: the lifecycle check of the retired process's relaunch failed; trying it again at the probe interval", "error", err)
-	m.relaunchLater(m.deps.Timeouts.Probe, m.retryHolding(m.pluginRelaunch, relaunch))
+	m.relaunchLater(m.deps.Timeouts.Probe, kind, m.retryHolding(m.pluginRelaunch, relaunch))
 	return errors.Join(err, m.persist(ctx))
 }
 
@@ -194,29 +198,47 @@ func (m *Machine) watchAgain() {
 	}
 }
 
+// waitingRelaunch is the relaunch relaunchLater left waiting (Machine.relaunch): retry is the
+// call TimerRelaunch makes again, and kind the wake kind of the launch it retries, which is the
+// stale-plugin lane's own for a retry of that lane's launch and WakeLaunch for every other. The
+// two are one value so that one assignment sets or clears both, and a retry is never left
+// recorded under a kind that is not its own.
+type waitingRelaunch struct {
+	retry func(context.Context) error
+	kind  WakeKind
+}
+
 // relaunchLater leaves a claim whose process is already let go waiting launching with no process,
 // its task kept, and tries relaunch again after wait (TimerRelaunch, relaunchAgain): a relaunch
 // whose lifecycle check the store did not answer (relaunchRefused), or a launch whose write failed
 // (launchAfter), each at the probe interval, and a start the session store could not answer, at
 // its own minute (startWaitsForStore). Nothing else would relaunch such a claim before a restart,
 // which takes it up from what the store last holds.
-func (m *Machine) relaunchLater(wait time.Duration, relaunch func(context.Context) error) {
+//
+// kind is the wake kind of the launch relaunch retries, recorded with it. A retry of a launch of
+// the stale-plugin lane is that lane's launch still owed, so the machine keeps the credit of the
+// refresh gate that launch was admitted on until the retry is dropped, or runs and leaves nothing
+// of that launch owed (laneLaunchOwed, endRefreshLane).
+func (m *Machine) relaunchLater(wait time.Duration, kind WakeKind, relaunch func(context.Context) error) {
 	m.claim.State = StateLaunching
-	m.relaunch = relaunch
+	m.relaunch = &waitingRelaunch{retry: relaunch, kind: kind}
 	m.arm(TimerRelaunch, wait, "")
 }
 
 // relaunchAgain is the relaunch relaunchLater left waiting (TimerRelaunch). A suspension held
 // meanwhile ends here, with no process left to stop, rather than in a relaunch — a stop that meets
 // the relaunch it ends, which a project pause's stop owes the role (suspendedFor); otherwise the
-// relaunch is tried again as it was first made, charged as that call charges it.
+// relaunch is tried again as it was first made, charged as that call charges it. Either way the
+// retry is taken off the machine first, so the end of this decision holds the credit of a launch
+// of the stale-plugin lane only for what this retry leaves owed: the wake its launch leaves on the
+// machine, in the pacing or held by a gate, or a retry of its own (laneLaunchOwed).
 func relaunchAgain(m *Machine, ctx context.Context, _ Event) error {
 	relaunch := m.relaunch
 	m.relaunch = nil
 	if m.held != nil {
 		return m.suspendedFor(ctx, *m.held, true)
 	}
-	return relaunch(ctx)
+	return relaunch.retry(ctx)
 }
 
 // RunsNothing is whether the claim is in a state with no process of its own (RunsNothingStates):

@@ -326,11 +326,16 @@ func (m *Machine) settleUntakenCredit(credit *RefreshCredit) {
 	}
 }
 
-// laneWakeWaiting is whether a refresh wake of this machine's own waits in the pacing, which is
-// the one thing a credit is held for between decisions. A wake the project pause's gate holds
-// (wake.pause) waits in no pacing, so it is none. The caller holds mu.
-func (m *Machine) laneWakeWaiting() bool {
-	return m.wake != nil && m.wake.kind == WakePluginRefresh && m.wake.pause == 0
+// laneLaunchOwed is whether a launch of the stale-plugin lane is still owed on this machine,
+// which is the one thing a credit is held for between decisions: its wake is of the lane's kind,
+// whether the pacing holds it, the project pause's gate holds it (wake.pause) or it waits at its
+// issue pod's start gate (wake.park), or its retry waits on TimerRelaunch for a launch of the lane
+// (Machine.relaunch, waitingRelaunch.kind). Each is the launch the credit was admitted on, waiting
+// to run, and each kind is read off the same intent (pluginIntent.waitsUnder). The caller holds
+// mu.
+func (m *Machine) laneLaunchOwed() bool {
+	return m.wake != nil && m.wake.kind == WakePluginRefresh ||
+		m.relaunch != nil && m.relaunch.kind == WakePluginRefresh
 }
 
 // creditTakenBackMessage is the line a correction writes for each credit it takes back from a
@@ -343,9 +348,9 @@ const creditTakenBackMessage = "supervise: the refresh gate's correction took ba
 // (RefreshGate.Correct, the package doc). It waits on no decision: a machine whose lock is held is
 // deciding, and the decision may be the turn credit paid for, which gives it back as it ends, so
 // the credit is kept and the next sweep asks again. A machine between decisions holds credit only
-// as its own with a refresh wake of its own waiting; a credit it let go without giving it back, or
-// keeps with no such wake, is given back here, and the line names the claim, since a path that
-// gave a credit up without giving it back is a defect of the lane.
+// as its own while a launch of the lane is owed on it (laneLaunchOwed); a credit it let go without
+// giving it back, or keeps with no such launch owed, is given back here, and the line names the
+// claim, since a path that gave a credit up without giving it back is a defect of the lane.
 //
 // It is a locked section that can change the credit, so it ends in unlock, as every such section
 // does.
@@ -355,7 +360,7 @@ func (m *Machine) reclaimCredit(credit *RefreshCredit) {
 	}
 	defer m.unlock()
 	if m.refreshCredit == credit {
-		if m.laneWakeWaiting() {
+		if m.laneLaunchOwed() {
 			return
 		}
 		m.refreshCredit = nil
@@ -366,11 +371,13 @@ func (m *Machine) reclaimCredit(credit *RefreshCredit) {
 }
 
 // endRefreshLane holds the stale-plugin lane to its invariants, at the one line every decision of
-// a machine ends on (Machine.unlock): the credit goes back unless a refresh wake of this machine's
-// own is waiting in the pacing, which is the one thing a credit is held for, from the park that
-// raises it to the end of the turn that runs it (laneWakeWaiting). The intent goes whatever the
-// decision did with it: it names one launch and no other, and a retry that still owes one carries
-// it in its own closure (retryHolding).
+// a machine ends on (Machine.unlock): the credit goes back unless a launch of the lane is still
+// owed on this machine (laneLaunchOwed), which is the one thing a credit is held for, from the
+// park that raises its wake to the end of the decision that runs its launch, through every wait
+// of that launch outside the pacing: a hold of the pause's gate, a wait at its issue pod's start
+// gate, and a retry on TimerRelaunch. The intent goes whatever the decision did with it: it names
+// one launch and no other, and a retry that still owes one carries it in its own closure
+// (retryHolding).
 //
 // So the credit outlives a park of this lane's own kind and no other (dispatch://INFRA-2712 R1):
 // that wake is the one the credit was taken for, whether it is parked for the first time or taken
@@ -387,7 +394,7 @@ func (m *Machine) reclaimCredit(credit *RefreshCredit) {
 // one later is held to the rule here, at the end of its decision, and the park records nothing
 // for it (waitOnMachine).
 func (m *Machine) endRefreshLane() {
-	if !m.laneWakeWaiting() {
+	if !m.laneLaunchOwed() {
 		m.releaseRefresh()
 	}
 	m.pluginRelaunch = nil
