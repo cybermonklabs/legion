@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
+import { afterEach, beforeAll, beforeEach, expect, spyOn, test } from "bun:test";
 import { QueryClient } from "@tanstack/react-query";
 import { act, cleanup, render, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
@@ -7,6 +7,7 @@ import { MemoryRouter, useLocation } from "react-router-dom";
 import { api } from "../../api/client";
 import type { IssueCheckResults, IssueCoverage, IssueDetails } from "../../api/types";
 import { DESKTOP_WIDTH, stubViewport } from "../margin/margin-fixture";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { parseIssuePath } from "../refs/routes";
 import {
   artifact,
@@ -118,6 +119,13 @@ let restoreViewport: () => void = () => {};
 // whose head is the outline's first row, which the page opens on, then the statement under the
 // issue and the check under the statement it serves, each in its document, and each view's read
 // (`?view=`) with an empty view. At 1440 px.
+// The rows draw their words with the page's Markdown renderer, which loads in a task of its own:
+// warmed first, so each row's words are drawn with the row, and the boxes read before the
+// coverage and the results answer already hold them.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
+
 beforeEach(() => {
   stubs = [
     ...stubReads(),
