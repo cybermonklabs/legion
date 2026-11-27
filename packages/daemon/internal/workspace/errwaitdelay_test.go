@@ -31,7 +31,7 @@ func TestRunCheckedSucceedsWhenACommandExitsZeroWithAChildStillHoldingItsOutputO
 	}
 	t.Cleanup(func() { killPIDFile(t, pidFile) })
 
-	run := NewRunner(5*time.Second, map[string]string{"git": fakeGit})
+	run := NewRunner(procgroup.NoReaper, 5*time.Second, map[string]string{"git": fakeGit})
 
 	result, err := RunChecked(context.Background(), run, []string{"git"}, nil, dir)
 	if err != nil {
@@ -59,7 +59,7 @@ func TestRunReportsTheCommandsOwnFailureNotATimeoutWhenAChildHoldsItsOutputPastT
 	}
 	t.Cleanup(func() { killPIDFile(t, pidFile) })
 	timeout := procgroup.WaitDelay - 100*time.Millisecond
-	run := NewRunner(timeout, map[string]string{"git": fakeGit})
+	run := NewRunner(procgroup.NoReaper, timeout, map[string]string{"git": fakeGit})
 
 	started := time.Now()
 	result, err := run.Run(context.Background(), Command{Dir: dir, Argv: []string{"git"}, Timeout: timeout})
@@ -88,7 +88,7 @@ func TestRunDoesNotReportACommandItsCallerStoppedAsTimedOut(t *testing.T) {
 	if err := os.WriteFile(fakeGit, []byte(script), 0o700); err != nil {
 		t.Fatalf("write the fake git: %v", err)
 	}
-	run := NewRunner(time.Minute, map[string]string{"git": fakeGit})
+	run := NewRunner(procgroup.NoReaper, time.Minute, map[string]string{"git": fakeGit})
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go cancelOnceExists(ctx, cancel, started)
@@ -206,7 +206,7 @@ func TestACommandASignalEndedKeepsItsReport(t *testing.T) {
 		if err := os.WriteFile(fakeGit, []byte("#!/bin/sh\n"+strings.ReplaceAll(script, "$1", lock)+"\n"), 0o700); err != nil {
 			t.Fatalf("write the fake git: %v", err)
 		}
-		run := NewRunner(time.Minute, map[string]string{"git": fakeGit})
+		run := NewRunner(procgroup.NoReaper, time.Minute, map[string]string{"git": fakeGit})
 		if _, err := run.Run(context.Background(), Command{Dir: dir, Argv: []string{"git"}, Timeout: time.Minute}); err == nil || err.Error() != "signal: killed" {
 			t.Errorf("Run = %v, want the signal alone: the runner's error carries no stderr a caller has not scrubbed", err)
 		}

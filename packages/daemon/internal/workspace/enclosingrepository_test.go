@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
+	"github.com/sjawhar/legion/daemon/internal/procgroup"
 )
 
 // Provisioning leaves the repository it happens to stand inside alone, on both ways to the
@@ -239,7 +240,7 @@ func TestTheRunnerRefusesACommandWithNoAbsoluteWorkingDirectory(t *testing.T) {
 				command.Dir = dir
 			}
 
-			_, err := NewRunner(testTimeout, map[string]string{"git": stub}).Run(context.Background(), command)
+			_, err := NewRunner(procgroup.NoReaper, testTimeout, map[string]string{"git": stub}).Run(context.Background(), command)
 			_, ran := os.Stat(marker)
 			switch {
 			case tc.own:

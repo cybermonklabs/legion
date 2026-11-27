@@ -915,21 +915,26 @@ func (r *Runtime) bindLauncherSecrets(ctx context.Context, s *sandbox, roles []c
 // deployment defined after it) exists, is the Sandbox's, binds pod by uid, and records its
 // gh bundle's default owner (GitHubDefaultKey, empty for a controller whose project has no GitHub
 // owner), which every role of one pod shares and l takes as its gitHubDefault, every agent's
-// GH_CONFIG_DIR. A running pod an older runtime made (one worker container, no launchers, or one
-// gh directory where a bundle now stands) or one whose binding never landed is replaced rather than
-// trusted. A pod the Agent Sandbox controller recreated outside a launch is bound once one of its
-// launchers says hello with its role's current token (bindAtHello), so a launch after that hello
-// keeps it. Any other failure to read a Secret, such as the client's timeout, or a throttled request
-// or a server error the launch's deadline for it outlasted (resend), proves nothing about the pod:
-// it is returned, so only the launch that read it fails, and the caller stops that role's previous
-// process (runtime.Runtime's Spawn and Resume); the pod and every other role running in it are left
-// as they are. Each Secret it finds bound to pod, holding a launcher token, is held as its role's
-// credential (cacheLauncherCredential), so the launcher a kept pod's launch waits for is not
-// refused for a read of its own that failed earlier (credentialRetry).
+// GH_CONFIG_DIR. A stored template that names no role says nothing of what its pod was built with
+// (a template no launcher of this layout wrote, or one whose containers are gone), so its pod is
+// judged by l's roles: such a pod whose launchers this runtime did bind is not called unbound, and
+// a launch replaces it for the stored template it cannot read (relaunch's keptBy), which is what
+// the daemon is told (R7 of #5285). A running pod an older runtime made (one worker container, no
+// launchers, or one gh directory where a bundle now stands) or one whose binding never landed is
+// replaced rather than trusted. A pod the Agent Sandbox controller recreated outside a launch is
+// bound once one of its launchers says hello with its role's current token (bindAtHello), so a
+// launch after that hello keeps it. Any other failure to read a Secret, such as the client's
+// timeout, or a throttled request or a server error the launch's deadline for it outlasted
+// (resend), proves nothing about the pod: it is returned, so only the launch that read it fails,
+// and the caller stops that role's previous process (runtime.Runtime's Spawn and Resume); the pod
+// and every other role running in it are left as they are. Each Secret it finds bound to pod,
+// holding a launcher token, is held as its role's credential (cacheLauncherCredential), so the
+// launcher a kept pod's launch waits for is not refused for a read of its own that failed earlier
+// (credentialRetry).
 func (r *Runtime) launcherBound(ctx context.Context, s *sandbox, pod *corev1.Pod, l *launch) (bool, error) {
 	roles := templateRoles(s)
 	if len(roles) == 0 {
-		return false, nil
+		roles = l.roles
 	}
 	for _, role := range roles {
 		name := roleSecretName(s.Name, role)

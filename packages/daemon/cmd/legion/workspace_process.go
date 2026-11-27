@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/clock"
+	"github.com/sjawhar/legion/daemon/internal/procgroup"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
@@ -37,7 +38,13 @@ type workspaceProcess struct {
 // processWorkspace is this process's own: its environment as it started, the real clock, the
 // fetch's own bound, the production runner and the standard logger on stderr.
 func processWorkspace() workspaceProcess {
-	return workspaceProcess{environ: os.Environ(), clock: clock.Real(), newRunner: workspace.NewRunnerIn, standardLog: true}
+	return workspaceProcess{environ: os.Environ(), clock: clock.Real(), newRunner: noReaperRunner, standardLog: true}
+}
+
+// noReaperRunner is workspace.NewRunnerIn with procgroup.NoReaper: `legion workspace-init`
+// reaps no child it did not start itself.
+func noReaperRunner(environ []string, timeout time.Duration, tools map[string]string) workspace.Runner {
+	return workspace.NewRunnerIn(procgroup.NoReaper, environ, timeout, tools)
 }
 
 // logs points the standard logger at stderr when the process does (standardLog), and answers

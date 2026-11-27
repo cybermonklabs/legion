@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/procgroup"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
@@ -104,7 +105,7 @@ func TestRestoreGitWorktreeAnswersAPointerThatIsAFifo(t *testing.T) {
 	}
 	done := make(chan error, 1)
 	go func() {
-		done <- restoreGitWorktree(context.Background(), NewRunner(testTimeout, testTools(t)), located, func(string) {})
+		done <- restoreGitWorktree(context.Background(), NewRunner(procgroup.NoReaper, testTimeout, testTools(t)), located, func(string) {})
 	}()
 	err = testwait.Receive(t, "restoreGitWorktree over the fifo "+pointer, done)
 	if err == nil {

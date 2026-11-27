@@ -224,7 +224,7 @@ func TestAWorkspaceWorkFailureWithAnErrorOverOneLineReachesTheDaemon(t *testing.
 	if err := got.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"Command failed (exit 3)", "jj log", "the working copy is stale", "cut"} {
+	for _, want := range []string{"Command failed (exit 3)", "jj workspace list", "the working copy is stale", "cut"} {
 		if !strings.Contains(got.Error, want) {
 			t.Fatalf("the refusal reads %.300q, want it to say %q", got.Error, want)
 		}

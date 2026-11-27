@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -178,10 +179,10 @@ func TestAStartParkedAtThePodsGateIsJudgedAgainAtItsGrant(t *testing.T) {
 			phaseHoldsAnswering(&holds, &asked)(&h.deps)
 			first, second := h.podRole(claim.RoleArchitect, StateSuspended), h.podRole(claim.RoleImplementer, StateSuspended)
 			third := h.podRole(claim.RoleTester, StateSuspended)
-			h.mustPostTo(first.m, RequestResume{Claim: first.token})
+			h.mustPostTo(first.m, RequestResume{Claim: first.token, By: SuspendedByOperator})
 			h.wantStarts(first.token, 1)
 			h.parks(second, RequestRuleResume{Claim: second.token, Reason: "it owns its issue's step", Start: startOfStep}, 0)
-			h.parks(third, RequestResume{Claim: third.token}, 0)
+			h.parks(third, RequestResume{Claim: third.token, By: SuspendedByOperator}, 0)
 
 			holds = tc.holds
 			h.loadEnds(first)
@@ -241,6 +242,63 @@ func TestAStartRetriedAfterTheSessionStoreFailedJudgesItsWorkAgain(t *testing.T)
 			h.wantCalls("Resume", tc.resumes)
 			if got := h.claim(); !tc.holds && (got.State != StateSuspended || got.SuspendedBy != SuspendedByDaemon) {
 				t.Fatalf("the retried start's claim = %s by %q, want suspended by the daemon", got.State, got.SuspendedBy)
+			}
+		})
+	}
+}
+
+// A retry relaunchLater armed comes back over a claim left launching with no process, and its start
+// is judged before the retry asks the wake gate for a place (launchAfter, startLeftWhileParked):
+// a retry whose start's work the issue left during its wait suspends the claim for the daemon at
+// once and takes no place in the pacing, whose next turn then goes to a launch that starts. Judged
+// only at the turn, the claim would wait a whole turn written launching, which over a wave is tens
+// of minutes, and spend a turn of the pacing on a launch that starts nothing. The retry here is the
+// session store's, met while another claim's launch holds the pacing's one place. The control is
+// the same retry while the work holds, which the pacing does hold: it waits its turn, launching
+// with no process.
+func TestARetryOfWorkTheIssueLeftIsJudgedBeforeItTakesAPlaceInThePacing(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		holds bool
+	}{
+		{"the issue leaves the start's work before the retry", false},
+		{"the control: the work still holds at the retry", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			holds, asked := true, 0
+			h := pacedHarness(t, wakeRate, phaseHoldsAnswering(&holds, &asked))
+			retried := h.machineFor(wakeClaim(secondToken, StateSuspended))
+			storeDown := fmt.Errorf("resume %s: %w: dial tcp: connection refused", secondToken, runtime.ErrSessionStore)
+			h.rt.OnResume = func(context.Context) error { return storeDown }
+			if err := h.postTo(retried, RequestRuleResume{Claim: secondToken, Reason: "it owns its issue's step", Start: startOfStep}); !errors.Is(err, runtime.ErrSessionStore) {
+				t.Fatalf("the start's resume answered %v, want the store's refusal", err)
+			}
+			if state := retried.Claim().State; state != StateLaunching {
+				t.Fatalf("the start the store refused is %s, want %s with its retry armed", state, StateLaunching)
+			}
+			h.rt.OnResume = nil
+			holds = tc.holds
+
+			// A second before the retry is due, another claim's launch takes the pacing's one
+			// place, so the retry finds none free.
+			h.clock.Advance(sessionStoreRetry - time.Second)
+			h.must(RequestSpawn{Claim: h.token})
+			h.wantStarts(h.token, 1)
+			h.clock.Advance(time.Second)
+			retried.Wait()
+
+			h.wantStarts(secondToken, 1)
+			got := retried.View()
+			if tc.holds {
+				if got.Claim.State != StateLaunching || got.WakeWaiting == nil {
+					t.Fatalf("the retry of work that holds left the claim %s holding wake %+v, want it launching with its wake waiting for the pacing's next turn",
+						got.Claim.State, got.WakeWaiting)
+				}
+				return
+			}
+			if got.Claim.State != StateSuspended || got.Claim.SuspendedBy != SuspendedByDaemon || got.WakeWaiting != nil {
+				t.Fatalf("the retry of work the issue left left the claim %s by %q holding wake %+v, want it suspended by the daemon at the retry, holding no place in the pacing",
+					got.Claim.State, got.Claim.SuspendedBy, got.WakeWaiting)
 			}
 		})
 	}

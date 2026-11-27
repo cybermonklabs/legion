@@ -27,6 +27,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/procgroup"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/volumestat"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
@@ -80,7 +81,7 @@ func newTestRunner(t *testing.T, remote string) *testRunner {
 		t.Fatal(err)
 	}
 	tools["git"] = wrapper
-	return &testRunner{remote: remote, others: map[string]string{}, runner: workspace.NewRunner(testTimeout, tools)}
+	return &testRunner{remote: remote, others: map[string]string{}, runner: workspace.NewRunner(procgroup.NoReaper, testTimeout, tools)}
 }
 
 // serves has the runner's git reach repo's GitHub URL at the local bare remote too.

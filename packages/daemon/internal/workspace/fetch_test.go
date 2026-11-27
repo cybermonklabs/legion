@@ -33,6 +33,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/procgroup"
 	"github.com/sjawhar/legion/daemon/internal/testport"
 )
 
@@ -621,7 +622,7 @@ func TestFetchRetriesWhatARealGitPrintsForATransientFailure(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 			defer cancel()
 
-			report, err := Fetch(ctx, NewRunner(testTimeout, testTools(t)), req)
+			report, err := Fetch(ctx, NewRunner(procgroup.NoReaper, testTimeout, testTools(t)), req)
 			if err != nil {
 				t.Fatalf("Fetch: %v", err)
 			}
@@ -676,7 +677,7 @@ func TestFetchFailsWhatARealGitPrintsForAPermanentFailureAtOnce(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 			defer cancel()
 
-			_, err := Fetch(ctx, NewRunner(testTimeout, testTools(t)), req)
+			_, err := Fetch(ctx, NewRunner(procgroup.NoReaper, testTimeout, testTools(t)), req)
 			if err == nil || !strings.Contains(err.Error(), tc.says) {
 				t.Fatalf("Fetch = %v, want git's %q", err, tc.says)
 			}
@@ -709,7 +710,7 @@ func TestFetchReadsTheProvisioningTokenAsItsFileStandsBeforeEveryTransfer(t *tes
 		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 		defer cancel()
 
-		report, err := Fetch(ctx, NewRunner(testTimeout, testTools(t)), req)
+		report, err := Fetch(ctx, NewRunner(procgroup.NoReaper, testTimeout, testTools(t)), req)
 		if err != nil {
 			t.Fatalf("Fetch: %v", err)
 		}
@@ -728,7 +729,7 @@ func TestFetchReadsTheProvisioningTokenAsItsFileStandsBeforeEveryTransfer(t *tes
 		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 		defer cancel()
 
-		if _, err := Fetch(ctx, NewRunner(testTimeout, testTools(t)), req); err != nil {
+		if _, err := Fetch(ctx, NewRunner(procgroup.NoReaper, testTimeout, testTools(t)), req); err != nil {
 			t.Fatalf("Fetch: %v", err)
 		}
 		presented := github.presented()
@@ -1459,7 +1460,7 @@ func TestFetchScrubsTheTokenFromATransferASignalEnded(t *testing.T) {
 	if err := os.WriteFile(fakeGit, []byte(script), 0o700); err != nil {
 		t.Fatalf("write the stand-in git: %v", err)
 	}
-	run := NewRunner(time.Minute, map[string]string{"git": fakeGit})
+	run := NewRunner(procgroup.NoReaper, time.Minute, map[string]string{"git": fakeGit})
 
 	_, err = Fetch(context.Background(), run, fetchRequest(t))
 
@@ -2597,7 +2598,7 @@ func recordPackWindows(t *testing.T, run *recordingRunner) string {
 	}
 	path := os.Getenv("PATH")
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+path)
-	run.runner = NewRunner(testTimeout, testTools(t))
+	run.runner = NewRunner(procgroup.NoReaper, testTimeout, testTools(t))
 	t.Setenv("PATH", path)
 	return sink
 }
