@@ -556,10 +556,9 @@ refused_write "a new block under the old id c-held, carrying ci_check" "$work/k1
   "this check already holds a recorded result, so it does not become CI's; write a new check block under a new id and delete this one"
 
 # The sockets: the scope Hocuspocus's authentication answers, as the browser's provider reads it.
-# Version 4 is the version that knows `ci_check`, which the two socket rows below drive; the
-# schema rises as later blocks land (6 at the head this was last run at), so the check is that it
-# is at least 4. A schema below it would admit no read-write socket at 4 and the rows below would
-# say why.
+# Version 4 is the version that knows `ci_check`; the schema rises as later blocks land (6 at the
+# head this was last run at), so the check is that it is at least 4. The two socket rows below
+# drive the version this route reports, whatever it is.
 get "/api/v1/schema/blocks"
 want_status 200 k1 "the block schema answers"
 schema_version="$(jq -r '.version' <"$work/body")"
