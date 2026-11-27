@@ -282,6 +282,24 @@ type StallBackstop struct {
 	Step     StepRecord
 }
 
+// TurnPastBound is the controller keeper's word that the project controller's turn has been open
+// longer than its bound (`controller_turn_bound_minutes`, internal/daemon's controllerKeeper,
+// dispatch://INFRA-2045 R2): the daemon ends that launch as its stall backstop ends a stalled turn
+// (replaceProcess), whether or not steps still arrive in the turn, since a turn that kept making
+// steps for hours and never ended is what the stall backstop, which measures silence, cannot see.
+// The keeper posts it at every look that finds the turn still open past the bound, so a stop the
+// runtime refuses is tried again without a timer of its own, as StallBackstop is re-posted.
+//
+// Bound is the bound the turn passed, and TurnStart the start of the turn the keeper read
+// (Claim.LastTurnStart): the machine acts only on that same turn, still open and still past the
+// bound when the decision runs (turnPastBound), because a turn that ended and a new one that began
+// since the keeper's read are the controller working.
+type TurnPastBound struct {
+	Claim     claim.Token
+	Bound     time.Duration
+	TurnStart time.Time
+}
+
 // PodUpdateOpen opens, or keeps open, an update round over this claim: the process holding it is
 // about to be replaced, and the role is asked first to do the steps of its update message
 // (UpdateTask) and answer ready_for_update. Round is the round's identity and kind in one string
@@ -800,6 +818,17 @@ type RequestDeliver struct {
 	// gives way to a task of an entry while no turn has taken it (Machine.supersedes), since the
 	// start of an entry carries the same news itself.
 	NewsOnly bool
+	// ResumesNothing marks the daemon's own task that carries no ID and is no operator's: the
+	// controller keeper's start message (internal/daemon's controllerKeeper.ready). A suspended
+	// claim refuses it with a *RefusedError, queuing nothing and launching nothing (deliverResuming),
+	// since the next launch's ready sends it again; and it is no operator's delivery to the pacing
+	// (operatorDelivery). Without it an operator's suspension of the controller at or after its
+	// ready would be undone by the message, which reads as an operator's delivery and resumes the
+	// claim whoever suspended it, keeping a session older than its age (replaceAgedSession,
+	// dispatch://INFRA-2045 R3): a suspension that lands between the ready and the message, and one
+	// an operator made while the controller was launching, held until that ready and ended there
+	// (holdSuspendUntilReady), after which the ready route still hands the keeper its turn.
+	ResumesNothing bool
 }
 
 // RequestExit is the agent reporting its own end.
@@ -869,6 +898,7 @@ func (Timer) isEvent()                {}
 func (StalePlugin) isEvent()          {}
 func (RecordedDeath) isEvent()        {}
 func (StallBackstop) isEvent()        {}
+func (TurnPastBound) isEvent()        {}
 func (PodUpdateOpen) isEvent()        {}
 func (PodUpdateEnded) isEvent()       {}
 func (PodUpdateSignalled) isEvent()   {}
@@ -947,6 +977,7 @@ const (
 	onStalePlugin   eventKind = "stale_plugin"
 	onRecordedDeath eventKind = "recorded_death"
 	onStallBackstop eventKind = "stall_backstop"
+	onTurnPastBound eventKind = "turn_past_bound"
 
 	onPodUpdateOpen      eventKind = "pod_update_open"
 	onPodUpdateEnded     eventKind = "pod_update_ended"
@@ -993,6 +1024,8 @@ func kindOf(ev Event) eventKind {
 		return onRecordedDeath
 	case StallBackstop:
 		return onStallBackstop
+	case TurnPastBound:
+		return onTurnPastBound
 	case PodUpdateOpen:
 		return onPodUpdateOpen
 	case PodUpdateEnded:
@@ -1332,6 +1365,16 @@ func fillTable(t *builder) {
 	t.ignore(onStallBackstop, "the claim is in no turn, so its record names no turn to end",
 		StateQueued, StateLaunchUncertain, StateLaunching, StateShimConnected, StateRegistered, StateReady, StateIdle)
 	t.ignore(onStallBackstop, noProcess, gone...)
+
+	// The controller keeper's end of a controller turn open past its bound (dispatch://INFRA-2045
+	// R2), from the one state a turn runs in, to the same destinations as the stall backstop's:
+	// the machine re-reads the turn before it acts (turnPastBound), and a held suspension ends in
+	// a suspension rather than a relaunch (replaceProcess, endHeld).
+	t.row(onTurnPastBound, "the turn stayed open past its bound: end the launch, keep the task owed, and bring the session back", turnPastBound,
+		[]ClaimState{StateLaunching, StateFailed, StateSuspended}, StateWorking)
+	t.ignore(onTurnPastBound, "the claim is in no turn, so no turn of it is open past the bound",
+		StateQueued, StateLaunchUncertain, StateLaunching, StateShimConnected, StateRegistered, StateReady, StateIdle)
+	t.ignore(onTurnPastBound, noProcess, gone...)
 
 	// The update round over the process holding this claim: opened and kept open by the daemon's
 	// sweep, and ended once the replacement it waited for has been made. inRound is every state a
@@ -2109,11 +2152,12 @@ func agentBusy(reason string) bool {
 // idle past that bound would otherwise be relaunched at the sweep before its turn starts.
 //
 // For the same reason the record dates the turn's start (Claim.LastTurnStart) at the busy answer,
-// the daemon's first word that the turn exists, rather than leaving the start of the turn before
-// it standing: a let-go of the process in this turn reads an activity report older than that
-// start as no report of the turn (recordEnd), where the turn before's start would have counted a
-// report made before this turn began as one of it. The turn's own agent_start, read later, dates
-// it again at its own moment (beginTurn).
+// the daemon's first word that the turn exists, where it writes the turn's start line
+// (startTurn), rather than leaving the start of the turn before it standing: a let-go of the
+// process in this turn reads an activity report older than that start as no report of the turn
+// (recordEnd), where the turn before's start would have counted a report made before this turn
+// began as one of it. The turn's own agent_start, read later, dates it again at its own moment
+// (busyTurnBegun).
 //
 // The mark it sets (busyTurn) is what ends the record when no frame of the turn is ever read: the
 // runtime's sweep asks the agent whether the turn is over and ends it through turnEnded once the
@@ -2124,7 +2168,7 @@ func (m *Machine) recordBusyTurn(ctx context.Context) error {
 	if state := m.claim.State; state != StateReady && state != StateIdle {
 		return nil
 	}
-	m.claim.State, m.claim.LastTurnStart = StateWorking, m.deps.Clock.Now()
+	m.claim.State = StateWorking
 	m.busyTurn = true
 	m.log.Info("supervise: the agent's busy answer records the claim working; its task waits for the end of the turn the agent is in",
 		"delivery", pendingID(m.claim.Pending), "outstanding", m.outstanding)
@@ -2181,12 +2225,15 @@ func turnStarted(m *Machine, ctx context.Context, ev Event) error {
 }
 
 // beginTurn is what a turn's start decides and records, in a claim the start has just put in
-// working (turnStarted) or one a busy answer already recorded working (turnStartedWhileBusy):
-// when the turn began, whether it is the pending delivery's turn — which confirms that delivery —
-// the durable write, and the turn's step. logStart writes the start's line, naming the delivery
-// the start confirms and "" for a start that confirms none.
-func (m *Machine) beginTurn(ctx context.Context, start StreamTurnStart, logStart func(delivery string)) error {
-	m.claim.LastTurnStart = m.deps.Clock.Now()
+// working (turnStarted), one a busy answer already recorded working, or one working for a
+// compaction, this daemon's own or one a restart restored (turnStartedWhileBusy): whether it is
+// the pending delivery's turn — which confirms that delivery — the durable write, and the turn's
+// step. dateStart dates the turn (Claim.LastTurnStart) and writes the line that names the
+// delivery the start confirms, "" for a start that confirms none: startTurn, which writes the
+// turn's start line, or busyTurnBegun, which writes the line of the agent_start of a turn a busy
+// answer recorded, in place of the start line recordBusyTurn already wrote. A callback that only
+// wrote a line would leave the turn timed from the busy answer, or from the turn before it.
+func (m *Machine) beginTurn(ctx context.Context, start StreamTurnStart, dateStart func(delivery string)) error {
 	p := m.claim.Pending
 	news, inFlight := m.turnAnswers()
 	own := p != nil && p.ConfirmedAt.IsZero() && (start.DeliveryID == p.ID || (start.DeliveryID == "" && inFlight))
@@ -2197,11 +2244,11 @@ func (m *Machine) beginTurn(ctx context.Context, start StreamTurnStart, logStart
 	if own {
 		persist, task = func(ctx context.Context) error { return m.confirmCarrying(ctx, news) }, p.ID
 	}
-	// The start is logged before the write, never after it: the decision this line exists for is
-	// a turn start whose claim write failed, and a line written after the write would leave
-	// exactly that decision silent again. The delivery is named only where this start is that
-	// delivery's turn; a foreign turn is no task's and carries none.
-	logStart(task)
+	// The start is dated and logged before the write, never after it: the decision this line
+	// exists for is a turn start whose claim write failed, and a line written after the write
+	// would leave exactly that decision silent again. The delivery is named only where this start
+	// is that delivery's turn; a foreign turn is no task's and carries none.
+	dateStart(task)
 	if err := m.durableWrite(ctx, StateWorking, persist); err != nil {
 		return err
 	}
@@ -2276,7 +2323,7 @@ func (m *Machine) staleStep(s StreamToolStep) bool {
 }
 
 // turnStartedWhileBusy is a turn starting in a claim that is already working. A claim working a
-// turn is in the turn it is already in and nothing moves, except in two claims.
+// turn is in the turn it is already in and nothing moves, except in three claims.
 //
 // One is a claim a busy answer recorded working (busyTurn, recordBusyTurn): the start is the start
 // of the turn the record stands for, the first frame of it this daemon reads. It is decided and
@@ -2289,34 +2336,56 @@ func (m *Machine) staleStep(s StreamToolStep) bool {
 // second start line, since recordBusyTurn wrote the turn's one, and names the delivery it confirms
 // in a line of its own instead (busyTurnBegun).
 //
-// The other is a claim working because its session is being compacted: a turn starting under the
-// compaction — a follow-up an Envoy delivery queued while the session was being compacted, or the
-// turn of a prompt of the task that Oh My Pi parked until the handoff ended — is recorded on the
-// compaction: its end would otherwise reach an idle claim, where it means nothing, and the
-// compaction's end would send the owed task into a running agent (compactEnded). That turn's
-// start is decided and recorded as any start is (beginTurn, startTurn): its start line is written
-// here, because its end writes the end line (turnEnded), and an operator reads an end with no
-// start as a turn the daemon never saw begin. A start that is the task's — a prompt of it still
-// outstanding, a send of it in flight (turnAnswers) — confirms the task, as a start of a ready
-// claim does: the worker calls the daemon inside that turn, and the entry it serves is the
-// confirmed task's (Claim.ServingEntry), so a confirmation that waited for the prompt's result
-// would come after the calls it is needed for. A turn of Oh My Pi's own confirms nothing and its
-// line names no delivery; a start taken for the task's that was another input's is corrected by
-// the prompt's own result, as it is outside a compaction (promptResulted).
+// The other two are a claim working for a compaction with no turn under it: the one this daemon
+// took (Machine.compacting), and one a daemon restart restored working with its times showing no
+// turn open (Claim.OpenTurn), which is a claim stored working for a compaction that restart forgot
+// (compactStart closed any turn its times showed open). A turn starting there — a follow-up an
+// Envoy delivery queued while the session was being compacted, which the new daemon's hello may
+// already have found streaming (askTurnOver), or the turn of a prompt of the task that Oh My Pi
+// parked until the handoff ended — is decided and recorded as any start is (beginTurn, startTurn):
+// it is dated, and its start line is written here, because its end writes the end line
+// (turnEnded), and an operator reads an end with no start as a turn the daemon never saw begin.
+// beginTurn's durable write stores that date, so a daemon restarted while this turn runs reads it
+// from the store, and the controller keeper ends it past its bound rather than reading it as no
+// turn (dispatch://INFRA-2045 R2). Under this daemon's own compaction a start that is the task's —
+// a prompt of it still outstanding, a send of it in flight (turnAnswers) — confirms the task, as
+// a start of a ready claim does: the worker calls the daemon inside that turn, and the entry it
+// serves is the confirmed task's (Claim.ServingEntry), so a confirmation that waited for the
+// prompt's result would come after the calls it is needed for. A turn of Oh My Pi's own confirms
+// nothing and its line names no delivery; a start taken for the task's that was another input's
+// is corrected by the prompt's own result, as it is outside a compaction (promptResulted). In a
+// claim a restart restored, this daemon reads the turn's start and end itself, which answers the
+// question the restart left (askFirst), as the agent's answer that it is streaming does
+// (askTurnOver), so the question goes before the decision: only a start that names the pending
+// delivery confirms it, and only the shim's replay of a start names one (StreamTurnStart). Oh My
+// Pi's own agent_start names none, so an Envoy follow-up and the turn of the task's prompt that Oh
+// My Pi parked until the handoff ended start alike: neither confirms the task, the worker's calls
+// inside either meet it unconfirmed, and the end of either sends it again. That is told twice,
+// never not at all, the lesser fault (confirmCarrying), and main and this branch before its merge
+// did the same. Left standing, the question would take either start for the owed task's turn, and
+// the turn's end would retire the task as served, though no turn of it was seen (settle). Under
+// this daemon's own compaction the turn is recorded on the compaction too: its end would otherwise
+// reach an idle claim, where it means nothing, and the compaction's end would send the owed task
+// into a running agent (compactEnded). A restored claim whose times show a turn open is in the
+// turn an earlier daemon saw start, and a start read again changes nothing.
 //
-// The two never meet: a compaction is taken only from a ready or idle claim (compactStart), and a
-// busy answer records only a ready or idle one.
+// A busy answer and a compaction never meet: a compaction is taken only from a ready or idle claim
+// (compactStart), and a busy answer records only a ready or idle one.
 func turnStartedWhileBusy(m *Machine, ctx context.Context, ev Event) error {
 	if m.busyTurn {
 		m.busyTurn = false
 		return m.beginTurn(ctx, ev.(StreamTurnStart), m.busyTurnBegun)
 	}
-	if m.compacting == nil {
+	if _, open := m.claim.OpenTurn(); m.compacting == nil && open {
 		return nil
 	}
-	m.log.Info("supervise: a turn started while this claim's session is being compacted; the claim is left working for it",
-		"generation", m.claim.Generation)
-	m.compacting.inTurn, m.compacting.back = true, StateIdle
+	if m.compacting != nil {
+		m.compacting.inTurn, m.compacting.back = true, StateIdle
+	} else {
+		m.askFirst = false
+	}
+	m.log.Info("supervise: a turn started while this claim works for a compaction; the claim is left working for it",
+		"generation", m.claim.Generation, "compactionKnown", m.compacting != nil)
 	return m.beginTurn(ctx, ev.(StreamTurnStart), m.startTurn)
 }
 
@@ -2324,8 +2393,10 @@ func turnStartedWhileBusy(m *Machine, ctx context.Context, ev Event) error {
 // (turnStartedWhileBusy), in place of the pinned start line recordBusyTurn already wrote for it.
 // It names the delivery the start confirms, if any, and that delivery becomes the one the turn's
 // end line names (Machine.turnsDelivery): the turn is now known to be that task's, which the
-// start line written at the record could not yet say.
+// start line written at the record could not yet say. It dates the turn again at this, its own
+// moment (Claim.LastTurnStart), as startTurn dates every other start.
 func (m *Machine) busyTurnBegun(delivery string) {
+	m.claim.LastTurnStart = m.deps.Clock.Now()
 	if delivery != "" {
 		m.turnsDelivery = delivery
 	}
@@ -2424,6 +2495,9 @@ func turnEnded(m *Machine, ctx context.Context, _ Event) error {
 	m.turnsEnded.Add(1)
 	m.claim.LastTurnEnd = m.deps.Clock.Now()
 	m.claim.Budgets.Deaths = 0
+	// A finished turn is the session working: its run of ended launches starts again, and it is
+	// a session that has finished a turn (SessionRun, dispatch://INFRA-2045 R1).
+	m.claim.SessionRun = SessionRun{TurnFinished: true}
 	if m.compacting != nil {
 		m.log.Info("supervise: a turn ended while this claim's session is being compacted; the claim stays working until the compaction ends")
 		m.compacting.inTurn, m.compacting.back = false, StateIdle
@@ -2839,6 +2913,9 @@ func registrationDeadline(m *Machine, ctx context.Context, _ Event) error {
 		// log as that, attempt by attempt.
 		m.log.Warn("supervise: the agent "+never+"; retired its process", "incarnation", incarnation,
 			"launchFailure", m.claim.Budgets.LaunchFailures+1, "limit", m.deps.Limits.LaunchFailures)
+		// A launch retired at its deadline is charged a launch failure, so it is an end of the
+		// session's launch (SessionRun, dispatch://INFRA-2045 R1).
+		m.sessionEnded("its agent " + never)
 		return m.relaunchAfterFailure(ctx, CauseNeverRegistered, noEnd, nil)
 	}, TimerRegistration, m.deps.Timeouts.Probe)
 }
@@ -2958,6 +3035,15 @@ func ready(m *Machine, ctx context.Context, _ Event) error {
 	// (Machine.lostCause): the first launch after this ready continues a session of its own.
 	m.lostCause = ""
 	m.claim.LastReady = m.deps.Clock.Now()
+	// The controller's fresh session says ready: one line names it beside the session it
+	// replaced, once for each replacement, at the first ready of the session that replaced it
+	// (AbandonedSession.ReadyNamed, dispatch://INFRA-2045 R4). The mark is written with this
+	// ready's own write (finishReady). A replacement already told — one a release before this one
+	// recorded, which wrote no mark — is no fresh session's, and names none.
+	if a := &m.claim.Abandoned; m.claim.Role == claim.RoleController && a.Tells() && !a.ReadyNamed {
+		a.ReadyNamed = true
+		m.log.Info(freshSessionReadyLine, "oldSession", a.Session, "newSession", m.claim.Session, "reason", a.Why)
+	}
 	// The pending cause and the last start failure go with the launch failures they name: the
 	// episode they measure ended when this agent came up (Claim.PendingCause,
 	// Claim.LastStartFailure). A start failure kept past it would read, on a claim launching
@@ -3418,22 +3504,28 @@ func deliverNow(m *Machine, ctx context.Context, ev Event) error {
 	return m.sendPending(ctx)
 }
 
-// deliverResuming queues a task on a suspended claim and resumes it for that task. The workflow's
-// task (an outbox delivery, which carries a durable id) resumes an agent unless a suspension that
-// holds is over it: the operator's or the controller's answers that holder's wait (RuleHoldError),
-// queuing nothing, and its start waits for a resume to lift it. The operator's own delivery
-// resumes the agent whoever suspended it.
+// deliverResuming queues a task on a suspended claim and resumes it for that task, for two of the
+// three kinds of task. The workflow's task (an outbox delivery, which carries a durable id) resumes
+// an agent unless a suspension that holds is over it: the operator's or the controller's answers
+// that holder's wait (RuleHoldError), queuing nothing, and its start waits for a resume to lift it.
+// The operator's own delivery (no id) resumes the agent whoever suspended it. The daemon's own task
+// of no id, the controller keeper's start message (RequestDeliver.ResumesNothing), resumes nothing:
+// a suspended claim refuses it with a *RefusedError, queuing nothing, and the next launch's ready
+// sends it again.
 //
-// Which of the two it is decides the pacing too, and the id is what says which (RequestDeliver.ID,
-// which the API's deliver route leaves empty). The workflow's own task is a wake of the daemon's
-// own and waits its turn like every other (reserveWake): the task waits on the claim until the
-// launch it waits for runs. The operator's task never waits — a person is waiting on it, as they
-// are on the resume and the retry the same route sends (exemptWake) — so it launches where it
-// arrives and takes nothing from the rate. A wake the pacing already holds over the claim is
-// dropped before this row is reached, so the claim this decides is the claim the gate found
-// (dropsWaitingWake, dropWakeFor).
+// Which of the first two it is decides the pacing too, and the id is what says which
+// (RequestDeliver.ID, which the API's deliver route leaves empty). The workflow's own task is a
+// wake of the daemon's own and waits its turn like every other (reserveWake): the task waits on
+// the claim until the launch it waits for runs. The operator's task never waits — a person is
+// waiting on it, as they are on the resume and the retry the same route sends (exemptWake) — so it
+// launches where it arrives and takes nothing from the rate. A wake the pacing already holds over
+// the claim is dropped before this row is reached, so the claim this decides is the claim the gate
+// found (dropsWaitingWake, dropWakeFor).
 func deliverResuming(m *Machine, ctx context.Context, ev Event) error {
 	d := ev.(RequestDeliver)
+	if d.ResumesNothing {
+		return &RefusedError{State: m.claim.State, Request: "deliver", Reason: "the claim is suspended, and the daemon's own task resumes nothing: the next launch's ready sends it again"}
+	}
 	if d.ID != "" && !m.claim.RuleMayResume() {
 		return fmt.Errorf("deliver %s to %s: %w", d.ID, m.claim.Token, m.current().RuleHoldError())
 	}

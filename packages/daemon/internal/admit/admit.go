@@ -132,6 +132,13 @@ type Admission struct {
 	// as work.
 	workerSilence    time.Duration
 	workerBackground time.Duration
+
+	// p0Configured is legion.yaml's `admission_p0_bound` (UseP0Bound,
+	// config.Config.AdmissionP0Bound): how many P0 issues may hold a slot at once, outside the cap,
+	// while no value set while the daemon runs stands, and nil for no bound, which is what an
+	// admission nobody registered a bound with holds. Every pass reads the bound in force again
+	// (p0BoundAt), so a value set while the daemon runs is in force from its own fact's pass on.
+	p0Configured *int
 }
 
 // ReportCapabilities registers open, whose answer every tick controller notice carries as its
@@ -171,6 +178,58 @@ func (a *Admission) UseStalledTreeNotice(bound time.Duration) {
 func (a *Admission) UseWorkerSilence(silence, background time.Duration) {
 	a.workerSilence = silence
 	a.workerBackground = background
+}
+
+// UseP0Bound registers legion.yaml's P0 bound (`admission_p0_bound`, config.Config.AdmissionP0Bound),
+// nil where the file gives none: the bound every pass admits under while no value set while the
+// daemon runs stands (p0BoundAt). It is a setter rather than a parameter of New for the reason
+// UseWorkerSilence is: every test that admits anything builds an admission, and most of them
+// configure no bound.
+func (a *Admission) UseP0Bound(configured *int) {
+	a.p0Configured = configured
+}
+
+// p0BoundAt is the P0 bound this pass admits under, read through tx: the value the controller or
+// the operator set while the daemon runs where one stands, a number or none, else legion.yaml's
+// (store.EffectiveP0Bound). nil is no bound. It is read on every pass rather than held, so a change
+// is in force from the pass of its own fact on (recordP0BoundChange), with no restart, and one made
+// before a restart is in force from the boot's first pass.
+func (a *Admission) p0BoundAt(ctx context.Context, tx pgx.Tx) (*int, error) {
+	standing, found, err := store.P0BoundTx(ctx, tx, a.project)
+	if err != nil {
+		return nil, err
+	}
+	return store.EffectiveP0Bound(a.p0Configured, standing, found), nil
+}
+
+// recordP0BoundChange appends the change a P0BoundChanged fact carries, for this admission's
+// project (store.RecordP0BoundChangeTx), and logs it once it commits: who made it, why, what it
+// did, and the bound in force before and after it. It refuses nothing the route did not refuse
+// first: the routes refused a bound below 1 or above 2147483647 and a change with no reason
+// before the fact.
+func (a *Admission) recordP0BoundChange(ctx context.Context, tx pgx.Tx, change store.P0BoundChange) error {
+	before, err := a.p0BoundAt(ctx, tx)
+	if err != nil {
+		return err
+	}
+	change.Project = a.project
+	recorded, err := store.RecordP0BoundChangeTx(ctx, tx, change)
+	if err != nil {
+		return err
+	}
+	after := store.EffectiveP0Bound(a.p0Configured, recorded, true)
+	a.logOnCommit(ctx, "admission: the P0 bound changed", "change", recorded.ID, "mode", string(recorded.Mode),
+		"by", string(change.By.Kind), "by_session", change.By.Session, "reason", change.Reason,
+		"p0_bound_before", boundWords(before), "p0_bound", boundWords(after), "p0_bound_configured", boundWords(a.p0Configured))
+	return nil
+}
+
+// boundWords is a P0 bound as a log line writes it: the number, or "none".
+func boundWords(bound *int) any {
+	if bound == nil {
+		return "none"
+	}
+	return *bound
 }
 
 var _ intake.Handler = (*Admission)(nil)
@@ -266,6 +325,16 @@ func (a *Admission) applyFact(ctx context.Context, tx pgx.Tx, fact intake.Fact) 
 			return nil, nil, err
 		}
 		_, returned, err := a.promoteWritten(ctx, tx)
+		return returned, nil, err
+	}
+	if changed, ok := fact.(intake.P0BoundChanged); ok {
+		// The bound is written before the pass, in the fact's own transaction, so this very pass
+		// admits under it: a bound raised or set to none starts the P0 issues it lets in now, and a
+		// lower one starts no P0 issue while it is at the bound and stops nothing that runs.
+		if err := a.recordP0BoundChange(ctx, tx, changed.Change); err != nil {
+			return nil, nil, err
+		}
+		_, returned, err := a.promote(ctx, tx)
 		return returned, nil, err
 	}
 
@@ -506,6 +575,11 @@ const todoWakeDelay = 30 * time.Second
 // blocker hold and the same children-first wait: a line built here from its own reads would
 // answer differently from the pass that acts, and a slot this said was free would then go to
 // nobody.
+//
+// The slot it speaks of is one of the cap's, so it counts the holders the cap counts: a P0 holder
+// takes none of the cap's slots (record.HoldersOf), and a P0 candidate the line would start is no
+// taker of one either, since it starts outside the cap (capLets). The promotion, the stall
+// measure's free-slot term (lineCanMove) and this read count the same holders of one record.
 func (a *Admission) slotFree(ctx context.Context, tx pgx.Tx) (bool, error) {
 	if a.cap <= 0 {
 		return false, nil
@@ -527,13 +601,14 @@ func (a *Admission) slotFree(ctx context.Context, tx pgx.Tx) (bool, error) {
 	if err != nil {
 		return false, err
 	}
+	held := record.HoldersOf(issues, own)
 	taking := 0
 	for _, candidate := range line {
-		if len(blockers.LineWaitsOn(rows, candidate)) == 0 && slotFor(candidate) {
+		if len(blockers.LineWaitsOn(rows, candidate)) == 0 && slotFor(candidate) && !candidate.Issue.StartsNow() {
 			taking++
 		}
 	}
-	return len(own)+taking < a.cap, nil
+	return held.Capped+taking < a.cap, nil
 }
 
 // wakeController queues notice on issue, due at dueAt, when a controller is registered and no
@@ -1057,6 +1132,7 @@ func (a *Admission) putNewRoot(ctx context.Context, tx pgx.Tx, observation intak
 		Status:          "todo",
 		Rank:            observation.Rank,
 		Priority:        observation.Priority,
+		Resolved:        observation.Resolved,
 		HandedOver:      observation.HandedOver,
 		LastDispatchSeq: observation.Seq,
 		DispatchStatus:  observation.Status,
@@ -1253,21 +1329,32 @@ func (a *Admission) applyListed(ctx context.Context, tx pgx.Tx, summary intake.D
 		stored, status = refreshed, summary.Status
 	}
 	o := observed{
-		Title: summary.Title, Parent: summary.Parent, Rank: summary.Rank, Priority: summary.Priority,
+		Title: summary.Title, Parent: summary.Parent, Rank: summary.Rank, Priority: summary.Priority, Resolved: summary.Resolved,
 		Status: status, Shown: summary.Status, Ancestry: summary.Ancestry, HandedOver: handed, Seq: seq,
 	}
 	if summary.Status == "todo" && handed && stored.Readmittable() {
 		return a.readmit(ctx, tx, *stored, o, false)
 	}
 	// A todo echo of an issue the record shows running is the boot listing catching a status the
-	// daemon itself wrote and Dispatch had not shown yet. It is taken only while the issue's tree
-	// is not live: a running tree's member keeps what the record says, because the tree is the
-	// thing that says the work is under way, and the row the member holds, or does not hold, says
-	// nothing about it: it keeps that row through every phase that keeps one, worked or not
-	// (record.KeepsSlot), holds none in accepting, retro or merging, and gives it back while it
-	// waits on another issue (releaseSlotsForWaits).
+	// daemon itself wrote and Dispatch had not shown yet. Its status is taken only while the
+	// issue's tree is not live: a running tree's member keeps the status the record says, because
+	// the tree is the thing that says the work is under way, and the row the member holds, or does
+	// not hold, says nothing about it: it keeps that row through every phase that keeps one, worked
+	// or not (record.KeepsSlot), holds none in accepting, retro or merging, and gives it back while
+	// it waits on another issue (releaseSlotsForWaits). Its priorities are Dispatch's alone, though,
+	// and the listing can be the one read that carries them: the first boot after Dispatch resolves
+	// priorities lists a member's inherited P0 at the member's own sequence, with no event of the
+	// member's (C1 of dispatch://INFRA-5636). So the echo writes the own and the resolved priority it
+	// shows, and nothing else of the record.
 	if summary.Status == "todo" && stored.Status == "in_progress" {
 		if _, running := live[stored.Tree]; running {
+			if stored.Priority == o.Priority && stored.Resolved == o.Resolved {
+				return nil
+			}
+			stored.Priority, stored.Resolved = o.Priority, o.Resolved
+			if err := a.engine.WriteIssue(ctx, tx, *stored); err != nil {
+				return fmt.Errorf("record the priorities the listing shows of %s: %w", stored.Key, err)
+			}
 			return nil
 		}
 	}
@@ -1311,7 +1398,7 @@ func (a *Admission) applyObservation(ctx context.Context, tx pgx.Tx, stored reco
 	}
 	handed := observation.HandedOver
 	o := observed{
-		Title: observation.Title, Parent: observation.Parent, Rank: observation.Rank, Priority: observation.Priority,
+		Title: observation.Title, Parent: observation.Parent, Rank: observation.Rank, Priority: observation.Priority, Resolved: observation.Resolved,
 		Status: observation.Status, Shown: observation.Status, Ancestry: observation.Ancestry, HandedOver: handed, Seq: observation.Seq,
 	}
 	if observation.DaemonActor && observation.HandedOver && observation.Status == "todo" {
@@ -1376,7 +1463,7 @@ func (a *Admission) consumeHandover(ctx context.Context, tx pgx.Tx, fact intake.
 		a.log.Info("admission hand-over", "issue", fact.Issue, "tree", fact.Tree, "linger", fact.Generation, "via", "outbox")
 	})
 	return a.readmit(ctx, tx, *stored, observed{
-		Title: stored.Title, Parent: deref(stored.Parent), Rank: stored.Rank, Priority: stored.Priority, Ancestry: stored.Ancestry, Seq: stored.LastDispatchSeq,
+		Title: stored.Title, Parent: deref(stored.Parent), Rank: stored.Rank, Priority: stored.Priority, Resolved: stored.Resolved, Ancestry: stored.Ancestry, Seq: stored.LastDispatchSeq,
 	}, stored.CarriesRun())
 }
 
@@ -1408,10 +1495,12 @@ func (a *Admission) orphan(ctx context.Context, tx pgx.Tx, stored record.Issue, 
 // the boot read: Shown is the status Dispatch showed, and Status the one the record takes, which is
 // Shown except from a boot listing no newer than the record, which keeps the record's own.
 // Ancestry is the Dispatch chain its preparation read, which a record takes as the engine's
-// Ancestry says, and Priority the issue's own Dispatch priority.
+// Ancestry says, Priority the issue's own Dispatch priority and Resolved the one Dispatch resolves
+// it to (record.Resolved), which the record takes with it.
 type observed struct {
 	Title, Parent, Rank, Status, Shown string
 	Priority                           record.Priority
+	Resolved                           record.Resolved
 	Ancestry                           []string
 	HandedOver                         bool
 	Seq                                int64
@@ -1431,7 +1520,7 @@ func (a *Admission) recordObservation(ctx context.Context, tx pgx.Tx, stored rec
 	if err != nil {
 		return fmt.Errorf("read whether %s ran as a tree of its own: %w", stored.Key, err)
 	}
-	if stored.Title == o.Title && stored.Rank == o.Rank && stored.Priority == o.Priority && stored.Status == o.Status && stored.DispatchStatus == o.Shown &&
+	if stored.Title == o.Title && stored.Rank == o.Rank && stored.Priority == o.Priority && stored.Resolved == o.Resolved && stored.Status == o.Status && stored.DispatchStatus == o.Shown &&
 		stored.HandedOver == o.HandedOver && sameParent(stored.Parent, record.ParentOf(o.Parent)) && stored.LastDispatchSeq == o.Seq &&
 		slices.Equal(stored.Ancestry, ancestry) {
 		return nil
@@ -1440,6 +1529,7 @@ func (a *Admission) recordObservation(ctx context.Context, tx pgx.Tx, stored rec
 	stored.Parent = record.ParentOf(o.Parent)
 	stored.Rank = o.Rank
 	stored.Priority = o.Priority
+	stored.Resolved = o.Resolved
 	stored.Status = o.Status
 	stored.DispatchStatus = o.Shown
 	stored.HandedOver = o.HandedOver
@@ -1543,6 +1633,7 @@ func (a *Admission) readmit(ctx context.Context, tx pgx.Tx, stored record.Issue,
 	stored.Status, stored.DispatchStatus = "todo", "todo"
 	stored.Rank = o.Rank
 	stored.Priority = o.Priority
+	stored.Resolved = o.Resolved
 	stored.LingerUntil = nil
 	stored.LastDispatchSeq = o.Seq
 	if err := a.engine.WriteIssue(ctx, tx, stored); err != nil {
@@ -2240,6 +2331,12 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 	}
 	// The pass is taken past the pause, so a pause's skipped pass leaves a catch-up release owed.
 	a.passCatchUpReleases(ctx)
+	// The P0 bound is read once for the pass, beside the pause, and the stall measure and the
+	// promotion below judge under it (capLets).
+	bound, err := a.p0BoundAt(ctx, tx)
+	if err != nil {
+		return 0, nil, err
+	}
 	issues, slots, facts, err := a.adoptQueuedRoots(ctx, tx, respectHolds)
 	if err != nil {
 		return 0, nil, err
@@ -2371,7 +2468,7 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 	// holds now. It runs before the cap check below, because a deployment whose cap admits
 	// nothing still runs the trees it opened before and still owes its controller the news that
 	// one has stopped.
-	if err := a.tellStalledTrees(ctx, tx, issues, facts, slots, line, dropped, rows, floor); err != nil {
+	if err := a.tellStalledTrees(ctx, tx, issues, facts, slots, line, dropped, rows, floor, bound); err != nil {
 		return 0, released, err
 	}
 	if a.cap <= 0 {
@@ -2379,7 +2476,8 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 	}
 	admitted := 0
 	for {
-		own := ownSlots(issues, slots)
+		// The holders as the cap and the P0 bound count them, which grow with each grant below.
+		held := record.HoldersOf(issues, slots)
 		stopped, opened, resumed := false, false, false
 		for _, candidate := range line {
 			issue := candidate.Issue
@@ -2417,22 +2515,31 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 			// brought, and an answered root resumes its architect on the row it kept through
 			// the wait.
 			takes := slotFor(candidate)
-			if !capLets(candidate, len(own), a.cap) {
-				// A full cap gives no further slot, and the scan goes on. This is not the hold
-				// above and must not be read as one: a hold is an answer for every candidate
+			if !capLets(candidate, held, a.cap, bound) {
+				// A full cap gives no further slot below P0, and the scan goes on. This is not the
+				// hold above and must not be read as one: a hold is an answer for every candidate
 				// behind it, because it says the pass does not yet know what this candidate is;
 				// the cap is an answer for this candidate alone, because it says only that there
-				// is no slot for it. own only grows inside this loop, so no candidate behind
-				// this one takes a slot either and the rank order of the issues that need one is
-				// kept whole, while the candidates the cap cannot bind — the ones slotFor is
-				// false for — are promoted as they are reached, which is what makes a hand-over
-				// and an answered root resume under a cap that is permanently full.
+				// is no slot for it. The count only grows inside this loop, so no candidate below
+				// P0 behind this one takes a slot either and the rank order of the issues that
+				// need one is kept whole, while the candidates the cap cannot bind — the ones
+				// slotFor is false for, and a P0 issue, which starts outside the cap (capLets) —
+				// are promoted as they are reached, which is what makes a hand-over, an answered
+				// root and a P0 issue start under a cap that is permanently full.
 				//
 				// An answered root this branch passes over is told nothing. It reads where it
 				// stands from its own record — `waitingLine`, which is the live place
 				// (api.WaitingLineView) — and the daemon resumes it by itself on the pass that
 				// finds a slot free, so a message would carry a snapshot of a place that moves
 				// with every pass and nothing besides.
+				//
+				// A P0 issue is held here by the P0 bound alone, never by the cap: the bound is
+				// set and as many P0 issues as it allows hold a slot. It waits first in the line,
+				// where its priority places it (record.Waiting), and the pass says why.
+				if takes && issue.StartsNow() {
+					a.logOnCommit(ctx, "admission holds a P0 issue at the P0 bound", "issue", issue.Key,
+						"p0_holders", held.P0, "p0_bound", boundWords(bound), "other_holders", held.Capped, "cap", a.cap)
+				}
 				continue
 			}
 			if candidate.Kind == record.LineAnswered {
@@ -2489,12 +2596,13 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 				// An entry carries whether its issue held a row when the line was built
 				// (record.LineEntry.Holds), and the line this loop reads holds each issue once,
 				// so no grant here changes the answer slotFor gives a candidate behind it; what
-				// the grant does change, the count against the cap, is own, which grows with
-				// it. finishFencedStarts keeps the line to one entry an issue, not record.Waiting:
-				// Waiting would list an issue at admitted that holds no row and still owes a start
-				// both as a return and as a first phase, but every owed start names a worker
-				// phase, and finishFencedStarts ends each one whose phase is not the issue's own
-				// before the line is built, so none is left owed at admitted.
+				// the grant does change is held, the count of holders, which grows with it: the
+				// cap reads held.Capped and the P0 bound held.P0 (capLets). finishFencedStarts
+				// keeps the line to one entry an issue, not record.Waiting: Waiting would list an
+				// issue at admitted that holds no row and still owes a start both as a return and
+				// as a first phase, but every owed start names a worker phase, and
+				// finishFencedStarts ends each one whose phase is not the issue's own before the
+				// line is built, so none is left owed at admitted.
 				slot := record.Slot{Issue: issue.Key, Index: nextSlotIndex(slots), AdmittedAt: now}
 				if err := a.store.PutSlot(ctx, tx, slot); err != nil {
 					return admitted, released, fmt.Errorf("put admission slot for %s: %w", issue.Key, err)
@@ -2508,8 +2616,16 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 						return admitted, released, fmt.Errorf("clear the slot release of %s for what it waits on: %w", issue.Key, err)
 					}
 				}
-				slots, own = append(slots, slot), append(own, slot)
-				a.logSlot(ctx, "taken", issue.Key, len(own))
+				slots = append(slots, slot)
+				held.Add(issue)
+				a.logSlot(ctx, "taken", issue.Key, held.Total())
+				// A P0 start is the one start the cap does not count, so it says so with what the
+				// cap and the bound count (C4 of dispatch://INFRA-5636): the P0 holders, this one
+				// among them, the other holders and the cap.
+				if issue.StartsNow() {
+					a.logOnCommit(ctx, "admission starts a P0 issue outside the cap", "issue", issue.Key,
+						"p0_holders", held.P0, "other_holders", held.Capped, "cap", a.cap, "p0_bound", boundWords(bound))
+				}
 			}
 			switch candidate.Kind {
 			case record.LineReturning:
@@ -2728,10 +2844,14 @@ func slotFor(entry record.LineEntry) bool {
 	return !entry.Holds && record.KeepsSlot(entry.Issue)
 }
 
-// capLets says whether the cap lets the promotion start entry, given held, the rows of the cap
-// the project holds, and cap: an entry that takes no slot (slotFor) starts whatever the cap
-// says, and one that takes a slot starts only while a row stands free. A cap that admits nothing
-// lets nothing start, since the promotion does not run under it. It answers the cap's half
+// capLets says whether the cap and the P0 bound let the promotion start entry, given held, the
+// project's holders of a slot as the two count them (record.HoldersOf), cap and bound, the P0 bound
+// in force (p0BoundAt, nil for none): an entry that takes no slot (slotFor) starts whatever the cap
+// says; a P0 entry that takes one (record.Issue.StartsNow: Dispatch's resolved P0, or own P0 with
+// an older Dispatch release) starts outside the cap, while fewer P0 issues than the bound hold a
+// slot, or always where no bound is set (R10 of dispatch://INFRA-3199); and any other entry that
+// takes one starts only while the holders below P0 leave a row of the cap free. A cap that admits
+// nothing lets nothing start, since the promotion does not run under it. It answers the cap's half
 // alone: what an entry waits on is the other half (blockers.LineWaitsOn), which each reader asks
 // beside this.
 //
@@ -2739,11 +2859,18 @@ func slotFor(entry record.LineEntry) bool {
 // (promoteHolds) and the stall measure's free-slot term (lineCanMove). Read apart, the measure
 // said the cap held a queued root in accepting, retro or merging that the promotion of the same pass started,
 // and told the controller of a stall that was not one.
-func capLets(entry record.LineEntry, held, cap int) bool {
+func capLets(entry record.LineEntry, held record.SlotHolders, cap int, bound *int) bool {
 	if cap <= 0 {
 		return false
 	}
-	return !slotFor(entry) || held < cap
+	switch {
+	case !slotFor(entry):
+		return true
+	case entry.Issue.StartsNow():
+		return bound == nil || held.P0 < *bound
+	default:
+		return held.Capped < cap
+	}
 }
 
 // held says whether Reconcile still holds key for the Dispatch consumer to reach the stream
@@ -3042,7 +3169,7 @@ func (a *Admission) refreshHeldSummary(observation intake.DispatchIssue) {
 	a.stamps++
 	a.pending[observation.Key] = heldSummary{summary: intake.DispatchIssue{
 		Key: observation.Key, Seq: observation.Seq, Status: observation.Status, Title: observation.Title,
-		Parent: observation.Parent, Rank: observation.Rank, Priority: observation.Priority, HandedOver: observation.HandedOver,
+		Parent: observation.Parent, Rank: observation.Rank, Priority: observation.Priority, Resolved: observation.Resolved, HandedOver: observation.HandedOver,
 		ResolvedRepo: observation.ResolvedRepo, Ancestry: observation.Ancestry,
 	}, stamp: a.stamps}
 }

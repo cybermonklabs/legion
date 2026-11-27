@@ -73,7 +73,7 @@ func (g *rig) pendingPod(name string, status func(*corev1.Pod)) time.Time {
 // once the launcher connects: the claim is charged no launch failure.
 func TestALaunchWaitsForAPodProvisioningPastTheBootTimeout(t *testing.T) {
 	t.Parallel()
-	g := newRig(t, nil)
+	g := newRig(t, nil, withTestBootTimeout())
 	g.autoStart.Store(false)
 	spec := workerSpec(t)
 	machine, _, _ := supervisedSandboxMachine(t, g, spec)
@@ -115,7 +115,7 @@ func TestALaunchWaitsForAPodProvisioningPastTheBootTimeout(t *testing.T) {
 // ProvisionBound.
 func TestALaunchGivesUpTheBootTimeoutAfterItsPodStopsProvisioning(t *testing.T) {
 	t.Parallel()
-	g := newRig(t, nil)
+	g := newRig(t, nil, withTestBootTimeout())
 	g.autoStart.Store(false)
 	result := make(chan error, 1)
 	go func() { _, err := g.r.Spawn(g.ctx, workerSpec(t)); result <- err }()
@@ -145,7 +145,7 @@ func TestALaunchGivesUpTheBootTimeoutAfterItsPodStopsProvisioning(t *testing.T) 
 // provisioning: its launch gives up at the boot timeout.
 func TestALaunchWhosePodNeverProvisionsGivesUpAtTheBootTimeout(t *testing.T) {
 	t.Parallel()
-	g := newRig(t, nil)
+	g := newRig(t, nil, withTestBootTimeout())
 	g.autoStart.Store(false)
 	result := make(chan error, 1)
 	go func() { _, err := g.r.Spawn(g.ctx, workerSpec(t)); result <- err }()
@@ -314,7 +314,7 @@ func TestALaunchReplacesAPodItsNodeNeverStartedOncePastTheBootTimeout(t *testing
 			logs := &lockedLog{}
 			g := newRig(t, nil, withOptions(func(o *Options) {
 				o.Log = slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelWarn}))
-			}))
+			}), withTestBootTimeout())
 			g.autoStart.Store(false)
 			spec := workerSpec(t)
 			name := SandboxName(spec.Claim)
@@ -434,7 +434,7 @@ func TestTheLauncherWaitOutlastsTheFetchsWholeBudget(t *testing.T) {
 // name it, has not come.
 func TestALaunchThatGivesUpOnAFetchNamesTheRepositorysCache(t *testing.T) {
 	t.Parallel()
-	g := newRig(t, nil)
+	g := newRig(t, nil, withTestBootTimeout())
 	g.autoStart.Store(false)
 	g.r.provisionBound = time.Second
 	spec := workerSpec(t)
@@ -462,7 +462,7 @@ func TestALaunchThatGivesUpOnAFetchNamesTheRepositorysCache(t *testing.T) {
 // the pod provisioning at 1 or 1.5 s on any machine, and its cap is 6 or 6.5 s.
 func TestALaunchCountsItsProvisioningBoundFromTheFirstInitContainer(t *testing.T) {
 	t.Parallel()
-	g := newRig(t, nil)
+	g := newRig(t, nil, withTestBootTimeout())
 	g.autoStart.Store(false)
 	g.r.provisionBound = 3 * time.Second
 	g.launchProvisioningUntil(clocktest.New(rigNow), workerSpec(t), g.r.bootTimeout, time.Second, 5500*time.Millisecond)
@@ -786,8 +786,11 @@ func TestAKeptVolumePodWaitsOutADetach(t *testing.T) {
 			return sandboxRuntime(t, SandboxConfig{Type: SandboxMicroVM, MicroVM: block}, func(o *Options) { o.TerminationGrace = grace })
 		}
 		on, off := at(keptMicroVM()), at(testMicroVM())
-		if got, want := off.LaunchBound(), launchBound(boot, boot, off.ProvisionBound(), grace); got != want || want != 5*time.Hour+49*time.Minute+41*time.Second {
-			t.Fatalf("LaunchBound with keep_volume off = %s, want %s (5h49m41s)", got, want)
+		// 6 h 4 min 41 s: launchBound at the default boot timeout and grace over ProvisionBound's 295
+		// minutes, the fetch's whole budget, its attempt on the cache's bucket among its terms, with
+		// the shared clone's bound and the checkout's.
+		if got, want := off.LaunchBound(), launchBound(boot, boot, off.ProvisionBound(), grace); got != want || want != 6*time.Hour+4*time.Minute+41*time.Second {
+			t.Fatalf("LaunchBound with keep_volume off = %s, want %s (6h4m41s)", got, want)
 		}
 		if got, want := on.LaunchBound(), launchBound(boot, keptVolumeAttachWait, on.ProvisionBound(), grace); got != want || got != off.LaunchBound()+keptVolumeAttachWait-boot {
 			t.Fatalf("LaunchBound with keep_volume on = %s, want %s: %s more than with it off", got, want, keptVolumeAttachWait-boot)

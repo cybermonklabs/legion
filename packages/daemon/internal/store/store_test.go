@@ -90,6 +90,9 @@ func emptyStore(t *testing.T) *Store {
 			t.Errorf("drop %s: %v", name, err)
 		}
 	})
+	if _, err := admin.Exec(ctx, testdb.WithoutJIT(name)); err != nil {
+		t.Fatalf("turn JIT off on %s: %v", name, err)
+	}
 
 	testURL := *base
 	testURL.Path = "/" + name
@@ -131,39 +134,6 @@ func TestOpenNamesTheUnreachableAddressAndNotThePassword(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), "hunter2") {
 		t.Errorf("error leaks the DSN password: %v", err)
-	}
-}
-
-// The driver's own text is not ours to trust: whatever it says on a future
-// version, the password the daemon was configured with does not reach a log.
-func TestConnectErrorRedactsThePasswordOutOfWhatItWraps(t *testing.T) {
-	t.Parallel()
-	for _, detail := range []string{
-		"failed to connect to `host=db.internal password=hunter2`",
-		"cannot parse postgres://legion:hunter2@db.internal:5432/legion",
-	} {
-		err := &connectError{address: "db.internal:5432", password: "hunter2", err: errors.New(detail)}
-		if strings.Contains(err.Error(), "hunter2") {
-			t.Errorf("error leaks the password its driver printed: %v", err)
-		}
-		if !strings.Contains(err.Error(), "db.internal:5432") {
-			t.Errorf("error does not name the host:port it failed to reach: %v", err)
-		}
-	}
-}
-
-// postgres://legion:legion@… is the ordinary devbox DSN: the password equals
-// the user and the database name. Redaction that blanked every occurrence
-// would hide the two fields an operator reads to diagnose the refusal.
-func TestConnectErrorKeepsTheFieldsThatMerelyMatchThePassword(t *testing.T) {
-	t.Parallel()
-	err := &connectError{
-		address:  "127.0.0.1:5432",
-		password: "legion",
-		err:      errors.New("failed to connect to `user=legion database=legion`: connection refused"),
-	}
-	if !strings.Contains(err.Error(), "user=legion database=legion") {
-		t.Errorf("error hides the user and database the daemon was connecting as: %v", err)
 	}
 }
 

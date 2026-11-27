@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/sjawhar/envoy/internal/redirects"
 )
 
@@ -74,6 +75,9 @@ type AzureConfig struct {
 // AzureClient calls Cohere Embed v4 deployed on Azure AI Foundry, over plain net/http: one POST
 // per batch does not need the Azure SDK.
 type AzureClient struct {
+	// endpoint is the configured endpoint, and url the route the client posts to; a transport
+	// failure is printed through redact.CauseAt over both.
+	endpoint   string
 	url        string
 	identity   string
 	deployment string
@@ -112,6 +116,7 @@ func NewAzure(cfg AzureConfig) (*AzureClient, error) {
 	target.RawPath = ""
 	target.RawQuery = url.Values{"api-version": {azureAPIVersion}}.Encode()
 	return &AzureClient{
+		endpoint:   cfg.Endpoint,
 		url:        target.String(),
 		identity:   azureIdentityPrefix + strings.ToLower(endpoint.Host) + "/" + cfg.Deployment,
 		deployment: cfg.Deployment,
@@ -215,7 +220,12 @@ func (c *AzureClient) Embed(ctx context.Context, texts []string, inputType Input
 	}
 	response, err := c.http.Do(request)
 	if err != nil {
-		return nil, fmt.Errorf("embed: azure embeddings: %w", err)
+		// net/http's error quotes the request URL with only a password masked. CauseAt prints the
+		// failure without that quote: its own text when the endpoint is a clean http(s) URL and the
+		// URL net/http names is this client's own (a refused dial's address, a TLS failure's x509
+		// cause), and its class alone otherwise, a redirect's target or an endpoint holding a
+		// credential among them (boot refuses one).
+		return nil, fmt.Errorf("embed: azure embeddings: %w", redact.CauseAt(err, c.endpoint, c.url))
 	}
 	defer response.Body.Close()
 	if response.StatusCode < 200 || response.StatusCode > 299 {

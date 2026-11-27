@@ -350,15 +350,16 @@ func DecodeDispatchEvent(project, key string, event []byte) (Fact, []string, err
 	return decodeDispatchIssueEvent(key, project, string(event))
 }
 
-// isIssueEvent says whether a Dispatch event of type typ is an issue event: one that carries the
+// issueEventTypes is every type of Dispatch event that is an issue event: one that carries the
 // issue as the event leaves it. decodeDispatchEvent reads a DispatchIssue from each such event,
-// and walkIssueEvents gives each such event of an issue's event log, so the two read one list.
+// and walkIssueEvents gives each such event of an issue's event log, so the two read one list,
+// and TestEveryIssueEventKindTheDaemonAdmitsFromCarriesTheResolvedShape ranges over it too, so a
+// type added here fails that test until a fixture of the resolved shape holds an event of it.
+var issueEventTypes = []string{"issue.created", "issue.updated", "issue.closed"}
+
+// isIssueEvent says whether a Dispatch event of type typ is an issue event (issueEventTypes).
 func isIssueEvent(typ string) bool {
-	switch typ {
-	case "issue.created", "issue.updated", "issue.closed":
-		return true
-	}
-	return false
+	return slices.Contains(issueEventTypes, typ)
 }
 
 // decodeDispatchEvent decodes a checked Dispatch event of the daemon's project by its type, adding
@@ -366,14 +367,21 @@ func isIssueEvent(typ string) bool {
 func decodeDispatchEvent(event dispatchEvent, unread *[]string) (Fact, error) {
 	if isIssueEvent(event.Type) {
 		var issue struct {
-			Key          string          `json:"key"`
-			Status       string          `json:"status"`
-			Title        string          `json:"title"`
-			Parent       *string         `json:"parent"`
-			Rank         string          `json:"rank"`
-			Priority     json.RawMessage `json:"priority"`
-			Labels       []string        `json:"labels"`
-			ResolvedRepo json.RawMessage `json:"resolved_repo"`
+			Key      string          `json:"key"`
+			Status   string          `json:"status"`
+			Title    string          `json:"title"`
+			Parent   *string         `json:"parent"`
+			Rank     string          `json:"rank"`
+			Priority json.RawMessage `json:"priority"`
+			// ResolvedPriority and PriorityFrom are the priority Dispatch resolves the issue to and
+			// the issue it comes from (J1 of dispatch://INFRA-5793); an event of a Dispatch release
+			// before it carries neither, and its resolved priority reads as unknown
+			// (issueEventResolved). Changed is the event's list of the fields it changed.
+			ResolvedPriority json.RawMessage `json:"resolved_priority"`
+			PriorityFrom     *string         `json:"priority_from"`
+			Changed          []string        `json:"changed"`
+			Labels           []string        `json:"labels"`
+			ResolvedRepo     json.RawMessage `json:"resolved_repo"`
 			// An event retained from a Dispatch that did not yet send blocked_by decodes to no
 			// blockers, as an issue waiting on nothing does: unlike a missing repository, which the
 			// consumer fills, nothing reads an absence here.
@@ -413,7 +421,8 @@ func decodeDispatchEvent(event dispatchEvent, unread *[]string) (Fact, error) {
 		}
 		claimedBy, claimKnown := issueEventClaim(issue.Claim, unread)
 		return DispatchIssue{Key: event.IssueKey, Seq: event.Seq, Type: event.Type, Status: issue.Status, Title: issue.Title, Parent: parent, Rank: issue.Rank,
-			Priority: issueEventPriority(issue.Priority, unread), HandedOver: dispatch.CarriesLegionLabel(issue.Labels), Labels: issue.Labels,
+			Priority: issueEventPriority("priority", issue.Priority, unread), Resolved: issueEventResolved(issue.ResolvedPriority, issue.PriorityFrom, unread),
+			ResolvedOnly: resolvedOnly(issue.Changed), HandedOver: dispatch.CarriesLegionLabel(issue.Labels), Labels: issue.Labels,
 			ActorSession: actorSession, DaemonActor: daemonActor, ResolvedRepo: deref(resolved),
 			ResolvedRepoMissing: missing, Blockers: issue.BlockedBy, ClaimedBy: claimedBy, ClaimKnown: claimKnown}, nil
 	}
@@ -615,22 +624,60 @@ func issueEventClaim(raw json.RawMessage, unread *[]string) (string, bool) {
 	return claimed.Actor.Kind + ":" + claimed.Actor.ID, true
 }
 
-// issueEventPriority reads an issue event's own priority, Dispatch's 0 for P0 to 3 for P3 or null,
-// as the record keeps it (record.DecodePriority); an absent field is none. A value Dispatch never
-// writes, a level outside 0 to 3 or no integer at all, is none and named in unread rather than
-// making the event poison: the event can carry a status the workflow acts on.
-func issueEventPriority(raw json.RawMessage, unread *[]string) record.Priority {
+// issueEventPriority reads one of an issue event's priorities, field, `priority` for the issue's
+// own and `resolved_priority` for the one Dispatch resolves it to: Dispatch's 0 for P0 to 3 for P3
+// or null, as the record keeps it (record.DecodePriority); an absent field is none. A value
+// Dispatch never writes, a level outside 0 to 3 or no integer at all, is none and named in unread,
+// under field's name, rather than making the event poison: the event can carry a status the
+// workflow acts on.
+func issueEventPriority(field string, raw json.RawMessage, unread *[]string) record.Priority {
 	if raw == nil {
 		return record.NoPriority
 	}
 	priority, read, err := record.DecodePriority(raw)
 	switch {
 	case err != nil:
-		*unread = append(*unread, fmt.Sprintf("priority %s is not a priority: %v", raw, err))
+		*unread = append(*unread, fmt.Sprintf("%s %s is not a priority: %v", field, raw, err))
 	case !read:
-		*unread = append(*unread, fmt.Sprintf("priority %s is no level Dispatch writes", raw))
+		*unread = append(*unread, fmt.Sprintf("%s %s is no level Dispatch writes", field, raw))
 	}
 	return priority
+}
+
+// issueEventResolved reads an issue event's resolved priority and the issue it comes from, as the
+// record keeps them (record.Resolved): unknown where the event carries no `resolved_priority`, as an
+// event of a Dispatch release before dispatch://INFRA-5793 does, and else read as the issue's own
+// priority is (issueEventPriority), a present null being no priority. `priority_from` is kept only
+// where it is an issue key, as `parent` is: the state serves it as `priorityFrom`, which its
+// readers take for an issue key (the plugin's schema refuses the whole state for one that is not).
+// One that is not is no issue and named in unread rather than making the event poison, for the
+// reason a bad level is; null or empty is none, with no note.
+func issueEventResolved(raw json.RawMessage, from *string, unread *[]string) record.Resolved {
+	if raw == nil {
+		return record.Resolved{}
+	}
+	resolved := record.Resolved{Priority: issueEventPriority("resolved_priority", raw, unread), Known: true}
+	if key := deref(from); claim.IsIssueKey(key) {
+		resolved.From = key
+	} else if key != "" {
+		*unread = append(*unread, fmt.Sprintf("priority_from %q is no issue key", key))
+	}
+	return resolved
+}
+
+// resolvedOnly says an issue event's `changed` names the resolved priority and nothing else: the
+// event Dispatch appends on an issue whose ancestor's priority or parent changed (J3 of
+// dispatch://INFRA-5793). An event that names no field changed nothing it says, and is not one.
+func resolvedOnly(changed []string) bool {
+	if len(changed) == 0 {
+		return false
+	}
+	for _, field := range changed {
+		if field != "resolved_priority" && field != "priority_from" {
+			return false
+		}
+	}
+	return true
 }
 
 // askPayload is what the daemon reads of an ask.* event's payload, which is the ask itself
