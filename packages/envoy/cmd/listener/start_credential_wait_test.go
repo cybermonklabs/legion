@@ -1137,13 +1137,15 @@ func awaitChildExitAtBound(t *testing.T, listener *cmdtest.Process, rig edgeStar
 func TestTheListenerStartEndsAtTheCredentialBound(t *testing.T) {
 	// Not parallel: it holds the child's waits between tries to credentialWaitTolerance (500 ms)
 	// of 1 and 2 s, and a start of ten failed dials to mainsEndMargin (500 ms) past main's connect
-	// beside it (requireMainsEnd).
+	// beside it (requireMainsEnd). Its rows run beside each other alone: the child and the two
+	// connects spend their time waiting on timers, and the third row reads source files.
 	if seedFile, child := os.LookupEnv(startChildSeedFile); child {
 		runStartChild(seedFile)
 	}
 	const watchdog = 60 * time.Second
 
 	t.Run("a credential the server never admits ends the listener at the bound", func(t *testing.T) {
+		t.Parallel()
 		var rig edgeStartServer
 		rig.seed, rig.public = testnats.User(t)
 		_, fallback := testnats.User(t)
@@ -1170,6 +1172,7 @@ func TestTheListenerStartEndsAtTheCredentialBound(t *testing.T) {
 	})
 
 	t.Run("a port where nothing listens ends the start after main's ten tries", func(t *testing.T) {
+		t.Parallel()
 		run := newListenerStartRun(t)
 		start := newNATSStart(listenerCredentialWait)
 		cfg := config.Service{MachineID: "start-refused-port", NATSURLs: []string{"nats://" + testport.Refused(t)}, NATSReplicas: 1}
@@ -1189,6 +1192,7 @@ func TestTheListenerStartEndsAtTheCredentialBound(t *testing.T) {
 	})
 
 	t.Run("the production start waits 180 s and no other caller waits", func(t *testing.T) {
+		t.Parallel()
 		if listenerCredentialWait != 180*time.Second {
 			t.Fatalf("listenerCredentialWait is %s, want 180s", listenerCredentialWait)
 		}
