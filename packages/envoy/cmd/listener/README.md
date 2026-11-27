@@ -570,4 +570,9 @@ cd packages/envoy
 go test -tags multiprocess -count=1 -timeout 20m -v -run '^Test(TwoPods|TwoBuilds)' ./cmd/listener
 ```
 
+`TestTwoBuildsTheFirstRollFromTheReleasedBuildSkipsOrDoublesNoMessage` skips if `ENVOY_LISTENER_OLD_BINARY` is unset or empty.
+To run it, set that variable to the path of a listener built from the commit behind production's dispatch-listener image.
+CI's `listener-multiprocess` step does not set the variable and skips the row.
+Check `c-oldbinary` in the change's Verification records the run with the released build.
+
 The lease, receive and ledger rows that need no second process (`lease_test.go` and the `lease_*_test.go` files beside it, `receive_test.go` and the `receive_*_test.go` files beside it, `ledger_test.go`) run with the package's other tests.

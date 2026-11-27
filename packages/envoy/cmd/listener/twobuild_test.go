@@ -215,10 +215,13 @@ func TestTwoBuildsSkipOrDoubleNoMessage(t *testing.T) {
 // row was written). Without it the row skips, naming the variable, so CI's listener-multiprocess
 // job, which sets none, skips it, and a run that skips proves nothing.
 //
-// The row waits for this build's pod to wait on the binding or to be active, and requires the
-// wait only after the each-once check: a build that subscribed beside the old build's binding
-// rather than waiting it out is active at once and has a message delivered twice, and the row is
-// to fail on that doubled message, the fault itself, rather than on the report.
+// The row waits for this build's pod to wait on the binding or to be active. The !waiting check
+// after tbRequireEachOnce is what fails a build that did not wait out the old build's binding:
+// every session here is on consumer delivery (tbRegister), whose messages the durable's handler,
+// in this build and at 15338e75, leaves to the relay of the session's consumer (delivery.go's
+// result.Relayed and relayed), and two pods' relays pulling one session consumer split its
+// messages rather than copy them, so a build that subscribed beside the binding doubles no
+// message here. tbRequireEachOnce catches any message missing or doubled.
 func TestTwoBuildsTheFirstRollFromTheReleasedBuildSkipsOrDoublesNoMessage(t *testing.T) {
 	old := os.Getenv("ENVOY_LISTENER_OLD_BINARY")
 	if old == "" {

@@ -259,7 +259,7 @@ jobs:
         run: |
           docker exec "${{ job.services.postgres.id }}" psql -U postgres -Atc "select current_setting('server_version_num'), coalesce((select default_version from pg_available_extensions where name = 'vector'), 'no vector')"
       # The images the module's tests start, pulled first for the reason the action gives:
-      # testnats.HubImage, the image the hub runs Envoy on, testnats.Image (nats:2.10), and
+      # testnats.HubImage, the image the hub runs Envoy on, testnats.Image (nats:2.15.1), and
       # tests3.Image.
       - name: Pull test container images
         uses: ./.github/actions/pull-test-images
