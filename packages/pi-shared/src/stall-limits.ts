@@ -20,7 +20,8 @@ export interface StallLimits {
   readonly reminderMs: number;
   /** How long a WAITING reply buys before the reminder comes again. */
   readonly waitingMs: number;
-  /** How long after a resume on an open phase the plugin waits before reminding. */
+  /** How long after a resume the plugin waits before it asks the daemon whether the claim owes
+   * work, and reminds the worker if it does. */
   readonly resumeMs: number;
   /** How many delivered reminders in a row change nothing before the architect is told. */
   readonly architectAfter: number;

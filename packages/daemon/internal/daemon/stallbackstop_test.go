@@ -72,9 +72,7 @@ func newBackstopRig(t *testing.T) *backstopRig {
 		},
 	}
 	rig.s = &supervision{
-		cfg: cfg, log: quietLogger(), supervisor: sup, plan: plan{clock: stillClock{}},
-		refreshGate: supervise.NewRefreshGate(0),
-		enqueue: func(_ context.Context, issue string, payloads ...record.OutboxPayload) (bool, error) {
+		cfg: cfg, log: quietLogger(), supervisor: sup, plan: plan{clock: stillClock{}, enqueue: func(_ context.Context, issue string, payloads ...record.OutboxPayload) (bool, error) {
 			rig.mu.Lock()
 			defer rig.mu.Unlock()
 			rig.attempts++
@@ -83,7 +81,8 @@ func newBackstopRig(t *testing.T) *backstopRig {
 			}
 			rig.rows[issue] = append(rig.rows[issue], payloads...)
 			return true, nil
-		},
+		}},
+		refreshGate: supervise.NewRefreshGate(0),
 	}
 	// The machines tell supervision what each stall backstop ended, as the daemon's own boot
 	// wires them (openSupervision): nothing else writes the owner's notice. The rig counts each
@@ -521,7 +520,7 @@ func TestTheStallBackstopKeepsTheNewerNoticeOwedWhileTheSweepRetriedTheOlder(t *
 				notices []record.Notice
 			)
 			s := &supervision{log: quietLogger(), plan: plan{clock: stillClock{}}}
-			s.enqueue = func(_ context.Context, _ string, payloads ...record.OutboxPayload) (bool, error) {
+			s.plan.enqueue = func(_ context.Context, _ string, payloads ...record.OutboxPayload) (bool, error) {
 				mu.Lock()
 				refusing, inside := refused, during
 				during = nil
