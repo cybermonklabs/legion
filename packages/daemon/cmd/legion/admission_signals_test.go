@@ -50,6 +50,7 @@ func (signalsLineState) ObservedState(context.Context, pgx.Tx) (api.State, []sup
 // nor reaches the terminal, a hold no pass dated reads as undated, and every series of
 // signals.Names() is on it (/series-inventory).
 func TestStateSignalLine(t *testing.T) {
+	t.Parallel()
 	since := time.Date(2026, 11, 26, 7, 0, 0, 0, time.UTC)
 	reading := store.SignalsReading{On: true}
 	shapes := map[string]store.SignalSeriesReading{

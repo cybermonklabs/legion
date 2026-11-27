@@ -20,6 +20,7 @@ const queueTimelineReadVersion = 20261126190955
 // would stop its own effect. A kind that is none is still refused, and so is a kind of the merge
 // the daemon no longer submits.
 func TestTheOutboxTakesTheQueueTimelineReadWith20261126190955(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, queueTimelineReadVersion-1)

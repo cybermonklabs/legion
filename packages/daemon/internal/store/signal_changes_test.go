@@ -17,6 +17,7 @@ import (
 // The ids of a project rise by one for each entry in the transaction that writes it, so a
 // transaction rolled back, and one retried after it, leave no gap, and each project counts its own.
 func TestSignalChangesForPublish(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	st := migratedStore(t)
 	const project = "LEGION"

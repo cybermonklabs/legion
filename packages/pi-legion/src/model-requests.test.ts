@@ -249,9 +249,10 @@ test("batch across minutes", async () => {
   await advance(MODEL_REQUEST_REPORT_BOUND_MS - 10_000 - 1);
   expect(batches()).toEqual([]);
   await advance(1);
+  const [batch] = batches();
   expect(batches()).toHaveLength(1);
   expect(
-    (batches()[0]?.requests as { endedAt: string }[]).map((request) => request.endedAt)
+    ((batch?.requests ?? []) as { endedAt: string }[]).map((request) => request.endedAt)
   ).toEqual(["2026-11-25T21:53:17.412Z", "2026-11-25T21:53:27.412Z"]);
 
   await advance(MODEL_REQUEST_REPORT_BOUND_MS);
@@ -266,8 +267,9 @@ test("turn end flush", async () => {
   await advance(2_000);
   reporter.turnEnded();
   await reporter.settled();
+  const [batch] = batches();
   expect(batches()).toHaveLength(1);
-  expect((batches()[0]?.requests as unknown[]).length).toBe(1);
+  expect(batch?.requests).toHaveLength(1);
 
   await advance(MODEL_REQUEST_REPORT_BOUND_MS * 2);
   expect(batches()).toHaveLength(1);

@@ -27,6 +27,7 @@ const queueEventsRelease = "the release that keeps each merge-queue timeline eve
 // release queued while it ran: a list written again here, which could not name that kind, would
 // refuse the row and stop Migrate (SQLSTATE 23514).
 func TestTheQueueEventsArriveWith20261126020201AndTheirWayBackLetsThemComeAgain(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, queueEventsVersion-1)

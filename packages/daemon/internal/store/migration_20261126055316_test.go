@@ -20,6 +20,7 @@ const signalDeadlinesRelease = "the release that keeps each project's one deadli
 // other mark: the roll-forward starts each project's fence again from 1, so a firing of a fence that
 // fired before the rollback must apply as the new fact it is, not be taken for a duplicate.
 func TestTheSignalDeadlinesArriveWith20261126055316AndTheirWayBackLetsTheirFencesFireAgain(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, signalDeadlinesVersion-1)

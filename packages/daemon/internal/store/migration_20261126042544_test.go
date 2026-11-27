@@ -25,6 +25,7 @@ const modelRequestsRelease = "the release that keeps each model request its proj
 // Its way back drops the four tables and the provider's row of signal_inputs, leaves every other
 // input's row and deletes this version row, so a roll-forward runs the file again.
 func TestTheModelRequestsArriveWith20261126042544AndTheirWayBackLetsThemComeAgain(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, modelRequestsVersion-1)

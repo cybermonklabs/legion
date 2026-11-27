@@ -438,6 +438,7 @@ func signalEvents() []signalEvent {
 // its holder is idle. A kill delivered again commits no pass, nor does a fact whose transaction
 // rolls back. It fails where a source event has no row.
 func TestSignalEventPassInventory(t *testing.T) {
+	t.Parallel()
 	now := time.Now().UTC().Truncate(time.Minute).Add(20 * time.Second)
 	rows := map[string]bool{}
 	for _, event := range signalEvents() {
@@ -617,6 +618,7 @@ func signalInputs() []signalInput {
 // end, is kept, and read by the live signals, once: its tokens in the headroom's minute. It fails
 // where an input has no row.
 func TestSignalInputInventory(t *testing.T) {
+	t.Parallel()
 	now := time.Now().UTC().Truncate(time.Minute).Add(20 * time.Second)
 	rows := map[string]bool{}
 	for _, input := range signalInputs() {
@@ -646,6 +648,7 @@ func TestSignalInputInventory(t *testing.T) {
 // intake.SignalDeadline through the fact path; its one pass is a deadline's, which computes the
 // deadline again, none being due. The daemon's stop ends the runtime and its timer.
 func TestDaemonSignalDeadlineLive(t *testing.T) {
+	t.Parallel()
 	r := newSignalRig(t, map[string]float64{signals.Kills: 1})
 	r.boot(time.Now().Add(-7*time.Hour), time.Now())
 	r.mu.Lock()

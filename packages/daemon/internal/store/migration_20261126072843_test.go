@@ -20,6 +20,7 @@ const signalSettingsRelease = "the release that keeps each project's settings of
 // is its headroom: a limit or an entry of its refusals is refused. Its way back drops the three
 // tables and deletes this version row, so a roll-forward runs the file again.
 func TestTheSignalSettingsArriveWith20261126072843AndTheirFlagsAreOneOrZero(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, signalSettingsVersion-1)

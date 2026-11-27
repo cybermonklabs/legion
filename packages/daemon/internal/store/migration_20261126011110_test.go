@@ -24,6 +24,7 @@ const memoryKillsRelease = "the release that keeps the memory kills of the issue
 // its moment anew. The negative control is the store before the migration, which holds neither
 // table.
 func TestTheMemoryKillsArriveWith20261126011110AndTheirWayBackLetsThemComeAgain(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, memoryKillsVersion-1)

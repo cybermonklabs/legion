@@ -20,6 +20,7 @@ const approvalAsksRelease = "the release that keeps each ask, issue assignee and
 // approvals row of signal_inputs, leaves every other input's row and deletes this version row, so
 // a roll-forward runs the file again.
 func TestTheApprovalAsksArriveWith20261126025927AndTheirWayBackLetsThemComeAgain(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, approvalAsksVersion-1)
