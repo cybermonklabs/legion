@@ -594,7 +594,8 @@ const parallelProjects = [
   // Dismiss takes away; `priorities`' New priority form after Cancel; and `create-document`'s
   // document made from the project's Documents list. INFRA-2160's round-22 rows, read the same
   // way: `keyboard-complete`'s two `composer hand-back` rows of a Conversation comment's edit
-  // composer and the spec margin's after Save.
+  // composer and the spec margin's after Save, and its three `header hand-back` rows of today's
+  // issue header's Close issue, Reopen and Release, each of which its own press takes away.
   // Where the engine leaves the focus once the element that held it is removed or replaced, which
   // the Inbox's reading view below 1280 px must hand on from: the focus held by the answer box, the
   // scroller or a card's control that a commit takes off the page as the view closes on the last

@@ -28,6 +28,7 @@ import { openAgents, setLiveSessions, shownAgentRows } from "./agents";
 import {
   answerAsk,
   baseUrl,
+  claimIssue,
   createArtifactAsk,
   createAsk,
   createComment,
@@ -11315,6 +11316,135 @@ test("composer hand-back: on today's issue page Save in the spec margin's edit c
       "after Save the focus is back on the card's Edit button, which opened the editor, not on the page body."
     )
   ).toBeFocused();
+});
+
+/** A CORE issue in todo whose header the next three rows press: the issue's key. */
+async function plantHeaderIssue(): Promise<string> {
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({ project: "CORE", title: "Ledger clock" });
+  await patchIssue(issue.key, { status: "todo" });
+  return issue.key;
+}
+
+// The tester's red row of round 22 (a control a press takes off the page leaves the focus on the
+// page body: today's issue header draws Close issue only while the issue is open (IssueHeader.tsx
+// :916, `isClosed ? null : (`), and its press is held (`heldPress`, :924) only while the status
+// write is out; once the write lands the issue is closed and Close issue leaves the page with the
+// focus it holds, and the header, which draws Reopen in its place (:644-660), hands that focus to
+// no control - IssueHeader.tsx holds no `useFocusPlace` and no `.focus(`; the architect's ruling
+// of 2026-11-27T02:47Z). Enter on the focused Close issue of an issue with no open child closes it; the
+// focus must then be on a control of the header, Reopen being the one that takes Close issue's
+// place, not on the page body. At 5c7ae79c it is on the body in every sample: Chromium and
+// Firefox twice each, WebKit twice, at 1440x900 and at 390x664.
+// SLOW(>=2s): one issue seeded, one issue page open, and one status write that closes the issue.
+// @firefox: the engine's focus after the element that held it is removed (playwright.config.ts names the clause).
+test("header hand-back: on today's issue page Enter on Close issue closes the issue with the focus on a control of the header, not on the page body @firefox", async ({
+  page,
+}) => {
+  const step = (text: string) => `header hand-back: Enter on Close issue: ${text}`;
+  const key = await plantHeaderIssue();
+  await page.setViewportSize(WIDE);
+  await page.goto(`/issues/${key}`);
+  const header = page.getByTestId("issue-header");
+  const close = header.getByRole("button", { exact: true, name: "Close issue" });
+  await expect(close, step("the open issue's header draws Close issue.")).toBeVisible();
+  await close.focus();
+  await expect(close, step("Close issue holds the focus.")).toBeFocused();
+  await page.keyboard.press("Enter");
+  await expect
+    .poll(async () => (await getIssue(key)).status, { message: step("the issue is closed.") })
+    .toBe("done");
+  await expect(close, step("Close issue leaves the closed issue's header.")).toHaveCount(0);
+  await expect(
+    header.getByRole("button", { exact: true, name: "Reopen issue" }),
+    step("the closed issue's header draws Reopen.")
+  ).toBeVisible();
+  await expect(
+    header.locator(":focus"),
+    step(
+      "once Close issue has left the page the focus is on a control of the header - Reopen, which takes its place - not on the page body."
+    )
+  ).toHaveCount(1);
+});
+
+// The tester's red row of round 22 (a control a press takes off the page leaves the focus on the
+// page body: today's issue header draws Reopen only while the issue is closed (IssueHeader.tsx
+// :644, `isClosed ? (`), and its press is held (`heldPress`, :655) only while the status write is
+// out; once the write lands the issue is open and Reopen leaves the page with the focus it holds,
+// and the header, which draws Close issue again (:916-935), hands that focus to no control -
+// IssueHeader.tsx holds no `useFocusPlace` and no `.focus(`; the architect's ruling of
+// 2026-11-27T02:47Z). Enter on the focused Reopen of a closed issue reopens it; the focus must then be on
+// a control of the header, Close issue being the one that takes Reopen's place, not on the page
+// body. At 5c7ae79c it is on the body in every sample: Chromium and Firefox twice each, WebKit
+// twice, at 1440x900 and at 390x664.
+// SLOW(>=2s): one issue seeded and closed, one issue page open, and one status write that
+// reopens the issue.
+// @firefox: the engine's focus after the element that held it is removed (playwright.config.ts names the clause).
+test("header hand-back: on today's issue page Enter on Reopen reopens the issue with the focus on a control of the header, not on the page body @firefox", async ({
+  page,
+}) => {
+  const step = (text: string) => `header hand-back: Enter on Reopen: ${text}`;
+  const key = await plantHeaderIssue();
+  await patchIssue(key, { status: "done" });
+  await page.setViewportSize(WIDE);
+  await page.goto(`/issues/${key}`);
+  const header = page.getByTestId("issue-header");
+  const reopen = header.getByRole("button", { exact: true, name: "Reopen issue" });
+  await expect(reopen, step("the closed issue's header draws Reopen.")).toBeVisible();
+  await reopen.focus();
+  await expect(reopen, step("Reopen holds the focus.")).toBeFocused();
+  await page.keyboard.press("Enter");
+  await expect
+    .poll(async () => (await getIssue(key)).status, { message: step("the issue is open again.") })
+    .not.toBe("done");
+  await expect(reopen, step("Reopen leaves the open issue's header.")).toHaveCount(0);
+  await expect(
+    header.getByRole("button", { exact: true, name: "Close issue" }),
+    step("the open issue's header draws Close issue.")
+  ).toBeVisible();
+  await expect(
+    header.locator(":focus"),
+    step(
+      "once Reopen has left the page the focus is on a control of the header - Close issue, which takes its place - not on the page body."
+    )
+  ).toHaveCount(1);
+});
+
+// The tester's red row of round 22 (a control a press takes off the page leaves the focus on the
+// page body: today's issue header draws Release beside the claim only while the issue has one
+// (IssueHeader.tsx:867, `issue.claim === null ? null : (`), and its press is held (`heldPress`,
+// :873) only while the release is out; once it lands the claim is gone and Release leaves the page
+// with the focus it holds, and the header hands that focus to no control - IssueHeader.tsx holds
+// no `useFocusPlace` and no `.focus(`; the architect's ruling of 2026-11-27T02:47Z). Enter on the focused
+// Release of a claimed issue frees it; the focus must then be on a control of the header, not on
+// the page body. At 5c7ae79c it is on the body in every sample: Chromium and Firefox twice each,
+// WebKit twice, at 1440x900 and at 390x664.
+// SLOW(>=2s): one issue seeded and claimed, one issue page open, and one release written.
+// @firefox: the engine's focus after the element that held it is removed (playwright.config.ts names the clause).
+test("header hand-back: on today's issue page Enter on Release frees the claim with the focus on a control of the header, not on the page body @firefox", async ({
+  page,
+}) => {
+  const step = (text: string) => `header hand-back: Enter on Release: ${text}`;
+  const key = await plantHeaderIssue();
+  await claimIssue(key, { as: "user", login: "alice" });
+  await page.setViewportSize(WIDE);
+  await page.goto(`/issues/${key}`);
+  const header = page.getByTestId("issue-header");
+  const release = header.getByRole("button", { name: `Release the claim on ${key}` });
+  await expect(release, step("the claimed issue's header draws Release.")).toBeVisible();
+  await release.focus();
+  await expect(release, step("Release holds the focus.")).toBeFocused();
+  await page.keyboard.press("Enter");
+  await expect
+    .poll(async () => (await getIssue(key)).claim, { message: step("the claim is released.") })
+    .toBeNull();
+  await expect(release, step("Release leaves the header with the claim.")).toHaveCount(0);
+  await expect(
+    header.locator(":focus"),
+    step(
+      "once Release has left the page with the claim the focus is on a control of the header, not on the page body."
+    )
+  ).toHaveCount(1);
 });
 
 // The tester's red row of round 19 (R12; the architect's ruling of 2026-11-25T13:35Z): on today's
