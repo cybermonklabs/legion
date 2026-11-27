@@ -27,8 +27,10 @@ import (
 // TestMachineKeyIsTheRolesKey: a role in a pod, where AGENT_SECRETS_MACHINE_IDENTITY is kubernetes
 // and AGENT_SECRETS_KEY_DIR names its agent-secrets directory, trades with the key.pem `agent-secrets
 // keygen` wrote there, so the trade's DPoP proof embeds that key, whose registration the broker
-// holds the pod session's exchange to. A key.pem that cannot be read refuses the trade, naming the
-// path, and no fresh key stands in for it. Every other machine proves a fresh key of its own.
+// holds the pod session's exchange to. A key.pem that cannot be read, or holds no key, refuses the
+// trade, naming the directory by AGENT_SECRETS_KEY_DIR and never its path, which can be a token a
+// person pasted there, and no fresh key stands in for it. Every other machine proves a fresh key of
+// its own.
 func TestMachineKeyIsTheRolesKey(t *testing.T) {
 	dir := t.TempDir()
 	roleKey := testKey(t)
@@ -45,14 +47,34 @@ func TestMachineKeyIsTheRolesKey(t *testing.T) {
 		}
 	})
 
-	t.Run("an unreadable role key refuses the trade, naming the path", func(t *testing.T) {
-		empty := t.TempDir()
-		key, err := MachineKey(getenvOf(map[string]string{IdentityVar: IdentityKubernetes, KeyDirVar: empty}))
-		if path := filepath.Join(empty, RoleKeyFile); err == nil || !strings.Contains(err.Error(), path) {
-			t.Fatalf("MachineKey with no key.pem in the role's directory = %v, want a refusal naming %s", err, path)
+	t.Run("a role key that cannot be read or holds no key refuses the trade, naming the variable and not the path", func(t *testing.T) {
+		const pasted = "madeUpKeyDirToken0123456789abcdef"
+		root := t.TempDir()
+		notPEM := filepath.Join(root, "not-pem-"+pasted)
+		if err := os.Mkdir(notPEM, 0o700); err != nil {
+			t.Fatal(err)
 		}
-		if key != nil {
-			t.Fatal("MachineKey answered a key beside its refusal: a fresh key stands in for the role's")
+		if err := os.WriteFile(filepath.Join(notPEM, RoleKeyFile), []byte("no key here\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		for _, row := range []struct{ name, dir, want string }{
+			{"a directory that does not exist, a token pasted in its place", filepath.Join(root, pasted),
+				"read this role's agent-secrets key in the directory AGENT_SECRETS_KEY_DIR names: open: no such file or directory"},
+			{"a key.pem that holds no PEM block", notPEM,
+				"this role's agent-secrets key in the directory AGENT_SECRETS_KEY_DIR names holds no PEM block"},
+		} {
+			key, err := MachineKey(getenvOf(map[string]string{IdentityVar: IdentityKubernetes, KeyDirVar: row.dir}))
+			if err == nil || err.Error() != row.want {
+				t.Fatalf("%s: MachineKey = %v, want exactly %q", row.name, err, row.want)
+			}
+			for i := 0; i+10 <= len(pasted); i++ {
+				if strings.Contains(err.Error(), pasted[i:i+10]) {
+					t.Fatalf("%s: MachineKey = %q, which holds %q of the directory's path", row.name, err, pasted[i:i+10])
+				}
+			}
+			if key != nil {
+				t.Fatalf("%s: MachineKey answered a key beside its refusal: a fresh key stands in for the role's", row.name)
+			}
 		}
 	})
 

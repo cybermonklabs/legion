@@ -25,8 +25,6 @@ Never merge just to refresh CI or to pick up the default branch.
 Each merge creates a new head, reruns CI and can void a review.
 Never use `jj rebase`, which rewrites pushed commits (*A wrong pushed commit*, below).
 
-Before you race another tree's pull request on shared files, `envoy_publish` to its implementer's role topic, ask when its next push lands, and merge once, after it.
-
 1. Merge the bookmark, never `@`, with the base, in one new commit. `base` is the pull request's base branch, JSON-quoted so jj reads it as a string literal:
 
    ```bash

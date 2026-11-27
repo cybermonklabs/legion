@@ -540,17 +540,22 @@ check "keeps it a failure" \
 
 echo "case: every job that restates its legs' result writes the words runner-shutdown.sh reads"
 # The marker is read by its words, so a job whose error is reworded would hide its legs' shutdowns
-# again with every check green: each such step of ci-job-daemon-go.yaml must hold them.
+# again with every check green: each such step of the three files whose jobs run in legs must hold
+# them.
 marker=$(sed -n "s/^RUNNER_SHUTDOWN_RESTATED=\"\(.*\)\"\$/\1/p" "$script_dir/runner-shutdown.sh")
 check "runner-shutdown.sh spells the marker" "$(is "$([ -n "$marker" ] && echo set)" set)"
-held=$(MARKER="$marker" python3 -c '
+restating() { # restating <workflow>: how many restating steps the file has, and how many write the marker
+  MARKER="$marker" python3 -c '
 import os, sys, yaml
 document = yaml.safe_load(open(sys.argv[1]))
 steps = [step for job in document["jobs"].values() for step in job.get("steps", [])
          if step.get("name") == "Pass only when every leg passed"]
 print(len(steps), sum(os.environ["MARKER"] in step.get("run", "") for step in steps))
-' "$script_dir/../workflows/ci-job-daemon-go.yaml")
-check "both restating steps of ci-job-daemon-go.yaml write it" "$(is "$held" "2 2")"
+' "$script_dir/../workflows/$1"
+}
+check "both restating steps of ci-job-daemon-go.yaml write it" "$(is "$(restating ci-job-daemon-go.yaml)" "2 2")"
+check "envoy-go's restating step writes it" "$(is "$(restating ci-job-envoy-go.yaml)" "1 1")"
+check "envoy-go-race's restating step writes it" "$(is "$(restating ci-job-envoy-go-race.yaml)" "1 1")"
 
 echo "case: GitHub refuses the check runs of this head"
 # The read is tried three times and the verdict is reached without it: a read that did not

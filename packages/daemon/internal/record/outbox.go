@@ -76,8 +76,8 @@ const (
 	// versions approved now, and queues the starts that tell them. Its issue column is the tree's
 	// root.
 	OutboxKindDesignChanges OutboxKind = "design_changes"
-	// OutboxKindRoleHoldersPublish publishes the live role sessions of one issue onto its Dispatch
-	// row (RoleHoldersPublish).
+	// OutboxKindRoleHoldersPublish publishes the role sessions of one issue whose claims hold their
+	// roles onto its Dispatch row (RoleHoldersPublish).
 	OutboxKindRoleHoldersPublish OutboxKind = "role_holders_publish"
 	// OutboxKindMergeHoldsChanged tells the merger of an issue in merging that the project's merge
 	// holds document changed (MergeHoldsChanged).
@@ -308,9 +308,26 @@ func (ClaimRelease) OutboxKind() OutboxKind { return OutboxKindClaimRelease }
 // must still decode and still put its document up. It, MessageArtifact and the outbox's upload
 // can go once no daemon of a release before this one shares the database and no unsent
 // dispatch_message row holds an artifact.
+//
+// HookPrompts, when set, makes the message the one that names the undelivered hook prompts to one
+// role of the issue (UndeliveredHookPrompts), and Body is the text the daemon rendered from it at
+// its last write. A release before this field refuses a row that carries it
+// (DisallowUnknownFields), so a rollback strips it first (docs/kubernetes.md, "Rolling back the
+// release that names undelivered hook prompts on the issue"); Body then posts as it stands.
 type MessagePost struct {
-	Body     string           `json:"body"`
-	Artifact *MessageArtifact `json:"artifact,omitempty"`
+	Body        string                  `json:"body"`
+	Artifact    *MessageArtifact        `json:"artifact,omitempty"`
+	HookPrompts *UndeliveredHookPrompts `json:"hook_prompts,omitempty"`
+}
+
+// UndeliveredHookPrompts is what the message on an issue that names its undelivered hook prompts
+// to one role holds as data (Store.NameUndeliveredHookPrompt): the role, which is how that role's
+// open message is found, and one paragraph for each prompt it names (HookPrompt.Undelivered), in
+// the order they ended. Message renders the row's Body from it each time the row is written, so
+// the row posts as any message posts.
+type UndeliveredHookPrompts struct {
+	Role       claim.Role `json:"role"`
+	Paragraphs []string   `json:"paragraphs"`
 }
 
 // MessageArtifact is the markdown document a message links. Name is the slug Dispatch files it
@@ -1836,11 +1853,12 @@ type DesignNewsReconcile struct{}
 
 func (DesignNewsReconcile) OutboxKind() OutboxKind { return OutboxKindDesignChanges }
 
-// RoleHoldersPublish writes the session of each live Legion role of Issue onto the issue's
-// Dispatch row (PUT /api/v1/issues/{key}/role-holders), which Dispatch reads to take the role of a
-// result from the session that wrote it. The payload names the issue alone: the executor reads the
-// live set from the claims when the row runs (publishRoleHolders), so a row queued before a claim
-// ended sends the set without it, and two events of one issue never publish a stale set.
+// RoleHoldersPublish writes the session of each Legion role of Issue whose claim holds it
+// (supervise.HoldsRole) onto the issue's Dispatch row (PUT /api/v1/issues/{key}/role-holders),
+// which Dispatch reads to take the role of a result from the session that wrote it. The payload
+// names the issue alone: the executor reads the set from the claims when the row runs
+// (publishRoleHolders), so a row queued before a claim ended sends the set without it, and two
+// events of one issue never publish a stale set.
 //
 // The row waits on its issue's board lane among the issue's other Dispatch writes. The write
 // replaces the issue's whole set and tells nobody, so a set Dispatch already holds costs nothing.
@@ -2138,12 +2156,15 @@ func (p PhaseEnded) Message(issue string) string {
 // that word. There is nothing for a hook to interpolate, because every fact it could ask for
 // stands above its words already.
 //
-// The prompt is published with keep: for a role no live session holds, the listener answers it
-// kept and holds it for an hour for the role's next live holder, and the row ends with one log
-// line, the listener its keeper. A listener before #4079 keeps nothing for a claim whose holder is
-// not live. The daemon's publishKeptToRole says what each answer does to the row, and why a later
-// round's session can be handed the prompt and what bounds that; the move back and the counts
-// Message states tell that reader which round the words were written for.
+// The prompt is published with keep and names no source session, since the daemon is none. The
+// Envoy listener keeps nothing for such a publish to a role no live session holds, since no notice
+// of an expired copy could reach its sender, and answers it 404; the row is then the prompt's
+// keeper, and waits up to an hour after it was made for a session to hold the role before it ends
+// undelivered with a message on the issue. A listener that keeps such a publish answers it kept,
+// and the row ends with one log line, the listener its keeper. The daemon's hookPrompt and
+// publishKeptToRole say what each answer does to the row, and why a later round's session can be
+// handed the prompt and what bounds it; the move back and the counts Message states tell that
+// reader which round the words were written for.
 type HookPrompt struct {
 	Hook        string         `json:"hook"`
 	Role        claim.Role     `json:"role"`
@@ -2193,6 +2214,29 @@ func (p HookPrompt) Message(issue string) string {
 	return fmt.Sprintf("Legion hook %s on %s: work went back from %s to %s.\n\n%s\n\n"+
 		"Moves back this hook counts: %d. Counts by move: %s.%s",
 		p.Hook, issue, p.From, p.To, p.Prompt, p.Count, counts, pull)
+}
+
+// Undelivered is the paragraph of the message on the issue that names this prompt, which ended
+// undelivered for why (UndeliveredHookPrompts): written in the form of the message the hook's
+// firing posts (workflow's Engine.fireHook: "Legion hook <name> fired at <n> moves back: <from> to
+// <to>."), so the two read as a pair, then why it was not delivered and the words it carried, so a
+// person or the issue's architect can give them to the role another way.
+func (p HookPrompt) Undelivered(why string) string {
+	return fmt.Sprintf("Legion hook %s fired at %d moves back: %s to %s. Its prompt for that round was not delivered, because %s. The prompt told the %s: %q",
+		p.Hook, p.Count, p.From, p.To, why, p.Role, p.Prompt)
+}
+
+// Message is the message on issue that names these prompts: the data it is found and added to by
+// (Store.NameUndeliveredHookPrompt), and the body rendered from it, which is an opening, each
+// prompt's paragraph (HookPrompt.Undelivered) in the order they ended, and a closing, a blank line
+// between each. The body is rendered at each write, so the row posts as any message posts, and a
+// row whose data a rollback stripped posts the body it holds.
+func (p UndeliveredHookPrompts) Message(issue string) MessagePost {
+	opening := fmt.Sprintf("Legion hook prompts to the %s of %s were not delivered. This message names every prompt to the %s that ended undelivered in the hour after the first of them did.",
+		p.Role, issue, p.Role)
+	closing := fmt.Sprintf("No session of the %s received these words, and the daemon will not send them again.", p.Role)
+	body := opening + "\n\n" + strings.Join(p.Paragraphs, "\n\n") + "\n\n" + closing
+	return MessagePost{Body: body, HookPrompts: &p}
 }
 
 // UpdateAsk is an update round's ask to one claim of the issue, on that claim's Envoy topic:
@@ -2896,6 +2940,13 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 				return fmt.Errorf("a message's artifact %s holds %d bytes, more than the %d of one Dispatch document", artifact.Name, len(artifact.Content), MaxMessageArtifactBytes)
 			}
 		}
+		// The role is how the message is found again (Store.NameUndeliveredHookPrompt), and a
+		// message that names no prompt names nothing.
+		if prompts := value.HookPrompts; prompts != nil {
+			if prompts.Role == "" || len(prompts.Paragraphs) == 0 || value.Artifact != nil {
+				return fmt.Errorf("a message of undelivered hook prompts requires its role and at least one prompt, and carries no artifact")
+			}
+		}
 	case GateSeed, LingerClose, IssueBranch, CheckBound, ClaimRelease, DesignNewsReconcile:
 	case PendingBasisSeed:
 		if !value.Step.Valid() || value.ArtifactID == "" || value.BasisArtifactID == "" || value.BasisVersion <= 0 || value.Ask == "" || value.Generation == 0 || value.RegisteredAt.IsZero() {
@@ -3404,6 +3455,17 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 // `workspace-kept` (WorkspaceKeptNotice) is a pod no role runs in that the daemon keeps for its
 // disk, or a pod an update round kept for its disk; `workspace-taken` (WorkspaceTakenNotice) is a
 // replacement that still took a disk that may hold work.
+//
+// `hook-prompt-undelivered` is a hook's prompt to a role of the issue that ended with no session of
+// that role handed it: the role's claim failed or was retired, or no session of it held the role
+// within the prompt's hour (internal/daemon's keptRoleMessageEnded, finishRefused). The issue's
+// architect is told once for each message on the issue that names such prompts, when the first of
+// them opens that message (Store.NameUndeliveredHookPrompt), so a role that is not coming makes
+// one notice an hour, as it makes one message. The reason names the role, the hook, why the
+// prompt was not delivered, and when the message that names every prompt of that hour posts,
+// with the words, which the architect can give to the role another way. No earlier release
+// decodes it, so a rollback deletes its unsent rows first (docs/kubernetes.md, "Rolling back the
+// release that names undelivered hook prompts on the issue").
 var validNoticeKinds = []NoticeKind{
 	"phase-finished", "worker-died", "worker-stalled", "worker-silent", "worker-background-stalled", "held",
 	"pr-blocked", "pr-merged", "pr-closed-unmerged", "pull-request-missing", "message-refused",
@@ -3414,7 +3476,12 @@ var validNoticeKinds = []NoticeKind{
 	"session-lost", "session-forgotten", "session-store-fault", "merge-holds-changed", ProviderErrorsNotice,
 	"task-stopped", "plan-not-taken", "retro-held",
 	WorkspaceKeptNotice, WorkspaceTakenNotice,
+	HookPromptUndeliveredNotice,
 }
+
+// HookPromptUndeliveredNotice is the architect's notice of a hook's prompt that ended undelivered
+// (validNoticeKinds says when it is written).
+const HookPromptUndeliveredNotice NoticeKind = "hook-prompt-undelivered"
 
 // VolumeNearFullNotice is the architect's notice of a sweep of its issue pod's volume that left
 // that volume still above its low mark, or of the trimmer having switched itself off: the one
