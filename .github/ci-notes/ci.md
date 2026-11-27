@@ -2066,7 +2066,10 @@ Three pieces make it:
   the reviewer's own token, an App's or a person's, so its event starts a run; nothing this
   mechanism writes has to start one. Its jobs run only on an approval of a pull request that is
   not a draft and carries `large-pr`, by a reviewer this repository trusts: author_association
-  OWNER, MEMBER or COLLABORATOR, which is a person with write access, or a GitHub App
+  OWNER, MEMBER or COLLABORATOR, which is the repository's owner, an organization member or an
+  invited collaborator (a member's role on this repository, and a collaborator's, may be Read or
+  Triage: such an account spends runner time here, and reaches no secret with code of its own,
+  since a branch of this repository needs write access), or a GitHub App
   (`github.event.review.user.type == 'Bot'`), which can review here only where it is installed on
   this repository. The repository is public, and any signed-in account may approve one of its
   pull requests, so without that term any account could start these runs, a three-hour hold and
@@ -2080,15 +2083,18 @@ Three pieces make it:
   - `lead` decides whether this approval runs the suites or follows the approval-time run
     already at this head: the earliest older run of this workflow at the same head whose ci-ok is
     still open or passed (`.github/scripts/large-pr-lanes.sh lead`). So one approval-time run at
-    a time tests a head, and later approvals of it, a third as much as a second, conclude as that
-    run does. Two runs at once would meet in ci.yaml's concurrency group, which on this event is
-    the merge commit (`ci-<sha>`), and in browser-image.yaml's build group, keyed the same way:
-    GitHub keeps one running and one pending run per group, and a third arrival cancels the
-    pending one, whatever cancel-in-progress says, which would leave a failed ci-ok with nothing
-    failed. Keying those two groups per run on this event instead was weighed and not taken:
-    browser-image.yaml is part of the browser image's build recipe (ci_images.py's
-    recipe_sha256), so any edit of it rebuilds the image and moves its row, and following does
-    the same work with no second run of the suites at all.
+    a time tests a head, unless GitHub refuses `lead`'s read, and later approvals of it, a third
+    as much as a second, conclude as that run does. Two runs at once would meet in ci.yaml's
+    concurrency group, which on this event is the merge commit (`ci-<sha>`), and in
+    browser-image.yaml's build group, keyed the same way: GitHub keeps one running and one
+    pending run per group, and a third arrival cancels the pending one, whatever
+    cancel-in-progress says, which would leave a failed ci-ok with nothing failed. A second call
+    that does start, after a refused read, lists no job while it waits in that group, so its own
+    ci-ok fails 300 s after its `lead` ended; its `lead` says so, and its failed jobs are re-run
+    once the first run has ended. Keying those two groups per run on this event instead was
+    weighed and not taken: browser-image.yaml is part of the browser image's build recipe
+    (ci_images.py's recipe_sha256), so any edit of it rebuilds the image and moves its row, and
+    following does the same work with no second run of the suites at all.
   - `approval` calls this file, through its `workflow_call` trigger, when `lead` says to run. A
     called workflow runs under its caller's event, and on pull_request_review the `full-ci` term
     of every held-back output (`github.event_name != 'pull_request' || …`) is true, so each takes its
@@ -2107,10 +2113,11 @@ Three pieces make it:
 
 What an approval's run runs beside a merge group's. The jobs and steps of ci.yaml's tree that
 test the event, read at this head: dispatch-two-builds-same runs on both
-(ci-job-dispatch-two-builds.yaml); the daemon API contract step of lint, `pr-title`,
-dispatch-browser-pr and the dispatch-references preview run on a pull request, and the first two
-on a merge group too, so on an approval's run they are skipped, and each ran at the same head on
-that head's push run; worker-image runs on a pull request alone, so an approval's run skips it as
+(ci-job-dispatch-two-builds.yaml); `pr-title` runs on an approval's run too, since #5231 left
+its `if:` the draft term alone, and it gates nothing (CI_OK_EXEMPT); the daemon API contract
+step of lint, dispatch-browser-pr and the dispatch-references preview run on a pull request, so
+an approval's run skips them, and each ran at the same head on that head's push run;
+worker-image runs on a pull request alone, so an approval's run skips it as
 a merge group does; cancel-started, ci-ok's two refusal steps and every ci-ok-report post are
 merge-group mechanics. The tree an approval's run tests is the head merged with its base as GitHub
 last merged it, not with the entries ahead of it in the queue.
@@ -2158,9 +2165,14 @@ cancelled (run 45392143357, created 12:17:56Z, its ci-ok job 12:18:35Z). A later
 head follows the run already testing it, as `lead` says above; an approval of a newer head leaves
 the older head's run to finish. To run an approval-time run again after a failure that was not
 the change's, re-run its failed jobs (`gh run rerun <run> --failed`): a later attempt of a job
-replaces its own check run (the k28 probe of INFRA-1066, ci-ok-reconcile.sh's header), and the
-runs that follow it read its new ci-ok. Another approval would run the suites anew beside the
-failed verdict, which stays on the head.
+replaces its own check run (the k28 probe of INFRA-1066, ci-ok-reconcile.sh's header). A run
+that follows it does **not** take that new verdict: a follower concludes on the first poll that
+sees the followed run's ci-ok completed, whatever its conclusion, and the polls are 60 s apart,
+so by the time anyone re-runs the lead run its followers have already failed their own ci-ok,
+and each failed ci-ok keeps the head red. Re-run the lead run's failed jobs first, then each
+follower's: a follower's new attempt chooses a run to follow again and follows the lead run's
+new attempt. Another approval would run the suites anew beside the failed verdict, which stays
+on the head.
 
 What it leaves as it was:
 
@@ -2170,7 +2182,7 @@ What it leaves as it was:
 - ci.yaml's ci-ok reads a runner shutdown off check runs named for its own jobs
   (.github/scripts/runner-shutdown.sh), and under this caller each is named `approval / <job>`,
   so a job the platform killed in an approval-time run reads as a failure, not as cancelled.
-  Re-run that run's failed jobs to run it again.
+  Re-run that run's failed jobs, and then each run that followed it.
 - `full-ci` and the lane labels decide nothing here: the approval's run selects by paths alone,
   as the queue does.
 

@@ -319,7 +319,7 @@ check "exits 0" "$(is "$status" 0)"
 check "says what it read" \
   "$(contains "$out" '^all 47 workflow files under .github/workflows are within 64,000 bytes')"
 check "and what it held them to" \
-  "$(contains "$out" 'call at most 46 unique reusable workflows, set JOB_TIMEOUT_MINUTES and STEP_TIMEOUT_MINUTES to the timeout-minutes they stand for, start every Postgres service on postgres-service-settings.sh.s command line with a step that reads it back, and grant each workflow they call every scope it declares$')"
+  "$(contains "$out" 'call at most 46 unique reusable workflows, set JOB_TIMEOUT_MINUTES and STEP_TIMEOUT_MINUTES to the timeout-minutes they stand for, start every Postgres service on postgres-service-settings.sh.s command line with a step that reads it back, grant each workflow they call every scope it declares, and write one condition in a job.s name and in every .if:. beside it$')"
 
 echo "case: job ids and with: keys that differ only in case"
 root=$(fixture folded-elsewhere)
@@ -800,5 +800,99 @@ check "names the script, its exit and what it printed" \
 check "still names the job with no read-back" "$(contains "$out" "job bare runs the Postgres service 'postgres' and no step")"
 check "and holds no command: line to a line it could not read" "$(is "$(contains "$out" 'not the one')" false)"
 check "refuses those two and nothing else" "$(contains "$out" '^2 problem(s) across the 1 workflow file(s) under .github/workflows$')"
+
+echo "case: a job named for its own condition, and the jobs beside it that the event alone decides"
+root=$(fixture one-condition)
+trust="github.event.review.state == 'approved' && contains(github.event.pull_request.labels.*.name, 'large-pr')"
+cat > "$root/.github/workflows/ci.yaml" <<YAML
+name: Lanes
+on: pull_request_review
+jobs:
+  held:
+    name: \${{ $trust && 'ci-ok' || 'lanes (not run)' }}
+    if: \${{ $trust }}
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo hold
+  lead:
+    if: \${{ $trust }}
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo lead
+  after:
+    needs: lead
+    if: needs.lead.outputs.run == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo after
+YAML
+run_check "$root"
+check "exits 0 while the three texts are one" "$(is "$status" 0)"
+
+echo "case: the name's condition drifts from its own if:"
+root=$(fixture one-condition-name-drift)
+cat > "$root/.github/workflows/ci.yaml" <<YAML
+name: Lanes
+on: pull_request_review
+jobs:
+  held:
+    name: \${{ github.event.review.state == 'approved' && 'ci-ok' || 'lanes (not run)' }}
+    if: \${{ $trust }}
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo hold
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names the job and both texts" \
+  "$(contains "$out" "^::error file=.github/workflows/ci.yaml::.github/workflows/ci.yaml: job 'held' writes one condition in its \`name:\` and another in its \`if:\`")"
+check "refuses that one and nothing else" "$(contains "$out" '^1 problem(s) across the 1 workflow file(s) under .github/workflows$')"
+
+echo "case: a job beside it that the event alone decides writes another condition"
+root=$(fixture one-condition-job-drift)
+cat > "$root/.github/workflows/ci.yaml" <<YAML
+name: Lanes
+on: pull_request_review
+jobs:
+  held:
+    name: \${{ $trust && 'ci-ok' || 'lanes (not run)' }}
+    if: \${{ $trust }}
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo hold
+  lead:
+    if: \${{ github.event.review.state == 'approved' }}
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo lead
+  after:
+    needs: lead
+    if: needs.lead.outputs.run == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo after
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names the job that waits for nothing" \
+  "$(contains "$out" "job 'lead' waits for no job and writes \`github.event.review.state == 'approved'\` where job 'held' writes")"
+check "and not the job that waits for lead" "$(is "$(contains "$out" "job 'after'")" false)"
+check "refuses that one and nothing else" "$(contains "$out" '^1 problem(s) across the 1 workflow file(s) under .github/workflows$')"
+
+echo "case: a name that picks between two names by a test of its own is no condition of its job's run"
+root=$(fixture name-by-event)
+cat > "$root/.github/workflows/ci.yaml" <<'YAML'
+name: Build
+on: [push, workflow_dispatch]
+jobs:
+  pr-title:
+    name: ${{ github.event_name == 'workflow_dispatch' && 'pr-title (dispatch)' || 'pr-title' }}
+    if: ${{ !github.event.pull_request.draft }}
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo title
+YAML
+run_check "$root"
+check "exits 0: its first term is not the if:'s" "$(is "$status" 0)"
 
 summary "check-workflow-files.sh"

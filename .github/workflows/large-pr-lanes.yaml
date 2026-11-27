@@ -13,7 +13,10 @@ name: Large PR lanes
 # pull request (.github/scripts/large-pr-lanes.sh label).
 #
 # Who is trusted: an approval whose author_association is OWNER, MEMBER or COLLABORATOR, which is
-# a person with write access, or whose author is a GitHub App (`user.type == 'Bot'`), which can
+# this repository's owner, a member of its organization or an invited collaborator (a member's
+# role here, and a collaborator's, may be Read or Triage: such an account spends runner time and
+# reaches no secret with code of its own, since a branch of this repository needs write access),
+# or whose author is a GitHub App (`user.type == 'Bot'`), which can
 # review here only where it is installed on this repository. The repository is public, and GitHub
 # lets any signed-in account approve one of its pull requests; without this term any account could
 # start these runs, a three-hour hold and every slow suite, as often as it liked. An App's
@@ -21,6 +24,12 @@ name: Large PR lanes
 # the association alone cannot admit the reviewer Legion uses (167 approvals by
 # legion-reviewer[bot] on pull requests merged from 2026-11-23 read CONTRIBUTOR, the 2 by a person
 # MEMBER; review 6042186091 on #5346 reads CONTRIBUTOR too).
+# That condition is written three times: in ci-ok's `name:`, in its `if:` and in `lead`'s `if:`.
+# The three must be one text, and rule 9 of .github/scripts/check-workflow-files.sh holds them
+# equal: a `lead` that admitted an approval ci-ok did not would run every suite with no ci-ok
+# holding the queue; a ci-ok that admitted one `lead` did not would follow nothing and fail; and
+# a name narrower than its own `if:` would put the hold under "large-pr-lanes (not run)", which
+# no ruleset reads.
 #
 # `lead` decides whether this approval runs the suites or follows the approval-time run already at
 # this head (large-pr-lanes.sh lead), so two approvals never test one head at once. `approval`

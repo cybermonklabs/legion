@@ -68,6 +68,15 @@
 #      head: .github/workflows/large-pr-lanes.yaml, which calls ci.yaml on an approval, is the
 #      caller this was written for. A caller with no `permissions` anywhere passes GitHub's
 #      default, which this check cannot read, so it is refused too.
+#   9. a job whose `name:` is a condition that decides whether the job runs, written as
+#      `<condition> && '<name>' || '<other>'`, whose `<condition>` is not its own `if:` word for
+#      word; and, where the file holds other jobs whose `if:` is such a condition too, any two of
+#      them that differ. GitHub leaves a skipped job's name unevaluated, so a job named for a
+#      required check writes its whole condition into its name, and the name and the two `if:`s
+#      are then the same text in three places with nothing holding them together:
+#      .github/workflows/large-pr-lanes.yaml is the file this was written for, where a `lead`
+#      that admits an approval its ci-ok does not runs every slow suite with no ci-ok holding the
+#      queue. A file whose jobs carry no such name is not its business.
 #
 # A file that is not valid YAML is still measured for its bytes, and cannot be read for the other
 # faults.
@@ -235,22 +244,20 @@ SCOPES = (
     "security-events", "statuses",
 )
 LEVELS = {"none": 0, "read": 1, "write": 2}
+LEVEL_NAMES = {level: name for name, level in LEVELS.items()}
 
 
-def granted(block: object) -> dict[str, int] | None:
-    """A `permissions` value as {scope: level}: `{}` grants nothing, `read-all` and `write-all`
-    every scope, a mapping what it names. None for a value GitHub would not take."""
+def granted(block: object) -> dict[str, int]:
+    """A `permissions` value as {scope: level}: a mapping what it names, `read-all` and
+    `write-all` every scope, and anything else, `{}` and a value GitHub would not take, nothing.
+    A scope written at no level GitHub takes is left out, so a caller is refused for it and a
+    callee declares it not: this check holds nothing to a level it cannot read."""
     if isinstance(block, str):
         level = {"read-all": 1, "write-all": 2}.get(block)
-        return None if level is None else {scope: level for scope in SCOPES}
+        return {} if level is None else {scope: level for scope in SCOPES}
     if isinstance(block, dict):
-        levels = {}
-        for scope, level in block.items():
-            if level not in LEVELS:
-                return None
-            levels[str(scope)] = LEVELS[level]
-        return levels
-    return None
+        return {str(scope): LEVELS[level] for scope, level in block.items() if level in LEVELS}
+    return {}
 
 
 def check_call_permissions(path: Path) -> None:
@@ -272,20 +279,15 @@ def check_call_permissions(path: Path) -> None:
             called = yaml.safe_load(callee.read_text())
         except (OSError, UnicodeDecodeError, yaml.YAMLError):
             continue  # that file's own read names it
-        if not isinstance(called, dict):
-            continue
         need: dict[str, int] = {}
-        blocks = [("the workflow's", called.get("permissions"))]
-        blocks += [(f"job '{name}''s", body.get("permissions"))
-                   for name, body in (called.get("jobs") or {}).items() if isinstance(body, dict)]
-        for _, block in blocks:
-            levels = granted(block) if block is not None else {}
-            for scope, level in (levels or {}).items():
+        blocks = [called.get("permissions")]
+        blocks += [body.get("permissions") for body in (called.get("jobs") or {}).values() if isinstance(body, dict)]
+        for block in blocks:
+            for scope, level in granted(block).items():
                 need[scope] = max(need.get(scope, 0), level)
         if not any(need.values()):
             continue
-        names = {v: k for k, v in LEVELS.items()}
-        declared = ", ".join(f"{s}: {names[n]}" for s, n in sorted(need.items()) if n)
+        declared = ", ".join(f"{s}: {LEVEL_NAMES[n]}" for s, n in sorted(need.items()) if n)
         block = job["permissions"] if "permissions" in job else document.get("permissions")
         if block is None:
             problem(path, f"{path}: job '{job_id}' calls {callee}, which declares {declared}, and "
@@ -293,14 +295,74 @@ def check_call_permissions(path: Path) -> None:
                           f"repository's default, which this check cannot read. Name the scopes "
                           f"on the job." + limits(path))
             continue
-        have = granted(block) or {}
+        have = granted(block)
         short = sorted(scope for scope, level in need.items() if have.get(scope, 0) < level)
         if short:
-            lacking = ", ".join(f"{s}: {names[need[s]]} (granted {names[have.get(s, 0)]})" for s in short)
+            lacking = ", ".join(f"{s}: {LEVEL_NAMES[need[s]]} (granted {LEVEL_NAMES[have.get(s, 0)]})" for s in short)
             problem(path, f"{path}: job '{job_id}' calls {callee}, and grants less than that "
                           f"workflow declares: {lacking}. GitHub refuses such a run at startup, "
                           f"with no job and no check run, so every run of this caller would stop "
                           f"with no signal on the head." + limits(path))
+
+
+# Rule 9. A job name that is the condition deciding the job's own run: `<condition> && '<name>'
+# || '<other>'`, the whole of it in one `${{ }}` or in none.
+NAMED_CONDITION = re.compile(r"^\s*(?:\$\{\{)?\s*(?P<condition>.*?)\s*&&\s*'[^']*'\s*\|\|\s*'[^']*'\s*(?:\}\})?\s*$",
+                             re.S)
+
+
+def condition_text(value: object) -> str:
+    """An `if:`, or the condition a name holds, as its words: GitHub reads the expression, so a
+    line break or a run of spaces is no difference."""
+    text = str(value).strip()
+    if text.startswith("${{") and text.endswith("}}"):
+        text = text[3:-2]
+    return " ".join(text.split())
+
+
+def check_one_condition(path: Path) -> None:
+    """Rule 9: in a file where a job's `name:` restates the condition that decides its own run,
+    that condition is the job's own `if:`, and every job of the file that waits for nothing
+    (`needs:` absent) writes the same `if:`: those are the jobs the event alone decides. A name
+    that chooses between two names by a test of its own, as the `pr-title (dispatch)` name in
+    .github/workflows/ci.yaml does, states no condition of the job's run: its first term differs
+    from the `if:`'s, and this passes over it."""
+    try:
+        document = yaml.safe_load(path.read_text())
+    except (OSError, UnicodeDecodeError, yaml.YAMLError):
+        return  # rule 3 has named it
+    jobs = (document or {}).get("jobs") if isinstance(document, dict) else None
+    if not isinstance(jobs, dict):
+        return
+    named = holder = ""
+    for job_id, job in jobs.items():
+        match = NAMED_CONDITION.match(str(job["name"])) if isinstance(job, dict) and "name" in job else None
+        if not match:
+            continue
+        wanted = condition_text(match.group("condition"))
+        own = condition_text(job.get("if", ""))
+        if not own or wanted.split(" && ")[0] != own.split(" && ")[0]:
+            continue
+        if wanted != own:
+            problem(path, f"{path}: job '{job_id}' writes one condition in its `name:` and "
+                          f"another in its `if:`, and GitHub evaluates the name only where the "
+                          f"job runs, so a name narrower than its `if:` leaves the job's check "
+                          f"run under another name. Its name holds `{wanted}` and its `if:` "
+                          f"`{own}`." + limits(path))
+        elif not named:
+            named, holder = own, str(job_id)
+    if not named:
+        return
+    for job_id, job in jobs.items():
+        if not isinstance(job, dict) or str(job_id) == holder or "needs" in job:
+            continue
+        own = condition_text(job.get("if", ""))
+        if own != named:
+            problem(path, f"{path}: job '{job_id}' waits for no job and writes "
+                          f"`{own or 'no if:'}` where job '{holder}' writes `{named}` in its "
+                          f"`name:` and its `if:`. The jobs of this file that the event alone "
+                          f"decides must write one condition, or one of them runs where the job "
+                          f"named for the check does not." + limits(path))
 
 
 def job_uses(node: object) -> list[str]:
@@ -631,6 +693,7 @@ for path in targets:
             f"starts no run." + limits(path),
         )
     check_call_permissions(path)
+    check_one_condition(path)
 
 if problems:
     for annotation in problems:
@@ -646,7 +709,7 @@ print(
     f"{GITHUB_CAP:,}-byte cap, parse as YAML, repeat no mapping key after upper-casing, call "
     f"at most {CALL_LIMIT} unique reusable workflows, set JOB_TIMEOUT_MINUTES and "
     f"STEP_TIMEOUT_MINUTES to the timeout-minutes they stand for, start every Postgres service on "
-    f"{SETTINGS}'s command line with a step that reads it back, and grant each workflow they call "
-    f"every scope it declares"
+    f"{SETTINGS}'s command line with a step that reads it back, grant each workflow they call "
+    f"every scope it declares, and write one condition in a job's name and in every `if:` beside it"
 )
 PY

@@ -233,7 +233,7 @@ reset
 head_runs 40
 reads_of 40 "ci-ok|in_progress|-|1;approval / changes|in_progress|-|1"
 run_lead
-check "follows it" "$(is "$(output)" "run=false follows=40 ")"
+check "follows it" "$(is "$(output)" "run=false ")"
 check "says so" "$(contains "$out" '^run 40, an approval-time run at abc, is open or passed: this approval follows it')"
 
 echo "case: lead with an earlier run that passed, after one that failed"
@@ -242,7 +242,8 @@ head_runs 38 39
 reads_of 38 "ci-ok|completed|failure|1"
 reads_of 39 "ci-ok|completed|success|1"
 run_lead
-check "follows the one that passed" "$(is "$(output)" "run=false follows=39 ")"
+check "follows the one that passed" "$(is "$(output)" "run=false ")"
+check "and says which" "$(contains "$out" '^run 39, an approval-time run at abc, is open or passed')"
 
 echo "case: lead with only a failed earlier run, a newer run and another workflow's run"
 reset
@@ -326,12 +327,15 @@ run_hold
 check "is waited through" "$(is "$status" 0)"
 
 echo "case: lead still open, then the caller starts"
+# START=0, so the start clock fails the moment it runs: a hold that started it while lead was
+# queued or running would fail at once rather than reach the third read. The case so needs no
+# second of wall time to pass between the reads.
 reset
-reads "$self;lead|queued|-|1" "$self;lead|in_progress|-|1" "$self;$lead_done" \
+reads "$self;lead|queued|-|1" "$self;lead|in_progress|-|1" \
   "$self;$lead_done;approval / changes|completed|success|1;approval / ci-ok|completed|success|1"
-START=1 run_hold
+START=0 run_hold
 check "is waited for: the start clock runs only once lead has ended" "$(is "$status" 0)"
-check "through every read" "$(is "$(reads_made)" 4)"
+check "through every read" "$(is "$(reads_made)" 3)"
 
 echo "case: the caller never starts"
 # A caller held where nothing releases it, or cancelled before it listed a job, lists neither its

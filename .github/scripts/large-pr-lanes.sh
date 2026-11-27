@@ -141,10 +141,10 @@ label() {
   esac
 }
 
-# target: the id of the run to follow, or nothing: the earliest run of large-pr-lanes.yaml at
-# HEAD_SHA, older than this one, whose job named ci-ok is still open (it tests, or follows one that
-# does) or concluded success. Returns 1 when GitHub refused a read at every attempt.
-target() {
+# earlier_runs: one line `<run id> <status> <conclusion>` for each run of large-pr-lanes.yaml at
+# HEAD_SHA older than this one, oldest first, read off its job named ci-ok. Returns 1 when GitHub
+# refused a read at every attempt.
+earlier_runs() {
   local runs id state
   runs=$(gh_read gh api --paginate \
     "repos/$GITHUB_REPOSITORY/actions/runs?event=pull_request_review&head_sha=$HEAD_SHA&per_page=100" \
@@ -153,26 +153,30 @@ target() {
     [ -n "$id" ] || continue
     state=$(gh_read gh api "repos/$GITHUB_REPOSITORY/actions/runs/$id/jobs?filter=latest&per_page=100" \
       --jq '.jobs[] | select(.name == "ci-ok") | "\(.status) \(.conclusion // "-")"') || return 1
-    case $state in
-      "completed success" | queued* | in_progress* | waiting* | pending* | requested*)
-        echo "$id"
-        return 0
-        ;;
-    esac
+    echo "$id $state"
   done < <(sort -n <<<"$runs")
+}
+
+# target: the id of the run to follow, or nothing: the earliest of earlier_runs whose ci-ok is still
+# open (it tests, or follows one that does) or concluded success. Returns 1 as earlier_runs does.
+target() {
+  local rows
+  rows=$(earlier_runs) || return 1
+  awk '$2 == "completed" && $3 == "success" || $2 ~ /^(queued|in_progress|waiting|pending|requested)$/ { print $1; exit }' \
+    <<<"$rows"
 }
 
 lead() {
   need GH_TOKEN GITHUB_REPOSITORY GITHUB_RUN_ID HEAD_SHA GITHUB_OUTPUT
   local follow
   if ! follow=$(target); then
-    echo "::warning::GitHub refused the approval-time runs at $HEAD_SHA at every attempt gh-read.sh made, so this approval runs the suites itself, beside any run already testing this head"
+    echo "::warning::GitHub refused the approval-time runs at $HEAD_SHA at every attempt gh-read.sh made, so this approval runs the suites itself. If another approval-time run is testing this head, this run's call of ci.yaml waits behind it in ci.yaml's concurrency group (ci-<merge commit>), lists no job meanwhile, and this run's ci-ok then fails ${LARGE_PR_HOLD_START_SECONDS:-300} s after this job ends: re-run its failed jobs once the other run has ended"
     echo "run=true" >>"$GITHUB_OUTPUT"
     return 0
   fi
   if [ -n "$follow" ]; then
     echo "run $follow, an approval-time run at $HEAD_SHA, is open or passed: this approval follows it and runs no suite of its own"
-    printf 'run=false\nfollows=%s\n' "$follow" >>"$GITHUB_OUTPUT"
+    echo "run=false" >>"$GITHUB_OUTPUT"
     return 0
   fi
   echo "no approval-time run at $HEAD_SHA is open or passed: this approval runs the suites"
@@ -191,94 +195,139 @@ conclude() {
   return 1
 }
 
-# hold: the three cases of the header. Each read lists the newest execution of every job of this
-# run (`filter=latest`). A verdict of this attempt decides. One of an earlier attempt decides only
-# when no job of CALLER ran in this attempt (a re-run of this job alone): when its jobs re-ran,
-# ci.yaml's ci-ok re-runs after them, and until GitHub creates it the newest one listed is the
-# earlier attempt's.
-hold() {
-  need GH_TOKEN GITHUB_REPOSITORY GITHUB_RUN_ID GITHUB_RUN_ATTEMPT CALLER HEAD_SHA
-  local poll=${LARGE_PR_HOLD_POLL_SECONDS:-60} ended_reads=${LARGE_PR_HOLD_ENDED_READS:-3}
-  local start_limit=${LARGE_PR_HOLD_START_SECONDS:-300}
-  local want="$CALLER / ci-ok" ended=0 started='' followed='' jobs verdict others listed open skipped lead_open
-  local route="repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/jobs?filter=latest&per_page=100"
-  local status conclusion attempt url
-  echo "waiting for this approval's verdict at $HEAD_SHA (attempt $GITHUB_RUN_ATTEMPT)"
+# caller_rows <jobs> <field test>: the rows of this run's jobs that belong to CALLER's called
+# workflow, less its own ci-ok, that the awk test keeps; `wc -l` of them.
+caller_rows() {
+  awk -F'\t' -v caller="$CALLER / " -v want="$CALLER / ci-ok" \
+    "index(\$1, caller) == 1 && \$1 != want && ($2)" <<<"$1" | wc -l
+}
+
+# wait_for_caller: reads this run's jobs until CALLER has listed a job of the workflow it calls
+# (this approval runs the suites) or has itself been skipped (`lead` chose to follow). It writes
+# that last read into HOLD_JOBS and the case into HOLD_PHASE (`caller` or `skipped`), rather than
+# printing them, so that the read it made is the next phase's first pass rather than a read of its
+# own. It fails when no job of CALLER is listed HOLD_START_LIMIT s after `lead` ended.
+wait_for_caller() {
+  local started='' jobs skipped lead_open
   while true; do
-    if jobs=$(gh_read gh api --paginate "$route" \
+    if jobs=$(gh_read gh api --paginate "$HOLD_ROUTE" \
       --jq '.jobs[] | [.name, .status, (.conclusion // "-"), (.run_attempt | tostring), .html_url] | @tsv'); then
-      verdict=$(awk -F'\t' -v want="$want" '$1 == want' <<<"$jobs")
-      others=$(awk -F'\t' -v attempt="$GITHUB_RUN_ATTEMPT" -v caller="$CALLER / " -v want="$want" \
-        'index($1, caller) == 1 && $1 != want && $4 == attempt' <<<"$jobs" | wc -l)
-      listed=$(awk -F'\t' -v caller="$CALLER / " -v want="$want" 'index($1, caller) == 1 && $1 != want' <<<"$jobs" | wc -l)
-      open=$(awk -F'\t' -v caller="$CALLER / " -v want="$want" \
-        'index($1, caller) == 1 && $1 != want && $2 != "completed"' <<<"$jobs" | wc -l)
       skipped=$(awk -F'\t' -v caller="$CALLER" '$1 == caller && $3 == "skipped"' <<<"$jobs")
+      if [ "$(caller_rows "$jobs" 1)" -gt 0 ] || [ -n "$(awk -F'\t' -v want="$CALLER / ci-ok" '$1 == want' <<<"$jobs")" ]; then
+        HOLD_JOBS=$jobs HOLD_PHASE=caller
+        return 0
+      fi
+      if [ -n "$skipped" ]; then
+        HOLD_JOBS=$jobs HOLD_PHASE=skipped
+        return 0
+      fi
+      # Nothing of CALLER yet: `lead` has not ended, or the caller has not started.
       lead_open=$(awk -F'\t' '$1 == "lead" && $2 != "completed"' <<<"$jobs")
-      if [ "$listed" -gt 0 ] || [ -n "$verdict" ]; then
-        # This approval runs the suites.
-        if [ -n "$verdict" ]; then
-          IFS=$'\t' read -r _ status conclusion attempt url <<<"$verdict"
-          if [ "$status" = completed ] && { [ "$attempt" = "$GITHUB_RUN_ATTEMPT" ] || [ "$others" -eq 0 ]; }; then
-            conclude "$want" "$conclusion" "$url" "which ran every fast job and every slow suite this change's paths select"
-            return
-          fi
-        fi
-        # GitHub creates ci.yaml's ci-ok only once its needs have ended, so a moment with every
-        # job of CALLER completed and no verdict is normal; the same reading several reads in a
-        # row is a run that will not reach one.
-        if [ "$open" -eq 0 ]; then
-          ended=$((ended + 1))
-          if [ "$ended" -ge "$ended_reads" ]; then
-            echo "::error::no job of $CALLER is open and $want has not concluded on attempt $GITHUB_RUN_ATTEMPT, $ended reads in a row, so this run reaches no verdict and this ci-ok fails"
-            return 1
-          fi
-        else
-          ended=0
-        fi
-      elif [ -n "$skipped" ]; then
-        # `lead` chose to follow the approval-time run already at this head. The run followed is
-        # read once and kept, so this job concludes as that run's ci-ok does.
-        if [ -z "$followed" ]; then
-          if ! followed=$(target); then
-            followed=''
-            echo "::warning::GitHub refused the approval-time runs at $HEAD_SHA at every attempt gh-read.sh made; reading again in $poll s"
-          elif [ -z "$followed" ]; then
-            echo "::error::$CALLER is skipped, so this approval follows the approval-time run at $HEAD_SHA, and none of that head's runs is open or passed now: the one it followed failed or was cancelled. Re-run that run's failed jobs (gh run rerun <run> --failed), which replaces its ci-ok, and this one's"
-            return 1
-          else
-            echo "following run $followed, the approval-time run at $HEAD_SHA"
-          fi
-        fi
-        if [ -n "$followed" ]; then
-          if verdict=$(gh_read gh api "repos/$GITHUB_REPOSITORY/actions/runs/$followed/jobs?filter=latest&per_page=100" \
-            --jq '.jobs[] | select(.name == "ci-ok") | [.status, (.conclusion // "-"), .html_url] | @tsv'); then
-            IFS=$'\t' read -r status conclusion url <<<"$verdict"
-            if [ "$status" = completed ]; then
-              conclude "the ci-ok of run $followed" "$conclusion" "$url" "the approval-time run at this head that this approval follows"
-              return
-            fi
-          else
-            echo "::warning::GitHub refused run $followed's jobs at every attempt gh-read.sh made; reading again in $poll s"
-          fi
-        fi
+      if [ -n "$lead_open" ]; then
+        started=''
       else
-        # Nothing of CALLER yet: `lead` has not ended, or the caller has not started.
-        if [ -n "$lead_open" ]; then
-          started=''
-        else
-          [ -n "$started" ] || started=$SECONDS
-          if [ $((SECONDS - started)) -ge "$start_limit" ]; then
-            echo "::error::no job of $CALLER is listed $start_limit s after lead ended, neither its jobs nor its skip, so the caller never started (cancelled, or held where nothing will release it) and this ci-ok fails"
-            return 1
-          fi
+        [ -n "$started" ] || started=$SECONDS
+        if [ $((SECONDS - started)) -ge "$HOLD_START_LIMIT" ]; then
+          echo "::error::no job of $CALLER is listed $HOLD_START_LIMIT s after lead ended, neither its jobs nor its skip, so the caller never started (cancelled, or held where nothing will release it, as a second call of ci.yaml at this merge commit waits behind the first in ci.yaml's concurrency group) and this ci-ok fails"
+          return 1
         fi
       fi
     else
-      echo "::warning::GitHub refused this run's jobs at every attempt gh-read.sh made; reading again in $poll s"
+      echo "::warning::GitHub refused this run's jobs at every attempt gh-read.sh made; reading again in $HOLD_POLL s"
     fi
-    sleep "$poll"
+    sleep "$HOLD_POLL"
   done
+}
+
+# hold_caller: this approval runs the suites, so the verdict is ci.yaml's own ci-ok under CALLER.
+# The first pass reads HOLD_JOBS, which wait_for_caller already read. A verdict of this attempt
+# decides. One of an earlier attempt decides only when no job of CALLER ran in this attempt (a
+# re-run of this job alone): when its jobs re-ran, ci.yaml's ci-ok re-runs after them, and until
+# GitHub creates it the newest one listed is the earlier attempt's.
+hold_caller() {
+  local want="$CALLER / ci-ok" ended=0 jobs=$HOLD_JOBS verdict status conclusion attempt url
+  while true; do
+    if [ -n "$jobs" ]; then
+      verdict=$(awk -F'\t' -v want="$want" '$1 == want' <<<"$jobs")
+      if [ -n "$verdict" ]; then
+        IFS=$'\t' read -r _ status conclusion attempt url <<<"$verdict"
+        if [ "$status" = completed ] &&
+          { [ "$attempt" = "$GITHUB_RUN_ATTEMPT" ] || [ "$(caller_rows "$jobs" "\$4 == $GITHUB_RUN_ATTEMPT")" -eq 0 ]; }; then
+          conclude "$want" "$conclusion" "$url" "which ran every fast job and every slow suite this change's paths select"
+          return
+        fi
+      fi
+      # GitHub creates ci.yaml's ci-ok only once its needs have ended, so a moment with every job
+      # of CALLER completed and no verdict is normal; the same reading several reads in a row is a
+      # run that will not reach one.
+      if [ "$(caller_rows "$jobs" '$2 != "completed"')" -eq 0 ]; then
+        ended=$((ended + 1))
+        if [ "$ended" -ge "$HOLD_ENDED_READS" ]; then
+          echo "::error::no job of $CALLER is open and $want has not concluded on attempt $GITHUB_RUN_ATTEMPT, $ended reads in a row, so this run reaches no verdict and this ci-ok fails"
+          return 1
+        fi
+      else
+        ended=0
+      fi
+    fi
+    sleep "$HOLD_POLL"
+    if ! jobs=$(gh_read gh api --paginate "$HOLD_ROUTE" \
+      --jq '.jobs[] | [.name, .status, (.conclusion // "-"), (.run_attempt | tostring), .html_url] | @tsv'); then
+      jobs=''
+      echo "::warning::GitHub refused this run's jobs at every attempt gh-read.sh made; reading again in $HOLD_POLL s"
+    fi
+  done
+}
+
+# hold_follow: `lead` chose to follow the approval-time run already at this head, so this job
+# concludes as that run's ci-ok does. The run is chosen once and kept.
+hold_follow() {
+  local followed='' rows verdict status conclusion url
+  while true; do
+    if [ -z "$followed" ]; then
+      if ! rows=$(earlier_runs); then
+        echo "::warning::GitHub refused the approval-time runs at $HEAD_SHA at every attempt gh-read.sh made; reading again in $HOLD_POLL s"
+      else
+        followed=$(awk '$2 == "completed" && $3 == "success" || $2 ~ /^(queued|in_progress|waiting|pending|requested)$/ { print $1; exit }' <<<"$rows")
+        if [ -z "$followed" ]; then
+          echo "::error::$CALLER is skipped, so this approval follows the approval-time run at $HEAD_SHA, and none of that head's runs is open or passed now: the one it followed failed or was cancelled. Re-run that run's failed jobs first (gh run rerun $(awk '{ printf "%s ", $1 }' <<<"$rows")--failed names the runs at this head), and then this run's, which follows its new attempt"
+          return 1
+        fi
+        echo "following run $followed, the approval-time run at $HEAD_SHA"
+      fi
+    fi
+    if [ -n "$followed" ]; then
+      if verdict=$(gh_read gh api "repos/$GITHUB_REPOSITORY/actions/runs/$followed/jobs?filter=latest&per_page=100" \
+        --jq '.jobs[] | select(.name == "ci-ok") | [.status, (.conclusion // "-"), .html_url] | @tsv'); then
+        IFS=$'\t' read -r status conclusion url <<<"$verdict"
+        if [ "$status" = completed ]; then
+          conclude "the ci-ok of run $followed" "$conclusion" "$url" "the approval-time run at this head that this approval follows"
+          return
+        fi
+      else
+        echo "::warning::GitHub refused run $followed's jobs at every attempt gh-read.sh made; reading again in $HOLD_POLL s"
+      fi
+    fi
+    sleep "$HOLD_POLL"
+  done
+}
+
+# hold: the three cases of the header, in two phases. wait_for_caller says which of the first two
+# this run is, and hold_caller or hold_follow then waits for that one verdict. Each read lists the
+# newest execution of every job of the run it reads (`filter=latest`).
+hold() {
+  need GH_TOKEN GITHUB_REPOSITORY GITHUB_RUN_ID GITHUB_RUN_ATTEMPT CALLER HEAD_SHA
+  HOLD_POLL=${LARGE_PR_HOLD_POLL_SECONDS:-60}
+  HOLD_ENDED_READS=${LARGE_PR_HOLD_ENDED_READS:-3}
+  HOLD_START_LIMIT=${LARGE_PR_HOLD_START_SECONDS:-300}
+  HOLD_ROUTE="repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/jobs?filter=latest&per_page=100"
+  HOLD_JOBS='' HOLD_PHASE=''
+  echo "waiting for this approval's verdict at $HEAD_SHA (attempt $GITHUB_RUN_ATTEMPT)"
+  wait_for_caller || return 1
+  case $HOLD_PHASE in
+    caller) hold_caller ;;
+    skipped) hold_follow ;;
+  esac
 }
 
 WORKFLOW_PATH='.github/workflows/large-pr-lanes.yaml'
