@@ -1,0 +1,12 @@
+# A copy of the way back of the release that records each task's needs, as docs/kubernetes.md
+# carries it under "Rolling back the release that records each task's needs": the content of the
+# fenced block that holds its `update outbox set payload = jsonb_set(payload, '{tasks}',` line, in
+# the guide's own bytes and none of the prose around it.
+#
+# The release runs no migration, so no header carries the block. This package's
+# plan_needs_way_back_test.go runs this copy over a store, and
+# packages/daemon/internal/textcheck's TestThePlanNeedsWayBackExtractIsTheGuidesWayBackBlock holds
+# it to the guide's block, so the guide stays out of this package's CI filter.
+update outbox set payload = jsonb_set(payload, '{tasks}',
+    (select jsonb_agg(task - 'needs' order by place) from jsonb_array_elements(payload->'tasks') with ordinality as t(task, place)))
+  where kind = 'plan_record' and split_part(issue, '-', 1) = '<PROJECT>' and jsonb_path_exists(payload, '$.tasks[*].needs');
