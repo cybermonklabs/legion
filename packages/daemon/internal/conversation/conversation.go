@@ -152,13 +152,19 @@ type Message struct {
 	Model    string
 }
 
+const (
+	// AnthropicMessages names the Anthropic Messages API.
+	AnthropicMessages = "anthropic-messages"
+	// OpenAIResponses names the OpenAI Responses API.
+	OpenAIResponses = "openai-responses"
+)
+
 // Conversation is a session's conversation as its harness rebuilds it on resume.
 type Conversation struct {
 	Messages []Message
 	// Model is the model the conversation resumes on, "<provider>/<model>".
 	Model string
-	// API is the provider API that model is called through ("anthropic-messages",
-	// "openai-responses").
+	// API is the provider API that model is called through (AnthropicMessages or OpenAIResponses).
 	API string
 	// ThinkingLevel is the reasoning level the conversation last ran at ("off", "low", "high", …).
 	ThinkingLevel string
@@ -195,8 +201,8 @@ type Append struct {
 	QuestionID string
 	// Question is the question's text, written as a user turn.
 	Question string
-	// Provider, API and Model are the model that answered: its provider id, provider API and
-	// model id, as the harness names them.
+	// Provider, API and Model are the model that answered: its provider id, provider API
+	// (AnthropicMessages or OpenAIResponses) and model id, as the harness names them.
 	Provider string
 	API      string
 	Model    string

@@ -1,7 +1,6 @@
 package ompsessions
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -9,6 +8,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+
+	"github.com/sjawhar/legion/daemon/internal/conversation"
 )
 
 // The custom entries pi-envoy writes into a session (packages/pi-envoy/extensions/envoy.ts):
@@ -49,7 +50,7 @@ type Description struct {
 // My Pi skips it.
 func Describe(content []byte) Description {
 	var d Description
-	_ = lineScanner{read: headLines(content)}.describe(&d, false)
+	_ = describe(&d, conversation.ContentLines(content), false)
 	return d
 }
 
@@ -61,51 +62,40 @@ func DescribeFile(path string, withClaims bool) (Description, error) {
 		return Description{}, err
 	}
 	defer file.Close()
-	reader := bufio.NewReaderSize(file, 64<<10)
-	scanner := lineScanner{read: func() ([]byte, error) {
-		line, err := reader.ReadBytes('\n')
-		if len(line) > 0 && errors.Is(err, io.EOF) {
-			err = nil
-		}
-		return line, err
-	}}
 	var d Description
-	if err := scanner.describe(&d, !withClaims); err != nil {
+	if err := describe(&d, conversation.ReaderLines(file), !withClaims); err != nil {
 		return Description{}, fmt.Errorf("read session %s: %w", path, err)
 	}
 	return d, nil
 }
 
-type lineScanner struct {
-	read func() ([]byte, error)
-}
-
-// describe fills d from the scanner's lines, stopping after the header when headOnly.
-func (s lineScanner) describe(d *Description, headOnly bool) error {
+// describe fills d from read, stopping after the header when headOnly.
+func describe(d *Description, read func() ([]byte, error), headOnly bool) error {
 	first, sawHeader := true, false
 	var headerTitle, headerSource string
-	var slot *slotLine
+	var slotTitle, slotSource string
+	var hasSlot bool
 	for {
-		line, err := s.read()
+		line, err := read()
 		if errors.Is(err, io.EOF) {
 			break
 		}
 		if err != nil {
 			return err
 		}
-		line = bytes.TrimSpace(line)
-		wasFirst := first
-		first = false
-		if len(line) == 0 || !json.Valid(line) {
-			continue
-		}
-		if wasFirst {
-			if parsed, ok := parseSlot(line); ok {
-				slot = parsed
+		if !sawHeader {
+			line = bytes.TrimSpace(line)
+			wasFirst := first
+			first = false
+			if !json.Valid(line) {
 				continue
 			}
-		}
-		if !sawHeader {
+			if wasFirst {
+				slotTitle, slotSource, hasSlot = ParseTitleSlot(line)
+				if hasSlot {
+					continue
+				}
+			}
 			sawHeader = true
 			var header struct {
 				Type          string `json:"type"`
@@ -136,7 +126,7 @@ func (s lineScanner) describe(d *Description, headOnly bool) error {
 				SessionID *string `json:"session_id"`
 			} `json:"data"`
 		}
-		if json.Unmarshal(line, &custom) != nil || custom.Type != "custom" {
+		if json.Unmarshal(bytes.TrimSpace(line), &custom) != nil || custom.Type != "custom" {
 			continue
 		}
 		switch {
@@ -151,23 +141,17 @@ func (s lineScanner) describe(d *Description, headOnly bool) error {
 	}
 	// The title slot, when the file has one, is the title: an empty one clears the header's
 	// (session-loader.ts applyTitleSlot).
-	if slot != nil {
-		d.Title, d.TitleSource = slot.Title, slot.Source
+	if hasSlot {
+		d.Title, d.TitleSource = slotTitle, slotSource
 	} else {
 		d.Title, d.TitleSource = headerTitle, headerSource
 	}
 	return nil
 }
 
-// slotLine is the fixed-width first line Oh My Pi keeps a session's title in
-// (session-title-slot.ts).
-type slotLine struct {
-	Title  string
-	Source string
-}
-
-// parseSlot is Oh My Pi's parseTitleSlotLine.
-func parseSlot(line []byte) (*slotLine, bool) {
+// ParseTitleSlot reads the fixed-width first line Oh My Pi keeps a session's title in
+// (session-title-slot.ts). It returns false for a line that is not a title slot.
+func ParseTitleSlot(line []byte) (title, source string, ok bool) {
 	var slot struct {
 		Type      string  `json:"type"`
 		V         int     `json:"v"`
@@ -177,16 +161,15 @@ func parseSlot(line []byte) (*slotLine, bool) {
 		Pad       *string `json:"pad"`
 	}
 	if json.Unmarshal(line, &slot) != nil || slot.Type != "title" || slot.V != 1 || slot.Title == nil || slot.UpdatedAt == nil || slot.Pad == nil {
-		return nil, false
+		return "", "", false
 	}
-	parsed := &slotLine{Title: *slot.Title}
 	if slot.Source != nil {
 		if *slot.Source != "auto" && *slot.Source != "user" {
-			return nil, false
+			return "", "", false
 		}
-		parsed.Source = *slot.Source
+		source = *slot.Source
 	}
-	return parsed, true
+	return *slot.Title, source, true
 }
 
 // Titled is a session of the table with its title and header.
@@ -223,12 +206,12 @@ func Titles(ctx context.Context, conn *Conn) ([]Titled, error) {
 		var path string
 		var title, source *string
 		started := false
-		describe := func() error {
+		finishRow := func() error {
 			if !started {
 				return nil
 			}
 			var d Description
-			if err := (lineScanner{read: headLines(head.Bytes())}).describe(&d, true); err != nil {
+			if err := describe(&d, conversation.ContentLines(head.Bytes()), true); err != nil {
 				return err
 			}
 			if title != nil {
@@ -247,7 +230,7 @@ func Titles(ctx context.Context, conn *Conn) ([]Titled, error) {
 				return err
 			}
 			if !started || rowPath != path {
-				if err := describe(); err != nil {
+				if err := finishRow(); err != nil {
 					return err
 				}
 				head.Reset()
@@ -260,7 +243,7 @@ func Titles(ctx context.Context, conn *Conn) ([]Titled, error) {
 		if err := rows.Err(); err != nil {
 			return err
 		}
-		return describe()
+		return finishRow()
 	})
 	if isUndefinedTable(err) {
 		return nil, nil
@@ -269,19 +252,4 @@ func Titles(ctx context.Context, conn *Conn) ([]Titled, error) {
 		return nil, fmt.Errorf("list sessions: %w", err)
 	}
 	return titled, nil
-}
-
-func headLines(content []byte) func() ([]byte, error) {
-	return func() ([]byte, error) {
-		if len(content) == 0 {
-			return nil, io.EOF
-		}
-		line := content
-		if i := bytes.IndexByte(content, '\n'); i >= 0 {
-			line, content = content[:i], content[i+1:]
-		} else {
-			content = nil
-		}
-		return line, nil
-	}
 }

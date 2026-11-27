@@ -1,4 +1,4 @@
-// Package testbin names the pinned binaries the real-binary tests run (OMP, UV), readies the
+// Package testbin names the pinned binaries the real-binary tests run (OMP, Claude, UV), readies the
 // fresh HOME a test runs Oh My Pi under (OMPHome) with the profile and environment it runs with
 // (WriteOMPProfile, OMPEnviron), reads back what that run said - the frame shape (OMPFrame), the
 // model one answer names (StateModel) and the session files it left (SessionFiles) - answers a

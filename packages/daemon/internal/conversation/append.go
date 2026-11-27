@@ -1,9 +1,12 @@
 package conversation
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"time"
 )
@@ -43,5 +46,43 @@ func Marshal(v any) ([]byte, error) {
 	return bytes.TrimSuffix(buf.Bytes(), []byte("\n")), nil
 }
 
+// JSONObjectOrEmpty returns raw unchanged if it is a valid JSON object, and {} otherwise.
+func JSONObjectOrEmpty(raw json.RawMessage) json.RawMessage {
+	if bytes.HasPrefix(bytes.TrimSpace(raw), []byte("{")) && json.Valid(raw) {
+		return raw
+	}
+	return json.RawMessage("{}")
+}
+
 // ISOTime is JavaScript's Date.prototype.toISOString.
 func ISOTime(t time.Time) string { return t.UTC().Format("2006-01-02T15:04:05.000Z") }
+
+// ContentLines returns successive lines of content without their terminating newline.
+// The last line need not end in a newline. The function returns io.EOF when no lines remain.
+func ContentLines(content []byte) func() ([]byte, error) {
+	return func() ([]byte, error) {
+		if len(content) == 0 {
+			return nil, io.EOF
+		}
+		line := content
+		if i := bytes.IndexByte(content, '\n'); i >= 0 {
+			line, content = content[:i], content[i+1:]
+		} else {
+			content = nil
+		}
+		return line, nil
+	}
+}
+
+// ReaderLines returns successive lines from r, including any terminating newline.
+// It returns a final unterminated line before reporting io.EOF.
+func ReaderLines(r io.Reader) func() ([]byte, error) {
+	reader := bufio.NewReaderSize(r, 64<<10)
+	return func() ([]byte, error) {
+		line, err := reader.ReadBytes('\n')
+		if len(line) > 0 && errors.Is(err, io.EOF) {
+			err = nil
+		}
+		return line, err
+	}
+}

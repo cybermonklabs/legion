@@ -38,9 +38,6 @@ import (
 // copy of the pin.
 const PinnedVersion = "2.1.311"
 
-// anthropicMessages is the provider API every Claude Code turn runs on.
-const anthropicMessages = "anthropic-messages"
-
 // Session is a transcript read: its conversation as Claude Code rebuilds it on resume, and what an
 // append after it needs.
 type Session struct {
@@ -84,7 +81,7 @@ func Read(content []byte) (*Session, error) {
 	}
 	s := &Session{
 		Title: l.title, Size: int64(len(content)), Torn: len(content) > 0 && content[len(content)-1] != '\n',
-		Conversation: conversation.Conversation{API: anthropicMessages, ThinkingLevel: l.effort},
+		Conversation: conversation.Conversation{API: conversation.AnthropicMessages, ThinkingLevel: l.effort},
 		answered:     map[string]bool{},
 	}
 	if l.model != "" {

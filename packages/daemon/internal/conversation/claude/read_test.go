@@ -88,11 +88,11 @@ func user(blocks ...conversation.Block) conversation.Message {
 }
 
 func claude(blocks ...conversation.Block) conversation.Message {
-	return conversation.Message{Role: conversation.Assistant, Provider: "anthropic", API: anthropicMessages, Model: fixtureModel, Content: blocks}
+	return conversation.Message{Role: conversation.Assistant, Provider: "anthropic", API: conversation.AnthropicMessages, Model: fixtureModel, Content: blocks}
 }
 
 func synthetic() conversation.Message {
-	return conversation.Message{Role: conversation.Assistant, Provider: "anthropic", API: anthropicMessages, Model: syntheticModel, Content: []conversation.Block{text(noResponse)}}
+	return conversation.Message{Role: conversation.Assistant, Provider: "anthropic", API: conversation.AnthropicMessages, Model: syntheticModel, Content: []conversation.Block{text(noResponse)}}
 }
 
 func result(id, name string, isError bool, content ...conversation.Block) conversation.Message {
@@ -147,7 +147,7 @@ func TestReadRebuildsTheConversationClaudeCodeResumes(t *testing.T) {
 		result("toolu_1", "Read", false, text("1\tplum")),
 		claude(text("It says plum.")),
 	})
-	if s.Model != "anthropic/"+fixtureModel || s.API != anthropicMessages || s.ThinkingLevel != "high" {
+	if s.Model != "anthropic/"+fixtureModel || s.API != conversation.AnthropicMessages || s.ThinkingLevel != "high" {
 		t.Errorf("model %q, API %q, thinking level %q", s.Model, s.API, s.ThinkingLevel)
 	}
 	if s.ID != "s-1" || s.Cwd != "/work" || s.Version != "2.1.310" || s.GitBranch != "main" || s.Leaf != leaf || s.Torn {

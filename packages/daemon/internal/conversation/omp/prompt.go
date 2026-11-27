@@ -77,10 +77,10 @@ func formatPrompt(content string) string {
 			}
 		}
 		if indent >= len(line) {
-			if i+1 >= len(lines) || strings.TrimFunc(lines[i+1], isJSSpace) == "" {
+			if i+1 >= len(lines) || blank(lines[i+1]) {
 				popBlanks()
 				j := i + 1
-				for j < len(lines) && strings.TrimFunc(lines[j], isJSSpace) == "" {
+				for j < len(lines) && blank(lines[j]) {
 					j++
 				}
 				i = j - 1

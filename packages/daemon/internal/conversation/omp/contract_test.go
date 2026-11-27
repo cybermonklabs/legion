@@ -155,7 +155,7 @@ type ompRig struct {
 // standInModelOf is the stand-in's model id on api: a Claude id on Anthropic Messages, a GPT id on
 // OpenAI Responses, so Oh My Pi's dialect for each is its family's.
 func standInModelOf(api string) string {
-	if api == openaiResponses {
+	if api == conversation.OpenAIResponses {
 		return standInGPT
 	}
 	return standInModel
@@ -169,7 +169,7 @@ func newOMPRig(t *testing.T, api string, model *standIn, extraEnv ...string) *om
 	testbin.OMPHome(t, omp, rig.home)
 	agent := filepath.Join(rig.home, ".omp", "agent")
 	baseURL := model.server.URL
-	if api == openaiResponses {
+	if api == conversation.OpenAIResponses {
 		baseURL += "/v1"
 	}
 	for path, content := range map[string]string{
@@ -490,7 +490,7 @@ func assertResumeMatches(t *testing.T, before *Session, content []byte, request 
 		wantJSON, _ := json.MarshalIndent(want, "", "  ")
 		t.Errorf("Oh My Pi's resume request:\n%s\nthe reader's conversation and the follow-up:\n%s", gotJSON, wantJSON)
 	}
-	if resumed.Model != standInProvider+"/"+standInModel || resumed.API != anthropicMessages {
+	if resumed.Model != standInProvider+"/"+standInModel || resumed.API != conversation.AnthropicMessages {
 		t.Errorf("the reader's model %q, API %q", resumed.Model, resumed.API)
 	}
 	assertBlankedOnly(t, before, resumed)
@@ -502,7 +502,7 @@ func assertResumeMatches(t *testing.T, before *Session, content []byte, request 
 // thinking signatures and redacted data.
 func TestThePinnedOhMyPiResumesTheConversationTheReaderRebuilds(t *testing.T) {
 	model := newAnthropicStandIn(t, firstRunReplies()...)
-	rig := newOMPRig(t, anthropicMessages, model)
+	rig := newOMPRig(t, conversation.AnthropicMessages, model)
 	rig.run(t, "", "Read note.txt and tell me what it says.")
 	file := rig.sessionFile(t)
 	before, err := ReadFile(file, standInEndpoint)
@@ -571,7 +571,7 @@ func TestThePinnedOhMyPiResumesHandWrittenRecordsAsTheReaderRebuildsThem(t *test
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			model := newAnthropicStandIn(t, firstRunReplies()...)
-			rig := newOMPRig(t, anthropicMessages, model)
+			rig := newOMPRig(t, conversation.AnthropicMessages, model)
 			rig.run(t, "", "Read note.txt and tell me what it says.")
 			file := rig.sessionFile(t)
 			content := sessionContent(t, file)
@@ -646,7 +646,7 @@ func carriedOnce(t *testing.T, turns []wireTurn, match func(wireTurn, wireBlock)
 func TestThePinnedOhMyPiResumesAnAppendedAnswer(t *testing.T) {
 	answer := conversation.Append{
 		QuestionID: "q-1", Question: "Which fruit does the note name?",
-		Provider: standInProvider, API: anthropicMessages, Model: standInModel,
+		Provider: standInProvider, API: conversation.AnthropicMessages, Model: standInModel,
 		Turns: []conversation.Turn{
 			{
 				Content: []conversation.Block{
@@ -691,7 +691,7 @@ func TestThePinnedOhMyPiResumesAnAppendedAnswer(t *testing.T) {
 
 	t.Run("file storage", func(t *testing.T) {
 		model := newAnthropicStandIn(t, firstRunReplies()...)
-		rig := newOMPRig(t, anthropicMessages, model)
+		rig := newOMPRig(t, conversation.AnthropicMessages, model)
 		rig.run(t, "", "Read note.txt and tell me what it says.")
 		file := rig.sessionFile(t)
 		before, err := ReadFile(file, standInEndpoint)
@@ -712,7 +712,7 @@ func TestThePinnedOhMyPiResumesAnAppendedAnswer(t *testing.T) {
 	t.Run("SQL storage", func(t *testing.T) {
 		dsn, dsnFile := testdb.DSNFile(t, "legion_conversation_omp_test")
 		model := newAnthropicStandIn(t, firstRunReplies()...)
-		rig := newOMPRig(t, anthropicMessages, model, ompsessions.StorageVariable+"="+ompsessions.SQLStorage, ompsessions.DSNFileVariable+"="+dsnFile)
+		rig := newOMPRig(t, conversation.AnthropicMessages, model, ompsessions.StorageVariable+"="+ompsessions.SQLStorage, ompsessions.DSNFileVariable+"="+dsnFile)
 		rig.run(t, "", "Read note.txt and tell me what it says.")
 		ctx := context.Background()
 		conn, err := ompsessions.ConnectURL(ctx, dsn)
@@ -758,7 +758,7 @@ func TestThePinnedOhMyPiResumesAnAppendedAnswer(t *testing.T) {
 func TestThePinnedOhMyPiResumesAnAnswerAskedForAgain(t *testing.T) {
 	answer := conversation.Append{
 		QuestionID: "q-1", Question: "Which fruit does the note name?",
-		Provider: standInProvider, API: anthropicMessages, Model: standInModel,
+		Provider: standInProvider, API: conversation.AnthropicMessages, Model: standInModel,
 		Turns: []conversation.Turn{
 			{
 				Content:    []conversation.Block{thinking("I cannot tell from here.", "cmVmdXNlZA=="), text(refusedReply)},
@@ -772,7 +772,7 @@ func TestThePinnedOhMyPiResumesAnAnswerAskedForAgain(t *testing.T) {
 		},
 	}
 	model := newAnthropicStandIn(t, firstRunReplies()...)
-	rig := newOMPRig(t, anthropicMessages, model)
+	rig := newOMPRig(t, conversation.AnthropicMessages, model)
 	rig.run(t, "", "Read note.txt and tell me what it says.")
 	file := rig.sessionFile(t)
 	before, err := ReadFile(file, standInEndpoint)

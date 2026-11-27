@@ -4,17 +4,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 	"unicode"
 	"unicode/utf16"
 
 	"github.com/sjawhar/legion/daemon/internal/conversation"
-)
-
-// The provider APIs the reader rebuilds a request for.
-const (
-	anthropicMessages = "anthropic-messages"
-	openaiResponses   = "openai-responses"
 )
 
 // target is the model the conversation resumes on, which Oh My Pi's provider layer
@@ -32,7 +27,7 @@ type target struct {
 // every tool call followed by its result; and, on Anthropic, a "Continue." user turn between two
 // assistant turns, as Oh My Pi's encoder puts one.
 func toRequest(messages []llmMessage, t target) ([]conversation.Message, error) {
-	if t.api != anthropicMessages && t.api != openaiResponses {
+	if t.api != conversation.AnthropicMessages && t.api != conversation.OpenAIResponses {
 		return nil, conversation.Unknown("the conversation runs on provider API %q, which the reader does not rebuild a request for", t.api)
 	}
 	messages = dropMalformedToolCalls(messages)
@@ -65,7 +60,7 @@ func toRequest(messages []llmMessage, t target) ([]conversation.Message, error) 
 			continue
 		}
 		result := &out[i].Content[0]
-		if t.api == openaiResponses {
+		if t.api == conversation.OpenAIResponses {
 			result.ToolCallID = responsesCallID(m.toolCallID)
 		} else if id, ok := idOf[m.toolCallID]; ok {
 			result.ToolCallID = id
@@ -74,7 +69,7 @@ func toRequest(messages []llmMessage, t target) ([]conversation.Message, error) 
 		}
 	}
 	paired, err := pairToolResults(messages, out)
-	if err != nil || t.api != anthropicMessages {
+	if err != nil || t.api != conversation.AnthropicMessages {
 		return paired, err
 	}
 	var continued []conversation.Message
@@ -96,7 +91,7 @@ func userMessage(m llmMessage) (conversation.Message, error) {
 		if err != nil {
 			return conversation.Message{}, err
 		}
-		if keep && (converted.Type != conversation.Text || strings.TrimFunc(converted.Text, isJSSpace) != "") {
+		if keep && (converted.Type != conversation.Text || !blank(converted.Text)) {
 			msg.Content = append(msg.Content, converted)
 		}
 	}
@@ -142,8 +137,8 @@ func assistantMessage(m llmMessage, t target, latest bool, idOf map[string]strin
 	}
 	msg.Native = native
 	sameModel := m.provider == t.provider && m.api == t.api && m.model == t.model
-	anthropicTarget := t.api == anthropicMessages
-	anthropicReplay := anthropicTarget && m.api == anthropicMessages
+	anthropicTarget := t.api == conversation.AnthropicMessages
+	anthropicReplay := anthropicTarget && m.api == conversation.AnthropicMessages
 	official := anthropicTarget && t.signing
 	sameDeployment := anthropicReplay && m.provider == t.provider && official
 	signingInvolved := (anthropicReplay && m.provider == "anthropic") || official
@@ -194,12 +189,12 @@ func assistantMessage(m llmMessage, t target, latest bool, idOf map[string]strin
 		case "toolCall":
 			id := b.ID
 			switch {
-			case t.api == openaiResponses:
+			case t.api == conversation.OpenAIResponses:
 				id = responsesCallID(b.ID)
 			case !sameModel || official:
 				id = anthropicToolCallID(b.ID)
 				idOf[b.ID] = id
-				if m.api == openaiResponses {
+				if m.api == conversation.OpenAIResponses {
 					idOf[responsesCallID(b.ID)] = id
 				}
 			}
@@ -356,12 +351,7 @@ var openaiReasoningModel = regexp.MustCompile(`^o\d`)
 func blank(s string) bool { return strings.TrimFunc(s, isJSSpace) == "" }
 
 func hasToolCall(blocks []block) bool {
-	for _, b := range blocks {
-		if b.Type == "toolCall" {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(blocks, func(b block) bool { return b.Type == "toolCall" })
 }
 
 // truncatedThinkingOnly is shouldDropTruncatedThinkingOnlyAssistant: a turn the provider cut off
@@ -433,11 +423,13 @@ func dropMalformedToolCalls(messages []llmMessage) []llmMessage {
 }
 
 func malformedToolCall(b block) bool {
-	if blank(b.ID) || b.Name == "" || len(utf16.Encode([]rune(b.Name))) > 128 {
+	if blank(b.ID) || b.Name == "" {
 		return true
 	}
+	units := 0
 	for _, r := range b.Name {
-		if isJSSpace(r) || unicode.Is(unicode.Cc, r) {
+		units += utf16.RuneLen(r)
+		if units > 128 || isJSSpace(r) || unicode.Is(unicode.Cc, r) {
 			return true
 		}
 	}
@@ -545,7 +537,7 @@ func pairToolResults(source []llmMessage, messages []conversation.Message) ([]co
 			}
 			var texts []string
 			for _, part := range result.Content {
-				if part.Type == conversation.Text && strings.TrimFunc(part.Text, isJSSpace) != "" {
+				if part.Type == conversation.Text && !blank(part.Text) {
 					texts = append(texts, part.Text)
 				}
 			}
@@ -571,19 +563,9 @@ func pairToolResults(source []llmMessage, messages []conversation.Message) ([]co
 }
 
 func pendingHas(pending []conversation.Block, id string) bool {
-	for _, call := range pending {
-		if call.ToolCallID == id {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(pending, func(call conversation.Block) bool { return call.ToolCallID == id })
 }
 
 func pendingUnresolved(pending []conversation.Block, resolved map[string]bool) bool {
-	for _, call := range pending {
-		if !resolved[call.ToolCallID] {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(pending, func(call conversation.Block) bool { return !resolved[call.ToolCallID] })
 }

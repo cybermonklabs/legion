@@ -417,7 +417,7 @@ func assertResumeMatches(t *testing.T, before *Session, request anthropicRequest
 		wantJSON, _ := json.MarshalIndent(want, "", "  ")
 		t.Errorf("Claude Code's resume request:\n%s\nthe reader's conversation and the follow-up:\n%s", gotJSON, wantJSON)
 	}
-	if before.Model != "anthropic/"+standInModel || before.API != anthropicMessages {
+	if before.Model != "anthropic/"+standInModel || before.API != conversation.AnthropicMessages {
 		t.Errorf("the reader's model %q, API %q", before.Model, before.API)
 	}
 	if before.ThinkingLevel != request.OutputConfig.Effort {
@@ -660,7 +660,7 @@ func TestThePinnedClaudeCodeResumesAnAppendedAnswer(t *testing.T) {
 	model.queue(firstRunReplies(rig.work)...)
 	answer := conversation.Append{
 		QuestionID: "q-1", Question: "Which fruit does the note name?",
-		Provider: "anthropic", API: anthropicMessages, Model: standInModel,
+		Provider: "anthropic", API: conversation.AnthropicMessages, Model: standInModel,
 		Turns: []conversation.Turn{
 			{
 				Content: []conversation.Block{
@@ -724,7 +724,7 @@ func TestThePinnedClaudeCodeResumesAnAnswerAskedForAgain(t *testing.T) {
 	model.queue(firstRunReplies(rig.work)...)
 	answer := conversation.Append{
 		QuestionID: "q-1", Question: "Which fruit does the note name?",
-		Provider: "anthropic", API: anthropicMessages, Model: standInModel,
+		Provider: "anthropic", API: conversation.AnthropicMessages, Model: standInModel,
 		Turns: []conversation.Turn{
 			{
 				Content:    []conversation.Block{thinking("I cannot tell from here.", "cmVmdXNlZA=="), text(refusedReply)},

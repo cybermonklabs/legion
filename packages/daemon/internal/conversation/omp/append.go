@@ -46,15 +46,12 @@ func (s *Session) Encode(a conversation.Append, now time.Time) ([]byte, error) {
 	if err := a.Validate(); err != nil {
 		return nil, err
 	}
-	if a.API != anthropicMessages && a.API != openaiResponses {
+	if a.API != conversation.AnthropicMessages && a.API != conversation.OpenAIResponses {
 		return nil, fmt.Errorf("append: Oh My Pi's %s turns are not written by this appender", a.API)
 	}
-	w := entryWriter{session: s, parent: s.Leaf, now: now, taken: map[string]bool{}}
-	if s.Torn {
-		w.buf.WriteByte('\n')
-	}
+	w := s.writer(now)
 	ms := now.UnixMilli()
-	if err := w.message(userOut{Role: "user", Content: []any{textOut{Type: "text", Text: a.Question}}, Attribution: "user", Timestamp: ms}); err != nil {
+	if err := w.user(a.Question); err != nil {
 		return nil, err
 	}
 	for i, turn := range a.Turns {
@@ -90,13 +87,13 @@ func (s *Session) Encode(a conversation.Append, now time.Time) ([]byte, error) {
 			}
 		}
 		if turn.AskedAgain != "" {
-			if err := w.message(userOut{Role: "user", Content: []any{textOut{Type: "text", Text: turn.AskedAgain}}, Attribution: "user", Timestamp: ms}); err != nil {
+			if err := w.user(turn.AskedAgain); err != nil {
 				return nil, err
 			}
 		}
 	}
 	if a.NoAnswer != "" {
-		if err := w.message(userOut{Role: "user", Content: []any{textOut{Type: "text", Text: a.NoAnswer}}, Attribution: "user", Timestamp: ms}); err != nil {
+		if err := w.user(a.NoAnswer); err != nil {
 			return nil, err
 		}
 	}
@@ -113,17 +110,22 @@ func (s *Session) EncodeDelivery(d conversation.Delivery, now time.Time) ([]byte
 	if err := d.Validate(); err != nil {
 		return nil, err
 	}
-	w := entryWriter{session: s, parent: s.Leaf, now: now, taken: map[string]bool{}}
-	if s.Torn {
-		w.buf.WriteByte('\n')
-	}
-	if err := w.message(userOut{Role: "user", Content: []any{textOut{Type: "text", Text: d.Text}}, Attribution: "user", Timestamp: now.UnixMilli()}); err != nil {
+	w := s.writer(now)
+	if err := w.user(d.Text); err != nil {
 		return nil, err
 	}
 	if err := w.custom(AnswerEntryType, map[string]string{"questionId": d.ID}); err != nil {
 		return nil, err
 	}
 	return w.buf.Bytes(), nil
+}
+
+func (s *Session) writer(now time.Time) *entryWriter {
+	w := &entryWriter{session: s, parent: s.Leaf, now: now, taken: map[string]bool{}}
+	if s.Torn {
+		w.buf.WriteByte('\n')
+	}
+	return w
 }
 
 // AppendFile appends a to the session file at path, which s was read from, in one O_APPEND write.
@@ -178,16 +180,14 @@ type entryWriter struct {
 }
 
 // newID is Oh My Pi's generateId: 8 hex characters no entry of the session holds.
-func (w *entryWriter) newID() (string, error) {
+func (w *entryWriter) newID() string {
 	for {
 		var raw [4]byte
-		if _, err := rand.Read(raw[:]); err != nil {
-			return "", err
-		}
+		_, _ = rand.Read(raw[:])
 		id := hex.EncodeToString(raw[:])
 		if !w.session.ids[id] && !w.taken[id] {
 			w.taken[id] = true
-			return id, nil
+			return id
 		}
 	}
 }
@@ -200,29 +200,26 @@ func (w *entryWriter) parentID() *string {
 	return &parent
 }
 
+func (w *entryWriter) user(text string) error {
+	return w.message(userOut{Role: "user", Content: []any{textOut{Type: "text", Text: text}}, Attribution: "user", Timestamp: w.now.UnixMilli()})
+}
+
 func (w *entryWriter) message(m any) error {
-	id, err := w.newID()
-	if err != nil {
-		return err
-	}
+	id := w.newID()
 	return w.line(id, messageEntryOut{Type: "message", ID: id, ParentID: w.parentID(), Timestamp: conversation.ISOTime(w.now), Message: m})
 }
 
 func (w *entryWriter) custom(customType string, data any) error {
-	id, err := w.newID()
-	if err != nil {
-		return err
-	}
+	id := w.newID()
 	return w.line(id, customEntryOut{Type: "custom", CustomType: customType, Data: data, ID: id, ParentID: w.parentID(), Timestamp: conversation.ISOTime(w.now)})
 }
 
 func (w *entryWriter) line(id string, entry any) error {
-	encoded, err := conversation.Marshal(entry)
-	if err != nil {
+	enc := json.NewEncoder(&w.buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(entry); err != nil {
 		return err
 	}
-	w.buf.Write(encoded)
-	w.buf.WriteByte('\n')
 	w.parent = id
 	return nil
 }
@@ -236,7 +233,7 @@ func (w *entryWriter) line(id string, entry any) error {
 // openaiResponsesHistory payload, byte for byte.
 func turnContent(a conversation.Append, turn conversation.Turn) ([]any, map[string]string, *payloadOut, error) {
 	callIDs := map[string]string{}
-	if a.API == anthropicMessages {
+	if a.API == conversation.AnthropicMessages {
 		var content []any
 		for _, b := range turn.Content {
 			switch b.Type {
@@ -309,13 +306,10 @@ func turnContent(a conversation.Append, turn conversation.Turn) ([]any, map[stri
 	return content, callIDs, &payloadOut{Type: string(conversation.OpenAIResponsesHistory), Provider: a.Provider, DT: true, Items: turn.Native}, nil
 }
 
-// arguments is a tool call's arguments as the object Oh My Pi records; anything else is {}.
+// arguments is a tool call's arguments as the object Oh My Pi records, with the space around it
+// trimmed; anything else is {}.
 func arguments(raw json.RawMessage) json.RawMessage {
-	trimmed := bytes.TrimSpace(raw)
-	if len(trimmed) == 0 || trimmed[0] != '{' || !json.Valid(trimmed) {
-		return json.RawMessage("{}")
-	}
-	return trimmed
+	return conversation.JSONObjectOrEmpty(bytes.TrimSpace(raw))
 }
 
 func usageOf(u conversation.Usage) usageOut {

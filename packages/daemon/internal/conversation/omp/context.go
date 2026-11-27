@@ -3,6 +3,7 @@ package omp
 import (
 	"bytes"
 	"encoding/json"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -55,14 +56,18 @@ type sessionContext struct {
 // transcript) along the path from the last entry, with each message as convertToLlm turns it into
 // provider messages. The tool result prunes are applied first, as the loader does.
 func buildContext(entries []*entry) (*sessionContext, error) {
-	if err := applyToolResultPrunes(entries); err != nil {
-		return nil, err
-	}
 	ctx := &sessionContext{thinkingLevel: "off"}
 	if len(entries) == 0 {
 		return ctx, nil
 	}
-	path := activePath(entries)
+	byID := make(map[string]*entry, len(entries))
+	for _, e := range entries {
+		byID[e.ID] = e
+	}
+	if err := applyToolResultPrunes(entries, byID); err != nil {
+		return nil, err
+	}
+	path := activePath(entries[len(entries)-1], byID)
 
 	models := map[string]string{}
 	explicitDefault := false
@@ -133,13 +138,7 @@ func buildContext(entries []*entry) (*sessionContext, error) {
 		}
 		messages = append(messages, summary)
 		if remote == nil {
-			retained := -1
-			for i, e := range path[:compactionIdx] {
-				if e.ID == compaction.FirstKeptEntryID {
-					retained = i
-					break
-				}
-			}
+			retained := indexOf(path[:compactionIdx], compaction.FirstKeptEntryID)
 			if retained < 0 && summary.native != nil && summary.native.Kind == conversation.AnthropicCompaction &&
 				compaction.FirstKeptEntryID == "" && compaction.ProviderReplayThroughEntryID != "" {
 				if i := indexOf(path, compaction.ProviderReplayThroughEntryID); i >= 0 {
@@ -202,14 +201,10 @@ func refuseContextNotes(path []*entry) error {
 
 // activePath is the path from the last entry, Oh My Pi's leaf after a load, to the root by
 // parentId, root first. A parent cycle ends the walk at its first repeat, as Oh My Pi's does.
-func activePath(entries []*entry) []*entry {
-	byID := make(map[string]*entry, len(entries))
-	for _, e := range entries {
-		byID[e.ID] = e
-	}
+func activePath(leaf *entry, byID map[string]*entry) []*entry {
 	var path []*entry
 	seen := map[string]bool{}
-	for current := entries[len(entries)-1]; current != nil && !seen[current.ID]; {
+	for current := leaf; current != nil && !seen[current.ID]; {
 		seen[current.ID] = true
 		path = append(path, current)
 		if current.ParentID == nil {
@@ -217,9 +212,7 @@ func activePath(entries []*entry) []*entry {
 		}
 		current = byID[*current.ParentID]
 	}
-	for i, j := 0, len(path)-1; i < j; i, j = i+1, j-1 {
-		path[i], path[j] = path[j], path[i]
-	}
+	slices.Reverse(path)
 	return path
 }
 
@@ -236,22 +229,13 @@ func restoredModel(models map[string]string, lastRole string) string {
 }
 
 func indexOf(path []*entry, id string) int {
-	for i, e := range path {
-		if e.ID == id {
-			return i
-		}
-	}
-	return -1
+	return slices.IndexFunc(path, func(e *entry) bool { return e.ID == id })
 }
 
 // applyToolResultPrunes blanks every tool result a tool_result_prune record names, as Oh My Pi's
 // loader does (tool-result-prunes.ts): its content becomes the record's notice and it is marked
 // pruned. A malformed record, or one naming no tool result, is skipped as Oh My Pi skips it.
-func applyToolResultPrunes(entries []*entry) error {
-	byID := map[string]*entry{}
-	for _, e := range entries {
-		byID[e.ID] = e
-	}
+func applyToolResultPrunes(entries []*entry, byID map[string]*entry) error {
 	for _, e := range entries {
 		if e.Type != "custom" || e.CustomType != toolResultPruneType {
 			continue
@@ -338,8 +322,7 @@ func compactionSummary(c *entry) (summary llmMessage, remote *conversation.Nativ
 
 func allObjects(items []json.RawMessage) bool {
 	for _, item := range items {
-		trimmed := strings.TrimSpace(string(item))
-		if !strings.HasPrefix(trimmed, "{") {
+		if !bytes.HasPrefix(bytes.TrimSpace(item), []byte("{")) {
 			return false
 		}
 	}
@@ -432,8 +415,9 @@ func customMessages(customType string, content json.RawMessage, attribution, whe
 	if customType == interruptedThinkingType {
 		return nil, conversation.Unknown("an interrupted-thinking turn (%s)", where)
 	}
-	trimmed := strings.TrimSpace(string(content))
-	if !strings.HasPrefix(trimmed, "\"") && !strings.HasPrefix(trimmed, "[") {
+	trimmed := bytes.TrimSpace(content)
+	textContent := bytes.HasPrefix(trimmed, []byte(`"`))
+	if !textContent && !bytes.HasPrefix(trimmed, []byte("[")) {
 		// Not custom message content: Oh My Pi restores no message from it.
 		return nil, nil
 	}
@@ -455,7 +439,7 @@ func customMessages(customType string, content json.RawMessage, attribution, whe
 			texts = append(texts, b)
 		}
 	}
-	if len(images) == 0 || strings.HasPrefix(trimmed, "\"") {
+	if len(images) == 0 || textContent {
 		return []llmMessage{{role: "user", blocks: blocks}}, nil
 	}
 	var out []llmMessage
@@ -546,15 +530,15 @@ func emptyErrorTurn(blocks []block) bool {
 	for _, b := range blocks {
 		switch b.Type {
 		case "text":
-			if strings.TrimFunc(b.Text, isJSSpace) != "" {
+			if !blank(b.Text) {
 				return false
 			}
 		case "thinking":
-			if strings.TrimFunc(b.Thinking, isJSSpace) != "" || strings.TrimFunc(b.ThinkingSignature, isJSSpace) != "" {
+			if !blank(b.Thinking) || !blank(b.ThinkingSignature) {
 				return false
 			}
 		case "redactedThinking":
-			if strings.TrimFunc(b.Data, isJSSpace) != "" {
+			if !blank(b.Data) {
 				return false
 			}
 		default:
@@ -609,12 +593,7 @@ func stripDanglingToolCalls(messages []llmMessage) []llmMessage {
 }
 
 func hasDangling(blocks []block, paired map[string]bool) bool {
-	for _, b := range blocks {
-		if b.Type == "toolCall" && !paired[b.ID] {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(blocks, func(b block) bool { return b.Type == "toolCall" && !paired[b.ID] })
 }
 
 // dropFailedTurns is buildSessionContext's last pass: an aborted or failed assistant turn is not

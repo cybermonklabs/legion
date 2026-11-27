@@ -19,7 +19,7 @@ var appendedAt = time.Date(2026, 10, 26, 12, 0, 0, 0, time.UTC)
 func claudeAnswer() conversation.Append {
 	return conversation.Append{
 		QuestionID: "q-7", Question: "What does the note say?",
-		Provider: "anthropic", API: anthropicMessages, Model: "claude-opus-5-5",
+		Provider: "anthropic", API: conversation.AnthropicMessages, Model: "claude-opus-5-5",
 		Turns: []conversation.Turn{
 			{
 				Content: []conversation.Block{
@@ -92,7 +92,7 @@ func TestEncodeAppendsAfterATornTailAsOhMyPiWritesEntries(t *testing.T) {
 		t.Errorf("message roles %v", roles)
 	}
 	first := entries[1]["message"].(map[string]any)
-	if first["api"] != anthropicMessages || first["provider"] != "anthropic" || first["model"] != "claude-opus-5-5" || first["stopReason"] != "toolUse" {
+	if first["api"] != conversation.AnthropicMessages || first["provider"] != "anthropic" || first["model"] != "claude-opus-5-5" || first["stopReason"] != "toolUse" {
 		t.Errorf("the tool turn = %v", first)
 	}
 	usage := first["usage"].(map[string]any)
@@ -127,7 +127,7 @@ func TestEncodeWritesOpenAIResponsesTurnsFromTheirItems(t *testing.T) {
 	functionCall := `{"id":"fc_1","type":"function_call","status":"completed","call_id":"call_1","name":"read","arguments":"{\"path\":\"note.txt\"}"}`
 	message := `{"id":"msg_1","type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"Plum.","annotations":[]}]}`
 	a := conversation.Append{
-		QuestionID: "q-8", Question: "What does it say?", Provider: "openai", API: openaiResponses, Model: "gpt-6.1",
+		QuestionID: "q-8", Question: "What does it say?", Provider: "openai", API: conversation.OpenAIResponses, Model: "gpt-6.1",
 		Turns: []conversation.Turn{
 			{
 				Content: []conversation.Block{thinking("Weigh it.", ""), call("call_1", "read", `{"path":"note.txt"}`)},
@@ -140,7 +140,7 @@ func TestEncodeWritesOpenAIResponsesTurnsFromTheirItems(t *testing.T) {
 	f := newFixture()
 	f.add(`{"type":"model_change","model":"openai/gpt-6.1"}`)
 	f.add(userEntry("hello"))
-	f.add(assistantEntry("openai", openaiResponses, "gpt-6.1", "stop", `[{"type":"text","text":"hi"}]`))
+	f.add(assistantEntry("openai", conversation.OpenAIResponses, "gpt-6.1", "stop", `[{"type":"text","text":"hi"}]`))
 	s := read(t, f.bytes())
 	data, err := s.Encode(a, appendedAt)
 	if err != nil {
@@ -200,7 +200,7 @@ const (
 func askedAgainAnswer() conversation.Append {
 	return conversation.Append{
 		QuestionID: "q-9", Question: "Is PR 7 green?",
-		Provider: "anthropic", API: anthropicMessages, Model: "claude-opus-5-5",
+		Provider: "anthropic", API: conversation.AnthropicMessages, Model: "claude-opus-5-5",
 		Turns: []conversation.Turn{
 			{Content: []conversation.Block{thinking("I cannot see the checks.", "c2lnLXI="), text(refusedReply)}, AskedAgain: askedAgain},
 			{Content: []conversation.Block{text(replyAgain)}},
@@ -347,7 +347,7 @@ func TestEncodeRefusesAnAppendItCannotWrite(t *testing.T) {
 		t.Error("an append on an API the appender does not write encoded")
 	}
 	noItems := claudeAnswer()
-	noItems.API = openaiResponses
+	noItems.API = conversation.OpenAIResponses
 	if _, err := s.Encode(noItems, appendedAt); err == nil {
 		t.Error("an OpenAI Responses append with no output items encoded")
 	}

@@ -155,7 +155,7 @@ func assertResponsesResumeMatches(t *testing.T, before *Session, content, body [
 	if !reflect.DeepEqual(got, wantDecoded) {
 		t.Errorf("Oh My Pi's resume request input:\n%s\nthe reader's conversation and the follow-up:\n%s", observed, wantJSON)
 	}
-	if resumed.Model != standInProvider+"/"+standInGPT || resumed.API != openaiResponses {
+	if resumed.Model != standInProvider+"/"+standInGPT || resumed.API != conversation.OpenAIResponses {
 		t.Errorf("the reader's model %q, API %q", resumed.Model, resumed.API)
 	}
 	assertBlankedOnly(t, before, resumed)
@@ -167,7 +167,7 @@ func assertResponsesResumeMatches(t *testing.T, before *Session, content, body [
 // for byte, which is what the reader carries as the turns' native items.
 func TestThePinnedOhMyPiReplaysTheOpenAIItemsTheReaderCarries(t *testing.T) {
 	model := newOpenAIStandIn(t, firstOpenAIRunReplies()...)
-	rig := newOMPRig(t, openaiResponses, model)
+	rig := newOMPRig(t, conversation.OpenAIResponses, model)
 	rig.run(t, "", "Read note.txt and tell me what it says.")
 	file := rig.sessionFile(t)
 	before, err := ReadFile(file, Options{})
@@ -241,7 +241,7 @@ func messageText(item map[string]any) string {
 // append wrote them, the call, its output and the answer, once each and in order.
 func TestThePinnedOhMyPiResumesAnAppendedOpenAIAnswer(t *testing.T) {
 	model := newOpenAIStandIn(t, firstOpenAIRunReplies()...)
-	rig := newOMPRig(t, openaiResponses, model)
+	rig := newOMPRig(t, conversation.OpenAIResponses, model)
 	rig.run(t, "", "Read note.txt and tell me what it says.")
 	file := rig.sessionFile(t)
 	before, err := ReadFile(file, Options{})
@@ -251,7 +251,7 @@ func TestThePinnedOhMyPiResumesAnAppendedOpenAIAnswer(t *testing.T) {
 	item := func(raw string) json.RawMessage { return json.RawMessage(raw) }
 	answer := conversation.Append{
 		QuestionID: "q-1", Question: "Which fruit does the note name?",
-		Provider: standInProvider, API: openaiResponses, Model: standInGPT,
+		Provider: standInProvider, API: conversation.OpenAIResponses, Model: standInGPT,
 		Turns: []conversation.Turn{
 			{
 				Content: []conversation.Block{thinking("Check the note.", ""), call("call_append_1", "read", `{"path":"note.txt"}`)},
@@ -306,7 +306,7 @@ func TestThePinnedOhMyPiResumesAnAppendedOpenAIAnswer(t *testing.T) {
 // Each appears once.
 func TestThePinnedOhMyPiResumesAnOpenAIAnswerAskedForAgain(t *testing.T) {
 	model := newOpenAIStandIn(t, firstOpenAIRunReplies()...)
-	rig := newOMPRig(t, openaiResponses, model)
+	rig := newOMPRig(t, conversation.OpenAIResponses, model)
 	rig.run(t, "", "Read note.txt and tell me what it says.")
 	file := rig.sessionFile(t)
 	before, err := ReadFile(file, Options{})
@@ -316,7 +316,7 @@ func TestThePinnedOhMyPiResumesAnOpenAIAnswerAskedForAgain(t *testing.T) {
 	item := func(raw string) json.RawMessage { return json.RawMessage(raw) }
 	answer := conversation.Append{
 		QuestionID: "q-1", Question: "Which fruit does the note name?",
-		Provider: standInProvider, API: openaiResponses, Model: standInGPT,
+		Provider: standInProvider, API: conversation.OpenAIResponses, Model: standInGPT,
 		Turns: []conversation.Turn{
 			{
 				Content: []conversation.Block{thinking("I cannot tell from here.", ""), text(refusedReply)},

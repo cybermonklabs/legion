@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/sjawhar/legion/daemon/internal/conversation"
+	"github.com/sjawhar/legion/daemon/internal/ompsessions"
 )
 
 // sessionVersion is the one session header version this reader knows: the pinned Oh My Pi's
@@ -96,20 +97,8 @@ type block struct {
 	Arguments         json.RawMessage `json:"arguments"`
 }
 
-// titleSlot is the fixed-width first line Oh My Pi keeps the session's title in
-// (session-title-slot.ts), when the file has one.
-type titleSlot struct {
-	Type      string  `json:"type"`
-	V         int     `json:"v"`
-	Title     *string `json:"title"`
-	Source    *string `json:"source"`
-	UpdatedAt *string `json:"updatedAt"`
-	Pad       *string `json:"pad"`
-}
-
 // parsed is a session's records as Oh My Pi's loader reads them.
 type parsed struct {
-	slot    *titleSlot
 	header  header
 	entries []*entry
 }
@@ -137,8 +126,7 @@ func parseSession(content []byte) (*parsed, error) {
 			continue
 		}
 		if wasFirst {
-			if slot, ok := parseTitleSlot(line); ok {
-				p.slot = slot
+			if _, _, ok := ompsessions.ParseTitleSlot(line); ok {
 				continue
 			}
 		}
@@ -179,20 +167,6 @@ func parseSession(content []byte) (*parsed, error) {
 		return nil, conversation.Unknown("no Oh My Pi session header")
 	}
 	return &p, nil
-}
-
-// parseTitleSlot is Oh My Pi's parseTitleSlotLine: a title slot, or false for a line that is not
-// one (which is then the header).
-func parseTitleSlot(line []byte) (*titleSlot, bool) {
-	var slot titleSlot
-	if json.Unmarshal(line, &slot) != nil || slot.Type != "title" || slot.V != 1 ||
-		slot.Title == nil || slot.UpdatedAt == nil || slot.Pad == nil {
-		return nil, false
-	}
-	if slot.Source != nil && *slot.Source != "auto" && *slot.Source != "user" {
-		return nil, false
-	}
-	return &slot, true
 }
 
 // parseBlocks reads a message's content: a string is one text block, an array its blocks, each of

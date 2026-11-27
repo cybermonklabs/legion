@@ -123,17 +123,20 @@ func userBlocks(raw json.RawMessage) ([]block, error) {
 	if err := json.Unmarshal(raw, &blocks); err != nil {
 		return nil, conversation.Unknown("a user message's content is neither text nor blocks")
 	}
-	for _, b := range blocks {
+	for i := range blocks {
+		b := &blocks[i]
 		switch b.Type {
 		case "text":
 		case "image":
-			if err := checkImage(b); err != nil {
+			if err := checkImage(*b); err != nil {
 				return nil, err
 			}
 		case "tool_result":
-			if _, err := resultParts(b.Content); err != nil {
+			parts, err := resultParts(b.Content)
+			if err != nil {
 				return nil, err
 			}
+			b.parts = parts
 		default:
 			return nil, conversation.Unknown("a user content block of type %q", b.Type)
 		}
@@ -252,8 +255,8 @@ func closeTail(items []item) []item {
 		for _, it := range items[start:] {
 			for _, id := range toolUseIDs(it.blocks) {
 				if !answered[id] {
-					encoded, _ := json.Marshal(interruptedResult)
-					missing = append(missing, block{Type: "tool_result", ToolUseID: id, Content: encoded, IsError: true})
+					missing = append(missing, block{Type: "tool_result", ToolUseID: id, IsError: true,
+						parts: []block{{Type: "text", Text: interruptedResult}}})
 				}
 			}
 		}
@@ -390,7 +393,7 @@ func toConversation(items []item) []conversation.Message {
 	var messages []conversation.Message
 	for _, it := range items {
 		if it.role == "assistant" {
-			m := conversation.Message{Role: conversation.Assistant, Provider: "anthropic", API: anthropicMessages, Model: it.model}
+			m := conversation.Message{Role: conversation.Assistant, Provider: "anthropic", API: conversation.AnthropicMessages, Model: it.model}
 			for _, b := range it.blocks {
 				switch b.Type {
 				case "text":
@@ -410,9 +413,8 @@ func toConversation(items []item) []conversation.Message {
 		for _, b := range it.blocks {
 			switch b.Type {
 			case "tool_result":
-				parts, _ := resultParts(b.Content)
 				result := conversation.Block{Type: conversation.ToolResult, ToolCallID: b.ToolUseID, ToolName: names[b.ToolUseID], IsError: b.IsError}
-				for _, p := range parts {
+				for _, p := range b.parts {
 					result.Content = append(result.Content, neutralPart(p))
 				}
 				messages = append(messages, conversation.Message{Role: conversation.Tool, Content: []conversation.Block{result}})

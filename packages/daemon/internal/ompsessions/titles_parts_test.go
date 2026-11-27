@@ -8,7 +8,7 @@ import (
 
 // Titles reads the header of a session laid out as Oh My Pi writes it: Replace leaves the row's
 // content empty and stores the session bytes in omp_session_files_parts.
-func TestAuditTitlesReadsTheHeaderOfAnOhMyPiWrittenRow(t *testing.T) {
+func TestTitlesReadsTheHeaderOfAnOhMyPiWrittenRow(t *testing.T) {
 	conn := connect(t)
 	ctx := context.Background()
 	if err := CreateTables(ctx, conn); err != nil {
@@ -24,7 +24,9 @@ func TestAuditTitlesReadsTheHeaderOfAnOhMyPiWrittenRow(t *testing.T) {
 	if err := conn.c.QueryRow(ctx, "SELECT length(content), byte_len FROM omp_session_files WHERE path = '/s/omp.jsonl'").Scan(&contentLen, &byteLen); err != nil {
 		t.Fatal(err)
 	}
-	t.Logf("row: length(content)=%d byte_len=%d", contentLen, byteLen)
+	if want := int64(len(describedSession)); contentLen != 0 || byteLen != want {
+		t.Fatalf("row: length(content)=%d byte_len=%d, want 0 and %d", contentLen, byteLen, want)
+	}
 	titled, err := Titles(ctx, conn)
 	if err != nil || len(titled) != 1 {
 		t.Fatalf("Titles = %v, %v", titled, err)

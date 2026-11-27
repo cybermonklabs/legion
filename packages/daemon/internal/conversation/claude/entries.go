@@ -121,6 +121,7 @@ type block struct {
 	Content   json.RawMessage `json:"content"`
 	IsError   bool            `json:"is_error"`
 	Source    *imageSource    `json:"source"`
+	parts     []block         // decoded content of a tool result
 }
 
 type imageSource struct {

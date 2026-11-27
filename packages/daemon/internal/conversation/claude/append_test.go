@@ -19,7 +19,7 @@ var appendedAt = time.Date(2026, 10, 26, 12, 0, 0, 0, time.UTC)
 func toolAnswer() conversation.Append {
 	return conversation.Append{
 		QuestionID: "q-7", Question: "What does the note say?",
-		Provider: "anthropic", API: anthropicMessages, Model: fixtureModel,
+		Provider: "anthropic", API: conversation.AnthropicMessages, Model: fixtureModel,
 		Turns: []conversation.Turn{
 			{
 				Content: []conversation.Block{
@@ -149,7 +149,7 @@ const (
 func askedAgainAnswer() conversation.Append {
 	return conversation.Append{
 		QuestionID: "q-9", Question: "Is PR 7 green?",
-		Provider: "anthropic", API: anthropicMessages, Model: fixtureModel,
+		Provider: "anthropic", API: conversation.AnthropicMessages, Model: fixtureModel,
 		Turns: []conversation.Turn{
 			{Content: []conversation.Block{thinking("I cannot see the checks.", "c2lnLXI="), text(refusedReply)}, AskedAgain: askedAgain},
 			{Content: []conversation.Block{text(replyAgain)}},
@@ -285,7 +285,7 @@ func TestAppendFileRefusesATranscriptThatMoved(t *testing.T) {
 func TestEncodeRefusesWhatClaudeCodeCannotHold(t *testing.T) {
 	s := read(t, baseTranscript().bytes())
 	other := toolAnswer()
-	other.API = "openai-responses"
+	other.API = conversation.OpenAIResponses
 	if _, err := s.Encode(other, appendedAt); err == nil {
 		t.Error("an OpenAI Responses answer was encoded")
 	}

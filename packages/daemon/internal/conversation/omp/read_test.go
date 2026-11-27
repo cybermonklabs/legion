@@ -56,7 +56,7 @@ func assistantEntry(provider, api, model, stopReason, content string) string {
 }
 
 func claudeEntry(stopReason, content string) string {
-	return assistantEntry("anthropic", anthropicMessages, "claude-opus-5-5", stopReason, content)
+	return assistantEntry("anthropic", conversation.AnthropicMessages, "claude-opus-5-5", stopReason, content)
 }
 
 func toolResultEntry(id, name, text string, isError bool) string {
@@ -89,7 +89,7 @@ func user(texts ...string) conversation.Message {
 }
 
 func claude(blocks ...conversation.Block) conversation.Message {
-	return conversation.Message{Role: conversation.Assistant, Provider: "anthropic", API: anthropicMessages, Model: "claude-opus-5-5", Content: blocks}
+	return conversation.Message{Role: conversation.Assistant, Provider: "anthropic", API: conversation.AnthropicMessages, Model: "claude-opus-5-5", Content: blocks}
 }
 
 func result(id, name, output string, isError bool) conversation.Message {
@@ -138,7 +138,7 @@ func TestReadRebuildsTheConversationOhMyPiResumes(t *testing.T) {
 		result("toolu_01", "read", "plum", false),
 		claude(thinking("It says plum.", "c2lnMg=="), text("Plum.")),
 	})
-	if s.Model != "anthropic/claude-opus-5-5" || s.API != anthropicMessages || s.ThinkingLevel != "high" {
+	if s.Model != "anthropic/claude-opus-5-5" || s.API != conversation.AnthropicMessages || s.ThinkingLevel != "high" {
 		t.Errorf("model %q, API %q, thinking level %q", s.Model, s.API, s.ThinkingLevel)
 	}
 	if s.ID != "0001" || s.Leaf != f.last || s.Torn || s.Size != int64(len(f.bytes())) {
@@ -263,7 +263,7 @@ func TestReadCarriesToolCallIDsAsTheTargetRequestDoes(t *testing.T) {
 	build := func(final string) []byte {
 		f := newFixture()
 		f.add(userEntry("request"))
-		f.add(assistantEntry("openai", openaiResponses, "gpt-6.1", "toolUse", `[{"type":"toolCall","id":"call_A|fc_0123456789012345678901234567890123456789012345678901234567890123","name":"read","arguments":{}}]`))
+		f.add(assistantEntry("openai", conversation.OpenAIResponses, "gpt-6.1", "toolUse", `[{"type":"toolCall","id":"call_A|fc_0123456789012345678901234567890123456789012345678901234567890123","name":"read","arguments":{}}]`))
 		f.add(`{"type":"custom_message","customType":"mid-run-todo-nudge","content":"Keep going.","display":false}`)
 		f.add(toolResultEntry("call_A|fc_0123456789012345678901234567890123456789012345678901234567890123", "read", "out", false))
 		f.add(final)
@@ -281,7 +281,7 @@ func TestReadCarriesToolCallIDsAsTheTargetRequestDoes(t *testing.T) {
 		t.Errorf("message after the result = %+v, want the custom message", got)
 	}
 
-	s = read(t, build(assistantEntry("openai", openaiResponses, "gpt-6.1", "stop", `[{"type":"text","text":"done"}]`)))
+	s = read(t, build(assistantEntry("openai", conversation.OpenAIResponses, "gpt-6.1", "stop", `[{"type":"text","text":"done"}]`)))
 	if s.Messages[1].Content[0].ToolCallID != "call_A" || s.Messages[2].Content[0].ToolCallID != "call_A" {
 		t.Errorf("Responses ids = %q and %q, want call_A", s.Messages[1].Content[0].ToolCallID, s.Messages[2].Content[0].ToolCallID)
 	}
@@ -318,7 +318,7 @@ func TestReadCarriesOpenAIReasoningNativeAndForeignReasoningAsText(t *testing.T)
 	if got := s.Messages[1].Content[0]; got.Type != conversation.Thinking || got.Text != "Weighing it." {
 		t.Errorf("thinking = %+v", got)
 	}
-	if s.API != openaiResponses || s.Model != "openai/gpt-6.1" {
+	if s.API != conversation.OpenAIResponses || s.Model != "openai/gpt-6.1" {
 		t.Errorf("API %q, model %q", s.API, s.Model)
 	}
 
@@ -326,7 +326,7 @@ func TestReadCarriesOpenAIReasoningNativeAndForeignReasoningAsText(t *testing.T)
 	f.add(claudeEntry("stop", `[{"type":"thinking","thinking":"Claude thinks.","thinkingSignature":"c2ln"},{"type":"redactedThinking","data":"cmVk"},{"type":"text","text":"Claude answers."}]`))
 	s = read(t, f.bytes())
 	assertMessages(t, s.Messages[1:2], []conversation.Message{{
-		Role: conversation.Assistant, Provider: "openai", API: openaiResponses, Model: "gpt-6.1",
+		Role: conversation.Assistant, Provider: "openai", API: conversation.OpenAIResponses, Model: "gpt-6.1",
 		Content: []conversation.Block{text("Weighing it."), call("call_01_fc_01", "read", `{"path":"x"}`)},
 	}})
 

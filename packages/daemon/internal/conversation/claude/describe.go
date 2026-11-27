@@ -1,13 +1,14 @@
 package claude
 
 import (
-	"bufio"
 	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
+
+	"github.com/sjawhar/legion/daemon/internal/conversation"
 )
 
 // Description is what a transcript says about itself without its conversation being rebuilt.
@@ -27,7 +28,7 @@ type Description struct {
 // as Claude Code skips it.
 func Describe(content []byte) Description {
 	var d Description
-	_ = describe(&d, headLines(content))
+	_ = describe(&d, conversation.ContentLines(content))
 	return d
 }
 
@@ -38,16 +39,8 @@ func DescribeFile(path string) (Description, error) {
 		return Description{}, err
 	}
 	defer file.Close()
-	reader := bufio.NewReaderSize(file, 64<<10)
 	var d Description
-	err = describe(&d, func() ([]byte, error) {
-		line, err := reader.ReadBytes('\n')
-		if len(line) > 0 && errors.Is(err, io.EOF) {
-			err = nil
-		}
-		return line, err
-	})
-	if err != nil {
+	if err := describe(&d, conversation.ReaderLines(file)); err != nil {
 		return Description{}, fmt.Errorf("read transcript %s: %w", path, err)
 	}
 	return d, nil
@@ -85,20 +78,5 @@ func describe(d *Description, read func() ([]byte, error)) error {
 		case d.SessionID == "" && transcriptTypes[e.Type] && e.UUID != "":
 			d.SessionID, d.Cwd, d.Timestamp = e.SessionID, e.Cwd, e.Timestamp
 		}
-	}
-}
-
-func headLines(content []byte) func() ([]byte, error) {
-	return func() ([]byte, error) {
-		if len(content) == 0 {
-			return nil, io.EOF
-		}
-		line := content
-		if i := bytes.IndexByte(content, '\n'); i >= 0 {
-			line, content = content[:i], content[i+1:]
-		} else {
-			content = nil
-		}
-		return line, nil
 	}
 }

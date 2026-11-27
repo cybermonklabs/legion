@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/sjawhar/legion/daemon/internal/conversation"
 )
 
@@ -34,15 +35,15 @@ func (s *Session) Encode(a conversation.Append, now time.Time) ([]byte, error) {
 	if err := a.Validate(); err != nil {
 		return nil, err
 	}
-	if a.API != anthropicMessages {
-		return nil, fmt.Errorf("append: a Claude Code transcript holds %s turns, not %s", anthropicMessages, a.API)
+	if a.API != conversation.AnthropicMessages {
+		return nil, fmt.Errorf("append: a Claude Code transcript holds %s turns, not %s", conversation.AnthropicMessages, a.API)
 	}
 	w, err := s.writer(now)
 	if err != nil {
 		return nil, err
 	}
-	promptID := newUUID()
-	if err := w.user(promptID, a.Question, nil, ""); err != nil {
+	promptID := uuid.NewString()
+	if err := w.prompt(promptID, a.Question); err != nil {
 		return nil, err
 	}
 	for i, turn := range a.Turns {
@@ -61,7 +62,7 @@ func (s *Session) Encode(a conversation.Append, now time.Time) ([]byte, error) {
 			if err != nil {
 				return nil, fmt.Errorf("append: turn %d: %w", i+1, err)
 			}
-			uuid, err := w.assistant(assistantMessageOut{
+			lineID, err := w.assistant(assistantMessageOut{
 				ID: messageID, Type: "message", Role: "assistant", Model: a.Model, Content: []any{content},
 				StopReason: stopReason, Usage: usage,
 			})
@@ -69,30 +70,27 @@ func (s *Session) Encode(a conversation.Append, now time.Time) ([]byte, error) {
 				return nil, err
 			}
 			if b.Type == conversation.ToolCall {
-				callLines[b.ToolCallID] = uuid
+				callLines[b.ToolCallID] = lineID
 			}
 		}
 		for _, r := range turn.Results {
-			if err := w.user(promptID, nil, &r, callLines[r.ToolCallID]); err != nil {
+			if err := w.toolResult(promptID, r, callLines[r.ToolCallID]); err != nil {
 				return nil, err
 			}
 		}
 		if turn.AskedAgain != "" {
-			promptID = newUUID()
-			if err := w.user(promptID, turn.AskedAgain, nil, ""); err != nil {
+			promptID = uuid.NewString()
+			if err := w.prompt(promptID, turn.AskedAgain); err != nil {
 				return nil, err
 			}
 		}
 	}
 	if a.NoAnswer != "" {
-		if err := w.user(newUUID(), a.NoAnswer, nil, ""); err != nil {
+		if err := w.prompt(uuid.NewString(), a.NoAnswer); err != nil {
 			return nil, err
 		}
 	}
-	if err := w.write(answerLineOut{Type: AnswerLineType, QuestionID: a.QuestionID, SessionID: s.ID, Timestamp: w.at}); err != nil {
-		return nil, err
-	}
-	if err := w.write(lastPromptOut{Type: "last-prompt", LastPrompt: a.Question, LeafUUID: w.parent, SessionID: s.ID}); err != nil {
+	if err := w.checkpoint(a.QuestionID, a.Question); err != nil {
 		return nil, err
 	}
 	return w.buf.Bytes(), nil
@@ -110,13 +108,10 @@ func (s *Session) EncodeDelivery(d conversation.Delivery, now time.Time) ([]byte
 	if err != nil {
 		return nil, err
 	}
-	if err := w.user(newUUID(), d.Text, nil, ""); err != nil {
+	if err := w.prompt(uuid.NewString(), d.Text); err != nil {
 		return nil, err
 	}
-	if err := w.write(answerLineOut{Type: AnswerLineType, QuestionID: d.ID, SessionID: s.ID, Timestamp: w.at}); err != nil {
-		return nil, err
-	}
-	if err := w.write(lastPromptOut{Type: "last-prompt", LastPrompt: d.Text, LeafUUID: w.parent, SessionID: s.ID}); err != nil {
+	if err := w.checkpoint(d.ID, d.Text); err != nil {
 		return nil, err
 	}
 	return w.buf.Bytes(), nil
@@ -185,35 +180,43 @@ func (w *lineWriter) parentUUID() *string {
 	return &parent
 }
 
-// user writes a user line: the question (text) or one tool result with the uuid of the assistant
-// line holding its call. A tool result line carries toolUseResult, which is what tells Claude Code
-// it is not a prompt the person typed; Claude Code puts the tool's own output there, the reader
-// has its text.
-func (w *lineWriter) user(promptID string, text any, result *conversation.Block, callLine string) error {
-	line := userLineOut{ParentUUID: w.parentUUID(), PromptID: promptID, Type: "user", UUID: newUUID(), Timestamp: w.at, commonOut: w.common}
-	if result == nil {
-		line.Message = userMessageOut{Role: "user", Content: text}
-	} else {
-		var parts []any
-		var texts []string
-		for _, p := range result.Content {
-			if p.Type == conversation.Image {
-				parts = append(parts, imageOut{Type: "image", Source: imageSourceOut{Type: "base64", MediaType: p.MediaType, Data: p.ImageData}})
-				continue
-			}
-			parts = append(parts, textOut{Type: "text", Text: p.Text})
-			texts = append(texts, p.Text)
+func (w *lineWriter) userLine(promptID string) userLineOut {
+	return userLineOut{ParentUUID: w.parentUUID(), PromptID: promptID, Type: "user", UUID: uuid.NewString(), Timestamp: w.at, commonOut: w.common}
+}
+
+func (w *lineWriter) prompt(promptID, text string) error {
+	line := w.userLine(promptID)
+	line.Message = userMessageOut{Role: "user", Content: text}
+	return w.writeUser(line)
+}
+
+// toolResult writes a user line with the uuid of the assistant line holding its call.
+// The toolUseResult field tells Claude Code it is not a prompt the person typed.
+func (w *lineWriter) toolResult(promptID string, result conversation.Block, callLine string) error {
+	line := w.userLine(promptID)
+	var parts []any
+	var texts []string
+	for _, p := range result.Content {
+		if p.Type == conversation.Image {
+			parts = append(parts, imageOut{Type: "image", Source: imageSourceOut{Type: "base64", MediaType: p.MediaType, Data: p.ImageData}})
+			continue
 		}
-		var content any = parts
-		if len(parts) == 1 && len(texts) == 1 {
-			content = texts[0]
-		} else if len(parts) == 0 {
-			content = ""
-		}
-		line.Message = userMessageOut{Role: "user", Content: []any{toolResultOut{ToolUseID: result.ToolCallID, Type: "tool_result", Content: content, IsError: result.IsError}}}
-		line.ToolUseResult = strings.Join(texts, "\n")
-		line.SourceToolAssistantUUID = callLine
+		parts = append(parts, textOut{Type: "text", Text: p.Text})
+		texts = append(texts, p.Text)
 	}
+	var content any = parts
+	if len(parts) == 1 && len(texts) == 1 {
+		content = texts[0]
+	} else if len(parts) == 0 {
+		content = ""
+	}
+	line.Message = userMessageOut{Role: "user", Content: []any{toolResultOut{ToolUseID: result.ToolCallID, Type: "tool_result", Content: content, IsError: result.IsError}}}
+	line.ToolUseResult = strings.Join(texts, "\n")
+	line.SourceToolAssistantUUID = callLine
+	return w.writeUser(line)
+}
+
+func (w *lineWriter) writeUser(line userLineOut) error {
 	if err := w.write(line); err != nil {
 		return err
 	}
@@ -223,7 +226,7 @@ func (w *lineWriter) user(promptID string, text any, result *conversation.Block,
 
 // assistant writes an assistant line and returns its uuid.
 func (w *lineWriter) assistant(m assistantMessageOut) (string, error) {
-	line := assistantLineOut{ParentUUID: w.parentUUID(), Message: m, Type: "assistant", UUID: newUUID(), Timestamp: w.at, Effort: w.effort, commonOut: w.common}
+	line := assistantLineOut{ParentUUID: w.parentUUID(), Message: m, Type: "assistant", UUID: uuid.NewString(), Timestamp: w.at, Effort: w.effort, commonOut: w.common}
 	if err := w.write(line); err != nil {
 		return "", err
 	}
@@ -231,14 +234,17 @@ func (w *lineWriter) assistant(m assistantMessageOut) (string, error) {
 	return line.UUID, nil
 }
 
-func (w *lineWriter) write(v any) error {
-	encoded, err := conversation.Marshal(v)
-	if err != nil {
+func (w *lineWriter) checkpoint(questionID, lastPrompt string) error {
+	if err := w.write(answerLineOut{Type: AnswerLineType, QuestionID: questionID, SessionID: w.common.SessionID, Timestamp: w.at}); err != nil {
 		return err
 	}
-	w.buf.Write(encoded)
-	w.buf.WriteByte('\n')
-	return nil
+	return w.write(lastPromptOut{Type: "last-prompt", LastPrompt: lastPrompt, LeafUUID: w.parent, SessionID: w.common.SessionID})
+}
+
+func (w *lineWriter) write(v any) error {
+	enc := json.NewEncoder(&w.buf)
+	enc.SetEscapeHTML(false)
+	return enc.Encode(v)
 }
 
 // assistantBlockOut is a model turn's block as Claude Code records it from the Messages API.
@@ -251,22 +257,9 @@ func assistantBlockOut(b conversation.Block) (any, error) {
 	case conversation.RedactedThinking:
 		return redactedOut{Type: "redacted_thinking", Data: b.Data}, nil
 	case conversation.ToolCall:
-		input := b.Arguments
-		if !json.Valid(input) || !bytes.HasPrefix(bytes.TrimSpace(input), []byte("{")) {
-			input = json.RawMessage("{}")
-		}
-		return toolUseOut{Type: "tool_use", ID: b.ToolCallID, Name: b.ToolName, Input: input}, nil
+		return toolUseOut{Type: "tool_use", ID: b.ToolCallID, Name: b.ToolName, Input: conversation.JSONObjectOrEmpty(b.Arguments)}, nil
 	}
 	return nil, fmt.Errorf("a %s block in a model turn", b.Type)
-}
-
-// newUUID is a random (version 4) UUID, the form of Claude Code's line uuids.
-func newUUID() string {
-	var b [16]byte
-	_, _ = rand.Read(b[:])
-	b[6] = b[6]&0x0f | 0x40
-	b[8] = b[8]&0x3f | 0x80
-	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
 }
 
 func randomHex(n int) string {

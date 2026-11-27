@@ -3,6 +3,7 @@ package claude
 import (
 	"encoding/json"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/conversation"
@@ -359,7 +360,7 @@ func (l *loaded) recoverParallel(chain []*entry, seen map[string]bool) []*entry 
 		switch {
 		case e.Type == "assistant" && e.Message != nil && e.Message.ID != "":
 			groups[e.Message.ID] = append(groups[e.Message.ID], e)
-		case e.Type == "user" && hasToolResult(e) && e.parent() != "":
+		case e.Type == "user" && !seen[e.UUID] && e.parent() != "" && hasToolResult(e):
 			results[e.parent()] = append(results[e.parent()], e)
 		}
 	}
@@ -419,13 +420,7 @@ func (l *loaded) descendants(leaf *entry, seen map[string]bool) []*entry {
 		}
 	}
 	slices.SortStableFunc(found, func(a, b *entry) int {
-		switch {
-		case a.Timestamp < b.Timestamp:
-			return -1
-		case a.Timestamp > b.Timestamp:
-			return 1
-		}
-		return 0
+		return strings.Compare(a.Timestamp, b.Timestamp)
 	})
 	return found
 }
