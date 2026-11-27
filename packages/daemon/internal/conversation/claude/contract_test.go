@@ -715,6 +715,74 @@ func TestThePinnedClaudeCodeResumesAnAppendedAnswer(t *testing.T) {
 	}
 }
 
+func TestThePinnedClaudeCodeResumesAnAppendedExchangeWithNoAnswer(t *testing.T) {
+	a := toolAnswer()
+	a.Model = standInModel
+	a.Turns = a.Turns[:1]
+	a.NoAnswer = "The model returned no answer."
+	toolID := a.Turns[0].Results[0].ToolCallID
+	turns := resumeAfterFileAppend(t, func(path string, before *Session) error {
+		return AppendFile(path, before, a, time.Now())
+	})
+	question := carriedOnce(t, turns, func(turn wireTurn, b wireBlock) bool {
+		return turn.Role == "user" && b.Type == "text" && b.Text == a.Question
+	}, "the question")
+	call := carriedOnce(t, turns, func(turn wireTurn, b wireBlock) bool {
+		return turn.Role == "assistant" && b.Type == "tool_use" && b.ID == toolID
+	}, "the tool call")
+	result := carriedOnce(t, turns, func(turn wireTurn, b wireBlock) bool {
+		return turn.Role == "user" && b.Type == "tool_result" && b.ID == toolID && b.Result == "plum"
+	}, "the tool result")
+	note := carriedOnce(t, turns, func(turn wireTurn, b wireBlock) bool {
+		return turn.Role == "user" && b.Type == "text" && b.Text == a.NoAnswer
+	}, "the no-answer note")
+	if !(question+1 == call && call+1 == result && result == note && note == len(turns)-3) {
+		t.Fatalf("question, call, result and note at %d, %d, %d, %d of %d turns; want the result and note together before the synthetic reply and the follow-up",
+			question, call, result, note, len(turns))
+	}
+	if blocks := turns[note].Blocks; len(blocks) != 2 || blocks[0].Type != "tool_result" || blocks[1].Text != a.NoAnswer {
+		t.Errorf("result and note blocks = %+v; want the tool result followed by the note", blocks)
+	}
+}
+
+func TestThePinnedClaudeCodeResumesAnAppendedDelivery(t *testing.T) {
+	d := conversation.Delivery{ID: "delivery-1", Text: "The tester says the note still says plum."}
+	turns := resumeAfterFileAppend(t, func(path string, before *Session) error {
+		return AppendDeliveryFile(path, before, d, time.Now())
+	})
+	delivery := carriedOnce(t, turns, func(turn wireTurn, b wireBlock) bool {
+		return turn.Role == "user" && b.Type == "text" && b.Text == d.Text
+	}, "the delivery")
+	if delivery != len(turns)-3 {
+		t.Errorf("delivery at %d of %d turns; want it before the synthetic reply and the follow-up", delivery, len(turns))
+	}
+}
+
+func resumeAfterFileAppend(t *testing.T, appendTo func(string, *Session) error) []wireTurn {
+	t.Helper()
+	model := newStandIn(t)
+	rig := newClaudeRig(t, model)
+	model.queue(firstRunReplies(rig.work)...)
+	rig.run(t, false, "Read note.txt and tell me what it says.")
+	file := rig.transcript(t)
+	before, err := ReadFile(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := appendTo(file, before); err != nil {
+		t.Fatal(err)
+	}
+	appended, err := ReadFile(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const followUp = "Thanks."
+	rig.run(t, true, followUp)
+	request := model.last(t)
+	assertResumeMatches(t, appended, request, followUp)
+	return request.turns(t)
+}
+
 // After resuming an appended exchange, Claude Code sends the question, first reply, retry prompt,
 // second reply and follow-up in that order, once each. The request matches the rebuilt
 // conversation followed by the follow-up.

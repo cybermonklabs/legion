@@ -926,6 +926,68 @@ func TestThePinnedOhMyPiResumesAnAppendedAnswer(t *testing.T) {
 	})
 }
 
+func TestThePinnedOhMyPiResumesAnAppendedExchangeWithNoAnswer(t *testing.T) {
+	a := claudeAnswer()
+	a.Provider, a.Model = standInProvider, standInModel
+	a.Turns = a.Turns[:1]
+	a.NoAnswer = "The model returned no answer."
+	toolID := a.Turns[0].Results[0].ToolCallID
+	turns := resumeAfterFileAppend(t, func(path string, before *Session) error {
+		return AppendFile(path, before, a, time.Now())
+	})
+	question := carriedOnce(t, turns, func(turn wireTurn, b wireBlock) bool {
+		return turn.Role == "user" && b.Type == "text" && b.Text == a.Question
+	}, "the question")
+	call := carriedOnce(t, turns, func(turn wireTurn, b wireBlock) bool {
+		return turn.Role == "assistant" && b.Type == "tool_use" && b.ID == toolID
+	}, "the tool call")
+	result := carriedOnce(t, turns, func(turn wireTurn, b wireBlock) bool {
+		return turn.Role == "user" && b.Type == "tool_result" && b.ID == toolID && b.Result == "plum"
+	}, "the tool result")
+	note := carriedOnce(t, turns, func(turn wireTurn, b wireBlock) bool {
+		return turn.Role == "user" && b.Type == "text" && b.Text == a.NoAnswer
+	}, "the no-answer note")
+	if !(question+1 == call && call+1 == result && result+1 == note && note == len(turns)-2) {
+		t.Errorf("question, call, result and note at %d, %d, %d, %d of %d turns; want them before the follow-up",
+			question, call, result, note, len(turns))
+	}
+}
+
+func TestThePinnedOhMyPiResumesAnAppendedDelivery(t *testing.T) {
+	d := conversation.Delivery{ID: "delivery-1", Text: "The tester says the note still says plum."}
+	turns := resumeAfterFileAppend(t, func(path string, before *Session) error {
+		return AppendDeliveryFile(path, before, d, time.Now())
+	})
+	delivery := carriedOnce(t, turns, func(turn wireTurn, b wireBlock) bool {
+		return turn.Role == "user" && b.Type == "text" && b.Text == d.Text
+	}, "the delivery")
+	if delivery != len(turns)-2 {
+		t.Errorf("delivery at %d of %d turns; want it before the follow-up", delivery, len(turns))
+	}
+}
+
+func resumeAfterFileAppend(t *testing.T, appendTo func(string, *Session) error) []wireTurn {
+	t.Helper()
+	model := newAnthropicStandIn(t, firstRunReplies()...)
+	rig := newOMPRig(t, conversation.AnthropicMessages, model)
+	rig.run(t, "", "Read note.txt and tell me what it says.")
+	file := rig.sessionFile(t)
+	before, err := ReadFile(file, standInEndpoint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := appendTo(file, before); err != nil {
+		t.Fatal(err)
+	}
+	appended, err := ReadFile(file, standInEndpoint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const followUp = "Thanks."
+	rig.run(t, file, followUp)
+	return assertResumeMatches(t, appended, sessionContent(t, file), model.lastAnthropic(t), followUp)
+}
+
 // After resuming an appended exchange, Oh My Pi sends the question, first reply, retry prompt,
 // second reply and follow-up in that order, once each. The request matches what the reader
 // rebuilds from the session as it stood just before the follow-up.

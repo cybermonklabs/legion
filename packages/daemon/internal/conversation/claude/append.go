@@ -145,6 +145,10 @@ func (s *Session) writer(now time.Time) (*lineWriter, error) {
 // AppendFile appends a to the transcript at path, which s was read from, in one O_APPEND write.
 // It refuses with an error that Is conversation.ErrMoved when the file is no longer the size s was
 // read at.
+// Confirm that the agent's process is stopped before reading the transcript, and keep it stopped
+// through the append. No live Claude Code process may have the session open during that interval.
+// The length check catches only a write that already changed the length. It does not lock the
+// transcript or prevent a live process from continuing on a branch that omits the append.
 func AppendFile(path string, s *Session, a conversation.Append, now time.Time) error {
 	data, err := s.Encode(a, now)
 	if err != nil {
@@ -155,6 +159,9 @@ func AppendFile(path string, s *Session, a conversation.Append, now time.Time) e
 
 // AppendDeliveryFile appends d to the transcript at path, which s was read from, in the same one
 // write and under the same refusal as AppendFile.
+// Confirm that the agent's process is stopped before reading the transcript, and keep it stopped
+// through the append. No live Claude Code process may have the session open during that interval.
+// The length check catches only a write that already changed the length.
 func AppendDeliveryFile(path string, s *Session, d conversation.Delivery, now time.Time) error {
 	data, err := s.EncodeDelivery(d, now)
 	if err != nil {

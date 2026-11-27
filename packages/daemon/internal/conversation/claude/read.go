@@ -64,9 +64,9 @@ type Session struct {
 	answered map[string]bool
 }
 
-// Answered is whether the transcript already holds the answer to questionID: an append naming it
-// wrote its legion-answer line (AnswerLineType). A caller can check this before retrying an
-// append.
+// Answered reports whether a legion-answer marker (AnswerLineType) names questionID anywhere
+// in the transcript, on any branch. It tells a caller whether the append was recorded, not whether
+// the resumed agent will see it.
 func (s *Session) Answered(questionID string) bool { return s.answered[questionID] }
 
 // Read reads a transcript's content.

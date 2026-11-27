@@ -35,7 +35,7 @@ func WriteAfter(path, noun string, size int64, data []byte) error {
 	return file.Close()
 }
 
-// Marshal is JSON as JavaScript's JSON.stringify writes it: no HTML escaping, no trailing newline.
+// Marshal encodes v with Go's JSON encoder, without HTML escaping or a trailing newline.
 func Marshal(v any) ([]byte, error) {
 	var buf bytes.Buffer
 	encoder := json.NewEncoder(&buf)

@@ -222,7 +222,8 @@ type Append struct {
 // Turn is one model turn of an Append.
 type Turn struct {
 	// Content is what the model returned, in order: Thinking (with its Signature),
-	// RedactedThinking, Text and ToolCall blocks.
+	// RedactedThinking, Text and ToolCall blocks. Every turn needs at least one block,
+	// including OpenAI Responses turns that also carry Native items.
 	Content []Block
 	// Native is the turn's OpenAI Responses output items, each byte for byte as the API returned
 	// it, for a turn on that API; the appender writes the turn from them.
@@ -263,6 +264,9 @@ func (a Append) Validate() error {
 		return errors.New("append: no turns")
 	}
 	for i, turn := range a.Turns {
+		if len(turn.Content) == 0 {
+			return fmt.Errorf("append: turn %d has no content blocks", i+1)
+		}
 		var calls []Block
 		for _, block := range turn.Content {
 			switch block.Type {

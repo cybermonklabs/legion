@@ -118,15 +118,11 @@ func TestEncodeAppendsAfterATornTailAsOhMyPiWritesEntries(t *testing.T) {
 	}
 }
 
-// An OpenAI Responses turn is written as Oh My Pi's provider records one: the output items as the
-// openaiResponsesHistory payload byte for byte, a thinking block per reasoning item naming it, a
-// text block per message item with its id in a text signature, a tool call per function_call item
-// under "call_id|item_id", and the result under that id.
-func TestEncodeWritesOpenAIResponsesTurnsFromTheirItems(t *testing.T) {
+func openAIAnswer() conversation.Append {
 	reasoning := `{"id":"rs_1","type":"reasoning","encrypted_content":"gAAAA+/x==","summary":[{"type":"summary_text","text":"Weigh it."}]}`
 	functionCall := `{"id":"fc_1","type":"function_call","status":"completed","call_id":"call_1","name":"read","arguments":"{\"path\":\"note.txt\"}"}`
 	message := `{"id":"msg_1","type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"Plum.","annotations":[]}]}`
-	a := conversation.Append{
+	return conversation.Append{
 		QuestionID: "q-8", Question: "What does it say?", Provider: "openai", API: conversation.OpenAIResponses, Model: "gpt-6.1",
 		Turns: []conversation.Turn{
 			{
@@ -137,10 +133,25 @@ func TestEncodeWritesOpenAIResponsesTurnsFromTheirItems(t *testing.T) {
 			{Content: []conversation.Block{text("Plum.")}, Native: []json.RawMessage{json.RawMessage(message)}},
 		},
 	}
+}
+
+func openAIBaseSession() *fixture {
 	f := newFixture()
 	f.add(`{"type":"model_change","model":"openai/gpt-6.1"}`)
 	f.add(userEntry("hello"))
 	f.add(assistantEntry("openai", conversation.OpenAIResponses, "gpt-6.1", "stop", `[{"type":"text","text":"hi"}]`))
+	return f
+}
+
+// An OpenAI Responses turn is written as Oh My Pi's provider records one: the output items as the
+// openaiResponsesHistory payload byte for byte, a thinking block per reasoning item naming it, a
+// text block per message item with its id in a text signature, a tool call per function_call item
+// under "call_id|item_id", and the result under that id.
+func TestEncodeWritesOpenAIResponsesTurnsFromTheirItems(t *testing.T) {
+	a := openAIAnswer()
+	reasoning, functionCall := string(a.Turns[0].Native[0]), string(a.Turns[0].Native[1])
+	message := string(a.Turns[1].Native[0])
+	f := openAIBaseSession()
 	s := read(t, f.bytes())
 	data, err := s.Encode(a, appendedAt)
 	if err != nil {
@@ -441,5 +452,67 @@ func TestEncodeDeliveryRefusesWhatItCannotWrite(t *testing.T) {
 	}
 	if _, err := s.EncodeDelivery(conversation.Delivery{ID: "agent.ses_asker.k9"}, appendedAt); err == nil {
 		t.Error("a delivery with no message encoded")
+	}
+}
+
+func TestFileAppendRoundTrip(t *testing.T) {
+	unanswered := claudeAnswer()
+	unanswered.Turns = unanswered.Turns[:1]
+	unanswered.NoAnswer = "The model returned no answer."
+	emptyTurn := unanswered
+	emptyTurn.Turns = []conversation.Turn{{}}
+	delivery := conversation.Delivery{ID: "delivery-1", Text: "The tester says the note still says plum."}
+	for _, tc := range []struct {
+		name     string
+		content  []byte
+		exchange conversation.Append
+		delivery conversation.Delivery
+		refuse   bool
+	}{
+		{name: "Anthropic answer", content: baseSession().bytes(), exchange: claudeAnswer()},
+		{name: "OpenAI Responses answer", content: openAIBaseSession().bytes(), exchange: openAIAnswer()},
+		{name: "retry prompt", content: baseSession().bytes(), exchange: askedAgainAnswer()},
+		{name: "no answer", content: baseSession().bytes(), exchange: unanswered},
+		{name: "delivery", content: baseSession().bytes(), delivery: delivery},
+		{name: "empty turn", content: baseSession().bytes(), exchange: emptyTurn, refuse: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "session.jsonl")
+			if err := os.WriteFile(path, tc.content, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			before, err := ReadFile(path, Options{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			id := tc.exchange.QuestionID
+			if tc.delivery.ID == "" {
+				err = AppendFile(path, before, tc.exchange, appendedAt)
+			} else {
+				id = tc.delivery.ID
+				err = AppendDeliveryFile(path, before, tc.delivery, appendedAt)
+			}
+			if tc.refuse {
+				if err == nil {
+					t.Error("the appender accepted a turn with no content blocks")
+				}
+				got, err := os.ReadFile(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !bytes.Equal(got, tc.content) {
+					t.Error("the empty turn changed the session file")
+				}
+			} else if err != nil {
+				t.Fatal(err)
+			}
+			after, err := ReadFile(path, Options{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if after.Answered(id) == tc.refuse {
+				t.Errorf("Answered(%q) = %t, want %t", id, after.Answered(id), !tc.refuse)
+			}
+		})
 	}
 }

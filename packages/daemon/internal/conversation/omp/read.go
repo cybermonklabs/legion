@@ -52,9 +52,9 @@ type Session struct {
 	answered map[string]bool
 }
 
-// Answered is whether the session already holds the answer to questionID: an append naming it
-// ended with its legion-answer entry (AnswerEntryType). A caller can check this before retrying
-// an append.
+// Answered reports whether a legion-answer marker (AnswerEntryType) names questionID anywhere
+// in the session, on any branch. It tells a caller whether the append was recorded, not whether
+// the resumed agent will see it.
 func (s *Session) Answered(questionID string) bool { return s.answered[questionID] }
 
 // Options is what the reader must know that the session does not say: how the endpoint the

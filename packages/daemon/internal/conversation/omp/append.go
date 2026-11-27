@@ -131,6 +131,10 @@ func (s *Session) writer(now time.Time) *entryWriter {
 // AppendFile appends a to the session file at path, which s was read from, in one O_APPEND write.
 // It refuses with an error that Is conversation.ErrMoved when the file is no longer the size s was
 // read at.
+// Confirm that the agent's process is stopped before reading the session, and keep it stopped
+// through the append. No live Oh My Pi process may have the session open during that interval.
+// The length check catches only a write that already changed the length. It does not lock the
+// session or prevent a live process from continuing on a branch that omits the append.
 func AppendFile(path string, s *Session, a conversation.Append, now time.Time) error {
 	data, err := s.Encode(a, now)
 	if err != nil {
@@ -141,6 +145,9 @@ func AppendFile(path string, s *Session, a conversation.Append, now time.Time) e
 
 // AppendDeliveryFile appends d to the session file at path, which s was read from, in the same
 // one write and under the same refusal as AppendFile.
+// Confirm that the agent's process is stopped before reading the session, and keep it stopped
+// through the append. No live Oh My Pi process may have the session open during that interval.
+// The length check catches only a write that already changed the length.
 func AppendDeliveryFile(path string, s *Session, d conversation.Delivery, now time.Time) error {
 	data, err := s.EncodeDelivery(d, now)
 	if err != nil {
@@ -152,6 +159,11 @@ func AppendDeliveryFile(path string, s *Session, d conversation.Delivery, now ti
 // AppendSQL appends a to the session Oh My Pi's session table holds at path, which s was read
 // from, with Oh My Pi's own append statement (ompsessions.Append): refused with an error that Is
 // conversation.ErrMoved when the row's length is no longer s's.
+// Confirm that the agent's process is stopped before reading the session, and keep it stopped
+// through the append. No live Oh My Pi process may have the session open during that interval.
+// The pinned Oh My Pi holds a lease row in omp_session_leases, keyed by session_id, while it
+// has the session open. This function does not check that lease. The length check catches only
+// a write that already changed the length.
 func AppendSQL(ctx context.Context, conn *ompsessions.Conn, path string, s *Session, a conversation.Append, now time.Time) error {
 	data, err := s.Encode(a, now)
 	if err != nil {
@@ -162,6 +174,11 @@ func AppendSQL(ctx context.Context, conn *ompsessions.Conn, path string, s *Sess
 
 // AppendDeliverySQL appends d to the session Oh My Pi's session table holds at path, which s was
 // read from, through the same statement and under the same refusal as AppendSQL.
+// Confirm that the agent's process is stopped before reading the session, and keep it stopped
+// through the append. No live Oh My Pi process may have the session open during that interval.
+// The pinned Oh My Pi holds a lease row in omp_session_leases, keyed by session_id, while it
+// has the session open. This function does not check that lease. The length check catches only
+// a write that already changed the length.
 func AppendDeliverySQL(ctx context.Context, conn *ompsessions.Conn, path string, s *Session, d conversation.Delivery, now time.Time) error {
 	data, err := s.EncodeDelivery(d, now)
 	if err != nil {
@@ -234,7 +251,7 @@ func (w *entryWriter) line(id string, entry any) error {
 func turnContent(a conversation.Append, turn conversation.Turn) ([]any, map[string]string, *payloadOut, error) {
 	callIDs := map[string]string{}
 	if a.API == conversation.AnthropicMessages {
-		var content []any
+		content := make([]any, 0, len(turn.Content))
 		for _, b := range turn.Content {
 			switch b.Type {
 			case conversation.Thinking:
@@ -259,7 +276,7 @@ func turnContent(a conversation.Append, turn conversation.Turn) ([]any, map[stri
 			wantCalls = append(wantCalls, b.ToolCallID)
 		}
 	}
-	var content []any
+	content := make([]any, 0, len(turn.Native))
 	var calls []string
 	for _, raw := range turn.Native {
 		var item conversation.OpenAIResponsesItem

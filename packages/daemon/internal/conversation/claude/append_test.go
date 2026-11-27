@@ -387,3 +387,64 @@ func TestEncodeDeliveryRefusesWhatItCannotWrite(t *testing.T) {
 		t.Error("a delivery with no message encoded")
 	}
 }
+
+func TestFileAppendRoundTrip(t *testing.T) {
+	unanswered := toolAnswer()
+	unanswered.Turns = unanswered.Turns[:1]
+	unanswered.NoAnswer = "The model returned no answer."
+	emptyTurn := unanswered
+	emptyTurn.Turns = []conversation.Turn{{}}
+	delivery := conversation.Delivery{ID: "delivery-1", Text: "The tester says the note still says plum."}
+	for _, tc := range []struct {
+		name     string
+		exchange conversation.Append
+		delivery conversation.Delivery
+		refuse   bool
+	}{
+		{name: "answer with a tool call", exchange: toolAnswer()},
+		{name: "retry prompt", exchange: askedAgainAnswer()},
+		{name: "no answer", exchange: unanswered},
+		{name: "delivery", delivery: delivery},
+		{name: "empty turn", exchange: emptyTurn, refuse: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			content := baseTranscript().bytes()
+			path := filepath.Join(t.TempDir(), "session.jsonl")
+			if err := os.WriteFile(path, content, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			before, err := ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			id := tc.exchange.QuestionID
+			if tc.delivery.ID == "" {
+				err = AppendFile(path, before, tc.exchange, appendedAt)
+			} else {
+				id = tc.delivery.ID
+				err = AppendDeliveryFile(path, before, tc.delivery, appendedAt)
+			}
+			if tc.refuse {
+				if err == nil {
+					t.Error("the appender accepted a turn with no content blocks")
+				}
+				got, err := os.ReadFile(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !bytes.Equal(got, content) {
+					t.Error("the empty turn changed the transcript")
+				}
+			} else if err != nil {
+				t.Fatal(err)
+			}
+			after, err := ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if after.Answered(id) == tc.refuse {
+				t.Errorf("Answered(%q) = %t, want %t", id, after.Answered(id), !tc.refuse)
+			}
+		})
+	}
+}
