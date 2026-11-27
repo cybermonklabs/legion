@@ -468,6 +468,9 @@ func TestTheImageProbeHoldsThePluginToTheContractItIsGiven(t *testing.T) {
 // refused at once; Oh My Pi dying after it answered is waited out, as is a probe the budget cut
 // off before it answered (TestTheImageProbeGivesUpAfterItsAttempts). A pass slower than a second
 // or two passes on the first attempt that answers, as it does on a loaded machine.
+// missing-then-hang answers and then hangs, and only the gate's budget ends it. Each row runs
+// under testwait.Context, so a budget that never fires fails the row by name before the test
+// binary's deadline.
 func TestTheAgentsProbeClassifiesWhatOhMyPiSaid(t *testing.T) {
 	t.Parallel()
 	for _, testCase := range []struct {
@@ -486,7 +489,7 @@ func TestTheAgentsProbeClassifiesWhatOhMyPiSaid(t *testing.T) {
 			f := newImageOmp(t, testCase.plan, []string{"yes"}, []string{"refuses"})
 			gate, logged := imageGateUnder(t, f, contractCurrent, 0)
 
-			err := gate.verifyImage(context.Background())
+			err := gate.verifyImage(testwait.Context(t))
 
 			if testCase.refusal == nil && err != nil {
 				t.Fatalf("verifyImage = %v, want a pass", err)
