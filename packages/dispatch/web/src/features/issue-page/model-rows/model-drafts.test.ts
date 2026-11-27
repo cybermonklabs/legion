@@ -292,7 +292,7 @@ function standingOf(results: readonly TreeAnswerNode[], check = true, kinds?: re
 // over the check's words now decides; where none is, one over moved words reads out of date,
 // every result withdrawn retracted, and none at all no result. Without that sum or a node's
 // `result` the check draws no standing word, since its standing cannot be shown current.
-test("a borrowed check's standing comes from its results in a read of every kind", () => {
+test("a borrowed check's standing comes from its results", () => {
   const passThenFail = [
     childResult("res-1", "c-child", "pass", "2026-11-05T10:00:00Z"),
     childResult("res-2", "c-child", "fail", "2026-11-05T11:00:00Z"),
