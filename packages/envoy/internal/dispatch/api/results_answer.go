@@ -56,9 +56,6 @@ func (s *server) answerIssueChecks(ctx context.Context, issueKey, at string, tre
 	if when != everyCheckWhen {
 		checks = slices.DeleteFunc(checks, func(check model.CheckBlock) bool { return check.When != when })
 	}
-	if err != nil {
-		return issueCheckResults{}, false, err
-	}
 	recorded, err := loadCheckResults(ctx, s.deps.Store.Pool, artifact.ID)
 	if err != nil {
 		return issueCheckResults{}, false, err
