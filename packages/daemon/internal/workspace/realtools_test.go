@@ -172,6 +172,11 @@ func gitWaitedToLock(waited, seen, forked time.Duration) time.Duration {
 // SIGKILL.
 func TestARealGitStoppedAtItsBudgetLeavesNoLock(t *testing.T) {
 	git := realTool(t, "git")
+	stalled := filepath.Join(t.TempDir(), "git")
+	if err := testexec.WriteFile(stalled, []byte("#!/bin/sh\nsleep 1.5\nexec '"+git+"' \"$@\"\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	git = stalled
 	root := t.TempDir()
 	repository := filepath.Join(root, "repository")
 	marks := t.TempDir()
