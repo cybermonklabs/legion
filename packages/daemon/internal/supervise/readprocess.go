@@ -74,12 +74,13 @@ const processReadBound = 5 * time.Second
 // What the read finds is recorded exactly as the sweep's own report of the same process is
 // recorded (reportedProcess). A running verdict that clears the death charge (Claim.DeathCharged),
 // or the record's judgement of that death (EndedWork.Died), is written here in the same write
-// judge makes for that report, which is the claim as the machine holds it (persist): whatever an
-// earlier decision set in memory and no write carried yet goes into the store with the clear — in
-// the window a refused relaunch leaves, its launch failure count and its pending cause — exactly
-// as it would at the sweep's next running report. Held in memory alone, the clear would be lost
-// at a restart, the sweep's next report of the live process would find nothing to clear, the
-// process's next real death would go uncounted toward the deaths limit, and a later end of it
+// judge makes for that report (writeCleared): the claim as the machine holds it, and with it, in
+// the same transaction, the pending delivery where the verdict changed the task's marks. Whatever
+// an earlier decision set in memory and no write carried yet goes into the store with the clear —
+// in the window a refused relaunch leaves, its launch failure count and its pending cause —
+// exactly as it would at the sweep's next running report. Held in memory alone, the clear would
+// be lost at a restart, the sweep's next report of the live process would find nothing to clear,
+// the process's next real death would go uncounted toward the deaths limit, and a later end of it
 // read as from outside the pod would be charged as the death that is over (judgedDeath). The
 // read is not the refusal a caller gives on its answer (dispatch://INFRA-3161 R3): that refusal
 // stops, suspends, forgets, takes back and starts nothing (api's refuseWorkingClaim). Nothing

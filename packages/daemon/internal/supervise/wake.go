@@ -720,6 +720,34 @@ func (m *Machine) dropWakeFor(ev Event) *wake {
 	return dropped
 }
 
+// dropOutlivedRelaunch drops the relaunch of a death died decided, waiting over the process a
+// report has just found running, in the pacing or behind the pause's gate (judge,
+// dispatch://INFRA-1117/comment/80daf46d-7ffd-4020-b51f-63fedd02182e). The report ended the
+// death (reportedProcess), and the relaunch was raised for that death alone, so the daemon
+// replaces no live process and no let-go records an end of the death's words (letGo, recordEnd).
+// The wake goes off the machine and gives up what held it: its place in the pacing
+// (placeTimer), the turn it would have taken going to the wake behind it, or the gate's own stop
+// of the claim for the pause (TimerPause, pauseStopDue), which the gate posted because the launch
+// it held was to replace the process. The pause's end then lets nothing out (resumePause,
+// letOutHeldLaunch), and the live claim is the pause's to stop as every other live claim is
+// (the daemon's pause_stop row). The process the claim keeps is watched again as at a refused
+// turn (watchAgain), since the park took its boot interval, its registration deadline and its
+// turn bound (waitOnMachine). What a wake spent with no launch leaves goes as it goes at that
+// turn: the end of the decision tells the daemon that a paced wait ended and gives back a credit
+// of the refresh gate (tellWakeQueue, endRefreshLane). It writes nothing: the park wrote nothing
+// of a claim that still records its process.
+func (m *Machine) dropOutlivedRelaunch() {
+	waiting := m.wake
+	// The estimate is read before the disarm gives the place up (placeTimer): a place that left
+	// estimates the zero time.
+	m.log.Info("supervise: a report found running the process a death's relaunch waits to replace; the death is over, so the relaunch is dropped and the process kept",
+		"kind", waiting.kind, "due", waiting.due(), "pause", waiting.pause, "state", m.claim.State)
+	m.disarm(TimerWake)
+	m.disarm(TimerPause)
+	m.wake = nil
+	m.watchAgain()
+}
+
 // runParkedLaunchNow is an operator's task meeting a launch the pacing parked over the process
 // the claim still records: that launch runs here, unpaced, before the row that queues the task
 // (Handle). Both halves of what the operator is owed hold only this way. A person is waiting on

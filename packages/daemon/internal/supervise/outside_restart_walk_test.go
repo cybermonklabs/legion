@@ -589,7 +589,8 @@ func (w *outsideWalk) beside() {
 // turn, an end of the process (liveEnd). So a read is followed by the orders the reviews found by
 // hand: a held suspension at the end of the turn of the task a death took back and the process
 // ran on, and a displacement, a death or an end from outside the pod after a turn that ended
-// normally, with the cleared death's record still to be told.
+// normally, with the record of the death the read cleared marked told by no delivery, which no
+// prompt may tell (invariant 9).
 func (w *outsideWalk) live() {
 	if w.path == 0 {
 		w.path = 1 + w.life.IntN(2)

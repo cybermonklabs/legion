@@ -300,13 +300,16 @@ type sentences struct{ abandoned, ended bool }
 //     again because the daemon read the process wrongly as ended, and nothing of an end, a cause
 //     or a turn cut off (sentAgainTask): the process never ended, and the record of that death is
 //     told already, by no delivery, or gone (reportedProcess). Where the read put back an earlier
-//     launch's end that no prompt had carried yet (EndedWork.Earlier), that end's sentence and its
-//     out-of-memory note lead, exactly as they would have had the false death never happened, and
-//     the sentence of the task sent again follows them, since both are true: the earlier process
-//     ended, and this one did not. It is that task's alone, and only while the process it went to
-//     again lives: a task of another id never carries it, the task's confirmation ends its sends
-//     under that id, and every let-go of the process ends the mark (recordEnd), so the next prompt
-//     carries none.
+//     launch's end that no turn had yet confirmed a prompt carrying (EndedWork.Earlier, Tells),
+//     that end's sentence and its out-of-memory note lead, exactly as they would have had the
+//     false death never happened, and the sentence of the task sent again follows them, since
+//     both are true: the earlier process ended, and this one did not. It is that task's alone,
+//     and only while the process it went to again lives: a task of another id never carries it,
+//     a prompt of the task that comes to nothing, or a send that rewrites it for its news, moves
+//     the mark to the id the task takes (takeBackPending, rewritePending), a turn that runs the
+//     task's prompt to its result and the task's retirement end the mark (promptResulted,
+//     retirePending), and so does the let-go of the process (letGo), so the next process's
+//     prompt carries none.
 //
 // Composing a prompt tells nothing (confirmCarrying).
 //
@@ -1198,11 +1201,30 @@ func renderedID(was string, news, held []byte) string {
 // text and its news together, so news is always what task names. The write comes first, so a
 // restart reads the task the send that follows carries, and a failed write leaves memory as the
 // record holds it.
+//
+// A rewrite under a new id (renderedID) takes the mark of a task sent again to a process a read
+// found running with it (EndedWork.SentAgain), as a take-back does (takeBackPending): the task is
+// the same one, and the prompt the send makes of it says again that it is sent again because the
+// daemon read the process wrongly as ended. The claim then goes with the delivery in one write,
+// and a write that fails leaves the mark on the id the task keeps.
 func (m *Machine) rewritePending(ctx context.Context, id, task string, kept, news []byte) error {
 	next := *m.claim.Pending
+	was := next.ID
 	next.ID, next.Task, next.Kept, next.News = id, task, kept, news
-	if err := m.saved(m.putDelivery(ctx, next)); err != nil {
+	again := id != was && m.claim.EndedWork.SentAgain == was
+	var err error
+	if again {
+		stored := m.stored()
+		stored.EndedWork.SentAgain = id
+		err = m.putClaimAndDelivery(ctx, stored, next)
+	} else {
+		err = m.putDelivery(ctx, next)
+	}
+	if m.saved(err) != nil {
 		return err
+	}
+	if again {
+		m.claim.EndedWork.SentAgain = id
 	}
 	*m.claim.Pending = next
 	return nil
@@ -1554,6 +1576,8 @@ func (m *Machine) retirePending(ctx context.Context) error {
 	}
 	// The deaths were charged against this task, so they end with it, in the same write.
 	retired.Budgets.Deaths = 0
+	// So does the mark of a task sent again (EndedWork.SentAgain): the task it names is gone.
+	retired.EndedWork.SentAgain = ""
 	err := m.write(ctx, func(ctx context.Context) error {
 		return m.deps.Store.RetireDelivery(ctx, retired, p.ID)
 	})
@@ -1974,16 +1998,20 @@ func interruptedTask(cause string) string {
 	return relaunchSentence(EndedWork{Cause: cause, Turn: true, TaskTurn: true}, true) + "\n\n"
 }
 
-// sentAgainTask begins a task a death the daemon judged of its process took back, sent again to
-// that same process after a read found it running (Claim.sentAgain): one sentence that says why
-// the task comes again and that the process did not end, and nothing of a cause or a turn.
+// sentAgainTask is the sentence in front of a task a death the daemon judged of its process took
+// back, sent again to that same process after a read found it running (Claim.sentAgain): it says
+// why the task comes again and that the process did not end, and nothing of a cause or a turn. It
+// need not open the prompt: the sentence and the out-of-memory note of an earlier end the read
+// put back go in front of it (Delivery.message).
 const sentAgainTask = "This task is sent to you again because the daemon wrongly read your process as ended; " +
 	"your process did not end, so carry on from where your conversation stands.\n\n"
 
 // sentAgain is whether d is the task a death the daemon judged of the claim's process took back,
 // sent again to that process, which a read found running (EndedWork.SentAgain): the record names
-// d's id. A task of another id, the task once its confirmation ended its sends, and the task once
-// the process is let go (recordEnd clears the mark) are not. The record can be an earlier
+// d's id. A task of another id is not, and neither is the task once a turn has run its prompt to
+// its result or once the process is let go, each of which ends the mark (promptResulted, letGo);
+// a prompt of the task that came to nothing, or a send that rewrote it for its news, moves the
+// mark to the id the task takes (takeBackPending, rewritePending). The record can be an earlier
 // launch's end that the read put back (EndedWork.Earlier), so its launch says nothing here.
 func (c Claim) sentAgain(d Delivery) bool {
 	return c.EndedWork.SentAgain != "" && d.ID == c.EndedWork.SentAgain
@@ -2407,6 +2435,13 @@ func (m *Machine) turnNews() []byte {
 // moved with it to the new id, so that a later take-back of the same confirmation under that id
 // still finds it.
 //
+// The mark of a task sent again to a process a read found running moves to the new id as well,
+// whichever way the confirmation goes (EndedWork.SentAgain): the prompt that came to nothing is
+// one the daemon reads as unread, as it reads its telling, so the next prompt of the task, a
+// provider error's retry among them, says again that the task is sent again because the daemon
+// read the process wrongly as ended. The claim goes with the delivery in one write where it
+// moved, and a write that fails leaves the mark on the id the task keeps.
+//
 // The id moves either way: the prompt whose answer this is gets a new one, so its own late
 // acknowledgement is fenced out (fenceOutcome) and adds nothing outstanding, and the shim's
 // one-delivery record (shimwire's dedupe) is never asked to answer an old id again.
@@ -2436,6 +2471,10 @@ func (m *Machine) takeBackPending(ctx context.Context, read bool) error {
 	p := m.claim.Pending
 	id, kept := rotateTaskID(p.ID), m.awaitsResult()
 	var moved, handshakeMoved bool
+	again := m.claim.EndedWork.SentAgain == p.ID
+	if again {
+		m.claim.EndedWork.SentAgain = id
+	}
 	if kept {
 		moved = m.moveTelling(p.ID, id)
 	} else {
@@ -2451,7 +2490,7 @@ func (m *Machine) takeBackPending(ctx context.Context, read bool) error {
 	next := *p
 	next.ID = id
 	var err error
-	if moved || handshakeMoved {
+	if moved || handshakeMoved || again {
 		err = m.putClaimAndDelivery(ctx, m.stored(), next)
 	} else {
 		err = m.putDelivery(ctx, next)
@@ -2460,6 +2499,9 @@ func (m *Machine) takeBackPending(ctx context.Context, read bool) error {
 		if kept && moved {
 			// The confirmation stays under the id the write could not move it from.
 			m.moveTelling(id, p.ID)
+		}
+		if again {
+			m.claim.EndedWork.SentAgain = p.ID
 		}
 		return err
 	}

@@ -156,7 +156,9 @@ func (m *Machine) holdsTask() bool {
 // The decision ends in a state its own row names (Handle). A suspension made inside it would not:
 // no row that launches names suspended, and the hold that would excuse it is read before the row
 // acts. So the claim's stop is posted for its next decision (TimerPause, armed at once), as the
-// machine posts itself every event it owes itself, and is made there (pauseStopDue).
+// machine posts itself every event it owes itself, and is made there (pauseStopDue). A report
+// that finds the process running before that stop lands, over a death whose relaunch this gate
+// holds, drops that launch and the stop with it (judge, dropOutlivedRelaunch).
 func (m *Machine) pauseGate(ctx context.Context, waiting *wake, pause int64) error {
 	waiting.pause = pause
 	m.disarm(TimerWake)

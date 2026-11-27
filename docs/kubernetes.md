@@ -8534,9 +8534,12 @@ The record goes into the store with any write of the role's claim.
 Where no write of the claim reached the store between the end and the restart, the new daemon continues the role uncharged only if it reads the end again as one from outside the pod, and otherwise counts the end as a stop of the role's process as an end of neither reading is (below): one death where the role held a task or a turn, and a task the role held is still sent to it again.
 An end the daemon first judged a death of the role's own process stays that death, whatever a later read of the pod says, and stays it after a restart where a write of the claim carried that judgement into the daemon's store.
 A read that finds the role's process running ends that judgement without telling the role it died.
+If the relaunch of that death still waits for its turn, in the wake pacing or behind a project pause, the daemon drops the relaunch and keeps the running process.
 The next prompt still tells an earlier untold end in its own words, including the memory guidance if the task already carried an out-of-memory mark from that end.
 If the false death took the task back, the daemon sends it again with a sentence saying that it read the process wrongly as ended, after the earlier end's words when both apply.
+Each later send of that task to that process carries the sentence too, after a provider error or a second false death, until a turn runs the task to its result.
 The daemon judges a later end of that process afresh and tells the role its cause: a death in its own words, an end from outside the pod, or the daemon's replacement of the pod.
+Where the read put back an earlier untold end and the later end ended nothing worth telling, the role is told that earlier end in its own words instead.
 An end the daemon first judged its own replacement of the pod stays that replacement: a later report of the pod read neither way, as after a restart that lost the daemon's record of its act, relaunches the role uncharged in its own session, telling it that its pod was replaced where the end cut off its work, on the daemon that judged it and after a restart where a write of the claim carried the record of the replacement into the daemon's store.
 
 An end of either reading costs its roles nothing, however often it comes.

@@ -686,26 +686,30 @@ func TestARunningReadTellsNothingOfTheDeathItEnded(t *testing.T) {
 // recorded memory limit. The relaunch G is sent the task behind that record's sentence. Before
 // the telling is certain, G is wrongly judged dead with a turn cut off, so that death's record
 // joins the earlier one (joined), which it keeps whole (EndedWork.Earlier), in the claim, in the
-// store and in a copy of the claim handed out of the machine (copyClaim); its relaunch is
-// refused, and a read finds G running, on the daemon that judged the death or after a restart.
-// The read puts the earlier record back, untold, and the death goes with all it added
-// (reportedProcess). In the first row the turn is the agent's own, which its busy answer to the
-// task said it was in (recordBusyTurn), so the task was never confirmed and the death took
-// nothing back: the turn's end sends G the task again behind G-1's end, told in its own words as
-// the end that interrupted the task's turn, and the note of the pod's memory, the marks G-1's
-// take-back left on the task. In the second the turn is the task's own, whose confirmation of the
-// prompt that carried the sentence the death takes back with the task (untellInFlight,
-// interrupted), naming the id it gives the task (EndedWork.TookBack). The read restores the
-// task's earlier interruption and memory marks, so that prompt reads the same as in the first
-// row, with the sent-again sentence after the memory guidance. In both, the turn that confirms
-// that prompt tells the record, and the next task goes as its text alone.
+// store and in a copy of the claim handed out of the machine (copyClaim). Either its relaunch is
+// refused and a read finds G running, or its relaunch still waits for its turn in the wake pacing
+// and the sweep's report finds G running, which drops that relaunch (judge,
+// dropOutlivedRelaunch); each on the daemon that judged the death or after a restart, whose
+// boot's replay parks the waiting relaunch again. The read or the report puts the earlier record
+// back, untold, and the death goes with all it added (reportedProcess). In the first row the turn
+// is the agent's own, which its busy answer to the task said it was in (recordBusyTurn), so the
+// task was never confirmed and the death took nothing back: the turn's end sends G the task again
+// behind G-1's end, told in its own words as the end that interrupted the task's turn, and the
+// note of the pod's memory, the marks G-1's take-back left on the task. In the second the turn is
+// the task's own, whose confirmation of the prompt that carried the sentence the death takes back
+// with the task (untellInFlight, interrupted), naming the id it gives the task
+// (EndedWork.TookBack). The read restores the task's earlier interruption and memory marks, so
+// that prompt reads the same as in the first row, with the sent-again sentence after the memory
+// guidance. In both, the turn that confirms that prompt tells the record, and the next task goes
+// as its text alone.
 //
 // Marking the joined record told whole fails every row: the prompt no longer carries G-1's
 // record. Reading a joined record's take-back by its turn and the task's marks fails the
 // busy-turn rows: a task the false death never took back gets the sent-again sentence.
 // Skipping the restoration of the earlier marks fails the task-turn rows: the prompt loses
 // its task-specific interruption and memory guidance. Restoring the memory mark from the death
-// kind instead of the task fails the rows with no recorded memory limit.
+// kind instead of the task fails the rows with no recorded memory limit. judge leaving the
+// waiting relaunch as it stood fails every row whose relaunch waits: the claim still holds it.
 func TestAFalseDeathErasesNoEarlierEndStillUntold(t *testing.T) {
 	const next = "the next task"
 	const oomDetail = "the pod's roles container was OOMKilled"
@@ -743,9 +747,12 @@ func TestAFalseDeathErasesNoEarlierEndStillUntold(t *testing.T) {
 			turn: taskTurn,
 			want: interrupted + noLimit + ". " + cut + instruction + outOfMemoryTask + sentAgainTask + owedTask},
 	} {
-		for _, restart := range []bool{false, true} {
+		for _, v := range []struct{ waits, restart bool }{{}, {restart: true}, {waits: true}, {waits: true, restart: true}} {
 			name := row.name
-			if restart {
+			if v.waits {
+				name += "; the sweep's report while the relaunch waits"
+			}
+			if v.restart {
 				name += "; a restart before the read"
 			}
 			t.Run(name, func(t *testing.T) {
@@ -772,9 +779,11 @@ func TestAFalseDeathErasesNoEarlierEndStillUntold(t *testing.T) {
 				h.m.deps.Store = store
 				h.observe(runtime.Gone)
 				waiting := h.wantWaitingWake(WakeLaunch)
-				store.failing = true
-				h.advance(waiting.At.Sub(h.clock.Now()))
-				store.failing = false
+				if !v.waits {
+					store.failing = true
+					h.advance(waiting.At.Sub(h.clock.Now()))
+					store.failing = false
+				}
 				handed := h.claim()
 				for whose, c := range map[string]Claim{"the claim": handed, "the store": h.store.load(h.token)} {
 					if e := c.EndedWork; !e.Died || e.Generation != c.Generation || !e.Turn || !e.Tells() || e.Earlier == nil ||
@@ -788,11 +797,26 @@ func TestAFalseDeathErasesNoEarlierEndStillUntold(t *testing.T) {
 				if kept := h.claim().EndedWork.Earlier; kept.Cause != wantCause {
 					t.Fatalf("a copy of the claim shares G-1's record with the machine, which now holds %+v", *kept)
 				}
-				if restart {
+				if v.restart {
 					h.restart()
+					if v.waits {
+						firstAhead(h.deps.WakePace.Pacer, 1)
+						h.must(RecordedDeath{Claim: h.token, Generation: h.claim().Generation})
+						h.wantWaitingWake(WakeLaunch)
+					}
 				}
-
-				readRunning(t, h)
+				if v.waits {
+					// G is still in its turn, so the sweep's question of a restored claim or of a
+					// busy answer's turn finds it streaming, and the turn's own end sends the task.
+					h.conn.SetStreaming(true)
+					h.observe(runtime.Alive)
+					h.conn.SetStreaming(false)
+					if held := h.m.View().WakeWaiting; held != nil {
+						t.Fatalf("the claim still holds wake %+v after the sweep found G running, want the false death's relaunch dropped", *held)
+					}
+				} else {
+					readRunning(t, h)
+				}
 				sent = len(h.prompts())
 				h.must(StreamTurnEnd{Claim: h.token})
 				got := h.wantPrompts(sent + 1)[sent]

@@ -2690,6 +2690,11 @@ func issueTurnEnded(m *Machine, ctx context.Context, _ Event) error { return m.s
 // that fails leaves the delivery unsaved, and settle's next write of it folds the copy then. A task
 // this result confirms is confirmed with the news its own prompt carried (promptNews), or, for a
 // prompt this daemon did not see acknowledged, the copy the task holds.
+//
+// Such a result also ends the mark of a task sent again to a process a read found running
+// (EndedWork.SentAgain): a turn ran the task's prompt to its end, so no later prompt of the task
+// says again that it is sent again. The clear is written here, with the claim, so a restart
+// before the turn's end retires the task reads no mark back from the store.
 func promptResulted(m *Machine, ctx context.Context, ev Event) error {
 	r := ev.(StreamPromptResult)
 	if send := m.send; send != nil && (send.id == r.DeliveryID || (r.AgentInvoked && send.id == m.claim.Pending.ID)) {
@@ -2730,8 +2735,12 @@ func promptResulted(m *Machine, ctx context.Context, ev Event) error {
 	// ended in an error keeps the task owed, under the id it holds now when the take-back's write
 	// did not land, and a send of it still in flight is still the only word on that send.
 	m.ranTask = m.claim.Pending.ID
+	again := m.claim.EndedWork.SentAgain == m.ranTask
+	if again {
+		m.claim.EndedWork.SentAgain = ""
+	}
 	if m.providerErrorRunOver("supervise: a turn of this task ended with no provider error; the run of provider errors is over",
-		"delivery", r.DeliveryID) {
+		"delivery", r.DeliveryID) || again {
 		if err := m.persist(ctx); err != nil {
 			return err
 		}
