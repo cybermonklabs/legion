@@ -29,7 +29,7 @@ func ghChildEnviron(environ []string, set map[string]string) []string {
 	out := make([]string, 0, len(forced)+len(ghChildTestEnviron)+32)
 	out = append(out, ghChildTestEnviron...)
 	for _, pair := range environ {
-		if name, _, _ := strings.Cut(pair, "="); forced[name] == "" && ghChildKeeps(name) {
+		if name, _, _ := strings.Cut(pair, "="); forced[name] == "" && ghChildKeeps(pair) {
 			out = append(out, pair)
 		}
 	}
@@ -69,11 +69,11 @@ var ghChildForced = map[string]string{
 // legion binary holds no code that sets it, so no caller of it can.
 var ghChildTestEnviron []string
 
-// ghChildKeeps is whether gh keeps the name of its caller's environment: what a program carrying a
-// GitHub token keeps (leakguard.TokenChildKeeps: PATH, HOME, TMPDIR, TERM, TZ, LANG, the LC_ names
-// and the proxy variables), and these, each with what reads it (cli/cli v2.104.0 and v2.98.0,
-// go-gh v2.17.0 and v2.13.0; the measure is every os.Getenv and os.LookupEnv of their non-test
-// code):
+// ghChildKeeps is whether gh keeps pair, one NAME=value of its caller's environment: what a program
+// carrying a GitHub token keeps (leakguard.TokenChildKeeps: PATH, HOME, TMPDIR, TERM, TZ, LANG, the
+// LC_ names and the proxy variables, less the secrets broker's airlock proxy), and these names,
+// each with what reads it (cli/cli v2.104.0 and v2.98.0, go-gh v2.17.0 and v2.13.0; the measure is
+// every os.Getenv and os.LookupEnv of their non-test code):
 //
 //   - XDG_CONFIG_HOME, XDG_DATA_HOME, XDG_STATE_HOME and XDG_CACHE_HOME, where gh keeps its state
 //     and cache (go-gh pkg/config/config.go:276-327);
@@ -105,8 +105,9 @@ var ghChildTestEnviron []string
 // GH_TELEMETRY, DO_NOT_TRACK, GH_DEBUG, GH_FORCE_TTY, and CLAUDE_CONFIG_DIR and DOCKER_CONFIG, which
 // only `gh skills` and `gh attestation verify oci://` read and no Legion caller runs through
 // `legion gh`, among them.
-func ghChildKeeps(name string) bool {
-	return leakguard.TokenChildKeeps(name) || ghChildNames[name]
+func ghChildKeeps(pair string) bool {
+	name, value, _ := strings.Cut(pair, "=")
+	return leakguard.TokenChildKeeps(name, value) || ghChildNames[name]
 }
 
 // ghNoEditor is the editor gh is handed (GH_EDITOR, which outranks gh's config `editor`, VISUAL,

@@ -1,0 +1,10 @@
+kind: Added
+body: |-
+    `cipheraddr` says which proxy URL is the airlock's: `AirlockProxyUser`, the user name
+    `agent-secrets` writes into the proxy URL of a command whose secret the broker holds back, and
+    `NamesAirlockProxy`, which reads a proxy variable's value for it. A program inside such a
+    command that carries a credential of its own reads them to leave that proxy out; Legion's leak
+    guard is the first.
+time: 2026-11-27T05:00:44Z
+custom:
+    Issue: INFRA-4776

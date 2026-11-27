@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sjawhar/envoy/cipheraddr"
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
 	"github.com/sjawhar/legion/daemon/internal/programbound"
 )
@@ -389,32 +390,54 @@ func (r CurlResponse) Unreached() error {
 	return &transportError{program: "curl", said: fmt.Sprintf("exit %d: %s", r.Exit, said(r.Body(), r.Stderr))}
 }
 
-// curlInherits is which names of the caller's environment the curl read keeps: those a program
+// curlInherits is which entries of the caller's environment the curl read keeps: those a program
 // carrying a GitHub token keeps (TokenChildKeeps), which hold neither GH_TOKEN nor GITHUB_TOKEN,
-// since the token goes to curl on its standard input alone. The proxy variables are kept, so a
-// host that reaches GitHub through a proxy reaches it the same way here, and the proxy sees only
-// the TLS tunnel curl opens through it. Every other name is left out: the trust stores
-// (SSL_CERT_FILE, SSL_CERT_DIR, CURL_CA_BUNDLE), by which a proxy would be trusted to read inside
-// that tunnel, SSLKEYLOGFILE, a file OpenSSL writes the connection's TLS keys to, and any name a
-// later curl learns to read.
-func curlInherits(name string) bool { return TokenChildKeeps(name) }
+// since the token goes to curl on its standard input alone. The proxy variables are kept, the
+// secrets broker's airlock proxy aside (TokenChildKeeps says why), so a host that reaches GitHub
+// through a proxy reaches it the same way here, and the proxy sees only the TLS tunnel curl opens
+// through it. Every other name is left out: the trust stores (SSL_CERT_FILE, SSL_CERT_DIR,
+// CURL_CA_BUNDLE), by which a proxy would be trusted to read inside that tunnel, SSLKEYLOGFILE, a
+// file OpenSSL writes the connection's TLS keys to, and any name a later curl learns to read.
+func curlInherits(entry string) bool {
+	name, value, _ := strings.Cut(entry, "=")
+	return TokenChildKeeps(name, value)
+}
 
-// TokenChildKeeps is whether a program that carries a GitHub token keeps the name of its caller's
-// environment: gh, which `legion gh` runs with an installation's token, and the guard's curl read.
-// It keeps what any program needs to run (PATH, HOME, TMPDIR), the terminal (TERM), the locale and
-// time zone (LANG and the LC_ names, TZ), and the proxy variables in both cases (HTTPS_PROXY,
-// HTTP_PROXY, ALL_PROXY, NO_PROXY), which the daemon hands a pane or a pod as its route out
-// (runtime/tmux's paneEnvAllowList, the guard's own ls-remote): gh and curl reach GitHub through
-// such a proxy by a CONNECT tunnel, and with no trust store of the caller's, the proxy reads
-// nothing inside it. Nothing else is kept: an allowlist, so that no trust store (SSL_CERT_FILE,
-// SSL_CERT_DIR, CURL_CA_BUNDLE), no TLS key log (SSLKEYLOGFILE), no program the tool would hand
-// text to (EDITOR, VISUAL, BROWSER, PAGER) and no name a later release learns to read reaches it
-// from the caller. A proxy and a trust store the caller names together would hand the token to
-// whatever the proxy is, so a deployment whose proxy inspects TLS with its own CA installs that
-// CA in the system's trust store, which gh and curl read by default. A caller that needs more of
-// its environment names it beside this, with what reads it.
-func TokenChildKeeps(name string) bool {
-	return tokenChildNames[name]
+// TokenChildKeeps is whether a program that carries a GitHub token keeps the variable name with
+// the value value, one entry of its caller's environment. Those programs are gh, which `legion
+// gh` runs with an installation's token, and the guard's curl read. It keeps what any program
+// needs to run (PATH, HOME, TMPDIR), the terminal (TERM), the locale and time zone (LANG and the
+// LC_ names, TZ), and the proxy variables in both
+// cases (HTTPS_PROXY, HTTP_PROXY, ALL_PROXY, NO_PROXY), which the daemon hands a pane or a pod as
+// its route out (runtime/tmux's paneEnvAllowList, the guard's own ls-remote): gh and curl reach
+// GitHub through such a proxy by a CONNECT tunnel, and with no trust store of the caller's, the
+// proxy reads nothing inside it. Nothing else is kept: an allowlist, so that no trust store
+// (SSL_CERT_FILE, SSL_CERT_DIR, CURL_CA_BUNDLE), no TLS key log (SSLKEYLOGFILE), no program the
+// tool would hand text to (EDITOR, VISUAL, BROWSER, PAGER) and no name a later release learns to
+// read reaches it from the caller. A proxy and a trust store the caller names together would hand
+// the token to whatever the proxy is, so a deployment whose proxy inspects TLS with its own CA
+// installs that CA in the system's trust store, which gh and curl read by default. A caller that
+// needs more of its environment names it beside this, with what reads it.
+//
+// A proxy variable that names the secrets broker's airlock proxy (cipheraddr.NamesAirlockProxy)
+// is not kept either. `agent-secrets NAME -- command` hands that proxy, and the CA it reads TLS
+// with, to a command whose NAME the broker holds back, and the proxy reads TLS to every host
+// NAME's grant binds, GitHub's among them for a GitHub secret. With no trust store of the
+// caller's, the program cannot verify it, so every call to such a host through it fails, the
+// guard's visibility read of a push's target among them. Without it the program connects
+// directly, or through a proxy variable the airlock leaves alone (curl reads ALL_PROXY): the route
+// a pod has with no airlock, since a pod names no proxy. agent-secrets replaces a caller's own
+// HTTPS_PROXY, so where that proxy was the only route to GitHub, the call still fails, on its
+// connection. The token the program sends is Legion's installation token, or for the guard's own
+// reads the caller's GH_TOKEN or GITHUB_TOKEN where it set one (cmd/legion's ghVisibilityRead,
+// Guard.ghToken); where that is an airlock placeholder, GitHub refuses it, as it refuses a
+// placeholder from any program that does not use the proxy.
+//
+// It reads the value, and not the name alone, because the airlock's proxy is known by its URL.
+// A caller written for the earlier shape, which passed the name alone, would keep that proxy, so
+// the two arguments are there to stop it compiling.
+func TokenChildKeeps(name, value string) bool {
+	return tokenChildNames[name] && !cipheraddr.NamesAirlockProxy(value)
 }
 
 // tokenChildNames are the names TokenChildKeeps keeps, each by its whole name, as

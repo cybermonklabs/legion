@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/cipheraddr"
 	"github.com/sjawhar/legion/daemon/internal/execfile"
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
@@ -381,6 +382,20 @@ func TestRealGhAndGitSendTheTargetOwnersToken(t *testing.T) {
 		if sent := proxy.take(); len(sent) != 0 {
 			t.Errorf("%s reached GitHub with %+v, want nothing", what, sent)
 		}
+	}
+
+	// The secrets broker's airlock proxy, as `agent-secrets NAME -- command` names it to a command
+	// whose NAME the broker holds back: a URL whose user is cipheraddr.AirlockProxyUser, a proxy
+	// that reads TLS with a CA of its own, and SSL_CERT_FILE naming that CA. gh keeps neither
+	// (leakguard.TokenChildKeeps), so the call takes the route the airlock's URL does not name,
+	// https_proxy here, the capture proxy, and sends acme's token there and nothing to the
+	// airlock. A gh that kept the airlock's proxy and no trust store of the caller's failed
+	// verifying it and sent GitHub nothing, which refused every push under such a command.
+	airlock := startCaptureProxy(t)
+	airlockURL := strings.Replace(airlock.url, "://", "://"+cipheraddr.AirlockProxyUser+":placeholder@", 1)
+	check(home, []string{"HTTPS_PROXY=" + airlockURL, "https_proxy=" + proxy.url, "SSL_CERT_FILE=" + airlock.caFile}, []string{"api", "repos/acme/widgets"}, "acme", "")
+	if connects := airlock.takeConnects(); len(connects) != 0 {
+		t.Errorf("legion gh api repos/acme/widgets under the airlock's proxy sent it %+v, want nothing", connects)
 	}
 
 	// An editor gh runs after the leak guard has read the call posts what it wrote, which the

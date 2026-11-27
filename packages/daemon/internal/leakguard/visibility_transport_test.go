@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/cipheraddr"
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 )
 
@@ -47,11 +48,11 @@ func noGraphQL(record string) string {
 }
 
 // curlStandIn is a stand-in curl. It appends a line to record with its arguments and with the
-// GH_TOKEN, GITHUB_TOKEN and SSLKEYLOGFILE it was given (readCalls reads it), writes its standard
-// input to stdin, and then does what then says.
+// GH_TOKEN, GITHUB_TOKEN, SSLKEYLOGFILE, proxies and trust stores it was given (readCalls reads
+// it), writes its standard input to stdin, and then does what then says.
 func curlStandIn(record, stdin, then string) string {
-	return `printf 'argv=%s\tghtoken=%s\tgithubtoken=%s\tsslkeylog=%s\thttpsproxy=%s\tallproxy=%s\tcertfile=%s\tcertdir=%s\tcabundle=%s\n' "$*" "${GH_TOKEN-unset}" "${GITHUB_TOKEN-unset}" "${SSLKEYLOGFILE-unset}" ` +
-		`"${HTTPS_PROXY-unset}" "${ALL_PROXY-unset}" "${SSL_CERT_FILE-unset}" "${SSL_CERT_DIR-unset}" "${CURL_CA_BUNDLE-unset}" >> ` +
+	return `printf 'argv=%s\tghtoken=%s\tgithubtoken=%s\tsslkeylog=%s\thttpsproxy=%s\thttpsproxylower=%s\tallproxy=%s\tcertfile=%s\tcertdir=%s\tcabundle=%s\n' "$*" "${GH_TOKEN-unset}" "${GITHUB_TOKEN-unset}" "${SSLKEYLOGFILE-unset}" ` +
+		`"${HTTPS_PROXY-unset}" "${https_proxy-unset}" "${ALL_PROXY-unset}" "${SSL_CERT_FILE-unset}" "${SSL_CERT_DIR-unset}" "${CURL_CA_BUNDLE-unset}" >> ` +
 		shQuote(record) + "\n" + "cat > " + shQuote(stdin) + "\n" + then
 }
 
@@ -428,6 +429,27 @@ func TestCurlCarriesTheTokenOnItsStandardInput(t *testing.T) {
 				t.Errorf("curl's standard input held %q (%v), want the token's one header", stdin, err)
 			}
 		})
+	}
+}
+
+// Under `agent-secrets NAME -- git push`, whose NAME the secrets broker's airlock holds back, both
+// HTTPS_PROXY and https_proxy name the airlock's proxy, which curl keeps neither of
+// (TokenChildKeeps); it keeps the caller's other proxy, ALL_PROXY here, and no trust store.
+func TestTheCurlReadLeavesTheAirlocksProxyOut(t *testing.T) {
+	airlock := "http://" + cipheraddr.AirlockProxyUser + ":placeholder@broker.internal.example:13381"
+	rig := newTransportRig(t, ghTLSTimeout, noGraphQL, curlAnswers("private"), answersTheRefs,
+		"HTTPS_PROXY="+airlock, "https_proxy="+airlock, "ALL_PROXY=http://127.0.0.1:1", "SSL_CERT_FILE=/dev/null")
+	if visibility, err := rig.guard.Visibility(bound(t), theRepo); err != nil || visibility != Private {
+		t.Fatalf("read %q, %v; want curl's private", visibility, err)
+	}
+	calls := readCalls(t, rig.curl)
+	if len(calls) != 1 {
+		t.Fatalf("curl ran %d times, want once", len(calls))
+	}
+	for key, want := range map[string]string{"httpsproxy": "unset", "httpsproxylower": "unset", "allproxy": "http://127.0.0.1:1", "certfile": "unset"} {
+		if got := calls[0][key]; got != want {
+			t.Errorf("curl ran with %s=%q, want %q", key, got, want)
+		}
 	}
 }
 

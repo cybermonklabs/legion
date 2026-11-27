@@ -83,7 +83,8 @@ const ghUsage = "usage: legion gh [gh args…]  (the gh first on a Legion pane's
 // with no pager.
 //
 // gh runs with an environment built from an allowlist (ghChildEnviron), never the caller's whole:
-// the proxy variables are kept, since a deployment that reaches GitHub through a proxy names it
+// the proxy variables are kept, the secrets broker's airlock proxy aside
+// (leakguard.TokenChildKeeps), since a deployment that reaches GitHub through a proxy names it
 // there, but no trust store, no editor, browser or pager program, no repository that is not the
 // current directory's and no variable a later gh learns to read reaches it, so a proxy sees only
 // a TLS tunnel it cannot read, and no proxy a CA vouches for is the caller's to name. A gh

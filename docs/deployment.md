@@ -321,14 +321,19 @@ checkout`) authenticates through the helper gh names after it, `legion gh auth g
 which answers as `legion git-credential` does, with `credential.useHttpPath` on for `github.com`;
 and with gh's update check, prompts and telemetry off and its editor a program that fails
 (`/bin/false`), whatever the caller names. Its environment is built from an allowlist of the
-caller's (`ghChildEnviron` and `ghChildKeeps`, `packages/daemon/cmd/legion/gh.go`): the paths,
+caller's (`ghChildEnviron` and `ghChildKeeps`, `packages/daemon/cmd/legion/gh_child.go`): the paths,
 the terminal, the locale, the proxy variables, gh's state directories, `GH_REPO`, how gh prints,
 git's identity, and Legion's wrapper variables, each kept for a read gh or go-gh makes of it. No
 trust store, editor, browser or pager variable of the caller's reaches gh: a proxy sees only the
 TLS tunnel gh opens through it, and cannot read the token. A deployment whose proxy inspects TLS
 with a CA of its own must install that CA in the system's trust store, which gh, git and curl read
 by default; naming it in `SSL_CERT_FILE` or `SSL_CERT_DIR` reaches a pane, but not the gh `legion
-gh` runs, and gh's requests then fail certificate verification. The git gh runs reads no global
+gh` runs, and gh's requests then fail certificate verification. gh keeps no proxy variable that
+names the secrets broker's airlock proxy (`leakguard.TokenChildKeeps` says why), so from a pod it
+reaches GitHub directly, as it would with no airlock. A deployment whose only route to GitHub is
+a proxy named in `HTTPS_PROXY` has no such route inside an `agent-secrets` command, which replaces
+that variable with the airlock's: gh's reads there fail to connect, and such a deployment reaches
+GitHub from its pods another way. The git gh runs reads no global
 or system configuration file (`GIT_CONFIG_GLOBAL=/dev/null`, `GIT_CONFIG_NOSYSTEM=1`), takes of
 the caller's `GIT_CONFIG_*` pairs only those the runtime sets, and gets `http.sslVerify=true` and
 submodule recursion off (`submodule.recurse=false`, `fetch.recurseSubmodules=false`,

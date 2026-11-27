@@ -15,6 +15,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/cipheraddr"
 )
 
 // testAirlockPlaceholder is one placeholder in the broker's own shape: placeholder.Prefix and
@@ -208,7 +210,8 @@ func TestAirlockRefusesTwoAWSNames(t *testing.T) {
 
 // TestAirlockProxyURLCarriesThePasswordAndParsesBack: the proxy reads the password of a Basic
 // credential, so the URL must carry it and every client must be able to parse it out again,
-// whether or not the placeholder holds a character a URL must escape.
+// whether or not the placeholder holds a character a URL must escape. The URL is one
+// cipheraddr.NamesAirlockProxy knows as the airlock's.
 func TestAirlockProxyURLCarriesThePasswordAndParsesBack(t *testing.T) {
 	t.Parallel()
 	for _, password := range []string{
@@ -228,8 +231,8 @@ func TestAirlockProxyURLCarriesThePasswordAndParsesBack(t *testing.T) {
 		if parsed.User == nil {
 			t.Fatalf("the proxy URL %q carries no credential", got)
 		}
-		if parsed.User.Username() != "agent-secrets" {
-			t.Errorf("the proxy URL's user is %q, want agent-secrets", parsed.User.Username())
+		if !cipheraddr.NamesAirlockProxy(got) {
+			t.Errorf("the proxy URL's user is %q, which cipheraddr.NamesAirlockProxy does not know as the airlock's", parsed.User.Username())
 		}
 		back, set := parsed.User.Password()
 		if !set || back != password {
