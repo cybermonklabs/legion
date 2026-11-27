@@ -44,48 +44,31 @@ body: |-
   A migration adds `approval_asks`, `approval_assignees` and `approval_default_assignees`; its
   header carries the way back.
 
-  The daemon also keeps each model request its project's hosts report, for the provider's headroom
-  and refusals: `POST /legion/v1/claims/model-requests` takes a batch of 1 to 200 requests, each
-  with a stable id, its session (the role's own, a subagent's or the controller's), its model, when
-  it ended, its uncached input tokens where known and, for a refused one, `own`, `provider` or
-  `unknown`, and answers the ids it now holds. A host authenticates as for a turn outcome, by the
-  claim's secret or the launch's boot token, and the operator's controller by its controller
-  record; the project is the claim's. Each request counts once, in the minute it ended. The daemon
-  API entry `20261126011643` (`admission-signals`) adds the route and its answer; the turn-outcome
-  report and its answer are unchanged, and a minute a turn of a host before that entry overlaps reads
-  as not recorded, never as zero. Four optional project keys configure it:
-  `signal_token_limit_per_minute`, `signal_token_model_pattern`, `signal_own_refusal_pattern` and
-  `signal_provider_refusal_pattern`, each pattern held at load to a subset Go and JavaScript read
-  alike. Every role's pane and pod and the controller's launch, the daemon's and
-  `legion controller start`'s, carry the two refusal patterns as `LEGION_SIGNAL_OWN_REFUSAL` and
-  `LEGION_SIGNAL_PROVIDER_REFUSAL`, and `legion controller start`'s file takes them under the same
-  keys. A migration adds `model_requests`, `signal_token_limits` and `claim_turns`; its header
+  The daemon also keeps each model request its project's hosts report, for the provider's
+  headroom: `POST /legion/v1/claims/model-requests` takes a batch of 1 to 200 requests, each with a
+  stable id, its session (the role's own, a subagent's or the controller's), its model, when it
+  ended and its uncached input tokens where known, and answers the ids it now holds. A host
+  authenticates as for a turn outcome, by the claim's secret or the launch's boot token, and the
+  operator's controller by its controller record; the project is the claim's. Each request counts
+  once, in the minute it ended. The daemon API entry `20261126011643` (`admission-signals`) adds
+  the route and its answer; the turn-outcome report and its answer are unchanged, and a minute a
+  turn of a host before that entry overlaps reads as not recorded, never as zero. Two optional
+  project keys configure it: `signal_token_limit_per_minute` and `signal_token_model_pattern`, the
+  pattern held at load to a subset Go and JavaScript read alike. A migration adds
+  `model_requests`, `model_request_minutes`, `signal_token_limits` and `claim_turns`; its header
   carries the way back.
-
-  Each batch also says whether its host reports each HTTP 429 its transport retries by itself
-  (`retriedRefusalsReported`, false where the body says nothing of it), and the daemon keeps each
-  request with it. While a request of a batch that said false ended in the hour the refusals read,
-  or in the minute under way, the provider's refusals read as not recorded, with a reason naming
-  that cause, and hold no start; they are recorded again an hour after that request's minute ends,
-  a crossing the signal deadline's timer sees. The headroom reads every batch alike. A migration
-  adds `model_requests.retried_refusals_reported`; its header carries the way back.
 
   `legion claude-bridge` reports each model request of its Claude Code session on that route with
   the launch's boot token: each answered request once, by its message id, however many stream lines
-  it took, ended at its last line, with `input_tokens + cache_creation_input_tokens`; a subagent's
-  under its `agent_id`; each attempt Claude Code retries after a 429 (`system` `api_retry`) as a
-  refusal of its own, `unknown`, since the line carries no text of the refusal; and the last refused
-  attempt classed by its text under the two patterns, compiled as `regexp.Compile("(?s)" +
-  pattern)`. Each batch says that its host reports the 429s its transport retries. A request is
-  reported within 15 seconds of its end while the turn goes on, and what is left at each `result`
-  at once; the turn-outcome report is unchanged.
+  it took, ended at its last line, with `input_tokens + cache_creation_input_tokens`, and a
+  subagent's under its `agent_id`. A request is reported within 15 seconds of its end while the
+  turn goes on, and what is left at each `result` at once; the turn-outcome report is unchanged.
 
-  Each admission pass now reads the six series of admission by signals from what the daemon
+  Each admission pass now reads the five series of admission by signals from what the daemon
   keeps, with the replay's one definition of each: the idle share of the slot holders, the merge
-  queue's wait, the provider's headroom and refusals, the kills and the approvals. A series counted
-  over a span reads as not recorded, with its reason, until its span is whole after the first boot
-  that kept its input, and the refusals read as not recorded where a minute of their hour was not
-  wholly reported. While a project's settings turn admission by signals on, an issue below P0
+  queue's wait, the provider's headroom, the kills and the approvals. A series counted over a span
+  reads as not recorded, with its reason, until its span is whole after the first boot that kept
+  its input. While a project's settings turn admission by signals on, an issue below P0
   starts only while every series that has a limit reads under it and the cap has room; a P0 issue,
   every other hold and every holder's slot stand as with it off, and the tick starts no issue below
   P0. Each start a signal held is logged once its fact commits as `admission: a signal held a
@@ -110,14 +93,14 @@ body: |-
   on a person's cited word. A fresh project is off with no limit. Each change is a fact whose own
   pass admits by it, and a restart keeps it. The daemon refuses a limit outside its signal's range
   (the idle share above 0 to 1, the queue above 0 to 168 hours, the headroom above 0 to 10, and the
-  refusals, the kills and the approvals a whole number from 1 to 1,000,000), a name of no signal and
+  kills and the approvals a whole number from 1 to 1,000,000), a name of no signal and
   a blank reason (`SIGNAL_SETTING_INVALID`), changing nothing.
 
   The daemon keeps a record of changes of each project, each entry `{id, at, signal, part, what,
   value, absent, setBy, reason}` with ids that rise by one: each change of the switch and of a limit
   with who made it and why, each change of a hold with the series' value beside it, and each other
-  value that moved by its signal's step (idle 0.05, queue 0.25 hours, headroom 0.10, refusals, kills
-  and approvals 5), the headroom's only at a pass that gives out or takes back a slot. Holds are 0
+  value that moved by its signal's step (idle 0.05, queue 0.25 hours, headroom 0.10, kills and
+  approvals 5), the headroom's only at a pass that gives out or takes back a slot. Holds are 0
   while admission by signals is off, and no clock writes an entry. One log line goes with each
   change of the switch, a limit and a hold. `legion state --json` gives `admission.signals`, each
   series read at the state's moment with its value or why it cannot be computed, its limit, whether
