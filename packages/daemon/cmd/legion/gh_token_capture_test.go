@@ -386,11 +386,15 @@ func TestRealGhAndGitSendTheTargetOwnersToken(t *testing.T) {
 
 	// The secrets broker's airlock proxy, as `agent-secrets NAME -- command` names it to a command
 	// whose NAME the broker holds back: a URL whose user is cipheraddr.AirlockProxyUser, a proxy
-	// that reads TLS with a CA of its own, and SSL_CERT_FILE naming that CA. gh keeps neither
-	// (leakguard.TokenChildKeeps), so the call takes the route the airlock's URL does not name,
-	// https_proxy here, the capture proxy, and sends acme's token there and nothing to the
-	// airlock. A gh that kept the airlock's proxy and no trust store of the caller's failed
-	// verifying it and sent GitHub nothing, which refused every push under such a command.
+	// that reads TLS with a CA of its own, and SSL_CERT_FILE naming that CA. This is the mixed
+	// case, HTTPS_PROXY naming the airlock and https_proxy another proxy; agent-secrets itself
+	// writes the airlock into both, which the curl read's test holds (leakguard's
+	// TestTheCurlReadLeavesTheAirlocksProxyOutForADirectorysTokenAlone). gh, carrying acme's
+	// directory's token, keeps neither the airlock nor the CA (leakguard.TokenChildKeeps), so the
+	// call takes the route the other variable names, the capture proxy, and sends acme's token
+	// there and nothing to the airlock. A gh that kept the airlock's proxy and no trust store of
+	// the caller's failed verifying it and sent GitHub nothing, which refused every push under
+	// such a command.
 	airlock := startCaptureProxy(t)
 	airlockURL := strings.Replace(airlock.url, "://", "://"+cipheraddr.AirlockProxyUser+":placeholder@", 1)
 	check(home, []string{"HTTPS_PROXY=" + airlockURL, "https_proxy=" + proxy.url, "SSL_CERT_FILE=" + airlock.caFile}, []string{"api", "repos/acme/widgets"}, "acme", "")
@@ -400,21 +404,24 @@ func TestRealGhAndGitSendTheTargetOwnersToken(t *testing.T) {
 
 	// Under `agent-secrets GH_TOKEN -- git push`, the guard's visibility read carries the caller's
 	// own token (ghVisibilityRead), the airlock's placeholder, which only the airlock's proxy puts
-	// the real token in place of, so that read keeps the airlock's proxy. The capture proxy stands
+	// the real token in place of, so that read keeps the airlock's proxy; and so does a read under
+	// the caller's GITHUB_TOKEN, which gh sends where GH_TOKEN is empty. The capture proxy stands
 	// for an airlock whose roots the machine's store holds, where agent-secrets writes no trust
 	// bundle: its CA is the one this test hands every gh (ghChildTestEnviron). A read that left
 	// the airlock out sent the placeholder past it, which GitHub refuses, and the push was refused.
 	const callersPlaceholder = "callers-placeholder-not-a-secret"
 	trustedAirlock := strings.Replace(proxy.url, "://", "://"+cipheraddr.AirlockProxyUser+":placeholder@", 1)
-	underAirlock := []string{"GH_TOKEN=" + callersPlaceholder, "HTTPS_PROXY=" + trustedAirlock, "https_proxy=" + trustedAirlock, leakguard.VisibilityReadVar + "=acme/widgets"}
-	readCode, readOut := runIn(home, slices.Concat(ghEnv, underAirlock), legionCopy(t), append([]string{"gh"}, leakguard.VisibilityReadWithHeadersArgs("acme/widgets")...)...)
-	switch sent := proxy.take(); {
-	case len(sent) == 0:
-		t.Errorf("the guard's visibility read under the caller's GH_TOKEN and the airlock = exit %d, %q, and sent the airlock nothing; want the read, with the caller's token", readCode, readOut)
-	default:
-		for _, r := range sent {
-			if r.host != "api.github.com" || r.auth != "token "+callersPlaceholder {
-				t.Errorf("the guard's visibility read under the caller's GH_TOKEN sent %s%s with %q; want api.github.com with the caller's token", r.host, r.path, r.auth)
+	for _, variable := range []string{"GH_TOKEN", "GITHUB_TOKEN"} {
+		underAirlock := []string{variable + "=" + callersPlaceholder, "HTTPS_PROXY=" + trustedAirlock, "https_proxy=" + trustedAirlock, leakguard.VisibilityReadVar + "=acme/widgets"}
+		readCode, readOut := runIn(home, slices.Concat(ghEnv, underAirlock), legionCopy(t), append([]string{"gh"}, leakguard.VisibilityReadWithHeadersArgs("acme/widgets")...)...)
+		switch sent := proxy.take(); {
+		case len(sent) == 0:
+			t.Errorf("the guard's visibility read under the caller's %s and the airlock = exit %d, %q, and sent the airlock nothing; want the read, with the caller's token", variable, readCode, readOut)
+		default:
+			for _, r := range sent {
+				if r.host != "api.github.com" || r.auth != "token "+callersPlaceholder {
+					t.Errorf("the guard's visibility read under the caller's %s sent %s%s with %q; want api.github.com with the caller's token", variable, r.host, r.path, r.auth)
+				}
 			}
 		}
 	}
