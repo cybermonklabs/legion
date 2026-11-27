@@ -419,6 +419,14 @@ export const coverage: readonly CoverageEntry[] = [
   ...answers('InboxBody | - | form | (mode === "list") ? …', { reason: REASONS[13] }),
   ...answers('InboxBody | - | form | if (mode === "list") return …', { reason: REASONS[13] }),
   ...answers('InboxBody | - | form | (mode === "reading") ? …', { reason: REASONS[13] }),
+  // The selection bar's hand-off reads the row open in the reading view below the column's width
+  // (`barOpenRow`) to choose where its landing goes, as the reading mode's branch above does: it
+  // draws nothing, so no box moves with it.
+  ...answers("InboxBody | - | form | (barOpenRow === undefined) ? …", { reason: REASONS[13] }),
+  ...answers(
+    "InboxBody | - | form | (id === barOpenRow && view?.dataset.inboxReadingRow === id) ? …",
+    { reason: REASONS[13] }
+  ),
   ...answers(
     'InboxBody | - | form | if (mode === "list" && inHand(COPY_REF_SELECTOR) === null) return …',
     { reason: REASONS[13] }
