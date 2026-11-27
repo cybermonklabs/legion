@@ -31,7 +31,8 @@ import (
 var observedAt = time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)
 
 // observedRig is a store of project LEGION, token legion, seeded (seedObserved) with an issue in
-// every phase, an issue for every word of admission.held (record.HeldReasons), phases rows of
+// every phase, an issue for every word the ladder of admission.held gives (record.HeldReasons but
+// tree_closed and tree_parked, which it gives no more), the copy of Dispatch's issues, phases rows of
 // several roles, pull requests, design gates, slots and claims, and the daemon's own state source
 // over it (source), configured from stateGoldenSettingsFile as the daemon's serve configures it and
 // reading the fixed clock observedAt. The record store writes with the state events on, and the
@@ -100,21 +101,29 @@ func observedClaim(t *testing.T, issue, tree string, role claim.Role, state supe
 
 // seedObserved records the rig's store. Its first part is internal/projection's
 // TestEveryIssueInTheWorkflowHasAPlace over the real store, one issue for each of the fourteen
-// words of admission.held: a member of a closed tree (LEGION-101) and of a parked tree
-// (LEGION-111), a root whose label is off (LEGION-120), a root whose Dispatch chain reaches another
-// live root (LEGION-140), a member of a tree whose root waits on a person (LEGION-151), a member
-// under a shut design gate (LEGION-161), a child an unfinished Dispatch link holds (LEGION-171), an
-// issue past its review (LEGION-172, at_work), an issue beneath it (LEGION-173, accepted_ancestor),
-// an issue none of the others is true of (LEGION-174), a parent whose own children are still open
-// (LEGION-181), a sub-parent in awaiting_children on its open child (LEGION-186 over LEGION-187,
-// awaiting_children), a parent held before its retro for the child at work beneath it
-// (LEGION-195 over LEGION-196, children_before_retro) and a root whose task was stopped in its
-// merge (LEGION-197, task_stopped). Its second part is a running tree, LEGION-300, whose members
-// stand in the phases the first part leaves out — planning, testing, reviewing, accepting, retro
-// and held — and its third the phases rows, pull requests and claims both views of the state
-// read: rows of several roles whose claims stand, a row whose claim is gone, claims no row names,
-// an architect, claims on issues the workflow does not record, and the daemon's own controller's
-// claim.
+// words the ladder of admission.held still gives: an issue whose Dispatch parent the copy holds no
+// row of (LEGION-101 under LEGION-100, chain_unknown), an issue under a backlog parent under a
+// root at work (LEGION-111 under LEGION-110 under LEGION-160, ancestry), a root whose label is off
+// (LEGION-120), a root on a new run that Dispatch shows in_progress and that waits for a person's
+// todo (LEGION-140, awaiting_todo), a member of a tree whose root waits on a person (LEGION-151),
+// a member under a shut design gate (LEGION-161), a child an unfinished Dispatch link holds
+// (LEGION-171), an issue past its review (LEGION-172, at_work), an issue beneath it (LEGION-173,
+// accepted_ancestor), an issue none of the others is true of (LEGION-174), a parent whose own
+// children are still open (LEGION-181, and LEGION-185 over its sub-parent), a sub-parent in
+// awaiting_children on its open child (LEGION-186 over LEGION-187, awaiting_children), a parent
+// held before its retro for the child at work beneath it (LEGION-195 over LEGION-196,
+// children_before_retro) and a root whose task was stopped in its merge (LEGION-197,
+// task_stopped). tree_closed and tree_parked stay in the vocabulary, and no issue reads them: an
+// issue under a done or parked parent with nothing above it in work is a root. Every word reads
+// Dispatch's chain from the copy, so the copy holds a row of every issue the seed records, under
+// the parent and at the status its record names, as the projection's fixture states its records
+// (projectionStore.copyRows), but LEGION-100's, the one row it lacks on purpose; beside them
+// stand the rows of the issues the daemon records nothing of that the fixture names. Its second
+// part is a running tree, LEGION-300, whose members stand in the phases the first part leaves out
+// — planning, testing, reviewing, accepting, retro and held — and its third the phases rows, pull
+// requests and claims both views of the state read: rows of several roles whose claims stand, a
+// row whose claim is gone, claims no row names, an architect, claims on issues the workflow does
+// not record, and the daemon's own controller's claim.
 func (r *observedRig) seedObserved(t *testing.T) {
 	t.Helper()
 	ctx := context.Background()
@@ -122,8 +131,10 @@ func (r *observedRig) seedObserved(t *testing.T) {
 
 	unlabelled := observedIssue("LEGION-120", "LEGION-120", "", "todo", phase.Admitted)
 	unlabelled.HandedOver = false
-	underQueued := observedIssue("LEGION-140", "LEGION-140", "LEGION-130", "todo", phase.Admitted)
-	underQueued.Ancestry = []string{"LEGION-130"}
+	// A root on a new run, generation 2: a person reopened it straight to in_progress, so only a
+	// person's todo queues it (record.LineFacts.AwaitsTodo).
+	waitsForTodo := observedIssue("LEGION-140", "LEGION-140", "", "in_progress", phase.Admitted)
+	waitsForTodo.Generation = 2
 	askingRoot := observedIssue("LEGION-150", "LEGION-150", "", "in_progress", phase.AwaitingPerson)
 	askingRoot.Awaiting = &record.Awaiting{Ask: "ask-q", Since: record.EventMark{Seq: 5}}
 	answeredRoot := observedIssue("LEGION-190", "LEGION-190", "", "in_progress", phase.AwaitingPerson)
@@ -144,11 +155,11 @@ func (r *observedRig) seedObserved(t *testing.T) {
 	issues := []record.Issue{
 		observedIssue("LEGION-100", "LEGION-100", "", "done", phase.Done),
 		observedIssue("LEGION-101", "LEGION-100", "LEGION-100", "todo", phase.Admitted),
-		observedIssue("LEGION-110", "LEGION-110", "", "backlog", phase.Admitted),
-		observedIssue("LEGION-111", "LEGION-110", "LEGION-110", "todo", phase.Admitted),
+		observedIssue("LEGION-110", "LEGION-160", "LEGION-160", "backlog", phase.Admitted),
+		observedIssue("LEGION-111", "LEGION-160", "LEGION-110", "todo", phase.Admitted),
 		unlabelled,
 		observedIssue("LEGION-130", "LEGION-130", "", "todo", phase.Admitted),
-		underQueued,
+		waitsForTodo,
 		askingRoot,
 		observedIssue("LEGION-151", "LEGION-150", "LEGION-150", "todo", phase.Admitted),
 		observedIssue("LEGION-160", "LEGION-160", "", "todo", phase.Admitted),
@@ -239,13 +250,30 @@ func (r *observedRig) seedObserved(t *testing.T) {
 				return err
 			}
 		}
-		for _, mirrored := range []struct{ key, status, parent string }{
-			{"LEGION-130", "todo", ""}, {"LEGION-171", "todo", "LEGION-170"}, {"LEGION-180", "todo", ""},
-			{"LEGION-182", "backlog", "LEGION-181"}, {"LEGION-187", "todo", "LEGION-186"}, {"LEGION-900", "todo", ""}, {"LEGION-901", "todo", ""}, {"LEGION-903", "todo", ""},
-		} {
-			blockers := map[string][]string{"LEGION-130": {"LEGION-903"}, "LEGION-171": {"LEGION-900"}, "LEGION-180": {"LEGION-901"}}[mirrored.key]
-			if err := records.PutDispatchIssue(ctx, tx, record.DispatchReading{Key: mirrored.key, Project: "LEGION", Seq: 1,
-				Status: record.Carry(mirrored.status), Parent: record.Carry(mirrored.parent), Blockers: record.Carry(append([]string{}, blockers...))}); err != nil {
+		// The copy's row of every issue the seed records but LEGION-100, whose missing row leaves
+		// the chain of LEGION-101 unknown, and the rows of the issues the daemon records nothing
+		// of: LEGION-182, the backlog child LEGION-181 waits on, LEGION-187, the open child
+		// LEGION-186 waits on, and the three issues the unfinished links of LEGION-130, LEGION-171
+		// and LEGION-180 name.
+		blockedBy := map[string][]string{"LEGION-130": {"LEGION-903"}, "LEGION-171": {"LEGION-900"}, "LEGION-180": {"LEGION-901"}}
+		copyRow := func(key, status, parent string) record.DispatchReading {
+			return record.DispatchReading{Key: key, Project: "LEGION", Seq: 1, Status: record.Carry(status), Parent: record.Carry(parent),
+				Blockers: record.Carry(append([]string{}, blockedBy[key]...))}
+		}
+		copied := []record.DispatchReading{copyRow("LEGION-182", "backlog", "LEGION-181"), copyRow("LEGION-187", "todo", "LEGION-186"),
+			copyRow("LEGION-900", "todo", ""), copyRow("LEGION-901", "todo", ""), copyRow("LEGION-903", "todo", "")}
+		for _, issue := range issues {
+			if issue.Key == "LEGION-100" {
+				continue
+			}
+			parent := ""
+			if issue.Parent != nil {
+				parent = *issue.Parent
+			}
+			copied = append(copied, copyRow(issue.Key, issue.DispatchStatus, parent))
+		}
+		for _, reading := range copied {
+			if err := records.PutDispatchIssue(ctx, tx, reading); err != nil {
 				return err
 			}
 		}
@@ -312,13 +340,13 @@ func (r *observedRig) readOnly(t *testing.T, read func(ctx context.Context, tx p
 
 // Every read of all issues the state route makes in place of a read for each issue answers each
 // issue what that issue's own read answers it, on a store holding an issue in every phase, an
-// issue for every word of admission.held, and phases rows of several roles: AllPhases beside
-// Phases, row for row, in order and in each column AllPhases reads (listedPhases), PullRequestsOf
-// beside PullRequest but for what each pull request remembers of its settled heads, which
-// PullRequestsOf loads none of and the state shows none of (listedPullRequest), and Gates beside
-// GatesOf. An issue with no row is absent from the bulk answer, which reads as the empty answer its
-// own read gives. The seed is held to its own claim first, so the comparison runs over what it
-// says.
+// issue for every word the ladder of admission.held gives, and phases rows of several roles:
+// AllPhases beside Phases, row for row, in order and in each column AllPhases reads
+// (listedPhases), PullRequestsOf beside PullRequest but for what each pull request remembers of
+// its settled heads, which PullRequestsOf loads none of and the state shows none of
+// (listedPullRequest), and Gates beside GatesOf. An issue with no row is absent from the bulk
+// answer, which reads as the empty answer its own read gives. The seed is held to its own claim
+// first, so the comparison runs over what it says.
 func TestTheBulkReadsAnswerEachIssueWhatItsOwnReadAnswers(t *testing.T) {
 	r := newObservedRig(t)
 	r.readOnly(t, func(ctx context.Context, tx pgx.Tx) {
@@ -345,10 +373,39 @@ func TestTheBulkReadsAnswerEachIssueWhatItsOwnReadAnswers(t *testing.T) {
 		if err != nil {
 			t.Fatalf("judge the admission: %v", err)
 		}
-		for _, word := range record.HeldReasons {
-			if !slices.ContainsFunc(judged.Block.Held, func(row record.HeldIssue) bool { return row.Reason == word }) {
-				t.Fatalf("the seed holds no issue under %s; admission.held is %#v", word, judged.Block.Held)
+		// The seed's claim (seedObserved): each issue of its first part reads the word it stands
+		// for; only LEGION-101 reads chain_unknown, at LEGION-100, the copy's one missing row, so a
+		// copy row the seed lost fails here rather than passing under the word it hides; every word
+		// of the vocabulary the ladder gives is read by some issue, so a word added to it with no
+		// issue here fails; and tree_closed and tree_parked, which the ladder gives no more
+		// (record.HeldTreeClosed), are read by none.
+		claimed := map[string]record.HeldReason{
+			"LEGION-101": record.HeldChainUnknown, "LEGION-111": record.HeldAncestry, "LEGION-120": record.HeldLabelOff,
+			"LEGION-140": record.HeldAwaitingTodo, "LEGION-151": record.HeldRootAwaitingPerson, "LEGION-161": record.HeldDesignGate,
+			"LEGION-171": record.HeldDispatchBlocker, "LEGION-172": record.HeldAtWork, "LEGION-173": record.HeldAcceptedAncestor,
+			"LEGION-174": record.HeldUnclassified, "LEGION-181": record.HeldChildrenFirst, "LEGION-185": record.HeldChildrenFirst,
+			"LEGION-186": record.HeldAwaitingChildren, "LEGION-195": record.HeldChildrenBeforeRetro, "LEGION-197": record.HeldTaskStopped,
+		}
+		read := make(map[string]record.HeldReason, len(judged.Block.Held))
+		for _, row := range judged.Block.Held {
+			read[row.Issue] = row.Reason
+			if row.Reason == record.HeldChainUnknown && (row.Issue != "LEGION-101" || !slices.Equal(row.HeldBy, []string{"LEGION-100"})) {
+				t.Errorf("%s reads chain_unknown at %v: the copy lacks a row of its chain, where the seed leaves out LEGION-100's alone", row.Issue, row.HeldBy)
 			}
+		}
+		for _, key := range slices.Sorted(maps.Keys(claimed)) {
+			if read[key] != claimed[key] {
+				t.Errorf("%s reads %q in admission.held, want %s", key, read[key], claimed[key])
+			}
+		}
+		for _, word := range record.HeldReasons {
+			given := slices.ContainsFunc(judged.Block.Held, func(row record.HeldIssue) bool { return row.Reason == word })
+			if obsolete := word == record.HeldTreeClosed || word == record.HeldTreeParked; given == obsolete {
+				t.Errorf("an issue of the seed reads %s: %t, want %t", word, given, !obsolete)
+			}
+		}
+		if t.Failed() {
+			t.Fatalf("the seed is not held to its own claim; admission.held is %#v", judged.Block.Held)
 		}
 
 		// Every key the seed records, a Dispatch issue the daemon does not record, and a key
