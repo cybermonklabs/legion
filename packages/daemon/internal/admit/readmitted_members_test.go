@@ -21,8 +21,10 @@ import (
 )
 
 // The tree of dispatch://INFRA-5471's cases: a root a person moved out of the workflow and back,
-// and the members its re-admission leaves as they stood. LEGION-ACTIVE holds the one slot of the
-// cap, so the re-admitted root waits in the line until that slot frees.
+// and the members its re-admission leaves as they stood. rmActive holds the one slot of the cap,
+// so the re-admitted root waits in the line until that slot frees. Each key is a Dispatch issue
+// key (claim.IsIssueKey), the only kind intake records: every claim of an issue is named from its
+// key (claim.AgentToken), which refuses any other.
 const (
 	rmRoot         = "LEGION-300"
 	rmImplementing = "LEGION-301"
@@ -30,7 +32,7 @@ const (
 	rmAccepting    = "LEGION-303"
 	rmReopened     = "LEGION-304"
 	rmAdmitted     = "LEGION-305"
-	rmActive       = "LEGION-ACTIVE"
+	rmActive       = "LEGION-309"
 )
 
 // rmMembers is every member a re-admission leaves mid-phase or reopened, the issues the root's
@@ -66,7 +68,7 @@ func putClaimRow(t *testing.T, pool *pgxpool.Pool, root, key string, role claim.
 
 // readmittedTree records the running tree runningTree seeds and moves its root to backlog and back
 // to todo, as the controller's restart did on 2026-11-23. The backlog parks the root and gives its
-// slot to LEGION-ACTIVE; the todo re-admits it at generation 2, where it waits in the line.
+// slot to rmActive; the todo re-admits it at generation 2, where it waits in the line.
 //
 // With cleaned false the root comes back inside its linger, so its tree's lifecycle stands open
 // under the workflow, as INFRA-3118's did on 2026-11-23. With cleaned true the tree's cleanup was
@@ -102,7 +104,7 @@ func readmittedTree(t *testing.T, pool *pgxpool.Pool, admission *Admission, clea
 }
 
 // runningTree records the tree the cases move out and back as it runs before the move: its root
-// holds the cap's one slot at admitted with its design gate opened, LEGION-ACTIVE waits in the
+// holds the cap's one slot at admitted with its design gate opened, rmActive waits in the
 // line behind it, and its members stand mid-phase, one implementing, one merging, one in accepting
 // whose own architect and implementer have run, and one a person reopened at done. Their claims
 // are suspended by the daemon, as the suspends the tree's close queues leave them. With cleaned
@@ -148,7 +150,7 @@ func registerApprovedSpec(t *testing.T, pool *pgxpool.Pool, admission *Admission
 		ApprovedMark: record.EventMark{Seq: 9, At: reviewedAt}})
 }
 
-// promoteRoot frees LEGION-ACTIVE's slot, which promotes the waiting root.
+// promoteRoot frees rmActive's slot, which promotes the waiting root.
 func promoteRoot(t *testing.T, pool *pgxpool.Pool, admission *Admission) {
 	t.Helper()
 	apply(t, pool, admission, "active-done", intake.DispatchIssue{Key: rmActive, ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated",
