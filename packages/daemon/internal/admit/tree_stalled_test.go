@@ -453,6 +453,69 @@ func TestAQuietTreeIsToldToTheControllerOncePerStall(t *testing.T) {
 	}
 }
 
+// A tree whose root waits in verifying is no stall. Its pull request merged and no role works
+// that phase: the close waits for a check of its goal, for its production check, for a defect,
+// for an open next change, or for an issue beneath it (phase.Verifying). What ends the wait is
+// a report or a departure and never a worker of the tree, so the measure reads the phase as a
+// wait of the daemon's own (lineHolds.waitsByDesign) and the controller hears nothing.
+//
+// The control stands beside it, on the same database, the same clock and the same quiet time:
+// a root in implementing, which a worker of its tree is there to move, is told. A rule that
+// silenced the project whole would fail on that root, and a rule that reads the merged root as
+// a tree at work on no slot — as it reads accepting, retro and merging — fails on the first.
+func TestAWaitForChecksIsAWaitByDesign(t *testing.T) {
+	pool := migratedPool(t)
+	bound := deploymentBound(t, "")
+	admission := quiet(t, 4)
+	admission.UseStalledTreeNotice(bound)
+	registerController(t, pool)
+	records := claimStore(t, pool)
+
+	// The merged root: its close waits in verifying, it holds none of the cap's slots, since
+	// verifying is past its review (record.KeepsSlot), and its architect sits idle.
+	const merged, stoppedRoot = "LEGION-900", "LEGION-910"
+	waiting := seedQuietRoot(t, pool, merged, "A", phase.Verifying)
+	seedPullRequest(t, pool, merged, 90, record.PullRequestMerged)
+	seedClaim(t, records, merged, merged, claim.RoleArchitect, supervise.StateIdle)
+
+	// The control: a root that has stopped in implementing, holding the slot its phase keeps.
+	// Nothing silences it, so it is told, and that slot is what keeps the project's line moving
+	// (lineCanMove), which is the state the ladder's waits are read under.
+	seedQuietRoot(t, pool, stoppedRoot, "B", phase.Implementing)
+	seedClaim(t, records, stoppedRoot, stoppedRoot, claim.RoleImplementer, supervise.StateIdle)
+
+	// The fixture's own premise, read from the rows the pass judges from: the merged root holds
+	// none of the cap's slots and the stopped root holds one. Were the merged root a holder, the
+	// measure would read it as one of the line's and this case would say nothing of its phase.
+	if record.KeepsSlot(waiting) {
+		t.Fatalf("%s in %s keeps one of the cap's slots: this case is a merged root that holds none", merged, waiting.Phase)
+	}
+	_, slots := passFacts(t, pool)
+	holdsSlot := func(key string) bool {
+		return slices.ContainsFunc(slots, func(slot record.Slot) bool { return slot.Issue == key })
+	}
+	if holdsSlot(merged) || !holdsSlot(stoppedRoot) {
+		t.Fatalf("the slots are %#v, want one of %s and none of %s: the stopped root's slot is what keeps this project's line moving",
+			slots, stoppedRoot, merged)
+	}
+
+	settled := settleMovements(t, pool, merged, stoppedRoot)
+	admission.now = func() time.Time { return settled.Add(bound + time.Hour) }
+
+	tick(t, pool, admission, "verifying")
+
+	if got, want := stalledRoots(t, pool), []string{stoppedRoot}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("the controller was told of %v, want %v alone: a root whose close waits in verifying waits by design, and the root in implementing has stopped",
+			got, want)
+	}
+	// The silence is the measure's and no release's: the pass left the merged root where it
+	// stood, in the workflow, so nothing but the rule above can have kept it out of the notice.
+	if got := issue(t, pool, merged); got.Phase != phase.Verifying || !record.InWorkflow(got) {
+		t.Fatalf("%s stands at %s/%s after the pass, want it still waiting in verifying: a root the pass took out of the workflow is told to nobody for another reason",
+			merged, got.Phase, got.Status)
+	}
+}
+
 // Five waits the daemon makes on purpose are never a stall, and six trees that look like them
 // are. A tree every quiet issue of which is held by one of the five is working as designed:
 // something the daemon itself knows about will move it, and telling the controller it has

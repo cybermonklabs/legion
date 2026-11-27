@@ -602,14 +602,21 @@ func lineHoldsOf(facts record.LineFacts, slots []record.Slot, line []record.Line
 //     answered or not) waits by design wherever the walk placed it: it keeps its slot while it
 //     waits (record.KeepsSlot, the ruling on dispatch://INFRA-1909), and once answered it
 //     stands in the line as well, so neither membership says anything of why it stands still;
-//  2. an entry of the waiting line waits by design exactly where it holds no slot
+//  2. an issue whose work merged and whose close waits (phase.Verifying) waits by design
+//     wherever it stands: no role works that phase and it holds none of the cap's slots
+//     (record.PhaseKeepsSlot), and what ends the wait is a check of its goal, its production
+//     check, a defect, an open next change or an issue beneath it — a report or a departure,
+//     and never a worker of its tree. So no reading of the line decides it, and the phase is
+//     read before them. An issue in accepting, retro or merging on no slot is read the other
+//     way in the last clause, because a worker of its tree has the turn there;
+//  3. an entry of the waiting line waits by design exactly where it holds no slot
 //     (record.LineEntry.Holds): that is the cap's own hold, in both its shapes — a start written
 //     and marked for a row the slots table names none of, and a first phase whose start the
 //     promotion that grants the row writes — and a started issue that gave its row back to wait
 //     on another issue (record.LineWaitingOnIssue), which a blocker or an open child holds
 //     (waitsOnWorkOutsideItsTree says when that wait holds whatever the line does). An entry that
 //     already holds a slot waits for nothing but its own work;
-//  3. an issue whose first phase has still to start — standing at admitted, in the workflow and
+//  4. an issue whose first phase has still to start — standing at admitted, in the workflow and
 //     no root waiting for its tree to be opened — that the line left behind waits by design
 //     exactly where its word silences (silencedTree). Its slot decides nothing here: a tree's
 //     root at admitted may hold one while its design gate is closed, since a closed gate is no
@@ -619,7 +626,7 @@ func lineHoldsOf(facts record.LineFacts, slots []record.Slot, line []record.Line
 //     (dispatch://INFRA-3320 R13, which counts the phase as it counts a first phase that waits
 //     on its children): the line leaves it behind, since the phase keeps no slot, and its word
 //     (awaiting_children, or one the ladder reads before it) decides;
-//  4. every other issue does not: a slot holder at work in its phase, an issue in accepting, retro or merging
+//  5. every other issue does not: a slot holder at work in its phase, an issue in accepting, retro or merging
 //     on no slot, a root waiting for its tree to be opened, an issue out of the workflow, and an
 //     issue already started that the line left behind. The holds the ladder names for that last
 //     one — its root's wait on a person, its tree's gate — hold a start, and such an issue has
@@ -627,6 +634,9 @@ func lineHoldsOf(facts record.LineFacts, slots []record.Slot, line []record.Line
 //     to report and not a wait by design (dispatch://INFRA-2560, R5).
 func (h lineHolds) waitsByDesign(issue record.Issue) bool {
 	if issue.AwaitingPerson() {
+		return true
+	}
+	if issue.Phase == phase.Verifying {
 		return true
 	}
 	if entry, waits := h.line[issue.Key]; waits {
