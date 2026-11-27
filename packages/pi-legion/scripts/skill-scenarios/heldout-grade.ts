@@ -49,20 +49,11 @@
  * when the procedure ended with no grade after an invocation; 2 when it was refused before any
  * invocation, the error saying that nothing was sent.
  */
-import {
-  existsSync,
-  mkdirSync,
-  readdirSync,
-  readFileSync,
-  renameSync,
-  rmSync,
-  statSync,
-  writeFileSync,
-} from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { messageFor } from "@legion/envoy-client/errors";
 import { z } from "zod";
-import { main as readerMain, sha256 } from "./heldout-reader";
+import { main as readerMain, sha256, subdirectories, writeWhole } from "./heldout-reader";
 import { type CliIo, processIo } from "./production-dispatch";
 
 /** One run of heldout-reader.ts: its `main`, or a test's stand-in with the same signature. */
@@ -171,13 +162,9 @@ function parseArguments(argv: readonly string[]): Arguments | string {
 /** The batch's membership: each case directory under `records` and the run directories in it,
  * sorted, as heldout-reader.ts's readRuns lists them. It reads directory names alone. */
 function membershipOf(records: string): Member[] {
-  const directories = (parent: string) =>
-    readdirSync(parent)
-      .sort()
-      .filter((name) => statSync(path.join(parent, name)).isDirectory());
-  return directories(records).map((id) => ({
+  return subdirectories(records).map((id) => ({
     case: id,
-    runs: directories(path.join(records, id)),
+    runs: subdirectories(path.join(records, id)),
   }));
 }
 
@@ -226,17 +213,6 @@ function invocationOf(
       logged,
       `invocation ${number} ended with exit 0, and its labels cannot be read: ${messageFor(error)}`,
     ];
-  }
-}
-
-/** Writes `text` to `file` through a temporary file beside it, so a reader never sees half. */
-function writeWhole(file: string, text: string): void {
-  const partial = `${file}.${process.pid}.tmp`;
-  try {
-    writeFileSync(partial, text);
-    renameSync(partial, file);
-  } finally {
-    rmSync(partial, { force: true });
   }
 }
 

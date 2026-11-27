@@ -9,6 +9,9 @@ import {
   composeRolePrompt,
   DAEMON_MODULE,
   declaresProductionCheck,
+  type LaunchRole,
+  type PromptBackend,
+  type PromptPosition,
   RIG_GH_TOKEN,
   workerPane,
 } from "./daemon-pane";
@@ -297,7 +300,7 @@ test.skipIf(skip)(
       expect(controller.env).not.toHaveProperty(name);
     }
     expect(promptOf("legion-skillsrig-controller")).toContain(
-      promptPart("go/controller-headless.md")
+      concatenated("go/controller-headless.md")
     );
   },
   600_000
@@ -339,18 +342,32 @@ test.skipIf(skip)(
   600_000
 );
 
-// A part of the daemon module's own role prompts, as the composition holds it: each part's text in
-// order, so every part but the last ends with its own newline, which this drops.
-const promptPart = (name: string) =>
-  readFileSync(path.join(DAEMON_MODULE, "internal", "prompts", name), "utf8").trimEnd();
-
 // The role prompt files a launch concatenates, as the daemon writes them: each file whole, in
-// order, and the newlines that end the last one dropped (runtime.ComposePrompt).
+// order, and the newlines that end the last one dropped (runtime.ComposePrompt). One file alone is
+// that part as the composition holds it.
 const concatenated = (...names: string[]) =>
   names
     .map((name) => readFileSync(path.join(DAEMON_MODULE, "internal", "prompts", name), "utf8"))
     .join("")
     .trimEnd();
+
+// The prompt the daemon module composes for a launch (composeRolePrompt), asked once for each
+// launch: each ask is a `go run` of daemon-pane.go. A launch the daemon refuses is asked again at
+// each call, and throws each time.
+const composed = new Map<string, string>();
+function rolePrompt(
+  role: LaunchRole,
+  position: PromptPosition,
+  backend: PromptBackend = "omp"
+): string {
+  const launch = `${role} ${position} ${backend}`;
+  let prompt = composed.get(launch);
+  if (prompt === undefined) {
+    prompt = composeRolePrompt(DAEMON_MODULE, role, position, backend);
+    composed.set(launch, prompt);
+  }
+  return prompt;
+}
 
 // The parts of a phase worker's launch: the core and the role's own, the headless mechanics, the
 // role's part, then the daemon's two (prompts.Composer.Compose).
@@ -377,21 +394,21 @@ const rigWorld = (name: string) => rigAssignment(name).slice(name.length + 1);
 test.skipIf(skip)(
   "composes the prompt a launch of a role starts with: its parts, its addressing, and a root architect's design gate",
   () => {
-    const root = composeRolePrompt(DAEMON_MODULE, "architect", "root");
-    expect(root.startsWith(promptPart("roles/architect-root.md"))).toBe(true);
-    expect(root).toContain(promptPart("go/architect-root.md"));
+    const root = rolePrompt("architect", "root");
+    expect(root.startsWith(concatenated("roles/architect-root.md"))).toBe(true);
+    expect(root).toContain(concatenated("go/architect-root.md"));
     expect(root).toMatch(
       /\n\nLegion addressing: your role topic is [^\n]* Design gate steps: [^\n]+\.$/
     );
 
-    const child = composeRolePrompt(DAEMON_MODULE, "architect", "child");
-    expect(child.startsWith(promptPart("roles/architect.md"))).toBe(true);
-    expect(child).toContain(promptPart("go/architect.md"));
-    expect(child).not.toContain(promptPart("roles/architect-root.md"));
+    const child = rolePrompt("architect", "child");
+    expect(child.startsWith(concatenated("roles/architect.md"))).toBe(true);
+    expect(child).toContain(concatenated("go/architect.md"));
+    expect(child).not.toContain(concatenated("roles/architect-root.md"));
     expect(child).not.toContain("Design gate steps: ");
 
-    const reviewer = composeRolePrompt(DAEMON_MODULE, "reviewer", "child");
-    expect(reviewer).toContain(promptPart("go/reviewer.md"));
+    const reviewer = rolePrompt("reviewer", "child");
+    expect(reviewer).toContain(concatenated("go/reviewer.md"));
     expect(reviewer).toMatch(/\n\nLegion addressing: your role topic is [^\n]*\.$/);
     const repository = `Your issue's repository is ${rigWorld("worker_repo")} (default branch ${rigWorld("worker_default_branch")}); `;
     for (const prompt of [root, child, reviewer]) expect(prompt).toContain(repository);
@@ -404,7 +421,7 @@ test.skipIf(skip)(
 test.skipIf(skip)(
   "composes a root architect's prompt: its three parts, its addressing, the design gate and the production check",
   () => {
-    const prompt = composeRolePrompt(DAEMON_MODULE, "architect", "root");
+    const prompt = rolePrompt("architect", "root");
     const parts = concatenated(
       "roles/architect-root.md",
       "go/architect-root.md",
@@ -421,7 +438,7 @@ test.skipIf(skip)(
 test.skipIf(skip)(
   "composes a child architect's prompt: its three parts, the architect above it, no design gate and the production check",
   () => {
-    const prompt = composeRolePrompt(DAEMON_MODULE, "architect", "child");
+    const prompt = rolePrompt("architect", "child");
     const parts = concatenated("roles/architect.md", "go/architect.md", "go/architect-common.md");
     expect(prompt.startsWith(`${parts}\n\nLegion addressing: your role topic is `)).toBe(true);
     expect(prompt).toContain("; the architect above you is `");
@@ -447,7 +464,7 @@ test.skipIf(skip)(
       ["child", concatenated("roles/architect.md", "go/architect.md", "go/architect-common.md")],
     ] as const) {
       expect(parts).not.toContain("Production check: off");
-      const prompt = composeRolePrompt(DAEMON_MODULE, "architect", position);
+      const prompt = rolePrompt("architect", position);
       expect(prompt.startsWith(`${parts}\n\nLegion addressing: `)).toBe(true);
       expect(prompt).toMatch(/ Production check: tester\.$/);
     }
@@ -504,7 +521,7 @@ test.skipIf(skip)(
       });
       // The prompt is this daemon's, but for the sentence.
       expect(`${run.stdout.toString()} Production check: tester.`).toBe(
-        composeRolePrompt(DAEMON_MODULE, "architect", position)
+        rolePrompt("architect", position)
       );
     }
   },
@@ -517,15 +534,15 @@ test.skipIf(skip)(
     const reach =
       /\n\nDesign gate steps: `spec`\.[^\n]* Your role's GitHub App is installed on the owner example, and its token reaches every repository of that owner\.$/;
     for (const launch of ["headless", "interactive"] as const) {
-      const prompt = composeRolePrompt(DAEMON_MODULE, "controller", launch);
+      const prompt = rolePrompt("controller", launch);
       const parts = concatenated("roles/controller-root.md", `go/controller-${launch}.md`);
       expect(prompt.startsWith(`${parts}\n\nDesign gate steps: `)).toBe(true);
       expect(prompt).toMatch(reach);
       expect(prompt).not.toContain("Legion addressing: ");
       expect(prompt).not.toContain("Production check:");
     }
-    expect(composeRolePrompt(DAEMON_MODULE, "controller", "headless")).not.toContain(
-      promptPart("go/controller-interactive.md")
+    expect(rolePrompt("controller", "headless")).not.toContain(
+      concatenated("go/controller-interactive.md")
     );
   },
   600_000
@@ -534,7 +551,7 @@ test.skipIf(skip)(
 test.skipIf(skip)(
   "composes the merger's prompt: the headless mechanics, its part, the daemon's two and its addressing",
   () => {
-    const prompt = composeRolePrompt(DAEMON_MODULE, "merger", "child");
+    const prompt = rolePrompt("merger", "child");
     const parts = concatenated(
       "roles/mechanics/headless.md",
       "roles/merger.md",
@@ -553,11 +570,11 @@ test.skipIf(skip)(
 test.skipIf(skip)(
   "composes a worker's prompt for the claude backend: the claude mechanics part after the worker parts",
   () => {
-    const omp = composeRolePrompt(DAEMON_MODULE, "reviewer", "child", "omp");
-    const claude = composeRolePrompt(DAEMON_MODULE, "reviewer", "child", "claude");
+    const omp = rolePrompt("reviewer", "child", "omp");
+    const claude = rolePrompt("reviewer", "child", "claude");
     const parts = concatenated(...workerParts("reviewer"), "go/claude-mechanics.md");
     expect(claude.startsWith(`${parts}\n\nLegion addressing: your role topic is `)).toBe(true);
-    expect(omp).not.toContain(promptPart("go/claude-mechanics.md"));
+    expect(omp).not.toContain(concatenated("go/claude-mechanics.md"));
     expect(
       omp.startsWith(`${concatenated(...workerParts("reviewer"))}\n\nLegion addressing: `)
     ).toBe(true);

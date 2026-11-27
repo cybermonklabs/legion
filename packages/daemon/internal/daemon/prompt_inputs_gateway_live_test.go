@@ -248,7 +248,7 @@ func (r *promptInputsRun) recordReads(a *liveAgentProof, p *promptInputsPane, se
 			return true
 		}
 		// A single end-turn after the last read is also a measurement boundary.
-		return strings.Contains(string(data), `"stopReason":"stop"`) && len(reads) > 0
+		return bytes.Contains(data, []byte(`"stopReason":"stop"`)) && len(reads) > 0
 	})
 	r.writeEvidence("reads-transcripts/"+promptInputsSlug(p.name)+".jsonl", data)
 	g := p.model.gateway

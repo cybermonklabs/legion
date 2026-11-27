@@ -2994,6 +2994,13 @@ is_case_scenario() {
   case ${1:-} in heldout | skilluse | devcase) return 0 ;; *) return 1 ;; esac
 }
 
+# case_tag_of ID prints the tag of case ID in its run names: the first 12 hex characters of the
+# SHA-256 of ID. cmd_case_run names a run directory with it, and cmd_case_batch numbers its runs
+# from those directories (next_run), so both take it from here.
+case_tag_of() {
+  printf '%s' "$1" | sha256sum | cut -c1-12
+}
+
 case_input() {
   [ -n "${SKILL_SCENARIOS_CASES:-}" ] || fail "set SKILL_SCENARIOS_CASES to a local case file"
   realpath -e -- "$SKILL_SCENARIOS_CASES" || fail "cannot read $SKILL_SCENARIOS_CASES"
@@ -3118,10 +3125,6 @@ run_case() {
   bun "$here/outcome.ts" "$R" ${agent:+"$agent"}
 }
 
-run_heldout() { run_case heldout "$@"; }
-run_skilluse() { run_case skilluse "$@"; }
-run_devcase() { run_case devcase "$@"; }
-
 cmd_case_run() {
   [ $# = 4 ] || fail "usage: rig.sh run <heldout|skilluse|devcase> <case id> <label> <n>"
   local scenario=$1 id=$2 n=$4 name case_tag
@@ -3130,7 +3133,7 @@ cmd_case_run() {
   [ -f "$services_env" ] || fail "a case run needs its batch's services"
   load_label "$3"
   # own_dispatch uses a SQL identifier from the run name and only replaces hyphens.
-  case_tag=$(printf '%s' "$id" | sha256sum | cut -c1-12)
+  case_tag=$(case_tag_of "$id")
   name=$scenario-$case_tag-${P##*/}-$n
   R=$work/runs/$name
   evidence=$R
@@ -3138,11 +3141,7 @@ cmd_case_run() {
   on_exit stop_run
   mkdir -p "$R/bin" "$R/sessions" "$R/cwd" "$R/logs"
   cp "$P/built-from" "$R/built-from"
-  case $scenario in
-    heldout) run_heldout "$id" "$name" ;;
-    skilluse) run_skilluse "$id" "$name" ;;
-    devcase) run_devcase "$id" "$name" ;;
-  esac
+  run_case "$scenario" "$id" "$name"
   note "$name ($id): $(tail -n 1 "$R/out.txt")"
 }
 
@@ -3158,7 +3157,7 @@ cmd_case_batch() {
   # skillUseGaps over the whole file): case-world.ts names each gap, and the batch starts nothing.
   bun "$here/case-world.ts" check "$file" "$scenario" "$id"
   local -A seen=()
-  case_tag=$(printf '%s' "$id" | sha256sum | cut -c1-12)
+  case_tag=$(case_tag_of "$id")
   for label do
     load_label "$label"
     [ "${#label}" -le 24 ] || fail "case profile labels may have at most 24 characters"

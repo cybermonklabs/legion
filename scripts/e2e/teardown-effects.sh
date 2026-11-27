@@ -37,13 +37,11 @@ case ${1:-} in
     ;;
   *) usage ;;
 esac
-[[ ${LEGION_OMP_PATH:-} == /* && -x ${LEGION_OMP_PATH:-} ]] || {
-  echo 'FAIL setup: LEGION_OMP_PATH must name an absolute, executable Oh My Pi binary' >&2
-  exit 2
-}
-export LEGION_E2E_TEARDOWN_OMP=$LEGION_OMP_PATH
 # shellcheck source-path=SCRIPTDIR source=lib/live-daemon-proof.sh
 . "$root/scripts/e2e/lib/live-daemon-proof.sh"
+[[ ${LEGION_OMP_PATH:-} == /* && -x ${LEGION_OMP_PATH:-} ]] ||
+  refuse 'LEGION_OMP_PATH must name an absolute, executable Oh My Pi binary'
+export LEGION_E2E_TEARDOWN_OMP=$LEGION_OMP_PATH
 require_dispatch_cli
 if [[ $LEGION_E2E_TEARDOWN_MODE == controls ]]; then
   bun "$root/packages/pi-legion/scripts/skill-scenarios/heldout-case.ts" parse "$LEGION_E2E_TEARDOWN_CASES"

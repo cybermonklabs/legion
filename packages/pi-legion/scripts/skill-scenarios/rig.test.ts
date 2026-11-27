@@ -3450,6 +3450,7 @@ describe.skipIf(withoutPython || withoutLibpq)("a batch given its Postgres and N
         "pg_sql",
         "owner_only",
         "services_up",
+        "case_tag_of",
         "cmd_case_batch"
       ),
       'until_true() { shift 2; "$@"; }',

@@ -767,7 +767,7 @@ func teardownEffectsWorkspaceMoves(dir string, launched time.Time) ([]teardownEf
 // question of a document, another change of the issue than its status, a person's review, a
 // file), and not a record the readback lacks or an author the write cannot have.
 func teardownEffectsDispatchFault(b *teardownEffectsReadback, e teardownEffectsEvent) (fault string, unsupported bool) {
-	text := func(key string) string { s, _ := e.Payload[key].(string); return s }
+	text := func(key string) string { return teardownEffectsString(e.Payload, key) }
 	set := func(field string) bool { v, ok := e.Payload[field]; return ok && v != nil && v != "" && v != false }
 	switch e.Type {
 	case "handoff.recorded":
@@ -956,7 +956,7 @@ type teardownEffectsRequest struct {
 // text to a comment or a question of key (teardownEffectsCaseRefs). A record the replay holds no id
 // of is an error.
 func teardownEffectsEventRequest(key string, e teardownEffectsEvent, b *teardownEffectsReadback, ids map[string]string) (teardownEffectsRequest, error) {
-	text := func(field string) string { s, _ := e.Payload[field].(string); return s }
+	text := func(field string) string { return teardownEffectsString(e.Payload, field) }
 	prefix := "/api/v1/issues/" + key
 	given := func(kind, field, id string) (string, error) {
 		if mapped, ok := ids[kind+"/"+id]; ok {
@@ -1341,7 +1341,7 @@ func teardownEffectsTraceChange(a teardownEffectsTraceAction) (*teardownEffectsP
 		return &recorded, nil
 	}
 	fields := a.Fields
-	text := func(key string) string { s, _ := fields[key].(string); return s }
+	text := func(key string) string { return teardownEffectsString(fields, key) }
 	named := func(key string) *string {
 		if s, ok := fields[key].(string); ok {
 			return &s
@@ -1946,10 +1946,7 @@ func TestTeardownEffectsOrderTypesTheRoleWrite(t *testing.T) {
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			t.Parallel()
-			dir := filepath.Join(t.TempDir(), "run")
-			if err := os.CopyFS(dir, os.DirFS(teardownEffectsLocalOnlyHead)); err != nil {
-				t.Fatal(err)
-			}
+			dir := teardownEffectsEditedRun(t, nil, "")
 			teardownEffectsEditEvent(t, filepath.Join(dir, "dispatch-readback.json"), row.seq, row.edit)
 			_, err := teardownEffectsOrderOf(t, dir)
 			if err == nil || !strings.Contains(err.Error(), row.want) {
@@ -1983,10 +1980,7 @@ func TestTeardownEffectsOrderPlacesTheRoleWrites(t *testing.T) {
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			t.Parallel()
-			dir := filepath.Join(t.TempDir(), "run")
-			if err := os.CopyFS(dir, os.DirFS(teardownEffectsLocalOnlyHead)); err != nil {
-				t.Fatal(err)
-			}
+			dir := teardownEffectsEditedRun(t, nil, "")
 			teardownEffectsEditEvent(t, filepath.Join(dir, "dispatch-readback.json"), 6, func(e map[string]any) {
 				e["type"] = row.event
 				row.edit(e)
@@ -2060,10 +2054,7 @@ func TestTeardownEffectsOrderFoldsFollowOns(t *testing.T) {
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			t.Parallel()
-			dir := filepath.Join(t.TempDir(), "run")
-			if err := os.CopyFS(dir, os.DirFS(teardownEffectsLocalOnlyHead)); err != nil {
-				t.Fatal(err)
-			}
+			dir := teardownEffectsEditedRun(t, nil, "")
 			path := filepath.Join(dir, "dispatch-readback.json")
 			var readback map[string]any
 			data, err := os.ReadFile(path)
