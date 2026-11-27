@@ -72,6 +72,7 @@ import {
   decisionsPartHeading,
   decisionsViewServedGate,
   type FilterReading,
+  failNextTreePages,
   heldDecisionsRead,
   holdTreeReads,
   idReadsOf,
@@ -1749,9 +1750,9 @@ test("every decision of a paged issue is in its part, the header's count and the
     const traffic = watchApiRequests(page);
     const writes = watchWrites(page);
     const firstPage = conversationFirstPage(page);
-    // The page's own reads of Conversation's next pages (`cursor`), held from the load until
-    // step (2) has read the counts.
-    const nextPages = await holdTreeReads(page, key, (url) => url.searchParams.has("cursor"));
+    // The page's own reads of Conversation's next pages (`cursor`) fail, from the load to the
+    // row's end, so Conversation's read stays paged for every step, as each step reads it.
+    await failNextTreePages(page, key);
     await gotoIssue(page, `/issues/${key}/conversation`);
     await expectIssuePageDrawn(page);
     const first = await firstPage;
@@ -1812,8 +1813,10 @@ test("every decision of a paged issue is in its part, the header's count and the
     // a next page, so each reads a number and "+" (part T's R15). The flag is drawn because the
     // decision the seed stood under the open question (`seeded.firstBlock`) is on that page and
     // waits for review. The page reads Conversation's next pages itself once it has drawn
-    // (decisions 574 (B) and 580), so the row holds those reads while it reads the counts, then
-    // lets them go.
+    // (decisions 574 (B) and 580), which would make that read whole at once, so the row fails
+    // those reads to its end: (2) reads the counts over the paged read, and (4) a decision past
+    // Conversation's first page. A failed read is in flight no longer, so the page goes quiet
+    // for `readFilter`, which a held one would never let it.
     await expect
       .poll(
         async () => ({
@@ -1831,7 +1834,6 @@ test("every decision of a paged issue is in its part, the header's count and the
         flag: expect.stringMatching(COUNTED_SO_FAR),
         header: expect.stringMatching(WAITING_SO_FAR),
       });
-    await nextPages.release();
 
     // (1) The Decisions view: each decision and answered question of its read stands in its part,
     // read from the parts the page draws - the decisions that wait in the review list, the

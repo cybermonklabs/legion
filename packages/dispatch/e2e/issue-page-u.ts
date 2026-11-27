@@ -99,8 +99,8 @@ import type { ApiRequests } from "./traffic";
  *   `specCells` is each cell of the Spec view's Decided by column: whose words it says it draws
  *   (`data-said`), the heading and the words it draws, and the statements its bracket spans.
  * - **What the page sends and receives.** `watchWrites` keeps every request under `/api/` that is
- *   no read, with its body; `holdTreeReads` holds every tree read the page sends, or each one a
- *   filter of its URL takes, until released.
+ *   no read, with its body; `holdTreeReads` holds every tree read the page sends until released,
+ *   and `failNextTreePages` fails each tree read the page sends that names a next page.
  * - **Row 2's decisions.** `writeThirdDecision` writes, through the spec's edit route, a
  *   `:::decision` block whose `shaped` names `r1`, as the planner; `rewordThirdDecision` changes
  *   its words, and `rewordSecondDecision` the heading of the seed's second decision
@@ -559,18 +559,11 @@ export interface HeldReads {
 }
 
 /** Holds every request of issue `key`'s tree route the page sends from now on, its views' with
- *  it, until `release`. With `which`, it holds only each request whose URL `which` takes: every
- *  other one goes on at once (`route.fallback()`, to any other route of the page) and is not
- *  counted. */
-export async function holdTreeReads(
-  page: Page,
-  key: string,
-  which?: (url: URL) => boolean
-): Promise<HeldReads> {
+ *  it, until `release`. */
+export async function holdTreeReads(page: Page, key: string): Promise<HeldReads> {
   const held: Route[] = [];
   const matches = treeReadRoute(key);
-  const hold = async (route: Route): Promise<void> => {
-    if (which !== undefined && !which(new URL(route.request().url()))) return route.fallback();
+  const hold = (route: Route): void => {
     held.push(route);
   };
   await page.route(matches, hold);
@@ -585,6 +578,17 @@ export async function holdTreeReads(
       }
     },
   };
+}
+
+/** Fails, as the network fails it (`route.abort()`), every request of issue `key`'s tree route
+ *  the page sends from now on that names a next page (`cursor`), its views' with it: each other
+ *  one goes on (`route.fallback()`, to any other route of the page). A failed request is in
+ *  flight no longer, so the page can go quiet (`expectLoadSettled`), which a held one never
+ *  lets it. */
+export async function failNextTreePages(page: Page, key: string): Promise<void> {
+  await page.route(treeReadRoute(key), (route) =>
+    new URL(route.request().url()).searchParams.has("cursor") ? route.abort() : route.fallback()
+  );
 }
 
 /** Row 2's third decision: its block, the words it is written with, and the words the row
