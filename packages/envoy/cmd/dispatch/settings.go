@@ -232,6 +232,8 @@ var settings = []setting{
 		Description: "How often a test process's webhook redelivery sweep runs, in place of the two minutes a deployment runs it at; a positive Go duration, for an end-to-end test only and never a real deployment. Set only with `DISPATCH_TEST_HOOKS=1`."},
 	{Name: "DISPATCH_TEST_DELIVERY_RECONCILE_INTERVAL", Default: "`5m`", Required: "no",
 		Description: "How often a test process's delivery reconcile pass runs, in place of the five minutes a deployment runs it at; a positive Go duration, for an end-to-end test only and never a real deployment. Set only with `DISPATCH_TEST_HOOKS=1`."},
+	{Name: "DISPATCH_TEST_INTAKE_WRITE_DEADLINE", Default: "`5s`", Required: "no",
+		Description: "The write deadline of a test process's intake clients, in place of the five seconds a deployment's take (`delivery.IntakeWriteDeadline`), so a row can hold one write to a frozen link past the shutdown's deadline; a positive Go duration, for an end-to-end test only and never a real deployment. Set only with `DISPATCH_TEST_HOOKS=1`."},
 	{Name: "DISPATCH_TEST_MAINTENANCE_SWEEP_INTERVAL", Default: "`1m`", Required: "no",
 		Description: "How often a test process's maintenance sweep runs - the Idempotency-Keys and spent DPoP proofs past their windows, and the deliveries a process that died left owed - in place of the minute a deployment runs it at; a positive Go duration, for an end-to-end test only and never a real deployment. Set only with `DISPATCH_TEST_HOOKS=1`."},
 	{Name: "DISPATCH_TEST_PROCESS_HEARTBEAT", Default: "`5s`", Required: "no",

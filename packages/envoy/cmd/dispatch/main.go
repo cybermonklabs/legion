@@ -3,6 +3,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
@@ -196,6 +197,12 @@ type bootConfig struct {
 	// delivery.ReconcileInterval's five minutes; only DISPATCH_TEST_DELIVERY_RECONCILE_INTERVAL,
 	// under the test hooks, sets it, since no end-to-end test can wait five minutes for a pass.
 	DeliveryReconcileInterval time.Duration
+	// IntakeWriteDeadline is the write deadline of the intakes' NATS clients, zero for
+	// delivery.IntakeWriteDeadline's five seconds; only DISPATCH_TEST_INTAKE_WRITE_DEADLINE, under
+	// the test hooks, sets it, since a row that holds an intake's close past the shutdown's
+	// deadline needs one held write to outlast that deadline, where production's writes end within
+	// five seconds each and only the writes queued ahead of the close keep it waiting.
+	IntakeWriteDeadline time.Duration
 	// MaintenanceSweepInterval is how often the maintenance sweep runs - the Idempotency-Keys and
 	// spent DPoP proofs past their windows, and the deliveries a process that died left owed -
 	// zero for api.MaintenanceSweepInterval's minute; only
@@ -892,8 +899,7 @@ func main() {
 	// hold's renewal - whether or not this configuration starts it (legion.ReserveLeases).
 	legionIntakeLeases, err := legion.ReserveLeases(leaseCallers)
 	if err != nil {
-		slog.Error("dispatch: reserve the lease pool for the Legion state intake", "error", err)
-		os.Exit(1)
+		fatal("dispatch: reserve the lease pool for the Legion state intake", "error", err)
 	}
 	// The keyword fill's two callers - its own goroutine's hold statements, batches and reads, and
 	// its hold's renewal (textversions.ReserveLeases).
@@ -1353,7 +1359,7 @@ func main() {
 		// payloads a slow link can take longer than that to accept.
 		connectIntake := func(name string) (*bus.Client, error) {
 			return bus.Connect(envoyConfig.Envoy.NatsURLs, serverClient(bus.WithEnvironment(env.lookup), bus.WithName(name),
-				bus.WithWriteDeadline(delivery.IntakeWriteDeadline))...)
+				bus.WithWriteDeadline(cmp.Or(boot.IntakeWriteDeadline, delivery.IntakeWriteDeadline)))...)
 		}
 		stopIntakes, err := delivery.StartIntakes(ctx, connectIntake, background, intakeLeases, backgroundGitHub, broker, settingsWake, architectureTicker, attributor)
 		if err != nil {
@@ -1371,7 +1377,7 @@ func main() {
 			slog.Error("dispatch: connect the Legion state intake to NATS", "error", err)
 			cancel()
 			stopIntakes()
-			os.Exit(1)
+			exit(1)
 		}
 		waitIntakes = func() {
 			stopIntakes()
@@ -1886,6 +1892,7 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 		{"DISPATCH_TEST_CI_RECONCILE_INTERVAL", &boot.CIReconcileInterval},
 		{"DISPATCH_TEST_REDELIVERY_INTERVAL", &boot.RedeliveryInterval},
 		{"DISPATCH_TEST_DELIVERY_RECONCILE_INTERVAL", &boot.DeliveryReconcileInterval},
+		{"DISPATCH_TEST_INTAKE_WRITE_DEADLINE", &boot.IntakeWriteDeadline},
 		{"DISPATCH_TEST_MAINTENANCE_SWEEP_INTERVAL", &boot.MaintenanceSweepInterval},
 		{"DISPATCH_TEST_PROCESS_HEARTBEAT", &boot.ProcessHeartbeat},
 	} {

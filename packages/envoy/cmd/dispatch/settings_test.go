@@ -2190,6 +2190,24 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			}
 			refusedWith(t, map[string]string{"DISPATCH_TEST_DELIVERY_RECONCILE_INTERVAL": "1s"}, "DISPATCH_TEST_HOOKS=1 required")
 		},
+		"DISPATCH_TEST_INTAKE_WRITE_DEADLINE": func(t *testing.T) {
+			if boot := resolveWith(t, map[string]string{}); boot.IntakeWriteDeadline != 0 {
+				t.Errorf("DISPATCH_TEST_INTAKE_WRITE_DEADLINE unset: IntakeWriteDeadline = %v, want 0 (delivery.IntakeWriteDeadline's five seconds)", boot.IntakeWriteDeadline)
+			}
+			const held = time.Minute
+			boot := resolveWith(t, map[string]string{
+				"DISPATCH_TEST_HOOKS":                 "1",
+				"DISPATCH_TEST_INTAKE_WRITE_DEADLINE": held.String(),
+			})
+			if boot.IntakeWriteDeadline != held {
+				t.Errorf("DISPATCH_TEST_INTAKE_WRITE_DEADLINE: IntakeWriteDeadline = %v, want %v", boot.IntakeWriteDeadline, held)
+			}
+			for _, invalid := range []string{"not-a-duration", "-1s", "0s"} {
+				refusedWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_INTAKE_WRITE_DEADLINE": invalid},
+					fmt.Sprintf("DISPATCH_TEST_INTAKE_WRITE_DEADLINE=%q (expected a positive Go duration)", invalid))
+			}
+			refusedWith(t, map[string]string{"DISPATCH_TEST_INTAKE_WRITE_DEADLINE": "1s"}, "DISPATCH_TEST_HOOKS=1 required")
+		},
 		"DISPATCH_TEST_MAINTENANCE_SWEEP_INTERVAL": func(t *testing.T) {
 			if boot := resolveWith(t, map[string]string{}); boot.MaintenanceSweepInterval != 0 {
 				t.Errorf("DISPATCH_TEST_MAINTENANCE_SWEEP_INTERVAL unset: MaintenanceSweepInterval = %v, want 0 (api.MaintenanceSweepInterval's minute)", boot.MaintenanceSweepInterval)

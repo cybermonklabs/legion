@@ -2171,6 +2171,7 @@ The watcher ends once the delivery's stop has sealed it with nothing handed back
 The sever reaches the connection without the bus client's own lock, which a caller holds while it waits for nats.go's, and a socket whose write failed is reset when nats.go closes it, so its unsent bytes are dropped too.
 Dispatch shutdown closes that client, which resets each socket that still carries an unconfirmed hand-back, then waits, within its one deadline, for the finalizer to release the hold through the still-open pool.
 Each intake's client writes with a 5 s deadline (`delivery.IntakeWriteDeadline`, nats.go's `FlusherTimeout`), where nats.go's default is a minute: a write to a frozen link holds nats.go's connection lock, and `Client.Close` and nats.go's ping timer wait for that lock.
+`DISPATCH_TEST_INTAKE_WRITE_DEADLINE` replaces those 5 s for an end-to-end test that holds one write past the shutdown's deadline, and a deployment never sets it.
 A reconnect attempt through a frozen link holds the lock too, through its dial and its handshake, each bounded by the bus's 5 s connect timeout.
 `Client.Close` waits behind each write queued on that lock, each up to 5 s while the link takes no byte, so no fixed time bounds the close (`delivery.IntakeWriteDeadline` says why).
 The close and the release normally finish well inside the deadline, 27 s after the signal, and after the close the finalizer can spend up to 5 s releasing the hold.

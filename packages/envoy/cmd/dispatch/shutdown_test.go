@@ -1030,10 +1030,13 @@ const heldIntakeConnection = "dispatch-intake"
 // package's intakeHoldName of bus.DispatchDeliveryDurable).
 const deliveryHoldName = "delivery-intake-" + bus.DispatchDeliveryDurable
 
-// A deploy's SIGTERM can come while a write holds nats.go's connection lock on an intake's client,
-// as on a link that has stopped taking the client's bytes: the write waits out its one-minute
-// deadline (natsgo.DefaultFlusherTimeout), and the intakes' stop waits for that lock in
-// Client.Close. shutdown gives up on the intakes at its one deadline and says so; the process must
+// A deploy's SIGTERM can come while writes hold nats.go's connection lock on an intake's client,
+// as on a link that has stopped taking the client's bytes, and the intakes' stop waits for that
+// lock in Client.Close. Production's write deadline ends each write within 5 s
+// (delivery.IntakeWriteDeadline), so the close outlasts the shutdown's deadline only by the writes
+// queued ahead of it; this row's process writes with nats.go's one-minute default
+// (DISPATCH_TEST_INTAKE_WRITE_DEADLINE, startIntakesThroughWriteHold), so one held write is such a
+// close. shutdown gives up on the intakes at its one deadline and says so; the process must
 // then write that line and exit on its own, within shutdownMargin of the deadline, before the
 // runtime kills it at stopGrace. main's deferred stop of the intakes waited for that same stop
 // (waitIntakes is a sync.OnceFunc, so a second call waits for the first), which kept the process
@@ -1158,7 +1161,10 @@ func headAttributionReadsWaiting(t *testing.T, database *store.Store, cancel boo
 
 // intakesThroughWriteHold is a Dispatch process whose NATS connections all go through link, with a
 // GitHub App and the delivery settings, so both intakes have bound their durables. natsURL is the
-// server's own address, which the row's own clients use.
+// server's own address, which the row's own clients use. Its intake clients write with nats.go's
+// one-minute default deadline in place of delivery.IntakeWriteDeadline's 5 s
+// (DISPATCH_TEST_INTAKE_WRITE_DEADLINE), so one write the link holds keeps the client's Close
+// waiting past the shutdown's deadline, as the writes queued ahead of a close can in production.
 type intakesThroughWriteHold struct {
 	database *store.Store
 	process  *dispatchProcess
@@ -1177,9 +1183,11 @@ func startIntakesThroughWriteHold(t *testing.T) intakesThroughWriteHold {
 		_, _ = io.WriteString(w, "[]")
 	}))
 	t.Cleanup(github.Close)
+	env := githubAppEnv(t, github.URL)
+	env["DISPATCH_TEST_INTAKE_WRITE_DEADLINE"] = natsgo.DefaultFlusherTimeout.String()
 	process := startDispatchProcessWith(t, database.Pool.Config().ConnString(), dispatchOptions{
 		NATSURL: link.url,
-		Env:     githubAppEnv(t, github.URL),
+		Env:     env,
 	})
 	process.waitHealthy(t)
 	for _, durable := range deliveryDurables {
