@@ -313,7 +313,8 @@ No bun_install and no skills/** - the two pages of skills/ this filter names are
 this job reads of it: the tests of this suite that packed the two plugins - and so
 resolved the root manifest, the lockfile and the patches - or staged each plugin's
 partition of skills/ with the prepack script are the plugin-pack job's now, and
-this job installs nothing (dispatch://INFRA-1413, A4).
+this job installs no workspace dependency: its plain legs use Bun only to install
+the pinned Claude Code (dispatch://INFRA-1413, A4).
 
 The list is the one the test job's filter used to name through this anchor while
 it gated nothing of its own; it is now the daemon-go job's own filter, so a change
