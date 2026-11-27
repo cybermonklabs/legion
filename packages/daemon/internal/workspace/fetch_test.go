@@ -1117,6 +1117,11 @@ func TestFetchPointsTheCachesHeadAtGitHubsDefaultBranch(t *testing.T) {
 		t.Errorf("Fetch read GitHub's HEAD with %q, want %q", read.Argv, want)
 	}
 	assertCredentialedEnvironmentBounded(t, read, read.Timeout)
+	// read.Timeout against itself checks nothing, so the bound is checked here: the read gets what
+	// remains of the request's one FetchTimeout, which its own transfers have not spent much of.
+	if read.Timeout > FetchTimeout || read.Timeout < FetchTimeout-time.Minute {
+		t.Errorf("the read of GitHub's HEAD was given %s, want what remained of one %s FetchTimeout", read.Timeout, FetchTimeout)
+	}
 	if want := "the default branch of acme/widgets is now trunk (HEAD named refs/heads/main)"; !slices.Contains(logged, want) {
 		t.Errorf("the move was not logged as %q: %q", want, logged)
 	}

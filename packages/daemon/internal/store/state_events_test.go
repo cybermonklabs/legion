@@ -201,6 +201,7 @@ func queues(t *testing.T, s *Store, wakes *stateWakes, name string, write func()
 // the daemon has not turned the events on for queues none. Each row is read back through record's
 // decoder, which holds its payload to record.StateChange.
 func TestAClaimWriteThatChangesItsStateQueuesOneStateEvent(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	const issue = "LEGION-301"
 	tester := func(t *testing.T, state supervise.ClaimState) supervise.Claim {
