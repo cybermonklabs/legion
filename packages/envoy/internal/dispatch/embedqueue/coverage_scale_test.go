@@ -447,6 +447,11 @@ func measureCoverageAtScale(t *testing.T, admin *pgx.Conn, server string, scale 
 	if _, err := admin.Exec(ctx, "alter database "+name+" set synchronous_commit = on"); err != nil {
 		t.Fatalf("make %s commit synchronously: %v", name, err)
 	}
+	// The measured database runs without JIT, as production's does; a clone takes none of its
+	// template's settings, so the copy the server starts on is set again (copyForServerStart).
+	if _, err := admin.Exec(ctx, testdb.WithoutJIT(name)); err != nil {
+		t.Fatalf("turn JIT off on %s: %v", name, err)
+	}
 	databaseURL := serverDatabaseURL(t, server, name)
 	database, err := store.Open(ctx, databaseURL)
 	if err != nil {

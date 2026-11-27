@@ -1005,9 +1005,10 @@ func TestTheRefreshAndTheRecountRenderAnIssuesInputsAlike(t *testing.T) {
 
 // ───── the counts loop: the fold, the recount, the fill (R7e to R7i, R7o, R7x) ─────
 
-// setForTest sets variable to value until the test ends, as shortenIdentityRecheck sets the
-// identity recheck's interval: the counts loop's periods, bounds, random sources and clock are
-// package variables, and no test that sets one runs in parallel.
+// setForTest sets variable, a package variable a test may change (the counts loop's periods,
+// bounds, random sources and clock, renewClaimInterval, callBound), to value until the test ends.
+// A test that calls it is serial (its "Not parallel:" line says so), and Go starts no parallel test
+// of a package until its serial tests have finished, so nothing else reads the variable meanwhile.
 func setForTest[T any](t *testing.T, variable *T, value T) {
 	t.Helper()
 	saved := *variable

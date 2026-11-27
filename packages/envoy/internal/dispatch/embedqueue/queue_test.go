@@ -687,12 +687,12 @@ func TestReserveTokensSharesItsBudgetAcrossConnections(t *testing.T) {
 // the identical loop: a claim renewed just before the wait is renewed again inside it, before the
 // wait ends, and that renewal reaches the database.
 func TestWaitOutDebtRenewsTheClaimMidWaitSoNoSecondWorkerClaimsIt(t *testing.T) {
-	// Not parallel: it shortens renewClaimInterval (shortenForTest), which every claim renewal reads.
+	// Not parallel: it shortens renewClaimInterval (setForTest), which every claim renewal reads.
 	database := storetest.Open(t)
 	seedIssue(t, database, "LONG", "LONG-1", "A title")
 	ctx := context.Background()
 	const interval = 300 * time.Millisecond
-	shortenForTest(t, &renewClaimInterval, interval)
+	setForTest(t, &renewClaimInterval, interval)
 	renewal := newClaimRenewal(Deps{Store: database}, []pendingRow{{kind: "issue", id: "LONG-1", contentHash: contentHashOf(t, database, "issue", "LONG-1")}}, time.Now())
 	var renewed []time.Duration
 	write := renewal.extend
@@ -717,17 +717,6 @@ func TestWaitOutDebtRenewsTheClaimMidWaitSoNoSecondWorkerClaimsIt(t *testing.T) 
 	if !nextAttempt.After(before.Add(claimWindow - time.Second)) {
 		t.Errorf("next_attempt_at = %v, want at least claimWindow (%v) past %v - the mid-wait renewal should have pushed it out, so a concurrent scanner never reclaims LONG-1 while this reservation is still waiting", nextAttempt, claimWindow, before)
 	}
-}
-
-// shortenForTest sets *setting, a duration of the package a test may shrink (renewClaimInterval,
-// callBound), to d until t ends. A test that calls it is serial (its "Not parallel:" line says so),
-// and Go starts no parallel test of a package until its serial tests have finished, so nothing
-// else reads the setting meanwhile.
-func shortenForTest(t *testing.T, setting *time.Duration, d time.Duration) {
-	t.Helper()
-	healthy := *setting
-	*setting = d
-	t.Cleanup(func() { *setting = healthy })
 }
 
 // TestClaimRenewalResolveStopsRenewingACommittedRow proves resolve removes a row from the set a
@@ -1372,7 +1361,7 @@ func TestProcessBatchActuallyCallsRenewalAndReservesTokens(t *testing.T) {
 	for i, id := range ids {
 		seedIssue(t, database, "WIRE", id, fmt.Sprintf("Title %d", i))
 	}
-	shortenForTest(t, &renewClaimInterval, 10*time.Millisecond)
+	setForTest(t, &renewClaimInterval, 10*time.Millisecond)
 
 	var tokensBefore float64
 	if err := database.Pool.QueryRow(context.Background(),
@@ -1433,7 +1422,7 @@ func (e *claimLeftEmbedder) Embed(ctx context.Context, texts []string, _ embed.I
 // scanHeld, and a claim dated after the scan is renewed only if renewClaimInterval, a second short
 // of scanHeld, passes between the scan and the call.
 func TestAClaimIsDatedBeforeTheScanThatMadeIt(t *testing.T) {
-	// Not parallel: it shortens renewClaimInterval (shortenForTest), and the renewal must reach the
+	// Not parallel: it shortens renewClaimInterval (setForTest), and the renewal must reach the
 	// call within 2.5 s of the scan that a lock holds 5 s.
 	database := storetest.Open(t)
 	ids := []string{"SCAN-1", "SCAN-2"}
@@ -1441,7 +1430,7 @@ func TestAClaimIsDatedBeforeTheScanThatMadeIt(t *testing.T) {
 		seedIssue(t, database, "SCAN", id, fmt.Sprintf("Title %d", i))
 	}
 	const scanHeld = 5 * time.Second
-	shortenForTest(t, &renewClaimInterval, scanHeld-time.Second)
+	setForTest(t, &renewClaimInterval, scanHeld-time.Second)
 	mustExec(t, database.Pool, `create function hold_claim() returns trigger language plpgsql as $$
 		begin perform pg_advisory_xact_lock(1); return new; end $$`)
 	mustExec(t, database.Pool, `create trigger hold_claim before update of next_attempt_at on embeddings

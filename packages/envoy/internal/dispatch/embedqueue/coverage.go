@@ -945,8 +945,9 @@ const coverageSettings = `set local enable_seqscan = off; set local enable_sort 
 // max_parallel_workers_per_gather = 0, since the planner chooses a parallel plan by its estimated
 // cost, and the parallel bitmap plan was the slower on a pod's test Postgres. jit = off, since
 // Postgres compiles a statement whose estimated cost passes a threshold, and every measurement of
-// the window statement ran with JIT off (a pod's test server and the builds Job); production's
-// setting was never read. Index and index-only scans stay on: they are the report's probes.
+// the window statement ran with JIT off (a pod's test server and the builds Job), as production's
+// database runs without JIT (testdb.WithoutJIT says why). Index and index-only scans stay on: they
+// are the report's probes.
 //
 // Each version of main's coverage statement before the window statement left the planner a
 // choice of paths, and scale testing found each choice wrong in a state a production table

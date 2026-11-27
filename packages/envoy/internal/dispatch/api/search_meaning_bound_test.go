@@ -247,7 +247,7 @@ func TestMeaningScanRollsBackWhenASettingFails(t *testing.T) {
 // statement would wait for that lock until the test binary's deadline guard fails the case by
 // name.
 func TestSearchReportsAMeaningStatementTheServerEnded(t *testing.T) {
-	// Not parallel: it writes the package variable searchMeaningScan (endMeaningStatementsAt).
+	// Not parallel: it writes the package variable searchStatementBound (endSearchStatementsAt).
 	const title, spec = "Celestial navigation device maintenance", "Routine upkeep notes."
 	embedder := &fakeEmbedder{vectors: map[string][]float32{
 		issueEmbeddingText(title, spec): angledVector(0.9, 2),
@@ -445,7 +445,7 @@ func requireSearchTimedOut(t *testing.T, answer *httptest.ResponseRecorder, boun
 // thing, so the keyword stage has the item to fall back on and the meaning stage has a reason
 // to be running at all.
 func TestRelatedCheckReportsAMeaningStatementTheServerEndedAsATimeout(t *testing.T) {
-	// Not parallel: it writes the package variable searchMeaningScan (endMeaningStatementsAt).
+	// Not parallel: it writes the package variable searchStatementBound (endSearchStatementsAt).
 	const title, spec = "Nightly backups overrun their window", "The backup job runs past six in the morning."
 	const text = "Nightly snapshots finish late"
 	embedder := &fakeEmbedder{vectors: map[string][]float32{
