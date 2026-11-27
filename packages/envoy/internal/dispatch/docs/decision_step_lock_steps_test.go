@@ -47,6 +47,7 @@ import (
 // after it. A step whose table the path wrote at an earlier step is held by a gate
 // (gatedDocsWrites).
 func TestTheDecisionsStepsWritersTakeTheStoreLockOrder(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	for _, path := range []func(t *testing.T) (*docsWriterRig, docsWriter){conversionPath, followCatchUpPath} {
 		rig, writer := path(t)

@@ -61,6 +61,7 @@ func closureOf(t *testing.T, tx pgx.Tx, who model.Actor) []Member {
 // a member's via nor reaches a member, and a private document is no member at all. Its author
 // reads both.
 func TestTheClosureAnswersANodeReservedForItsAuthorToThatAuthorAlone(t *testing.T) {
+	t.Parallel()
 	tx := prefixFixture(t)
 	_, publicDocument := createReferenceArtifact(t, tx, "", "CORE", "public-md")
 	_, privateDocument := createReferenceArtifact(t, tx, "", "CORE", "private-md")
@@ -102,6 +103,7 @@ func referencesOf(t *testing.T, tx pgx.Tx, who model.Actor) References {
 // comment: its author's linked_from holds B, through the comment, and another person's holds
 // nothing of B.
 func TestTheClosureAnswersADocumentReservedForItsAuthorTwoHopsAwayToThatAuthorAlone(t *testing.T) {
+	t.Parallel()
 	tx := prefixFixture(t)
 	publicDocument, publicDocumentKey := createReferenceArtifact(t, tx, "", "CORE", "public-md")
 	privateDocument, privateDocumentKey := createReferenceArtifact(t, tx, "", "CORE", "private-md")
@@ -156,6 +158,7 @@ func linkedFromOf(t *testing.T, tx pgx.Tx, who model.Actor) []string {
 // link in carries no depth: its row is the node that links, the kinds of its links and its via,
 // the node of the issue's own at the near end (Closure's LinkedFrom, the in statement's rows).
 func TestTheReferencesReadAnswersALinkFromADocumentReservedForItsAuthorToThatAuthorAlone(t *testing.T) {
+	t.Parallel()
 	tx := prefixFixture(t)
 	publicDocument, _ := createReferenceArtifact(t, tx, "", "CORE", "public-md")
 	privateDocument, privateDocumentKey := createReferenceArtifact(t, tx, "", "CORE", "private-md")
@@ -198,6 +201,7 @@ func TestTheReferencesReadAnswersALinkIntoAnIssueReservedForItsAuthorToThatAutho
 // A private target is no mention another person reads among a document's outgoing ones, and a
 // private document lists no mention to them at all. Its author reads both.
 func TestOutgoingAnswersANodeReservedForItsAuthorToThatAuthorAlone(t *testing.T) {
+	t.Parallel()
 	tx := prefixFixture(t)
 	ctx := context.Background()
 	source, _ := createReferenceArtifact(t, tx, "", "CORE", "source-md")
@@ -245,6 +249,7 @@ func TestOutgoingAnswersANodeReservedForItsAuthorToThatAuthorAlone(t *testing.T)
 // first line is answered. A private block is no candidate either. Its author reads both, the
 // shared prefix as the two comments it names.
 func TestResolvePrefixAnswersANodeReservedForItsAuthorToThatAuthorAlone(t *testing.T) {
+	t.Parallel()
 	tx := prefixFixture(t)
 	ctx := context.Background()
 	const (
@@ -296,6 +301,7 @@ func TestResolvePrefixAnswersANodeReservedForItsAuthorToThatAuthorAlone(t *testi
 // in one call, so the statement of the comments and the two statements of the blocks each bind
 // that reader's credential within one batch.
 func TestResolvePrefixesAnswersANodeReservedForItsAuthorToThatAuthorAlone(t *testing.T) {
+	t.Parallel()
 	tx := prefixFixture(t)
 	ctx := context.Background()
 	const (
@@ -371,6 +377,7 @@ func TestResolvePrefixesAnswersANodeReservedForItsAuthorToThatAuthorAlone(t *tes
 // A private comment belongs to no document another person reads, and nor does a public comment
 // whose document is private. Its author reads both scopes.
 func TestScopeOfAnswersANodeReservedForItsAuthorToThatAuthorAlone(t *testing.T) {
+	t.Parallel()
 	tx := prefixFixture(t)
 	ctx := context.Background()
 	spec, specKey := createReferenceArtifact(t, tx, "CORE-1", "CORE", "spec")
@@ -407,6 +414,7 @@ func TestScopeOfAnswersANodeReservedForItsAuthorToThatAuthorAlone(t *testing.T) 
 // A private ask is no question another person reads in its document's question map, and a
 // private document has no question map to them at all. Its author reads both.
 func TestQuestionMapAnswersANodeReservedForItsAuthorToThatAuthorAlone(t *testing.T) {
+	t.Parallel()
 	tx := prefixFixture(t)
 	ctx := context.Background()
 	spec, specKey := createReferenceArtifact(t, tx, "CORE-1", "CORE", "spec")
@@ -441,6 +449,7 @@ func TestQuestionMapAnswersANodeReservedForItsAuthorToThatAuthorAlone(t *testing
 // A private document's stored excerpt, and an excerpt that is a private block, are no excerpt
 // another person reads. Their author reads both.
 func TestStoredExcerptsAnswerANodeReservedForItsAuthorToThatAuthorAlone(t *testing.T) {
+	t.Parallel()
 	tx := prefixFixture(t)
 	ctx := context.Background()
 	privateDocument, privateDocumentKey := createReferenceArtifact(t, tx, "", "CORE", "private-md")
@@ -480,6 +489,7 @@ func TestStoredExcerptsAnswerANodeReservedForItsAuthorToThatAuthorAlone(t *testi
 // holds (graphstore.KindComment): nothing writes a node of kind comment_block, so a read that
 // tested one would answer the text to everybody.
 func TestReplyBlocksAnswerANodeReservedForItsAuthorToThatAuthorAlone(t *testing.T) {
+	t.Parallel()
 	tx := prefixFixture(t)
 	ctx := context.Background()
 	const privateText = "A private block of the parent."
@@ -527,6 +537,7 @@ func TestReplyBlocksAnswerANodeReservedForItsAuthorToThatAuthorAlone(t *testing.
 // under it; its author reads them all. CORE-2, a child of CORE-1, holds the walk's first step to
 // that, and CORE-5, under the public CORE-4, holds every step below the first.
 func TestIssueDescendantsAnswerANodeReservedForItsAuthorToThatAuthorAlone(t *testing.T) {
+	t.Parallel()
 	tx := prefixFixture(t)
 	ctx := context.Background()
 	for _, issue := range []struct {

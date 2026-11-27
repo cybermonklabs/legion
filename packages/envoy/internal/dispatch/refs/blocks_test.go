@@ -116,6 +116,7 @@ func indexVersionAndWindow(t *testing.T, tx pgx.Tx, artifact string, version int
 // title for a comment, under comment/<uuid>; the question for an ask's parts, under
 // ask/<uuid>.
 func TestAWindowRecordsTheBlocksItCovers(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	tx := windowFixture(t)
 	artifact, _ := createReferenceArtifact(t, tx, "WIND-1", "WIND", "notes-md")
@@ -185,6 +186,7 @@ func TestAWindowRecordsTheBlocksItCovers(t *testing.T) {
 // says the item is gone, where it used to be no row from the lock; an ask still takes its lock
 // on its own and reads its parts after it.
 func TestWindowingAnItemThatIsGoneWritesNothing(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	tx := windowFixture(t)
 	body := "The comment deleted below."
@@ -224,6 +226,7 @@ func TestWindowingAnItemThatIsGoneWritesNothing(t *testing.T) {
 // reworded paragraph moves the hash of its own window alone, and an edited heading moves the
 // hash of every window of its section, since the heading is the context they embed.
 func TestOneParagraphEditReEmbedsOnlyItsWindows(t *testing.T) {
+	t.Parallel()
 	tx := windowFixture(t)
 	artifact, _ := createReferenceArtifact(t, tx, "WIND-1", "WIND", "notes-md")
 	parts := []part{
@@ -267,6 +270,7 @@ func TestOneParagraphEditReEmbedsOnlyItsWindows(t *testing.T) {
 // A version that no longer holds a block leaves no window of it: the rows the new set does not
 // name are deleted, so a deleted section's window goes with it.
 func TestADeletedBlockTakesItsWindowRow(t *testing.T) {
+	t.Parallel()
 	tx := windowFixture(t)
 	artifact, _ := createReferenceArtifact(t, tx, "WIND-1", "WIND", "notes-md")
 	parts := []part{
@@ -456,6 +460,7 @@ func checkKeptAcrossRenderers(t *testing.T, slug, document string, cuts []struct
 // quote, a block inside a container, whose text read alone loses the quote's prefix, takes
 // version 2, as does the reworded paragraph, and a citation of it is counted.
 func TestABlockKeepsItsChangedVersionAcrossAnotherRenderersSpelling(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	tx := windowFixture(t)
 	artifact, refKey := createReferenceArtifact(t, tx, "WIND-1", "WIND", "respelled-md")
@@ -575,6 +580,7 @@ var otherMarkerDocumentBlocks = []struct{ nodeType, text string }{
 // text read alone renders with `-` or `N.` while its text now keeps the other marker, since its
 // text now read alone renders so too. The reworded paragraph takes version 2.
 func TestAListWrittenWithTheOtherMarkerKeepsItsChangedVersion(t *testing.T) {
+	t.Parallel()
 	// Blocks 3 and 9 are the second list of each pair, with the marker this build writes each
 	// with; block 12 is the reworded paragraph.
 	checkKeptAcrossRenderers(t, "other-marker-md", otherMarkerDocument, otherMarkerDocumentBlocks, map[int]string{3: "* ", 9: "1) "}, 12)
@@ -650,6 +656,7 @@ var typedDocumentBlocks = []struct{ nodeType, text string }{
 // second callout's list, the callout in the list item and the list in that callout, and the list
 // in the quote, the callout in the quote and the list in that callout.
 func TestABlockInsideATypedBlockKeepsItsChangedVersion(t *testing.T) {
+	t.Parallel()
 	// Block 7 is the second list in the first callout, with the marker this build writes it with;
 	// blocks 13, 18, 19, 23, 26 and 27 are the lists and callouts a list item or a quote encloses,
 	// and block 30 is the reworded paragraph.
@@ -675,6 +682,7 @@ var footnotedDocumentBlocks = []struct{ nodeType, text string }{
 // tree, so the paragraph is compared by its text's sum (pmdoc.FragmentReadsAs): it takes version
 // 2, and its text is recorded at version 2.
 func TestABlockWhoseFootnoteShapedTextBecomesAReferenceTakesTheNewVersion(t *testing.T) {
+	t.Parallel()
 	tx := windowFixture(t)
 	artifact, _ := createReferenceArtifact(t, tx, "WIND-1", "WIND", "footnoted-md")
 	tree, stored := indexOtherRendererVersionOne(t, tx, artifact, footnotedDocument, footnotedDocumentBlocks)
@@ -748,6 +756,7 @@ func renderedBlocks(t *testing.T, tree *pmdoc.Node) (string, []model.ArtifactBlo
 // version 2 the prefix of c's line is also the content indent of b's `- ` item. So the inner list,
 // a block inside a list item, takes version 2, and its text is recorded at version 2.
 func TestAListInsideAListItemTakesTheNewVersionThoughItsTextReadsAloneAsBefore(t *testing.T) {
+	t.Parallel()
 	tx := windowFixture(t)
 	artifact, _ := createReferenceArtifact(t, tx, "WIND-1", "WIND", "nested-md")
 	const versionOne, versionTwo = "- a\n  - b\n    - c\n", "- a\n  - b\n  - c\n"
@@ -794,6 +803,7 @@ func TestAListInsideAListItemTakesTheNewVersionThoughItsTextReadsAloneAsBefore(t
 // recorded text did not stand at a line start of version 1, takes version 2, and its text is
 // recorded at version 2.
 func TestABlockThatStoodInsideAListItemTakesTheNewVersionAtTheTopLevel(t *testing.T) {
+	t.Parallel()
 	tx := windowFixture(t)
 	artifact, _ := createReferenceArtifact(t, tx, "WIND-1", "WIND", "lifted-md")
 	const versionOne, versionTwo = "- a\n  * b\n  * c\n", "- b\n  - c\n"
@@ -836,6 +846,7 @@ func TestABlockThatStoodInsideAListItemTakesTheNewVersionAtTheTopLevel(t *testin
 // parent, the parent between its children, and no block at all between top-level blocks or past
 // the last one. A block ending where a mention starts does not hold it.
 func TestInnermostBlocksPicksTheTightestRangeHoldingEachStart(t *testing.T) {
+	t.Parallel()
 	blocks := []model.ArtifactBlock{{ID: "a", From: 0, To: 100}, {ID: "b", From: 10, To: 20}, {ID: "c", From: 30, To: 40}, {ID: "d", From: 120, To: 130}}
 	got := innermostBlocks(blocks, []int{5, 15, 20, 25, 35, 50, 110, 125, 200})
 	want := []int{0, 1, 0, 0, 2, 0, -1, 3, -1}
@@ -850,6 +861,7 @@ func TestInnermostBlocksPicksTheTightestRangeHoldingEachStart(t *testing.T) {
 // however deep, a typed block inside one and the blocks that typed block holds included. Each case
 // makes every block a candidate, and then its last block alone.
 func TestAloneCandidatesKeepsTheBlocksOnlyTypedBlocksEnclose(t *testing.T) {
+	t.Parallel()
 	block := func(id, nodeType string, from, to int) model.ArtifactBlock {
 		return model.ArtifactBlock{ID: id, Type: nodeType, From: from, To: to}
 	}
@@ -909,6 +921,7 @@ func TestAloneCandidatesKeepsTheBlocksOnlyTypedBlocksEnclose(t *testing.T) {
 // no node, nor is one longer than text.MaxBlockIDBytes, which no key of the index can hold; those
 // are counted, with the longest one's bytes. An id at the bound is a node.
 func TestUniqueBlocksKeepsTheFirstHolderOfEachID(t *testing.T) {
+	t.Parallel()
 	atBound := strings.Repeat("é", text.MaxBlockIDBytes/2)
 	got, long, longest := uniqueBlocks([]model.ArtifactBlock{
 		{ID: "a", From: 0, To: 10},

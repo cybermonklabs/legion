@@ -281,6 +281,7 @@ func startCatchUp(step *DecisionStep) <-chan error {
 // never behind the project's row, since it appends no event. The ask's node then holds the answer
 // under that build's ask.answered, so the run followed is the one that committed.
 func TestTheCatchUpTakesTheAsksOwnerRowBeforeItsRow(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ask, issue := seedCatchUpAsk(t, database, "CATCH")
 	answered := answerAsThePreviousBuild(t, database, issue, ask, "Ship")
@@ -321,6 +322,7 @@ func TestTheCatchUpTakesTheAsksOwnerRowBeforeItsRow(t *testing.T) {
 // commits, and the pass goes on. The ask's row and its node then both hold Hold, the node's
 // answer_state under that newer ask.answered.
 func TestTheCatchUpStatesAWriteCommittedBetweenItsReadAndItsLock(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	ask, issue := seedCatchUpAsk(t, database, "GAP")
@@ -383,6 +385,7 @@ const failFirstAskWrite = `
 // node holds no answer state under that build's ask.answered after that tick, and holds the answer
 // under it after the next.
 func TestACatchUpWhoseApplyFailsOnTheFinalPassIsAppliedOnTheNextTick(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	ask, issue := seedCatchUpAsk(t, database, "FINAL")
@@ -420,6 +423,7 @@ func TestACatchUpWhoseApplyFailsOnTheFinalPassIsAppliedOnTheNextTick(t *testing.
 // queueing behind either. The previous build then answers the second ask, and the third pass
 // states that answer.
 func TestACatchUpPassNeverReadsAgainAnEventAPassBeforeItRead(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	retracted, retractedIssue := seedCatchUpAsk(t, database, "SKIP")
@@ -500,6 +504,7 @@ func TestACatchUpPassNeverReadsAgainAnEventAPassBeforeItRead(t *testing.T) {
 // condition narrows, nor one of every ask's tuples, which on a store of millions of events and
 // tuples is all of them on every tick.
 func TestTheCatchUpReadsItsWindowThroughIndexes(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	keys := explaintest.NewIndexKeys(database.Pool)
 	const ask = "00000000-0000-4000-8000-0000000000c1"
@@ -626,6 +631,7 @@ var wholeTableRead = regexp.MustCompile(`\b(from|join)\s+(issues|artifacts|asks|
 // stands at nothing owed. A project then stores a list of gated steps holding `decisions`, with
 // the event its write appends, and the next tick counts it.
 func TestATickWithNothingOwedReadsNoTableWhole(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	recorder := &storetest.StatementRecorder{}
@@ -804,6 +810,7 @@ func TestABootWaitsForNoPassOfTheThirdPhase(t *testing.T) {
 // naming no node. A boot has not answered two seconds later, and waits behind the holder. Once the
 // lock is let go, the boot answers nil, the ask names its node, and phase 1 owes nothing.
 func TestABootWaitsForTheStepsLockOnlyWhilePhaseOneOwesARow(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	conn, err := database.Pool.Dedicated(ctx, "test-stalled-decision-step")
@@ -1166,6 +1173,7 @@ func TestATickAfterAnEventThatCannotMoveTheCountReadsNoRestoreWork(t *testing.T)
 // project ELSEWHERE. A boot answers nil, the ask and its follower row then name their node, phase
 // 1 owes nothing, and a second boot answers nil and leaves it so.
 func TestABootRunsTheAskPassesPastARowWhoseNodeStandsInAnotherProject(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	ask, issue := seedUnmarkedAsk(t, database, "MOVED")
@@ -1228,6 +1236,7 @@ func TestABootRunsTheAskPassesPastARowWhoseNodeStandsInAnotherProject(t *testing
 // build again. A process of this release then rolls forward again, of this commit and of another,
 // and its first tick states the answer on the ask's node under the release before's ask.answered.
 func TestTheCatchUpOfARollForwardAfterARollbackStatesWhatTheReleaseBeforeWroteInBetween(t *testing.T) {
+	t.Parallel()
 	for name, commit := range map[string]string{"this commit": catchUpCommit, "another commit of this release": catchUpFixCommit} {
 		t.Run(name, func(t *testing.T) {
 			database := storetest.Open(t)

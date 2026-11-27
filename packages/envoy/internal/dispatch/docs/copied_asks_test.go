@@ -183,6 +183,7 @@ func TestADocumentCopiedOnItsIssueShowsItsSourcesAsksAndOpensNone(t *testing.T) 
 // names the other document. A source whose row names no node yet, which the boot step's backfill
 // marks, has no part_of to read, and its copy names the document its row does.
 func TestACopysSourceDocumentIsTheSourceAsksPartOf(t *testing.T) {
+	t.Parallel()
 	service, original := newTestService(t)
 	service.settle = time.Hour
 	ctx := context.Background()
@@ -615,6 +616,7 @@ func askEditsOf(t *testing.T, service *Service, ask string) int {
 // resolved ask's block leaves its row as it was decided, appends no ask.edited, and settlement
 // writes the decided wording back into the block beside its decision, logging that it did.
 func TestADocumentEditOfADecidedAsksWordingIsWrittenBackAndLeavesItsRow(t *testing.T) {
+	// Not parallel: it swaps the default logger (logtest.SetDefault).
 	logs := &storetest.LockedLog{}
 	logtest.SetDefault(t, slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	writes := map[string]func(t *testing.T, service *Service, document string){
@@ -710,6 +712,7 @@ func rewordAsAnEarlierRelease(t *testing.T, service *Service, document string, a
 // on, writes it back into the block, and logs the ask, its document and the restored question;
 // the boot's restoration then finds nothing left to restore.
 func TestASettlementRestoresADecidedAskAnEarlierReleaseReworded(t *testing.T) {
+	// Not parallel: it swaps the default logger (logtest.SetDefault).
 	logs := &storetest.LockedLog{}
 	logtest.SetDefault(t, slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	for _, closing := range []string{"answered", "resolved"} {
@@ -884,6 +887,7 @@ func TestTheBootsRestorationSettlesTheRestoredAsksOwnDocument(t *testing.T) {
 // (rollWindowAskAttributes); on a fleet of one build a copy keeps its provenance, and its source's
 // state where that is not open, alone (keptAskState).
 func TestASettlementLogsEachBlockItTakesForACopyOnce(t *testing.T) {
+	// Not parallel: it swaps the default logger (logtest.SetDefault).
 	logs := &storetest.LockedLog{}
 	logtest.SetDefault(t, slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	service, original := newTestService(t)

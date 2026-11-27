@@ -46,6 +46,7 @@ func withAskQuestion(t *testing.T, blockID, question string) func(*pmdoc.Node) *
 // strict read and claims an answer state and an answerer keeps none of the seven attributes a
 // version can store in the live tree, as a block that reads keeps none.
 func TestTheInvalidReasonIsWrittenAndClearedOnTheAskNode(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, ":::ask{#ship urgency=\"med\" multiple=\"false\"}\nShould we ship?\n\n- Ship: Release it\n- Hold: Wait for review\n:::\n")
@@ -121,6 +122,7 @@ func TestTheInvalidReasonIsWrittenAndClearedOnTheAskNode(t *testing.T) {
 // its node's state, answerer and time, and the forged answerer does not come back; a block no ask
 // row backs keeps none of the seven, whatever it claims.
 func TestABlockThatFailsTheStrictReadKeepsOnlyWhatItsAsksNodeHolds(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, ":::ask{#ship urgency=\"med\" multiple=\"false\"}\nShould we ship?\n\n- Ship: Release it\n- Hold: Wait for review\n:::\n")

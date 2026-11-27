@@ -206,6 +206,8 @@ const validCalls = {
     verdict: "pass",
     commit: "1111111111111111111111111111111111111111",
   },
+  dispatch_deploy: { repo: "acme/widgets", program: "renderer", commit: "a".repeat(40) },
+  dispatch_deploys: { repo: "acme/widgets", program: "renderer" },
   dispatch_results: { issue: "DSP-1" },
   dispatch_artifact: { issue: "DSP-1", name: "design.pdf", path: "design.pdf" },
   dispatch_read: { issue: "DSP-1" },
@@ -329,6 +331,8 @@ describe("dispatchToolSpecs", () => {
       "dispatch_plan_approve",
       "dispatch_review",
       "dispatch_result",
+      "dispatch_deploy",
+      "dispatch_deploys",
       "dispatch_results",
       "dispatch_artifact",
       "dispatch_read",
@@ -1891,10 +1895,6 @@ describe("dispatchToolSpecs", () => {
     [
       "dispatch_artifact",
       "Never upload a document's own name to change it (spec.md replaces the spec whole); edit it with dispatch doc-edit.",
-    ],
-    [
-      "dispatch_ask",
-      "Measure what you can first, and put the measurement and the size of the population it covers in the question; drop an option that cannot fix most of that population, never offer it cut down, and keep an option not to act (Hold). Set urgency high when your work halts on the answer, and keep working on everything else.",
     ],
     [
       "dispatch_issue_update",

@@ -80,9 +80,9 @@ BUNDLES = [
      at("dispatch-two-builds", "Two-build tests of the Dispatch server (`packages/envoy/cmd/dispatch/twobuild_cli_test.go#currentCLI` runs "
                                "`bun ../../../envoy-client/bin/dispatch.ts`, this tree's dispatch command)")),
     ("envoy_go_race_api", "packages/envoy-client/bin/dispatch.ts",
-     at("envoy-go-race-api", "Race-test the Dispatch API (internal/dispatch/api/decision_entries_test.go's "
-                             "runDispatchCLI runs `bun ../../../../envoy-client/bin/dispatch.ts`, this tree's "
-                             "dispatch command)")),
+     at("envoy-go-race-api-legs", "Race-test the Dispatch API (internal/dispatch/api/decision_entries_test.go's "
+                                  "runDispatchCLI runs `bun ../../../../envoy-client/bin/dispatch.ts`, this tree's "
+                                  "dispatch command)", "envoy-go-race-api")),
     ("envoy_go_checks", "packages/envoy/scripts/approve/scan.ts",
      at("envoy-go-checks", "Scan tests of approve-check's session (bun test scripts/approve/, whose tests spawn "
                            "`bun scripts/approve/scan.ts`)")),
