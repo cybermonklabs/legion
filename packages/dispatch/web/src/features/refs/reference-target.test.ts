@@ -516,46 +516,49 @@ test.each([
       }),
     "Beta as written.",
   ],
-] as const)("the link to %s is titled as the refresh leaves it", async (_case, route, refresh, kept) => {
-  const pin =
-    "pin" in route.block
-      ? {
-          ref: "dispatch://CORE-1/comment/c-1#b-b2@v1",
-          state: "unchanged" as const,
-          text: "Beta as written.",
-          text_tree: displayTree("Beta as written."),
-          version: 1,
-        }
-      : undefined;
-  const answer = typeof refresh === "function" ? refresh() : refresh;
-  const getReferences = spyOn(api, "getReferences")
-    .mockResolvedValueOnce(blockRead("Beta as written.", pin))
-    .mockImplementationOnce(() =>
-      answer instanceof Error ? Promise.reject(answer) : Promise.resolve(answer)
-    );
-  const standing = { body: "Beta as written.", deleted_at: null, deleted_by: null };
-  const getComment = spyOn(api, "getComment").mockResolvedValue({ comment: standing } as never);
-  const getMessage = spyOn(api, "getMessage").mockResolvedValue({ message: standing } as never);
-  restore = () => {
-    getReferences.mockRestore();
-    getComment.mockRestore();
-    getMessage.mockRestore();
-  };
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const hook = renderHook(() => useReferenceTarget(route, { text: false }), {
-    wrapper: ({ children }: { children: ReactNode }) =>
-      createElement(QueryClientProvider, { client: queryClient }, children),
-  });
-  try {
-    await waitFor(() => expect(hook.result.current.title).toBe("Beta as written."));
+] as const)(
+  "the link to %s is titled as the refresh leaves it",
+  async (_case, route, refresh, kept) => {
+    const pin =
+      "pin" in route.block
+        ? {
+            ref: "dispatch://CORE-1/comment/c-1#b-b2@v1",
+            state: "unchanged" as const,
+            text: "Beta as written.",
+            text_tree: displayTree("Beta as written."),
+            version: 1,
+          }
+        : undefined;
+    const answer = typeof refresh === "function" ? refresh() : refresh;
+    const getReferences = spyOn(api, "getReferences")
+      .mockResolvedValueOnce(blockRead("Beta as written.", pin))
+      .mockImplementationOnce(() =>
+        answer instanceof Error ? Promise.reject(answer) : Promise.resolve(answer)
+      );
+    const standing = { body: "Beta as written.", deleted_at: null, deleted_by: null };
+    const getComment = spyOn(api, "getComment").mockResolvedValue({ comment: standing } as never);
+    const getMessage = spyOn(api, "getMessage").mockResolvedValue({ message: standing } as never);
+    restore = () => {
+      getReferences.mockRestore();
+      getComment.mockRestore();
+      getMessage.mockRestore();
+    };
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const hook = renderHook(() => useReferenceTarget(route, { text: false }), {
+      wrapper: ({ children }: { children: ReactNode }) =>
+        createElement(QueryClientProvider, { client: queryClient }, children),
+    });
+    try {
+      await waitFor(() => expect(hook.result.current.title).toBe("Beta as written."));
 
-    await act(() => queryClient.refetchQueries({ queryKey: ["references", "to"] }));
-    expect(getReferences).toHaveBeenCalledTimes(2);
-    await waitFor(() => expect(hook.result.current.title).toBe(kept));
-  } finally {
-    hook.unmount();
+      await act(() => queryClient.refetchQueries({ queryKey: ["references", "to"] }));
+      expect(getReferences).toHaveBeenCalledTimes(2);
+      await waitFor(() => expect(hook.result.current.title).toBe(kept));
+    } finally {
+      hook.unmount();
+    }
   }
-});
+);
 
 // A reference to a post, or to a block of one, answers the post's marks beside its text: the
 // time its author edited it, and its deletion. A block of a post that stands reads its node

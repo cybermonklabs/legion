@@ -22,6 +22,7 @@ func spilledDSN(password string) string {
 // database: an "@" with nothing after the host, one before a "/", one before a "?" and a "/" after
 // digits.
 func TestOpenOfASpilledDSNPrintsNoPartOfThePassword(t *testing.T) {
+	t.Parallel()
 	for name, password := range map[string]string{
 		"a password holding an @":             "madeuphead0123@zqtail0123",
 		"a password holding an @ and then /":  "madeuphead0123@zqtailone/zqtailtwo",
@@ -51,6 +52,7 @@ func TestOpenOfASpilledDSNPrintsNoPartOfThePassword(t *testing.T) {
 // which quotes the DSN and masks its password only when written `password=<value>`; the error is
 // still a *pgconn.ParseConfigError, which OpenRetryable reads as one no attempt clears.
 func TestOpenOfAKeywordDSNPgxCannotParseNamesTheSettingAlone(t *testing.T) {
+	t.Parallel()
 	_, err := Open(context.Background(), "host=db.invalid user=legion password = zqtailsecret0123 dbname=legion sslmode=requir")
 	if want := "connect to Postgres: " + DSNSetting + " cannot be parsed as a Postgres DSN; the driver's error is not printed, since it quotes the DSN"; err == nil || err.Error() != want {
 		t.Fatalf("Open = %v, want %q", err, want)

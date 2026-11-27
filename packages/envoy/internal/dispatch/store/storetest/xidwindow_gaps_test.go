@@ -19,10 +19,11 @@ import (
 
 // A Linux build does not promise a schedstat file: gVisor exposes neither /proc/self/schedstat
 // nor /proc/thread-self/schedstat. Nor does it promise that a thread, or the process's memory, can
-// be held out of NUMA balancing: a container's seccomp profile may refuse get_mempolicy, set_mempolicy or mbind.
-// Where the probe cannot do one of these, the rig follows its race build and judges window shape
-// alone, rather than fail every Measure before it starts - unless the run sets XidRequireGapsEnv,
-// as the CI jobs that judge gaps do, where Measure fails and names what the probe could not do.
+// be held out of NUMA balancing: a container's seccomp profile may refuse get_mempolicy,
+// set_mempolicy or mbind. Where the probe cannot do one of these, the rig follows its race build
+// and judges window shape alone, rather than fail every Measure before it starts - unless the run
+// sets XidRequireGapsEnv, as the CI jobs that judge gaps do, where Measure fails and names what
+// the probe could not do.
 //
 // The readable row proves a build whose probe reads the clocks and holds the thread still judges
 // a planted gap. It fakes only the probe and judges a window built here, so it holds on a kernel

@@ -297,6 +297,7 @@ func TestTheLastLooksPendingIsOnlyForAnIssueWithNoneOfThoseRequirements(t *testi
 // too. The task is the text in front of the tester at every look, so a task that routed a decision
 // and no other finding would overrule the skill it points to.
 func TestTheCheckTaskRoutesADefectAsTheTesterPromptDoes(t *testing.T) {
+	t.Parallel()
 	for _, last := range []bool{false, true} {
 		task := checkTaskFor(wakeMerge, "merge-43", last)
 		for _, want := range []string{
