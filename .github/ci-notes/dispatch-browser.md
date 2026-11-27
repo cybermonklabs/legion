@@ -15,7 +15,8 @@ Every browser job of the Dispatch suite, in one place. ci.yaml calls it from thr
 with a literal lane: dispatch-browser-pr with the pull-request lane on a pull request,
 dispatch-browser with the full lane in the merge queue, on a dispatched run and on a pull request
 labelled `full-ci` or `lane:dispatch_browser`, and dispatch-references with the references lane
-on a pull request that changes what the reference rows test; the nightly workflow calls it with
+on a pull request that changes what the reference rows test and whose run does not run that full
+lane; the nightly workflow calls it with
 the full lane, under the job id dispatch-browser. Each caller passes its own id as `job`, which
 GitHub puts before every job name of this file (`dispatch-browser-pr / shard (1)`) and which
 starts every artifact name, so two callers of one run share no artifact. The rows are spread

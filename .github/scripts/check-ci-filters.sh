@@ -72,8 +72,8 @@
 #      (`needs.changes.outputs.<x> != 'true'`) gates on no filter: it holds the job back where
 #      <x> selected its own job, as dispatch-references' holds the preview off a run whose full
 #      lane runs (.github/ci-notes/ci.md#the-reference-rows-preview-job), and reads none of <x>'s
-#      paths; the same rule refuses one whose <x> the table neither lists nor EXCLUDES, an output
-#      empty on every run, so the term always holds,
+#      paths; the same rule refuses one whose <x> is no output of the changes job, since
+#      needs.changes.outputs.<x> is then empty on every run and the term always holds,
 #   4. a run: line of a job of ci.yaml, or of a job of a workflow ci.yaml calls - which is where
 #      such a job's steps are - that starts a go command (test, vet, build, run, list, install,
 #      generate) no Run of a gate on that job claims and no exact entry's step holds, or a
