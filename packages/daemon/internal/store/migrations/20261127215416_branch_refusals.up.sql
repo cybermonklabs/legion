@@ -8,7 +8,11 @@
 -- retried, so the issue's roles start, and the owning architect gets one branch-refused notice: a
 -- second refused row of the same generation finds the record and tells nobody. A later row of the
 -- issue whose write GitHub takes deletes the issue's records. Every database the upgrade finds
--- holds none: no release before this one ended a branch row on a refusal.
+-- holds none: no release before this one ended a branch row on a refusal. It writes no list of a
+-- constraint: outbox_kind_check, defects_kind_check and issues_phase_check stay as
+-- 20261127135256_merged_new_work wrote them, so that migration's lists stay the last word on any
+-- database although this one sorts above it. The notice kind branch-refused is a value of a notice
+-- row's payload, which no constraint lists.
 --
 -- There is no down file. This directory keeps none, so the way back is the transaction that ends
 -- this header, its last paragraph (migrations.WayBack). Run it with every project's daemon on that

@@ -1,0 +1,6 @@
+kind: Added
+body: |-
+  `legion-api.ts`: each issue of the state may carry `branchRefused` (`legionBranchRefused`: `row`, `write`, `kind`, `reason`, `at`), the refusal for good of its branch row under the branch-refused entry. Every member is optional and each word is a string and not an enum, so a kind a later daemon adds is read rather than refused.
+time: 2026-11-27T22:16:11Z
+custom:
+    Issue: pr5558

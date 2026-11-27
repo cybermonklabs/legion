@@ -1,0 +1,9 @@
+kind: Added
+body: |-
+  An issue's branch row that GitHub, or the deployment's private-name rules, refuses in a way a retry meets again now ends rather than retries for ever. Before, a deployment whose App cannot use GitHub's GraphQL API could not move a next change's branch, the row retried on its backoff, and nobody was told.
+  The refusals that end the row are a REST 403 that is no rate limit, a 404, a 409 and a create's 422, the GraphQL endpoint's 403 or 404, an `updateRefs` error of type FORBIDDEN, INSUFFICIENT_SCOPES or NOT_FOUND, a repository read with no node id, a ref read with no commit, a compare status the daemon does not read, a move with neither its base nor the default branch, and a branch name the rules match. A rate limit, a 5xx, a 401, a failed token mint and a GitHub that answered nothing still retry on the backoff, and tell nobody.
+  The owning architect gets one `branch-refused` notice for each generation of the issue, however many rows meet the refusal and across a restart. The issue's roles start without the write. A later row whose write GitHub takes clears the refusal.
+  `GET /legion/v1/state` and the issue record name it as `branchRefused` (`row`, `write`, `kind`, `reason`, `at`), under the branch-refused contract entry, and `legion state` prints a `refused issue branches` block. Store migration `20261127215416_branch_refusals` adds the table `branch_refusals`. Its header carries the way back, which a rollback runs first, with every daemon of the database stopped (docs/kubernetes.md, "Rolling back the release that ends a branch row GitHub refuses for good").
+time: 2026-11-27T22:16:10Z
+custom:
+    Issue: pr5558
