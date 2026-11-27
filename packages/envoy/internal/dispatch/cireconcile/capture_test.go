@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The head the captured answers below are of: the oldest open pull request of
@@ -275,7 +276,7 @@ func TestAPassOverACapturedAnswerChangesNothingTheWebhooksRecorded(t *testing.T)
 		delivery++
 		h.post("check_suite", capturedWebhook(t, "check_suite", item), fmt.Sprintf("suite-%d", delivery))
 	}
-	if _, err := settlements.NextMsg(15 * time.Second); err != nil {
+	if _, err := settlements.NextMsgWithContext(testwait.Context(t)); err != nil {
 		t.Fatalf("the webhooks published no settlement: %v", err)
 	}
 	before := capturedRevision(t, h)
@@ -307,16 +308,12 @@ func TestAPassOverACapturedAnswerChangesNothingTheWebhooksRecorded(t *testing.T)
 func capturedRevision(t *testing.T, h *harness) uint64 {
 	t.Helper()
 	var revision uint64
-	for deadline := time.Now().Add(15 * time.Second); time.Now().Before(deadline); {
+	return testwait.UntilPolling(t, 50*time.Millisecond, "the captured head's settled record with a stable revision", func() (uint64, bool) {
 		state, next := h.recordAt(capturedRepository, capturedNumber, capturedSHA)
-		if state != nil && state.SettledEmitted && state.Claim == nil && next == revision {
-			return revision
-		}
+		settled := state != nil && state.SettledEmitted && state.Claim == nil && next == revision
 		revision = next
-		time.Sleep(50 * time.Millisecond)
-	}
-	t.Fatalf("the head's record did not settle: %+v", h.stateAt(capturedRepository, capturedNumber, capturedSHA))
-	return 0
+		return next, settled
+	})
 }
 
 // capturedWebhook is one GitHub webhook body carrying a captured object as its event, named for
