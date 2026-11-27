@@ -3,6 +3,7 @@ package docs
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -341,6 +342,35 @@ func TestAFailedRoomsReplacementSettlesWithoutAnotherEdit(t *testing.T) {
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
+}
+
+// failRoom logs a room's failure once, as it happens, with the room and the cause: a failure no
+// later write met otherwise left no line naming it (failRoomLocked).
+func TestARoomFailureIsLoggedWithItsCause(t *testing.T) {
+	// Not parallel: it swaps the process's default logger (captureWarnings).
+	logs := captureWarnings(t)
+	service, artifactID := newTestService(t)
+	if err := service.warmLiveDocument(context.Background(), artifactID); err != nil {
+		t.Fatalf("load live document: %v", err)
+	}
+	before := logs.Len()
+	service.failRoom(artifactID, errors.New("a cause the log must name"))
+	written := logs.String()[before:]
+	want := fmt.Sprintf(`level=WARN msg="dispatch: a document room failed" room=%s error="a cause the log must name"`, artifactID)
+	var failures []string
+	for line := range strings.Lines(written) {
+		if strings.Contains(line, "a document room failed") {
+			failures = append(failures, line)
+		}
+	}
+	if len(failures) != 1 {
+		t.Fatalf("the room's failure wrote %d lines naming a room failure, want 1; written:\n%s", len(failures), written)
+	}
+	_, line, timed := strings.Cut(strings.TrimSuffix(failures[0], "\n"), " ")
+	if !timed || !strings.HasPrefix(failures[0], "time=") || line != want {
+		t.Fatalf("the room's failure logged\n%s\nwant, after its time,\n%s", failures[0], want)
+	}
+	awaitRecovered(t, service, artifactID)
 }
 
 func indexedAsks(t *testing.T, service *Service, artifactID string) int {
