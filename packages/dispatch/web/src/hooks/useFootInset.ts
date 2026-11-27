@@ -40,8 +40,10 @@ import { type RefObject, useLayoutEffect } from "react";
  *     thread's and a phone reply's in the Conversation, and a phone margin thread's (`ThreadCard`'s
  *     composer frame), all through `MentionComposer`. From `sm` up the docked composer sticks to
  *     the top and counts nothing.
- *   - The shared selection bar from `sm` up (`SelectionBar`), over the issues table's and the
- *     Inbox's marked rows. Below `sm` it sits under the header and counts nothing.
+ *   - The shared selection bar (`SelectionBar`): the issues table's at every width, and the
+ *     Inbox's from `sm` up, over their marked rows. Below `sm` the Inbox's sits under the header
+ *     and counts nothing. The issues table's publishes its band's upper edge too (`useFootInset`'s
+ *     `topProperty`), the room the table keeps at its end for it.
  *   - The margin's sheet below `xl` while it is collapsed (`MarginSheet`).
  *   - The Agents page's broadcast composer, sticky to the foot of the page's scroll
  *     (`AgentsPage`), wherever it is on screen, stuck or resting at the end of the list: the
@@ -974,11 +976,19 @@ function publish(): void {
  * (`--foot-floor`) and left and right edges each time: a resize can cross a breakpoint that
  * changes the floor or edges.
  * A float with no box (height 0) counts nothing.
+ *
+ * `topProperty`, given for a page element, names a property the hook writes on the document
+ * element at each measure: the upper edge of the element's band, how far above the screen's bottom
+ * edge its top stands, while it counts, and unset while it counts nothing or is no longer a foot
+ * element. It is the one property a page element's band publishes for the page to read: the
+ * issues table keeps that much room at its end for its selection bar (`SelectionBar`'s
+ * `SELECTION_BAR_TOP_PROPERTY`). The bar is fixed, so that room moves no foot element.
  */
 export function useFootInset(
   ref: RefObject<HTMLElement | null>,
   active: boolean,
-  layer: FootLayer
+  layer: FootLayer,
+  topProperty?: string
 ): void {
   useLayoutEffect(() => {
     const element = ref.current;
@@ -1035,6 +1045,9 @@ export function useFootInset(
       } else {
         pageBands.delete(element);
       }
+      if (topProperty !== undefined) {
+        writePixels(document.documentElement.style, topProperty, pageBands.get(element)?.hi ?? 0);
+      }
       publish();
     };
     const measureLayerFloat = () => {
@@ -1052,7 +1065,8 @@ export function useFootInset(
       cancelAnimationFrame(frame);
       pageBands.delete(element);
       floats.delete(element);
+      if (topProperty !== undefined) writePixels(document.documentElement.style, topProperty, 0);
       publish();
     };
-  }, [active, layer, ref]);
+  }, [active, layer, ref, topProperty]);
 }

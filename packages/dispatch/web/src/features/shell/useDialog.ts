@@ -8,6 +8,9 @@ import { DIALOG_SCOPE, useKeymap, useKeymapScope } from "./keymap";
 export const COMPACT_VIEWPORT_QUERY = "(max-width: 1279px)";
 /** Below Tailwind's `md`: a phone, where a margin thread opens full-screen. */
 export const PHONE_VIEWPORT_QUERY = "(max-width: 767px)";
+/** styles.css's `narrow-or-short` variant, as a query: a phone, or any screen shorter than 500 px
+ *  (a phone in landscape). The two say the same pixels, and must keep doing so. */
+export const NARROW_OR_SHORT_VIEWPORT_QUERY = `${PHONE_VIEWPORT_QUERY}, (max-height: 500px)`;
 /** Tailwind's `md` itself: true exactly when the `md:` classes apply. A caller that pairs this
  *  query with `md:` classes on the same element must keep the two in step, since a predicate a
  *  pixel out leaves a fractional viewport width - zoom, a fractional device-pixel ratio - with

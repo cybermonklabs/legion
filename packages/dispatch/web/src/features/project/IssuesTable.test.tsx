@@ -18,6 +18,7 @@ import { boardMoveMutationKey, projectIssuesQuery, userStateQuery } from "../../
 import { DispatchQueryClient } from "../../api/query-client";
 import type { Agent, CreateIssueInput, Issue, IssueDetails, IssueSummary } from "../../api/types";
 import { causedByReader, holdHandOff, pressArmed, pressMadeIn } from "../../components/focus-place";
+import { SELECTION_BAR_TOP_PROPERTY } from "../../components/SelectionBar";
 import { useTableLayout } from "../../components/table-layout";
 import { readLayout } from "../../components/table-storage";
 import { DOCUMENT_SCROLL_ATTRIBUTE, footPassNow, MARK_ATTRIBUTE } from "../../hooks/useFootInset";
@@ -288,6 +289,54 @@ test("opening a Labels facet does not pass its values through another column's f
   await user.click(trigger);
   expect(await screen.findByRole("combobox", { name: "Search Labels" })).toBeDefined();
   expect(screen.getByRole("option", { name: "frontend, 1 issue" })).toBeDefined();
+});
+
+// The Layout rule (`web/src/AGENTS.md`), point 2: a label with no break in it shortens inside its
+// own pill, with the whole label as its title, rather than running past the Labels cell.
+test("a long label shortens to an ellipsis inside its pill, with the whole label as its title", async () => {
+  const long = "dispatchlayoutruleaverylonglabelnobreak1";
+  table([issue("CORE-1", { labels: [long] })]);
+  const row = await screen.findByRole("row", { name: "CORE-1 Work CORE-1" });
+  const words = within(row).getByText(long);
+  expect(words).toHaveAttribute("title", long);
+  expect(words.className).toContain("truncate");
+});
+
+// The Layout rule (`web/src/AGENTS.md`), point 3: a row's labels are a list as long as the
+// issue's data, so the cell shows ten and one "+N" that shows the rest in place. A row the search
+// hides and shows again is drawn from nothing, and the labels the reader opened are still open.
+test("a row shows ten of its labels and a +N, and its opened labels stay open when the row is drawn again", async () => {
+  const user = userEvent.setup();
+  const labels = Array.from({ length: 13 }, (_, index) => `label-${index + 1}`);
+  table([
+    issue("CORE-1", { labels, title: "Work with many labels" }),
+    issue("CORE-2", { title: "Sextant" }),
+  ]);
+  const labelsOf = async () => {
+    const row = await screen.findByRole("row", { name: "CORE-1 Work with many labels" });
+    const group = row.querySelector<HTMLElement>('[data-layout-group="labels"]');
+    if (group === null) throw new Error("the row's labels are not a group");
+    return group;
+  };
+  const drawn = (group: HTMLElement) =>
+    labels.filter((label) => within(group).queryByText(label) !== null);
+
+  expect(drawn(await labelsOf())).toEqual(labels.slice(0, 10));
+  await user.click(
+    within(await labelsOf()).getByRole("button", { name: "+3, show all 13 labels" })
+  );
+  expect(drawn(await labelsOf())).toEqual(labels);
+
+  const search = screen.getByRole("searchbox", { name: "Search issues" });
+  await user.type(search, "sextant");
+  // A query longer than the box ends in an ellipsis, so the whole query is the box's title.
+  expect(search).toHaveAttribute("title", "sextant");
+  await waitFor(() =>
+    expect(screen.queryByRole("row", { name: "CORE-1 Work with many labels" })).toBeNull()
+  );
+  await user.clear(search);
+  expect(drawn(await labelsOf())).toEqual(labels);
+  expect(within(await labelsOf()).getByRole("button", { name: "Show fewer labels" })).toBeDefined();
 });
 
 test("Created sorts RFC3339 fractional timestamps by instant, not by text", async () => {
@@ -1593,6 +1642,48 @@ test("Take out of epic lands its focus wholly in the box the List draws once the
   expect(`${focusedName()} at ${landed.top} to ${landed.bottom}`).toBe(
     `${focusedName()} at ${Math.max(40, landed.top)} to ${Math.min(432, landed.bottom)}`
   );
+});
+
+// By the architect's ruling of 2026-11-27 18:48Z (INFRA-3135): the List's selection bar stands at
+// the foot at every width, and the List keeps room at its end for the bar's whole height and the
+// 1rem under it, never less than 6rem, so its box ends above the bar: a bar wrapped onto three
+// lines at 360 px gets room of its height, and a bar of one line gets 96 px.
+test("the List keeps room at its end for its selection bar's whole height, and never less than 96 px", async () => {
+  const user = userEvent.setup();
+  // Three lines of 36 px controls, two 8 px gaps between them and the bar's own 4 px padding
+  // above and below; happy-dom lays nothing out, so the bar's box is given here, 16 px above the
+  // screen's bottom edge, as `bottom-4` stands it.
+  let barHeight = 132;
+  const own = Element.prototype.getBoundingClientRect;
+  const rect = spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
+    this: Element
+  ) {
+    if (this.getAttribute("aria-label") !== "Selected issues") return own.call(this);
+    const bottom = window.innerHeight - 16;
+    return new DOMRect(8, bottom - barHeight, 344, barHeight);
+  });
+  restores.push(() => rect.mockRestore());
+  table([issue("CORE-1"), issue("CORE-2")]);
+  const section = await screen.findByRole("region", { name: "Project issues" });
+  // The section's bottom padding is Tailwind's rule of the larger of 6rem and the property the
+  // bar's foot inset writes. happy-dom's computed `padding-bottom` reads empty with that rule in
+  // the document, so the room is read as a browser computes the rule: the larger of 96 px and the
+  // property.
+  expect(section.classList.contains(`pb-[max(6rem,var(${SELECTION_BAR_TOP_PROPERTY},0px))]`)).toBe(
+    true
+  );
+  const room = () => {
+    const bar = Number.parseFloat(
+      document.documentElement.style.getPropertyValue(SELECTION_BAR_TOP_PROPERTY)
+    );
+    return Math.max(96, Number.isNaN(bar) ? 0 : bar);
+  };
+  expect(room()).toBe(96);
+  await user.click(await screen.findByRole("checkbox", { name: "Select CORE-1" }));
+  expect(room()).toBe(148);
+  barHeight = 44;
+  act(() => window.dispatchEvent(new Event("resize")));
+  expect(room()).toBe(96);
 });
 
 // With a float at the foot, the foot pass is still to come as the bar goes. Main holds 100 px of
@@ -3009,7 +3100,7 @@ async function headerLayout(width: number): Promise<string[]> {
 
 /** The columns after the pinned ones, at the registry's widths, then the Start next column. */
 const UNPINNED_REST = [
-  "Status 132px -",
+  "Status 148px -",
   "Epic 220px -",
   "Assignee 180px -",
   "Created by 200px -",
@@ -3070,7 +3161,7 @@ test("a stored desktop width reaches the List's header", async () => {
   );
   const cells = await headerLayout(1400);
   expect(cells).toContain("Epic 300px -");
-  expect(cells).toContain("Status 132px -");
+  expect(cells).toContain("Status 148px -");
 });
 
 test("the Status filter counts Done once the closed issues are loaded", async () => {
@@ -5810,6 +5901,8 @@ test.each([
     await user.click(await screen.findByRole("checkbox", { name: "Select CORE-1" }));
     const trigger = screen.getByRole("button", { name: pickNamed("Move to epic") });
     await pick(user, "Move to epic", "Platform");
+    // The closed picker may end the epic's title in an ellipsis, so its whole title is the title.
+    expect(within(trigger).getByText("Platform")).toHaveAttribute("title", "Platform");
     // The epic closes while it is picked, and the list offers it no more.
     rows[1] = issue("CORE-9", { labels: ["epic"], status: "done", title: "Platform" });
     await act(() => client.invalidateQueries({ queryKey: ["issues"] }));
@@ -6612,9 +6705,9 @@ test("a layout's Title fills a desktop box with what the other shown columns and
   expect([narrow.fills, narrow.trailing]).toEqual(["title", 104]);
   const wide = renderHook(() => useTableLayout("fills-narrow", narrow));
   expect(wide.result.current.boxWidth).toBe(1000);
-  // Select 44, key 108 and status 132 shown, and the row's actions, in a box not yet measured,
-  // whose borders read as nothing: 1000 - 388.
-  expect(wide.result.current.responsive.sizing.title).toBe(612);
+  // Select 44, key 108 and status 148 shown, and the row's actions, in a box not yet measured,
+  // whose borders read as nothing: 1000 - 404.
+  expect(wide.result.current.responsive.sizing.title).toBe(596);
   wide.unmount();
   // With more shown than leave Title its minimum, it stays at that minimum.
   const full = renderHook(() =>

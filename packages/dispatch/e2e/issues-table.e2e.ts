@@ -553,10 +553,10 @@ async function expectFootClearAt(
   });
 }
 
-// The selection bar from the sm width up, Pending changes and the update banner all sit at the
-// foot of the window, each in a layer of the foot (`web/src/hooks/useFootInset.ts`), so none
-// lies over another; below sm the bar sits under the header. On the issues table the row walks,
-// in one page, every combination of the bar, Pending changes and the banner that shows any. The
+// The issues table's selection bar at every width, Pending changes and the update banner all sit
+// at the foot of the window, each in a layer of the foot (`web/src/hooks/useFootInset.ts`), so
+// none lies over another. On the issues table the row walks, in one page, every combination of
+// the bar, Pending changes and the banner that shows any. The
 // banner comes first: a browser that focuses a new page itself asks for the builds then, and the
 // page asks again only a minute later, so the answer that shows the banner has to be the one the
 // page reads at its load. The banner is dismissed once no combination left shows it, and the
@@ -582,8 +582,8 @@ test("no two of the selection bar, Pending changes and the update banner meet, a
   await walkTheBarCombinations(browser, (own) => [own]);
 });
 
-// The walk's second row: the two desktop sizes past `chromium`'s own 1280x720. No `@phone`: the
-// bar sits at the foot from 640 px wide, and these sizes are no phone's.
+// The walk's second row: the two desktop sizes past `chromium`'s own 1280x720. No `@phone`: these
+// sizes are no phone's.
 // SLOW(>=2s): the issues table's seven combinations at two sizes each, each a settled reading at
 // the end of every scroller.
 test("no two of the selection bar, Pending changes and the update banner meet, and nothing covers the centre of a control of any of them, at 1600x1000 and 1920x1080 @foot", async ({
@@ -726,9 +726,21 @@ test("no two of the broadcast composer, Pending changes and the update banner me
     for (const title of titles.slice(0, 3)) {
       await page.getByRole("checkbox", { name: `Select ${title} for broadcast` }).check();
     }
+    // The three selections have landed once the heading counts them. On a narrow or short screen
+    // the closed composer shows its first chosen agent and a "+N" for the rest (`AgentsPage.tsx`):
+    // the row opens it, so every chosen agent is drawn and each one's chip is read against the
+    // floats below, the "Show fewer" control with them. The composer keeps the group open at every
+    // size the row then reads, and a wide one shows all three with no control.
     await expect(
-      broadcast.getByRole("list", { name: "Selected agents" }).getByRole("listitem")
-    ).toHaveCount(3);
+      broadcast.getByRole("heading", { name: "Broadcast to 3 of 3 selected" })
+    ).toBeVisible();
+    const chosen = broadcast.getByRole("list", { name: "Selected agents" });
+    const more = chosen.getByRole("button", { name: "+2, show all 3 agents" });
+    // One read is safe: the project's fixed viewport decides the "+N", drawn with the heading.
+    if ((await more.count()) > 0) await more.click();
+    for (const title of titles.slice(0, 3)) {
+      await expect(chosen.getByRole("button", { name: new RegExp(`^${title}\\b`) })).toBeVisible();
+    }
     const endedRow = page
       .getByRole("region", { name: "Replied, no longer connected" })
       .getByRole("article")
@@ -939,10 +951,10 @@ test("the margin column, the live view's transcript and the Inbox reading pane e
   }
 });
 
-// The update banner sits at the foot of the window too, centred, as the selection bar does from
-// the sm width up. With a selection made and the banner shown (every live process serves a build
-// other than the page's), every control of the bar must still take a press at each width where
-// the bar sits at the foot; on a phone the bar sits under the header instead.
+// The update banner sits at the foot of the window too, centred, as the issues table's selection
+// bar does at every width. With a selection made and the banner shown (every live process serves a
+// build other than the page's), every control of the bar must still take a press at each size the
+// row reads: the project's own, and from 640 px wide three more.
 test("with the update banner shown, every control of the selection bar takes a press @phone @foot", async ({
   browser,
 }) => {
@@ -1215,7 +1227,7 @@ test("a refused bulk write retries after reload while the other operations have 
     for (const row of rows) {
       await page.getByRole("checkbox", { name: `Select ${row.key}`, exact: true }).check();
       // The bar is fixed to the window, so the geometry that matters is the page at its top,
-      // where the bar sits under the header and the table begins below it.
+      // where the table begins below the header and the bar stands at the foot.
       await page.evaluate(() => window.scrollTo(0, 0));
       const toolbar = page.getByRole("toolbar");
       const table = page.getByTestId("issues-table-scroll");

@@ -58,6 +58,14 @@ const COUNT_SEGMENT = `px-2 ${SEGMENT_TYPE} md:px-3`;
  *  and outranks every utility class; from `md` up each count with its padding is wider anyway. */
 const COUNT_SEGMENT_MIN = 24;
 
+/**
+ * The table's counts and its status bar. Its groups, in this order, each on a line of its own:
+ * Counts (in Legion's queue, running, epics), which wrap one count at a time, and Statuses (the
+ * status bar). The bar has one button per status that has issues - at most the nine statuses,
+ * never more - each as wide as its share of the issues. A box too narrow for them all wraps the
+ * rest onto the next line, where they share that line the same way, so every status stays in
+ * sight and nothing scrolls sideways.
+ */
 export function IssueTableStatus({
   table,
   items,
@@ -69,8 +77,8 @@ export function IssueTableStatus({
   epics: readonly IssueSummary[];
   /** Whether the bar draws each segment's count alone where the segments with their names are
    *  wider than it, and the names in a legend under it (`IssuesTable`'s `statusLegend`). Unset,
-   *  each segment draws its name and its count, and the bar scrolls sideways where they are
-   *  wider than it, as a project's does on a phone. */
+   *  each segment draws its name and its count, and the bar wraps them onto further lines where
+   *  they are wider than it, as a project's does on a phone. */
   legend?: boolean;
 }): ReactNode {
   const statusColumn = table.getColumn("status");
@@ -125,11 +133,11 @@ export function IssueTableStatus({
       </div>
       {legend ? (
         // The copy the bar is measured against: the segments with their names, each at its
-        // natural width, in a strip that takes no height and clips them, so nothing of it is
-        // drawn and the page grows no wider. It stands before the bar, so nothing a reader
-        // reads under the bar holds it.
-        <div aria-hidden className="h-0 overflow-hidden">
-          <div className="invisible flex w-max" ref={namesRef}>
+        // natural width, in a strip that takes no height, is not drawn and clips them, so the
+        // page grows no wider. It stands before the bar, so nothing a reader reads under the bar
+        // holds it.
+        <div aria-hidden className="invisible h-0 overflow-hidden">
+          <div className="flex w-max" ref={namesRef}>
             {shown.map((status) => (
               <span className={SEGMENT} key={status}>
                 {statusLabel(status)} {statusCounts.get(status)}
@@ -140,7 +148,7 @@ export function IssueTableStatus({
       ) : null}
       <fieldset
         aria-label="Issues by status"
-        className={`flex min-h-11 min-w-0 overflow-x-auto rounded-md border-0 p-0 md:min-h-7 ${surfaceMutedBg}`}
+        className={`flex min-h-11 min-w-0 flex-wrap rounded-md border-0 p-0 md:min-h-7 ${surfaceMutedBg}`}
         ref={barRef}
       >
         {shown.map((status) => {
@@ -159,7 +167,7 @@ export function IssueTableStatus({
               }
               title={`${statusLabel(status)}: ${count}`}
               // Each status takes width in proportion to its count, so the bar spans the box
-              // and reads as shares; a phone keeps 44 px targets and scrolls sideways instead,
+              // and reads as shares; a phone keeps 44 px targets and wraps a line instead,
               // unless the table draws the counts alone with their names in a legend (`legend`),
               // each segment as narrow as its count and 24 px (`COUNT_SEGMENT_MIN`).
               style={{ flexGrow: count, minWidth: countsOnly ? COUNT_SEGMENT_MIN : undefined }}
@@ -399,6 +407,12 @@ export function IssueTableToolbar({
  * hands the focus back to an opener that can take it. A held Move to epic opens no list and
  * stages no pick; a pick stages the epic, and Move, held until one is staged, writes it. The bar
  * and its steps take the List's compact size, as its control row does.
+ *
+ * Its groups, in this order: Count ("N selected" and "Select all N matching"), Start next, Move
+ * (the epic list and its Move), Epic (Take out of epic, New epic from these) and Clear. A screen
+ * too narrow for one line moves the last groups that do not fit to the next line whole, so every
+ * action stays in sight and nothing scrolls sideways; the bar stands at the foot of the screen,
+ * where the List keeps room for its whole height (`SelectionBar`'s `BAR_LINE`).
  */
 export function IssueTableSelection({
   barRef,
@@ -438,19 +452,21 @@ export function IssueTableSelection({
     <SelectionBar
       barRef={barRef}
       count={selectedKeys.length}
+      countAction={
+        selectedKeys.length < leafCount ? (
+          <StepButton
+            ariaDisabled={busy}
+            onClick={() => table.toggleAllRowsSelected(true)}
+            size="compact"
+          >
+            Select all {leafCount} matching
+          </StepButton>
+        ) : undefined
+      }
       label="Selected issues"
       returnFocus={returnFocus}
       size="compact"
     >
-      {selectedKeys.length < leafCount ? (
-        <StepButton
-          ariaDisabled={busy}
-          onClick={() => table.toggleAllRowsSelected(true)}
-          size="compact"
-        >
-          Select all {leafCount} matching
-        </StepButton>
-      ) : null}
       {/* A selection the reader cannot see all of — "Select all N matching" — is asked
           about first: Start next writes once per issue. */}
       <StepButton
@@ -465,51 +481,56 @@ export function IssueTableSelection({
       {/* Two steps, since a Move reparents every selected issue: the list stages an epic and
           Move commits it, so no press or key in the list writes anything. While a press is out
           the list is held as a `StepButton` is, and for the same reason: it opens on nothing,
-          and a pick stages nothing. */}
-      <MultiSelect
-        ariaDisabled={busy}
-        emptyMessage={epics.length === 0 ? "No epics yet." : "No epic matches that."}
-        label="Move to epic"
-        mode="single"
-        onOpenChange={(next) => setPicking(next && !busy)}
-        onPick={(picked) => {
-          if (!busy) setEpic(picked);
-        }}
-        open={picking}
-        optionLabel={(key) => epicTitles.get(key)}
-        options={epics.map((option) => option.key)}
-        searchLabel="Search epics"
-        size="compact"
-        triggerClassName={`max-w-60 rounded-lg border text-left refused:opacity-40 ${borderDefault} ${surfaceBg}`}
-        value={epic === "" ? undefined : epic}
-      />
-      <StepButton
-        ariaDisabled={busy || epic === ""}
-        onClick={() => {
-          const into = epic;
-          setEpic("");
-          void moveTo(selectedKeys, into);
-        }}
-        size="compact"
-      >
-        Move
-      </StepButton>
-      <StepButton
-        ariaDisabled={busy}
-        onClick={() => void moveTo(selectedKeys, null)}
-        size="compact"
-      >
-        Take out of epic
-      </StepButton>
-      {newEpic === undefined ? null : (
+          and a pick stages nothing. The list's trigger shortens to the bar's width, ending an
+          epic's title in an ellipsis with the whole title as its title. */}
+      <span className="flex min-w-0 max-w-full items-center gap-2">
+        <MultiSelect
+          ariaDisabled={busy}
+          emptyMessage={epics.length === 0 ? "No epics yet." : "No epic matches that."}
+          label="Move to epic"
+          mode="single"
+          onOpenChange={(next) => setPicking(next && !busy)}
+          onPick={(picked) => {
+            if (!busy) setEpic(picked);
+          }}
+          open={picking}
+          optionLabel={(key) => epicTitles.get(key)}
+          options={epics.map((option) => option.key)}
+          searchLabel="Search epics"
+          size="compact"
+          triggerClassName={`min-w-0 max-w-60 rounded-lg border text-left refused:opacity-40 ${borderDefault} ${surfaceBg}`}
+          value={epic === "" ? undefined : epic}
+        />
         <StepButton
-          ariaDisabled={busy || unansweredEpic !== undefined}
-          onClick={() => void newEpic(selectedKeys)}
+          ariaDisabled={busy || epic === ""}
+          onClick={() => {
+            const into = epic;
+            setEpic("");
+            void moveTo(selectedKeys, into);
+          }}
           size="compact"
         >
-          New epic from these
+          Move
         </StepButton>
-      )}
+      </span>
+      <span className="flex flex-wrap items-center gap-2">
+        <StepButton
+          ariaDisabled={busy}
+          onClick={() => void moveTo(selectedKeys, null)}
+          size="compact"
+        >
+          Take out of epic
+        </StepButton>
+        {newEpic === undefined ? null : (
+          <StepButton
+            ariaDisabled={busy || unansweredEpic !== undefined}
+            onClick={() => void newEpic(selectedKeys)}
+            size="compact"
+          >
+            New epic from these
+          </StepButton>
+        )}
+      </span>
       <StepButton ariaDisabled={busy} onClick={() => setSelection({})} size="compact">
         Clear selection
       </StepButton>

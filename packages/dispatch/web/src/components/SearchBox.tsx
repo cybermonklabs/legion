@@ -45,7 +45,8 @@ export interface SearchBoxProps {
  * reader meets on the Inbox is the field they meet on a project (`MultiSelect`'s own option
  * search is the one other `type="search"`, and it belongs to that panel). It carries the focus
  * ring as well as the border, because a page whose shortcut lands the reader here must show
- * them where they are.
+ * them where they are. A query longer than the box ends in an ellipsis while the reader is not in
+ * it, with the whole query as its title.
  */
 export function SearchBox({
   className,
@@ -61,7 +62,7 @@ export function SearchBox({
   size = "comfortable",
   value,
 }: SearchBoxProps): ReactNode {
-  const own = `block min-w-0 rounded-lg border text-sm outline-none focus-visible:ring-2 ${controlPadding[size]} ${inputClasses(true)} ${focusVisibleRing}`;
+  const own = `block min-w-0 rounded-lg border text-sm text-ellipsis outline-none focus-visible:ring-2 ${controlPadding[size]} ${inputClasses(true)} ${focusVisibleRing}`;
   // The combobox's own attributes, which only a box driving a list may carry: a plain search
   // box has no rows to claim, and `aria-expanded` on one is an attribute its role refuses.
   const drives =
@@ -85,6 +86,7 @@ export function SearchBox({
       onKeyDown={onKeyDown}
       placeholder={placeholder}
       ref={ref}
+      title={value === "" ? undefined : value}
       type="search"
       value={value}
       {...drives}

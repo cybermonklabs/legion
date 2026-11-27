@@ -23,6 +23,7 @@ import {
   focusListStop,
   type MarkedList as MarkedListModel,
   type MarkedPlace,
+  SELECTION_BAR_TOP_PROPERTY,
   SelectionBar,
   useLastMarkedPlace,
 } from "./SelectionBar";
@@ -133,47 +134,134 @@ test("the bar's box takes the page's size: the comfortable padding by default, t
   }
 });
 
-/** Tailwind's definitions of the utilities the bar's line is drawn by below `sm`, and of the `sm:`
- *  ones as they apply from 640 px up, read after them as Tailwind orders them. */
+/** Tailwind's definitions of the utilities the bar's line is drawn by, and of the `sm:` ones the
+ *  compact line was once drawn by from 640 px up, read after them as Tailwind orders them: a
+ *  compact line that took them again would read differently with them in the document. */
 const LINE_CSS =
   ".flex-nowrap{flex-wrap:nowrap}.flex-wrap{flex-wrap:wrap}.overflow-x-auto{overflow-x:auto}";
 const SM_LINE_CSS = String.raw`.sm\:flex-wrap{flex-wrap:wrap}.sm\:overflow-x-visible{overflow-x:visible}`;
 
-// INFRA-3135, round 29 (the architect's ruling of 2026-11-26 07:01Z): below `sm` the bar stands
-// under the header over the list's top rows, and the compact line wrapped there stood 210 px over
-// the rows it acts on at 390x664 (builds Jobs `infra-3135-infra-3135-r30j-dblp` and `-r30k-dblp`).
-// So it keeps one line that scrolls sideways there, and wraps from `sm` up, where the bar stands at
-// the foot and the foot inset gives the list its room.
-test("the compact bar's line is one line that scrolls sideways below sm, and wraps from sm up", () => {
-  const view = render(
-    <SelectionBar count={2} label="Selected rows" size="compact">
+/** `css`, in the document while `read` runs. */
+function withCss<T>(css: string, read: () => T): T {
+  const sheet = document.createElement("style");
+  sheet.textContent = css;
+  document.head.appendChild(sheet);
+  try {
+    return read();
+  } finally {
+    sheet.remove();
+  }
+}
+
+// By the architect's ruling of 2026-11-27 18:42Z (INFRA-3135): the compact line, the project
+// List's, wraps at every width, in its groups, and nothing in it scrolls sideways, which the
+// layout rule reads as a breach; its bar stands at the foot, where the List keeps room for its
+// whole height. The comfortable line, the Inbox's, keeps one line that scrolls sideways.
+test("the compact bar's line wraps at every width and scrolls nowhere sideways, and the comfortable line keeps one line that scrolls", () => {
+  const lineAt = (size: ControlSize) => {
+    const view = render(
+      <SelectionBar count={2} label="Selected rows" size={size}>
+        <button type="button">Clear selection</button>
+      </SelectionBar>
+    );
+    try {
+      const line = screen.getByRole("button", { name: "Clear selection" }).parentElement;
+      if (line === null) throw new Error("the bar draws no line around its actions");
+      const read = () => {
+        const style = getComputedStyle(line);
+        return `${style.flexWrap}, ${style.overflowX === "auto" ? "scrolls sideways" : "scrolls nowhere"}`;
+      };
+      return [withCss(LINE_CSS, read), withCss(LINE_CSS + SM_LINE_CSS, read)];
+    } finally {
+      view.unmount();
+    }
+  };
+  expect(lineAt("compact")).toEqual(["wrap, scrolls nowhere", "wrap, scrolls nowhere"]);
+  expect(lineAt("comfortable")).toEqual(["nowrap, scrolls sideways", "nowrap, scrolls sideways"]);
+});
+
+/** Tailwind's definitions of the utilities the bar is placed by below `sm`, and of its `sm:` ones
+ *  as they apply from 640 px up, read after them. */
+const PLACE_CSS = ".top-14{top:56px}.bottom-4{bottom:16px}";
+const SM_PLACE_CSS = String.raw`.sm\:top-auto{top:auto}.sm\:bottom-4{bottom:16px}`;
+
+// The compact bar stands at the foot of the screen at every width, so the room the List keeps at
+// its end for it is one rule at every width; the comfortable bar, the Inbox's, stands under the
+// header below `sm` and at the foot from `sm` up.
+test("the compact bar stands at the foot at every width, and the comfortable bar under the header below sm", () => {
+  const placeAt = (size: ControlSize) => {
+    const view = render(
+      <SelectionBar count={2} label="Selected rows" size={size}>
+        <button type="button">Clear selection</button>
+      </SelectionBar>
+    );
+    try {
+      const bar = screen.getByRole("toolbar", { name: "Selected rows" });
+      const read = () => {
+        const style = getComputedStyle(bar);
+        return `top ${style.top}, bottom ${style.bottom}`;
+      };
+      return [withCss(PLACE_CSS, read), withCss(PLACE_CSS + SM_PLACE_CSS, read)];
+    } finally {
+      view.unmount();
+    }
+  };
+  const [compactPhone, compactWide] = placeAt("compact");
+  expect(compactPhone).toBe(compactWide);
+  expect(compactPhone).toContain("bottom 16px");
+  expect(compactPhone).not.toContain("top 56px");
+  const [comfortablePhone, comfortableWide] = placeAt("comfortable");
+  expect(comfortablePhone).toContain("top 56px");
+  expect(comfortablePhone).not.toContain("bottom 16px");
+  expect(comfortableWide).toContain("bottom 16px");
+});
+
+// The room the project List keeps at its end is the compact bar's band in the foot inset: how far
+// above the screen's bottom edge the bar's top stands, its whole height and the 1rem under it,
+// published while the bar is drawn (`SELECTION_BAR_TOP_PROPERTY`), so a bar that wraps onto three
+// lines at 360 gives the List room of that height. The Inbox's bar publishes nothing.
+test("the compact bar publishes how far above the screen's foot its top stands while it is drawn, the room of its whole height, and the comfortable bar publishes nothing", () => {
+  const property = () =>
+    document.documentElement.style.getPropertyValue(SELECTION_BAR_TOP_PROPERTY);
+  // Three lines of 36 px controls, two 8 px gaps between them and the compact bar's own 4 px
+  // padding above and below.
+  let height = 132;
+  // The toolbar laid out `height` px tall, 16 px above the screen's bottom edge, as `bottom-4`
+  // stands it: happy-dom lays nothing out.
+  const own = Element.prototype.getBoundingClientRect;
+  const rect = spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
+    this: Element
+  ) {
+    if (this.getAttribute("role") !== "toolbar") return own.call(this);
+    const bottom = window.innerHeight - 16;
+    return new DOMRect(8, bottom - height, 344, height);
+  });
+  const bar = (size: ControlSize, count: number) => (
+    <SelectionBar count={count} label="Selected rows" size={size}>
       <button type="button">Clear selection</button>
     </SelectionBar>
   );
-  const line = screen.getByRole("button", { name: "Clear selection" }).parentElement;
-  if (line === null) throw new Error("the bar draws no line around its actions");
-  const drawn = (css: string) => {
-    const sheet = document.createElement("style");
-    sheet.textContent = css;
-    document.head.appendChild(sheet);
-    try {
-      const style = getComputedStyle(line);
-      return { flexWrap: style.flexWrap, overflowX: style.overflowX };
-    } finally {
-      sheet.remove();
-    }
-  };
+  const view = render(bar("compact", 2));
   try {
-    expect(drawn(LINE_CSS)).toEqual({ flexWrap: "nowrap", overflowX: "auto" });
-    expect(drawn(LINE_CSS + SM_LINE_CSS)).toEqual({ flexWrap: "wrap", overflowX: "visible" });
+    expect(property()).toBe("148px");
+    // One line: a 36 px control and the padding.
+    height = 44;
+    act(() => window.dispatchEvent(new Event("resize")));
+    expect(property()).toBe("60px");
+    view.rerender(bar("compact", 0));
+    expect(property()).toBe("");
+    view.rerender(bar("comfortable", 2));
+    expect(property()).toBe("");
   } finally {
     view.unmount();
+    rect.mockRestore();
   }
 });
 
 // Firefox makes a box that scrolls and holds controls a Tab stop of its own, which Chromium and
-// WebKit do not. The bar's line scrolls sideways where its actions outrun it, at every size, so it
-// takes tabindex -1: no stop of its own, while each action in it stays a Tab stop.
+// WebKit do not. The comfortable and toolbar lines scroll sideways where their actions outrun them,
+// and every line takes tabindex -1 alike: no stop of its own, while each action in it stays a Tab
+// stop.
 test("the bar's line takes tabindex -1 at every size, and its actions keep their Tab stops", () => {
   const sizes: readonly ControlSize[] = ["comfortable", "compact", "toolbar"];
   for (const size of sizes) {

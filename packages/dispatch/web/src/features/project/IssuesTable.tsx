@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import type { FilterFn, RowSelectionState } from "@tanstack/react-table";
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { userStateQuery } from "../../api/queries";
+import { useOpenedGroups } from "../../components/CappedGroup";
 import {
   DataTable,
   type DataTableNames,
@@ -73,6 +74,7 @@ import {
 import { IssueTableSelection, IssueTableStatus, IssueTableToolbar } from "./issues-table-page";
 import { GroupRow, IssueRow } from "./issues-table-rows";
 import { useTableView } from "./issues-table-view";
+import { OpenedLabelsContext } from "./LabelsGroup";
 import { issueIsUnread } from "./UnreadDot";
 
 const EMPTY_FACETS: ReadonlyMap<string, number> = new Map();
@@ -123,6 +125,21 @@ const ISSUE_TABLE_PAGER: PagerOptions = {
   testId: "issues-table-pager",
 };
 
+/**
+ * A table of issues: a project's, or the work advancing one priority. Its groups, in this order,
+ * each on a line of its own: Notices (a read that failed, the closed issues loading), Statuses
+ * (`IssueTableStatus`: the counts and the status bar), Toolbar (`IssueTableToolbar`: search,
+ * filters, the chips of every narrowing that is on - the chip of a table showing only some rows
+ * among them - columns and view), Feedback (the line that says how a table action went; an
+ * interrupted action's Finish and Dismiss; the warning that an epic's creation got no answer,
+ * with Dismiss; and the warning that an epic of that title exists, with Create anyway and Cancel
+ * new epic), Table (the rows, in their own box that scrolls sideways with its key columns pinned
+ * at the left, the data-table exception of the Layout rule in `web/src/AGENTS.md`, then the
+ * pager) and, while rows are ticked, Selection (`IssueTableSelection`, over the page rather than
+ * in it). The action dialogs open over it. Each group lays out its own entries; which rows'
+ * labels the reader opened is the table's (`OpenedLabelsContext`), since a row the window stops
+ * drawing loses its own state.
+ */
 export function IssuesTable({
   empty,
   label,
@@ -155,8 +172,8 @@ export function IssuesTable({
    *  `statusLegend: true` draws each segment of the status bar as its count alone where the
    *  segments with their names are wider than the bar, and the names in a legend under it
    *  (`IssueTableStatus`), so no name is cut at the bar's edge: each of those tables stands in a
-   *  box narrower than a project's, whose bar keeps its names and scrolls sideways on a phone.
-   *  Each of those gives its own; unset, the table opens as a project's table does. */
+   *  box narrower than a project's, whose bar keeps its names and wraps them onto further lines
+   *  on a phone. Each of those gives its own; unset, the table opens as a project's table does. */
   layout?: {
     readonly key: string;
     readonly opens: readonly IssueTableColumnId[];
@@ -225,6 +242,7 @@ export function IssuesTable({
     lastMarked.current = key;
   }, []);
   const [openFilter, setOpenFilter] = useState<string>();
+  const openedLabels = useOpenedGroups();
 
   const statusPicked = (filters.find((filter) => filter.id === "status")?.value ?? []) as string[];
   const wantsDone = !whole && (statusPicked.length === 0 || statusPicked.includes("done"));
@@ -572,11 +590,16 @@ export function IssuesTable({
   // puts the skeleton in place of the table alone, and the control pressed, with the keyboard
   // focus on it, stays where it was. Everything else here needs the listing and waits for it.
   // The section is the table's frame: its toolbar, box and pager, which another table's
-  // page-wide keys leave to it (`TABLE_FRAME_ATTRIBUTE`).
+  // page-wide keys leave to it (`TABLE_FRAME_ATTRIBUTE`). Its bottom padding is the room the
+  // selection bar takes at the foot of the screen, at every width: the bar's whole height and the
+  // 1rem under it while it is drawn (`SELECTION_BAR_TOP_PROPERTY`, which the bar's foot inset
+  // writes), and never less than 6rem, which it keeps with no bar or a one-line one, so the box
+  // under the bar ends above it and its last rows scroll clear of it however many lines the bar
+  // wraps onto. The box takes the window less that padding (`components/table-layout.ts`).
   return (
     <section
       aria-label={name}
-      className="space-y-3 sm:pb-24"
+      className="space-y-3 pb-[max(6rem,var(--selection-bar-top,0px))]"
       {...TABLE_FRAME_MARK}
       {...ARM_ON_PRESS}
       onFocus={noteFocus}
@@ -722,58 +745,60 @@ export function IssuesTable({
       ) : null}
       {loaded ? (
         <>
-          <DataTable
-            empty={
-              empty !== undefined && narrowsNothing(view) && !flags.needsYou && !flags.unread
-                ? empty
-                : "No issues match these filters."
-            }
-            filterCounted={filterCounted}
-            filterCounts={openFacets}
-            filterUnloaded={doneLoaded || whole ? undefined : DONE_UNLOADED}
-            label={`${name} table`}
-            leaving={leaving}
-            model={model}
-            noun={ISSUE_TABLE_NOUN}
-            onOpenFilterChange={setOpenFilter}
-            openFilter={openFilter}
-            pager={ISSUE_TABLE_PAGER}
-            renderGroup={({ entry, index, measure }) => (
-              <GroupRow
-                busy={busy}
-                columns={visibleColumns}
-                viewportWidth={boxWidth}
-                continued={entry.continued}
-                epics={epics}
-                grouping={grouping[0] ?? ""}
-                index={index}
-                measure={measure}
-                onMerge={mergeEpic === undefined ? undefined : askMerge}
-                shown={entry.shown}
-                onRename={renameEpic}
-                onStartAll={(key) =>
-                  startNext(
-                    allItems.filter((item) => item.epicKey === key).map((item) => item.issue.key)
-                  )
-                }
-                row={entry.row}
-              />
-            )}
-            renderRow={({ row, index, measure }) => (
-              <IssueRow
-                busy={busy}
-                index={index}
-                measure={measure}
-                moved={moved}
-                onStartNext={rowActions ? (key) => startNext([key]) : undefined}
-                row={row}
-              />
-            )}
-            scrollTestId="issues-table-scroll"
-            size="compact"
-            stackColumn="title"
-            trailingWidth={actions}
-          />
+          <OpenedLabelsContext.Provider value={openedLabels}>
+            <DataTable
+              empty={
+                empty !== undefined && narrowsNothing(view) && !flags.needsYou && !flags.unread
+                  ? empty
+                  : "No issues match these filters."
+              }
+              filterCounted={filterCounted}
+              filterCounts={openFacets}
+              filterUnloaded={doneLoaded || whole ? undefined : DONE_UNLOADED}
+              label={`${name} table`}
+              leaving={leaving}
+              model={model}
+              noun={ISSUE_TABLE_NOUN}
+              onOpenFilterChange={setOpenFilter}
+              openFilter={openFilter}
+              pager={ISSUE_TABLE_PAGER}
+              renderGroup={({ entry, index, measure }) => (
+                <GroupRow
+                  busy={busy}
+                  columns={visibleColumns}
+                  viewportWidth={boxWidth}
+                  continued={entry.continued}
+                  epics={epics}
+                  grouping={grouping[0] ?? ""}
+                  index={index}
+                  measure={measure}
+                  onMerge={mergeEpic === undefined ? undefined : askMerge}
+                  shown={entry.shown}
+                  onRename={renameEpic}
+                  onStartAll={(key) =>
+                    startNext(
+                      allItems.filter((item) => item.epicKey === key).map((item) => item.issue.key)
+                    )
+                  }
+                  row={entry.row}
+                />
+              )}
+              renderRow={({ row, index, measure }) => (
+                <IssueRow
+                  busy={busy}
+                  index={index}
+                  measure={measure}
+                  moved={moved}
+                  onStartNext={rowActions ? (key) => startNext([key]) : undefined}
+                  row={row}
+                />
+              )}
+              scrollTestId="issues-table-scroll"
+              size="compact"
+              stackColumn="title"
+              trailingWidth={actions}
+            />
+          </OpenedLabelsContext.Provider>
 
           <IssueTableSelection
             barRef={barRef}

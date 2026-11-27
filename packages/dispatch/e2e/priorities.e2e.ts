@@ -308,14 +308,19 @@ function documentOverflow(page: Page): Promise<number> {
   return page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
 }
 
-/** The headers of a table whose words its column cuts: a header's sort control that holds more
- *  than its box shows. A header whose words wrap onto a second line shows them whole. */
+/** The headers of a table whose words its column cuts: a header's sort control, or the box inside
+ *  it that ends the name in an ellipsis (`DataTable`'s `TruncatedText`), that holds more than it
+ *  shows. A header whose words wrap onto a second line shows them whole. */
 function cutHeaders(table: Locator): Promise<string[]> {
   return table
     .locator('thead th button[title^="Sort"]')
     .evaluateAll((buttons) =>
       buttons
-        .filter((button) => button.scrollWidth > button.clientWidth)
+        .filter((button) =>
+          [button, ...button.querySelectorAll("*")].some(
+            (part) => part.scrollWidth > part.clientWidth
+          )
+        )
         .map((button) => button.textContent ?? "")
     );
 }
@@ -431,8 +436,9 @@ async function chooseTabAndReload(page: Page, tab: "none" | "backlog"): Promise<
   await expect(page.getByRole("tab", { name: TABS[tab] })).toHaveAttribute("aria-selected", "true");
 }
 
-/** The badge beside the rail's Priorities entry, which is its last span; an entry with no count
- *  draws two spans and no third. */
+/** The rail's Priorities entry: its name, the line under it, and, while any work is off the
+ *  list, the count beside them, which is the last span it draws. Neither the name nor the line
+ *  holds a digit, so an entry with no count is one whose text holds none. */
 const railEntry = (page: Page): Locator => page.getByRole("link", { name: /^Priorities/ });
 
 /** The priorities an issue advances in its header: the chips and the picker's "+", the value of
@@ -915,7 +921,8 @@ test("with no priority the page reads the server's sentence, and writes the firs
     // The rail's entry carries no number: nothing is off a list that does not exist.
     await expect(page.getByText(NONE_LIVE, { exact: true })).toBeVisible();
     await expect(page.getByRole("table", { exact: true, name: "Priorities table" })).toHaveCount(0);
-    await expect(railEntry(page).locator("span")).toHaveCount(2);
+    await expect(railEntry(page)).toBeVisible();
+    await expect(railEntry(page)).not.toHaveText(/\d/);
 
     // The page with no priority is where the first is written, with the control the table's
     // toolbar carries once there is one.
@@ -1240,7 +1247,7 @@ test("the rail's Priorities count falls as work leaves flight and as a parent li
     for (const id of seed.ids) await endPriority(id);
     await page.reload();
     await expect(railEntry(page)).toBeVisible();
-    await expect(railEntry(page).locator("span")).toHaveCount(2);
+    await expect(railEntry(page)).not.toHaveText(/\d/);
   } finally {
     await context.close();
   }

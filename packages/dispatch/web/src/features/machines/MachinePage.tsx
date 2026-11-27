@@ -4,6 +4,7 @@ import { Link, useLocation } from "react-router-dom";
 
 import { inboxQuery, userAgentStateQuery, whoAmIQuery } from "../../api/queries";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
+import { TruncatedText } from "../../components/TruncatedText";
 import { useCappedAddressParam } from "../../lib/page-address";
 import {
   borderDefault,
@@ -185,6 +186,14 @@ function MachineView({ host }: { host: string }): ReactNode {
   );
 }
 
+/**
+ * One tmux server of the machine. Its groups, in this order, each on a line of its own: Heading
+ * (the socket, and its pid when two servers share it), the note on which windows have agents,
+ * Windows (the window navigation) and the drawn window. In Windows every window is a pick of its
+ * own, and the strip wraps onto as many lines as the windows need: nothing scrolls sideways, so
+ * every window stays in sight and one press away at any width. A window's name that is wider than
+ * the strip shortens to an ellipsis inside its own pick, with the whole name as the pick's title.
+ */
 function ServerPart({
   counts,
   now,
@@ -220,16 +229,15 @@ function ServerPart({
       <p className={`mt-1 text-xs ${textMutedOnCanvas}`} data-testid="machine-windows-with-agents">
         {WINDOWS_WITH_AGENTS}
       </p>
-      <ul
-        className="mt-2 mb-3 flex flex-nowrap items-center gap-2 overflow-x-auto [scrollbar-width:thin]"
-        data-testid="window-strip"
-      >
+      <ul className="mt-2 mb-3 flex flex-wrap items-center gap-2" data-testid="window-strip">
         {windows.map((entry) => {
           const current = entry.window.windowId === drawn?.window.windowId;
           return (
-            <li key={entry.window.windowId}>
+            <li className="min-w-0 max-w-full" key={entry.window.windowId}>
+              {/* `max-w-full` bounds the pick below 1280 px too, where `styles.css` draws every
+                  link as an inline-flex box that `block` does not override. */}
               <Link
-                className={`block rounded-lg border px-2 py-1 text-xs whitespace-nowrap ${
+                className={`block max-w-full truncate rounded-lg border px-2 py-1 text-xs ${
                   current
                     ? `${selectedCardBorder} ${selectedCardBg} ${textPrimaryOnCanvas}`
                     : `${borderDefault} ${textSecondaryOnCanvas}`
@@ -237,11 +245,14 @@ function ServerPart({
                 data-picked={current ? "true" : "false"}
                 data-testid="window-pick"
                 data-window={entry.window.windowId}
+                title={`${entry.sessionName}:${entry.window.windowIndex} ${entry.window.windowName}`}
                 to={`?${new URLSearchParams({
                   window: windowChoice(server.socket, server.serverPid, entry.window.windowId),
                 })}`}
               >
-                {entry.sessionName}:{entry.window.windowIndex} {entry.window.windowName}
+                <TruncatedText>
+                  {entry.sessionName}:{entry.window.windowIndex} {entry.window.windowName}
+                </TruncatedText>
               </Link>
             </li>
           );

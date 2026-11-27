@@ -19,6 +19,7 @@ import { Link } from "react-router-dom";
 import { projectIssuesQuery, userStateQuery } from "../../api/queries";
 import type { IssueSummary, UserState } from "../../api/types";
 import { AttentionBadge } from "../../components/Badge";
+import { useOpenedGroups } from "../../components/CappedGroup";
 import { Chip } from "../../components/Chip";
 import { ControlRow } from "../../components/ControlRow";
 import { EmptyState } from "../../components/EmptyState";
@@ -26,7 +27,7 @@ import { filterChips } from "../../components/filter-chips";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import { MultiSelect } from "../../components/MultiSelect";
 import { PanelTrigger } from "../../components/PanelTrigger";
-import { LabelPill, Pill, StatusPill } from "../../components/Pill";
+import { Pill, StatusPill } from "../../components/Pill";
 import { SearchBox } from "../../components/SearchBox";
 import { useNestedPanels } from "../../components/useNestedPanels";
 import { copyText } from "../../lib/clipboard";
@@ -82,6 +83,7 @@ import { useBoardMoves } from "./board-moves";
 import { CollapsedColumn } from "./CollapsedColumn";
 import { IssueFlagChips, UnclaimedUnchecked } from "./IssueFlags";
 import { projectIssuesQueryKey, useIssueFilters } from "./issue-filters";
+import { LabelsGroup, OpenedLabelsContext } from "./LabelsGroup";
 import { issueIsUnread, UnreadDot } from "./UnreadDot";
 
 const boardCollisionDetection: CollisionDetection = (args) => {
@@ -116,6 +118,13 @@ function columnAround(node: Element | null): HTMLElement | null {
  * so the card is `tabIndex={-1}` - reached by those keys, not by Tab - and `data-board-card`
  * names it for them. dnd-kit's default drag attributes would make the card a `button`; it stays
  * an `article` so nothing interactive is nested in a control.
+ *
+ * Under its key and title, the card's row has these groups, in this order: Unread (the dot),
+ * Priority, Claim, Progress (its task and child counts, together), Route (the mark of a route
+ * nobody holds), Labels (the first ten, then "+N" for the rest, wrapping inside their own box)
+ * and Asks (the open-asks count). Each is one flex item, so a card too narrow for them moves the
+ * last group that does not fit to the next line whole. Which cards' labels the reader opened is
+ * the board's (`OpenedLabelsContext`), so a card drawn again in another column keeps them open.
  */
 function IssueCard({ issue, unread }: { issue: IssueSummary; unread: boolean }): ReactNode {
   const {
@@ -143,10 +152,14 @@ function IssueCard({ issue, unread }: { issue: IssueSummary; unread: boolean }):
     transition,
   };
 
+  // `relative` is load-bearing: a marker's `sr-only` words (`UnreachableRouteMarker`) are
+  // absolutely positioned, and without a positioned ancestor inside the lane's scroll box their
+  // containing block is the page, so a card far along the lanes widened the page past the
+  // viewport instead of being clipped by its lane.
   return (
     <article
       aria-label={`${issue.key} ${issue.title}`}
-      className={`cursor-grab rounded-xl border p-3 ${card} ${cardHoverBorder} ${boardFocusRing} ${
+      className={`relative cursor-grab rounded-xl border p-3 ${card} ${cardHoverBorder} ${boardFocusRing} ${
         isDragging ? "opacity-50" : ""
       }`}
       data-board-card={issue.key}
@@ -156,15 +169,22 @@ function IssueCard({ issue, unread }: { issue: IssueSummary; unread: boolean }):
       {...listeners}
     >
       {/* Below `xl` every anchor is `inline-flex` with centred items (the 44 px touch rule in
-          styles.css), so the key and title are stacked and start-aligned explicitly. */}
+          styles.css), so the key and title are stacked and start-aligned explicitly, and bounded
+          to the card: a title with no break in it wraps inside the card rather than past it. */}
       <Link
-        className={`flex flex-col text-sm ${linkText} ${linkHoverText}`}
+        className={`flex max-w-full flex-col text-sm ${linkText} ${linkHoverText}`}
         data-issue-link
         to={buildIssuePath({ key: issue.key, kind: "issue" })}
         {...referenceTriggerProps({ key: issue.key, kind: "issue" })}
       >
-        <span className="self-start font-semibold">{issue.key}</span>
-        <span className={`mt-1 self-start ${textPrimaryOnSurface}`}>{issue.title}</span>
+        <span className="max-w-full self-start font-semibold [overflow-wrap:anywhere]">
+          {issue.key}
+        </span>
+        <span
+          className={`mt-1 max-w-full self-start [overflow-wrap:anywhere] ${textPrimaryOnSurface}`}
+        >
+          {issue.title}
+        </span>
       </Link>
       <div className="mt-3 flex flex-wrap items-center gap-2">
         {unread ? <UnreadDot /> : null}
@@ -174,11 +194,14 @@ function IssueCard({ issue, unread }: { issue: IssueSummary; unread: boolean }):
           priority={issuePriority(issue.priority)}
         />
         <ClaimChip claim={issue.claim} />
-        <ProgressChips progress={issue.progress} />
+        <span className="flex flex-wrap items-center gap-2 empty:hidden">
+          <ProgressChips progress={issue.progress} />
+        </span>
         <UnreachableRouteMarker issue={issue} />
-        {(issue.labels ?? []).map((label) => (
-          <LabelPill key={label}>{label}</LabelPill>
-        ))}
+        <LabelsGroup
+          className="flex min-w-0 max-w-full flex-wrap items-center gap-2"
+          issue={issue}
+        />
         {issue.open_asks === 0 ? null : (
           <span title={`${issue.open_asks} open asks`}>
             <AttentionBadge count={issue.open_asks} />
@@ -290,6 +313,7 @@ const BoardLaneRow = memo(function BoardLaneRow({
       </h2>
       <div
         className={`overflow-x-auto pb-3 ${dragging ? "" : "snap-x snap-mandatory"}`}
+        data-layout-scroll="board"
         data-testid="board-lane-scroll-container"
         // Firefox makes a box that scrolls and holds controls a Tab stop of its own, which
         // Chromium and WebKit do not: -1 takes that stop away while the lane draws a card, whose
@@ -343,6 +367,18 @@ function QuestionOpening({ tookFocusFrom }: { tookFocusFrom: RefObject<Element |
   return null;
 }
 
+/**
+ * A project's issues as a board. Its groups, top to bottom: Controls (the board's control row:
+ * its search, its Filters and the chips of what narrows it, `ControlRow`), Refusal (a move the
+ * server refused, while there is one), then Board - the status columns side by side, or, with
+ * `lanes`, one `BoardLaneRow` per priority band, each its heading over its columns - or, with no
+ * issue, the empty state. Where a moved card landed is said to screen readers only, and the
+ * question a move asks opens over the page. Board is the layout rule's board exception: the
+ * columns stay side by side at every width and scroll sideways inside their own box
+ * (`data-layout-scroll="board"`), never the page. Each card wraps its own groups (`IssueCard`).
+ * Which cards' labels the reader opened is the board's (`OpenedLabelsContext`), held for as long
+ * as the board is mounted.
+ */
 export function IssueBoard({
   project,
   showEdges = false,
@@ -357,6 +393,7 @@ export function IssueBoard({
   lanes?: boolean;
 }): ReactNode {
   const queryClient = useQueryClient();
+  const openedLabels = useOpenedGroups();
   const filters = useIssueFilters();
   const { activeFilterCount, activeFilters, labels, matches, setLabels } = filters;
   // The same query-key pair the List keeps: the plain project list, or the server-filtered
@@ -922,6 +959,7 @@ export function IssueBoard({
           ) : (
             <div
               className={`overflow-x-auto pb-3 ${dragging ? "" : "snap-x snap-mandatory"}`}
+              data-layout-scroll="board"
               data-testid="board-scroll-container"
               // Firefox makes a box that scrolls and holds controls a Tab stop of its own, which
               // Chromium and WebKit do not: -1 takes that stop away, and each card's link still
@@ -950,10 +988,10 @@ export function IssueBoard({
     </section>
   );
   return (
-    <>
+    <OpenedLabelsContext.Provider value={openedLabels}>
       {questionDialog}
       {controls}
       {body}
-    </>
+    </OpenedLabelsContext.Provider>
   );
 }

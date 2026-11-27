@@ -8,8 +8,14 @@ import {
 
 /** The recipes every Settings section's form shares, so the sections stay in step. The table
  *  each section draws is `components/TableShell.tsx`, which owns its box, head and rows. */
-export const settingsFieldLabel = `grid gap-1 text-sm font-medium ${textSecondaryOnCanvas}`;
-export const settingsMonoInput = `rounded-md px-3 py-2 font-mono ${inputClasses(false)} ${textPrimaryOnSurface}`;
+/** A form field: its words over its control. `min-w-0` and the one `minmax(0,1fr)` column let
+ *  the field shrink with the form's grid track, and the control with the field, so a long value
+ *  - a long project name on a list's trigger - never pushes the form's last control past the
+ *  viewport (Settings scrolled sideways at 1280 px on a long project name). */
+export const settingsFieldLabel = `grid min-w-0 grid-cols-[minmax(0,1fr)] gap-1 text-sm font-medium ${textSecondaryOnCanvas}`;
+/** A one-line field of a value: a value or a placeholder longer than the box ends in an ellipsis
+ *  while the reader is not in it, rather than being cut at the box's edge with no sign. */
+export const settingsMonoInput = `rounded-md px-3 py-2 font-mono text-ellipsis ${inputClasses(false)} ${textPrimaryOnSurface}`;
 /** The trigger of a Settings list of the shared list's single pick, in the place of the form's
  *  `<select>`, with `settingsListText` on its text. Chromium makes a select's box its font's
  *  ascent and descent, its line gap left out, plus 1 px above and below, plus its padding, where
