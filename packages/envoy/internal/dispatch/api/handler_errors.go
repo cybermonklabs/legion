@@ -383,8 +383,9 @@ func (s *server) writeHandlerError(w http.ResponseWriter, err error) {
 		return
 	}
 	// A block pointer refused on any route but the edit route (which answers INVALID_OP) is the
-	// caller's markdown to fix, as a schema refusal of it is.
-	if errors.Is(err, docs.ErrInvalidMarkdown) || errors.Is(err, pmdoc.ErrBlockPointer) {
+	// caller's markdown to fix, as a schema refusal of it is; a control character in a block id
+	// or directive attribute is refused 400 INVALID_MARKDOWN on every document write route.
+	if errors.Is(err, docs.ErrInvalidMarkdown) || errors.Is(err, pmdoc.ErrBlockPointer) || errors.Is(err, pmdoc.ErrControlCharacter) {
 		writeError(w, "INVALID_MARKDOWN", http.StatusBadRequest, err.Error())
 		return
 	}

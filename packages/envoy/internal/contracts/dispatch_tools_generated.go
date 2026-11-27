@@ -296,7 +296,7 @@ var DispatchTools = []DispatchTool{
 				{Name: "block", Kind: ToolFieldString, Description: "Block id for retype, delete, move, delete_row, or delete_column: the #id of a typed block, or an id dispatch doc-read --blocks lists."},
 				{Name: "index", Kind: ToolFieldNumber, Description: "Zero-based row or column index for delete_row or delete_column.", Min: new(float64(0))},
 				{Name: "type", Kind: ToolFieldString, Description: "Typed block name for retype."},
-				{Name: "attributes", Kind: ToolFieldAny, Description: "Typed block attributes for retype; a CR LF or a lone carriage return in a string value is written as a line feed."},
+				{Name: "attributes", Kind: ToolFieldAny, Description: "Typed block attributes for retype; a control character in a string value, a CR LF or a lone carriage return among them, is refused with 400 INVALID_MARKDOWN naming the block and the attribute."},
 			}}},
 			{Name: "precondition", Kind: ToolFieldObject, Description: "Optional optimistic-concurrency guard; select exactly one of document or blocks.", Fields: []ToolField{
 				{Name: "document", Kind: ToolFieldString, Description: "Token for the exact canonical document returned by dispatch doc-read.", Min: new(float64(1))},

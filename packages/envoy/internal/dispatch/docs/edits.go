@@ -288,6 +288,7 @@ func isEditRefusal(err error) bool {
 	return errors.Is(err, pmdoc.ErrTargetNotFound) ||
 		errors.Is(err, pmdoc.ErrTargetSpansBlocks) ||
 		errors.Is(err, pmdoc.ErrTableWidth) ||
+		errors.Is(err, pmdoc.ErrControlCharacter) ||
 		IsTooLarge(err) ||
 		errors.As(err, &invalid) ||
 		errors.As(err, &ambiguous) ||

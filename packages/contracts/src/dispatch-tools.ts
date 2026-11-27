@@ -2294,7 +2294,7 @@ export const dispatchToolSpecs = [
               attributes: z
                 .unknown()
                 .describe(
-                  "Typed block attributes for retype; a CR LF or a lone carriage return in a string value is written as a line feed."
+                  "Typed block attributes for retype; a control character in a string value, a CR LF or a lone carriage return among them, is refused with 400 INVALID_MARKDOWN naming the block and the attribute."
                 )
                 .optional(),
             },

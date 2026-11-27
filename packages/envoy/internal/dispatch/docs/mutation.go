@@ -473,6 +473,9 @@ func (s *Service) applyLiveWritten(ctx context.Context, artifactID string, actor
 	// pointers' targets and a check's recorded result, in the order a new document's seed runs them
 	// (SeedText), and the answers of the asks the readings stand in. The check blocks the write
 	// introduces are found once, for both refusals that read them.
+	if err := refuseControlCharacters(tree.Node(), weighedFrom); err != nil {
+		return err
+	}
 	introduced := introducedCIChecks(tree.Node(), weighedFrom)
 	if err := refuseCICheckText(introduced); err != nil {
 		return err
@@ -773,6 +776,9 @@ func seedRendering(markdown string) (renderedTree, pmdoc.WrittenReadBack, error)
 		return renderedTree{}, pmdoc.WrittenReadBack{}, err
 	}
 	if err := weighRendering("", canonical); err != nil {
+		return renderedTree{}, pmdoc.WrittenReadBack{}, err
+	}
+	if err := refuseControlCharacters(tree, nil); err != nil {
 		return renderedTree{}, pmdoc.WrittenReadBack{}, err
 	}
 	if err := refuseCICheckText(introducedCIChecks(tree, nil)); err != nil {

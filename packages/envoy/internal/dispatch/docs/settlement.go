@@ -508,10 +508,10 @@ func (st *settlement) commitFailed(advanced bool, err error) settleOutcome {
 func (st *settlement) applyStamp(ctx context.Context) (settleStep, settleOutcome) {
 	s, room, state := st.service, st.room, st.state
 	st.reconciled, st.reconciledCounts = st.read, st.first.counts
-	if pmdoc.BlockIDRepairCount(st.read) > 0 {
+	if pmdoc.SettlementBlockIDRepairCount(st.read) > 0 {
 		slot, update, err := s.applySuppressed(ctx, room, st.doc, func(doc *crdt.Doc, origin any) error {
 			var stampErr error
-			st.reconciled, st.reconciledCounts, _, st.renamed, stampErr = stampBlockIDs(doc, st.layout, origin)
+			st.reconciled, st.reconciledCounts, _, st.renamed, stampErr = stampSettlementBlockIDs(doc, st.layout, origin)
 			return stampErr
 		})
 		st.keep(slot, update)
@@ -619,6 +619,7 @@ func (st *settlement) planRepairs(ctx context.Context) (settleStep, settleOutcom
 	// against the document as settlement read it, before any other repair is planned on it.
 	// kept for one release: roll-window-attributes
 	reconciliation.withholdAnswersWithoutRoom(st.room, st.reconciled, st.markdown)
+	reconciliation.reconcileControlCharacters(st.room, st.owner, st.reconciled, st.credit.actor)
 	if err := reconciliation.reconcileCICheckBlocks(ctx, st.tx, st.room, st.owner, st.reconciled, st.credit.actor); err != nil {
 		return settleDone, st.abandon(err)
 	}

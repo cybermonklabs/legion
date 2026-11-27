@@ -4134,6 +4134,15 @@ func TestACICheckNamePaddedWithSpacesIsRefusedOrReadAsTheRunItNames(t *testing.T
 		written := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/artifacts", map[string]any{
 			"name": "verification.md", "content": ciCheckBlock("c1", attributes),
 		}, "alice")
+		// A tab is a control character, which a directive attribute may not hold: the write is
+		// refused 400 INVALID_MARKDOWN naming the block and `ci_check`, not read as the run.
+		if strings.HasPrefix(padded, "\t") {
+			expectControlCharRefusal(t, fmt.Sprintf("ci_check %q", padded), written.Code, written.Body.Bytes(), "ci_check", "U+0009")
+			if !strings.Contains(written.Body.String(), "check block") || !strings.Contains(written.Body.String(), "c1") {
+				t.Fatalf("ci_check %q: refusal = %s, want it to name check block c1", padded, written.Body.String())
+			}
+			continue
+		}
 		if written.Code == http.StatusBadRequest && strings.Contains(written.Body.String(), "INVALID_CI_CHECK") {
 			continue
 		}

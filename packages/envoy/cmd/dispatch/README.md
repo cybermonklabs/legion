@@ -7311,6 +7311,11 @@ Each item below names a status and code, then its meaning.
   A typed block's `block[]` value that is not canonical block references joined by exactly one space is refused naming the attribute and the value, as any attribute value the schema refuses is.
   A write introducing a `block[]` pointer to an existing block whose type the attribute's `targets` do not allow is refused naming the typed block, the attribute, the reference, the target's type and the allowed types, on every route but `POST /edits`, which answers it `INVALID_OP` on `attributes`;
   a browser's edit is never refused for a pointer.
+  A write that introduces a typed block's `id`, or an attribute value of a typed block that its caller writes (any but a server-owned one, such as an ask's `answer`), that holds a control character after its character references are decoded is refused naming the block and the field, `id` or the attribute's name, and the character's code point, on every route that writes a document, `POST /edits` included (it does not answer `INVALID_OP` for it).
+  The control characters are C0 (U+0000 to U+001F, a line feed, a carriage return and a tab among them; a U+0000 in any text is refused earlier as `NUL_CHARACTER`), C1 (U+0080 to U+009F), U+2028 and U+2029, written raw or as a character reference such as `&#xA;` or `&#x1B;`.
+  A block that a stored version already holds with such a value still reads, and a write that leaves it as it is still lands;
+  a write that changes it or adds one is refused.
+  A browser's edit is never refused for one: the room's settlement gives a block id that holds one a new id, resets an attribute that holds one to its default or removes it, and appends one `block.invalid` event naming the block, its type and the field.
   An upload that moves an open anchor's quote where that anchor cannot stand - an ask's quote into a code block, or any open ask's, comment's or suggestion's quote into the front matter - and leaves no copy where it can is refused naming the anchor, its quote and where the text landed:
   move the text out, or resolve the anchor first.
   A copy there beside the original is taken, and the anchor stays on the original.

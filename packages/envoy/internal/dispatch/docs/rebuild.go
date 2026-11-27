@@ -266,6 +266,9 @@ func (s *Service) RebuildDocument(ctx context.Context, artifactID string, markdo
 		if latestTree, err := pmdoc.ParseRendering(latest.markdown); err == nil {
 			prior = latestTree
 		}
+		if err := refuseControlCharacters(tree, prior); err != nil {
+			return RebuildReport{}, VersionResult{}, err
+		}
 		introduced := introducedCIChecks(tree, prior)
 		if err := refuseCICheckText(introduced); err != nil {
 			return RebuildReport{}, VersionResult{}, err
