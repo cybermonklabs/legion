@@ -333,10 +333,22 @@ func (r *relayLiveRig) call(t *testing.T, s *relayLiveSession, edge *listenerPro
 	return response.StatusCode, string(answer)
 }
 
-// register registers s on replica A with token at epoch, so A holds its consumer and relays it.
+// register registers s on replica A with token at epoch, so A holds its consumer and relays it. It
+// advertises the delivery modes of a session whose conversation takes messages (deliveryModes), as
+// a plugin does once something writes into its conversation: a probed session that advertises none
+// answers a plain send no_receiver (sendHandler), and these rows want connected.
 func (r *relayLiveRig) register(t *testing.T, s *relayLiveSession, token, epoch string) {
 	t.Helper()
-	if status, answer := r.call(t, s, r.a, token, http.MethodPost, "/v1/interests/subscribe", consumerRegistration(s.id, epoch)); status != http.StatusOK {
+	body, err := json.Marshal(deliveryModes(map[string]any{
+		"session_id":      s.id,
+		"self_subscribed": true,
+		"topics":          []string{},
+		"delivery":        map[string]any{"consumer": true, "epoch": epoch},
+	}))
+	if err != nil {
+		t.Fatalf("encode the registration of %s: %v", s.id, err)
+	}
+	if status, answer := r.call(t, s, r.a, token, http.MethodPost, "/v1/interests/subscribe", string(body)); status != http.StatusOK {
 		t.Fatalf("the registration of %s on A was answered %d %s", s.id, status, answer)
 	}
 }

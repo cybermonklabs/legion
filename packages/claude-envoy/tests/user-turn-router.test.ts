@@ -839,31 +839,34 @@ test.each([
     ),
     warning: undefined,
   },
-])("a BTW whose reply $reply posts an error over it only where it is not still running", async (row) => {
-  const mod = fakeMod({
-    "model.fork": () => ({ isAnswered: true as const, text: "It is the migration guard." }),
-  })
-  const session = await harness({
-    link: mod.link,
-    replyFails: (result) => (result.body === undefined ? undefined : row.error),
-  })
-  try {
-    await session.router.route(frame(personSends("what blocks it?", { mode: "btw" })))
-    await waitFor(
-      async () => session.order.length + session.warnings.length === 2,
-      "the BTW's reply and what followed it",
-    )
-    await settled()
+])(
+  "a BTW whose reply $reply posts an error over it only where it is not still running",
+  async (row) => {
+    const mod = fakeMod({
+      "model.fork": () => ({ isAnswered: true as const, text: "It is the migration guard." }),
+    })
+    const session = await harness({
+      link: mod.link,
+      replyFails: (result) => (result.body === undefined ? undefined : row.error),
+    })
+    try {
+      await session.router.route(frame(personSends("what blocks it?", { mode: "btw" })))
+      await waitFor(
+        async () => session.order.length + session.warnings.length === 2,
+        "the BTW's reply and what followed it",
+      )
+      await settled()
 
-    expect(session.order).toEqual([
-      "reply:It is the migration guard.",
-      ...(row.warning === undefined ? [`reply:${messageFor(row.error)}`] : []),
-    ])
-    expect(session.warnings).toEqual(row.warning === undefined ? [] : [row.warning])
-  } finally {
-    await rm(session.directory, { recursive: true, force: true })
-  }
-})
+      expect(session.order).toEqual([
+        "reply:It is the migration guard.",
+        ...(row.warning === undefined ? [`reply:${messageFor(row.error)}`] : []),
+      ])
+      expect(session.warnings).toEqual(row.warning === undefined ? [] : [row.warning])
+    } finally {
+      await rm(session.directory, { recursive: true, force: true })
+    }
+  },
+)
 
 // A reply Dispatch made and gave no copy of its answer for answered the attempt: an error reply
 // after it would answer the person a second time with the error of a write that was made, and

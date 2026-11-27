@@ -178,8 +178,9 @@ func (g *hubGeneration) leaveLocked(sub *deliverySub) {
 // The channels the delivery hub listens on, all on its listener's one connection (startLocked).
 // delivery_changes carries no payload and is notified as a delivery_changes row commits (migration
 // 0100); delivery_freshness carries the settings row's freshness columns as JSON (0100);
-// legion.StateChannel carries a project key and is notified after each read of that project's
-// Legion daemon and after each write of its Legion setting (settings_legion.go), which with
+// legion.StateChannel carries a project key and is notified by the Legion intake after each
+// batch of state events it applied and each whole read of that project's Legion daemon, and after
+// each write of its Legion setting (settings_legion.go), which with
 // Dispatch's own events is all that moves a Legion board; and workflowstore.RunsChannel carries
 // an issue key and is notified as a write of one of that issue's runs commits, which with the
 // project's notifies on legion.StateChannel is all that moves the issue's legion_issue view.
@@ -518,9 +519,10 @@ func (h *deliveryHub) onNotify(g *hubGeneration, channel, payload string) {
 	}
 }
 
-// dirtyLegionProject marks every Legion view of the project a read of a Legion daemon just recorded,
-// or whose Legion setting a write just named or removed: its board, and the legion_issue view of
-// each of its issues. The sampler announces every read, failed or not: the header and an issue's
+// dirtyLegionProject marks every Legion view of the project whose Legion daemon Dispatch just
+// recorded, a batch of its state events or a whole read, or whose Legion setting a write just
+// named or removed: its board, and the legion_issue view of each of its issues. The intake
+// announces every whole read, failed or not: the header and an issue's
 // read carry the read itself, so a view whose daemon stopped answering moves as surely as one
 // whose issues did. A setting's write moves every such view too: the board appears or is refused,
 // and an issue's view says whether the project names a daemon (configured).

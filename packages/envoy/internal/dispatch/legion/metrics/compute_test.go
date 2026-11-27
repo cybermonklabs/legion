@@ -214,7 +214,7 @@ func TestEachCutCountsRootsOrChildren(t *testing.T) {
 }
 
 // TestEachPhaseStartsAtItsRolesFirstEventAndEndsWhereTheNextStarts is the fallback timeline, for
-// an issue the sampler never observed: each role's phase starts at the first event of its
+// an issue Dispatch never observed: each role's phase starts at the first event of its
 // session or at the handoff of the phase before it, whichever comes first, accepting starts at
 // the review handoff, and the merging the merger's first event starts ends at the close.
 func TestEachPhaseStartsAtItsRolesFirstEventAndEndsWhereTheNextStarts(t *testing.T) {
@@ -340,7 +340,7 @@ func TestAnIssuesOwnArchitectEventsGiveItADesignPhase(t *testing.T) {
 		worked("implementer", hour(1)).
 		handedOff("review", hour(3)).
 		closedAt(hour(5))
-	// The sampler recorded a slot an hour before this one's architect spoke, which is where its
+	// Dispatch recorded a slot an hour before this one's architect spoke, which is where its
 	// design phase begins.
 	admitted := newIssue("INFRA-4").
 		observe(legion.FieldSlot, hour(1), "2").
@@ -407,9 +407,13 @@ func TestAHandoffStartsTheNextPhaseAndLeavesNoHourBetweenThem(t *testing.T) {
 // The fallback timeline follows the order of the steps the issue's plan names, not the default
 // steps' order. Under `implementer reviewer tester` the implement handoff starts reviewing, the
 // review handoff starts testing, the tester's first event is no step back, and the test handoff,
-// the last step's, starts the retro. A plan made after an event does not reach back to it: the
-// event reads the plan of the run it fell in, or the first run's where it fell before every plan.
-// The control is the same event log with no plan, read in the default steps' order.
+// the last step's, starts the retro. Each mark reads the version of the plan written last at or
+// before it, or the first version where it falls before every version: the implement handoff at
+// hour 2 reads a first version written at hour 2.5, and under a later version written at hour 4
+// the marks before hour 4 read the first version and the marks after it the later one.
+// `needs_review` names the first of reviewing and accepting that the line holds: accepting under
+// `implementer acceptance reviewer`. The controls are the same event logs with no plan, read in
+// the default steps' order.
 func TestTheFallbackTimelineFollowsTheStepsOfTheIssuesPlan(t *testing.T) {
 	events := func() *Issue {
 		return newIssue("INFRA-1").
@@ -421,6 +425,12 @@ func TestTheFallbackTimelineFollowsTheStepsOfTheIssuesPlan(t *testing.T) {
 			handedOff("test", hour(8)).
 			closedAt(hour(10))
 	}
+	needsReview := func() *Issue {
+		return newIssue("INFRA-1").
+			worked("implementer", hour(0)).
+			statusAt(hour(2), "needs_review").
+			closedAt(hour(4))
+	}
 	for _, tc := range []struct {
 		name  string
 		issue *Issue
@@ -428,10 +438,17 @@ func TestTheFallbackTimelineFollowsTheStepsOfTheIssuesPlan(t *testing.T) {
 	}{
 		{"implementer reviewer tester", events().ran(hour(0), "implementer", "reviewer", "tester"),
 			[]string{"implementing 0-2", "reviewing 2-5", "testing 5-8", "retro 8-10"}},
-		{"the plan of the first run, made after the first event", events().ran(hour(1), "implementer", "reviewer", "tester"),
+		{"the first version of the plan, written after the implement handoff", events().ran(hour(2.5), "implementer", "reviewer", "tester"),
 			[]string{"implementing 0-2", "reviewing 2-5", "testing 5-8", "retro 8-10"}},
+		{"a later version of the plan, read from its moment on",
+			events().ran(hour(0), "implementer", "tester", "reviewer").ran(hour(4), "implementer", "reviewer", "tester"),
+			[]string{"implementing 0-2", "testing 2-3", "reviewing 3-5", "testing 5-8", "retro 8-10"}},
 		{"control: no plan, the default steps", events(),
 			[]string{"implementing 0-2", "testing 2-3", "reviewing 3-5", "accepting 5-8", "reviewing 8-10"}},
+		{"needs_review under an acceptance before the review", needsReview().ran(hour(0), "implementer", "acceptance", "reviewer"),
+			[]string{"implementing 0-2", "accepting 2-4"}},
+		{"control: needs_review with no plan, the default steps", needsReview(),
+			[]string{"implementing 0-2", "reviewing 2-4"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := timelineOf(fixture(hour(-24), hour(24), tc.issue), tc.issue); !reflect.DeepEqual(got, tc.want) {
@@ -753,7 +770,7 @@ func TestWorkHoursBeforeTheFirstPhaseMarkAreOnThatPhasesBar(t *testing.T) {
 // The hours before an issue's first observation are the event log's to name (the spec's
 // "Statuses before observations"), so the first observed phase is the issue's first phase only
 // where the event log names none before it: here, an issue whose Legion work opens with a
-// handoff naming no phase two hours before the sampler first saw it. Those hours are on the bar
+// handoff naming no phase two hours before Dispatch first observed it. Those hours are on the bar
 // of the phase it is first seen in, as the fallback's are, or the seven bars would not add up to
 // the work time.
 func TestWorkHoursBeforeTheFirstObservedMarkAreOnThatPhasesBar(t *testing.T) {
@@ -790,8 +807,8 @@ func TestWorkHoursBeforeTheFirstObservedMarkAreOnThatPhasesBar(t *testing.T) {
 // Its hours before it come from these status rules, so they keep the phases its events mark
 // rather than all falling on the first phase the sampler saw" (the spec's "Statuses before
 // observations"). The issue below was implemented, tested, reviewed and sent back before the
-// sampler's first read found it implementing at hour 4; from there the daemon's phases name its
-// second round. Metric 3 reads the same two halves: the status history's first round and its
+// first observation of it found it implementing at hour 4; from there the daemon's phases name
+// its second round. Metric 3 reads the same two halves: the status history's first round and its
 // send-back before hour 4, and the observed second round after it, whose `needs_review` status
 // is the observations' to count and not the status history's.
 func TestAnIssueFirstObservedInFlightTakesItsEarlierPhasesFromItsEvents(t *testing.T) {
@@ -824,7 +841,7 @@ func TestAnIssueFirstObservedInFlightTakesItsEarlierPhasesFromItsEvents(t *testi
 		"architect": 1, "planner": 0, "implementer": 3, "tester": 2, "reviewer": 2, "merger": 0, barNoRole: 0,
 	}
 	if !reflect.DeepEqual(hoursPerBar, want2) {
-		t.Fatalf("the bars are %v, want %v: the first round's testing and reviewing hours are not the implementing the sampler first saw",
+		t.Fatalf("the bars are %v, want %v: the first round's testing and reviewing hours are not the implementing Dispatch first observed",
 			hoursPerBar, want2)
 	}
 	row := w.fact(t, "INFRA-1")

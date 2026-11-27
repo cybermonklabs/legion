@@ -12,10 +12,11 @@ Seven Go families, each one a restore step of ci.yaml's run names, keyed on the 
 architecture and on the Go version the family's own module installs (go-envoy-infra on the hash
 of its module files too, for the reason its job gives): go-notices (lint's notices step),
 go-daemon (typecheck, daemon-go, plugin-pack and pi-legion), go-envoy (envoy-go-build,
-envoy-go-checks, listener-server-change, envoy-e2e-local and envoy-session-stall, and the embedder
-job of .github/workflows/dispatch-browser.yaml), go-envoy-test (envoy-go, envoy-go-claim-model,
-which builds the API's test binary of that set, the binaries, multiprocess and visual jobs of
-.github/workflows/dispatch-browser.yaml, which ci.yaml's dispatch-browser and dispatch-browser-pr
+envoy-go-checks, listener-server-change, envoy-e2e-local, envoy-session-stall and envoy-refill,
+and the embedder job of .github/workflows/dispatch-browser.yaml), go-envoy-test (envoy-go,
+envoy-go-claim-model, which builds the API's test binary of that set, the binaries, multiprocess
+and visual jobs of .github/workflows/dispatch-browser.yaml, which ci.yaml's dispatch-browser and
+dispatch-browser-pr
 jobs call: those three build the Dispatch server and the real broker's commands, whose packages
 the go-envoy entry's build of the listener and natsd alone does not hold, the two jobs of
 .github/workflows/ci-job-dispatch-two-builds.yaml, whose ceiling step and twobuild test step build

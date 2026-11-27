@@ -613,91 +613,94 @@ describe("renderInbound dispatch events", () => {
       standing: "may still be running",
       finishes: "an attempt of the write it received",
     },
-  ])("a reply Dispatch $how its minute ends then as one that $standing, naming its key", async (row) => {
-    jest.useFakeTimers();
-    const otherFetch = globalThis.fetch;
-    const keys: string[] = [];
-    globalThis.fetch = Object.assign(
-      async (_input: RequestInfo | URL, init?: RequestInit) => {
-        const key = new Headers(init?.headers).get("Idempotency-Key") ?? "";
-        keys.push(key);
-        if (row.silent) {
-          // No answer, until the attempt is cut off.
-          const { promise, reject } = Promise.withResolvers<Response>();
-          init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), {
-            once: true,
-          });
-          return await promise;
-        }
-        return Response.json(
+  ])(
+    "a reply Dispatch $how its minute ends then as one that $standing, naming its key",
+    async (row) => {
+      jest.useFakeTimers();
+      const otherFetch = globalThis.fetch;
+      const keys: string[] = [];
+      globalThis.fetch = Object.assign(
+        async (_input: RequestInfo | URL, init?: RequestInit) => {
+          const key = new Headers(init?.headers).get("Idempotency-Key") ?? "";
+          keys.push(key);
+          if (row.silent) {
+            // No answer, until the attempt is cut off.
+            const { promise, reject } = Promise.withResolvers<Response>();
+            init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), {
+              once: true,
+            });
+            return await promise;
+          }
+          return Response.json(
+            {
+              code: IDEMPOTENCY_KEY_IN_FLIGHT,
+              error: "an earlier request with this key is still running",
+            },
+            { status: 409, headers: { "Idempotency-Key": key, "Retry-After": "1" } }
+          );
+        },
+        { preconnect: otherFetch.preconnect }
+      );
+      try {
+        const started = performance.now();
+        const ended: { at?: number; error?: unknown } = {};
+        const reply = postDeliveryReply(
+          { url: "http://dispatch.test", credential: bearerCredential(REPLY_TOKEN) },
+          reader,
           {
-            code: IDEMPOTENCY_KEY_IN_FLIGHT,
-            error: "an earlier request with this key is still running",
+            resource: "message",
+            id: "message-1",
+            attempt: 1,
+            mode: "btw",
+            replyPath: "/api/v1/messages/message-1/reply",
+            replyFields: {},
+            issueKey: null,
+            body: "status?",
           },
-          { status: 409, headers: { "Idempotency-Key": key, "Retry-After": "1" } }
+          { body: "green" }
+        ).then(
+          () => {
+            ended.at = performance.now();
+          },
+          (error: unknown) => {
+            ended.at = performance.now();
+            ended.error = error;
+          }
         );
-      },
-      { preconnect: otherFetch.preconnect }
-    );
-    try {
-      const started = performance.now();
-      const ended: { at?: number; error?: unknown } = {};
-      const reply = postDeliveryReply(
-        { url: "http://dispatch.test", credential: bearerCredential(REPLY_TOKEN) },
-        reader,
-        {
-          resource: "message",
-          id: "message-1",
-          attempt: 1,
-          mode: "btw",
-          replyPath: "/api/v1/messages/message-1/reply",
-          replyFields: {},
-          issueKey: null,
-          body: "status?",
-        },
-        { body: "green" }
-      ).then(
-        () => {
-          ended.at = performance.now();
-        },
-        (error: unknown) => {
-          ended.at = performance.now();
-          ended.error = error;
+        // The fake timers move a second at a time while the reply waits, and each attempt and its
+        // answer take no time; the loop stops past the longest run window, should the reply wait it.
+        while (ended.at === undefined && performance.now() - started < 700_000) {
+          for (let i = 0; i < 100; i++) await Promise.resolve();
+          if (ended.at === undefined) jest.advanceTimersByTime(1_000);
         }
-      );
-      // The fake timers move a second at a time while the reply waits, and each attempt and its
-      // answer take no time; the loop stops past the longest run window, should the reply wait it.
-      while (ended.at === undefined && performance.now() - started < 700_000) {
-        for (let i = 0; i < 100; i++) await Promise.resolve();
-        if (ended.at === undefined) jest.advanceTimersByTime(1_000);
-      }
-      await reply;
+        await reply;
 
-      expect(ended.at === undefined ? undefined : ended.at - started).toBe(
-        DISPATCH_IN_PROCESS_DEADLINE_MS
-      );
-      expect(keys).toHaveLength(row.attempts);
-      expect(new Set(keys)).toEqual(new Set([keys[0] as string]));
-      expect(ended.error).toBeInstanceOf(DispatchWriteUnsettledError);
-      expect(ended.error).toEqual(
-        expect.objectContaining({
-          key: keys[0],
-          running: true,
-          toldRunning: row.standing === "is still running",
-        })
-      );
-      expect((ended.error as Error).message).toBe(
-        `POST http://dispatch.test/api/v1/messages/message-1/reply ${row.standing} on ` +
-          "Dispatch, and its deadline ended the wait for its outcome (the last of " +
-          `${row.attempts} attempts): Dispatch finishes ${row.finishes} whatever this side ` +
-          `does, and the same request sent again under Idempotency-Key ${keys[0]} returns its ` +
-          "outcome once Dispatch's run ends."
-      );
-    } finally {
-      globalThis.fetch = otherFetch;
-      jest.useRealTimers();
+        expect(ended.at === undefined ? undefined : ended.at - started).toBe(
+          DISPATCH_IN_PROCESS_DEADLINE_MS
+        );
+        expect(keys).toHaveLength(row.attempts);
+        expect(new Set(keys)).toEqual(new Set([keys[0] as string]));
+        expect(ended.error).toBeInstanceOf(DispatchWriteUnsettledError);
+        expect(ended.error).toEqual(
+          expect.objectContaining({
+            key: keys[0],
+            running: true,
+            toldRunning: row.standing === "is still running",
+          })
+        );
+        expect((ended.error as Error).message).toBe(
+          `POST http://dispatch.test/api/v1/messages/message-1/reply ${row.standing} on ` +
+            "Dispatch, and its deadline ended the wait for its outcome (the last of " +
+            `${row.attempts} attempts): Dispatch finishes ${row.finishes} whatever this side ` +
+            `does, and the same request sent again under Idempotency-Key ${keys[0]} returns its ` +
+            "outcome once Dispatch's run ends."
+        );
+      } finally {
+        globalThis.fetch = otherFetch;
+        jest.useRealTimers();
+      }
     }
-  });
+  );
 
   test("renders an issue-less targeted BTW with a reply address and an issue-less reply hint", () => {
     const frame = JSON.parse(targetedDispatchPayload) as {

@@ -657,22 +657,25 @@ describe("the Codex router of a person's messages", () => {
       ),
       warning: undefined,
     },
-  ])("a BTW whose reply $reply posts an error over it only where it is not still running", async (row) => {
-    const { replies, router, warnings } = await harness("unused", {
-      replyFails: (result) => (result.body === undefined ? undefined : row.error),
-    })
-    expect(await router.route(frame("btw", "which file?"))).toBe(true)
-    await waitFor(
-      async () => replies.length + warnings.length === 2,
-      "the BTW's reply and what followed it",
-    )
-    await settled()
-    expect(replies).toEqual([
-      { body: "answer to which file?" },
-      ...(row.warning === undefined ? [{ error: messageFor(row.error) }] : []),
-    ])
-    expect(warnings).toEqual(row.warning === undefined ? [] : [row.warning])
-  })
+  ])(
+    "a BTW whose reply $reply posts an error over it only where it is not still running",
+    async (row) => {
+      const { replies, router, warnings } = await harness("unused", {
+        replyFails: (result) => (result.body === undefined ? undefined : row.error),
+      })
+      expect(await router.route(frame("btw", "which file?"))).toBe(true)
+      await waitFor(
+        async () => replies.length + warnings.length === 2,
+        "the BTW's reply and what followed it",
+      )
+      await settled()
+      expect(replies).toEqual([
+        { body: "answer to which file?" },
+        ...(row.warning === undefined ? [{ error: messageFor(row.error) }] : []),
+      ])
+      expect(warnings).toEqual(row.warning === undefined ? [] : [row.warning])
+    },
+  )
 
   test("a / message is answered that it was not run", async () => {
     const { delivered, replies, router } = await harness("/model gpt-y")

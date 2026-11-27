@@ -125,7 +125,7 @@ ARG GH_STACK_TOOL=github:github/gh-stack@0.3.0
 # archive of the gh release ARG GH_TOOL names (gh_<version>_linux_amd64.tar.gz of cli/cli). A pin
 # and its digest move in one commit: a bump of .omp-pin, ARG JJ_TOOL or ARG GH_TOOL that leaves its
 # digest fails the tools stage's sha256sum check in that pull request's own worker-image build.
-# Oh My Pi's was read on 2026-11-27 at its 18.18.6-sami.20261127-010836 pin, jj's on 2026-11-26 at
+# Oh My Pi's was read on 2026-11-27 at its 18.18.6-sami.20261127-055727 pin, jj's on 2026-11-26 at
 # its 0.46.0-sami.20261120-120102 pin and gh's on 2026-11-22 at 2.98.0, each as the `digest`
 # GitHub's API gives the release asset (`gh api repos/<owner>/<repo>/releases/tags/<tag> --jq
 # '.assets[]'`), and each equals the sha256 of the archive downloaded from the address the tools
@@ -135,7 +135,7 @@ ARG GH_STACK_TOOL=github:github/gh-stack@0.3.0
 # sami-build.yml workflow at refs/heads/release-candidate (`gh attestation verify <archive> --repo
 # cybermonklabs/oh-my-pi`); the jj release carries no attestation (the command answers 404). A
 # bump repeats those reads.
-ARG OMP_SHA256=01dcd8d691a7acd8c9da7175715225b23e937f23e6ef66a61cdb93874870b493
+ARG OMP_SHA256=e17f13c83beb6ccc86820fb9517e4be2011d045739900fa23830aef1b466c830
 ARG JJ_SHA256=770b129af434b0b93edfea6de3960a34b82e4f77fda30960aa18f816d543a1de
 ARG GH_SHA256=3b8ac6b30336802fc1a858d7c084e11cdf24ac1a761ca90b68022d7d729208de
 # The SHA-256 of the linux-amd64 binary of the gh-stack release ARG GH_STACK_TOOL names (the release
@@ -260,8 +260,9 @@ ARG AZURE_CLI_PYTHON_VERSION=3.13.17
 # it against this SHA-256 before apt reads one index signed by it, so a rotated or re-exported key
 # fails the build and gets read by a person instead of being trusted.
 ARG PGDG_KEY_SHA256=0144068502a1eddd2a0280ede10ef607d1ec592ce819940991203941564e8e76
-# The CodeGraph CLI and the Oh My Pi tool that wraps it are pinned to the versions the devbox runs
-# (`codegraph --version`, `omp/plugins/package.json`). Each one installs from a committed lockfile
+# The CodeGraph CLI is pinned here, and the dev box follows it: the worker image is the source of its
+# version. The Oh My Pi tool that wraps it is pinned to the version the devbox runs
+# (`omp/plugins/package.json`). Each one installs from a committed lockfile
 # in the plugin-deps stage: the tool, @bopstack/pi-codegraph, from packages/daemon/docker/omp-plugins,
 # and the CLI, @colbymchenry/codegraph, from packages/daemon/docker/codegraph. Each package.json
 # pins its one package, and each bun.lock pins everything Bun installs beside it, so, as for the
