@@ -35,7 +35,7 @@ GATE = gate("test", "test", runs=[
     ("packages/envoy-client/test/fake-dispatch.ts", "`scripts/e2e/lib/agent-replay.test.ts#startFakeDispatch` imports it by path"),
     ("scripts/dispatch/**", at("test", "Test the Dispatch census script")),
     ("scripts/approval-eval/**", at("test", "Test the approval-eval statistics")),
-    ("scripts/search-measure/**", f"{at('test', 'Test the search-measure helpers')}: pg_test.py imports pg.py; stream_test.py imports harvest.py, load_fixture.py, corpus.py and dispatch_read.py"),
+    ("scripts/search-measure/**", f"{at('test', 'Test the search-measure helpers')}: pg_test.py imports pg.py; stream_test.py imports harvest.py, load_fixture.py, corpus.py, dispatch_read.py and pg.py"),
     (f"{ENVOY}/scripts/fixtures/pg-url.json", f"{at('test', 'Test the search-measure helpers')}: `scripts/search-measure/pg_test.py#CORPUS` reads it"),
     ("skills/approval-review/references/never-decide.md",
      f"{at('test', 'Test the approval-eval statistics')}: `scripts/approval-eval/never-decide.ts#neverDecideDefinition` reads "

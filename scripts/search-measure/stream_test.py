@@ -1,4 +1,4 @@
-"""Tests of the corpus `harvest.py` writes and `load_fixture.py` loads, each a row at a time.
+r"""Tests of the corpus `harvest.py` writes and `load_fixture.py` loads, each a row at a time.
 
 Run from this directory with `python3 -m unittest stream_test`. A deployment's documents are more
 than a gigabyte of markdown, so the harvest writes each row as its chunk of answers comes and the
@@ -6,6 +6,12 @@ load reads each large corpus file a line at a time; these tests hold both to wha
 at once wrote and loaded. A stand-in Dispatch answers the harvest's GETs from dicts, and a stand-in
 psql records each statement and each COPY file it was handed, so neither needs a network or a
 Postgres.
+
+What the load hands psql is read back here as PostgreSQL reads COPY's text format, so a text holding
+a line that is only `\.`, which psql reads as the end of a COPY's data, is held to loading whole
+without a server. One test does need a server: it runs `load_fixture.copy()` through the real psql
+into a database of its own, which it drops after, and reads each value back. Its server is
+SEARCH_MEASURE_TEST_PG_DSN, else LEGION_TEST_PG_DSN; with neither set, as in CI, it skips.
 """
 
 import sys
@@ -13,7 +19,6 @@ import sys
 sys.dont_write_bytecode = True
 
 import contextlib  # noqa: E402
-import csv  # noqa: E402
 import io  # noqa: E402
 import json  # noqa: E402
 import os  # noqa: E402
@@ -21,6 +26,7 @@ import pathlib  # noqa: E402
 import re  # noqa: E402
 import tempfile  # noqa: E402
 import unittest  # noqa: E402
+import uuid  # noqa: E402
 from unittest import mock  # noqa: E402
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
@@ -28,6 +34,7 @@ import corpus  # noqa: E402
 import dispatch_read  # noqa: E402
 import harvest  # noqa: E402
 import load_fixture  # noqa: E402
+import pg  # noqa: E402
 
 # A chunk larger than the corpus: every answer of a phase held at once, as harvest.py read them
 # before it read a chunk at a time.
@@ -83,6 +90,9 @@ def message(message_id, in_reply_to=None, **extra):
 
 
 MARKDOWN = '# A heading\n\nA café\'s "quoted", comma-laden line,\twith a tab.\n\nAnd a second paragraph.\n'
+# A text holding a line that is only `\.`, which psql reads as the end of a COPY's inline data
+# wherever it stands, beside a backslash, a tab, a CR and a CRLF.
+AWKWARD_TEXT = "A path, C:\\new\\table,\ta tab,\ra CR and a CRLF.\r\n\\.\nThe line after the \\. line.\n"
 
 
 def harvest_routes():
@@ -152,6 +162,31 @@ HARVEST_SAID = [
     "6 documents with text, 1 unread",
     "4 comments, 3 asks, 6 messages, 1 issues unread",
 ]
+# Every row the harvest of harvest_routes writes of asks.jsonl and of messages.jsonl, whole, as the
+# harvest that held every answer at once wrote them: an ask's owner is its issue or the document of
+# no issue it was read from, and a message's is its issue.
+HARVESTED_ASKS = [
+    {"id": "ask-a1", "issue_key": "ALPHA-1", "artifact_id": None, "question": "The question of ask-a1?",
+     "options": [], "answer": None, "state": "open", "created_at": "2026-11-03T09:00:00Z"},
+    {"id": "ask-b1", "issue_key": "BETA-1", "artifact_id": None, "question": "The question of ask-b1?",
+     "options": ["yes", "no"], "answer": {"choice": "yes"}, "state": "answered", "created_at": "2026-11-03T09:00:00Z"},
+    {"id": "ask-plan", "issue_key": None, "artifact_id": "plan", "question": "The question of ask-plan?",
+     "options": [], "answer": None, "state": "open", "created_at": "2026-11-03T09:00:00Z"},
+]
+HARVESTED_MESSAGES = [
+    {"id": "m-1", "issue_key": "ALPHA-1", "body": "The body of m-1", "created_at": "2026-11-03T10:00:00Z",
+     "in_reply_to": None, "target": None},
+    {"id": "m-2", "issue_key": "ALPHA-1", "body": "The body of m-2", "created_at": "2026-11-03T10:00:00Z",
+     "in_reply_to": "m-1", "target": None},
+    {"id": "m-3", "issue_key": "ALPHA-1", "body": "The body of m-3", "created_at": "2026-11-03T10:00:00Z",
+     "in_reply_to": "m-2", "target": None},
+    {"id": "m-4", "issue_key": "ALPHA-1", "body": "The body of m-4", "created_at": "2026-11-03T10:00:00Z",
+     "in_reply_to": None, "target": None},
+    {"id": "m-5", "issue_key": "BETA-1", "body": "The body of m-5", "created_at": "2026-11-03T10:00:00Z",
+     "in_reply_to": None, "target": None},
+    {"id": "m-6", "issue_key": "BETA-1", "body": "The body of m-6", "created_at": "2026-11-03T10:00:00Z",
+     "in_reply_to": "m-5", "target": None},
+]
 
 
 def ids(text, key):
@@ -203,10 +238,9 @@ class HarvestTest(unittest.TestCase):
                           for line in map(json.loads, whole["comments.jsonl"].decode().splitlines())],
                          [["c-a1-1", "ALPHA-1", None], ["c-a1-2", "ALPHA-1", None], ["c-b1", "BETA-1", None],
                           ["c-plan", None, "plan"]])
-        self.assertEqual(ids(whole["asks.jsonl"], "id"), ["ask-a1", "ask-b1", "ask-plan"])
-        self.assertEqual([(line["id"], line["in_reply_to"])
-                          for line in map(json.loads, whole["messages.jsonl"].decode().splitlines())],
-                         [("m-1", None), ("m-2", "m-1"), ("m-3", "m-2"), ("m-4", None), ("m-5", None), ("m-6", "m-5")])
+        self.assertEqual([json.loads(line) for line in whole["asks.jsonl"].decode().splitlines()], HARVESTED_ASKS)
+        self.assertEqual([json.loads(line) for line in whole["messages.jsonl"].decode().splitlines()],
+                         HARVESTED_MESSAGES)
         self.assertEqual(json.loads(whole["coverage.json"]), {"total_items": 19, "kinds": {"issue": 4, "document": 6}})
         self.assertEqual([line for line in whole_said if not PROGRESS.match(line)], HARVEST_SAID)
         self.assertEqual(whole_mapped, [("text_of", 7), ("issue_items", 4), ("document_items", 2)])
@@ -233,7 +267,8 @@ arguments = sys.argv[1:]
 flag = "-f" if "-f" in arguments else "-c"
 given = arguments[arguments.index(flag) + 1]
 if flag == "-f":
-    with open(given) as handle:
+    # newline="" keeps each CR the file holds, as psql reads it.
+    with open(given, newline="") as handle:
         given = handle.read()
 with open(os.environ["STREAM_TEST_CALLS"], "a") as calls:
     calls.write(json.dumps({"url": arguments[0], flag: given}) + "\\n")
@@ -249,7 +284,9 @@ DSN = "postgres://tester@127.0.0.1:5999/postgres"
 
 def write_load_corpus(directory):
     """A corpus written with harvest.py's own rows, holding an issue the load leaves out (ALPHA-9,
-    the parent of ALPHA-3 and the issue of `stray`), so each of the load's filters has rows to drop."""
+    the parent of ALPHA-3 and the issue of `stray`), so each of the load's filters has rows to drop,
+    and texts a COPY has to carry whole: AWKWARD_TEXT as a document's markdown and as a comment's
+    body, an empty markdown, and an empty message body beside the message's null target."""
     corpus.write_json(directory, "projects.json", [{"key": "ALPHA", "name": "Alpha"}])
     corpus.write_jsonl(directory, "issues.jsonl", [
         harvest.issue_row(issue("ALPHA-1")), harvest.issue_row(issue("ALPHA-2", parent="ALPHA-1")),
@@ -257,13 +294,14 @@ def write_load_corpus(directory):
     ])
     corpus.write_jsonl(directory, "documents.jsonl", [
         harvest.document_row(artifact(artifact_id, "ALPHA", artifact_id, issue_key=key), {"markdown": markdown})
-        for artifact_id, key, markdown in (("doc-1", "ALPHA-1", "The first."), ("doc-2", None, MARKDOWN),
+        for artifact_id, key, markdown in (("doc-1", "ALPHA-1", AWKWARD_TEXT), ("doc-2", None, MARKDOWN),
                                            ("stray", "ALPHA-9", "Not loaded."), ("doc-4", "ALPHA-2", ""))
     ])
     corpus.write_jsonl(directory, "comments.jsonl", [
-        harvest.comment_row(comment(comment_id), key, artifact_id)
-        for comment_id, key, artifact_id in (("c-1", "ALPHA-1", None), ("c-2", "ALPHA-9", None), ("c-3", None, "doc-2"),
-                                             ("c-4", None, "stray"), ("c-5", "ALPHA-3", None))
+        harvest.comment_row(comment(comment_id, **extra), key, artifact_id)
+        for comment_id, key, artifact_id, extra in (
+            ("c-1", "ALPHA-1", None, {"body": AWKWARD_TEXT}), ("c-2", "ALPHA-9", None, {}),
+            ("c-3", None, "doc-2", {}), ("c-4", None, "stray", {}), ("c-5", "ALPHA-3", None, {}))
     ])
     corpus.write_jsonl(directory, "asks.jsonl", [
         harvest.ask_row(ask(ask_id, **extra), key, artifact_id)
@@ -275,7 +313,7 @@ def write_load_corpus(directory):
     messages = []
     harvest.flatten_threads([{"message": message("m-1"), "replies": [message("m-4", "m-1")]}], "ALPHA-1", messages)
     harvest.flatten_threads([{"message": message("m-2")}], "ALPHA-9", messages)
-    harvest.flatten_threads([{"message": message("m-3")}], "ALPHA-3", messages)
+    harvest.flatten_threads([{"message": message("m-3", body="")}], "ALPHA-3", messages)
     corpus.write_jsonl(directory, "messages.jsonl", messages)
 
 
@@ -290,16 +328,54 @@ LOADED = {
     "comments": ["c-1", "c-3", "c-5"],
     "messages": ["m-1", "m-4", "m-3"],
 }
-COPY = re.compile(r"^copy (\w+) \([^)]*\) from stdin with \(format csv, null ''\);\n(.*?)^\\\.\n", re.M | re.S)
+# A COPY statement of a script load_fixture.copy writes, and the table it names.
+COPY = re.compile(r"^copy (\w+) \([^)]*\) from stdin[^;\n]*;\n", re.M)
+# A backslash of COPY's text format and what it escapes, as PostgreSQL reads them
+# (CopyReadAttributesText in copyfromparse.c): one to three octal digits, an x and one or two hex
+# digits, or any one character. A backslash that ends its field escapes nothing.
+ESCAPE = re.compile(rb"\\(?:([0-7]{1,3})|x([0-9A-Fa-f]{1,2})|(.))?", re.S)
+# The letters that escape a control character; any other character escaped stands for itself.
+CONTROLS = {b"b": b"\b", b"f": b"\f", b"n": b"\n", b"r": b"\r", b"t": b"\t", b"v": b"\v"}
+
+
+def copy_data(script):
+    r"""The table a psql script COPYs into and the lines psql sends it as the COPY's data: every line
+    after the COPY statement up to the first that is only `\.`, where psql ends the data."""
+    statement = COPY.search(script)
+    lines = script[statement.end():].split("\n")
+    return statement[1], lines[:lines.index("\\.")]
+
+
+def copy_text_row(line):
+    r"""A line of COPY's text format as PostgreSQL reads it: its fields split on tab, a field that is
+    `\N` NULL, and every backslash escape of the others decoded, an octal or hex byte included. A CR
+    is no character of a row: PostgreSQL ends the row at it or refuses it."""
+    if "\r" in line:
+        raise AssertionError(f"a raw CR in a row: {line!r}")
+    return [None if field == "\\N" else ESCAPE.sub(unescape, field.encode()).decode() for field in line.split("\t")]
+
+
+def unescape(escape):
+    octal, hexadecimal, character = escape.groups()
+    if octal:
+        return bytes([int(octal, 8) & 0o377])
+    if hexadecimal:
+        return bytes([int(hexadecimal, 16)])
+    # A backslash and a period end the data: PostgreSQL 18 refuses one that is not alone on its
+    # line, and an earlier server stops reading there.
+    if character == b".":
+        raise AssertionError("an end-of-copy marker inside a row")
+    return CONTROLS.get(character, character or b"")
 
 
 def copied(calls):
-    """Each COPY's table and the first cell of each of its rows, in the order psql was handed them."""
+    """Each COPY's table and its rows, each read as PostgreSQL reads COPY's text format, in the order
+    psql was handed them."""
     tables = {}
     for call in calls:
         if "-f" in call:
-            table, body = COPY.search(call["-f"]).groups()
-            tables[table] = [row[0] for row in csv.reader(io.StringIO(body))]
+            table, data = copy_data(call["-f"])
+            tables[table] = [copy_text_row(line) for line in data]
     return tables
 
 
@@ -352,14 +428,122 @@ class LoadTest(unittest.TestCase):
         self.assertEqual(read_whole, ["issues.jsonl"])
         self.assertEqual(streamed, whole)
         self.assertEqual(streamed_said, whole_said)
-        self.assertEqual(copied(streamed), LOADED)
+        copies = copied(streamed)
+        self.assertEqual({table: [row[0] for row in rows] for table, rows in copies.items()}, LOADED)
         self.assertEqual([line for line in streamed_said if line.startswith("copy ")],
                          [f"copy {len(rows)} rows into {table}" for table, rows in LOADED.items()])
-        self.assertIn('"doc-2","2","' + MARKDOWN.replace('"', '""') + '"',
+        # Each text reads back whole, the line that is only `\.` and every line after it included,
+        # and an empty text is not a NULL.
+        self.assertEqual({row[0]: row[2] for row in copies["artifact_versions"]},
+                         {"doc-1": AWKWARD_TEXT, "doc-2": MARKDOWN, "doc-4": ""})
+        self.assertEqual([row[4] for row in copies["comments"]], [AWKWARD_TEXT, "The body of c-3", "The body of c-5"])
+        self.assertEqual([row[3:5] for row in copies["messages"]],
+                         [["The body of m-1", None], ["The body of m-4", None], ["", None]])
+        # What psql is handed for doc-1, escaped by hand: each backslash doubled, and each newline, CR
+        # and tab written as \n, \r and \t.
+        escaped = r"A path, C:\\new\\table,\ta tab,\ra CR and a CRLF.\r\n\\.\nThe line after the \\. line.\n"
+        self.assertIn(f"doc-1\t2\t{escaped}\t",
                       next(call["-f"] for call in streamed if call.get("-f", "").startswith("copy artifact_versions ")))
         self.assertEqual([call["-c"] for call in streamed if "-c" in call][:3],
                          ['drop database if exists "searchfix"', 'create database "searchfix"',
                           "select count(*) from schema_migrations"])
+
+
+# Values a COPY has to carry whole, each beside what makes it awkward.
+AWKWARD = [
+    ("a line that is only \\. inside a text", "before\n\\.\nafter"),
+    ("a value that is exactly \\.", "\\."),
+    ("a newline, a CR, a CRLF and a tab inside", "one\ntwo\rthree\r\nfour\tfive"),
+    ("an empty string", ""),
+    ("a None", None),
+    ("a trailing backslash", "C:\\temp\\"),
+    ("a value that is exactly \\N", "\\N"),
+    ("a backslash before each letter COPY escapes with", "\\b\\f\\n\\r\\t\\v\\x41\\101\\N\\."),
+    ("non-ASCII", "café, naïve, 東京, 🙂"),
+]
+
+
+class CopyTextFormatTest(unittest.TestCase):
+    r"""The data load_fixture.copy writes for a row holding each awkward value, read as psql and
+    PostgreSQL read it: psql ends the data at the first line that is only `\.`, and PostgreSQL reads a
+    row as one line and its fields as the text between its tabs. copy's psql call is replaced with one
+    that keeps the script, so no server is needed."""
+
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        environment = mock.patch.dict(os.environ, {"TMPDIR": directory.name})
+        environment.start()
+        self.addCleanup(environment.stop)
+
+    def written(self, row):
+        """The psql script load_fixture.copy writes for a COPY of the one row."""
+        scripts = []
+
+        def kept(dsn, *arguments, **options):
+            # newline="" keeps each CR the script holds, as psql reads it.
+            with open(arguments[arguments.index("-f") + 1], newline="") as handle:
+                scripts.append(handle.read())
+
+        with mock.patch.object(load_fixture.pg, "run", kept), contextlib.redirect_stderr(io.StringIO()):
+            load_fixture.copy(DSN, "awkward", [f"c{index}" for index in range(len(row))], [row])
+        [script] = scripts
+        return script
+
+    def test_each_awkward_value_is_one_field_of_one_line_and_reads_back_exact(self):
+        for what, value in AWKWARD:
+            # Alone in a one-column row, where a value written as it stands would be a whole line of
+            # the data, and between an empty string and a NULL.
+            for row in ([value], ["", value, None]):
+                with self.subTest(what=what, row=row):
+                    script = self.written(row)
+                    self.assertEqual([line for line in script.split("\n") if line == "\\."], ["\\."],
+                                     "a line that is only \\. before the end of the data")
+                    table, data = copy_data(script)
+                    self.assertEqual(table, "awkward")
+                    self.assertEqual(len(data), 1, f"a newline inside the row: {data!r}")
+                    self.assertEqual(data[0].count("\t"), len(row) - 1, f"a tab that separates no columns: {data[0]!r}")
+                    self.assertEqual(copy_text_row(data[0]), row)
+
+
+class CopyIntoPostgresTest(unittest.TestCase):
+    """load_fixture.copy run by the real psql against a real server, and every value read back.
+
+    The server is SEARCH_MEASURE_TEST_PG_DSN, else LEGION_TEST_PG_DSN, and the test skips when neither
+    is set. It copies into a database of its own, named afresh for each run, and drops it after."""
+
+    def setUp(self):
+        server = os.environ.get("SEARCH_MEASURE_TEST_PG_DSN") or os.environ.get("LEGION_TEST_PG_DSN")
+        if not server:
+            self.skipTest("no Postgres server: set SEARCH_MEASURE_TEST_PG_DSN or LEGION_TEST_PG_DSN")
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        environment = mock.patch.dict(os.environ, {"TMPDIR": directory.name})
+        environment.start()
+        self.addCleanup(environment.stop)
+        database = f"search_measure_copy_{uuid.uuid4().hex}"
+        load_fixture.psql(server, f'create database "{database}"')
+        self.addCleanup(load_fixture.psql, server, f'drop database if exists "{database}"')
+        self.dsn = load_fixture.replace_database(server, database)
+
+    def test_each_awkward_value_reads_back_exact(self):
+        load_fixture.psql(self.dsn, "create table awkward (id integer primary key, value text, flag boolean, "
+                                    "labels text[], options jsonb, beside text)")
+        # Each value as a text, as an element of a text[] beside a quote and a backslash, and as a
+        # JSON string beside a backslash, with a boolean and an empty string or a NULL beside it.
+        sources = [{"id": number, "value": value, "flag": (True, False, None)[number % 3],
+                    "labels": ['a "quoted" label', "a back\\slash", "a,b {c}"] + ([] if value is None else [value]),
+                    "options": {"value": value, "path": "C:\\temp"}, "beside": None if number % 2 else ""}
+                   for number, (_, value) in enumerate(AWKWARD)]
+        with contextlib.redirect_stderr(io.StringIO()):
+            load_fixture.copy(self.dsn, "awkward", ("id", "value", "flag", "labels", "options", "beside"),
+                              ([source["id"], source["value"], source["flag"], load_fixture.pg_array(source["labels"]),
+                                json.dumps(source["options"]), source["beside"]] for source in sources))
+        read = pg.rows(self.dsn, "select id, value, flag, labels, options, beside from awkward order by id")
+        self.assertEqual(len(read), len(sources))
+        for (what, _), source, row in zip(AWKWARD, sources, read):
+            with self.subTest(what=what):
+                self.assertEqual(row, source)
 
 
 if __name__ == "__main__":

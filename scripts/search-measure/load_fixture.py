@@ -156,20 +156,26 @@ def main():
 
 
 def copy(dsn, table, columns, rows, create=None, after=None):
-    """COPY rows into table as CSV, so every row-level trigger the schema has fires.
+    r"""COPY rows into table in COPY's text format, so every row-level trigger the schema has fires.
 
-    Every value is quoted and NULL is the one unquoted field there is, so an empty body and a
-    missing one are not the same cell. The rows are counted as they are written, so the line this
-    says costs no pass over a corpus file of its own.
+    The rows go into the psql script itself, after the COPY statement, and psql ends a COPY's inline
+    data at the first line that is only `\.`, inside a quoted CSV field too: as CSV, a document or a
+    comment holding such a line stopped the load with `unterminated CSV quoted field`. In the text
+    format a backslash is written `\\` and a newline, a carriage return and a tab (the column
+    separator) `\n`, `\r` and `\t`, and every other character stands for itself; so a row is one
+    line, its only tabs separate its columns, and no line of it can be `\.`, on every psql. NULL is
+    `\N` and an empty string an empty field, so an empty body and a missing one are not the same
+    cell. The rows are counted as they are written, so the line this says costs no pass over a
+    corpus file of its own.
     """
     path = os.path.join(os.environ.get("TMPDIR", "/tmp"), f"search-measure-copy-{table}.sql")
     count = 0
     with open(path, "w") as handle:
         if create:
             handle.write(create + ";\n")
-        handle.write(f"copy {table} ({', '.join(columns)}) from stdin with (format csv, null '');\n")
+        handle.write(f"copy {table} ({', '.join(columns)}) from stdin with (format text);\n")
         for row in rows:
-            handle.write(",".join(_cell(value) for value in row) + "\n")
+            handle.write("\t".join(_cell(value) for value in row) + "\n")
             count += 1
         handle.write("\\.\n")
         if after:
@@ -181,12 +187,12 @@ def copy(dsn, table, columns, rows, create=None, after=None):
 
 def _cell(value):
     if value is None:
-        return ""
+        return "\\N"
     if value is True:
-        return '"t"'
+        return "t"
     if value is False:
-        return '"f"'
-    return '"' + str(value).replace('"', '""') + '"'
+        return "f"
+    return str(value).replace("\\", "\\\\").replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t")
 
 
 def pg_array(values):
