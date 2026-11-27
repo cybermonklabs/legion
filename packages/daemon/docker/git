@@ -52,12 +52,13 @@
 # pre-push` (runLeakCheckPrePush, packages/daemon/cmd/legion/leak_check.go) asks Guard.StaysLocal
 # (packages/daemon/internal/leakguard/local.go) before the guard runs, and a push it clears exits 0
 # with no check found or run and nothing printed, since it copies bytes already on this machine's
-# disk and a later push of them to a host meets the hook again. StaysLocal reads the URL git hands
-# the hook, the repository's remotes, its configuration and git's exec path, but not the command
-# line, and `--receive-pack=<program>` and `--exec=<program>` make git run that program in place of
-# git-receive-pack, which can write somewhere other than that URL, a host included. Only this
-# wrapper sees the command line, so for a push with any word after the subcommand that is `--<P>`
-# or `--<P>=<value>`, <P> a non-empty prefix of `receive-pack` or of `exec`, it exports
+# disk and a later push of them to a host through this wrapper meets the hook again (a hook of the
+# destination's own that pushes onward runs the real git, with no wrapper). StaysLocal reads the
+# URL git hands the hook, the repository's remotes, its configuration and git's exec path, but not
+# the command line, and `--receive-pack=<program>` and `--exec=<program>` make git run that program
+# in place of git-receive-pack, which can write somewhere other than that URL, a host included.
+# Only this wrapper sees the command line, so for a push with any word after the subcommand that
+# is `--<P>` or `--<P>=<value>`, <P> a non-empty prefix of `receive-pack` or of `exec`, it exports
 # LEGION_PUSH_NAMES_RECEIVE_PACK=1 (leakguard.PushNamesReceivePackVar). git hands its environment
 # to the hook, and StaysLocal clears no push that carries the variable, whatever its value. Every
 # prefix is marked rather than the ones one release of git accepts: git 2.47.3 reads `--e` to

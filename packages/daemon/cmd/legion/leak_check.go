@@ -24,9 +24,11 @@ var leakCheckStdin io.Reader = os.Stdin
 
 // newLeakCheckCommand is `legion leak-check`, the image's shell door to
 // packages/daemon/internal/leakguard: the guard the daemon runs in process is the one a pod's git
-// hook and a pod's own scripts run here, so one set of rules answers for every write. Its two
-// commands are the two shapes a write reaches the guard in from a shell: a push, which git's
-// pre-push hook runs, and a piece of text, which anything about to publish one runs.
+// hook and a pod's own scripts run here, so one set of rules answers for every write the guard
+// reads. Its two commands are the two shapes a write reaches the guard in from a shell: a push,
+// which git's pre-push hook runs, and a piece of text, which anything about to publish one runs.
+// The pre-push form clears with no check a push that can only write to a path on this machine,
+// and the guard reads no such push (runLeakCheckPrePush).
 func newLeakCheckCommand(stderr io.Writer) *cobra.Command {
 	return group(&cobra.Command{
 		Use:    "leak-check",
@@ -73,8 +75,8 @@ func leakCheckCommand(use string, words int, usage, short string, do func(ctx co
 // the repository the guard reads the push's commits from. A push that can only write to a path on
 // this machine (leakguard's Guard.StaysLocal) is cleared before the guard runs: no shared check is
 // found or run, no commit is read and nothing is printed, since it copies bytes already on this
-// machine's disk and a later push of them to a host meets this hook again. Every other push gets
-// the guard as it always did.
+// machine's disk and a later push of them to a host through the pod's git wrapper meets this hook
+// again. Every other push gets the guard as it always did.
 func runLeakCheckPrePush(ctx context.Context, args []string, stderr io.Writer) int {
 	remote, url := args[0], args[1]
 	what := leakguard.PushName(remote)

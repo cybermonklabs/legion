@@ -97,15 +97,20 @@ Each item below names a script, then what it proves.
 
 - `leak-guard-image-job.sh`
 
-  the published worker image's own `git` and `jj` refuse a push that names something private, driven as one Kubernetes Job on the image digest the caller names, under the rules of `docs/kubernetes.md`, "Running a workload in the cluster from a role":
-  k1 of dispatch://INFRA-1527 — a commit whose message carries a refusable Tailscale MagicDNS host, one whose author identity carries it, one whose only hit is an added line of a tracked file, one whose only hit is the branch name, and a clean one — under `git push` and under `jj git push` in each shape jj's own help in that image enumerates (the bare shape, `--all`, `--change`, `--named` and `--deleted`, the last a ref change with no commit), with `git ls-remote` read before and after every push, the added-line case and the branch-name case reported as checks of their own, each refusal naming the record and the class and, on the head's image, the text the rule matched and the line it stands on, and the run failed outright where a shape the script drives is gone from jj;
-  a refusable push with no rule file named, which the head's image lands with no `LEAK CHECK` line printed;
+  the published worker image's own `git` and `jj` refuse a push that names something private and clear a push that can only write to a local path, driven as one Kubernetes Job on the image digest the caller names, under the rules of `docs/kubernetes.md`, "Running a workload in the cluster from a role":
+  k1 of dispatch://INFRA-1527 — a commit whose message carries a refusable Tailscale MagicDNS host, one whose author identity carries it, one whose only hit is an added line of a tracked file, one whose only hit is the branch name, and a clean one — under `git push` and under `jj git push` in each shape jj's own help in that image enumerates (the bare shape, `--all`, `--change`, `--named` and `--deleted`, the last a ref change with no commit), with `git ls-remote` read before and after every push, the added-line case and the branch-name case reported as checks of their own, each refusal naming the record, the class, the text the rule matched and the line it stands on, and the run failed outright where a shape the script drives is gone from jj;
+  a refusable push with no rule file named, which lands with no `LEAK CHECK` line printed;
   k7's four setup failures at those same call sites, on the clean case — the stand-in check removed so that none resolves, a stand-in that exits 2 for an internal error, and `LEGION_PRIVATE_NAME_RULES_FILE` naming a missing file or a file that is no TOML — each of which must refuse under both commands as a setup failure (`LEAK CHECK SETUP ERROR`) and name the failure it met;
-  and, on the head's image alone, a `jj gerrit upload` of the message case run with `--config git.executable-path=/usr/bin/git`, which the image's jj wrapper must refuse before the upload starts, with exit 2, its `LEAK CHECK SETUP ERROR` line saying `git.executable-path is /usr/bin/git`, and the remote unchanged.
+  and a `jj gerrit upload` of the message case run with `--config git.executable-path=/usr/bin/git`, which the image's jj wrapper must refuse before the upload starts, with exit 2, its `LEAK CHECK SETUP ERROR` line saying `git.executable-path is /usr/bin/git`, and the remote unchanged.
 
-  - One more case, `jj-push-author-from-trailer`, on the head's image alone, drives the push step of `legion jj` in a repository of its own: one identity makes a commit with `jj new`, the implementer's identity describes it with `jj commit -m` and a `Legion-Role: implementer` trailer, and `jj git push --bookmark` sends it with `LEGION_ROLE_IDENTITIES` set for that push alone.
-    The remote commit's author must be the implementer's identity, which the step sets.
-    The control is the base branch's image from before the rule-file change, which holds the push step or not according to when it was built, so a verdict there would prove nothing.
+  - One case, `local-path`, is the one where the two arms part: the added-line case from a repository whose every remote is a local bare repository, pushed to that repository by its path with `git push` and with `jj git push --bookmark`, with the Job's rule file named and no shared check.
+    The head's hook clears a push that can only write to a local path, so on the head's image each push lands with no `LEAK CHECK` line printed.
+    On the control's image, whose hook reads every push, the rules refuse it, naming the record, the class, what matched and its line.
+    A control that lands it was built with the change, and a head that refuses it was built without it.
+    Every case but this one and `jj-push-author-from-trailer` pushes to its bare repository through a `git daemon` the probe starts inside the Job on 127.0.0.1, at a URL with a host (`git://127.0.0.1:<port>/<case>/origin.git`), so the hook reads it on both arms.
+
+  - One more case, `jj-push-author-from-trailer`, drives the push step of `legion jj` in a repository of its own whose one remote is a local bare repository: one identity makes a commit with `jj new`, the implementer's identity describes it with `jj commit -m` and a `Legion-Role: implementer` trailer, and `jj git push --bookmark` sends it with `LEGION_ROLE_IDENTITIES` set for that push alone and no shared check or rule file named.
+    The remote commit's author must be the implementer's identity, which the step sets, and the push must print the step's `legion jj: implementer: ` line and no `LEAK CHECK` line: the head's hook clears the push, and the control's guard finds nothing to say of it.
 
   The Job runs no launcher, so the daemon hands it neither the shared check nor the deployment's rule file.
   It writes a stand-in of each into its `emptyDir`:
@@ -113,9 +118,9 @@ Each item below names a script, then what it proves.
   The probe the Job runs is `leak-guard-image-probe.sh` beside the harness, which reads it in and writes it into the Job's command, since a Job holds no checkout to read it from, so the two files are one recipe and neither is changed without the other.
   Needs a pod whose projected credential may create a Job (`kubectl -n <namespace> auth can-i create jobs` answers `yes`), the image to prove by digest (`--image`, from the `Worker Image` run's `Record digest` step), and the deployment's compute class (`--node-selector`), whose value is in that deployment's own declaration and in no file of this repository.
   Each arm also runs a negative control in the same Job: a `jj git push` of the message case with `/opt/legion/bin` taken off `PATH`, so the real jj and the real git push with no wrapper and no hook, which must land on the scratch remote.
-  Its second negative control (`--control`) is the base branch's published image from before the `legion` binary stopped carrying a rule file of its own:
-  it carries the same wrappers and runs the rules embedded in its `legion`, reading no `LEGION_PRIVATE_NAME_RULES_FILE`, so it refuses the refusable push with no file named, refuses k1's cases with the Job's file named while naming the class alone, and lands the clean push with a missing or an unparseable file named, and it refuses under the shared check's two failures as the head does.
-  A run without it proves only the head, and an image built after the change is no control;
+  Its second negative control (`--control`) is main's published image at the base commit the change merges onto (`git merge-base <head> origin/main`), by digest, from the `Record digest` step of that commit's `Worker Image` run:
+  it carries the wrappers and the hook, and its `legion` runs the rule file the Job names, as the head's does, so every case gets the head's verdict on it but `local-path`.
+  A run without `--control` proves only the head;
   `--dry-run` renders the manifest and validates it with `kubectl` without creating anything.
   Legion pod only
 
@@ -5138,7 +5143,7 @@ the tester and the reviewer are the claims the implementer's completion and the 
 The panes' working directory is the issue's one jj workspace, which every role of the issue shares, as in a pod.
 Its `@-` is first the implementer's commit, on `legion/<issue>` of an origin of the run's own (a bare git repository), with `legion/<issue>@origin` at that commit, which the implementer's completion in `implementing` is held to;
 that commit is the pull request's head, which every record names.
-The origin takes the branch with a fetch of its own from the workspace, and the workspace then fetches the origin, which leaves both where a push leaves them, since a pod's `git` runs its leak guard on every push (`/opt/legion/bin/git`).
+The origin takes the branch with a fetch of its own from the workspace, and the workspace then fetches the origin, which leaves both where a push leaves them and runs no pre-push hook: a run's own origin under `TMPDIR` publishes nothing for a pod's leak guard (`/opt/legion/bin/git`) to read.
 Step 2 then puts the tester's commit on top of it, pushed nowhere.
 
 | step | driven by | read back as |

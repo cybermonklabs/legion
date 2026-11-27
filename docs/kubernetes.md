@@ -66,14 +66,14 @@ It carries:
 - pinned Bun, `jj` (Sami's fork, the version the dogfood daemon runs) and `gh` at `/usr/local/bin`, and `git` at `/usr/bin/git` from the `debian:trixie-slim` base
   — jj's git backend requires git >= 2.42 (bookworm's 2.39.5 made every `jj git clone` in the init container fail), so the build also proves the image's jj accepts its git with a network-free `jj git clone` of a scratch bare repository before the probes run, and its last step refuses a git anywhere but `/usr/bin/git`;
 
-- the leak guard in front of those two, which is what makes a pod's own writes pass Legion's check before a byte reaches a remote:
+- Legion's wrappers of those two and their pre-push hook, which make a pod's own pushes pass Legion's leak guard before a byte reaches a remote, all but a push that can only write to a local path (the next item):
   `/opt/legion/bin/git` and `/opt/legion/bin/jj`, root-owned wrappers that lead every pod's `PATH`, and `/opt/legion/githooks/pre-push`, root's hook in a root-owned directory no role can write (`packages/daemon/docker/git`, `docker/jj` and `docker/githooks/pre-push`).
   The git wrapper changes two commands, a commit and a push, and runs every other one unchanged.
   A commit goes to `legion git --real /usr/bin/git`, which adds the commit's `Omp-Session` and `Legion-Role` trailers and then runs the real git.
   It adds each line only when its value is valid, and only when git alone would accept the commit's message and the two lines change nothing else.
   It adds none when the caller asks git for an isolated configuration, as hermetic tests do: `GIT_CONFIG_NOSYSTEM` set to a value git reads as true, or `GIT_CONFIG_GLOBAL=/dev/null`.
   The two lines record which session and which role made the commit, and they guard nothing.
-  A push runs with `-c core.hooksPath=/opt/legion/githooks` immediately before the subcommand, after the caller's own global options, and with the push's own `--no-verify` taken out:
+  A push runs with `-c core.hooksPath=/opt/legion/githooks` immediately before the subcommand, after the caller's own global options, and with every spelling git reads as `--no-verify` taken out (`--no-veri`, `--no-verif` and `--no-verify`):
   git itself computes the update lines and hands them to that hook, which runs `legion leak-check pre-push`, and `jj git push` makes its push by shelling out to the `git` its `PATH` names, so this one wrapper catches a role's own push and jj's.
   git takes the last `-c` of a name, so that placement outranks a caller's own `-c core.hooksPath` and the runtime's `core.hooksPath=/dev/null` pin alike, and the pin still holds for every other command.
   The jj wrapper gives jj that wrapper as `git.executable-path` on every command line, and once more as the line's last layer after a push, which outranks every configuration file and a `[[--scope]]` for one command alike.
@@ -82,6 +82,22 @@ It carries:
   The step gives each commit the push sends the author of the role its first `Legion-Role` trailer names, from `LEGION_ROLE_IDENTITIES` (contract entry `20261125161436`, below), and prints one `legion jj:` line for each commit it rewrote.
   It sets no author on an immutable commit, one a remote bookmark holds, one only a git tag names or one whose role has no identity, nor, but for an empty author, where it prints that it could not.
   The build's last step asserts that each wrapper is first on `PATH` with the real binary behind it and that the hook is root's and executable;
+
+- what that hook clears with no check, a push that can only write to a local path:
+  `legion leak-check pre-push` clears it before the leak guard runs, with exit 0 and nothing printed (`Guard.StaysLocal`, `packages/daemon/internal/leakguard/local.go`).
+  A push can only write to a local path when all of these hold:
+
+  - the URL git hands the hook begins with `/`, `./`, `../` or `file:///` and holds no `::`, and so does every fetch and push URL of every remote of the repository, read after `insteadOf` and `pushInsteadOf`, the remotes of the legacy `remotes` and `branches` files included;
+
+  - no key of the repository's configuration, in any scope down to the command line's, is `remote.<name>.vcs` or `remote.<name>.receivepack`;
+
+  - the git wrapper did not mark the push as one that names its own receive-pack program: it exports `LEGION_PUSH_NAMES_RECEIVE_PACK=1` for a push with a word after the subcommand that is `--<P>` or `--<P>=<value>`, `<P>` a prefix of `receive-pack` or of `exec` of one letter or more, and the hook clears no push that carries that variable;
+
+  - `GIT_EXEC_PATH` is unset or names git's own exec path.
+
+  Such a push copies bytes already on the pod's disk, and a later push of them to a host through the git wrapper meets the hook again.
+  A cleared push runs the destination repository's own hooks, and a hook there that pushes onward runs the real git with no wrapper and no leak guard, since git puts its own exec path (`/usr/lib/git-core`) first on a hook's `PATH`.
+  Every other push gets the leak guard;
 
 - the rules engine that hook and those wrappers run:
   `legion leak-check` is the shell door to `packages/daemon/internal/leakguard`, and the engine the rules run through, gitleaks, is linked into the `legion` binary as a library, so no pod can meet an absent engine.
@@ -151,7 +167,8 @@ It carries:
   `<the write>: GitHub answers 404 for <repo>, …` is a wrong name or a credential that cannot see it.
   `LEAK CHECK SETUP ERROR: <the write>: <what could not be made to run>` is a broken pod and not a name in the write at all.
   `legion leak-check` exits 0 for a write the guard cleared, 3 for one it refused and 2 for either of the other two — the shared check's own statuses — and 128 plus the signal when a SIGINT, SIGTERM or SIGHUP reaches it before it reports the guard's answer, whatever that answer was, and git stops the push on any of them but the first.
-  `scripts/e2e/leak-guard-image-job.sh` drives all of this on a published digest, as one Job of this section's own shape ([Running a workload in the cluster from a role](#running-a-workload-in-the-cluster-from-a-role));
+  `legion leak-check pre-push` exits 0 with nothing printed for a push that can only write to a local path, which it clears before the guard runs.
+  `scripts/e2e/leak-guard-image-job.sh` drives all of this on a published digest, such a push included, as one Job of this section's own shape ([Running a workload in the cluster from a role](#running-a-workload-in-the-cluster-from-a-role));
 
 - `mise` at `/usr/local/bin/mise`, the binary the Dockerfile's `tools` stage checks against `ARG MISE_SHA256` (the build itself resolves no pin with it):
   two scripts a role runs, `scripts/e2e/lib/install-plugin-profile.sh` and the skill-scenario rig (`packages/pi-legion/scripts/skill-scenarios/rig.sh`), resolve the Oh My Pi pin with `mise where` and `mise x`.
@@ -5089,7 +5106,7 @@ Exempt, each for a reason the list above does not hold:
   A Claude Code role's `CLAUDE_CONFIG_DIR` is this path's `claude` directory, its transcripts, its plugin data and the rest of Claude Code's own state, so it is held back with the rest of the path.
 
 - `/legion/scratch/leak-check` — the shared public leak check the pod's launcher installs once before any role starts, and which every role's `legion gh`, pushes and shim read; installed software rather than a cache.
-  Nothing installs it again while the pod's launcher runs, so once it is gone every `legion gh` write, every push and every agent start of the issue's roles refuses.
+  Nothing installs it again while the pod's launcher runs, so once it is gone every `legion gh` write, every push but one that can only write to a local path, and every agent start of the issue's roles refuses.
 
 - `/legion/scratch/data` — the shared `XDG_DATA_HOME`, the data-class home of the tools that honour it.
   Nothing re-derives it: the caches above are rebuilt by the next build or install, where what a tool stores in its data home is gone when it is deleted.
@@ -5537,6 +5554,7 @@ Reversed, a daemon holding only the `legion-pane` seed connects as `legion-pane`
 
 The leak guard runs up to two checks before a role writes ([Worker image](#worker-image)):
 the shared public leak check, where one is named for the role (the deployment's `leak_check` setting in a pod, or on a pane's machine the check its operator installed), and the deployment's own private-name rules, where the deployment names a rule file (`packages/daemon/internal/leakguard`).
+A pod's push that can only write to a local path gets neither: `legion leak-check pre-push` clears it before the guard runs ([Worker image](#worker-image)).
 The `legion` binary carries no private-name rule.
 A deployment names its own rule file, in gitleaks' rule format.
 Each is the operator's to name, so a write gets one of four guards:

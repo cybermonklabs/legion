@@ -1,0 +1,27 @@
+kind: Fixed
+body: |-
+    A pod's pre-push hook now clears with no check a push that can only write to a local path, such
+    as a test's push to a bare repository on the pod's disk, which the leak guard refused in a pod
+    while CI, which has no such hook, passed it. Such a push has a local path (`/`, `./`, `../` or
+    `file:///`, with no `::`) as its URL and as every URL of every remote of the repository, no
+    `remote.<name>.vcs` or `remote.<name>.receivepack` setting, no receive-pack program of its own,
+    and git's own `GIT_EXEC_PATH`. The leak guard still checks every other push.
+
+    The pod's git wrapper now takes `--no-veri` and `--no-verif` out of a push, as it takes
+    `--no-verify`: git reads all three as `--no-verify`, so the two shorter spellings skipped the
+    hook. The wrapper also exports `LEGION_PUSH_NAMES_RECEIVE_PACK=1` for a push that names its own
+    receive-pack program with a prefix of `--receive-pack` or `--exec`, and the hook clears no push
+    that carries it.
+
+    The leak guard now reads the answer of its `gh` visibility read from `gh`'s standard output
+    alone, and a failure `gh` reports from its standard error, so the lines `gh` writes on standard
+    error, such as its `GH_DEBUG=api` output, no longer turn a push's check into a setup failure.
+    Its `gh` reads also run with `GH_DEBUG` cleared.
+
+    The first push of a new branch is now judged on the commits its destination does not hold, as
+    the destination itself says: `git ls-remote` of the push's URL and a fetch negotiation with it,
+    which fetches nothing. Before, a stale or missing remote-tracking ref made the guard read, and
+    refuse the push over, commits the destination already held.
+time: 2026-11-27T23:04:15.885120039Z
+custom:
+    Issue: pr0

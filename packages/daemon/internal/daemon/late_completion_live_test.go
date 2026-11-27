@@ -320,8 +320,8 @@ func (r *lateCompletionLive) token(role claim.Role) claim.Token {
 // pane's tool runs there finds `@-` on the branch at origin. That commit is the pull request's
 // head, which every record names. The origin takes the branch with a fetch of its own from the
 // workspace, and the workspace then fetches the origin, which leaves both where a push leaves
-// them: a pod's git runs its leak guard on every push (/opt/legion/bin/git), which needs the pod's
-// own environment, and a run's own origin under TMPDIR publishes nothing for it to guard. Every
+// them: a pod's git runs its leak guard on a push (/opt/legion/bin/git), which needs the pod's own
+// environment, and a run's own origin under TMPDIR publishes nothing for it to guard. Every
 // command runs under fixturegit.Isolated of the panes' HOME: the panes are told that HOME and no
 // XDG_CONFIG_HOME (localRuntime's paneEnvironment), so their jj reads the repository
 // configuration under the same home as the driver's, and opens the same repository in the same
