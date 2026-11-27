@@ -45,19 +45,21 @@ const asker = {
 };
 
 /** Names `login` CORE's default from the Settings page, as a person does: the people the control
- *  offers are read only once the reader reaches for it, so it is focused first and the option
- *  waited for. `from` is the person it names before. */
+ *  offers are read only once the reader reaches for it, so it is focused first, then its list
+ *  opened and the option waited for. Its trigger is found by a name that begins with its label,
+ *  which may go on to the person it shows; that person is `from` before. */
 async function nameDefaultFromSettings(settings: Page, from: string, login: string): Promise<void> {
   await settings.goto("/settings");
-  const control = settings.getByRole("combobox", {
-    exact: true,
-    name: "Default assignee of CORE",
-  });
+  const control = settings.getByRole("button", { name: /^Default assignee of CORE\b/ });
   await expect(control).toBeEnabled();
-  await expect(control).toHaveValue(from);
+  await expect(control).toHaveText(from);
   await control.focus();
-  await expect(control.locator(`option[value="${login}"]`)).toHaveCount(1);
-  await control.selectOption(login);
+  await control.click();
+  const option = settings
+    .getByRole("listbox", { exact: true, name: "Default assignee of CORE options" })
+    .getByRole("option", { exact: true, name: login });
+  await expect(option).toHaveCount(1);
+  await option.click();
 }
 
 /** The issue page's own card for an unanchored question, which the page draws on its
