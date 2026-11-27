@@ -741,9 +741,10 @@ func TestANextChangeNeedsAPassAtItsOwnHead(t *testing.T) {
 
 // A write of its own issue while the issue waits (D17, ruling 4): an issue in verifying waits for a
 // check after the merge whose evidence is an edit of the issue's own document. A role's edit of
-// that document is taken by Dispatch, the check's result is recorded as a pass, and the issue
-// closes at the read after it. The same edit once the issue closed is refused ISSUE_CLOSED, which
-// is what the release before met, since it closed the issue at its merge.
+// that document, made once Dispatch shows the status the merge wrote, is taken by Dispatch, the
+// check's result is recorded as a pass, and the issue closes at the read after it. The same edit
+// once the issue closed is refused ISSUE_CLOSED, which is what the release before met: it closed
+// the issue at its merge, so the edit made at the merge's status write was refused.
 func TestAWriteToItsOwnIssueIsTakenWhileTheIssueWaits(t *testing.T) {
 	t.Parallel()
 	r := newDoneByChecksRigWith(t, doneByChecksOptions{issues: []doneByChecksIssueSpec{
@@ -752,12 +753,28 @@ func TestAWriteToItsOwnIssueIsTakenWhileTheIssueWaits(t *testing.T) {
 	}})
 	r.walkToMerging(doneByChecksPull, stepRecordsHead)
 	merged := r.mergeOf(r.key, doneByChecksPull, doneByChecksMergeCommit)
-	r.awaitCloseRead(r.key, "the merge", merged, namesMerge(doneByChecksOpenItemsCheck, doneByChecksMergeCommit))
-	r.awaitIssue(r.key, "the merge", inVerifying)
+	r.mergeStatusShown()
 	implementer := r.worker(claim.RoleImplementer)
 	editOpenItems(r, implementer)
+	r.awaitCloseRead(r.key, "the merge", merged, namesMerge(doneByChecksOpenItemsCheck, doneByChecksMergeCommit))
+	r.awaitIssue(r.key, "the merge", inVerifying)
 	closesOnPassOf(r, doneByChecksOpenItemsCheck, doneByChecksMergeCommit)
 	openItemsRefused(r, implementer)
+}
+
+// mergeStatusShown waits for Dispatch to show the status the daemon wrote for the walk's issue at
+// its merge, whatever that status is: the barrier after which a role's edit lands on the issue as
+// the merge left it.
+func (r *doneByChecksRig) mergeStatusShown() {
+	t := r.t
+	t.Helper()
+	var shown struct {
+		Status string `json:"status"`
+	}
+	testwait.WithinPolling(t, stepRecordsWait, 200*time.Millisecond, "Dispatch's status of "+r.key+" after its merge", func() bool {
+		return r.personRead("/api/v1/issues/"+r.key, &shown) == nil && shown.Status != "" && shown.Status != "retro"
+	})
+	t.Logf("Dispatch shows %s %s after its merge", r.key, shown.Status)
 }
 
 // editOpenItems is c's edit of the issue's open items, which Dispatch must take while the issue
