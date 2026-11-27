@@ -1924,11 +1924,13 @@ this head's selection. Whether a line says its suite runs is the output's own ex
 evaluated by ci_router_outputs.py's evaluator over what the step is handed, and the reason beside
 it is a fact the step is handed too: that the run selects every job, that the filters file dorny
 read was widened to every path, that the paths matched, or the label carried. Whether a filter was
-widened is read from that file's first line, in one of the four forms ci-filters-generate.sh
-writes: the computed filters' own header (nothing widened), `# FAIL-OPEN:`, `# FORCED: every
-filter matches every path:`, or `# FORCED: <names> differ from the base tree's filters`. A file
-that cannot be read, or a first line in no such form, is an `::error::`, and every line then says
-that whether its filter was widened is UNKNOWN, never that its paths matched.
+widened is read from that file's first line, which must be, as a whole line, one of the four
+ci-filters-generate.sh writes: the computed filters' own header (ci_filter_coverage's
+GENERATED_HEAD, nothing widened), the fail-open line, the every-filter FORCED line, or the FORCED
+line naming the filters that differ from the base tree's. A file that cannot be read or decoded,
+or a first line in no such form, is an `::error::`, and every line whose paths matched then says
+that whether its filter was widened is UNKNOWN, never that its paths matched; a line whose paths
+did not match, or on a run that selects every job, says so as before.
 ci-router-outputs.test.sh hands the script the env ci.yaml's step evaluates to on pull requests
 with and without a label, a merge group, and dispatches of main and of a branch. It checks that
 the step's FILTERS_FILE is the file the paths-filter step reads, feeds the script files the real

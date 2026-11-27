@@ -15,12 +15,14 @@ Apart from those it writes no annotation: ci-ok's notice names the suites a run 
 (.github/ci-notes/ci.md#the-changes-job-says-what-decided-each-slow-suite).
 
 Whether a filter was widened is read from the first line of the file the paths-filter step read,
-in one of the four forms ci-filters-generate.sh writes (COMPUTED_HEADER, FAIL_OPEN, FORCED_ALL,
-FORCED_NAMES): the computed filters' own header (nothing widened), `# FAIL-OPEN:` and
-`# FORCED: every filter matches every path:` (every filter), or
-`# FORCED: <names> differ from the base tree's filters` (those). A file that cannot be
-read, or a first line in no such form, is an `::error::`, and every line then says that whether
-its filter was widened is UNKNOWN: it never falls back to "its paths matched".
+which must be, as a whole line, one of the four ci-filters-generate.sh writes (COMPUTED_HEADER,
+FAIL_OPEN, FORCED_ALL, FORCED_NAMES): the computed filters' own header (nothing widened), the
+fail-open line and the every-filter FORCED line (every filter), or the FORCED line naming the
+filters that differ from the base tree's (those). A file that cannot be read or decoded, or a
+first line in no such form, is an `::error::` and exit 1, and every line whose paths matched then
+says that whether its filter was widened is UNKNOWN: such a line never falls back to "its paths
+matched". A line whose paths did not match, or on a run that selects every job, says so as
+before.
 ci-router-outputs.test.sh hands the script the env ci.yaml's step evaluates to, checks that its
 FILTERS_FILE is the file the paths-filter step reads, feeds it files ci-filters-generate.sh itself
 wrote, and holds each line to the output it is about.
@@ -40,6 +42,7 @@ from pathlib import Path
 import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from ci_filter_coverage import GENERATED_HEAD  # noqa: E402
 from ci_router_outputs import Evaluator, Refused, expression_of, label_readers, text_of  # noqa: E402
 
 WORKFLOW = Path(__file__).resolve().parent.parent / "workflows" / "ci.yaml"
@@ -52,10 +55,11 @@ def read_json(name, default):
 
 
 # The first lines ci-filters-generate.sh writes into the file the paths-filter step reads, and the
-# filters each widens to `'**'`: the computed filters copied as they are (check-ci-filters.sh
-# generate's header), the fail-open file, the base it cannot read or compute, and the filters whose
-# patterns differ from the base tree's.
-COMPUTED_HEADER = "# Every filter of .github/workflows/ci.yaml's changes job, computed by "
+# filters each widens to `'**'`, each matched as the whole line: the computed filters copied as
+# they are (their header, whose owner is ci_filter_coverage.GENERATED_HEAD, the text
+# `check-ci-filters.sh generate` writes), the fail-open file (its `$why` free), the base it cannot
+# read or compute (its reason free), and the filters whose patterns differ from the base tree's.
+COMPUTED_HEADER = GENERATED_HEAD[0]
 FAIL_OPEN = re.compile(r"# FAIL-OPEN: the filters could not be computed \(.*\), so every filter matches every path "
                        r"and every job runs\.")
 FORCED_ALL = re.compile(r"# FORCED: every filter matches every path: .+\.")
@@ -71,9 +75,10 @@ def widened(path):
     try:
         with open(path) as fh:
             first = fh.readline().rstrip("\n")
-    except OSError as error:
-        return None, f"FILTERS_FILE {path} cannot be read ({error.strerror or error}), so which filters were widened to every path is unknown"
-    if first.startswith(COMPUTED_HEADER):
+    except (OSError, UnicodeDecodeError) as error:
+        why = error.strerror if isinstance(error, OSError) and error.strerror else error
+        return None, f"FILTERS_FILE {path} cannot be read ({why}), so which filters were widened to every path is unknown"
+    if first == COMPUTED_HEADER:
         return set(), None
     if FAIL_OPEN.fullmatch(first) or FORCED_ALL.fullmatch(first):
         return {"*"}, None
@@ -117,7 +122,7 @@ def line(job, name, runs, event, every_job, wide, paths, carried):
             f"base, which may be fewer than this head's selection"), False
 
 
-def main(argv):
+def main():
     event = os.environ.get("GITHUB_EVENT_NAME", "")
     labels = [str(label) for label in read_json("LABELS", [])]
     filter_outputs = read_json("FILTER", {})
@@ -158,4 +163,4 @@ def main(argv):
 
 
 if __name__ == "__main__":
-    sys.exit(main(sys.argv))
+    sys.exit(main())
