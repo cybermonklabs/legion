@@ -3428,15 +3428,16 @@ func (m *Machine) launch(ctx context.Context, cause string) error {
 //
 // start is the work a workflow start brings the claim back for (StartWork, revive), the zero
 // StartWork for every other launch. Its caller judged it under this lock already (startHolds),
-// so a launch that runs here is not judged twice. One the gate parks is judged again when its
-// wake runs, since the wait can be tens of minutes over a wave and the issue can leave the
-// start's work meanwhile. A launch that wake finds left behind starts no process: the claim,
-// written launching with none for the wait (waitOnMachine), is suspended for the daemon with its
-// session kept, and the start of the role's next work resumes it (startLeft). A launch its issue
-// pod's start gate or the project's pause holds after its write is judged so at the grant or the
-// let-out that runs it on (startLeftWhileParked). Unlike requested, start goes with every retry
-// raised anew from the top, whose wake finds the claim launching with no process and judges it
-// again.
+// so a launch that runs here is not judged twice. A launch that waited is judged again where its
+// wait ends (startLeftWhileParked): at the end of a park — the pacing's turn, the pod gate's
+// grant, the pause's let-out (runWake, podStartDue) — and here, before the wake gate, where a
+// retry relaunchLater armed comes back over a claim left launching with no process (the probe
+// interval's, the session store's, the lifecycle check's). A launch a judgment finds left behind
+// starts no process: the claim, written launching with none for the wait, is suspended for the
+// daemon with its session kept, and the start of the role's next work resumes it (startLeft).
+// Judged here, such a retry takes no place in the pacing, whose turn would otherwise be spent,
+// tens of minutes later over a wave, on a launch that starts nothing. Unlike requested, start goes
+// with every retry raised anew from the top.
 func (m *Machine) launchAfter(ctx context.Context, charged, exempt, requested bool, place *wakepace.Place, cause string, start StartWork) error {
 	again := func(ctx context.Context) error {
 		return m.launchAfter(ctx, charged, exempt, false, nil, cause, start)
@@ -3444,10 +3445,10 @@ func (m *Machine) launchAfter(ctx context.Context, charged, exempt, requested bo
 	if err := m.checkLaunch(ctx); err != nil {
 		return m.relaunchRefused(ctx, again, err)
 	}
+	if left, err := m.startLeftWhileParked(ctx, start, again); left {
+		return err
+	}
 	return m.reserveWake(ctx, exempt, place, start, func(ctx context.Context) error {
-		if left, err := m.startLeftWhileParked(ctx, start, again); left {
-			return err
-		}
 		return m.launchNow(ctx, charged, exempt, requested, cause, start)
 	}, again)
 }
