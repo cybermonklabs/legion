@@ -328,12 +328,22 @@ trust store, editor, browser or pager variable of the caller's reaches gh: a pro
 TLS tunnel gh opens through it, and cannot read the token. A deployment whose proxy inspects TLS
 with a CA of its own must install that CA in the system's trust store, which gh, git and curl read
 by default; naming it in `SSL_CERT_FILE` or `SSL_CERT_DIR` reaches a pane, but not the gh `legion
-gh` runs, and gh's requests then fail certificate verification. gh keeps no proxy variable that
-names the secrets broker's airlock proxy (`leakguard.TokenChildKeeps` says why), so from a pod it
-reaches GitHub directly, as it would with no airlock. A deployment whose only route to GitHub is
-a proxy named in `HTTPS_PROXY` has no such route inside an `agent-secrets` command, which replaces
-that variable with the airlock's: gh's reads there fail to connect, and such a deployment reaches
-GitHub from its pods another way. The git gh runs reads no global
+gh` runs, and gh's requests then fail certificate verification. Inside an `agent-secrets` command,
+whose `HTTPS_PROXY` and `https_proxy` name the secrets broker's airlock proxy in place of any proxy
+the caller had there, what gh keeps depends on whose token it sends (`leakguard.TokenChildKeeps`
+says why). With its directory's token, Legion's installation token in a pod, gh keeps no proxy
+variable that names the airlock and no `ALL_PROXY`, so it connects to GitHub directly; the
+guard's curl read and `legion git-credential`'s fork read do the same. With the caller's own
+`GH_TOKEN` or `GITHUB_TOKEN`, which under `agent-secrets GH_TOKEN` is the airlock's placeholder,
+gh keeps the airlock's proxy, which alone puts the real token in its place: that read works where
+the machine's trust store holds the airlock's roots and fails verifying the airlock where it does
+not. The airlock is known by its URL's user, `agent-secrets` (`cipheraddr.NamesAirlockProxy`), a
+convention and no proof: any proxy URL with that user is left out the same way. Two limits
+follow. A deployment whose only route to GitHub is a proxy has none inside such a command, since
+`agent-secrets` replaced that proxy: gh's reads with a directory's token fail to connect there.
+And where the machine's trust store does hold the airlock's roots, a read with a directory's token
+still leaves the airlock out, which would read that token, rather than take the route that works.
+The git gh runs reads no global
 or system configuration file (`GIT_CONFIG_GLOBAL=/dev/null`, `GIT_CONFIG_NOSYSTEM=1`), takes of
 the caller's `GIT_CONFIG_*` pairs only those the runtime sets, and gets `http.sslVerify=true` and
 submodule recursion off (`submodule.recurse=false`, `fetch.recurseSubmodules=false`,

@@ -1,10 +1,15 @@
 kind: Fixed
 body: |-
-    A push under `agent-secrets NAME -- git push`, whose `NAME` the secrets broker's airlock holds
-    back, is no longer refused because the leak guard could not read its target's visibility. The
-    gh `legion gh` runs, and the guard's curl read, keep no `HTTPS_PROXY` or `https_proxy` that names
-    the airlock's proxy: that proxy reads TLS to GitHub with a CA they are not given, so every read
-    through it failed certificate verification. From a pod they now reach GitHub directly.
+    Inside `agent-secrets NAME -- git push`, whose `NAME` the secrets broker's airlock holds back,
+    the leak guard's visibility read of the push's target no longer fails on the airlock's
+    certificate when it carries a gh directory's token, Legion's installation token in a pod. The gh
+    `legion gh` runs, the guard's curl read and `legion git-credential`'s fork read then keep no
+    `HTTPS_PROXY` or `https_proxy` that names the airlock's proxy, and no `ALL_PROXY`, and connect to
+    GitHub directly: that proxy reads TLS with a CA they are not given, so every read through it
+    failed certificate verification and the push was refused. A pod whose only route to GitHub is a
+    proxy has none there, since `agent-secrets` replaced it. A read that carries the caller's own
+    `GH_TOKEN` or `GITHUB_TOKEN` keeps the airlock's proxy, as before, since only the airlock swaps
+    a placeholder for the real token.
 time: 2026-11-27T03:54:31Z
 custom:
     Issue: INFRA-4776

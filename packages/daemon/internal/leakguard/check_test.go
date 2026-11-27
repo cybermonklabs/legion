@@ -618,7 +618,7 @@ func TestAReadASignalEndedKeepsWhatItPrinted(t *testing.T) {
 		{"the curl read", "curl", toStderr, []string{"GH_TOKEN=" + theToken}, func(g *Guard) error { _, err := g.curlVisibility(bound(t), slug); return err }},
 		{"the read with no credential", "git", toStderr, nil, func(g *Guard) error { _, err := g.lsRemote(bound(t), githubOrigin, slug); return err }},
 		{"a git read of a push's records", "git", "echo '+the pushed line'\n" + toStderr, nil, func(g *Guard) error { _, err := g.git(bound(t), t.TempDir(), "rev-list", "HEAD"); return err }},
-		{"the token read", "gh", "echo 'password=" + theToken + "'\n" + toStderr, nil, func(g *Guard) error { _, err := g.ghToken(bound(t), slug); return err }},
+		{"the token read", "gh", "echo 'password=" + theToken + "'\n" + toStderr, nil, func(g *Guard) error { _, _, err := g.ghToken(bound(t), slug); return err }},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			err := row.read(killsItself(t, row.program, row.script, row.env...))

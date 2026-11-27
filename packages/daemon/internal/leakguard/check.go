@@ -414,11 +414,12 @@ type child struct {
 	dir string
 	// env is what the child's environment carries beyond the guard's own (Guard.env).
 	env []string
-	// inherit, where it is not nil, is which entries (NAME=value) of the base environment the
-	// child keeps; the guard's own names and env go on top either way. Nil keeps the whole base,
-	// which is what every child keeps but the visibility read made with no credential
-	// (Guard.lsRemote) and the read through curl (Guard.CurlGet).
-	inherit func(entry string) bool
+	// inherit, where it is not nil, is which entries of the base environment the child keeps,
+	// each read as its name and its value, which Guard.env splits once; the guard's own names and
+	// env go on top either way. Nil keeps the whole base, which is what every child keeps but the
+	// visibility read made with no credential (Guard.lsRemote) and the read through curl
+	// (Guard.CurlGet).
+	inherit func(name, value string) bool
 	// stdin is the child's standard input, nil for none.
 	stdin io.Reader
 	// files are the child's descriptors from 3 up, as exec.Cmd.ExtraFiles takes them.

@@ -94,7 +94,7 @@ type Options struct {
 	// reads, and the git commands a push's records are read with. Nil means this process's own
 	// (os.Environ()). Every child keeps all of it but the read with no credential (Guard.lsRemote)
 	// and the read through curl (Guard.CurlGet), which keep only the entries lsRemoteInherits and
-	// curlInherits allow. The guard adds to it the names that make a credential prompt fail closed
+	// TokenChildKeeps allow. The guard adds to it the names that make a credential prompt fail closed
 	// (promptsNothing) and RunByRealGhVar blanked, and each child's own names on top of those. It
 	// is also where the guard reads RulesFileVar (Guard.rules).
 	Env []string
@@ -160,7 +160,8 @@ const RunByRealGhVar = "LEGION_GH_RUN_BY_REAL_GH"
 // env is the environment a child of this guard starts from: base, the names that make a
 // credential prompt fail closed, RunByRealGhVar blanked, and extra on top, which wins over all
 // three because exec takes the last value of a name. inherit, where it is not nil, keeps only the
-// entries of base it answers true for (child.inherit). The base is the caller's rather than read
+// entries of base it answers true for, each split once into its name and its value
+// (child.inherit). The base is the caller's rather than read
 // here, so that a child costs one copy of the process environment and not two (Guard.run).
 //
 // RunByRealGhVar is blanked because the guard, and not the real gh, is what runs its children. A
@@ -171,13 +172,13 @@ const RunByRealGhVar = "LEGION_GH_RUN_BY_REAL_GH"
 // them would be refused, and so would the push. Blanking it stays bounded: `legion gh` runs each
 // read with a real gh it gives the variable again, so a real gh that leads back to `legion gh` is
 // still refused one start later.
-func (g *Guard) env(base []string, inherit func(entry string) bool, extra ...string) []string {
+func (g *Guard) env(base []string, inherit func(name, value string) bool, extra ...string) []string {
 	out := make([]string, 0, len(base)+5+len(extra))
 	if inherit == nil {
 		out = append(out, base...)
 	} else {
 		for _, entry := range base {
-			if inherit(entry) {
+			if name, value, _ := strings.Cut(entry, "="); inherit(name, value) {
 				out = append(out, entry)
 			}
 		}

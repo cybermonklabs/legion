@@ -398,6 +398,27 @@ func TestRealGhAndGitSendTheTargetOwnersToken(t *testing.T) {
 		t.Errorf("legion gh api repos/acme/widgets under the airlock's proxy sent it %+v, want nothing", connects)
 	}
 
+	// Under `agent-secrets GH_TOKEN -- git push`, the guard's visibility read carries the caller's
+	// own token (ghVisibilityRead), the airlock's placeholder, which only the airlock's proxy puts
+	// the real token in place of, so that read keeps the airlock's proxy. The capture proxy stands
+	// for an airlock whose roots the machine's store holds, where agent-secrets writes no trust
+	// bundle: its CA is the one this test hands every gh (ghChildTestEnviron). A read that left
+	// the airlock out sent the placeholder past it, which GitHub refuses, and the push was refused.
+	const callersPlaceholder = "callers-placeholder-not-a-secret"
+	trustedAirlock := strings.Replace(proxy.url, "://", "://"+cipheraddr.AirlockProxyUser+":placeholder@", 1)
+	underAirlock := []string{"GH_TOKEN=" + callersPlaceholder, "HTTPS_PROXY=" + trustedAirlock, "https_proxy=" + trustedAirlock, leakguard.VisibilityReadVar + "=acme/widgets"}
+	readCode, readOut := runIn(home, slices.Concat(ghEnv, underAirlock), legionCopy(t), append([]string{"gh"}, leakguard.VisibilityReadWithHeadersArgs("acme/widgets")...)...)
+	switch sent := proxy.take(); {
+	case len(sent) == 0:
+		t.Errorf("the guard's visibility read under the caller's GH_TOKEN and the airlock = exit %d, %q, and sent the airlock nothing; want the read, with the caller's token", readCode, readOut)
+	default:
+		for _, r := range sent {
+			if r.host != "api.github.com" || r.auth != "token "+callersPlaceholder {
+				t.Errorf("the guard's visibility read under the caller's GH_TOKEN sent %s%s with %q; want api.github.com with the caller's token", r.host, r.path, r.auth)
+			}
+		}
+	}
+
 	// An editor gh runs after the leak guard has read the call posts what it wrote, which the
 	// guard never read; the Copilot API host GitHub names is handed the token by `gh agent-task`.
 	// Each is refused before gh runs, whatever names the editor, and the editor never runs.
