@@ -3795,8 +3795,10 @@ func assertDerived(t *testing.T, check model.CheckBlock, id int64, run, conclusi
 // A check CI proves is answered by the run its ci_check names at the issue's open head, for every
 // case R3 names: success is a pass with its one derived result; neutral, skipped, cancelled, a
 // run not completed and a head carrying no run of that name are no result, each naming its case;
-// timed_out and a conclusion the list does not name are a fail. The named run on page two of a
-// head carrying 101 runs is read, because the read pages.
+// timed_out is a fail under its own name, and a conclusion the closed list does not name is a fail
+// whose case is failure (results_ci.go's ciAnswerOf), while the result it derives keeps the
+// conclusion as GitHub wrote it. The named run on page two of a head carrying 101 runs is read,
+// because the read pages.
 func TestCIResultReadsEachOutcomeOfTheNamedRun(t *testing.T) {
 	t.Parallel()
 	handler, database, fake := resultsGitHubCheckRuns(t)
@@ -3806,22 +3808,26 @@ func TestCIResultReadsEachOutcomeOfTheNamedRun(t *testing.T) {
 		others[index] = completedRun(int64(1000+index), fmt.Sprintf("other-%d", index), "success")
 	}
 	for index, test := range []struct {
-		name   string
-		runs   []map[string]any
-		state  string
-		ciCase string
-		run    int64
-		pages  int
+		name string
+		runs []map[string]any
+		// state is the verdict the read publishes and ciCase the case it publishes beside it.
+		// conclusion is the word GitHub wrote, which the derived result keeps; it differs from
+		// ciCase for a conclusion the closed list does not name, and an empty one is ciCase.
+		state      string
+		ciCase     string
+		conclusion string
+		run        int64
+		pages      int
 	}{
-		{"success", []map[string]any{completedRun(11, ciCheckRun, "success")}, model.CIStatePass, "success", 11, 1},
-		{"neutral", []map[string]any{completedRun(12, ciCheckRun, "neutral")}, model.CIStateNoResult, "neutral", 0, 1},
-		{"skipped", []map[string]any{completedRun(13, ciCheckRun, "skipped")}, model.CIStateNoResult, "skipped", 0, 1},
-		{"cancelled", []map[string]any{completedRun(14, ciCheckRun, "cancelled")}, model.CIStateNoResult, "cancelled", 0, 1},
-		{"in progress", []map[string]any{pendingRun(15, ciCheckRun, "in_progress")}, model.CIStateNoResult, "not_completed", 0, 1},
-		{"absent", []map[string]any{completedRun(16, "lint", "success")}, model.CIStateNoResult, "absent", 0, 1},
-		{"on page two of 101 runs", append(slices.Clone(others), completedRun(17, ciCheckRun, "success")), model.CIStatePass, "success", 17, 2},
-		{"timed out", []map[string]any{completedRun(18, ciCheckRun, "timed_out")}, model.CIStateFail, "timed_out", 18, 1},
-		{"an unnamed conclusion", []map[string]any{completedRun(19, ciCheckRun, "frobnicated")}, model.CIStateFail, "frobnicated", 19, 1},
+		{"success", []map[string]any{completedRun(11, ciCheckRun, "success")}, model.CIStatePass, "success", "", 11, 1},
+		{"neutral", []map[string]any{completedRun(12, ciCheckRun, "neutral")}, model.CIStateNoResult, "neutral", "", 0, 1},
+		{"skipped", []map[string]any{completedRun(13, ciCheckRun, "skipped")}, model.CIStateNoResult, "skipped", "", 0, 1},
+		{"cancelled", []map[string]any{completedRun(14, ciCheckRun, "cancelled")}, model.CIStateNoResult, "cancelled", "", 0, 1},
+		{"in progress", []map[string]any{pendingRun(15, ciCheckRun, "in_progress")}, model.CIStateNoResult, "not_completed", "", 0, 1},
+		{"absent", []map[string]any{completedRun(16, "lint", "success")}, model.CIStateNoResult, "absent", "", 0, 1},
+		{"on page two of 101 runs", append(slices.Clone(others), completedRun(17, ciCheckRun, "success")), model.CIStatePass, "success", "", 17, 2},
+		{"timed out", []map[string]any{completedRun(18, ciCheckRun, "timed_out")}, model.CIStateFail, "timed_out", "", 18, 1},
+		{"an unnamed conclusion", []map[string]any{completedRun(19, ciCheckRun, "frobnicated")}, model.CIStateFail, "failure", "frobnicated", 19, 1},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			key := issueOfProject(t, handler, "RESCO", test.name, ciCheckBlock("c1", ciCheckKept))
@@ -3837,7 +3843,11 @@ func TestCIResultReadsEachOutcomeOfTheNamedRun(t *testing.T) {
 				}
 			} else {
 				assertCI(t, check, ciCheckRun, test.state, test.ciCase, ciVerdictLineOf("c1", ciCheckRun, test.state, head))
-				assertDerived(t, check, test.run, ciCheckRun, test.ciCase, test.state, head)
+				conclusion := test.conclusion
+				if conclusion == "" {
+					conclusion = test.ciCase
+				}
+				assertDerived(t, check, test.run, ciCheckRun, conclusion, test.state, head)
 				wantStands := model.CheckPassStands{Answer: model.PassStandsNo}
 				if test.state == model.CIStatePass {
 					wantStands = model.CheckPassStands{Answer: model.PassStandsYes, Roles: []string{"ci"}}
