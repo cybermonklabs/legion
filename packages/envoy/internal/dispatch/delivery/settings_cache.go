@@ -25,27 +25,33 @@ const SettingsChannel = "dispatch_delivery_settings"
 // often than that did.
 const settingsRetryInterval = 30 * time.Second
 
-// SettingsCache holds the rules both intakes route by (SourceRules): every source repository's
-// rule and the population, read from the projects' delivery settings at start and again each time
-// one of its wakes is signalled, rather than on a timer or per message. In the server both wakes
-// are the shared listener's (pglisten.Hub), which the hub also signals after every LISTEN it makes:
-// a change made while the listener had no connection is read once it has one again. A cache with
-// no wake reads the settings once.
+// SettingsWakes is the two wakes a SettingsCache reads the delivery settings again on, each nil
+// for none. In the server both are the shared listener's (pglisten.Hub), which the hub also
+// signals after every LISTEN it makes: a change made while the listener had no connection is read
+// once it has one again.
 //
-// settingsWake is the wake on SettingsChannel: a save of any project's settings, which the cache
-// reads again whole. projectsWake is the wake on the events every commit of an event announces
+// Settings is the wake on SettingsChannel: a save of any project's settings, which the cache reads
+// again whole. Projects is the wake on the events every commit of an event announces
 // (api.EventsChannel): a project.updated event is how a write of a project's default repository
 // shows (PUT /api/v1/projects/{key}/default-repository), and a source that names no repository
 // reads that default (SourceRepoOf), so a move of it moves the source's repository. On that wake
 // the cache reads the default repositories of the projects whose sources read them, and reads the
 // settings again only when one moved (defaultsMoved); with no such project it reads nothing.
+type SettingsWakes struct {
+	Settings <-chan struct{}
+	Projects <-chan struct{}
+}
+
+// SettingsCache holds the rules both intakes route by (SourceRules): every source repository's
+// rule and the population, read from the projects' delivery settings at start and again each time
+// one of its wakes (SettingsWakes) is signalled, rather than on a timer or per message. A cache
+// with no wake reads the settings once.
 //
 // While the listener is down, a change waits for its reconnect, as it does in the release before
 // this one, whose cache of the one delivery_settings row is woken on the same channel.
 type SettingsCache struct {
-	pool         *store.Pool
-	settingsWake <-chan struct{}
-	projectsWake <-chan struct{}
+	pool  *store.Pool
+	wakes SettingsWakes
 	// log is where the cache writes a read that failed: the intakes' logger (intakeTuning.log),
 	// given at construction.
 	log *slog.Logger
@@ -58,11 +64,11 @@ type SettingsCache struct {
 }
 
 // newSettingsCache builds a cache over pool's delivery settings that reads them again on each
-// signal on settingsWake, and on each signal on projectsWake that finds a moved default repository,
-// and logs to logger, the intakes' (startIntakes passes intakeTuning.log); a nil logger is the
-// default logger as it is now. It holds nothing until Run (or reload) has read the settings.
-func newSettingsCache(pool *store.Pool, settingsWake, projectsWake <-chan struct{}, logger *slog.Logger) *SettingsCache {
-	return &SettingsCache{pool: pool, settingsWake: settingsWake, projectsWake: projectsWake, log: cmp.Or(logger, slog.Default()), read: make(chan struct{})}
+// signal on wakes.Settings, and on each signal on wakes.Projects that finds a moved default
+// repository, and logs to logger, the intakes' (startIntakes passes intakeTuning.log); a nil logger
+// is the default logger as it is now. It holds nothing until Run (or reload) has read the settings.
+func newSettingsCache(pool *store.Pool, wakes SettingsWakes, logger *slog.Logger) *SettingsCache {
+	return &SettingsCache{pool: pool, wakes: wakes, log: cmp.Or(logger, slog.Default()), read: make(chan struct{})}
 }
 
 // Read returns a channel closed once the cache's first read of the delivery settings has answered,
@@ -81,8 +87,8 @@ func (c *SettingsCache) Load() *SourceRules {
 	return c.current.Load()
 }
 
-// Run reads the settings at once, then each time settingsWake is signalled, and each time
-// projectsWake is signalled and a default repository a source reads moved, until ctx ends. A read
+// Run reads the settings at once, then each time wakes.Settings is signalled, and each time
+// wakes.Projects is signalled and a default repository a source reads moved, until ctx ends. A read
 // that fails is made again after settingsRetryInterval unless a wake comes first; a whole read that
 // failed stays owed until one succeeds, whichever wake comes.
 func (c *SettingsCache) Run(ctx context.Context) {
@@ -103,9 +109,9 @@ func (c *SettingsCache) Run(ctx context.Context) {
 		}
 		select {
 		case <-ctx.Done():
-		case <-c.settingsWake:
+		case <-c.wakes.Settings:
 			owed = true
-		case <-c.projectsWake:
+		case <-c.wakes.Projects:
 		case <-retry:
 		}
 		if timer != nil {

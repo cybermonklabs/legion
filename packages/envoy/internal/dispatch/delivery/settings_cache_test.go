@@ -102,7 +102,7 @@ func TestTheIntakesReadNoSettingsWhileNothingChanges(t *testing.T) {
 	runCtx, cancel := context.WithCancel(ctx)
 	stop, err := StartIntakes(runCtx, func(name string) (*bus.Client, error) {
 		return bus.Connect([]string{natsURL}, bus.WithName(name))
-	}, counted, deliveryTestIntakeLeases(t, counted), newFakeGitHub(t).newTestClient(), events.NewBroker(), wake, nil, nil, unrenamed())
+	}, counted, deliveryTestIntakeLeases(t, counted), newFakeGitHub(t).newTestClient(), events.NewBroker(), SettingsWakes{Settings: wake}, nil, unrenamed())
 	if err != nil {
 		cancel()
 		t.Fatalf("start the intakes: %v", err)
@@ -155,7 +155,7 @@ func TestJobEventsReadNoSettings(t *testing.T) {
 func TestTheSettingsCacheHoldsTheRulesOfDeliveryOnProjects(t *testing.T) {
 	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
-	cache := newSettingsCache(pool, nil, nil, nil)
+	cache := newSettingsCache(pool, SettingsWakes{}, nil)
 	if cache.Load() != nil {
 		t.Fatalf("a cache that has read nothing holds %+v, want nothing", cache.Load())
 	}
@@ -193,7 +193,7 @@ func TestTheCacheReloadsOnASaveAndOnADefaultRepositoryMove(t *testing.T) {
 	seeded := seedDeliverySettings(t, ctx, pool)
 	counted, counter := countedDeliveryPool(t, pool)
 	projectsWake := make(chan struct{}, 1)
-	cache := newSettingsCache(counted, settingsWake(t, counted), projectsWake, tuningFor(t).log)
+	cache := newSettingsCache(counted, SettingsWakes{Settings: settingsWake(t, counted), Projects: projectsWake}, tuningFor(t).log)
 	runSettingsCache(t, cache)
 	waitFor(t, 5*time.Second, func() bool {
 		_, ok := cache.Load().For(deliveryRepo)
@@ -258,7 +258,7 @@ func TestTheSettingsCachesFirstReadIsTheFirstReadThatAnswers(t *testing.T) {
 		}
 	}
 
-	cache := newSettingsCache(pool, nil, nil, nil)
+	cache := newSettingsCache(pool, SettingsWakes{}, nil)
 	if closed(cache) {
 		t.Fatal("a settings cache that has read nothing has its first read closed")
 	}
@@ -285,7 +285,7 @@ func TestTheSettingsCachesFirstReadIsTheFirstReadThatAnswers(t *testing.T) {
 	if _, err := pool.Exec(ctx, `update project_delivery_settings set delivery = false where project_key = $1`, deliveryProject); err != nil {
 		t.Fatalf("turn the project's delivery off: %v", err)
 	}
-	empty := newSettingsCache(pool, nil, nil, nil)
+	empty := newSettingsCache(pool, SettingsWakes{}, nil)
 	if !empty.reload(ctx) || !closed(empty) {
 		t.Fatal("a first read that found no delivery-on project left the settings cache's first read open")
 	}

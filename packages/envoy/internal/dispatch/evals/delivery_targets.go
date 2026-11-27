@@ -232,13 +232,19 @@ func publishedSettingsIn(ctx context.Context, q delivery.Querier) ([]delivery.Pr
 	}); err != nil {
 		return nil, fmt.Errorf("read the published default repositories: %w", err)
 	}
+	withDefaults(projects, published)
+	return projects, nil
+}
+
+// withDefaults sets, in place, each of projects' default repository to the one defaults holds for
+// it (by project), none where defaults holds none.
+func withDefaults(projects []delivery.ProjectSettings, defaults map[string]string) {
 	for i := range projects {
 		projects[i].DefaultRepo = nil
-		if repo, held := published[projects[i].Project]; held {
+		if repo, held := defaults[projects[i].Project]; held {
 			projects[i].DefaultRepo = new(repo)
 		}
 	}
-	return projects, nil
 }
 
 // ProjectEvals reads the current definition and series of each of slugs project holds, by slug,

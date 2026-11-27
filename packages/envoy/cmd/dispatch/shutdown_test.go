@@ -760,7 +760,7 @@ func TestShutdownWaitsForAnIntakeHandlerBeforeClosingThePool(t *testing.T) {
 
 	stopIntakes, err := delivery.StartIntakes(ctx, func(name string) (*bus.Client, error) {
 		return bus.Connect([]string{natsURL}, bus.WithName(name))
-	}, database.Pool, intakeLeasesOf(t, database.Pool), app, events.NewBroker(), nil, nil, nil, delivery.NewAttributor(refs.Renames{}))
+	}, database.Pool, intakeLeasesOf(t, database.Pool), app, events.NewBroker(), delivery.SettingsWakes{}, nil, delivery.NewAttributor(refs.Renames{}))
 	if err != nil {
 		t.Fatalf("start the intakes: %v", err)
 	}
@@ -877,7 +877,7 @@ func TestAPanicAfterTheIntakesStartEndsTheProcess(t *testing.T) {
 	defer cancel()
 	stopIntakes, err := delivery.StartIntakes(ctx, func(name string) (*bus.Client, error) {
 		return bus.Connect([]string{natsURL}, bus.WithName(name))
-	}, database.Pool, intakeLeasesOf(t, database.Pool), testGitHubApp(t, githubServer.URL), events.NewBroker(), nil, nil, nil, delivery.NewAttributor(refs.Renames{}))
+	}, database.Pool, intakeLeasesOf(t, database.Pool), testGitHubApp(t, githubServer.URL), events.NewBroker(), delivery.SettingsWakes{}, nil, delivery.NewAttributor(refs.Renames{}))
 	if err != nil {
 		t.Fatalf("start the intakes: %v", err)
 	}

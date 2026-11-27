@@ -118,11 +118,10 @@ func (r *refresherRig) putSettings(t *testing.T, settings delivery.DeliverySetti
 
 // sameSource reports whether stored holds input's kind, repository and rule.
 func sameSource(stored delivery.DeploySource, input delivery.SourceInput) bool {
-	same := func(a, b *string) bool { return (a == nil) == (b == nil) && (a == nil || *a == *b) }
-	return stored.Kind == input.Kind && same(stored.Repo, input.Repo) && same(stored.DeployWorkflowPath, input.DeployWorkflowPath) &&
-		slices.Equal(stored.ProductionJobNames, input.ProductionJobNames) && same(stored.ProductionApplyStepName, input.ProductionApplyStepName) &&
-		same(stored.StagingE2EJobName, input.StagingE2EJobName) && same(stored.StagingApplyJobName, input.StagingApplyJobName) &&
-		same(stored.PRChecksWorkflowPath, input.PRChecksWorkflowPath) && same(stored.PRChecksRollupJobName, input.PRChecksRollupJobName)
+	return stored.Kind == input.Kind && sameName(stored.Repo, input.Repo) && sameName(stored.DeployWorkflowPath, input.DeployWorkflowPath) &&
+		slices.Equal(stored.ProductionJobNames, input.ProductionJobNames) && sameName(stored.ProductionApplyStepName, input.ProductionApplyStepName) &&
+		sameName(stored.StagingE2EJobName, input.StagingE2EJobName) && sameName(stored.StagingApplyJobName, input.StagingApplyJobName) &&
+		sameName(stored.PRChecksWorkflowPath, input.PRChecksWorkflowPath) && sameName(stored.PRChecksRollupJobName, input.PRChecksRollupJobName)
 }
 
 // readAlso saves fixture's project's settings with one GitHub source more for each of repos, each
@@ -749,7 +748,7 @@ func TestASettingsChangeThatMovesNoEvalWritesNothing(t *testing.T) {
 		}
 		wantRule := settings
 		wantRule.Project = deliveries.Project
-		if held, found := recorded[ruleKey(settings.DeployRepo)]; !found || !sameBuiltRule(held.rule, wantRule) {
+		if held, found := recorded[delivery.RuleKey(settings.DeployRepo)]; !found || !sameBuiltRule(held.rule, wantRule) {
 			t.Fatalf("%s: the rows stand built under %+v, want the new settings, production jobs %v", change.name, recorded, settings.ProductionJobNames)
 		}
 	}
@@ -2843,14 +2842,11 @@ func TestTheReadsSettingsMoveWithTheCommitThatBringsTheRowsToThem(t *testing.T) 
 	r, deliveries := newSettingsRig(t, walkBatch)
 	read := func(what string) (string, delivery.DeliverySettings) {
 		t.Helper()
-		repos, err := DeployReposIn(t.Context(), r.database.Pool)
-		if err != nil {
-			t.Fatalf("%s: %v", what, err)
+		owned := ownedRepos(t, r.database.Pool, deliveries.Project)
+		if len(owned) != 1 {
+			t.Fatalf("%s: %s's sources read the repositories %v, want one", what, deliveries.Project, owned)
 		}
-		if len(repos.Owned(deliveries.Project)) != 1 {
-			t.Fatalf("%s: %s's sources read the repositories %v, want one", what, deliveries.Project, repos.Owned(deliveries.Project))
-		}
-		repo := repos.Owned(deliveries.Project)[0]
+		repo := owned[0]
 		built, err := BuiltSettingsIn(t.Context(), r.database.Pool, []string{repo})
 		if err != nil || built[0] == nil {
 			t.Fatalf("%s: the settings a read takes are %v (%v)", what, built, err)

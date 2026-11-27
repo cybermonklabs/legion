@@ -17,7 +17,6 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/evals"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
-	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 // One project's delivery settings (dispatch://INFRA-978, R1 to R4): the switch, the deploy
@@ -212,9 +211,12 @@ func (s *server) readProjectDeliverySettings(ctx context.Context, project string
 // DELIVERY_REPOSITORY_SHARED, the latter naming the other project (delivery.PutProjectSettings);
 // and 409 DELIVERY_SETTINGS_CHANGED, where another write moved what the save rests on under each
 // of its attempts (resolveThenLock). A repository is stored lower-case under its new name where a
-// rename pair renames it away, as an excluded one is. The change rows both writes log are moved
-// into the change log once the transaction commits, as every eval write's are
-// (evals.Store.RegisterWith).
+// rename pair renames it away, as an excluded one is. The settings tables' triggers write their
+// `settings` change rows into the change log itself, in the save's transaction, taking the change
+// log's lock at the first write that moves a logged column and holding it to the commit
+// (migration 20261123010254, delivery_change_log); the target writes' change rows wait in the
+// change log's outbox and are moved into the log once the transaction commits, as every eval
+// write's are (evals.Store.RegisterWith).
 func (s *server) putProjectDeliverySettings(w http.ResponseWriter, r *http.Request) {
 	var input projectDeliverySettingsInput
 	body, err := decodeJSONBody(r, &input)
@@ -489,7 +491,7 @@ func keepStoredDeliverySettings(save *delivery.ProjectSettingsInput, present map
 }
 
 // projectSettingsSave is the save input names, its repositories canonical: each source's
-// repository trimmed and lower-cased as GitHub could hold it (refs.ParseGitHubRepo), and each
+// repository trimmed and lower-cased as GitHub could hold it (parseSourceRepo), and each
 // repository, a source's or an excluded one, under its new name where a rename pair renames it
 // away (refs.Renames.Canonical), so no write stores an old name. A github_workflow source's job
 // names are stored as the singleton's save stores them, since every reader matches a job by its
@@ -510,7 +512,7 @@ func (s *server) projectSettingsSave(project string, input projectDeliverySettin
 	for i, source := range input.Sources {
 		save.Sources[i] = delivery.SourceInput(source)
 		if source.Repo != nil {
-			owner, name, err := refs.ParseGitHubRepo(strings.TrimSpace(*source.Repo))
+			owner, name, err := parseSourceRepo(*source.Repo)
 			if err != nil {
 				return delivery.ProjectSettingsInput{}, delivery.InputRefusal(new(i), "repo",
 					"source %d names %q, which is no GitHub repository owner/name", i, *source.Repo)
@@ -595,7 +597,7 @@ func (s *server) checkSourceAccess(ctx context.Context, save delivery.ProjectSet
 		}
 		owner, name, _ := strings.Cut(repo, "/")
 		if _, err := s.deps.GitHub.CheckSource(ctx, owner, name); err != nil {
-			if errors.Is(err, githubapp.ErrNoAppKey) || errors.Is(err, githubapp.ErrNoInstallation) || errors.Is(err, githubapp.ErrNoContentsRead) {
+			if appCannotRead(err) {
 				return &delivery.SettingsError{
 					Code: delivery.CodeDeliverySettingsAccess, Field: "repo", Source: new(i),
 					Message: fmt.Sprintf("source %d reads %s, which Dispatch's GitHub App cannot read: %v", i, repo, err),
@@ -606,6 +608,13 @@ func (s *server) checkSourceAccess(ctx context.Context, save delivery.ProjectSet
 		proved[strings.ToLower(repo)] = true
 	}
 	return nil, nil
+}
+
+// appCannotRead reports whether err, the answer of a check of a repository
+// (githubapp.Client.CheckSource), says Dispatch's GitHub App cannot read it: no app key, no
+// installation that covers it, or no contents read.
+func appCannotRead(err error) bool {
+	return errors.Is(err, githubapp.ErrNoAppKey) || errors.Is(err, githubapp.ErrNoInstallation) || errors.Is(err, githubapp.ErrNoContentsRead)
 }
 
 // deliveryTargetChanges is a register write of each target of targets that is not its eval's

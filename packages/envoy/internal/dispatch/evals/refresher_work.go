@@ -142,9 +142,9 @@ type refresh struct {
 	absent   map[string]bool
 	// rules is the rule of each deploy source repository of a delivery-on project
 	// (delivery.DeployRules), and of each such project's events repository where it holds an
-	// events source (eventsRule), by ruleKey: empty where no project has delivery on, which leaves
-	// the delivery and CI rows unwritten, since no production rule judges a run and no deploy card
-	// follows a job.
+	// events source (eventsRule), by delivery.RuleKey: empty where no project has delivery on,
+	// which leaves the delivery and CI rows unwritten, since no production rule judges a run and no
+	// deploy card follows a job.
 	rules map[string]delivery.DeliverySettings
 	// failures is each project whose failure measures are on, by key (failureProjectOf), read
 	// with rules; failuresWritten the loop's UTC day on which a whole write of this process last
@@ -153,10 +153,11 @@ type refresh struct {
 	failures        map[string]failureProject
 	failuresWritten map[string]time.Time
 	// builtUnder is the rule each repository's stored delivery and CI rows stand built under
-	// (eval_days_rules, by ruleKey), read by the pass's first page (builtRead) and moved by each of
-	// its pages that brings the rows to the rules it reads (syncSettings, syncKept); empty where
-	// none is recorded. keptUnder is the repositories the rows stand built for (those of builtUnder
-	// with a start), read with it and moved by each page that reads another set (syncKept).
+	// (eval_days_rules, by delivery.RuleKey), read by the pass's first page (builtRead) and moved
+	// by each of its pages that brings the rows to the rules it reads (syncSettings, syncKept);
+	// empty where none is recorded. keptUnder is the repositories the rows stand built for (those
+	// of builtUnder with a start), read with it and moved by each page that reads another set
+	// (syncKept).
 	builtUnder map[string]builtRule
 	keptUnder  []keptRepo
 	builtRead  bool
@@ -273,8 +274,8 @@ func (r *refresh) load(ctx context.Context, seeds *seeding) error {
 
 // loadSettings reads every project's delivery settings (delivery.ListProjectSettings) as the rule
 // of each deploy source repository of a delivery-on project (delivery.DeployRules) and of each such
-// project's events repository where it holds an events source (eventsRule), by ruleKey, and as each
-// project whose failure measures are on (failureProjectOf).
+// project's events repository where it holds an events source (eventsRule), by delivery.RuleKey,
+// and as each project whose failure measures are on (failureProjectOf).
 func (r *refresh) loadSettings(ctx context.Context) error {
 	projects, err := delivery.ListProjectSettings(ctx, r.store.database.Pool)
 	if err != nil {
@@ -282,13 +283,13 @@ func (r *refresh) loadSettings(ctx context.Context) error {
 	}
 	r.rules = map[string]delivery.DeliverySettings{}
 	for _, rule := range delivery.DeployRules(projects) {
-		r.rules[ruleKey(rule.DeployRepo)] = rule
+		r.rules[delivery.RuleKey(rule.DeployRepo)] = rule
 	}
 	r.failures = map[string]failureProject{}
 	for _, project := range projects {
 		if project.Delivery && holdsEventsSource(project) {
 			rule := eventsRule(project.Project)
-			r.rules[ruleKey(rule.DeployRepo)] = rule
+			r.rules[delivery.RuleKey(rule.DeployRepo)] = rule
 		}
 		if failures, on := failureProjectOf(project); on {
 			r.failures[project.Project] = failures
@@ -306,7 +307,7 @@ func (r *refresh) delivers() bool {
 // ruleOf is the rule the pass reads for repo (refresh.rules), its DeployRepo repo as its rows are
 // keyed, false where no source reads it.
 func (r *refresh) ruleOf(repo string) (delivery.DeliverySettings, bool) {
-	rule, held := r.rules[ruleKey(repo)]
+	rule, held := r.rules[delivery.RuleKey(repo)]
 	rule.DeployRepo = repo
 	return rule, held
 }
@@ -859,7 +860,7 @@ func (r *refresh) applyDelivery(ctx context.Context, w *pageWork, owed []owedDay
 func (r *refresh) applyPosted(ctx context.Context, days *pageDays, changed map[string]map[string][]time.Time) error {
 	for _, project := range slices.Sorted(maps.Keys(changed)) {
 		repo := EventsRepo(project)
-		if _, read := r.rules[ruleKey(repo)]; !read {
+		if _, read := r.rules[delivery.RuleKey(repo)]; !read {
 			continue
 		}
 		known, err := r.knows(ctx, project)
@@ -1249,7 +1250,7 @@ func (r *refresh) keptRepos(ctx context.Context) ([]keptRepo, error) {
 			repos = append(repos, repo)
 			continue
 		}
-		if recorded, found := r.builtUnder[ruleKey(repo.name)]; found {
+		if recorded, found := r.builtUnder[delivery.RuleKey(repo.name)]; found {
 			repo.rule = recorded.rule
 			repo.rule.DeployRepo, repo.rule.Project = repo.name, ""
 			repos = append(repos, repo)

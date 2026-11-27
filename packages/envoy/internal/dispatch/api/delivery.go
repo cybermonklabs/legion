@@ -217,7 +217,8 @@ func readDeliveryRules(ctx context.Context, q delivery.Querier) (*delivery.Sourc
 	for i, rule := range built {
 		recorded[delivery.RuleKey(repos[i])] = rule
 	}
-	for _, project := range projects {
+	for p := range projects {
+		project := &projects[p]
 		if !project.Delivery {
 			continue
 		}

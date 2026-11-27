@@ -144,15 +144,10 @@ func (r *refresh) syncDefaults(ctx context.Context, w *pageWork) error {
 func judgingMoves(settings []delivery.ProjectSettings, published, live map[string]string) []string {
 	judges := func(defaults map[string]string) map[string]string {
 		projects := slices.Clone(settings)
-		for i := range projects {
-			projects[i].DefaultRepo = nil
-			if repo, held := defaults[projects[i].Project]; held {
-				projects[i].DefaultRepo = new(repo)
-			}
-		}
+		withDefaults(projects, defaults)
 		judge := map[string]string{}
 		for _, rule := range delivery.DeployRules(projects) {
-			judge[ruleKey(rule.DeployRepo)] = rule.Project
+			judge[delivery.RuleKey(rule.DeployRepo)] = rule.Project
 		}
 		return judge
 	}
@@ -660,7 +655,7 @@ const ownerEvalsQuery = `
 // and each owner key's it reads before or after), naming the project's eval of each such row's slug
 // (asReader), whose union cut (`deploy_repo` `*`) folds that row in one selection and not in the
 // other; and, of each project the commit moves (moved) or that this names a cut of, its failure
-// evals in each cut their rows stand in (failureDaySlugs: the project's own rows, which the
+// evals in each cut their rows stand in (FailureDaySlugs: the project's own rows, which the
 // failure writes rewrite under the published selection once the commit lands, applyFailures). It
 // answers each cut's ids in byte order, and no cut that holds no such row, whose stored figures
 // stand. An owner key's rows of a deploy repository are of the key's repository alone: a
@@ -709,7 +704,7 @@ func sourceMarksOf(ctx context.Context, tx pgx.Tx, projects, moved []string, bef
 	}
 	slices.Sort(failing)
 	for _, project := range slices.Compact(failing) {
-		for _, slug := range failureDaySlugs {
+		for _, slug := range FailureDaySlugs {
 			add(probe{key: project, evalID: EvalID(project, slug)})
 		}
 	}

@@ -177,8 +177,8 @@ func (s *Store) readBuiltUnder(ctx context.Context) (map[string]builtRule, error
 }
 
 // builtUnderIn reads, in q, the rule each repository's stored delivery and CI rows stand built
-// under (eval_days_rules), the fields recorded there alone (sameBuiltRule), by ruleKey: empty where
-// none is recorded. A rule no source reads any more has no project ("").
+// under (eval_days_rules), the fields recorded there alone (sameBuiltRule), by delivery.RuleKey:
+// empty where none is recorded. A rule no source reads any more has no project ("").
 func builtUnderIn(ctx context.Context, q delivery.Querier) (map[string]builtRule, error) {
 	rows, err := q.Query(ctx, `
 		select repo, coalesce(project_key, ''), production_job_names, production_apply_step_name, staging_e2e_job_name,
@@ -196,7 +196,7 @@ func builtUnderIn(ctx context.Context, q delivery.Querier) (map[string]builtRule
 			rows.Close()
 			return nil, fmt.Errorf("read the rules the day rows stand built under: %w", err)
 		}
-		built[ruleKey(one.rule.DeployRepo)] = one
+		built[delivery.RuleKey(one.rule.DeployRepo)] = one
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("read the rules the day rows stand built under: %w", err)
@@ -254,10 +254,12 @@ func BuiltSettingsOf(ctx context.Context, q delivery.Querier, saved []delivery.D
 	answers := make([]*delivery.DeliverySettings, len(repos))
 	for i, repo := range repos {
 		var settings *delivery.DeliverySettings
-		if at := slices.IndexFunc(saved, func(rule delivery.DeliverySettings) bool { return ruleKey(rule.DeployRepo) == ruleKey(repo) }); at >= 0 {
+		if at := slices.IndexFunc(saved, func(rule delivery.DeliverySettings) bool {
+			return delivery.RuleKey(rule.DeployRepo) == delivery.RuleKey(repo)
+		}); at >= 0 {
 			settings = new(saved[at])
 		}
-		recorded, held := built[ruleKey(repo)]
+		recorded, held := built[delivery.RuleKey(repo)]
 		switch {
 		case held && settings != nil:
 			settings.ProductionJobNames, settings.ProductionApplyStepName = recorded.rule.ProductionJobNames, recorded.rule.ProductionApplyStepName
@@ -444,7 +446,7 @@ func (r *refresh) syncSettings(ctx context.Context, w *pageWork) error {
 			w.settingsApplied = true
 			w.failureSelection = append(w.failureSelection, recorded.rule.Project, next.Project)
 		}
-		at := slices.IndexFunc(kept, func(repo keptRepo) bool { return ruleKey(repo.name) == key && repo.deploys })
+		at := slices.IndexFunc(kept, func(repo keptRepo) bool { return delivery.RuleKey(repo.name) == key && repo.deploys })
 		slugs, families := settingsMoves(recorded.rule, next)
 		if len(slugs) == 0 || at < 0 {
 			w.record = true
@@ -518,10 +520,10 @@ func (r *refresh) syncKept(ctx context.Context, w *pageWork) error {
 		r.builtUnder[key] = one
 	}
 	for _, repo := range kept {
-		one := r.builtUnder[ruleKey(repo.name)]
+		one := r.builtUnder[delivery.RuleKey(repo.name)]
 		since := repo.since
 		one.rule.DeployRepo, one.since = repo.name, &since
-		r.builtUnder[ruleKey(repo.name)] = one
+		r.builtUnder[delivery.RuleKey(repo.name)] = one
 	}
 	return nil
 }
@@ -801,19 +803,11 @@ func (r *refresh) rewriteSettings(ctx context.Context, prev delivery.DeliverySet
 	}
 	posted := make([]postedRecord, len(events))
 	var storedByDay map[projectDay][]DayRow
-	// memberDays is every day a stored member of the repositories rewritten can stand on: from the
-	// first of their histories (keptRepo.since, before which none is kept) through today.
+	// memberDays is every day a stored member of the repository rewritten can stand on: from the
+	// start of its history (keptRepo.since, before which none is kept) through today.
 	var memberDays []time.Time
-	if len(rewritten) > 0 {
-		from := rewritten[0].since
-		for _, repo := range rewritten {
-			if repo.since.Before(from) {
-				from = repo.since
-			}
-		}
-		for day := from; !day.After(r.today); day = day.AddDate(0, 0, 1) {
-			memberDays = append(memberDays, day)
-		}
+	for day := repo.since; !day.After(r.today); day = day.AddDate(0, 0, 1) {
+		memberDays = append(memberDays, day)
 	}
 	parts := min(memberParts, len(memberDays))
 	partTimes := make([]time.Duration, parts)
@@ -863,7 +857,9 @@ func (r *refresh) rewriteSettings(ctx context.Context, prev delivery.DeliverySet
 			rules := keptRules(kept)
 			// The rules before the change: the rewritten repository's under prev.
 			prevRules := slices.Clone(rules)
-			if at := slices.IndexFunc(prevRules, func(rule delivery.DeliverySettings) bool { return ruleKey(rule.DeployRepo) == ruleKey(repo.name) }); at >= 0 {
+			if at := slices.IndexFunc(prevRules, func(rule delivery.DeliverySettings) bool {
+				return delivery.RuleKey(rule.DeployRepo) == delivery.RuleKey(repo.name)
+			}); at >= 0 {
 				prevRules[at] = prev
 			}
 			for _, project := range owners {

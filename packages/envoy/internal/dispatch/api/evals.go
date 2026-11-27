@@ -911,7 +911,7 @@ func readEvalValues(ctx context.Context, tx pgx.Tx, entries []evals.Entry, deplo
 		return evalValues{}, err
 	}
 	if evals.FiguresOffered(repos, ranges.window, ranges.compare) {
-		stored, err := evals.ReadStoredFiguresIn(ctx, tx, projects, entries, deployRepos, repos, ranges.window, ranges.compare)
+		stored, err := evals.ReadStoredFiguresIn(ctx, tx, projects, entries, repos, ranges.window, ranges.compare)
 		if err != nil {
 			return evalValues{}, err
 		}

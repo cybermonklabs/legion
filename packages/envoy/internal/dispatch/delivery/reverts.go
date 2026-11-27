@@ -129,28 +129,25 @@ func RecordRevert(ctx context.Context, pool *store.Pool, revert Revert) error {
 // commit (revertedPullRequest) and records the revert (RecordRevert). Every fact it stores is
 // GitHub's own answer, never an envelope's, which any bearer of the bus can publish.
 func recordRevertFromGitHub(ctx context.Context, pool *store.Pool, client *githubapp.Client, repo string, number int) error {
-	owner, name, err := refs.SplitGitHubRepo(repo)
+	owner, name, token, err := repositoryRead(ctx, client, repo)
 	if err != nil {
 		return err
-	}
-	token, err := client.RepositoryToken(ctx, owner, name)
-	if err != nil {
-		return fmt.Errorf("mint installation token for %s: %w", repo, err)
 	}
 	payload, err := fetchPullRequestPayload(ctx, client, token, owner, name, number)
 	if err != nil {
 		return err
 	}
-	revertsRepo, revertsNumber, ok := ParseRevert(payload.Body)
-	if !ok || payload.MergedAt == nil {
+	revert, ok := revertOf(repo, payload, nil)
+	if !ok {
 		return nil
 	}
-	reverted, err := revertedPullRequest(ctx, client, repo, token, revertsRepo, revertsNumber)
+	reverted, err := revertedPullRequest(ctx, client, repo, token, revert.RevertsRepo, revert.RevertsNumber)
 	if err != nil {
 		return err
 	}
-	// payload merged and its body names revertsRepo#revertsNumber, as read above, so it is a revert.
-	revert, _ := revertOf(repo, payload, reverted)
+	if reverted != nil {
+		revert.RevertsMergeCommitSHA = lowerSHA(reverted.MergeCommitSHA)
+	}
 	return RecordRevert(ctx, pool, revert)
 }
 

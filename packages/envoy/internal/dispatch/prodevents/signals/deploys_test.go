@@ -43,7 +43,7 @@ func TestADeployRunWhoseProductionJobAndApplyStepSucceedWritesOneDeployRow(t *te
 	row := rows[0]
 	if row.ProjectKey != alpha || row.Kind != prodevents.KindDeploy || row.Source != prodevents.SourceGitHub ||
 		row.SourceRef != "github:100" || row.Status != prodevents.StatusSucceeded || row.Repo != widgets ||
-		row.URL != "https://github.com/acme/widgets/actions/runs/100" || row.Actor != Actor {
+		row.URL != "https://github.com/acme/widgets/actions/runs/100" || row.Actor != loopActor {
 		t.Fatalf("deploy row = %+v", row)
 	}
 	if !row.StartedAt.Equal(at(60)) || !row.FinishedAt.Equal(at(70)) {
@@ -188,7 +188,7 @@ func TestARuleChangeDerivesTheRepositorysDeployRowsAgain(t *testing.T) {
 	}
 	if rejected.State != prodevents.StateRejected || rejected.StateReason == nil ||
 		!strings.Contains(*rejected.StateReason, "deploy rule of acme/widgets changed") ||
-		!strings.Contains(*rejected.StateReason, canaryJob) || rejected.StateBy == nil || *rejected.StateBy != Actor {
+		!strings.Contains(*rejected.StateReason, canaryJob) || rejected.StateBy == nil || *rejected.StateBy != loopActor {
 		t.Errorf("the failure on the dropped row = state %q, reason %v, by %v; want rejected naming the rule change", rejected.State, rejected.StateReason, rejected.StateBy)
 	}
 	if _, held, err := prodevents.DeployForCommit(r.ctx, r.pool, sha("e")); err != nil || held {
@@ -213,7 +213,7 @@ func TestTheDeployRowWriteTakesNoChangeLogLock(t *testing.T) {
 		t.Fatalf("take the change log's lock: %v", err)
 	}
 	done := make(chan error, 1)
-	go func() { done <- passDeploys(r.ctx, r.pool, time.Now) }()
+	go func() { done <- passDeploys(r.ctx, r.pool) }()
 
 	var row prodevents.Event
 	for deadline := time.Now().Add(30 * time.Second); ; {

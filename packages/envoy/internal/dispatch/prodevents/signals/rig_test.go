@@ -131,10 +131,10 @@ func (r *rig) pullRequest(number int, merged time.Time, commit, issue string) {
 	}
 }
 
-// passDeploys runs one pass of the deploys feed at the clock's now.
+// passDeploys runs one pass of the deploys feed.
 func (r *rig) passDeploys() {
 	r.t.Helper()
-	if err := passDeploys(r.ctx, r.pool, time.Now); err != nil {
+	if err := passDeploys(r.ctx, r.pool); err != nil {
 		r.t.Fatalf("the deploys feed's pass: %v", err)
 	}
 }

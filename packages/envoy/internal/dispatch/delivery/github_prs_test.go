@@ -708,9 +708,10 @@ func TestSearchMergedPullRequestsLeavesCompletingFieldsNil(t *testing.T) {
 // population PR reconcile was deleting on every pass: GraphQL's author.login for a bot-created
 // pull request is the bare account name ("sjawhar-agent"), carrying no "[bot]" suffix, while
 // REST's identical pull_request.user.login for the same account is "sjawhar-agent[bot]" --
-// IsPopulationPR and delivery_settings.population_authors are both written and compared in
-// REST's form, so an un-normalized GraphQL result never matches and reconcile.reconcilePullRequest
-// calls DeletePullRequest on every bot-authored population PR the search finds.
+// IsPopulationPR and a project's population authors (project_delivery_settings.population_authors)
+// are both written and compared in REST's form, so an un-normalized GraphQL result never matches
+// and reconcile.reconcilePullRequest calls DeletePullRequest on every bot-authored population PR
+// the search finds.
 func TestSearchMergedPullRequestsNormalizesABotAuthorToRESTForm(t *testing.T) {
 	t.Parallel()
 	fake := newFakeGitHub(t)

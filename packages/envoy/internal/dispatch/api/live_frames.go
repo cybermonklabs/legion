@@ -363,10 +363,6 @@ type deliveryLiveClasses struct {
 	read func(h *deliveryHub, ctx context.Context, spec deliveryLiveSpec, now time.Time, into *deliveryViewRead) (any, error)
 }
 
-// deliveryFailureSlugs are the failure measures whose stored day parts the delivery measures fold
-// (measures.FailureParts, read by evals.Store.DeploymentFailures).
-var deliveryFailureSlugs = []string{evals.SlugChangeFailRate, evals.SlugFailedDeployRecovery, evals.SlugDeploymentReworkRate}
-
 // deliveryLiveKinds is each view kind's classes. The timeline's waiting entries have no id, and
 // are few, so they are sent whole; its measures are sent whole on a change of anything but their
 // own computed_at, window and freshness.
@@ -384,7 +380,7 @@ var deliveryLiveKinds = map[string]deliveryLiveClasses{
 		reads:        viewReadsDelivery,
 		unownedP0:    true,
 		evalVersions: evals.DeliveryTargetSlugs,
-		evalDays:     deliveryFailureSlugs,
+		evalDays:     evals.FailureDaySlugs,
 		parse:        parseDeliveryWindowView,
 		read:         (*deliveryHub).readDeliveryView,
 	},
@@ -396,7 +392,7 @@ var deliveryLiveKinds = map[string]deliveryLiveClasses{
 		reads:        viewReadsDelivery,
 		unownedP0:    true,
 		evalVersions: evals.DeliveryTargetSlugs,
-		evalDays:     deliveryFailureSlugs,
+		evalDays:     evals.FailureDaySlugs,
 		parse:        parseDeliveryWindowView,
 		read:         (*deliveryHub).readDeliveryView,
 	},

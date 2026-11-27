@@ -67,14 +67,14 @@ type StoredFigures struct {
 }
 
 // ReadStoredFiguresIn reads in q the stored figures a read of window and compare (nil for none) of
-// repos folds for entries, evals of projects, where the rows are recorded under deployRepos
-// (DeployReposIn): of an eval keyed by the deploy repository the fold of its project's union cut
-// (`deploy_repo` `*`, unionDeployRepo), which folds all of the project's currently recorded deploy
-// repositories (its GitHub sources and its events repository), and of every other the fold of the
-// rows of none (`""`). Its cut is the one repository repos names, or the projects' own rows (`""`)
-// where it names none (figures.go's cuts): the read is FiguresOffered's to make, which offers none
-// of two or more. It reads, one after the other: how far each project's figures are built, which of
-// its evals a stale mark of the cut names and what the mark's generation has folded again of them
+// repos folds for entries, evals of projects: of an eval keyed by the deploy repository the fold of
+// its project's union cut (`deploy_repo` `*`, unionDeployRepo), which folds all of the project's
+// currently recorded deploy repositories (its GitHub sources and its events repository), and of
+// every other the fold of the rows of none (`""`). Its cut is the one repository repos names, or
+// the projects' own rows (`""`) where it names none (figures.go's cuts): the read is
+// FiguresOffered's to make, which offers none of two or more. It reads, one after the other: how
+// far each project's figures are built, which of its evals a stale mark of the cut names and what
+// the mark's generation has folded again of them
 // (figuresThrough), answering at once where no eval is left whose project's figures are built
 // through the end of both ranges and which the stored rows of the cut this read reads answer
 // (builtCut.serves), an eval keyed by the deploy repository only where its project's union cut is
@@ -96,7 +96,7 @@ type StoredFigures struct {
 // own transaction. A read in one snapshot (BeginSnapshot), as the eval list reads, sees the day
 // rows, marks and figures from the same state. On the pool each statement reads the rows that
 // stand when it runs.
-func ReadStoredFiguresIn(ctx context.Context, q delivery.Querier, projects []string, entries []Entry, deployRepos *DeployRepos, repos []string, window Range, compare *Range) (StoredFigures, error) {
+func ReadStoredFiguresIn(ctx context.Context, q delivery.Querier, projects []string, entries []Entry, repos []string, window Range, compare *Range) (StoredFigures, error) {
 	repo := ""
 	if len(repos) == 1 {
 		repo = repos[0]

@@ -237,12 +237,12 @@ func readUnrecordedOwners(ctx context.Context, q delivery.Querier, owners []stri
 			union all
 			select m.owner, r.project_key, r.via from missing m
 			cross join lateral eval_owner_readers(substr(m.repo_key, 2), m.sharers, m.lists) r
-			where m.lists <> '{>~}'
+			where m.lists <> '{>`+sourceTerminal+`}'
 			union all
 			select m.owner, p.key, true from missing m
 			join eval_days_rules rule on lower(rule.repo) = lower(substr(m.repo_key, 2))
 			join projects p on p.key = rule.project_key
-			where m.lists = '{>~}'`, chunk)
+			where m.lists = '{>`+sourceTerminal+`}'`, chunk)
 		if err != nil {
 			return nil, fmt.Errorf("read unrecorded owner keys of the production record: %w", err)
 		}

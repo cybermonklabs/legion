@@ -8,7 +8,6 @@ import (
 	"strings"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
-	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -85,25 +84,25 @@ func (s *server) putDeliverySettings(w http.ResponseWriter, r *http.Request) {
 		"pr_checks_workflow_path": input.PRChecksWorkflowPath,
 	} {
 		if strings.TrimSpace(value) == "" {
-			writeError(w, "DELIVERY_SETTINGS_INPUT", http.StatusBadRequest, name+" is required")
+			writeError(w, delivery.CodeDeliverySettingsInput, http.StatusBadRequest, name+" is required")
 			return
 		}
 	}
 	if len(input.PopulationAuthors) == 0 {
-		writeError(w, "DELIVERY_SETTINGS_INPUT", http.StatusBadRequest, "population_authors must name at least one author")
+		writeError(w, delivery.CodeDeliverySettingsInput, http.StatusBadRequest, "population_authors must name at least one author")
 		return
 	}
 	productionJobNames, refusal := trimmedProductionJobNames(input.ProductionJobNames)
 	if refusal != "" {
-		writeError(w, "DELIVERY_SETTINGS_INPUT", http.StatusBadRequest, refusal)
+		writeError(w, delivery.CodeDeliverySettingsInput, http.StatusBadRequest, refusal)
 		return
 	}
 
 	// The access check runs before any write: a failed re-PUT leaves the stored settings
 	// untouched, matching putArchitectureSource's own ordering.
 	if _, err := s.deps.GitHub.CheckSource(r.Context(), repoOwner, repoName); err != nil {
-		if errors.Is(err, githubapp.ErrNoAppKey) || errors.Is(err, githubapp.ErrNoInstallation) || errors.Is(err, githubapp.ErrNoContentsRead) {
-			writeError(w, "DELIVERY_SETTINGS_ACCESS", http.StatusConflict, err.Error())
+		if appCannotRead(err) {
+			writeError(w, delivery.CodeDeliverySettingsAccess, http.StatusConflict, err.Error())
 			return
 		}
 		s.writeHandlerError(w, err)

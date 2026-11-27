@@ -278,15 +278,13 @@ type deliveryRead struct {
 
 // repoReads is what a day reads of one repository as the deploy repository, under settings, its
 // own rule, whose DeployRepo is that repository, whose history starts at since: its deploys, its
-// apply runs and its CI runs; or, of an events repository (posted), the project's posted deploys
-// that finished from the day on, or from an earlier day on.
+// apply runs and its CI runs.
 type repoReads struct {
 	settings delivery.DeliverySettings
 	since    time.Time
 	deploys  delivery.Deploys
 	applies  delivery.ApplyRows
 	ci       delivery.CIRows
-	posted   postedRecord
 }
 
 // readDeliveryDays reads the delivery and CI rows of each of days (UTC midnights, in order and

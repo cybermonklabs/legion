@@ -964,14 +964,10 @@ func TestAProjectReadsEachOfItsSourceRepositoriesUnderItsOwnRule(t *testing.T) {
 	r := newRefresherRig(t)
 	r.seedSources(t)
 	r.settle(t)
-	repos, err := DeployReposIn(t.Context(), r.database.Pool)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := repos.Owned("ALPHA"); !slices.Equal(got, []string{alphaApp, alphaOps}) {
+	if got := ownedRepos(t, r.database.Pool, "ALPHA"); !slices.Equal(got, []string{alphaApp, alphaOps}) {
 		t.Errorf("ALPHA's rows stand recorded under %v, want %s and %s", got, alphaApp, alphaOps)
 	}
-	if got := repos.Owned("OMEGA"); !slices.Equal(got, []string{omegaApp}) {
+	if got := ownedRepos(t, r.database.Pool, "OMEGA"); !slices.Equal(got, []string{omegaApp}) {
 		t.Errorf("OMEGA's rows stand recorded under %v, want %s alone", got, omegaApp)
 	}
 	for project, want := range map[string]defaultTally{"ALPHA": {n: 2, via: 2}, "OMEGA": {n: 1, via: 1}} {
@@ -1011,11 +1007,7 @@ func TestASourceNamingNoRepositoryMovesWithTheDefaultRepository(t *testing.T) {
 		t.Errorf("before the pass ALPHA reads %d deploys, %d through a repository; want the old selection's 2 and 2", got.n, got.via)
 	}
 	r.settle(t)
-	repos, err := DeployReposIn(t.Context(), r.database.Pool)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := repos.Owned("ALPHA"); !slices.Equal(got, []string{alphaNext, alphaOps}) {
+	if got := ownedRepos(t, r.database.Pool, "ALPHA"); !slices.Equal(got, []string{alphaNext, alphaOps}) {
 		t.Errorf("after the move ALPHA's rows stand recorded under %v, want %s and %s", got, alphaNext, alphaOps)
 	}
 	if got := r.deploysOn(t, "ALPHA", sourcesDay); got != (defaultTally{n: 3, via: 3}) {

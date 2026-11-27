@@ -321,14 +321,6 @@ func scanDay(row pgx.Row) (DayRow, error) {
 	return day, nil
 }
 
-// scanWindowRow reads one row of a DayWindowIn read that names no repository and folds at most one
-// deploy repository per project: whether it answers for the window or the compare range, then its
-// eval, series and day, its parts, its updated_at and the owner it is stored under (owners.go).
-// Every row of that read is stored under "", which the row's repo, left empty, says.
-func scanWindowRow(row pgx.CollectableRow) (WindowRow, error) {
-	return scanWindowRowOf(row, false, false)
-}
-
 // scanWindowRowOf reads one row of a DayWindowIn read, scanning repo and deployRepo after owner
 // when the query selects them.
 func scanWindowRowOf(row pgx.CollectableRow, repo, deployRepo bool) (WindowRow, error) {

@@ -44,8 +44,10 @@ func ScanSettings(row pgx.Row) (DeliverySettings, error) {
 	return settings, nil
 }
 
-// ErrNoSettings is "delivery_settings has no row yet": intake and reconcile stay idle, and the
-// API answers that delivery is not configured, rather than guessing a repository.
+// ErrNoSettings is "no delivery settings stand": the singleton delivery_settings has no row yet
+// (GetSettings), a project has no row of project_delivery_settings (GetProjectSettings), or no
+// project has delivery on (the API's readDeliveryRules), which the API answers as delivery not
+// configured rather than guessing a repository.
 var ErrNoSettings = errors.New("delivery settings are not configured")
 
 // GetSettings reads the one delivery_settings row in q (the pool, or a transaction a read of

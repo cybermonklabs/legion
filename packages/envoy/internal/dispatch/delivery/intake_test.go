@@ -438,7 +438,7 @@ func capHeadWriteDeliveriesAt(t *testing.T, deliveries uint64) {
 // It logs to the test's intake logger (tuningFor), as the cache startIntakes builds does.
 func loadedSettingsCache(t *testing.T, ctx context.Context, pool *store.Pool) *SettingsCache {
 	t.Helper()
-	settings := newSettingsCache(pool, nil, nil, tuningFor(t).log)
+	settings := newSettingsCache(pool, SettingsWakes{}, tuningFor(t).log)
 	if !settings.reload(ctx) {
 		t.Fatal("read the delivery settings into the cache")
 	}

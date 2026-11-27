@@ -156,21 +156,13 @@ func putSources(t testing.TB, pool *store.Pool, project string, authors []string
 	})
 }
 
-// putProjectSettings saves input through delivery.PutProjectSettings, in a transaction of its own.
+// putProjectSettings saves input through delivery.PutProjectSettings, in a transaction of its own
+// (deliverytest.SaveSettings).
 func putProjectSettings(t testing.TB, pool *store.Pool, input delivery.ProjectSettingsInput) delivery.ProjectSettings {
 	t.Helper()
-	ctx := t.Context()
-	tx, err := pool.Begin(ctx)
-	if err != nil {
-		t.Fatalf("begin the delivery settings of %s: %v", input.Project, err)
-	}
-	defer tx.Rollback(ctx)
-	saved, err := delivery.PutProjectSettings(ctx, tx, input, model.Actor{Kind: "system", ID: "evals-test"})
+	saved, err := deliverytest.SaveSettings(t.Context(), pool, input, model.Actor{Kind: "system", ID: "evals-test"})
 	if err != nil {
 		t.Fatalf("save the delivery settings of %s: %v", input.Project, err)
-	}
-	if err := tx.Commit(ctx); err != nil {
-		t.Fatalf("commit the delivery settings of %s: %v", input.Project, err)
 	}
 	return saved
 }

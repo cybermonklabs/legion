@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
@@ -107,6 +109,23 @@ func (r rig) count(t *testing.T, statement string, args ...any) int {
 		t.Fatalf("count %q: %v", statement, err)
 	}
 	return n
+}
+
+// ownedRepos is the source repositories project's own sources read, as the refresher last recorded
+// them with the rows (eval_days_rules, the rows DeployReposIn reads), in the order of their names.
+func ownedRepos(t *testing.T, q delivery.Querier, project string) []string {
+	t.Helper()
+	rows, err := q.Query(t.Context(), `
+		select repo from eval_days_rules where project_key = $1 and not starts_with(repo, 'events:') order by repo
+	`, project)
+	if err != nil {
+		t.Fatalf("read %s's source repositories: %v", project, err)
+	}
+	repos, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		t.Fatalf("read %s's source repositories: %v", project, err)
+	}
+	return repos
 }
 
 // write logs rows under slug as caller and fails the test unless the write is stored.

@@ -35,12 +35,13 @@ import (
 //     name their days themselves: an issue's close day before and after the change, a filing's
 //     day before and after. A change of the delivery settings rewrites every day of the delivery
 //     and CI evals it moves, staged aside and published in one transaction with the rule
-//     (settings_rewrite.go, ruleStaging), and begins no walk; a move
-//     of the deploy repository moves none, since the evals that read it are kept for every
-//     repository that holds a delivery run and a read chooses among them (deploy_repos.go). A page
-//     whose changes move a series' first input day, or the repositories that hold a delivery run,
-//     writes the days it names and every other day those moves reach in its one commit, and
-//     moves no walk (span.go).
+//     (settings_rewrite.go, ruleStaging), and begins no walk; a move of a deploy source writes
+//     no day row of a repository whose rows stand built, since the evals that read it are kept for
+//     every repository that holds a delivery run and a read chooses among them (deploy_repos.go),
+//     and a repository a source reads under its first rule has its days built in the page's
+//     commit that records the rule (syncKept). A page whose changes move a series' first input
+//     day, or the repositories that hold a delivery run, writes the days it names and every other
+//     day those moves reach in its one commit, and moves no walk (span.go).
 //   - the event log up to its safe horizon, woken by the events channel: an issue event that can
 //     move the count of open P0 issues with no owner rewrites that project's unowned-p0 row of
 //     today, and one that moves an issue's repository or parent rewrites the days of the filings of

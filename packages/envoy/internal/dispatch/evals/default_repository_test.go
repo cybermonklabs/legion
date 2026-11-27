@@ -1915,11 +1915,7 @@ func TestAnOwnerChangeOfARepositoryWritesNoDayRow(t *testing.T) {
 	if differ := sameValues(r.xmins(t, memberXmins), members, show); len(differ) > 0 {
 		t.Errorf("the move wrote or deleted members, first ones:\n\t%s", strings.Join(differ, "\n\t"))
 	}
-	repos, err := DeployReposIn(t.Context(), r.database.Pool)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := repos.Owned("OMEGA"); !slices.Equal(got, []string{alphaOps, omegaApp}) {
+	if got := ownedRepos(t, r.database.Pool, "OMEGA"); !slices.Equal(got, []string{alphaOps, omegaApp}) {
 		t.Errorf("after the move OMEGA's sources stand recorded under %v, want %s and %s", got, alphaOps, omegaApp)
 	}
 	check("after the move", "OMEGA", "ALPHA", map[string]defaultTally{"ALPHA": {n: 1, via: 1}, "OMEGA": {n: 2, via: 2}})
@@ -1965,11 +1961,7 @@ func TestADefaultMoveUnderASourceNamingNoRepositoryWritesNoDayRow(t *testing.T) 
 		if differ := sameValues(r.xmins(t, memberXmins), members, show); len(differ) > 0 {
 			t.Errorf("the move to %s wrote or deleted members, first ones:\n\t%s", step.repo, strings.Join(differ, "\n\t"))
 		}
-		repos, err := DeployReposIn(t.Context(), r.database.Pool)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if got := repos.Owned("ALPHA"); !slices.Equal(got, step.owned) {
+		if got := ownedRepos(t, r.database.Pool, "ALPHA"); !slices.Equal(got, step.owned) {
 			t.Errorf("after the move to %s ALPHA's sources stand recorded under %v, want %v", step.repo, got, step.owned)
 		}
 		if got := r.deploysOn(t, "ALPHA", sourcesDay); got != step.deploys {
@@ -2100,7 +2092,7 @@ func (r *refresherRig) marksOfSourceMove(t *testing.T, before, after sourceState
 		}
 	}
 	for _, row := range rows {
-		if touched[row.ProjectKey] && slices.Contains(failureDaySlugs, slugOf(row.ProjectKey, row.EvalID)) {
+		if touched[row.ProjectKey] && slices.Contains(FailureDaySlugs, slugOf(row.ProjectKey, row.EvalID)) {
 			note(staleCut{project: row.ProjectKey, repo: row.Repo}, row.EvalID)
 		}
 	}

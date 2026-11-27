@@ -110,8 +110,8 @@ func (r *refresherRig) failureValues(t *testing.T, project string, window Range)
 		t.Fatalf("read the evals of %s: %v", project, err)
 	}
 	entries := slices.DeleteFunc(page.Items, func(entry Entry) bool { return !isFailureMeasure(entry.Definition) })
-	if len(entries) != len(failureDaySlugs) {
-		t.Fatalf("%s holds %d failure measures, want %d", project, len(entries), len(failureDaySlugs))
+	if len(entries) != len(FailureDaySlugs) {
+		t.Fatalf("%s holds %d failure measures, want %d", project, len(entries), len(FailureDaySlugs))
 	}
 	firsts, err := FirstDaysIn(ctx, r.database.Pool, entries, nil)
 	if err != nil {
@@ -306,7 +306,7 @@ func TestAWindowBeforeFailuresMeasuredSinceReadsNoDataAndNamesTheDay(t *testing.
 	}
 	named := func(what string, values map[string]SeriesValues, day time.Time) {
 		t.Helper()
-		for _, slug := range failureDaySlugs {
+		for _, slug := range FailureDaySlugs {
 			if since := values[slug].DataSince; since == nil || *since != day.Format(time.DateOnly) {
 				t.Errorf("%s: %s's data_since is %v, want %s", what, slug, since, day.Format(time.DateOnly))
 			}
@@ -447,7 +447,7 @@ func TestASettingsChangeOfTheFailureSourcesRebuildsTheRows(t *testing.T) {
 	}
 	off := r.failureValues(t, "ALPHA", threeDays)
 	wantFigures(t, "failure sources off", off, map[string]*float64{"change-fail-rate.rate": nil, "deployment-rework-rate.rate": nil})
-	for _, slug := range failureDaySlugs {
+	for _, slug := range FailureDaySlugs {
 		if since := off[slug].DataSince; since != nil {
 			t.Errorf("with failure sources off %s's data_since is %s, want none", slug, *since)
 		}
@@ -479,7 +479,7 @@ func TestTheStoredDaysReadAsTheirDayInASessionEastOfUTC(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read the rules the rows stand built under: %v", err)
 	}
-	if since := built[ruleKey(alphaApp)].since; since == nil || !since.Equal(failureDay) {
+	if since := built[delivery.RuleKey(alphaApp)].since; since == nil || !since.Equal(failureDay) {
 		t.Errorf("%s's kept_since %s reads as %v, want that day", alphaApp, failureDay.Format(time.DateOnly), since)
 	}
 	for _, projects := range [][]string{{"ALPHA"}, nil} {

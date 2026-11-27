@@ -101,12 +101,10 @@ func KeyedByDeployRepo(definition Definition) bool {
 // for a project only where the attribution counts a pull request, a deploy or a run for it (a deploy
 // of one project's repository that ships another's pull request counts for both, dispatch://INFRA-978
 // A8, and one that ships none, a row of the repository's source key, for its source's project
-// alone, R12), and the project's own events repository. owners is each source repository's project,
-// by repository.
+// alone, R12), and the project's own events repository.
 type DeployRepos struct {
 	sources []string
 	events  map[string]string
-	owners  map[string]string
 }
 
 // Of is the repositories project's read folds: every source repository, and its events repository
@@ -120,20 +118,6 @@ func (d *DeployRepos) Of(project string) []string {
 		repos = append(repos, repo)
 	}
 	return nonNil(repos)
-}
-
-// Owned is the source repositories project's own sources read, in the byte order of their names.
-func (d *DeployRepos) Owned(project string) []string {
-	if d == nil {
-		return nil
-	}
-	var owned []string
-	for _, repo := range d.sources {
-		if d.owners[repo] == project {
-			owned = append(owned, repo)
-		}
-	}
-	return owned
 }
 
 // DeployRepoOf is the deploy repositories whose day rows, stored figures and members a read of
@@ -176,7 +160,7 @@ func DeployReposOf(project, repo string) *DeployRepos {
 	case posted:
 		return &DeployRepos{events: map[string]string{project: repo}}
 	}
-	return &DeployRepos{sources: []string{repo}, owners: map[string]string{repo: project}}
+	return &DeployRepos{sources: []string{repo}}
 }
 
 // unionPairs is each of projects paired with unionDeployRepo ("*"), as two arrays of one element
@@ -201,12 +185,12 @@ func cutDeployRepos(ctx context.Context, q delivery.Querier, project, deployRepo
 	return DeployReposOf(project, deployRepo), nil
 }
 
-// hasRepo reports whether repos contains repo.
+// hasRepo reports whether project's read folds repo (Of).
 func (d *DeployRepos) hasRepo(project, repo string) bool {
 	if d == nil || repo == "" {
 		return false
 	}
-	return slices.Contains(d.Of(project), repo)
+	return slices.Contains(d.sources, repo) || d.events[project] == repo
 }
 
 // DeployReposIn is, read in q, the repositories whose rows a read of a project's evals that read
@@ -229,13 +213,13 @@ func DeployReposIn(ctx context.Context, q delivery.Querier) (*DeployRepos, error
 	if err != nil {
 		return nil, fmt.Errorf("read the deploy repositories the day rows stand recorded under: %w", err)
 	}
-	repos := &DeployRepos{events: map[string]string{}, owners: map[string]string{}}
+	repos := &DeployRepos{events: map[string]string{}}
 	var project, repo string
 	var kept bool
 	if _, err := pgx.ForEachRow(rows, []any{&project, &repo, &kept}, func() error {
 		switch posted := IsEventsRepo(repo); {
 		case !posted:
-			repos.sources, repos.owners[repo] = append(repos.sources, repo), project
+			repos.sources = append(repos.sources, repo)
 		case kept:
 			repos.events[project] = repo
 		}
@@ -280,12 +264,6 @@ func EventsRepo(project string) string {
 // repository's name.
 func IsEventsRepo(repo string) bool {
 	return strings.HasPrefix(repo, delivery.SourceKindEvents+":")
-}
-
-// ruleKey is the key a repository's rule is held by (refresh.rules, refresh.builtUnder): its name
-// without case, as a source names it and as the runs of it are stored either way.
-func ruleKey(repo string) string {
-	return strings.ToLower(repo)
 }
 
 // keptRepo is one repository whose rows of the evals that read the deploy repository are kept:

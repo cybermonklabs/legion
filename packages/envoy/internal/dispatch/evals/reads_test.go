@@ -326,7 +326,7 @@ func TestARequestForAnotherSpellingReadsTheOneStoredCutAndItsMark(t *testing.T) 
 		if !slices.Equal(repos, []string{storedRepo}) || !FiguresOffered(repos, window, nil) {
 			t.Fatalf("%q resolved to %v, want the one stored cut %q", repo, repos, storedRepo)
 		}
-		got, err := ReadStoredFiguresIn(ctx, pool, []string{r.project}, []Entry{entry}, nil, repos, window, nil)
+		got, err := ReadStoredFiguresIn(ctx, pool, []string{r.project}, []Entry{entry}, repos, window, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -527,7 +527,7 @@ func TestTheListReadsOfAFullPageOfTheLargestEvalsSendBoundedStatements(t *testin
 	if err != nil {
 		t.Fatalf("read the first days of %d evals: %v", page, err)
 	}
-	if _, err := ReadStoredFiguresIn(t.Context(), traced.database.Pool, []string{r.project}, entries, nil, nil, window, &compare); err != nil {
+	if _, err := ReadStoredFiguresIn(t.Context(), traced.database.Pool, []string{r.project}, entries, nil, window, &compare); err != nil {
 		t.Fatalf("read the stored figures of %d evals: %v", page, err)
 	}
 	sent := r.measured(t, statements.take())

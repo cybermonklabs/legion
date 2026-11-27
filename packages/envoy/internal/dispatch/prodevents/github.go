@@ -33,7 +33,7 @@ const StatusDropped = "dropped"
 
 // droppedDeploy is the SQL condition of a dropped GitHub deploy row (StatusDropped), which no
 // signal blames: the reads of a signal's deploy leave it out.
-const droppedDeploy = `(source = 'github' and status = 'dropped')`
+const droppedDeploy = `(source = '` + SourceGitHub + `' and status = '` + StatusDropped + `')`
 
 // UpsertGitHubDeploy stores the GitHub adapter's deploy row event, or moves the row its project
 // already holds under its source_ref to event's fields (a re-run's times, the pull requests and

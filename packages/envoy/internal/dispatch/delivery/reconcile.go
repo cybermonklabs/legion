@@ -287,7 +287,7 @@ func (r *Reconcile) runOnce(ctx context.Context) {
 		record(repo, step, err)
 	}
 
-	recordRead("", "reconcile merged pull requests", r.reconcileMergedPullRequests(ctx, rules, searchProgressScope(rules), now))
+	recordRead("", "reconcile merged pull requests", r.reconcileMergedPullRequests(ctx, rules, now))
 	recordRead("", "reconcile partial pull requests", r.reconcilePartialPullRequests(ctx))
 	// The head pass ran at the top of the pass, before the settings were read; its failure is
 	// recorded here, so last_error names the steps in this list's order.
@@ -458,7 +458,8 @@ const mergedPullRequestsStepPrefix = "merged_pull_requests/installation/"
 // plain errors.New, so a *githubapp.RateLimitError among them still answers errors.As for a
 // caller that needs to tell it apart from an ordinary failure, the same reason
 // reconcileWorkflow's own per-run aggregation keeps its typed error with %w.
-func (r *Reconcile) reconcileMergedPullRequests(ctx context.Context, rules *SourceRules, scope string, until time.Time) error {
+func (r *Reconcile) reconcileMergedPullRequests(ctx context.Context, rules *SourceRules, until time.Time) error {
+	scope := searchProgressScope(rules)
 	var mu sync.Mutex
 	var failures []error
 	blocked := map[int64]bool{}

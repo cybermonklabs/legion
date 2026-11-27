@@ -302,10 +302,11 @@ type searchPullRequestsPage struct {
 // `Actor` interface `author` resolves to. GitHub's GraphQL login for a bot-authored pull request
 // is the bare account name ("sjawhar-agent"); its REST `user.login` for the identical account
 // carries the "[bot]" suffix ("sjawhar-agent[bot]") REST adds for every App-created identity.
-// IsPopulationPR (population.go) and delivery_settings.population_authors are both written and
-// compared in REST's form -- Dispatch's own intake and every other fetcher in this package read
-// REST -- so a GraphQL result normalizes to that same form here, at decode time, rather than
-// teaching every consumer to recognize two spellings of one account.
+// IsPopulationPR (population.go) and a project's population authors
+// (project_delivery_settings.population_authors) are both written and compared in REST's form --
+// Dispatch's own intake and every other fetcher in this package read REST -- so a GraphQL result
+// normalizes to that same form here, at decode time, rather than teaching every consumer to
+// recognize two spellings of one account.
 type searchPullRequestNode struct {
 	Number int    `json:"number"`
 	Title  string `json:"title"`
@@ -478,12 +479,15 @@ func searchOneInstallation(ctx context.Context, client *githubapp.Client, instal
 	return searchMergedPullRequests(ctx, client, token, repos, authors, since, until, visit)
 }
 
-// searchMergedPullRequestsWindow bounds how many results one window of the merged-PR search
-// hands to its visit callback, and so how much a failed pass redoes: GitHub's own 1,000-result
-// cap, which at 100 results a page is ten pages. Unlike a run listing, nothing here costs a
-// GitHub call per result -- each one is classified and upserted against Postgres alone -- so a
-// window is its pages and no more.
-const searchMergedPullRequestsWindow = githubResultCap
+// searchPullRequestsWindow bounds how many results one window of a pull-request search
+// (searchPullRequests: the merged-PR search and the revert search) hands to its visit callback,
+// and so how much a failed pass redoes: GitHub's own 1,000-result cap, which at 100 results a page
+// is ten pages. The merged-PR search's visit classifies and upserts each result against Postgres
+// alone, so its window costs its pages and no more. The revert search's visit reads each revert
+// it finds and the pull request it reverts from GitHub (reconcileReverts, recordRevertFromGitHub),
+// two calls or more a revert, so a window of it that fails partway, a rate limit among the
+// failures, reads those reverts again on a later pass.
+const searchPullRequestsWindow = githubResultCap
 
 // searchMergedPullRequests is the merged-PR search of repos by authors over [since, until]
 // (searchPullRequests).
@@ -516,7 +520,7 @@ func searchPullRequests(ctx context.Context, client *githubapp.Client, token fun
 			return result.items, result.issueCount, nil
 		}
 	}
-	return walkWindowed(since, until, scope, searchMergedPullRequestsWindow, newFetcher, visit)
+	return walkWindowed(since, until, scope, searchPullRequestsWindow, newFetcher, visit)
 }
 
 // SearchMergedReverts finds every pull request merged in [since, until] into owner/repo whose body

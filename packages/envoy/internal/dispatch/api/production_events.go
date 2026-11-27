@@ -305,7 +305,7 @@ func (input productionEventInput) event(person bool) (prodevents.Event, error) {
 		commits[index] = strings.ToLower(strings.TrimSpace(commit))
 	}
 	event := prodevents.Event{
-		Kind: input.Kind, Environment: environment, Status: status, SourceRef: input.SourceRef,
+		Kind: input.Kind, Source: prodevents.SourceAPI, Environment: environment, Status: status, SourceRef: input.SourceRef,
 		StartedAt: input.StartedAt, FinishedAt: input.FinishedAt, Repo: input.Repo, Commits: commits,
 		PullRequests: input.PullRequests, URL: link, Note: input.Note,
 	}
@@ -317,11 +317,9 @@ func (input productionEventInput) event(person bool) (prodevents.Event, error) {
 			return prodevents.Event{}, productionEventInputError(
 				"deploy_id, cicd.pipeline.run.id, commit_sha and detected_at name a failure's deploy and its detection; a deploy's own run is its source_ref and url")
 		}
-		event.Source = prodevents.SourceAPI
 		return event, nil
 	}
 	signal := prodevents.SignalAPI
-	event.Source = prodevents.SourceAPI
 	if person {
 		signal = prodevents.SignalPerson
 		event.Source = prodevents.SourcePerson

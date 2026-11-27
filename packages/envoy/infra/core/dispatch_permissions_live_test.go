@@ -30,6 +30,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
+	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliverytest"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/githubapptest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -245,7 +246,8 @@ func testClientPermissions() core.Permissions {
 // seedDispatchDeliverySettings migrates a fresh Postgres and saves the delivery settings the
 // intakes route by: a project of its own, WIDGETS, with delivery on and one github_workflow source
 // reading acme/widgets, the repository the fake GitHub App answers for (newDispatchGitHub), saved
-// through delivery.PutProjectSettings as the settings route saves a project's.
+// through delivery.PutProjectSettings (deliverytest.SaveSettings) as the settings route saves a
+// project's.
 func seedDispatchDeliverySettings(t *testing.T, databaseURL string) {
 	t.Helper()
 	const project = "WIDGETS"
@@ -255,10 +257,7 @@ func seedDispatchDeliverySettings(t *testing.T, databaseURL string) {
 	require.NoError(t, database.Migrate(t.Context()))
 	_, err = database.Pool.Exec(t.Context(), `insert into projects (key, name, default_assignee) values ($1, $1, $2)`, project, dispatchPerson)
 	require.NoError(t, err)
-	tx, err := database.Pool.Begin(t.Context())
-	require.NoError(t, err)
-	defer func() { _ = tx.Rollback(context.Background()) }()
-	_, err = delivery.PutProjectSettings(t.Context(), tx, delivery.ProjectSettingsInput{
+	_, err = deliverytest.SaveSettings(t.Context(), database.Pool, delivery.ProjectSettingsInput{
 		Project: project, Delivery: true, PopulationAuthors: []string{"octocat"},
 		Sources: []delivery.SourceInput{{
 			Kind: delivery.SourceKindGitHubWorkflow, Repo: new("acme/widgets"),
@@ -267,7 +266,6 @@ func seedDispatchDeliverySettings(t *testing.T, databaseURL string) {
 		}},
 	}, model.Actor{Kind: "system", ID: "dispatch-permissions-test"})
 	require.NoError(t, err)
-	require.NoError(t, tx.Commit(t.Context()))
 }
 
 // startDispatch runs the Dispatch binary against databaseURL and natsURL on a held loopback port,

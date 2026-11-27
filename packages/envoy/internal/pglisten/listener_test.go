@@ -16,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
+	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliverytest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -494,22 +495,14 @@ func TestTheListenerHearsTheTriggersItListensFor(t *testing.T) {
 	if _, err := database.Pool.Exec(ctx, `insert into projects (key, name, default_assignee, default_repo) values ('LIVE', 'Live', 'alice', 'acme/widgets')`); err != nil {
 		t.Fatalf("insert the project: %v", err)
 	}
-	tx, err := database.Pool.Begin(ctx)
-	if err != nil {
-		t.Fatalf("begin the settings save: %v", err)
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	if _, err := delivery.PutProjectSettings(ctx, tx, delivery.ProjectSettingsInput{
+	if _, err := deliverytest.SaveSettings(ctx, database.Pool, delivery.ProjectSettingsInput{
 		Project: "LIVE", Delivery: true, PopulationAuthors: []string{"octocat"},
 		Sources: []delivery.SourceInput{{
 			Kind: delivery.SourceKindGitHubWorkflow, DeployWorkflowPath: new(".github/workflows/deploy.yml"),
 			ProductionJobNames: []string{"widgets-release / widgets-release"}, PRChecksWorkflowPath: new(".github/workflows/pr-checks.yml"),
 		}},
 	}, model.Actor{Kind: "system", ID: "test"}); err != nil {
-		t.Fatalf("PutProjectSettings: %v", err)
-	}
-	if err := tx.Commit(ctx); err != nil {
-		t.Fatalf("commit the settings save: %v", err)
+		t.Fatalf("save the delivery settings: %v", err)
 	}
 	for _, statement := range []string{
 		`insert into issues (key, project_key, number, title, created_by, rank) values ('LIVE-1', 'LIVE', 1, 'x', '{"kind":"user","id":"alice"}', 'U')`,

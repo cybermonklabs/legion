@@ -51,7 +51,7 @@ const deriveChunk = 28 * 24 * time.Hour
 // catch-up whose pages run past a prune is judged at each page. A cursor lost
 // (delivery.CursorLost), before the first page or before a later one, forgets every recorded rule,
 // so every repository derives whole, as before a first page, and moves to the log's head.
-func passDeploys(ctx context.Context, pool *store.Pool, now func() time.Time) error {
+func passDeploys(ctx context.Context, pool *store.Pool) error {
 	stored, err := readCursor(ctx, pool, deploysCursor)
 	if err != nil {
 		return err
@@ -63,7 +63,7 @@ func passDeploys(ctx context.Context, pool *store.Pool, now func() time.Time) er
 	}
 	derived := map[string]bool{}
 	for first := true; ; first = false {
-		checked := now()
+		checked := time.Now()
 		lost := first && !stored.held
 		if !lost {
 			if lost, err = delivery.CursorLost(ctx, pool, position, checked); err != nil {
@@ -337,7 +337,7 @@ func apply(ctx context.Context, pool *store.Pool, rule delivery.DeliverySettings
 		if wanted[old.SourceRef] && old.ProjectKey == rule.Project || old.Status == prodevents.StatusDropped {
 			continue
 		}
-		if _, err := prodevents.DropGitHubDeploy(ctx, pool, old.ProjectKey, old.ID, dropReason(rule, old, at), Actor, at); err != nil {
+		if _, err := prodevents.DropGitHubDeploy(ctx, pool, old.ProjectKey, old.ID, dropReason(rule, old, at), loopActor, at); err != nil {
 			return err
 		}
 	}
@@ -351,7 +351,7 @@ func deployEvent(rule delivery.DeliverySettings, row delivery.DeployRow) prodeve
 		ProjectKey: rule.Project, Kind: prodevents.KindDeploy, Status: prodevents.StatusSucceeded,
 		Source: prodevents.SourceGitHub, SourceRef: prodevents.GitHubSourceRef(row.Run.RunID),
 		StartedAt: new(row.Run.Created().UTC()), FinishedAt: new(row.FinishedAt.UTC()), Repo: rule.DeployRepo,
-		Commits: row.Commits, PullRequests: row.PullRequests, URL: row.Run.URL, Actor: Actor,
+		Commits: row.Commits, PullRequests: row.PullRequests, URL: row.Run.URL, Actor: loopActor,
 	}
 }
 

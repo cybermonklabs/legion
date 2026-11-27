@@ -127,7 +127,7 @@ func TestTheSignalsWritesTakeNoChangeLogLock(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("record the revert: %v", err)
 	}
-	r.underChangeLogLock("the deploys feed's revert", func() error { return passDeploys(r.ctx, r.pool, time.Now) }, r.newFailure())
+	r.underChangeLogLock("the deploys feed's revert", func() error { return passDeploys(r.ctx, r.pool) }, r.newFailure())
 
 	incident := r.issue(10, "incident")
 	r.link(incident, "https://github.com/acme/widgets/pull/11")

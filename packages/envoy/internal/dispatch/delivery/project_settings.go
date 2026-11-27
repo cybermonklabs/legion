@@ -833,13 +833,11 @@ func ValidateProjectSettings(input ProjectSettingsInput) error {
 func ReconciledThrough(ctx context.Context, q Querier, rule DeliverySettings, rules *SourceRules) (*time.Time, error) {
 	// The reconcile lists the pull-request checks workflow on its own only where it is another file
 	// than the deploy workflow (runOnce), so a source with one workflow waits for one listing.
-	steps := [][2]string{{runsStep(DeliveryRunKindDeploy, rule.DeployRepo), runsProgressScope(rule.DeployRepo, rule.DeployWorkflowPath)}}
+	names := []string{runsStep(DeliveryRunKindDeploy, rule.DeployRepo)}
+	scopes := []string{runsProgressScope(rule.DeployRepo, rule.DeployWorkflowPath)}
 	if rule.PRChecksWorkflowPath != rule.DeployWorkflowPath {
-		steps = append(steps, [2]string{runsStep(DeliveryRunKindPRChecks, rule.DeployRepo), runsProgressScope(rule.DeployRepo, rule.PRChecksWorkflowPath)})
-	}
-	names, scopes := make([]string, len(steps)), make([]string, len(steps))
-	for i, step := range steps {
-		names[i], scopes[i] = step[0], step[1]
+		names = append(names, runsStep(DeliveryRunKindPRChecks, rule.DeployRepo))
+		scopes = append(scopes, runsProgressScope(rule.DeployRepo, rule.PRChecksWorkflowPath))
 	}
 	var through *time.Time
 	err := q.QueryRow(ctx, `

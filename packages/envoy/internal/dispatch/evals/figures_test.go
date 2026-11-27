@@ -1261,7 +1261,7 @@ func (s listState) values(t *testing.T, window Range, compare *Range) (stated, f
 	offered := FiguresOffered(s.repos, window, compare)
 	if offered {
 		var err error
-		if stored, err = ReadStoredFiguresIn(t.Context(), s.q, []string{s.project}, s.entries, s.deployRepos, s.repos, window, compare); err != nil {
+		if stored, err = ReadStoredFiguresIn(t.Context(), s.q, []string{s.project}, s.entries, s.repos, window, compare); err != nil {
 			t.Fatalf("read %s's stored figures: %v", s.project, err)
 		}
 	}
@@ -3708,7 +3708,7 @@ func TestAFigureOfADeployEvalReadsTheProjectsOwnDeployRepository(t *testing.T) {
 		if n != want.n {
 			t.Errorf("%s's day rows of deploy-frequency count %d deploys over the week, want %d", project, n, want.n)
 		}
-		stored, err := ReadStoredFiguresIn(ctx, r.database.Pool, []string{project}, []Entry{entry}, repos, nil, window, nil)
+		stored, err := ReadStoredFiguresIn(ctx, r.database.Pool, []string{project}, []Entry{entry}, nil, window, nil)
 		if err != nil {
 			t.Fatal(err)
 		}

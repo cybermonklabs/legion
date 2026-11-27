@@ -72,8 +72,8 @@ func reserveDurableLeases(callers *store.LeaseCallers, durable string) (intakeLe
 // in reserves the same callers as one they run in.
 //
 // Both intakes route by one SettingsCache, which reads every project's delivery settings at start
-// and again each time settingsWake is signalled -- in the server, the shared listener's wake on
-// SettingsChannel -- and each time projectsWake is signalled -- the listener's wake on the events
+// and again each time wakes.Settings is signalled -- in the server, the shared listener's wake on
+// SettingsChannel -- and each time wakes.Projects is signalled -- the listener's wake on the events
 // channel (api.EventsChannel) -- and a default repository a deploy source reads has moved, so no
 // message and no timer reads the settings. Nil wakes read them once.
 //
@@ -104,14 +104,14 @@ func reserveDurableLeases(callers *store.LeaseCallers, durable string) (intakeLe
 // every envoy-dispatch process one delivers from each durable at a time -- and so that neither
 // intake's take-over can block the other's, which one lease over both durables did (the
 // measurement is on consumerLease).
-func StartIntakes(ctx context.Context, connect func(name string) (*bus.Client, error), pool *store.Pool, leases IntakeLeases, github *githubapp.Client, broker *events.Broker, settingsWake, projectsWake <-chan struct{}, pushes PushImports, attributor *Attributor) (stop func(), err error) {
-	return startIntakes(ctx, newIntakeTuning(), connect, pool, leases, github, broker, settingsWake, projectsWake, pushes, attributor)
+func StartIntakes(ctx context.Context, connect func(name string) (*bus.Client, error), pool *store.Pool, leases IntakeLeases, github *githubapp.Client, broker *events.Broker, wakes SettingsWakes, pushes PushImports, attributor *Attributor) (stop func(), err error) {
+	return startIntakes(ctx, newIntakeTuning(), connect, pool, leases, github, broker, wakes, pushes, attributor)
 }
 
 // startIntakes is StartIntakes with both intakes, and the settings cache they route by, timed by
 // tuning and logging to its logger (intakeTuning.log): production's values from StartIntakes, or a
 // test's.
-func startIntakes(ctx context.Context, tuning *intakeTuning, connect func(name string) (*bus.Client, error), pool *store.Pool, leases IntakeLeases, github *githubapp.Client, broker *events.Broker, settingsWake, projectsWake <-chan struct{}, pushes PushImports, attributor *Attributor) (stop func(), err error) {
+func startIntakes(ctx context.Context, tuning *intakeTuning, connect func(name string) (*bus.Client, error), pool *store.Pool, leases IntakeLeases, github *githubapp.Client, broker *events.Broker, wakes SettingsWakes, pushes PushImports, attributor *Attributor) (stop func(), err error) {
 	if github == nil {
 		tuning.log.Info("dispatch delivery: no GitHub App key — the intakes are idle")
 		return func() {}, nil
@@ -125,7 +125,7 @@ func startIntakes(ctx context.Context, tuning *intakeTuning, connect func(name s
 		intakeClient.Close()
 		return nil, fmt.Errorf("connect the job intake: %w", err)
 	}
-	settings := newSettingsCache(pool, settingsWake, projectsWake, tuning.log)
+	settings := newSettingsCache(pool, wakes, tuning.log)
 	intake := newIntake(tuning, intakeClient, pool, leases.events, github, broker, settings, attributor)
 	intake.pushes = pushes
 	job := newJobIntake(tuning, jobClient, pool, leases.jobs, github, realJobClock{}, settings)

@@ -73,7 +73,7 @@ func TestAReadOfSeveralDaysAnswersEachDaysOwnReads(t *testing.T) {
 	var repos []keptRepo
 	for _, repo := range held {
 		for _, rule := range delivery.DeployRules(projects) {
-			if ruleKey(rule.DeployRepo) == ruleKey(repo.name) {
+			if delivery.RuleKey(rule.DeployRepo) == delivery.RuleKey(repo.name) {
 				repo.rule = rule
 				repo.rule.DeployRepo = repo.name
 				repos = append(repos, repo)

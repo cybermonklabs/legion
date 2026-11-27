@@ -58,16 +58,17 @@ import (
 // Each write is a project's days in one transaction, as every computed day row is written: upserted
 // where a value moved, the stale rows deleted, and the stored figures of the days folded again.
 
-// failureDaySlugs is the evals a project's failure rows are of.
-var failureDaySlugs = []string{SlugChangeFailRate, SlugFailedDeployRecovery, SlugDeploymentReworkRate}
+// FailureDaySlugs is the evals a project's failure rows are of, whose stored day parts the delivery
+// measures fold (measures.FailureParts, read by Store.DeploymentFailures).
+var FailureDaySlugs = []string{SlugChangeFailRate, SlugFailedDeployRecovery, SlugDeploymentReworkRate}
 
 // failureFamily names the failure rows in a pass's report (builtDay) and in a refusal.
 const failureFamily = "failure"
 
 // isFailureMeasure reports whether definition is one of the three failure measures: a computed
-// eval of failureDaySlugs.
+// eval of FailureDaySlugs.
 func isFailureMeasure(definition Definition) bool {
-	return definition.Computed() && slices.Contains(failureDaySlugs, definition.Slug)
+	return definition.Computed() && slices.Contains(FailureDaySlugs, definition.Slug)
 }
 
 // signalSources is the failure source each signal of the record counts under
@@ -89,7 +90,7 @@ type failureProject struct {
 }
 
 // failureProjectOf is settings' failure project, false where its failure measures are off:
-// delivery off, or no failure source.
+// delivery off, no failure source, or no first measured day (failures_measured_since).
 func failureProjectOf(settings delivery.ProjectSettings) (failureProject, bool) {
 	if !settings.Delivery || len(settings.FailureSources) == 0 || settings.FailuresMeasuredSince == nil {
 		return failureProject{}, false
@@ -282,13 +283,33 @@ func (f *failureRecord) count(failures []prodevents.Event) {
 			day := measures.Midnight(*failure.RestoredAt)
 			f.restoredOn[day] = append(f.restoredOn[day], len(f.counted))
 		}
-		if by := failure.RestoredByDeploy; by != nil {
-			if _, held := f.index[*by]; held {
-				f.restores[*by] = true
-			}
+		if at, held := f.restorer(failure); held {
+			f.restores[f.deploys[at].ID] = true
 		}
 		f.counted = append(f.counted, failure)
 	}
+}
+
+// restorer is the index in f.deploys of the deploy that restored failure (restored_by_deploy),
+// false where none of f's deploys did.
+func (f *failureRecord) restorer(failure prodevents.Event) (int, bool) {
+	if failure.RestoredByDeploy == nil {
+		return 0, false
+	}
+	at, held := f.index[*failure.RestoredByDeploy]
+	return at, held
+}
+
+// failureEvalIDs is the ids of the failure measures (FailureDaySlugs) of each of projects, in
+// their order.
+func failureEvalIDs(projects ...string) []string {
+	ids := make([]string, 0, len(projects)*len(FailureDaySlugs))
+	for _, project := range projects {
+		for _, slug := range FailureDaySlugs {
+			ids = append(ids, EvalID(project, slug))
+		}
+	}
+	return ids
 }
 
 // recordProjects uses the same ownership keys as attribution.deploy for a GitHub deploy. A
@@ -440,14 +461,11 @@ func (s *Store) writeFailureDays(ctx context.Context, write failureWrite, builtB
 	if len(write.days) == 0 && !write.whole {
 		return nil
 	}
-	evalIDs := make([]string, len(failureDaySlugs))
-	for i, slug := range failureDaySlugs {
-		evalIDs[i] = EvalID(write.project, slug)
-	}
+	evalIDs := failureEvalIDs(write.project)
 	var rows []DayRow
 	spans := writtenSpans{}
 	for _, day := range write.days {
-		if err := checkProjectDay(failureFamily, day, failureDaySlugs, nil); err != nil {
+		if err := checkProjectDay(failureFamily, day, FailureDaySlugs, nil); err != nil {
 			return err
 		}
 		rows = append(rows, day.Rows...)
@@ -455,60 +473,55 @@ func (s *Store) writeFailureDays(ctx context.Context, write failureWrite, builtB
 			spans.add(write.project, id, day.Day, day.Day)
 		}
 	}
-	tx, err := s.database.Pool.Begin(ctx)
-	if err != nil {
-		return fmt.Errorf("begin the failure rows of %s: %w", write.project, err)
-	}
-	defer tx.Rollback(ctx)
-	if write.rewrite {
-		if err := MarkSettingsRewrite(ctx, tx); err != nil {
+	if err := s.inTx(ctx, "the failure rows of "+write.project, func(tx pgx.Tx) error {
+		if write.rewrite {
+			if err := MarkSettingsRewrite(ctx, tx); err != nil {
+				return err
+			}
+		}
+		if len(rows) > 0 {
+			if err := upsertDays(ctx, tx, rows, builtBy); err != nil {
+				return err
+			}
+		}
+		if err := deleteStaleFailureDays(ctx, tx, write.project, evalIDs, write.days); err != nil {
 			return err
 		}
-	}
-	if len(rows) > 0 {
-		if err := upsertDays(ctx, tx, rows, builtBy); err != nil {
+		if write.whole {
+			// Every day outside the days written: before the first day and after today, or every
+			// day where the project's measures are off and no day is written. The figures of each
+			// day a row goes from are folded again with the days written.
+			outside := `delete from eval_days where project_key = $1 and eval_id = any($2) and writer = $3`
+			args := []any{write.project, evalIDs, writerComputation}
+			if len(write.days) > 0 {
+				outside += ` and (day < $4::date or day > $5::date)`
+				args = append(args, write.days[0].Day, write.days[len(write.days)-1].Day)
+			}
+			rows, err := tx.Query(ctx, outside+` returning eval_id, day`, args...)
+			if err != nil {
+				return fmt.Errorf("delete the failure rows %s holds outside its days: %w", write.project, err)
+			}
+			var evalID string
+			var day time.Time
+			if _, err := pgx.ForEachRow(rows, []any{&evalID, &day}, func() error {
+				spans.add(write.project, evalID, day, day)
+				return nil
+			}); err != nil {
+				return fmt.Errorf("delete the failure rows %s holds outside its days: %w", write.project, err)
+			}
+		}
+		if err := recordOwners(ctx, tx, write.owners); err != nil {
 			return err
 		}
-	}
-	if err := deleteStaleFailureDays(ctx, tx, write.project, evalIDs, write.days); err != nil {
-		return err
-	}
-	if write.whole {
-		// Every day outside the days written: before the first day and after today, or every day
-		// where the project's measures are off and no day is written. The figures of each day a
-		// row goes from are folded again with the days written.
-		outside := `delete from eval_days where project_key = $1 and eval_id = any($2) and writer = $3`
-		args := []any{write.project, evalIDs, writerComputation}
-		if len(write.days) > 0 {
-			outside += ` and (day < $4::date or day > $5::date)`
-			args = append(args, write.days[0].Day, write.days[len(write.days)-1].Day)
-		}
-		rows, err := tx.Query(ctx, outside+` returning eval_id, day`, args...)
-		if err != nil {
-			return fmt.Errorf("delete the failure rows %s holds outside its days: %w", write.project, err)
-		}
-		var evalID string
-		var day time.Time
-		if _, err := pgx.ForEachRow(rows, []any{&evalID, &day}, func() error {
-			spans.add(write.project, evalID, day, day)
-			return nil
-		}); err != nil {
-			return fmt.Errorf("delete the failure rows %s holds outside its days: %w", write.project, err)
-		}
-	}
-	if err := recordOwners(ctx, tx, write.owners); err != nil {
-		return err
-	}
-	if err := foldFiguresInTx(ctx, tx, builtBy, spans.sets()...); err != nil {
-		return err
-	}
-	if write.firstDayMoved {
-		if err := markFailureFirstDayMoved(ctx, tx, write.project); err != nil {
+		if err := foldFiguresInTx(ctx, tx, builtBy, spans.sets()...); err != nil {
 			return err
 		}
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("commit the failure rows of %s: %w", write.project, err)
+		if write.firstDayMoved {
+			return markFailureFirstDayMoved(ctx, tx, write.project)
+		}
+		return nil
+	}); err != nil {
+		return err
 	}
 	s.drainChanges(ctx)
 	return nil
@@ -556,38 +569,27 @@ func (s *Store) deleteFailureDays(ctx context.Context, projects []string, builtB
 	if len(projects) == 0 {
 		return nil
 	}
-	evalIDs := make([]string, 0, len(projects)*len(failureDaySlugs))
-	for _, project := range projects {
-		for _, slug := range failureDaySlugs {
-			evalIDs = append(evalIDs, EvalID(project, slug))
+	evalIDs := failureEvalIDs(projects...)
+	if err := s.inTx(ctx, fmt.Sprintf("the failure rows of %v", projects), func(tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, `
+			delete from eval_days where project_key = any($1) and eval_id = any($2) and writer = $3
+			returning project_key, eval_id, day
+		`, projects, evalIDs, writerComputation)
+		if err != nil {
+			return fmt.Errorf("delete the failure rows of %v, whose failure measures are off: %w", projects, err)
 		}
-	}
-	tx, err := s.database.Pool.Begin(ctx)
-	if err != nil {
-		return fmt.Errorf("begin the failure rows of %v: %w", projects, err)
-	}
-	defer tx.Rollback(ctx)
-	rows, err := tx.Query(ctx, `
-		delete from eval_days where project_key = any($1) and eval_id = any($2) and writer = $3
-		returning project_key, eval_id, day
-	`, projects, evalIDs, writerComputation)
-	if err != nil {
-		return fmt.Errorf("delete the failure rows of %v, whose failure measures are off: %w", projects, err)
-	}
-	spans := writtenSpans{}
-	var project, evalID string
-	var day time.Time
-	if _, err := pgx.ForEachRow(rows, []any{&project, &evalID, &day}, func() error {
-		spans.add(project, evalID, day, day)
-		return nil
+		spans := writtenSpans{}
+		var project, evalID string
+		var day time.Time
+		if _, err := pgx.ForEachRow(rows, []any{&project, &evalID, &day}, func() error {
+			spans.add(project, evalID, day, day)
+			return nil
+		}); err != nil {
+			return fmt.Errorf("delete the failure rows of %v, whose failure measures are off: %w", projects, err)
+		}
+		return foldFiguresInTx(ctx, tx, builtBy, spans.sets()...)
 	}); err != nil {
-		return fmt.Errorf("delete the failure rows of %v, whose failure measures are off: %w", projects, err)
-	}
-	if err := foldFiguresInTx(ctx, tx, builtBy, spans.sets()...); err != nil {
 		return err
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("commit the failure rows of %v: %w", projects, err)
 	}
 	s.drainChanges(ctx)
 	return nil
@@ -868,10 +870,7 @@ func (s *Store) DeploymentFailures(ctx context.Context, days Range) (DeploymentF
 		return DeploymentFailures{}, nil
 	}
 	read := DeploymentFailures{since: first}
-	evalIDs := make([]string, len(failureDaySlugs))
-	for i, slug := range failureDaySlugs {
-		evalIDs[i] = EvalID(project, slug)
-	}
+	evalIDs := failureEvalIDs(project)
 	rows, err := tx.Query(ctx, `
 		select `+dayColumns+` from eval_days
 		where project_key = $1 and eval_id = any($2) and writer = $3 and deploy_repo = '' and repo = '' and listed
@@ -955,7 +954,7 @@ func FailureRecordIn(ctx context.Context, q delivery.Querier, attributor *delive
 		return nil, err
 	}
 	failures, on := failureProjectOf(settings)
-	if !on || !slices.Contains(failureDaySlugs, slug) {
+	if !on || !slices.Contains(FailureDaySlugs, slug) {
 		return nil, nil
 	}
 	projects, err := ProjectsIn(ctx, q)
@@ -1037,11 +1036,9 @@ func (f *FailureRecord) Items(days Range) []FailureItem {
 				blame(failure)
 			}
 		case SlugDeploymentReworkRate:
-			if by := failure.RestoredByDeploy; by != nil {
-				if at, held := record.index[*by]; held && inRange(*record.deploys[at].FinishedAt) {
-					restoring := record.deploys[at]
-					counted = append(counted, FailureItem{Event: failure, Relation: RelationRestored, Repo: restoring.Repo, At: *restoring.FinishedAt})
-				}
+			if at, held := record.restorer(failure); held && inRange(*record.deploys[at].FinishedAt) {
+				restoring := record.deploys[at]
+				counted = append(counted, FailureItem{Event: failure, Relation: RelationRestored, Repo: restoring.Repo, At: *restoring.FinishedAt})
 			}
 		}
 	}
