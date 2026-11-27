@@ -29,10 +29,12 @@ import { type ArmName, buildArm, snapshotTag } from "./arms";
 import { ListingMeasure } from "./build";
 import { capturePaths } from "./capture";
 import { type Case, pathHash } from "./cases";
+import { answerCall } from "./checkout";
 import {
   armCaptureDir,
   CaseResult,
   type CliIo,
+  caseDotfiles,
   caseResultFile,
   caseShell,
   falseLossChance,
@@ -2684,6 +2686,82 @@ test("caseShell gives a case whose dotfiles commit holds no bash gate Oh My Pi's
     why: expect.stringContaining("records no arm of its context session's bash gate"),
   };
   expect(await shellAt(commits.gated)).toEqual({ shell: noArm, record: noArm });
+});
+
+// Catches: a written case's read of its session's dotfiles checkout answered from another commit
+// than the one its profile names; answered for a case whose profile names several commits of the
+// dotfiles, or installs its skill from another repository, or where the configuration names no
+// dotfiles; or answered where the dotfiles' knives registry trusts the repository, whose blocks
+// the runner does not hold.
+test("caseDotfiles answers a read of a file the dotfiles commit the case's profile names tracks, read through the runner's source and cache; it gives none where the configuration names no dotfiles, the profile names two commits of them or installs the skill from another repository; knives' trust of the dotfiles' repository leaves the read unanswered", async () => {
+  const repos = path.join(scratch, "case-dotfiles-repos");
+  const commits = {
+    first: "e1e1e1e1e1e1e1e1",
+    second: "e2e2e2e2e2e2e2e2",
+    trusted: "e3e3e3e3e3e3e3e3",
+  } as const;
+  const proxyText = (name: string) => `# Proxy\n\nThe ${name} proxy.\n`;
+  for (const [name, commit] of Object.entries(commits)) {
+    writeSkill(path.join(repos, DOTFILES.repo, commit), {
+      "skills/alpha/SKILL.md": SKILL_MD,
+      "agents/proxy.md": proxyText(name),
+      ...(name === "trusted" ? { "knives/repos.toml": '[trust]\nowners = ["acme"]\n' } : {}),
+    });
+  }
+  const r = {
+    source: localSource(repos),
+    cacheDir: path.join(scratch, "case-dotfiles-cache"),
+    dotfilesRepo: DOTFILES.repo,
+  };
+  /** w00 with its profile's alpha at `commit` and its beta at `beta`. */
+  const at = (commit: string, beta = commit): Case => {
+    const c = makeWrittenCase("w00");
+    const skills = c.profile.skills.map((skill) => ({
+      ...skill,
+      commit: skill.name === "beta" ? beta : commit,
+    }));
+    return { ...c, profile: { ...c.profile, skills } };
+  };
+  // The session's checkout of acme/skills, a directory that holds its name, out of whose
+  // skills/alpha the case's reads show alpha installed.
+  const root = "/home/dev/acme-skills";
+  const proxy = `${root}/agents/proxy.md`;
+  const checkout = path.join(scratch, "case-dotfiles-checkout");
+  writeSkill(checkout, { "docs/guide.md": "# Guide\n" });
+  const read = (c: Case, reader: Parameters<typeof caseDotfiles>[0] = r) => {
+    const dotfiles = caseDotfiles(reader, c);
+    const copy = {
+      dir: checkout,
+      root: "/work/acme/proj",
+      cwd: "/work/acme/proj",
+      git: false,
+      installed: { dir: `${root}/skills/alpha` },
+      ...(dotfiles === undefined ? {} : { dotfiles }),
+    };
+    return answerCall(copy, "read", { path: proxy }, "hashline");
+  };
+  for (const name of ["first", "second"] as const) {
+    expect({ name, answer: await read(at(commits[name])) }).toEqual({
+      name,
+      answer: {
+        text: `[${proxy}#${snapshotTag(proxyText(name))}]\n1:# Proxy\n2:\n3:The ${name} proxy.`,
+        isError: false,
+      },
+    });
+  }
+  const outside = { why: `${proxy} is no file of the session's checkout /work/acme/proj` };
+  expect(await read(at(commits.first, commits.second))).toEqual(outside);
+  expect(await read(at(commits.first), { ...r, dotfilesRepo: undefined })).toEqual(outside);
+  const first = at(commits.first);
+  const elsewhere = first.profile.skills.map((skill) =>
+    skill.name === "alpha" ? { ...skill, repo: "acme/other" } : skill
+  );
+  expect(await read({ ...first, profile: { ...first.profile, skills: elsewhere } })).toEqual(
+    outside
+  );
+  expect(await read(at(commits.trusted))).toEqual({
+    why: `${proxy} touches ${DOTFILES.repo}, the session's dotfiles checkout ${root}: knives trusts it (knives/repos.toml at ${DOTFILES.repo}@${commits.trusted}, its [trust]), and the runner has none of the blocks knives adds to the first result of a session that touches it`,
+  });
 });
 
 describe("behaviour: written cases and the report's descriptions", () => {

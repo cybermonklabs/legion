@@ -2297,6 +2297,82 @@ test("in a written case that read its skill by skill:// only, a reply's bash lis
   }
 });
 
+/** The session's dotfiles checkout of a made-up written case: acme/dotfiles at DOT_COMMIT, at
+ *  DOT_ROOT, out of whose directory DOT_SKILL the case's profile installs alpha. */
+const DOT_ROOT = "/home/agent/.dotfiles";
+const DOT_COMMIT = "fedcba9876543210fedcba9876543210fedcba98";
+const DOT_SKILL = "plugins/acme/skills/alpha";
+/** An agent definition alpha points to, which the dotfiles' commit tracks outside alpha. */
+const PROXY_MD = "# Proxy\n\nAsk the operator before each step.\n";
+
+/** urlOnlyCase("written"), its skill://alpha read's `[Skill file: …]` line showing alpha
+ *  installed under DOT_ROOT at DOT_SKILL. */
+function dotfilesCase(): Case {
+  const c = urlOnlyCase("written");
+  const text = `[Skill file: ${DOT_ROOT}/${DOT_SKILL}/SKILL.md]\n${SKILL_MD.replace(/\n$/, "")}`;
+  return {
+    ...c,
+    messages: c.messages.map((message) =>
+      message.role === "toolResult" ? { ...message, content: [{ type: "text", text }] } : message
+    ),
+  };
+}
+
+// Catches: a written case's read of a file of its session's dotfiles checkout, which its skill
+// points it to, left with no verdict as unanswered-read, or answered with another text in the arm
+// with no skill; or a read of a path the dotfiles' commit lacks answered as not found.
+test("in a written case whose skill is installed out of the session's dotfiles checkout, a reply's read of a file the dotfiles commit tracks is answered from that commit, alike in old and none, and the act after it is judged; a read of a path the commit lacks gets no verdict, as unanswered-read", async () => {
+  const c = dotfilesCase();
+  const tree = path.join(scratch, "dotfiles-commit");
+  writeTree(tree, {
+    "plugins/acme/agents/proxy.md": PROXY_MD,
+    [`${DOT_SKILL}/SKILL.md`]: SKILL_MD,
+  });
+  const dotfiles = {
+    repo: "acme/dotfiles",
+    commit: DOT_COMMIT,
+    skill: DOT_SKILL,
+    files: async (dir: string) => path.join(tree, dir),
+    knives: async () => undefined,
+  };
+  const proxy = `${DOT_ROOT}/plugins/acme/agents/proxy.md`;
+  const read = readCall("toolu_proxy", proxy);
+  const answer = toolResult(
+    "toolu_proxy",
+    `[${proxy}#${snapshotTag(PROXY_MD)}]\n1:# Proxy\n2:\n3:Ask the operator before each step.`,
+    false
+  );
+  for (const name of ["old", "none"] as const) {
+    const arm = urlOnlyArm(c, name);
+    const { gateway, bodies } = scripted([[read], [WRITE_ACT]]);
+    const replayed = await replayOnce({ ...BODY, stream: false }, arm, gateway, {
+      checkout: { ...checkoutCopy(), dotfiles },
+    });
+    expect(bodies).toHaveLength(2);
+    expect(bodies[1]?.messages.at(-1)).toEqual({ role: "user", content: [answer] });
+    expect(replayed.reads).toEqual([
+      [{ from: "checkout", tool: "read", input: read.input, isError: false }],
+    ]);
+    expect(replayed.step.message.content).toEqual([read, WRITE_ACT]);
+  }
+
+  const local = `${DOT_ROOT}/plugins/acme/agents/local.md`;
+  const failed = await replayOnce(
+    { ...BODY, stream: false },
+    urlOnlyArm(c, "none"),
+    scripted([[readCall("toolu_local", local)], [WRITE_ACT]]).gateway,
+    { checkout: { ...checkoutCopy(), dotfiles } }
+  ).then(
+    () => "judged",
+    (error: unknown) => error
+  );
+  if (!(failed instanceof UnansweredRead)) throw new Error(`not refused: ${String(failed)}`);
+  expect(failed.message).toBe(
+    `${UNANSWERED_READ}: read {"path":"${local}"}: acme/dotfiles at ${DOT_COMMIT} holds no file plugins/acme/agents/local.md, and the session's dotfiles checkout ${DOT_ROOT} may hold one there that git ignores or never tracked, so ${local} is not answered as not found`
+  );
+  expect(failed.replayed.checkoutRounds).toBe(0);
+});
+
 // The mixed-reply rule (the runner's architect, 2026-11-26T06:16:45Z and 06:20:08Z): a reply that
 // reads a skill file beside other calls is sorted with no model call, by the case's act (its two
 // steps' calls and their argument tokens) or by the load test's read-only rule. Catches: a batch

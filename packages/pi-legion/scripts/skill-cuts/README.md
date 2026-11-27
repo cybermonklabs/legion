@@ -1006,6 +1006,30 @@ The copy is the arm's directory copied for that run alone, each link that resolv
 Its entries' times, and those of the directory that holds it, are the time the checkout's copy was made (a copy that records none answers no such call),
 so its `ls -l` reads the same in every arm and run; its files show as root's, as the checkout's do.
 
+A written case's `read` of a file of the session's dotfiles checkout is answered from that checkout's commit (`cli.ts`'s `caseDotfiles`, `checkout.ts`'s `dotfilesRead`).
+The checkout is the configuration's `dotfilesRepo` at the one commit the case's profile names of it,
+where the copy the profile lists under the case's skill comes from it;
+the runner reads its files through its source and cache, as it reads the dotfiles' shell (below).
+Its root on the session's machine is the directory the case's reads show the skill in, less the skill's directory in the repository at its end
+(`/home/<user>/.dotfiles/plugins/<p>/skills/<name>` less `plugins/<p>/skills/<name>`),
+where the directory left holds the repository's name (`.dotfiles` holds `dotfiles`, as `attribute`'s checkout rule reads a path, below).
+So `~/.omp/agent/skills/<name>`, where an installer puts a repository's `skills/<name>`, names no checkout of it,
+and a case whose reads show no such directory has no dotfiles checkout.
+A `read` of a path under that root, outside the session's checkout and outside the skill's installed directory (whose files the arm answers, above),
+is answered as a read of a checkout file is, whole or with a line selector, its header at the session's path (`~/.dotfiles/…`),
+the same in every arm, `none` among them.
+It is answered only where the commit tracks a file at that path.
+A path the commit lacks is not answered, and never answered as not found (`<repo> at <commit> holds no file <path>, …`):
+the session's checkout may hold files git ignores or never tracked, which leave no trace in the commit.
+So no listing there is answered either (`<path> is a directory of the session's dotfiles checkout <root>, whose listing <repo> at <commit> cannot show whole: …`),
+since the commit cannot show any directory whole.
+Nor is a symbolic link, a path with an empty, `.` or `..` part,
+or a read where knives may give the dotfiles' repository blocks (its registry at that commit manages it as a fork or trusts it: "knives' blocks", below)
+and no call of the case's history touched that checkout: knives would add its blocks to the read, and the runner holds none of them.
+A `bash`, `grep` or `glob` call with such a path stays unanswered as outside the checkout.
+A sandbox shows a directory whole, so it could show the commit's files there only as a directory that holds them alone,
+which a glob, a listing or a test for a file the commit lacks would read as the session's.
+
 The read-only rule decides which calls are answered; it does not make running them safe. So each
 answered `bash` command, and each jj command of a checkout's colocation, runs in a sandbox
 (`checkout.ts`'s `runSandboxed`): new user, mount, network, process and host-name namespaces
@@ -1221,8 +1245,8 @@ subagent, the bare `xd://` listing and an `xd://` device the fresh session lacks
 session may have mounted it), any other scheme (`cfg://`, `issue://`, `pr://`, `mcp://`, `ssh://`,
 `memory://`, `https://`: each reads configuration, a store, the network or a host the sandbox does
 not hold as the session did), an answer that names the pin's own session directory, one with rows
-where the session shows another form than hashline, and a read of a path outside the checkout,
-which stays unanswered.
+where the session shows another form than hashline, and a read of a path outside the checkout
+(but a file of the session's dotfiles checkout, above), which stays unanswered.
 
 A runner process starts one checkout sandbox at a time, in request order.
 The queue limits sandboxes, not gateway calls, `read`, `grep`, or `glob`.
@@ -1236,7 +1260,7 @@ An expired call remains unanswered, so the replay receives no verdict and retrie
 The same queue holds the commands that make a colocated jj checkout, with a 30-minute setup and command deadline.
 
 A reply one of whose read-only calls the copy answers in no form (a read with a selector of a form not rebuilt, a
-path outside the checkout and outside the directory of the case's skill, or under `~` where the case records no home, a `bash` option that
+path outside the checkout and outside the directory of the case's skill (but a file the session's dotfiles commit tracks, above), or under `~` where the case records no home, a `bash` option that
 asks for a terminal, a job or a service, a git or jj command where the copy is the tarball, a jj
 command where its colocation failed or whose checkout tracks a `.jj` at its root, a command whose
 sandbox cannot be made or one of whose programs the sandbox lacks, an output past 50 KB or with a

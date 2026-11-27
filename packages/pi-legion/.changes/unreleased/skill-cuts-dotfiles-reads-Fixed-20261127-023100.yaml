@@ -1,0 +1,17 @@
+kind: Fixed
+body: |-
+  The `skill-cuts` behaviour replay answers a written case's `read` of a file of the session's
+  dotfiles checkout, such as an agent definition its skill points to, from the configuration's
+  `dotfilesRepo` at the one commit the case's profile names, the same in every arm. Before, each
+  such read went unanswered as outside the checkout, so every run that made one was made again.
+  The checkout's root is the directory the case's reads show the skill in, less the skill's
+  directory in the repository, where the directory left holds the repository's name. Only a file
+  that commit tracks is answered: a path the commit lacks stays unanswered, never answered as not
+  found, since the session's checkout may hold files git ignores or never tracked, and for that
+  reason no listing there is answered. Nor is a symbolic link, the skill's own installed directory
+  (whose files the arm answers), or a read where knives' registry at that commit may give the
+  dotfiles' repository blocks and the case's history never touched it. A `bash`, `grep` or `glob`
+  call with such a path stays unanswered as outside the checkout.
+time: 2026-11-27T02:31:00Z
+custom:
+    Issue: skill-cuts-dotfiles-reads

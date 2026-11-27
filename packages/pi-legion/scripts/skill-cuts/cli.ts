@@ -548,6 +548,7 @@ import {
   pathReadFile,
   stepSkillFiles,
   Thinking,
+  testedSource,
   textLines,
 } from "./cases";
 import {
@@ -555,6 +556,7 @@ import {
   type BashInterceptor,
   type CheckoutCopy,
   colocateJj,
+  type DotfilesCheckout,
   gateVersion,
   interceptorOf,
   type KnivesRepository,
@@ -3438,8 +3440,8 @@ const NO_CHECKOUT: Unanswered = {
   why: "the case has no checkout of its context session's repository, so the runner answers none of its read-only calls (build-cases now passes over a context session whose working directory is in no checkout it knows, as no-checkout)",
 };
 
-/** What a written case's dotfiles are read through (`caseShell`, `caseKnives`): the runner's
- *  source and cache, and the configuration's `dotfilesRepo`. */
+/** What a written case's dotfiles are read through (`caseShell`, `caseKnives`, `caseDotfiles`):
+ *  the runner's source and cache, and the configuration's `dotfilesRepo`. */
 type DotfilesReader = Pick<Runner, "source" | "cacheDir" | "dotfilesRepo">;
 
 /** The dotfiles' omp wrapper, which exports PI_SHELL_PREFIX from commit bcd580fa on
@@ -3635,9 +3637,10 @@ export async function caseShell(
 }
 
 /** The one commit of the configuration's dotfiles repository (`dotfilesRepo`) case `c`'s profile's
- *  skills name, whose files set up the session's Oh My Pi (`caseShell`, `caseKnives`), or why none
- *  is known, for the caller's `file` of it, which `use` says what it is for: the configuration
- *  names no dotfiles repository, or the profile names no commit of it or several. */
+ *  skills name, whose files set up the session's Oh My Pi (`caseShell`, `caseKnives`) and answer
+ *  its reads of its dotfiles checkout (`caseDotfiles`), or why none is known, for the caller's
+ *  `file` of it, which `use` says what it is for: the configuration names no dotfiles
+ *  repository, or the profile names no commit of it or several. */
 function profileDotfiles(
   r: DotfilesReader,
   c: Case,
@@ -3680,8 +3683,10 @@ function remoteSlug(url: unknown): string | undefined {
 }
 
 /**
- * Why knives' plugin may give blocks to the repository of written case `c`'s checkout `checkout`,
- * by the registry the dotfiles hold at the commit the case's profile names (KNIVES_REGISTRY):
+ * Why knives' plugin may give blocks to the repository `checkout.repo` checked out at
+ * `checkout.root` on written case `c`'s session's machine (the case's checkout, `caseKnives`, or
+ * the session's dotfiles checkout, `caseDotfiles`), by the registry the dotfiles hold at the
+ * commit the case's profile names (KNIVES_REGISTRY):
  * knives gives a notice where it manages the repository as a fork and guidance where it trusts it
  * (knives v3.2.3 src/hook/resolve.rs lines 108-145; src/commands/hook.rs lines 189-203);
  * undefined where it gives none, as where that commit holds no registry. knives reads the
@@ -3695,9 +3700,9 @@ function remoteSlug(url: unknown): string | undefined {
  * TOML).
  */
 async function knivesMayGive(
-  r: Runner,
+  r: DotfilesReader,
   c: Case,
-  checkout: NonNullable<Case["checkout"]>
+  checkout: Pick<NonNullable<Case["checkout"]>, "repo" | "root">
 ): Promise<string | undefined> {
   const cannot = (why: string) =>
     `the runner cannot read knives' registry ${KNIVES_REGISTRY}, which says whether knives gives it blocks: ${why}`;
@@ -3772,6 +3777,40 @@ async function caseKnives(r: Runner, c: Case): Promise<KnivesRepository | undefi
   return { name, blocks: { why: `${gives}, and ${lacks}` } };
 }
 
+/**
+ * The session's dotfiles checkout as written case `c`'s `read` calls reach it (checkout.ts's
+ * DotfilesCheckout), or undefined where the runner knows none, and no read is answered from it:
+ * the configuration names no dotfiles repository, the profile names no commit of it or several
+ * (`profileDotfiles`), or the copy the profile lists under the case's skill (cases.ts's
+ * `testedSource`) is not of it. Its files are read through the runner's source and cache, one
+ * directory of the repository at a time (context.ts's `repositoryDirectory`), and whether knives
+ * may give the repository blocks by the registry the same commit holds (`knivesMayGive`), once
+ * for each root checkout.ts derives. Exported for cli.test.ts.
+ */
+export function caseDotfiles(r: DotfilesReader, c: Case): DotfilesCheckout | undefined {
+  const skill = testedSource(c.profile.skills, c.skill);
+  const dotfiles = profileDotfiles(
+    r,
+    c,
+    "files",
+    "answer a read of the session's dotfiles checkout"
+  );
+  if (skill === undefined || "why" in dotfiles || skill.repo !== dotfiles.repo) return undefined;
+  const { repo, commit } = dotfiles;
+  const knives = new Map<string, Promise<string | undefined>>();
+  return {
+    repo,
+    commit,
+    skill: skill.path,
+    files: (dir) => repositoryDirectory(r.source, r.cacheDir, repo, commit, dir),
+    knives: (root) => {
+      const held = knives.get(root) ?? knivesMayGive(r, c, { repo, root });
+      knives.set(root, held);
+      return held;
+    },
+  };
+}
+
 interface CaseCheckout {
   checkout?: CheckoutCopy | Unanswered;
   record?: StageResult["checkout"];
@@ -3789,6 +3828,7 @@ async function caseCheckout(r: Runner, c: Case): Promise<CaseCheckout> {
   const home = sessionHome(root, c.pathCopy?.home);
   const { shell, record } = await caseShell(r, c);
   const knives = await caseKnives(r, c);
+  const dotfiles = caseDotfiles(r, c);
   return {
     checkout: {
       dir: shared.dir,
@@ -3802,6 +3842,7 @@ async function caseCheckout(r: Runner, c: Case): Promise<CaseCheckout> {
       history: JSON.stringify(c.messages),
       shell,
       ...(knives === undefined ? {} : { knives }),
+      ...(dotfiles === undefined ? {} : { dotfiles }),
     },
     record: { git, depth, removedLinks, ...(jj === undefined ? {} : { jj }), shell: record },
   };

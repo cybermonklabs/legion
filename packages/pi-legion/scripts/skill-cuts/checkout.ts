@@ -153,6 +153,32 @@
  * access '<path>': No such file or directory`, exit 2). Where the pin answers such a call (below),
  * its sandbox shows the same.
  *
+ * **The session's dotfiles checkout** (`CheckoutCopy.dotfiles`, `dotfilesRead`): cli.ts gives a
+ * written case's copy the configuration's `dotfilesRepo` at the one commit the case's profile names
+ * of it, where the copy the profile lists under the case's skill comes from it (`caseDotfiles`),
+ * with a reader of the files that commit tracks, through the runner's source and cache, as it
+ * reads the dotfiles' shell (below). The checkout's root on the session's machine is the directory
+ * the case's reads show the skill in (`CheckoutCopy.installed`) less the skill's directory in the
+ * repository at its end, where it so ends and the directory left holds the repository's name
+ * (`.dotfiles` holds `dotfiles`, as attribute.ts's `checkoutRule` reads a checkout's path: so
+ * `~/.omp/agent/skills/<name>`, where an installer puts a repository's `skills/<name>`, names no
+ * checkout of it) (`dotfilesRoot`); a case where it is not so has none. A `read` of a path under
+ * that root, outside the session's checkout and outside the skill's installed directory (whose
+ * files the arm answers, replay.ts), is answered from the commit, the same in every arm, as a read
+ * of a file of the copy is (below), its header at the session's path, but only where the commit
+ * tracks a file at that path. A path the commit lacks is not answered, never answered as not
+ * found: the session's checkout may hold files git ignores or never tracked, which leave no trace
+ * in the commit. For that reason no listing there is answered either, since the commit cannot show
+ * a directory whole, nor is a symbolic link, a path with an empty, `.` or `..` part, or a read
+ * where knives may give the dotfiles' repository blocks (its registry at that commit manages it as
+ * a fork or trusts it, cli.ts's `knivesMayGive`; knives' blocks, below) and no call of the case's
+ * history touched that checkout, so knives would add them to the read, and the runner holds none
+ * of them. A `bash`, `grep` or `glob` path there stays outside the checkout: a sandbox shows a
+ * directory whole (`runShowingSkill`), so it could show the commit's files there only as a
+ * directory that holds them alone, which a glob, a listing or a test for a file the commit lacks
+ * would read as the session's, and the confinement (`escapes`) reads each program's paths alike,
+ * with no rule that would let `cat` of such a file through and refuse those.
+ *
  * **The sandbox.** The rule decides which calls are answered; it does not make running them safe.
  * So each answered `bash` command, and each jj command of a copy's colocation, runs in a sandbox
  * of the copy (`runSandboxed`): new user, mount, network, process and host-name namespaces
@@ -409,7 +435,8 @@
  *   empty file: the pin keeps its notices out of the text) or whose first line passes 50 KiB (the
  *   pin shows a part of it), a read of a directory with a selector, a listing of a copy that
  *   records no time it was made, one that would show `.git`
- *   or `.jj` (the copy's, not the session's), or past 50 KB, a read outside the root, under
+ *   or `.jj` (the copy's, not the session's), or past 50 KB, a read outside the root (but a read
+ *   of a file of the session's dotfiles checkout, above), under
  *   `.git` or, where the copy names no home of the session's, under `~`, a file past 4 MiB (the
  *   pin streams it, with a notice of its own and no block context), a read whose block context
  *   or summary needs
@@ -664,6 +691,7 @@ import {
   grepLineRanges,
   type LineRange,
   outputNotice,
+  type ParsedSelector,
   type PathRows,
   pathAnswer,
   pathRangeAnswer,
@@ -2056,7 +2084,11 @@ export function readOnlyCall(name: string | undefined, input: unknown): boolean 
  *  none; `installed`, the arm's copy of the case's skill, which a `bash` call's sandbox shows at
  *  the directory the session's reads show the skill in (`InstalledSkill`), set for each arm's
  *  calls by replay.ts's `checkoutRound`; absent (or a directory that is the root, inside it or
- *  above it), none, and a path there is outside the checkout as any other. */
+ *  above it), none, and a path there is outside the checkout as any other; `dotfiles`, the
+ *  session's dotfiles checkout, whose root is in that directory's path, a `read` of a file of
+ *  which is answered from the commit the case's profile names of it (`DotfilesCheckout`,
+ *  cli.ts's `caseDotfiles`); absent, or where no root is in that path (`dotfilesRoot`), none, and
+ *  such a read is outside the checkout as any other. */
 export interface CheckoutCopy {
   readonly dir: string;
   readonly root: string;
@@ -2070,6 +2102,7 @@ export interface CheckoutCopy {
   readonly shell?: ShellSetup | Unanswered;
   readonly knives?: KnivesRepository;
   readonly installed?: InstalledSkill;
+  readonly dotfiles?: DotfilesCheckout;
 }
 
 /** The arm's copy of a written case's skill as a `bash` call of its run reaches it
@@ -2081,6 +2114,24 @@ export interface CheckoutCopy {
 export interface InstalledSkill {
   readonly dir: string;
   readonly source?: string;
+}
+
+/** The session's dotfiles checkout as a written case's `read` calls reach it
+ *  (`CheckoutCopy.dotfiles`, `dotfilesRead`; cli.ts's `caseDotfiles`): the configuration's
+ *  `dotfilesRepo` (`repo`) at the one commit the case's profile names of it (`commit`), out of
+ *  whose directory `skill` the profile installs the case's skill; `files(dir)`, a directory of
+ *  this machine that holds the files the commit tracks under the directory `dir` of the
+ *  repository ("" its root), each at its path below `dir`, a symbolic link as a link, and nothing
+ *  where the commit tracks nothing there (context.ts's `repositoryDirectory`, through the
+ *  runner's source and cache), which throws where a read fails; and `knives(root)`, why knives
+ *  may give the repository, checked out at `root` on the session's machine, its blocks (cli.ts's
+ *  `knivesMayGive`, by the registry the commit holds), or undefined where it gives none. */
+export interface DotfilesCheckout {
+  readonly repo: string;
+  readonly commit: string;
+  readonly skill: string;
+  readonly files: (dir: string) => Promise<string>;
+  readonly knives: (root: string) => Promise<string | undefined>;
 }
 
 /** How a written case's context session's Oh My Pi ran a `bash` call, as its dev box's dotfiles
@@ -3906,19 +3957,19 @@ function searchTarget(
   return { full, inside };
 }
 
-/** The `read` call's answer (see the file's header). */
-function readAnswer(
-  copy: CheckoutCopy,
-  input: Record<string, unknown>,
-  rows: PathRows
-): CheckoutAnswer | Unanswered {
-  const other = otherKeys(input, ["path"]);
-  if (other !== undefined) return { why: other };
-  const target = input.path;
-  if (typeof target !== "string") return { why: "it names no path" };
-  // A file named with the selector is read as it is (path-utils.ts's
-  // `splitPathAndSelPreferringLiteral`).
-  const selected = readSelector(target, (literal) => copyHolds(copy, literal));
+/** A `read` target's path and selector as the pin takes them (arms.ts's `readSelector`; `holds`,
+ *  whether a literal path names a file, which is then read as it is), or why the runner does not
+ *  rebuild the read: a selector the pin refuses with an error, `:conflicts` or `:img`. */
+function selectedRead(
+  target: string,
+  holds: (literal: string) => boolean
+):
+  | {
+      readonly path: string;
+      readonly parsed: Exclude<ParsedSelector, { readonly kind: "conflicts" | "image" }>;
+    }
+  | Unanswered {
+  const selected = readSelector(target, holds);
   if ("refused" in selected) {
     return {
       why: `${target} has the selector :${selected.selector}, which the pin refuses with an error the runner does not rebuild (${selected.refused})`,
@@ -3930,7 +3981,27 @@ function readAnswer(
       why: `${target} has the selector :${selected.selector}, of a form the runner does not rebuild (it rebuilds line ranges, lists of them, :-N and :raw)`,
     };
   }
-  const read = selected.path;
+  return { path: selected.path, parsed };
+}
+
+/** The `read` call's answer (see the file's header): from the session's dotfiles checkout where
+ *  its path is one of that checkout's (`dotfilesRead`), else from the copy. */
+async function readAnswer(
+  copy: CheckoutCopy,
+  input: Record<string, unknown>,
+  rows: PathRows
+): Promise<CheckoutAnswer | Unanswered> {
+  const other = otherKeys(input, ["path"]);
+  if (other !== undefined) return { why: other };
+  const target = input.path;
+  if (typeof target !== "string") return { why: "it names no path" };
+  const dotfiles = await dotfilesRead(copy, target, rows);
+  if (dotfiles !== undefined) return dotfiles;
+  // A file named with the selector is read as it is (path-utils.ts's
+  // `splitPathAndSelPreferringLiteral`).
+  const selected = selectedRead(target, (literal) => copyHolds(copy, literal));
+  if ("why" in selected) return selected;
+  const { path: read, parsed } = selected;
   const full = resolvedReadPath(read, { cwd: copy.cwd, home: copy.home });
   const inside = full === undefined ? undefined : insideRoot(copy.root, full);
   if (full === undefined || inside === undefined) {
@@ -3971,6 +4042,158 @@ function readAnswer(
     shown,
     rows,
     checkout: { listed: relativeToCwd(copy, full) },
+  });
+  if (typeof answer === "string") return { why: answer };
+  return { text: answer.text, isError: answer.isError };
+}
+
+/** The root of the session's dotfiles checkout on its machine (`CheckoutCopy.dotfiles`; see the
+ *  file's header): the directory the case's reads show its skill in (`CheckoutCopy.installed`),
+ *  absolute and normal, less the skill's directory in the repository (`DotfilesCheckout.skill`) at
+ *  its end, where it so ends and the directory left is not `/` and its name holds the repository's
+ *  (`.dotfiles` holds `dotfiles`, as attribute.ts's `checkoutRule` reads a checkout's path); else
+ *  undefined, and no read is answered from the dotfiles. */
+function dotfilesRoot(copy: CheckoutCopy): string | undefined {
+  const { dotfiles, installed } = copy;
+  if (dotfiles === undefined || installed === undefined) return undefined;
+  const { dir } = installed;
+  if (!dir.startsWith("/") || dir.endsWith("/") || path.posix.normalize(dir) !== dir) {
+    return undefined;
+  }
+  const tail = `/${dotfiles.skill}`;
+  if (!dir.endsWith(tail)) return undefined;
+  const root = dir.slice(0, -tail.length);
+  const name = dotfiles.repo.slice(dotfiles.repo.indexOf("/") + 1);
+  return root !== "" && path.posix.basename(root).includes(name) ? root : undefined;
+}
+
+/** Whether a call of the case's history (`CheckoutCopy.history`) to one of KNIVES_TOOLS touches
+ *  the repository checked out at `root`, as knives reads a call's paths (`knivesTouches`): knives
+ *  then gave its blocks of that repository, where it gives any, to that call's result, and gives
+ *  none again in the session. */
+function historyTouches(copy: CheckoutCopy, root: string): boolean {
+  let messages: unknown;
+  try {
+    messages = JSON.parse(copy.history ?? "[]");
+  } catch {
+    return false;
+  }
+  const place = { root, cwd: copy.cwd, home: copy.home };
+  return (
+    Array.isArray(messages) &&
+    messages.some((message: { content?: unknown }) =>
+      (Array.isArray(message?.content) ? message.content : []).some(
+        (block: { type?: unknown; name?: unknown; arguments?: unknown }) =>
+          block?.type === "toolCall" &&
+          typeof block.name === "string" &&
+          Object.hasOwn(KNIVES_TOOLS, block.name) &&
+          typeof block.arguments === "object" &&
+          block.arguments !== null &&
+          knivesTouches(place, block.arguments as Record<string, unknown>) === true
+      )
+    )
+  );
+}
+
+/**
+ * The answer to a `read` of `target` from the session's dotfiles checkout (`CheckoutCopy.dotfiles`,
+ * see the file's header), its rows shown as `rows`; undefined where the path it reads (its selector
+ * taken off), resolved as the pin's read resolves it, is no path of that checkout: the copy names
+ * none (`dotfilesRoot`), or the path is in the session's checkout, in the case's skill's installed
+ * directory (whose files the arm answers, replay.ts) or outside the dotfiles' root. Answered from
+ * the file the commit tracks at that path, the same in every arm, as a read of a file of the copy
+ * is (`pathAnswer`, `pathRangeAnswer`; its header at the session's path), a literal path that
+ * names a file the commit tracks read as it is. Not answered: a path with an empty, `.` or `..`
+ * part; a read where knives may give the dotfiles' repository blocks (`DotfilesCheckout.knives`)
+ * and no call of the case's history touched that checkout (`historyTouches`), since the runner
+ * holds none of them; a directory, the root among them, whose listing the commit cannot show
+ * whole (an entry git ignores or never tracked leaves no trace in it); a path ending in `/` that
+ * the commit holds no directory at; a symbolic link; and a path the commit lacks, never answered
+ * as not found, since the session's checkout may hold a file there that git ignores or never
+ * tracked. Throws where the commit's files cannot be read.
+ */
+async function dotfilesRead(
+  copy: CheckoutCopy,
+  target: string,
+  rows: PathRows
+): Promise<CheckoutAnswer | Unanswered | undefined> {
+  const { dotfiles, installed } = copy;
+  const root = dotfilesRoot(copy);
+  if (dotfiles === undefined || installed === undefined || root === undefined) return undefined;
+  const where = { cwd: copy.cwd, home: copy.home };
+  const full = resolvedReadPath(splitPathAndSel(target).path, where);
+  if (full === undefined || insideRoot(copy.root, full) !== undefined) return undefined;
+  if (insideRoot(installed.dir, full) !== undefined) return undefined;
+  const inside = insideRoot(root, full);
+  if (inside === undefined) return undefined;
+  const at = `${dotfiles.repo} at ${dotfiles.commit}`;
+  const checkout = `the session's dotfiles checkout ${root}`;
+  const listing = {
+    why: `${target} is a directory of ${checkout}, whose listing ${at} cannot show whole: an entry git ignores or never tracked leaves no trace in the commit`,
+  };
+  const slash = inside.endsWith("/");
+  const file = slash ? inside.slice(0, -1) : inside;
+  if (file === "") return listing;
+  const parts = file.split("/");
+  if (parts.some((part) => part === "" || part === "." || part === "..")) {
+    return {
+      why: `${target} is a path of ${checkout} with an empty, . or .. part, which the runner does not walk`,
+    };
+  }
+  if (!historyTouches(copy, root)) {
+    const gives = await dotfiles.knives(root);
+    if (gives !== undefined) {
+      return {
+        why: `${target} touches ${dotfiles.repo}, ${checkout}: ${gives}, and the runner has none of the blocks knives adds to the first result of a session that touches it`,
+      };
+    }
+  }
+  const parent = parts.slice(0, -1).join("/");
+  const local = await dotfiles.files(parent);
+  const tracked = (name: string) => lstatSync(path.join(local, name), { throwIfNoEntry: false });
+  // A literal path that names a file the commit tracks is read as it is.
+  const selected = selectedRead(target, (literal) => {
+    const each = resolvedReadPath(literal, where);
+    const rel = each === undefined ? undefined : insideRoot(root, each);
+    return (
+      rel !== undefined &&
+      path.posix.dirname(rel) === (parent === "" ? "." : parent) &&
+      tracked(path.posix.basename(rel))?.isFile() === true
+    );
+  });
+  if ("why" in selected) return selected;
+  const { path: read, parsed } = selected;
+  const readFull = resolvedReadPath(read, where) ?? full;
+  const name = path.posix.basename(readFull);
+  const stats = tracked(name);
+  if (stats?.isDirectory()) return listing;
+  if (slash) return { why: `${target} names a directory ${at} does not hold as one` };
+  if (stats?.isSymbolicLink()) {
+    return { why: `${target} is a symbolic link of ${at}, which the runner does not follow` };
+  }
+  if (stats?.isFile() !== true) {
+    return {
+      why: `${at} holds no file ${file}, and ${checkout} may hold one there that git ignores or never tracked, so ${target} is not answered as not found`,
+    };
+  }
+  const shown = shownPath(read, readFull, where);
+  if (parsed.kind !== "none") {
+    const answer = pathRangeAnswer(local, {
+      file: name,
+      target: read,
+      shown,
+      rows,
+      selector: parsed,
+    });
+    return typeof answer === "string" ? { why: `${target}: ${answer}` } : answer;
+  }
+  const answer = pathAnswer(local, {
+    file: name,
+    target,
+    source: readFull,
+    shown,
+    rows,
+    checkout: { listed: relativeToCwd(copy, readFull) },
   });
   if (typeof answer === "string") return { why: answer };
   return { text: answer.text, isError: answer.isError };
@@ -6408,9 +6631,7 @@ export async function answerCall(
     let answer = copy.answers?.get(key);
     if (answer === undefined) {
       const made =
-        name === "read"
-          ? Promise.resolve(readAnswer(copy, fields, rows))
-          : answerInWorker(name, copy, fields, rows);
+        name === "read" ? readAnswer(copy, fields, rows) : answerInWorker(name, copy, fields, rows);
       copy.answers?.set(key, made);
       made.catch(() => copy.answers?.delete(key));
       answer = made;

@@ -3148,6 +3148,179 @@ pinned.test(
   60_000
 );
 
+/** The made-up session's home, which holds its checkout and its dotfiles checkout. */
+const DOT_HOME = "/home/agent";
+/** The made-up session's checkout root under DOT_HOME. */
+const DOT_PROJ = `${DOT_HOME}/src/proj`;
+/** The made-up session's dotfiles checkout: acme/dotfiles at DOT_COMMIT, at DOT_ROOT. */
+const DOT_ROOT = `${DOT_HOME}/.dotfiles`;
+const DOT_COMMIT = "0123456789abcdef0123456789abcdef01234567";
+/** The directory of acme/dotfiles out of which the case's profile installs alpha. */
+const DOT_SKILL = "plugins/acme/skills/alpha";
+/** An agent definition that alpha points to, which the dotfiles' commit tracks outside alpha. */
+const PROXY_MD = "# Proxy\n\nAsk the operator before each step.\n";
+/** PROXY_MD's path under the session's home, and its whole read's answer. */
+const PROXY = "~/.dotfiles/plugins/acme/agents/proxy.md";
+const PROXY_TEXT = `[${PROXY}#${snapshotTag(PROXY_MD)}]\n1:# Proxy\n2:\n3:Ask the operator before each step.`;
+
+/** A copy of a made-up checkout under `name` at DOT_PROJ, whose case's skill alpha is installed
+ *  out of DOT_SKILL of the session's dotfiles (the arm's copy SKILL_FILES in `old`, none in
+ *  `none`), the dotfiles' commit holding README.md, PROXY_MD, alpha's SKILL.md and a link
+ *  `plugins/acme/agents/link.md` to proxy.md; knives giving the dotfiles' repository blocks where
+ *  `knives` says why. */
+function dotfilesCopy(name: string, arm: "old" | "none", knives?: string): CheckoutCopy {
+  const copy = filesCopy(name, { "docs/guide.md": GUIDE });
+  const commit = path.join(scratch, `${name}-dotfiles`);
+  writeTree(commit, {
+    "README.md": "# Dotfiles\n",
+    "plugins/acme/agents/proxy.md": PROXY_MD,
+    [`${DOT_SKILL}/SKILL.md`]: "# Alpha\n",
+  });
+  symlinkSync("proxy.md", path.join(commit, "plugins/acme/agents/link.md"));
+  const source = path.join(scratch, `${name}-alpha`);
+  if (arm === "old") writeTree(source, SKILL_FILES);
+  return {
+    ...copy,
+    root: DOT_PROJ,
+    cwd: DOT_PROJ,
+    home: DOT_HOME,
+    installed: { dir: `${DOT_ROOT}/${DOT_SKILL}`, ...(arm === "old" ? { source } : {}) },
+    dotfiles: {
+      repo: "acme/dotfiles",
+      commit: DOT_COMMIT,
+      skill: DOT_SKILL,
+      files: async (dir) => path.join(commit, dir),
+      knives: async () => knives,
+    },
+  };
+}
+
+// Catches: a written case's read of a file of its session's dotfiles checkout that its skill points
+// it to (an agent definition) left unanswered as outside the checkout, so its runs are made again,
+// or answered with one text in the arm with the skill and another in the arm with none.
+test("a read of a file the session's dotfiles commit tracks, outside the skill's installed directory, is answered from that commit in the same text in the arm with the skill and in the arm with none: by its path, by ~, relative, with a line selector and :raw", async () => {
+  for (const arm of ["old", "none"] as const) {
+    const copy = dotfilesCopy(`dotfiles-read-${arm}`, arm);
+    for (const [target, text] of [
+      [`${DOT_ROOT}/plugins/acme/agents/proxy.md`, PROXY_TEXT],
+      [PROXY, PROXY_TEXT],
+      ["../../.dotfiles/plugins/acme/agents/proxy.md", PROXY_TEXT],
+      [`${PROXY}:2`, PROXY_TEXT],
+      [`${PROXY}:raw`, PROXY_MD],
+      [
+        "~/.dotfiles/README.md",
+        `[~/.dotfiles/README.md#${snapshotTag("# Dotfiles\n")}]\n1:# Dotfiles`,
+      ],
+    ] as const) {
+      const answer = await answerCall(copy, "read", { path: target }, "hashline");
+      expect({ arm, target, answer }).toEqual({ arm, target, answer: { text, isError: false } });
+    }
+  }
+}, 60_000);
+
+// Catches: a read of a path of the session's dotfiles checkout that its commit does not track
+// answered as not found, where the session's checkout may hold a file git ignores or never
+// tracked; a listing there answered from the commit, which cannot show a directory whole; a read
+// answered without the blocks knives adds to it; or a checkout's root taken from an installed
+// directory that names none.
+test("a read of the session's dotfiles checkout is not answered, and never as not found, where the commit tracks no file there; nor a directory, a link, a path under the skill's installed directory or with a .. part, a read knives adds blocks to, a bash, grep or glob call there, or a read where no root is in the installed directory's path", async () => {
+  const at = `acme/dotfiles at ${DOT_COMMIT}`;
+  const listing = (target: string) => ({
+    why: `${target} is a directory of the session's dotfiles checkout ${DOT_ROOT}, whose listing ${at} cannot show whole: an entry git ignores or never tracked leaves no trace in the commit`,
+  });
+  const copy = dotfilesCopy("dotfiles-unanswered", "old");
+  const absent = "~/.dotfiles/plugins/acme/agents/local.md";
+  for (const [target, answer] of [
+    [
+      absent,
+      {
+        why: `${at} holds no file plugins/acme/agents/local.md, and the session's dotfiles checkout ${DOT_ROOT} may hold one there that git ignores or never tracked, so ${absent} is not answered as not found`,
+      },
+    ],
+    ["~/.dotfiles/plugins/acme/agents", listing("~/.dotfiles/plugins/acme/agents")],
+    ["~/.dotfiles/plugins/acme/agents/", listing("~/.dotfiles/plugins/acme/agents/")],
+    ["~/.dotfiles", listing("~/.dotfiles")],
+    [
+      "~/.dotfiles/plugins/acme/agents/link.md",
+      {
+        why: `~/.dotfiles/plugins/acme/agents/link.md is a symbolic link of ${at}, which the runner does not follow`,
+      },
+    ],
+    [
+      "~/.dotfiles/plugins/../README.md",
+      {
+        why: `~/.dotfiles/plugins/../README.md is a path of the session's dotfiles checkout ${DOT_ROOT} with an empty, . or .. part, which the runner does not walk`,
+      },
+    ],
+    // The skill's installed directory is the arm's (replay.ts answers a read of its files).
+    [
+      `${DOT_ROOT}/${DOT_SKILL}/SKILL.md`,
+      { why: `${DOT_ROOT}/${DOT_SKILL}/SKILL.md is no file of the session's checkout ${DOT_PROJ}` },
+    ],
+  ] as const) {
+    expect({
+      target,
+      answer: await answerCall(copy, "read", { path: target }, "hashline"),
+    }).toEqual({ target, answer });
+  }
+  const proxy = `${DOT_ROOT}/plugins/acme/agents/proxy.md`;
+  for (const [name, input, why] of [
+    ["bash", { command: `cat ${proxy}` }, `${proxy} is outside the session's checkout ${DOT_PROJ}`],
+    [
+      "bash",
+      { command: `ls ${DOT_ROOT}/plugins/acme/agents` },
+      `${DOT_ROOT}/plugins/acme/agents is outside the session's checkout ${DOT_PROJ}`,
+    ],
+    [
+      "grep",
+      { pattern: "Proxy", path: proxy },
+      `its path ${proxy} is outside the session's checkout`,
+    ],
+  ] as const) {
+    expect({ name, answer: await answerCall(copy, name, input, "hashline") }).toEqual({
+      name,
+      answer: { why: expect.stringContaining(why) },
+    });
+  }
+
+  // Where knives' registry trusts the dotfiles' repository, knives adds its guidance to the first
+  // read of the checkout, which the runner does not hold; unless the case's history read a file
+  // of the checkout first, which got it.
+  const trusts = "knives trusts it (knives/repos.toml at acme/dotfiles, its [trust])";
+  const trusted = dotfilesCopy("dotfiles-knives", "none", trusts);
+  expect(await answerCall(trusted, "read", { path: PROXY }, "hashline")).toEqual({
+    why: `${PROXY} touches acme/dotfiles, the session's dotfiles checkout ${DOT_ROOT}: ${trusts}, and the runner has none of the blocks knives adds to the first result of a session that touches it`,
+  });
+  const read = { path: `${DOT_ROOT}/${DOT_SKILL}/SKILL.md` };
+  const history = [
+    { role: "assistant", content: [{ type: "toolCall", id: "h", name: "read", arguments: read }] },
+  ];
+  const touched = { ...trusted, history: JSON.stringify(history) };
+  expect(await answerCall(touched, "read", { path: PROXY }, "hashline")).toEqual({
+    text: PROXY_TEXT,
+    isError: false,
+  });
+
+  // A root is the installed directory less the skill's directory in the repository, where what is
+  // left holds the repository's name: an installer's `~/.omp/agent/skills/alpha`, of a skill the
+  // repository holds at `skills/alpha`, names no checkout of it, nor does a directory that ends
+  // otherwise.
+  const readme = "~/.omp/agent/README.md";
+  for (const [dir, skill] of [
+    [`${DOT_HOME}/.omp/agent/skills/alpha`, "skills/alpha"],
+    [`${DOT_HOME}/.omp/agent/skills/alpha`, DOT_SKILL],
+  ] as const) {
+    const shown = {
+      ...copy,
+      installed: { dir },
+      ...(copy.dotfiles === undefined ? {} : { dotfiles: { ...copy.dotfiles, skill } }),
+    };
+    expect(await answerCall(shown, "read", { path: readme }, "hashline")).toEqual({
+      why: `${readme} is no file of the session's checkout ${DOT_PROJ}`,
+    });
+  }
+}, 60_000);
+
 // Catches: a bash call that gives `pty`, `async`, `name` or `ready` as a placeholder (R4's
 // sessions give `pty: false, async: false, name: null` or `"null"`, `ready: null`, or a `ready` of
 // blank fields, on 131 calls) left unanswered where Oh My Pi reads it as absent, or a call that

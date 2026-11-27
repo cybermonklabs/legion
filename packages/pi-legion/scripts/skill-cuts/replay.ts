@@ -95,11 +95,14 @@
  * names a path under the directory the case's reads show its skill in (`arm.pathCopy`), answered
  * with the arm's own copy of the skill there (checkout.ts's `CheckoutCopy.installed`, from
  * `arm.skillDir`; nothing there in the arm with no skill, so the shell gives its error for a path
- * it lacks); and a `read` of one of
+ * it lacks); a `read` of a file of the session's dotfiles checkout outside that directory,
+ * answered from the commit of the dotfiles the case's profile names, the same in every arm
+ * (checkout.ts's `CheckoutCopy.dotfiles`, from cli.ts's `caseDotfiles`, its root found in
+ * `arm.pathCopy`); and a `read` of one of
  * the pin's internal URLs (`history://`, `local://`, `xd://<device>`, …), answered by the pin's
  * read tool as a fresh session answers it. A reply one of whose read-only calls the copy answers
  * in no form (a selector of a form not rebuilt, a path outside the checkout and outside that
- * directory, a git command where
+ * directory, but for a file that dotfiles commit tracks, a git command where
  * the copy holds no history, a rewritten output or an internal-URL read where the pin's binary is
  * absent or the session's history made the item, a form not rebuilt) gets no verdict, never judged
  * on that call: the replay rejects with UnansweredRead
