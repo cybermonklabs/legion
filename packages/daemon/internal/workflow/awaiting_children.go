@@ -598,7 +598,11 @@ func acceptedEntry(row record.PhaseRow) bool {
 //     route's entry fence refuses a completion of an entry from before the wait whatever head it
 //     names, the head the record holds among them (api/handoff.go, HANDOFF_STALE_ENTRY), and
 //     leftItsPhase refuses one of a phase the issue has left. The starting role's handoff is
-//     cleared, as a transition clears it (clearHandoff).
+//     cleared, as a transition clears it (clearHandoff). On a run with plan rows the return's
+//     task goes on the task's row (record.PlanTask.StartTask) before the start, as a move back's
+//     reason does: where the step's agent does a step of another task, the step waits for it
+//     (start, waitForAgent), and the start after the wait is told that task as written and raises
+//     the same entry, a move back's out of awaiting_children (startAfterWait).
 //   - The held start goes with the phase (record.Issue.ChildrenWait), and the moment of the last
 //     wait stays (record.Issue.ChildrenWaitedAt), which leftItsPhase reads after the return.
 //   - News of the approved design reaches the return as it reaches every move into a phase. The
@@ -687,6 +691,11 @@ func (e *Engine) ReturnFromChildren(ctx context.Context, tx pgx.Tx, issue record
 		"tree", issue.Tree, "task", w.Task, "held", held.Start, "to", to, "issuePhase", written.Phase, "merged", merged)
 	if err := e.clearHandoff(ctx, tx, issue.Key, role); err != nil {
 		return err
+	}
+	if starts && w.Stored {
+		if err := e.store.SetStartTask(ctx, tx, s.issue.Key, s.issue.Generation, s.walk.Task, work); err != nil {
+			return err
+		}
 	}
 	if err := e.start(ctx, tx, s, role, readPull(pr), func(Standing) string { return work }, phase.AwaitingChildren, true); err != nil {
 		return err

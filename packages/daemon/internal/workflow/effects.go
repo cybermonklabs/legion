@@ -515,13 +515,19 @@ const testerVerdictLabel = "Tester's verdict"
 // agent instead (waitForAgent), and nothing of it starts: no entry is raised, no start is counted
 // and no start is queued. The settle hands the agent on when it is free (handOnAgents), through
 // this function again. A run with no plan rows passes no agent's check: its walk names no agent.
+// A step that waits, for its join or its agent, keeps from, the phase this start moved the issue
+// from, on its task's row (waitsFrom), so the start after the wait raises the entry this start
+// would have raised (startAfterWait, record.PhaseRow.EntryFrom).
 func (e *Engine) start(ctx context.Context, tx pgx.Tx, s TaskScope, role claim.Role, pull taskPull, told func(Standing) string,
 	from phase.Phase, movedBack bool,
 ) error {
 	if s.walk.Wait == record.StepWaitJoin {
 		waits, err := e.joinNeeds(ctx, tx, &s, role)
-		if err != nil || waits {
+		if err != nil {
 			return err
+		}
+		if waits {
+			return e.waitsFrom(ctx, tx, s, from)
 		}
 	}
 	if role == "" {
@@ -534,8 +540,11 @@ func (e *Engine) start(ctx context.Context, tx pgx.Tx, s TaskScope, role claim.R
 		return e.startStandingStep(ctx, tx, s)
 	}
 	waits, err := e.waitForAgent(ctx, tx, &s, role)
-	if err != nil || waits {
+	if err != nil {
 		return err
+	}
+	if waits {
+		return e.waitsFrom(ctx, tx, s, from)
 	}
 	at, err := e.standingPart(ctx, tx, s, pull)
 	if err != nil {
@@ -546,6 +555,16 @@ func (e *Engine) start(ctx context.Context, tx pgx.Tx, s TaskScope, role claim.R
 		return err
 	}
 	return e.started(ctx, tx, s, role, sent, entry, startMarks{stored: true})
+}
+
+// waitsFrom writes from, the phase the start of the step at the place of s's task moved the issue
+// from, on that task's row, whose step this start found waiting for its join or its agent
+// (record.Store.SetStepWaitFrom): nothing of the step started, so no entry names the phase, and the
+// start after the wait (startAfterWait) raises the step's entry from it, as this start would have.
+// An entry a role's move back raised out of retro or merging so names that phase whether or not its
+// step waited, and the admission pass leaves its start alone (acceptedEntry).
+func (e *Engine) waitsFrom(ctx context.Context, tx pgx.Tx, s TaskScope, from phase.Phase) error {
+	return e.store.SetStepWaitFrom(ctx, tx, s.issue.Key, s.issue.Generation, s.walk.Task, from)
 }
 
 // waitForAgent says whether the step at the place of s's task waits for its agent (Walk.AgentAt)
@@ -1287,9 +1306,10 @@ func startOrOwe(ctx context.Context, tx pgx.Tx, store record.Store, issue string
 //
 // from is written with them too: the phase the move that raises this entry left, "" where no
 // move raises it (StartPromotedWorker, EnterArchitect), which is no move back, and held for the
-// release of a hold that raises one (restartTask, StartHeldRetro). The admission pass reads it to
-// leave a parent whose entry a role's move back raised out of retro or merging where it stands
-// (record.PhaseRow.EntryFrom, StopForChildren).
+// release of a hold that raises one (restartTask, StartHeldRetro). A start whose step waited for
+// its join or its agent raises it from the phase its start kept on the task's row (startAfterWait,
+// waitsFrom). The admission pass reads it to leave a parent whose entry a role's move back raised
+// out of retro or merging where it stands (record.PhaseRow.EntryFrom, StopForChildren).
 //
 // verbatim is whether the sweep's send of a root architect's entry again sends that task as
 // written (record.PhaseRow.EntryVerbatim), which only the resume of an answered root says. Every
@@ -1461,7 +1481,14 @@ const (
 // task a held start keeps, this task built for the held phase (holdForChildren, retryPhase), carry
 // none of them.
 func task(issue record.Issue, at Standing, handoff record.PhaseRow, reason string) string {
-	text := continueLine(issue) + at.lines + handoffReport(issue, handoff) + at.pull
+	return taskReported(issue, at, handoffReport(issue, handoff), reason)
+}
+
+// taskReported is task with the report of the step before already composed (handoffReport): what
+// the start after a wait is told from the report its move kept on the task's row
+// (record.PlanTask.StartReport, startAfterWait), in the place the move's own start tells it.
+func taskReported(issue record.Issue, at Standing, report, reason string) string {
+	text := continueLine(issue) + at.lines + report + at.pull
 	if reason != "" {
 		text += " " + reasonLabel + ": " + sentence(reason)
 	}

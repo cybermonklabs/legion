@@ -3367,7 +3367,11 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, s TaskScope, trigger
 	// its move, which cleared the reason before it. The start of that step tells that one stored
 	// reason in the reason's place, and no report of its own, whether it starts below or after a
 	// wait for its agent (startAfterWait), so the two starts are told the same and each counts its
-	// entry as raised by a move back.
+	// entry as raised by a move back. Any other move of such a task to a step it runs writes the
+	// report of the step that ended (handoffReport) on its task instead (record.Store.SetStartReport),
+	// which the start of the next step tells in its place, before the pull request: where that step
+	// waits for its agent, the start after the wait is told it too (startAfterWait), so the tester
+	// after a wait still reads which handoff and which head to test.
 	report, why := handoff, reason
 	if movedBack && w.Stored {
 		s.walk.StartReason = moveBackReason(issue, handoff, reason)
@@ -3378,6 +3382,12 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, s TaskScope, trigger
 			}
 		}
 		report, why = record.PhaseRow{}, w.StartReason
+	} else if w.Stored && w.State == record.TaskRunning {
+		if told := handoffReport(issue, handoff); told != "" {
+			if err := e.store.SetStartReport(ctx, tx, issue.Key, issue.Generation, w.Task, told); err != nil {
+				return err
+			}
+		}
 	}
 	// An issue the daemon moves into retro or merging is accepted (record.Accepted), so it leaves
 	// R1's first condition, and every step of another root that waits on it as an ancestor ends
