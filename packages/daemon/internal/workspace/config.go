@@ -356,7 +356,9 @@ func (r execRunner) Run(ctx context.Context, command Command) (Result, error) {
 	// procgroup.Err passes context.DeadlineExceeded through, so a git that handles its SIGTERM,
 	// removes its lock and exits 0 inside the grace would otherwise be reported as a command that
 	// could not be run rather than as the timeout it is.
-	result.TimedOut = killed() && errors.Is(bounded.Err(), context.DeadlineExceeded)
+	// FAULT (W-ws1 deadline): TimedOut read from the deadline having passed by the time the wait returned.
+	result.TimedOut = errors.Is(bounded.Err(), context.DeadlineExceeded)
+	_ = killed
 	if runErr := procgroup.Err(err); runErr != nil && !result.TimedOut {
 		return result, runErr
 	}
