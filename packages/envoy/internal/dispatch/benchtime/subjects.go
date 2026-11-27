@@ -6,13 +6,17 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/envoy/internal/dispatch/answerswindow"
 )
 
 // Subjects are the rows the measured statements read: the largest project and its most heavily
 // linked issue, the document most anchors point at, the sessions the agents list reads, the
-// embedding a meaning arm searches by, and three words of three frequencies.
+// embedding a meaning arm searches by, three words of three frequencies, and the window and the
+// three sessions of the agents' answers read.
 //
 // Each is read from the database when the run starts rather than written here as the key the
 // seed printed, so a re-seed, a scale flag or a second seeded database moves the subjects with
@@ -53,6 +57,29 @@ type Subjects struct {
 	// its first row at once, the probe reads tens of milliseconds whatever its plan is, and a
 	// document arm that reads the whole table once per lexeme is invisible.
 	ProbeLexemes []string
+	// AnswersSince is the start of the seed's answers window by its one rule
+	// (answerswindow.StartQuery): the since that every measurement of the agents' answers read
+	// binds. It is read from the database, never now() less 72 hours, since the seed dates every
+	// row in its own year.
+	AnswersSince time.Time
+	// AnswerSessions are the three sessions the answers read is measured for, chosen as the
+	// seed's report chooses them (answerswindow.Read), in this order: the session with the most
+	// deliveries before the window, and of the others the session with the most deliveries in the
+	// window and the one with the fewest there, at least one.
+	AnswerSessions []AnswerSession
+}
+
+// AnswerSession is one of the three sessions the agents' answers read is measured for, with the
+// name its measurement carries.
+type AnswerSession struct {
+	// Name says which of the three the session is, as a pair's name says it.
+	Name string
+	answerswindow.Subject
+}
+
+// String is the session as the subjects' line records it: its name, its id and its deliveries.
+func (s AnswerSession) String() string {
+	return s.Name + ": " + s.Subject.String()
 }
 
 // rareWordFloor and mediumWordFloor are the item counts the two scarcer words, and rareWordFloor
@@ -69,11 +96,15 @@ const (
 // String is the one line a run records its subjects as. The query vector is given by its length
 // alone: it is 1,536 numbers, and what identifies it is the issue it is the embedding of.
 func (s Subjects) String() string {
+	sessions := make([]string, 0, len(s.AnswerSessions))
+	for _, session := range s.AnswerSessions {
+		sessions = append(sessions, session.String())
+	}
 	return fmt.Sprintf(
-		"project=%s issue=%s anchored_document=%s sessions=%s model=%s query_vector=%d bytes of %s's embedding words=%s/%s/%s probe_lexemes=%d",
+		"project=%s issue=%s anchored_document=%s sessions=%s model=%s query_vector=%d bytes of %s's embedding words=%s/%s/%s probe_lexemes=%d answers_since=%s answer_sessions=[%s]",
 		s.Project, s.Issue, s.AnchoredDocument, strings.Join(s.Sessions, ","),
 		s.EmbeddingModel, len(s.QueryVector), s.Issue, s.RareWord, s.MediumWord, s.CommonWord,
-		len(s.ProbeLexemes))
+		len(s.ProbeLexemes), s.AnswersSince.Format(time.RFC3339Nano), strings.Join(sessions, "; "))
 }
 
 // bindSubjects reads every subject. A subject the database does not hold fails the run with what
@@ -147,7 +178,37 @@ func bindSubjects(t *testing.T, conn *pgx.Conn) Subjects {
 		t.Fatalf("%s holds %d words in at least %d of its items, and the probe's subject is %d: the term statistics of this database are not the seed's",
 			subjects.Project, len(subjects.ProbeLexemes), rareWordFloor, probeLexemeCount)
 	}
+	subjects.AnswersSince, subjects.AnswerSessions = answerSubjects(t, conn)
 	return subjects
+}
+
+// answerSubjects reads the agents' answers read's subjects by the rule the seed's report prints
+// them by (answerswindow.Read): the start of the window and its three sessions. A database that
+// holds no delivery, or too few sessions for the three, is one seeded before the seed wrote
+// deliveries, and the run fails, as for every other subject, rather than measure a read that
+// lists nothing.
+func answerSubjects(t *testing.T, conn *pgx.Conn) (time.Time, []AnswerSession) {
+	t.Helper()
+	answers, err := answerswindow.Read(context.Background(), conn)
+	if err != nil {
+		t.Fatalf("read the agents' answers read's window and sessions: %v", err)
+	}
+	if answers.Since.IsZero() {
+		t.Fatal("the database holds no event that delivers a person's words to a session, so the agents' answers read has no window: " +
+			"it was seeded before cmd/dispatch-seed wrote deliveries, or by another tool; seed it again with this checkout's cmd/dispatch-seed")
+	}
+	sessions := []AnswerSession{
+		{Name: "the session with old deliveries", Subject: answers.Old},
+		{Name: "the session with the most deliveries in the window", Subject: answers.Most},
+		{Name: "the session with the fewest deliveries in the window", Subject: answers.Fewest},
+	}
+	for _, session := range sessions {
+		if session.Session == "" {
+			t.Fatalf("%s for the agents' answers read is missing: the database was seeded before cmd/dispatch-seed wrote deliveries, or at a scale too small for three sessions; seed it again with this checkout's cmd/dispatch-seed",
+				session.Name)
+		}
+	}
+	return answers.Since, sessions
 }
 
 // word reads one of the three frequencies. A project whose term statistics are not built has no

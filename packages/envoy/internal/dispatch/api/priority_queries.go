@@ -157,17 +157,82 @@ var priorityCountsQuery = `with recursive ` + priorityMemberTerms + `
 	where ` + priorityProjectFilter + `
 	group by m.priority, i.status`
 
-// priorityNewestEventQuery reads the newest event under each priority: max(events.created_at)
-// over the issues that advance it. It is the events table and not issues.updated_at, which a
-// claim and an issue patch write and a comment does not — comment_create.go appends a
-// `comment.created` event and writes no issue row — so a priority whose work was last spoken
-// about rather than last moved still reads as having moved.
-var priorityNewestEventQuery = `with recursive ` + priorityMemberTerms + `
-	select m.priority, max(e.created_at)
+// priorityNewestEventQuery reads the newest event under each priority. For each member issue, an
+// issue that advances at least one priority, it reads the issue's event of issues.last_seq
+// through the unique (issue_key, seq) of events (events_issue_key_seq_key), and it answers, for
+// each priority, the newest created_at of those events over the issues that advance it. Each
+// append sets last_seq to the seq it took, in the statement that inserts the event
+// (events/broker.go, QueueAppendWithLogins), so that event is the issue's newest by seq. The
+// statement reads that one event of each member issue and no other, and it reads no event of an
+// issue that advances no priority. An issue with no event has last_seq 0, which no event of it
+// carries, so it matches no row; a priority none of whose issues has an event answers no row and
+// keeps its null (scanPriorityNewestEvents).
+//
+// The read of the event is a lateral probe with `limit 1`. The key is unique, so the limit
+// changes no answer. It keeps the planner from flattening the subquery into a join, which the
+// planner may hash: for a plain join on (issue_key, seq) over a table of a million events, it
+// hashed all of them under both plans.
+//
+// The probe runs once for each distinct member issue, inside a materialized CTE (member_event).
+// The CTE reads the distinct keys of `members` (member_issue), reads the issues row of each, and
+// probes with that key (member_issue.key) as well as the issue (i.last_seq), so the probe can run
+// only on a key the dedupe answered; member_issue.key is i.key by that read. It answers the one
+// time of each member issue, which is then joined back to `members`, and the time of a priority
+// is the newest over its member issues. `materialized` is a fence: the planner plans the CTE on
+// its own, so the join to `members` cannot move below the probe, whatever join order it prefers.
+// Without the fence, the planner joined the members before the probe on the database
+// cmd/dispatch-seed fills at --scale 1, and probed each member row, an (issue, priority) pair,
+// which reads an issue's event once for every priority the issue advances: 14,712 probes for
+// 6,362 member issues, and the statement's top plan node read 79,933 shared buffers under both
+// plans, against the 56,798 and 58,533 that main's text, which hashes every event of the table,
+// read under its two plans (TestStatementTimings, PostgreSQL 18.6, 2026-11-24).
+//
+// The issues row of each member issue is read by a lateral probe of issues_pkey on the key, which
+// `offset 0` keeps the planner from flattening into a join. As a join, under its default
+// settings the planner read every row of issues and joined each to a hash of the member keys,
+// since it plans 200 distinct keys of `members` whatever the walk answers, and 200 probes cost
+// more by its estimate than one read of the table: on the corpus of
+// TestPriorityNewestEventReadsOneEventOfEachMember it read all 1,029 issues in a Seq Scan for 29
+// member issues, under the generic plan and the plan made for the values alike, and priced the
+// join at 431 against 2,036 for the probes under the plan made for the values with no project
+// named (PostgreSQL 18.7, 2026-11-25). Such a read grows with every issue the deployment holds,
+// where the probes grow with the members alone. So every read of issues and of events beside the
+// walk over the members (priorityMemberTerms) is through an index. The walk is main's, which
+// hashes issues from one read of the table, and the plan test holds it to that one read and to
+// main's shared buffers (TestPriorityNewestEventReadsOneEventOfEachMember).
+//
+// The time can be earlier than the newest created_at over all the events of the members, but only
+// inside a bound. An event that Dispatch appends takes the start of its transaction as its
+// created_at (the now() default of events.created_at, store/migrations/0001_init.up.sql). Each
+// write of an issue holds the issue's lock from before it takes its seq until it commits
+// (store.LockOwner, and the issue's row in lockEventOwner of events/broker.go), so the seq follows
+// the order in which the writes of the issue commit, and the event of last_seq is that of the
+// write that committed last. Its time is earlier than the time of another event of the issue only
+// when its transaction began before that other write committed, and then it is earlier by less
+// than the time from that start to that commit. Over the members of a priority, the difference is
+// less than the longest such time.
+//
+// It reads the event and not issues.updated_at. The broker moves updated_at on every append, to
+// the later of its value and the event's created_at (events/broker.go, QueueAppendWithLogins),
+// but a patch moves it too, to the clock time of its own statement (issueUpdatedNow), so
+// updated_at is not the time of an event.
+var priorityNewestEventQuery = `with recursive ` + priorityMemberTerms + `, member_event as materialized (
+		select member_issue.key, last_seq_event.created_at
+		from (select distinct key from members) member_issue
+		cross join lateral (
+			select i.last_seq, i.project_key from issues i where i.key = member_issue.key offset 0
+		) i
+		cross join lateral (
+			select last_seq_event.created_at
+			from events last_seq_event
+			where last_seq_event.issue_key = member_issue.key and last_seq_event.seq = i.last_seq
+			limit 1
+		) last_seq_event
+		where ` + priorityProjectFilter + `
+	)
+	select m.priority, max(member_event.created_at)
 	from members m
-	join issues i on i.key = m.key
-	join events e on e.issue_key = i.key
-	where ` + priorityProjectFilter + `
+	join member_event on member_event.key = m.key
 	group by m.priority`
 
 // priorityUnplacedQuery is the first fault: an open issue in flight that advances no live
@@ -273,10 +338,11 @@ func priorityBacklogQuery(summary bool) string {
 // `?moved=true` (issueSummaryJoins) both splice, so the two answer the same cells for one issue.
 // An issue whose events do not reach back to the move answers both null.
 //
-// The lateral walks the issue's events backwards over the unique (issue_key, seq) index and stops
-// at the first match, so a read costs the issues it is asked for rather than the table. gate,
-// where it is not empty, is a condition the read runs under at all; it is written against the
-// request's parameters and the outer issue alone, so the planner makes it a one-time filter
+// The lateral walks the partial index events_backlog_moves (migration 20261125131100), whose
+// predicate is the lateral's own conditions on the event, backwards from the issue's newest move
+// and stops at the first row, so a read costs the issues it is asked for rather than the table.
+// gate, where it is not empty, is a condition the read runs under at all; it is written against
+// the request's parameters and the outer issue alone, so the planner makes it a one-time filter
 // above the index scan and a row it is false for reads no event.
 func backlogMoveLateral(issue, gate string) string {
 	if gate != "" {
