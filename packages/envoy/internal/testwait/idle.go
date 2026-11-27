@@ -41,10 +41,11 @@ func Idle(t testing.TB, d time.Duration, why string) {
 // bubble's t panics on Deadline. Before the bubble starts, Bubble reads on the real clock how much
 // of t's deadline is left; the t f takes names the moment that much past the bubble's start, on
 // the bubble's clock, which starts at midnight UTC 2000-01-01. So a wait in the bubble gives up the
-// margin before that moment and fails naming what it waited for: a wait that asks at the
-// package's pace (Until, Eventually) moves the bubble's clock by the pace between two asks while
-// nothing else in the bubble runs, and a Receive whose value never comes gives up once nothing
-// else in the bubble can run, since the bubble's clock then moves to its timer.
+// margin before that moment, or, for an Eventually, a minute after it began on the bubble's clock
+// when that is sooner, and fails naming what it waited for: a wait that asks at the package's pace
+// (Until, Eventually) moves the bubble's clock by the pace between two asks while nothing else in
+// the bubble runs, and a Receive whose value never comes gives up once nothing else in the bubble
+// can run, since the bubble's clock then moves to its timer.
 //
 // The bubble's clock moves only while every goroutine of the bubble is durably blocked, and then
 // at once to the next timer due. In a bubble whose goroutines spend their time durably blocked,
