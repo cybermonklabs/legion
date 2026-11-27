@@ -841,8 +841,17 @@ export interface CarriedOptions {
    * view before it a second time, under its own settle and its own fit. So a walk may name
    * more views than a width has without paying for the ones it does not, and a walk that
    * reaches no view at all fails the check below for want of anything to merge.
+   *
+   * A view that only moved the focus to one row of a tree a view before it loaded and waited
+   * out answers that row instead of `true`. The focus draws nothing outside the row: the body
+   * and the acts it opens are drawn inside it (`NodeRow.tsx`'s `NodeBody` and `RowActs`), from
+   * reads the page has already answered. So the row is read alone, once it holds its tree's
+   * one tab stop, which its tree gives it in the commit that draws its body, and read once,
+   * with no settle: the rest of the page is as the views before it read it. Its boxes are the
+   * page's own (`getBoundingClientRect`), so the sideways rule below reads them as it reads a
+   * whole page's, and the page is still fitted to its viewport first.
    */
-  readonly views: readonly (() => Promise<boolean>)[];
+  readonly views: readonly (() => Promise<boolean | Locator>)[];
 }
 
 /** How many presses of the left arrow reach a parent row: a row that holds rows of its own and
@@ -901,6 +910,18 @@ async function parentRowMissing(
   return `the left arrow from "${mapping.node}" does not reach its parent row "${mapping.parent}"`;
 }
 
+/** What one row offers once a view moved the focus to it on a settled page
+ *  (`CarriedOptions.views`): its `treeitem` and every landmark and control inside it, read once
+ *  the row holds its tree's one tab stop, which the tree gives it in the commit that draws what
+ *  the focus opens in it. */
+async function focusedRowEntries(row: Locator): Promise<MeasuredEntry[]> {
+  await expect(
+    row,
+    "the row a view focused never took its tree's tab stop, so its focus was never drawn"
+  ).toHaveAttribute("tabindex", "0");
+  return measured(row.ariaSnapshotJSON({ boxes: true }), true);
+}
+
 /**
  * Nothing recorded was lost: every recorded `{role, name}`, under the name the rename table gives
  * it, is a landmark or control of the page as it stands, and a reader reaches each of them
@@ -957,12 +978,13 @@ export async function assertInventoryCarried(
   const present = new Map<string, MeasuredEntry[]>();
   let read = 0;
   for (const view of options.views) {
-    if ((await view()) === false) continue;
+    const shown = await view();
+    if (shown === false) continue;
     await assertPageFits(page);
     read += 1;
-    for (const entry of await settled(() =>
-      measured(page.ariaSnapshotJSON({ boxes: true }), true)
-    )) {
+    for (const entry of shown === true
+      ? await settled(() => measured(page.ariaSnapshotJSON({ boxes: true }), true))
+      : await focusedRowEntries(shown)) {
       const key = entryKey(entry);
       present.set(key, [...(present.get(key) ?? []), entry]);
     }
