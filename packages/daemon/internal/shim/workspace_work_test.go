@@ -173,7 +173,8 @@ func TestAMalformedWorkspaceWorkFrameReachesNoAgent(t *testing.T) {
 func TestAWorkspaceWorkFailureWithAnErrorOverOneLineReachesTheDaemon(t *testing.T) {
 	marks := newJJMarks(t)
 	bin := t.TempDir()
-	script := marks.script(fmt.Sprintf("echo 'Error: the working copy is stale' >&2\nhead -c %d /dev/zero | tr '\\0' x >&2\nstatus=3\n",
+	// CONTROL: the jj stalls 121 s, past the read's old 120 s budget, standing in for a loaded machine.
+	script := marks.script(fmt.Sprintf("sleep 121\necho 'Error: the working copy is stale' >&2\nhead -c %d /dev/zero | tr '\\0' x >&2\nstatus=3\n",
 		2*shimwire.MaxFrameBytes))
 	if err := execfile.Write(filepath.Join(bin, "jj"), []byte(script), 0o700); err != nil {
 		t.Fatalf("write the fake jj: %v", err)
@@ -274,7 +275,13 @@ func (f *workFixture) read() shimwire.WorkspaceWorkResult {
 	}
 	marks := newJJMarks(f.t)
 	bin := f.t.TempDir()
-	if err := execfile.Write(filepath.Join(bin, "jj"), []byte(marks.script(realJJ(jj))), 0o700); err != nil {
+	// CONTROL: in the first fixture alone, the read's first jj stalls 121 s, past the read's old
+	// 120 s budget, inside the run it marks, standing in for a loaded machine.
+	stall := ""
+	if strings.HasSuffix(f.t.Name(), "/1_a_freshly_added_workspace_is_no_work") {
+		stall = "[ -e '" + bin + "/stalled' ] || { : >'" + bin + "/stalled'; sleep 121; }\n"
+	}
+	if err := execfile.Write(filepath.Join(bin, "jj"), []byte(marks.script(stall+realJJ(jj))), 0o700); err != nil {
 		f.t.Fatalf("write the PATH's jj: %v", err)
 	}
 	pathBefore := os.Getenv("PATH")
