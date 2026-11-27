@@ -32,16 +32,19 @@ async function blockAsks(
 
 /** The words and rule a refusal over open ask blocks uses around the blocks it names: `call`, the
  * call it refused (`dispatch request-approval`, `legion register_gate`); `blocks`, what its count
- * calls an open block (`ask block` in the words of both); `decidedBy`, which state decides a block
- * that is not open live — `"live"` takes the server's live ask state once the live text answers
- * `asks` (which `dispatch request-approval` uses, since approval carry moves an open request to
- * the version an answer writes), whereas `"version"` also requires the latest saved version to
- * record the block settled (which `legion register_gate` on a basis uses, since a later version
- * ends the basis); `effect`, the sentence on why an open block stops that call; `remedy`, what to
- * do instead. */
+ * calls an open block (`ask block` in the words of both); `decidedBy`, below; `effect`, the
+ * sentence on why an open block stops that call; `remedy`, what to do instead. */
 export interface OpenDecisionBlockRefusal {
   readonly call: string;
   readonly blocks: string;
+  /** Which state decides a block that is not open live: `"live"` takes the server's live ask
+   * state once the live text answers `asks` (which `dispatch request-approval` uses, since
+   * approval carry moves an open request to the version an answer writes), whereas `"version"`
+   * also requires the latest saved version to record the block settled with the answer the server
+   * holds (which `legion register_gate` on a basis uses, since a later version ends the basis).
+   * `"version"` reads what the kept form writes on a block's opening line, so it goes with that
+   * form, and with it this field and the value each caller sets. */
+  // kept for one release: stored-ask-state
   readonly decidedBy: "live" | "version";
   readonly effect: string;
   readonly remedy: string;
@@ -52,11 +55,15 @@ export interface OpenDecisionBlockRefusal {
 export const OPEN_BLOCK_ASK_THE_HUMAN =
   "Tell the human which block is open and ask them to answer it or to waive it.";
 
+/** How long an answered block takes to reach a version: settlement writes the answer into one on
+ * its own about two seconds after it. The line of a block still open in the latest saved version
+ * waits on it (`refuseOpenDecisionBlocks`), and `OPEN_BLOCK_SETTLES` tells the agent it. */
+const SETTLES_ON_ITS_OWN = "it settles into a version on its own in about two seconds";
+
 /** The sentence `register_gate`'s `remedy` over open ask blocks adds after
- * `OPEN_BLOCK_ASK_THE_HUMAN`, saying that an answered block settles into a version on its own
- * about two seconds later, matching the wait `refuseOpenDecisionBlocks` names under `"version"`. */
-export const OPEN_BLOCK_SETTLES =
-  "Once it is answered, it settles into a version on its own in about two seconds.";
+ * `OPEN_BLOCK_ASK_THE_HUMAN`: an answered block settles into a version on its own, the wait
+ * `refuseOpenDecisionBlocks` names under `"version"` (`SETTLES_ON_ITS_OWN`). */
+export const OPEN_BLOCK_SETTLES = `Once it is answered, ${SETTLES_ON_ITS_OWN}.`;
 
 /** How every `remedy` over open ask blocks closes a block the human waives, which each one
  * continues with its own next step. */
@@ -97,8 +104,9 @@ export const OPEN_BLOCK_WAIVED =
  * The `legion` tool makes the same test before `register_gate` opens a root's design-gate step on
  * an ancestor's approval, which no person's review of the root's own document stands behind
  * (dispatch://INFRA-3320, R1), with `decidedBy: "version"` so an answered block waits for the
- * saved version that holds the answer before the basis registers. `refusal` carries that rule and
- * each caller's own words around the blocks named.
+ * saved version that holds the answer, who gave it and when, before the basis registers: a person
+ * may change an answer while its ask stays answered, and the version settlement then writes ends
+ * the basis. `refusal` carries that rule and each caller's own words around the blocks named.
  */
 export async function refuseOpenDecisionBlocks(
   client: DispatchClient,
@@ -126,14 +134,19 @@ export async function refuseOpenDecisionBlocks(
       served: text.asks !== undefined && text.asks !== null,
       asks: liveTextAsks(text),
     })));
-  // A version of the release before, or a caller whose `decidedBy` is `"version"`, shows open a
-  // block whose ask is answered or closed until the version its settlement writes the answer into;
-  // a waived one (resolved) gets the decision written in.
+  // The line of a block whose ask, or a copy's source, is answered or closed while the latest
+  // saved version does not record it so, for an own ask and a copy alike: a version of the release
+  // before shows such a block open until settlement writes the answer in, and a caller whose
+  // `decidedBy` is `"version"` waits for the version that holds the answer the server holds.
+  // `named` names the block, a copy with its source, and `state` is the state the check read, the
+  // ask's own or the copy's. An answered block settles into a version on its own; a waived one
+  // (resolved), own or copy, gets the decision written in with an edit, since a Dispatch of the
+  // release before writes no record of a waiver.
   // kept for one release: release-before-text
   // kept for one release: stored-ask-state
   const stillOpen = (named: string, state: string): string =>
     state === "answered"
-      ? `${named}, answered but still open in version ${latest}: it settles into a version on its own in about two seconds; wait for that version`
+      ? `${named}, answered but still open in version ${latest}: ${SETTLES_ON_ITS_OWN}; wait for that version`
       : `${named}, ${state} but still open in version ${latest}: write the decision into the text with dispatch doc-edit, which writes a version that carries it`;
   // A block copied from another document's ask opens none: settlement names that ask and its
   // document, as the copy's `copied_from` and `copied_from_document`, so the source is where it is
@@ -165,16 +178,6 @@ export async function refuseOpenDecisionBlocks(
     if (source === undefined) return `${named}, whose ask Dispatch has not opened yet`;
     return `${named}, a copy of ask ${source.ref}, which is open on ${source.where}: answer it there`;
   };
-  // A copy whose source is settled live but whose latest saved version does not record it settled
-  // yet: under `decidedBy: "version"`, wait for the version settlement writes with the kept state.
-  // kept for one release: stored-ask-state
-  const settledCopyWaiting = (named: string, copies: readonly TextAsk[]): string => {
-    const state = copies[0]?.state ?? "answered";
-    const source = copySource(copies);
-    const what =
-      source === undefined ? named : `${named}, a copy of ask ${source.ref} on ${source.where}`;
-    return `${what}, ${state} but still open in version ${latest}: it settles into a version on its own in about two seconds; wait for that version`;
-  };
   /** The refusal's line for `block`, or undefined where the block is not open. */
   const judged = async (block: ArtifactBlock): Promise<string | undefined> => {
     const ask = asks.get(block.id);
@@ -183,26 +186,54 @@ export async function refuseOpenDecisionBlocks(
         ? `block ${block.id}`
         : `${JSON.stringify(ask.question)} (block ${block.id}, ask ${ask.id})`;
     const openers = askOpeners(openerLines, block.id);
-    // The state each of the block's opening lines records (askOpenerAttributes), which decides a
+    // What each of the block's opening lines records (askOpenerAttributes): its state decides a
     // block against a Dispatch of the release before (whose live text sends no `asks`), and under
-    // `decidedBy: "version"`, which waits for the saved version to record the block settled.
+    // `decidedBy: "version"`, which waits for the saved version to record the block settled, its
+    // state, and who answered and when.
     // kept for one release: release-before-text
     // kept for one release: stored-ask-state
-    const states = openers.map((line) => askOpenerAttributes(line)?.state);
+    const recorded = openers.map((line) => askOpenerAttributes(line));
+    // kept for one release: release-before-text
+    // kept for one release: stored-ask-state
+    const states = recorded.map((attributes) => attributes?.state);
     if (states.length === 0) return `${named}, which version ${latest} does not hold yet`;
     // kept for one release: release-before-text
     const recordsOpen = states.includes("open");
     // kept for one release: release-before-text
     // kept for one release: stored-ask-state
     const recordsSettled = !recordsOpen && states.every((state) => state !== undefined);
+    // Under `decidedBy: "version"`, whether every opening line records an answer by `answeredBy`
+    // at `answeredAt`, the one the server holds now, as the kept form writes it (keptAskState):
+    // the answerer as the ask's node names them, and the time as asks.AnsweredAtValue writes it,
+    // RFC 3339 in UTC. The asks list and the live text serve both the same way, so a settled
+    // version holds the same text; a time a row's own answer holds in another offset is the same
+    // instant spelled otherwise. A person may change an answer while its ask stays answered, and
+    // settlement then writes a version with the new answer, which ends a basis registered on the
+    // one before.
+    // kept for one release: stored-ask-state
+    const recordsAnswer = (answeredBy: string | undefined, answeredAt: string | undefined) =>
+      recorded.every((attributes) => {
+        const at = attributes?.answered_at;
+        return (
+          attributes?.answered_by === answeredBy &&
+          (at === answeredAt ||
+            (at !== undefined &&
+              answeredAt !== undefined &&
+              Date.parse(at) === Date.parse(answeredAt)))
+        );
+      });
     if (ask !== undefined) {
       const open = ask.state === "open";
       // Under `decidedBy: "version"` (register_gate's basis), a block is not open only when the
-      // ask is settled live and every opening line in the latest saved version records it settled.
+      // ask is settled live and every opening line in the latest saved version records it settled,
+      // an answered one with the answer the ask holds; the kept form writes no answerer an answer
+      // names none of. A resolved block has no answerer.
       // kept for one release: stored-ask-state
       if (refusal.decidedBy === "version") {
         if (open) return named;
-        return recordsSettled ? undefined : stillOpen(named, ask.state);
+        const holdsTheAnswer =
+          ask.state !== "answered" || recordsAnswer(ask.answer?.user || undefined, ask.answer?.at);
+        return recordsSettled && holdsTheAnswer ? undefined : stillOpen(named, ask.state);
       }
       // A Dispatch of this release sends `asks`, and the ask's own state decides. One of the
       // release before sends none, and there a version that records the block open while its ask
@@ -228,9 +259,23 @@ export async function refuseOpenDecisionBlocks(
       copies.length > 0 &&
       copies.every((copy) => copy.state !== undefined && copy.state !== "open");
     if (!settled) return openCopy(named, copies);
+    // Under `decidedBy: "version"`, a settled copy is not open only when every opening line in the
+    // latest saved version records it settled, an answered one with the answer its source holds,
+    // which the live text gives the copy. The line names the copy's source and the state of the
+    // copy the version does not record.
     // kept for one release: stored-ask-state
-    if (refusal.decidedBy === "version" && !recordsSettled) {
-      return settledCopyWaiting(named, copies);
+    if (refusal.decidedBy === "version") {
+      const unrecorded = copies.find(
+        (copy) =>
+          !recordsSettled ||
+          (copy.state === "answered" && !recordsAnswer(copy.answered_by, copy.answered_at))
+      )?.state;
+      if (unrecorded !== undefined) {
+        const source = copySource(copies);
+        const what =
+          source === undefined ? named : `${named}, a copy of ask ${source.ref} on ${source.where}`;
+        return stillOpen(what, unrecorded);
+      }
     }
     return undefined;
   };

@@ -1764,11 +1764,11 @@ The four that run passes (`duty.RunWoken`) start two passes no closer together t
   It is the first type change written after the store's backfill (`backfill-graph-store`), which the releases from legion-envoy v34.11.0 on may have run over `graph_nodes` and `graph_tuples`, so it writes both tables by bounded writes alone (below): literal rows, and each block type's supertag node by its primary key, to the whole attributes the earlier type migrations left with the version moved (`TestATypeMigrationAfterTheBackfillIsAdmittedAndLeavesTheFilesSchema`).
   Migration `20261125125701` adds `check`'s `subject` and `program` attribute nodes.
   It sorts below `20261125125703_btree_gin` on purpose: a pending `create extension` takes the census's size exemptions from every later pending migration, and this migration needs them.
-  Each is read from version 6 and created from version 7.
+  Each is read from version 6, and this migration gives each `creatable_since` 7.
   It moves every block type to version 6.
   Migration `20261125163555` makes `decision` and `reading` block types and adds their attribute nodes and `ask`'s `shaped`, each read from version 7 and created from version 8.
-  It moves every block type to version 7.
-  Migration `20261126040700` moves every block type to version 8, the version `pmdoc/schema/blocks.json` declares, so from this release a build creates `decision`, `reading` and `ask`'s `shaped`, and moves the `creatable_since` of `check`'s `subject` and `program` from 7 to 9, so no build of this release creates either.
+  It moves `check`'s `subject` and `program` to `creatable_since` 8, and moves every block type to version 7.
+  Migration `20261126040700` moves every block type to version 8, the version `pmdoc/schema/blocks.json` declares, so from this release a build creates `decision`, `reading` and `ask`'s `shaped`, and moves the `creatable_since` of `check`'s `subject` and `program` from 8 to 9, so no build of this release creates either.
   Like `20261123080000`, all three use bounded writes alone.
   Each read runs in one read-only transaction at repeatable read, so a migration that commits while it reads is read whole by the next read, never half.
   A store schema above the version this binary was built for is a store the next release migrated: the process installs it at its own version, with the elements whose `since` is at or below that version and nothing else, and keeps serving, its boot and `/healthz` unaffected, so a release that ships a type migration takes no process of the previous build out of service.

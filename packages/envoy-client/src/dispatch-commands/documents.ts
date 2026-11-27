@@ -455,6 +455,7 @@ export async function docReadCommand(context: CommandContext): Promise<DispatchT
  *  ask blocks. */
 const APPROVAL_REQUEST_OPEN_BLOCKS = {
   blocks: "ask block",
+  // kept for one release: stored-ask-state
   decidedBy: "live",
   effect:
     "Approving the document means agreeing to every point in it, and an open block is a question the human has not decided yet.",

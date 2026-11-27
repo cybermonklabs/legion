@@ -2,7 +2,7 @@
 -- requirement, plan_task, check, decision and reading) to what
 -- 20261125163555_graph_supertags_decision_reading left on them, the version moved from 7 to 8,
 -- sets the attributes of the two attribute nodes check/subject and check/program to what
--- 20261125125701_graph_supertags_check_subject left on them, `creatable_since` moved from 7 to 9,
+-- 20261125163555_graph_supertags_decision_reading left on them, `creatable_since` moved from 8 to 9,
 -- and appends the `version` and `creatable_since` tuples that state each. Those rows are type
 -- nodes, and nothing but a migration writes a type node: no route and no command writes one
 -- (cmd/dispatch's requireNoRouteOrCommandWritesAType), no migration between 20261125163555 and
