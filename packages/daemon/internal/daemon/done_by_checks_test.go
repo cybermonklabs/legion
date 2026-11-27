@@ -125,9 +125,10 @@ func TestAnIssueClosesWhenTheChecksOfItsGoalPass(t *testing.T) {
 		secondClosesAtItsProductionPass(r, second)
 		r.on(third)
 		r.walkReview(doneByChecksSprocketPull, doneByChecksSprocketHead)
+		thirdToItsMerge(r, third)
 		fifth := fifthSetBack(r, third)
+		thirdWaitsForTheFifth(r, third, fifth)
 		firstThroughItsNextChange(r, first, look)
-		thirdStaysOpenAfterItsMerge(r, third, fifth)
 		if got := r.d.state().Issues[second]; got.Phase != phase.Done {
 			t.Errorf("%s stands in %s at the run's end, want done since its production check's pass", second, got.Phase)
 		}
@@ -294,17 +295,20 @@ func secondClosesAtItsProductionPass(r *doneByChecksRig, second string) {
 	r.awaitIssue(second, "the production check's pass", inPhase(phase.Done))
 }
 
-// fifthSetBack is the fifth issue, filed as the third's child once the third stands in accepting,
-// from its review to its merge, its pull request approved and signed off by the tree's architect,
-// and then that architect's done on it while its check after the merge has no pass: the daemon
-// sets the done back, the child stays in verifying with the status testing, and the architect is
-// told why. It answers the fifth issue's key.
+// fifthSetBack is the fifth issue, a child a person files under the third once the third waits in
+// verifying, walked from its first phase to its merge, its pull request approved and signed off by
+// the tree's architect. Then that architect's done on it, while its check after the merge has no
+// pass: the daemon sets the done back, the child stays in verifying with the status testing, and
+// the architect is told why. It answers the fifth issue's key.
 func fifthSetBack(r *doneByChecksRig, third string) string {
 	t := r.t
 	t.Helper()
 	r.on(third)
-	fifth := r.childInReviewing(doneByChecksIssueSpec{title: "Gears mesh with the new axle", verification: doneByChecksVerification,
+	fifth := r.childFiled(doneByChecksIssueSpec{title: "Gears mesh with the new axle", verification: doneByChecksVerification,
 		number: doneByChecksGearsPull, head: doneByChecksGearsHead})
+	r.stepOf(fifth, claim.RolePlanner, "plan", api.HandoffCompleteRequest{Summary: "planned"}, phase.Implementing)
+	r.stepOf(fifth, claim.RoleImplementer, "implement", api.HandoffCompleteRequest{Summary: "implemented", Commit: doneByChecksGearsHead}, phase.Testing)
+	r.stepOf(fifth, claim.RoleTester, "test", testCompletion, phase.Reviewing)
 	r.reviewOf(fifth, doneByChecksGearsPull, doneByChecksGearsHead, "APPROVED", phase.Accepting)
 	r.signOff(fifth)
 	r.retroOf(fifth, doneByChecksGearsHead)
@@ -502,21 +506,28 @@ func firstThroughItsNextChange(r *doneByChecksRig, first string, look firstLook)
 	r.awaitIssue(first, "the fail after the close", inPhase(phase.Done))
 }
 
-// thirdStaysOpenAfterItsMerge is the third issue, from the release before, from its sign-off to its
-// merge: after it, it stands in verifying as the first did, and its close waits for the fifth
-// issue beneath it.
-func thirdStaysOpenAfterItsMerge(r *doneByChecksRig, third, fifth string) {
+// thirdToItsMerge is the third issue, which the release before left at its review, from its
+// architect's sign-off to its merge: after it, it stands in verifying as the first does, with its
+// check after the merge unpassed.
+func thirdToItsMerge(r *doneByChecksRig, third string) {
 	r.t.Helper()
 	r.on(third)
 	r.walkSignOff()
 	r.walkRetro(doneByChecksSprocketHead)
 	merged := r.mergeOf(third, doneByChecksSprocketPull, doneByChecksSprocketMerge)
 	r.awaitCloseRead(third, "the third issue's merge", merged, namesMerge(doneByChecksCheck, doneByChecksSprocketMerge))
-	r.awaitIssue(third, "its merge", func(issue api.Issue) error {
+	r.awaitIssue(third, "its merge", inVerifying)
+}
+
+// thirdWaitsForTheFifth is the third issue once the fifth stands in verifying beneath it: its own
+// close waits for that issue beneath it, whatever its checks say.
+func thirdWaitsForTheFifth(r *doneByChecksRig, third, fifth string) {
+	r.t.Helper()
+	r.awaitIssue(third, "the fifth issue beneath it", func(issue api.Issue) error {
 		if err := inVerifying(issue); err != nil {
 			return err
 		}
-		if issue.CloseWait == nil || !slices.ContainsFunc(issue.CloseWait.Beneath, func(beneath api.CloseWaitIssueView) bool { return beneath.Key == fifth }) {
+		if !slices.ContainsFunc(issue.CloseWait.Beneath, func(beneath api.CloseWaitIssueView) bool { return beneath.Key == fifth }) {
 			return fmt.Errorf("its closeWait %+v names no %s beneath it", issue.CloseWait, fifth)
 		}
 		return nil

@@ -268,40 +268,68 @@ func (r *doneByChecksRig) seedIssue(issue doneByChecksIssueSpec, created created
 	writePrompt(t, r.cfg, reviewer)
 }
 
-// childInReviewing files child, an issue of the walk's issue, a running root, as
-// seedChildInReviewing does: made in Dispatch under the root with its documents, held by the
-// daemon's store in reviewing at generation 1 in the root's tree, on its pull request open at its
-// head, which GitHub opens and the rig publishes. It is filed after the boot, since a root the boot
-// finds at its review with a child in the workflow waits for its children (awaiting_children). It
-// adds the child to the run's issues and answers its key.
-func (r *doneByChecksRig) childInReviewing(child doneByChecksIssueSpec) string {
+// childFiled files child in Dispatch under the walk's issue, as a person files one: a todo issue
+// of the project with the legion label and its documents. The daemon takes it in, admits it under
+// the root — a root in verifying is not accepted, so no child of it is held (D10) — and starts its
+// first phase, which the gate of root issues does not hold (config.DesignGateRootIssues). Once it
+// stands in planning, GitHub opens its pull request on its own branch at its head and the rig
+// publishes the opened event. It adds the child to the run's issues and answers its key.
+func (r *doneByChecksRig) childFiled(child doneByChecksIssueSpec) string {
 	t := r.t
 	t.Helper()
 	root := r.key
 	var created createdIssue
 	r.person(http.MethodPost, "/api/v1/issues", map[string]string{"project": r.cfg.Project, "title": child.title, "parent": root}, http.StatusCreated, &created)
 	r.documents(created.Key, child)
-	pull := stepRecordsPullRequest(created.Key, child.number)
-	pull.HeadSHA = child.head
-	ctx := context.Background()
-	if err := store.Transact(ctx, r.st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
-		if err := r.records.PutIssue(ctx, tx, record.Issue{
-			Key: created.Key, Repo: liveRepo, DefaultBranch: "main", GitHubRepo: liveRepo, Tree: root, Parent: &root, Project: r.cfg.Project,
-			Title: child.title, Phase: phase.Reviewing, Generation: 1, Status: "needs_review", DispatchStatus: "needs_review",
-			Rank: created.Rank, LastDispatchSeq: created.LastSeq, HandedOver: true,
-		}); err != nil {
-			return err
-		}
-		return r.records.PutPullRequest(ctx, tx, pull)
-	}); err != nil {
-		t.Fatalf("seed %s under %s: %v", created.Key, root, err)
-	}
+	r.person(http.MethodPatch, "/api/v1/issues/"+created.Key, map[string]any{"status": "todo", "labels": []string{"legion"}}, http.StatusOK, &created)
 	r.issues = append(r.issues, walkIssue{key: created.Key, title: child.title, number: child.number})
+	r.waitPhaseOf(created.Key, phase.Planning)
 	r.standIn.open(child.number, claim.IssueBranch(created.Key), child.head)
 	opened := r.publishPull(child.number, "opened")
-	t.Logf("%s filed under %s in reviewing; GitHub opened pull request #%d from %s at %s: envelope %s",
+	t.Logf("%s filed under %s as a person files a child; the daemon admitted it and it stands in planning. GitHub opened pull request #%d from %s at %s: envelope %s",
 		created.Key, root, child.number, claim.IssueBranch(created.Key), child.head, opened)
 	return created.Key
+}
+
+// stepOf is one role's turn on issue, a member of the walk's tree: it takes the role's next task
+// (taskOf) and finishes it, and issue reaches next.
+func (r *doneByChecksRig) stepOf(issue string, role claim.Role, word string, req api.HandoffCompleteRequest, next phase.Phase) {
+	t := r.t
+	t.Helper()
+	c := r.workerOf(issue, role)
+	r.taskOf(c)
+	if word != "" {
+		req.HandoffID, req.HandoffVersion = r.writeHandoffOf(issue, c.session, word)
+	}
+	if status, body := r.complete(c, req); status != http.StatusOK {
+		t.Fatalf("the %s's completion of %s = %d %s, want 200", role, issue, status, body)
+	}
+	c.endTurn()
+	r.waitPhaseOf(issue, next)
+	t.Logf("the walk of %s: %s done; the daemon's state route shows it in %s", issue, role, r.d.state().Issues[issue].Phase)
+}
+
+// writeHandoffOf writes issue's handoff record of word under session, as `dispatch handoff-write`
+// does with the agent's bearer, and answers its id and version (stepRecordsRig's writeHandoff,
+// which writes the walk's own issue's).
+func (r *doneByChecksRig) writeHandoffOf(issue, session, word string) (string, int) {
+	t := r.t
+	t.Helper()
+	body := fmt.Sprintf(`{"schemaVersion": 1, "phase": %q, "issue": %q, "summary": "written by %s"}`, word, issue, session)
+	status, answer := r.agent(http.MethodPost, "/api/v1/issues/"+issue+"/handoffs/"+word, map[string]any{
+		"actor": map[string]string{"kind": "session", "id": session}, "body": body,
+	})
+	if status != http.StatusCreated {
+		t.Fatalf("write the %s handoff of %s as %s = %d %s, want 201", word, issue, session, status, answer)
+	}
+	var written struct {
+		ID      string `json:"id"`
+		Version int    `json:"version"`
+	}
+	if err := json.Unmarshal(answer, &written); err != nil || written.ID == "" {
+		t.Fatalf("decode the written handoff %s: %v", answer, err)
+	}
+	return written.ID, written.Version
 }
 
 // walk runs one step of the walk, which returns once the issue reached its next phase, and logs
