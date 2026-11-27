@@ -1,4 +1,13 @@
-import { type ReactNode, type RefObject, useCallback, useEffect, useRef, useState } from "react";
+import {
+  createContext,
+  type ReactNode,
+  type RefObject,
+  useCallback,
+  useContext,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import { useLocation } from "react-router-dom";
 
 import { primarySpec } from "../../../api/issue-cache";
@@ -8,9 +17,11 @@ import { ThreeThingsAbove } from "../contents-frame";
 import { DocumentStages } from "../document-stage";
 import { bringOnScreen } from "../identity-block";
 import { issueAddress } from "../issue-address";
+import { useReadsSettled } from "../outline-reads";
 import type { Preset } from "../page-words";
 import type { SlotProps } from "../slot-props";
 import { focusIsLoose, TAB_STOP_ROW } from "../tree-focus";
+import { useTellViewDrawn } from "../tree-read/tree-read";
 import { ViewReadProvider } from "../tree-read/view-read";
 import { BodySlot, ReaderActsWatch } from "./body";
 import { FAILED_READ_RETRY, FailedLineLeaves } from "./failed-read-line";
@@ -61,6 +72,14 @@ import { ViewVerificationSlot } from "./view-verification";
  *
  * Above the slot, after those sentences, stand the issue's children, a section of their own that
  * opens and closes (`children-section.tsx`), in every view that draws an outline read (R14).
+ *
+ * The stage tells the page once its view has drawn its first drawing from its reads, painted
+ * (`useTellViewDrawn`): its first row, which the box the slot is drawn in watches for
+ * (`StageBox`), or, where it draws none once every read it draws from has answered
+ * (`useReadsSettled`), what it draws in their place - the line that the issue holds nothing, a
+ * refused read's line, the Decisions view's folded foot. Until then the page reads none of the
+ * pages the outline read has not loaded (`useReadUnloadedPages`), whatever frame another surface
+ * draws first, the header's included (decision 578 (2)).
  */
 export function StageSlot({
   filled = SLOT_FILLED,
@@ -118,26 +137,37 @@ export function StageSlot({
   // (`ViewStage`).
   const landsItself = beside && preset === "graph";
   const dropped = useDroppedAddress();
+  // The view's first drawing from its reads (`useTellViewDrawn`): its first row, which the box it
+  // is drawn in tells (`StageBox`), or, once every read it draws from has answered, what it draws
+  // then, in the frame after.
+  const viewDrawn = useTellViewDrawn(props.issue.key);
+  const settled = useReadsSettled(props.issue, preset);
+  useEffect(() => {
+    if (!settled) return;
+    return afterPaint(viewDrawn);
+  }, [settled, viewDrawn]);
   return (
     <ViewReadProvider issue={props.issue} preset={preset}>
-      <DocumentStages>
-        <ReaderActsWatch into={acts} key={following} />
-        {/* Below 1024 px, the issue's three sentences above the slot's first row (R13). */}
-        <ThreeThingsAbove {...props} view={View !== undefined} />
-        {/* The issue's children, above the slot's first row (R14). */}
-        <ChildrenSection {...props} />
-        {View === undefined ? (
-          <StageBox>
-            <BodySlot {...props} acts={swapped && undrawn.viewsFocus ? undefined : acts} />
-          </StageBox>
-        ) : (
-          <LandsItself.Provider value={landsItself}>
-            <ViewStage box={viewBox} dropped={dropped} key={preset}>
-              <View {...props} acts={acts} onAddressDrawn={onAddressDrawn} />
-            </ViewStage>
-          </LandsItself.Provider>
-        )}
-      </DocumentStages>
+      <FirstRowDrawn.Provider value={viewDrawn}>
+        <DocumentStages>
+          <ReaderActsWatch into={acts} key={following} />
+          {/* Below 1024 px, the issue's three sentences above the slot's first row (R13). */}
+          <ThreeThingsAbove {...props} view={View !== undefined} />
+          {/* The issue's children, above the slot's first row (R14). */}
+          <ChildrenSection {...props} />
+          {View === undefined ? (
+            <StageBox>
+              <BodySlot {...props} acts={swapped && undrawn.viewsFocus ? undefined : acts} />
+            </StageBox>
+          ) : (
+            <LandsItself.Provider value={landsItself}>
+              <ViewStage box={viewBox} dropped={dropped} key={preset}>
+                <View {...props} acts={acts} onAddressDrawn={onAddressDrawn} />
+              </ViewStage>
+            </LandsItself.Provider>
+          )}
+        </DocumentStages>
+      </FirstRowDrawn.Provider>
     </ViewReadProvider>
   );
 }
@@ -402,6 +432,9 @@ export function ViewStage({
  * tab-stop row, or to the tree itself, in that order, unless something else took it in the
  * render the line left in: once the line is off the page the browser has moved the focus to the
  * page's body, where nothing says where the reader was.
+ *
+ * Inside the stage (`FirstRowDrawn`), the box watches for the slot's first row until it holds
+ * one, and tells the stage's mark that its view has drawn once the browser has painted it.
  */
 function StageBox({
   box: given,
@@ -414,6 +447,24 @@ function StageBox({
 }): ReactNode {
   const own = useRef<HTMLDivElement>(null);
   const box = given ?? own;
+  const rowDrawn = useContext(FirstRowDrawn);
+  useEffect(() => {
+    const stage = box.current;
+    if (rowDrawn === undefined || stage === null) return;
+    let painted: (() => void) | undefined;
+    const look = (): void => {
+      if (painted !== undefined || stage.querySelector(VIEW_ROW) === null) return;
+      rows.disconnect();
+      painted = afterPaint(rowDrawn);
+    };
+    const rows = new MutationObserver(look);
+    rows.observe(stage, { childList: true, subtree: true });
+    look();
+    return () => {
+      rows.disconnect();
+      painted?.();
+    };
+  }, [box, rowDrawn]);
   // The line calls this while React takes it off the page, before what replaces it is drawn: the
   // focus is placed once that render is on the page.
   const lineLeaves = useCallback(() => {
@@ -434,6 +485,27 @@ function StageBox({
       </div>
     </FailedLineLeaves.Provider>
   );
+}
+
+/** A row of the slot's tree, the outline's or a view's. */
+const VIEW_ROW = "[data-node-row]";
+
+/** What the box a slot is drawn in calls once it has drawn the slot's first row, painted
+ *  (`StageBox`): the stage's mark that its view has drawn (`useTellViewDrawn`). Undefined outside
+ *  a stage (`ViewStage` drawn alone), where the box watches for nothing. */
+const FirstRowDrawn = createContext<(() => void) | undefined>(undefined);
+
+/** Calls `then` once the browser has painted the frame it draws next: in the task that frame's
+ *  animation callback queues, as the page reads a frame painted. Answers how to call it off. */
+function afterPaint(then: () => void): () => void {
+  let painted: number | undefined;
+  const frame = requestAnimationFrame(() => {
+    painted = window.setTimeout(then, 0);
+  });
+  return () => {
+    cancelAnimationFrame(frame);
+    window.clearTimeout(painted);
+  };
 }
 
 /** Puts the focus on `to` without scrolling to it, then brings it on screen on the next frame

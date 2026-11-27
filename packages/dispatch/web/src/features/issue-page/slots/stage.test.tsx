@@ -14,7 +14,12 @@ import { issueDetails, KEY } from "../decisions-filter/decisions-fixtures";
 import { presetPath } from "../issue-address";
 import { readComment, TWO_THREADS, waitInAct } from "../outline-fixtures";
 import { CONTROL_LABELS, PRESET_NAMES, PRESET_ORDER, type Preset } from "../page-words";
-import { readOlderComments, type TreeAnswer } from "../tree-read/tree-read";
+import {
+  outlineQuery,
+  readOlderComments,
+  type TreeAnswer,
+  useReadUnloadedPages,
+} from "../tree-read/tree-read";
 import { FailedReadLine } from "./failed-read-line";
 import { ProvidersSlot } from "./providers";
 import { SLOT_FILLED, StageSlot, VIEW_SLOTS, type ViewSlotProps, ViewStage } from "./stage";
@@ -610,5 +615,106 @@ test("the Contents list's foot reads the next older comment page once, with the 
     view.unmount();
     client.clear();
     elsewhere.remove();
+  }
+});
+
+/** A reader beside the stage of the pages the outline read has not loaded, as the header's count
+ *  is (`IssuePropertiesRow`): it wants the next page from the load on, and draws nothing. */
+function ReaderBeside({ issue }: { issue: IssueDetails }): null {
+  useReadUnloadedPages(issue, () => true);
+  return null;
+}
+
+/** How the case draws the held view's row (`HeldRowView`). */
+const heldRow: { draw?: () => void } = {};
+
+/** A stand-in for a view's own slot that draws its tree's first row only once the case says so
+ *  (`heldRow.draw`), as a view whose rows wait on a read of its own. */
+function HeldRowView(): ReactNode {
+  const [drawn, setDrawn] = useState(false);
+  useEffect(() => {
+    heldRow.draw = () => setDrawn(true);
+  }, []);
+  if (!drawn) return null;
+  return (
+    <div aria-label={CONTROL_LABELS.tree} role="tree">
+      <div aria-level={1} data-node-row="" role="treeitem" tabIndex={0}>
+        The first row.
+      </div>
+    </div>
+  );
+}
+
+/** The stage of the fixtures' issue with `ReaderBeside` beside it, as the page's root draws the
+ *  header beside the stage, each view drawn by `HeldRowView`. */
+function BesideStage({ issue }: { issue: IssueDetails }): ReactNode {
+  const { pathname, search } = useLocation();
+  const route = parseIssuePath(pathname, search);
+  if (route === undefined) throw new Error(`${pathname} names no route`);
+  return (
+    <ProvidersSlot issue={issue} route={route}>
+      <ReaderBeside issue={issue} />
+      <StageSlot
+        issue={issue}
+        route={route}
+        views={{ ...VIEW_SLOTS, conversation: HeldRowView, decisions: HeldRowView }}
+      />
+    </ProvidersSlot>
+  );
+}
+
+// Decision 578 (2): the pages the outline read has not loaded are read only once the stage's view
+// has drawn its first drawing, never on a frame another surface draws first. A reader beside the
+// stage, as the header's count is, holds Conversation's first page, which names a next page, and
+// wants that page from the load on; the messages read stays out, so the view's reads never settle,
+// and the view draws its first row only when the case says so. In Decisions and in Conversation,
+// frames go by with no page read, and the next page is read once the view draws its row.
+test("no page the outline read has not loaded is read before the stage's view draws its first row, though a reader beside the stage wants one", async () => {
+  for (const preset of ["decisions", "conversation"] as const) {
+    restore = stubReads();
+    (api.listIssueMessages as Mock<typeof api.listIssueMessages>).mockReturnValue(
+      Promise.withResolvers<never>().promise
+    );
+    const first: TreeAnswer = { ...treeOf(commentNodes(TWO_THREADS)), cursor: "page-2" };
+    const tree = (api.getIssueTree as Mock<typeof api.getIssueTree>).mockImplementation(
+      async (_key, query = {}) =>
+        query.view === undefined && query.cursor === undefined
+          ? first
+          : Promise.withResolvers<never>().promise
+    );
+    const pagesSent = () => tree.mock.calls.filter(([, query]) => query?.cursor !== undefined);
+    const client = newClient();
+    heldRow.draw = undefined;
+    const view = render(
+      <MemoryRouter initialEntries={[presetPath(KEY, preset)]}>
+        <AppProviders client={client}>
+          <BesideStage issue={issueDetails()} />
+        </AppProviders>
+      </MemoryRouter>
+    );
+    try {
+      await waitFor(() =>
+        expect(
+          client.getQueryData(outlineQuery(KEY, "conversation").queryKey),
+          `${preset}: Conversation's first page was not held`
+        ).toBeDefined()
+      );
+      await waitInAct(50);
+      expect(pagesSent(), `${preset}: a page was read before the view drew its first row`).toEqual(
+        []
+      );
+      act(() => heldRow.draw?.());
+      await waitFor(() =>
+        expect(
+          pagesSent().length,
+          `${preset}: the next page was not read once the view drew its row`
+        ).toBe(1)
+      );
+    } finally {
+      view.unmount();
+      client.clear();
+      for (const spy of restore) spy.mockRestore();
+      restore = [];
+    }
   }
 });

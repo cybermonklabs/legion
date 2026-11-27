@@ -150,7 +150,7 @@ export function IssuePropertiesRow({
   // document's chip. A press made on the filter already replaces its entry, so Back leaves the
   // filter rather than walking back through the presses.
   const goToWaiting = () => {
-    if (waiting.asks + waiting.decisions > 0) {
+    if (waiting.asks + waiting.decisions + waiting.mayWait > 0) {
       const press: WaitingPress = { waitingPress: performance.now() };
       const path = presetPath(issue.key, "decisions");
       navigate(path, { replace: pathname === path, state: press });
@@ -211,7 +211,7 @@ export function IssuePropertiesRow({
         variant="header"
       />
       <ChildrenProgress childIssues={issue.children ?? []} />
-      {waiting.total > 0 ? (
+      {waiting.total + waiting.mayWait > 0 ? (
         // The prototype's `.waitchip`: a control, because the reader acts on what it counts.
         <button
           className={`inline-flex shrink-0 items-center gap-1.5 rounded-full border px-2.5 text-xs leading-[22px] font-semibold ${pageWaitingChip} ${focusVisibleRing}`}
@@ -223,9 +223,16 @@ export function IssuePropertiesRow({
           <span aria-hidden="true" className={`size-2 shrink-0 rounded-full ${pageWaitingBg}`} />
           {/* The words are one item, so the flex gap is the dot's alone: as items of their own,
               the brackets and the number each took the gap and the count drew "Waiting on
-              you ( 2 )". */}
+              you ( 2 )". While a decision that may wait is marked (`waiting.mayWait`), the
+              number takes "+", as every count with more to read does (R15, decisions 580 and
+              583 (1)): "(1+)", or "(0+)" where only such decisions may wait. */}
           <span>
-            {PROPERTY_LABELS.waiting_on_you} (<span {...authorText}>{waiting.total}</span>)
+            {PROPERTY_LABELS.waiting_on_you} (
+            <span {...authorText}>
+              {waiting.total}
+              {waiting.mayWait > 0 ? "+" : ""}
+            </span>
+            )
           </span>
         </button>
       ) : agentsTurn > 0 && knowsWhoseTurn ? (
