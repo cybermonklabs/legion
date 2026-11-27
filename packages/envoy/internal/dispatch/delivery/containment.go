@@ -12,6 +12,7 @@ package delivery
 import (
 	"cmp"
 	"slices"
+	"sort"
 	"strings"
 	"time"
 )
@@ -181,6 +182,43 @@ func ContainingRun(pr DeliveryPullRequest, deployRepo string, applies []Apply) *
 		return nil
 	}
 	return FirstShippingApply(*pr.MergedAt, applies)
+}
+
+// ShippingIndex answers ContainingRun over one list of applies for many pull requests, each in the
+// time of a binary search where FirstShippingApply reads every apply: the applies by creation, and
+// for each the earliest-completing (compareApplies) of it and every apply created after it, which
+// is FirstShippingApply's answer for a merge before that apply's creation and at or after the
+// creation of the one before it. The day-row refresher's rewrite of a settings change (evals'
+// rewriteSettings) ships every pull request of the history with one.
+type ShippingIndex struct {
+	byCreated []Apply
+	first     []int
+}
+
+// NewShippingIndex is the index of applies.
+func NewShippingIndex(applies []Apply) ShippingIndex {
+	byCreated := slices.Clone(applies)
+	slices.SortStableFunc(byCreated, func(a, b Apply) int { return a.CreatedAt.Compare(b.CreatedAt) })
+	first := make([]int, len(byCreated))
+	for i := len(byCreated) - 1; i >= 0; i-- {
+		first[i] = i
+		if i+1 < len(byCreated) && compareApplies(byCreated[first[i+1]], byCreated[i]) < 0 {
+			first[i] = first[i+1]
+		}
+	}
+	return ShippingIndex{byCreated: byCreated, first: first}
+}
+
+// Containing is ContainingRun(pr, deployRepo, applies) of the applies the index was made of.
+func (x ShippingIndex) Containing(pr DeliveryPullRequest, deployRepo string) *Apply {
+	if pr.Repo != deployRepo || pr.MergedAt == nil {
+		return nil
+	}
+	at := sort.Search(len(x.byCreated), func(k int) bool { return x.byCreated[k].CreatedAt.After(*pr.MergedAt) })
+	if at == len(x.byCreated) {
+		return nil
+	}
+	return &x.byCreated[x.first[at]]
 }
 
 // ComputeDeployedStatus is the PR's deploy state: DeployedStatusNotTracked for any PR outside the
