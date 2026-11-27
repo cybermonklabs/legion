@@ -58,6 +58,7 @@ import {
   startEnvoyStack,
   useEnvoyStackDirectory,
 } from "@legion/envoy-client/test/envoy-stack";
+import { keyedLayer } from "@legion/envoy-client/test/keyed-layer";
 import {
   NATS_START_HOOK_MS,
   NATS_STOP_HOOK_MS,
@@ -67,6 +68,7 @@ import {
   useNatsServerDirectory,
 } from "@legion/envoy-client/test/nats-server";
 import { runReplayGrantScenario } from "@legion/envoy-client/test/replay-grant-scenario";
+import { routeAnswer } from "@legion/envoy-client/test/route-answers";
 import { startStallProxy } from "@legion/envoy-client/test/stall-proxy";
 import { runFreezeScenario } from "@legion/envoy-client/test/stall-scenario";
 import { consumerDelivery, projectRefusal } from "@legion/envoy-client/test/subscribe-answer";
@@ -353,19 +355,14 @@ const acceptOnce =
       ? { accepted: true, ...(body !== undefined && { body }) }
       : { code: "ACCEPT_ALREADY_ACCEPTED", status: 409 };
 
-/** The accept route's response for `answer` to an accept of `attempt`, carrying back the request's
- *  key (`key`) as Dispatch's keyed layer does. The resend ignores the echo: the client asks again
- *  under its key whatever the answer carries, and reads the echo only to settle a fresh 4xx
- *  refusal that echoes exactly its key. */
+/** The accept route's response for `answer` to an accept of `attempt`. */
 function acceptResponse(
   attempt: number,
   answer: AcceptAnswer,
-  messageID = DIRECT_MESSAGE_ID,
-  key: string | null = null
+  messageID = DIRECT_MESSAGE_ID
 ): Response {
   if ("reject" in answer) throw new TypeError(answer.reject);
   const headers: Record<string, string> = { "content-type": "application/json" };
-  if (key !== null) headers["Idempotency-Key"] = key;
   if (!("accepted" in answer)) {
     return new Response(JSON.stringify({ code: answer.code, error: "refused" }), {
       headers,
@@ -452,6 +449,8 @@ async function bootDirectSession(
   const replyWaiters: { readonly count: number; readonly resolve: () => void }[] = [];
   globalThis.fetch = async (input, init) => {
     const url = new URL(input.toString());
+    // This Dispatch runs the keyed layer: its answers to a keyed write carry the key back, and a
+    // failed accept is asked again under its key.
     if (url.pathname.startsWith("/api/v1/messages/")) {
       const authorization = new Headers(init?.headers).get("Authorization");
       if ((init?.method ?? "GET") === "POST" && url.pathname.endsWith("/accept")) {
@@ -461,12 +460,18 @@ async function bootDirectSession(
           body: JSON.parse(init?.body?.toString() ?? "null"),
           path: url.pathname,
         });
-        return acceptResponse(
-          Number(url.pathname.split("/").at(-2)),
-          await (options.accept ?? acceptOnce())(accepts.length),
-          url.pathname.split("/").at(-4),
-          new Headers(init?.headers).get("Idempotency-Key")
-        );
+        const answer = await (options.accept ?? acceptOnce())(accepts.length);
+        // The keyed layer judged each accept, its refusals too, so each names the request's key
+        // back, which is what lets the client ask again under it.
+        return keyedLayer(
+          (_input: string | URL | Request, _init?: RequestInit) =>
+            acceptResponse(
+              Number(url.pathname.split("/").at(-2)),
+              answer,
+              url.pathname.split("/").at(-4)
+            ),
+          { judged: () => true }
+        )(input, init);
       }
       // The session asks Dispatch nothing else about a direct message but its reply and, where
       // the event carried the body in part, the read of the message whole: a row that expects
@@ -5263,9 +5268,14 @@ console.log(JSON.stringify(args));
           recordWrites.uploads += 1;
           keep(body.content ?? "");
           const name = body.name ?? "";
+          const slug = name.replace(/\./g, "-");
           if (!recordDocuments.some((document) => document.name === name))
-            recordDocuments.push({ id: "doc-decisions", name, slug: name.replace(/\./g, "-") });
-          return Response.json({ artifact: { id: "doc-decisions" } });
+            recordDocuments.push({ id: "doc-decisions", name, slug });
+          return Response.json(
+            routeAnswer("POST /api/v1/projects/{key}/artifacts", {
+              artifact: { id: "doc-decisions", name, slug, project: "INFRA" },
+            })
+          );
         }
         if (url.endsWith("/edits")) {
           const body = JSON.parse(String(init?.body ?? "{}")) as {
@@ -5273,7 +5283,9 @@ console.log(JSON.stringify(args));
           };
           recordWrites.appends += 1;
           for (const op of body.ops ?? []) keep(op.markdown ?? "");
-          return Response.json({ applied: body.ops?.length ?? 0 });
+          return Response.json(
+            routeAnswer("POST /api/v1/artifacts/{id}/edits", { applied: body.ops?.length ?? 0 })
+          );
         }
         return other(input, init);
       };
@@ -5316,7 +5328,10 @@ console.log(JSON.stringify(args));
           stderr: () => {},
           readText: (path) => readFileSync(path, "utf8"),
           cwd: configDirectory,
-          fetchImpl: (async () => Response.json({})) as typeof fetch,
+          // The write's own answer, its route's row with its key named back, as Dispatch's.
+          fetchImpl: keyedLayer((input: string | URL | Request, init?: RequestInit) =>
+            responseWithRegistration(input, init, {})
+          ) as typeof fetch,
         }
       );
       await fixture.handlers.get("tool_result")?.(
@@ -5495,7 +5510,10 @@ console.log(JSON.stringify(args));
           stderr: () => {},
           readText: (path) => readFileSync(path, "utf8"),
           cwd: configDirectory,
-          fetchImpl: (async () => Response.json({})) as typeof fetch,
+          // The write's own answer, its route's row with its key named back, as Dispatch's.
+          fetchImpl: keyedLayer((input: string | URL | Request, init?: RequestInit) =>
+            responseWithRegistration(input, init, {})
+          ) as typeof fetch,
         }
       );
       const readLedger = () =>
@@ -13125,26 +13143,34 @@ console.log(JSON.stringify(args));
       process.env.DISPATCH_URL = "http://dispatch.test";
       process.env.DISPATCH_TOKEN = DISPATCH_TOKEN;
       const replies: unknown[] = [];
-      globalThis.fetch = async (input, init) => {
-        const path = new URL(input.toString()).pathname;
-        if (path === "/v1/interests/subscribe") {
-          return response({
-            session_id: "ses_delivery",
-            machine_id: "test",
-            dir: "/tmp",
-            topics: ["notifications.agent.ses_delivery"],
-            delivery: consumerDelivery("ses_delivery", { streamID: TEST_STREAM_ID }),
-          });
-        }
-        if (path === REPLY) {
-          replies.push(JSON.parse(init?.body?.toString() ?? "{}"));
-          return new Response(
-            JSON.stringify({ code: IDEMPOTENCY_KEY_COMMITTED, error: "this request already ran" }),
-            { status: 409, headers: { "Content-Type": "application/json" } }
-          );
-        }
-        return response({});
-      };
+      // Behind Dispatch's keyed layer, whose own refusal of a repeat that already ran names the
+      // reply's key back.
+      globalThis.fetch = keyedLayer(
+        async (input: string | URL | Request, init?: RequestInit) => {
+          const path = new URL(input.toString()).pathname;
+          if (path === "/v1/interests/subscribe") {
+            return response({
+              session_id: "ses_delivery",
+              machine_id: "test",
+              dir: "/tmp",
+              topics: ["notifications.agent.ses_delivery"],
+              delivery: consumerDelivery("ses_delivery", { streamID: TEST_STREAM_ID }),
+            });
+          }
+          if (path === REPLY) {
+            replies.push(JSON.parse(init?.body?.toString() ?? "{}"));
+            return new Response(
+              JSON.stringify({
+                code: IDEMPOTENCY_KEY_COMMITTED,
+                error: "this request already ran",
+              }),
+              { status: 409, headers: { "Content-Type": "application/json" } }
+            );
+          }
+          return response({});
+        },
+        { judged: () => true }
+      ) as typeof fetch;
       const warnings: string[] = [];
       const stopSink = logger.registerLogSink((entry) => {
         if (entry.level === "warn") warnings.push(entry.message);
@@ -21731,8 +21757,8 @@ console.log(JSON.stringify(args));
 // A real natsd and a real listener: the session registers for a consumer, and the listener
 // relays it. There is no second rollout state to prove any more — a listener whose grant cannot
 // give a consumer refuses the registration, and the session receives nothing at all.
-// Reserved out here, at the file's module scope: the file's own `afterAll` removes it once the
-// `describe` has stopped the stack writing into it.
+// Reserved out here, at the file's module scope. Once the `describe` has stopped the stack, the
+// file's `afterAll` hands the directory to a removal it does not wait for (`useEnvoyStackDirectory`).
 const stackDirectory = useEnvoyStackDirectory();
 
 describe.skipIf(!envoyStackEnabled)("against a real natsd and Envoy listener", () => {
