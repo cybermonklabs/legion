@@ -2,7 +2,8 @@
 # The live proof that a project's declared experiment draws a group for each new issue, and that
 # the group sets how the issue is done: the experiment `planning` gives its arm `a` the plan
 # `owner`, where the issue's owner gives its plan as today, and its arm `b` the plan `default`,
-# where the issue runs the project's default steps and Legion takes no plan from its owner. The
+# where the issue runs the project's default steps. Legion takes from that issue's owner only a
+# version that changes nothing but the text of its running task `default`. The
 # driver (packages/daemon/internal/daemon/plan_experiment_live_test.go, which this script builds
 # with `-tags e2e`) builds and starts the real Dispatch server from this checkout's packages/envoy
 # on a database of its own, with its events on the run's own broker, and boots the whole daemon

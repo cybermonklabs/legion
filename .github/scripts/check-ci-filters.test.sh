@@ -233,7 +233,7 @@ fixture() {
   mkdir -p "$root/.github/scripts" "$root/.github/workflows" "$root/.github/ci-gates" "$root/mod/cmd/app" \
     "$root/mod/lib" "$root/mod/other" "$root/fixtures" "$root/docs" "$root/packages/widget"
   for linked in check-ci-filters.sh ci_filter_coverage.py ci_filter_sources.py ci_workflow_rules.py workflow_paths.py \
-    go_build_tags.py ci-filters-generate.sh ci_ts_listing.py; do
+    go_build_tags.py ci-filters-generate.sh ci_ts_listing.py audited_scripts.py; do
     ln -s "$script_dir/$linked" "$root/.github/scripts/$linked"
   done
   printf 'PROGRAMS = []\nBUNDLES = []\nLISTED = []\n' > "$root/.github/scripts/ci_ts_programs.py"
@@ -3107,6 +3107,86 @@ replace "$root/.github/workflows/ci.yaml" "        run: go build ./..." \
   "        run: go test -tags live -count=1 ./..."
 run_check "$root"
 check "passes" "$(is "$status" 0)"
+
+# A step whose run: is a script audited_scripts.AUDITED_SCRIPTS reads is read through that entry's
+# reading of the script, on both sides of the rule: envoy-infra-go's natslive step runs
+# packages/envoy/infra/scripts/natslive.sh, whose reading holds the go test lines that carry -tags
+# and -run, and read from the run: alone such a step runs no go test at all.
+# audited_scripts.reading_of says whether a run: is such a script, for this rule and for
+# go-test-step-expansion.py alike. These cases use that real entry - its module and its argument
+# list - so no reading is planted and the path under test is the one CI takes; no script file is
+# needed, since nothing here reads one.
+audited_step() { # audited_step <root> <the run: line> [<the step's working-directory>]
+  replace "$1/.github/workflows/ci.yaml" "        run: go build ./..." \
+    "        run: $2${3:+
+        working-directory: $3}"
+}
+echo "case: a step whose run: names an audited script is read through that entry"
+root=$(fixture tag-run-audited)
+audited_step "$root" 'scripts/natslive.sh ./core ./seed ./gcp' packages/envoy/infra
+tag_run "$root" "$entry"
+run_check "$root"
+check "passes" "$(is "$status" 0)"
+check "and its entry is not called stale" \
+  "$(is "$(grep -c 'which passes no -run' <<<"$out" || true)" 0)"
+echo "case: a step whose run: names an audited script, which TAG_RUNS does not name"
+root=$(fixture tag-run-audited-undeclared)
+audited_step "$root" 'scripts/natslive.sh ./core ./seed ./gcp' packages/envoy/infra
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the step and the table it must be declared in" \
+  "$(contains "$out" 'image step "Build" runs only what its tag adds (-run), but no TAG_RUNS entry of .github/scripts/ci_job_reads.py names it')"
+# The script moves into its module itself, so a step may run it from the repository root, by its
+# path from there. The expansion tool reads that step; so must this rule, or a tag step run that way
+# would pass with no entry, and one with an entry would be told to drop it.
+echo "case: a step that runs an audited script from the repository root, which TAG_RUNS does not name"
+root=$(fixture tag-run-audited-from-root)
+audited_step "$root" 'packages/envoy/infra/scripts/natslive.sh ./core ./seed ./gcp'
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the step and the table it must be declared in" \
+  "$(contains "$out" 'image step "Build" runs only what its tag adds (-run), but no TAG_RUNS entry of .github/scripts/ci_job_reads.py names it')"
+echo "case: a step that runs an audited script from the repository root, named by an entry"
+root=$(fixture tag-run-audited-from-root-declared)
+audited_step "$root" 'packages/envoy/infra/scripts/natslive.sh ./core ./seed ./gcp'
+tag_run "$root" "$entry"
+run_check "$root"
+check "passes" "$(is "$status" 0)"
+check "and its entry is not called stale" \
+  "$(is "$(grep -c 'which passes no -run' <<<"$out" || true)" 0)"
+# A form no entry reads fails by name, on either side of the rule: read as if it named no script,
+# the step would run no go test the rule can see, and the entry would be called stale.
+echo "case: a step whose run: names an audited script with an argument list no entry reads"
+root=$(fixture tag-run-audited-other-arguments)
+audited_step "$root" 'scripts/natslive.sh ./core' packages/envoy/infra
+tag_run "$root" "$entry"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the entry's step and why the rule cannot read it" \
+  "$(contains "$out" 'TAG_RUNS names image step "Build", whose run: names packages/envoy/infra/scripts/natslive.sh in a form no AUDITED_SCRIPTS entry reads')"
+check "and does not call the entry stale" \
+  "$(is "$(grep -c 'drop the entry' <<<"$out" || true)" 0)"
+echo "case: the same step, which TAG_RUNS does not name"
+root=$(fixture tag-run-audited-other-arguments-undeclared)
+audited_step "$root" 'scripts/natslive.sh ./core' packages/envoy/infra
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the step and why the rule cannot read it" \
+  "$(contains "$out" 'image step "Build" names packages/envoy/infra/scripts/natslive.sh in a form no AUDITED_SCRIPTS entry reads')"
+# The -run both sides look for is on a `go test` line, never elsewhere in the step's text: a
+# `--dry-run` in an echo is no selection, and a step that runs its package's tests whole needs no
+# entry.
+echo "case: a --dry-run in a step's own echo is no -run"
+root=$(fixture tag-run-dry-run-word)
+replace "$root/.github/workflows/ci.yaml" "        run: go build ./..." \
+  "        run: |
+          echo \"pass --dry-run to preview\"
+          go test -tags live -count=1 ./..."
+tag_run "$root" "$entry"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the step: its go test selects nothing, so it runs the untagged tests itself" \
+  "$(contains "$out" 'TAG_RUNS names image step "Build", which passes no -run, so it runs the package.s untagged tests itself')"
 
 # A job that calls a reusable workflow keeps its gate in ci.yaml and gives its steps away, so a
 # why cites the step in the file that holds it. ci.yaml's docs job does that with docs-site.yaml.

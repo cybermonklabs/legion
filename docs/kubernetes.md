@@ -117,7 +117,7 @@ It carries:
   it unpacks the check into a staging directory, records the tag there, runs the check once with `--help` to see that it names its own shapes, and renames the result over `/legion/scratch/leak-check/` (`checkInstall`, `internal/launcher/leakcheck.go`).
   Every role is told that copy as `PUBLIC_LEAK_CHECK`, and the manifest digest as `LEGION_LEAK_CHECKER_MANIFEST_SHA256` (`mainEnvironment`, `internal/runtime/sandbox/manifest.go`, which names the install's own constant).
   The digest a role is told is the one its pod was built under, which the pod's template records (`legion.dev/leak-checker-manifest-sha256`): a pod kept after the deployment moved its worker image's pin and its `manifest_sha256` together holds the install of the old pin, so a role started in it before its update round is told the old digest and starts, and can push its work and answer that round (`keptPod.checker`, `launch.leakChecker`).
-  A recorded digest other than the setting's is drift, so an update round opens over such a pod and replaces it once its workers have pushed (`leakCheckDrift`): a corrected digest, or a moved repository, reaches every pod.
+  A recorded digest other than the setting's is drift, so an update round opens over such a pod and replaces it once its workers have pushed and the read of its workspace is clean (`leakCheckDrift`, `roundKeeps`): a corrected digest, or a moved repository, reaches every pod.
   A pod that records none was built under no setting or by a daemon before the record.
   If its reconnected launcher holds no install, the daemon computes the manifest of the tarball it will push to that exact session, records and tells that served digest before the first slice, then starts the role only after that session installs it.
   A served digest other than the setting is drift, so the kept pod starts safely under its own pin and its update round replaces it.
@@ -1081,8 +1081,8 @@ the loader gives both the same line and its reason (`readSessionStore`, `interna
 runtime.kubernetes.session_store must name a store that keeps sessions in a database, and is
 required (INFRA-80): an issue pod's disk is the pod's own ephemeral volume, deleted with the pod,
 so a session kept as a file on it ('pvc', also what an omitted session_store means) dies with it,
-the next launch's resume fails on the missing file (internal/launcher's sessionWritten), and three
-such failures retire the claim
+and the next launch finds no session to resume, so the claim starts a fresh agent without that
+conversation (internal/supervise's startFresh)
 ```
 
 There is no silent default, because a default would be a deployment that boots and then loses every conversation at the first pod replacement.
@@ -1294,8 +1294,9 @@ give it no rights beyond the database of those two tables, and treat its URL as 
 A resume is held to the table, and to nothing on a disk.
 A role's launcher looks the recorded session up in the table before it starts the child (`internal/launcher`, `resumable`, `sessionWritten`)
 — under `postgres` through the same URL file the child will read, and under `cloudsql-iam` through its own pgx client over the socket its proxy has just bound and proven, which is that generation's own (`Endpoint.ClientURL`)
-— and refuses the start when the table holds no such session (`resume session <path>: the session table holds no such session`):
-a launch failure, never a fresh agent, and three of them retire the claim.
+— and refuses the start when the table holds no such session (`resume session <path>: the session table holds no such session`).
+The daemon reads that refusal as `runtime.ErrSessionFileMissing` (`startRefusal`, `internal/runtime/sandbox/launcher.go`), forgets the session and starts a fresh agent in the same try, charged nothing (`startFresh` and `SessionLossGone`, `internal/supervise/machine.go`);
+the loss is posted on the issue and told to its architect and to the new agent, as [Cutting over an instance from tmux to pods](#cutting-over-an-instance-from-tmux-to-pods) says.
 A database it cannot reach is asked again with a backoff (half a second, doubling to four seconds) for up to 30 seconds
 — under `postgres` the URL file read afresh each time, since that file is a projection something else may replace — and only then refuses the start.
 Neither `workspace-init` looks for a session file, and neither is told to expect one: there is no disk on which a session could be waiting.
@@ -1356,7 +1357,7 @@ So a link, a fifo or anything else that is no regular file at one of those paths
 a resume over it fails, and a save is tried again at the next save.
 Then Claude Code starts.
 On a fresh session the launcher writes `<transcript>.legion-saved` beside the transcript once its first save has committed, and the claim boot of claude-envoy waits for that file as well as the transcript before it registers the session.
-A transcript the daemon has recorded is then always in the table: otherwise the next pod's resume would be refused, and three refusals retire the claim.
+A transcript the daemon has recorded is then always in the table: otherwise the next pod's resume finds no session, and the claim starts a fresh agent that has lost the conversation.
 After Claude Code exits, the launcher makes one last save before the generation's proxy closes.
 Its deadline is the stop's grace less the proxy's 1 s drain.
 This save is best effort: at the 9 s floor of `worker_stop_timeout_seconds`, a worker that spends its whole 5 s agent grace can leave it no time.
@@ -3016,6 +3017,8 @@ On a store that cybermonklabs/legion#5310's release or a later one migrated, als
 Each of its statements runs again with no error, so it runs in each project's session as the block below does.
 An earlier release refuses a `legion.yaml` that names `projects.<KEY>.default_steps`, with `Unknown key "projects.<KEY>.default_steps"` (`readProject` in `config/stage3.go`), so remove that key from `legion.yaml` before you pin the earlier image, where the file sets it.
 It drops the three tables and the two columns and deletes the migration's version row, so the roll-forward's `Migrate` runs the migration again (`versionRecorded` in `internal/store/store.go` decides each migration on its own row).
+The drop of `plan_tasks` takes with it `plan_tasks.parent_ref`, which a later migration, `20261124022547_plan_tasks_parent_ref.up.sql`, adds.
+So the block deletes that migration's version row too, and the roll-forward adds the column again to the table it creates.
 That part is owed to the roll-forward, not to the earlier release.
 Left in place, the place a task stands at goes stale while the earlier release moves its issue along today's fixed line, and after the roll-forward the walk would start that issue from the stale place.
 With the tables and the columns dropped, each issue the earlier release moved has no plan rows after the roll-forward and walks today's line.
@@ -3034,6 +3037,7 @@ delete from outbox where kind in ('notice', 'controller_notice') and payload->>'
 delete from outbox where kind = 'supervise' and payload->>'op' = 'step_stop' and split_part(issue, '-', 1) = '<PROJECT>';
 update issues set hold_reason = null where hold_reason in ('task-stopped', 'children') and split_part(key, '-', 1) = '<PROJECT>';
 delete from schema_version where version = 20261117034837;
+delete from schema_version where version = 20261124022547;
 commit;
 ```
 
@@ -3097,7 +3101,9 @@ Take the key out of every arm that names it, or the experiment out of the file, 
 The column needs no statement.
 An earlier image names the columns of `experiment_assignments` in each statement it runs (`assignmentColumns`, `PutAssignments` and `CarryAssignments` in `internal/record/store.go`), so it boots with the column in place, reads no word of it, and every row it inserts takes the default, the empty word.
 What the rollback costs: an issue drawn into an arm whose `plan` is `default` before the rollback has its group read by no code while the earlier release runs, so the plan its owner gives is taken and run.
-Rolling forward does not undo that: such an issue's row still reads `default`, so a run that started on its owner's plan while the earlier release ran goes on with that plan, since its first step does not run again, and from then on each later version of the plan and each `stop_task` on the issue is answered `409 PLAN_NOT_TAKEN`, so its owner can neither change nor stop the plan it gave.
+Rolling forward does not undo that: such an issue's row still reads `default`, so a run that started on its owner's plan while the earlier release ran goes on with that plan, since its first step does not run again.
+From then on its owner can change only the text of a running task of that plan.
+Each other later version of the plan and each `stop_task` on the issue is answered `409 PLAN_NOT_TAKEN`.
 That lasts until the issue's next run, whose first step passes the plan over, or until the issue leaves the workflow, which ends the run.
 Rolling forward again also costs the window the other way: an issue the earlier release drew while it ran reads the empty word afterwards and runs as an issue with no experiment does.
 
@@ -3713,7 +3719,7 @@ The same log names each pod running as a ServiceAccount other than the one its k
 — one warning per Sandbox per kind of drift, so a pod holding both is named twice.
 A repository cache's pod is warned of for neither, whether it runs as `runtime.kubernetes.repository_cache.service_account`, while its bucket is on, or as `service_account`, since its own sweep replaces it for either drift ([The repository cache](#the-repository-cache)).
 A pod runs as the account it was created with for its whole life, so changing `service_account` reaches a running pod only by replacing it, and which replacement that is follows the pod's kind (`accountDrift` in `sandbox.go`, read by `relaunch` in `relaunch.go`, `roundCovers` in `drift.go`):
-a pod an update round covers — every issue pod — is replaced by that round, which asks the issue's roles to push their work, let their subagents and background jobs finish or stop them and push what they made, and ends the pod once every role it asks has answered, no turn runs and each role's report since its last turn names no running background work, or at the round's bound, and a pod no round covers — the project controller's — by the next launch of any of its roles, which interrupts the roles live in it once: they end with the pod and resume in the new one, as a moved worker stream already makes them (below).
+a pod an update round covers — every issue pod — is replaced by that round, which asks the issue's roles to push their work, let their subagents and background jobs finish or stop them and push what they made, and ends the pod once every role it asks has answered, no turn runs and each role's report since its last turn names no running background work, or at the round's bound, over a clean read of the issue's workspace where its drift is one the roles can keep working under (below), and a pod no round covers — the project controller's — by the next launch of any of its roles, which interrupts the roles live in it once: they end with the pod and resume in the new one, as a moved worker stream already makes them (below).
 Its agents hold the old account's identity until then.
 Under the secrets broker, `BROKER_SESSION_ACCOUNT_PAIRS` has to be live on the broker before the change, pairing the old account with the new, or the broker refuses each live role's session name to its pod on the new account (`403 SESSION_HELD`) and the role's grants, pending requests and withheld secrets stay behind (the item on moving the daemon's pods in [Operator configuration](#operator-configuration)).
 For the account, the pod's kind decides, not the exemption a stale-plugin install has for the pod's shape (below): such a launch keeps a pod a round covers for the account as for every other drift, and replaces a pod no round covers for the account whatever it is installing, since no round will ever come for such a pod.
@@ -3762,7 +3768,7 @@ it runs the layout before one container, one launcher container per role, or its
 A pod the launch finds suspended, ended, with a failed init container, never started by its node (scheduled with `PodReadyToStartContainers=False`, created longer than the boot timeout ago, and scheduled longer than half the boot timeout or a minute ago, whichever is less), with a disk of the shape before the pod-owned disk, or whose launcher Secret no longer binds it is replaced too.
 A pod running as a ServiceAccount other than the configured one is replaced by a launch only where no round covers that pod, the project controller's (`accountDrift`, `roundCovers`): the account is fixed for the pod's life, and no round will ever come for such a pod.
 Everything else a running pod cannot be changed to carry — its image, its pod kind's reservation, the operator's volumes and mounts, the disk size, a role's overlays, the secrets broker's enrollment and the session store, the repository it was built from once the issue's record names another, and the ServiceAccount it runs as wherever a round covers the pod
-— is drift, and the update round replaces the pod for it ([The disk dies with its pod](#the-disk-dies-with-its-pod)).
+— is drift, and the update round replaces the pod for it: over a drift that breaks the pod whatever the read of the issue's workspace finds, and over any other drift only where that read is clean (`roundKeeps`, [The disk dies with its pod](#the-disk-dies-with-its-pod)).
 The launch's replacement ends those roles' processes wherever their turns stood, and that end is the daemon's act, not theirs (LEGION-729);
 a round's replacement runs this same path, but before the round's bound only once no role of the pod is in a turn at all and each role's report since its last turn names no running background work, and at the bound whatever still runs.
 The patch that suspends the pod also names it on the Sandbox, as the `legion.dev/displaced-pod` annotation:
@@ -4277,6 +4283,10 @@ Then run that section's update of `parked_decisions`, since a decision the earli
 20261123165139_experiment_assignment_plan adds `experiment_assignments.plan` and touches none of the six, so the block holds over it and leaves the column standing, which the earlier release names in no statement; a rollback past it takes `plan` out of `legion.yaml` first ([Rolling back the release whose experiment sets how each issue is done](#rolling-back-the-release-whose-experiment-sets-how-each-issue-is-done)).
 20261123212127_claim_start_failure_after_ready empties `claims.last_start_failure` on every claim stored ready, working or idle, and touches none of the six, so the block holds over it; it carries no way back, since an earlier release reads an empty start failure as none recorded.
 20261123224717_members_owed, of dispatch://INFRA-5471, adds `issues.members_owed`, true on the roots whose re-admission has still to bring their members back, and touches none of the six, so the block holds over it; a rollback to a release before it runs the way back in its own header first, which drops the column and deletes its version row, with every daemon of the database stopped: `issues` holds the rows of every project that shares the database, and a daemon of this release still running for another project would fail every fact after the drop.
+20261124022547_plan_tasks_parent_ref adds `plan_tasks.parent_ref` and touches none of the six.
+So the block holds over it and leaves the column standing, which the earlier release names in no statement.
+A rollback past 20261117034837_issue_plans drops the column with its table.
+That migration's way back deletes this migration's version row too ([Rolling back the release whose owner's plan picks the steps](#rolling-back-the-release-whose-owners-plan-picks-the-steps)).
 20261124033010_plan_earlier_givers adds `issue_plans.earlier_givers`, each owner that gave a version of a plan before the one `given_by` names, at its default, no earlier giver, and touches none of the six, so the block holds over it and leaves the column standing, which the earlier release names in no statement; its way back, which drops the column where `issue_plans` still stands and deletes its row, runs only in a rollback past `20261117034837_issue_plans`, before or after that migration's way back, and a rollback onto a release that has the plan tables costs what its header says: the earlier release passes a version over at a first step where the giver it last recorded no longer owns the issue, though an earlier giver still does.
 20261124060500_issue_priority adds `issues.priority`, null on every row it finds, and touches none of the six, so the block holds over it and leaves the column standing, which the earlier release names in no statement; it carries no way back, since an earlier release reads none of it, a row that release updates keeps the priority it held, and only a row it inserts gets null.
 20261124073512_claim_cause_times adds `claims.last_death_at`, `claims.last_start_failure_at`, `claims.last_death_digest` and `claims.last_start_failure_digest`, null on every row it finds, and touches none of the six, so the block holds over it and leaves the four columns standing, which the earlier release names in no statement; it carries no way back.
@@ -4758,7 +4768,11 @@ Nothing opens such a round now, and a boot takes every claim an earlier daemon l
 The pod update round is untouched by all this: it replaces a pod and its disk, so it still asks each role it waits for, before the pod goes, to push its work, let its subagents and background jobs finish or stop them and push what they made, and it ends at its bound whatever the roles answer ("Pinning a release that drops what a running pod still uses" above).
 
 How many of those relaunches are in the pacing at once is bounded, because the lane shares one queue with every wake that starts or continues a tree's work.
-A gate grants the lane `worker_wakes_per_minute` credits (`RefreshGate` in `internal/supervise/gate.go`), one held by each relaunch from the moment the pass posts it until its wake runs, so the lane holds about a minute of the pacing and a newly admitted tree's first launch waits that long rather than the whole fleet's refresh.
+A gate grants the lane `worker_wakes_per_minute` credits (`RefreshGate` in `internal/supervise/gate.go`), one held by each relaunch from the moment the pass posts it until no launch of that relaunch is owed, so the lane holds about a minute of the pacing and a newly admitted tree's first launch waits that long rather than the whole fleet's refresh.
+A relaunch keeps its credit through a retry, a hold of the project pause's gate and a wait at its issue pod's start gate.
+So each `plugin-refresh` wake in the pacing holds a credit, and the lane never has more than `worker_wakes_per_minute` wakes in the pacing.
+A start that waits for the session store or for the pod's update round gives its credit back, because that wait can take hours.
+The retry of that start waits as a plain `launch` wake.
 The pass re-reads the machines' own waiting wakes at every orphan sweep and corrects the count, and the sweep posts the next credits' worth, so a fleet of N stale sessions drains in about N ÷ rate minutes.
 A deployment with `worker_wakes_per_minute: 0` has no pacing and no gate, and the pass admits every stale claim in one tick.
 Each of those relaunches waits under a wake kind of its own, `plugin-refresh`, which no other launch carries, so `wakesWaiting` on `GET /legion/v1/state` tells a fleet's refresh from the launches that start work; `claimsToRefresh` on the same body is what the lane still has to do, which the wakes cannot say while the gate holds only a minute of them.
@@ -4789,8 +4803,8 @@ A pod the same relaunch replaces
 — a suspended Sandbox, a lost launcher binding, a failed init container, a moved address, a pod no round covers running as another ServiceAccount, a controller pod built on another image
 — installs nothing: it comes up on the configured image, whose copies the boot gate already holds to the daemon's contract.
 An issue pod merely running another image is replaced by no relaunch at all, stale-plugin or not:
-it is drift, and the update round replaces it once every role it asks has answered, no turn runs and each role's report since its last turn names no running background work, or at the round's bound ("Pinning a release that drops what a running pod still uses" above).
-Where that round is over and no role process runs in the pod, a relaunch into it makes the round's own replacement, under the round's mark, and installs nothing, as any launch into that pod does (`RoundPodEnds`, `internal/runtime/sandbox/relaunch.go`, [The disk dies with its pod](#the-disk-dies-with-its-pod)).
+it is drift, and its update round ends once every role it asks has answered, no turn runs and each role's report since its last turn names no running background work, or at the round's bound, and replaces the pod only over a clean read of the issue's workspace, keeping it where the read finds work that no branch or tag on origin holds, or fails (`roundKeeps`, "Pinning a release that drops what a running pod still uses" above).
+Where that round is over and no role process runs in the pod, a relaunch into it makes the round's own replacement over the same read of the workspace (`roundPodEndsAtLaunch`), under the round's mark, and installs nothing, as any launch into that pod does (`RoundPodEnds`, `internal/runtime/sandbox/relaunch.go`, [The disk dies with its pod](#the-disk-dies-with-its-pod)).
 The controller's pod, which no round covers, is replaced by any relaunch that installs nothing, for any drift, and by a relaunch that installs the pair only when it was built on another image (`podImageDrift`, `internal/runtime/sandbox/drift.go`) or runs as a ServiceAccount other than the configured one (`accountDrift`, `internal/runtime/sandbox/sandbox.go`): the account is fixed for the pod's life, so `relaunch.go` replaces a pod no round covers for that drift whatever the launch installs.
 The install puts the release's plugins under the agent and nothing more, so a kept pod on another image would go on running another release's `legion launcher` as its PID 1, and another release's Oh My Pi.
 A controller pod whose other facets alone drifted is kept, and the pair is installed into it.
@@ -5902,7 +5916,8 @@ A change of `microvm.compute_class`, `microvm.storage_class`, `microvm.keep_volu
 A shape with `keep_volume` off reads byte for byte as one recorded before the key existed, so the release that adds the key opens no round.
 With `microvm.storage_class` left out, the microVM issue pods take `storage_class`, so a change of `storage_class` opens a round on each microVM issue pod, and still on no gVisor pod.
 The controller's pod is in no round: its launch compares the pod's recorded shape with the shape that launch would build (`launch.shapeKey`, `drift.go`, and `relaunch`, `relaunch.go`).
-A daemon boot re-adopts a running controller pod and replaces nothing, whatever its shape.
+A daemon boot's re-adoption of a running controller pod replaces nothing itself, and a change of the pod's shape alone does not make the pod stale.
+Where the change also moved a facet that `movedInPod` reads of a pod no round covers, such as the mount of a file the controller's own `role_config_files` names, the re-adoption reports the controller `StaleAddress` (`verdict`, `observe.go`), and the relaunch after it replaces the pod whatever it installs (`forced`, `relaunch.go`; [A pod whose address moved](#a-pod-whose-address-moved)).
 A launch that installs nothing replaces a live controller pod whose shape differs, so the controller moves into a microVM, or back into gVisor, at its first such launch after a change of `type`: when its process ends, or when the operator suspends and resumes its claim (below).
 A launch that installs a stale-plugin pair replaces it only where its image differs (`podImageDrift`, [Pinning a release that drops what a running pod still uses](#pinning-a-release-that-drops-what-a-running-pod-still-uses)), and the fresh pod is built in the sandbox `type` names.
 A change of `microvm.compute_class` or `microvm.metadata` moves a microVM controller pod at its next launch that installs nothing, and a change of `microvm.storage_class` or `microvm.keep_volume` alone moves no controller pod.
@@ -7407,7 +7422,7 @@ Every role of such a pod is reported at once, from the boot that re-adopts them:
 the first of them relaunched replaces the pod, under the pod's launch turn, and the others, whose relaunches wait on that turn, resume into the new pod, whose launcher dials the current stream for every role.
 None of them is charged, and none is found gone when the pod is replaced under it.
 What an issue pod lacks that its workers can be asked about first — the broker enrollment its roles are started against now, the operator mount holding a file `role_config_files` names for any of its roles, and the session store it was created under — is drift rather than a moved address (`driftedInPod`):
-the relaunch keeps that pod, the role runs in it as the pod was built, and the update round is what replaces it, once every role the round asks has answered, no turn runs and each role's report since its last turn names no running background work, or at the round's bound ([The disk dies with its pod](#the-disk-dies-with-its-pod)).
+the relaunch keeps that pod, the role runs in it as the pod was built, and only the update round replaces it: the round ends once every role it asks has answered, no turn runs and each role's report since its last turn names no running background work, or at the round's bound, and replaces the pod only over a clean read of the issue's workspace, keeping it where the read finds work that no branch or tag on origin holds, or fails (`roundKeeps`, [The disk dies with its pod](#the-disk-dies-with-its-pod)).
 The controller's pod holds every one of those facets as a moved address, since no round covers it (`roundCovers`):
 it is replaced at its relaunch when its one launcher dials a stale stream, when it lacks the broker enrollment under `runtime.kubernetes.agent_secrets`, and when it lacks the mount of one of its own `role_config_files`.
 A role whose environment alone moved, the broker's URL, `LEGION_SLACK_CHANNELS` for the controller and the other addresses its agent is told among them, starts its next generation in the same pod, handed the current values, and the pod and its other roles are left as they are.
@@ -8751,7 +8766,7 @@ The daemon applies each report once, under the event id `memory-guard-kill:<guar
 It credits the kill to the claim and the pod that the connection authenticated as, and never to anything the report says.
 For a claim that is not the project's controller, the workflow tells nobody and writes a line in the daemon's log.
 For the controller's claim it writes one controller notice of kind `memory-guard-kill` for each kill, under the project key as a `tick` is (`controllerMemoryGuardKill`, `packages/daemon/internal/workflow/engine.go`).
-The outbox publishes the notice to `notifications.legion.<project>.controller` as `memory-guard-kill on <PROJECT>`.
+The outbox publishes the notice to the controller's role topic, `notifications.role.legion-<project>-controller`, as `memory-guard-kill on <PROJECT>`, once the registered controller session holds that role live, as it publishes every controller notice.
 Each kill is a notice of its own, also while the notice of an earlier kill is still unsent.
 The notice names the process as the lines do, by its executable's base name or its `comm`, with its pid, its size, the pod's reading and the limit in binary units, and it prints no argument:
 
@@ -8903,7 +8918,7 @@ Every end of an issue pod is therefore the end of that pod's disk, and the ends 
   It still costs the identity: until its round has replaced it a pod's agents hold the identity the old account grants, so an old account is deleted only once no live pod of it is left, and how fast a fleet moves is what `pod_update_max_open_rounds` and `pod_update_rounds_per_minute` bound, each round also waiting, until its bound, for every running turn in its pod to end and for the background work its roles report to end (below).
   Under the secrets broker, `BROKER_SESSION_ACCOUNT_PAIRS` has to be live on the broker before the change, pairing the old account with the new, or the broker refuses each live role's session name to its pod on the new account (`403 SESSION_HELD`) and the role's grants, pending requests and withheld secrets stay behind (the item on moving the daemon's pods in [Operator configuration](#operator-configuration));
 
-- **an update round replaces the pod**, once every role it asks has answered, no turn runs and each role's report since its last turn names no running background work, or at the round's bound (below).
+- **an update round replaces the pod**, once every role it asks has answered, no turn runs and each role's report since its last turn names no running background work, or at the round's bound, over a drift that breaks the pod whatever the read of the issue's workspace finds, and over any other drift only where that read is clean (`roundKeeps`, below).
   A live pod whose configuration has merely drifted is never replaced where it is found, because that would end every role's turn in it and delete the disk with everything unpushed on it;
 
 - **the issue is stopped**: its close as `done`, or a move to `backlog`, `icebox` or `triage`, runs the durable suspend effect, which sets the Sandbox `Suspended`, waits its pod out and deletes the Sandbox with the six role Secrets it owns (`SuspendIssue`, `internal/runtime/sandbox/issue_suspend.go`), logging `sandbox runtime: deleted the closed
@@ -9316,7 +9331,7 @@ Where the class's reclaim policy is `Delete`, the disk goes with the claim.
 
 - A launch into a Sandbox of the other disk shape.
   A claim template cannot change, so a change of `keep_volume`, of the issue's sandbox, of `microvm.storage_class` or of `issue_volume` needs a new Sandbox.
-  Each of these changes is in the pod's shape record, so the update round first asks each role to push its work, and then ends the pod.
+  Each of these changes is in the pod's shape record, so the update round first asks each role to push its work, and then ends the pod where the read of the issue's workspace is clean (`roundKeeps`).
   The launch after the round replaces the Sandbox, and the new pod gets a new, empty volume.
   A launch that replaces the pod for another reason replaces such a Sandbox at the same time.
 
@@ -10996,11 +11011,14 @@ each issue's pod (every role of it alike) and the image probe's.
   The probe reads the ConfigMap as it is at boot, and a pod reads it when it starts;
   a file mounted by `sub_path` is never refreshed in a running pod, so a changed file reaches a role once its pod is replaced.
 
-- **Rolling it out:** a pod created before the operator added the overlay's volume and mount (or moved or dropped a mount around it, or changed that volume's ConfigMap, Secret or `items`) cannot run a role whose `PI_CONFIG_FILES` names the file, so the whole pod is replaced, as for a change of the secrets broker's enrollment.
-  At the restart, every role of an affected pod that is running is reported `StaleAddress` at the boot's re-adoption, whether or not `role_config_files` names it, its detail `role_config_files.<role> <file> (unset), now volume <name> from ConfigMap <name>
-  items [...]`; the supervisor relaunches each at once, uncharged, so each running turn is lost and each role resumes its session in the new pod, and the issue pod is replaced with its disk, which takes the unpushed work of every role in it ([The disk dies with its pod](#the-disk-dies-with-its-pod)), unless the disk is a kept volume ([A kept volume on a microVM pod](#a-kept-volume-on-a-microvm-pod)).
-  A pod with no role running at the restart is replaced at the first launch into it, which ends no turn, since none is running.
-  So add the mount and the key when no role of an affected issue is mid-turn and every role has pushed.
+- **Rolling it out:** a pod created before the operator added the overlay's volume and mount (or moved or dropped a mount around it, or changed that volume's ConfigMap, Secret or `items`) cannot run a role whose `PI_CONFIG_FILES` names the file, so the whole pod must be replaced, as for a change of the secrets broker's enrollment.
+  For an issue pod this is drift, not a moved address (`driftedInPod`, `internal/runtime/sandbox/addresses.go`): the boot's re-adoption reports no role of the pod stale, and every role in it runs on, whether or not `role_config_files` names it.
+  The sweep reads the drift (`PodDrift`, `drift.go`), its detail `role_config_files.<role> <file> (unset), now volume <name> from ConfigMap <name> items [...]`, and opens an update round on the pod, which asks the issue's roles to push their work and ends once every role it asks has answered, no turn runs and each role's report since its last turn names no running background work, or at the round's bound, `pod_update_grace_minutes` after the round opened.
+  The round replaces the pod only over a clean read of the issue's workspace: where the read finds work that no branch or tag on origin holds, or fails, the round keeps the pod and ends with no replacement, since the roles can keep working under this drift (`roundKeeps`, `internal/daemon/podkeep.go`; [Pinning a release that drops what a running pod still uses](#pinning-a-release-that-drops-what-a-running-pod-still-uses)).
+  Where the round replaces the pod at its bound, a turn, a subagent or a background job still running then ends with the pod ([The disk dies with its pod](#the-disk-dies-with-its-pod)).
+  Until a round replaces it, a launch into the pod keeps it and starts the role with the overlays the pod holds (`heldRoleOverlays`), and a launch after the round is over makes the round's replacement over the same read of the workspace (`roundPodEndsAtLaunch`).
+  The controller's pod, which no round covers (`roundCovers`), holds a moved mount of one of its own `role_config_files` as a moved address instead (`movedInPod`): the boot's re-adoption reports the controller `StaleAddress`, and its relaunch replaces the pod ([A pod whose address moved](#a-pod-whose-address-moved)).
+  So add the mount and the key when every role of an affected issue can push and answer its round before the round's bound, since a pod its round keeps runs its roles without the file.
   **Who can read the files:** only loading is per role.
   Every role of a pod mounts every operator volume, so each role can read every role's overlay file;
   never put a secret in one (a credential travels in `provider_keys` or a mounted Secret the operator means every role to hold).
@@ -11058,9 +11076,13 @@ each issue's pod (every role of it alike) and the image probe's.
   the mount check at load (a file under no `pod.volume_mounts` mount is refused, naming `projects.<KEY>.memory.config_files`), the image probe's per-role value (they are passed for every workflow role and never for the controller, and a file the probe cannot read refuses the boot), the pod drift, and what a kept pod's role is told.
 
 - **Turning it on:** a pod created before the operator added the memory overlay's volume and mount is handled as it is for an overlay of `role_config_files` ("Rolling it out" above), with two differences.
-  The drift is reported `memory.config_files <file>`, and it replaces every issue pod of the deployment rather than the memory-group trees' pods alone, since any tree may be drawn into the group;
-  the controller's pod is never replaced for it, since the controller names these files in no list.
-  A role of a memory-group tree started into a pod the launch keeps is told only the memory overlays that pod holds, as it is told only the role's own files that it holds, so it starts, pushes its work, lets its subagents and background jobs finish or stops them, pushes what they made and answers the update round that replaces the pod.
+  The drift is reported `memory.config_files <file>`, and it opens an update round on every issue pod of the deployment rather than the memory-group trees' pods alone, since any tree may be drawn into the group;
+  the file itself does not replace the controller's pod, since the controller names these files in no list.
+  A `pod.volumes` or `pod.volume_mounts` entry that the operator adds or changes, for that file or for any other reason, is part of the shape of every pod, the controller's pod too (`podShape`, `internal/runtime/sandbox/drift.go`).
+  No update round covers the controller's pod (`roundCovers`), so under `controller: daemon` the controller's next launch that installs nothing replaces that pod.
+  A daemon boot keeps the pod, and a launch that installs a stale-plugin pair keeps it unless its image moved ([Pinning a release that drops what a running pod still uses](#pinning-a-release-that-drops-what-a-running-pod-still-uses)).
+  An entry that moves the mount of a file the controller's own `role_config_files` names is the exception: the boot's re-adoption reports that pod stale and its relaunch replaces it, as any launch into it does (`movedInPod`, `internal/runtime/sandbox/addresses.go`).
+  A role of a memory-group tree started into a pod the launch keeps is told only the memory overlays that pod holds, as it is told only the role's own files that it holds, so it starts, pushes its work, lets its subagents and background jobs finish or stops them, pushes what they made and answers the update round over the pod.
 
 - **What is refused, and where the group shows.**
   The loader refuses a `mode` that is no word of the three, a mode other than `off` that names no `config_files`, a block that names `config_files` while `worker_backends` puts an issue role on Claude Code (which reads no `PI_CONFIG_FILES`) whatever the mode, and an overlay under no `pod.volume_mounts` mount, also whatever the mode;
@@ -11114,8 +11136,10 @@ each issue's pod (every role of it alike) and the image probe's.
   (beside the block's other volumes and mounts).
 
 - **An arm's `plan`: how the issues drawn into it are done.**
-  `owner`'s issues take the plan their owner gives with `register_plan`, and `default`'s issues run the project's `default_steps` and take no plan from their owner.
-  Once the daemon records an issue drawn into `default`, its owner's `register_plan` and `stop_task` are answered `409 PLAN_NOT_TAKEN`, and a plan its owner gave before is passed over at the issue's first step and told in a `plan-not-taken` notice.
+  `owner`'s issues take the plan their owner gives with `register_plan`, and `default`'s issues run the project's `default_steps`.
+  Legion takes from the owner of a `default` issue only a version that changes nothing but the text of its running task `default`.
+  Once the daemon records an issue drawn into `default`, every other `register_plan` and every `stop_task` of its owner are answered `409 PLAN_NOT_TAKEN`.
+  A plan its owner gave before is passed over at the issue's first step and told in a `plan-not-taken` notice.
   An experiment that names `plan` in one arm names it in every arm and is `unit: issue`, and at most one experiment of a project sets it;
   the loader refuses an arm that names none beside one that does, such an experiment at `unit: tree`, a second experiment of the project that sets it, a word other than those two, and `owner-alone`, the owner doing the whole issue itself in one step, which this release does not carry out.
   The draw records the arm's `plan` beside the arm, and the issue keeps it for its whole life, whatever the file says later.
@@ -11149,17 +11173,23 @@ each issue's pod (every role of it alike) and the image probe's.
   the mount check at load (a file under no `pod.volume_mounts` mount is refused, naming `projects.<KEY>.experiments.<NAME>.variants.<ARM>.config_files`), the image probe's per-role value, the pod drift, and what a kept pod's role is told.
 
 - **The pod-replacement cost of a newly declared overlay file.**
-  An overlay file causes pod drift, so the day a project declares an experiment whose arm names `config_files`, every live issue pod of the deployment has drifted and is replaced.
+  An overlay file causes pod drift, so the day a project declares an experiment whose arm names `config_files`, every live issue pod of the deployment has drifted, and an update round opens over each.
   Nothing can avoid it:
   a pod's volumes and mounts are fixed when the pod is created, and a role cannot read a file its pod does not mount.
   It is every issue pod, and not the drawn units' pods alone, because any unit may be drawn into any arm;
-  the controller's pod is never replaced for it, since the controller runs in no experiment.
+  the file itself does not replace the controller's pod, since the controller runs in no experiment.
+  A `pod.volumes` or `pod.volume_mounts` entry that the operator adds or changes, for that file or for any other reason, is part of the shape of every pod, the controller's pod too (`podShape`, `internal/runtime/sandbox/drift.go`).
+  No update round covers the controller's pod (`roundCovers`), so under `controller: daemon` the controller's next launch that installs nothing replaces that pod.
+  A daemon boot keeps the pod, and a launch that installs a stale-plugin pair keeps it unless its image moved ([Pinning a release that drops what a running pod still uses](#pinning-a-release-that-drops-what-a-running-pod-still-uses)).
+  An entry that moves the mount of a file the controller's own `role_config_files` names is the exception: the boot's re-adoption reports that pod stale and its relaunch replaces it, as any launch into it does (`movedInPod`, `internal/runtime/sandbox/addresses.go`).
   The drift is reported `projects.<KEY>.experiments.<NAME>.variants.<ARM>.config_files <file>`, naming the key the operator wrote, and it is handled as an overlay of `role_config_files` is ("Rolling it out" above):
-  the daemon opens an update round on each drifted pod, which asks the issue's roles, each on its own Envoy topic, to push their work, let their subagents and background jobs finish or stop them, push what they made and answer `ready_for_update`, and replaces the pod once every role it asks has answered, no turn runs and each role's report since its last turn names no running background work, or at the round's bound, `pod_update_grace_minutes` after the round opened, whatever the roles answered, so a turn, a subagent or a background job still running at the bound ends with the pod;
-  a pod no round covers is replaced by the first launch into it.
-  Replacing an issue pod takes its disk with it ([The disk dies with its pod](#the-disk-dies-with-its-pod)), unless the disk is a kept volume ([A kept volume on a microVM pod](#a-kept-volume-on-a-microvm-pod)), and a role mid-turn at the boot's re-adoption is reported `StaleAddress` and relaunched at once, uncharged, so that turn is lost.
+  the daemon opens an update round on each drifted pod, which asks the issue's roles, each on its own Envoy topic, to push their work, let their subagents and background jobs finish or stop them, push what they made and answer `ready_for_update`, and ends once every role it asks has answered, no turn runs and each role's report since its last turn names no running background work, or at the round's bound, `pod_update_grace_minutes` after the round opened, whatever the roles answered.
+  The round replaces the pod only over a clean read of the issue's workspace: where the read finds work that no branch or tag on origin holds, or fails, it keeps the pod and ends with no replacement (`roundKeeps`, [Pinning a release that drops what a running pod still uses](#pinning-a-release-that-drops-what-a-running-pod-still-uses)), and the pod's roles run on without the arm's file.
+  Where the round replaces the pod at its bound, a turn, a subagent or a background job still running then ends with the pod.
+  Replacing an issue pod takes its disk with it ([The disk dies with its pod](#the-disk-dies-with-its-pod)), unless the disk is a kept volume ([A kept volume on a microVM pod](#a-kept-volume-on-a-microvm-pod)).
+  The boot's re-adoption reports no role of a drifted issue pod stale for the file, so each role runs on in its pod until a round replaces the pod.
   So turn an experiment on knowing the cost:
-  declare an arm that names files when no role of an affected issue is mid-turn and every role has pushed.
+  every live issue pod opens an update round, which replaces each pod whose workspace reads clean, and a turn, a subagent or a background job still running when that round replaces its pod at the bound is lost.
   An arm that names no file costs nothing, since nothing new is mounted for it — which is a second reason the control arm names none.
 
 - **The kept-pod degrade: a unit in neither arm.**
@@ -11248,7 +11278,7 @@ each issue's pod (every role of it alike) and the image probe's.
   The daemon sends no clean stop of the Envoy session of a claim that records a name it does not hold, when the boot suspends it or its process dies, since the listener's registration under that session id can be the live process of the claim that holds the name.
 
 - A boot suspension that fails for a reason other than the claim's state, such as a stop the runtime refuses, is logged at Error (`… failed; it is left as it is …`) naming the claim, and the boot goes on, so the steps below can run.
-  The claim is then contained: its hold refuses every relaunch, resume and new enrollment of it; the enrollment its process holds is revoked once the broker confirms the revocation, the claim keeping it recorded and asking again at each observation until then, and, where the broker refuses the revocation for good, recorded no longer and logged at Error while the process renews it until it stops; and the daemon publishes nothing to its Envoy role or, for the daemon's own controller, the controller topic, and sends that process no task and no compaction; the next boot asks again.
+  The claim is then contained: its hold refuses every relaunch, resume and new enrollment of it; the enrollment its process holds is revoked once the broker confirms the revocation, the claim keeping it recorded and asking again at each observation until then, and, where the broker refuses the revocation for good, recorded no longer and logged at Error while the process renews it until it stops; and the daemon publishes nothing to its Envoy role, the controller's role among them for the daemon's own controller, and sends that process no task and no compaction; the next boot asks again.
   A stop the runtime refused leaves the process running; a write the store refused after the stop leaves it stopped, with the claim not yet recorded suspended.
   The daemon withholds its messages from a claim's role whatever the claim's state, a retired or failed claim included, since its unheld session may still be a live process the daemon no longer manages; that stays so until the Envoy listener withholds the role itself, which it does not yet do.
   A process that runs on does so under the session until it is stopped, and the listener still gives it the role its session claimed: the daemon could free the role, but the process claims a free role again at its next heartbeat, so a message another session sends to that role reaches the session's subscriber until the session ends.
@@ -11728,7 +11758,7 @@ A pod's volumes are fixed when the pod is created, so a pod built before the set
 The daemon reads the file at boot and never calls Dispatch with it.
 A launch into such a live pod carries the transition token as every launch carried the shared token before: as `DISPATCH_TOKEN` in its start command, which its role reads through `DISPATCH_TOKEN_FILE`, and with no `DISPATCH_TOKEN_BROKER`.
 A launch into a pod that carries the exchange identity never carries it, with the file named or not.
-The daemon replaces such a pod with its update round, as it replaces every pod whose configuration drifted, and a launch never replaces it.
+Only its update round replaces such a pod, as for every pod whose configuration drifted, and a launch never replaces it: where a launch into the pod is refused until that round replaces it (`awaitsPodRound`, below), the drift breaks the pod and the round replaces it whatever the read of its workspace finds, and otherwise the round replaces it only over a clean read (`roundKeeps`).
 With the transition file named, the exchange identity's drift does not break the pod: no launch into the pod is refused, so its roles keep working under the drift, and a read that finds work or fails keeps the pod (`roundKeeps`) until a later read finds nothing and a later round replaces it ([The disk dies with its pod](#the-disk-dies-with-its-pod)).
 A pod whose exchange token differs from the one a pod built now projects only in its lifetime still trades (`carriesExchangeIdentity`), and its drift does not break the pod either, with the file named or not.
 
@@ -12194,7 +12224,7 @@ remove it before enabling issue pods ([Upgrading a deployment with running trees
 Nobody types into the pod.
 A person reaches the controller through Dispatch (a message to its session on the Agents page, a reply to its ask, a mention) or Envoy, and reads its session with `kubectl -n <namespace> logs legion-<project>-controller -c controller` (its launcher's log, which carries the shim's and Oh My Pi's) or its session in the session database, where every session is a row rather than a file on any volume.
 A Send from the Agents page is answered in the conversation that page shows.
-Wakes reach it as they reach the operator's controller: it subscribes to `notifications.legion.<project>.controller` once it holds the role.
+Wakes reach it as they reach the operator's controller: the daemon publishes each to the controller's role topic, `notifications.role.legion-<project>-controller`, once the controller's registered session holds that role live, and holds it until then.
 
 **Switching back.**
 To hand the controller back to a person, set `controller: operator` (or drop the key), drop `runtime.kubernetes.resources.controller` and `runtime.kubernetes.pod.controller_service_account`, which the daemon refuses at boot unless `controller: daemon`, and restart the daemon.
