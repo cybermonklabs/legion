@@ -60,9 +60,18 @@ func TestALossMetOnALaterPageIsAnswered(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// A later page of a pass, which carries no work the feeds do not name: unfed is false.
-	if _, _, err := passPage(t.Context(), run.deps, run.sched, safe, run.at, false); err != nil {
+	// A later page of a pass, which carries no work the feeds do not name: unfed is false. It may
+	// not answer the loss, so it holds the change cursor where it stood and tells the page after
+	// it to carry the whole read at once (readPages).
+	_, next, err := passPage(t.Context(), run.deps, run.sched, safe, run.at, false)
+	if err != nil {
 		t.Fatal(err)
+	}
+	if !next.more || !next.unfed {
+		t.Errorf("the later page that met the loss answers more=%t and unfed=%t, want both, so the pass reads the page that answers it at once", next.more, next.unfed)
+	}
+	if held := run.cursors(t)[changesCursor].position; held != cursorAt {
+		t.Errorf("the later page that met the loss moved the change cursor from %d to %d, past the pruned gap that ends at %d", cursorAt, held, first)
 	}
 	t.Logf("after the later page the change cursor stands at %d (it stood at %d, the pruned gap ends at %d)",
 		run.cursors(t)[changesCursor].position, cursorAt, first)

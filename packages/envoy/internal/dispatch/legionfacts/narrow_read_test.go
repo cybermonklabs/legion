@@ -1,13 +1,18 @@
 package legionfacts
 
 import (
+	"context"
 	"regexp"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/explaintest"
 )
 
 // TestAFilingOutsideTheScopeHoldsTheRootTheProjectComputedWhole: a pass that computes some issues
@@ -78,62 +83,91 @@ func TestAFilingOutsideTheScopeHoldsTheRootTheProjectComputedWhole(t *testing.T)
 // eventLogStatement matches a statement that reads the event log.
 var eventLogStatement = regexp.MustCompile(`\bevents\b`)
 
-// eventLogBound is one thing that bounds a statement of the event log a narrow pass may run, a
-// part of the statement's own text.
-type eventLogBound struct {
-	what  string
-	bound *regexp.Regexp
+// statementTracer records the SQL and the arguments of every statement a traced pool runs
+// (storetest.Traced), so a test can plan each statement again with the values it ran with.
+type statementTracer struct {
+	mu         sync.Mutex
+	statements []tracedStatement
 }
 
-// eventLogBounds is every such bound: the issues the computation reads (metrics.ReadIssues'
-// reads, and legion.PhaseWorkOf), and the three reads of the page itself (feeds.go), its event
-// ids, the sessions its events name, and each of those sessions' title before the page
-// (retitledSessions, one probe a session).
-var eventLogBounds = []eventLogBound{
-	{"the issues", regexp.MustCompile(`issue_key\s*=\s*any\(`)},
-	{"the page's event ids", regexp.MustCompile(`event\.id\s*>\s*\$1\s+and\s+event\.id\s*<=\s*\$2`)},
-	{"the page's sessions", regexp.MustCompile(`event\.actor\s*->>\s*'id'\s*=\s*any\(`)},
-	{"each session's title before the page", regexp.MustCompile(`event\.actor\s*->>\s*'id'\s*=\s*session\.id`)},
+// tracedStatement is one statement a traced pool ran, and its arguments.
+type tracedStatement struct {
+	sql  string
+	args []any
 }
+
+func (r *statementTracer) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
+	r.mu.Lock()
+	r.statements = append(r.statements, tracedStatement{sql: data.SQL, args: slices.Clone(data.Args)})
+	r.mu.Unlock()
+	return ctx
+}
+
+func (r *statementTracer) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
 
 // TestANarrowPassReadsTheEventLogOnlyByIssueOrByItsPage: a pass after an event reads the event
-// log only through what bounds it, never whole. The computation reads it by the issues it computes
-// (`issue_key = any(`), the phase work among them: the whole log's read of phase work
-// (legion.PhaseWorkKeys) cost every pass about 730 ms a call at ten times INFRA's rate, and a
-// narrow pass reads it for the issues its computation can place alone (legion.PhaseWorkOf). The
-// page reads the events after its cursor by id and the events of the sessions it names.
+// log only through what bounds it, never whole. The computation reads it by the issues it computes,
+// the phase work among them: the whole log's read of phase work (legion.PhaseWorkKeys) cost every
+// pass about 730 ms a call at ten times INFRA's rate, and a narrow pass reads it for the issues its
+// computation can place alone (legion.PhaseWorkOf). The page reads the events after its cursor by
+// id, the events of the sessions it names, and each such session's title before the page.
 //
-// The pass's statements are recorded on a traced pool, and each that reads the event log is held
-// to one of those bounds and printed.
+// The pass's statements are recorded on a traced pool with their arguments, and each that reads
+// the event log is planned again with those values and sequential scans off
+// (explaintest.AnalyzedPlan): a statement no index can bound still plans a scan of the table,
+// which fails. A statement the planner reads through an index under no index condition is logged
+// and not failed: at the rig's few hundred events the planner reads metrics' read of a page's
+// filings (`issue_key = any(…)` and a session actor) through the whole of
+// events_session_actor_created_at_idx, the partial index its actor matches, which is no plan of
+// a log of INFRA's size.
 func TestANarrowPassReadsTheEventLogOnlyByIssueOrByItsPage(t *testing.T) {
 	run := newConsumer(t, 3)
 	run.pass(t)
 	open := run.fixture.Open[0]
 	run.writeEvent(t, open, "implementer", "issue.updated", `{"status":"in_progress"}`, run.at.Add(-time.Minute))
 
-	recorder := &storetest.StatementRecorder{}
+	recorder := &statementTracer{}
 	run.deps.Pool = storetest.Traced(t, run.database.Pool, recorder, nil)
 	changed := run.pass(t)
 	if !slices.Contains(changed, open) {
 		t.Fatalf("the pass after an event on %s changed %v, which does not hold it, so it computed nothing this test can judge", open, changed)
 	}
 
-	read, bounded := 0, map[string]int{}
-	for _, statement := range recorder.Statements() {
-		if !eventLogStatement.MatchString(statement) {
+	recorder.mu.Lock()
+	statements := slices.Clone(recorder.statements)
+	recorder.mu.Unlock()
+	read, byIndex, unkeyed := 0, map[string]int{}, []string{}
+	for _, statement := range statements {
+		if !eventLogStatement.MatchString(statement.sql) {
 			continue
 		}
 		read++
-		index := slices.IndexFunc(eventLogBounds, func(one eventLogBound) bool { return one.bound.MatchString(statement) })
-		if index < 0 {
-			t.Errorf("the narrow pass read the event log bounded by no issue and no page:\n%s", strings.TrimSpace(statement))
-			continue
+		plan, text := explaintest.AnalyzedPlan(t, t.Context(), run.database.Pool, statement.sql, statement.args...)
+		for _, node := range explaintest.Nodes(t, plan) {
+			onEvents := node.Relation == "events" || (node.Relation == "" && strings.HasPrefix(node.Index, "events"))
+			switch {
+			case !onEvents:
+			case node.Type == "Seq Scan":
+				t.Errorf("the narrow pass reads the event log whole:\n%s\n%s", strings.TrimSpace(statement.sql), text)
+			case node.Index != "" && node.IndexCond == "":
+				unkeyed = append(unkeyed, node.Index+": "+strings.Join(strings.Fields(statement.sql), " "))
+			case node.Index != "":
+				byIndex[node.Index+" ("+node.IndexCond+")"]++
+			}
 		}
-		bounded[eventLogBounds[index].what]++
-		t.Logf("bounded by %s:\n%s", eventLogBounds[index].what, strings.TrimSpace(statement))
 	}
-	if bounded["the issues"] == 0 {
-		t.Fatalf("the narrow pass read the event log %d times and never by its issues, so it computed nothing this test can judge", read)
+	if read == 0 || !slices.ContainsFunc(slicesOfKeys(byIndex), func(read string) bool { return strings.Contains(read, "issue_key") }) {
+		t.Fatalf("the narrow pass read the event log %d times and never through an index on its issues (%v), so it computed nothing this test can judge", read, byIndex)
 	}
-	t.Logf("the pass after an event on %s read the event log %d times, by bound %v", open, read, bounded)
+	t.Logf("the pass after an event on %s read the event log %d times, through %v; read through an index under no condition at the rig's size: %v", open, read, byIndex, unkeyed)
+}
+
+// slicesOfKeys is the keys of counts, sorted.
+func slicesOfKeys(counts map[string]int) []string {
+	keys := make([]string, 0, len(counts))
+	for key := range counts {
+		keys = append(keys, key)
+	}
+	slices.Sort(keys)
+	return keys
 }

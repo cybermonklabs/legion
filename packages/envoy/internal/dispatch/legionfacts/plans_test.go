@@ -19,7 +19,9 @@ import (
 // and closedInWhere), reads one project's issues closed in a window through issue_facts_closed
 // (migration 20261117100000) and never scans issue_facts, on an analyzed store of five projects of
 // 4,000 stored facts each, nine in ten closed, one a day back over a year: enough rows that the
-// planner prices a scan of the whole table above the index read.
+// planner prices a scan of the whole table above the index read. It is planned with the values
+// and as the generic plan pgx's cached statement settles on, and its answer is the issues the
+// seed closed in the window, written out from the seed's own rule.
 func TestReadClosedInReadsTheClosedFactsIndex(t *testing.T) {
 	ctx := t.Context()
 	pool := factsDatabase(t)
@@ -41,19 +43,67 @@ func TestReadClosedInReadsTheClosedFactsIndex(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadClosedIn: %v", err)
 	}
+	// The seed closes FC-n n % 365 days before now where n % 10 is not 0, and the window holds
+	// the closes from 28 days before now up to now, now itself left out.
+	want := []string{}
+	for n := 1; n <= 4000; n++ {
+		if n%10 != 0 && n%365 >= 1 && n%365 <= 28 {
+			want = append(want, fmt.Sprintf("FC-%d", n))
+		}
+	}
+	got := []string{}
+	for _, row := range closed {
+		got = append(got, row.Issue)
+	}
+	if slices.Sort(got); !slices.Equal(got, slices.Sorted(slices.Values(want))) {
+		t.Errorf("ReadClosedIn answered %d issues of FC closed in 28 days, want the %d the seed closed there; it missed %v", len(got), len(want), absent(want, setOf(got)))
+	}
 	var raw []byte
 	if err := pool.QueryRow(ctx, "explain (format json) "+wideSelect+closedInWhere, "FC", from, now).Scan(&raw); err != nil {
 		t.Fatalf("explain ReadClosedIn: %v", err)
 	}
-	plan := explaintest.OnePlan(t, raw)
-	if explaintest.SeqScansRelation(t, plan, "issue_facts") {
-		t.Fatalf("ReadClosedIn scans issue_facts sequentially; want a range of issue_facts_closed:\n%s", plan)
+	connection, err := pool.Acquire(ctx)
+	if err != nil {
+		t.Fatalf("acquire a connection for the plan: %v", err)
 	}
-	scans := explaintest.IndexScans(t, plan)
-	if !slices.ContainsFunc(scans, func(scan explaintest.IndexScan) bool { return scan.Index == "issue_facts_closed" }) {
-		t.Fatalf("ReadClosedIn reads %v; want issue_facts_closed:\n%s", scans, plan)
+	defer connection.Release()
+	generic := explaintest.GenericPlan(t, ctx, connection, "closed_in", wideSelect+closedInWhere, []string{"text", "timestamptz", "timestamptz"},
+		[]string{"'FC'", "'" + from.Format(time.RFC3339) + "'", "'" + now.Format(time.RFC3339) + "'"})
+	for how, plan := range map[string]json.RawMessage{"with the values": explaintest.OnePlan(t, raw), "under the generic plan": generic} {
+		if explaintest.SeqScansRelation(t, plan, "issue_facts") {
+			t.Errorf("%s, ReadClosedIn scans issue_facts sequentially; want a range of issue_facts_closed:\n%s", how, plan)
+		}
+		scans := explaintest.IndexScans(t, plan)
+		if !slices.ContainsFunc(scans, func(scan explaintest.IndexScan) bool { return scan.Index == "issue_facts_closed" }) {
+			t.Errorf("%s, ReadClosedIn reads %v; want issue_facts_closed:\n%s", how, scans, plan)
+		}
+		t.Logf("%s, ReadClosedIn answered %d issues of FC closed in 28 days, through %v", how, len(closed), scans)
 	}
-	t.Logf("ReadClosedIn answered %d issues of FC closed in 28 days, through %v", len(closed), scans)
+}
+
+// setOf is keys as a set, which absent reads.
+func setOf(keys []string) map[string]bool {
+	set := make(map[string]bool, len(keys))
+	for _, key := range keys {
+		set[key] = true
+	}
+	return set
+}
+
+// requireIndexReads holds the plans of a read, with the values and under the generic plan, to
+// reaching relation through index and never scanning it, and logs what each reads.
+func requireIndexReads(t *testing.T, read, relation, index string, plans map[string]json.RawMessage) {
+	t.Helper()
+	for how, plan := range plans {
+		if explaintest.SeqScansRelation(t, plan, relation) {
+			t.Errorf("%s, %s scans %s sequentially; want %s:\n%s", how, read, relation, index, plan)
+		}
+		scans := explaintest.IndexScans(t, plan)
+		if !slices.ContainsFunc(scans, func(scan explaintest.IndexScan) bool { return scan.Index == index }) {
+			t.Errorf("%s, %s reads %v; want %s:\n%s", how, read, scans, index, plan)
+		}
+		t.Logf("%s, %s reads %v", how, read, scans)
+	}
 }
 
 // TestTheOtherBuildsRowsReadReadsTheWrittenBuildIndex: the read of the rows another build wrote
@@ -91,15 +141,13 @@ func TestTheOtherBuildsRowsReadReadsTheWrittenBuildIndex(t *testing.T) {
 	if err := pool.QueryRow(ctx, "explain (format json) "+otherBuildsRowsQuery, running).Scan(&raw); err != nil {
 		t.Fatalf("explain otherBuildsRows: %v", err)
 	}
-	plan := explaintest.OnePlan(t, raw)
-	if explaintest.SeqScansRelation(t, plan, "issue_facts") {
-		t.Fatalf("the read of the rows another build wrote scans issue_facts sequentially; want ranges of issue_facts_written_build:\n%s", plan)
-	}
-	scans := explaintest.IndexScans(t, plan)
-	if !slices.ContainsFunc(scans, func(scan explaintest.IndexScan) bool { return scan.Index == "issue_facts_written_build" }) {
-		t.Fatalf("the read of the rows another build wrote reads %v; want issue_facts_written_build:\n%s", scans, plan)
-	}
-	t.Logf("of 20,000 rows of five projects recorded under the running build, the read answered %v through %v", other, scans)
+	// Only the plan with the values: the generic plan of `written_build < $1 or written_build >
+	// $1` knows no value of $1, prices the two ranges as most of the table and scans it, and so
+	// costs more than the custom plan, which Postgres's plan_cache_mode = auto then keeps for the
+	// cached statement.
+	requireIndexReads(t, "the read of the rows another build wrote", "issue_facts", "issue_facts_written_build",
+		map[string]json.RawMessage{"with the values": explaintest.OnePlan(t, raw)})
+	t.Logf("of 20,000 rows of five projects recorded under the running build, the read answered %v", other)
 }
 
 // TestTheOtherBuildsFilingsReadReadsTheWrittenBuildIndex: the read of the filings another build
@@ -136,15 +184,10 @@ func TestTheOtherBuildsFilingsReadReadsTheWrittenBuildIndex(t *testing.T) {
 	if err := pool.QueryRow(ctx, "explain (format json) "+otherBuildsFilingsQuery, running).Scan(&raw); err != nil {
 		t.Fatalf("explain otherBuildsFilings: %v", err)
 	}
-	plan := explaintest.OnePlan(t, raw)
-	if explaintest.SeqScansRelation(t, plan, "issue_filings") {
-		t.Fatalf("the read of the filings another build wrote scans issue_filings sequentially; want ranges of issue_filings_written_build:\n%s", plan)
-	}
-	scans := explaintest.IndexScans(t, plan)
-	if !slices.ContainsFunc(scans, func(scan explaintest.IndexScan) bool { return scan.Index == "issue_filings_written_build" }) {
-		t.Fatalf("the read of the filings another build wrote reads %v; want issue_filings_written_build:\n%s", scans, plan)
-	}
-	t.Logf("of 20,000 filings of five projects recorded under the running build, the read answered %v through %v", other, scans)
+	// Only the plan with the values, for the reason the rows' read gives.
+	requireIndexReads(t, "the read of the filings another build wrote", "issue_filings", "issue_filings_written_build",
+		map[string]json.RawMessage{"with the values": explaintest.OnePlan(t, raw)})
+	t.Logf("of 20,000 filings of five projects recorded under the running build, the read answered %v", other)
 }
 
 // TestTheBoardsReadReadsItsRowsByKeyAndByRootAlone: the Legion board's two reads of the facts
@@ -252,36 +295,36 @@ func TestTheBoardsReadReadsItsRowsByKeyAndByRootAlone(t *testing.T) {
 		"open":   {{"issue_facts_closed", "closed_at IS NULL"}},
 		"closed": {{"issue_facts_pkey", "issue_key"}, {"issue_facts_root", "root_key"}},
 	}
-	judge := func(read, how string, plan json.RawMessage) []explaintest.IndexScan {
-		t.Helper()
-		if explaintest.SeqScansRelation(t, plan, "issue_facts") {
-			t.Errorf("%s, the board's %s read scans issue_facts sequentially:\n%s", how, read, plan)
+	judge := func(tb testing.TB, read, how string, plan json.RawMessage) []explaintest.IndexScan {
+		tb.Helper()
+		if explaintest.SeqScansRelation(tb, plan, "issue_facts") {
+			tb.Errorf("%s, the board's %s read scans issue_facts sequentially:\n%s", how, read, plan)
 		}
-		if unkeyed := explaintest.ScansWithoutIndexCond(t, plan); len(unkeyed) > 0 {
-			t.Errorf("%s, the board's %s read reads %v under no index condition:\n%s", how, read, unkeyed, plan)
+		if unkeyed := explaintest.ScansWithoutIndexCond(tb, plan); len(unkeyed) > 0 {
+			tb.Errorf("%s, the board's %s read reads %v under no index condition:\n%s", how, read, unkeyed, plan)
 		}
-		scans := explaintest.IndexScans(t, plan)
+		scans := explaintest.IndexScans(tb, plan)
 		for _, scan := range scans {
 			if !slices.ContainsFunc(keyedBy[read], func(keyed struct{ index, cond string }) bool {
 				return scan.Index == keyed.index && strings.Contains(scan.Cond, keyed.cond)
 			}) {
-				t.Errorf("%s, the board's %s read reads %s under %q; want each arm through its own index under its own condition, %v:\n%s", how, read, scan, scan.Cond, keyedBy[read], plan)
+				tb.Errorf("%s, the board's %s read reads %s under %q; want each arm through its own index under its own condition, %v:\n%s", how, read, scan, scan.Cond, keyedBy[read], plan)
 			}
 		}
 		for _, keyed := range keyedBy[read] {
 			if !slices.ContainsFunc(scans, func(scan explaintest.IndexScan) bool { return scan.Index == keyed.index }) {
-				t.Errorf("%s, the board's %s read reads %v; want %s under %s:\n%s", how, read, scans, keyed.index, keyed.cond, plan)
+				tb.Errorf("%s, the board's %s read reads %v; want %s under %s:\n%s", how, read, scans, keyed.index, keyed.cond, plan)
 			}
 		}
-		filters := openRowFilters(t, plan)
+		filters := openRowFilters(tb, plan)
 		switch {
 		case read == "closed" && len(filters) > 0:
-			t.Errorf("%s, the board's read of the closed rows reads the open rows through issue_facts_closed:\n%s", how, plan)
+			tb.Errorf("%s, the board's read of the closed rows reads the open rows through issue_facts_closed:\n%s", how, plan)
 		case read == "open" && len(filters) == 0:
-			t.Errorf("%s, the board's read of the open rows reads no open row through issue_facts_closed under closed_at IS NULL:\n%s", how, plan)
+			tb.Errorf("%s, the board's read of the open rows reads no open row through issue_facts_closed under closed_at IS NULL:\n%s", how, plan)
 		case read == "open":
 			if tested := slices.IndexFunc(filters, listTest.MatchString); tested >= 0 {
-				t.Errorf("%s, the board's read of the open rows tests a list on each of them (filter %q):\n%s", how, filters[tested], plan)
+				tb.Errorf("%s, the board's read of the open rows tests a list on each of them (filter %q):\n%s", how, filters[tested], plan)
 			}
 		}
 		return scans
@@ -328,9 +371,16 @@ func TestTheBoardsReadReadsItsRowsByKeyAndByRootAlone(t *testing.T) {
 	judged := map[string]map[string][]explaintest.IndexScan{"open": {}, "closed": {}}
 	for _, read := range []string{"open", "closed"} {
 		for how, plan := range plans[read] {
-			judged[read][how] = judge(read, how, plan)
+			judged[read][how] = judge(t, read, how, plan)
 		}
 	}
+	// The control: the open read's statement planned with the board's values and the planner's
+	// own settings, outside readByIndex. The store's shape plans it as a scan of the table, so
+	// the judgement above fails without the reads' settings and is no judgement that cannot fail.
+	control := explaintest.AnalyzedPlanUnder(t, ctx, pool, openStatement, nil, "FC")
+	explaintest.RequireControlFails(t, "the board's read of the open rows planned with sequential scans on", "the control",
+		"a read the board's settings keep on its index from one they do not", control,
+		func(tb testing.TB) { judge(tb, "open", "with sequential scans on", control) })
 	t.Logf("of 14,000 rows of five projects, 4,000 of FC's 12,000 open, the reads joined answered %d of FC for %d keys and %d trees (%d open, %d closed), and %d closed for no card; the open read through %v, the closed read through %v; the open read's plan:\n%s",
 		len(rows), len(keys), len(roots), openCount, closedCount, len(bare), judged["open"], judged["closed"], strings.Join(lines, "\n"))
 }
@@ -341,7 +391,7 @@ var listTest = regexp.MustCompile(`\b(ANY|ALL) \(`)
 // openRowFilters is the filter of each node of plan that reads the open rows of issue_facts: an
 // index scan of issue_facts_closed keyed by closed_at IS NULL, whose own filter tests each row it
 // reads, or a bitmap heap scan whose bitmap is one, which holds the filter itself.
-func openRowFilters(t *testing.T, plan json.RawMessage) []string {
+func openRowFilters(t testing.TB, plan json.RawMessage) []string {
 	t.Helper()
 	open := func(node explaintest.Node) bool {
 		return node.Index == "issue_facts_closed" && strings.Contains(node.IndexCond, "closed_at IS NULL")
@@ -376,7 +426,8 @@ func absent[V any](keys []string, set map[string]V) []string {
 // through its primary key and through issue_filings_filer (migration 20261117100007) under the
 // generic plan pgx's cached statement settles on, which knows no value of the keys, and never
 // scans the table: 6,000 filings of two projects, two in three by a phase worker, are analyzed
-// first, and sequential scans are off, so the plan names only the indexes the statement can prove.
+// first, and the plan is taken with the planner's settings as filingsToCompute runs it. The keys
+// it answers are the ones the seed's own rule gives.
 func TestTheStoredFilingsReadKeepsItsIndexesUnderAGenericPlan(t *testing.T) {
 	ctx := t.Context()
 	pool := factsDatabase(t)
@@ -396,13 +447,18 @@ func TestTheStoredFilingsReadKeepsItsIndexesUnderAGenericPlan(t *testing.T) {
 	if err != nil {
 		t.Fatalf("filingsToCompute: %v", err)
 	}
+	// FILE-7 is filed itself, and a phase worker's filing names FILE-7 as its filer's issue where
+	// n / 10 + 1 is 7 and n % 3 is not 0: n of 61, 62, 64, 65, 67 and 68.
+	if want := []string{"FILE-61", "FILE-62", "FILE-64", "FILE-65", "FILE-67", "FILE-68", "FILE-7"}; !slices.Equal(keys, want) {
+		t.Errorf("the filings to compute for FILE-7 are %v, want %v", keys, want)
+	}
 	connection, err := pool.Acquire(ctx)
 	if err != nil {
 		t.Fatalf("acquire a connection for the plan: %v", err)
 	}
 	defer connection.Release()
 	plan := explaintest.GenericPlan(t, ctx, connection, "stored_filings_of", storedFilingsOfQuery,
-		[]string{"text", "text[]"}, []string{"'FILE'", "array['FILE-7']"}, "set local enable_seqscan = off")
+		[]string{"text", "text[]"}, []string{"'FILE'", "array['FILE-7']"})
 	if explaintest.SeqScansRelation(t, plan, "issue_filings") {
 		t.Fatalf("the generic plan of the stored filings read scans issue_filings:\n%s", plan)
 	}
@@ -410,7 +466,69 @@ func TestTheStoredFilingsReadKeepsItsIndexesUnderAGenericPlan(t *testing.T) {
 	if !slices.ContainsFunc(scans, func(scan explaintest.IndexScan) bool { return scan.Index == "issue_filings_filer" }) {
 		t.Fatalf("the generic plan of the stored filings read reads %v; want issue_filings_filer:\n%s", scans, plan)
 	}
-	t.Logf("FILE-7 is the filed or the filer's issue of %d filings; the generic plan reads %v", len(keys), scans)
+	t.Logf("FILE-7 is the filed or the filer's issue of %d filings (%v); the generic plan reads %v", len(keys), keys, scans)
+}
+
+// TestTheChangedPullRequestsReadProbesThePrimaryKey: the read of the issues a page's changed pull
+// requests are stored under (changedPullRequestsQuery) probes delivery_pull_requests_pkey on both
+// its columns, the repository and the number, with the values and under the generic plan, on an
+// analyzed store of 20,000 pull requests in four repositories. A join on the number cast to text
+// keys the probe on the repository alone and reads every pull request of it.
+func TestTheChangedPullRequestsReadProbesThePrimaryKey(t *testing.T) {
+	ctx := t.Context()
+	pool := factsDatabase(t)
+	if _, err := pool.Exec(ctx, `
+		insert into projects (key, name, default_assignee) values ('FC', 'FC', 'alice');
+		insert into issues (key, project_key, number, title, status, rank, created_by)
+		values ('FC-1', 'FC', 1, 'A merged issue', 'done', '00000001', '{"kind":"user","id":"alice"}');
+		insert into delivery_pull_requests (repo, number, title, url, author, merged_at, issue_key)
+		select 'acme/' || repo, n, 'A pull request', 'https://example.test/' || repo || '/' || n, 'alice', now(),
+		       case when repo = 'b' and n = 7 then 'FC-1' end
+		from unnest(array['a', 'b', 'c', 'd']) as repo, generate_series(1, 5000) as n;
+		analyze delivery_pull_requests;
+		analyze issues;
+	`); err != nil {
+		t.Fatalf("seed the pull requests: %v", err)
+	}
+	repos, numbers := []string{"acme/b", "acme/c"}, []int32{7, 8}
+	rows, err := pool.Query(ctx, changedPullRequestsQuery, repos, numbers)
+	if err != nil {
+		t.Fatalf("read the changed pull requests' issues: %v", err)
+	}
+	answered := []string{}
+	var project, issue string
+	if _, err := pgx.ForEachRow(rows, []any{&project, &issue}, func() error {
+		answered = append(answered, project+" "+issue)
+		return nil
+	}); err != nil {
+		t.Fatalf("read the changed pull requests' issues: %v", err)
+	}
+	if want := []string{"FC FC-1"}; !slices.Equal(answered, want) {
+		t.Errorf("the changed pull requests acme/b#7 and acme/c#8 are stored under %v, want %v", answered, want)
+	}
+	var raw []byte
+	if err := pool.QueryRow(ctx, "explain (format json) "+changedPullRequestsQuery, repos, numbers).Scan(&raw); err != nil {
+		t.Fatalf("explain the changed pull requests' read: %v", err)
+	}
+	connection, err := pool.Acquire(ctx)
+	if err != nil {
+		t.Fatalf("acquire a connection for the plan: %v", err)
+	}
+	defer connection.Release()
+	generic := explaintest.GenericPlan(t, ctx, connection, "changed_pull_requests", changedPullRequestsQuery,
+		[]string{"text[]", "integer[]"}, []string{"array['acme/b', 'acme/c']", "array[7, 8]"})
+	for how, plan := range map[string]json.RawMessage{"with the values": explaintest.OnePlan(t, raw), "under the generic plan": generic} {
+		if explaintest.SeqScansRelation(t, plan, "delivery_pull_requests") {
+			t.Errorf("%s, the changed pull requests' read scans delivery_pull_requests:\n%s", how, plan)
+		}
+		scans := explaintest.IndexScans(t, plan)
+		if !slices.ContainsFunc(scans, func(scan explaintest.IndexScan) bool {
+			return scan.Index == "delivery_pull_requests_pkey" && strings.Contains(scan.Cond, "repo") && strings.Contains(scan.Cond, "number")
+		}) {
+			t.Errorf("%s, the changed pull requests' read reads %v; want delivery_pull_requests_pkey keyed on the repository and the number:\n%s", how, scans, plan)
+		}
+		t.Logf("%s, the changed pull requests' read answered %v through %v", how, answered, scans)
+	}
 }
 
 // TestTheLostMergesReadProbesTheMergedFactsIndex: the read of the stored rows a pull request's

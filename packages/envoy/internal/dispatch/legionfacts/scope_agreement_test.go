@@ -64,7 +64,7 @@ func TestEveryIssueComputedAloneHoldsTheFactsTheProjectComputedWhole(t *testing.
 		wholeRows[row.Issue] = row
 	}
 
-	differed, first := 0, ""
+	differed, first, compared := 0, "", 0
 	note := func(difference string) {
 		differed++
 		if first == "" {
@@ -86,6 +86,7 @@ func TestEveryIssueComputedAloneHoldsTheFactsTheProjectComputedWhole(t *testing.
 		case len(alone) == 1 && !has:
 			note(fmt.Sprintf("%s has no row computed with its project and this row computed on its own: %s", key, show(alone[0])))
 		case len(alone) == 1:
+			compared++
 			if difference := rowDifference(alone[0], row); difference != "" {
 				note(fmt.Sprintf("%s computed on its own against the same issue computed with its project: %s", key, difference))
 			}
@@ -96,12 +97,15 @@ func TestEveryIssueComputedAloneHoldsTheFactsTheProjectComputedWhole(t *testing.
 		t.Fatalf("the project holds %d issues and the whole-project computation answered %d rows, so this test examined nothing",
 			len(seeded.fixture.Keys), len(wholeRows))
 	}
+	if compared != len(wholeRows) {
+		t.Errorf("%d rows were compared field by field, want every one of the %d rows the project computed whole", compared, len(wholeRows))
+	}
 	if differed > 0 {
 		t.Errorf("%d of the %d issues hold different facts computed alone and computed with their project; the first is %s",
 			differed, len(seeded.fixture.Keys), first)
 	}
-	t.Logf("%d issues compared field by field, each computed alone against the project computed whole; %d differed. The whole-project computation answered %d rows, %s stands in the waiting line, a blocker link holds %s, and %s is a child its tree has not started, counted on %s",
-		len(seeded.fixture.Keys), differed, len(wholeRows), queued, blocked, unstarted, countedOn)
+	t.Logf("%d issues computed alone against the project computed whole, %d rows of them compared field by field; %d differed. The whole-project computation answered %d rows, %s stands in the waiting line, a blocker link holds %s, and %s is a child its tree has not started, counted on %s",
+		len(seeded.fixture.Keys), compared, differed, len(wholeRows), queued, blocked, unstarted, countedOn)
 }
 
 // seedPhase writes one phase observation of an issue as the Legion state intake writes it, which

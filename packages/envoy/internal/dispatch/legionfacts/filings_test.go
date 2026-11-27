@@ -26,6 +26,25 @@ func TestTheConsumerStoresEachLegionFilingAsMetricsClassesItAndMovesItsRootWithI
 	if len(whole) == 0 {
 		t.Fatal("the rig's history holds no Legion filing, so this check has nothing to compare")
 	}
+	// The rig's own filings, written out from its trees (legion/legiontest) rather than from the
+	// classification the consumer runs: in each tree the root's architect files the implemented,
+	// reviewed and open children, the three keys after the root, at hours 2, 5 and 8, under the
+	// root and before any implementer works it, so each is in the tree at design and stands under
+	// that root. The filer's phase at the filing is held by compareFilings alone.
+	if len(whole) != 3*len(run.fixture.Roots) {
+		t.Errorf("the whole read stored %d filings, want the 3 the architect of each of the %d trees made", len(whole), len(run.fixture.Roots))
+	}
+	for tree, root := range run.fixture.Roots {
+		for _, key := range run.fixture.Keys[tree*6+1 : tree*6+4] {
+			got, has := whole[key]
+			switch {
+			case !has:
+				t.Errorf("%s was filed by %s's architect and the whole read stored no filing of it", key, root)
+			case got.Filer != "architect" || got.FilerIssue != root || got.Class != metrics.ClassInTreeAtDesign || got.Root != root:
+				t.Errorf("%s is stored as %s, want class %s by the architect of %s under %s", key, showFiling(got), metrics.ClassInTreeAtDesign, root, root)
+			}
+		}
+	}
 
 	// Four filings the events feed carries to the next pass. Tree 0 starts 60 hours before the
 	// rig's end: its implemented child is implementing from hour 4 to hour 14, and its reviewed

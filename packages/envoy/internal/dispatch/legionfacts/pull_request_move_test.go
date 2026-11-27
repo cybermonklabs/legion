@@ -14,15 +14,17 @@ import (
 //
 // Two merged pull requests move between closed issues in one pass: the earlier of one issue's
 // two, to an issue whose own merged later, and the only one of another issue, to an issue with
-// none. After the pass the first loser holds its other pull request's merge, the second none, and
-// each gainer the merge of the pull request it took, each row as a computation of its issue
-// answers it.
+// none. In the same pass one pull request leaves its issue for no issue, and another is deleted,
+// the other two ways the attribution takes a pull request from an issue. After the pass the
+// first loser holds its other pull request's merge, the other three losers none, and each gainer
+// the merge of the pull request it took, each row as a computation of its issue answers it.
 func TestAPullRequestMovedToAnotherIssueRewritesTheMergeOfTheIssueItLeft(t *testing.T) {
 	run := newConsumer(t, 3)
 	_, closed, _ := issueRows(t, run.history)
 	kept, gained := run.fixture.Keys[1], run.fixture.Keys[2]
 	emptied, filled := run.fixture.Keys[7], run.fixture.Keys[8]
-	for _, key := range []string{kept, gained, emptied, filled} {
+	unattributed, deleted := run.fixture.Keys[13], run.fixture.Keys[14]
+	for _, key := range []string{kept, gained, emptied, filled, unattributed, deleted} {
 		if closed[key] == nil {
 			t.Fatalf("%s is open, and this check moves pull requests between closed issues", key)
 		}
@@ -41,9 +43,11 @@ func TestAPullRequestMovedToAnotherIssueRewritesTheMergeOfTheIssueItLeft(t *test
 	merge(2, kept, closed[kept].Add(-time.Hour))
 	merge(3, gained, closed[gained].Add(-time.Hour))
 	merge(4, emptied, closed[emptied].Add(-90*time.Minute))
+	merge(5, unattributed, closed[unattributed].Add(-time.Hour))
+	merge(6, deleted, closed[deleted].Add(-time.Hour))
 	run.pass(t)
 	before := run.rows(t)
-	for key, want := range map[string]*time.Time{kept: new(merged[1]), gained: new(merged[3]), emptied: new(merged[4]), filled: nil} {
+	for key, want := range map[string]*time.Time{kept: new(merged[1]), gained: new(merged[3]), emptied: new(merged[4]), filled: nil, unattributed: new(merged[5]), deleted: new(merged[6])} {
 		if !sameTime(before[key].MergedAt, want) {
 			t.Fatalf("%s's row holds the merge %v before any move, want %v: this test examined nothing", key, utc(before[key].MergedAt), utc(want))
 		}
@@ -61,10 +65,12 @@ func TestAPullRequestMovedToAnotherIssueRewritesTheMergeOfTheIssueItLeft(t *test
 	}
 	move(1, gained)
 	move(4, filled)
+	run.exec(t, fmt.Sprintf("attribute %s#5 to no issue", repo), `update delivery_pull_requests set issue_key = null where repo = $1 and number = 5`, repo)
+	run.exec(t, fmt.Sprintf("delete %s#6", repo), `delete from delivery_pull_requests where repo = $1 and number = 6`, repo)
 	changed := run.pass(t)
 	after := run.rows(t)
 
-	for key, want := range map[string]*time.Time{kept: new(merged[2]), gained: new(merged[1]), emptied: nil, filled: new(merged[4])} {
+	for key, want := range map[string]*time.Time{kept: new(merged[2]), gained: new(merged[1]), emptied: nil, filled: new(merged[4]), unattributed: nil, deleted: nil} {
 		if !sameTime(after[key].MergedAt, want) {
 			t.Errorf("%s's row holds the merge %v after the moves, want %v", key, utc(after[key].MergedAt), utc(want))
 		}

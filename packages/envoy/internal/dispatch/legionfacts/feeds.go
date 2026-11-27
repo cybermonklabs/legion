@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"strconv"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -650,15 +651,21 @@ func readChangePage(ctx context.Context, q Querier, after delivery.ChangeCursor,
 	}
 	moved := after.Through(changes, limit, checked)
 	page := feed{position: moved.Seq, at: moved.At, readAt: moved.ReadAt, full: len(changes) == limit}
-	repos, refs := make([]string, 0, len(changes)), make([]string, 0, len(changes))
+	repos, numbers := make([]string, 0, len(changes)), make([]int32, 0, len(changes))
 	merges := []time.Time{}
 	for _, change := range changes {
 		// A pull request's merge time is the one delivery fact an issue's facts read.
 		if change.Kind != delivery.ChangeKindPullRequest {
 			continue
 		}
+		// The trigger writes the pull request's number as the ref (migration 0100); a ref that
+		// is no number names no pull request.
+		number, err := strconv.ParseInt(change.Ref, 10, 32)
+		if err != nil {
+			continue
+		}
 		repos = append(repos, change.Repo)
-		refs = append(refs, change.Ref)
+		numbers = append(numbers, int32(number))
 		if change.TOld != nil {
 			merges = append(merges, *change.TOld)
 		}
@@ -670,12 +677,7 @@ func readChangePage(ctx context.Context, q Querier, after delivery.ChangeCursor,
 	if len(repos) == 0 {
 		return page, lost, nil
 	}
-	rows, err := q.Query(ctx, `
-		select distinct issue.project_key, request.issue_key
-		from unnest($1::text[], $2::text[]) as given(repo, ref)
-		join delivery_pull_requests request on request.repo = given.repo and request.number::text = given.ref
-		join issues issue on issue.key = request.issue_key
-	`, repos, refs)
+	rows, err := q.Query(ctx, changedPullRequestsQuery, repos, numbers)
 	if err != nil {
 		return feed{}, false, fmt.Errorf("read the issues of %d changed pull requests: %w", len(repos), err)
 	}
@@ -697,6 +699,17 @@ func readChangePage(ctx context.Context, q Querier, after delivery.ChangeCursor,
 	page.touches = append(page.touches, left...)
 	return page, lost, nil
 }
+
+// changedPullRequestsQuery is readChangePage's read of the issues the changed pull requests $1 and
+// $2 (each repository and its number) are stored under now: one probe of
+// delivery_pull_requests_pkey (repo, number) for each pair, keyed on both columns. A join on the
+// number cast to text keys the probe on the repository alone and filters every pull request of
+// that repository by its number.
+const changedPullRequestsQuery = `
+	select distinct issue.project_key, request.issue_key
+	from unnest($1::text[], $2::integer[]) as given(repo, number)
+	join delivery_pull_requests request on request.repo = given.repo and request.number = given.number
+	join issues issue on issue.key = request.issue_key`
 
 // lostMerges is every stored row a change of a pull request left with a merge no pull request
 // backs: the rows whose merged_at is one of merges, the merges the changed pull requests held

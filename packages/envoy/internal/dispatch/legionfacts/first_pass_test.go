@@ -37,6 +37,10 @@ func TestTheFirstPassOverASeededLogReadsOnePage(t *testing.T) {
 	}
 
 	narrow := schedule{page: 1, now: func() time.Time { return run.at }, started: run.at}
+	// The change log's head as the page reads it: the page's own write then appends an
+	// issue_facts change for every row it writes, so the cursor is held to this head rather than
+	// to the head after the write.
+	read := run.feedHeads(t)
 	changed, next, err := passPage(t.Context(), run.deps, narrow, safe, run.at, true)
 	if err != nil {
 		t.Fatalf("the first page of the first pass failed: %v", err)
@@ -56,9 +60,9 @@ func TestTheFirstPassOverASeededLogReadsOnePage(t *testing.T) {
 			t.Errorf("the %s cursor stands at 0, so the first pass left that feed at its start", name)
 		case at.position > heads[name]:
 			t.Errorf("the %s cursor stands at %d, past its feed's head %d", name, at.position, heads[name])
-		// The facts feed is the one exception: the page's own write appends an issue_facts
-		// change for every row it wrote, after it read that feed's head.
-		case at.position < heads[name] && name != changesCursor:
+		case name == changesCursor && at.position != read[name]:
+			t.Errorf("the %s cursor stands at %d, want the head %d the change log stood at when the page read it", name, at.position, read[name])
+		case name != changesCursor && at.position < heads[name]:
 			t.Errorf("the %s cursor stands at %d, want its feed's head %d", name, at.position, heads[name])
 		}
 	}

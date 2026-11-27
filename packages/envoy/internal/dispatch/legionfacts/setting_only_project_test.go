@@ -1,6 +1,8 @@
 package legionfacts
 
 import (
+	"maps"
+	"slices"
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/dispatch/legion/legiontest"
@@ -36,13 +38,14 @@ func TestAProjectNamingADaemonTheSamplerNeverReadGetsItsFacts(t *testing.T) {
 	}
 
 	run.pass(t)
-	for project, want := range map[string]int{named: len(histories[named].PhaseWork), unnamed: 0} {
+	for project, want := range map[string][]string{named: histories[named].PhaseWork, unnamed: nil} {
 		stored, err := readStored(ctx, run.database.Pool, project, run.at)
 		if err != nil {
 			t.Fatalf("read the stored facts of %s: %v", project, err)
 		}
-		if len(stored) != want {
-			t.Errorf("%s holds %d stored rows after a pass, want %d", project, len(stored), want)
+		got, wanted := slices.Sorted(maps.Keys(stored)), slices.Sorted(slices.Values(want))
+		if !slices.Equal(got, wanted) {
+			t.Errorf("%s holds the stored rows of %v after a pass, want one for each of its issues with Legion phase work, %v", project, got, wanted)
 		}
 		t.Logf("%s: %d stored rows, of %d issues with phase work", project, len(stored), len(histories[project].PhaseWork))
 	}

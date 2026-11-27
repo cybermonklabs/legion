@@ -63,14 +63,13 @@ func TestAClosedIssueThatLosesItsPhaseWorkLosesItsStoredRow(t *testing.T) {
 
 	// Three passes, the first of them reading the session's event: the row goes on the first, and
 	// stays gone on the two after it.
-	for range 3 {
+	for pass := range 3 {
 		run.at = run.at.Add(time.Minute)
 		run.pass(t)
-	}
-	stored := run.rows(t)
-	if _, has := stored[closed]; has {
-		t.Errorf("%s is closed, carries no Legion phase work and keeps its stored row after three passes: the computation answers %d issues and the table holds %d rows",
-			closed, len(computed), len(stored))
+		if stored := run.rows(t); stored[closed].Issue != "" {
+			t.Errorf("%s is closed, carries no Legion phase work and keeps its stored row after pass %d of the three, the first of which read its session's event: the computation answers %d issues and the table holds %d rows",
+				closed, pass+1, len(computed), len(stored))
+		}
 	}
 }
 

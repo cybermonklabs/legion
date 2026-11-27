@@ -52,7 +52,7 @@ func TestEveryIssueComputedAloneHoldsTheFactsTheProjectComputedWholeWhenADaemonN
 			child, wholeRows[child].Tree, tree)
 	}
 
-	differed, first := 0, ""
+	differed, first, compared := 0, "", 0
 	note := func(difference string) {
 		differed++
 		if first == "" {
@@ -74,6 +74,7 @@ func TestEveryIssueComputedAloneHoldsTheFactsTheProjectComputedWholeWhenADaemonN
 		case len(alone) == 1 && !has:
 			note(fmt.Sprintf("%s has no row computed with its project and this row computed on its own: %s", key, show(alone[0])))
 		case len(alone) == 1:
+			compared++
 			if difference := rowDifference(alone[0], row); difference != "" {
 				note(fmt.Sprintf("%s computed on its own against the same issue computed with its project: %s", key, difference))
 			}
@@ -84,12 +85,15 @@ func TestEveryIssueComputedAloneHoldsTheFactsTheProjectComputedWholeWhenADaemonN
 		t.Fatalf("the project holds %d issues and the whole-project computation answered %d rows, so this test examined nothing",
 			len(seeded.fixture.Keys), len(wholeRows))
 	}
+	if compared != len(wholeRows) {
+		t.Errorf("%d rows were compared field by field, want every one of the %d rows the project computed whole", compared, len(wholeRows))
+	}
 	if differed > 0 {
 		t.Errorf("%d of the %d issues hold different facts computed alone and computed with their project; the first is %s. The child %s reports the tree %s",
 			differed, len(seeded.fixture.Keys), first, child, tree)
 	}
-	t.Logf("%d issues compared field by field, each computed alone against the project computed whole; %d differed. The child %s reports the tree %s, whose parent chain holds %s instead",
-		len(seeded.fixture.Keys), differed, child, tree, parents[child])
+	t.Logf("%d issues computed alone against the project computed whole, %d rows of them compared field by field; %d differed. The child %s reports the tree %s, whose parent chain holds %s instead",
+		len(seeded.fixture.Keys), compared, differed, child, tree, parents[child])
 }
 
 // seedTree writes one `tree` observation of an issue as the Legion state intake writes it: the

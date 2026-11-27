@@ -23,10 +23,9 @@ import (
 // of that base head with the seeder (legion/legiontest) of 02a7b3c6 and the recorder
 // legion/metrics/golden_record_test.go of 8a78cf55, which this branch has since deleted. They were
 // 02a7b3c6's answers until the base changed its rules on purpose (8beac41a07, 687c7048d5,
-// 2eed8f979e, 22bd759ecb, e2a409a4f5, 9f994275a7; the evals package's legion_golden_test.go names
-// them), so the oracle is the base's own code over the same history. A work-time row's
-// out_of_workflow_hours is no stored part (issue_facts has no column for it), so nothing here
-// reads it.
+// 2eed8f979e, 22bd759ecb, e2a409a4f5, 9f994275a7), so the oracle is the base's own code over the
+// same history. A work-time row's out_of_workflow_hours is no stored part (issue_facts has no
+// column for it), so nothing here reads it.
 var goldenPartsFile = filepath.Join("..", "legion", "metrics", "testdata", "golden_issue_parts.json")
 
 // goldenParts is that file: the history it was recorded over and each finished issue's parts, in

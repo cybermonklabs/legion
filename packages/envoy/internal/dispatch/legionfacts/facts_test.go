@@ -77,12 +77,24 @@ func TestEveryIssueLegionWorkedGetsAStoredRowAndNoOtherIssueDoes(t *testing.T) {
 		len(seeded.fixture.Keys), len(seeded.fixture.PhaseWork), len(seeded.fixture.NoPhaseWork), len(stored))
 }
 
-// TestEachStoredFactEqualsTheSourceItComesFrom: the opening, the close, the slot hours, the depth
-// in the tree and the waiting reason of each written row are what their own sources answer — the
-// issue's own row, the rig's record of the slot it wrote, the parent chain, and the card rule
-// over the newest observations of the issue.
+// TestEachStoredFactEqualsTheSourceItComesFrom: the opening, the close, the merge, the slot hours,
+// the depth in the tree and the waiting reason of each written row are what their own sources
+// answer — the issue's own row, its pull requests' earliest merge, the rig's record of the slot it
+// wrote, the parent chain, and the card rule over the newest observations of the issue.
+//
+// The history holds the rig's queued roots, its children moved to backlog or icebox and its merged
+// pull requests, and one more phase observation: the first tree's implemented child is tested
+// for an hour after its second review, which no tree of the rig does. So four facts that a split
+// of a row could drop are non-zero on at least one row: the hours in backlog or icebox, the queued
+// hours, merged_at and the testing hours after the first review. The fifth such part, a bar's
+// ci_wait, is no measured segment and is 0 on every bar by design (legion/metrics/segments.go,
+// Segments), so every stored bar is held to 0 there instead.
 func TestEachStoredFactEqualsTheSourceItComesFrom(t *testing.T) {
-	seeded := seed(t, 6)
+	database := storetest.Open(t)
+	now := time.Date(2026, 11, 11, 12, 0, 0, 0, time.UTC)
+	seeded := history{database: database, now: now, fixture: legiontest.Seed(t, database.Pool, legiontest.Spec{
+		Project: "LEGION", Trees: 6, Now: now, Queued: true, InBacklogOrIcebox: true, Merged: true,
+	})}
 	project := seeded.fixture.Project
 	// The rig writes no admission block, so without one every issue is queued by nothing and
 	// every reason reads the same. This is the daemon's own block: the open child of the first
@@ -92,6 +104,14 @@ func TestEachStoredFactEqualsTheSourceItComesFrom(t *testing.T) {
 		Waiting: []string{queued},
 		Blocked: []legion.BlockedIssue{{Issue: blocked, BlockedBy: []string{blocker}}},
 	})
+	tested := seeded.fixture.Keys[1]
+	var reviewed time.Time
+	if err := database.Pool.QueryRow(t.Context(), `
+		select max(observed_at) from legion_observations where issue_key = $1 and field = $2 and value = '"reviewing"'
+	`, tested, legion.FieldPhase).Scan(&reviewed); err != nil {
+		t.Fatalf("read when %s was last reviewed: %v", tested, err)
+	}
+	seedPhase(t, seeded, tested, legion.PhaseTesting, reviewed.Add(time.Hour))
 
 	rows, _, err := ComputeProject(t.Context(), seeded.database.Pool, project, seeded.now)
 	if err != nil {
@@ -104,11 +124,59 @@ func TestEachStoredFactEqualsTheSourceItComesFrom(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read the facts back: %v", err)
 	}
+	if len(stored) != len(seeded.fixture.PhaseWork) {
+		t.Fatalf("the project holds %d stored rows, want one for each of the %d issues with Legion phase work, so the checks below would read the wrong rows",
+			len(stored), len(seeded.fixture.PhaseWork))
+	}
+	// The four parts and the bars are columns the board's read leaves at zero, so they are read
+	// with every column (readWhole).
+	wide, err := readWhole(t.Context(), seeded.database.Pool, project)
+	if err != nil {
+		t.Fatalf("read the facts back with every column: %v", err)
+	}
+	merges := map[string]time.Time{}
+	mergeRows, err := database.Pool.Query(t.Context(), `
+		select issue_key, min(merged_at) from delivery_pull_requests where merged_at is not null and issue_key is not null group by issue_key`)
+	if err != nil {
+		t.Fatalf("read the pull requests' merges: %v", err)
+	}
+	var mergedIssue string
+	var mergedAt time.Time
+	if _, err := pgx.ForEachRow(mergeRows, []any{&mergedIssue, &mergedAt}, func() error {
+		merges[mergedIssue] = mergedAt
+		return nil
+	}); err != nil {
+		t.Fatalf("read the pull requests' merges: %v", err)
+	}
 
 	opened, closed, parents := issueRows(t, seeded)
 	reasons := cardReasons(t, seeded)
+	nonZero := map[string]int{}
 	for _, key := range slices.Sorted(maps.Keys(stored)) {
-		row := stored[key]
+		row, all := stored[key], wide[key]
+		if all.ParkedHours > 0 {
+			nonZero["backlog_or_icebox_hours"]++
+		}
+		if all.QueuedHours > 0 {
+			nonZero["queued_hours"]++
+		}
+		if all.TestingHoursAfterFirstReview > 0 {
+			nonZero["testing_after_first_review"]++
+		}
+		merge, merged := merges[key]
+		switch {
+		case merged && !sameTime(all.MergedAt, &merge):
+			t.Errorf("%s merged at %v in its row and its pull requests' earliest merge is %s", key, utc(all.MergedAt), merge.UTC())
+		case !merged && all.MergedAt != nil:
+			t.Errorf("%s merged at %s in its row and no pull request of it merged", key, all.MergedAt.UTC())
+		case merged:
+			nonZero["merged_at"]++
+		}
+		for role, bar := range all.Bars {
+			if bar.Segments.CIWait != 0 {
+				t.Errorf("%s holds %g ci_wait hours in the %s bar, a segment that is not measured", key, bar.Segments.CIWait, role)
+			}
+		}
 		if !row.OpenedAt.Equal(opened[key]) {
 			t.Errorf("%s opened at %s in its row and at %s in the issues table", key, row.OpenedAt, opened[key])
 		}
@@ -131,14 +199,19 @@ func TestEachStoredFactEqualsTheSourceItComesFrom(t *testing.T) {
 			t.Errorf("%s waits for %q in its row, want the card rule's %q", key, row.WaitingReason, reasons[key])
 		}
 	}
+	for _, part := range []string{"backlog_or_icebox_hours", "queued_hours", "merged_at", "testing_after_first_review"} {
+		if nonZero[part] == 0 {
+			t.Errorf("no stored row holds a non-zero %s, so a split of the row that dropped it would pass", part)
+		}
+	}
 	// The block above is what makes the reasons differ from each other: a check over rows that
 	// all read "" would pass on a rule that answered nothing at all.
 	if reasons[queued] != legion.WaitingReady || reasons[blocked] != legion.WaitingBlocked {
 		t.Fatalf("the queued issue waits for %q and the blocked one for %q, want %q and %q",
 			reasons[queued], reasons[blocked], legion.WaitingReady, legion.WaitingBlocked)
 	}
-	t.Logf("%d rows compared against their own sources; %s waits for %q and %s for %q",
-		len(stored), queued, reasons[queued], blocked, reasons[blocked])
+	t.Logf("%d rows compared against their own sources; %s waits for %q and %s for %q; rows with a non-zero part: %v, %s tested after its review",
+		len(stored), queued, reasons[queued], blocked, reasons[blocked], nonZero, tested)
 }
 
 // TestWriteRewritesNothingThatDidNotMove: the same rows written twice change no row the second

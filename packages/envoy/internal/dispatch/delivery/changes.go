@@ -19,9 +19,9 @@ import (
 // An issue_facts row holds no repository: Repo carries the project key and Ref the issue key,
 // because a stored Legion fact belongs to a project and an issue (migration 20261117100002). Its
 // TOld and TNew are the issue's closed_at before and after the change (the same migration),
-// since a Legion day row counts an issue on its close day alone: an insert carries TNew alone, a
-// delete TOld alone, and each is nil where the issue was or is open, so a change of an open
-// issue's facts carries neither.
+// since a reader that counts an issue by day counts it on its close day alone: an insert carries
+// TNew alone, a delete TOld alone, and each is nil where the issue was or is open, so a change of
+// an open issue's facts carries neither.
 //
 // An issue_filings row holds none either: Repo carries the project key and Ref the filed issue's
 // key (migration 20261117100019). TOld and TNew are the filing's filed_at before and after: an
