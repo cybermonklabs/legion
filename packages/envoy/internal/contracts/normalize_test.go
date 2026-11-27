@@ -1751,8 +1751,9 @@ func TestGithubEnvelopesWorkflowRunMissingPathDropsEnvelope(t *testing.T) {
 	}
 }
 
-// githubFixture is a GitHub webhook body captured from GitHub (scripts/fixtures/github/<name>.json;
-// the plan of dispatch://INFRA-4122 names the command that captured each), decoded as the listener
+// githubFixture is a GitHub webhook body captured from GitHub (scripts/fixtures/github/<name>.json:
+// the run of `gh api repos/<owner>/<repo>/actions/runs/<id>` and the repository of
+// `gh api repos/<owner>/<repo>`, cut to the fields the normalizer reads), decoded as the listener
 // decodes a delivery. Each call reads the file again, so a test may change the body it is given.
 func githubFixture(t *testing.T, name string) map[string]any {
 	t.Helper()
