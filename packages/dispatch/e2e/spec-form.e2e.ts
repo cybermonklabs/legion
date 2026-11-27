@@ -14,7 +14,7 @@ import {
 } from "./api";
 import { type CliRun, cliSession, runDispatch } from "./dispatch-cli";
 import { drawer, peekTrigger } from "./inbox-drawer";
-import { askCard, inboxRow } from "./inbox-pane";
+import { inboxRow } from "./inbox-pane";
 import { READING_PANE_WIDTH } from "./reading-pane";
 import { expect, test } from "./test";
 
