@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# legion: tool - measures the repository cache's CPU and each fetch's source when a person reruns INFRA-5789's check o2
 # The burst Job of check o2 of INFRA-5789 (verification of the repository cache's bucket): with the
 # cache's bucket on, 20 `workspace-init fetch` runs at once leave the cache pod's CPU below 0.2 CPU,
 # each logging the bucket as its source; with it off, the same 20 read /tar, each logging that /packs
