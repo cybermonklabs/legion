@@ -5,7 +5,14 @@ import { isDismissedPage, pageIds, seedDismissedThreads } from "./dismissed-seed
 import { chooseShow, listTrigger, openFilterPanel, pickFromList } from "./filters";
 import { describeFocus, frameAndTask, holdsFocus, tabTo } from "./focus";
 import { drawer } from "./inbox-drawer";
-import { inboxList, inboxPane, selectedRow } from "./inbox-pane";
+import {
+  inboxList,
+  inboxPane,
+  selectRow as openRow,
+  paneScroller,
+  readingView,
+  selectedRow,
+} from "./inbox-pane";
 import {
   asSession,
   replyRowId,
@@ -1634,6 +1641,126 @@ test("a range action that leaves no row hands the focus to the list's empty mess
     ).toBeVisible();
   } finally {
     await alice.close();
+  }
+});
+
+// SLOW(>=2s): four seeded rows at 390x664, row 2's reading view opened, marked and dismissed, then
+// a second person's page with its one seeded row opened, marked and dismissed.
+test("at 390 px a range action that takes the row the reading view shows hands the focus to the view of the next item", async ({
+  browser,
+}) => {
+  await setLiveSessions([THREAD_SESSION]);
+  await createProject({ key: "CORE", name: "Core" });
+  const mirror = await createIssue({ project: "CORE", title: "Mirror retries" });
+  await patchIssue(mirror.key, { priority: 2 });
+  const count = 4;
+  await seedBulkReplyThreads({ count, issueKey: mirror.key, prefix: "Mirror" });
+  // Bob's one thread, on an issue of its own. Its other writer is the session, so it lands in his
+  // Inbox and in no one else's, and his Inbox holds nothing else: a press on it leaves no row.
+  const lease = await createIssue({ project: "CORE", title: "Lease handover" });
+  await seedBulkReplyThreads({ count: 1, issueKey: lease.key, login: "bob", prefix: "Lease" });
+  // The iPhone 13's window, where a row the person opens is read in a view in place of the list,
+  // which the page keeps mounted under `hidden` (main's #5223).
+  const phone = { height: 664, width: 390 };
+  /** The rows the reading views drawn in `on` read: one while a view is open, none while the list
+   *  shows. Read once, as the landing left them. */
+  const viewRows = (on: Page): Promise<string[]> =>
+    on
+      .locator("[data-inbox-reading-row]")
+      .evaluateAll((nodes) =>
+        nodes.map((node) => node.getAttribute("data-inbox-reading-row") ?? "")
+      );
+
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    await page.setViewportSize(phone);
+    await page.goto("/");
+    await expect(rows(page)).toHaveCount(count);
+    // The count above waited for every row, and nothing moves them before the press does.
+    const drawn = await drawnIds(inboxList(page));
+    const [second, third] = [drawn[1] ?? "", drawn[2] ?? ""];
+    // Row 3's root, read off its checkbox's name while the list is in sight: the view hides the
+    // list, which takes its checkboxes out of the accessibility tree.
+    const thirdWords =
+      ROOT_WORDS.exec((await mark(page, third).getAttribute("aria-label")) ?? "")?.[1] ?? "";
+    expect(thirdWords, "row 3 draws its thread's root").not.toBe("");
+
+    // Row 2 opened as the pointer opens it, then marked with the view's own checkbox.
+    await openRow(page, second);
+    await expect(inboxList(page), "the list is hidden under the reading view").toBeHidden();
+    expect(await viewRows(page), `the reading view reads row 2 (${second})`).toEqual([second]);
+    await readingView(page)
+      .getByRole("checkbox", { name: /^Select / })
+      .click();
+    await expectCount(page, 1);
+    expect(await markedIds(page), "row 2 alone is marked").toEqual([second]);
+    await bar(page).getByRole("button", { name: "Dismiss selected threads" }).click();
+    await expect(row(page, second)).toHaveCount(0);
+    await frameAndTask(page);
+
+    // The view reads row 3, the row after row 2, and its scroll area holds the focus: the list
+    // under the view is hidden, so a focus given to a row there falls to the page's body.
+    expect(await drawnIds(inboxList(page)), "the press took row 2 away and no other row").toEqual(
+      drawn.filter((id) => id !== second)
+    );
+    expect(
+      await viewRows(page),
+      `the reading view reads row 3 (${third}), the row after row 2`
+    ).toEqual([third]);
+    expect(
+      await holdsFocus(paneScroller(page)),
+      `the focus is on the reading view's scroll area; it is on ${await focusWords(page, drawn)}`
+    ).toBe(true);
+    expect(
+      await page.evaluate(() => document.activeElement === document.body),
+      `the focus is on the page's body; it is on ${await focusWords(page, drawn)}`
+    ).toBe(false);
+    await expect(
+      readingView(page).locator("[data-inbox-thread-subject]"),
+      "the reading view shows row 3's thread"
+    ).toHaveText(thirdWords);
+  } finally {
+    await alice.close();
+  }
+
+  const bob = await asUser(browser, "bob");
+  try {
+    const page = await bob.newPage();
+    await page.setViewportSize(phone);
+    await page.goto("/");
+    await expect(rows(page), "bob's Inbox lists his one thread and nothing else").toHaveCount(1);
+    // The count above waited for the row, and nothing moves it before the press does.
+    const only = (await drawnIds(inboxList(page)))[0] ?? "";
+    const empty = inboxList(page).locator("[data-inbox-empty]");
+
+    // The one row opened, marked with the view's own checkbox and dismissed.
+    await openRow(page, only);
+    expect(await viewRows(page), `the reading view reads bob's one row (${only})`).toEqual([only]);
+    await readingView(page)
+      .getByRole("checkbox", { name: /^Select / })
+      .click();
+    await expectCount(page, 1);
+    expect(await markedIds(page), "bob's one row is marked").toEqual([only]);
+    await bar(page).getByRole("button", { name: "Dismiss selected threads" }).click();
+    await expect(row(page, only)).toHaveCount(0);
+    await frameAndTask(page);
+
+    // No row is left: the view gives way to the list, and the list's empty message holds the
+    // focus. With no row the page draws no view at all, so the view is read closed where the
+    // hand-off closes it: the address goes back to the list's, which names no item.
+    expect(await viewRows(page), "the reading view stayed open with no item left").toEqual([]);
+    await expect(
+      page,
+      "the reading view stayed open with no item left: the address still names the item"
+    ).not.toHaveURL(/[?&]item=/);
+    expect(await empty.count(), "the list draws its one empty message").toBe(1);
+    expect(
+      await holdsFocus(empty),
+      `the focus is on the list's empty message; it is on ${await focusWords(page, [only])}`
+    ).toBe(true);
+  } finally {
+    await bob.close();
   }
 });
 
