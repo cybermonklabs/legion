@@ -1,13 +1,8 @@
 # The ci_router_outputs_test filter's gate: what job test reads.
 GATE = harness("ci_router_outputs_test", "Test the router outputs' label terms", f"{SCRIPTS}/ci-router-outputs.test.sh", [
     (f"{SCRIPTS}/ci_router_outputs.py", "the script under test"),
-    (f"{SCRIPTS}/lane_packages.py", "the harness runs its filters mode to read the names of the own-packages filter, "
-                                    "which must be the gated outputs"),
     (f"{SCRIPTS}/lane-verdicts.py", "the harness runs it over the env ci.yaml's statement step evaluates to and holds its "
                                     "decisions to the outputs"),
-    (".github/lane-packages.yaml", "lane_packages.py's table, whose outputs are those names"),
-    (".github/workflows/ci-job-test.yaml", "lane_packages.py reads the test job's harnesses out of it"),
-    (".github/workflows/ci-job-envoy-go-checks.yaml", "lane_packages.py reads envoy-go-checks' harnesses out of it"),
     (f"{SCRIPTS}/ci-filters-generate.sh", "the harness runs a copy of it to write the fallback file its fall-open "
                                           "cases evaluate the list over"),
     (".github/ci-gates/*.py", "the filter names the script reads (--filters) are the gates' names, which the changes "

@@ -20,10 +20,8 @@ is what the harness tests. It runs the `changes` job's steps in order the way th
 a step's `if:`, `env:` and `with:` are evaluated when it starts, over the outputs of the steps
 before it alone, a step whose `if:` is false is skipped and its outputs read as null, a `run:`
 step that carries an `id` runs in bash with its `env:` and GITHUB_EVENT_NAME, GITHUB_REF,
-GITHUB_SHA and GITHUB_OUTPUT set, and its outputs are what it wrote there. Four steps it models
+GITHUB_SHA and GITHUB_OUTPUT set, and its outputs are what it wrote there. Three steps it models
 instead of running: the `filter` step's outputs are the verdicts given and the list below; the
-`own` step's, the paths filter of the slow suites' own packages, are the --own verdicts given, and
-empty for every other name, as a filter that matched nothing reads; the
 `base` step's `sha` is the --base given, since that step fetches main's history to find it; and
 the `generate` step writes nothing, as ci-filters-generate.sh writes to its outputs only when it
 falls open (--step-outputs gives what it wrote then). One reader, runs(), decides whether each
@@ -49,15 +47,14 @@ false.
 
 Usage: ci_router_outputs.py <workflow> --filters <file> --event <name> [--ref <ref>] [--sha <sha>]
   [--base <sha>] [--pull-base <sha>] [--input <name>=<value>]... [--label <name>]...
-  [--verdict <filter>=<value>]... [--verdicts <true|false>] [--own <output>=<value>]...
-  [--step-outputs <id>=<file>]...
+  [--verdict <filter>=<value>]... [--verdicts <true|false>] [--step-outputs <id>=<file>]...
   [--filter-step | --generate-step | --concurrency | --step-env <step name>
    | --steps <job> [--changes-result <result>]]
+       ci_router_outputs.py <workflow> --label-readers
 Prints `<output>=<value>` for each output of the `changes` job, in the file's order. --filters is
 the changes job's filters, which it computes when it runs (.github/scripts/ci-filters-generate.sh)
 and no file of the repository holds; the filter names are its keys. --verdicts sets every filter's
-verdict (default true); --verdict overrides one. --own sets the `own` step's verdict for one slow
-suite's output, which no other verdict sets. --ref defaults to a pull request's merge ref, the
+verdict (default true); --verdict overrides one. --ref defaults to a pull request's merge ref, the
 queue's branch, or refs/heads/main for any other event; --sha to forty 1s. --base is the commit
 the run is measured against, forty 3s by default: a merge group's base, or the commit the `base`
 step finds - the first parent of a pull request's merge commit, the merge base with main on a
@@ -332,7 +329,7 @@ def run_step(step, env, context):
     return outputs
 
 
-def run_steps(job, context, filter_outputs, base, given, own_outputs=None):
+def run_steps(job, context, filter_outputs, base, given):
     """Each step of the job in order, as the runner takes them, its outputs into
     context["steps"] under its `id`: a step given with --step-outputs has those outputs, the
     filter, base and generate steps are modelled as the docstring above says, and any other `run:`
@@ -357,8 +354,6 @@ def run_steps(job, context, filter_outputs, base, given, own_outputs=None):
             outputs = dict(given[step_id])
         elif step_id == "filter":
             outputs = dict(filter_outputs)
-        elif step_id == "own":
-            outputs = dict(own_outputs or {})
         elif step_id == "base":
             outputs = {"sha": base}
         elif step_id == "generate":
@@ -438,6 +433,13 @@ def steps_of(workflow, document, job_id, outputs, context, result):
     return out
 
 
+def label_readers(outputs):
+    """The outputs of the changes job whose expression reads the pull request's labels, found in
+    the text rather than by evaluating it, so a broken term cannot drop an output from the list.
+    --label-readers prints them, and lane-verdicts.py reads them."""
+    return [name for name, expression in outputs.items() if "github.event.pull_request.labels" in str(expression)]
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("workflow")
@@ -454,7 +456,6 @@ def main():
     parser.add_argument("--concurrency", action="store_true")
     parser.add_argument("--label", action="append", default=[])
     parser.add_argument("--verdict", action="append", default=[])
-    parser.add_argument("--own", action="append", default=[])
     parser.add_argument("--verdicts", default="true", choices=["true", "false"])
     parser.add_argument("--steps")
     parser.add_argument("--changes-result", default="success")
@@ -464,9 +465,8 @@ def main():
     document = yaml.safe_load(Path(args.workflow).read_text())
     outputs = document["jobs"]["changes"]["outputs"]
     if args.label_readers:
-        for name, expression in outputs.items():
-            if "github.event.pull_request.labels" in str(expression):
-                print(name)
+        for name in label_readers(outputs):
+            print(name)
         return 0
     if not args.event or not args.filters:
         parser.error("--event and --filters are required unless --label-readers is given")
@@ -521,8 +521,7 @@ def main():
             print(f"group={text_of(interpolate(concurrency.get('group', ''), evaluator))}")
             print(f"cancel-in-progress={text_of(truthy(interpolate(concurrency.get('cancel-in-progress', False), evaluator)))}")
             return 0
-        own_outputs = dict(pair.partition("=")[::2] for pair in args.own)
-        started = run_steps(changes, context, filter_outputs, args.base, given, own_outputs)
+        started = run_steps(changes, context, filter_outputs, args.base, given)
         if args.filter_step:
             step, at_start, ran = started_step(started, lambda s: s.get("id") == "filter", "step of id filter")
             with_ = step.get("with") or {}

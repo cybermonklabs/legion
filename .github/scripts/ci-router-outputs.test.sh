@@ -156,99 +156,6 @@ for label in lane:no_such_output lane:typecheck lane:envoy-go "lane:${held[0]}x"
   check "$label leaves every output as an unlabelled pull request has it" "$(is "$got" "$baseline")"
 done
 
-# A merge group (and a dispatched branch) runs every slow suite whose own package it changes
-# (.github/lane-packages.yaml), even where the computed filter, which reads build tags, leaves the
-# file out: the changes job's `own` step, a paths filter of each suite's own packages, runs on every
-# event but a pull request, and the output reads its verdict ahead of the label terms there
-# (.github/ci-notes/ci.md#a-merge-group-runs-every-slow-suite-whose-own-package-the-change-touches).
-echo "case: the own-packages filter names exactly the fifteen gated outputs"
-own_names=$("$script_dir/lane_packages.py" filters "$work/lane-packages.yaml" &&
-  python3 -c 'import sys, yaml; print(" ".join(sorted(yaml.safe_load(open(sys.argv[1])))))' "$work/lane-packages.yaml")
-check "they are the fifteen" "$(is "$own_names " "$gated ")"
-
-echo "case: each gated output reads its own verdict, by its own name, off a pull request"
-# Read from the text, as held_of reads the label terms, so an output that lost its own term, or
-# reads another output's, fails here by name and not by a value that happened to agree.
-without_own=$(python3 -c '
-import sys, yaml
-outputs = yaml.safe_load(open(sys.argv[1]))["jobs"]["changes"]["outputs"]
-for name in sys.argv[2:]:
-    term = f"github.event_name != \x27pull_request\x27 && steps.own.outputs.{name} == \x27true\x27 && \x27true\x27 ||"
-    if term not in str(outputs[name]):
-        print(name)
-' "$repo/.github/workflows/ci.yaml" "${held[@]}" | tr '\n' ' ')
-check "none lacks it" "$(is "$without_own" "")"
-
-echo "case: a merge group runs each suite whose own package it changes, whatever its filter says, and no other"
-for name in "${held[@]}"; do
-  got=$(outputs --event merge_group --verdicts false --own "$name=true")
-  check "own $name turns $name on" "$(is "$(value "$got" "$name")" true)"
-  check "own $name turns no other gated output on" \
-    "$(is "$(grep -cE "^($(IFS='|'; echo "${held[*]}"))=true\$" <<<"$got")" 1)"
-done
-got=$(outputs --event workflow_dispatch --ref refs/heads/feature --verdicts false --own "${held[0]}=true")
-check "and so does a dispatch of a branch" "$(is "$(value "$got" "${held[0]}")" true)"
-
-echo "case: a pull request's own verdict moves nothing, since the own step does not run there"
-args=()
-for name in "${held[@]}"; do args+=(--own "$name=true"); done
-check "every output reads as an unlabelled pull request has it" "$(is "$(outputs --event pull_request "${args[@]}")" "$baseline")"
-
-echo "case: an own verdict of false leaves a merge group running every one its filter selects"
-args=()
-for name in "${held[@]}"; do args+=(--own "$name=false"); done
-check "none is off" \
-  "$(is "$(not_value "$repo/.github/workflows/ci.yaml" true --event merge_group "${args[@]}" | tr '\n' ' ')" "")"
-
-# The changes job's step "Say what decided each slow suite on this run" prints, for each gated
-# output, what decided it (.github/ci-notes/ci.md#the-changes-job-says-what-decided-each-slow-suite).
-# Its decision is the output's own expression evaluated over what the step is handed, so these
-# cases hand .github/scripts/lane-verdicts.py the env ci.yaml's step evaluates to (--step-env) and
-# hold its decision to the outputs, on each shape of run.
-statement=$'Say what decided each slow suite on this run'
-# verdicts_of <event> <argument>...: lane-verdicts.py --decided, run over the env the step is
-# handed on that run; what it prints in full goes to $work/said, which said_last reads.
-verdicts_of() {
-  local event=$1 spec
-  shift
-  spec=$("$script_dir/ci_router_outputs.py" "$repo/.github/workflows/ci.yaml" --filters "$filters" --event "$event" \
-    --step-env "$statement" "$@")
-  python3 -c '
-import json, os, subprocess, sys
-spec = json.loads(sys.argv[1])
-env = dict(os.environ, GITHUB_EVENT_NAME=sys.argv[2], GITHUB_STEP_SUMMARY="", **spec["env"])
-print(subprocess.run([sys.argv[3]], env=env, capture_output=True, text=True).stdout)
-print(subprocess.run([sys.argv[3], "--decided"], env=env, capture_output=True, text=True).stdout, file=sys.stderr)
-' "$spec" "$event" "$script_dir/lane-verdicts.py" >"$work/said" 2>"$work/decided"
-  sort "$work/decided" | grep -v '^$'
-}
-# said_last: what the last verdicts_of call printed in full.
-said_last() { cat "$work/said"; }
-# gated_outputs <outputs>: the gated outputs' lines of an outputs text.
-gated_outputs() { grep -E "^($(IFS='|'; echo "${held[*]}"))=" <<<"$1" | sort; }
-
-echo "case: the statement's decisions are the outputs on each shape of run"
-check "a pull request with no label" \
-  "$(is "$(verdicts_of pull_request)" "$(gated_outputs "$(outputs --event pull_request)")")"
-check "  and it says each one is held back and that the merge queue runs it" \
-  "$(contains "$(said_last)" "^envoy-go-race: does not run on this head: its paths matched, the pull request carries neither full-ci nor lane:envoy_go_race, so changes holds it back; the merge queue runs it")"
-check "  and names them in one notice" "$(contains "$(said_last)" '^::notice title=Slow suites not run on this head::.*envoy-go-race.*the merge queue runs them$')"
-check "a pull request with lane:envoy_go_race" \
-  "$(is "$(verdicts_of pull_request --label lane:envoy_go_race)" "$(gated_outputs "$(outputs --event pull_request --label lane:envoy_go_race)")")"
-check "  and it says the race suite runs on this head under its label" \
-  "$(contains "$(said_last)" '^envoy-go-race: runs on this head: its paths matched and the pull request carries lane:envoy_go_race$')"
-check "a pull request with full-ci" \
-  "$(is "$(verdicts_of pull_request --label full-ci)" "$(gated_outputs "$(outputs --event pull_request --label full-ci)")")"
-check "  and it holds nothing back, so no notice" "$(is "$(contains "$(said_last)" '::notice')" false)"
-check "a merge group whose filters say no and whose own packages say envoy_go_race" \
-  "$(is "$(verdicts_of merge_group --verdicts false --own envoy_go_race=true)" \
-    "$(gated_outputs "$(outputs --event merge_group --verdicts false --own envoy_go_race=true)")")"
-check "  and it says the race suite runs for its own package" \
-  "$(contains "$(said_last)" '^envoy-go-race: runs on this merge_group run: the change touches one of its own packages$')"
-check "a pull request whose filters say no" \
-  "$(is "$(verdicts_of pull_request --verdicts false)" "$(gated_outputs "$(outputs --event pull_request --verdicts false)")")"
-check "  and it says none is selected" "$(contains "$(said_last)" '^envoy-go-race: not selected: its paths did not match$')"
-
 echo "case: a verdict for a filter the computed filters do not hold is refused, naming their file"
 set +e
 err=$("$script_dir/ci_router_outputs.py" "$repo/.github/workflows/ci.yaml" --filters "$filters" \
@@ -304,29 +211,60 @@ check "the set keeps all ${#held[@]}" "$(is "$(held_of "$broken" | wc -l)" "${#h
 check "lane:envoy_smoke leaves it off" "$(is "$(off_under "$broken" lane:envoy_smoke | grep -c '^envoy_smoke$')" 1)"
 check "full-ci still turns it on" "$(is "$(off_under "$broken" full-ci | tr '\n' ' ')" "")"
 
-echo "case: an output whose own term reads another output's verdict fails its own row"
-broken=$(copy_with "$work/own-misnamed" ci.yaml \
-  "steps.own.outputs.envoy_go_race == 'true'" "steps.own.outputs.envoy_go_race_api == 'true'")
-check "own envoy_go_race in a merge group whose filters say no then leaves it off" \
-  "$(is "$(value "$(outputs_of "$broken" --event merge_group --verdicts false --own envoy_go_race=true)" envoy_go_race)" false)"
-
-echo "case: an output whose own term is gone fails its own row"
-broken=$(copy_with "$work/own-gone" ci.yaml \
-  "github.event_name != 'pull_request' && steps.own.outputs.envoy_smoke == 'true' && 'true' || " "")
-check "the set keeps all ${#held[@]}" "$(is "$(held_of "$broken" | wc -l)" "${#held[@]}")"
-check "own envoy_smoke in a merge group whose filters say no then leaves it off" \
-  "$(is "$(value "$(outputs_of "$broken" --event merge_group --verdicts false --own envoy_smoke=true)" envoy_smoke)" false)"
-
-echo "case: a statement step handed another step's verdicts says what the outputs do not, and the case sees it"
-broken=$(copy_with "$work/statement-wrong-step" ci.yaml \
-  'FILTER: ${{ toJSON(steps.filter.outputs) }}' 'FILTER: ${{ toJSON(steps.own.outputs) }}')
-spec=$("$script_dir/ci_router_outputs.py" "$broken" --filters "$filters" --event pull_request --step-env "$statement")
-got=$(python3 -c '
+# The changes job's step "Say what decided each slow suite on this run" prints, for each gated
+# output, what decided it (.github/ci-notes/ci.md#the-changes-job-says-what-decided-each-slow-suite).
+# Its decision is the output's own expression evaluated over what the step is handed, so these
+# cases hand .github/scripts/lane-verdicts.py the env a workflow's step evaluates to (--step-env)
+# and hold its decision to ci.yaml's outputs, on each shape of run.
+statement='Say what decided each slow suite on this run'
+# verdicts_of <workflow> <event> <argument>...: lane-verdicts.py --decided, run over the env that
+# workflow's statement step is handed on that run; what it prints in full goes to $work/said.
+verdicts_of() {
+  local workflow=$1 event=$2 spec
+  shift 2
+  spec=$("$script_dir/ci_router_outputs.py" "$workflow" --filters "$filters" --event "$event" \
+    --step-env "$statement" "$@")
+  python3 -c '
 import json, os, subprocess, sys
-env = dict(os.environ, GITHUB_EVENT_NAME="pull_request", **json.loads(sys.argv[1])["env"])
-print(subprocess.run([sys.argv[2]], env=env, capture_output=True, text=True).stdout)' "$spec" "$script_dir/lane-verdicts.py")
-check "it then says no suite's paths matched, though every filter did" \
-  "$(contains "$got" '^envoy-go-race: not selected: its paths did not match$')"
+spec = json.loads(sys.argv[1])
+env = dict(os.environ, GITHUB_EVENT_NAME=sys.argv[2], **spec["env"])
+print(subprocess.run([sys.argv[3]], env=env, capture_output=True, text=True).stdout)
+print(subprocess.run([sys.argv[3], "--decided"], env=env, capture_output=True, text=True).stdout, file=sys.stderr)
+' "$spec" "$event" "$script_dir/lane-verdicts.py" >"$work/said" 2>"$work/decided"
+  sort "$work/decided" | grep -v '^$'
+}
+# said_last: what the last verdicts_of call printed in full.
+said_last() { cat "$work/said"; }
+# gated_outputs <outputs>: the gated outputs' lines of an outputs text.
+gated_outputs() { grep -E "^($(IFS='|'; echo "${held[*]}"))=" <<<"$1" | sort; }
+
+echo "case: the statement's decisions are the outputs on each shape of run"
+check "a pull request with no label" \
+  "$(is "$(verdicts_of "$repo/.github/workflows/ci.yaml" pull_request)" "$(gated_outputs "$(outputs --event pull_request)")")"
+check "  and it says each one is held back and that the merge queue runs it" \
+  "$(contains "$(said_last)" "^envoy-go-race: does not run on this head: its paths matched, the pull request carries neither full-ci nor lane:envoy_go_race, so changes holds it back; the merge queue runs it")"
+check "  and writes no annotation, which ci-ok's notice already is" "$(is "$(contains "$(said_last)" '::')" false)"
+check "a pull request with lane:envoy_go_race" \
+  "$(is "$(verdicts_of "$repo/.github/workflows/ci.yaml" pull_request --label lane:envoy_go_race)" "$(gated_outputs "$(outputs --event pull_request --label lane:envoy_go_race)")")"
+check "  and it says the race suite runs on this head under its label" \
+  "$(contains "$(said_last)" '^envoy-go-race: runs on this head: its paths matched and the pull request carries lane:envoy_go_race$')"
+check "a pull request with full-ci" \
+  "$(is "$(verdicts_of "$repo/.github/workflows/ci.yaml" pull_request --label full-ci)" "$(gated_outputs "$(outputs --event pull_request --label full-ci)")")"
+check "a merge group" \
+  "$(is "$(verdicts_of "$repo/.github/workflows/ci.yaml" merge_group)" "$(gated_outputs "$(outputs --event merge_group)")")"
+check "  and it says the race suite runs there" "$(contains "$(said_last)" '^envoy-go-race: runs on this merge_group run: its paths matched$')"
+check "a pull request whose filters say no" \
+  "$(is "$(verdicts_of "$repo/.github/workflows/ci.yaml" pull_request --verdicts false)" "$(gated_outputs "$(outputs --event pull_request --verdicts false)")")"
+check "  and it says none is selected" "$(contains "$(said_last)" '^envoy-go-race: not selected: its paths did not match$')"
+
+echo "case: a statement step handed another step's outputs decides what the outputs do not, and the comparison fails"
+broken=$(copy_with "$work/statement-wrong-step" ci.yaml \
+  'FILTER: ${{ toJSON(steps.filter.outputs) }}' 'FILTER: ${{ toJSON(steps.scope.outputs) }}')
+check "the decisions then differ from the outputs under lane:envoy_go_race" \
+  "$(is "$([ "$(verdicts_of "$broken" pull_request --label lane:envoy_go_race)" != \
+    "$(gated_outputs "$(outputs --event pull_request --label lane:envoy_go_race)")" ] && echo differ)" differ)"
+check "  and the line it prints says the race suite's paths did not match" \
+  "$(contains "$(said_last)" '^envoy-go-race: not selected: its paths did not match$')"
 
 echo "case: an output whose event term is broken stays in the set and fails the merge-group case"
 broken=$(copy_with "$work/no-event" ci.yaml \
@@ -772,4 +710,4 @@ broken=$(copy_with "$work/no-fall-open" ci.yaml " || steps.generate.outputs.ever
 got=$(fallen "$broken" --event merge_group --steps test)
 check "none of them runs" "$(is "$(running "$got")" "")"
 
-summary "ci.yaml's changes outputs turn on what a change to a slow suite's own package, full-ci, the lane labels and a dispatch's ref and diff name, its filter generation is measured against each diff's base, its cancel key cancels only a branch's older dispatch, and the test job's steps run on what their filters name"
+summary "ci.yaml's changes outputs turn on what full-ci, the lane labels and a dispatch's ref and diff name, the statement step says what decided each slow suite, its filter generation is measured against each diff's base, its cancel key cancels only a branch's older dispatch, and the test job's steps run on what their filters name"

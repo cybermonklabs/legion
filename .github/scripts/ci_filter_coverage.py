@@ -988,17 +988,6 @@ GENERATED_INPUT = "${{ runner.temp }}/ci-filters.yaml"
 GENERATED_FILE = "the generated filters (check-ci-filters.sh generate)"
 GENERATE_SCRIPT = ".github/scripts/ci-filters-generate.sh"
 GENERATE_RUN = f'{GENERATE_SCRIPT} "$RUNNER_TEMP/ci-filters.yaml"'
-# The changes job's second paths filter, of each slow suite's own packages: OWN_SCRIPT writes it from
-# .github/lane-packages.yaml in the step before it (OWN_RUN), every output it names is a table entry's
-# `output`, and each slow suite's output reads its verdict ahead of the label terms
-# (.github/ci-notes/ci.md#a-change-to-a-slow-suites-own-package-runs-it-on-its-pull-request).
-# It is computed by no rule here on purpose: ci-ok's lane check holds every run to the same table
-# through its own reading, so a fault of this filter or of this engine fails ci-ok rather than
-# agreeing with itself.
-OWN_INPUT = "${{ runner.temp }}/lane-packages.yaml"
-OWN_SCRIPT = ".github/scripts/lane_packages.py"
-OWN_RUN = f'{OWN_SCRIPT} filters "$RUNNER_TEMP/lane-packages.yaml"'
-OWN_TABLE = ".github/lane-packages.yaml"
 # The first line of a filters file GENERATE_SCRIPT wrote because the computation failed: every
 # filter `'**'`, so every job runs. A reader of the file (check-ts-filters.sh,
 # check-image-trigger-paths.sh) refuses one, since it holds nothing to check a filter against.
@@ -1017,21 +1006,6 @@ def reads_generated_file(step: dict) -> bool:
     no newline and no colon, and as inline YAML otherwise (src/main.ts, isPathInput); the
     expression evaluates to a path with neither, so it is the one form admitted."""
     return (step.get("with") or {}).get("filters") == GENERATED_INPUT
-
-
-def reads_own_file(step: dict) -> bool:
-    """Whether a paths-filter step hands the action exactly OWN_INPUT, the own-packages filter."""
-    return (step.get("with") or {}).get("filters") == OWN_INPUT
-
-
-def own_outputs() -> set:
-    """The outputs OWN_TABLE names, which are the filters OWN_SCRIPT writes; empty when the table
-    cannot be read, which check_output_steps then refuses."""
-    try:
-        table = yaml.safe_load(Path(OWN_TABLE).read_text()) or {}
-        return {str((entry or {}).get("output")) for entry in (table.get("jobs") or {}).values()}
-    except (OSError, yaml.YAMLError, AttributeError):
-        return set()
 
 
 def changes_quantifier(document: dict, problems: list[Annotation]) -> str:
@@ -1067,31 +1041,20 @@ def check_filter_inputs(workflows: dict, problems: list[Annotation]) -> None:
     action exactly GENERATED_INPUT, and the job that holds it writes that file first, in a step
     whose run: is exactly GENERATE_RUN. Every filter is computed into that file, so a filter
     written into a workflow's own text, or a file nothing wrote, would gate its job on patterns no
-    rule here computed, and nothing would say so. The one other input admitted is OWN_INPUT, in
-    the changes job of WORKFLOW alone, after a step whose run: is exactly OWN_RUN: ci-ok's lane
-    check reads its table on every run, so that filter is held there rather than here."""
+    rule here computed, and nothing would say so."""
     for path, document in workflows.items():
         jobs = document.get("jobs") if isinstance(document, dict) else None
         for job_id, job in (jobs if isinstance(jobs, dict) else {}).items():
             job = job if isinstance(job, dict) else {}
             steps = [s for s in job.get("steps") or [] if isinstance(s, dict)]
             for step in filter_input_steps(job):
-                before = steps[:steps.index(step)]
-                if reads_own_file(step):
-                    if path != WORKFLOW or job_id != "changes":
-                        problems.append(error(path, f"the paths-filter step {step_label(step)} of job {job_id} reads "
-                                                    f"{OWN_INPUT}, which only {WORKFLOW}'s changes job writes and reads"))
-                    elif not any(str(s.get("run", "")).strip() == OWN_RUN for s in before):
-                        problems.append(error(path, f"the paths-filter step {step_label(step)} of job {job_id} reads "
-                                                    f"{OWN_INPUT}, and no step before it runs `{OWN_RUN}`, which "
-                                                    f"writes that file, so the step reads a file nothing wrote"))
-                    continue
                 if not reads_generated_file(step):
                     problems.append(error(path, f"the paths-filter step {step_label(step)} of job {job_id} passes a "
                                                 f"`filters` input that is not exactly {GENERATED_INPUT}; every filter is "
                                                 f"computed into that file, so one declared anywhere else is computed by "
                                                 f"no rule of this check and gates its job on whatever it says, unread"))
                     continue
+                before = steps[:steps.index(step)]
                 if not any(str(s.get("run", "")).strip() == GENERATE_RUN for s in before):
                     problems.append(error(path, f"the paths-filter step {step_label(step)} of job {job_id} reads "
                                                 f"{GENERATED_INPUT}, and no step before it runs `{GENERATE_RUN}`, which "
@@ -1152,7 +1115,6 @@ def check_output_steps(document: dict, filters: dict, problems: list[Annotation]
     steps = job.get("steps") or []
     ids = [str(s.get("id", "")) for s in steps if s.get("id")]
     filter_steps = {str(s.get("id", "")): s for s in filter_input_steps(job)}
-    own = own_outputs() if any(reads_own_file(s) for s in filter_steps.values()) else set()
     if job and (SCOPE_STEP_ID not in ids or SCOPE_STEP_ID in filter_steps):
         problems.append(error(WORKFLOW, f"the changes job has no step of id {SCOPE_STEP_ID} that writes "
                                         f"{SCOPE_OUTPUT}, the every-job term `{EVERY_JOB_TERM}` every output but "
@@ -1249,11 +1211,6 @@ def check_output_steps(document: dict, filters: dict, problems: list[Annotation]
                                                 f"steps.{step_id}.outputs.{name}, and {GENERATED_FILE} hold no filter "
                                                 f"{name}, since no file of .github/ci-gates declares one, so the output "
                                                 f"is empty on every run"))
-            elif reads_own_file(filter_steps[step_id]) and name not in own:
-                problems.append(error(WORKFLOW, f"the changes job's output {output} reads "
-                                                f"steps.{step_id}.outputs.{name}, and {OWN_TABLE} names no output "
-                                                f"{name}, so {OWN_SCRIPT} writes no such filter and the output's own "
-                                                f"term is false on every run"))
 
 
 GATE_REF = re.compile(r"needs\.changes\.outputs\.([A-Za-z0-9_-]+)")

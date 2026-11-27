@@ -734,27 +734,6 @@ run_check "$root"
 check "a widening term reading the paths-filter step is refused" "$(is "$status" 1)"
 check "  as an output this check cannot read" \
   "$(contains "$out" 'gated on needs.changes.outputs.gated, which is not a dorny/paths-filter filter this check can read')"
-# ci.yaml's slow suites read their own-packages filter, a second paths-filter step of the changes
-# job, in a widening disjunct: it hands the job 'true' or falls through, so the filter below still
-# decides, and the build's coverage is read off that filter as before.
-root=$(fixture widening-another-filter-step)
-gate_build_job "$root" "$all_inputs"
-python3 - "$root/.github/workflows/image.yaml" <<'PY'
-import sys
-path = sys.argv[1]
-text = open(path).read()
-step = """      - uses: dorny/paths-filter@v3
-        id: filter
-"""
-assert text.count(step) == 1, "the fixture holds no one paths-filter step to copy"
-text = text.replace(step, step.replace("id: filter", "id: own") + step, 1)
-plain = "      gated: ${{ steps.filter.outputs.gated }}\n"
-assert text.count(plain) == 1, "the fixture's output is not the plain shape"
-open(path, "w").write(text.replace(plain, "      gated: ${{ steps.own.outputs.gated == 'true' && 'true' || steps.filter.outputs.gated }}\n"))
-PY
-run_check "$root"
-check "a widening term reading another paths-filter step passes" "$(is "$status" 0)"
-check "  and its filter still decides the build" "$(contains "$out" 'jobs.docker.if (jobs.changes filter gated)')"
 
 echo "case: a gate reaches the build however it is written"
 # gate_probe <root> <docker job header> [extra job yaml]: a changes job exposing img (covers

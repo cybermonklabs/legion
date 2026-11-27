@@ -297,10 +297,6 @@ jobs:
         if: inputs.changes-result != 'success' || inputs.matched-filters == 'all' || contains(inputs.matched-filters, '"ci_ok_test"')
         run: .github/scripts/harness-pool.sh start .github/scripts/ci-ok.test.sh .github/scripts/ci-ok.test.sh
 
-      - name: Test the slow suites' own packages and ci-ok's lane check
-        if: inputs.changes-result != 'success' || inputs.matched-filters == 'all' || contains(inputs.matched-filters, '"lane_packages_test"')
-        run: .github/scripts/harness-pool.sh start .github/scripts/lane-packages.test.sh .github/scripts/lane-packages.test.sh
-
       - name: Test ci-ok's report and the check-run post (a stand-in gh)
         if: inputs.changes-result != 'success' || inputs.matched-filters == 'all' || contains(inputs.matched-filters, '"ci_ok_report_test"')
         run: .github/scripts/harness-pool.sh start .github/scripts/ci-ok-report.test.sh .github/scripts/ci-ok-report.test.sh
@@ -324,10 +320,6 @@ jobs:
       - name: Test the main bypass check's decision
         if: inputs.changes-result != 'success' || inputs.matched-filters == 'all' || contains(inputs.matched-filters, '"main_bypass_check_test"')
         run: .github/scripts/harness-pool.sh start .github/scripts/main-bypass-check.test.sh .github/scripts/main-bypass-check.test.sh
-
-      - name: Test the check that names open pull request heads no workflow ran and queued entries that conflict with main (a fixture git origin; a stand-in gh)
-        if: inputs.changes-result != 'success' || inputs.matched-filters == 'all' || contains(inputs.matched-filters, '"heads_without_runs_test"')
-        run: .github/scripts/harness-pool.sh start .github/scripts/heads-without-runs.test.sh .github/scripts/heads-without-runs.test.sh
 
       # The base envoy-go-build's edited-migrations check compares a run's tree with, per event,
       # over fixture remotes cloned one commit deep as actions/checkout leaves a run's tree.
