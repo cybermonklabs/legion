@@ -14,9 +14,11 @@ import (
 )
 
 // echoedToken is an installation token's form short enough for a login's 39 characters, as
-// whatever answers in GitHub's place can write a run of the token the read carried. It has a
-// login's shape, so only the token-form test refuses it.
-const echoedToken = "ghs_" + "pv7q2RDXd58e1bq4"
+// whatever answers in GitHub's place can write a run of the token the read carried. It holds
+// eyJhbGci, the start of every JWS, the marker the redaction gate reads its evidence by: the
+// credential such an answer echoes here is the App's JWT the list carried. It is a login's
+// length and holds a login's characters, so only the token-form check refuses it.
+const echoedToken = "ghs_" + "eyJhbGcipv7q2d58"
 
 // A reading's line names GitHub's words from GET /app/installations only in the shape GitHub gives
 // them, and whatever answers in GitHub's place can write the JWT the list carried there: an owner
