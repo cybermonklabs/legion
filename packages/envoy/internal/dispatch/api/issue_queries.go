@@ -1246,8 +1246,9 @@ var issueRowStatement = issueRowSelect(`select $1::text as key`, ``, `i.key = $1
 var issueRowsStatement = issueRowSelect(`select unnest($1::text[]) as key`, `,
 		       `+issueRowLinksColumn, `i.key = any($1::text[])`)
 
-// issueRowLinksColumn is an issue's external links as one JSON array, in the order
-// issueExternalLinksStatement reads them, '[]' for none.
+// issueRowLinksColumn is the external links of the issue aliased `i` as one JSON array, in the
+// order issueExternalLinksStatement reads them, '[]' for none: the column issueRowsStatement,
+// issueChildrenStatement and the architecture tree's treeIssuesQuery each read them by.
 const issueRowLinksColumn = `coalesce((select json_agg(json_build_object('url', l.url, 'kind', l.kind) order by l.url)
 		                 from issue_external_links l where l.issue_key = i.key), '[]')`
 
@@ -1425,8 +1426,7 @@ var issueChildrenStatement = `
 			group by s.root
 		)
 		select i.key, i.title, i.status, r.done, r.total, r.active_at,
-		       coalesce((select json_agg(json_build_object('url', l.url, 'kind', l.kind) order by l.url)
-		                 from issue_external_links l where l.issue_key = i.key), '[]'),
+		       ` + issueRowLinksColumn + `,
 		       blockers.keys,
 		       ` + issueClaimColumns + `
 		from issues i join rollup r on r.root = i.key

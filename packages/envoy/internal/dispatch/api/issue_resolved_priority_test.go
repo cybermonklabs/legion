@@ -16,9 +16,7 @@
 // The plan's decision 20 builds J1's clause that a reader who cannot see the project of the issue
 // a priority comes from gets none, and with it the conditional rows of R2, R4 and R5, only where
 // an issue read calls access.Resolve or access.VisibleProjectsSQL, INFRA-3862's read rule. No issue
-// read calls either on this change's base (`git grep -n -e 'access.Resolve' -e VisibleProjectsSQL
-// -- packages/envoy/internal/dispatch/api ':!*_test.go'` finds nothing), so this file holds none of
-// those rows: whichever of this change and that read rule merges second adds them.
+// read calls either, so this file holds none of those rows.
 //
 // The tests need DISPATCH_TEST_DATABASE_URL, as every test of this package that opens a store.
 package api
@@ -124,16 +122,7 @@ func seedResolvedPriorities(t *testing.T, handler http.Handler, project, other s
 	seed := resolvedSeed{issueNames: issueNames{}}
 	file := func(name, in, parent string, priority *int) string {
 		t.Helper()
-		body := map[string]any{"project": in, "title": "The seed's " + name, "force": true}
-		if parent != "" {
-			body["parent"] = parent
-		}
-		if priority != nil {
-			body["priority"] = *priority
-		}
-		key := createdIssue(t, "file the seed's "+name, dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", body, "alice")).Key
-		seed.issueNames[key] = name
-		return key
+		return fileNamed(t, handler, seed.issueNames, name, in, parent, priority)
 	}
 	seed.a = file("A", project, "", new(0))
 	seed.c = file("C", project, seed.a, nil)
@@ -368,7 +357,7 @@ var resolvedShapeExceptions = map[string]struct {
 const prioritiesGraphPath = "/api/v1/priorities"
 
 // resolvedShapes are the response shapes of the plan's decision 3: each carries an issue's own
-// priority on main, and the inventory fails when it finds fewer.
+// priority, and the inventory fails when it finds fewer.
 var resolvedShapes = []string{
 	"ArchitectureTreeIssue", "ClaimedIssue", "DeliveryPR", "InboxRow", "Issue", "IssueDetails",
 	"IssueSummary", "LegionBoardCard", "MyReplyRow", "OpenAsk",
@@ -524,7 +513,7 @@ func TestEveryIssueRowShapeCarriesTheResolvedPriority(t *testing.T) {
 		}
 		for _, shape := range resolvedShapes {
 			if !slices.Contains(found, shape) {
-				t.Errorf("%s: no response shape %s carries a priority, and the plan's decision 3 names it: the inventory found %v", documentName, shape, found)
+				t.Errorf("%s: no response shape %s carries a priority, and resolvedShapes names it: the inventory found %v", documentName, shape, found)
 			}
 		}
 	}
@@ -1290,35 +1279,6 @@ var resolvedP0Filters = map[string]string{
 	"POST /api/v1/me/inbox/read":    "its priority is a filter of the Inbox rows the mark-all reaches, and it takes no parent",
 }
 
-// priorityOrParentOperations answers each operation of document, as "METHOD path", whose request
-// body, under any of its media types, has a property named priority or parent.
-func priorityOrParentOperations(t *testing.T, name string, document map[string]any) []string {
-	t.Helper()
-	components, _ := document["components"].(map[string]any)
-	schemas, _ := components["schemas"].(map[string]any)
-	paths, _ := document["paths"].(map[string]any)
-	var found []string
-	for path, item := range paths {
-		operations, _ := item.(map[string]any)
-		for _, method := range openAPIMethods {
-			operation, _ := operations[method].(map[string]any)
-			body, _ := operation["requestBody"].(map[string]any)
-			if _, referenced := body["$ref"]; referenced {
-				t.Fatalf("%s: %s %s's request body is a reference, which this test does not follow", name, strings.ToUpper(method), path)
-			}
-			content, _ := body["content"].(map[string]any)
-			for _, media := range content {
-				schema, _ := media.(map[string]any)
-				if takesAnyProperty(t, name, schema["schema"], schemas, map[string]bool{}, "priority", "parent") {
-					found = append(found, strings.ToUpper(method)+" "+path)
-					break
-				}
-			}
-		}
-	}
-	return found
-}
-
 // TestEveryOperationThatTakesAPriorityOrAParentRunsTheP0Rows is the inventory of J2's last clause
 // (R10), beside INFRA-5637's TestEveryOperationThatTakesAnIssuePriorityNeedsP0ForZero. It reads
 // every committed dispatch-openapi*.json and takes each operation whose request body has a property
@@ -1333,7 +1293,7 @@ func TestEveryOperationThatTakesAPriorityOrAParentRunsTheP0Rows(t *testing.T) {
 	t.Parallel()
 	found := map[string][]string{}
 	for name, document := range committedOpenAPIDocuments(t) {
-		for _, operation := range priorityOrParentOperations(t, name, document) {
+		for _, operation := range operationsTaking(t, name, document, "priority", "parent") {
 			found[operation] = append(found[operation], name)
 		}
 	}

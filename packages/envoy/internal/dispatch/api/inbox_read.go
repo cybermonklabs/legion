@@ -54,7 +54,7 @@ import (
 //
 // The rows are matched first, as myRepliesCount matches them, so the planner reads them through
 // the state's own partial index rather than misjudging the stored flag; the narrowing these routes
-// add is applied over that set, where the issue join costs one lookup per matched row.
+// add is applied over that set.
 //
 // The match reads the index and nothing else - the thread id it answers and the mark it narrows by
 // are both columns the state's partial index holds - and each matched row's owner is then read by
@@ -86,10 +86,9 @@ func inboxReplyMatchQuery(source, mark string) string {
 	), ` + refs.IssuePriorityTerms + `
 	select o.thread_id::text, o.issue_key, o.artifact_id::text, o.version
 	from owned o
-	left join issues i on i.key = o.issue_key
-	` + refs.IssuePriorityJoin + `
-	where $5::int[] is null or priority_resolved.priority = any($5::int[])
-	   or ($6::boolean and priority_resolved.priority is null)
+	left join priority_resolved on priority_resolved.key = o.issue_key
+	where $5::int[] is null or ` + refs.IssuePriorityResolved + ` = any($5::int[])
+	   or ($6::boolean and ` + refs.IssuePriorityResolved + ` is null)
 	order by o.thread_id`
 }
 

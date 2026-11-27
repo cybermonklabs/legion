@@ -318,9 +318,9 @@ func committedOpenAPIDocuments(t *testing.T) map[string]map[string]any {
 	return documents
 }
 
-// priorityOperations answers each operation of document, as "METHOD path", whose request body,
-// under any of its media types, has a property named priority.
-func priorityOperations(t *testing.T, name string, document map[string]any) []string {
+// operationsTaking answers each operation of document, as "METHOD path", whose request body, under
+// any of its media types, has a property named one of names.
+func operationsTaking(t *testing.T, name string, document map[string]any, names ...string) []string {
 	t.Helper()
 	components, _ := document["components"].(map[string]any)
 	schemas, _ := components["schemas"].(map[string]any)
@@ -337,7 +337,7 @@ func priorityOperations(t *testing.T, name string, document map[string]any) []st
 			content, _ := body["content"].(map[string]any)
 			for _, media := range content {
 				schema, _ := media.(map[string]any)
-				if takesAnyProperty(t, name, schema["schema"], schemas, map[string]bool{}, "priority") {
+				if takesAnyProperty(t, name, schema["schema"], schemas, map[string]bool{}, names...) {
 					found = append(found, strings.ToUpper(method)+" "+path)
 					break
 				}
@@ -350,8 +350,8 @@ func priorityOperations(t *testing.T, name string, document map[string]any) []st
 // takesAnyProperty reports whether node, a schema of document name, has a property named one of
 // names: its own, a nested object's, an array's items', or one a $ref, allOf, anyOf or oneOf
 // reaches. seen holds the component schemas already walked, so a schema that refers to itself
-// ends. It is the one walk of both inventories: G1's for priority (priorityOperations), and
-// INFRA-5793's for priority or parent (priorityOrParentOperations).
+// ends. It is the one walk of both inventories (operationsTaking): G1's for priority, and
+// INFRA-5793's for priority or parent.
 func takesAnyProperty(t *testing.T, name string, node any, schemas map[string]any, seen map[string]bool, names ...string) bool {
 	t.Helper()
 	schema, ok := node.(map[string]any)
@@ -415,7 +415,7 @@ func TestEveryOperationThatTakesAnIssuePriorityNeedsP0ForZero(t *testing.T) {
 	t.Parallel()
 	found := map[string][]string{}
 	for name, document := range committedOpenAPIDocuments(t) {
-		for _, operation := range priorityOperations(t, name, document) {
+		for _, operation := range operationsTaking(t, name, document, "priority") {
 			found[operation] = append(found[operation], name)
 		}
 	}

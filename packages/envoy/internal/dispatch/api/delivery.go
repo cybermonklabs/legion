@@ -549,8 +549,8 @@ func (p deliveryPopulation) derive(settings delivery.DeliverySettings) deliveryD
 			if issue, found := p.issues[*pr.IssueKey]; found {
 				view.IssueTitle = &issue.title
 				view.Components = issue.components
-				if issue.priority != nil {
-					label := "P" + strconv.Itoa(*issue.priority)
+				if issue.resolvedPriority != nil {
+					label := "P" + strconv.Itoa(*issue.resolvedPriority)
 					view.Priority, view.PriorityFrom = &label, issue.priorityFrom
 				}
 			}
@@ -859,11 +859,11 @@ func (s *server) firstToWarn(ctx context.Context, key warnedProductionRun, jobNa
 // because it is what the priority facet labels, selects and counts a pull request by: work under
 // a P0 issue is P0 work.
 type deliveryIssue struct {
-	project      string
-	title        string
-	priority     *int
-	priorityFrom *string
-	components   []string
+	project          string
+	title            string
+	resolvedPriority *int
+	priorityFrom     *string
+	components       []string
 }
 
 // deliveryIssueFactsQuery is the pull-request timeline's read of the issues a delivery names,
@@ -894,7 +894,7 @@ func (s *server) deliveryIssueFacts(ctx context.Context, keys []string) (map[str
 		var key string
 		var issue deliveryIssue
 		var ids []string
-		if err := rows.Scan(&key, &issue.project, &issue.title, &issue.priority, &issue.priorityFrom, &ids); err != nil {
+		if err := rows.Scan(&key, &issue.project, &issue.title, &issue.resolvedPriority, &issue.priorityFrom, &ids); err != nil {
 			return nil, err
 		}
 		issue.components = make([]string, len(ids))

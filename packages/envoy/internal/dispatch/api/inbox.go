@@ -136,7 +136,7 @@ func (s *server) listInbox(w http.ResponseWriter, r *http.Request) {
 		  and ($2 = ''
 		       or ($2 = 'unassigned' and `+askedOfPersonExpression+` is null)
 		       or ($2 = 'login' and `+askedOfPersonExpression+` = $3))
-		order by priority_resolved.priority asc nulls last, waiting_on desc,
+		order by `+refs.IssuePriorityResolved+` asc nulls last, waiting_on desc,
 		         coalesce(lr.created_at, a.created_at) desc, a.id desc
 	`, project, assigneeMode, assigneeLogin, model.CanonicalLogin(caller.ID))
 	if err != nil {

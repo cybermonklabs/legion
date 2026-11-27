@@ -167,40 +167,29 @@ func readIssuePriorityStanding(ctx context.Context, q queryer, key string) (issu
 // one and else what key resolves to; so each of them goes from not 0 to 0 exactly when key does,
 // and an issue under key with a priority of its own takes nothing from key. After the write, key
 // resolves to its own priority where it has one, else to what its parent after the write resolves
-// to (the parent the write names, or the one it has where the write names none), read through q
-// by the walk every issue read resolves a priority by, else to none: a root with no priority. So a
-// move of an issue that keeps a priority of its own, and a move that leaves what key resolves to
-// at 0, refuse nothing, and a detach never does (movesOrClears). writeIssue asks it under the
-// write's locks, where the dependency lock that every write of a priority or a parent takes holds
-// the chain above key still, right after refuseP0WithoutScope; refuseP0BeforeSettlement asks it on
-// the pool before a close settles the issue's documents.
-func refuseResolvedP0WithoutScope(ctx context.Context, q queryer, credential *model.Credential, key string, write p0Write, before issuePriorityStanding) error {
+// to (the parent the write names, or the one it has where the write names none), else to none: a
+// root with no priority (passedDownAfter, the rule movesPassedDownPriority reads too). So a move of
+// an issue that keeps a priority of its own, and a move that leaves what key resolves to at 0,
+// refuse nothing, and a detach never does (movesOrClears).
+//
+// That parent's priority is read through q by the walk every issue read resolves a priority by,
+// unless above holds it already, and above is nil where the caller has read none. writeIssue asks
+// it under the write's locks, where the dependency lock that every write of a priority or a parent
+// takes holds the chain above key still, right after refuseP0WithoutScope, with above as
+// movesPassedDownPriority left it under that lock, so the write reads the parent once;
+// refuseP0BeforeSettlement asks it on the pool before a close settles the issue's documents.
+func refuseResolvedP0WithoutScope(ctx context.Context, q queryer, credential *model.Credential, key string, write p0Write, before issuePriorityStanding, above *parentStanding) error {
 	if !write.movesOrClears() || isPriorityZero(before.resolved) || credential.Holds(model.ScopeP0) {
 		return nil
 	}
+	if above == nil {
+		above = &parentStanding{}
+	}
 	// from is the issue the priority after the write comes from, which a refused clear names: a
 	// clear leaves key no priority of its own, so it is the parent's or the one the parent takes.
-	after, from := before.own, ""
-	if write.namesPriority {
-		after = write.priority
-	}
-	parent := before.parent
-	if write.namesParent {
-		parent = write.parent
-	}
-	if after == nil && parent != nil {
-		above, found, err := readIssuePriorityStanding(ctx, q, *parent)
-		if err != nil {
-			return err
-		}
-		// A parent that no issue holds resolves no priority: the write's own read of its parent
-		// refuses it (validateIssueParent).
-		if found {
-			after, from = above.resolved, *parent
-			if above.from != nil {
-				from = *above.from
-			}
-		}
+	after, from, err := passedDownAfter(ctx, q, key, write, before, above)
+	if err != nil {
+		return err
 	}
 	if !isPriorityZero(after) {
 		return nil
@@ -208,7 +197,7 @@ func refuseResolvedP0WithoutScope(ctx context.Context, q queryer, credential *mo
 	if write.namesParent && write.parent != nil {
 		return missingScopeError(model.ScopeP0, p0MoveRefusal(key, *write.parent))
 	}
-	return missingScopeError(model.ScopeP0, p0ClearRefusal(key, from))
+	return missingScopeError(model.ScopeP0, p0ClearRefusal(key, *from))
 }
 
 // refuseP0BeforeSettlement is the p0 checks of a PATCH that closes the issue key, asked before the
@@ -237,7 +226,7 @@ func (s *server) refuseP0BeforeSettlement(ctx context.Context, credential *model
 	if err := refuseP0WithoutScope(credential, write.priority, stored.own); err != nil {
 		return err
 	}
-	return refuseResolvedP0WithoutScope(ctx, pool, credential, key, write, stored)
+	return refuseResolvedP0WithoutScope(ctx, pool, credential, key, write, stored, nil)
 }
 
 // refuseNewChildP0WithoutScope is the one rule of a new issue with no priority of its own under

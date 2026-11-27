@@ -115,11 +115,12 @@ export const issueFields = {
    *  on its parent chain that has one, in any project and within 32 links, else null. Dispatch
    *  orders, filters and counts issues by it, and a write that makes it P0 can need the `p0`
    *  scope (`DISPATCH_SCOPES` says when). The server writes it on every issue read and on the
-   *  issue of every `issue.*` event, null included; it is absent from a Dispatch older than that
-   *  walk, whose readers take the issue's own `priority` instead. */
+   *  issue of every `issue.*` event, null included; it is absent from a Dispatch release that
+   *  sends no `resolved_priority`, whose readers take the issue's own `priority` instead. */
   resolved_priority: IssuePrioritySchema.nullable().optional(),
   /** The key of the issue `resolved_priority` comes from, of any project; null where the priority
-   *  is the issue's own or there is none. Absent from a Dispatch older than that walk. */
+   *  is the issue's own or there is none. Absent from a Dispatch release that sends no
+   *  `resolved_priority`. */
   priority_from: z.string().nullable().optional(),
   rank: z.string(),
   labels: z.array(z.string()),

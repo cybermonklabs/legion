@@ -169,8 +169,7 @@ func TestAnInheritedP0ChangeReachesTheViewsLiveFromQuietEvents(t *testing.T) {
 			patchHubIssue(t, rig.handler, seed.m0, map[string]any{"priority": nil})
 		}, []p0Want{{seed.m0, false}, {seed.m0c, false}}},
 	} {
-		point := pause.at(recomputeBegin(""))
-		t.Cleanup(point.proceed)
+		point := holdRecomputes(t, pause)
 		step.write()
 		fresh := freshUnownedP0(t, rig.handler, held["m"])
 		for _, want := range step.wants {
@@ -229,9 +228,7 @@ func TestAPriorityChangeWithNoEventShowsAtTheNextFreshRead(t *testing.T) {
 	conn.snapshot(t, "t")
 	rig.settle(t)
 
-	if _, err := rig.database.Pool.Exec(t.Context(), `update issues set priority = 0 where key = $1`, seed.r2); err != nil {
-		t.Fatalf("set R2's priority to 0 by direct SQL: %v", err)
-	}
+	setOwnPriority(t, rig, seed.r2, new(0))
 	later := newFakeLiveConn()
 	rig.hub.Subscribe(later, subscribeFrame("m", presetView(deliveryLiveMeasures, 28, "")))
 	snapshot := later.snapshot(t, "m")
@@ -320,15 +317,15 @@ func holdRecomputes(t *testing.T, pause *notePause) *pausePoint {
 	return point
 }
 
-// resolvedPayload is an issue event's payload as this change writes it, cut to what the hub
+// resolvedPayload is an issue event's payload as the server writes it, cut to what the hub
 // reads: the key, the status, the own priority, and resolved_priority and priority_from, each
 // present, null included.
 func resolvedPayload(key, status string, own, resolved *int, from *string) map[string]any {
 	return map[string]any{"key": key, "status": status, "priority": own, "resolved_priority": resolved, "priority_from": from}
 }
 
-// olderPayload is an issue event's payload as a build before this change writes it, cut the same
-// way: no resolved_priority key and no priority_from key.
+// olderPayload is an issue event's payload as a server that writes no resolved_priority writes it,
+// cut the same way: no resolved_priority key and no priority_from key.
 func olderPayload(key, status string, own *int) map[string]any {
 	return map[string]any{"key": key, "status": status, "priority": own}
 }
@@ -419,8 +416,8 @@ func TestTheHubsP0SetFollowsEachEventAndRead(t *testing.T) {
 			seed.require(t, rig, "after the event", seed.child, false)
 		}},
 		{"in, then a payload with no resolved_priority key and its own priority null: in", func(t *testing.T) {
-			// A build before this change edits child, which still has no priority of its own: the
-			// payload cannot say what child resolves to, so the hub keeps what it knew.
+			// A server that writes no resolved_priority edits child, which still has no priority of
+			// its own: the payload cannot say what child resolves to, so the hub keeps what it knew.
 			rig, pause, seed := newP0SetRig(t)
 			seed.require(t, rig, "before the event", seed.child, true)
 			holdRecomputes(t, pause)

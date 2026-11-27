@@ -5,7 +5,7 @@ import type { IssuePriority } from "../../api/types";
  *  every surface that draws a priority hands `issuePriority` all three and none draws the issue's
  *  own value where it works at an inherited one. `resolved_priority` and `priority_from` are
  *  optional because a Dispatch of the release before the one that added them answers neither. */
-export interface PriorityFields {
+interface PriorityFields {
   /** The issue's own priority, null where it sets none; a row that carries none reads as none. */
   readonly priority?: number | null;
   /** The priority the issue works at: its own, else that of the nearest issue above it that has
@@ -39,12 +39,12 @@ function priorityLevel(value: number | null | undefined): IssuePriority | null {
 /**
  * `issue`'s priority as a surface draws it: the one view every surface that shows, sorts,
  * filters, groups or colours by a priority reads, so none reads `resolved_priority` or
- * `priority_from` of a row itself. An own priority is the one the issue works at, from nowhere
- * else, whatever else the row says: Dispatch resolves an issue's own first, and a pick writes the
- * own priority alone (`pickLook`), so a row that holds a new own priority beside the inherited
- * one Dispatch last answered shows the new one. An issue with none of its own works at
- * `resolved_priority`, from `priority_from`; from a Dispatch that answers no `resolved_priority`,
- * at none.
+ * `priority_from` of an issue row itself; Delivery's rows come resolved from the server. An own
+ * priority is the one the issue works at, from nowhere else, whatever else the row says:
+ * Dispatch resolves an issue's own first, and a pick writes the own priority alone (`pickLook`),
+ * so a row that holds a new own priority beside the inherited one Dispatch last answered shows
+ * the new one. An issue with none of its own works at `resolved_priority`, from
+ * `priority_from`; from a Dispatch that answers no `resolved_priority`, at none.
  *
  * It stands here rather than beside the write hook (`useIssuePriority.ts`) because every surface
  * that only draws a priority reads it - the Inbox's row rule among them - and that hook's module

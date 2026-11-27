@@ -350,7 +350,7 @@ func (issue issueEventP0) openP0() (p0, decided bool) {
 		if err := json.Unmarshal(issue.ResolvedPriority, &resolved); err != nil {
 			return false, false
 		}
-		return resolved != nil && *resolved == 0, true
+		return isPriorityZero(resolved), true
 	case issue.Priority != nil:
 		return *issue.Priority == 0, true
 	default:

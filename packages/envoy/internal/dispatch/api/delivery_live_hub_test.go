@@ -1558,13 +1558,7 @@ func TestAnUnownedP0ChangeReachesEveryTimelineAndMeasuresView(t *testing.T) {
 	upsertPR(t, rig.database, hubPR(1, rig.clock.Now().Add(-3*time.Hour)))
 	seed := createHubIssue(t, rig.handler, map[string]any{"title": "Raised later", "priority": 1})
 	conn := newFakeLiveConn()
-	kinds := map[string]string{"t": deliveryLiveTimeline, "m": deliveryLiveMeasures}
-	rig.hub.Subscribe(conn, subscribeFrame("t", presetView(deliveryLiveTimeline, 7, "")))
-	rig.hub.Subscribe(conn, subscribeFrame("m", presetView(deliveryLiveMeasures, 28, "")))
-	held := map[string]json.RawMessage{}
-	for sub, snapshot := range conn.firstSnapshots(t, "t", "m") {
-		held[sub] = snapshot.Body
-	}
+	held, kinds := subscribeDeliveryViews(t, rig, conn)
 	var created, child string
 	unownedNow := func(after string, want bool) {
 		t.Helper()

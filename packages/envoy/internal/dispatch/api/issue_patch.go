@@ -414,8 +414,12 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 	// write that moves nothing the issue passes down reads and locks none of them, so a writer busy
 	// on an issue under it does not hold it up (movesPassedDownPriority).
 	var inheriting []refs.IssueDescendant
+	// above is the parent the issue has after the write, as movesPassedDownPriority reads it under
+	// the dependency lock, which the p0 check of a move or a clear below judges by rather than read
+	// it a second time (parentStanding).
+	var above parentStanding
 	if priorityProvided || parentProvided {
-		moves, err := movesPassedDownPriority(ctx, tx, key, p0)
+		moves, err := movesPassedDownPriority(ctx, tx, key, p0, &above)
 		if err != nil {
 			return issueWriteResult{}, err
 		}
@@ -486,11 +490,12 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 	// Then the move and the clear: a write that names a parent, or clears the issue's own priority,
 	// and so makes the priority the issue resolves to go from 1 to 3, or none, to 0 makes the issue
 	// and each issue under it that takes its priority from it P0, which needs the scope as well.
-	// It reads the new parent's chain under the dependency lock taken above, which every write of
-	// a priority or a parent takes, so the chain it reads is the one the write commits under.
+	// It judges by the new parent's chain as read under the dependency lock taken above, which
+	// every write of a priority or a parent takes, so the chain it reads is the one the write
+	// commits under.
 	if err := refuseResolvedP0WithoutScope(ctx, tx, call.writer.credential, key, p0, issuePriorityStanding{
 		own: before.Priority, resolved: before.ResolvedPriority, parent: before.Parent,
-	}); err != nil {
+	}, &above); err != nil {
 		return issueWriteResult{}, err
 	}
 	if input.ExpectedSeq != nil && *input.ExpectedSeq != int64(before.LastSeq) {
@@ -1098,19 +1103,27 @@ func passedDownPriority(key string, own, resolved *int, from *string) (*int, *st
 	return resolved, from
 }
 
-// movesPassedDownPriority reports whether write, a write that names the own priority or the
-// parent of the issue key, moves what key passes down (passedDownPriority), read through q before
-// the write. After the write key resolves to its own priority where it has one, else to what its
-// parent after the write passes down, else to none, which is the rule refuseResolvedP0WithoutScope
-// reads too. writeIssue asks it under the dependency lock that every write of a priority or a
-// parent takes, so the priorities and the parents it reads stand until the write commits, and
-// before any owner lock, so that a write which moves nothing under key locks no issue there.
-func movesPassedDownPriority(ctx context.Context, q queryer, key string, write p0Write) (bool, error) {
-	standing, found, err := readIssuePriorityStanding(ctx, q, key)
-	if err != nil || !found {
-		return false, err
-	}
-	priorityBefore, fromBefore := passedDownPriority(key, standing.own, standing.resolved, standing.from)
+// parentStanding is the standing (readIssuePriorityStanding) of key, the parent an issue has after
+// a write, as passedDownAfter read it: key is "" until it has read one, and a parent that no issue
+// holds reads as one with no priority. writeIssue keeps one for its write, so the check whether
+// the write moves what the issue passes down (movesPassedDownPriority) and the check of its move or
+// clear (refuseResolvedP0WithoutScope) read that parent once between them, under the dependency
+// lock that holds the chain above the issue still until the write commits.
+type parentStanding struct {
+	key string
+	issuePriorityStanding
+}
+
+// passedDownAfter is what the issue key passes down (passedDownPriority) after write, a write that
+// names its own priority or its parent, where standing is key as it stands before the write: its
+// own priority after the write, from key, where it has one; else what its parent after the write
+// passes down, the parent the write names or the one key has where the write names none; else
+// none, for a root with no priority. The priority is also the one key resolves to after the
+// write. That parent's standing is above's where above, never nil, holds that parent's already;
+// else passedDownAfter reads it through q, by the walk every issue read resolves a priority by,
+// and keeps it in above. A parent that no issue holds passes down nothing: the write's own read of
+// its parent refuses it (validateIssueParent).
+func passedDownAfter(ctx context.Context, q queryer, key string, write p0Write, standing issuePriorityStanding, above *parentStanding) (*int, *string, error) {
 	own, parent := standing.own, standing.parent
 	if write.namesPriority {
 		own = write.priority
@@ -1118,17 +1131,36 @@ func movesPassedDownPriority(ctx context.Context, q queryer, key string, write p
 	if write.namesParent {
 		parent = write.parent
 	}
-	priorityAfter, fromAfter := passedDownPriority(key, own, nil, nil)
-	if own == nil && parent != nil {
-		above, found, err := readIssuePriorityStanding(ctx, q, *parent)
+	if own != nil || parent == nil {
+		priority, from := passedDownPriority(key, own, nil, nil)
+		return priority, from, nil
+	}
+	if above.key != *parent {
+		read, _, err := readIssuePriorityStanding(ctx, q, *parent)
 		if err != nil {
-			return false, err
+			return nil, nil, err
 		}
-		// A parent that no issue holds passes down nothing: the write's own read of its parent
-		// refuses it (validateIssueParent).
-		if found {
-			priorityAfter, fromAfter = passedDownPriority(*parent, above.own, above.resolved, above.from)
-		}
+		*above = parentStanding{key: *parent, issuePriorityStanding: read}
+	}
+	priority, from := passedDownPriority(*parent, above.own, above.resolved, above.from)
+	return priority, from, nil
+}
+
+// movesPassedDownPriority reports whether write, a write that names the own priority or the
+// parent of the issue key, moves what key passes down (passedDownPriority), read through q before
+// the write, to what it passes down after (passedDownAfter), which keeps in above the parent key
+// has after the write. writeIssue asks it under the dependency lock that every write of a priority
+// or a parent takes, so the priorities and the parents it reads stand until the write commits, and
+// before any owner lock, so that a write which moves nothing under key locks no issue there.
+func movesPassedDownPriority(ctx context.Context, q queryer, key string, write p0Write, above *parentStanding) (bool, error) {
+	standing, found, err := readIssuePriorityStanding(ctx, q, key)
+	if err != nil || !found {
+		return false, err
+	}
+	priorityBefore, fromBefore := passedDownPriority(key, standing.own, standing.resolved, standing.from)
+	priorityAfter, fromAfter, err := passedDownAfter(ctx, q, key, write, standing, above)
+	if err != nil {
+		return false, err
 	}
 	return !intPointersEqual(priorityBefore, priorityAfter) || !stringPointersEqual(fromBefore, fromAfter), nil
 }

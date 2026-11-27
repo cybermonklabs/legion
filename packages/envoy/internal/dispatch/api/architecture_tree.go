@@ -179,8 +179,7 @@ var treeIssuesQuery = `
 		` + issueComponentsTerms + `,
 		` + refs.IssuePriorityTerms + `
 		select i.key, i.title, i.status, i.priority, ` + refs.IssuePriorityColumns + `, i.parent_key, i.updated_at,
-		       coalesce((select json_agg(json_build_object('url', l.url, 'kind', l.kind) order by l.url)
-		                 from issue_external_links l where l.issue_key = i.key), '[]'),
+		       ` + issueRowLinksColumn + `,
 		       ` + issueComponentsColumns + `
 		from issues i
 		` + issueComponentsJoin + `

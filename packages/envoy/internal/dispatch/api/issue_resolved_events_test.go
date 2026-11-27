@@ -15,9 +15,8 @@
 //
 // The plan's decision 20 builds E1's conditional row, a reader who cannot see a project reading
 // an event of it with no inherited priority, only where an issue read calls access.Resolve or
-// access.VisibleProjectsSQL, INFRA-3862's read rule. No issue read calls either on this change's
-// base, so this file holds no such row, as issue_resolved_priority_test.go holds none of R2's, R4's
-// and R5's: whichever of this change and that read rule merges second adds them.
+// access.VisibleProjectsSQL, INFRA-3862's read rule. No issue read calls either, so this file
+// holds no such row, as issue_resolved_priority_test.go holds none of R2's, R4's and R5's.
 //
 // The tests need DISPATCH_TEST_DATABASE_URL, as every test of this package that opens a store.
 package api
@@ -792,23 +791,6 @@ func (s secondWrite) String() string {
 	return fmt.Sprintf("no answer, a lock waiter: %t", s.waiting)
 }
 
-// lockWaitInOwnDatabase is whether a backend of database waits on a lock it has not been granted.
-// The predicate names the test's own database, since the tests beside it take the same lock keys
-// in databases cloned from the same template (docs/testing.md).
-func lockWaitInOwnDatabase(t *testing.T, database *store.Store) bool {
-	t.Helper()
-	var waiting bool
-	if err := database.Pool.QueryRow(context.Background(), `
-		select exists (
-			select 1 from pg_locks
-			where not granted and database = (select oid from pg_database where datname = current_database())
-		)
-	`).Scan(&waiting); err != nil {
-		t.Fatalf("read pg_locks: %v", err)
-	}
-	return waiting
-}
-
 // TestTwoPriorityWritesOnOneTreeEndWithRightEvents (E6): a middle M, at its own P2, under a root
 // R at P1, with a child Mc (none). A person's clear of M's own priority is held once it has read M
 // under M's owner lock (server.afterIssueLoad), and a person's write of R's priority to 0 is sent
@@ -866,7 +848,7 @@ func TestTwoPriorityWritesOnOneTreeEndWithRightEvents(t *testing.T) {
 			return secondWrite{answer: answer}, true
 		default:
 		}
-		waiting := lockWaitInOwnDatabase(t, database)
+		waiting := lockWaiters(t, database) > 0
 		return secondWrite{waiting: waiting}, waiting
 	})
 	if first.answer != nil {

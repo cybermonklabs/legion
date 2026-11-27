@@ -11,6 +11,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // work recomputes g's dirty views and the expired ones, one at a time, and keeps the freshness
@@ -271,15 +272,24 @@ func (h *deliveryHub) read(g *hubGeneration, view *deliveryView, spec deliveryLi
 		g.p0Heard = map[string]bool{}
 	}
 	h.mu.Unlock()
+	// When the position's change was recorded, and the open P0 issues: neither read needs the
+	// other's answer, so they run side by side, each on a connection of its own
+	// (store.ReadSideBySide).
+	reads := make([]func(ctx context.Context) error, 0, 2)
 	if read.seq > 0 {
-		if read.changedAt, err = delivery.ChangeAt(ctx, pool, read.seq); err != nil {
-			return read, err
-		}
+		reads = append(reads, func(ctx context.Context) (err error) {
+			read.changedAt, err = delivery.ChangeAt(ctx, pool, read.seq)
+			return err
+		})
 	}
 	if classes.unownedP0 {
-		if read.p0, err = delivery.OpenP0Keys(ctx, pool); err != nil {
-			return read, err
-		}
+		reads = append(reads, func(ctx context.Context) (err error) {
+			read.p0, err = delivery.OpenP0Keys(ctx, pool)
+			return err
+		})
+	}
+	if err := store.ReadSideBySide(ctx, reads...); err != nil {
+		return read, err
 	}
 	now := h.clock.Now()
 	body, err := classes.read(h, ctx, spec, now, &read)

@@ -691,7 +691,8 @@ export async function issuesCommand(context: CommandContext): Promise<DispatchTo
     status: row.status,
     priority: row.priority,
     // The priority the issue works at and the issue it takes it from, as Dispatch served them: a
-    // Dispatch older than that walk sends neither, and the JSON row then carries neither.
+    // Dispatch release that sends no `resolved_priority` sends no `priority_from` either, and the
+    // JSON row then carries neither.
     resolved_priority: row.resolved_priority,
     priority_from: row.priority_from,
     parent: row.parent,

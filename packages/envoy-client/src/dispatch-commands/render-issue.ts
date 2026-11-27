@@ -283,8 +283,8 @@ export function progressText(progress: IssueProgress | undefined, sep: string): 
  * The priority an issue works at, as every line of the command that prints one writes it:
  * `P0 (from ACME-1)` where the issue has none of its own and takes it from the nearest issue above
  * it that has one (`priority_from`), `P2` where it is the issue's own, and undefined where the
- * issue resolves none. A Dispatch older than that walk sends no `resolved_priority`, and the line
- * then prints the issue's own `priority`, as it did before the server resolved one.
+ * issue resolves none. From a Dispatch release that sends no `resolved_priority`, the line prints
+ * the issue's own `priority`, as it did before the server resolved one.
  */
 export function priorityText(issue: {
   readonly priority: number | null;

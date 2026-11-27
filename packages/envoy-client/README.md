@@ -2004,8 +2004,8 @@ when the write needs `p0`.
 `Priority: P2` for its own, `Priority: P0 (from ACME-1)` where it has none of its own and takes it
 from ACME-1, the nearest issue above it that has one, and no line where it resolves none
 (`priorityText`). The rows of `dispatch issues`, `dispatch open-asks` and `dispatch inbox` print it
-in the same words. A Dispatch older than that walk sends no `resolved_priority`, and each line then
-prints the issue's own priority, as before.
+in the same words. From a Dispatch release that sends no `resolved_priority`, each line prints the
+issue's own priority, as before.
 With `--include-children`, `--unlink-children` or `--include-parent`, `dispatch issue-update`
 sends `POST /api/v1/issues/{key}/status-change` (`DispatchClient.changeIssueStatus`) in place of
 the PATCH. The three flags go with `--status` alone, and with `--reason` beside `done`, which is

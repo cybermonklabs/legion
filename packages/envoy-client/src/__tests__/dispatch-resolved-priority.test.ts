@@ -192,13 +192,10 @@ function inboxRow(id: string, key: string, question: string) {
   };
 }
 
-const requests: string[] = [];
-
 const server = Bun.serve({
   port: 0,
   fetch(request) {
-    const { pathname, search, searchParams } = new URL(request.url);
-    requests.push(`${request.method} ${pathname}${search}`);
+    const { pathname, searchParams } = new URL(request.url);
     if (request.method !== "GET") {
       return Response.json({ error: `unexpected ${request.method} ${pathname}` }, { status: 500 });
     }
@@ -260,7 +257,6 @@ afterAll(() => server.stop(true));
 
 let stateDir = "";
 beforeEach(() => {
-  requests.length = 0;
   stateDir = makeDirectory();
   resetAdviceMemory();
 });

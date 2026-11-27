@@ -765,8 +765,8 @@ func (s *server) listOpenAsks(w http.ResponseWriter, r *http.Request) {
 				a.created_at,
 				greatest(0, floor(extract(epoch from (statement_timestamp() - a.created_at))))::bigint as age_seconds,
 				i.priority,
-				priority_resolved.priority as resolved_priority,
-				priority_resolved.source as priority_from,
+				`+refs.IssuePriorityResolved+` as resolved_priority,
+				`+refs.IssuePrioritySource+` as priority_from,
 				-- The issue's own assignee beside its key and title, which is not the person the
 				-- question reaches: a question on an issue nobody holds carries a null assignee
 				-- here and the project's default in waiting_on_person below. The Inbox's rows

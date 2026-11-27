@@ -132,29 +132,7 @@ type IssueDescendant struct {
 // cost there). The two columns follow from the key, so `union` removes the rows it removes
 // without them.
 func IssueDescendantRows(ctx context.Context, q Queryer, key string) ([]IssueDescendant, error) {
-	if key == "" {
-		return []IssueDescendant{}, nil
-	}
-	rows, err := q.Query(ctx, `
-		with recursive descendants as (
-			select c.key, c.parent_key, c.status, c.project_key, c.number, 1 as depth
-			from issues c where c.parent_key = $1
-			union
-			select c.key, c.parent_key, c.status, c.project_key, c.number, d.depth + 1
-			from issues c join descendants d on c.parent_key = d.key
-			where d.depth < $2
-		)
-		select key, parent_key, status, depth, project_key from descendants
-		order by depth, project_key, number
-	`, key, IssueDepthCap)
-	if err != nil {
-		return nil, fmt.Errorf("read the descendants of %s: %w", key, err)
-	}
-	descendants, err := pgx.CollectRows(rows, pgx.RowToStructByPos[IssueDescendant])
-	if err != nil {
-		return nil, fmt.Errorf("read the descendants of %s: %w", key, err)
-	}
-	return descendants, nil
+	return readIssueDescendantRows(ctx, q, key, issueDescendantRowsStatement, "")
 }
 
 // IssueInheritingDescendantRows is every issue below the issue key on `child_of` that takes its
@@ -181,27 +159,53 @@ func IssueDescendantRows(ctx context.Context, q Queryer, key string) ([]IssueDes
 // leave that issue's resolved priority, to every reader that keeps one from the issue's events, as
 // it was before the write. It names none of them to the writer.
 func IssueInheritingDescendantRows(ctx context.Context, q Queryer, key string) ([]IssueDescendant, error) {
-	if key == "" {
-		return []IssueDescendant{}, nil
+	return readIssueDescendantRows(ctx, q, key, issueInheritingDescendantRowsStatement, " that take its priority")
+}
+
+// The statements of IssueDescendantRows and IssueInheritingDescendantRows, built once, at start.
+var (
+	issueDescendantRowsStatement           = issueDescendantRowsQuery("")
+	issueInheritingDescendantRowsStatement = issueDescendantRowsQuery("c.priority is null")
+)
+
+// issueDescendantRowsQuery is the text of the walk IssueDescendantRows and
+// IssueInheritingDescendantRows read, $1 the key it starts at and $2 IssueDepthCap, so the two
+// answer the same columns in the same order and differ only in where the walk stops: keep is a
+// condition on the issue c that both arms of the walk add beside its parent link, so the walk
+// neither answers an issue that fails it nor descends below one, and "" keeps every issue.
+func issueDescendantRowsQuery(keep string) string {
+	if keep != "" {
+		keep = " and " + keep
 	}
-	rows, err := q.Query(ctx, `
+	return `
 		with recursive descendants as (
 			select c.key, c.parent_key, c.status, c.project_key, c.number, 1 as depth
-			from issues c where c.parent_key = $1 and c.priority is null
+			from issues c where c.parent_key = $1` + keep + `
 			union
 			select c.key, c.parent_key, c.status, c.project_key, c.number, d.depth + 1
 			from issues c join descendants d on c.parent_key = d.key
-			where d.depth < $2 and c.priority is null
+			where d.depth < $2` + keep + `
 		)
 		select key, parent_key, status, depth, project_key from descendants
 		order by depth, project_key, number
-	`, key, IssueDepthCap)
+	`
+}
+
+// readIssueDescendantRows reads statement, a walk of issueDescendantRowsQuery, from the issue key
+// through q, and answers its rows; the empty key answers [] and reads nothing. A failure names the
+// descendants of key, followed by what, which says which of them the walk keeps ("" for every
+// one).
+func readIssueDescendantRows(ctx context.Context, q Queryer, key, statement, what string) ([]IssueDescendant, error) {
+	if key == "" {
+		return []IssueDescendant{}, nil
+	}
+	rows, err := q.Query(ctx, statement, key, IssueDepthCap)
 	if err != nil {
-		return nil, fmt.Errorf("read the descendants of %s that take its priority: %w", key, err)
+		return nil, fmt.Errorf("read the descendants of %s%s: %w", key, what, err)
 	}
 	descendants, err := pgx.CollectRows(rows, pgx.RowToStructByPos[IssueDescendant])
 	if err != nil {
-		return nil, fmt.Errorf("read the descendants of %s that take its priority: %w", key, err)
+		return nil, fmt.Errorf("read the descendants of %s%s: %w", key, what, err)
 	}
 	return descendants, nil
 }
@@ -368,8 +372,19 @@ func IssuePriorityTermsOver(subjects, resolved string) string {
 // query: one row per issue, null for an issue that resolves no priority.
 const IssuePriorityJoin = `left join priority_resolved on priority_resolved.key = i.key`
 
+// IssuePriorityResolved is the priority the issue resolves to, over IssuePriorityJoin, null where
+// it resolves none: the first of IssuePriorityColumns, alone, for a statement that orders or
+// filters by the resolved priority or names the two columns apart (api's Inbox reads and open
+// asks).
+const IssuePriorityResolved = `priority_resolved.priority`
+
+// IssuePrioritySource is the key of the issue IssuePriorityResolved comes from, over
+// IssuePriorityJoin, null where it is the issue's own or there is none: the second of
+// IssuePriorityColumns.
+const IssuePrioritySource = `priority_resolved.source`
+
 // IssuePriorityColumns are the priority columns every issue read scans beside the issue's own
 // priority, over IssuePriorityJoin: the priority the issue resolves to, and the key of the issue
 // it comes from, null where it is the issue's own; both null where it resolves none. They are the
 // issue's resolved_priority and priority_from (model.Issue).
-const IssuePriorityColumns = `priority_resolved.priority, priority_resolved.source`
+const IssuePriorityColumns = IssuePriorityResolved + `, ` + IssuePrioritySource

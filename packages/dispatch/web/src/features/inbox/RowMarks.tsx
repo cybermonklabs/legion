@@ -56,22 +56,12 @@ export function RowPriorityTag({ priority }: { priority: PriorityView }): ReactN
   const { from, level } = priority;
   if (level === null) return null;
   const tone = priorityBadge[level];
-  const className = `inline-flex shrink-0 items-center rounded-sm px-1.5 py-0.5 text-xs font-semibold whitespace-nowrap ${tone.bg} ${tone.text}`;
-  if (from === null) {
-    return (
-      <span className={className} data-inbox-priority={`P${level}`}>
-        P{level}
-      </span>
-    );
-  }
-  const words = `P${level}, from ${from}`;
+  const words = from === null ? undefined : `P${level}, from ${from}`;
   return (
     <span
-      aria-label={words}
-      className={className}
+      className={`inline-flex shrink-0 items-center rounded-sm px-1.5 py-0.5 text-xs font-semibold whitespace-nowrap ${tone.bg} ${tone.text}`}
       data-inbox-priority={`P${level}`}
-      role="img"
-      title={words}
+      {...(words === undefined ? {} : { "aria-label": words, role: "img", title: words })}
     >
       P{level}
     </span>

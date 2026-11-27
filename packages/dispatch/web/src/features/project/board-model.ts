@@ -384,7 +384,7 @@ export function moveIssueToLane(
             resolved_priority: targetLane,
           };
     },
-    (candidate) => candidate.status === targetStatus && !relaned,
+    (candidate) => candidate.status === targetStatus && inLane(candidate),
     isVisible
   );
   if (placed === undefined) {
