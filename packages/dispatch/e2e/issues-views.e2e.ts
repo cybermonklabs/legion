@@ -2310,6 +2310,9 @@ test('no line of a Created by cell at 1440 starts with the "·" of its creator\'
           createdByLines(table, ids)
         )
       );
+      // A box that scrolls no further ends the reading on this one instant's answer, which is
+      // safe: a creator left unread fails the first assertion below, so a stop that came too
+      // early cannot pass a row that read too little.
       const moved = await scroller.evaluate((box) => {
         const before = box.scrollTop;
         box.scrollTop += box.clientHeight / 2;
