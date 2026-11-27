@@ -1,6 +1,7 @@
 package bus
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -29,7 +30,7 @@ func TestASpentFlushWindowKeepsItsText(t *testing.T) {
 		if err := w.conn.Publish(subject, []byte("{}")); err != nil {
 			t.Fatalf("publish: %v", err)
 		}
-		return confirmFlushed(w.conn, subject, before, deadline)
+		return confirmFlushed(context.Background(), w.conn, subject, before, deadline)
 	}
 	// No span of its own: the server's answer can come late on a loaded machine with nothing wrong,
 	// so the control's window is the test binary's deadline less testwait's margin (30 s).

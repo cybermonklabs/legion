@@ -14,12 +14,13 @@ import {
   ExternalLinkSchema,
 } from "./dispatch-api-core";
 import { AskApprovalDocumentSchema } from "./dispatch-api-documents";
+import { IssueRoleHolderRecordSchema } from "./dispatch-api-issues";
 import { ReplyBlockSchema } from "./dispatch-api-refs";
 
 /**
- * What holds the eleven shapes the split owns to the shapes the server's document declares.
+ * What holds the twelve shapes the split owns to the shapes the server's document declares.
  *
- * Those eleven are exported as `z.output` of a zod schema rather than as the generated alias,
+ * Those twelve are exported as `z.output` of a zod schema rather than as the generated alias,
  * because the two spellings are the same type. Before that, each name *was* the document's type
  * and could not drift from it; after it, the equality is a fact about today's two definitions.
  * A probe run once says nothing about the next regeneration: a field whose Go type changes is
@@ -51,6 +52,7 @@ const OWNED_SCHEMAS = {
   BlockPathEntry: BlockPathEntrySchema,
   ExternalLink: ExternalLinkSchema,
   InboxDocument: InboxDocumentSchema,
+  IssueRoleHolderRecord: IssueRoleHolderRecordSchema,
   ReplyBlock: ReplyBlockSchema,
   Suggestion: SuggestionSchema,
 } satisfies Record<SplitOwnedSchemaName, z.ZodType>;

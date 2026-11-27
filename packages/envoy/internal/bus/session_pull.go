@@ -233,13 +233,15 @@ func pullStatus(msg *nats.Msg) (status, description string) {
 	return msg.Header.Get("Status"), msg.Header.Get("Description")
 }
 
-// pull sends a pull request for sessionPullBatch messages.
+// pull sends a pull request for sessionPullBatch messages. It waits for no connection: a request
+// nats.go refuses while it reconnects the connection fails at once as ErrReconnecting
+// (Reconnecting), and its caller restarts the pull.
 func (p *SessionPull) pull() error {
 	p.mu.Lock()
 	p.heard = time.Now()
 	p.mu.Unlock()
 	if err := p.conn.PublishRequest(p.next, p.inbox, p.request); err != nil {
-		return err
+		return Reconnecting(err)
 	}
 	p.remaining = sessionPullBatch
 	return nil
@@ -322,12 +324,16 @@ func sessionMessageOf(msg *nats.Msg) (SessionMessage, error) {
 }
 
 // sessionAck answers a pulled message on the connection it arrived on, by publishing to its reply
-// subject; Ack and NakWithDelay are sent once.
+// subject; Ack and NakWithDelay are sent once. An answer waits for no connection: one nats.go
+// refuses while it reconnects the connection fails at once as ErrReconnecting (Reconnecting), and
+// the server delivers the message again once its ack wait has passed.
 type sessionAck struct{ msg *nats.Msg }
 
-func (a sessionAck) Ack() error                             { return a.msg.Ack() }
-func (a sessionAck) InProgress() error                      { return a.msg.InProgress() }
-func (a sessionAck) NakWithDelay(delay time.Duration) error { return a.msg.NakWithDelay(delay) }
+func (a sessionAck) Ack() error        { return Reconnecting(a.msg.Ack()) }
+func (a sessionAck) InProgress() error { return Reconnecting(a.msg.InProgress()) }
+func (a sessionAck) NakWithDelay(delay time.Duration) error {
+	return Reconnecting(a.msg.NakWithDelay(delay))
+}
 
 // Stop ends the pull and leaves the messages it held and Next had not returned where they are:
 // the server delivers each of them again once its ack wait (SessionConsumerAckWait) has passed.
@@ -409,9 +415,9 @@ func (p *SessionPull) Release() (int, error) {
 // relay -- so that the two halves of one hand-over read apart in a log; the error carries the
 // package's own prefix itself, so no caller spells it.
 //
-// The naks of one hand-over fail together, since the connection is closed or its reconnect buffer
-// is full, so a failure is one error naming how many failed and the first of their errors rather
-// than up to SessionConsumerMaxAckPending copies of that one error.
+// The naks of one hand-over fail together, since the connection is closed or nats.go is
+// reconnecting it (ErrReconnecting), so a failure is one error naming how many failed and the
+// first of their errors rather than up to SessionConsumerMaxAckPending copies of that one error.
 func ReturnMessages(whose string, ackers []SessionAcker) (int, error) {
 	returned, failed := 0, 0
 	var firstErr error

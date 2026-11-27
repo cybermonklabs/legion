@@ -238,7 +238,7 @@ Each item below names a script, then what it proves.
   another agent's `dispatch claim` and release are refused naming the state and since when, which `dispatch read --issue` prints with the takeable time;
   a `SIGKILL`ed session is `unresponsive` until a 90-second gone horizon and then `gone`, the latency measured and printed, its role claim released only then, while `/clear` and `new_session` leave the id each replaces `gone` at once and `claude --resume` gets its topics back;
   both hosts show their model the peer's state and `last_seen`;
-  and a listener of the run's own raising `ENVOY_SESSION_MAX_AGE` to 2 h reaches both running listeners' `/healthz`, a session stalled seven minutes after that raise reading `unresponsive` where the shipping five minutes would already have dropped its key, and the rollback reaching both the same way.
+  and a listener of the run's own raising `ENVOY_SESSION_MAX_AGE` to 2 h reaches both running listeners' `/healthz`, a session stalled seven minutes after that raise reading `unresponsive` where the 5 minutes of a bucket an older listener created would already have dropped its key, and the rollback reaching both the same way.
   Legion pod only
 
 - `clean-session-stop-tmux.sh`

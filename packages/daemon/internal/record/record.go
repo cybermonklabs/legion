@@ -407,20 +407,18 @@ func (i Issue) TreeRun() uint64 {
 // issue's own generation on a child, whose own architect runs on the child's run. A root's next
 // change raises its Generation alone, so it ends no run of its tree's architect.
 func (i Issue) ArchitectGeneration() uint64 {
-	if i.Key == i.Tree {
-		return i.TreeRun()
-	}
-	return i.Generation
+	return claim.StartGeneration(claim.RoleArchitect, i.Key, i.Tree, i.Generation, i.TreeGeneration)
 }
 
 // GenerationOf is the generation of the issue that a supervise row of op for role serves, the one
 // the outbox's fence holds the row to (internal/daemon's supervise): a start of the architect
 // serves the architect's run (ArchitectGeneration), which a tree root's next change leaves, and
-// every other row serves the issue's own generation. Every writer of a start, the fence and every
-// reader of a role's run (RunKey) read the rule here, so the three agree.
+// every other row serves the issue's own generation. The rule for a start is claim.StartGeneration,
+// which the store reads too; every writer of a start, the fence and every reader of a role's run
+// (RunKey) read it, so they agree.
 func (i Issue) GenerationOf(op SuperviseOp, role claim.Role) uint64 {
-	if op == "start" && role == claim.RoleArchitect {
-		return i.ArchitectGeneration()
+	if op == "start" {
+		return claim.StartGeneration(role, i.Key, i.Tree, i.Generation, i.TreeGeneration)
 	}
 	return i.Generation
 }
