@@ -182,3 +182,65 @@ func TestABrokerTokenGrantedApproveStillMintsAndDecidesNothing(t *testing.T) {
 		t.Errorf("the mint by a broker token granted approve wrote %d token rows, want none", minted)
 	}
 }
+
+// TestNoJobTokenReachesARowThatNeedsAPerson: a job's token names its identity and no person, so it
+// holds no OAuth scope, and each row routeScopes says needs person refuses both of a job's tokens
+// 403 OAUTH_SCOPE_REQUIRED naming person before its handler runs; a row that needs approve as well
+// names person, the first scope of its set. The walk is over routeScopes itself, on a server that
+// mounts the test hooks so that every row it names is served, and a row the server does not serve
+// fails the walk rather than passing unprobed.
+func TestNoJobTokenReachesARowThatNeedsAPerson(t *testing.T) {
+	t.Parallel()
+	rig := newBrokerTokenRigOn(t, testServerOptions{testHooks: true})
+	caller := newBrokerCaller(t)
+	tokens := []struct {
+		name, token string
+		answer      ciphertoken.Introspection
+	}{
+		{"a job's named token", "a-job-named-token", liveJobNamedToken(caller.jkt)},
+		{"a job's public token", "a-job-public-token", liveJobPublicToken(caller.jkt, "PRIV")},
+	}
+	for _, token := range tokens {
+		rig.broker.Says(token.token, token.answer)
+	}
+	served := make(map[string]apiRoute)
+	for _, route := range rig.served.routes() {
+		served[route.Method+" "+route.Pattern] = route
+	}
+
+	probed := 0
+	for _, name := range slices.Sorted(maps.Keys(routeScopes)) {
+		if !slices.Contains(routeScopes[name], model.ScopePerson) {
+			continue
+		}
+		route, mounted := served[name]
+		if !mounted {
+			t.Errorf("routeScopes names %s, which this server does not serve: the walk cannot hold it to the rule", name)
+			continue
+		}
+		probed++
+		t.Run(name, func(t *testing.T) {
+			path := routeProbePath(route.Pattern)
+			var body any
+			if route.Method != http.MethodGet {
+				body = json.RawMessage(routeProbeBody(route))
+			}
+			for _, token := range tokens {
+				response := rig.serve(caller.presenting(t, route.Method, path, token.token, body))
+				refusal := decodeBody[refusalAnswer](t, response)
+				if response.Code != http.StatusForbidden || refusal.Code != codeScopeRequired {
+					t.Fatalf("%s under %s = %d %s, want 403 %s", name, token.name, response.Code, response.Body.String(), codeScopeRequired)
+				}
+				if challenge := response.Header().Get("WWW-Authenticate"); !strings.Contains(refusal.Error, model.ScopePerson) ||
+					challenge != insufficientScopeChallenge(model.ScopePerson) {
+					t.Fatalf("%s under %s refused %q with challenge %q, want the %s scope named in both",
+						name, token.name, refusal.Error, challenge, model.ScopePerson)
+				}
+			}
+		})
+	}
+	if probed == 0 {
+		t.Fatal("routeScopes names no row that needs person: the walk held nothing to the rule")
+	}
+	t.Logf("routeScopes names person on %d rows", probed)
+}

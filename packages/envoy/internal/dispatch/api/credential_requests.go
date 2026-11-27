@@ -36,6 +36,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/sjawhar/envoy/fileerr"
 	"github.com/sjawhar/envoy/internal/cipher/wire"
 	"github.com/sjawhar/envoy/internal/dispatch/accesslog"
 	"github.com/sjawhar/envoy/internal/dispatch/cipher"
@@ -52,11 +53,13 @@ import (
 // one. Each handler then holds the member to a machine login of their own (ownMachineLogin for a
 // pending one, memberMachineLogins, their own machines' and their pods', for an issued one).
 // Through a token a restricted member is refused every one of them: no token of theirs holds a
-// scope - their agent's named broker token, a broker token acting as them, and their personal
-// token (personalTokenActor) - so gateRouteScopes, which runs first, answers 403
-// OAUTH_SCOPE_REQUIRED, and restrictedOwnLoginRefusal's 403 RESTRICTED_MEMBER stands behind it for
-// any credential of theirs that held a row's scopes; so no agent of theirs decides, lists or ends
-// any credential, their own machine's included.
+// scope - their agent's named broker token, a broker token acting as them, their approve-only token
+// included, and their personal token (personalTokenActor) - so gateRouteScopes answers 403
+// OAUTH_SCOPE_REQUIRED, unless the read-only or the approve-only gate outside it answers first, for
+// such a token on a row its list does not name (refuseReadOnlyToken, refuseApproveOnlyToken); and
+// restrictedOwnLoginRefusal's 403 RESTRICTED_MEMBER stands behind them for any credential of theirs
+// that held a row's scopes; so no agent of theirs decides, lists or ends any credential, their own
+// machine's included.
 var restrictedOwnLoginRoutes = map[string]bool{
 	"POST /api/v1/credential-requests/machine-lookup": true,
 	"POST /api/v1/credential-requests/{id}/approve":   true,
@@ -447,8 +450,10 @@ func (s *server) relayMachineLoginApproval(relay context.Context, w http.Respons
 //     (tokenAccountReplaced: people records another account, or the token records none and was
 //     made before people recorded the address's); its account is the one its mint recorded.
 //
-// A broker-issued token never decides: none holds the approve scope these routes require
-// (brokerPersonScopes), so it is refused before it gets here, and refused here too, before any
+// A broker-issued token never decides: no such token a machine holds has the approve scope these
+// routes require (brokerPersonScopes), so it is refused before it gets here. The approve-only token
+// has it, and its approve list names the approve and the deny (approveScopeRoutes), so it passes
+// their scope gate and gets here; it is refused here, as every broker-issued token is, before any
 // read (refuseUnboundCredential), since nothing below has an arm for it.
 //
 // Each account the statement binds is the address's recorded one, since each that is not is

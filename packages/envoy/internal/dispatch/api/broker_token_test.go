@@ -286,7 +286,7 @@ func stubBrokerTokens(t *testing.T, broker *ciphertokentest.StubBroker, options 
 	return func(database *store.Store) *ciphertoken.Verifier {
 		opts := ciphertoken.Options{
 			BrokerURL: broker.Server.URL,
-			Account:   ciphertoken.NewAccountToken(accountTokenFile(t, credentialTestAccountToken)),
+			Account:   ciphertoken.NewAccountToken("DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE", accountTokenFile(t, credentialTestAccountToken)),
 			Origins:   []string{testServerURL},
 			Replay:    store.NewDPoPProofs(database.Pool),
 			// What Dispatch itself passes: the check keys its bucket on the address
@@ -1863,5 +1863,416 @@ func TestAFullMembersBrokerTokenAnswersAsBeforeWhereNoRestrictedMemberIsAdmitted
 			t.Errorf("%s: the token resolved to %+v, %v in %d reads and %d ties, reading the lists %t; want its session in %d reads and %d ties, reading the lists %t:\n%s",
 				test.name, actor, err, len(reads), len(ties), readsLists, test.statements, test.ties, test.readsLists, strings.Join(statements, "\n---\n"))
 		}
+	}
+}
+
+// TestAJobBrokerTokenWritesAsItsSessionForItsService: a job's token names its identity as its
+// service and no person, and its writes land in the one project its entry names: an issue, a
+// comment on it and a change of its status. Each write's event names the session the token proved
+// as its actor, the job's identity as the service it acted for, and no owner; each write's
+// access-log line names that session as its caller and the broker token as its credential, with
+// the identity under the `service:` prefix. It captures the default logger, so it runs alone.
+func TestAJobBrokerTokenWritesAsItsSessionForItsService(t *testing.T) {
+	// Not parallel: it swaps the default logger (captureLog, logtest.SetDefault).
+	rig := newBrokerTokenRig(t)
+	caller := newBrokerCaller(t)
+	const token = "a-job-token-naming-one-project"
+	rig.broker.Says(token, liveJobNamedToken(caller.jkt))
+	seedProject(t, rig, brokerTestProject, "Broker")
+	logged := captureLog(t)
+
+	created := rig.serve(caller.presenting(t, http.MethodPost, "/api/v1/issues", token, map[string]any{
+		"project": brokerTestProject, "title": "Filed by a job", "spec": "# Spec",
+	}))
+	if created.Code != http.StatusCreated {
+		t.Fatalf("a job's issue in its own project: status=%d body=%s, want 201", created.Code, created.Body.String())
+	}
+	key := decodeBody[struct {
+		Key string `json:"key"`
+	}](t, created).Key
+	commented := rig.serve(caller.presenting(t, http.MethodPost, "/api/v1/issues/"+key+"/comments", token, map[string]any{
+		"body": "Written by a job.",
+	}))
+	if commented.Code != http.StatusCreated {
+		t.Fatalf("a job's comment: status=%d body=%s, want 201", commented.Code, commented.Body.String())
+	}
+	moved := rig.serve(caller.presenting(t, http.MethodPatch, "/api/v1/issues/"+key, token, map[string]any{
+		"status": "in_progress",
+	}))
+	if moved.Code != http.StatusOK {
+		t.Fatalf("a job's status change: status=%d body=%s, want 200", moved.Code, moved.Body.String())
+	}
+
+	lines := accessLines(t, logged)
+	if len(lines) != 3 {
+		t.Fatalf("three writes wrote %d access-log lines:\n%s", len(lines), strings.Join(lines, "\n"))
+	}
+	for _, line := range lines {
+		for _, want := range []string{`caller_kind=session`, `caller=` + brokerTestSession, `credential=broker-token:service:` + brokerTestJob} {
+			if !strings.Contains(line, want) {
+				t.Errorf("access-log line %q does not carry %q", line, want)
+			}
+		}
+	}
+
+	listed := rig.asPerson(t, http.MethodGet, "/api/v1/issues/"+key+"/events", nil)
+	if listed.Code != http.StatusOK {
+		t.Fatalf("read the issue's events: status=%d body=%s", listed.Code, listed.Body.String())
+	}
+	seen := map[string]bool{}
+	for _, event := range decodeBody[[]model.Event](t, listed) {
+		switch event.Type {
+		case "issue.created", "comment.created", "issue.updated":
+		default:
+			continue
+		}
+		seen[event.Type] = true
+		actor := event.Actor
+		if actor.Kind != "session" || actor.ID != brokerTestSession {
+			t.Errorf("the %s event's actor = %s:%s, want the session the token proved", event.Type, actor.Kind, actor.ID)
+		}
+		if actor.Service == nil || *actor.Service != brokerTestJob {
+			t.Errorf("the %s event's service = %v, want %q", event.Type, actor.Service, brokerTestJob)
+		}
+		if actor.Owner != nil {
+			t.Errorf("the %s event's owner = %q, want none: the token names no person", event.Type, *actor.Owner)
+		}
+	}
+	if !seen["issue.created"] || !seen["comment.created"] || !seen["issue.updated"] {
+		t.Fatalf("the issue's events hold %v, want issue.created, comment.created and issue.updated", seen)
+	}
+}
+
+// TestAJobBrokerTokenWritesEveryClass: the write rule that refuses a machine nobody signed in on
+// lets a job's token through at the same chokepoint, so a job's public token writes every class
+// TestAServiceOnlyBrokerTokenIsRefusedEveryWrite is refused: a project's object, a write whose
+// project its body names, the deployment's own rows, and its own session's rows.
+func TestAJobBrokerTokenWritesEveryClass(t *testing.T) {
+	t.Parallel()
+	rig := newBrokerTokenRig(t)
+	caller := newBrokerCaller(t)
+	const token = "a-job-token-naming-public"
+	rig.broker.Says(token, liveJobPublicToken(caller.jkt))
+	own := seedProject(t, rig, brokerTestProject, "Broker")
+
+	writes := map[string]struct {
+		method, pattern string
+		class           writeScope
+		request         func(t *testing.T) *http.Request
+	}{
+		"a comment on a project's issue": {
+			http.MethodPost, "/api/v1/issues/{key}/comments", scopeProject, func(t *testing.T) *http.Request {
+				return caller.presenting(t, http.MethodPost, "/api/v1/issues/"+own.issue+"/comments", token,
+					map[string]any{"body": "Written by a job."})
+			},
+		},
+		"an issue whose body names the project": {
+			http.MethodPost, "/api/v1/issues", scopeProjectInBody, func(t *testing.T) *http.Request {
+				return caller.presenting(t, http.MethodPost, "/api/v1/issues", token,
+					map[string]any{"project": brokerTestProject, "title": "Filed by a job", "spec": "# Spec"})
+			},
+		},
+		"a project of the deployment's own": {
+			http.MethodPost, "/api/v1/projects", scopeDeployment, func(t *testing.T) *http.Request {
+				// A credential that acts for nobody names the person the project's unowned work
+				// lands on, which a person's create would default to themselves.
+				return caller.presenting(t, http.MethodPost, "/api/v1/projects", token,
+					map[string]any{"key": "JOB", "name": "Job", "default_assignee": brokerTestPerson})
+			},
+		},
+		"a file in its own session's conversation": {
+			http.MethodPost, "/api/v1/agents/{session_id}/artifacts", scopeSession, func(t *testing.T) *http.Request {
+				return caller.presentingUpload(t, "/api/v1/agents/"+brokerTestSession+"/artifacts", token,
+					"shot.png", "image/png", pngBytes("a job's conversation"))
+			},
+		},
+	}
+	for name, write := range writes {
+		t.Run(name, func(t *testing.T) {
+			if got := writeClasses[write.method+" "+write.pattern]; got != write.class {
+				t.Fatalf("%s %s is classed %q, want %q", write.method, write.pattern, got, write.class)
+			}
+			response := rig.serve(write.request(t))
+			if response.Code < 200 || response.Code > 299 {
+				t.Fatalf("status=%d body=%s, want 2xx", response.Code, response.Body.String())
+			}
+		})
+	}
+}
+
+// TestAJobsNamedTokenIsJudgedAsAPersonsNamedTokenForTheSameProject: a job's token whose entry
+// names one project is judged by the rule that judges a person's named token for that project.
+// Each write below (one whose body names another project, one to another project's object, and
+// the deployment's own project create) is sent under the job's token and under a person's named
+// token for the same project, and the job's answer has the status and the refusal code of the
+// person's. That answer is 201 for the issue made in the other project and for the comment on
+// the other project's issue, since a token that names one project writes a public project's
+// objects as a credential that names none does, and 403 PROJECT_SCOPE_DEPLOYMENT for the project
+// create (dispatch://INFRA-264). A person reads each write back: the job's write lands where the
+// answer is 201, and lands nothing where it is a refusal. The job's writes into its own project
+// are TestAJobBrokerTokenWritesAsItsSessionForItsService's.
+func TestAJobsNamedTokenIsJudgedAsAPersonsNamedTokenForTheSameProject(t *testing.T) {
+	t.Parallel()
+	rig := newBrokerTokenRig(t)
+	caller := newBrokerCaller(t)
+	const jobToken, personToken = "a-job-token-held-to-one-project", "a-persons-named-token-for-the-same-project"
+	rig.broker.Says(jobToken, liveJobNamedToken(caller.jkt))
+	rig.broker.Says(personToken, liveNamedToken(caller.jkt))
+	seedProject(t, rig, brokerTestProject, "Broker")
+	other := seedProject(t, rig, "OTHER", "Other")
+
+	for name, write := range map[string]struct {
+		method, path string
+		// job and person are the write's body under each token, each with a text of its own, so
+		// the job's write is told from the person's where both land.
+		job, person any
+		// read is where a person reads the job's write back, and written the text it shows where
+		// the write landed, and must not show where it was refused.
+		read, written string
+		// status and code are the answer both tokens get: its status, and its refusal code, which
+		// is empty for a write that lands.
+		status int
+		code   string
+	}{
+		"an issue whose body names another project": {
+			method: http.MethodPost, path: "/api/v1/issues",
+			job:    map[string]any{"project": "OTHER", "title": "Filed by a job elsewhere", "spec": "# Spec"},
+			person: map[string]any{"project": "OTHER", "title": "Filed by a person elsewhere", "spec": "# Spec"},
+			read:   "/api/v1/issues?project=OTHER", written: "Filed by a job elsewhere",
+			status: http.StatusCreated,
+		},
+		"a comment on another project's issue": {
+			method: http.MethodPost, path: "/api/v1/issues/" + other.issue + "/comments",
+			job:    map[string]any{"body": "Written by a job elsewhere."},
+			person: map[string]any{"body": "Written by a person elsewhere."},
+			read:   "/api/v1/issues/" + other.issue + "/comments", written: "Written by a job elsewhere.",
+			status: http.StatusCreated,
+		},
+		"a project of the deployment's own": {
+			method: http.MethodPost, path: "/api/v1/projects",
+			job:    map[string]any{"key": "JOB", "name": "Job", "default_assignee": brokerTestPerson},
+			person: map[string]any{"key": "PERSON", "name": "Person", "default_assignee": brokerTestPerson},
+			read:   "/api/v1/projects", written: `"JOB"`,
+			status: http.StatusForbidden, code: codeProjectScopeDeployment,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			persons := rig.serve(caller.presenting(t, write.method, write.path, personToken, write.person))
+			jobs := rig.serve(caller.presenting(t, write.method, write.path, jobToken, write.job))
+			personCode := decodeBody[refusalAnswer](t, persons).Code
+			if persons.Code != write.status || personCode != write.code {
+				t.Fatalf("the person's named token for the same project: status=%d code=%q body=%s, want status=%d code=%q",
+					persons.Code, personCode, persons.Body.String(), write.status, write.code)
+			}
+			if decodeBody[refusalAnswer](t, jobs).Code != personCode || jobs.Code != persons.Code {
+				t.Fatalf("the job's token: status=%d body=%s, want the answer of the person's named token for the same project: status=%d body=%s",
+					jobs.Code, jobs.Body.String(), persons.Code, persons.Body.String())
+			}
+			read := rig.asPerson(t, http.MethodGet, write.read, nil)
+			if read.Code != http.StatusOK {
+				t.Fatalf("read %s back: status=%d body=%s", write.read, read.Code, read.Body.String())
+			}
+			if landed, want := strings.Contains(read.Body.String(), write.written), write.status < http.StatusBadRequest; landed != want {
+				t.Fatalf("the job's write landed: %t, want %t: %s", landed, want, read.Body.String())
+			}
+		})
+	}
+}
+
+// TestAJobsPublicTokenWritesEveryProjectAndTheDeployment: a job's token whose entry names public
+// writes wherever a token that names no project may, projects its list does not name included,
+// and its writes that belong to the deployment follow that rule too: the project check lets them
+// through.
+func TestAJobsPublicTokenWritesEveryProjectAndTheDeployment(t *testing.T) {
+	t.Parallel()
+	rig := newBrokerTokenRig(t)
+	caller := newBrokerCaller(t)
+	const token = "a-job-token-writing-every-project"
+	rig.broker.Says(token, liveJobPublicToken(caller.jkt, "PRIV"))
+	seedProject(t, rig, brokerTestProject, "Broker")
+	seedProject(t, rig, "OTHER", "Other")
+
+	for _, project := range []string{brokerTestProject, "OTHER"} {
+		written := rig.serve(caller.presenting(t, http.MethodPost, "/api/v1/issues", token, map[string]any{
+			"project": project, "title": "Filed by a public job", "spec": "# Spec",
+		}))
+		if written.Code != http.StatusCreated {
+			t.Fatalf("a public job's issue in %s: status=%d body=%s, want 201", project, written.Code, written.Body.String())
+		}
+		if key := decodeBody[struct {
+			Key string `json:"key"`
+		}](t, written).Key; !strings.HasPrefix(key, project+"-") {
+			t.Fatalf("a public job's issue in %s was filed as %q", project, key)
+		}
+	}
+	created := rig.serve(caller.presenting(t, http.MethodPost, "/api/v1/projects", token, map[string]any{
+		"key": "JOB", "name": "Job", "default_assignee": brokerTestPerson,
+	}))
+	if created.Code != http.StatusCreated {
+		t.Fatalf("a public job's project: status=%d body=%s, want 201", created.Code, created.Body.String())
+	}
+}
+
+// TestAJobBrokerTokenIsNamedByWhoami: whoami names a job's token by the session it proved and the
+// identity its entry lists as its service, with no owner and no OAuth scope; the project is the
+// one a named token's entry names, and none for a public token, which no one project limits; and
+// the project scope is the token's own, named or public, and sign_in_required is false, which is
+// what tells a job's token, whose service writes, from a machine's, which is refused every write.
+func TestAJobBrokerTokenIsNamedByWhoami(t *testing.T) {
+	t.Parallel()
+	rig := newBrokerTokenRig(t)
+	caller := newBrokerCaller(t)
+	for _, row := range []struct {
+		name, token string
+		answer      ciphertoken.Introspection
+		project     *string
+		scope       string
+	}{
+		{"a job's named token", "a-job-named-token-asking-who-it-is", liveJobNamedToken(caller.jkt), new(brokerTestProject), ciphertoken.ProjectScopeNamed},
+		{"a job's public token", "a-job-public-token-asking-who-it-is", liveJobPublicToken(caller.jkt, "PRIV"), nil, ciphertoken.ProjectScopePublic},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			rig.broker.Says(row.token, row.answer)
+			response := rig.serve(caller.presenting(t, http.MethodGet, "/api/v1/whoami", row.token, nil))
+			if response.Code != http.StatusOK {
+				t.Fatalf("whoami: status=%d body=%s", response.Code, response.Body.String())
+			}
+			answer := decodeBody[whoamiAnswer](t, response)
+			if answer.Kind != "agent" || answer.Session == nil || *answer.Session != brokerTestSession {
+				t.Fatalf("whoami = %s, want the session the token names", response.Body.String())
+			}
+			if answer.Service == nil || *answer.Service != brokerTestJob {
+				t.Fatalf("whoami service = %v, want %q", answer.Service, brokerTestJob)
+			}
+			if answer.Owner != nil {
+				t.Fatalf("whoami owner = %q, want null: the token names no person", *answer.Owner)
+			}
+			if answer.Scopes == nil || len(answer.Scopes) != 0 {
+				t.Fatalf("whoami scopes = %v, want an empty array: a job's token holds no OAuth scope", answer.Scopes)
+			}
+			switch {
+			case row.project == nil && answer.Project != nil:
+				t.Fatalf("whoami project = %q, want null", *answer.Project)
+			case row.project != nil && (answer.Project == nil || *answer.Project != *row.project):
+				t.Fatalf("whoami project = %v, want %q", answer.Project, *row.project)
+			}
+			if answer.ProjectScope == nil || *answer.ProjectScope != row.scope {
+				t.Fatalf("whoami project_scope = %v, want %q: %s", answer.ProjectScope, row.scope, response.Body.String())
+			}
+			if answer.SignInRequired == nil || *answer.SignInRequired {
+				t.Fatalf("whoami answered %s, want sign_in_required false: a job's token writes as its service", response.Body.String())
+			}
+		})
+	}
+}
+
+// TestAJobTokenWritesOnlyAsItsOwnSession: a job's token proved one session, and a write whose body
+// names another is refused ACTOR_SESSION_MISMATCH naming the session the token proved, as for
+// every broker token, so a job writes under no session but its own.
+func TestAJobTokenWritesOnlyAsItsOwnSession(t *testing.T) {
+	t.Parallel()
+	rig := newBrokerTokenRig(t)
+	caller := newBrokerCaller(t)
+	own := seedProject(t, rig, brokerTestProject, "Broker")
+	for _, row := range []struct {
+		name, token string
+		answer      ciphertoken.Introspection
+	}{
+		{"a job's named token", "a-job-named-token-naming-another-session", liveJobNamedToken(caller.jkt)},
+		{"a job's public token", "a-job-public-token-naming-another-session", liveJobPublicToken(caller.jkt)},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			rig.broker.Says(row.token, row.answer)
+			response := rig.serve(caller.presenting(t, http.MethodPost, "/api/v1/issues/"+own.issue+"/comments", row.token, map[string]any{
+				"body": "Written as another session.", "actor": map[string]string{"kind": "session", "id": "ses_someone_else"},
+			}))
+			refusal := decodeBody[refusalAnswer](t, response)
+			if response.Code != http.StatusForbidden || refusal.Code != "ACTOR_SESSION_MISMATCH" || !strings.Contains(refusal.Error, brokerTestSession) {
+				t.Fatalf("status=%d refusal=%+v, want 403 ACTOR_SESSION_MISMATCH naming %s", response.Code, refusal, brokerTestSession)
+			}
+		})
+	}
+}
+
+// TestANarrowedTokenActsAsItsIdentityAndOnlyReads: a token narrowed to reading acts as the
+// identity the same trade without read would have, and holds less. For each answer of the golden
+// file the broker's own test holds its narrowed answers to, the actor is the session it names,
+// with the person or the service it names; a token narrowed from a named one names its one
+// project; a read-person token that names its person holds the person scope alone; every other
+// holds no scope. Each is marked read-only with the cut its answer names, and none holds approve
+// or carries the word read among its scopes. The control is the machine login's answer with the
+// project scope person and no read: the same identity, holding both scopes and not read-only, so
+// approve is withheld by the narrowing.
+func TestANarrowedTokenActsAsItsIdentityAndOnlyReads(t *testing.T) {
+	t.Parallel()
+	rig := newBrokerTokenRig(t)
+	caller := newBrokerCaller(t)
+	const session = "ses_narrowed"
+	answers := ciphertokentest.NarrowedAnswers(t, caller.jkt, session, time.Now().Add(time.Hour).Unix())
+	ada, fleet, reader, account, acme := "ada@example.com", brokerTestService, brokerTestReader, brokerTestAccount, "ACME"
+	cut, err := time.Parse(time.RFC3339Nano, answers["machine-login-with-a-cut"].AsOf)
+	if err != nil {
+		t.Fatalf("the golden machine login's cut: %v", err)
+	}
+	type identity struct {
+		owner, service, project *string
+		scopes                  []string
+		readOnly                bool
+		cut                     time.Time
+	}
+	personOnly := []string{model.ScopePerson}
+	want := map[string]identity{
+		"pod-entry":                     {owner: &ada, project: &acme, readOnly: true},
+		"pod-entry-no-person":           {service: &account, readOnly: true},
+		"read-entry":                    {service: &reader, readOnly: true},
+		"workflow-entry":                {owner: &ada, project: &acme, readOnly: true},
+		"google-identity-no-person":     {service: &fleet, readOnly: true},
+		"google-identity-with-a-person": {owner: &ada, project: &acme, readOnly: true},
+		"person-sign-in":                {owner: &ada, scopes: personOnly, readOnly: true},
+		"machine-login":                 {owner: &ada, scopes: personOnly, readOnly: true},
+		"machine-login-with-a-cut":      {owner: &ada, scopes: personOnly, readOnly: true, cut: cut},
+	}
+	if kinds := slices.Sorted(maps.Keys(answers)); !slices.Equal(kinds, slices.Sorted(maps.Keys(want))) {
+		t.Fatalf("the golden file answers for %v, and this test names the actor of %v", kinds, slices.Sorted(maps.Keys(want)))
+	}
+	writer := answers["machine-login"]
+	writer.ProjectScope, writer.Scope = ciphertoken.ProjectScopePerson, ""
+	rows := map[string]ciphertoken.Introspection{"the machine login's token with no read": writer}
+	// The same token without read writes: it holds the person scope alone, as every broker token
+	// that acts for its person does (brokerPersonScopes), and it is not read-only.
+	want["the machine login's token with no read"] = identity{owner: &ada, scopes: personOnly}
+	maps.Copy(rows, answers)
+
+	same := func(got, want *string) bool { return (got == nil) == (want == nil) && (got == nil || *got == *want) }
+	for _, name := range slices.Sorted(maps.Keys(rows)) {
+		t.Run(name, func(t *testing.T) {
+			token := "a-token-of-" + strings.ReplaceAll(name, " ", "-")
+			rig.broker.Says(token, rows[name])
+			actor, human, err := rig.served.brokerTokenActor(caller.presenting(t, http.MethodGet, "/api/v1/whoami", token, nil))
+			if err != nil || human {
+				t.Fatalf("brokerTokenActor = %+v, human %v, %v; want the session's actor", actor, human, err)
+			}
+			expected := want[name]
+			if actor.Kind != "session" || actor.ID != session || !actor.Proven {
+				t.Fatalf("actor = %s:%s (proven %v), want the proven session %s", actor.Kind, actor.ID, actor.Proven, session)
+			}
+			if !same(actor.Owner, expected.owner) || !same(actor.Service, expected.service) || !same(actor.Project, expected.project) {
+				t.Fatalf("actor owner, service, project = %v, %v, %v; want %v, %v, %v",
+					actor.Owner, actor.Service, actor.Project, expected.owner, expected.service, expected.project)
+			}
+			credential := actor.Credential
+			if credential == nil || credential.Session != session {
+				t.Fatalf("credential = %+v, want one naming the session %s", credential, session)
+			}
+			if !slices.Equal(credential.Scopes, expected.scopes) {
+				t.Fatalf("credential scopes = %v, want %v", credential.Scopes, expected.scopes)
+			}
+			if credential.ReadOnly != expected.readOnly {
+				t.Fatalf("credential read-only = %v, want %v", credential.ReadOnly, expected.readOnly)
+			}
+			if !credential.Cut.Equal(expected.cut) || credential.Cut.Location() != time.UTC {
+				t.Fatalf("credential cut = %v, want %v in UTC", credential.Cut, expected.cut)
+			}
+		})
 	}
 }

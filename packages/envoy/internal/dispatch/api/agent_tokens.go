@@ -28,34 +28,29 @@ const agentTokenPrefixLength = 8
 // alone or beside person, which Dispatch answers on the reads of its read class alone
 // (refuseReadOnlyToken). A build before read-only tokens looks a bearer up in agent_tokens alone,
 // so it finds no read-only token and answers it 401, rather than read its scopes and let it
-// write (migration 20261120023712_agent_read_tokens). Both tables carry the same columns, and
-// agentTokenColumns is what every statement here answers of a row, as scanAgentToken reads it.
-const agentTokenColumns = `id::text, name, prefix, scopes, created_at, last_used_at, revoked_at`
-
-// The mint and a token's last use each run one of two statements, one per table. Each names its
-// table in its own text, so the census of item-row writers (item_writer_census_test.go) reads the
-// table it writes, and takes what follows the table from one of these, so the two stay one text:
-// agentTokenInsert is the mint's columns, their values and the row it answers (createAgentToken),
-// and agentTokenUse is a token's last use, written at most once a minute (personalTokenActor).
-const (
-	agentTokenInsert = `(owner, name, token_hash, prefix, scopes)
-		values ($1, $2, $3, $4, $5)
-		returning ` + agentTokenColumns
-	agentTokenUse = `set last_used_at = now()
+// write (migration 20261120023712_agent_read_tokens). agent_read_tokens holds no list of projects
+// and records no account: a read-only token lists none and binds none.
+//
+// A token's last use runs one of two statements, one per table. Each names its table in its own
+// text, so the census of item-row writers (item_writer_census_test.go) reads the table it writes,
+// and takes what follows the table from agentTokenUse, so the two stay one text: a token's last
+// use, written at most once a minute (personalTokenActor).
+const agentTokenUse = `set last_used_at = now()
 		where token_hash = $1
 		  and revoked_at is null
 		  and (last_used_at is null or last_used_at < now() - interval '1 minute')`
-)
 
 type createAgentTokenResponse struct {
 	model.AgentToken
 	Token string `json:"token"`
 }
 
-// listAgentTokens is GET /api/v1/me/agent-tokens. Each token is answered with the scopes it acts
-// with: a restricted member's token acts with none, whatever its row holds (personalTokenActor), so
-// a token minted before that rule, or while its owner was a full member, is listed holding none,
-// read in the list's own statement from the owner's people row (a join on its key).
+// listAgentTokens is GET /api/v1/me/agent-tokens: the caller's tokens of both tables, newest
+// first. Each token is answered with the scopes it acts with: a restricted member's token acts
+// with none, whatever its row holds (personalTokenActor), so a token minted before that rule, or
+// while its owner was a full member, is listed holding none, read in the list's own statement
+// from the owner's people row (a join on its key). A read-only token is listed holding read,
+// beside person where it holds it, and lists no project.
 func (s *server) listAgentTokens(w http.ResponseWriter, r *http.Request) {
 	actor, ok := s.actingPerson(w, r)
 	if !ok {
@@ -66,9 +61,16 @@ func (s *server) listAgentTokens(w http.ResponseWriter, r *http.Request) {
 		select agent_tokens.id::text, agent_tokens.name, agent_tokens.prefix,
 			case when people.member_kind = 'restricted' then '{}'::text[] else agent_tokens.scopes end,
 			agent_tokens.projects, agent_tokens.created_at, agent_tokens.last_used_at, agent_tokens.revoked_at
-		from agent_tokens
+		from (
+			select id, name, prefix, scopes, projects, created_at, last_used_at, revoked_at, owner
+			from agent_tokens
+			where owner = $1
+			union all
+			select id, name, prefix, scopes, null, created_at, last_used_at, revoked_at, owner
+			from agent_read_tokens
+			where owner = $1
+		) agent_tokens
 		left join people on people.email = canonical_login(agent_tokens.owner)
-		where agent_tokens.owner = $1
 		order by agent_tokens.created_at desc
 	`, actor.ID)
 	if err != nil {
@@ -126,14 +128,17 @@ func seeToken(reader model.Actor, token *model.AgentToken) {
 type createAgentTokenInput struct {
 	Name string `json:"name" required:"true"`
 	// Scopes is the set the new token holds. A body that names none at all leaves it to the
-	// caller's own set, which is why the field is a pointer: an empty array is a token that
-	// holds nothing, and that is a different request from one that asks for the default. A
-	// restricted member's token holds none (tokenScopes).
-	Scopes *[]string `json:"scopes"`
+	// caller's own set but p0 (callerScopes), which is why the field is a pointer: an empty array
+	// is a token that holds nothing, and that is a different request from one that asks for the
+	// default. A token holds p0 only where its body names it and its maker holds it. A set that
+	// holds read is a read-only token's: read alone, or read beside person, never beside approve
+	// or p0. A restricted member's token holds none (tokenScopes).
+	Scopes *[]string `json:"scopes" enum:"person,approve,p0,read"`
 	// Projects is the list the new token may use. A body that names none leaves it to the
 	// caller's own list, for the reason Scopes is a pointer: an empty array is a token that lists
 	// nothing, which sees every public project its person sees. A restricted member's token lists
-	// exactly one project, which a body naming none leaves to the one they see (tokenProjects).
+	// exactly one project, which a body naming none leaves to the one they see (tokenProjects). A
+	// read-only token lists none.
 	Projects *[]string `json:"projects"`
 }
 
@@ -141,6 +146,9 @@ type createAgentTokenInput struct {
 // plaintext is shown, so an Idempotency-Key never keeps it (keyedWrites, answerHoldsSecret): the
 // insert commits in a transaction of its own, which marks the key committed, and a repeat under the
 // key is 409 KEY_COMMITTED - the token was made and cannot be shown again - never a second token.
+// A token whose set holds read is kept in agent_read_tokens, and every other in agent_tokens. A
+// read-only token lists no project and records no account (mintAgentReadTokenSQL), so a body
+// naming projects beside read is 400 TOKEN_PROJECTS_INPUT: the list is refused, never dropped.
 //
 // A token must never outlive the account that minted it. A sign-in under another Google account
 // (store.PgPeopleStore.SignInSubject) ends the address's sessions and revokes its tokens in its
@@ -156,9 +164,11 @@ type createAgentTokenInput struct {
 // waits for the mint, and then the token it made is revoked. A mint whose caller lost the address
 // inserts nothing and is refused as that caller's next request is (mintCallerGone): 401
 // TOKEN_REVOKED for a personal token, 401 NO_IDENTITY for a cookie. A broker-issued token never
-// mints: none holds the approve scope this route requires (brokerPersonScopes), and the handler
-// refuses one itself too (refuseUnboundCredential). The lock is the one statement a mint costs
-// beyond what it always cost; the re-check rides in the insert.
+// mints: no such token a machine holds has the approve scope this route requires
+// (brokerPersonScopes); the approve-only token, which has it, is refused before the route runs,
+// since its approve list leaves the mint out (refuseApproveOnlyToken, approveScopeRoutes); and the
+// handler refuses every one itself too (refuseUnboundCredential). The lock is the one statement a
+// mint costs beyond what it always cost; the re-check rides in the insert.
 //
 // The token records the Google account its minting credential is bound to (agent_tokens.subject,
 // credentialSubjectSQL), read in the insert beside that re-check: an approve by the token names
@@ -211,8 +221,15 @@ func (s *server) createAgentToken(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	projects, ok := s.tokenProjects(w, r, input.Projects)
-	if !ok {
+	readOnly := slices.Contains(scopes, model.ScopeRead)
+	var projects []string
+	if readOnly {
+		if input.Projects != nil && len(*input.Projects) > 0 {
+			writeError(w, codeTokenProjectsInput, http.StatusBadRequest,
+				"a read-only token lists no projects: it reads the projects its person sees that no list holds; leave projects out")
+			return
+		}
+	} else if projects, ok = s.tokenProjects(w, r, input.Projects); !ok {
 		return
 	}
 	// Before the transaction: Standing takes a pooled connection of its own.
@@ -247,8 +264,13 @@ func (s *server) createAgentToken(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, fmt.Errorf("create agent token: %w", err))
 		return
 	}
-	token, err := scanAgentToken(tx.QueryRow(r.Context(), mintAgentTokenSQL,
-		actor.ID, input.Name, hash[:], prefix, scopes, projects, cookieLogin, cookieGeneration, tokenID, recordsAccounts))
+	mint := mintAgentTokenSQL
+	arguments := []any{actor.ID, input.Name, hash[:], prefix, scopes, projects, cookieLogin, cookieGeneration, tokenID, recordsAccounts}
+	if readOnly {
+		mint = mintAgentReadTokenSQL
+		arguments = []any{actor.ID, input.Name, hash[:], prefix, scopes, cookieLogin, cookieGeneration, tokenID, recordsAccounts}
+	}
+	token, err := scanAgentToken(tx.QueryRow(r.Context(), mint, arguments...))
 	if errors.Is(err, pgx.ErrNoRows) {
 		s.writeAuthenticationError(w, mintCallerGone(tokenID))
 		return
@@ -279,11 +301,29 @@ var mintAgentTokenSQL = `
 	insert into agent_tokens (owner, name, token_hash, prefix, scopes, projects, subject)
 	select $1::text, $2::text, $3::bytea, $4::text, $5::text[], $6::text[], ` +
 	credentialSubjectSQL("$1::text", "$7::text", "$9::uuid", "$10::boolean") + `
-	where not exists (select 1 from user_sessions where login = $7::text and generation <> $8::bigint)
-	  and not exists (select 1 from agent_tokens left join people on people.email = canonical_login(agent_tokens.owner)
-		where agent_tokens.id = $9::uuid and (agent_tokens.revoked_at is not null or ` + tokenAccountReplaced("$10::boolean") + `))
+	where ` + mintCallerStandsSQL("$7::text", "$8::bigint", "$9::uuid", "$10::boolean") + `
 	returning id::text, name, prefix, scopes, projects, created_at, last_used_at, revoked_at
 `
+
+// mintAgentReadTokenSQL is mintAgentTokenSQL for a read-only token, kept in agent_read_tokens
+// (migration 20261120023712_agent_read_tokens), which holds no list and records no account: the
+// same re-check of its caller, $6 to $9 being mintAgentTokenSQL's $7 to $10, and an answer that
+// lists no project.
+var mintAgentReadTokenSQL = `
+	insert into agent_read_tokens (owner, name, token_hash, prefix, scopes)
+	select $1::text, $2::text, $3::bytea, $4::text, $5::text[]
+	where ` + mintCallerStandsSQL("$6::text", "$7::bigint", "$8::uuid", "$9::boolean") + `
+	returning id::text, name, prefix, scopes, null::text[], created_at, last_used_at, revoked_at
+`
+
+// mintCallerStandsSQL is the SQL predicate that a mint's caller still holds the address, over the
+// statement's four values (mintAgentTokenSQL): a cookie caller's login and session generation, a
+// personal token caller's token id, and whether the account binding holds.
+func mintCallerStandsSQL(cookieLogin, cookieGeneration, tokenID, recordsAccounts string) string {
+	return "not exists (select 1 from user_sessions where login = " + cookieLogin + " and generation <> " + cookieGeneration + ")" +
+		"\n\t  and not exists (select 1 from agent_tokens left join people on people.email = canonical_login(agent_tokens.owner)" +
+		"\n\t\twhere agent_tokens.id = " + tokenID + " and (agent_tokens.revoked_at is not null or " + tokenAccountReplaced(recordsAccounts) + "))"
+}
 
 // credentialSubjectSQL is the SQL expression of the Google account (`sub`) a caller's own
 // credential is bound to, null for none, over the four values a statement names: the caller's
@@ -304,9 +344,10 @@ var mintAgentTokenSQL = `
 // people recorded it: no account that held the address before made it, so what it mints records
 // the holder and the no-account state stops there. One made before is refused
 // (tokenAccountReplaced) and binds nothing; one with no recording to compare with is bound to none,
-// as before. Any other caller is bound to none: a broker-issued token never mints or decides
-// (brokerPersonScopes). So is every caller while the binding does not hold: what is minted then
-// records no account, as a build without the binding mints it.
+// as before. Any other caller is bound to none: a broker-issued token, the approve-only one
+// included, never mints and never decides a credential request (refuseUnboundCredential). So is
+// every caller while the binding does not hold: what is minted then records no account, as a
+// build without the binding mints it.
 func credentialSubjectSQL(address, cookieLogin, tokenID, recordsAccounts string) string {
 	return "(case when " + cookieLogin + " is not null then (select sub from people where email = " + address + " and " + recordsAccounts + ")" +
 		" when " + tokenID + " is not null then coalesce((select subject from agent_tokens where id = " + tokenID + " and " + recordsAccounts + "), " +
@@ -372,14 +413,18 @@ func mintCallerGone(tokenID *string) error {
 // refuseUnboundCredential is the mint's and the decisions' own refusal of a credential that is
 // neither the person's browser (no act) nor a personal token (an act naming its token): an act
 // that names no token, which is a broker-issued token's, since every one proves its session
-// (ciphertoken.ErrNotASession) and actingPerson gives each such credential an act. No such token
-// holds the approve scope these routes require (brokerPersonScopes), so the route's scope gate
-// refuses it first. This holds the routes to that whatever the gate is given: the re-checks a
+// (ciphertoken.ErrNotASession) and actingPerson gives each such credential an act. No such token a
+// machine holds has the approve scope these routes require (brokerPersonScopes), so the route's
+// scope gate refuses it first. The approve-only token holds approve (brokerApproveOnlyScopes): it
+// is refused the mint before the route runs, since its approve list leaves the mint out
+// (refuseApproveOnlyToken), but that list names a credential request's approve and deny
+// (approveScopeRoutes), so it reaches their scope gate and passes it, and this refuses it there
+// (approverStanding). This holds the routes to that whatever the gate is given: the re-checks a
 // mint and a decision make once the body has arrived (mintAgentTokenSQL, approverStanding) and
 // the account they bind (credentialSubjectSQL) have an arm for a cookie and a personal token
-// alone, so a broker token granted approve would mint and decide with nothing read again, an
+// alone, so a broker token holding approve would mint and decide with nothing read again, an
 // account replaced while its body was held back included. It answers as the gate does, 403
-// OAUTH_SCOPE_REQUIRED for approve.
+// OAUTH_SCOPE_REQUIRED for approve, the approve-only token too.
 func refuseUnboundCredential(actor model.Actor) error {
 	if actor.Act != nil && actor.Act.TokenID == "" {
 		return missingScopeError(model.ScopeApprove,
@@ -393,9 +438,10 @@ func errTokenRevoked() error {
 	return errorf(http.StatusUnauthorized, "TOKEN_REVOKED", "agent token has been revoked")
 }
 
-// updateAgentTokenScopesInput is the body of PATCH /api/v1/me/agent-tokens/{id}.
+// updateAgentTokenScopesInput is the body of PATCH /api/v1/me/agent-tokens/{id}. Its scopes never
+// hold read: no token changes to or from read only (updateAgentTokenScopes).
 type updateAgentTokenScopesInput struct {
-	Scopes *[]string `json:"scopes" required:"true"`
+	Scopes *[]string `json:"scopes" required:"true" enum:"person,approve,p0"`
 	// Projects is the whole list the token is to use, with the mint's refusals. A body that names
 	// none leaves the token's list as it stands, which a personal token's edit is held to as a list
 	// it names (heldTokenEdit).
@@ -426,6 +472,12 @@ type updateAgentTokenScopesInput struct {
 // mint's 403 RESTRICTED_MEMBER, and one that keeps a list of any other shape - a token minted
 // before that rule, or while its owner was a full member - is 403 RESTRICTED_MEMBER too, writing
 // nothing, so the edit that makes such a token act again is the one naming its project.
+//
+// No token changes to or from read only, so both are 400 TOKEN_SCOPES_INPUT: a set that holds
+// read, since a token that writes never gains it, and any set for a read-only token, whose scopes
+// never change at all (refuseMissingToken). An agent holding a token keeps what it was given until
+// the token is revoked; a person who wants it to read only, or to write, makes a new token. A
+// restricted member's set that names read is the mint's 403 RESTRICTED_MEMBER (tokenScopes).
 func (s *server) updateAgentTokenScopes(w http.ResponseWriter, r *http.Request) {
 	actor, ok := s.actingPerson(w, r)
 	if !ok {
@@ -449,6 +501,13 @@ func (s *server) updateAgentTokenScopes(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	restricted := reader.Viewer != nil && reader.Viewer.Restricted
+	// A full member's set that holds read is refused before any other check of the set, as it
+	// was before a member could be restricted; a restricted member's is tokenScopes' refusal.
+	if !restricted && slices.Contains(*input.Scopes, model.ScopeRead) {
+		writeError(w, codeTokenScopesInput, http.StatusBadRequest,
+			"no token's scopes change to or from read: a token that writes never gains read, and a read-only token keeps the scopes it was made with. A person makes a new token for that, and revokes this one")
+		return
+	}
 	scopes, ok := tokenScopes(w, actor, input.Scopes, restricted)
 	if !ok {
 		return
@@ -494,7 +553,7 @@ func (s *server) updateAgentTokenScopes(w http.ResponseWriter, r *http.Request) 
 		err := tx.QueryRow(r.Context(), `select true from agent_tokens where id = $1 and owner = $2 for update`,
 			r.PathValue("id"), actor.ID).Scan(&held)
 		if errors.Is(err, pgx.ErrNoRows) {
-			writeError(w, "NOT_FOUND", http.StatusNotFound, "not found")
+			s.refuseMissingToken(w, r, tx, actor.ID)
 			return
 		}
 		if err != nil {
@@ -517,21 +576,7 @@ func (s *server) updateAgentTokenScopes(w http.ResponseWriter, r *http.Request) 
 		returning id::text, name, prefix, scopes, projects, created_at, last_used_at, revoked_at
 	`, r.PathValue("id"), actor.ID, scopes, projects))
 	if errors.Is(err, pgx.ErrNoRows) {
-		// No token of the caller's that writes. One of the caller's read-only tokens is still
-		// refused by name, so the person learns why rather than that it is not there.
-		var readOnly bool
-		if err := tx.QueryRow(r.Context(), `
-			select exists (select 1 from agent_read_tokens where id = $1 and owner = $2)
-		`, r.PathValue("id"), actor.ID).Scan(&readOnly); err != nil {
-			s.writeHandlerError(w, fmt.Errorf("update agent token scopes: %w", err))
-			return
-		}
-		if readOnly {
-			writeError(w, codeTokenScopesInput, http.StatusBadRequest,
-				"this token is read only, and a read-only token keeps the scopes it was made with. A person makes a new token for other scopes, and revokes this one")
-			return
-		}
-		writeError(w, "NOT_FOUND", http.StatusNotFound, "not found")
+		s.refuseMissingToken(w, r, tx, actor.ID)
 		return
 	}
 	if err != nil {
@@ -555,6 +600,25 @@ func (s *server) updateAgentTokenScopes(w http.ResponseWriter, r *http.Request) 
 	WriteJSON(w, http.StatusOK, token)
 }
 
+// refuseMissingToken answers an edit that finds no token of owner's in agent_tokens, in tx. One of
+// owner's read-only tokens is refused by name, 400 TOKEN_SCOPES_INPUT, so the person learns why
+// rather than that it is not there; any other id is 404 NOT_FOUND.
+func (s *server) refuseMissingToken(w http.ResponseWriter, r *http.Request, tx pgx.Tx, owner string) {
+	var readOnly bool
+	if err := tx.QueryRow(r.Context(), `
+		select exists (select 1 from agent_read_tokens where id = $1 and owner = $2)
+	`, r.PathValue("id"), owner).Scan(&readOnly); err != nil {
+		s.writeHandlerError(w, fmt.Errorf("update agent token scopes: %w", err))
+		return
+	}
+	if readOnly {
+		writeError(w, codeTokenScopesInput, http.StatusBadRequest,
+			"this token is read only, and a read-only token keeps the scopes it was made with. A person makes a new token for other scopes, and revokes this one")
+		return
+	}
+	writeError(w, "NOT_FOUND", http.StatusNotFound, "not found")
+}
+
 // codeTokenScopesInput refuses a set no token may hold: a word that is no scope this deployment
 // knows, approve without person, which agent_tokens' own check refuses as well, or read beside
 // approve or p0, which agent_read_tokens' own check refuses as well. It also refuses any change of
@@ -567,15 +631,22 @@ const codeTokenScopesInput = "TOKEN_SCOPES_INPUT"
 var tokenWords = append(slices.Clip(model.Scopes), model.ScopeRead)
 
 // tokenScopes is the set a mint or an edit gives a token: the one the body names, or, where it
-// names none, the set the caller's own credential holds. It writes its own refusal and answers
-// false for a set the token may not hold (codeTokenScopesInput) and for one the caller does not
-// hold itself (403 OAUTH_SCOPE_REQUIRED): a credential gives a token only what it holds, or a
-// token narrowed to one scope would mint itself a wide one. A scope named twice is stored once.
+// names none, the set the caller's own credential holds but p0 (callerScopes). It writes its own
+// refusal and answers false for a set the token may not hold (codeTokenScopesInput) and for one
+// the caller does not hold itself (403 OAUTH_SCOPE_REQUIRED): a credential gives a token only what
+// it holds, or a token narrowed to one scope would mint itself a wide one. So a credential without
+// p0 that names p0 is refused, also where the token it changes holds p0 already, since a change
+// sends the token's whole set. read is the one word the caller need not hold, since it gives the
+// token nothing: it narrows the token to reading. A read-only token holds read alone or beside
+// person, never beside approve or p0, since settling what a person settles and setting an issue's
+// priority to P0 are writes. A scope named twice is stored once.
 //
 // A restricted member's token holds no scope (R16), restricted being whether the caller is one: a
-// body naming none, or naming the empty set, gives it none, and one naming any scope is 403
-// RESTRICTED_MEMBER saying so, whatever the caller's own credential holds - their browser holds
-// both, since the member themselves approves their own machine's login there.
+// body naming none, or naming the empty set, gives it none, and one naming any word - person,
+// approve, p0 and read alike - is 403 RESTRICTED_MEMBER saying so, before any other check of the
+// set and whatever the caller's own credential holds: their browser holds every scope, since the
+// member themselves approves their own machine's login there. So a restricted member makes no
+// read-only token, which would list no project.
 func tokenScopes(w http.ResponseWriter, actor model.Actor, requested *[]string, restricted bool) ([]string, bool) {
 	if restricted {
 		if requested != nil && len(*requested) > 0 {
@@ -633,6 +704,22 @@ func withoutP0(scopes []string) []string {
 		return scopes
 	}
 	return slices.DeleteFunc(slices.Clone(scopes), func(scope string) bool { return scope == model.ScopeP0 })
+}
+
+// mintDefaultScopes is the set a mint that names no scopes gives when a browser makes it: every
+// scope a person's own credential holds (model.Scopes) but p0. Every such mint shares this one
+// slice, so none allocates; nothing writes it.
+var mintDefaultScopes = withoutP0(model.Scopes)
+
+// callerScopes is the set a mint that names no scopes gives: every scope the caller's own
+// credential holds but p0. That is the scopes actingPerson copied onto Act for a token that acted
+// for its person, less p0, and mintDefaultScopes for a browser, whose cookie names no agent
+// because the person themselves acted.
+func callerScopes(actor model.Actor) []string {
+	if actor.Act == nil {
+		return mintDefaultScopes
+	}
+	return withoutP0(actor.Act.Scopes)
 }
 
 // codeTokenProjectsInput refuses a list no token may hold: more keys than
@@ -845,6 +932,9 @@ func heldTokenEdit(w http.ResponseWriter, viewer *model.Viewer, own, standing []
 	return true
 }
 
+// revokeAgentToken is DELETE /api/v1/me/agent-tokens/{id}: it revokes one of the caller's tokens,
+// whichever table keeps it, in one statement. A token already revoked keeps the time it was first
+// revoked, so a repeat answers 204 as the first did.
 func (s *server) revokeAgentToken(w http.ResponseWriter, r *http.Request) {
 	actor, ok := s.actingPerson(w, r)
 	if !ok {
@@ -885,8 +975,13 @@ func (s *server) revokeAgentToken(w http.ResponseWriter, r *http.Request) {
 const codeTokenOwnerNotAdmitted = "TOKEN_OWNER_NOT_ADMITTED"
 
 // personalTokenActor resolves a personal token (dsp_) to the credential its row says it is: its
-// owner, its scopes and its list of projects. A plaintext no row holds is no actor, and a revoked
-// token is 401 TOKEN_REVOKED. A token carries its owner's sign-in to an agent, so it acts only
+// owner, its scopes and its list of projects. It looks the token's hash up in agent_tokens and
+// agent_read_tokens in one statement. A plaintext neither table holds is no actor, and a revoked
+// token is 401 TOKEN_REVOKED. A row of agent_read_tokens is a read-only credential
+// (model.Credential.ReadOnly), which the read-only gate holds to the read class: its scopes are the
+// person scope where the row holds it, and never read, which marks the credential and is no scope
+// a route can require; it lists no project and records no account, and every check below reads it
+// as such a row of agent_tokens. A token carries its owner's sign-in to an agent, so it acts only
 // while its owner may still sign in: a restricted member's token is checked at every use
 // (restrictedOwnerAdmitted, which asks the sign-in rule itself), so it stops the moment the rule
 // would no longer admit its owner (the deployment admitting nobody from outside, the owner's
@@ -930,8 +1025,11 @@ const codeTokenOwnerNotAdmitted = "TOKEN_OWNER_NOT_ADMITTED"
 // other than one project is 403 RESTRICTED_MEMBER (errRestrictedTokenList): it cannot be held to
 // one project without choosing one its owner never named, and one listing none reaches no private
 // project of theirs anyway (access.CredentialCovers), so it is told why and what to do, and acts
-// again once its owner names one (PATCH /api/v1/me/agent-tokens/{id}). Both follow the hold, so a
-// held owner is told to sign in first, and neither costs a read.
+// again once its owner names one (PATCH /api/v1/me/agent-tokens/{id}); a read-only token lists
+// none, so a restricted owner's is refused so and acts again never. Both follow the hold, so a
+// held owner is told to sign in first, and neither costs a read. A token's use is written to its
+// own row at most once a minute, so a busy agent costs its row one write a minute rather than one a
+// request.
 func (s *server) personalTokenActor(ctx context.Context, plaintext string) (model.Actor, error) {
 	hash := sha256.Sum256([]byte(plaintext))
 	var id, name, owner string
@@ -940,10 +1038,11 @@ func (s *server) personalTokenActor(ctx context.Context, plaintext string) (mode
 	var memberKind *string
 	var replaced bool
 	var hold ownerHold
+	var readOnly bool
 	legacyWindow, markWindow := store.AccountBindingWindows()
 	err := s.deps.Store.Pool.QueryRow(ctx, personalTokenActorSQL, hash[:], s.deps.SignInIssuer != "", legacyWindow, markWindow).
 		Scan(&id, &name, &owner, &scopes, &projects, &revokedAt, &memberKind, &replaced,
-			&hold.recorded, &hold.stored, &hold.age)
+			&hold.recorded, &hold.stored, &hold.age, &readOnly)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return model.Actor{}, nil
 	}
@@ -978,26 +1077,40 @@ func (s *server) personalTokenActor(ctx context.Context, plaintext string) (mode
 	}
 	// The token's own row says what it may do and which projects it may use, and it names the
 	// credential that acted: the person's token, not the person at a browser.
+	credential := &model.Credential{Scopes: scopes, TokenID: id, TokenName: name, Projects: projects}
+	if readOnly {
+		credential.Scopes = slices.DeleteFunc(scopes, func(scope string) bool { return scope == model.ScopeRead })
+		credential.ReadOnly = true
+	}
 	return model.Actor{
 		Kind:       "session",
 		Owner:      &owner,
-		Credential: &model.Credential{Scopes: scopes, TokenID: id, TokenName: name, Projects: projects},
+		Credential: credential,
 	}, nil
 }
 
 // personalTokenActorSQL is personalTokenActor's one statement, over the token's hash ($1), whether
 // the deployment's sign-in records accounts ($2) and the binding's two windows ($3, $4,
-// store.AccountBindingWindows); last, the owner's hold (ownerHoldColumns). Named so a plan row
+// store.AccountBindingWindows); last, the owner's hold (ownerHoldColumns) and whether the row is
+// agent_read_tokens'. The two tables' rows are read as one set under agent_tokens' name, a read-only
+// row with no list and no account, so tokenAccountReplaced reads either. Named so a plan row
 // explains the statement the request runs
 // (TestTheArmForATokenMintedWhileARefusedTokenWasLiveReadsOnlyTheAddresssTokens).
 var personalTokenActorSQL = `
 		select agent_tokens.id::text, agent_tokens.name, agent_tokens.owner, agent_tokens.scopes,
 			agent_tokens.projects, agent_tokens.revoked_at, people.member_kind,
 			` + tokenAccountReplaced(accountsHeldSQL("$2::boolean", "$3", "$4")) + `,
-			` + ownerHoldColumns + `
-		from agent_tokens
+			` + ownerHoldColumns + `, agent_tokens.read_only
+		from (
+			select id, name, owner, scopes, projects, subject, created_at, revoked_at, false as read_only
+			from agent_tokens
+			where token_hash = $1
+			union all
+			select id, name, owner, scopes, null, null, created_at, revoked_at, true
+			from agent_read_tokens
+			where token_hash = $1
+		) agent_tokens
 		left join people on people.email = canonical_login(agent_tokens.owner)
-		where agent_tokens.token_hash = $1
 	`
 
 // codeMembershipHeld refuses, 401, what a person Dispatch holds does with a credential: use their

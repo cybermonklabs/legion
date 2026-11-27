@@ -78,8 +78,8 @@ func (s *server) decideBrokerToken(handler http.HandlerFunc) http.HandlerFunc {
 // read in its one statement (broker true: a broker-issued token names its one project, or none,
 // for its whole life, so no grant is compared). The heartbeat holds the connection to that
 // (memberKindPerson, personRestricted), with no read of its own, so a socket a demoted member's
-// broker token opened closes too. A token naming no person, a read-only one among them, answers
-// no caller. Nothing is admitted through this, only kept.
+// broker token opened closes too. A token naming no person, the read entry's read-only one and a
+// job's among them, answers no caller. Nothing is admitted through this, only kept.
 func (s *server) callerStillResolves(r *http.Request) (caller model.Actor, broker bool, err error) {
 	if _, presented := ciphertoken.Presented(r); presented {
 		if s.deps.BrokerTokens == nil {
@@ -190,8 +190,8 @@ func errBrokerTokenLapsed() error {
 // account nor its credential's creation, and that is how it is told apart: a restricted member's
 // machine login trades for a named token too (exchange.Set.Machine, held to one project), but a
 // person's credential made it and its trade recorded that credential, so it is held to its account
-// as the person scope's is (personCredential). A named token holds no scope, so it never mints or
-// decides.
+// as the person scope's is (personCredential). A named token holds no scope but legion-status, a
+// Legion daemon's own (legionStatusScopes), so it never mints or decides.
 //
 // That leaves no window to wait out while the broker pays a revocation: every credential the
 // replaced account holds records it, or records no account and was made before the recording that
@@ -210,8 +210,9 @@ func errBrokerTokenLapsed() error {
 // member, or of a person no people row holds, costs that one read and answers as it always did
 // while its account is theirs; only a restricted member's reads the lists. A token naming a
 // service and no person is not asked. The admission answers whether the person is restricted,
-// which a live socket's heartbeat holds it to. A broker token never mints or decides
-// (brokerPersonScopes), so nothing past the admission reads its account.
+// which a live socket's heartbeat holds it to. A broker token never mints and never decides a
+// credential request, an approve-only one included (refuseUnboundCredential), so nothing past the
+// admission reads its account.
 //
 // Last, where a Google rule signs people in (Deps.Standing set), the same statement reads whether
 // Dispatch records a hold of the person (recordedHoldSQL), which is 401 MEMBERSHIP_HELD in the
@@ -422,8 +423,9 @@ type brokerAdmission struct {
 // the address's account or less than brokerCredentialMargin after it, or at an unrecorded time.
 // It is false for an address recording no account, and, for a token recording none, with no
 // recording time, so nothing is refused that predates the column. An admission reads it
-// (brokerPersonAdmitted), the one place it is read: a broker token neither decides nor mints
-// (brokerPersonScopes), so no read made again once a request's body has arrived asks it.
+// (brokerPersonAdmitted), the one place it is read: a broker token neither mints nor decides a
+// credential request (refuseUnboundCredential), so no read made again once a request's body has
+// arrived asks it.
 func brokerAccountReplaced(address, subject, issuer, foreign, createdAt, held string) string {
 	return "(exists (select 1 from people where email = " + address + " and sub is not null and (" +
 		foreign + " or (nullif(" + subject + ", '') is not null and (sub <> " + subject + " or coalesce(sub_issuer, '') <> " + issuer + "))" +
@@ -471,9 +473,20 @@ func errNoBrokerConfigured() *apiError {
 
 // brokerPersonScopes is what a broker token that acts for its person holds, a read-only one
 // included, but for an approve-only token (brokerApproveOnlyScopes): the person scope alone, never
-// approve (brokerTokenActor). Every such credential shares this one slice, as personCredential
-// shares model.Scopes, so a request allocates none; nothing writes it.
+// approve (brokerTokenActor). Every such credential shares this one slice, as model.BrowserActor's
+// credential shares model.Scopes, so a request allocates none; nothing writes it.
 var brokerPersonScopes = []string{model.ScopePerson}
+
+// brokerApproveOnlyScopes is what an approve-only token holds (brokerTokenActor): the person and
+// approve scopes, never p0, which no broker-issued token holds. It is a slice of its own, as
+// brokerPersonScopes is, so no request allocates one; nothing writes it.
+var brokerApproveOnlyScopes = []string{model.ScopePerson, model.ScopeApprove}
+
+// legionStatusScopes is the scopes of a Legion daemon's own broker token: model.ScopeLegionStatus
+// alone. It is a slice of its own, as brokerPersonScopes is, so no request allocates one and
+// nothing appends to another credential's scopes. Read it, never write it: every daemon's
+// credential shares this one slice.
+var legionStatusScopes = []string{model.ScopeLegionStatus}
 
 // maxTiedSessions bounds tiedSessions: once it holds this many pairs it starts again empty, which
 // costs a later request of each pair one more statement, access.TieSession's, that finds its row
@@ -537,11 +550,11 @@ func (s *server) tieBrokerSession(ctx context.Context, session, person string, p
 // project its entry names or `public` with its entry's private projects, beside which it reaches
 // every public project. It writes as its session, for its service and under no person:
 // writeNeedsASignedInPerson lets a broker credential naming no person write under those two
-// scopes alone (project_scope.go). A `named` one sets Actor.Project (below), so the project check
-// judges it as it judges a person's named token for that project; a `public` one names no one
-// project, so the project check holds it to none and its writes that belong to the deployment
-// follow the rule of a token naming no project. It holds no OAuth scope, so the rows that need
-// `person` or `approve` turn it away (gateRouteScopes).
+// scopes alone (project_scope.go). A `named` one sets Credential.NamedProject (below), so the
+// project check judges it as it judges a person's named token for that project; a `public` one
+// names no one project, so the project check holds it to none and its writes that belong to the
+// deployment follow the rule of a token naming no project. It holds no OAuth scope, so the rows
+// that need `person` or `approve` turn it away (gateRouteScopes).
 //
 // A caller that names a service and no person under the project scope named and names no project
 // is an account entry's that names no person and no project (cipher/exchange's Set.Pod): its
@@ -671,29 +684,65 @@ func (s *server) brokerTokenActor(r *http.Request) (model.Actor, bool, error) {
 	}
 	// A token the broker scoped to its person holds the person scope: that token is the person's
 	// own agent acting for them, so it reads, writes and answers their questions as they do. No
-	// broker-issued token holds approve, whatever its project scope (brokerPersonScopes): every
-	// one is made from a file on the machine that holds it, a machine login or a person's sign-in,
-	// so whoever copies that file holds it, and approve settles what only the person settles - an
-	// approval, a credential decision or revoke, a personal token. Those need the person's browser
-	// session or a personal token the person gave approve. A token scoped to a project gets no
-	// scope, because the deployment mapped that token to a project and not to the person: it
-	// proves a session, not that any person stands behind the request. A restricted member's
-	// machine login trades for one too: a person's own credential made that one, and it is held to
-	// that person's account (brokerPersonAdmitted, personCredential), but it is the outside
-	// person's agent held to the one project they work on, which acts in that project and settles
-	// nothing of the person's own, so it holds no scope either. A restricted member's token the
-	// broker scoped to their person gets none for the same reason: a broker whose project check is
-	// off, an older broker during a rollout, or a token minted before the broker held restricted
-	// members to one project can still answer one, and brokerPersonAdmitted has read the member's
-	// kind above, so the scope does not rest on the broker's check alone. Such a token that lists
-	// other than one project acts for nobody (restrictedBrokerTokenList, above). A token that names a
-	// service and no person gets none either, whatever scope the broker answered: there is no
-	// person for it to act as, and a scope that said otherwise would let it act as the session's
-	// own id on the routes that read what belongs to a person. A read-only token is one of those,
-	// and its one scope, read, is carried as the credential's ReadOnly mark and never as a scope a
-	// route could require.
+	// broker-issued token a machine holds gets approve, whatever its project scope
+	// (brokerPersonScopes): every one is made from a file on the machine that holds it, a machine
+	// login or a person's sign-in, so whoever copies that file holds it, and approve settles what
+	// only the person settles - an approval, a credential decision or revoke, a personal token.
+	// Those need the person's browser session, a personal token the person gave approve, or the
+	// one broker-issued token no machine holds: an approve-only token (ciphertoken.Caller.
+	// ApproveOnly), which the secrets broker mints for a person's approve grant, binds to its own
+	// pod's key and spends through its proxy without ever releasing it. That token holds person
+	// and approve (brokerApproveOnlyScopes), never p0, and is marked approve-only, so
+	// refuseApproveOnlyToken holds it to the approve list (approveScopeRoutes) before any route
+	// runs. That list lets it reach the scope gate of a credential request's approve and deny
+	// too, but their handler refuses it (approverStanding, refuseUnboundCredential), as it
+	// refuses every broker-issued token, since nothing there reads a broker token's account again
+	// once the body has arrived. A token scoped to a project gets no person scope, because the
+	// deployment mapped that token to a project and not to the person: it proves a session, not
+	// that any person stands behind the request. A token that names a service and no person gets
+	// none either, whatever scope the broker answered: there is no person for it to act as, and a
+	// scope that said otherwise would let it act as the session's own id on the routes that read
+	// what belongs to a person. A job's token, named or public, is one of those.
+	//
+	// A read-only token is read by its base word (ciphertoken.Caller.ProjectScope) as the same
+	// token without read would be: one narrowed from a token that acts as its person still acts
+	// for that person, so it holds the person scope, and every other holds none. The scope read
+	// itself is carried as the credential's ReadOnly mark and never as a scope a route could
+	// require, so no recorded act names it.
+	//
+	// A token scoped to one project whose answer holds legion-status gets that scope alone
+	// (legionStatusScopes). The broker grants it to a Legion daemon's own token only. A named
+	// token that names no project names a person, as the shared public-session account's token
+	// does. legion-status on such a token would pass R26 on the Legion issues of every project,
+	// so it gets no scope. Dispatch does not check the token's session: the broker decides who
+	// holds the scope. No credential holds it beside person, and no act records it: the act of a
+	// proven session (bearerSessionActor) and of a person (actingPerson) record the credential's
+	// scopes through actScopes, which leaves legion-status out. oneProject is also the
+	// test for the one project the token may write (Credential.NamedProject, below), so the two
+	// cannot drift apart.
+	//
+	// A restricted member's token gets no scope at all, whatever the cases above would give it,
+	// so that case is tested first. A restricted member's machine login trades for a token scoped
+	// to a project: a person's own credential made that one, and it is held to that person's
+	// account (brokerPersonAdmitted, personCredential), but it is the outside person's agent held
+	// to the one project they work on, which acts in that project and settles nothing of the
+	// person's own. A restricted member's token the broker scoped to their person, a read-only
+	// one narrowed from it included, gets none for the same reason: a broker whose project check
+	// is off, an older broker during a rollout, or a token minted before the broker held
+	// restricted members to one project can still answer one, and brokerPersonAdmitted has read
+	// the member's kind above, so the scope does not rest on the broker's check alone. Their
+	// approve-only token gets none either, approve included: such a member decides a pending
+	// machine login of their own at their browser alone (ownMachineLogin), never through a token.
+	// Such a token that lists other than one project acts for nobody (restrictedBrokerTokenList,
+	// above).
+	oneProject := caller.ProjectScope == ciphertoken.ProjectScopeNamed && len(caller.Projects) == 1
 	var scopes []string
-	if caller.Person != "" && caller.ProjectScope == ciphertoken.ProjectScopePerson && !admission.Restricted {
+	switch {
+	case admission.Restricted:
+		// No scope (above).
+	case caller.ApproveOnly:
+		scopes = brokerApproveOnlyScopes
+	case caller.Person != "" && caller.ProjectScope == ciphertoken.ProjectScopePerson:
 		scopes = brokerPersonScopes
 	case caller.LegionStatus && oneProject:
 		scopes = legionStatusScopes
@@ -737,27 +786,35 @@ func (s *server) brokerTokenActor(r *http.Request) (model.Actor, bool, error) {
 	if caller.Service != "" {
 		actor.Service = &caller.Service
 	}
-	// A token's list is its credential's, which the one rule of what a caller sees reads
-	// (access.CredentialCovers): for a full member's token it decides only which private projects
-	// the token reaches, so while the deployment holds no private project it changes nothing the
-	// token did before projects could be private (R9); for a restricted member's token it narrows
-	// every project (R3). A token held to one project names that project: one an operator's entry
-	// mapped, today's named-scope rule, and a restricted member's machine login's (the broker's
-	// exchange.Set.Machine); ciphertoken refuses a named token naming two. A full member's such
-	// token has its writes held to that project as they were before, whatever the deployment holds
-	// (NamedProject; namedProjectOf), and a restricted member's is held by its list, which covers
-	// that project alone. A token acting as its person carries the list its trade asked for
-	// (ciphertoken.Caller.Projects), which holds no write by name, since a dev box session's person
-	// writes wherever they may. Every other token carries no list: a named token naming none (the
-	// shared public-session account's), which reads and writes as a token naming no project does;
-	// the token of a machine naming a service and no person, which names no project at all; and a
-	// read-only token, whose project scope none names no project and writes none.
-	switch {
-	case caller.ProjectScope == ciphertoken.ProjectScopeNamed && len(caller.Projects) == 1:
-		actor.Credential.Projects = caller.Projects
+	// A token's list is its credential's, carried as the broker answered it (Projects, above),
+	// which the one rule of what a caller sees reads (access.CredentialCovers): for a full
+	// member's token it decides only which private projects the token reaches, so while the
+	// deployment holds no private project it changes nothing the token did before projects could
+	// be private (R9); for a restricted member's token it narrows every project (R3).
+	//
+	// A token held to one project names that project (NamedProject, which namedProjectOf reads):
+	// one an operator's entry mapped, today's named-scope rule; a job's named token, whose entry
+	// names one project, named the same way, so the project check judges the two alike; and a
+	// restricted member's machine login's (the broker's exchange.Set.Machine). A token narrowed
+	// from a named one names its project too, as the project it reads as, and writes none. A full
+	// member's such token writes every project's objects that a token naming no project may
+	// write. The one exception is a private project it does not name (access.CredentialCovers). A
+	// target that resolves to no project or to nothing is still refused it (withinProjectScope).
+	// A restricted member's such token is held by its list, which covers that project alone.
+	// ciphertoken refuses a named token naming two, and a named token naming no person, no
+	// project and a service that is no account. A named token naming none (the shared
+	// public-session account's, and an account entry's naming no person) writes wherever
+	// Dispatch's own rules let it.
+	//
+	// A token acting as its person carries the list its trade asked for
+	// (ciphertoken.Caller.Projects), and that list holds no write by name: a dev box session's
+	// person writes wherever they may, and the token of a machine naming a service and no person
+	// names no project at all. A job's public token names no one project either, so it writes
+	// wherever a token naming no project may: the private projects of its list limit no write
+	// here. Nor does a token of the project scope none, the read entry's or one narrowed from it,
+	// which names no project and writes none.
+	if oneProject {
 		actor.Credential.NamedProject = caller.Projects[0]
-	case caller.ProjectScope == ciphertoken.ProjectScopePerson && len(caller.Projects) > 0:
-		actor.Credential.Projects = caller.Projects
 	}
 	// The writer the line names: the person, or the service for a token that names none, under
 	// the `service:` prefix requestKeyLogin spells a service with, so one field never reads a
