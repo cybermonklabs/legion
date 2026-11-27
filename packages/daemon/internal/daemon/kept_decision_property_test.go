@@ -376,6 +376,7 @@ func (p *keptPublisher) published() []outboxPublish {
 type keptForgetStore struct {
 	record.Store
 	fails atomic.Bool
+	run   *keptRun
 	// failedTellings is every catch-up telling, by the outbox row its publish went out under (the
 	// row a re-held copy copies), whose forget failed: the telling's own write did not commit, so
 	// the decision it told stands kept and a later catch-up may name it again (held, tell).
@@ -823,6 +824,11 @@ type keptRun struct {
 	// audit holds each row the run claims to the lanes' claim rule (keptLaneAudit). It is nil, and
 	// audits nothing, unless TestTheKeptModelRunsOnlyRowsALaneWouldClaim sets it.
 	audit *keptLaneAudit
+	// faults counts the fault states the regression seeds guard (kept_decision_faults_test.go),
+	// and delivering is the row whose publish raceRow holds open with a delivering answer, set for
+	// the time the race op runs so DropCatchUps can read it.
+	faults     keptFaultMarkers
+	delivering atomic.Int64
 }
 
 // A person's decision on a tree nobody in it can hear reaches an architect of that tree exactly
@@ -1039,6 +1045,7 @@ func newKeptRun(t *testing.T, seed int64, steps int) *keptRun {
 		applied:    map[string]bool{},
 		resent:     map[string]int64{},
 	}
+	records.run = run
 	run.publisher.atPublish = run.rootGeneration
 	parent, childKey := keptRoot, keptChild
 	run.root = &keptTree{key: keptRoot, token: mustClaimToken(t, keptRoot, claim.RoleArchitect), conn: newKeptConn(),
@@ -2230,6 +2237,7 @@ func (r *keptRun) raceRow() {
 	}
 	race := r.prepareRace(ops[r.rng.IntN(len(ops))])
 	race.mode = []keptPublishMode{keptDelivers, keptReceiptTimeout}[r.rng.IntN(2)]
+	r.markDelivering(race, row.ID)
 	answered := r.publisher.answers()
 	r.publisher.arm(race)
 	claimed, runErr := r.runOne(keptSiteRaceCatchUp, &row, payload)
@@ -2256,9 +2264,14 @@ func (r *keptRun) raceRow() {
 	// publish moved the root or its architect past the catch-up, or the row was the last copy the
 	// re-hold queues. Nothing takes over the claims this row holds, so they are handed to a fresh
 	// catch-up.
-	if r.publisher.answers()[keptReceiptTimeout] > answered[keptReceiptTimeout] && r.copiesOf(row.ID) == 0 {
-		r.counts.supersededTimeouts++
-		r.tracef("the re-hold of row %d queued no copy: the publish was superseded while it ran or its re-holds are spent, so what it claimed is handed over", row.ID)
+	if r.publisher.answers()[keptReceiptTimeout] > answered[keptReceiptTimeout] {
+		if r.copiesOf(row.ID) == 0 {
+			r.counts.supersededTimeouts++
+			r.tracef("the re-hold of row %d queued no copy: the publish was superseded while it ran or its re-holds are spent, so what it claimed is handed over", row.ID)
+		}
+		if runErr == nil {
+			r.markSpentRehold(row, payload)
+		}
 	}
 }
 
@@ -3741,6 +3754,9 @@ func (r *keptRun) tell(telling keptTelling) {
 		if !before.prompt && r.records.tellingFailed(before.row) {
 			excused++
 		}
+	}
+	if earlier > 0 && excused > 0 {
+		r.markToldAgainAfterAFailedWrite(telling.ref, telling.tree)
 	}
 	switch {
 	case earlier == 0:

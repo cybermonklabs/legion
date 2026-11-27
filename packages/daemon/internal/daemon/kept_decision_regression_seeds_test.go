@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"fmt"
+	"slices"
 	"testing"
 )
 
@@ -28,9 +29,9 @@ import (
 // again beside the fresh catch-up, and the architect was told it twice. That late lease stood for
 // a lane's claim until #2743 put the issue's lock in ClaimRow, which the drop takes too, so no lane
 // makes that schedule while its claim stands (record's
-// TestDroppingCatchUpsLeavesTheRowALaneIsLeasing guards the lock); the model now leases every row
-// of a step before any of them runs (runTogether), so it no longer makes that schedule either
-// (dispatch://INFRA-2836); 701 spent a catch-up's re-holds while
+// TestDroppingCatchUpsLeavesTheRowALaneIsLeasing guards the lock); the model now claims every row
+// of a step through ClaimRow before any of them runs (runTogether), so it no longer makes that
+// schedule either (dispatch://INFRA-2836); 701 spent a catch-up's re-holds while
 // its architect held its launch, and the row's deletion left the decision with nothing to name it
 // (reholdNotice now hands it to a fresh catch-up, spentKept); 41 published a catch-up (row 112)
 // whose own telling write then failed, so the decision stood kept and a later catch-up (row 115)
@@ -77,6 +78,50 @@ func TestKeptDecisionsRegressionSeeds(t *testing.T) {
 			run.quiesce()
 			run.held()
 			run.report()
+		})
+	}
+}
+
+// keptFaultSeed pairs one regression seed of keptLongRegressionSeeds with the fault state it is
+// kept for, the seek that steers the run to that state (none until the seeks are added), and the
+// marker that counts how many times the run reached it.
+type keptFaultSeed struct {
+	seed   int64
+	fault  string
+	seek   func(*keptRun)
+	marker func(*keptRun) int64
+}
+
+var keptFaultSeeds = []keptFaultSeed{
+	{seed: 41, fault: keptFaultToldAgainAfterAFailedWrite, marker: func(r *keptRun) int64 { return r.faults.toldAgainAfterAFailedWrite.Load() }},
+	{seed: 427, fault: keptFaultDropBesideADeliveringTelling, marker: func(r *keptRun) int64 { return r.faults.dropBesideADeliveringTelling.Load() }},
+	{seed: 701, fault: keptFaultSpentRehold, marker: func(r *keptRun) int64 { return r.faults.spentRehold.Load() }},
+}
+
+// Each of seeds 41, 427 and 701 of keptLongRegressionSeeds is kept for a named fault of the
+// kept-decision machinery; a seed that passes without ever reaching that state no longer guards it.
+// This test runs each at 300 steps and fails any whose marker does not fire.
+func TestEachKeptFaultSeedReachesTheStateOfItsFault(t *testing.T) {
+	t.Parallel()
+	for _, tc := range keptFaultSeeds {
+		t.Run(fmt.Sprintf("seed-%d", tc.seed), func(t *testing.T) {
+			t.Parallel()
+			if !slices.Contains(keptLongRegressionSeeds, tc.seed) {
+				t.Fatalf("seed %d is not in keptLongRegressionSeeds", tc.seed)
+			}
+			run := newKeptRun(t, tc.seed, 300)
+			if tc.seek != nil {
+				tc.seek(run)
+			}
+			run.drive()
+			run.quiesce()
+			run.held()
+			run.report()
+			reached := tc.marker(run)
+			t.Logf("seed %d: %s reached %d times", tc.seed, tc.fault, reached)
+			if reached == 0 {
+				t.Fatalf("seed %d: %s reached 0 times; the seed does not reach the state of its fault", tc.seed, tc.fault)
+			}
 		})
 	}
 }
