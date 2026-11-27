@@ -564,6 +564,20 @@ func (c *comparisonReader) nothingReason(ctx context.Context, issueKey string) s
 // learn reads no bases and no pull requests whose answer is not known. answer reads both after
 // learn (comparedWith, notKnownOf), so each holds every row that this read's read-throughs wrote,
 // and the same answer names a pull request it learned (review 18, note 3).
+//
+// readThroughsPerRead bounds what one read spends: learn reads commits through one call after
+// another, so an issue whose results stand at scores of commits no stored head names would pay a
+// GitHub round trip for each of them before the first check is answered — a production read of
+// an issue with many such results took longer than two minutes, where the same read with ?at=,
+// which reads nothing through, took 8.3 s
+// (dispatch://INFRA-3992/comment/56fe3d7a-64af-456c-bff5-cd1c977c6bc0). Past the bound the read
+// answers each remaining result from the stored rows, exactly as a read that learned nothing
+// about it does, and the next read reads more of them: each commit this read learned is claimed
+// (delivery.CommitPullReads) and each one it left is not, so the reads walk the commits rather
+// than one read paying for all of them. The Verification tab refetches on every result.recorded,
+// and a reader's own refresh is another read.
+const readThroughsPerRead = 12
+
 func (c *comparisonReader) learn(ctx context.Context, checks []model.CheckBlock) {
 	if c.at != noCommitNamed {
 		return
@@ -576,6 +590,9 @@ func (c *comparisonReader) learn(ctx context.Context, checks []model.CheckBlock)
 			key := [2]string{result.CheckIssueKey, result.CommitSHA}
 			if _, asked := c.readThroughs[key]; asked {
 				continue
+			}
+			if len(c.readThroughs) >= readThroughsPerRead {
+				return
 			}
 			c.readThroughs[key] = struct{}{}
 			c.readThroughHead(ctx, result)
