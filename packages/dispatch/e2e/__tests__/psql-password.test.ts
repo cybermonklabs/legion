@@ -214,13 +214,12 @@ test("the shared corpus has accepted and refused cases", () => {
   expect([corpus.accepted.length > 0, corpus.refused.length > 0]).toEqual([true, true]);
 });
 
-test.each(corpus.accepted)("the shared corpus: splits $url as libpq does", ({
-  url,
-  password,
-  bare,
-}) => {
-  expect(splitDatabaseUrl(url)).toEqual({ url: bare, password: password ?? undefined });
-});
+test.each(corpus.accepted)(
+  "the shared corpus: splits $url as libpq does",
+  ({ url, password, bare }) => {
+    expect(splitDatabaseUrl(url)).toEqual({ url: bare, password: password ?? undefined });
+  }
+);
 
 test.each(corpus.refused)("the shared corpus: refuses $url, naming $fault", ({ url, fault }) => {
   expect(() => splitDatabaseUrl(url)).toThrow(
