@@ -19,6 +19,7 @@ import (
 
 	"github.com/sjawhar/envoy/cipheraddr"
 	"github.com/sjawhar/envoy/internal/cipherclient"
+	"github.com/sjawhar/envoy/internal/testport"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -114,7 +115,7 @@ func TestAFailedRequestIsKnownOrUnknownByWhetherTheBrokerGotIt(t *testing.T) {
 				r.login(t)
 			}
 			if tc.refuse {
-				r.srv.Broker.URL = cipheraddr.New("http://127.0.0.1:1")
+				r.srv.Broker.URL = cipheraddr.New("http://" + testport.Refused(t))
 			}
 			if tc.fail != nil {
 				r.fake.mu.Lock()
@@ -150,6 +151,8 @@ func (s *heldSignIns) Current(context.Context) (*cipherclient.Authority, error) 
 }
 
 func (s *heldSignIns) Refused(context.Context, string) error { return nil }
+
+func (s *heldSignIns) SignedIn() (string, string, error) { return "", "", nil }
 
 // TestAnOpHeldOnALockAnswersUnknownAtTheBoundAndSendsNothingAfter: an enroll-session-key held on
 // a lock that does not watch the op's context is answered by the timer, ENROLL_OUTCOME_UNKNOWN,

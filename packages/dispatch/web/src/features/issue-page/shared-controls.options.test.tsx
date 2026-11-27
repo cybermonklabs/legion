@@ -1159,8 +1159,10 @@ function textNode(words: string): string {
 /** The claim's markup in each state as `ClaimChip` drew it before a claim in a row of Details
  *  became a sentence (`claimShape`): `main`'s pill outside `NoTooltips`, with `inRow` or without,
  *  and the header's pill inside it. Inside, each of the page's words is built from its list
- *  (`PROPERTY_LABELS`, `CONTROL_LABELS`); outside, each is `main`'s string, and the holder's name
- *  sits in `TruncatedText` (dispatch://INFRA-5200), whose `title` is the whole name. */
+ *  (`PROPERTY_LABELS`, `CONTROL_LABELS`); outside, each is `main`'s string, the holder's name
+ *  sits in `TruncatedText` (dispatch://INFRA-5200), whose `title` is the whole name, and the pill
+ *  holds two groups, Holder and Since, in the shape that wraps (the Layout rule of
+ *  `web/src/AGENTS.md`). */
 const RECORDED_CLAIMS: Readonly<Record<Surface, Readonly<Record<ClaimState, readonly string[]>>>> =
   {
     inside: {
@@ -1239,17 +1241,19 @@ const RECORDED_CLAIMS: Readonly<Record<Surface, Readonly<Record<ClaimState, read
     },
     outside: {
       free: [
-        '<span class="inline-flex shrink-0 items-center rounded-full px-2 py-1 text-xs font-medium whitespace-nowrap bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 min-w-0 max-w-full gap-1">',
+        '<span class="inline-flex min-w-0 max-w-full flex-wrap items-center rounded-full px-2 py-1 text-xs font-medium [overflow-wrap:anywhere] bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 min-w-0 max-w-full gap-1">',
+        '<span class="inline-flex min-w-0 max-w-full items-center gap-1 whitespace-nowrap">',
         '<span class="shrink-0">',
         '"Claimed by"',
         '<span class="truncate ">',
         '<span class="min-w-0 [overflow-wrap:anywhere] min-w-0 truncate">',
-        '<span class="shrink-0">',
+        '<span class="inline-flex min-w-0 max-w-full flex-wrap items-center gap-1">',
+        '<span class="min-w-0 [overflow-wrap:anywhere]">',
         '"·"',
-        '<time class="shrink-0">',
-        '<span class="shrink-0">',
+        '<time class="min-w-0 [overflow-wrap:anywhere]">',
+        '<span class="min-w-0 [overflow-wrap:anywhere]">',
         '"·"',
-        '<span class="shrink-0">',
+        '<span class="min-w-0 [overflow-wrap:anywhere]">',
         '"unresponsive"',
         '<span class="">',
         '" since "',
@@ -1258,51 +1262,59 @@ const RECORDED_CLAIMS: Readonly<Record<Surface, Readonly<Record<ClaimState, read
         '", takeable now"',
       ],
       held: [
-        '<span class="inline-flex shrink-0 items-center rounded-full px-2 py-1 text-xs font-medium whitespace-nowrap bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-300 min-w-0 max-w-full gap-1">',
+        '<span class="inline-flex min-w-0 max-w-full flex-wrap items-center rounded-full px-2 py-1 text-xs font-medium [overflow-wrap:anywhere] bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-300 min-w-0 max-w-full gap-1">',
+        '<span class="inline-flex min-w-0 max-w-full items-center gap-1 whitespace-nowrap">',
         '<span class="shrink-0">',
         '"Claimed by"',
         '<span class="truncate ">',
         '<span class="min-w-0 [overflow-wrap:anywhere] min-w-0 truncate">',
-        '<span class="shrink-0">',
+        '<span class="inline-flex min-w-0 max-w-full flex-wrap items-center gap-1">',
+        '<span class="min-w-0 [overflow-wrap:anywhere]">',
         '"·"',
-        '<time class="shrink-0">',
+        '<time class="min-w-0 [overflow-wrap:anywhere]">',
       ],
       lapsed: [
-        '<span class="inline-flex shrink-0 items-center rounded-full px-2 py-1 text-xs font-medium whitespace-nowrap bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 min-w-0 max-w-full gap-1">',
+        '<span class="inline-flex min-w-0 max-w-full flex-wrap items-center rounded-full px-2 py-1 text-xs font-medium [overflow-wrap:anywhere] bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 min-w-0 max-w-full gap-1">',
+        '<span class="inline-flex min-w-0 max-w-full items-center gap-1 whitespace-nowrap">',
         '<span class="shrink-0">',
         '"Claimed by"',
         '<span class="truncate ">',
         '<span class="min-w-0 [overflow-wrap:anywhere] min-w-0 truncate">',
-        '<span class="shrink-0">',
+        '<span class="inline-flex min-w-0 max-w-full flex-wrap items-center gap-1">',
+        '<span class="min-w-0 [overflow-wrap:anywhere]">',
         '"·"',
-        '<time class="shrink-0">',
-        '<span class="shrink-0">',
+        '<time class="min-w-0 [overflow-wrap:anywhere]">',
+        '<span class="min-w-0 [overflow-wrap:anywhere]">',
         '"·"',
-        '<span class="shrink-0">',
+        '<span class="min-w-0 [overflow-wrap:anywhere]">',
         '"not running"',
       ],
       unchecked: [
-        '<span class="inline-flex shrink-0 items-center rounded-full px-2 py-1 text-xs font-medium whitespace-nowrap bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-300 min-w-0 max-w-full gap-1">',
+        '<span class="inline-flex min-w-0 max-w-full flex-wrap items-center rounded-full px-2 py-1 text-xs font-medium [overflow-wrap:anywhere] bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-300 min-w-0 max-w-full gap-1">',
+        '<span class="inline-flex min-w-0 max-w-full items-center gap-1 whitespace-nowrap">',
         '<span class="shrink-0">',
         '"Claimed by"',
         '<span class="truncate ">',
         '<span class="min-w-0 [overflow-wrap:anywhere] min-w-0 truncate">',
-        '<span class="shrink-0">',
+        '<span class="inline-flex min-w-0 max-w-full flex-wrap items-center gap-1">',
+        '<span class="min-w-0 [overflow-wrap:anywhere]">',
         '"·"',
-        '<time class="shrink-0">',
+        '<time class="min-w-0 [overflow-wrap:anywhere]">',
       ],
       waiting: [
-        '<span class="inline-flex shrink-0 items-center rounded-full px-2 py-1 text-xs font-medium whitespace-nowrap bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-300 min-w-0 max-w-full gap-1">',
+        '<span class="inline-flex min-w-0 max-w-full flex-wrap items-center rounded-full px-2 py-1 text-xs font-medium [overflow-wrap:anywhere] bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-300 min-w-0 max-w-full gap-1">',
+        '<span class="inline-flex min-w-0 max-w-full items-center gap-1 whitespace-nowrap">',
         '<span class="shrink-0">',
         '"Claimed by"',
         '<span class="truncate ">',
         '<span class="min-w-0 [overflow-wrap:anywhere] min-w-0 truncate">',
-        '<span class="shrink-0">',
+        '<span class="inline-flex min-w-0 max-w-full flex-wrap items-center gap-1">',
+        '<span class="min-w-0 [overflow-wrap:anywhere]">',
         '"·"',
-        '<time class="shrink-0">',
-        '<span class="shrink-0">',
+        '<time class="min-w-0 [overflow-wrap:anywhere]">',
+        '<span class="min-w-0 [overflow-wrap:anywhere]">',
         '"·"',
-        '<span class="shrink-0">',
+        '<span class="min-w-0 [overflow-wrap:anywhere]">',
         '"unresponsive"',
         '<span class="">',
         '" since "',
@@ -1941,11 +1953,11 @@ test("outside NoTooltips an explicit component set makes no architecture read", 
   expect(await reads(true, "inside")).toBe(1);
 });
 
-// At its defaults each shared control draws `main`'s classes. Each string below is `main`'s class,
-// its theme's constants written out from `main`'s `theme/classes.ts`, for every class a shared
-// control builds from a template of its own, and `null` where `main` draws the element with no
-// class.
-test("the default shapes keep main's class strings", async () => {
+// At its defaults each shared control draws its recorded classes: `main`'s, or, where INFRA-5200's
+// layout fixes changed a control (each such entry says so), the class that fix draws. Each string
+// below is that class, its theme's constants written out from `theme/classes.ts`, for every class
+// a shared control builds from a template of its own, and `null` where the element has no class.
+test("the default shapes keep their recorded class strings", async () => {
   const want: Record<string, string | null> = {
     "approvalPillClassName approved":
       "inline-flex min-w-0 items-center rounded-full border px-2 py-1 text-center text-xs font-medium [overflow-wrap:anywhere] border-emerald-700 dark:border-emerald-400 text-emerald-700 dark:text-emerald-400",
@@ -2021,19 +2033,23 @@ test("the default shapes keep main's class strings", async () => {
     "PriorityControl badge, none":
       "inline-flex items-center rounded-sm px-1.5 py-0.5 text-xs font-semibold bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300",
 
+    // features/issue/ClaimChip.tsx outside `NoTooltips` as INFRA-5200 draws it: the pill in the
+    // shape that wraps, its Holder group holding its line, where the name ellipsizes, and its
+    // Since group, whose parts - the dots, the age, "not running", an unresponsive holder's
+    // words - move to the next line whole, so a board card or a table's cell cuts none of them.
     "ClaimChip, held":
-      "inline-flex shrink-0 items-center rounded-full px-2 py-1 text-xs font-medium whitespace-nowrap bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-300 min-w-0 max-w-full gap-1",
+      "inline-flex min-w-0 max-w-full flex-wrap items-center rounded-full px-2 py-1 text-xs font-medium [overflow-wrap:anywhere] bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-300 min-w-0 max-w-full gap-1",
+    "ClaimChip holder group": "inline-flex min-w-0 max-w-full items-center gap-1 whitespace-nowrap",
     "ClaimChip holder": "min-w-0 [overflow-wrap:anywhere] min-w-0 truncate",
-    "ClaimChip dot": "shrink-0",
-    "ClaimChip age": "shrink-0",
+    "ClaimChip since group": "inline-flex min-w-0 max-w-full flex-wrap items-center gap-1",
+    "ClaimChip dot": "min-w-0 [overflow-wrap:anywhere]",
+    "ClaimChip age": "min-w-0 [overflow-wrap:anywhere]",
     "ClaimChip, lapsed":
-      "inline-flex shrink-0 items-center rounded-full px-2 py-1 text-xs font-medium whitespace-nowrap bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 min-w-0 max-w-full gap-1",
-    "ClaimChip not running": "shrink-0",
-    // `main`'s features/issue/ClaimChip.tsx: the dot before a lapsed claim's "not running", and
-    // an unresponsive holder's dot and words.
-    "ClaimChip lapsed dot": "shrink-0",
-    "ClaimChip unresponsive dot": "shrink-0",
-    "ClaimChip unresponsive": "shrink-0",
+      "inline-flex min-w-0 max-w-full flex-wrap items-center rounded-full px-2 py-1 text-xs font-medium [overflow-wrap:anywhere] bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 min-w-0 max-w-full gap-1",
+    "ClaimChip not running": "min-w-0 [overflow-wrap:anywhere]",
+    "ClaimChip lapsed dot": "min-w-0 [overflow-wrap:anywhere]",
+    "ClaimChip unresponsive dot": "min-w-0 [overflow-wrap:anywhere]",
+    "ClaimChip unresponsive": "min-w-0 [overflow-wrap:anywhere]",
 
     // features/issue/RepoControl.tsx as today's issue header's Details draws it (INFRA-5200): the
     // line and the box's wrapper as wide as their row, the line wrapping so a refusal moves whole
@@ -2531,16 +2547,22 @@ test("the default shapes keep main's class strings", async () => {
       caseOf(view, "no priority").querySelector("span[aria-hidden='true']")
     );
 
+    // The chip's two groups are its children, Holder first and Since last.
     const held = within(caseOf(view, "held")).getByTestId("issue-claim");
     classAt("ClaimChip, held", held);
+    classAt("ClaimChip holder group", held.firstElementChild);
     classAt("ClaimChip holder", held.querySelector("[data-agent-name]"));
-    classAt("ClaimChip dot", held.querySelector(":scope > span[aria-hidden='true']"));
-    classAt("ClaimChip age", held.querySelector(":scope > time"));
+    classAt("ClaimChip since group", held.lastElementChild);
+    classAt(
+      "ClaimChip dot",
+      held.lastElementChild?.querySelector(":scope > span[aria-hidden='true']")
+    );
+    classAt("ClaimChip age", held.lastElementChild?.querySelector(":scope > time"));
     const lapsed = within(caseOf(view, "lapsed")).getByTestId("issue-claim");
     classAt("ClaimChip, lapsed", lapsed);
     classAt(
       "ClaimChip lapsed dot",
-      lapsed.querySelectorAll(":scope > span[aria-hidden='true']")[1]
+      lapsed.lastElementChild?.querySelectorAll(":scope > span[aria-hidden='true']")[1]
     );
     classAt(
       "ClaimChip not running",
@@ -2549,7 +2571,7 @@ test("the default shapes keep main's class strings", async () => {
     const unresponsive = within(caseOf(view, "unresponsive claim")).getByTestId("issue-claim");
     classAt(
       "ClaimChip unresponsive dot",
-      unresponsive.querySelectorAll(":scope > span[aria-hidden='true']")[1]
+      unresponsive.lastElementChild?.querySelectorAll(":scope > span[aria-hidden='true']")[1]
     );
     classAt("ClaimChip unresponsive", within(unresponsive).getByTestId("issue-claim-unresponsive"));
 

@@ -70,12 +70,15 @@ func TestMachineAndGrantCommandsNeedTheHelper(t *testing.T) {
 }
 
 // TestMachineAndGrantCommandsOnAnOlderHelper: a helper from before sign-launcher answers it as an
-// unknown op, and the command says the helper must be restarted on this release.
+// unknown op, and the command says the helper must be restarted on this release. The command
+// reads the broker's settings to name the source of its refusal (c.source in grant.go), although
+// this refusal does not print the source. The test's resolver answers that broker.internal.example
+// has no address (runResolved), so the machine's resolver is not asked.
 func TestMachineAndGrantCommandsOnAnOlderHelper(t *testing.T) {
 	t.Parallel()
-	binary := buildAgentSecrets(t)
 	sock, reqs := fakeHelper(t, helper.Response{Code: helper.CodeBadRequest, Error: "unknown op sign-launcher"})
-	stdout, stderr, exit := runAgentSecrets(t, binary, "https://broker.internal.example", t.TempDir(), []string{"AGENT_SECRETS_HELPER_SOCK=" + sock}, "grant", "list")
+	hosts := map[string]string{"broker.internal.example": noSuchHost}
+	stdout, stderr, exit := runResolved(t, hosts, "https://broker.internal.example", t.TempDir(), []string{"AGENT_SECRETS_HELPER_SOCK=" + sock}, "grant", "list")
 	const want = "agent-secrets grant list: this machine's agent-secrets-helper is older than this client and cannot sign for machine and grant commands; restart it on this release\n"
 	if exit != 1 || stdout != "" || stderr != want {
 		t.Fatalf("grant list on an older helper: exit %d, stdout %q, stderr %q; want 1, %q", exit, stdout, stderr, want)

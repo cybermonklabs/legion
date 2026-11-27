@@ -1,3 +1,4 @@
 {
-  "state": "launching"
+  "state": "failed",
+  "phaseNotRestarted": "legion-legion-legion-209-tester stays failed, and the start of its phase testing waits for an admission slot of LEGION-209, which holds none; `read_state` (`legion claims list`) shows its state"
 }
