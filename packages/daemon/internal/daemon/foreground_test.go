@@ -208,7 +208,8 @@ func TestATerminalAttemptRecordsACtrlCTheLaunchExitsZeroOn(t *testing.T) {
 	launch := `exec sh -c 'trap "" INT; sleep 1; exit 0'`
 	run := func(ctrlC bool) *os.ProcessState {
 		t.Helper()
-		cmd := exec.Command("sh", "-c", job.script(launch))
+		// CONTROL: the attempt's shell stalls 0.5 s before its trap, standing in for a loaded machine.
+		cmd := exec.Command("sh", "-c", "sleep 0.5; "+job.script(launch))
 		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 		if err := cmd.Start(); err != nil {
 			t.Fatal(err)
