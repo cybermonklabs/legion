@@ -8,6 +8,7 @@ import { useAgentText } from "../refs/AgentName";
 import { EVENT_FRESH } from "../refs/reference-target";
 import { documentOfNode } from "./issue-artifacts";
 import { isStatement, type TreeNode } from "./issue-tree";
+import { LensActContext, useLensAct } from "./lenses/LensMenu";
 import { IndentGuides, NodeRow } from "./NodeRow";
 import type { ThreadMark } from "./outline-thread-read";
 import { authorText, pageChrome } from "./page-structure";
@@ -105,6 +106,10 @@ export function TreeRows({
   const [authors] = useState(() => new Map<string, RowAuthor>());
   // The reader, whose own words carry the ink rule and whose name is drawn in the ink.
   const reader = useQuery({ ...whoAmIQuery(), ...EVENT_FRESH }).data?.login;
+  // The Lens act each row offers in Conversation and in Graph, whatever the focus, with every
+  // node's invocations read once for all the rows: one value while the address stands and no
+  // invocation of a lens changes (`useLensAct`).
+  const lensAct = useLensAct();
   return (
     <>
       {onOlder === undefined ? null : (
@@ -112,62 +117,64 @@ export function TreeRows({
           {CONTROL_LABELS.older_comments}
         </PageControl>
       )}
-      {rows.map((row) => {
-        const key = rowKeyOf(row);
-        if (row.kind === "page") {
-          return (
-            <PageControl key={key} kind="page" level={row.level} onPress={() => onPage(row)}>
-              {/* One run of text: below 1280 px a button is a flex box (`styles.css`), which
+      <LensActContext.Provider value={lensAct}>
+        {rows.map((row) => {
+          const key = rowKeyOf(row);
+          if (row.kind === "page") {
+            return (
+              <PageControl key={key} kind="page" level={row.level} onPress={() => onPage(row)}>
+                {/* One run of text: below 1280 px a button is a flex box (`styles.css`), which
                   lays the count's own span and the words after it out as two boxes side by
                   side, the space that opens the words dropped at the start of theirs. */}
-              <span>
-                <span {...authorText}>{row.left.toLocaleString()}</span>{" "}
-                {row.left === 1 ? CONTROL_LABELS.page_row : CONTROL_LABELS.page_rows}
-              </span>
-            </PageControl>
+                <span>
+                  <span {...authorText}>{row.left.toLocaleString()}</span>{" "}
+                  {row.left === 1 ? CONTROL_LABELS.page_row : CONTROL_LABELS.page_rows}
+                </span>
+              </PageControl>
+            );
+          }
+          const place = documentOfNode(row.node.id, artifacts);
+          const mark = threads.get(row.node.id);
+          return (
+            <NodeRow
+              {...(row.node.answer === undefined
+                ? {}
+                : { answerer: agentText.author(row.node.answer.by) })}
+              author={heldAuthor(
+                authors,
+                authorKind(row.node.author),
+                agentText.author(row.node.author),
+                isReader(row.node.author, reader)
+              )}
+              context={context.has(row.node.id)}
+              // Only a statement's row is given the coverage read's state, so the read answering
+              // draws again no row it gives nothing to.
+              countsHeld={coverageOut && isStatement(row.node)}
+              {...(place === undefined ? {} : { document: place.artifact })}
+              // Each row reads its own document's room admission (`useDocumentReadOnly`) and
+              // whether it is being edited (`useEditedRow`), so neither draws every row again.
+              editable={!isClosed && place !== undefined}
+              expanded={row.expanded}
+              focused={focused === key}
+              foldable={!(row.level === 1 && row.node.id === zoomRoot)}
+              folded={row.folded}
+              foldedMore={foldedMore}
+              isClosed={isClosed}
+              key={key}
+              level={row.level}
+              node={row.node}
+              onFocus={onFocus}
+              onToggle={onToggle}
+              ownAnswer={isReader(row.node.answer?.by, reader)}
+              placesItself={unplaced !== key}
+              {...(report?.row === key ? { report: report.line } : {})}
+              rowKey={key}
+              tabStop={tabStop === key}
+              {...(mark === undefined ? {} : { threadRead: mark })}
+            />
           );
-        }
-        const place = documentOfNode(row.node.id, artifacts);
-        const mark = threads.get(row.node.id);
-        return (
-          <NodeRow
-            {...(row.node.answer === undefined
-              ? {}
-              : { answerer: agentText.author(row.node.answer.by) })}
-            author={heldAuthor(
-              authors,
-              authorKind(row.node.author),
-              agentText.author(row.node.author),
-              isReader(row.node.author, reader)
-            )}
-            context={context.has(row.node.id)}
-            // Only a statement's row is given the coverage read's state, so the read answering
-            // draws again no row it gives nothing to.
-            countsHeld={coverageOut && isStatement(row.node)}
-            {...(place === undefined ? {} : { document: place.artifact })}
-            // Each row reads its own document's room admission (`useDocumentReadOnly`) and
-            // whether it is being edited (`useEditedRow`), so neither draws every row again.
-            editable={!isClosed && place !== undefined}
-            expanded={row.expanded}
-            focused={focused === key}
-            foldable={!(row.level === 1 && row.node.id === zoomRoot)}
-            folded={row.folded}
-            foldedMore={foldedMore}
-            isClosed={isClosed}
-            key={key}
-            level={row.level}
-            node={row.node}
-            onFocus={onFocus}
-            onToggle={onToggle}
-            ownAnswer={isReader(row.node.answer?.by, reader)}
-            placesItself={unplaced !== key}
-            {...(report?.row === key ? { report: report.line } : {})}
-            rowKey={key}
-            tabStop={tabStop === key}
-            {...(mark === undefined ? {} : { threadRead: mark })}
-          />
-        );
-      })}
+        })}
+      </LensActContext.Provider>
       {more === undefined ? null : (
         <PageControl kind="more" level={1} onPress={more.onPress}>
           <NextPageWords left={more.left} />
