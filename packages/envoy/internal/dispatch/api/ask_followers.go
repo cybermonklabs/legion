@@ -39,8 +39,9 @@ import (
 // A follow is refused, 403 SESSION_OUTSIDE_PROJECT, for a session that may not be shown the project the
 // ask is of (refuseSessionOutsideProject): a follower is sent every answer and reply of the ask
 // (the outbox's addFollowerRoutes), so following is being given the ask's thread. It is read in
-// the write's transaction, after the ask and before its lock, so a refusal writes nothing. An
-// unfollow takes nothing from a session and is refused nothing for it.
+// the write's transaction, after the ask and before its lock, so a refusal writes nothing, and the
+// listener record it reads is refreshed before that transaction opens (refreshRosterBeforeSight).
+// An unfollow takes nothing from a session and is refused nothing for it.
 
 func parseAskID(r *http.Request) (string, error) {
 	id := r.PathValue("id")
@@ -191,6 +192,9 @@ func (s *server) changeAskFollower(w http.ResponseWriter, r *http.Request, follo
 		s.writeHandlerError(w, err)
 		return
 	}
+	if follow && !hidden {
+		s.refreshRosterBeforeSight(r.Context())
+	}
 	tx, err := s.begin(r.Context())
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -213,7 +217,7 @@ func (s *server) changeAskFollower(w http.ResponseWriter, r *http.Request, follo
 	if follow {
 		project, _, err := graphstore.ScopeOf(r.Context(), tx, own.IssueKey, own.ArtifactID)
 		if err == nil {
-			err = refuseSessionOutsideProject(r.Context(), tx, sessionID, project, "follow this ask")
+			err = s.refuseSessionOutsideProject(r.Context(), tx, sessionID, project, "follow this ask")
 		}
 		if err != nil {
 			s.writeHandlerError(w, err)

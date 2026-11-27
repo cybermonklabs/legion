@@ -807,12 +807,15 @@ type Background struct {
 	// its own: one per process is what lets its readers share an observation. Only a server
 	// registered with a Store has an event log to answer for.
 	EventHorizon func() *events.Horizon
-	// RefreshListenerRecord is the refresh of the stored listener record the API's readers run
-	// before the session content rule reads it (refreshRosterForContent): it asks the listener
-	// again, in this process's one fetch, where the record has the content margin of its life or
-	// less left (rosterCache.contentMargin), and stores its answer for every process. cmd/dispatch
-	// binds it into the outbox (outbox.ListenerRefresh), which runs it before it judges a
-	// session's sight by a list of a record that has expired.
+	// RefreshListenerRecord is the API's refresh of the stored listener record
+	// (refreshRosterForContent). The API runs it before the session content rule reads the record
+	// in the live agent view and after a wait on the listener (refreshRosterBeforeReadBack), and
+	// before it judges a session's sight by a list of a record that has expired, at a send
+	// (withheldFromSession) and at a write (refreshedSessionSight, refreshRosterBeforeSight). It
+	// asks the listener again, in this process's one fetch, where the record has the content margin
+	// of its life or less left (rosterCache.contentMargin), and stores its answer for every process.
+	// cmd/dispatch binds it into the outbox (outbox.ListenerRefresh), which runs it before it judges
+	// a session's sight by a list of a record that has expired.
 	RefreshListenerRecord func(context.Context)
 }
 

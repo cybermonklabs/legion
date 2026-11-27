@@ -43,6 +43,12 @@ import (
 // (mayQueueForUnknownSession reads only noLiveSessionPrefix).
 const projectWithheldPrefix = "withheld: "
 
+// sightUnreadPrefix begins the failure a delivery records when Dispatch could not read whether its
+// session may be shown the delivery's project (withheldFromSession), as when its database failed
+// for a moment: nothing was sent, and the next try reads the sight again, so
+// retryableDeliveryFailure retries it.
+const sightUnreadPrefix = "sight unread: "
+
 // deliveryProject is the project a comment's or a message's delivery is of: its issue's, else its
 // document's (graphstore.ScopeOf), and "" for one of no project - a direct message, a file of an
 // agent's conversation.
@@ -60,13 +66,13 @@ func (s *server) deliveryProject(ctx context.Context, issueKey, artifactID *stri
 // withheldFromSession is the failure a delivery of project to session records instead of its
 // send, and "" when the send may go: session sees project (access.SessionSeesProjectClause), or
 // project is "", a delivery of no project. A sight that could not be read withholds the send too,
-// and its failure says so: a send Dispatch cannot judge is not made.
+// and its failure says so: a send Dispatch cannot judge is not made. A read that failed fails under
+// sightUnreadPrefix, which a later try outlasts, rather than being withheld for good.
 //
-// Where the verdict can depend on a listener list and the stored listener record has expired, as
-// the verdict's own statement reads it (access.SightListSQL), the record is refreshed first, as
-// the session content rule's readers refresh it (refreshRosterForContent): a send of the sender's
-// lane, a Retry or the delivery sweep has no request whose reader refreshed it. A record
-// still expired after the refresh, as when the listener does not answer, is a list Dispatch could
+// Where the verdict can depend on a listener list and the stored listener record has expired, the
+// record is refreshed first (refreshedSessionSight): a send of the sender's lane, a Retry or the
+// delivery sweep has no request whose reader refreshed it. A record still expired after the
+// refresh, as when the listener does not answer, is a list Dispatch could
 // not read, so the send fails under listenerUnreachablePrefix, which a later try outlasts
 // (retryableDeliveryFailure), rather than being withheld for good. Where no verdict depends on a
 // list, and with no listener configured, which lists nothing, the record is judged as it stands.
@@ -77,55 +83,100 @@ func (s *server) withheldFromSession(ctx context.Context, session, project strin
 	if s.deps.Store == nil || s.deps.Store.Pool == nil {
 		return projectWithheldPrefix + "Dispatch has no database to read whether session " + session + " sees project " + project
 	}
-	var sees, depends, fresh bool
-	read := func() error {
-		return s.deps.Store.Pool.QueryRow(ctx, sessionSightQuery, session, project).Scan(&sees, &depends, &fresh)
-	}
-	err := read()
-	if err == nil && depends && !fresh && s.deps.Envoy != nil {
-		s.refreshRosterForContent(ctx)
-		if err = read(); err == nil && !fresh {
-			return listenerUnreachablePrefix + "the stored listener record has expired and the listener did not answer again, " +
-				"so Dispatch could not read whether session " + session + " sees project " + project + " and sent nothing"
-		}
-	}
-	if err != nil {
-		return projectWithheldPrefix + "could not read whether session " + session + " sees project " + project + ": " + err.Error()
-	}
-	if !sees {
+	sees, expired, err := s.refreshedSessionSight(ctx, session, project)
+	switch {
+	case err != nil:
+		return sightUnreadPrefix + "could not read whether session " + session + " sees project " + project + ", so nothing was sent: " + err.Error()
+	case expired:
+		return listenerUnreachablePrefix + "the stored listener record has expired and the listener did not answer again, " +
+			"so Dispatch could not read whether session " + session + " sees project " + project + " and sent nothing"
+	case !sees:
 		return fmt.Sprintf("%ssession %s does not see project %s, so nothing was sent", projectWithheldPrefix, session, project)
 	}
 	return ""
 }
 
-// sessionSightQuery is withheldFromSession's one statement: whether session $1 sees project $2
-// (access.SessionSeesProjectClause), beside whether that verdict can depend on a listener list and
-// whether the stored listener record has an answer that has not expired (access.SightListSQL).
-var sessionSightQuery = `select exists (select 1 from projects p where p.key = $2 and ` +
-	access.SessionSeesProjectClause("$1::text", "p") + `), ` + access.SightListSQL("array[$1::text]", "array[$2::text]")
+// sessionSight is whether session sees project (access.ReadSessionSight), read through q, and
+// whether that verdict depends on a listener list of a stored listener record that has expired
+// (expired), which no caller judges by. With no listener configured, which lists nothing, the
+// record is judged as it stands, and no verdict is expired.
+func (s *server) sessionSight(ctx context.Context, q access.RowsQuerier, session, project string) (sees, expired bool, err error) {
+	sight, err := access.ReadSessionSight(ctx, q, []string{session}, []string{project})
+	return sight.Sees[project][session], s.deps.Envoy != nil && sight.ListExpired[project][session], err
+}
+
+// refreshedSessionSight is sessionSight on the pool, where a verdict that depends on a list of a
+// stored listener record that has expired has the record refreshed first, as the session content
+// rule's readers refresh it (refreshRosterForContent), and is read again: a send judged at the
+// send (withheldFromSession) and a write judged before its transaction opens
+// (refuseVisibleSessionOutsideProject). expired is a record still expired after the refresh, as
+// when the listener does not answer. Where no verdict depends on a list it asks the listener
+// nothing.
+func (s *server) refreshedSessionSight(ctx context.Context, session, project string) (sees, expired bool, err error) {
+	sees, expired, err = s.sessionSight(ctx, s.deps.Store.Pool, session, project)
+	if err == nil && expired {
+		s.refreshRosterForContent(ctx)
+		sees, expired, err = s.sessionSight(ctx, s.deps.Store.Pool, session, project)
+	}
+	return sees, expired, err
+}
 
 // refuseSessionOutsideProject is the refusal of a write that gives session work of project, or
 // sends it one of project's items - what names the work - when the session may not be shown that
-// project (access.SessionSeesProject): 403 SESSION_OUTSIDE_PROJECT, naming the session, the
+// project (sessionSight): 403 SESSION_OUTSIDE_PROJECT, naming the session, the
 // project and what proves a session's access to it, so the agent that wrote can put that right.
 // Every caller names a project the writer reads, which the refusal may therefore name: an issue
 // read as the writer reads it (issueProjectSeenBy; createStoredMessage's issue, read so before),
 // an ask or a comment's owner the write has already read as the writer reads it
 // (changeAskFollower's loadAskOwner, refuseOwnerBeforeResolving). A write of no project, and one
 // whose session sees the project, are refused nothing. It reads through q, the write's
-// transaction where it holds one.
-func refuseSessionOutsideProject(ctx context.Context, q access.RowsQuerier, session, project, what string) error {
+// transaction where it holds one, so it refreshes no listener record: the write refreshes it before
+// its transaction opens (refreshRosterBeforeSight), and a verdict that still depends on a list of
+// an expired record is refused 503 ENVOY_UNAVAILABLE (sessionSightRefusal).
+func (s *server) refuseSessionOutsideProject(ctx context.Context, q access.RowsQuerier, session, project, what string) error {
 	if project == "" {
 		return nil
 	}
-	sees, err := access.SessionSeesProject(ctx, q, session, project)
-	if err != nil {
+	sees, expired, err := s.sessionSight(ctx, q, session, project)
+	return sessionSightRefusal(sees, expired, err, session, project, what)
+}
+
+// sessionSightRefusal is the refusal of a write by one read of whether session sees project
+// (sessionSight): the read's err; nil where session sees project; 503 ENVOY_UNAVAILABLE, which a
+// later try outlasts, where the verdict depends on a listener list Dispatch could not read
+// (expired), as when the listener does not answer, since neither a refusal nor the write may rest
+// on that list; and 403 SESSION_OUTSIDE_PROJECT otherwise.
+func sessionSightRefusal(sees, expired bool, err error, session, project, what string) error {
+	switch {
+	case err != nil:
 		return err
-	}
-	if sees {
+	case expired:
+		return errorf(http.StatusServiceUnavailable, "ENVOY_UNAVAILABLE", sessionSightUnreadText, session, project)
+	case sees:
 		return nil
 	}
 	return errorf(http.StatusForbidden, codeSessionOutsideProject, sessionOutsideProjectText, session, project, what, project, project)
+}
+
+// sessionSightUnreadText is the message of sessionSightRefusal's 503 ENVOY_UNAVAILABLE, with the
+// session and the project: the listener did not answer, so nothing was written.
+const sessionSightUnreadText = "the Envoy listener did not answer Dispatch's read of its sessions, so Dispatch cannot tell " +
+	"whether session %s may see project %s; nothing was written: try again"
+
+// refreshRosterBeforeSight refreshes the stored listener record (refreshRosterForContent) before a
+// write opens the transaction in which it judges a session's sight (refuseSessionOutsideProject):
+// no refresh runs inside a transaction, and the session the write judges may be read only in it,
+// as a reply's inherited target is. It refreshes wherever a verdict of the rule can depend on a
+// listener list (access.SightMayDependOnAListSQL), so a deployment that holds no private project
+// and no restricted member, and a server with no listener, ask the listener nothing.
+func (s *server) refreshRosterBeforeSight(ctx context.Context) {
+	if s.deps.Envoy == nil || s.deps.Store == nil || s.deps.Store.Pool == nil {
+		return
+	}
+	var depends bool
+	if err := s.deps.Store.Pool.QueryRow(ctx, access.SightMayDependOnAListSQL).Scan(&depends); err == nil && depends {
+		s.refreshRosterForContent(ctx)
+	}
 }
 
 // sessionOutsideProjectText is SESSION_OUTSIDE_PROJECT's message, with the session, the project,
@@ -136,14 +187,19 @@ const sessionOutsideProjectText = "session %s cannot see project %s, so it canno
 	"tie the session to a person who sees %s (a broker-issued token of that person proves the session), " +
 	"and let the session's token list %s where it lists projects"
 
-// refuseVisibleSessionOutsideProject is refuseSessionOutsideProject, read on the pool, for a
-// session writer may see (sessionHiddenFrom). A session hidden from writer is refused nothing
-// here: a refusal, or its absence, would tell writer what that session sees, and such a session is
-// sent nothing by the api already (resolveDeliveryTarget answers it as one nobody holds), while
-// what the outbox would send it is withheld there (outbox: destinations.withheld). Whether it is
-// hidden is read only for a session the rule refuses.
+// refuseVisibleSessionOutsideProject is refuseSessionOutsideProject, read on the pool with the
+// stored listener record refreshed where the verdict depends on a list of a record that has
+// expired (refreshedSessionSight), for a session writer may see (sessionHiddenFrom). A session
+// hidden from writer is refused nothing here: a refusal, or its absence, would tell writer what
+// that session sees, and such a session is sent nothing by the api already (resolveDeliveryTarget
+// answers it as one nobody holds), while what the outbox would send it is withheld there (outbox:
+// destinations.withheld). Whether it is hidden is read only for a session the rule refuses.
 func (s *server) refuseVisibleSessionOutsideProject(ctx context.Context, writer model.Actor, session, project, what string) error {
-	err := refuseSessionOutsideProject(ctx, s.deps.Store.Pool, session, project, what)
+	if project == "" {
+		return nil
+	}
+	sees, expired, err := s.refreshedSessionSight(ctx, session, project)
+	err = sessionSightRefusal(sees, expired, err, session, project, what)
 	var refusal *apiError
 	if !errors.As(err, &refusal) {
 		return err

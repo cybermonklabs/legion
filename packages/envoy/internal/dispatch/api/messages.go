@@ -392,6 +392,12 @@ func (s *server) createStoredMessage(
 	actor, reader model.Actor,
 	resolved *ResolvedMention,
 ) (model.Message, *writeAdvice, error) {
+	// A session target of an issue's message, named or inherited, is judged in the transaction
+	// below (refuseSessionOutsideProject), which refreshes no listener record, so it is refreshed
+	// before that transaction opens.
+	if issueKey != nil && (input.Target != nil || input.InReplyTo != nil) {
+		s.refreshRosterBeforeSight(ctx)
+	}
 	tx, err := s.begin(ctx)
 	if err != nil {
 		return model.Message{}, nil, err
@@ -474,7 +480,7 @@ func (s *server) createStoredMessage(
 		if route, parseErr := model.ParseRoute(*input.Target); parseErr == nil && route.Kind == "session" {
 			project, _, err := graphstore.ScopeOf(ctx, tx, issueKey, nil)
 			if err == nil {
-				err = refuseSessionOutsideProject(ctx, tx, route.ID, project, "be sent this message")
+				err = s.refuseSessionOutsideProject(ctx, tx, route.ID, project, "be sent this message")
 			}
 			if err != nil {
 				return model.Message{}, nil, err
