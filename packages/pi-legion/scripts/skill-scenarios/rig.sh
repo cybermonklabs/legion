@@ -2582,12 +2582,13 @@ store_scored_run() {
 }
 
 # unpack_run PACK RUN DIR unpacks the pack of the run RUN into DIR, once each of its members is RUN
-# itself or under RUN/, with no `..` segment: no member lands beside its run.
+# itself or under RUN/: no member lands in another run's directory. tar itself refuses a member
+# with a `..` segment.
 unpack_run() {
   local members member
   members=$(tar -tzf "$1") || fail "$1 is no pack: tar cannot list it"
   while IFS= read -r member; do
-    [[ $member == "$2" || $member == "$2/" || $member == "$2/"* ]] && [[ /$member/ != */../* ]] ||
+    [[ $member == "$2" || $member == "$2/" || $member == "$2/"* ]] ||
       fail "the pack of $2 holds '$member', which is not under $2/: it is not unpacked"
   done <<<"$members"
   tar -xzf "$1" -C "$3" --no-same-owner || fail "the unpack of $1 failed"

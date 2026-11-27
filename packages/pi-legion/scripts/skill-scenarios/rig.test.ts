@@ -3385,7 +3385,8 @@ writeFileSync(path.join(runs, name, "row.json"), JSON.stringify({ outcome: "scor
       `checked ${run(1)}: rig error: runs/${run(1)}.row.json has no stored or got line in the Job's log`
     );
 
-    // A pack whose member lands beside its run, logged with its own sha256: it is not unpacked.
+    // A pack of run 3 whose member is run 1's world.json, logged with its own sha256: unpacked, it
+    // would write over run 1's. tar itself refuses a `..` member, and this one has none.
     const beside = download((dir) => {
       const pack = path.join(dir, "runs", `${run(3)}.tar.gz`);
       childSpawn([
@@ -3395,7 +3396,7 @@ writeFileSync(path.join(runs, name, "row.json"), JSON.stringify({ outcome: "scor
         "-C",
         pod,
         "--transform",
-        `s|^job.log$|${run(3)}/../escaped|`,
+        `s|^job.log$|${run(1)}/world.json|`,
         "job.log",
       ]);
       cpSync(
@@ -3411,9 +3412,11 @@ writeFileSync(path.join(runs, name, "row.json"), JSON.stringify({ outcome: "scor
     const besideCheck = check(beside, besideLog);
     expect(besideCheck.code).toBe(1);
     expect(besideCheck.stderr).toContain(
-      `the pack of ${run(3)} holds '${run(3)}/../escaped', which is not under ${run(3)}/: it is not unpacked`
+      `the pack of ${run(3)} holds '${run(1)}/world.json', which is not under ${run(3)}/: it is not unpacked`
     );
-    expect(existsSync(path.join(beside, "escaped"))).toBe(false);
+    expect(readFileSync(path.join(beside, "checked", run(1), "world.json"), "utf8")).toBe(
+      readFileSync(path.join(pod, "runs", run(1), "world.json"), "utf8")
+    );
 
     const nothing = freshDir("check-nothing");
     const emptyLog = path.join(nothing, "job.log");
