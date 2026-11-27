@@ -39,6 +39,13 @@ func TestAChangeACrashLeftPendingWakesASubscribedViewOnceTheBootDrains(t *testin
 	`); err != nil {
 		t.Fatalf("leave a pending change as a crash between commit and drain leaves it: %v", err)
 	}
+	// A quiet window, since the rig has no wait that ends on an absence without one: settle, and
+	// requireNothingSent through it, end on the hub's catch-up (waitNothingOwed's catchUpNow), and
+	// every catch-up drains the outbox before it reads the log (catchUpChanges), so either would move
+	// this row itself and recompute the board; a read of the hub's state without that barrier
+	// (intakeOwes) cannot see a wake still on its way from the listener. Four times the quiet a
+	// woken board waits before its recompute is longer than a wake would take to begin one, and a
+	// loaded machine can only make the window miss a wake, never fail a hub the row leaves idle.
 	time.Sleep(4 * viewQuiet)
 	if woken := rig.count(mark, recomputeOfView(t, frame)); woken != 0 {
 		t.Fatalf("the Legion board was recomputed %d times before any drain, so this test cannot tell what woke it", woken)

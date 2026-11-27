@@ -28,6 +28,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // TestFarmChangeLockHolds is R7's measurement of the change log's lock (k27; spec Design, "How
@@ -608,11 +609,19 @@ func sampleLockWaits(t *testing.T, pool *store.Pool, key1, key2 int32) (stop fun
 			}
 		}
 	}()
-	return func() []lockWait {
-		t.Helper()
+	// The sampler's goroutine and connection end once, whichever of stop and the test's cleanup
+	// comes first: a test that fails before it calls stop leaves neither running past its end,
+	// and a stop called again ends nothing more.
+	var once sync.Once
+	end := func() {
 		cancel()
 		<-done
 		_ = conn.Close(context.Background())
+	}
+	testcleanup.Add(t, func() { once.Do(end) })
+	return func() []lockWait {
+		t.Helper()
+		once.Do(end)
 		if failure != nil {
 			t.Fatalf("sample the waiters of the advisory lock (%d, %d): %v", key1, key2, failure)
 		}
