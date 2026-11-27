@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
 // minimalDeployment is the smallest legion.yaml that loads, under this package's own project
@@ -514,6 +515,112 @@ func TestAWaitForChecksIsAWaitByDesign(t *testing.T) {
 		t.Fatalf("%s stands at %s/%s after the pass, want it still waiting in verifying: a root the pass took out of the workflow is told to nobody for another reason",
 			merged, got.Phase, got.Status)
 	}
+}
+
+// A root that waits in verifying is told to nobody whatever the rest of its project does. The
+// case above cannot show that: there the stopped root's slot keeps the project's line moving
+// (lineCanMove), and the ladder's waits (lineHolds.waitsByDesign) are read only under a moving
+// line. Here the root in verifying is the project's only tree. It holds no slot, its one claim is
+// idle and the waiting line is empty, so every term of lineCanMove fails. That is the common case
+// and no edge: a production check runs fourteen days by default, and a project whose last tree
+// merged waits that long with nothing else open. What ends the wait is a report or a departure
+// (phase.Verifying), and nothing the project's slots decide, so the measure reads the phase
+// whether or not the line can move, as it reads a wait on work outside the tree
+// (everyIssueWaitsByDesign).
+//
+// The control is the same project on a database of its own, under the same clock, with its one
+// root stopped in implementing: it is told. So the pass this test runs sees a stall where one
+// stands, and the silence of the first case is its phase's alone.
+func TestAWaitForChecksIsNeverToldWhateverTheLineDoes(t *testing.T) {
+	bound := deploymentBound(t, "")
+	const root = "LEGION-960"
+	// onlyTree is a project whose one tree is root, standing in standing at that phase's own
+	// Dispatch status, with the slot its phase keeps (seedQuietRoot), its pull request in pr and
+	// its architect idle, measured an hour past the bound.
+	onlyTree := func(t *testing.T, standing phase.Phase, pr record.PullRequestState) (*pgxpool.Pool, *Admission) {
+		t.Helper()
+		pool := migratedPool(t)
+		admission := quiet(t, 4)
+		admission.UseStalledTreeNotice(bound)
+		registerController(t, pool)
+		seeded := seedQuietRoot(t, pool, root, "A", standing)
+		seeded.Status, seeded.DispatchStatus = workflow.PhaseStatus(standing), workflow.PhaseStatus(standing)
+		putIssue(t, pool, seeded)
+		seedPullRequest(t, pool, root, 96, pr)
+		seedClaim(t, claimStore(t, pool), root, root, claim.RoleArchitect, supervise.StateIdle)
+		settled := settleMovements(t, pool, root)
+		admission.now = func() time.Time { return settled.Add(bound + time.Hour) }
+		return pool, admission
+	}
+
+	t.Run("verifying", func(t *testing.T) {
+		pool, admission := onlyTree(t, phase.Verifying, record.PullRequestMerged)
+		// The fixture's own premise, read as the pass reads it: nothing of this project can move
+		// by itself, so the ladder's waits silence nothing here and only a reading of the phase
+		// that ignores the line can keep the root out of the notice.
+		if lineMoves(t, pool, admission) {
+			t.Fatalf("the project's line can move, want it stopped: this case is a root in verifying with nothing else in its project")
+		}
+
+		tick(t, pool, admission, "verifying-alone")
+
+		if got := stalledRoots(t, pool); got != nil {
+			t.Fatalf("the controller was told of %v, want nothing: a root whose close waits in verifying waits by design whether or not its project's line can move",
+				got)
+		}
+		if got := issue(t, pool, root); got.Phase != phase.Verifying || !record.InWorkflow(got) {
+			t.Fatalf("%s stands at %s/%s after the pass, want it still waiting in verifying: a root the pass took out of the workflow is told to nobody for another reason",
+				root, got.Phase, got.Status)
+		}
+	})
+
+	t.Run("control-implementing", func(t *testing.T) {
+		pool, admission := onlyTree(t, phase.Implementing, record.PullRequestOpen)
+
+		tick(t, pool, admission, "implementing-alone")
+
+		if got, want := stalledRoots(t, pool), []string{root}; !reflect.DeepEqual(got, want) {
+			t.Fatalf("the controller was told of %v, want %v: a root stopped in implementing has stopped, and this pass must see it",
+				got, want)
+		}
+	})
+}
+
+// lineMoves is the stall measure's liveness clause (lineCanMove) for the project, read as the
+// pass reads it: over the live records, the slots, the line one judgement builds
+// (blockers.JudgeLine) and the trees R6 counts at work (workingTrees), under no P0 bound.
+func lineMoves(t *testing.T, pool *pgxpool.Pool, admission *Admission) bool {
+	t.Helper()
+	var moves bool
+	inTx(t, pool, func(tx pgx.Tx) {
+		records, ctx, now := record.NewStore(), context.Background(), admission.now()
+		issues, err := records.LiveIssues(ctx, tx, testProject)
+		if err != nil {
+			t.Fatalf("list the live issues: %v", err)
+		}
+		slots, err := records.Slots(ctx, tx)
+		if err != nil {
+			t.Fatalf("list the slots: %v", err)
+		}
+		facts, err := record.ReadLineFacts(ctx, tx, records, testProject, issues, admission.engine.GatedSteps())
+		if err != nil {
+			t.Fatalf("read the line facts: %v", err)
+		}
+		rows, facts, line, dropped, err := blockers.JudgeLine(ctx, tx, records, testProject, issues, ownSlots(issues, slots), facts, nil, now)
+		if err != nil {
+			t.Fatalf("judge the waiting line: %v", err)
+		}
+		_, claims, err := admission.quietTrees(ctx, tx, issues, now)
+		if err != nil {
+			t.Fatalf("read the claims of the project: %v", err)
+		}
+		working, err := admission.workingTrees(ctx, tx, issues, facts, claims, now)
+		if err != nil {
+			t.Fatalf("read the trees at work: %v", err)
+		}
+		moves = admission.lineCanMove(issues, lineHoldsOf(facts, slots, line, dropped), working, rows, nil)
+	})
+	return moves
 }
 
 // Five waits the daemon makes on purpose are never a stall, and six trees that look like them
