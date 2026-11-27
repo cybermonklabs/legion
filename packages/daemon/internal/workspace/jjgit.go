@@ -73,8 +73,10 @@ func RunCommand(ctx context.Context, start procgroup.Starter, budget time.Durati
 	// own error is propagated: exec reports a command whose Cancel succeeded and which then exited
 	// cleanly as the context's error, which is what a git that handles its SIGTERM and exits 0
 	// inside the grace does.
-	timedOut := (killed() && errors.Is(ctx.Err(), context.DeadlineExceeded)) ||
+	// FAULT (W-ws1 deadline): a timeout read from the deadline having passed by the time the wait returned.
+	timedOut := errors.Is(ctx.Err(), context.DeadlineExceeded) ||
 		(cmd.Process == nil && errors.Is(err, context.DeadlineExceeded))
+	_ = killed
 	runErr := procgroup.Err(err)
 	if runErr == nil && !timedOut && cmd.ProcessState.ExitCode() == 0 {
 		return strings.TrimSpace(stdout.String()), nil
