@@ -75,7 +75,7 @@ import {
 import { presetView } from "../presets";
 import { publishedNames, publishedTree } from "../projection-fixture";
 import { ViewStage } from "../slots/stage";
-import { drawStage } from "../slots/stage-fixtures";
+import { drawStage, watchDrawn } from "../slots/stage-fixtures";
 import { nodeRowSelectorOf } from "../tree-focus";
 import { decisionBehind } from "../tree-keys";
 import {
@@ -1604,11 +1604,6 @@ test("on a return to the issue on Spec, the column's first render draws no cell 
   );
   const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
   const cell = "[data-spec-cell][data-decision-id]";
-  /** Whether `nodes` holds a cell of the earlier visit's decision, or an element around one. */
-  const holdsCell = (nodes: NodeList): boolean =>
-    [...nodes].some(
-      (one) => one instanceof Element && (one.matches(cell) || one.querySelector(cell) !== null)
-    );
   try {
     const earlier = drawStage("", { client, issue, preset: "spec" });
     await waitFor(() =>
@@ -1622,14 +1617,12 @@ test("on a return to the issue on Spec, the column's first render draws no cell 
 
     // Every element the return's renders put on the page or took off it, its first render's
     // among them, which the load's reset redraws before `render` hands the page back.
-    const drawn = new MutationObserver(() => {});
-    drawn.observe(document.body, { childList: true, subtree: true });
+    const drewCell = watchDrawn(cell);
     const view = drawStage("", { client, issue, preset: "spec" });
-    const records = drawn.takeRecords();
-    drawn.disconnect();
+    const drawnOnReturn = drewCell();
     try {
       expect(
-        records.some((record) => holdsCell(record.addedNodes) || holdsCell(record.removedNodes)),
+        drawnOnReturn,
         "the column's first render on the return drew the earlier visit's decision"
       ).toBe(false);
       await act(() => Bun.sleep(20));
@@ -1672,11 +1665,6 @@ test("a return to an issue whose earlier Spec view read failed once draws no fai
   );
   const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
   const line = "[data-failed-read]";
-  /** Whether `nodes` holds a failed read's line, or an element around one. */
-  const holdsLine = (nodes: NodeList): boolean =>
-    [...nodes].some(
-      (one) => one instanceof Element && (one.matches(line) || one.querySelector(line) !== null)
-    );
   try {
     const earlier = drawStage("", { client, issue, preset: "spec" });
     await waitFor(() => alertSaying(earlier, STATE_LINES.statements_unreadable));
@@ -1689,14 +1677,12 @@ test("a return to an issue whose earlier Spec view read failed once draws no fai
 
     // Every element the return's renders put on the page or took off it, its first render's
     // among them, which the load's reset redraws before `render` hands the page back.
-    const drawn = new MutationObserver(() => {});
-    drawn.observe(document.body, { childList: true, subtree: true });
+    const drewLine = watchDrawn(line);
     const view = drawStage("", { client, issue, preset: "spec" });
-    const records = drawn.takeRecords();
-    drawn.disconnect();
+    const drawnOnReturn = drewLine();
     try {
       expect(
-        records.some((record) => holdsLine(record.addedNodes) || holdsLine(record.removedNodes)),
+        drawnOnReturn,
         "the column's first render on the return drew the earlier visit's failed line"
       ).toBe(false);
       await act(() => Bun.sleep(20));

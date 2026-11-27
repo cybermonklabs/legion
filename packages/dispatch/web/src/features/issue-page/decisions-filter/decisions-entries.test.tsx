@@ -16,6 +16,7 @@ import { inDocument } from "../slots/stage-fixtures";
 import { pagedAnswer, treeNode } from "../tree-read/tree-fixtures";
 import {
   outlineQuery,
+  resetViews,
   type TreeAnswer,
   useDecisionsView,
   viewKey,
@@ -432,12 +433,13 @@ test("answers older than the app's staleTime are not read again as the seam moun
   }
 });
 
-// Every reader of the decisions view takes it through `useDecisionsView`, whose read is tracked
-// only as far as each reader reads it (`useLoadView`'s getters): a reader of the answer alone -
-// the page's tree, the header's count, each Decisions row's Keep and Change - is drawn again only
-// as the answer or its refusal changes, not as a read of the view starts and ends. Here the view
-// is read again, and its read answers what the view held, which TanStack's structural sharing
-// keeps as the same answer.
+// Every reader of the decisions view takes it through `useDecisionsView`, and the control after
+// its last row (`useNextViewPage`) through `useViewAnswer`, as `useDecisionsView` does; the read
+// is tracked only as far as each reader reads it (`useLoadView`'s getters): a reader of the
+// answer alone - the page's tree, the header's count, each Decisions row's Keep and Change - is
+// drawn again only as the answer or its refusal changes, not as a read of the view starts and
+// ends. Here the view is read again, and its read answers what the view held, which TanStack's
+// structural sharing keeps as the same answer.
 test("a reader of the decisions view's answer draws once, and not again when the view is read again to the same answer", async () => {
   const held = treeAnswer([decision("d1")]);
   const read = spyOn(api, "getIssueTree").mockImplementation(async () =>
@@ -467,6 +469,38 @@ test("a reader of the decisions view's answer draws once, and not again when the
   } finally {
     read.mockRestore();
   }
+});
+
+// A reader of the decisions view first drawn while the issue's last load has ended, as the next
+// load's first render is, before its reset (`ViewReadProvider`): the view holds no answer then
+// (`useLoadView`), and the reader reads the view's state as the view's entries do
+// (`useDecisionsEntries`). Its read is tracked on that render all the same, so once the next
+// load's answer of the view lands the reader draws it, with nothing else drawing it again.
+test("a reader of the decisions view first drawn while the issue's last load has ended draws the view's answer once it lands", async () => {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  resetViews(client, KEY)();
+  let draws = 0;
+  const hook = renderHook(
+    () => {
+      draws += 1;
+      const { answer, errorUpdateCount, isFetching, refetch, refused } = useDecisionsView(KEY);
+      return { answer, errorUpdateCount, isFetching, refetch, refused };
+    },
+    { wrapper: decisionsAddress(client) }
+  );
+  expect(hook.result.current.answer, "the reader drew an answer while the load had ended").toBe(
+    undefined
+  );
+  resetViews(client, KEY);
+  const answer = treeAnswer([decision("d1")]);
+  await act(async () => {
+    client.setQueryData(viewKey(KEY, "decisions"), answer);
+  });
+  expect(hook.result.current.answer, "the reader drew no answer of the view once it landed").toBe(
+    answer
+  );
+  expect(draws, "the reader drew other than once more as the answer landed").toBe(2);
+  hook.unmount();
 });
 
 // A decisions view that holds no decision gives no decision and no error, and the view draws

@@ -44,9 +44,10 @@ import {
   rowTakesFocus,
   stubReads,
   treeOf,
+  watchDrawn,
 } from "../slots/stage-fixtures";
 import { blockNodeId } from "../tree-drafts";
-import { treeNode } from "../tree-read/tree-fixtures";
+import { pagedAnswer, treeNode } from "../tree-read/tree-fixtures";
 import {
   outlineQuery,
   type TreeAnswer,
@@ -529,16 +530,10 @@ test("on a return to the issue, the Decisions view's first render draws no next-
   spyOn(api, "getIssueTree").mockImplementation((_key, query) => {
     if (query?.view !== "decisions") return Promise.resolve(treeOf([S1, tied("first")]));
     return earlierVisit
-      ? Promise.resolve({ ...decisionsView([tied("first"), tied("later")]), cursor: "page-2" })
+      ? Promise.resolve(pagedAnswer(decisionsView([tied("first"), tied("later")]), "page-2"))
       : Promise.withResolvers<TreeAnswer>().promise;
   });
   const control = "[data-tree-more]";
-  /** Whether `nodes` holds the next-page control, or an element around one. */
-  const holdsControl = (nodes: NodeList): boolean =>
-    [...nodes].some(
-      (one) =>
-        one instanceof Element && (one.matches(control) || one.querySelector(control) !== null)
-    );
   const earlier = drawStage("", { client });
   await waitFor(() =>
     expect(
@@ -551,13 +546,10 @@ test("on a return to the issue, the Decisions view's first render draws no next-
 
   // Every element the return's renders put on the page or took off it, its first render's among
   // them, which the load's reset redraws before `render` hands the page back.
-  const drawn = new MutationObserver(() => {});
-  drawn.observe(document.body, { childList: true, subtree: true });
+  const drewControl = watchDrawn(control);
   const view = drawStage("", { client });
-  const records = drawn.takeRecords();
-  drawn.disconnect();
   expect(
-    records.some((record) => holdsControl(record.addedNodes) || holdsControl(record.removedNodes)),
+    drewControl(),
     "the Decisions view's first render on the return drew the earlier visit's next-page control"
   ).toBe(false);
   await waitInAct(20);
@@ -688,7 +680,7 @@ test("while a Keep's read of the decisions view is out, the view draws the next-
     if (query?.view !== "decisions") return Promise.resolve(treeOf([S1, tied("first")]));
     viewReads += 1;
     return viewReads === 1
-      ? Promise.resolve({ ...decisionsView([tied("first"), tied("later")]), cursor: "page-2" })
+      ? Promise.resolve(pagedAnswer(decisionsView([tied("first"), tied("later")]), "page-2"))
       : Promise.withResolvers<TreeAnswer>().promise;
   });
   const later = decisionNode("later").id;
@@ -742,7 +734,7 @@ test("a press of the kept answer's next-page control while a Keep's read of the 
     }
     viewReads += 1;
     return viewReads === 1
-      ? Promise.resolve({ ...decisionsView([tied("first"), tied("later")]), cursor: "page-2" })
+      ? Promise.resolve(pagedAnswer(decisionsView([tied("first"), tied("later")]), "page-2"))
       : keepRead.promise;
   });
   const third = () =>
@@ -771,7 +763,7 @@ test("a press of the kept answer's next-page control while a Keep's read of the 
     expect(viewReads, "the press sent a first page of the view of its own").toBe(readsBefore);
 
     await act(async () =>
-      keepRead.resolve({ ...decisionsView([tied("first"), tied("later")]), cursor: "page-2" })
+      keepRead.resolve(pagedAnswer(decisionsView([tied("first"), tied("later")]), "page-2"))
     );
     await waitFor(() =>
       expect(pages, "the press read no next page once the Keep's read answered").toEqual(["page-2"])

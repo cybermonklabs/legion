@@ -576,10 +576,9 @@ export interface TreeRead {
  * nothing has sent - Conversation's on Spec below 1024 px until the Outline sheet opens - is not
  * pending: nothing is out, and the reads that wait on every read of the page do not wait on it.
  * The view read is this load's alone: while the last load of the issue has ended, what the cache
- * keeps of it is an earlier visit's, and no block is drawn from it (`loadEnded`).
+ * keeps of it is an earlier visit's, and no block is drawn from it (`useLoadView`).
  */
 export function useTreeRead(issue: IssueDetails): TreeRead {
-  const queryClient = useQueryClient();
   const { choice, read } = useOutlineRead(issue.key);
   const { filter } = choice;
   const {
@@ -592,8 +591,8 @@ export function useTreeRead(issue: IssueDetails): TreeRead {
     refetch,
   } = read;
   const sent = choice.outline !== undefined && (choice.sends || fetchStatus !== "idle");
-  const view = useQuery({ ...viewQuery(issue.key, filter ?? TREE_FILTERS[0]), enabled: false });
-  const viewHeld = filter !== undefined && !loadEnded(queryClient, issue.key);
+  const view = useLoadView(issue.key, filter ?? TREE_FILTERS[0]);
+  const viewHeld = filter !== undefined;
   const viewAnswer = viewHeld ? view.data : undefined;
   const blocks = useMemo(
     () => byRole((role) => blocksOfRole(role === filter ? viewAnswer : answer, role, issue)),
@@ -701,23 +700,29 @@ function loadHoldOf(queryClient: QueryClient, key: string): LoadHold {
 
 /** Whether the last load of issue `key` has ended and none has reset its views since
  *  (`LoadHold.ended`): what each view's answer and refusal the cache keeps are an earlier visit's,
- *  which no reader takes - the page's tree (`useIssueTree.ts`), the role blocks a filter draws
- *  from (`useTreeRead`) and every reader of a view's own query beside it (`useLoadView`), the
- *  decisions view's readers among them (`useDecisionsView`) - from the next load's first render
- *  on, before its reset drops them (`ViewReadProvider`). */
+ *  which no reader takes - the page's tree (`useIssueTree.ts`) and every reader of a view's own
+ *  query (`useLoadView`), the role blocks a filter draws from (`useTreeRead`) and the decisions
+ *  view's readers (`useDecisionsView`) among them - from the next load's first render on, before
+ *  its reset drops them (`ViewReadProvider`). */
 export function loadEnded(queryClient: QueryClient, key: string): boolean {
   return loadHolds.get(queryClient)?.get(key)?.ended === true;
 }
 
 /** A view read of issue `key` as this load holds it (`useLoadView`), by its own query's state.
  *  Each member is read off the query's result when a reader reads it, so TanStack Query, which
- *  draws a reader again only as a member it read changes, tracks only what each reader reads. */
+ *  draws a reader again only as a member it read changes, tracks only what each reader reads.
+ *  A member reads its field before the load's rule, so a render while the last load of the issue
+ *  has ended tracks that field too: one that tracked none but `refetch` would not be drawn again
+ *  as the view's answer lands. */
 export interface LoadView {
   /** The view's answer: undefined while the last load of the issue has ended. */
   readonly data: TreeAnswer | undefined;
   /** How many times a read of the view failed (TanStack Query's `errorUpdateCount`): 0 while the
    *  last load of the issue has ended. */
   readonly errorUpdateCount: number;
+  /** Whether the view's last read failed (TanStack Query's `isError`): false while the last load
+   *  of the issue has ended. */
+  readonly isError: boolean;
   /** Whether a read of the view runs (TanStack Query's `isFetching`): false while the last load
    *  of the issue has ended. */
   readonly isFetching: boolean;
@@ -727,29 +732,38 @@ export interface LoadView {
 
 /**
  * `view`'s view read of issue `key` as this load holds it (`LoadView`), the one rule every reader
- * of a view's own query takes it by: the view's answer the page holds (`useViewAnswer`), and so
+ * of a view's own query takes it by: the view's answer the page holds (`useViewAnswer`), which
  * the decisions view's readers (`useDecisionsView`) and the control after a view's last row
- * (`useNextViewPage`), and the Spec view's column, which draws the Spec view read's failed line
- * (`spec-filter/SpecFilterBody.tsx`). While the last load of the issue has ended, what the cache
- * keeps of the view is an earlier visit's (`loadEnded`): its answer, its failures and a read of
- * it still out. So until the next load's reset drops the view (`ViewReadProvider`), on that
- * load's first render too, the view holds no answer, has failed no read and runs none. Each
- * member is a getter over the query's result, which TanStack Query tracks as it is read: a
- * reader of the answer alone is not drawn again as a read of the view starts and ends. The view
- * is watched and never sent: `ViewReadProvider` sends it.
+ * (`useNextViewPage`) take it through; the role blocks a filter draws from (`useTreeRead`); and
+ * the Spec view's column, which draws the Spec view read's failed line
+ * (`spec-filter/SpecFilterBody.tsx`). The page's tree reads every filter's view in one
+ * `useQueries` call and takes the same rule by `loadEnded` (`useIssueTree.ts`' `viewOf`), and
+ * `useBlocksRunning` reads whether its view's read runs with no such rule, on purpose. While the
+ * last load of the issue has ended, what the cache keeps of the view is an earlier visit's
+ * (`loadEnded`): its answer, its failures and a read of it still out. So until the next load's
+ * reset drops the view (`ViewReadProvider`), on that load's first render too, the view holds no
+ * answer, has failed no read and runs none. The view is watched and never sent:
+ * `ViewReadProvider` sends it.
  */
 export function useLoadView(key: string, view: TreeView): LoadView {
   const ended = loadEnded(useQueryClient(), key);
   const read = useQuery({ ...viewQuery(key, view), enabled: false });
   return {
     get data() {
-      return ended ? undefined : read.data;
+      const data = read.data;
+      return ended ? undefined : data;
     },
     get errorUpdateCount() {
-      return ended ? 0 : read.errorUpdateCount;
+      const count = read.errorUpdateCount;
+      return ended ? 0 : count;
+    },
+    get isError() {
+      const failed = read.isError;
+      return !ended && failed;
     },
     get isFetching() {
-      return !ended && read.isFetching;
+      const fetching = read.isFetching;
+      return !ended && fetching;
     },
     get refetch() {
       return read.refetch;
@@ -783,9 +797,9 @@ function useViewAnswer(key: string, view: TreeView): ViewAnswer {
 }
 
 /** The decisions view's answer the page holds for issue `key`, and how the view's own read
- *  stands (`useDecisionsView`). `errorUpdateCount`, `isFetching` and `refetch` are getters over
- *  that read (`LoadView`), read only where a reader reads them. */
-export interface DecisionsView {
+ *  stands (`useDecisionsView`). */
+export interface DecisionsView
+  extends Pick<LoadView, "errorUpdateCount" | "isFetching" | "refetch"> {
   /** The view's answer, read during this load of the issue: the one its query holds, and on the
    *  Decisions view, from a write's drop of the view (`dropViews`) until its next answer lands -
    *  while that read is out, and after it is refused - the answer the drop took. On every other
@@ -793,14 +807,6 @@ export interface DecisionsView {
    *  write reads again. Undefined before the view's first answer of the load, and while the last
    *  load of the issue has ended (`loadEnded`). */
   readonly answer: TreeAnswer | undefined;
-  /** How many times the view's own read failed (`LoadView.errorUpdateCount`): 0 while the last
-   *  load of the issue has ended. */
-  readonly errorUpdateCount: number;
-  /** Whether the view's own read runs (`LoadView.isFetching`): false while the last load of the
-   *  issue has ended. */
-  readonly isFetching: boolean;
-  /** Reads the view again, by its own query: what the Decisions view's Retry asks. */
-  readonly refetch: () => Promise<unknown>;
   /** Whether the view's own read stands refused (`standsFailed`): its query holds no answer, and
    *  a read of it failed since it last held one, during this load of the issue. So it is refused
    *  while `answer` is the one a write's drop took, and the Decisions view draws its failed
@@ -828,8 +834,7 @@ export interface DecisionsView {
  * which takes the view (`useViewAnswer`), so the control after a view's last row takes it too
  * and observes no view but its own. The answer and the refusal are read on every draw; how the
  * read runs, how many times it failed and its refetch only where a reader reads them, so a
- * reader of the answer is not drawn again as a read of the view starts and ends. The view is
- * watched and never sent: `ViewReadProvider` sends it.
+ * reader of the answer is not drawn again as a read of the view starts and ends.
  */
 export function useDecisionsView(key: string): DecisionsView {
   const { answer, read } = useViewAnswer(key, "decisions");
@@ -1027,10 +1032,10 @@ export function readNextTreePage(
   version?: number
 ): Promise<void> {
   const { query, queryKey } = pagedQuery(key, read, version);
-  const cached = queryClient.getQueryCache().find<TreeAnswer>({ exact: true, queryKey });
-  const held = cached?.state.data;
+  const held = queryClient.getQueryData<TreeAnswer>(queryKey);
   if (held === undefined) {
     // The read out brings the answer whose next page the press asks for.
+    const cached = queryClient.getQueryCache().find<TreeAnswer>({ exact: true, queryKey });
     const out = cached?.state.fetchStatus === "fetching" ? cached.promise : undefined;
     if (out === undefined) return Promise.resolve();
     const again = () => readNextTreePage(queryClient, key, read, version);

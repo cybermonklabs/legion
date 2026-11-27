@@ -75,8 +75,12 @@ function AddressedStage({ filled, held, issue, page, views }: StageProps): React
   if (route === undefined) throw new Error(`${pathname} names no route`);
   return (
     <ProvidersSlot issue={issue} route={route}>
-      {page ? <HeaderSlot issue={issue} route={route} /> : null}
-      {page ? <ViewRowSlot issue={issue} route={route} /> : null}
+      {page ? (
+        <>
+          <HeaderSlot issue={issue} route={route} />
+          <ViewRowSlot issue={issue} route={route} />
+        </>
+      ) : null}
       <StageSlot filled={filled} issue={issue} route={route} views={views} />
     </ProvidersSlot>
   );
@@ -176,6 +180,24 @@ export function drawnSlot(view: RenderResult): string {
     "[data-decisions-body], [data-plan-body], [data-spec-body], [data-verification-body], [data-stand-in-view]"
   );
   return drawn === null ? "nothing" : "the view";
+}
+
+/** Starts watching the page for an element `selector` matches, or one around one, put on it
+ *  or taken off it however briefly it stands. Answers the call that ends the watch and says
+ *  whether one was. */
+export function watchDrawn(selector: string): () => boolean {
+  const drawn = new MutationObserver(() => {});
+  drawn.observe(document.body, { childList: true, subtree: true });
+  return () => {
+    const records = drawn.takeRecords();
+    drawn.disconnect();
+    return records.some(({ addedNodes, removedNodes }) =>
+      [...addedNodes, ...removedNodes].some(
+        (one) =>
+          one instanceof Element && (one.matches(selector) || one.querySelector(selector) !== null)
+      )
+    );
+  };
 }
 
 /** The node id of the row that holds the focus, or undefined where no row does. */
