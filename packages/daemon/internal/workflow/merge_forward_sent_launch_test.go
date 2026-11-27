@@ -161,8 +161,10 @@ func TestAnAskRowEndedOnAClosedPullRequestIsAskedAgainAfterTheReopen(t *testing.
 	closed := firstConflictRead.Add(4 * time.Minute)
 	applyRefusingNothing(t, pool, readsAfter(4*time.Minute), closedAt(conflictHead, closed))
 	askRowEnds(t, pool, readsAfter(5*time.Minute), false, 0, 2)
+	// The reopen names its head's repository, as GitHub's does: one that names none is not recorded
+	// (pullRequestOpened, as a fork's is), and would leave the closed record's ask in place.
 	applyRefusingNothing(t, pool, readsAfter(6*time.Minute), intake.PullRequestOpened{Repo: "sjawhar/legion", Number: 42,
-		Branch: "legion/LEGION-208", HeadSHA: conflictHead, UpdatedAt: closed.Add(2 * time.Minute), Reopened: true})
+		Branch: "legion/LEGION-208", HeadSHA: conflictHead, HeadRepo: "sjawhar/legion", UpdatedAt: closed.Add(2 * time.Minute), Reopened: true})
 	if mf := recordedPR(t, pool, "LEGION-208").MergeForward; mf != nil {
 		t.Fatalf("after the reopen the record's ask is %+v, want none: the reopen drops it", mf)
 	}

@@ -388,8 +388,12 @@ func TestAHeldParentReleasedIntoItsRetroLeavesTheMergeToTheMerger(t *testing.T) 
 				asksNothingAgain(t, pool, "the implementer's completion", phase.Retro, want)
 			}
 
+			// The retro's completion names the claim of the implementer's step, as the completion
+			// route's grant does: the completion writes it on the implementer's row, which runs the
+			// retro's step, so the withdrawal the move into merging addresses to the implementer names
+			// it (record.WorkerClaim). A claim that is no agent's token would make that row refused.
 			applyRefusingNothing(t, pool, readsAfter(4*time.Minute), intake.HandoffComplete{Generation: 1, Issue: "LEGION-208",
-				Role: claim.RoleImplementer, Claim: "implement-claim", Summary: "retro done", Commit: conflictHead})
+				Role: claim.RoleImplementer, Claim: seededClaim(t, phase.Retro, claim.RoleImplementer), Summary: "retro done", Commit: conflictHead})
 			if got := issuePhase(t, pool); got != phase.Merging {
 				t.Fatalf("after the retro's completion LEGION-208 is in %s, want merging", got)
 			}

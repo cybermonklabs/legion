@@ -539,6 +539,10 @@ type fileConfig struct {
 	WorkerStallBackstops     map[claim.Role]time.Duration
 	RepositoryRenames        []ghrepo.Rename
 	LeakCheck                *fileLeakCheck
+	// RoleKeyed is the mapping each role-keyed setting (worker_backends, role_config_files,
+	// worker_stall_backstop_hours) was read from, by key (readsRoleKeyed): it gives
+	// checkDeploymentRoleKeys the line of a name it refuses whose name has no key's shape.
+	RoleKeyed map[string]*yaml.Node
 	// GitHubGraphQLShare is `github_graphql_share` (readShare).
 	GitHubGraphQLShare *float64
 	// Hooks is `hooks`, a pointer so the settle tells a file that names no key, which runs
@@ -620,7 +624,7 @@ func rootMapping(document *yaml.Node) (*yaml.Node, error) {
 // readKeys walks the top-level keys in file order, dispatching each modelled one through the key
 // table (keytable.go) and classifying the rest.
 func readKeys(root *yaml.Node) (fileConfig, error) {
-	file := fileConfig{Durations: map[string]int{}, Counts: map[string]int{}}
+	file := fileConfig{Durations: map[string]int{}, Counts: map[string]int{}, RoleKeyed: map[string]*yaml.Node{}}
 	if root == nil {
 		return file, nil
 	}
@@ -1540,7 +1544,7 @@ func resolve(file fileConfig, env func(string) string, configDir string) (Config
 	}
 	cfg.Hooks = settleHooks(file.Hooks, configDir)
 	// Every key whose names it judges is set by now.
-	if err := checkDeploymentRoleKeys(cfg); err != nil {
+	if err := checkDeploymentRoleKeys(cfg, file.RoleKeyed); err != nil {
 		return Config{}, err
 	}
 	if cfg.Runtime.Name == "kubernetes" {

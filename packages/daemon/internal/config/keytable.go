@@ -108,6 +108,21 @@ func reads[T any](read func(*yaml.Node, string) (T, error), keep func(*fileConfi
 	}
 }
 
+// readsRoleKeyed is reads for a setting keyed by roles that checkDeploymentRoleKeys holds to a
+// role of the deployment once every key is read (worker_backends, role_config_files,
+// worker_stall_backstop_hours): beside the reader's answer, the file keeps the key's mapping
+// (fileConfig.RoleKeyed), from which that check takes the line of a name it refuses.
+func readsRoleKeyed[V any](read func(*yaml.Node, string) (map[claim.Role]V, error), keep func(*fileConfig, map[claim.Role]V)) func(*yaml.Node, string, *fileConfig) error {
+	readValue := reads(read, keep)
+	return func(value *yaml.Node, key string, file *fileConfig) error {
+		if err := readValue(value, key, file); err != nil {
+			return err
+		}
+		file.RoleKeyed[key] = value
+		return nil
+	}
+}
+
 // roundCap reads one of the two pod-update round caps and the review round cap: a positive integer
 // with no upper bound, whose absent key is no limit rather than a number nobody chose.
 func roundCap(value *yaml.Node, key string) (*int, error) { return readPositiveInteger(value, key, 0) }
@@ -321,12 +336,12 @@ var topLevelKeys = func() []keyDescriptor {
 		{
 			Name: "worker_backends", Default: "every role runs on Oh My Pi", RequiredBy: "no",
 			Description: "The issue roles that run on Claude Code instead of Oh My Pi: each key a phase worker's role (`planner`, `implementer`, `tester`, `reviewer`, `merger`) or a role of `roles`, each value `omp` or `claude`; the architect and the controller always run on Oh My Pi.",
-			Read:        reads(readWorkerBackends, func(f *fileConfig, v map[claim.Role]runtime.Backend) { f.WorkerBackends = v }),
+			Read:        readsRoleKeyed(readWorkerBackends, func(f *fileConfig, v map[claim.Role]runtime.Backend) { f.WorkerBackends = v }),
 		},
 		{
 			Name: "role_config_files", Default: "every role names only the overlays every role names", RequiredBy: "no",
 			Description: "Oh My Pi settings overlays one role names and no other — a model fallback chain for the roles whose output a machine checks, say: each key a role, each value absolute paths that role's `PI_CONFIG_FILES` names after the overlays every role names, so each outranks those.",
-			Read:        reads(readRoleConfigFiles, func(f *fileConfig, v map[claim.Role][]string) { f.RoleConfigFiles = v }),
+			Read:        readsRoleKeyed(readRoleConfigFiles, func(f *fileConfig, v map[claim.Role][]string) { f.RoleConfigFiles = v }),
 		},
 		{
 			Name: "capabilities", Default: "every capability the deployment leaves open is reported open", RequiredBy: "no",
@@ -426,7 +441,7 @@ var topLevelKeys = func() []keyDescriptor {
 		{
 			Name: stallBackstopKey, Default: "twice the bound that role's own worker holds a tool call no deadline judges to: eight hours for an implementer and a reviewer, two for every other role and the controller", RequiredBy: "no",
 			Description: "The daemon's own backstop under a worker whose turn has stopped: per role, how many hours after that role's last recorded step the daemon ends the turn that step belongs to, so the task goes back to waiting and the session is sent it again, charging the claim nothing; `0` switches the backstop off for that role, and a bound below the role's whole stall ladder is refused.",
-			Read:        reads(readStallBackstops, func(f *fileConfig, v map[claim.Role]time.Duration) { f.WorkerStallBackstops = v }),
+			Read:        readsRoleKeyed(readStallBackstops, func(f *fileConfig, v map[claim.Role]time.Duration) { f.WorkerStallBackstops = v }),
 		},
 		{
 			Name: "worker_boot_timeout_seconds", RequiredBy: "no",
