@@ -352,7 +352,8 @@ type evalDetailQuery struct {
 }
 
 // evalItemsQuery is GET /api/v1/projects/{key}/evals/{slug}/items's query: the window and the
-// compare range, the filters, the order of pr-ci's jobs and the page (parseEvalItemsQuery).
+// compare range, the filters, the sources, the order of pr-ci's jobs and the page
+// (parseEvalItemsQuery).
 type evalItemsQuery struct {
 	// From is the window's start, RFC3339; absent it is seven days before To.
 	From string `query:"from"`
@@ -371,6 +372,10 @@ type evalItemsQuery struct {
 	Row string `query:"row"`
 	// Repo, repeatable, narrows the rows to these repositories'.
 	Repo []string `query:"repo"`
+	// Source, repeatable, keeps the rows of these sources alone: computed, the rows a computed
+	// eval's source counts; readings, the eval's readings; days, its day rows. Absent, every
+	// source; `total` counts the rows of the sources kept.
+	Source []string `query:"source" enum:"computed,readings,days"`
 	// Sort answers pr-ci's job rows alone: median, the jobs with their series' min_n timed
 	// results, slowest first; failures, the jobs that failed in the 24 hours before the range's
 	// end, most failures first.

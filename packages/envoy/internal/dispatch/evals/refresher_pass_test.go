@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliveryseed"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
+	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/legion/metrics"
 	"github.com/sjawhar/envoy/internal/dispatch/prodevents"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -422,7 +423,9 @@ func TestTheShippedMembersReadKeepsItsPartialIndexUnderAGenericPlan(t *testing.T
 // other day: none before a series' first row, and none after today though a row of a later day
 // exists. A second fill writes nothing. The readings write writes the zero rows its readings leave
 // owed itself (writeLoggedZeros), so the test takes them away after the writes (leaveGaps), leaving
-// the gaps a write of an earlier build, which left them to the refresher, leaves.
+// the gaps a write of an earlier build, which left them to the refresher, leaves. Each series folds
+// by its sum: the fill writes no row of one that folds by its last value
+// (TestTheZeroFillWritesNoRowOfALastSeries).
 func TestTheLoggedZeroFillWritesEveryMissingDayAndNoOther(t *testing.T) {
 	t.Parallel()
 	r := newRig(t)
@@ -434,6 +437,8 @@ func TestTheLoggedZeroFillWritesEveryMissingDayAndNoOther(t *testing.T) {
 	reading := func(series, key string, measured time.Time) json.RawMessage {
 		return row(t, map[string]any{"series": series, "row_kind": "run", "row_key": key, "value": 1, "measured_at": measured})
 	}
+	r.registerFolded(t, "build-minutes", AggSum, "minutes", "cache")
+	r.registerFolded(t, "test-minutes", AggSum, "minutes")
 	r.write(t, "build-minutes", alice, reading("minutes", "a", on(3, 9)), reading("minutes", "b", on(8, 9)),
 		reading("minutes", "c", on(12, 9)), reading("minutes", "d", on(25, 9)), reading("cache", "e", on(15, 9)))
 	r.write(t, "test-minutes", alice, reading("minutes", "f", on(10, 9)))
@@ -496,6 +501,65 @@ func TestTheLoggedZeroFillWritesEveryMissingDayAndNoOther(t *testing.T) {
 		t.Errorf("a second fill wrote %d rows (%v), want none", again, err)
 	}
 	t.Logf("minutes' zero days %v, cache's %v; %d rows written", minutes, cache, filled)
+}
+
+// TestTheZeroFillWritesNoRowOfALastSeries (dispatch://INFRA-2918, D20 (c), k26): the refresher's
+// pass at a UTC midnight fills the zero rows of a logged eval's series that folds by anything but
+// its last value, and writes no row of one that folds by its last value (eval_series_current.agg
+// `last`). minutes folds by its sum and depth by its last value, each with a reading on the 3rd and
+// the 8th of October 2026, the zero rows their readings write left taken away (leaveGaps): the pass
+// as of the midnight that starts the 12th writes minutes' zero rows of the 4th to the 7th and the
+// 9th to the 12th, and none of depth, which keeps its two rows of a reading each. With the fill of
+// every series, the pass wrote depth's zero rows on the same days as minutes'.
+func TestTheZeroFillWritesNoRowOfALastSeries(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	ctx := t.Context()
+	on := func(day, hour int) time.Time { return time.Date(2026, time.October, day, hour, 0, 0, 0, time.UTC) }
+	if _, err := r.registry.Register(ctx, Registration{
+		Project: r.project, Slug: "queue-depth", Caller: alice, Kind: Set(KindExperiment),
+		Series: []SeriesChange{
+			{Series: "minutes", SeriesComputationChange: SeriesComputationChange{Agg: Set(AggSum)}},
+			{Series: "depth", SeriesComputationChange: SeriesComputationChange{Agg: Set(AggLast)}},
+		},
+	}); err != nil {
+		t.Fatalf("register queue-depth: %v", err)
+	}
+	reading := func(series, key string, measured time.Time) json.RawMessage {
+		return row(t, map[string]any{"series": series, "row_kind": "run", "row_key": key, "value": 2, "measured_at": measured})
+	}
+	r.write(t, "queue-depth", alice, reading("minutes", "a", on(3, 9)), reading("minutes", "b", on(8, 9)),
+		reading("depth", "c", on(3, 9)), reading("depth", "d", on(8, 9)))
+	leaveGaps(t, r)
+	evalID := EvalID(r.project, "queue-depth")
+	days := func(series string, zero bool) []int {
+		t.Helper()
+		rows, err := r.database.Pool.Query(ctx, `
+			select extract(day from day)::int from eval_days
+			where eval_id = $1 and series = $2 and repo = '' and (n = 0) = $3 order by day
+		`, evalID, series, zero)
+		if err != nil {
+			t.Fatalf("read the rows of %s: %v", series, err)
+		}
+		held, err := pgx.CollectRows(rows, pgx.RowTo[int])
+		if err != nil {
+			t.Fatalf("read the rows of %s: %v", series, err)
+		}
+		return held
+	}
+
+	midnight := on(12, 0)
+	if err := r.registry.RefreshThrough(ctx, RefresherDeps{Horizon: events.NewHorizon(r.database.Pool), Build: testBuild}, midnight); err != nil {
+		t.Fatalf("the refresher's pass as of %s: %v", midnight.Format(time.RFC3339), err)
+	}
+	if got, want := days("minutes", true), []int{4, 5, 6, 7, 9, 10, 11, 12}; !slices.Equal(got, want) {
+		t.Errorf("minutes, folded by its sum, holds zero rows on %v after the pass, want %v", got, want)
+	}
+	if zeros, rows := days("depth", true), days("depth", false); len(zeros) != 0 || !slices.Equal(rows, []int{3, 8}) {
+		t.Errorf("depth, folded by its last value, holds zero rows on %v and rows of a reading on %v after the pass, want no zero row and its readings' days [3 8]",
+			zeros, rows)
+	}
+	t.Logf("after the pass at %s minutes holds zero rows on %v, depth on %v", midnight.Format(time.RFC3339), days("minutes", true), days("depth", true))
 }
 
 // TestAPassOverDeliveryInputWithNoProjectSucceeds: the delivery walk begins at the UTC midnight of
@@ -766,9 +830,23 @@ func TestTheShippedMembersReadGoesInStatementsWithinTheBound(t *testing.T) {
 // write of the standing readings leaves, its first day (FirstDaysIn, the first day it states data
 // since) is the first reading's, and a window over a day the correction emptied reads no data
 // where a zero row left in place would read 0. A series a correction leaves with no value holds no
-// row of its all-repositories days.
+// row of its all-repositories days. It holds of a series that folds by its sum, whose days between
+// two readings hold zero rows, and of one that folds by its last value, which holds the rows of its
+// readings' days alone, the correction's emptied row of the 10th deleted with the rows before its
+// first day (dispatch://INFRA-2918, D20 (c)).
 func TestACorrectionThatEmptiesASeriesFirstDaysLeavesNoRowBeforeItsFirstReading(t *testing.T) {
 	t.Parallel()
+	for _, agg := range []string{AggSum, AggLast} {
+		t.Run(agg, func(t *testing.T) {
+			t.Parallel()
+			correctionEmptiesFirstDays(t, agg)
+		})
+	}
+}
+
+// correctionEmptiesFirstDays is TestACorrectionThatEmptiesASeriesFirstDaysLeavesNoRowBeforeItsFirstReading
+// over series that fold by agg.
+func correctionEmptiesFirstDays(t *testing.T, agg string) {
 	ctx := t.Context()
 	on := func(day, hour int) time.Time { return time.Date(2026, time.October, day, hour, 0, 0, 0, time.UTC) }
 	reading := func(series, key string, value float64, measured time.Time, extra map[string]any) json.RawMessage {
@@ -779,6 +857,7 @@ func TestACorrectionThatEmptiesASeriesFirstDaysLeavesNoRowBeforeItsFirstReading(
 		return row(t, fields)
 	}
 	r := newRig(t)
+	r.registerFolded(t, "build-minutes", agg, "minutes", "cache")
 	web := map[string]any{"attributes": map[string]any{"repo": "acme/web"}}
 	written := r.write(t, "build-minutes", alice, reading("minutes", "a", 1, on(3, 9), nil), reading("minutes", "b", 2, on(8, 9), nil),
 		reading("minutes", "c", 3, on(12, 9), nil), reading("cache", "e", 4, on(15, 9), web), reading("minutes", "g", 5, on(10, 9), web))
@@ -806,6 +885,7 @@ func TestACorrectionThatEmptiesASeriesFirstDaysLeavesNoRowBeforeItsFirstReading(
 	}
 	// The rows of a second database, whose readings were written as they now stand.
 	standing := newRig(t)
+	standing.registerFolded(t, "build-minutes", agg, "minutes", "cache")
 	standing.write(t, "build-minutes", alice, reading("minutes", "b", 2, on(8, 9), nil), reading("minutes", "a", 1, on(9, 9), nil),
 		reading("minutes", "c", 3, on(12, 9), nil), reading("minutes", "g", 5, on(11, 9), web))
 	minutes := stored(r, "minutes")

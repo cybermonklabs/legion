@@ -1247,6 +1247,32 @@ func TestCensusAdmitsTheBackfillIndexes(t *testing.T) {
 	requireCensusAdmitsLateIndexes(t, 20261119020700, 20261119020800, 20261119020900, 20261119021000)
 }
 
+// evalReadingsSeriesVersion builds eval_readings_series, the index the step reads of an eval's
+// readings read (dispatch://INFRA-2918, D20 (d)), and holds no other statement.
+const evalReadingsSeriesVersion = 20261127130304
+
+// TestTheReadingsSeriesMigrationIsAdmittedAndBuildsItsPartialIndex: 20261127130304 is one marked,
+// non-unique CREATE INDEX CONCURRENTLY IF NOT EXISTS of eval_readings, which the census admits at
+// any size of the table, over a database that holds every other migration of the shipped set
+// (requireCensusAdmitsLateIndexes); and a database migrated through it holds eval_readings_series
+// valid, over (eval_id, series, col, measured_at desc, id) where superseded_at is null.
+func TestTheReadingsSeriesMigrationIsAdmittedAndBuildsItsPartialIndex(t *testing.T) {
+	t.Parallel()
+	requireCensusAdmitsLateIndexes(t, evalReadingsSeriesVersion)
+	store := openMigratedTestStore(t, evalReadingsSeriesVersion)
+	var valid bool
+	var definition string
+	if err := store.Pool.QueryRow(context.Background(), `select indisvalid, pg_get_indexdef(indexrelid) from pg_index
+		where indexrelid = 'eval_readings_series'::regclass`).Scan(&valid, &definition); err != nil {
+		t.Fatalf("read eval_readings_series from pg_index: %v", err)
+	}
+	const shape = "ON public.eval_readings USING btree (eval_id, series, col, measured_at DESC, id) WHERE (superseded_at IS NULL)"
+	if !valid || !strings.HasSuffix(definition, shape) {
+		t.Errorf("eval_readings_series is valid %t, defined %q, want valid and %q", valid, definition, shape)
+	}
+	t.Logf("%s", definition)
+}
+
 // requireCensusAdmitsLateIndexes holds the census to admitting each of versions, the ascending
 // versions of migrations that each build one concurrent, non-unique index, over a database that
 // holds every other migration of the shipped set. That is production once a release without them

@@ -138,6 +138,7 @@ func TestAReadingsWriteAndTheZeroFillOfItsDayNeverDeadlock(t *testing.T) {
 	r := newRig(t)
 	slug := "fill-race"
 	evalID := EvalID(r.project, slug)
+	r.registerFolded(t, slug, AggSum, "minutes")
 	r.write(t, slug, alice, row(t, map[string]any{"series": "minutes", "row_kind": "run", "row_key": "a", "value": 2, "measured_at": at(4, 9, 0)}))
 	leaveGaps(t, r)
 	holder := pauseInserts(t, r, "eval_days", "new.built_by = 'readings-race'")
@@ -229,6 +230,7 @@ func TestAReadingsWriteAndTheZeroFillOfTwoSeriesNeverDeadlock(t *testing.T) {
 	collateSeriesAsADeploymentDoes(t, r)
 	slug := "fill-order"
 	evalID := EvalID(r.project, slug)
+	r.registerFolded(t, slug, AggSum, "Queue", "latency")
 	reading := func(series, key string, value float64, day int) json.RawMessage {
 		return row(t, map[string]any{"series": series, "row_kind": "run", "row_key": key, "value": value, "measured_at": at(day, 9, 0)})
 	}
@@ -332,6 +334,7 @@ func TestARegisterWriteThatUnlistsASeriesBesideAReadingsWriteUnlistsEveryRow(t *
 	t.Parallel()
 	r := newRig(t)
 	slug := "queue-depth"
+	r.registerFolded(t, slug, AggSum, "depth")
 	depth := func(key string, day int) json.RawMessage {
 		return row(t, map[string]any{"series": "depth", "row_kind": "queue", "row_key": key, "value": float64(day), "measured_at": at(day, 9, 0),
 			"attributes": map[string]any{"repo": "acme/web"}})
@@ -371,6 +374,7 @@ func TestARegisterWriteThatUnlistsASeriesBesideTheZeroFillUnlistsEveryRow(t *tes
 	t.Parallel()
 	r := newRig(t)
 	slug := "queue-depth"
+	r.registerFolded(t, slug, AggSum, "depth")
 	r.write(t, slug, alice, row(t, map[string]any{"series": "depth", "row_kind": "queue", "row_key": "a", "value": 4, "measured_at": at(4, 9, 0)}))
 	leaveGaps(t, r)
 	holder := pauseInserts(t, r, "eval_days", "new.built_by = 'fill-race'")
@@ -387,16 +391,14 @@ func TestARegisterWriteThatUnlistsASeriesBesideTheZeroFillUnlistsEveryRow(t *tes
 	requireDepthRows(t, r, slug, 4)
 }
 
-// TestTheFillOfANewDayWaitsForAFirstReadingItCannotSeeYet: a first reading of a slug, the write that
-// registers its eval, paused at its first day row's insert, which it reaches holding the lock of
-// the project's evals-md (lockDocument), while the refresher fills the logged evals' zero rows
-// through the next day, as the first pass after a midnight does while a write that read the day
-// before as its today is running. The fill waits for the write (awaitRegistrations), and then
-// fills the new eval's row of the next day, which the write, whose today is the day before, left
-// to it. Without the wait the fill read the project's logged evals before the write committed,
-// found no such eval, and left the new eval no row of the new day until the next midnight's fill.
-// It runs where the project has no evals-md yet, which the registration creates under the
-// project's documents' lock, and where an earlier registration made it.
+// TestTheFillOfANewDayWaitsForAFirstReadingItCannotSeeYet: a first reading of a slug, paused at
+// its first day row's insert, while the refresher fills the logged evals' zero rows through the
+// next day, as the first pass after a midnight does while a write that read the day before as its
+// today is running. A first reading of a brand-new slug registers its series folded by its last
+// value (firstSeries), which loggedZeros skips (dispatch://INFRA-2918, D20 (c)), so it leaves the
+// one day row of its reading and no zero row while still exercising awaitRegistrations' lock order
+// with and without evals-md stored. A slug already registered folded by sum gets its 4 day rows
+// (its reading's day and the three zero rows through the fill's today) without deadlocking.
 func TestTheFillOfANewDayWaitsForAFirstReadingItCannotSeeYet(t *testing.T) {
 	t.Parallel()
 	for _, documented := range []bool{false, true} {
@@ -428,12 +430,43 @@ func TestTheFillOfANewDayWaitsForAFirstReadingItCannotSeeYet(t *testing.T) {
 				return
 			}
 			if rows := r.count(t, `select count(*) from eval_days where eval_id = $1 and series = 'minutes' and repo = '' and day between $2 and $3`,
-				EvalID(r.project, slug), read, next); rows != 4 {
-				t.Errorf("the new eval holds %d rows from its reading's day %s through the fill's today %s, want one of each of the 4 days",
+				EvalID(r.project, slug), read, next); rows != 1 {
+				t.Errorf("the new last-folded eval holds %d rows from its reading's day %s through the fill's today %s, want 1 (no zero rows)",
 					rows, read.Format(time.DateOnly), next.Format(time.DateOnly))
 			}
 		})
 	}
+	t.Run("registered sum", func(t *testing.T) {
+		t.Parallel()
+		r := newRig(t)
+		var clock time.Time
+		if err := r.database.Pool.QueryRow(t.Context(), `select now()`).Scan(&clock); err != nil {
+			t.Fatalf("read the database's clock: %v", err)
+		}
+		read, next := measures.Midnight(clock).AddDate(0, 0, -2), measures.Midnight(clock).AddDate(0, 0, 1)
+		const slug = "new-day"
+		r.registerFolded(t, slug, AggSum, "minutes")
+		holder := pauseInserts(t, r, "eval_days", "new.built_by = 'registering'")
+		writeErr, fillErr := race(t, holder,
+			func(ctx context.Context) error {
+				_, err := r.registry.WriteReadings(ctx, Batch{Project: r.project, Slug: slug, Caller: alice, BuiltBy: "registering",
+					Rows: []json.RawMessage{row(t, map[string]any{"series": "minutes", "row_kind": "run", "row_key": "b", "value": 2, "measured_at": read.Add(9 * time.Hour)})}})
+				return err
+			},
+			func(ctx context.Context) error {
+				return r.registry.newRefresh("next-day", next.Add(time.Minute), walkBatch).fillLogged(ctx, r.project)
+			})
+		requireNoDeadlock(t, "the first reading", writeErr)
+		requireNoDeadlock(t, "the fill of the next day", fillErr)
+		if t.Failed() {
+			return
+		}
+		if rows := r.count(t, `select count(*) from eval_days where eval_id = $1 and series = 'minutes' and repo = '' and day between $2 and $3`,
+			EvalID(r.project, slug), read, next); rows != 4 {
+			t.Errorf("the sum-folded eval holds %d rows from its reading's day %s through the fill's today %s, want one of each of the 4 days",
+				rows, read.Format(time.DateOnly), next.Format(time.DateOnly))
+		}
+	})
 }
 
 // TestAFirstReadingAndARegisterWriteWithDocTextNeverDeadlock: a register write that replaces an

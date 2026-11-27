@@ -138,6 +138,21 @@ func (r rig) write(t *testing.T, slug string, caller model.Actor, rows ...json.R
 	return written
 }
 
+// registerFolded registers slug of the rig's project with each of series folded by agg, before any
+// reading of it, failing the test unless the write stores it. A series a readings write registers
+// itself folds by its last value (firstSeries), of which no zero row is written (loggedZeros), so a
+// test of a logged eval's zero rows registers its series folded otherwise first.
+func (r rig) registerFolded(t *testing.T, slug, agg string, series ...string) {
+	t.Helper()
+	changes := make([]SeriesChange, len(series))
+	for index, name := range series {
+		changes[index] = SeriesChange{Series: name, SeriesComputationChange: SeriesComputationChange{Agg: Set(agg)}}
+	}
+	if _, err := r.registry.Register(t.Context(), Registration{Project: r.project, Slug: slug, Caller: alice, Kind: Set(KindExperiment), Series: changes}); err != nil {
+		t.Fatalf("register %s with %v folded by %s: %v", slug, series, agg, err)
+	}
+}
+
 // entries answers the current entry of each of evalIDs, as the list read holds it (EvalIn, in one
 // snapshot), failing the test when no version holds one.
 func (r rig) entries(t *testing.T, evalIDs ...string) []Entry {

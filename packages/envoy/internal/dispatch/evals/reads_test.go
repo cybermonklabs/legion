@@ -796,3 +796,109 @@ func TestAWindowTheWalkHasNotBuiltReadsNoDataUntilItHas(t *testing.T) {
 			one.next.AddDate(0, 0, -1).Format(time.DateOnly), checked, one.walk)
 	}
 }
+
+// TestTheStepReadsUseTheSeriesIndex (dispatch://INFRA-2918, D20 (d)): over 64,000 standing readings,
+// 32,000 of the eval read and 32,000 of another eval of the same series, cols and rows, analyzed,
+// the statements the step reads send (BeforeWindowIn, its lines a col and a row, and StepLastIn) are
+// explained as they were sent, with their arguments, under `EXPLAIN (ANALYZE, BUFFERS, FORMAT
+// JSON)` and with sequential scans left on: no plan scans eval_readings whole, every index of it a
+// plan reads is eval_readings_series, every index scan of it carries a condition on eval_id, and no
+// node of it removes a row by a filter, so no plan reads another eval's readings. Each read answers
+// what the readings hold: a reading before each range for each col and each row of its lines, and
+// the newest reading at each range's end.
+func TestTheStepReadsUseTheSeriesIndex(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	ctx := t.Context()
+	declared := json.RawMessage(`[{"id":"cap","title":"cap","kind":"xy","y":{"series":"cap"},"curve":"step"},
+		{"id":"queue","title":"queue","kind":"xy","y":{"series":"queue"},"curve":"step"},
+		{"id":"holds","title":"holds","kind":"xy","y":{"series":"holds"},"curve":"step","group":"row"}]`)
+	changes := []SeriesChange{}
+	for _, name := range []string{"cap", "queue", "holds"} {
+		changes = append(changes, SeriesChange{Series: name, SeriesComputationChange: SeriesComputationChange{Agg: Set(AggLast)}})
+	}
+	if _, err := r.registry.Register(ctx, Registration{Project: r.project, Slug: "steps", Caller: alice, Kind: Set(KindExperiment),
+		Charts: Set(declared), Series: changes}); err != nil {
+		t.Fatalf("register steps: %v", err)
+	}
+	evalID := EvalID(r.project, "steps")
+	base := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
+	if _, err := r.database.Pool.Exec(ctx, `
+		insert into eval_readings (eval_id, series, row_key, row_kind, col, value, measured_at, recorded_by)
+		select e.id, s.series, s.row_key || (n % 5), 'sample', s.col, n, $2::timestamptz + n * interval '1 minute', '{"kind":"user","id":"alice"}'
+		from (values ($1), ('EVAL/other')) as e(id),
+			(values ('cap', '', 'c'), ('queue', 'value', 'q'), ('queue', 'limit', 'q'), ('holds', '', 'h')) as s(series, col, row_key),
+			generate_series(1, 8000) as n
+	`, evalID, base); err != nil {
+		t.Fatalf("seed the readings: %v", err)
+	}
+	if held := r.count(t, `select count(*) from eval_readings where superseded_at is null`); held != 64000 {
+		t.Fatalf("the store holds %d standing readings, want 64,000", held)
+	}
+	if _, err := r.database.Pool.Exec(ctx, `analyze eval_readings`); err != nil {
+		t.Fatalf("analyze eval_readings: %v", err)
+	}
+	steps, err := StepsIn(ctx, r.database.Pool, []string{evalID})
+	if err != nil {
+		t.Fatalf("read the step series of %s: %v", evalID, err)
+	}
+	window := Range{From: base.Add(4000 * time.Minute), To: base.Add(10000 * time.Minute)}
+	compare := Range{From: base.Add(2000 * time.Minute), To: base.Add(4000 * time.Minute)}
+	tx, err := r.database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the reads: %v", err)
+	}
+	defer tx.Rollback(ctx)
+	recorded := &explaintest.RecordedTx{Tx: tx}
+	before, err := BeforeWindowIn(ctx, recorded, evalID, steps[evalID], "", "", nil, []time.Time{window.From, compare.From})
+	if err != nil {
+		t.Fatalf("read the readings before the ranges: %v", err)
+	}
+	last, err := StepLastIn(ctx, recorded, r.entries(t, evalID), nil, window, &compare)
+	if err != nil {
+		t.Fatalf("read the step series' values at the ranges' ends: %v", err)
+	}
+	// Each range has a reading of cap, of each of queue's two cols and of each of holds' five rows.
+	if len(before[0]) != 8 || len(before[1]) != 8 {
+		t.Errorf("the reads before the ranges answer %d and %d readings, want 8 of each", len(before[0]), len(before[1]))
+	}
+	for _, series := range []string{"cap", "queue", "holds"} {
+		ends := last[stepSeries{evalID: evalID, series: series}]
+		if ends.window == nil || *ends.window != 8000 || ends.compare == nil || *ends.compare != 3999 {
+			t.Errorf("%s states %s at the window's end and %s at the compare range's, want 8000 and 3999", series, showValue(ends.window), showValue(ends.compare))
+		}
+	}
+	explained := 0
+	for _, statement := range recorded.Sent {
+		if !strings.Contains(statement.SQL, "with recursive cols") {
+			continue
+		}
+		explained++
+		var raw []byte
+		if err := r.database.Pool.QueryRow(ctx, "explain (analyze, buffers, format json) "+statement.SQL, statement.Args...).Scan(&raw); err != nil {
+			t.Fatalf("explain a step read: %v", err)
+		}
+		plan := explaintest.OnePlan(t, raw)
+		outline := explaintest.Outline(t, plan)
+		if explaintest.SeqScansRelation(t, plan, "eval_readings") {
+			t.Errorf("a step read scans eval_readings whole:\n%s", outline)
+		}
+		for _, scan := range explaintest.IndexScans(t, plan) {
+			if scan.Index != "" && strings.HasPrefix(scan.Index, "eval_readings") && scan.Index != "eval_readings_series" {
+				t.Errorf("a step read reads eval_readings through %s, want eval_readings_series:\n%s", scan.Index, outline)
+			}
+			if scan.Index == "eval_readings_series" && !strings.Contains(scan.Cond, "eval_id =") {
+				t.Errorf("a step read reads eval_readings_series with the condition %q, which names no eval:\n%s", scan.Cond, outline)
+			}
+		}
+		for _, node := range explaintest.Nodes(t, plan) {
+			if node.Relation == "eval_readings" && node.RowsRemovedByFilter > 0 {
+				t.Errorf("a step read's %s removes %.0f rows by its filter %q, reading readings it does not answer:\n%s", node, node.RowsRemovedByFilter, node.Filter, outline)
+			}
+		}
+		t.Logf("a step read's plan:\n%s", outline)
+	}
+	if explained != 2 {
+		t.Errorf("the step reads sent %d statements of eval_readings, want BeforeWindowIn's and StepLastIn's", explained)
+	}
+}

@@ -12888,6 +12888,21 @@
             }
           },
           {
+            "name": "source",
+            "in": "query",
+            "schema": {
+              "items": {
+                "enum": [
+                  "computed",
+                  "readings",
+                  "days"
+                ],
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          {
             "name": "sort",
             "in": "query",
             "schema": {
@@ -24495,6 +24510,9 @@
       },
       "EvalItemRow": {
         "properties": {
+          "before_window": {
+            "type": "boolean"
+          },
           "cols": {
             "additionalProperties": {},
             "type": [

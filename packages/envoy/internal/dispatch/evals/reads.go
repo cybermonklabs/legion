@@ -7,12 +7,14 @@ import (
 	"maps"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
+	"github.com/sjawhar/envoy/internal/dispatch/evals/charts"
 )
 
 // Entry is one eval as the registry read answers it: its newest definition and the newest
@@ -726,6 +728,300 @@ func ItemsIn(ctx context.Context, q delivery.Querier, evalID, series, rowKind, r
 		return Page[Reading]{}, fmt.Errorf("read the readings of %s: %w", evalID, err)
 	}
 	return Page[Reading]{Items: readings, Total: total}, nil
+}
+
+// The step reads (dispatch://INFRA-2918, D20): a series that a step chart of its eval's current
+// definition draws (charts.Steps) starts each line at the window's start, and at the compare
+// range's, at the value of the newest standing reading of its group before that start
+// (BeforeWindowIn), and a `last` series so drawn states as its value over a range the newest
+// standing reading at its end (StepLastIn). Each names a series and no row kind, so each reads
+// eval_readings_series, (eval_id, series, col, measured_at desc, id) where superseded_at is null
+// (migration 20261127130304): the cols of each series by one descent of it a col (stepCols), then
+// the newest reading of each col by one more, or of each row or row group of a col by one range of
+// it over the col's readings before the moment (stepNewest). Of readings measured at one moment
+// the newest is the one of the later write (recorded_at) and within one write the later row (id),
+// the reading the day rows' `last` fold takes (dayPart.lastBefore), so the value a step series
+// states is the stored path's last value wherever the two read the same readings.
+
+// StepsIn reads in q the declared charts of the current definition of each of evalIDs
+// (evals_current) and answers, by eval id, the series each draws as a step line over measured time
+// with the group of each (charts.Steps); an eval whose charts draw none has no entry. The ids go in
+// statements of at most statementBytes of parameters (statementChunks).
+func StepsIn(ctx context.Context, q delivery.Querier, evalIDs []string) (map[string][]charts.Step, error) {
+	steps := map[string][]charts.Step{}
+	for chunk := range statementChunks(evalIDs, paramBytes(1), textBytes) {
+		rows, err := q.Query(ctx, `select eval_id, charts from evals_current where eval_id = any($1)`, chunk)
+		if err != nil {
+			return nil, fmt.Errorf("read the charts of %d evals: %w", len(chunk), err)
+		}
+		var evalID string
+		var declared []byte
+		if _, err := pgx.ForEachRow(rows, []any{&evalID, &declared}, func() error {
+			drawn, err := charts.Steps(declared)
+			if err != nil {
+				return fmt.Errorf("the charts of %s: %w", evalID, err)
+			}
+			if len(drawn) > 0 {
+				steps[evalID] = drawn
+			}
+			return nil
+		}); err != nil {
+			return nil, fmt.Errorf("read the charts of %d evals: %w", len(chunk), err)
+		}
+	}
+	return steps, nil
+}
+
+// stepCols is the common table expression `cols` of the step reads: each col that holds a standing
+// reading of each (eval, series) pair $1 and $2 name, one descent of eval_readings_series a col (a
+// loose index scan), and for each pair a last row whose col is null, which ends its walk.
+const stepCols = `
+	with recursive cols (eval_id, series, col) as (
+		select given.eval_id, given.series, (
+			select r.col from eval_readings r
+			where r.eval_id = given.eval_id and r.series = given.series and r.superseded_at is null
+			order by r.col limit 1)
+		from unnest($1::text[], $2::text[]) as given(eval_id, series)
+		union all
+		select cols.eval_id, cols.series, (
+			select r.col from eval_readings r
+			where r.eval_id = cols.eval_id and r.series = cols.series and r.superseded_at is null and r.col > cols.col
+			order by r.col limit 1)
+		from cols where cols.col is not null
+	)`
+
+// stepNewest is the lateral read of the standing readings of the col of cols' row c measured before
+// before, which filter narrows further: the newest of them, or with a group key (the row key or the
+// row group) the newest of each group, through eval_readings_series.
+func stepNewest(before, key, filter string) string {
+	where := `
+		where r.eval_id = c.eval_id and r.series = c.series and r.col = c.col and r.superseded_at is null
+		  and r.measured_at < ` + before + filter
+	if key == "" {
+		return `select * from eval_readings r` + where + `
+		order by r.measured_at desc, r.recorded_at desc, r.id desc limit 1`
+	}
+	return `select distinct on (` + key + `) * from eval_readings r` + where + `
+		order by ` + key + `, r.measured_at desc, r.recorded_at desc, r.id desc`
+}
+
+// stepGroupKeys is the expression each group of a step line is told apart by beside its series and
+// col: none for a line a col, the row key for a line a row, the reading's row group for a line a
+// row group.
+var stepGroupKeys = []struct{ group, key string }{
+	{charts.GroupCol, ""}, {charts.GroupRow, "r.row_key"}, {charts.GroupRowGroup, "r.attributes ->> 'row_group'"},
+}
+
+// rangeScan is a row the step reads scan: its own columns, then the 1-based place in the read's
+// list of moments of the moment it was read for.
+type rangeScan struct {
+	row pgx.Row
+	nth *int64
+}
+
+func (r rangeScan) Scan(dest ...any) error {
+	return r.row.Scan(append(dest, r.nth)...)
+}
+
+// BeforeWindowIn reads in q, of the readings of evalID's step series (steps, each series and its
+// group), the newest standing reading of each group measured before each of befores, the start of
+// each range of a read (dispatch://INFRA-2918, D20 (a)): a group is the series and its col, and
+// further the row key or the row group where the step draws a line a row or a row group. Readings
+// are those of one row kind and row where each is not "", and those whose attributes.repo is one of
+// repos where repos names any, as ItemsIn reads them. It answers, for each of befores in order, its
+// readings newest first, each once though it is the newest of a group of several steps. One
+// statement reads them all: an eval's charts are at most 16, each drawing at most a y and its y
+// options, so its step series take a small part of statementBytes.
+func BeforeWindowIn(ctx context.Context, q delivery.Querier, evalID string, steps []charts.Step, rowKind, row string, repos []string, befores []time.Time) ([][]Reading, error) {
+	answer := make([][]Reading, len(befores))
+	if len(steps) == 0 || len(befores) == 0 {
+		return answer, nil
+	}
+	var series []string
+	grouped := map[string][]string{}
+	for _, step := range steps {
+		if !slices.Contains(series, step.Series) {
+			series = append(series, step.Series)
+		}
+		grouped[step.Group] = append(grouped[step.Group], step.Series)
+	}
+	starts := make([]time.Time, len(befores))
+	for index, before := range befores {
+		starts[index] = before.UTC()
+	}
+	args := []any{slices.Repeat([]string{evalID}, len(series)), series, starts}
+	filter := ""
+	for _, named := range []struct{ column, value string }{{"row_kind", rowKind}, {"row_key", row}} {
+		if named.value != "" {
+			args = append(args, named.value)
+			filter += ` and r.` + named.column + ` = $` + strconv.Itoa(len(args))
+		}
+	}
+	if len(repos) > 0 {
+		args = append(args, repos)
+		filter += ` and r.attributes ->> 'repo' = any($` + strconv.Itoa(len(args)) + `)`
+	}
+	var branches []string
+	for _, group := range stepGroupKeys {
+		if len(grouped[group.group]) == 0 {
+			continue
+		}
+		args = append(args, grouped[group.group])
+		branches = append(branches, `
+			select r.*, b.nth from cols c
+			cross join unnest($3::timestamptz[]) with ordinality as b(before, nth)
+			cross join lateral (`+stepNewest("b.before", group.key, filter)+`) r
+			where c.col is not null and c.series = any($`+strconv.Itoa(len(args))+`::text[])`)
+	}
+	rows, err := q.Query(ctx, stepCols+`
+		select `+ReadingColumns+`, nth from (`+strings.Join(branches, "\n\t\t\tunion all")+`
+		) picked
+		order by nth, measured_at desc, id`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("read the readings of %s before its ranges: %w", evalID, err)
+	}
+	defer rows.Close()
+	seen := make([]map[string]bool, len(befores))
+	for rows.Next() {
+		var nth int64
+		reading, err := scanReading(rangeScan{row: rows, nth: &nth})
+		if err != nil {
+			return nil, fmt.Errorf("read the readings of %s before its ranges: %w", evalID, err)
+		}
+		at := int(nth) - 1
+		if seen[at] == nil {
+			seen[at] = map[string]bool{}
+		}
+		if !seen[at][reading.ID] {
+			seen[at][reading.ID] = true
+			answer[at] = append(answer[at], reading)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read the readings of %s before its ranges: %w", evalID, err)
+	}
+	return answer, nil
+}
+
+// StepLast is the value each `last` series of a logged eval that a step chart of the eval's current
+// definition draws states over a read's window and its compare range (StepLastIn): the value of the
+// newest standing reading of the series, of any col, measured before each range's end, nil where
+// that reading has no value or the range ends before any reading (dispatch://INFRA-2918, D20 (b)).
+// Apply states it.
+type StepLast map[stepSeries]stepEnds
+
+// stepSeries is one series of one eval.
+type stepSeries struct{ evalID, series string }
+
+// stepEnds is a step series' value at the end of the window and of the compare range.
+type stepEnds struct{ window, compare *float64 }
+
+// stepPairBytes is the most bytes one pair adds to the parameters of StepLastIn's statement, as
+// pgx encodes them in binary: in each of its two arrays 4 bytes of length and the text.
+func stepPairBytes(pair *stepSeries) int {
+	return 2*4 + len(pair.evalID) + len(pair.series)
+}
+
+// StepLastIn reads in q the StepLast of entries over window and compare (nil for none): of each
+// logged eval among them that holds a `last` series, its current charts (StepsIn), and of each
+// `last` series one of its step charts draws, the newest standing reading of any col measured
+// before the end of each range, of those whose attributes.repo is one of repos where repos names
+// any, as the day rows of those repositories count a reading. A col's newest is one descent of
+// eval_readings_series (stepNewest), whatever the count of readings before it, and the newest of the
+// series the newest of its cols': a series of several cols (a value and its limit) states the
+// newest reading of either, the reading its day rows' `last` fold takes, since a day row folds
+// every col of its series. It sends no statement where no entry is such an eval, and no second one
+// where no `last` series is drawn as a step. The pairs go in statements of at most statementBytes
+// of parameters (statementChunks).
+func StepLastIn(ctx context.Context, q delivery.Querier, entries []Entry, repos []string, window Range, compare *Range) (StepLast, error) {
+	var candidates []string
+	for _, entry := range entries {
+		if !entry.Definition.Computed() && slices.ContainsFunc(entry.Series, func(series Series) bool { return series.Agg == AggLast }) {
+			candidates = append(candidates, entry.Definition.EvalID)
+		}
+	}
+	if len(candidates) == 0 {
+		return nil, nil
+	}
+	drawn, err := StepsIn(ctx, q, candidates)
+	if err != nil {
+		return nil, err
+	}
+	last := StepLast{}
+	var pairs []stepSeries
+	for _, entry := range entries {
+		steps := drawn[entry.Definition.EvalID]
+		for _, series := range entry.Series {
+			if series.Agg != AggLast || !slices.ContainsFunc(steps, func(step charts.Step) bool { return step.Series == series.Series }) {
+				continue
+			}
+			pair := stepSeries{evalID: entry.Definition.EvalID, series: series.Series}
+			if _, held := last[pair]; !held {
+				last[pair] = stepEnds{}
+				pairs = append(pairs, pair)
+			}
+		}
+	}
+	if len(pairs) == 0 {
+		return last, nil
+	}
+	ends := []time.Time{window.To.UTC()}
+	if compare != nil {
+		ends = append(ends, compare.To.UTC())
+	}
+	filter := ""
+	if len(repos) > 0 {
+		filter = ` and r.attributes ->> 'repo' = any($4)`
+	}
+	query := stepCols + `
+		select distinct on (c.eval_id, c.series, e.nth) c.eval_id, c.series, e.nth, newest.value
+		from cols c
+		cross join unnest($3::timestamptz[]) with ordinality as e(before, nth)
+		cross join lateral (` + stepNewest("e.before", "", filter) + `) newest
+		where c.col is not null
+		order by c.eval_id, c.series, e.nth, newest.measured_at desc, newest.recorded_at desc, newest.id desc`
+	base := paramBytes(3) + (4+8)*len(ends)
+	if len(repos) > 0 {
+		base += paramBytes(1)
+		for _, repo := range repos {
+			base += 4 + len(repo)
+		}
+	}
+	for chunk := range statementChunks(pairs, base, stepPairBytes) {
+		evalIDs, names := make([]string, len(chunk)), make([]string, len(chunk))
+		for index, pair := range chunk {
+			evalIDs[index], names[index] = pair.evalID, pair.series
+		}
+		args := []any{evalIDs, names, ends}
+		if len(repos) > 0 {
+			args = append(args, repos)
+		}
+		rows, err := q.Query(ctx, query, args...)
+		if err != nil {
+			return nil, fmt.Errorf("read the newest readings of %d step series: %w", len(chunk), err)
+		}
+		var pair stepSeries
+		var nth int64
+		var value *float64
+		if _, err := pgx.ForEachRow(rows, []any{&pair.evalID, &pair.series, &nth, &value}, func() error {
+			// The scan writes each row's value into one variable, so each range keeps a copy.
+			var kept *float64
+			if value != nil {
+				kept = new(*value)
+			}
+			held := last[pair]
+			if nth == 1 {
+				held.window = kept
+			} else {
+				held.compare = kept
+			}
+			last[pair] = held
+			return nil
+		}); err != nil {
+			return nil, fmt.Errorf("read the newest readings of %d step series: %w", len(chunk), err)
+		}
+	}
+	return last, nil
 }
 
 func checkPage(limit, offset int) error {

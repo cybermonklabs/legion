@@ -944,9 +944,9 @@ func (s *server) readEvalList(ctx context.Context, request evalListRequest, now 
 // (readEvalValues): each eval's values where the stored figures answer it, the indexes of those
 // they do not (unstated) with the day rows and the first days their values are folded from, the
 // indexes of those a narrowing builds at read time (narrowed) with the rows built for them
-// (atRead) and the keys of the filters they were narrowed by (applied), how far each family's
-// stored rows are whole through (built), the oldest updated_at of the stored rows read, and the
-// refresher's age.
+// (atRead) and the keys of the filters they were narrowed by (applied), the value of each `last`
+// series a step chart draws at each range's end (stepLast), how far each family's stored rows are
+// whole through (built), the oldest updated_at of the stored rows read, and the refresher's age.
 type evalValues struct {
 	entries  []evals.Entry
 	ranges   evalRanges
@@ -956,6 +956,7 @@ type evalValues struct {
 	narrowed []int
 	atRead   []evals.WindowRow
 	applied  []string
+	stepLast evals.StepLast
 	firsts   map[string]map[string]time.Time
 	built    evals.Built
 	oldest   *time.Time
@@ -985,8 +986,11 @@ type evalValues struct {
 // more repositories among them, is stated from one read of the day rows of the window and the
 // compare range of those evals alone (evals.DayWindowIn, the rows of repos where it names any),
 // folded once the snapshot is committed (evalValues.items). Both answer the same bits
-// (evals.StoredFigures.SeriesValues). Each read reads every project the entries it reads are evals
-// of at once.
+// (evals.StoredFigures.SeriesValues). A `last` series of a logged eval that a step chart of its
+// current definition draws states its value over each range from the newest reading at the range's
+// end, of repos where it names any (evals.StepLastIn, dispatch://INFRA-2918, D20 (b)), whichever of
+// the two states its other statistics. Each read reads every project the entries it reads are
+// evals of at once.
 func readEvalValues(ctx context.Context, tx pgx.Tx, entries []evals.Entry, deployRepos *evals.DeployRepos, repos []string, ranges evalRanges,
 	narrowing *evalNarrowing, attributor *delivery.Attributor, now time.Time) (evalValues, error) {
 	read := evalValues{entries: entries, ranges: ranges, values: make([][]evals.SeriesValues, len(entries))}
@@ -1006,6 +1010,9 @@ func readEvalValues(ctx context.Context, tx pgx.Tx, entries []evals.Entry, deplo
 		return evalValues{}, err
 	}
 	if read.built, err = evals.BuiltIn(ctx, tx, entries, now); err != nil {
+		return evalValues{}, err
+	}
+	if read.stepLast, err = evals.StepLastIn(ctx, tx, entries, repos, ranges.window, ranges.compare); err != nil {
 		return evalValues{}, err
 	}
 	var narrowed, stored []evals.Entry
@@ -1075,7 +1082,8 @@ func (v *evalValues) earliest(at time.Time) {
 // narrowing narrowed, each such series naming the filters it was narrowed by, through the one
 // fold of the day rows (evals.SeriesValuesOf), and reads nothing, so it runs once the snapshot v
 // was read in is committed. Every eval's values, the stored figures', the day rows' and those
-// built at read time alike, are stated under one rule (evals.Built.Withhold): a window or a
+// built at read time alike, take the value at each range's end of each `last` series a step chart
+// draws (evals.StepLast.Apply), and are stated under one rule (evals.Built.Withhold): a window or a
 // compare range that holds a day before today its family's stored rows are not whole through
 // answers no value, as one before its series' first day does, until the walk has built the day
 // (R12); the verdict judges what is stated.
@@ -1103,7 +1111,8 @@ func (v *evalValues) items() ([]evalItem, evalFreshness) {
 	}
 	items := make([]evalItem, len(v.entries))
 	for index, entry := range v.entries {
-		series := v.built.Withhold(entry.Definition, v.values[index], v.ranges.window, v.ranges.compare)
+		values := v.stepLast.Apply(entry, v.values[index], v.firsts[entry.Definition.EvalID], v.ranges.window, v.ranges.compare)
+		series := v.built.Withhold(entry.Definition, values, v.ranges.window, v.ranges.compare)
 		items[index] = evalItem{
 			Definition: entry.Definition,
 			Owner:      evalOwnerOf(entry.Definition),

@@ -306,6 +306,49 @@ func valuesOf(listed []Series, windowed map[string]Statistics, via map[string]in
 	return values
 }
 
+// Apply is values, the listed series of entry with their values as SeriesValuesOf or
+// StoredFigures.SeriesValues states them over window and compare (nil for none), with the value of
+// each `last` series s holds (StepLastIn) stated from s in place of the day rows' fold, changed in
+// place: the window's `value` is the value of the newest reading at the window's end, and the
+// compare range's the newest at its end, and the change between them follows. The value is the
+// reading's whatever the range's day rows hold, since a step line holds each value until the next
+// reading; it is null where that reading has no value, which ends the line, or where the range
+// ends before any reading. A range that starts before the series' first day (firsts, FirstDaysIn)
+// still reads no data, as valuesOf states it (R18). Every other statistic, and every other series,
+// stands as the day rows state it: a `last` series no step chart draws states no value for a range
+// with no reading (valuesOf, noData).
+func (s StepLast) Apply(entry Entry, values []SeriesValues, firsts map[string]time.Time, window Range, compare *Range) []SeriesValues {
+	for index := range values {
+		value := &values[index]
+		ends, held := s[stepSeries{evalID: entry.Definition.EvalID, series: value.Series.Series}]
+		if !held {
+			continue
+		}
+		first, begun := firsts[value.Series.Series]
+		if begun && !window.From.Before(first) {
+			value.Window = withValue(value.Window, ends.window)
+		}
+		if compare != nil {
+			if begun && !compare.From.Before(first) {
+				value.Compare = withValue(value.Compare, ends.compare)
+			}
+			value.Change = changeOf(value.Window, value.Compare)
+		}
+	}
+	return values
+}
+
+// withValue is stats with its `value` the figure given, as a copy, so no other read's statistics
+// change with it.
+func withValue(stats Statistics, figure *float64) Statistics {
+	stated := maps.Clone(stats)
+	if stated == nil {
+		stated = Statistics{}
+	}
+	stated["value"] = figure
+	return stated
+}
+
 // dayPoints is points with each day of daily that holds a fold of series appended, in daily's
 // order: one range's per-day array of a headline series.
 func dayPoints(points []DayPoint, series string, daily []dayFold) []DayPoint {

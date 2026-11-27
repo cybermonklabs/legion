@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
 	"github.com/sjawhar/envoy/internal/dispatch/evals"
+	"github.com/sjawhar/envoy/internal/dispatch/evals/charts"
 	"github.com/sjawhar/envoy/internal/dispatch/legion/metrics"
 	"github.com/sjawhar/envoy/internal/dispatch/legionfacts"
 	"github.com/sjawhar/envoy/internal/dispatch/prodevents"
@@ -39,11 +40,15 @@ import (
 // counted it (eval_day_members, evals.CountedIn), so the items are the rows the numbers fold, under
 // the attribution the day rows made (evals' delivery_days.go, "Attribution"). Every eval then
 // answers its readings (evals.ItemsIn, a reading logged under a computed eval's slug among them,
-// which its value never folds, R3) and last its day rows (evals.EvalDaysIn, `day`).
+// which its value never folds, R3) and last its day rows (evals.EvalDaysIn, `day`). `source` keeps
+// the rows of the sources it names alone: computed, the rows of a computed eval's source; readings;
+// days, the day rows.
 //
 // A row of the compare range carries range `compare`. The page runs across the row kinds in the
 // order above, the compare range's rows after the window's, and a row kind's rows in its own
-// order.
+// order. Before a range's rows the answer holds, whatever its page, the readings each step line of
+// the eval's current charts starts that range at (stepBeforeRows, dispatch://INFRA-2918, D20 (a)),
+// each marked before_window.
 //
 // One answer, one snapshot (dispatch://INFRA-2916, point 6): every read an answer makes, the
 // project and the eval, the settings the rows stand built under, the day rows, the items they
@@ -55,7 +60,8 @@ import (
 // evalItemRow is one row of an items answer, the same fields for every row kind (R7): its key and
 // kind, its columns (cols, whose names are the row kind's own), when it was measured, the source
 // it was read from, the address a reader follows to see it, the links it carries (a reading's
-// own, [] for every other row) and the range it is of.
+// own, [] for every other row), the range it is of, and whether it is a reading read before that
+// range (before_window, absent for every other row).
 //
 // MeasuredAt is when the row's value was measured, the moment its eval dates it by and so the
 // moment that puts it in its range, never when a row was last written: a reading's own
@@ -64,16 +70,17 @@ import (
 // ReadCIRows read runs by start); a Legion issue's close and a filing's filing; a day row's day; a
 // job's figures the newest day of the day rows they fold; a failing job its latest failure, which
 // measures.FailingJobs counts by completion; and an open P0 issue with no owner the read itself,
-// since the count is of the present.
+// since the count is of the present. A reading before its range is measured before it.
 type evalItemRow struct {
-	RowKey     string         `json:"row_key"`
-	RowKind    string         `json:"row_kind"`
-	Cols       map[string]any `json:"cols"`
-	MeasuredAt time.Time      `json:"measured_at"`
-	Source     string         `json:"source"`
-	Href       string         `json:"href"`
-	Links      []evals.Link   `json:"links"`
-	Range      string         `json:"range" enum:"window,compare"`
+	RowKey       string         `json:"row_key"`
+	RowKind      string         `json:"row_kind"`
+	Cols         map[string]any `json:"cols"`
+	MeasuredAt   time.Time      `json:"measured_at"`
+	Source       string         `json:"source"`
+	Href         string         `json:"href"`
+	Links        []evals.Link   `json:"links"`
+	Range        string         `json:"range" enum:"window,compare"`
+	BeforeWindow bool           `json:"before_window,omitempty"`
 }
 
 // evalItemsResponse is GET /api/v1/projects/{key}/evals/{slug}/items: one page of the rows, with
@@ -98,6 +105,14 @@ const (
 	evalRowDay         = "day"
 )
 
+// The sources `source` names, each a part of the rows: a computed eval's rows its source counts
+// (evalComputedItems), the eval's readings, and its day rows.
+const (
+	evalSourceComputed = "computed"
+	evalSourceReadings = "readings"
+	evalSourceDays     = "days"
+)
+
 // The two orders `sort` names, each of which answers pr-ci's job rows alone: the slowest jobs
 // with the series' min_n timed results by their median over the range, slowest first, and the
 // jobs that failed in the 24 hours before the range's end (measures.FailingJobs), most failures
@@ -108,17 +123,20 @@ const (
 )
 
 // evalItemsRequest is one items read: what every eval read reads of its query (the window and
-// compare range, the repositories and the page), and the filters and the order.
+// compare range, the repositories and the page), the filters, the sources it keeps (sources, nil
+// for every source) and the order.
 type evalItemsRequest struct {
 	evalReadQuery
 	series  string
 	rowKind string
 	row     string
+	sources []string
 	sort    string
 }
 
 // parseEvalItemsQuery reads the items route's query; a key the route does not take
-// (undeclaredQueryKey) and a malformed key are 400 INVALID_QUERY naming it.
+// (undeclaredQueryKey), a malformed key and a source that is none of the three are 400
+// INVALID_QUERY naming it.
 func parseEvalItemsQuery(query url.Values) (evalItemsRequest, error) {
 	read, err := parseEvalReadQuery(query, evalItemsQueryKeys)
 	if err != nil {
@@ -126,12 +144,23 @@ func parseEvalItemsQuery(query url.Values) (evalItemsRequest, error) {
 	}
 	request := evalItemsRequest{
 		evalReadQuery: read, series: query.Get("series"), rowKind: query.Get("row_kind"), row: query.Get("row"),
-		sort: query.Get("sort"),
+		sources: query["source"], sort: query.Get("sort"),
+	}
+	for _, source := range request.sources {
+		if source != evalSourceComputed && source != evalSourceReadings && source != evalSourceDays {
+			return evalItemsRequest{}, invalidEvalQuery(fmt.Errorf("source %q is none of %s, %s and %s",
+				evals.BoundedField(source), evalSourceComputed, evalSourceReadings, evalSourceDays))
+		}
 	}
 	if request.sort != "" && request.sort != evalSortMedian && request.sort != evalSortFailures {
 		return evalItemsRequest{}, invalidEvalQuery(fmt.Errorf("sort %q is neither %s nor %s", request.sort, evalSortMedian, evalSortFailures))
 	}
 	return request, nil
+}
+
+// reads is whether request keeps the rows of source: every source where it names none.
+func (request evalItemsRequest) reads(source string) bool {
+	return len(request.sources) == 0 || slices.Contains(request.sources, source)
 }
 
 // keeps is whether request keeps the rows of kind: the kind row_kind names, every kind where it
@@ -244,6 +273,14 @@ func listedSource(rows []evalItemRow) evalItemSource {
 	}
 }
 
+// evalItemsPart is one part of an items answer, in the order the answer runs across them: a source
+// the page reads (page), or, where page is nil, rows the answer holds whatever its page, outside
+// its limit, its offset and its total (pinned): a range's readings before it (stepBeforeRows).
+type evalItemsPart struct {
+	page   evalItemSource
+	pinned []evalItemRow
+}
+
 // listProjectEvalItems answers GET /api/v1/projects/{key}/evals/{slug}/items: one page of the rows
 // behind the eval's numbers (readProjectEvalItems).
 func (s *server) listProjectEvalItems(w http.ResponseWriter, r *http.Request) {
@@ -284,11 +321,12 @@ func (s *server) readProjectEvalItems(ctx context.Context, query url.Values, pro
 // readEvalItems is one items answer of slug's eval of project for request, read in one snapshot
 // (evals.Store.BeginSnapshot): the project (404 PROJECT_NOT_FOUND where no row holds it), the eval
 // (404 EVAL_NOT_FOUND), the settings the rows stand built under, and every source's page, in the
-// order the page runs across them. The transaction holds ctx's connection mark, so a read of the
-// pool made under it is refused (store.ErrNestedAcquire). A source's rows are built as it reads
-// them: the readings' page and the Legion issues' repositories and titles are read for the rows
-// the page holds of them, which the totals of the sources before them place, so no read can wait
-// for the builds. It commits before the answer is encoded.
+// order the page runs across them, with each range's readings before it first in the range. The
+// transaction holds ctx's connection mark, so a read of the pool made under it is refused
+// (store.ErrNestedAcquire). A source's rows are built as it reads them: the readings' page and the
+// Legion issues' repositories and titles are read for the rows the page holds of them, which the
+// totals of the sources before them place, so no read can wait for the builds. It commits before
+// the answer is encoded.
 func (s *server) readEvalItems(ctx context.Context, project, slug string, request evalItemsRequest) (evalItemsAnswer, error) {
 	evalID := evals.EvalID(project, slug)
 	tx, err := s.registry().BeginSnapshot(ctx)
@@ -307,7 +345,7 @@ func (s *server) readEvalItems(ctx context.Context, project, slug string, reques
 		return evalItemsAnswer{}, evalNotFound(project, slug)
 	}
 	window := &evalRangeReads{}
-	sources, err := s.evalItemSources(ctx, tx, project, entry, request, window)
+	parts, err := s.evalItemSources(ctx, tx, project, entry, request, window)
 	if err != nil {
 		return evalItemsAnswer{}, err
 	}
@@ -316,8 +354,12 @@ func (s *server) readEvalItems(ctx context.Context, project, slug string, reques
 		Window: newEvalRange(request.ranges.window), Compare: evalCompareRange(request.ranges.compare),
 	}
 	skip, want := request.offset, request.limit
-	for _, source := range sources {
-		rows, total, err := source(ctx, skip, want)
+	for _, part := range parts {
+		if part.page == nil {
+			answer.Items = append(answer.Items, part.pinned...)
+			continue
+		}
+		rows, total, err := part.page(ctx, skip, want)
 		if err != nil {
 			return evalItemsAnswer{}, err
 		}
@@ -332,12 +374,14 @@ func (s *server) readEvalItems(ctx context.Context, project, slug string, reques
 	return evalItemsAnswer{body: answer, failing: window.failing}, nil
 }
 
-// evalItemSources is the sources of one items read in tx, the answer's snapshot, in the order its
-// page runs across them: for the window and then the compare range, the computed rows of each
-// kind the eval's source answers (evalComputedItems), its readings and its day rows, each kept
-// where row_kind names it or names none. A request naming sort reads pr-ci's job rows alone. The
-// window's readers share window, the caller's, which holds what they read once they have read it.
-func (s *server) evalItemSources(ctx context.Context, tx pgx.Tx, project string, entry evals.Entry, request evalItemsRequest, window *evalRangeReads) ([]evalItemSource, error) {
+// evalItemSources is the parts of one items read in tx, the answer's snapshot, in the order its
+// page runs across them: for the window and then the compare range, first the readings each of
+// the eval's step lines starts the range at (stepBeforeRows), then the computed rows of each kind
+// the eval's source answers (evalComputedItems), its readings and its day rows, each kept where
+// row_kind names it or names none and where source names its source or names none. A request
+// naming sort reads pr-ci's job rows alone. The window's readers share window, the caller's, which
+// holds what they read once they have read it.
+func (s *server) evalItemSources(ctx context.Context, tx pgx.Tx, project string, entry evals.Entry, request evalItemsRequest, window *evalRangeReads) ([]evalItemsPart, error) {
 	repos, err := evals.StoredRepos(ctx, tx, []string{project}, request.repos)
 	if err != nil {
 		return nil, err
@@ -352,16 +396,26 @@ func (s *server) evalItemSources(ctx context.Context, tx pgx.Tx, project string,
 	if err != nil {
 		return nil, err
 	}
+	readings := request.sort == "" && request.reads(evalSourceReadings)
+	var before [][]evalItemRow
+	if readings {
+		if before, err = stepBeforeRows(ctx, tx, entry.Definition.EvalID, request, repos, ranges); err != nil {
+			return nil, err
+		}
+	}
 	definition := entry.Definition
-	var sources []evalItemSource
+	var parts []evalItemsPart
 	once := &evalRequestReads{}
-	for _, rng := range ranges {
+	for at, rng := range ranges {
 		shared := window
 		if rng.label != evals.RangeWindow {
 			shared = &evalRangeReads{}
 		}
 		read := evalItemsRead{project: project, entry: entry, request: request, repos: repos, rng: rng, deployRepos: deployRepos, once: once, shared: shared, tx: tx}
-		if definition.Computed() {
+		if readings && len(before[at]) > 0 {
+			parts = append(parts, evalItemsPart{pinned: before[at]})
+		}
+		if definition.Computed() && request.reads(evalSourceComputed) {
 			for _, kind := range evalComputedItems[definition.Source] {
 				if !request.keeps(kind.kind) {
 					continue
@@ -371,7 +425,7 @@ func (s *server) evalItemSources(ctx context.Context, tx pgx.Tx, project string,
 					if err != nil {
 						return nil, err
 					}
-					sources = append(sources, source)
+					parts = append(parts, evalItemsPart{page: source})
 					continue
 				}
 				rows, err := kind.read(s, ctx, read)
@@ -381,7 +435,7 @@ func (s *server) evalItemSources(ctx context.Context, tx pgx.Tx, project string,
 				if request.row != "" {
 					rows = slices.DeleteFunc(rows, func(row evalItemRow) bool { return row.RowKey != request.row })
 				}
-				sources = append(sources, listedSource(rows))
+				parts = append(parts, evalItemsPart{page: listedSource(rows)})
 			}
 		}
 		if request.sort != "" {
@@ -389,18 +443,20 @@ func (s *server) evalItemSources(ctx context.Context, tx pgx.Tx, project string,
 		}
 		// A reading's row kind is the one its writer gave it, so row_kind keeps the readings of that
 		// kind, as the store reads them.
-		sources = append(sources, func(ctx context.Context, skip, want int) ([]evalItemRow, int, error) {
-			page, err := evals.ItemsIn(ctx, tx, definition.EvalID, request.series, request.rowKind, request.row, repos, rng.days, max(want, 1), skip)
-			if err != nil {
-				return nil, 0, err
-			}
-			rows := make([]evalItemRow, 0, len(page.Items))
-			for _, reading := range page.Items[:min(len(page.Items), want)] {
-				rows = append(rows, readingItemRow(reading, rng.label))
-			}
-			return rows, page.Total, nil
-		})
-		if request.keeps(evalRowDay) {
+		if readings {
+			parts = append(parts, evalItemsPart{page: func(ctx context.Context, skip, want int) ([]evalItemRow, int, error) {
+				page, err := evals.ItemsIn(ctx, tx, definition.EvalID, request.series, request.rowKind, request.row, repos, rng.days, max(want, 1), skip)
+				if err != nil {
+					return nil, 0, err
+				}
+				rows := make([]evalItemRow, 0, len(page.Items))
+				for _, reading := range page.Items[:min(len(page.Items), want)] {
+					rows = append(rows, readingItemRow(reading, rng.label))
+				}
+				return rows, page.Total, nil
+			}})
+		}
+		if request.keeps(evalRowDay) && request.reads(evalSourceDays) {
 			days, err := s.evalDaysOf(ctx, read)
 			if err != nil {
 				return nil, err
@@ -412,10 +468,49 @@ func (s *server) evalItemSources(ctx context.Context, tx pgx.Tx, project string,
 					rows = append(rows, row)
 				}
 			}
-			sources = append(sources, listedSource(rows))
+			parts = append(parts, evalItemsPart{page: listedSource(rows)})
 		}
 	}
-	return sources, nil
+	return parts, nil
+}
+
+// stepBeforeRows is, for each of ranges, the readings of evalID's step series that its step lines
+// start the range at (evals.BeforeWindowIn): of each series a `curve: "step"` chart of the eval's
+// current charts draws over measured time (evals.StepsIn), the one series request names where it
+// names one, the newest standing reading of each group of the series before the range's first day,
+// a group being the series and its col, and further its row key or its row group where the chart
+// draws a line a row or a row group (dispatch://INFRA-2918, D20 (a)). Each is read through the
+// filters the range's readings are (row kind, row and repositories), and answered as its range's
+// row, marked before_window. A series no step chart draws has none.
+func stepBeforeRows(ctx context.Context, tx pgx.Tx, evalID string, request evalItemsRequest, repos []string, ranges []evalItemsRange) ([][]evalItemRow, error) {
+	rows := make([][]evalItemRow, len(ranges))
+	drawn, err := evals.StepsIn(ctx, tx, []string{evalID})
+	if err != nil {
+		return nil, err
+	}
+	steps := drawn[evalID]
+	if request.series != "" {
+		steps = slices.DeleteFunc(steps, func(step charts.Step) bool { return step.Series != request.series })
+	}
+	if len(steps) == 0 {
+		return rows, nil
+	}
+	befores := make([]time.Time, len(ranges))
+	for at, rng := range ranges {
+		befores[at] = rng.days.From
+	}
+	readings, err := evals.BeforeWindowIn(ctx, tx, evalID, steps, request.rowKind, request.row, repos, befores)
+	if err != nil {
+		return nil, err
+	}
+	for at, rng := range ranges {
+		for _, reading := range readings[at] {
+			row := readingItemRow(reading, rng.label)
+			row.BeforeWindow = true
+			rows[at] = append(rows[at], row)
+		}
+	}
+	return rows, nil
 }
 
 // evalDaysOf is the eval's day rows of read's range (evals.EvalDaysIn, of the request's series

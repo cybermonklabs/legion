@@ -823,3 +823,152 @@ func TestTheUnownedP0CountAndItsIssuesFollowTheRepositoryFilter(t *testing.T) {
 	}
 	t.Logf("the partition holds over %d series days of EVL, %d repository rows", seriesDays, repositoryRows)
 }
+
+// stepItems is the rows of answer read before their range (before_window), each as `<range>
+// <series>/<col>/<row key> <value>` in the answer's order, the rest of its rows, and the order of
+// its parts as `<range> before` or `<range> rows`, each part once for each run of its rows.
+func stepItems(t *testing.T, answer evalItemsResponse) (before []string, rest []evalItemRow, parts []string) {
+	t.Helper()
+	for _, row := range answer.Items {
+		part := row.Range + " rows"
+		if row.BeforeWindow {
+			part = row.Range + " before"
+			value, _ := row.Cols["value"].(float64)
+			before = append(before, fmt.Sprintf("%s %v/%v/%s %v", row.Range, row.Cols["series"], row.Cols["col"], row.RowKey, value))
+		} else {
+			rest = append(rest, row)
+		}
+		if len(parts) == 0 || parts[len(parts)-1] != part {
+			parts = append(parts, part)
+		}
+	}
+	return before, rest, parts
+}
+
+// TestTheItemsReadAnswersTheReadingBeforeTheWindowOfEachGroup (dispatch://INFRA-2918, D20 (a)):
+// for each series a step chart of the eval's current charts draws, the items read answers the
+// newest standing reading of each group before the window's first day, and before the compare
+// range's, each marked before_window and of its range: a group is the series and its col, and
+// further its row key where the chart draws a line a row. queue is drawn a line a col (value and
+// limit), holds a line a row (a and b), wait by an xy with no curve. The rows come first in their
+// range, outside the page: a read of one row from offset 1 answers every one of them beside that
+// row, its total the read of every row's, which counts none of them. A read of holds alone answers
+// holds' alone, and a read of wait none. With no read before the window, a step line starts at its
+// first reading in the window.
+func TestTheItemsReadAnswersTheReadingBeforeTheWindowOfEachGroup(t *testing.T) {
+	t.Parallel()
+	handler, _ := newTestHandlerWithStore(t)
+	createTestProject(t, handler, "EVL")
+	today := measures.Midnight(time.Now().UTC())
+	day := func(offset int) time.Time { return today.AddDate(0, 0, offset) }
+	registerLastSeries(t, handler, "EVL", "admission", []string{"queue", "holds", "wait"},
+		chartList(stepChart("queue", "queue", ""), stepChart("holds", "holds", "row"), waitChart))
+	logReadings(t, handler, "EVL", "admission", "step-readings",
+		stepReading("queue", "value", "q1", new(1.0), day(-30)), stepReading("queue", "value", "q2", new(2.0), day(-25)),
+		stepReading("queue", "value", "q3", new(3.0), day(-12)), stepReading("queue", "value", "q4", new(4.0), day(-3)),
+		stepReading("queue", "limit", "q5", new(10.0), day(-26)), stepReading("queue", "limit", "q6", new(11.0), day(-10)),
+		stepReading("holds", "", "a", new(100.0), day(-28)), stepReading("holds", "", "a", new(101.0), day(-11)),
+		stepReading("holds", "", "b", new(200.0), day(-24)),
+		stepReading("wait", "", "w1", new(7.0), day(-26)), stepReading("wait", "", "w2", new(8.0), day(-12)),
+		stepReading("wait", "", "w3", new(9.0), day(-2)), stepReading("wait", "", "w4", new(6.0), day(-16)),
+		stepReading("queue", "value", "q7", new(5.0), day(-18)))
+	window, compare := evalDaysEnding(7, today), evalDaysEnding(7, day(-14))
+	read := func(extra url.Values) evalItemsResponse {
+		t.Helper()
+		query := rangesQuery(window, compare)
+		maps.Copy(query, extra)
+		return evalGet[evalItemsResponse](t, handler, "/api/v1/projects/EVL/evals/admission/items?"+query.Encode())
+	}
+	windowBefore := []string{"window queue/limit/q6 11", "window holds//a 101", "window queue/value/q3 3", "window holds//b 200"}
+	compareBefore := []string{"compare holds//b 200", "compare queue/value/q2 2", "compare queue/limit/q5 10", "compare holds//a 100"}
+	wantBefore := slices.Concat(windowBefore, compareBefore)
+	wantParts := []string{"window before", "window rows", "compare before", "compare rows"}
+
+	every := read(url.Values{"limit": {"200"}})
+	before, rest, parts := stepItems(t, every)
+	if !slices.Equal(before, wantBefore) {
+		t.Errorf("the read answers the readings before its ranges %q, want %q", before, wantBefore)
+	}
+	if !slices.Equal(parts, wantParts) {
+		t.Errorf("the read answers its rows in the parts %v, want %v: each range's readings before it first in its range", parts, wantParts)
+	}
+	if len(rest) != every.Total || every.Total == 0 {
+		t.Errorf("the read of every row answers %d rows beside those before its ranges and a total of %d, want the total to count those rows alone", len(rest), every.Total)
+	}
+
+	paged := read(url.Values{"limit": {"1"}, "offset": {"1"}})
+	pagedBefore, pagedRest, pagedParts := stepItems(t, paged)
+	if !slices.Equal(pagedBefore, wantBefore) || len(pagedRest) != 1 || paged.Total != every.Total {
+		t.Fatalf("a page of one row from offset 1 answers the readings before its ranges %q, %d other rows and a total of %d; want %q, one row and %d",
+			pagedBefore, len(pagedRest), paged.Total, wantBefore, every.Total)
+	}
+	if got, want := mustJSON(t, pagedRest[0]), mustJSON(t, rest[1]); got != want {
+		t.Errorf("the page's one row is %s, want the second row of every row, %s", got, want)
+	}
+	if !slices.Equal(pagedParts, []string{"window before", "window rows", "compare before"}) {
+		t.Errorf("the page answers its rows in the parts %v, want the window's before its row, then the compare range's", pagedParts)
+	}
+
+	holds, _, _ := stepItems(t, read(url.Values{"series": {"holds"}}))
+	if want := []string{"window holds//a 101", "window holds//b 200", "compare holds//b 200", "compare holds//a 100"}; !slices.Equal(holds, want) {
+		t.Errorf("a read of holds answers the readings before its ranges %q, want %q", holds, want)
+	}
+	if wait, _, _ := stepItems(t, read(url.Values{"series": {"wait"}})); len(wait) != 0 {
+		t.Errorf("a read of wait, which no step chart draws, answers the readings before its ranges %q, want none", wait)
+	}
+	t.Logf("the readings before the ranges %q; %d rows beside them, total %d; a page of one row answers %q beside it", before, len(rest), every.Total, pagedBefore)
+}
+
+// TestARowsReadOfReadingsAloneCountsReadings (dispatch://INFRA-2918, D21, `source`): the rows
+// behind a logged number read with source=readings answer the eval's readings alone, and their
+// total counts the readings of the window; source=days answers the day rows alone; naming both is
+// the read naming none, which answers both and counts both; source=computed answers a logged eval
+// nothing; a source that is none of the three is 400 INVALID_QUERY naming it. The items view takes
+// source as the route does and answers its body. Four readings on three days stand behind the
+// number.
+func TestARowsReadOfReadingsAloneCountsReadings(t *testing.T) {
+	rig := newHubRig(t, nil)
+	createTestProject(t, rig.handler, "EVL")
+	today := measures.Midnight(rig.clock.Now())
+	logReadings(t, rig.handler, "EVL", "pr-size", "rows-readings",
+		reading("lines", 10, today.AddDate(0, 0, -3).Add(9*time.Hour)), reading("lines", 20, today.AddDate(0, 0, -3).Add(15*time.Hour)),
+		reading("lines", 30, today.AddDate(0, 0, -2).Add(9*time.Hour)), reading("lines", 40, today.AddDate(0, 0, -1).Add(9*time.Hour)))
+	window := evalDaysEnding(7, today)
+	query := func(sources ...string) url.Values {
+		return url.Values{"from": {window.From.Format(time.RFC3339)}, "to": {window.To.Format(time.RFC3339)}, "source": sources}
+	}
+	read := func(sources ...string) evalItemsResponse {
+		t.Helper()
+		return evalGet[evalItemsResponse](t, rig.handler, "/api/v1/projects/EVL/evals/pr-size/items?"+query(sources...).Encode())
+	}
+	kinds := func(answer evalItemsResponse) map[string]int {
+		counted := map[string]int{}
+		for _, row := range answer.Items {
+			counted[row.RowKind]++
+		}
+		return counted
+	}
+	readings, days, every, both, computed := read(evalSourceReadings), read(evalSourceDays), read(), read(evalSourceReadings, evalSourceDays), read(evalSourceComputed)
+	if got := kinds(readings); readings.Total != 4 || !maps.Equal(got, map[string]int{"sample": 4}) {
+		t.Errorf("source=readings answers the rows %v and a total of %d, want the 4 readings alone, counted", got, readings.Total)
+	}
+	if got := kinds(days); days.Total != 3 || !maps.Equal(got, map[string]int{evalRowDay: 3}) {
+		t.Errorf("source=days answers the rows %v and a total of %d, want the 3 day rows alone", got, days.Total)
+	}
+	if every.Total != readings.Total+days.Total || mustJSON(t, both) != mustJSON(t, every) {
+		t.Errorf("the read naming no source answers a total of %d, and naming both %s; want %d, and the read naming none, %s",
+			every.Total, mustJSON(t, both), readings.Total+days.Total, mustJSON(t, every))
+	}
+	if computed.Total != 0 || len(computed.Items) != 0 {
+		t.Errorf("source=computed answers a logged eval %d rows of a total of %d, want none", len(computed.Items), computed.Total)
+	}
+	refused := evalRequest(t, rig.handler, http.MethodGet, "/api/v1/projects/EVL/evals/pr-size/items?"+query("observed").Encode(), nil, "")
+	if answer := decodeBody[refusalAnswer](t, refused); refused.Code != http.StatusBadRequest || answer.Code != "INVALID_QUERY" || !strings.Contains(answer.Error, `"observed"`) {
+		t.Errorf("source=observed answers %d %s %q, want 400 INVALID_QUERY naming it", refused.Code, answer.Code, answer.Error)
+	}
+	conn := newFakeLiveConn()
+	viewQuery := url.Values{"source": {evalSourceReadings}}.Encode()
+	rig.hub.Subscribe(conn, subscribeFrame("rows", itemsLiveView("EVL", "pr-size", evalsDays(window.From, window.To), viewQuery)))
+	requireTheItemsRead(t, rig.handler, "EVL", "pr-size", conn.snapshot(t, "rows").Body, viewQuery)
+	t.Logf("readings alone: %d of %d; day rows alone: %d; every source: %d", len(readings.Items), readings.Total, days.Total, every.Total)
+}

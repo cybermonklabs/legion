@@ -1335,10 +1335,11 @@ func TestARegisterWriteOfNoTargetHoldsThroughTheSeed(t *testing.T) {
 // compare range's (compare_days), each day folded alone as a day of days is: over a window and a
 // compare range of seven days each, with three readings of a logged eval in each, compare_days
 // holds a point for each day of the compare range that holds a day row of the series (the
-// readings' days, and the zero rows the refresher writes from the first reading on), each reading's
-// day stating its value, and days the window's, on the project read and the cross-project read
-// alike. The stored figures, which answer the read once the refresher has built them, answer the
-// compare range's days the read of the day rows answers, bit for bit, and they are what that read
+// readings' days: the series, which its first reading registers folded by its last value, holds no
+// zero row), each reading's day stating its value, and days the window's, on the project read and
+// the cross-project read alike. The stored figures, which answer the read once the refresher has
+// built them, answer the compare range's days the read of the day rows answers, bit for bit, and
+// they are what that read
 // reads: with the compare range's stored day rows blanked, the read answers no day of it. A read
 // that names no compare range answers none (null), as it answers no compare figures.
 func TestAListReadWithACompareRangeAnswersItsDays(t *testing.T) {

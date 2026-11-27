@@ -538,12 +538,11 @@ const dayKeyOrder = `
 // the keys across their statements, the order Postgres's `collate "C"` gives them (dayKeyOrder);
 // every row holds its one reading; and the write logs one eval_days change of the eval, spanning
 // the day and the zero rows it writes of every day after it through today, as one statement does
-// (migration 20261117100014).
+// (migration 20261117100014). The series fold by their sum, registered before the write: no zero
+// row is written of one that folds by its last value.
 func TestAReadingsWritesDayRowsGoInBoundedStatementsInKeyOrder(t *testing.T) {
 	t.Parallel()
 	r := newRig(t)
-	statements := &sentStatements{}
-	r.registry = New(storetest.TracedStore(t, r.database, statements), r.documents, r.registry.events, r.registry.attributor)
 	const slug, count = "wide-keys", 190
 	evalID := EvalID(r.project, slug)
 	day := at(3, 0, 0)
@@ -554,16 +553,21 @@ func TestAReadingsWritesDayRowsGoInBoundedStatementsInKeyOrder(t *testing.T) {
 		return prefix + strings.Repeat("x", maxKeyBytes-len(prefix))
 	}
 	rows := make([]json.RawMessage, count)
+	names := make([]string, count)
 	var want []dayKey
 	values := map[dayKey]float64{}
 	for index := range count {
 		series, repo, value := name("s", index), name("r", index), float64(index)+0.25
+		names[index] = series
 		rows[index] = row(t, map[string]any{"series": series, "row_kind": "run", "row_key": fmt.Sprint(index), "value": value,
 			"measured_at": day.Add(time.Duration(index) * time.Second), "attributes": map[string]any{"repo": repo}})
 		for _, key := range []dayKey{{series: series, day: day}, {series: series, repo: repo, day: day}} {
 			want, values[key] = append(want, key), value
 		}
 	}
+	r.registerFolded(t, slug, AggSum, names...)
+	statements := &sentStatements{}
+	r.registry = New(storetest.TracedStore(t, r.database, statements), r.documents, r.registry.events, r.registry.attributor)
 	slices.SortFunc(want, compareDayKeys)
 	whole := paramBytes(4, r.project, evalID, writerReadings, testBuild)
 	for index := range want {
@@ -657,21 +661,27 @@ func TestAReadingsWritesDayRowsGoInBoundedStatementsInKeyOrder(t *testing.T) {
 // where the write folds every day it moved in its own transaction: it reads the stamps of every
 // day and writes the ranges of every end day since the floor. It logs how long the write took, what
 // its folds read and wrote, and how many rows the figures' read of a new version of the eval
-// (markMovedKeys) reads: every stored day row of the eval.
+// (markMovedKeys) reads: every stored day row of the eval. Its series fold by their sum, registered
+// before the store settles: no zero row is written of one that folds by its last value.
 func TestTheMostZeroRowsOneReadingsWriteOwesGoInBoundedStatements(t *testing.T) {
 	t.Parallel()
 	r := newRefresherRig(t)
 	ctx := t.Context()
-	today := r.settleAtTheDatabasesClock(t)
-	statements := &sentStatements{}
-	plain := r.registry
-	r.registry = New(storetest.TracedStore(t, r.database, statements), r.documents, plain.events, plain.attributor)
 	const slug = "floor-fill"
 	evalID := EvalID(r.project, slug)
 	name := func(index int) string {
 		prefix := fmt.Sprintf("s%03d-", index)
 		return prefix + strings.Repeat("x", maxKeyBytes-len(prefix))
 	}
+	names := make([]string, MaxEvalSeries)
+	for index := range names {
+		names[index] = name(index)
+	}
+	r.registerFolded(t, slug, AggSum, names...)
+	today := r.settleAtTheDatabasesClock(t)
+	statements := &sentStatements{}
+	plain := r.registry
+	r.registry = New(storetest.TracedStore(t, r.database, statements), r.documents, plain.events, plain.attributor)
 	rows := make([]json.RawMessage, MaxEvalSeries)
 	for index := range rows {
 		rows[index] = row(t, map[string]any{"series": name(index), "row_kind": "run", "row_key": fmt.Sprint(index), "value": 1.5,
@@ -917,20 +927,25 @@ const backfillDays = 200
 // writeBackfill writes, as alice, a first reading of each of 30 series of the logged eval
 // `backfill` backfillDays days before today, every other one of acme/web too: a write whose days
 // and series, 201 days of 30, pass what a write folds in its own transaction (inlineFoldDaySeries),
-// which it checks. It answers the eval's id.
+// which it checks. Each series folds by its sum, registered before the write, so the write owes
+// the zero rows of every day after the readings' through today (loggedZeros writes none of a
+// series that folds by its last value). It answers the eval's id.
 func (r *refresherRig) writeBackfill(t *testing.T, today time.Time) string {
 	t.Helper()
 	const slug, count = "backfill", 30
 	evalID := EvalID(r.project, slug)
 	rows := make([]json.RawMessage, count)
+	names := make([]string, count)
 	for index := range rows {
-		fields := map[string]any{"series": fmt.Sprintf("s%02d", index), "row_kind": "run", "row_key": fmt.Sprint(index), "value": float64(index) + 0.5,
+		names[index] = fmt.Sprintf("s%02d", index)
+		fields := map[string]any{"series": names[index], "row_kind": "run", "row_key": fmt.Sprint(index), "value": float64(index) + 0.5,
 			"measured_at": today.AddDate(0, 0, -backfillDays).Add(time.Duration(index) * time.Minute)}
 		if index%2 == 0 {
 			fields["attributes"] = map[string]any{"repo": "acme/web"}
 		}
 		rows[index] = row(t, fields)
 	}
+	r.registerFolded(t, slug, AggSum, names...)
 	r.write(t, slug, alice, rows...)
 	spans := daySpans{evalID: {{first: today.AddDate(0, 0, -backfillDays), last: today}}}
 	if size := daySeries(spans, r.entries(t, evalID)[0], r.figuresFolded(t)[r.project]); size <= inlineFoldDaySeries {
@@ -1031,7 +1046,7 @@ func (r *refresherRig) expectStampReads(t *testing.T, what, evalID string, reads
 // (movedFigureDays), which read exactly the rows of eval_days those spans hold, the 30 rows of each
 // day; one span from the first day to the last read the 30 rows of each of the 89 days between as
 // well (check k29 of dispatch://INFRA-2916). The stored figures are then the fold of the rows that
-// stand.
+// stand. The series fold by their sum, so their zero rows stand on every day without a reading.
 func TestAReadingsWriteOfAMonthsOldDayAndTodayFoldsThoseDaysAlone(t *testing.T) {
 	t.Parallel()
 	r := newRefresherRig(t)
@@ -1042,9 +1057,12 @@ func TestAReadingsWriteOfAMonthsOldDayAndTodayFoldsThoseDaysAlone(t *testing.T) 
 		return row(t, map[string]any{"series": series, "row_kind": "run", "row_key": series + "-" + key, "value": 12, "measured_at": day.Add(9 * time.Hour)})
 	}
 	var first []json.RawMessage
+	var names []string
 	for index := range 30 {
-		first = append(first, reading(fmt.Sprintf("s%02d", index), "first", today.AddDate(0, 0, -100)))
+		names = append(names, fmt.Sprintf("s%02d", index))
+		first = append(first, reading(names[index], "first", today.AddDate(0, 0, -100)))
 	}
+	r.registerFolded(t, slug, AggSum, names...)
 	r.write(t, slug, alice, first...)
 	r.exec(t, "analyze the day rows", `analyze eval_days`)
 	old := today.AddDate(0, 0, -90)
@@ -1066,7 +1084,8 @@ func TestAReadingsWriteOfAMonthsOldDayAndTodayFoldsThoseDaysAlone(t *testing.T) 
 // write folds their stored figures in its own transaction through reads of the stamps of those two
 // runs alone, each with its reading's day (movedFigureDays), which read exactly the rows of
 // eval_days those spans hold; one span from the first day to the last read the 900 rows of a00 to
-// a29 between as well. The stored figures are then the fold of the rows that stand.
+// a29 between as well. The stored figures are then the fold of the rows that stand. The series fold
+// by their sum: no zero row is written of one that folds by its last value.
 func TestAWriteOfZeroRowsOfTwoRunsFoldsThoseRunsAlone(t *testing.T) {
 	t.Parallel()
 	r := newRefresherRig(t)
@@ -1078,9 +1097,12 @@ func TestAWriteOfZeroRowsOfTwoRunsFoldsThoseRunsAlone(t *testing.T) {
 			"measured_at": today.AddDate(0, 0, -back).Add(9 * time.Hour)})
 	}
 	first := []json.RawMessage{reading("b", 20)}
+	names := []string{"b"}
 	for index := range 30 {
-		first = append(first, reading(fmt.Sprintf("a%02d", index), 60))
+		names = append(names, fmt.Sprintf("a%02d", index))
+		first = append(first, reading(names[index+1], 60))
 	}
+	r.registerFolded(t, slug, AggSum, names...)
 	r.write(t, slug, alice, first...)
 	r.exec(t, "analyze the day rows", `analyze eval_days`)
 	reads := &stampReads{}
@@ -1989,8 +2011,9 @@ func TestAWriteThatEmptiesADayRowWritesItsZeroRowBesideTheRowsItFills(t *testing
 // TestAReadingsWriteWritesTheZeroRowsItsReadingsLeaveOwed: a readings write writes, in its own
 // transaction, the zero row of every day its readings leave owed, so a view of the eval is sent one
 // change of its day rows, and the refresher's fill after it finds nothing to write. A first reading
-// of a slug twelve days back leaves its series a row on every day from its own through today, and
-// then a reading three days before that first day leaves one on each of the two days up to it.
+// of a series that folds by its sum (no zero row is written of one that folds by its last value)
+// twelve days back leaves it a row on every day from its own through today, and then a reading
+// three days before that first day leaves one on each of the two days up to it.
 // After each write every row it added carries its transaction (xmin, the transaction of its
 // reading's row), the change log holds one eval_days change of the eval spanning the days it wrote,
 // and the refresher's fill of the project's logged evals as of the same moment writes no row and
@@ -2007,6 +2030,7 @@ func TestAReadingsWriteWritesTheZeroRowsItsReadingsLeaveOwed(t *testing.T) {
 	today := measures.Midnight(clock)
 	const slug = "first-fill"
 	evalID := EvalID(r.project, slug)
+	r.registerFolded(t, slug, AggSum, "minutes")
 	// held is each day the series holds its all-repositories row of, by the transaction that wrote
 	// the row.
 	held := func() map[time.Time]string {
@@ -2074,6 +2098,63 @@ func TestAReadingsWriteWritesTheZeroRowsItsReadingsLeaveOwed(t *testing.T) {
 		}
 		t.Logf("%s: the write added %d rows, through %s, in its transaction %s", step.what, len(after)-len(before), step.last.Format(time.DateOnly), xmin)
 	}
+}
+
+// TestAReadingsWriteOwesNoZeroRowOfALastSeries (dispatch://INFRA-2918, D20 (c)): a readings write
+// writes no zero row of a series that folds by its last value (writeLoggedZeros, through
+// loggedZeros) beside the zero rows it owes of a series that does not. One write holds a reading of
+// minutes, registered folded by its sum, and one of depth, which the write registers folded by its
+// last value (firstSeries), each twelve days back: minutes holds a row on every day from its
+// reading's through today, depth the one row of its reading's day. The refresher's fill as of the
+// same moment then writes no row. With the zero rows of every series, depth held a zero row on every
+// day after its reading's through today, as minutes does.
+func TestAReadingsWriteOwesNoZeroRowOfALastSeries(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	ctx := t.Context()
+	var clock time.Time
+	if err := r.database.Pool.QueryRow(ctx, `select now()`).Scan(&clock); err != nil {
+		t.Fatalf("read the database's clock: %v", err)
+	}
+	today := measures.Midnight(clock)
+	const slug = "queue-depth"
+	if _, err := r.registry.Register(ctx, Registration{
+		Project: r.project, Slug: slug, Caller: alice, Kind: Set(KindExperiment),
+		Series: []SeriesChange{{Series: "minutes", SeriesComputationChange: SeriesComputationChange{Agg: Set(AggSum)}}},
+	}); err != nil {
+		t.Fatalf("register %s: %v", slug, err)
+	}
+	first := today.AddDate(0, 0, -12)
+	r.write(t, slug, alice,
+		row(t, map[string]any{"series": "minutes", "row_kind": "run", "row_key": "a", "value": 3, "measured_at": first.Add(9 * time.Hour)}),
+		row(t, map[string]any{"series": "depth", "row_kind": "run", "row_key": "b", "value": 3, "measured_at": first.Add(9 * time.Hour)}))
+	evalID := EvalID(r.project, slug)
+	if agg := r.entries(t, evalID)[0].Series; !slices.ContainsFunc(agg, func(series Series) bool { return series.Series == "depth" && series.Agg == AggLast }) {
+		t.Fatalf("the write registered the series %+v, want depth folded by its last value", agg)
+	}
+	rows := func(series string) (days, zeros int) {
+		t.Helper()
+		days = r.count(t, `select count(*) from eval_days where eval_id = $1 and series = $2 and repo = ''`, evalID, series)
+		zeros = r.count(t, `select count(*) from eval_days where eval_id = $1 and series = $2 and repo = '' and n = 0`, evalID, series)
+		return days, zeros
+	}
+	owed := int(today.Sub(first).Hours() / 24)
+	if days, zeros := rows("minutes"); days != owed+1 || zeros != owed {
+		t.Errorf("minutes, folded by its sum, holds %d rows, %d of them zero rows, want %d: its reading's day and a zero row of each day after it through today", days, zeros, owed+1)
+	}
+	if days, zeros := rows("depth"); days != 1 || zeros != 0 {
+		t.Errorf("depth, folded by its last value, holds %d rows, %d of them zero rows, want the one row of its reading's day", days, zeros)
+	}
+	filled, err := r.registry.newRefresh(testBuild, clock, walkBatch).fillLoggedZeros(ctx, r.project)
+	if err != nil {
+		t.Fatalf("the refresher's fill after the write: %v", err)
+	}
+	if filled != 0 {
+		t.Errorf("the refresher's fill after the write wrote %d rows, want none", filled)
+	}
+	minutes, _ := rows("minutes")
+	depth, _ := rows("depth")
+	t.Logf("minutes holds %d rows from %s through %s, depth %d", minutes, first.Format(time.DateOnly), today.Format(time.DateOnly), depth)
 }
 
 // sameValue reports whether two optional values are both absent or both the same value.

@@ -5,12 +5,15 @@ import (
 	"fmt"
 	"maps"
 	"net/http"
+	"net/url"
 	"reflect"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
 	"github.com/sjawhar/envoy/internal/dispatch/evals"
 	"github.com/sjawhar/envoy/internal/dispatch/evals/charts"
 )
@@ -25,6 +28,67 @@ const (
 // chartList is a list of declared charts as a register write's body carries it.
 func chartList(declarations ...string) json.RawMessage {
 	return json.RawMessage("[" + strings.Join(declarations, ",") + "]")
+}
+
+// stepChart is a declaration of an xy over measured time that draws series as a step line
+// (curve step), one line for each col of it, and further for each row or row group of a col where
+// group names one; validate_charts accepts it (evals/charts' corpus holds the shape).
+func stepChart(id, series, group string) string {
+	chart := `{"id":"` + id + `","title":"` + id + `","kind":"xy","y":{"series":"` + series + `"},"curve":"step"`
+	if group != "" {
+		chart += `,"group":"` + group + `"`
+	}
+	return chart + `}`
+}
+
+// stepReading is one reading of series under col and row key at noon of day, of value, or with no
+// value where value is nil, its absence's reason then given.
+func stepReading(series, col, rowKey string, value *float64, day time.Time) map[string]any {
+	written := map[string]any{
+		"series": series, "col": col, "row_kind": "sample", "row_key": rowKey, "measured_at": day.Add(12 * time.Hour).Format(time.RFC3339),
+	}
+	if value == nil {
+		written["value_absent_reason"] = "limit cleared"
+	} else {
+		written["value"] = *value
+	}
+	return written
+}
+
+// registerLastSeries registers slug of project with series, each folded by its last value, and
+// charts, failing the test unless the write stores it.
+func registerLastSeries(t *testing.T, handler http.Handler, project, slug string, series []string, declared json.RawMessage) {
+	t.Helper()
+	listed := make([]any, len(series))
+	for index, name := range series {
+		listed[index] = map[string]any{"series": name, "agg": evals.AggLast, "listed": true}
+	}
+	if registered := evalRequest(t, handler, http.MethodPost, "/api/v1/projects/"+project+"/evals",
+		map[string]any{"slug": slug, "name": slug, "series": listed, "charts": declared}, "register-"+slug); registered.Code != http.StatusCreated {
+		t.Fatalf("register %s: status %d, body %s", slug, registered.Code, registered.Body.String())
+	}
+}
+
+// logReadings logs readings under slug of project with key, failing the test unless the write
+// stores them.
+func logReadings(t *testing.T, handler http.Handler, project, slug, key string, readings ...map[string]any) {
+	t.Helper()
+	rows := make([]any, len(readings))
+	for index, one := range readings {
+		rows[index] = one
+	}
+	if written := evalRequest(t, handler, http.MethodPost, "/api/v1/projects/"+project+"/evals/"+slug+"/readings",
+		map[string]any{"readings": rows}, key); written.Code != http.StatusCreated {
+		t.Fatalf("log %d readings of %s: status %d, body %s", len(readings), slug, written.Code, written.Body.String())
+	}
+}
+
+// rangesQuery is the query of a read of window and compare.
+func rangesQuery(window, compare evals.Range) url.Values {
+	return url.Values{
+		"from": {window.From.Format(time.RFC3339)}, "to": {window.To.Format(time.RFC3339)},
+		"compare_from": {compare.From.Format(time.RFC3339)}, "compare_to": {compare.To.Format(time.RFC3339)},
+	}
 }
 
 // sameJSON reports whether two JSON texts hold one value, whatever their spacing and key order:
@@ -296,4 +360,126 @@ func TestChartsAreRefusedWithTheirFieldNamed(t *testing.T) {
 	if never := countRows(t, database, `select count(*) from eval_versions where eval_id = 'EVL/never-written'`); never != 0 {
 		t.Errorf("the refused first registration stored %d versions, want none", never)
 	}
+}
+
+// stepValueReads is the value each read of a list item states of slug's series over window and
+// compare (from the list read, the read across projects, the eval's own read and the evals view's
+// snapshot), each as `<window> <compare> <change>` of its `value` statistic, by series and then by
+// read; it fails the test where the four disagree, so a caller judges one of them.
+func stepValueReads(t *testing.T, rig *hubRig, project, slug string, window, compare evals.Range, series ...string) map[string]string {
+	t.Helper()
+	query := rangesQuery(window, compare)
+	stated := func(item evalItem) map[string]string {
+		values := map[string]string{}
+		for _, name := range series {
+			value := seriesValues(t, item, name)
+			values[name] = showFigure(value.Window["value"]) + " " + showFigure(value.Compare["value"]) + " " + showFigure(value.Change["value"])
+		}
+		return values
+	}
+	reads := map[string]map[string]string{}
+	list := evalGet[evalListResponse](t, rig.handler, "/api/v1/projects/"+project+"/evals?"+query.Encode())
+	reads["the list read"] = stated(findEval(t, list.Items, project, slug))
+	across := evalGet[evalListResponse](t, rig.handler, "/api/v1/evals?project="+project+"&"+query.Encode())
+	reads["the read across projects"] = stated(findEval(t, across.Items, project, slug))
+	detail := evalGet[evalDetailResponse](t, rig.handler, "/api/v1/projects/"+project+"/evals/"+slug+"?"+query.Encode())
+	if len(detail.Items) == 0 {
+		t.Fatalf("the eval's own read answers no version of %s", slug)
+	}
+	reads["the eval's own read"] = stated(detail.Items[0].evalItem)
+	conn := newFakeLiveConn()
+	compared := url.Values{"compare_from": query["compare_from"], "compare_to": query["compare_to"]}
+	rig.hub.Subscribe(conn, subscribeFrame("evals", evalsLiveView(project, evalsDays(window.From, window.To), compared.Encode())))
+	var view evalListResponse
+	if err := json.Unmarshal(conn.snapshot(t, "evals").Body, &view); err != nil {
+		t.Fatalf("decode the evals view's snapshot: %v", err)
+	}
+	reads["the evals view"] = stated(findEval(t, view.Items, project, slug))
+	want := reads["the list read"]
+	for _, what := range slices.Sorted(maps.Keys(reads)) {
+		if !maps.Equal(reads[what], want) {
+			t.Errorf("%s states %v, the list read %v", what, reads[what], want)
+		}
+	}
+	return want
+}
+
+// TestALastStepSeriesAnswersTheNewestReadingAtTheWindowsEnd (dispatch://INFRA-2918, D20 (b), k26):
+// a `last` series a step chart draws states as a range's value the newest standing reading at or
+// before the range's end, read from eval_readings and not from the day rows, for the window and
+// the compare range alike; of a series of two cols, the newest reading of either; and none where
+// that reading has no value. cap holds 3 on day -20 and 5 on day -10, queue 4 under col value on
+// day -9 and 10 under col limit on day -8: the window of the 7 days before today holds no reading of
+// either and states cap 5 and queue 10, the newest cap and the newest queue reading of either col,
+// and the compare range of the 6 days from day -20, cap's first day, to 14 days before today, which
+// ends after cap's reading of day -20 alone, states cap 3 and a change of 2, and no queue value,
+// since it starts before queue's first day (R18). A window that starts before cap's first day,
+// though it holds that day's reading, states no cap value either. A reading of queue's limit with no
+// value on day -2 then leaves the window no queue value. The list read, the read across projects,
+// the eval's own read and the evals view state alike. With the day rows' fold alone, the window,
+// which holds no day row of either, states no value of either.
+func TestALastStepSeriesAnswersTheNewestReadingAtTheWindowsEnd(t *testing.T) {
+	rig := newHubRig(t, nil)
+	createTestProject(t, rig.handler, "EVL")
+	today := measures.Midnight(rig.clock.Now())
+	day := func(offset int) time.Time { return today.AddDate(0, 0, offset) }
+	registerLastSeries(t, rig.handler, "EVL", "admission", []string{"cap", "queue"},
+		chartList(stepChart("cap", "cap", ""), stepChart("queue", "queue", "col")))
+	logReadings(t, rig.handler, "EVL", "admission", "step-readings",
+		stepReading("cap", "", "a", new(3.0), day(-20)), stepReading("cap", "", "b", new(5.0), day(-10)),
+		stepReading("queue", "value", "c", new(4.0), day(-9)), stepReading("queue", "limit", "d", new(10.0), day(-8)))
+	window, compare := evalDaysEnding(7, today), evalDaysEnding(6, day(-14))
+
+	stated := stepValueReads(t, rig, "EVL", "admission", window, compare, "cap", "queue")
+	if want := map[string]string{"cap": "5 3 2", "queue": "10 null null"}; !maps.Equal(stated, want) {
+		t.Errorf("the reads state (window compare change) %v, want %v: the newest reading at each range's end, of either col", stated, want)
+	}
+	early := stepValueReads(t, rig, "EVL", "admission", evalDaysEnding(7, day(-14)), evalDaysEnding(7, day(-21)), "cap")
+	if want := map[string]string{"cap": "null null null"}; !maps.Equal(early, want) {
+		t.Errorf("a window from day -21, before cap's first day, states %v, want %v: no data before the series' first day", early, want)
+	}
+	logReadings(t, rig.handler, "EVL", "admission", "step-cleared", stepReading("queue", "limit", "e", nil, day(-2)))
+	cleared := stepValueReads(t, rig, "EVL", "admission", window, compare, "cap", "queue")
+	if want := map[string]string{"cap": "5 3 2", "queue": "null null null"}; !maps.Equal(cleared, want) {
+		t.Errorf("after a reading with no value the reads state %v, want %v: a reading with no value ends the line", cleared, want)
+	}
+	t.Logf("the window %s..%s and the compare range %s..%s state %v, and after queue's limit is cleared %v",
+		window.From.Format(time.DateOnly), window.To.Format(time.DateOnly), compare.From.Format(time.DateOnly), compare.To.Format(time.DateOnly), stated, cleared)
+}
+
+// TestALastSeriesWithNoStepChartReadsNoValueForAnEmptyWindow (dispatch://INFRA-2918, D20 (b) and
+// (c), k26): a `last` series no step chart draws keeps the day rows' answer. depth holds 5 on day
+// -10 and is drawn by an xy with no curve, beside a step chart of cap, which draws no step of
+// depth: the window of the 7 days before today, which holds no reading of depth, states no value
+// of it, and, since no zero row follows a `last` series' reading, holds no day row of it either: its
+// n is null and its days hold no point. The compare range of the 3 days from the reading's day to
+// the window, which holds the reading, states 5. With the zero fill of every series, the readings
+// write left a zero row on each day from the reading's to today, and the window stated n 0 and a
+// point of each day.
+func TestALastSeriesWithNoStepChartReadsNoValueForAnEmptyWindow(t *testing.T) {
+	rig := newHubRig(t, nil)
+	createTestProject(t, rig.handler, "EVL")
+	today := measures.Midnight(rig.clock.Now())
+	day := func(offset int) time.Time { return today.AddDate(0, 0, offset) }
+	registerLastSeries(t, rig.handler, "EVL", "admission", []string{"depth", "cap"},
+		chartList(`{"id":"depth","title":"Depth","kind":"xy","y":{"series":"depth"}}`, stepChart("cap", "cap", "")))
+	logReadings(t, rig.handler, "EVL", "admission", "depth-readings",
+		stepReading("depth", "", "a", new(5.0), day(-10)), stepReading("cap", "", "b", new(2.0), day(-10)))
+	window, compare := evalDaysEnding(7, today), evalDaysEnding(3, day(-7))
+
+	stated := stepValueReads(t, rig, "EVL", "admission", window, compare, "depth", "cap")
+	if want := map[string]string{"depth": "null 5 null", "cap": "2 2 0"}; !maps.Equal(stated, want) {
+		t.Errorf("the reads state (window compare change) %v, want %v: no value of depth for the window that holds none of its readings", stated, want)
+	}
+	list := evalGet[evalListResponse](t, rig.handler, "/api/v1/projects/EVL/evals?"+rangesQuery(window, compare).Encode())
+	depth := seriesValues(t, findEval(t, list.Items, "EVL", "admission"), "depth")
+	if n := depth.Window["n"]; n != nil || len(depth.Days) != 0 {
+		t.Errorf("depth's window states n %s and the days %s, want n null and no day: no zero row follows the reading of a last series",
+			showFigure(n), mustJSON(t, depth.Days))
+	}
+	if zeros := countRows(t, rig.database, `select count(*) from eval_days where eval_id = 'EVL/admission' and n = 0`); zeros != 0 {
+		t.Errorf("the eval holds %d zero rows, want none: each of its series folds by its last value", zeros)
+	}
+	t.Logf("depth states %s over the window and %s over the compare range, its window n %s and %d days", showFigure(depth.Window["value"]),
+		showFigure(depth.Compare["value"]), showFigure(depth.Window["n"]), len(depth.Days))
 }

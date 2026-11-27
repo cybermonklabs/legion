@@ -464,14 +464,16 @@ func contiguous(days []time.Time, today time.Time) (time.Time, bool) {
 // it, pr-ci's on the first PR-checks run, deploy-frequency's on the first deploy run, LEGION's work
 // time on its first close, its idle time on its first close on or after the first whole day after
 // its first claim observation, and the logged eval's on its reading's day. The days with no input
-// (today, and a day before a reading) hold zero rows, n 0. The cursors stand at the feeds' heads,
-// stamped with the pass's moment, which RefresherAgeIn reads.
+// (today, and a day before a reading) hold zero rows, n 0; the logged eval's series folds by its
+// sum, since no zero row is written of one that folds by its last value (loggedZeros). The cursors
+// stand at the feeds' heads, stamped with the pass's moment, which RefresherAgeIn reads.
 func TestTheFirstPassWalksEveryFamilyFromItsFirstInputDayWithZeroRows(t *testing.T) {
 	t.Parallel()
 	r := newRefresherRig(t)
 	deliveries, legion := r.seedHistories(t)
 	r.leaveInputsUnread(t)
 	readingDay := refresherToday.AddDate(0, 0, -3)
+	r.registerFolded(t, "build-minutes", AggSum, "minutes")
 	r.write(t, "build-minutes", alice, row(t, map[string]any{"series": "minutes", "row_kind": "run", "row_key": "run-1", "value": 12.5, "measured_at": readingDay.Add(9 * time.Hour)}))
 	if _, found, err := RefresherAgeIn(t.Context(), r.database.Pool, r.now); err != nil || found {
 		t.Fatalf("before any pass RefresherAgeIn answers found %t, %v, want no age", found, err)
