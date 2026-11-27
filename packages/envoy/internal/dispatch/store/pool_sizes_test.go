@@ -18,9 +18,12 @@ func TestPoolSizesHoldEveryPoolConnectionsPerProcessCounts(t *testing.T) {
 
 // A budget scales every pool between its minimum and its production size and uses the whole
 // budget, the test hooks' listener counted; a budget that holds production's sizes gets exactly
-// them; and one below the minimums is refused. A budget of 20 holds every pool at its minimum, and
-// gives the one connection left over to the shared pool, which gives up the most of production's
-// size.
+// them; and one below the minimums is refused. One connection above MinBudget holds every pool at
+// the minimum its own argument names (minimumPoolSizes), the four connections the lease pool needs
+// for three intake take-overs at once among them, and gives the one connection left over to the
+// shared pool, which gives up the most of production's size. The sizes are written out, so a
+// minimum lowered below its argument fails here and not only in the budget row on the smallest
+// server (cmd/dispatch's TestEveryProcessOnTheSmallestServerASuiteRunsOnStaysWithinItsBudget).
 func TestScaledPoolSizesUseTheBudgetAndKeepEveryMinimum(t *testing.T) {
 	production := ConnectionsPerTestProcess
 	for budget := MinBudget(); budget <= production+10; budget++ {
@@ -42,8 +45,8 @@ func TestScaledPoolSizesUseTheBudgetAndKeepEveryMinimum(t *testing.T) {
 		}
 	}
 
-	if sizes, err := ScaledPoolSizes(20); err != nil || sizes != (PoolSizes{Shared: 2, Rooms: 1, RoomAppends: 1, Leases: 4, Outbox: 1, Compaction: 1, TextTrees: 1, Horizon: 1}) {
-		t.Errorf("budget 20: %+v, %v; want every pool at its minimum and the shared pool at 2", sizes, err)
+	if sizes, err := ScaledPoolSizes(MinBudget() + 1); err != nil || sizes != (PoolSizes{Shared: 2, Rooms: 1, RoomAppends: 1, Leases: 4, Outbox: 1, Compaction: 1, TextTrees: 1, Horizon: 1}) {
+		t.Errorf("budget %d, one above MinBudget: %+v, %v; want every pool at its minimum, the lease pool at 4, and the shared pool at 2", MinBudget()+1, sizes, err)
 	}
 	if _, err := ScaledPoolSizes(MinBudget() - 1); err == nil || !strings.Contains(err.Error(), "store.MinBudget") {
 		t.Errorf("budget %d, one below MinBudget: err = %v, want the refusal naming store.MinBudget", MinBudget()-1, err)
