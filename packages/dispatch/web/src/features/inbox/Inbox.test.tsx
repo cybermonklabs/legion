@@ -4029,6 +4029,192 @@ test("after a refused bulk Snooze, Clear selection lands on the row marked last 
   }
 });
 
+/** The Inbox's reads and its rows' snooze writes, each held at the case's word. A read answers
+ *  what Dispatch holds (`served`) when it is answered, and from `hold()` it waits until
+ *  `release()`. A snooze waits until the case lets it land (`land`), when Dispatch holds its
+ *  moment, or refuses it (`refuse`). */
+function heldReadsAndSnoozes(rows: readonly InboxRow[]) {
+  let served: InboxRow[] = [...rows];
+  let holding = false;
+  const heldReads: (() => void)[] = [];
+  const getInbox = spyOn(api, "getInbox").mockImplementation(async () => {
+    if (holding) {
+      const held = Promise.withResolvers<void>();
+      heldReads.push(held.resolve);
+      await held.promise;
+    }
+    return served;
+  });
+  /** Each snooze's verdict, by ask id: whether Dispatch takes it. */
+  const verdicts = new Map<string, (taken: boolean) => void>();
+  const snoozeAsk = answerAskSnoozes().mockImplementation(async (id, { snoozed_until: until }) => {
+    const verdict = Promise.withResolvers<boolean>();
+    verdicts.set(id, verdict.resolve);
+    if (!(await verdict.promise)) {
+      throw new ApiError(400, {
+        code: "SNOOZE_INPUT",
+        error: "snoozed_until must be in the future",
+      });
+    }
+    served = served.map((row) => (row.id === id ? { ...row, snoozed_until: until } : row));
+    return { snoozed_until: until };
+  });
+  const decide = async (id: string, taken: boolean) => {
+    await act(async () => {
+      verdicts.get(id)?.(taken);
+    });
+  };
+  return {
+    hold: () => {
+      holding = true;
+    },
+    land: (id: string) => decide(id, true),
+    refuse: (id: string) => decide(id, false),
+    release: () => {
+      holding = false;
+      for (const answer of heldReads.splice(0)) answer();
+    },
+    restore: () => {
+      getInbox.mockRestore();
+      snoozeAsk.mockRestore();
+    },
+    serve: (next: (rows: InboxRow[]) => InboxRow[]) => {
+      served = next(served);
+    },
+    snoozeAsk,
+  };
+}
+
+/** Picks Tomorrow from the row's own Snooze of the ask `askId`, named for `label`. */
+async function snoozeRow(user: UserEvent, askId: string, label: string): Promise<void> {
+  await pickIn(user, () => within(rowOf(askId)).getByLabelText(`Snooze ${label}`), "Tomorrow");
+}
+
+/** With the Inbox's reads held and the name of a snooze that landed still standing: the reader
+ *  opens Later, where that snooze's row is listed now, marks the row `marked`, whose mark the
+ *  window is scrolled past, and clears the selection. While a listed row is named as leaving, the
+ *  bar's hand-off parks the focus on the list's own stop and owes its landing. `release` lets the
+ *  read answer, which ends the name, and the landing is made on the mark of `marked`. */
+async function clearSelectionUntilTheRead(
+  user: UserEvent,
+  marked: string,
+  release: () => void
+): Promise<void> {
+  await user.click(screen.getByRole("button", { name: /^Later \(1\)/ }));
+  const mark = () => within(rowOf(marked)).getByRole("checkbox", { name: /^Select / });
+  await user.click(mark());
+  await screen.findByText("1 selected");
+  await user.click(screen.getByRole("button", { name: "Clear selection" }));
+  const stop = screen.getByTestId("inbox-list");
+  await waitFor(() => expect(stop).toHaveFocus());
+  await afterFrameAndTasks();
+  expect(stop).toHaveFocus();
+
+  await act(async () => {
+    release();
+  });
+  await waitFor(() => expect(mark()).toHaveFocus());
+}
+
+// A row's Snooze names its row from the pick until the list draws the first read Dispatch answers
+// after the write, and a change no read made to the Inbox's data ends no name. Here the snooze
+// lands while the Inbox's reads are held, and then the reader answers another ask, whose answer
+// takes its row out of the Inbox's data at once (`outstanding-answers.ts`). With Later open the
+// snoozed row is listed, so the bar's hand-off waits for it after Clear selection until the read
+// answers. A name that answer's optimistic update ended would let the hand-off land at once.
+test("a row's Snooze that lands while the reads are held names its row until a read answers, past another write's optimistic update", async () => {
+  const user = userEvent.setup();
+  const answered = inboxIssue("ask-b", "CORE-2", "Which format?", {
+    options: [{ label: "Ship" }, { label: "Hold" }],
+  });
+  const rows = [
+    inboxIssue("ask-a", "CORE-1", "Which approach?"),
+    answered,
+    inboxIssue("ask-c", "CORE-3", "Which owner?"),
+  ];
+  const inbox = heldReadsAndSnoozes(rows);
+  const getAsk = mockAskReads(rows);
+  const answerAsk = spyOn(api, "answerAsk").mockImplementation(async () => {
+    inbox.serve((served) => served.filter((row) => row.id !== "ask-b"));
+    return {
+      ...answered,
+      answer: { at: "2026-09-11T03:00:00Z", selected: ["Ship"], text: "", user: "alice" },
+      state: "answered",
+    };
+  });
+  // The window scrolled past every row, so no mark is in sight.
+  const laidOut = layRowsDown(10 * LAID_ROW_PX);
+  const { unmount } = renderInbox("/?group=waiting-on", { pane: false });
+  try {
+    await screen.findByText("Which owner?");
+    await snoozeRow(user, "ask-a", "CORE-1: Which approach?");
+    await waitFor(() => expect(inbox.snoozeAsk).toHaveBeenCalledTimes(1));
+    inbox.hold();
+    await inbox.land("ask-a");
+    await waitFor(() => expect(rowIds()).toEqual(["ask-b", "ask-c"]));
+
+    const card = screen.getByTestId("ask-ask-b");
+    // "Ship" is a Markdown label (`MarkdownBody`), unnamed until the lazy Markdown engine loads.
+    await user.click(await within(card).findByRole("radio", { name: "Ship" }));
+    await user.click(within(card).getByRole("button", { name: "Answer" }));
+    await waitFor(() => expect(answerAsk).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(rowIds()).toEqual(["ask-c"]));
+
+    await clearSelectionUntilTheRead(user, "ask-c", inbox.release);
+  } finally {
+    unmount();
+    inbox.release();
+    laidOut();
+    answerAsk.mockRestore();
+    getAsk.mockRestore();
+    inbox.restore();
+  }
+});
+
+// A refused row Snooze puts back its own ask's moment alone (`useAskSnooze.tsx`). Here another
+// ask's Snooze lands while it is out, with the Inbox's reads held, and then Dispatch refuses it:
+// the ask that landed stays out of the list, in Later, though no read has placed it yet, and its
+// name stands until that read answers. The list as it stood at the refused press would draw that
+// ask in its band again, and that rollback, a change no read made, ends no name either.
+test("a refused row Snooze rolls back its own ask alone: another ask whose Snooze landed meanwhile stays out of the list, named until a read answers", async () => {
+  const user = userEvent.setup();
+  const rows = [
+    inboxIssue("ask-a", "CORE-1", "Which approach?"),
+    inboxIssue("ask-b", "CORE-2", "Which format?"),
+    inboxIssue("ask-c", "CORE-3", "Which owner?"),
+  ];
+  const inbox = heldReadsAndSnoozes(rows);
+  const getAsk = mockAskReads(rows);
+  // The window scrolled past every row, so no mark is in sight.
+  const laidOut = layRowsDown(10 * LAID_ROW_PX);
+  const { unmount } = renderInbox("/?group=waiting-on", { pane: false });
+  try {
+    await screen.findByText("Which owner?");
+    await snoozeRow(user, "ask-b", "CORE-2: Which format?");
+    await waitFor(() => expect(inbox.snoozeAsk).toHaveBeenCalledTimes(1));
+    await snoozeRow(user, "ask-a", "CORE-1: Which approach?");
+    await waitFor(() => expect(inbox.snoozeAsk).toHaveBeenCalledTimes(2));
+    inbox.hold();
+    await inbox.land("ask-a");
+    await waitFor(() => expect(rowIds()).toEqual(["ask-b", "ask-c"]));
+
+    await inbox.refuse("ask-b");
+    await screen.findByText("snoozed_until must be in the future");
+    await waitFor(() =>
+      expect(rowOf("ask-b").querySelector("[data-inbox-snoozed-until]")).toBeNull()
+    );
+    expect(rowIds()).toEqual(["ask-b", "ask-c"]);
+
+    await clearSelectionUntilTheRead(user, "ask-c", inbox.release);
+  } finally {
+    unmount();
+    inbox.release();
+    laidOut();
+    getAsk.mockRestore();
+    inbox.restore();
+  }
+});
+
 // The same refusal under the bar's Dismiss, whose optimistic apply takes the rows out before its
 // request is sent: the landing is made on the row now at their place before Dispatch answers, and
 // the refusal that puts the rows back moves no focus. It ends the name of each row it put back

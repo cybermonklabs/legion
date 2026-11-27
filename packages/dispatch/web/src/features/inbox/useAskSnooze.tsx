@@ -80,9 +80,9 @@ export function useAskSnooze(askId: string): AskSnoozeWrite {
 
 /**
  * The one way the SPA writes a row's snooze, for every row of one Inbox. The new moment lands on
- * every inbox cache at once, rolls back if the server refuses, and the list refetches once the
- * save settles - the same shape as the issue field writes, without their cross-surface caches: a
- * snooze is on the ask and shows nowhere else.
+ * every inbox cache at once, the ask's own moment is put back if the server refuses, and the list
+ * refetches once the save settles - the same shape as the issue field writes, without their
+ * cross-surface caches: a snooze is on the ask and shows nowhere else.
  *
  * The Inbox holds these writes by ask (`useAskWrites`), and the control that pressed holds none
  * of them. A control can go while its write is out: the reading column's head goes when the
@@ -91,7 +91,11 @@ export function useAskSnooze(askId: string): AskSnoozeWrite {
  * narrowing, which lists no snoozed ask and keeps the row only while the reader's hand is on it.
  * A refusal stays with the ask until its next press, and every control drawn for the ask shows
  * it, with its Retry. A refused or stopped write holds no row: the rollback has put the row's
- * moment back, and the next read of the Inbox places it.
+ * moment back, and the next read of the Inbox places it. The rollback puts back that one ask's
+ * moment, as the bulk form's does (`useAskSnoozeMany`), and leaves every other row as it is now:
+ * another ask's snooze can have landed since the press, and the list as it stood before the press
+ * would draw that ask again in the band it left, with nothing naming it, until the next read
+ * takes it out again.
  *
  * Each press carries the ask it is of: a Retry runs the newest render's `write` with the press's
  * own values (`useKeyedWrite`), so every byte a Retry sends rides in the press. The Retry of a
@@ -124,9 +128,12 @@ export function useAskSnoozeWrites(): AskSnoozeWrites {
       );
       return previous;
     },
-    onError: (_error, _press, previous) => {
+    onError: (_error, press, previous) => {
       for (const [key, data] of previous ?? []) {
-        queryClient.setQueryData(key, data);
+        const before = data?.find((row) => row.id === press.askId)?.snoozed_until ?? null;
+        queryClient.setQueryData<InboxRow[]>(key, (current) =>
+          current?.map((row) => (row.id === press.askId ? { ...row, snoozed_until: before } : row))
+        );
       }
     },
     onSettled: () => {

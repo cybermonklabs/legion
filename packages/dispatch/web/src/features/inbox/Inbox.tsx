@@ -1,5 +1,5 @@
 import { awaitsDecision, INBOX_DISMISSED_PAGE, INBOX_THREAD_KINDS } from "@legion/contracts";
-import { useQuery } from "@tanstack/react-query";
+import { hashKey, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   type FocusEvent,
   type ReactNode,
@@ -9,6 +9,7 @@ import {
   useLayoutEffect,
   useRef,
   useState,
+  useSyncExternalStore,
 } from "react";
 
 import { inboxQuery, usersQuery, whoAmIQuery } from "../../api/queries";
@@ -844,12 +845,39 @@ function withHeldBands(
   return drawn;
 }
 
-/** What the Inbox keeps of a row a Snooze of the reader's is taking (`snoozedHere`): the read the
- *  list drew while the write was out, and the write that named the row, the row's own or the
- *  bar's, whose refusal alone ends the name. */
+/** What the Inbox keeps of a row a Snooze of the reader's is taking (`snoozedHere`): how many
+ *  reads of the Inbox Dispatch had answered in the list it drew while the write was out
+ *  (`useInboxReads`), and the write that named the row, the row's own or the bar's, whose refusal
+ *  alone ends the name. */
 interface SnoozeName {
   readonly from: "bar" | "row";
-  readonly read: unknown;
+  readonly reads: number;
+}
+
+/**
+ * How many reads of the Inbox (`inboxQuery`) Dispatch has answered since the list mounted: each
+ * fetch of it that succeeded, and none of the changes a write makes to its data itself - an
+ * optimistic update, a rollback - which no answer of Dispatch's is. A read answered with what the
+ * data already held counts as well, though it leaves that data as it was, the same array: the
+ * read the Snooze names wait for (`snoozedHere`) is often that one, Dispatch confirming the
+ * moment the optimistic update already drew.
+ */
+function useInboxReads(): number {
+  const queryClient = useQueryClient();
+  const answered = useRef(0);
+  const subscribe = useCallback(
+    (onChange: () => void) => {
+      const hash = hashKey(inboxQuery().queryKey);
+      return queryClient.getQueryCache().subscribe((event) => {
+        if (event.type !== "updated" || event.query.queryHash !== hash) return;
+        if (event.action.type !== "success" || event.action.manual === true) return;
+        answered.current += 1;
+        onChange();
+      });
+    },
+    [queryClient]
+  );
+  return useSyncExternalStore(subscribe, () => answered.current);
 }
 
 /** The row to keep where the reader last saw it (`seen`), if any: one kept for the reader
@@ -2098,11 +2126,17 @@ function InboxBody({
     },
   ]);
 
-  /** The rows a Snooze of this view is taking, by id, each with the read the list drew while its
+  /** The rows a Snooze of this view is taking, by id, each with the reads the list drew while its
    *  write was out and the write that named it, the row's own or the bar's: from the pick until the
-   *  first read the list adopts after that write, which places the row, or until Dispatch refuses
-   *  that write. Kept after every commit (below). */
+   *  list draws the first read Dispatch answered after that write, which places the row, or until
+   *  Dispatch refuses that write. Kept after every commit (below). */
   const snoozedHere = useRef<Map<string, SnoozeName>>(new Map());
+  const readsAnswered = useInboxReads();
+  /** How many reads of the Inbox the list draws (`useInboxReads`): every one answered so far in a
+   *  commit that draws the Inbox's own data, and, in one that draws the older answer the motion
+   *  hold keeps while the pointer travels (`adoptedInbox`), as many as when the list last drew its
+   *  own. Written by the names' effect (below), before the names read it. */
+  const readsDrawn = useRef(0);
   // The bar's hand-off (`useLastMarkedPlace`): the mark of the row the reader marked last while
   // the list holds it, out of sight or not. After a press that took that row away: a row the
   // reader can see at its place, else before it, else after it. With no row marked: the first row
@@ -2117,12 +2151,12 @@ function InboxBody({
   // the read that places the row.
   /** Whether a press of the reader's is taking this row off the view: a Dismiss's or a Move to
    *  Inbox's (`dismissedHere`), and a Snooze's, the bar's or a row's own, from the pick until the
-   *  first read the list adopts after its write (`snoozedHere`). The answer the bar's hand-off is
-   *  given, which names the reading view's open row past it too (`openRowTaken`), the one the
-   *  hand's own hold reads (`seen`, below), and the one the list's anchor reads beside its own
-   *  other reasons (`ViewportAnchor`'s `leaving`, below): the rows the hand-off waits for are the
-   *  rows the anchor lets go, so once the landing is made, their going moves nothing. The anchor
-   *  names the rows of a commit before that commit's layout effects run
+   *  list draws the first read answered after its write (`snoozedHere`). The answer the bar's
+   *  hand-off is given, which names the reading view's open row past it too (`openRowTaken`), the
+   *  one the hand's own hold reads (`seen`, below), and the one the list's anchor reads beside its
+   *  own other reasons (`ViewportAnchor`'s `leaving`, below): the rows the hand-off waits for are
+   *  the rows the anchor lets go, so once the landing is made, their going moves nothing. The
+   *  anchor names the rows of a commit before that commit's layout effects run
    *  (`getSnapshotBeforeUpdate`), where the Snooze names below are still the last commit's,
    *  so a Snooze's write out (`snoozing`, `bulkSnoozing`) names its rows too: the pick's own
    *  commit is named for it. A row named here is never kept on the page for the hand in it: the
@@ -2164,23 +2198,29 @@ function InboxBody({
   // A Dismiss's name ends once the page no longer draws its row after Dispatch took it
   // (`forgetDismissed`), and not before: a read that has not dropped the row yet still draws it.
   //
-  // A Snooze's name is made while its write is out, with the read the list draws then, and ends at
-  // the first read the list adopts after that write. It outlives `snoozing` and `bulkSnoozing`,
-  // which empty when the write settles, because a commit after that settle can still draw the
-  // row in its band: in WebKit the bar's hand-off read the row marked last still listed there,
-  // and named by nothing, in four of eight repeats when the name ended at the settle (builds Job
-  // `infra-3135-infra-3135-r30f-s70p`). The row does not wait for that read to leave: under
-  // `?group=none` it left in the commit the bar went in, with the read still held (builds Job
-  // `infra-3135-infra-3135-r30t-heldp`, Chromium), and the hand-off lands once it has left
-  // (`useLastMarkedPlace` waits only while a named row is listed). The first read adopted after
-  // the write is the one that places the row out of its band wherever Dispatch took the snooze.
-  // No read begun before Dispatch took it can be that read: each snooze write cancels the Inbox's
-  // reads in flight at the pick and holds back every read asked while it is out until Dispatch
-  // has taken it (`useAskSnooze.tsx`: the row's write through `holds` and `cancelQueries` in
-  // `onMutate`, the bar's through `holdBackReads` and `cancelQueries` in `submit`). So a row that
-  // read leaves in its band is staying, as a list with no Later band leaves it. The name ends at once where Dispatch refused the write that made
-  // it - the row's own, whose refusal stays with the ask until its next press, or the bar's
-  // newest pick - since the rollback has put the row's moment back and the row is staying.
+  // A Snooze's name is made while its write is out, with the reads the list draws then, and ends
+  // in the first commit that draws a read Dispatch answered after that write (`useInboxReads`). It
+  // outlives `snoozing` and `bulkSnoozing`, which empty when the write settles, because a commit
+  // after that settle can still draw the row in its band: in WebKit the bar's hand-off read the
+  // row marked last still listed there, and named by nothing, in four of eight repeats when the
+  // name ended at the settle (builds Job `infra-3135-infra-3135-r30f-s70p`). The row does not wait
+  // for that read to leave: under `?group=none` it left in the commit the bar went in, with the
+  // read still held (builds Job `infra-3135-infra-3135-r30t-heldp`, Chromium), and the hand-off
+  // lands once it has left (`useLastMarkedPlace` waits only while a named row is listed). The
+  // first read answered after the write is the one that places the row out of its band wherever
+  // Dispatch took the snooze. No read begun before Dispatch took it can be that read: each snooze
+  // write cancels the Inbox's reads in flight at the pick and holds back every read asked while it
+  // is out until Dispatch has taken it (`useAskSnooze.tsx`: the row's write through `holds` and
+  // `cancelQueries` in `onMutate`, the bar's through `holdBackReads` and `cancelQueries` in
+  // `submit`). So a row that read leaves in its band is staying, as a list with no Later band
+  // leaves it. A change to the Inbox's data that no read made ends no name: another press's
+  // optimistic update, or a refused write's rollback, can change the data after the write's
+  // answer and before that read, while the row is still listed where the reader saw it, and a
+  // name ended there would leave the row listed with nothing naming it. While the motion hold
+  // keeps an older answer drawn, the list draws as many reads as it drew with it (`readsDrawn`).
+  // The name ends at once where Dispatch refused the write that made it - the row's own, whose
+  // refusal stays with the ask until its next press, or the bar's newest pick - since the
+  // rollback has put the row's moment back and the row is staying.
   useLayoutEffect(() => {
     const open = barOpenRow;
     // Whether a press of the reader's names the open row as this commit begins, before the names
@@ -2188,14 +2228,16 @@ function InboxBody({
     const named = open !== undefined && leavingNow(open);
     const drawn = new Set(rows().map((row) => row.dataset.inboxRow ?? ""));
     forgetDismissed((id) => drawn.has(id));
+    if (adoptedInbox === inbox.data) readsDrawn.current = readsAnswered;
+    const reads = readsDrawn.current;
     const names = snoozedHere.current;
-    for (const id of bulkSnoozing) names.set(id, { from: "bar", read: adoptedInbox });
-    for (const id of snoozing) names.set(id, { from: "row", read: adoptedInbox });
+    for (const id of bulkSnoozing) names.set(id, { from: "bar", reads });
+    for (const id of snoozing) names.set(id, { from: "row", reads });
     for (const [id, name] of names) {
       if (snoozing.has(id) || bulkSnoozing.has(id)) continue;
       const refused =
         name.from === "row" ? snoozeWrites.of(id).error !== undefined : snoozeRefused(id);
-      if (refused || adoptedInbox !== name.read) names.delete(id);
+      if (refused || reads > name.reads) names.delete(id);
     }
     // The open row stays named past its press's own name while the list does not draw it: from
     // the commit whose names ended here as the list let it go, until the selection is handed on

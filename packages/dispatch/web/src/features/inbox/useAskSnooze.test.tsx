@@ -676,6 +676,58 @@ test("a snooze Dispatch refuses waits for no event, and the next snooze event en
   }
 });
 
+// A refusal puts back the refused ask's own moment and nothing else. Another ask's snooze, pressed
+// after it and taken while it was out, keeps the moment Dispatch took, though the read of the
+// Inbox that would bring that moment is still to come: the cache as it stood at the refused press
+// would bring that ask back out of Later.
+test("a refused snooze puts back its own ask's moment alone, and keeps the moment of another ask Dispatch took while it was out", async () => {
+  const served = { rows: [issueAsk({ id: "ask-1" }), issueAsk({ id: "ask-2" })] };
+  const verdicts = heldSnoozeVerdicts();
+  const { client, getInbox, hook } = renderBesideInbox(served, () => ({
+    first: useAskSnooze("ask-1"),
+    second: useAskSnooze("ask-2"),
+  }));
+  const reads = Promise.withResolvers<void>();
+  try {
+    await waitFor(() => expect(snoozedUntil(hook.result.current.inbox)).toEqual([null, null]));
+    // Every read of the Inbox from here waits, so the cache holds what the writes made of it.
+    getInbox.mockImplementation(async () => {
+      await reads.promise;
+      return served.rows;
+    });
+    act(() => hook.result.current.write.second.submit(UNTIL));
+    await waitFor(() => expect([...verdicts.keys()]).toEqual(["ask-2"]));
+    act(() => hook.result.current.write.first.submit(UNTIL));
+    await waitFor(() => expect([...verdicts.keys()].sort()).toEqual(["ask-1", "ask-2"]));
+    expect(snoozedUntil(hook.result.current.inbox)).toEqual([UNTIL, UNTIL]);
+
+    served.rows = [issueAsk({ id: "ask-1", snoozed_until: UNTIL }), issueAsk({ id: "ask-2" })];
+    await act(async () => {
+      verdicts.get("ask-1")?.resolve({ snoozed_until: UNTIL });
+      await settle();
+    });
+    await waitFor(() => expect(hook.result.current.write.first.pending).toBe(false));
+    await act(async () => {
+      verdicts.get("ask-2")?.reject(refusal());
+      await settle();
+    });
+    await waitFor(() => expect(hook.result.current.write.second.failed).toBe(true));
+    expect(snoozedUntil(hook.result.current.inbox)).toEqual([UNTIL, null]);
+
+    // The read then answers what Dispatch holds, which is the same.
+    await act(async () => {
+      reads.resolve();
+      await settle();
+    });
+    await waitFor(() => expect(client.isFetching()).toBe(0));
+    expect(snoozedUntil(hook.result.current.inbox)).toEqual([UNTIL, null]);
+  } finally {
+    reads.resolve();
+    hook.unmount();
+    getInbox.mockRestore();
+  }
+});
+
 /**
  * Has Dispatch take a first snooze whose answer is lost on the way back, and refuse the page's
  * retry of it, the snooze's moment having passed: a snooze is a `PUT`, which sends no key, so the
