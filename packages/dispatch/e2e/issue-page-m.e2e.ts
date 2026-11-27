@@ -2428,9 +2428,11 @@ async function verifyGapDetection(
     ...events
       .filter((event) => event.type === "issue.created")
       .map((event) => setEventCreatedAt(event.id, yesterday)),
-    ...events
-      .filter((event) => event.type === "comment.created" && backDatedAt.has(event.payload.id))
-      .map((event) => setEventCreatedAt(event.id, backDatedAt.get(event.payload.id) ?? yesterday)),
+    ...events.flatMap((event) => {
+      if (event.type !== "comment.created") return [];
+      const at = backDatedAt.get(event.payload.id);
+      return at === undefined ? [] : [setEventCreatedAt(event.id, at)];
+    }),
   ]);
   // Far beyond the issue's head, so nothing is unread and the history draws no line yet.
   await putIssueState(issue.key, { last_read_seq: 10_000 }, { login: "alice" });
