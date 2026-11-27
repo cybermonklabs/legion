@@ -20,6 +20,27 @@ export function displayTree(markdown: string): DisplayTree | undefined {
   return loadedEngine()?.parse(markdown)?.toJSON() as DisplayTree | undefined;
 }
 
+/**
+ * The reading the server sends a statement whose words call the footnotes `labels`, each of
+ * which its document defines outside it, as `api/coverage.go`'s `requirementBlocksIn` reads it:
+ * the statement's markdown read alone reads such a call as text, so it is read with a stand-in
+ * definition `[^<label>]: x` of each label after it, a blank line before each, and those
+ * definitions, the last blocks of the reading, are taken out of its document. Each call is then
+ * a `footnote_reference`, as the document and the editor hold it. `warmMarkdownRenderer` must
+ * have resolved before this is called.
+ */
+export function displayTreeWithStandIns(markdown: string, labels: readonly string[]): DisplayTree {
+  const tree = displayTree(`${markdown}${labels.map((label) => `\n\n[^${label}]: x`).join("")}`);
+  if (tree === undefined || !Array.isArray(tree.content)) {
+    throw new Error(`the engine reads no document from ${JSON.stringify(markdown)}`);
+  }
+  const kept = tree.content.length - labels.length;
+  if (kept < 1 || tree.content.slice(kept).some((block) => block?.type !== "footnote_definition")) {
+    throw new Error(`the reading of ${JSON.stringify(markdown)} ends in no stand-in definitions`);
+  }
+  return { ...tree, content: tree.content.slice(0, kept) };
+}
+
 /** A count of the markdown parses the page's shared engine makes, from the call that made it
  *  until `restore`, which gives the engine its own `parse` back. */
 export interface EngineParses {

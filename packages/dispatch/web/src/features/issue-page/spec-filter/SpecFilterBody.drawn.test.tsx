@@ -15,7 +15,7 @@ import type { ReactNode } from "react";
 import { MemoryRouter, type NavigateFunction, useLocation } from "react-router-dom";
 
 import { type HeldNotifications, holdNotifications } from "../../../__tests__/commits";
-import { displayTree } from "../../../__tests__/display-trees";
+import { displayTree, displayTreeWithStandIns } from "../../../__tests__/display-trees";
 import { nextFrame } from "../../../__tests__/frames";
 import { installIntersectionObserver } from "../../../__tests__/intersection-observer";
 import { installResizeObserver } from "../../../__tests__/scroll-box";
@@ -39,7 +39,7 @@ import type {
 import { pageFocusedRow } from "../../../theme/classes";
 import { issueDecisionsQuery } from "../../doc/spec-marks";
 import { MarginProvider } from "../../margin/margin-context";
-import { warmMarkdownRenderer } from "../../refs/markdown-engine";
+import { loadedEngine, warmMarkdownRenderer } from "../../refs/markdown-engine";
 import {
   type PublishedReferences,
   ReferenceNamesProvider,
@@ -2383,9 +2383,12 @@ test("a press after a reference counts the reference as the editor holds it", as
  * editor; both default to the press's own, for words the two draw alike after the kind a case
  * reads. The statement's words are `text`, drawn from `tree`, the reading the server sends,
  * where one is given, and as stored where none is, with `names` as the page's batched read named
- * its references. A plain editable on the stage stands in for the editor's drawing of the
- * statement: `held` is its paragraph, each kind drawn as the editor draws it. `drawn` reads the
- * statement's drawn words before the press.
+ * its references. The stage's editable holds the statement's block, and in it the statement's
+ * paragraph as the editor draws it: `held`, a plain paragraph standing in for the editor's
+ * drawing, each kind drawn as the editor draws it; or, from `parsed`, the markdown of the
+ * document the statement stands in, a ProseMirror view of the engine's schema drawing the first
+ * paragraph of the editor's own parse of it (`editorStateOf`), each atom `contenteditable="false"`
+ * and each text as text. `drawn` reads the statement's drawn words before the press.
  */
 async function pressAfterKind({
   at,
@@ -2394,34 +2397,44 @@ async function pressAfterKind({
   into,
   lands,
   names,
+  parsed,
   pressed,
   text,
   tree,
 }: {
   at?: number;
   drawn: (words: HTMLElement) => void;
-  held: ReactNode;
   into: number;
   lands?: string;
   names?: ReadonlyMap<string, string>;
   pressed: string;
   text: string;
   tree?: TreeNode["tree"];
-}): Promise<void> {
+} & (
+  | { held: ReactNode; parsed?: undefined }
+  | { held?: undefined; parsed: string }
+)): Promise<void> {
   const user = userEvent.setup();
   const editorView = new EditorView(null, {
-    state: EditorState.create({
-      schema: new Schema({ nodes: { doc: { content: "text*" }, text: {} } }),
-    }),
+    state:
+      parsed === undefined
+        ? EditorState.create({
+            schema: new Schema({ nodes: { doc: { content: "text*" }, text: {} } }),
+          })
+        : editorStateOf(parsed),
   });
   const onEditing: OnEditing = (artifactId, onEditor) => {
     if (artifactId !== undefined) onEditor?.({ view: editorView });
   };
+  // The view's own editable, which ProseMirror draws the parsed paragraph in, goes in the block.
+  const mountView = (section: HTMLElement | null) => {
+    if (section !== null && parsed !== undefined) section.append(editorView.dom);
+  };
   const editor = (
     <DocumentStage artifactId="artifact-spec">
       <div contentEditable suppressContentEditableWarning>
-        <section data-block-id="r1">
-          <p>{held}</p>
+        <section data-block-id="r1" ref={mountView}>
+          {parsed === undefined ? <p>{held}</p> : null}
         </section>
       </div>
     </DocumentStage>
@@ -2462,6 +2475,18 @@ async function pressAfterKind({
     editorView.destroy();
     read.mockRestore();
   }
+}
+
+/** The editor's state of statement r1 where `markdown` is the document it stands in: the first
+ *  paragraph of the editor's own parse of it (`MarkdownEngine.parse`, which `beforeAll` loads),
+ *  alone in a document of the engine's schema. */
+function editorStateOf(markdown: string): EditorState {
+  const parsed = loadedEngine()?.parse(markdown);
+  const paragraph = parsed?.firstChild;
+  if (parsed === undefined || paragraph == null || paragraph.type.name !== "paragraph") {
+    throw new Error(`the editor's parse of ${JSON.stringify(markdown)} opens with no paragraph`);
+  }
+  return EditorState.create({ doc: parsed.type.create(parsed.attrs, paragraph) });
 }
 
 /** Statement r1's words for `pressAfterKind`: a placeholder in inline HTML, `<name>`, and the
@@ -2624,30 +2649,64 @@ test("a press after a footnote reference lands in the word pressed", async () =>
   });
 });
 
-// A statement's own words define no note, so the view draws a footnote's reference as the text its
-// author wrote, `[^n1]`, while the editor holds it as an atom: the renderer marks that text with no
-// text of the editor's (`RowText.tsx`'s `markDrawnAtoms`), so a press after it counts it as nothing.
-test("a press after a footnote reference drawn as its written text lands in the word pressed", async () => {
-  const after = " first, then the rest.";
-  const text = `Read the note[^n1]${after}`;
+// A footnote's call whose note the document defines nowhere is text in the document: the server's
+// reading draws it as the characters its author wrote, with no mark, and the editor holds those
+// characters as text, so a press after the call counts them as written.
+test("a press after a footnote call the document defines no note for lands in the word pressed", async () => {
+  const text = "Read the note[^zz] first, then the rest.";
   await pressAfterKind({
     drawn: (words) => {
-      const marked = [...words.querySelectorAll('[data-row-written=""]')];
-      expect(marked.map((element) => element.textContent)).toEqual(["[^n1]"]);
+      expect(words.querySelector("[data-row-written]")).toBeNull();
+      expect(words.textContent).toContain(text);
     },
-    held: (
-      <>
-        {"Read the note"}
-        <sup contentEditable={false} data-type="footnote_reference">
-          n1
-        </sup>
-        {after}
-      </>
-    ),
-    into: 3,
-    pressed: after,
+    into: text.indexOf("first,") + 3,
+    parsed: text,
+    pressed: text,
     text,
     tree: displayTree(text),
+  });
+});
+
+// An escaped call, `\[^k1]`, is text in the document though the document defines `k1`: the server
+// stands in no note for it, so its reading draws `[^k1]` as text, with no mark, and the editor
+// holds those characters as text, so a press after the call counts them as written.
+test("a press after an escaped footnote call lands in the word pressed", async () => {
+  const written = "Read the note\\[^k1] first, then the rest.";
+  const text = "Read the note[^k1] first, then the rest.";
+  await pressAfterKind({
+    drawn: (words) => {
+      expect(words.querySelector("[data-row-written]")).toBeNull();
+      expect(words.textContent).toContain(text);
+    },
+    into: text.indexOf("first,") + 3,
+    parsed: `${written}\n\n[^k1]: The note.`,
+    pressed: text,
+    text,
+    tree: displayTree(written),
+  });
+});
+
+// A footnote's call written in a link's text, `[note[^k1]](https://example.com)`, the document
+// stores after the link, unmarked, since the renderer closes every mark before a reference. The
+// server's reading of the stored words, with a stand-in note for `k1`, draws the link's words and
+// then the reference by the schema's `sup`, which the editor holds as the link's words as text
+// and the reference as an atom the caret cannot enter, so a press after the reference counts the
+// link's words and nothing for the reference. The statement's plain words leave a link's text out.
+test("a press after a footnote call in a link's text lands in the word pressed", async () => {
+  const after = " first, then the rest.";
+  const written = `[note](https://example.com)[^k1]${after}`;
+  await pressAfterKind({
+    drawn: (words) => {
+      const reference = words.querySelector('[data-type="footnote_reference"]');
+      expect(reference?.textContent).toBe("k1");
+      expect(reference?.previousSibling?.textContent).toBe("note");
+      expect(reference?.nextSibling?.textContent).toBe(after);
+    },
+    into: 3,
+    parsed: `${written}\n\n[^k1]: The note.`,
+    pressed: after,
+    text: "first, then the rest.",
+    tree: displayTreeWithStandIns(written, ["k1"]),
   });
 });
 
