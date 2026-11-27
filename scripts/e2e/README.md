@@ -5723,7 +5723,7 @@ It needs no Docker, no cluster, no tmux, no GitHub and no deployed Dispatch.
 Its host must be loopback, and the driver also makes Dispatch's own database on that server, so the DSN's role must be allowed to create databases and the server must offer `pgvector`.
 The runs of the change passed `DISPATCH_TEST_DATABASE_URL` beside it, naming the same server, and the script reads nothing of it.
 The broker is the run's own: Dispatch publishes its events on it, and the daemon consumes them from it.
-A whole run of the seven cases took 67 s on a shared devbox with a warm Go build cache: 14 s building the driver and 52 s of proof, most of it the panes' start and completion-before-event's 10 s hold.
+A whole run of the eight cases took 93 s on a shared devbox: 22 s building the driver and 71 s of proof, most of it the panes' start and completion-before-event's 10 s hold.
 A case whose answer never comes waits a minute past its bound before it fails.
 The four checks are [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh)'s.
 Before them the script refuses a host with no `jj`, no `git`, no `bun` or no `node_modules`, and exports `LEGION_E2E_REPO_ROOT`.
@@ -5775,6 +5775,7 @@ A case reads three things:
 | `pass-goes-to-review` | the implementer's and the tester's passes of k1 and k2, the test record and the completion | the issue in `reviewing` and its reviewer started, each within 10 s of the completion; no task of its implementer; the four results |
 | `no-check` | an issue whose Verification document holds one check, k3, which is `after_merge`, and so no `before_merge` check; the test record and the completion, with no result | Dispatch's answer of the issue's checks (`GET /api/v1/issues/<key>/results`): a Verification document whose checks hold no `before_merge` one; the issue in `reviewing` and its reviewer started, each within 10 s of the completion; no task of its implementer; no row of the issue in `check_results` or `ci_check_results`; and in Dispatch's `check_states` only the head's set row, with no check, computed from that Verification document |
 | `fail-sends-back` | the tester's pass of k1 and fail of k2; then, on a second issue, a pass and a fail of k1 and a pass of k2 | each issue in `implementing` within 10 s of the completion; the tester's one `phase-finished` notice on the architect's topic carrying the head as `head` and, as `failing`, `[{k2, no, fail}]` on the first issue and `[{k1, unknown, pass_and_fail}]` on the second; each implementer's pending task carrying its notice's `reason`; each issue's results |
+| `ci-failure-tells` | an issue whose Verification document adds k3, a `before_merge` check whose `ci_check` names the CI job `acme-unit`, its pull request staged at its head and the issue in `testing`; the CI settlement of that head published on the run's broker (`notifications.github.<repo>.pr.<n>.checks`), `build` passed and `acme-unit` failed; Dispatch reads the job's run at the head through a throwaway GitHub App from a stand-in of GitHub on a loopback host, which answers `acme-unit` completed, failure | the daemon's log record `workflow: the implementer is told of a failed CI job` for the issue, once, its own time within 10 s of the publish, naming the pull request, k3, the head and the case `failure`; no task of its implementer, whose pane the runtime never launched; the issue still in `testing` |
 | `completion-before-event` | with the states from before the results held by the daemon, the run's `nats-server` stopped (`SIGSTOP`, by the pid the run started it with, which must be a `nats-server` holding the socket on the run's port); the tester's passes, test record and completion; after 10 s, `SIGCONT` | for 10 s the issue stays in `testing` and the daemon starts no worker; the architect has one `phase-finished` notice, the tester's, carrying the head as `head` and `fence` as `waits_for`; the issue in `reviewing` within 10 s of the `SIGCONT`; once its reviewer starts, no task of its implementer; the two results |
 
 Every move a case reads also prints the states Dispatch published of the issue (`check_states`).
@@ -5786,6 +5787,8 @@ What the proof stands in for lies outside the move:
   The trigger on that table marks the issue owed, as the envelope's own write does.
 
 - GitHub's REST API, as the daemon reads it, is the driver's stand-in for those pull requests.
+
+- In `ci-failure-tells`, GitHub as Dispatch reads it is a stand-in of its own on a loopback host, reached through a throwaway GitHub App whose key the run makes (`check_states_live_ci_test.go`'s `dispatchGitHub`); no other case gives Dispatch an App, so no other case reads CI.
 
 - Envoy's listener is the package's `noticeListener`.
 
