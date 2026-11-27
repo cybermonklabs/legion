@@ -569,6 +569,36 @@ func TestTheMergersCompletionLandsBeforeTheNextChange(t *testing.T) {
 	})
 }
 
+// The withdrawal of the last reported defect of an issue in verifying asks for a read of its
+// checks now. Its close was judged on the newest read, which a reason held, and the production
+// check opens only at a read with no reason waiting (openCheckAtRead), so in a project that runs
+// one, with no read asked, the issue waited for whatever event read its checks next — here the
+// read an hour after the merge that the merger's owed completion set. The read row stands due now
+// after the withdrawal. (A project with no production check closes at the withdrawal itself:
+// TestEachEventJudgesTheCloseAgain's "a defect is withdrawn".)
+func TestTheWithdrawalOfTheLastDefectAsksForARead(t *testing.T) {
+	t.Parallel()
+	rig := newWaitRig(t, claim.RoleTester)
+	rig.seedRoot(phase.Merging, "retro")
+	owedMerger(t, rig)
+	result := rig.fact(intake.DefectReport{Issue: waitRoot, Role: claim.RoleMerger, By: mergerClaim, Text: "The retry never stops.", Head: headOne})
+	if result.Refusal != nil || result.Defect == nil {
+		t.Fatalf("the merger's report in merging = %+v, want it recorded", result)
+	}
+	rig.mergeRoot()
+	rig.ranOut(waitRoot, "close_read")
+	rig.read(waitRoot, answerOf(waitRoot, nil, passing("c-after", waitRootMerge)))
+	rig.noChange(waitRoot, waitGeneration)
+	if reads := issueOutboxOf(t, rig.pool, waitRoot, "close_read"); len(reads) != 1 || !reads[0].nextAt.After(rig.now) {
+		t.Fatalf("the close_read rows before the withdrawal = %+v, want one due later than now: the fixture holds no read due now", reads)
+	}
+	rig.withdraw(waitRoot, result.Defect.Defect, "The retry was the fixture's.")
+	reads := issueOutboxOf(t, rig.pool, waitRoot, "close_read")
+	if len(reads) != 1 || reads[0].nextAt.After(rig.now) {
+		t.Fatalf("the close_read rows after the withdrawal of the last defect = %+v, want one due now, at %s", reads, rig.now)
+	}
+}
+
 // issuePhaseRow is role's phases row of key.
 func issuePhaseRow(t *testing.T, rig *waitRig, key string, role claim.Role) record.PhaseRow {
 	t.Helper()
