@@ -121,6 +121,7 @@ on:
       - 'packages/daemon/internal/stateevent/**'
       - 'packages/daemon/internal/store/*'
       - 'packages/daemon/internal/store/migrations/**'
+      - 'packages/daemon/internal/store/precommit/**'
       - 'packages/daemon/internal/store/storetext/**'
       - 'packages/daemon/internal/stream/**'
       - 'packages/daemon/internal/subreaper/**'

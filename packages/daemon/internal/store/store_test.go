@@ -1150,9 +1150,9 @@ var retiredOutboxKinds = []record.OutboxKind{"ready_merge", "auto_merge_disable"
 // the role-holders kind's 20261116165926 or the merge forward's 20261119003157, whose lists leave
 // it out, and the three state kinds would be, had the state events' 20261126163320 stood below the
 // merge holds' 20261126110259, whose list leaves them out. step_record, plan_record,
-// conflict_confirm, merge_forward, design_changes, the two basis seeds and merge_holds_changed are
-// refused too, unless the state events' list, which runs after each list that names them, names
-// them too.
+// conflict_confirm, merge_forward, design_changes, the two basis seeds, merge_holds_changed,
+// retention_end and the three state kinds are refused too, unless the list of the merge's union
+// of the kind lists (20261127104032), which runs after each list that names them, names them too.
 func TestTheOutboxCheckAdmitsEveryKindWhicheverOrderTheMigrationsRan(t *testing.T) {
 	t.Parallel()
 	all, err := migrations.All()

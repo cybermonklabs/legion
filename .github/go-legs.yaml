@@ -127,6 +127,7 @@ packages/daemon:
       - internal/pods
       - internal/runtime/sandbox/rolegitconfig
       - internal/stateevent
+      - internal/store/precommit
       - internal/supervise/supervisetest
       - internal/testbinary
       - internal/testbuild

@@ -60,18 +60,18 @@
 -- news's design_changes and the basis seeds' pending_basis_seed and reparent_seed among them, with
 -- retention_end added, main's merge_holds_changed (20261126110259) and main's three state kinds,
 -- state_change, state_admission and state_boot (20261126163320), thirty-seven in all.
--- Migrate applies every unrecorded migration in version order, so the list with the higher version
--- is the last word on any database. 20261122154643 says its list is that word because of its
--- version; this file stands above it, so this list is the last word on a database an earlier build
--- of this branch migrated. Main's 20261126110259 and 20261126163320 stand above this file and name
--- retention_end too, so the list of 20261126163320 is the last word on a fresh database. On a
--- database main migrated, which recorded 20261126110259 and can hold a merge_holds_changed row, and
--- which, where it recorded 20261126163320 too, can hold a state row, this file is applied after
--- them and is the last word, so it names merge_holds_changed and the three state kinds: a list
--- without one of them would fail the upgrade over a row of it and refuse every later one. A list
--- here that left out design_changes, pending_basis_seed or reparent_seed would refuse every
--- reconcile of a tree's news and every basis or re-parent seed, and fail the upgrade of a database
--- that holds one pending.
+-- Migrate applies every unrecorded migration in version order, so of the lists a database has not
+-- recorded, the one with the higher version is applied last. 20261122154643 says its list is the
+-- last word because of its version; this file stands above it. Main's 20261126110259 and
+-- 20261126163320 stand above this file and name retention_end too, and the merge's 20261127104032
+-- stands above every other version with the same kinds as this list, so its list is applied last
+-- on every database: a fresh one, one an earlier build of this branch migrated, and one main
+-- migrated. On a database main migrated, which recorded 20261126110259 and can hold a
+-- merge_holds_changed row, and which, where it recorded 20261126163320 too, can hold a state row,
+-- this file is applied after them, so it names merge_holds_changed and the three state kinds: a
+-- list without one of them would fail the upgrade over a pending row of it before 20261127104032
+-- ran. A list here that left out design_changes, pending_basis_seed or reparent_seed would fail
+-- the upgrade of a database that holds one pending in the same way.
 --
 -- The design news's reads over the Dispatch chain. 20261119203047_design_news reads what each
 -- audience of a tree took (design_news_told_in) and whether a delivery's news still counts

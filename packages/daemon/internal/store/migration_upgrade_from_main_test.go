@@ -213,13 +213,15 @@ func TestADatabaseMainMigratedUpgradesWithEveryRowItHolds(t *testing.T) {
 // Pi resume a claim's session by its id (cybermonklabs/legion#4581, 20261120042902), and every
 // other embedded version, the step record's three, 20261119003157, 20261120042902 and
 // 20261120055717 among them, is one main's run applied. One rewrites claims_suspended_by_check,
-// one deletes the controller notices of two kinds the daemon no longer writes, and 20261126110259
-// rewrites outbox_kind_check over the rows main's daemon left, and dispatch://INFRA-3931's state
-// events (20261126163320), which main has not recorded either, rewrite it last. The upgrade
-// applies all four whatever main's newest version is: Store.apply asks each migration whether its
-// own version is recorded.
+// one deletes the controller notices of two kinds the daemon no longer writes, 20261126110259
+// rewrites outbox_kind_check over the rows main's daemon left, dispatch://INFRA-3931's state
+// events (20261126163320), which main has not recorded either, rewrite it again, and the merge's
+// union of the kind lists (20261127104032) rewrites it last, as it does on every database this
+// release upgrades. The upgrade applies all five whatever main's newest version is: Store.apply
+// asks each migration whether its own version is recorded.
 var thisBranchsMigrationsMainLacks = map[int]bool{
 	20261115060739: true, 20261115121838: true, 20261126110259: true, stateEventsVersion: true,
+	kindsAfterTheStateEventsVersion: true,
 }
 
 // A daemon of this release is also deployed over a database main migrated once main recorded each
@@ -233,14 +235,21 @@ var thisBranchsMigrationsMainLacks = map[int]bool{
 // admission pass moves into awaiting_children in the middle of its worker's phase, and a
 // pending_basis_seed and a reparent_seed for each read of a root's design-gate basis and of a
 // re-parented root (20261122154643). The upgrade applies this branch's kind lists with the merge
-// holds change (20261126110259) and then the state events (20261126163320) over those rows, and
-// `ADD CONSTRAINT … CHECK` validates the rows the table holds, so a list that left any of the
-// eight kinds out would fail Migrate (SQLSTATE 23514) and leave the daemon unable to boot. After
-// the upgrade the outbox takes a merge_holds_changed row, the kind 20261126110259 adds: both lists
-// stand above 20261122154643's, which does not name the kind, and the state events' list, which
-// names it too, is the last word of the check. The negative controls are each of the eight kinds
-// taken out of either list, where the Migrate below then fails on that pending row, and
-// merge_holds_changed taken out of the last one, where the row queued after the upgrade is refused.
+// holds change (20261126110259), the state events (20261126163320) and then the merge's union of
+// the kind lists (20261127104032) over those rows, and `ADD CONSTRAINT … CHECK` validates the rows
+// the table holds, so a list that left any of the eight kinds out would fail Migrate (SQLSTATE
+// 23514) and leave the daemon unable to boot. After the upgrade the outbox takes a
+// merge_holds_changed row, the kind 20261126110259 adds, and a retention_end row, the kind
+// 20261122154645 adds: the three lists stand above 20261122154643's, which names neither, and
+// 20261127104032's list, which names both, is the last word of the check. The upgrade moves the
+// store's schema version from the one main's daemon announced to 20261127104032's, which the
+// merge's first boot announces (that migration's file says why), so the database main migrated
+// reports a version below it and the upgraded store reports it. The negative controls are each of
+// the eight kinds taken out of any of the three lists, where the Migrate below then fails on that
+// pending row; merge_holds_changed or retention_end taken out of the last one, where the row
+// queued after the upgrade is refused; and 20261127104032 taken out of
+// thisBranchsMigrationsMainLacks, where the database main migrated already reports the merge's
+// schema version.
 func TestADatabaseMainMigratedWithRowsOfItsNewestKindsUpgrades(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -256,6 +265,9 @@ func TestADatabaseMainMigratedWithRowsOfItsNewestKindsUpgrades(t *testing.T) {
 		if _, err := store.apply(ctx, migration); err != nil {
 			t.Fatalf("apply %s as main's own run did: %v", migration.Name, err)
 		}
+	}
+	if version, err := store.SchemaVersion(ctx); err != nil || version >= kindsAfterTheStateEventsVersion {
+		t.Fatalf("the database main migrated reports schema version %d (%v), want one below the merge's %d, which main's run never applied", version, err, kindsAfterTheStateEventsVersion)
 	}
 	kinds := []string{"step_record", "plan_record", "conflict_confirm", "merge_forward", "design_changes",
 		"phase_ended", "pending_basis_seed", "reparent_seed"}
@@ -277,9 +289,13 @@ func TestADatabaseMainMigratedWithRowsOfItsNewestKindsUpgrades(t *testing.T) {
 			t.Fatalf("%s rows after the upgrade = %d, want the pending one kept", kind, pending)
 		}
 	}
-	if _, err := store.pool.Exec(ctx, `insert into outbox (kind, issue, payload, attempts, next_at, last_error)
-		values ('merge_holds_changed', 'LEGION-208', '{}', 0, now(), '')`); err != nil {
-		t.Fatalf("queue a merge_holds_changed row after the upgrade: %v", err)
+	if version, err := store.SchemaVersion(ctx); err != nil || version != kindsAfterTheStateEventsVersion {
+		t.Fatalf("after the upgrade the store reports schema version %d (%v), want the merge's %d, which the upgrade applies last", version, err, kindsAfterTheStateEventsVersion)
+	}
+	for _, kind := range []string{"merge_holds_changed", "retention_end"} {
+		if err := queueRowOfKind(store, kind); err != nil {
+			t.Fatalf("queue a %s row after the upgrade: %v", kind, err)
+		}
 	}
 }
 
@@ -482,15 +498,19 @@ const (
 // adds an outbox kind, so 20261122154645's list stands as the last word on that database too.
 // The merge of main dc18a1fe brought #4194's committed release (20261120210000) and give-ups
 // (20261126001514), both below 20261126110259, and dispatch://INFRA-3931's state events
-// (20261126163320), which stands above every other version this head embeds. One that main at
-// dc18a1fe migrated holds all three and lacks INFRA-4730's three, below its newest, and can hold a
-// row of each state kind, which 20261122154645's list, applied over it as the last word on that
-// database, names: with a state kind out of that list, the Migrate fails on its pending row.
+// (20261126163320), above it. One that main at dc18a1fe migrated holds all three and lacks
+// INFRA-4730's three, below its newest, and can hold a row of each state kind, which
+// 20261122154645's list, applied over it, names: with a state kind out of that list, the Migrate
+// fails on its pending row.
 // One that this branch's head before that merge (40b2ad0e) migrated holds INFRA-4730's three and
 // lacks main's three, two below its newest and the state events above it, and can hold a
-// retention_end row, which the state events' list, applied over it as the last word there, names:
-// with retention_end out of that list, the Migrate fails on that row. Every database of an earlier
-// merge lacks the state events too, above its newest.
+// retention_end row, which the state events' list, applied over it, names: with retention_end out
+// of that list, the Migrate fails on that row. Every database of an earlier merge lacks the state
+// events too, above its newest.
+// That merge wrote the union of the kind lists (20261127104032), which stands above every other
+// version this head embeds: every database here lacks it, above its newest, so each upgrade
+// applies it last, and its list, which names the same kinds as 20261122154645's and the state
+// events', is the last word of the check on each.
 // Store.Migrate asks each embedded migration whether its own version is recorded (apply) and
 // never compares it with the newest, so each upgrade applies the versions that database lacks,
 // below its newest and above it alike, and leaves every embedded version recorded once.

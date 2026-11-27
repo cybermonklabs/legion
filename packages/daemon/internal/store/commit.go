@@ -330,14 +330,18 @@ func ReadOnly[T any](ctx context.Context, pool TxPool, what string, read func(ct
 //     runs on the commit's context, below, so a rollback after the caller's cancel still reaches
 //     the server and the pool gets back a connection whose transaction has ended.
 //   - write's error is returned. No hook runs.
-//   - The settles write registered (package precommit) run on the same transaction once write has
-//     returned nil, in the order they were registered, a joined write's among them unless that
-//     write failed (join), while hooks can still be registered: a settle's statements commit with
-//     write's or not at all. A settle's error is returned as write's would be, and no hook runs.
 //   - A joined write whose savepoint was neither rolled back nor released (join) is returned as
 //     errSavepointNotEnded, with that write's error and the savepoint statement's, even when write
 //     returned nil, and nothing commits: pgx leaves the transaction open after a failed savepoint
-//     statement, so a commit would keep the rows of a join that answered an error. No hook runs.
+//     statement, so a commit would keep the rows of a join that answered an error. No settle and
+//     no hook runs.
+//   - The settles write registered (package precommit) run on the same transaction once write has
+//     returned nil and each joined write's savepoint has ended, in the order they were registered,
+//     a joined write's among them unless that write failed (join), while hooks can still be
+//     registered: a settle's statements commit with write's or not at all. A settle's error is
+//     returned as write's would be, and no hook runs. A join a settle makes whose savepoint was
+//     neither rolled back nor released is returned as errSavepointNotEnded too, once the settles
+//     have run.
 //   - The transaction's id is read. No id means the transaction wrote nothing. A read-only
 //     transaction, in which PostgreSQL refuses every write to a table or a sequence (SQLSTATE
 //     25006), reads none.
@@ -388,12 +392,16 @@ func TransactWith(ctx context.Context, pool TxPool, options pgx.TxOptions, write
 		if err := write(ctx, tx); err != nil {
 			return err
 		}
+		if err := scope.notEnded(); err != nil {
+			return err
+		}
 		return settles.Run(ctx, tx)
 	}); err != nil {
 		return err
 	}
-	if scope.savepointNotEnded != nil {
-		return fmt.Errorf("%w: %w", errSavepointNotEnded, scope.savepointNotEnded)
+	// A settle's own join can leave its savepoint not ended too.
+	if err := scope.notEnded(); err != nil {
+		return err
 	}
 	xid := ""
 	if options.AccessMode != pgx.ReadOnly {
@@ -431,6 +439,15 @@ func runWrite(scoped context.Context, scope *commitScope, write func(ctx context
 	return write(scoped, scope.tx)
 }
 
+// notEnded is errSavepointNotEnded with the errors of each joined write of the scope whose
+// savepoint was neither rolled back nor released (join), or nil while each one ended.
+func (s *commitScope) notEnded() error {
+	if s.savepointNotEnded == nil {
+		return nil
+	}
+	return fmt.Errorf("%w: %w", errSavepointNotEnded, s.savepointNotEnded)
+}
+
 // join runs write inside the scope's open transaction, on ctx, the scope's own context, under a
 // savepoint of that transaction, and answers nil only for a write whose rows, hooks and settles
 // commit or roll back with the open transaction's. A write that fails is rolled back to the
@@ -443,9 +460,9 @@ func runWrite(scoped context.Context, scope *commitScope, write func(ctx context
 // succeeded would answer an error for rows and hooks that commit. A rollback or a release that
 // fails all the same is returned with the write's error, and kept on the scope
 // (savepointNotEnded): the write's rows may still be in the transaction, so TransactWith then
-// commits nothing, whatever the outer body returns. So a join that answers an error leaves
-// nothing of its write to commit. A join on another pool, or with another isolation level or
-// access mode than the open transaction's, runs nothing.
+// runs no settle and commits nothing, whatever the outer body returns. So a join that answers an
+// error leaves nothing of its write to commit. A join on another pool, or with another isolation
+// level or access mode than the open transaction's, runs nothing.
 func (s *commitScope) join(ctx context.Context, pool TxPool, options pgx.TxOptions, write func(ctx context.Context, tx pgx.Tx) error) error {
 	if !samePool(s.pool, pool) {
 		return errTransactionOnAnotherPool

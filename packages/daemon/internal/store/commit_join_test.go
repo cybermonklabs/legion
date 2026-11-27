@@ -399,7 +399,8 @@ func (s *heldSavepoint) Commit(ctx context.Context) error {
 // (heldSavepoints), so it is never sent: the rollback of a joined write that fails, and the release
 // of one that succeeds. pgx's savepoint statement that fails leaves the outer transaction open, so
 // a commit there would keep the joined write's row, without its hook after a rollback and with it
-// after a release, for a join that answered an error.
+// after a release, for a join that answered an error. The outer body's settle (package precommit)
+// never starts either: it would run its statements on a transaction already known not to commit.
 func TestAJoinedWriteWhoseSavepointWasNeverEndedFailsItsWholeTransaction(t *testing.T) {
 	t.Parallel()
 	innerFails := errors.New("the inner body fails once its context has ended")
@@ -416,6 +417,8 @@ func TestAJoinedWriteWhoseSavepointWasNeverEndedFailsItsWholeTransaction(t *test
 			pool := &heldSavepoints{pool: rig.pool, t: t, release: row.release}
 			ctx := WithTransactionTracking(context.Background())
 			var hooks joinedHooks
+			type settleID string
+			settled := false
 			err := Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 				if _, err := insertProbe(ctx, tx, 1); err != nil {
 					return err
@@ -438,6 +441,13 @@ func TestAJoinedWriteWhoseSavepointWasNeverEndedFailsItsWholeTransaction(t *test
 					return err
 				}
 				OnCommit(ctx, hooks.hook("C"))
+				if !precommit.Once(ctx, settleID("outer"), func(ctx context.Context, tx pgx.Tx) error {
+					settled = true
+					_, err := insertProbe(ctx, tx, 4)
+					return err
+				}) {
+					t.Errorf("precommit.Once in the outer body registered nothing, want its settle on the open transaction")
+				}
 				return nil
 			})
 			if !errors.Is(err, errSavepointNotEnded) {
@@ -448,6 +458,9 @@ func TestAJoinedWriteWhoseSavepointWasNeverEndedFailsItsWholeTransaction(t *test
 			}
 			if got := hooks.order(); len(got) != 0 {
 				t.Errorf("hooks ran %v, want none", got)
+			}
+			if settled {
+				t.Errorf("the outer body's settle ran, want none: its transaction was known not to commit before the settles")
 			}
 		})
 	}
