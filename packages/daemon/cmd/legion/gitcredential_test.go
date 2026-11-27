@@ -536,21 +536,42 @@ func runGhGitCredentialHere(t *testing.T, stdin string) (code int, stdout, stder
 	return code, out.String(), errb.String()
 }
 
+// forkNamed is the form a refusal names the fork in: by the slug the request names (bySlug), or by
+// its place alone (byPlace, ghroute.Shown), as ghroute.ForkDir names it once it refuses the
+// repositories the fork comes from. The zero value is neither, so a caller that says no form fails.
+type forkNamed int
+
+const (
+	bySlug forkNamed = iota + 1
+	byPlace
+)
+
+// forkPlace is the place ghroute.ForkDir names the fork by (byPlace).
+const forkPlace = "the repository the request names"
+
 // answersNothingForTheFork fails the test unless the helper, asked for the repository slug of an
 // owner the bundle at root holds no directory for, answered nothing, exit 1, on one stderr that
-// says so as ghroute.DirFor says it and names the fork and each of says, and that holds no token.
-// The fork is named as slug, or, where ghroute.ForkDir refuses the repositories it comes from, by
-// its place alone (ghroute.Shown), the request's own spelling not printed. Every token these tests
-// write begins `ghs_`; the one that holds a line break ends `break_write` after it.
-func answersNothingForTheFork(t *testing.T, code int, stdout, stderr, root, slug string, says ...string) {
+// says so as ghroute.DirFor says it and names the fork in the form named and each of says, and that
+// holds no token. Named byPlace, the fork is named by forkPlace and the stderr holds no spelling of
+// slug, the request's own. Every token these tests write begins `ghs_`; the one that holds a line
+// break ends `break_write` after it.
+func answersNothingForTheFork(t *testing.T, code int, stdout, stderr, root, slug string, named forkNamed, says ...string) {
 	t.Helper()
 	owner, _, _ := strings.Cut(slug, "/")
 	if code != 1 || stdout != "" {
 		t.Errorf("legion git-credential get for %s = exit %d, stdout %q, stderr %q; want exit 1 and no answer", slug, code, stdout, stderr)
 	}
-	fork := slug
-	if strings.Contains(stderr, "GitHub answers that the repository the request names is a fork") {
-		fork = "the repository the request names"
+	var fork string
+	switch named {
+	case bySlug:
+		fork = slug
+	case byPlace:
+		fork = forkPlace
+		if strings.Contains(strings.ToLower(stderr), strings.ToLower(slug)) {
+			t.Errorf("legion git-credential get for %s printed %q on stderr, which names the request's own spelling of the fork; want it named by its place alone, %q", slug, stderr, forkPlace)
+		}
+	default:
+		t.Fatalf("answersNothingForTheFork for %s names no form the fork is named in", slug)
 	}
 	unserved := `the role's GitHub App is not installed on "` + strings.ToLower(owner) + `": ` + root + " holds no gh directory for it"
 	for _, want := range append([]string{unserved, fork}, says...) {
@@ -772,23 +793,24 @@ func TestGitCredentialAnswersNothingForAnOutsideRepositoryThatIsNoServedFork(t *
 	for _, tc := range []struct {
 		name                       string
 		root, configDir, readToken string
-		slug                       string // the repository asked
-		answer                     string // the file the fake GitHub prints
+		slug                       string    // the repository asked
+		named                      forkNamed // the form the refusal names the fork in
+		answer                     string    // the file the fake GitHub prints
 		says                       []string
 	}{
 		{
 			name: "no fork", root: root, configDir: acme, readToken: "ghs_acme_write",
-			slug: "outside-org/sample-library", answer: forkReadFixture(t, "not-a-fork.http"),
+			slug: "outside-org/sample-library", named: bySlug, answer: forkReadFixture(t, "not-a-fork.http"),
 			says: []string{"is no fork"},
 		},
 		{
 			name: "a fork whose parent's and source's owners are outside the bundle", root: neither, configDir: sjawhar, readToken: forkToken("sjawhar"),
-			slug: "outside-author/sample-project", answer: forkReadFixture(t, "fork-of-a-fork.http"),
+			slug: "outside-author/sample-project", named: byPlace, answer: forkReadFixture(t, "fork-of-a-fork.http"),
 			says: []string{"outside-org/sample-project", "acme/sample-project"},
 		},
 		{
 			name: "a full_name of another repository", root: root, configDir: acme, readToken: "ghs_acme_write",
-			slug: "outside-author/sample-project", answer: another,
+			slug: "outside-author/sample-project", named: bySlug, answer: another,
 			says: []string{"outside-author/other-repository"},
 		},
 	} {
@@ -797,7 +819,7 @@ func TestGitCredentialAnswersNothingForAnOutsideRepositoryThatIsNoServedFork(t *
 			useForkRead(t, github.program, forkReadBound)
 			forkReadPane(t, tc.root, tc.configDir)
 			code, stdout, stderr := runGitCredentialHere(t, forkRequest(tc.slug), "get")
-			answersNothingForTheFork(t, code, stdout, stderr, tc.root, tc.slug, tc.says...)
+			answersNothingForTheFork(t, code, stdout, stderr, tc.root, tc.slug, tc.named, tc.says...)
 			if runs := github.runs(t); len(runs) != 1 {
 				t.Errorf("the fake GitHub ran %d times, want one read", len(runs))
 			}
@@ -866,56 +888,57 @@ func TestGitCredentialAnswersNothingWhenTheForkReadFails(t *testing.T) {
 		// configDir is GH_CONFIG_DIR, none where it is "", and token its token, the one the
 		// fake GitHub takes, which takes any where it is "".
 		configDir, token string
-		answer           string // what the fake GitHub does: the shell text of its answer
-		noCurl           bool   // leakguardCurl names a path with no file
-		reads            int    // how many times the fake GitHub runs
+		answer           string    // what the fake GitHub does: the shell text of its answer
+		noCurl           bool      // leakguardCurl names a path with no file
+		reads            int       // how many times the fake GitHub runs
+		named            forkNamed // the form the refusal names the fork in
 		// says is what stderr names beside the repository, <GH_CONFIG_DIR> and <curl> standing
 		// for GH_CONFIG_DIR and leakguardCurl.
 		says []string
 	}{
 		{
-			name: "404", configDir: acme, token: "ghs_acme_write", reads: 1,
+			name: "404", configDir: acme, token: "ghs_acme_write", reads: 1, named: bySlug,
 			answer: curlNotFound(t), says: []string{"the status 404"},
 		},
 		{
 			// bad-credentials.http, whatever the token.
-			name: "401", configDir: acme, reads: 1,
+			name: "401", configDir: acme, reads: 1, named: bySlug,
 			answer: printsAnswer(forkReadFixture(t, "bad-credentials.http"), 0), says: []string{"the status 401"},
 		},
 		{
-			name: "301 for a fork that moved", configDir: acme, token: "ghs_acme_write", reads: 1,
+			name: "301 for a fork that moved", configDir: acme, token: "ghs_acme_write", reads: 1, named: bySlug,
 			answer: printsAnswer(forkReadFixture(t, "moved.http"), 0),
 			says:   []string{"the status 301", "https://api.github.com/repositories/1146927990"},
 		},
 		{
-			name: "a spent core limit", configDir: acme, token: "ghs_acme_write", reads: 1,
+			name: "a spent core limit", configDir: acme, token: "ghs_acme_write", reads: 1, named: bySlug,
 			answer: printsAnswer(forkReadFixture(t, "core-limit-spent.http"), 0),
 			says:   []string{"rate limit is spent until 2026-11-14T06:00:00Z UTC"},
 		},
 		{
-			name: "a secondary limit", configDir: acme, token: "ghs_acme_write", reads: 1,
+			name: "a secondary limit", configDir: acme, token: "ghs_acme_write", reads: 1, named: bySlug,
 			answer: printsAnswer(forkReadFixture(t, "secondary-limit.http"), 0),
 			says:   []string{"secondary rate limit", "60 s"},
 		},
 		{
 			// curl's own words for a connection refused, exit 7, with nothing on stdout.
-			name: "curl's transport failure", configDir: acme, token: "ghs_acme_write", reads: 1,
+			name: "curl's transport failure", configDir: acme, token: "ghs_acme_write", reads: 1, named: bySlug,
 			answer: "printf '%s\\n' 'curl: (7) Failed to connect to api.github.com port 443' >&2\nexit 7\n",
 			says:   []string{"curl could not reach GitHub"},
 		},
 		{
-			name: "a body that is not JSON", configDir: acme, token: "ghs_acme_write", reads: 1,
+			name: "a body that is not JSON", configDir: acme, token: "ghs_acme_write", reads: 1, named: bySlug,
 			answer: printsAnswer(notJSON, 0), says: []string{"not JSON"},
 		},
 		{
-			name: "a 200 with no fork field", configDir: acme, token: "ghs_acme_write", reads: 1,
+			name: "a 200 with no fork field", configDir: acme, token: "ghs_acme_write", reads: 1, named: bySlug,
 			answer: printsAnswer(noFork, 0), says: []string{`no "fork" field`},
 		},
 		{
 			// A request for sjawhar/legion answers nothing, so the fork answers nothing too, and not
 			// acme's token, its source's, though the bundle holds acme's directory.
 			name:      "a fork of a served owner's repository a configured rename moved to an owner with no directory",
-			configDir: acme, token: "ghs_acme_write", reads: 1, answer: printsAnswer(movedParent, 0),
+			configDir: acme, token: "ghs_acme_write", reads: 1, named: byPlace, answer: printsAnswer(movedParent, 0),
 			says: []string{
 				"a fork of sjawhar/legion",
 				"the configured rename sjawhar/legion -> cybermonklabs/legion serves that repository from cybermonklabs's gh directory",
@@ -923,23 +946,23 @@ func TestGitCredentialAnswersNothingWhenTheForkReadFails(t *testing.T) {
 			},
 		},
 		{
-			name: "no curl at the path", configDir: acme, noCurl: true,
+			name: "no curl at the path", configDir: acme, noCurl: true, named: bySlug,
 			says: []string{"there is no curl at", "<curl>"},
 		},
 		{
-			name: "GH_CONFIG_DIR unset", answer: forkOfAcme,
+			name: "GH_CONFIG_DIR unset", answer: forkOfAcme, named: bySlug,
 			says: []string{"GH_CONFIG_DIR is unset"},
 		},
 		{
-			name: "GH_CONFIG_DIR outside the bundle", configDir: outside, answer: forkOfAcme,
+			name: "GH_CONFIG_DIR outside the bundle", configDir: outside, answer: forkOfAcme, named: bySlug,
 			says: []string{"GH_CONFIG_DIR", "<GH_CONFIG_DIR>", "is no directory of the bundle"},
 		},
 		{
-			name: "GH_CONFIG_DIR's hosts.yml holds no token", configDir: empty, answer: forkOfAcme,
+			name: "GH_CONFIG_DIR's hosts.yml holds no token", configDir: empty, answer: forkOfAcme, named: bySlug,
 			says: []string{"names no github.com oauth_token"},
 		},
 		{
-			name: "a token with a line break", configDir: lineBreak, answer: forkOfAcme,
+			name: "a token with a line break", configDir: lineBreak, answer: forkOfAcme, named: bySlug,
 			says: []string{"holds a line break"},
 		},
 	} {
@@ -957,7 +980,7 @@ func TestGitCredentialAnswersNothingWhenTheForkReadFails(t *testing.T) {
 			for _, said := range tc.says {
 				says = append(says, paths.Replace(said))
 			}
-			answersNothingForTheFork(t, code, stdout, stderr, root, "outside-author/sample-project", says...)
+			answersNothingForTheFork(t, code, stdout, stderr, root, "outside-author/sample-project", tc.named, says...)
 			if runs := github.runs(t); len(runs) != tc.reads {
 				t.Errorf("the fake GitHub ran %d times, want %d", len(runs), tc.reads)
 			}
@@ -1035,7 +1058,7 @@ func TestGitCredentialStopsAForkReadThatNeverAnswers(t *testing.T) {
 		ghroutetest.KillRecordedHelper(t, curlPid, curlSeconds)
 		answered, _ := startGitCredentialGet(t, forkRequest("outside-author/sample-project"))
 		got := testwait.Receive(t, "legion git-credential get to answer once the fork read's bound of 2 s passed", answered)
-		answersNothingForTheFork(t, got.code, got.stdout, got.stderr, root, "outside-author/sample-project")
+		answersNothingForTheFork(t, got.code, got.stdout, got.stderr, root, "outside-author/sample-project", bySlug)
 		// The guard gives curl what is left of the read's 2 s when curl starts, and names it in
 		// whole seconds (leakguard's Guard.run), so a loaded machine that starts curl late names
 		// less; one that leaves curl too little refuses the read before curl starts (curlTime).
@@ -1071,7 +1094,7 @@ func TestGitCredentialStopsAForkReadThatNeverAnswers(t *testing.T) {
 		})
 		stop()
 		got := testwait.Receive(t, "legion git-credential get to answer once its context ended", answered)
-		answersNothingForTheFork(t, got.code, got.stdout, got.stderr, root, "outside-author/sample-project", "stopped by a cancel")
+		answersNothingForTheFork(t, got.code, got.stdout, got.stderr, root, "outside-author/sample-project", bySlug, "stopped by a cancel")
 		testwait.WithinPolling(t, testwait.Bounded(t, 1<<60, testBoundMargin), testwait.Poll,
 			fmt.Sprintf("the fake GitHub's sleep, PID %d, to end once the helper answered: want the read's end to stop curl's whole process group", pid),
 			func() bool { return !ghroutetest.HelperRunning(pid, sleepSeconds) })

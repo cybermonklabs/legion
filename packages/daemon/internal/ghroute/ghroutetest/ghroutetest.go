@@ -8,8 +8,10 @@
 // which ghroute's tests hold its read rule (ghroute.Target.WritesNothing) to and `legion gh`'s
 // tests run end to end; a port of the pinned shared check's own read of a call
 // (PinnedCheckReads), which ghroute's tests prove the rule against and `legion gh`'s stand-in
-// check answers with; and the helper processes both packages' help-read rows hold their work with
-// (process.go).
+// check answers with; the helper processes both packages' help-read rows hold their work with
+// (process.go); and the walk of each package's source that finds the places formatting a value
+// without ghroute.Shown, which each holds to a reviewed table of its own (sourcewalk.go), and
+// cmd/legion's refusal paths, the calls of ghroute.Shown.
 //
 // It is an ordinary package rather than a _test.go file of one of them because cmd/legion is
 // package main, which can import no other package's test-only helpers (internal/leakguard's

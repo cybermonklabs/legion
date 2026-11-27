@@ -2,9 +2,6 @@ package main
 
 import (
 	"bytes"
-	"go/ast"
-	"go/parser"
-	"go/token"
 	"maps"
 	"os"
 	"path/filepath"
@@ -146,95 +143,19 @@ var ghCanaryRows = map[string][]ghCanaryRow{
 	},
 }
 
-// ghSourceCall is one call in the non-test files ghSources names as ghSourceCalls hands it on: the
-// function that holds it (owner, a method by its receiver's type, internal/ghroute's under
-// `ghroute.`), the file and line it stands at, the call, and text, which is a node's source.
-type ghSourceCall struct {
-	owner, at string
-	call      *ast.CallExpr
-	text      func(ast.Node) string
-}
+// ghOwnSource is this package's gh*.go, the non-test files of legion gh itself: the walk of its
+// formatting places (TestNoRefusalFormatsAPersonsValueItself) reads it alone, since internal/ghroute
+// holds its own to a table of its own.
+var ghOwnSource = ghroutetest.Source{Glob: "gh*.go"}
 
-// ghSources are the non-test files of legion gh the walk reads, each glob with the prefix its
-// functions are named under: this package's gh*.go, and internal/ghroute's, the routing every
-// call of legion gh runs through (ghroute.TargetOf), whose refusals legion gh prints.
-var ghSources = []struct{ glob, prefix string }{
-	{"gh*.go", ""},
-	{filepath.Join("..", "..", "internal", "ghroute", "*.go"), "ghroute."},
+// ghSources are the non-test files of legion gh the refusal-path walk reads
+// (ghroutetest.SourceCalls), each glob with the prefix its functions are named under: this
+// package's gh*.go, and internal/ghroute's, the routing every call of legion gh runs through
+// (ghroute.TargetOf), whose refusals legion gh prints.
+var ghSources = []ghroutetest.Source{
+	ghOwnSource,
+	{Glob: filepath.Join("..", "..", "internal", "ghroute", "*.go"), Prefix: "ghroute."},
 }
-
-// ghSourceCalls is every call in the non-test files ghSources names, in each function's body. It
-// is the one walk ghShownPaths and ghFormatSites both read, so a file or a receiver form one of
-// them reaches the other reaches too. A source glob matching no non-test file is refused: the
-// walk would have read nothing of it.
-func ghSourceCalls(t *testing.T) []ghSourceCall {
-	t.Helper()
-	var calls []ghSourceCall
-	fset := token.NewFileSet()
-	for _, src := range ghSources {
-		files, err := filepath.Glob(src.glob)
-		if err != nil {
-			t.Fatal(err)
-		}
-		read := 0
-		for _, name := range files {
-			if strings.HasSuffix(name, "_test.go") {
-				continue
-			}
-			read++
-			source, err := os.ReadFile(name)
-			if err != nil {
-				t.Fatal(err)
-			}
-			file, err := parser.ParseFile(fset, name, source, 0)
-			if err != nil {
-				t.Fatal(err)
-			}
-			text := func(node ast.Node) string {
-				return string(source[fset.Position(node.Pos()).Offset:fset.Position(node.End()).Offset])
-			}
-			for _, decl := range file.Decls {
-				fn, ok := decl.(*ast.FuncDecl)
-				if !ok || fn.Body == nil {
-					continue
-				}
-				owner := fn.Name.Name
-				if fn.Recv != nil && len(fn.Recv.List) == 1 {
-					recv := fn.Recv.List[0].Type
-					if star, ok := recv.(*ast.StarExpr); ok {
-						recv = star.X
-					}
-					switch generic := recv.(type) {
-					case *ast.IndexExpr:
-						recv = generic.X
-					case *ast.IndexListExpr:
-						recv = generic.X
-					}
-					if ident, ok := recv.(*ast.Ident); ok {
-						owner = ident.Name + "." + owner
-					} else {
-						t.Fatalf("%s: a receiver of a form the walk does not read: %s", fset.Position(fn.Pos()), text(recv))
-					}
-				}
-				owner = src.prefix + owner
-				ast.Inspect(fn.Body, func(node ast.Node) bool {
-					if call, ok := node.(*ast.CallExpr); ok {
-						calls = append(calls, ghSourceCall{owner: owner, at: fset.Position(call.Pos()).String(), call: call, text: text})
-					}
-					return true
-				})
-			}
-		}
-		if read == 0 {
-			t.Fatalf("UNKNOWN: no non-test file of %s was read", src.glob)
-		}
-	}
-	return calls
-}
-
-// ghShownCallees are how a call of ghroute.Shown reads in the source: by its own name inside
-// internal/ghroute, and by its package's name here.
-var ghShownCallees = []string{"Shown", "ghroute.Shown"}
 
 // ghShownPaths is every call of ghroute.Shown in the non-test files ghSources names, the refusal
 // paths of legion gh that put a person's value into a refusal, each keyed by the function that
@@ -245,18 +166,18 @@ var ghShownCallees = []string{"Shown", "ghroute.Shown"}
 func ghShownPaths(t *testing.T) map[string]string {
 	t.Helper()
 	paths := map[string]string{}
-	for _, c := range ghSourceCalls(t) {
-		if !slices.Contains(ghShownCallees, c.text(c.call.Fun)) {
+	for _, c := range ghroutetest.SourceCalls(t, ghSources...) {
+		if !slices.Contains(ghroutetest.ShownCallees, c.Text(c.Call.Fun)) {
 			continue
 		}
-		if len(c.call.Args) != 2 {
-			t.Fatalf("%s: ghroute.Shown takes a value and a place, given %d arguments", c.at, len(c.call.Args))
+		if len(c.Call.Args) != 2 {
+			t.Fatalf("%s: ghroute.Shown takes a value and a place, given %d arguments", c.At, len(c.Call.Args))
 		}
-		key := c.owner + ": " + c.text(c.call.Args[1])
+		key := c.Owner + ": " + c.Text(c.Call.Args[1])
 		if prior, seen := paths[key]; seen {
-			t.Fatalf("%s and %s both call ghroute.Shown as %s: give each path a place of its own", prior, c.at, key)
+			t.Fatalf("%s and %s both call ghroute.Shown as %s: give each path a place of its own", prior, c.At, key)
 		}
-		paths[key] = c.at
+		paths[key] = c.At
 	}
 	return paths
 }
@@ -347,12 +268,12 @@ func ghCanaryRefusal(row ghCanaryRow) error {
 	return err
 }
 
-// ghFormattedValues are the places in the non-test files ghSources names that quote or format a
-// value themselves, without ghroute.Shown, each keyed as ghFormatSites keys it and given the
-// reason it is no value a person typed in a slot a refusal names: a name gh's own help or this
-// command's tables gave, a position, a kind built from literals, a configured path, a value of
-// GitHub's answer. A new such place fails TestNoRefusalFormatsAPersonsValueItself until it joins
-// this table, which is where a reviewer reads it.
+// ghFormattedValues are the places in this package's gh*.go files (ghOwnSource) that quote or
+// format a value themselves, without ghroute.Shown, each keyed as ghroutetest.FormatSites keys it
+// and given the reason it is no value a person typed in a slot a refusal names: a name this
+// command's tables gave, a configured path, a value git or the clock gave. A new such place fails
+// TestNoRefusalFormatsAPersonsValueItself until it joins this table, which is where a reviewer
+// reads it. internal/ghroute's places are held to its own table, by its own test of that name.
 var ghFormattedValues = map[string]string{
 	"ghConfigShape: %w err":                                         "a read error of a file of the gh directory GH_CONFIG_DIR names, a configured path",
 	"ghWrapperPath: %w err":                                         "a read error of the wrapper's own path on PATH",
@@ -379,242 +300,14 @@ var ghFormattedValues = map[string]string{
 	"runGh: %s ghUsage":                                             "this command's usage, a literal",
 	"runGh: %s name":                                                "the name of an environment variable",
 	"runGhChild: %s gh (3 places)":                                  "LEGION_GH_PATH, a configured path",
-
-	"ghroute.DirFor: %w err (2 places)":                                                              "a read error of the bundle's configured renames file, a configured path, or ownerDir's leakguard.OwnerNotServedError of the configured pair's `to` owner and the bundle's path",
-	"ghroute.DirFor: %s pair.From":                                                                   "a configured rename's `from` repository, from the bundle's pairs file the daemon writes, which holds the repository the call named as configured",
-	"ghroute.DirFor: %s pair.To":                                                                     "a configured rename's `to` repository, from the bundle's pairs file the daemon writes",
-	"ghroute.DirFor: %s dir":                                                                         "the configured pair's `to` owner, lowercased (ghconfig.RouteDir)",
-	"ghroute.ForkDir: %s dir":                                                                        "a directory of the bundle, its configured path and an owner GitHub's answer names",
-	"ghroute.ForkDir: %s named (3 places)":                                                           "Shown's words for the repository the request names, never the repository",
-	"ghroute.ForkDir: %s strings.Join(tried, \"; \")":                                                "why each upstream GitHub's answer names did not route, built from literals, GitHub's answer and the errors this table holds",
-	"ghroute.ForkDir: %s upstream.fullName (5 places)":                                               "a repository's full_name in GitHub's answer for the fork, no value of the call",
-	"ghroute.ForkDir: %s upstream.role (3 places)":                                                   "parent or source, a literal of this function",
-	"ghroute.ForkDir: %v err (3 places)":                                                             "why an upstream GitHub's answer names did not route: ownerDir's, ghrepo.Parse's of GitHub's full_name, or DirFor's refusal, each of GitHub's answer or the configuration",
-	"ghroute.PrintRefusal: %s redact.URLCredentials(err.Error())":                                    "the refusal through the URL rule",
-	"ghroute.ReadGitRemotes: %q name":                                                                "a git remote's name, the text before the tab of git remote -v's line",
-	"ghroute.ReadHelp: %s bound (2 places)":                                                          "a duration",
-	"ghroute.ReadHelp: %v context.Cause(ctx) (2 places)":                                             "the cause of a stop: a signal or a deadline",
-	"ghroute.ReadHelp: %v err":                                                                       "gh's exit status",
-	"ghroute.ReentryRefusal: %s real":                                                                "LEGION_GH_PATH, a configured path",
-	"ghroute.Remote.what: %q r.name (2 places)":                                                      "a git remote's name, which git config holds and the refusals of remotes name",
-	"ghroute.Remote.what: %s markerShown(r.resolved)":                                                "a gh-resolved marker's value, printed only as base or a checked OWNER/REPO (markerShown)",
-	"ghroute.Remote.what: %s r.name":                                                                 "a git remote's name, which git config holds and the refusals of remotes name",
-	"ghroute.Remote.what: %s redact.URLNotPrinted":                                                   "the words that stand for a URL not printed",
-	"ghroute.Remote.what: %s remoteShown(r.url)":                                                     "the URL of a line repository read as a github.com OWNER/REPO, through remoteShown, the URL rule's",
-	"ghroute.TargetOf: %s name (2 places)":                                                           "the name of the token variable set, GH_TOKEN or GITHUB_TOKEN",
-	"ghroute.cannotPlace: %s advice":                                                                 "this command's own advice, a literal",
-	"ghroute.cannotPlace: %s name":                                                                   "its callers' name, each held in this table or a ghroute.Shown call or a literal",
-	"ghroute.cannotPlace: %s why":                                                                    "its callers' reason, built from literals and help-listed names",
-	"ghroute.checkedOwner: cannotPlace(kind)":                                                        "a slot's kind, built from literals and a help-listed option name",
-	"ghroute.cloneGitFlags: %q name":                                                                 "a git clone flag of cloneGitFlagTakes, by the table's spelling",
-	"ghroute.cloneGitFlags: %s cloneGitFlagList()":                                                   "the flags cloneGitFlagTakes holds",
-	"ghroute.cloneGitFlags: %s leaf (2 places)":                                                      "the leaf's command path, as gh's help spelled it",
-	"ghroute.ghArgs.set: %q \"--\"+name":                                                             "an option the leaf's help lists, by the help's name",
-	"ghroute.ghArgs.set: %s why":                                                                     "a reason of refusedOptions, a table",
-	"ghroute.ghCommand.addFlag: %q strings.TrimSpace(line) (5 places)":                               "a line of gh's own help, which gh printed for no argument of the call",
-	"ghroute.ghCommand.addFlag: %s match[1]":                                                         "a short option of gh's own help",
-	"ghroute.ghCommand.addFlag: %s match[2]":                                                         "an option of gh's own help",
-	"ghroute.ghCommand.addFlag: %s prior":                                                            "an option of gh's own help",
-	"ghroute.ghCommand.mayRead: %q word (2 places)":                                                  "a gh alias or extension gh's own help lists",
-	"ghroute.ghCommand.parse: cannotPlace why leaf (2 places)":                                       "the leaf's command path, as gh's help spelled it",
-	"ghroute.ghCommand.parse: cannotPlace(strconv.Quote(\"--\"+name)) (4 places)":                    "an option the leaf's help lists, by the help's name",
-	"ghroute.ghCommand.parse: strconv.Quote(\"--\"+name) (4 places)":                                 "an option the leaf's help lists, by the help's name",
-	"ghroute.ghWalk.check: %s path":                                                                  "a command path of ghRunsAnotherProgram, a table",
-	"ghroute.ghWalk.named: strconv.Quote(word)":                                                      "a subcommand gh's own help lists, quoted only when it does",
-	"ghroute.gitLines: %s procgroup.WaitDelayNow()":                                                  "the WaitDelay procgroup gives git's children, a duration this program sets",
-	"ghroute.gitLines: %s strings.Join(args, \" \") (2 places)":                                      "this command's own git arguments",
-	"ghroute.gitLines: %s strings.TrimSpace(stderr.String())":                                        "git's own error output, which ghroute.PrintRefusal passes through the URL rule",
-	"ghroute.gitLines: %v err":                                                                       "git's exit status",
-	"ghroute.ordinalArgument: %s suffix":                                                             "an ordinal's suffix",
-	"ghroute.parseGhHelp: %q entry (2 places)":                                                       "a line of gh's own help",
-	"ghroute.parseGhHelp: %q placeholder":                                                            "a usage placeholder of gh's own help",
-	"ghroute.parseGhHelp: %q strings.TrimSpace(line)":                                                "a line of gh's own help",
-	"ghroute.parseGhHelp: %s section (3 places)":                                                     "a section heading of gh's own help",
-	"ghroute.parseGhHelp: %s strings.Join(cmd.path, \" \")":                                          "the command path gh's help names",
-	"ghroute.parseGhHelp: %s strings.Join(slices.Sorted(maps.Keys(ghPassedOnPlaceholders)), \", \")": "a table's placeholders",
-	"ghroute.parseGhHelp: %s what (9 places)":                                                        "the command as ghWalk.named names it, help-listed words or places",
-	"ghroute.parseGhHelp: %w err":                                                                    "addFlag's error, which quotes a line of gh's own help",
-	"ghroute.readGhCommand: %s what":                                                                 "the command as ghWalk.named names it, help-listed words or places",
-	"ghroute.readGhCommand: %w err":                                                                  "ReadHelp's error, this command's own words with gh's exit, gh's output not printed",
-	"ghroute.refusedCommand: %s refused":                                                             "a command path of a table of refused commands",
-	"ghroute.refusedCommand: %s why":                                                                 "a reason of that table",
-	"ghroute.repositoryTarget: cannotPlace(shown) (5 places)":                                        "Shown's words for the value: its slot's kind, never the value",
-	"ghroute.selectors.dir: %s filepath.Base(dir)":                                                   "an owner's directory, a login the bundle holds",
-	"ghroute.selectors.dir: %s strings.Join(listed, \" and \")":                                      "each owner and the slots naming it (ghNamed.shown), whose owner, name and kind selectors.add's callers check",
-	"ghroute.selectors.dir: %s strings.Join(routed[dir], \", \")":                                    "each slot naming that directory (ghNamed.shown), checked as selectors.add says",
-	"ghroute.selectors.endpoint: %s hosts (3 places)":                                                "the hosts of ghAPIHosts, a table",
-	"ghroute.selectors.fromAPI: cannotPlace(ordinalArgument(2))":                                     "a position",
-	"ghroute.selectors.fromCommand: %s leaf":                                                         "the leaf's command path, as gh's help spelled it",
-	"ghroute.selectors.fromCommand: %s unknown":                                                      "a usage placeholder of gh's own help",
-	"ghroute.selectors.fromCommand: cannotPlace why leaf":                                            "the leaf's command path, as gh's help spelled it",
-	"ghroute.selectors.fromCommand: cannotPlace(ordinalArgument(i+1))":                               "a position",
-	"ghroute.selectors.fromCommand: cannotPlace(ordinalArgument(len(cmd.slots)+1))":                  "a position",
-	"ghroute.selectors.fromOptions: cannotPlace why name":                                            "an option the leaf's help lists, by the help's name",
-	"ghroute.selectors.fromOptions: cannotPlace(kind)":                                               "a slot's kind, built from literals and a help-listed option name",
-	"ghroute.selectors.fromOptions: cannotPlace(strconv.Quote(\"--\"+name))":                         "an option the leaf's help lists, by the help's name",
-	"ghroute.selectors.fromOptions: strconv.Quote(\"--\"+name)":                                      "an option the leaf's help lists, by the help's name",
-	"ghroute.selectors.fromWorkingDirectory: %s advice (2 places)":                                   "this command's own advice, a literal",
-	"ghroute.selectors.fromWorkingDirectory: %s remote.what()":                                       "a remote as Remote.what names it",
-	"ghroute.selectors.fromWorkingDirectory: %s why":                                                 "a reason built from literals",
-	"ghroute.selectors.fromWorkingDirectory: %v err":                                                 "a git read's error, which ghroute.PrintRefusal passes through the URL rule",
 }
 
-// ghFormatSites is every place in the non-test files ghSources names that quotes or formats a
-// value without ghroute.Shown, fn the function that holds it, a method by its receiver's type:
-//   - each strconv.Quote call (`fn: strconv.Quote(<arg>)`);
-//   - each errors.New call whose text is no literal (`fn: errors.New(<arg>)`);
-//   - each fmt call whose format is no literal (`fn: <the call's function> format <format>`), whose
-//     arguments no reading can hold to a verb;
-//   - each argument a %s, %v, %q, %x, %X or %w verb of an fmt call's literal format formats (`fn:
-//     %q <arg>`) but a literal, a ghroute.Shown call or a position (ordinalArgument);
-//   - each cannotPlace call whose name is neither a ghroute.Shown call nor a literal (`fn:
-//     cannotPlace(<name>)`);
-//   - and each piece of a cannotPlace call's why, read as the "+" of its pieces, that is neither a
-//     literal, a ghroute.Shown call nor an fmt.Sprintf call, whose format and arguments the fmt
-//     case reads on its own (`fn: cannotPlace why <piece>`): an fmt.Sprint piece, whose arguments
-//     no format holds to a verb, is reported whole.
-//
-// A format or a text built only of literals joined with "+" is a literal. A place that stands
-// more than once in one function is keyed with its count (`(5 places)`).
-func ghFormatSites(t *testing.T) map[string]string {
-	t.Helper()
-	sites, found := map[string]string{}, map[string][]string{}
-	for _, c := range ghSourceCalls(t) {
-		call, owner, text := c.call, c.owner, c.text
-		add := func(key string) { found[owner+": "+key] = append(found[owner+": "+key], c.at) }
-		calls := func(expr ast.Expr, names ...string) bool {
-			inner, ok := expr.(*ast.CallExpr)
-			return ok && slices.Contains(names, text(inner.Fun))
-		}
-		switch callee := text(call.Fun); {
-		case callee == "strconv.Quote" && len(call.Args) == 1:
-			add("strconv.Quote(" + text(call.Args[0]) + ")")
-		case callee == "errors.New" && len(call.Args) == 1:
-			if _, literal := literalString(call.Args[0]); !literal {
-				add("errors.New(" + text(call.Args[0]) + ")")
-			}
-		case callee == "cannotPlace" && len(call.Args) > 1:
-			if _, literal := literalString(call.Args[0]); !literal && !calls(call.Args[0], ghShownCallees...) {
-				add("cannotPlace(" + text(call.Args[0]) + ")")
-			}
-			for _, piece := range sumPieces(call.Args[1]) {
-				if _, literal := literalString(piece); literal || calls(piece, append(slices.Clone(ghShownCallees), "fmt.Sprintf")...) {
-					continue
-				}
-				add("cannotPlace why " + text(piece))
-			}
-		case strings.HasPrefix(callee, "fmt.") && len(call.Args) > 0:
-			formatAt := 0
-			if callee == "fmt.Fprintf" {
-				formatAt = 1
-			}
-			if !strings.HasSuffix(callee, "f") || formatAt >= len(call.Args) {
-				break
-			}
-			format, literal := literalString(call.Args[formatAt])
-			if !literal {
-				add(callee + " format " + text(call.Args[formatAt]))
-				break
-			}
-			for i, verb := range formatVerbs(format) {
-				arg := formatAt + 1 + i
-				if arg >= len(call.Args) || !strings.ContainsRune("sqvxXw", verb) {
-					continue
-				}
-				if _, literal := literalString(call.Args[arg]); literal || calls(call.Args[arg], append(slices.Clone(ghShownCallees), "ordinalArgument")...) {
-					continue
-				}
-				add("%" + string(verb) + " " + text(call.Args[arg]))
-			}
-		}
-	}
-	for key, at := range found {
-		if len(at) > 1 {
-			key += " (" + strconv.Itoa(len(at)) + " places)"
-		}
-		sites[key] = strings.Join(at, ", ")
-	}
-	return sites
-}
-
-// literalString is expr's value when expr is a string literal or literals joined with "+", and
-// whether it is.
-func literalString(expr ast.Expr) (string, bool) {
-	switch e := expr.(type) {
-	case *ast.BasicLit:
-		if e.Kind != token.STRING {
-			return "", false
-		}
-		value, err := strconv.Unquote(e.Value)
-		return value, err == nil
-	case *ast.ParenExpr:
-		return literalString(e.X)
-	case *ast.BinaryExpr:
-		if e.Op != token.ADD {
-			return "", false
-		}
-		left, ok := literalString(e.X)
-		if !ok {
-			return "", false
-		}
-		right, ok := literalString(e.Y)
-		return left + right, ok
-	}
-	return "", false
-}
-
-// sumPieces is expr read as the "+" of its pieces, each piece that is no "+" itself.
-func sumPieces(expr ast.Expr) []ast.Expr {
-	switch e := expr.(type) {
-	case *ast.ParenExpr:
-		return sumPieces(e.X)
-	case *ast.BinaryExpr:
-		if e.Op == token.ADD {
-			return append(sumPieces(e.X), sumPieces(e.Y)...)
-		}
-	}
-	return []ast.Expr{expr}
-}
-
-// formatVerbs is the verb of each argument format formats, in order; %% takes none.
-func formatVerbs(format string) []rune {
-	var verbs []rune
-	runes := []rune(format)
-	for i := 0; i < len(runes); i++ {
-		if runes[i] != '%' {
-			continue
-		}
-		i++
-		for i < len(runes) && strings.ContainsRune("+-# 0123456789.[]*", runes[i]) {
-			i++
-		}
-		if i < len(runes) && runes[i] != '%' {
-			verbs = append(verbs, runes[i])
-		}
-	}
-	return verbs
-}
-
-// No refusal of legion gh formats a person's value itself: every place in the source that quotes
-// or formats a value without ghroute.Shown (ghFormatSites) is one ghFormattedValues holds, with the
-// reason its value is none a person typed, and every place that table holds is still in the
-// source. A place added to the code, such as a cannotPlace(strconv.Quote(word), …) of a search
-// word, fails here naming its function and its argument. A source holding no such place at all
-// is refused: the walk would have read nothing.
+// No refusal of legion gh formats a person's value itself: every place in this package's gh*.go
+// that quotes or formats a value without ghroute.Shown (ghroutetest.FormatSites) is one
+// ghFormattedValues holds, with the reason its value is none a person typed, and every place that
+// table holds is still in the source (ghroutetest.RequireReviewed). A place added to the code, such
+// as an fmt.Errorf("%q", arg) of an argument, fails here naming its function and its argument. A
+// source holding no such place at all is refused: the walk would have read nothing.
 func TestNoRefusalFormatsAPersonsValueItself(t *testing.T) {
-	sites := ghFormatSites(t)
-	if len(sites) == 0 {
-		t.Fatal("UNKNOWN: the source holds no strconv.Quote call, no formatted value and no cannotPlace name, so this read nothing")
-	}
-	for _, key := range slices.Sorted(maps.Keys(sites)) {
-		if _, ok := ghFormattedValues[key]; !ok {
-			t.Errorf("%s formats a value itself, at %s, which ghFormattedValues does not hold: name a person's value by its place through ghroute.Shown, or name why this one is none", key, sites[key])
-		}
-	}
-	for _, key := range slices.Sorted(maps.Keys(ghFormattedValues)) {
-		if _, ok := sites[key]; !ok {
-			t.Errorf("ghFormattedValues holds %s, which the source no longer has", key)
-		}
-	}
-	t.Logf("%d places format a value without ghroute.Shown, each reviewed", len(sites))
+	ghroutetest.RequireReviewed(t, ghroutetest.FormatSites(ghroutetest.SourceCalls(t, ghOwnSource)), ghFormattedValues, "ghFormattedValues")
 }
