@@ -49,11 +49,7 @@ func (recordedIssues) State(ctx context.Context, tx pgx.Tx) (State, []supervise.
 	}
 	state := State{Issues: map[string]Issue{}}
 	for _, issue := range issues {
-		var view Issue
-		if left := issue.ClaimLeft; left != nil {
-			view.ClaimLeft = &ClaimLeftView{Holder: left.Holder, Reason: string(left.Reason), At: left.At}
-		}
-		state.Issues[issue.Key] = view
+		state.Issues[issue.Key] = Issue{ClaimLeft: ClaimLeftViewOf(issue.ClaimLeft)}
 	}
 	return state, nil, nil
 }

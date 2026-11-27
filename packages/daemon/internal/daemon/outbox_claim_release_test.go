@@ -172,19 +172,19 @@ func (r *claimReleaseRig) records(issue record.Issue) {
 	putOutboxIssue(r.t, r.pool, record.NewStore(), issue)
 }
 
-// heldByOperator opens the tree's lifecycle under the operator's authority, as an operator root
-// spawn under the root's key does (treelifecycle.AuthorityOperator).
-func (r *claimReleaseRig) heldByOperator() {
-	r.t.Helper()
+// openTreeUnderOperator opens claimTree's lifecycle under the operator's authority, as an operator
+// root spawn under the root's key does (treelifecycle.AuthorityOperator).
+func openTreeUnderOperator(t *testing.T, pool *store.Pool) {
+	t.Helper()
 	token, err := claim.ProjectToken("LEGION")
 	if err != nil {
-		r.t.Fatalf("the project token of LEGION: %v", err)
+		t.Fatalf("the project token of LEGION: %v", err)
 	}
-	if err := store.Transact(context.Background(), r.pool, func(ctx context.Context, tx pgx.Tx) error {
-		_, err := record.NewStore().OpenTreeLifecycle(context.Background(), tx, token, claimTree, treelifecycle.AuthorityOperator)
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
+		_, err := record.NewStore().OpenTreeLifecycle(ctx, tx, token, claimTree, treelifecycle.AuthorityOperator)
 		return err
 	}); err != nil {
-		r.t.Fatalf("open %s under the operator: %v", claimTree, err)
+		t.Fatalf("open %s under the operator: %v", claimTree, err)
 	}
 }
 
@@ -259,19 +259,20 @@ func (r *claimReleaseRig) run() {
 // left is how many rows the issue has left.
 func (r *claimReleaseRig) left() int { return outboxRowsOf(r.t, r.pool, claimIssue) }
 
-// loggedOnce holds the log to the one executor line the case names: every other line of the
-// executor's must be absent, so a case that names none leaves the log quiet of all four.
-func (r *claimReleaseRig) loggedOnce(text string) map[string]any {
-	r.t.Helper()
+// executorLoggedOnce holds logs to the one executor line text names, and answers that line: every
+// other line of the executor's must be absent, so a text of "" holds all four absent and answers
+// nil.
+func executorLoggedOnce(t *testing.T, logs *syncBuffer, text string) map[string]any {
+	t.Helper()
 	var named map[string]any
 	for _, line := range []string{claimUnreadLine, claimUnattributedLine, claimGaveUpLine, claimRefusedLine} {
-		got := loggedLines(r.t, r.logs.String(), line)
+		got := loggedLines(t, logs.String(), line)
 		want := 0
 		if line == text {
 			want = 1
 		}
 		if len(got) != want {
-			r.t.Fatalf("logged %q %d times, want %d: %s", line, len(got), want, r.logs.String())
+			t.Fatalf("logged %q %d times, want %d: %s", line, len(got), want, logs.String())
 		}
 		if want == 1 {
 			named = got[0]
@@ -407,7 +408,7 @@ func testReleaseClaimHolders(t *testing.T) {
 				t.Fatalf("rows left = %d, want the release row ended", left)
 			}
 			rig.wantClaimLeft(tc.left, tc.holder)
-			line := rig.loggedOnce(tc.logged)
+			line := executorLoggedOnce(t, rig.logs, tc.logged)
 			if line == nil {
 				return
 			}
@@ -456,7 +457,7 @@ func testReleaseClaimRecord(t *testing.T) {
 				rig.records(*tc.recorded)
 			}
 			if tc.operatorHolds {
-				rig.heldByOperator()
+				openTreeUnderOperator(t, rig.pool)
 			}
 			rig.due(0)
 			rig.run()
@@ -472,7 +473,7 @@ func testReleaseClaimRecord(t *testing.T) {
 				holder = "session:" + claimTreeSession
 			}
 			rig.wantClaimLeft(tc.left, holder)
-			rig.loggedOnce("")
+			executorLoggedOnce(t, rig.logs, "")
 		})
 	}
 }
@@ -579,7 +580,7 @@ func testReleaseClaimAnswers(t *testing.T) {
 					holder = "session:" + shape.holder
 				}
 				rig.wantClaimLeft(tc.left, holder)
-				line := rig.loggedOnce(tc.logged)
+				line := executorLoggedOnce(t, rig.logs, tc.logged)
 				if line == nil {
 					return
 				}
@@ -625,7 +626,7 @@ func testReleaseClaimAnswers(t *testing.T) {
 			t.Fatalf("rows left = %d, want the release row ended at the hour", left)
 		}
 		rig.wantClaimLeft(record.ClaimLeftHeldAnHour, "session:"+claimTreeSession)
-		if line := rig.loggedOnce(claimGaveUpLine); line["holder"] != "session:"+claimTreeSession {
+		if line := executorLoggedOnce(t, rig.logs, claimGaveUpLine); line["holder"] != "session:"+claimTreeSession {
 			t.Fatalf("%q names holder %v, want session:%s", claimGaveUpLine, line["holder"], claimTreeSession)
 		}
 	})

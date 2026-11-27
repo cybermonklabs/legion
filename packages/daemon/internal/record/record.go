@@ -405,19 +405,6 @@ type ClaimLeft struct {
 	At time.Time `json:"at"`
 }
 
-// TreeSession is what Store.SessionOfTree finds of a session in one tree.
-type TreeSession string
-
-const (
-	// TreeSessionNone is a session no claim of the tree recorded.
-	TreeSessionNone TreeSession = ""
-	// TreeSessionCurrent is a session a claim of the tree names as its session now (claims.session).
-	TreeSessionCurrent TreeSession = "current"
-	// TreeSessionLeft is a session claim_sessions holds (kind session) for a claim of the tree that
-	// no longer names it: one the daemon left behind for that claim.
-	TreeSessionLeft TreeSession = "left"
-)
-
 // SessionClaim is the claim claim_sessions holds a session's name for (kind session), read with
 // that claim's row (Store.SessionClaim). Session tells whether the claim names that session now or
 // left it behind.
@@ -2743,14 +2730,14 @@ type Store interface {
 	// does: a suspended architect's session is still the session of its claim, and a write in
 	// Dispatch names that session.
 	ArchitectIssueOfSession(ctx context.Context, tx pgx.Tx, tree, session string) (string, bool, error)
-	// SessionOfTree says whether a claim of the tree recorded the agent session: as its session now
-	// (TreeSessionCurrent), or as one it left behind, which claim_sessions still holds for that
-	// claim (kind session) while the claim names another (TreeSessionLeft). Every name a claim
-	// records as its session is held for it in claim_sessions first (supervise's holdRecorded), so
-	// the claim the hold names is the only claim that can name the session now; a name held for no
-	// claim (claim = '', a conflict the boot logs) is no session of the tree. It reads a claim's
-	// hold under that claim's own project, so it takes no project, in one statement that reads by
-	// claims_tree, claim_sessions' primary key and claims' own. An empty session is none.
+	// SessionOfTree says whether a claim of the tree recorded the agent session: as its session now,
+	// or as one it left behind, which claim_sessions still holds for that claim (kind session) while
+	// the claim names another. Every name a claim records as its session is held for it in
+	// claim_sessions first (supervise's holdRecorded), so the claim the hold names is the only claim
+	// that can name the session now; a name held for no claim (claim = '', a conflict the boot logs)
+	// is no session of the tree. It reads a claim's hold under that claim's own project, so it takes
+	// no project, in one statement that reads by claims_tree, claim_sessions' primary key and claims'
+	// own. An empty session answers false.
 	//
 	// It answers whose claim stands on an issue, and two readers ask that: the claim release
 	// executor, which may release a left session's claim as the tree's own leftover, and
@@ -2760,7 +2747,7 @@ type Store interface {
 	// SessionClaimsTree instead: a left session works no claim of the tree now, and the session that
 	// replaced it holds that authority, so a status write or an ask of a left session is an
 	// outsider's (dispatch://INFRA-3144/comment/5e38193d-eb7b-4eef-b740-e4b42c1f96ed).
-	SessionOfTree(ctx context.Context, tx pgx.Tx, tree, session string) (TreeSession, error)
+	SessionOfTree(ctx context.Context, tx pgx.Tx, tree, session string) (bool, error)
 	// SessionClaim is the claim of project that claim_sessions holds the agent session's name for
 	// (kind session), with that claim's tree, role and current session, and whether there is one:
 	// what tells the project controller's claim from another tree's, and a current session from a

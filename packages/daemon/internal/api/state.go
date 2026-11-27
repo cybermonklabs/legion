@@ -1110,9 +1110,17 @@ func PodHoldViewOf(hold store.PodHold) *PodHoldView {
 // At, the executor's clock when its row left the claim, which dates the entry, since a reader takes
 // the claim's current holder from Dispatch.
 type ClaimLeftView struct {
-	Holder string    `json:"holder,omitempty"`
-	Reason string    `json:"reason"`
-	At     time.Time `json:"at"`
+	Holder string                 `json:"holder,omitempty"`
+	Reason record.ClaimLeftReason `json:"reason"`
+	At     time.Time              `json:"at"`
+}
+
+// ClaimLeftViewOf is left as the state shows it, its time in UTC; nil for no entry.
+func ClaimLeftViewOf(left *record.ClaimLeft) *ClaimLeftView {
+	if left == nil {
+		return nil
+	}
+	return &ClaimLeftView{Holder: left.Holder, Reason: left.Reason, At: left.At.UTC()}
 }
 
 // AssignmentView is one experiment's answer for an issue as the state shows it

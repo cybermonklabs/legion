@@ -985,13 +985,13 @@ func TestSessionClaimsSeparateTheAskedTreeFromAnotherAndFromNoClaimAtAll(t *test
 		session string
 		// inTree is SessionClaimsTree's answer, ofTree SessionOfTree's, both for LEGION-208.
 		inTree bool
-		ofTree TreeSession
+		ofTree bool
 		// claimed is the claim SessionClaim finds in project LEGION, and found whether it finds one.
 		claimed SessionClaim
 		found   bool
 	}{
-		{name: "the current session of the asked tree", session: "ses-here", inTree: true, ofTree: TreeSessionCurrent, claimed: here, found: true},
-		{name: "a session the asked tree left behind", session: "ses-here-left", ofTree: TreeSessionLeft, claimed: here, found: true},
+		{name: "the current session of the asked tree", session: "ses-here", inTree: true, ofTree: true, claimed: here, found: true},
+		{name: "a session the asked tree left behind", session: "ses-here-left", ofTree: true, claimed: here, found: true},
 		{name: "the current session of another tree", session: "ses-elsewhere", claimed: elsewhere, found: true},
 		{name: "a session another tree left behind", session: "ses-elsewhere-left", claimed: elsewhere, found: true},
 		{name: "the project controller's session", session: "ses-controller", claimed: controlling, found: true},
@@ -1009,7 +1009,7 @@ func TestSessionClaimsSeparateTheAskedTreeFromAnotherAndFromNoClaimAtAll(t *test
 				claimed, found, err := records.SessionClaim(ctx, tx, "LEGION", tc.session)
 				must(t, err)
 				if inTree != tc.inTree || ofTree != tc.ofTree {
-					t.Fatalf("%s claims LEGION-208 = %t and is its session %q, want %t and %q", tc.session, inTree, ofTree, tc.inTree, tc.ofTree)
+					t.Fatalf("%s claims LEGION-208 = %t and is one of its sessions = %t, want %t and %t", tc.session, inTree, ofTree, tc.inTree, tc.ofTree)
 				}
 				if found != tc.found || (found && claimed != tc.claimed) {
 					t.Fatalf("SessionClaim(LEGION, %s) = %+v, %t, want %+v, %t", tc.session, claimed, found, tc.claimed, tc.found)

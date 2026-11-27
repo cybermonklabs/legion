@@ -119,8 +119,8 @@ func TestSessionOfTreeReadsTheClaimsAndTheirSessionsByTheirIndexes(t *testing.T)
 		sent := &statementTx{Tx: tx}
 		found, err := NewStore().SessionOfTree(ctx, sent, "LEGION-42", "left-4217")
 		must(t, err)
-		if found != TreeSessionLeft {
-			t.Fatalf("SessionOfTree(LEGION-42, left-4217) = %q, want %q: claim-4217 of that tree left the session behind", found, TreeSessionLeft)
+		if !found {
+			t.Fatal("SessionOfTree(LEGION-42, left-4217) = false, want true: claim-4217 of that tree left the session behind")
 		}
 		if len(sent.sent) != 1 {
 			t.Fatalf("SessionOfTree sent %d statements, want one that answers both halves", len(sent.sent))

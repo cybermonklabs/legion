@@ -275,9 +275,7 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 		}
 		// Why the newest claim release that judged the issue's Dispatch holder left that claim,
 		// absent where the record holds none (api.Issue.ClaimLeft).
-		if left := issue.ClaimLeft; left != nil {
-			view.ClaimLeft = &api.ClaimLeftView{Holder: left.Holder, Reason: string(left.Reason), At: left.At.UTC()}
-		}
+		view.ClaimLeft = api.ClaimLeftViewOf(issue.ClaimLeft)
 		// The phase, the tree, the slot, the claims, and what the root waits on from a person,
 		// which is present only while it is in awaiting_person.
 		entry.putListed(&view, claimViews)

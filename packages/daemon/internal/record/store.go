@@ -1425,32 +1425,29 @@ func (s *Postgres) ArchitectIssueOfSession(ctx context.Context, tx pgx.Tx, tree,
 	return issue, true, nil
 }
 
-// SessionOfTree reads both halves in one statement. The current half is SessionClaimsTree's read,
-// the tree's claims by claims_tree. The left half joins the tree's claims to their holds of the
-// name, each under the claim's own project, so it needs no project argument. Neither half may scan
-// a table whole: claims has no index on session, and claim_sessions holds every name each claim of
-// every project sharing the database recorded, so the statement reads by claims_tree,
-// claim_sessions' primary key and claims' own.
-func (s *Postgres) SessionOfTree(ctx context.Context, tx pgx.Tx, tree, session string) (TreeSession, error) {
+// SessionOfTree reads both halves in one statement, a case that asks the current half first and
+// the left half only where the current one finds no claim: PostgreSQL evaluates a case's branches
+// in order, where a select list of two exists would compute both. The current half is
+// SessionClaimsTree's read, the tree's claims by claims_tree. The left half joins the tree's claims
+// to their holds of the name, each under the claim's own project, so it needs no project argument.
+// Neither half may scan a table whole: claims has no index on session, and claim_sessions holds
+// every name each claim of every project sharing the database recorded, so the statement reads by
+// claims_tree, claim_sessions' primary key and claims' own.
+func (s *Postgres) SessionOfTree(ctx context.Context, tx pgx.Tx, tree, session string) (bool, error) {
 	if session == "" {
-		return TreeSessionNone, nil
+		return false, nil
 	}
-	var current, left bool
-	if err := tx.QueryRow(ctx, `select
-		exists (select 1 from claims where tree = $1 and session = $2 and session <> ''),
-		exists (select 1 from claims
+	var ofTree bool
+	if err := tx.QueryRow(ctx, `select case
+		when exists (select 1 from claims where tree = $1 and session = $2 and session <> '') then true
+		when exists (select 1 from claims
 			join claim_sessions held on held.project = claims.project and held.kind = 'session' and held.name = $2
-			where claims.tree = $1 and held.claim = claims.token and claims.session <> $2)`,
-		tree, session).Scan(&current, &left); err != nil {
-		return TreeSessionNone, fmt.Errorf("read whether session %s is one of %s's: %w", session, tree, err)
+			where claims.tree = $1 and held.claim = claims.token and claims.session <> $2) then true
+		else false end`,
+		tree, session).Scan(&ofTree); err != nil {
+		return false, fmt.Errorf("read whether session %s is one of %s's: %w", session, tree, err)
 	}
-	switch {
-	case current:
-		return TreeSessionCurrent, nil
-	case left:
-		return TreeSessionLeft, nil
-	}
-	return TreeSessionNone, nil
+	return ofTree, nil
 }
 
 // SessionClaim reads the hold by claim_sessions' primary key and its claim by claims' own, in one
@@ -3257,10 +3254,13 @@ func (s *Postgres) ClearMembersOwed(ctx context.Context, tx pgx.Tx, key string) 
 
 // RecordClaimLeft is the one writer of claim_left: PutIssue names the column nowhere, so a copy
 // of the issue read before a claim release wrote its entry never writes it away or writes an older
-// one back. A nil entry writes null, which clears it. A key with no record matches no row and
+// one back. A nil entry writes null, which clears it. The statement matches the row only where it
+// changes the entry, so a clear of an issue that holds none writes nothing, while an entry always
+// differs from the one before it, since its `at` moves. A key with no record matches no row and
 // writes nothing. The column is no observed column (observedIssueColumns), so the write queues no
-// state change. It keeps the record mark as every writer of an issues row does, and names no issue
-// among IssuesWritten, since the end of a step's run reads nothing of it.
+// state change. It keeps the record mark as every writer of an issues row does where its statement
+// matches a row, and names no issue among IssuesWritten, since the end of a step's run reads
+// nothing of it.
 func (s *Postgres) RecordClaimLeft(ctx context.Context, tx pgx.Tx, key string, left *ClaimLeft) error {
 	var entry []byte
 	if left != nil {
@@ -3269,7 +3269,7 @@ func (s *Postgres) RecordClaimLeft(ctx context.Context, tx pgx.Tx, key string, l
 			return fmt.Errorf("record the claim left on %s: %w", key, err)
 		}
 	}
-	tag, err := tx.Exec(ctx, "update issues set claim_left = $2 where key = $1", key, entry)
+	tag, err := tx.Exec(ctx, "update issues set claim_left = $2 where key = $1 and claim_left is distinct from $2::jsonb", key, entry)
 	if err != nil {
 		return fmt.Errorf("record the claim left on %s: %w", key, err)
 	}

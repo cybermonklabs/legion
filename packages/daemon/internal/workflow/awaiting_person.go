@@ -47,7 +47,7 @@ func Unresumable(ctx context.Context, store record.Store, tx pgx.Tx, project str
 	}
 	if kind == "session" {
 		ofTree, err := store.SessionOfTree(ctx, tx, issue.Tree, id)
-		if err != nil || ofTree != record.TreeSessionNone {
+		if err != nil || ofTree {
 			return "", err
 		}
 	}

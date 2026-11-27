@@ -27,27 +27,21 @@ import (
 const claimReleaseWait = time.Hour
 
 // claimVerdict is what releaseClaim's transaction makes of the holder Dispatch shows, against the
-// daemon's own record: whether the row sends the DELETE, and which of the executor's lines it logs
-// once the transaction that wrote why the claim stays (record.Issue.ClaimLeft) has committed. The
-// DELETE goes out after that transaction and never inside it, so no transaction of the record
-// waits on Dispatch.
+// daemon's own record: whether the row sends the DELETE, or leaves the claim and writes why it
+// stays (record.Issue.ClaimLeft). The DELETE goes out after that transaction and never inside it,
+// so no transaction of the record waits on Dispatch. The line the executor logs once that
+// transaction has committed is read off the reason it wrote: one for a claim Dispatch names no
+// actor for (record.ClaimLeftUnread), which leaves nothing to judge a holder by, and one for a
+// holder whose name no claim of the daemon's project recorded (record.ClaimLeftUnattributed).
 type claimVerdict string
 
 const (
-	// claimStays leaves the claim where it is with nothing logged, and the transaction wrote why.
+	// claimStays leaves the claim where it is, and the transaction wrote why: the reason, or ""
+	// for an issue Dispatch shows no claim on, which clears what an earlier row wrote.
 	claimStays claimVerdict = "stays"
 	// claimUnrecorded leaves the claim of an issue the daemon records nothing for: it can attribute
 	// no claim of it, and there is no record to say so in.
 	claimUnrecorded claimVerdict = "unrecorded"
-	// claimGone is an issue Dispatch shows no claim on: nothing is left, so the transaction cleared
-	// what an earlier row wrote.
-	claimGone claimVerdict = "gone"
-	// claimUnread is a claim Dispatch names no actor for, which leaves nothing to judge a holder
-	// by: written, and logged.
-	claimUnread claimVerdict = "unread"
-	// claimUnattributed is a holder whose name no claim of the daemon's project recorded: written,
-	// and logged.
-	claimUnattributed claimVerdict = "unattributed"
 	// claimTakeable is a claim the row asks Dispatch to release; Dispatch's answer decides what is
 	// written (takeClaim).
 	claimTakeable claimVerdict = "takeable"
@@ -120,8 +114,8 @@ func (r *outbox) releaseClaim(ctx context.Context, row record.OutboxRow, release
 	// one transaction, so they are one state of the record, and the entry that says why the claim
 	// stays is written from that state in the same transaction.
 	var verdict claimVerdict
+	var reason record.ClaimLeftReason
 	if err := store.Transact(ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
-		var reason record.ClaimLeftReason
 		var err error
 		if verdict, reason, err = r.judgeClaim(ctx, tx, row.Issue, release, issue); err != nil {
 			return err
@@ -134,13 +128,13 @@ func (r *outbox) releaseClaim(ctx context.Context, row record.OutboxRow, release
 	}); err != nil {
 		return fmt.Errorf("judge the Dispatch claim of %s against its record: %w", row.Issue, err)
 	}
-	switch verdict {
-	case claimUnread:
+	switch {
+	case reason == record.ClaimLeftUnread:
 		r.log.Warn("outbox claim release left a claim Dispatch names no actor for", "issue", row.Issue, "row", row.ID)
-	case claimUnattributed:
+	case reason == record.ClaimLeftUnattributed:
 		r.log.Warn("outbox claim release left a claim the daemon cannot attribute to the issue's tree",
 			"issue", row.Issue, "holder", holder)
-	case claimTakeable:
+	case verdict == claimTakeable:
 		return r.takeClaim(ctx, row, holder)
 	}
 	return nil
@@ -154,9 +148,9 @@ func (r *outbox) judgeClaim(ctx context.Context, tx pgx.Tx, key string, release 
 	case shown.ClaimUnread:
 		// Dispatch showed a claim naming no actor, so the read says neither who holds it nor
 		// that nobody does: there is nothing to hold the tree test against.
-		return claimUnread, record.ClaimLeftUnread, nil
+		return claimStays, record.ClaimLeftUnread, nil
 	case shown.Claim == nil:
-		return claimGone, "", nil
+		return claimStays, "", nil
 	}
 	holder := shown.Claim
 	// The id a Dispatch claim carries is the session id the claims table holds, which is why the
@@ -196,7 +190,7 @@ func (r *outbox) judgeClaim(ctx context.Context, tx pgx.Tx, key string, release 
 	if err != nil {
 		return "", "", err
 	}
-	if ofTree != record.TreeSessionNone {
+	if ofTree {
 		return claimTakeable, "", nil
 	}
 	owner, found, err := r.records.SessionClaim(ctx, tx, r.project, holder.ID)
@@ -204,7 +198,7 @@ func (r *outbox) judgeClaim(ctx context.Context, tx pgx.Tx, key string, release 
 	case err != nil:
 		return "", "", err
 	case !found:
-		return claimUnattributed, record.ClaimLeftUnattributed, nil
+		return claimStays, record.ClaimLeftUnattributed, nil
 	}
 	return claimStays, ownerLeft(owner), nil
 }
@@ -221,7 +215,9 @@ func (r *outbox) judgeLeftSession(ctx context.Context, tx pgx.Tx, tree, session 
 		return "", "", err
 	case !found || owner.Session != session:
 		return claimTakeable, "", nil
-	case owner.Tree == tree && owner.Role != claim.RoleController:
+	case owner.Tree == tree:
+		// The project controller's claim stands on no tree (0032_controller_claim's shape check),
+		// and the tree of an issue the daemon records is never empty.
 		return claimStays, record.ClaimLeftWorksNow, nil
 	}
 	return claimStays, ownerLeft(owner), nil
@@ -230,7 +226,7 @@ func (r *outbox) judgeLeftSession(ctx context.Context, tx pgx.Tx, tree, session 
 // ownerLeft is the reason a claim stays with a session a claim outside the issue's tree recorded:
 // the project controller's claim, which stands on no tree, or a claim of another tree.
 func ownerLeft(owner record.SessionClaim) record.ClaimLeftReason {
-	if owner.Role == claim.RoleController || owner.Tree == "" {
+	if claim.IsController(owner.Role, owner.Issue, owner.Tree) {
 		return record.ClaimLeftController
 	}
 	return record.ClaimLeftOtherTree

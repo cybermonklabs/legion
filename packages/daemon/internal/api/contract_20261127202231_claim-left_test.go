@@ -47,7 +47,7 @@ func claimLeftStates(t *testing.T) []State {
 		issues[key] = Issue{
 			Key: key, Generation: 1, Phase: phase.Done, Status: "backlog", Tree: key,
 			Repo: "acme/widgets", DefaultBranch: "main", Workers: map[claim.Role]PhaseView{},
-			ClaimLeft: &ClaimLeftView{Holder: holder, Reason: reason.Value, At: claimLeftAt},
+			ClaimLeft: &ClaimLeftView{Holder: holder, Reason: record.ClaimLeftReason(reason.Value), At: claimLeftAt},
 		}
 	}
 	return []State{{
@@ -69,7 +69,7 @@ func claimLeftStates(t *testing.T) []State {
 func withClaimLeft(state State) State {
 	issues := maps.Clone(state.Issues)
 	issue := issues["LEGION-207"]
-	issue.ClaimLeft = &ClaimLeftView{Holder: "user:alice", Reason: string(record.ClaimLeftPerson), At: claimLeftAt}
+	issue.ClaimLeft = &ClaimLeftView{Holder: "user:alice", Reason: record.ClaimLeftPerson, At: claimLeftAt}
 	issues["LEGION-207"] = issue
 	state.Issues = issues
 	return state

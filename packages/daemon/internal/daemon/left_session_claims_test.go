@@ -31,7 +31,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
-	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 	"github.com/sjawhar/legion/daemon/internal/wait"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
@@ -1190,37 +1189,6 @@ func (r *leftRig) seedReleaseTree(child record.Issue) {
 	seedControllerClaim(r.t, r.pool, "legion", claimControllerSession)
 }
 
-// heldByOperator opens claimTree's lifecycle under the operator's authority, as an operator root
-// spawn under the root's key does.
-func (r *leftRig) heldByOperator() {
-	r.t.Helper()
-	token, err := claim.ProjectToken("LEGION")
-	if err != nil {
-		r.t.Fatalf("the project token of LEGION: %v", err)
-	}
-	if err := store.Transact(r.ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
-		_, err := record.NewStore().OpenTreeLifecycle(ctx, tx, token, claimTree, treelifecycle.AuthorityOperator)
-		return err
-	}); err != nil {
-		r.t.Fatalf("open %s under the operator: %v", claimTree, err)
-	}
-}
-
-// loggedOnce holds the runner's log to the one executor line text names, every other one of the
-// four absent; "" holds all four absent.
-func (r *leftRig) loggedOnce(text string) {
-	r.t.Helper()
-	for _, line := range []string{claimUnreadLine, claimUnattributedLine, claimGaveUpLine, claimRefusedLine} {
-		want := 0
-		if line == text {
-			want = 1
-		}
-		if got := loggedLines(r.t, r.logs.String(), line); len(got) != want {
-			r.t.Fatalf("logged %q %d times, want %d: %s", line, len(got), want, r.logs.String())
-		}
-	}
-}
-
 // leftArms is every value of record.ClaimLeftReasons, each by the arm of the executor the plan's
 // decision table gives it.
 var leftArms = map[record.ClaimLeftReason][]leftArm{
@@ -1249,7 +1217,7 @@ var leftArms = map[record.ClaimLeftReason][]leftArm{
 		r.queueRelease(record.ClaimRelease{})
 	}, holder: "session:ses-stranger", logged: claimUnattributedLine}},
 	record.ClaimLeftOperatorTree: {{name: "the operator holds the issue's tree", set: func(r *leftRig) {
-		r.heldByOperator()
+		openTreeUnderOperator(r.t, r.pool)
 		r.dispatch.takes(claimIssue, claimTreeSession)
 		r.queueRelease(record.ClaimRelease{})
 	}, holder: "session:" + claimTreeSession}},
@@ -1331,7 +1299,7 @@ func TestEachClaimAReleaseLeavesIsReadInTheRecordWithItsReason(t *testing.T) {
 					t.Fatalf("claimLeft names the holder %v, want %q", holder, arm.holder)
 				}
 				wantLeftAt(t, left, before, after)
-				r.loggedOnce(arm.logged)
+				executorLoggedOnce(t, r.logs, arm.logged)
 			})
 		}
 	}
@@ -1361,7 +1329,7 @@ func TestEachClaimAReleaseLeavesIsReadInTheRecordWithItsReason(t *testing.T) {
 			if left := r.claimLeft(claimIssue); left != nil {
 				t.Fatalf("the record of %s names claimLeft %v after the release, want it cleared", claimIssue, left)
 			}
-			r.loggedOnce("")
+			executorLoggedOnce(t, r.logs, "")
 		})
 	}
 }
