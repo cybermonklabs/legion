@@ -1102,21 +1102,22 @@ func TestTheServingRunBackfillsForARelaunchingClaim(t *testing.T) {
 // 20261126164240 fills run_retros from step_starts (20261117004117) and phases.step_task
 // (20261117034837): applied before that version, it fails on the missing column or table. So does
 // one that changes a table a version of the list creates, as the givers of a plan version
-// (20261124033010) add a column to 20261117034837's issue_plans: applied as main's, before that
-// table exists, it fails on the missing table. This branch's 20261126164240 is now the last
-// migration that writes outbox_kind_check: it stands above main's 20261126163320, which stands
-// above 20261126110259, and those two, 20261122154643, 20261119203047 and 20261119003157 write
-// it too, while main's 20261111090000, 20261111091500, 20261116144907 and 20261123212127 write
-// none. The cache trimmer's two, 20261111090000 and 20261111091500, read no column a version of
-// the list adds either, so neither is in the list, and nor are the four of main's
-// cybermonklabs/legion#3712 (20261112012123, 20261112215432, 20261118073048 and 20261122212816):
-// none writes outbox_kind_check, and each changes only tables and columns that versions outside
-// the list create (issues, claims, pending_task_deliveries, parked_decisions, phases.entry_verbatim
-// and readmitted_approvals). The project pause's 20261115194357 is in it as
-// well, though it rewrites no kind list: a database migrated before the pause takes it in the
-// upgrade, over a row of every kind the schema admits, and its held_by_pause column on the outbox
-// must take them all. Any other version left out makes the cases below weaker, never red, which is
-// why the comment says where the list comes from.
+// (20261124033010) and the parent of a plan task (20261124022547) add a column to
+// 20261117034837's issue_plans and plan_tasks: applied as main's, before that table exists, each
+// fails on the missing table. This branch's 20261126164240 is now the last migration that writes
+// outbox_kind_check: it stands above main's 20261126163320, which stands above 20261126110259,
+// and those two, 20261122154643, 20261119203047 and 20261119003157 write it too, while main's
+// 20261111090000, 20261111091500, 20261116144907 and 20261123212127 write none. The cache
+// trimmer's two, 20261111090000 and 20261111091500, read no column a version of the list adds
+// either, so neither is in the list, and nor are the four of main's cybermonklabs/legion#3712
+// (20261112012123, 20261112215432, 20261118073048 and 20261122212816): none writes
+// outbox_kind_check, and each changes only tables and columns that versions outside the list
+// create (issues, claims, pending_task_deliveries, parked_decisions, phases.entry_verbatim and
+// readmitted_approvals). The project pause's 20261115194357 is in it as well, though it rewrites
+// no kind list: a database migrated before the pause takes it in the upgrade, over a row of every
+// kind the schema admits, and its held_by_pause column on the outbox must take them all. Any other
+// version left out makes the cases below weaker, never red, which is why the comment says where
+// the list comes from.
 var thisRelease = map[int]bool{
 	20261029120000: true, 20261029120100: true, 20261029120200: true, 20261029120300: true,
 	20261029120400: true, 20261029120600: true, 20261029120700: true, 20261029120800: true,
@@ -1127,8 +1128,8 @@ var thisRelease = map[int]bool{
 	20261114232555: true, 20261115060739: true, 20261115121838: true, 20261115194357: true,
 	20261116144907: true, 20261116165926: true, 20261117000528: true, 20261117004117: true,
 	20261117023932: true, 20261117034837: true, 20261117064152: true, 20261119003157: true,
-	20261119203047: true, 20261122154643: true, 20261123212127: true, 20261124033010: true,
-	20261126110259: true, 20261126163320: true, 20261126164240: true,
+	20261119203047: true, 20261122154643: true, 20261123212127: true, 20261124022547: true,
+	20261124033010: true, 20261126110259: true, 20261126163320: true, 20261126164240: true,
 }
 
 const idleRelease = 20261101222956

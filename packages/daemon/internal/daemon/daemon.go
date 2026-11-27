@@ -579,7 +579,7 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		plan.retroWakeHolds = workflow.retroWakeHolds
 		plan.phaseRole = workflow.phaseRole
 		plan.cacheRepositories = workflow.cacheRepositories
-		plan.rootTask, plan.designNews, plan.workingCopy = workflow.rootTask, workflow.designNews, workflow.workingCopy
+		plan.rootTask, plan.designNews, plan.taskText, plan.workingCopy = workflow.rootTask, workflow.designNews, workflow.taskText, workflow.workingCopy
 		plan.taskConfirmed = workflow.taskConfirmed
 		plan.sessionLost, plan.sessionStoreFault = workflow.sessionLost, workflow.sessionStoreFault
 		// The run's boot event, and from it on the state event of every write the run makes. The
@@ -1286,14 +1286,15 @@ type plan struct {
 	// repository state's own (repositories.renames, which is cfg.RepositoryRenames). Never nil,
 	// as installed is not.
 	left *appauth.LeftOut
-	// phaseHolds, retroWakeHolds, rootHears, rootTask, designNews, workingCopy and treeClosable
-	// are the workflow's answers to the supervisor's predicates; nil without a workflow, where
-	// every delivery is sent as it was queued and every tree closes.
+	// phaseHolds, retroWakeHolds, rootHears, rootTask, designNews, taskText, workingCopy and
+	// treeClosable are the workflow's answers to the supervisor's predicates; nil without a
+	// workflow, where every delivery is sent as it was queued and every tree closes.
 	phaseHolds     func(ctx context.Context, issue string, p phase.Phase, generation uint64) (bool, error)
 	retroWakeHolds func(ctx context.Context, issue string) (bool, error)
 	rootHears      func(ctx context.Context, c supervise.Claim, d supervise.Delivery) (bool, error)
 	rootTask       func(ctx context.Context, c supervise.Claim, d supervise.Delivery) (string, []byte, []byte, error)
 	designNews     func(ctx context.Context, c supervise.Claim, d supervise.Delivery) (string, []byte, error)
+	taskText       func(ctx context.Context, c supervise.Claim, d supervise.Delivery) (string, []byte, error)
 	workingCopy    func(ctx context.Context, c supervise.Claim, d supervise.Delivery) (string, []byte, error)
 	treeClosable   func(ctx context.Context, c supervise.Claim) (bool, error)
 	// phaseRole is the workflow's answer to which role works an issue's current phase, which the
@@ -2269,6 +2270,7 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 		RootHears:               p.rootHears,
 		RootTask:                p.rootTask,
 		DesignNews:              p.designNews,
+		TaskText:                p.taskText,
 		WorkingCopy:             p.workingCopy,
 		TreeClosable:            p.treeClosable,
 		ClaimActivity:           st.ClaimActivity,
