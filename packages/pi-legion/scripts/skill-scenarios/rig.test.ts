@@ -2892,8 +2892,9 @@ describe("ci_job_results", () => {
 // and heads_fixture's two pull request branches of one issue on it. worker_fixture, the
 // tester-proof world, builds on the same fixture_repo, and keeps its world as it was.
 describe("heads_fixture", () => {
-  function build(fixture: "heads_fixture" | "worker_fixture") {
+  function build(fixture: "heads_fixture" | "worker_fixture", page?: string) {
     const run = freshDir(`${fixture}-run`);
+    if (page !== undefined) writeFileSync(path.join(run, "fixture.json"), JSON.stringify({ page }));
     const result = bash(
       [
         "set -euo pipefail",
@@ -3781,6 +3782,31 @@ describe("heads_fixture", () => {
         .stdout.toString()
         .trim()
     ).toBe("1");
+  }, 600_000);
+
+  // Catches: a page that names commands in a world where nothing names one. In the worlds with
+  // neither k2 nor k3, R1 asks for no list and no CI job's log names a command, so a page that
+  // lists `add`, `list` and `remove` states what nothing in the world supports, and a correct
+  // reviewer refused it. #702's page is the one the fixture names, byte for byte.
+  test("in a world with neither k2 nor k3, the page at #702's head is the fixture's and names no command", () => {
+    const page = "# Usage\n\nRun `widgets --help` to list every command of the widgets CLI.\n";
+    const { code, run } = build("heads_fixture", page);
+    expect(code).toBe(0);
+    const head = JSON.parse(readFileSync(path.join(run, "heads.json"), "utf8"))["702"];
+    const shown = childSpawn({ ...VCS_COMMAND, part: "git show" }, [
+      "git",
+      "-C",
+      path.join(run, "remote.git"),
+      "show",
+      `${head}:docs/usage.md`,
+    ]).stdout.toString();
+    const log = RIG_WORLD.ciJobs["ci-check-fail"].log ?? "";
+    const listed = (/`widgets --help` lists \d+: ([^.]+)\./.exec(log)?.[1] ?? "")
+      .split(", ")
+      .filter((command) => command !== "");
+    expect(listed.length).toBeGreaterThan(0);
+    expect(listed.filter((command) => shown.includes(`\`${command}\``))).toEqual([]);
+    expect(shown).toBe(page);
   }, 600_000);
 });
 
