@@ -618,8 +618,14 @@ func TestAnArchitectGetsNoBackstop(t *testing.T) {
 		{name: "step is its running step's role", p: phase.Step, step: "checker", want: "checker"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			// A step that runs as step is a role of the deployment, which only a plan row names:
+			// the case's step is the role of task a's step 2, the one row of a planned run.
 			issue := record.Issue{Phase: tc.p}
-			issue.Running = record.RunningOf(issue, false, nil)
+			var rows []pods.RunningRow
+			if tc.step != "" {
+				rows = []pods.RunningRow{{Task: "a", Kind: "step", Position: 2, Role: string(tc.step), At: 2}}
+			}
+			issue.Running = record.RunningOf(issue, tc.step != "", rows)
 			var got []claim.Role
 			for _, step := range OpenStepsOf(issue) {
 				got = append(got, step.Role)
