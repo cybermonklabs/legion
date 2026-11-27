@@ -16,13 +16,14 @@ import (
 
 // A re-admitted tree brings back the claims of its members that have run, and no others, each on
 // a start that names it. The claim row is what says a claim has run: a re-admission clears the
-// generation's facts and never a claim (record.ClearTreeGeneration touches pull_requests,
-// design_gates, phases and issues), and a claim's token carries no generation (claim.AgentToken),
-// so the row outlives the generation that wrote it — which is why every state here asserts that
-// the rows it seeded are still there after the re-admission. A role that no stored claim holds
-// gets no start of its own: whatever ran it ran in a stored claim, a keyed agent's or its own,
-// and that claim comes back under its own token; a session started for the role's own claim
-// would hold no transcript and no task, so nothing but a message could ever wake it.
+// generation's facts and never a claim (workflow.Engine.ClearTreeGeneration touches
+// pull_requests, phases and design_gates), and a claim's token carries no generation
+// (claim.AgentToken), so the row outlives the generation that wrote it — which is why every state
+// here asserts that the rows it seeded are still there after the re-admission. A role that no
+// stored claim holds gets no start of its own: whatever ran it ran in a stored claim, a keyed
+// agent's or its own, and that claim comes back under its own token; a session started for the
+// role's own claim would hold no transcript and no task, so nothing but a message could ever wake
+// it.
 //
 // The five states are the member mid-phase, the member in a phase with no worker of its own, the
 // re-admitted root itself, the member whose phase worker never ran, and the member waiting in

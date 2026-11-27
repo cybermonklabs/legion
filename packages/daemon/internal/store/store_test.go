@@ -1092,10 +1092,11 @@ func TestTheServingRunBackfillsForARelaunchingClaim(t *testing.T) {
 // 20261117000528, the plan record's 20261117023932, dispatch://INFRA-4374's 20261119003157
 // (conflict_confirm and merge_forward), dispatch://INFRA-175's 20261119203047 (design_changes),
 // dispatch://INFRA-3320's 20261122154643 (the two basis seeds), the merge holds' 20261126110259
-// (merge_holds_changed), the copies of a plan's tasks' 20261121165047 (task_branch), the pull
-// requests by task's 20261122122826 (task_pull_requests_close), the removal of a removed task's
-// working copy's 20261123072431 (task_copy_remove) and the merge of main's 20261126144204 (the
-// lists of both) do: the case of a
+// (merge_holds_changed), dispatch://INFRA-3931's state events' 20261126163320, the copies of a
+// plan's tasks' 20261121165047 (task_branch), the pull requests by task's 20261122122826
+// (task_pull_requests_close), the removal of a removed task's working copy's 20261123072431
+// (task_copy_remove), the merge of main's 20261126144204 (the lists of both) and the merge's
+// checks with the state events' 20261127142558 (the lists of both again) do: the case of a
 // database main migrated applies a version left out of the list before the list's own rewrites of
 // that check, which do not name the later kind, so the row seeded of that kind fails the upgrade.
 // So does one that reads a column a version of the list adds, as t-e-54's 20261116144907 reads
@@ -1113,13 +1114,14 @@ func TestTheServingRunBackfillsForARelaunchingClaim(t *testing.T) {
 // branch added. The project pause's 20261115194357 is in it as well, though it rewrites no kind
 // list: a database migrated before the pause takes it in the upgrade, over a row of every kind the
 // schema admits, and its held_by_pause column on the outbox must take them all.
-// 20261126144204 is the last migration that writes outbox_kind_check: it stands
-// above main's 20261119003157, 20261119203047, 20261122154643 and 20261126110259 and this branch's
-// 20261121165047, 20261122122826 and 20261123072431, which write it too, and main's 20261111090000,
-// 20261111091500 and 20261116144907 write none. The cache trimmer's two, 20261111090000 and
-// 20261111091500, read no column a version of the list adds either, so neither is in the list. Any
-// other version left out makes the cases below weaker,
-// never red, which is why the comment says where the list comes from.
+// 20261127142558, the merge's checks with the state events, is the last migration that writes
+// outbox_kind_check: it stands above main's 20261119003157, 20261119203047, 20261122154643,
+// 20261126110259 and 20261126163320 and this branch's 20261121165047, 20261122122826,
+// 20261123072431 and 20261126144204, which write it too, and main's 20261111090000,
+// 20261111091500, 20261116144907 and 20261123212127 write none. The cache trimmer's two,
+// 20261111090000 and 20261111091500, read no column a version of the list adds either, so neither
+// is in the list. Any other version left out makes the cases below weaker, never red, which is why
+// the comment says where the list comes from.
 var thisRelease = map[int]bool{
 	20261029120000: true, 20261029120100: true, 20261029120200: true, 20261029120300: true,
 	20261029120400: true, 20261029120600: true, 20261029120700: true, 20261029120800: true,
@@ -1133,7 +1135,8 @@ var thisRelease = map[int]bool{
 	20261117224125: true, 20261119003157: true, 20261119203047: true, 20261121165047: true,
 	20261122074350: true, 20261122122826: true, 20261122154643: true, 20261123072431: true,
 	20261123200630: true, 20261123212127: true, 20261123221142: true, 20261124023617: true,
-	20261124033010: true, 20261126110259: true, 20261126144204: true, 20261126234607: true,
+	20261124033010: true, 20261126110259: true, 20261126144204: true, 20261126163320: true,
+	20261126234607: true, 20261127142558: true,
 }
 
 const idleRelease = 20261101222956
@@ -1158,9 +1161,14 @@ var retiredOutboxKinds = []record.OutboxKind{"ready_merge", "auto_merge_disable"
 // lower one names is refused there: design_changes would be, had its 20261119203047 stood below
 // the role-holders kind's 20261116165926 or the merge forward's 20261119003157, whose lists leave
 // it out, and is, unless each of the task copies' three lists above it (20261121165047,
-// 20261122122826 and 20261123072431) names it too; and step_record, plan_record, conflict_confirm
-// and merge_forward are, unless the design news's list, which runs after the step record's
-// 20261117000528, the plan record's 20261117023932 and the merge forward's 20261119003157, names
+// 20261122122826 and 20261123072431) names it too; and the three state kinds would be, had the
+// state events' 20261126163320 stood below the merge holds' 20261126110259, whose list leaves them
+// out. The three task kinds (task_branch, task_pull_requests_close and task_copy_remove) are,
+// unless a list above the state events' names them, since 20261126163320 stands above each of this
+// branch's lists and leaves them out: the merge's checks with the state events, 20261127142558, is
+// that list. step_record, plan_record, conflict_confirm, merge_forward, design_changes, the two
+// basis seeds, merge_holds_changed and the three state kinds are refused too, unless that list,
+// which runs after each list that names them, names
 // them too.
 func TestTheOutboxCheckAdmitsEveryKindWhicheverOrderTheMigrationsRan(t *testing.T) {
 	t.Parallel()
@@ -1256,25 +1264,28 @@ func TestTheOutboxCheckAdmitsEveryKindWhicheverOrderTheMigrationsRan(t *testing.
 	}
 }
 
-// mergeChecksVersion is 20261126144204_checks_of_the_merge_with_main, which writes the phase check
-// and the outbox kind check again with every value of both branches of the merge of main 169cfac.
-const mergeChecksVersion = 20261126144204
+// mergeChecksVersion is 20261127142558_checks_of_the_merge_with_the_state_events, which writes the
+// phase check and the outbox kind check again with every value of both branches of the merge of
+// main 17767e4, above main's state events' 20261126163320.
+const mergeChecksVersion = 20261127142558
 
 // mainsLateMigrations are main's migrations that a database this branch's head migrated before
 // its merge of main lacks and that write either check, all below that head's newest:
 // dispatch://INFRA-3320's gate basis, its phase awaiting_children (which writes the phase check
-// without step) and its two basis seeds' kind list, and the merge holds' 20261126110259 (which
-// writes the kind check with merge_holds_changed and without the three task kinds).
-var mainsLateMigrations = []int{20261114064234, 20261114232555, 20261122154643, 20261126110259}
+// without step) and its two basis seeds' kind list, the merge holds' 20261126110259 (which
+// writes the kind check with merge_holds_changed and without the three task kinds), and the state
+// events' 20261126163320 (which writes the kind check with the three state kinds and without the
+// three task kinds).
+var mainsLateMigrations = []int{20261114064234, 20261114232555, 20261122154643, 20261126110259, 20261126163320}
 
-// A database this branch's head migrated before its merge of main takes main's four migrations
-// late, after this branch's own lists of the two checks, and each of main's three lists takes this
+// A database this branch's head migrated before its merge of main takes main's five migrations
+// late, after this branch's own lists of the two checks, and each of main's four lists takes this
 // branch's values away: the phase step, and the task_branch, task_pull_requests_close and
-// task_copy_remove kinds. 20261126144204 stands above every migration and writes both lists again
+// task_copy_remove kinds. 20261127142558 stands above every migration and writes both lists again
 // with the values of both branches, so the upgraded database takes an issue at step or at
 // awaiting_children, and a row of each task kind, each basis seed and main's merge_holds_changed.
 // The control is the same
-// database upgraded without 20261126144204: the step and a task_branch row are refused there,
+// database upgraded without 20261127142558: the step and a task_branch row are refused there,
 // which is what the migration exists for.
 func TestTheChecksOfTheMergeWithMainPutBackWhatMainsLateListsTakeAway(t *testing.T) {
 	t.Parallel()

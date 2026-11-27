@@ -13,7 +13,7 @@ import (
 // TestAnIssuesRolesAreTheKnownRolesInTheirOrderThenTheRestByName: Roles lists every claim with its
 // state, a `retired` one and a role legionclaim.Roles does not name included, the known roles in
 // that list's order (planner before implementer, which no sort by name gives) and the rest after
-// them by name. A claim written `null`, the sampler's word for a claim gone, and a claim whose
+// them by name. A claim written `null`, the intake's word for a claim gone, and a claim whose
 // value is no string are no claim. Working is the roles whose claim is `working`, by name, which
 // is the board card's order.
 func TestAnIssuesRolesAreTheKnownRolesInTheirOrderThenTheRestByName(t *testing.T) {
@@ -95,7 +95,7 @@ func TestAPlaceInTheWaitingLineCountsFromOneAndTheBlockersKeepTheDaemonsOrder(t 
 // TestReadIssueReadsOneIssueItsProjectsAdmissionAndWhetherItsPhaseWasSeenToStart: ReadIssue answers
 // one issue's newest observations and nothing of another issue, its project's admission block and
 // no other project's, and whether a `phase` row older than the newest holds a value distinct from
-// the newest one's, a `null` counting as a value. Two equal rows in a row, which the sampler never
+// the newest one's, a `null` counting as a value. Two equal rows in a row, which the intake never
 // writes, are no start: a probe that asked only whether an older row exists would call that one
 // seen. An issue whose newest phase is `null`, or that has no row, is not recorded, and an
 // admission block written `null` is none.

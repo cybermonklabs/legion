@@ -2836,7 +2836,7 @@ export async function runEnvoyChannelServer(): Promise<void> {
           claim: () => claim?.capability(),
           booted: claimBooted.promise,
           firstTurnStarted: () => reportFirstTurn?.(),
-          readRecord: (issue, signal) => daemon.record(issue, { signal }),
+          readOwed: (input, signal) => daemon.owed(input, { signal }),
           reportActivity: (input) => daemon.activity(input),
           inbox: inbox === undefined ? undefined : (text) => inbox.notification({ content: text }),
           publish: client.publish,
@@ -2865,13 +2865,13 @@ export async function runEnvoyChannelServer(): Promise<void> {
       }
       // The request's signal aborts on the client's notifications/cancelled, which ends a wait
       // for a restarting daemon.
+      // A `ready_for_update` that answered blocks no `Stop` of its turn (`answerLegionTool`), as
+      // the Oh My Pi host's `onUpdateAnswered` does (`createLegionTool` in
+      // `packages/pi-legion/src/tools.ts`).
       const answer = await answerLegionTool(
         legionRuntime,
         request.params.arguments ?? {},
-        {
-          phaseClosed: () => phaseHook?.phaseClosed(),
-          updateAnswered: () => phaseHook?.updateAnswered(),
-        },
+        { updateAnswered: () => phaseHook?.updateAnswered() },
         extra.signal,
       )
       return mcpResult(answer)
@@ -2917,11 +2917,8 @@ export async function runEnvoyChannelServer(): Promise<void> {
   // Every line this server writes into the session: the bridge's inbox in a Legion pane, and the
   // mod's own write in a terminal session, which is a row of the turn running and the prompt of
   // a new turn while the session is idle (`ModSession.show`), since an appended row an idle
-  // session never reads would wait for the person to type. The endpoint is told every line
-  // written for a delivery: the `UserPromptSubmit` that carries one back is that delivery's
-  // turn, not a fresh assignment, and this server, which writes them all, is the only place
-  // that knows.
-  const writer: ChannelNotifier = inbox ?? {
+  // session never reads would wait for the person to type.
+  const notifier: ChannelNotifier = inbox ?? {
     notification: async ({ content, blocks, eventId }) => {
       await claude.show({
         content: blocks ?? [{ type: "text", text: content }],
@@ -2932,15 +2929,6 @@ export async function runEnvoyChannelServer(): Promise<void> {
       })
     },
   }
-  const notifier: ChannelNotifier =
-    phaseHook === undefined
-      ? writer
-      : {
-          notification: async (notification) => {
-            phaseHook.deliveryWritten(notification.content)
-            await writer.notification(notification)
-          },
-        }
   const capabilities = (): readonly DeliveryCapability[] =>
     sessionCapabilities({ pane: inboxSocket !== undefined, mod: modLink?.connected() === true })
   const booting = new AbortController()
@@ -3016,8 +3004,7 @@ export async function runEnvoyChannelServer(): Promise<void> {
       sessionId: () => identity.id,
       state,
       warn: (text) => serverStderr(`envoy-channel: ${text}\n`),
-      // A pane's person message is a line of the bridge's inbox, which makes it a user turn;
-      // the phase endpoint is told of it as it is told of every line this server writes.
+      // A pane's person message is a line of the bridge's inbox, which makes it a user turn.
       ...(inboxSocket === undefined ? {} : { inbox: (input) => notifier.notification(input) }),
     }
     return createUserTurnRouter(options)

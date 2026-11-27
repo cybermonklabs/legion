@@ -16,12 +16,12 @@ import (
 // migrate through everything before it whatever lands beside it.
 const pullRequestsByTaskVersion = 20261122122826
 
-// taskCopiesKinds is every outbox kind 20261121165047 names, thirty-four, the check this migration
-// writes again: main's two basis seeds and its merge_holds_changed among them, which this stack's
-// lists name as main's own (the last migration to write a list owns every value of it). A test that
-// queues a row of each before a way back holds that way back to keep them: main's 20261122154643 and
-// 20261126110259 stay recorded through it, and a way back whose check left one out would stop at
-// that row (SQLSTATE 23514).
+// taskCopiesKinds is every outbox kind 20261121165047 names, thirty-seven, the check this migration
+// writes again: main's two basis seeds, its merge_holds_changed and its three state kinds among
+// them, which this stack's lists name as main's own (the last migration to write a list owns every
+// value of it). A test that queues a row of each before a way back holds that way back to keep
+// them: main's 20261122154643, 20261126110259 and 20261126163320 stay recorded through it, and a
+// way back whose check left one out would stop at that row (SQLSTATE 23514).
 var taskCopiesKinds = []string{
 	"dispatch_status", "dispatch_message", "notice", "controller_notice", "supervise", "gate_seed",
 	"linger_close", "workspace_remove", "issue_branch", "issue_suspend", "check_wake",
@@ -29,7 +29,7 @@ var taskCopiesKinds = []string{
 	"gated_steps_publish", "claim_release", "hook_prompt", "design_gates_publish", "update_ask",
 	"merge_queue_read", "merge_queue_removal", "role_holders_publish", "step_record", "plan_record",
 	"conflict_confirm", "merge_forward", "design_changes", "task_branch", "pending_basis_seed",
-	"reparent_seed", "merge_holds_changed",
+	"reparent_seed", "merge_holds_changed", "state_change", "state_admission", "state_boot",
 }
 
 // 20261122122826 keys pull_requests by the issue and the branch, and the table stores no task. The

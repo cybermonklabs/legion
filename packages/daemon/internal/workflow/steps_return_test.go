@@ -467,7 +467,7 @@ func TestReturnToNamesAnEarlierStep(t *testing.T) {
 		}
 
 		assertWalksAt(t, pool, engine, root.Key, phase.Planning, record.TaskPlace{Kind: record.PlaceStep, Position: 1})
-		report := "Handoff: test version 1 (dispatch handoff-read --issue LEGION-208 --phase test --version 1). " + testerVerdictLabel + ": fail."
+		report := strings.TrimPrefix(handoffPartOf(t, "LEGION-208", "test", 1), " ") + " " + testerVerdictLabel + ": fail."
 		if start := returnStartOf(t, pool, root.Key, claim.RolePlanner, planners); start.FreshSession || start.Phase != phase.Planning || !strings.Contains(start.Task, report) {
 			t.Fatalf("the planner's start = %+v, want a start of planning in its own session whose task holds the tester's report %q", start, report)
 		}

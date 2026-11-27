@@ -781,7 +781,7 @@ func TestSettleRunsARowAgainAtTheMomentItsWaitNames(t *testing.T) {
 			var attempts int
 			var nextAt time.Time
 			var lastError string
-			if err := pool.QueryRow(context.Background(), "select attempts, next_at, last_error from outbox").Scan(&attempts, &nextAt, &lastError); err != nil {
+			if err := pool.QueryRow(context.Background(), "select attempts, next_at, last_error from outbox where "+notStateRows).Scan(&attempts, &nextAt, &lastError); err != nil {
 				t.Fatalf("read the waiting row: %v", err)
 			}
 			if attempts != 1 || !nextAt.Equal(tc.want) || !strings.Contains(lastError, "production check is open") {

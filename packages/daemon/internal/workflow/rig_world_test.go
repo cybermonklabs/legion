@@ -16,6 +16,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/plan"
@@ -30,6 +31,7 @@ import (
 // RIG_TEXTS_ANSWER it reads the world request (scored-runs-contracts.ts, WorldRequest) and writes
 // the world answer; with neither it runs its own cases.
 func TestRigWorld(t *testing.T) {
+	t.Parallel()
 	request, answer := rigWorldFiles(t)
 	if request != "" {
 		writeRigWorldAnswer(t, answer, rigWorld(t, readRigWorldRequest(t, request)))
@@ -289,7 +291,7 @@ func rigWorld(t *testing.T, req rigWorldRequest) rigWorldAnswer {
 	engine.cfg.Project = req.Project
 	engine.cfg.Steps = config.Gates{}.Steps()
 	engine.cfg.Repositories = fixedRepositories{served: map[string]string{req.Repository: req.DefaultBranch}}
-	engine.cfg.WorkspaceDir = func(record.Issue, string) string { return req.Workspace }
+	engine.cfg.WorkspaceDir = func(string, ghrepo.Repository) string { return req.Workspace }
 
 	for i, issue := range req.Issues {
 		at := phase.Admitted

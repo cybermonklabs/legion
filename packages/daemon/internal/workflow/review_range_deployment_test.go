@@ -4,7 +4,6 @@ import (
 	"context"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -131,7 +130,8 @@ func resetCritic(t *testing.T) (*pgxpool.Pool, *Engine, record.Issue) {
 	seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: "critic", Claim: "critic-claim", Entry: resetEntry,
 		EntryTask: "Continue child. Issue: LEGION-208. Phase: step.", ReviewedHead: stepCommitW})
 	seedRecord(t, pool, func(tx pgx.Tx) error {
-		return record.NewStore().ClearTreeGeneration(t.Context(), tx, "LEGION-207", time.Now().UTC())
+		_, err := record.NewStore().ClearTreeGeneration(t.Context(), tx, "LEGION-207", nil)
+		return err
 	})
 	if head := stepReviewedHead(t, pool, "LEGION-208", "critic"); head != "" {
 		t.Fatalf("the critic's row holds the commit %q right after the clear of its tree's generation, want none", head)

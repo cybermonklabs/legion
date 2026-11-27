@@ -768,12 +768,12 @@ type Prompt struct {
 // Response is OMP's answer to a request, carrying the request's own id. Data is the answer's
 // payload, left raw because its shape belongs to the command (worker-rpc.ts:369-377).
 //
-// Code is Oh My Pi's class of a refusal: a refused request's error response carries it at the
-// top level, right after Error (`RpcResponse` in packages/coding-agent/src/modes/rpc/rpc-types.ts
-// of cybermonklabs/oh-my-pi at the pinned tag). For a `prompt` or `abort_and_prompt` its one value
-// is `session_busy`: the prompt was refused, or failed, because the agent was busy (docs/rpc.md
-// there). Nothing in the daemon reads it; it is modelled so the frame survives this package
-// whole, the way every other frame does.
+// Code is Oh My Pi's class of a refusal, where it gives one, and "" where it gives none: a refused
+// request's error response carries it at the top level, right after Error (`RpcResponse` in
+// packages/coding-agent/src/modes/rpc/rpc-types.ts of cybermonklabs/oh-my-pi at the pinned tag).
+// For a `prompt` or `abort_and_prompt` its one value is `session_busy`: the prompt was refused, or
+// failed, because the agent was busy (docs/rpc.md there). It is what the daemon decides on; Error
+// is words for a person (CodeSessionBusy).
 type Response struct {
 	ID      string          `json:"id"`
 	Command string          `json:"command"`
@@ -782,6 +782,15 @@ type Response struct {
 	Code    string          `json:"code,omitempty"`
 	Data    json.RawMessage `json:"data,omitempty"`
 }
+
+// CodeSessionBusy is the code of a refusal or a failure the agent gives because it is busy: Oh My
+// Pi's word for it on every RPC command that can meet it, and the code the Claude Code bridge
+// gives its own. At the pinned tag one code covers three refusals (rpc-busy-code.ts there): a
+// prompt sent while a turn streams, a session busy with maintenance or user work, and a prompt
+// that waited 30 s while another run held the agent. The daemon reads each as the agent's busy
+// answer, and it is the only way the daemon reads a busy agent; a refusal that says so in words
+// alone is not one (internal/stream's PromptRefusalOutcome).
+const CodeSessionBusy = "session_busy"
 
 // StateData is the get_state answer's payload. IsStreaming is absent rather than false when the
 // worker does not report it, which is the difference between "idle" and "unknown"
@@ -863,13 +872,15 @@ type PromptResult struct {
 // false, and the status it carries is whatever a gateway relayed the refusal under, a 503 among
 // them (`promptError` in packages/coding-agent/src/modes/rpc/rpc-prompt-results.ts there).
 //
-// Message is the reason a failed prompt is recorded with (PromptResult.Reason), and
-// internal/stream carries Retryable, HTTPStatus, Provider, Model and Code onto its own
-// PromptResult event. Supervise's providerErrored decides on HTTPStatus and Code: a
-// `cyber_policy` failure holds the issue whatever its status, and a `cost_cap` one is named as the
-// cause. Every member is modelled, read or not, so the frame survives this package whole, the way
-// every other frame does. A decode that kept only what today's reader wants would quietly drop the
-// provider, the model and the status behind a failure from anything that re-encodes it.
+// Message is the reason a failed prompt is recorded with (PromptResult.Reason), for a person to
+// read, and internal/stream carries Retryable, HTTPStatus, Provider, Model and Code onto its own
+// PromptResult event. The daemon distinguishes failures by Code, not Message:
+// CodeSessionBusy is the agent's busy answer, and supervise's providerErrored decides on
+// HTTPStatus and Code: a `cyber_policy` failure holds the issue whatever its status, and a
+// `cost_cap` one is named as the cause. Every member is modelled, read or not, so the frame
+// survives this package whole, the way every other frame does. A decode that kept only what
+// today's reader wants would quietly drop the class, the provider, the model and the status
+// behind a failure from anything that re-encodes it.
 type PromptError struct {
 	Message    string `json:"message"`
 	Provider   string `json:"provider,omitempty"`

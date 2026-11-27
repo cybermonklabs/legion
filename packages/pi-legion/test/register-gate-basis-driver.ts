@@ -100,7 +100,6 @@ const tool = createLegionTool({
   daemon: () => daemon,
   session: () => ({ kind: "architect", ...input.claim }),
   controllerGrant: () => unexpected("controller grant"),
-  onPhaseCompleted: () => undefined,
   onUpdateAnswered: () => undefined,
   env: process.env,
   handoffReport: () => unexpected("handoff report"),

@@ -12,9 +12,17 @@ import (
 // deployment, at most 32 bytes.
 const agentGrammar = `[a-z][a-z0-9-]{0,31}`
 
+// ProjectKeyPattern is a Dispatch project key, the contract's PROJECT_KEY_PATTERN
+// (packages/contracts/src/dispatch-tools.ts): a capital letter, then one to nine capitals or
+// digits. IsProjectKey is the one test of it, and a refusal that names the rule quotes this.
+// TestTheProjectKeyPatternIsTheContractsOwn holds it to the contract's own.
+const ProjectKeyPattern = `^[A-Z][A-Z0-9]{1,9}$`
+
 var (
 	// issueKey is a Dispatch issue key, the one shape an issue has (legion-roles.ts:30).
 	issueKey = regexp.MustCompile(`^([A-Z][A-Z0-9]*)-([0-9]+)$`)
+	// projectKey is ProjectKeyPattern compiled.
+	projectKey = regexp.MustCompile(ProjectKeyPattern)
 	// projectToken is a project as a token spells it (legion-roles.ts:28).
 	projectToken = regexp.MustCompile(`^[a-z0-9]+$`)
 	// agentName is an agent's name alone.
@@ -48,6 +56,9 @@ func ProjectToken(project string) (string, error) {
 
 // IsIssueKey reports whether key is a Dispatch issue key (`LEGION-208`).
 func IsIssueKey(key string) bool { return issueKey.MatchString(key) }
+
+// IsProjectKey reports whether key is a Dispatch project key (`LEGION`), as the contract reads one.
+func IsProjectKey(key string) bool { return projectKey.MatchString(key) }
 
 // KeyOfProject reports whether an outbox row keyed key belongs to project: the key's part before
 // its first `-` — the whole key where it has none, as a row keyed by a project itself is (a pause's

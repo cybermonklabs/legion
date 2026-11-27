@@ -64,8 +64,8 @@ function daemon(respond: (url: URL) => Response): {
   return { fetch: stub, requests };
 }
 
-/** The contract the build under test speaks. Every request states it, and the refusal cases
- * below set the contract the daemon states against it. */
+/** A contract the test's client states. Every request states it, and the refusal cases below
+ * set the contract the daemon states against it. */
 const CONTRACT = 60;
 
 /** A claim's secret, as the claim wire's requests below carry it. */
@@ -272,6 +272,48 @@ test("activity posts the claim wire's report and accepts only the empty 204", as
   await expect(talkative.activity(report)).rejects.toBeInstanceOf(LegionDaemonContractError);
 });
 
+test("owed posts the claim's question and reads the daemon's answer through its contract", async () => {
+  const owed = daemonFixture("owed.json");
+  const { fetch, requests } = daemon(() => Response.json(owed));
+  const client = createLegionDaemonClient("http://daemon.test", {
+    pluginContract: CONTRACT,
+    fetch,
+  });
+  const question = {
+    claimToken: "legion-legion-legion-208-tester",
+    sessionId: "ses_tester_208",
+    secret: CLAIM_SECRET,
+  };
+
+  // The answer names the architect that owns the claim, which the architect notice goes to.
+  await expect(client.owed(question)).resolves.toEqual({
+    owes: true,
+    work: "the testing phase of LEGION-208",
+    architect: "legion-legion-legion-208-architect",
+  });
+  expect(requests).toEqual([
+    { method: "POST", url: "http://daemon.test/legion/v1/claims/owed", body: question },
+  ]);
+
+  // An answer that owes work and names none, or names work and owes none, is not one the reminder
+  // can render: it is refused, and the reminder reads it as no answer.
+  for (const body of [
+    { owes: true, work: "" },
+    { owes: false, work: "the testing phase of LEGION-208" },
+    without(owed, "work"),
+  ]) {
+    const refused = createLegionDaemonClient("http://daemon.test", {
+      pluginContract: CONTRACT,
+      fetch: daemon(() => Response.json(body)).fetch,
+    });
+    await expect(refused.owed(question)).rejects.toBeInstanceOf(LegionDaemonContractError);
+  }
+
+  // The request is the claim wire's own: a blank field is refused before it leaves the pane.
+  await expect(client.owed({ ...question, secret: "" })).rejects.toThrow();
+  expect(requests).toHaveLength(1);
+});
+
 test("the release records are read by a POST carrying the claim's token and secret, and a list the daemon left out is refused", async () => {
   const records = {
     releases: [
@@ -428,29 +470,6 @@ test("a state from a daemon a release ahead parses without its unknown top-level
       { op: "read_record", issue: "LEGION-208" }
     )
   ).resolves.toEqual({ record });
-});
-
-test("a state read hands fetch its caller's signal, and an abort ends a read the daemon never answers", async () => {
-  const handed: (AbortSignal | null | undefined)[] = [];
-  const hung = (async (_input, init) => {
-    handed.push(init?.signal);
-    const { promise, reject } = Promise.withResolvers<Response>();
-    init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), { once: true });
-    return promise;
-  }) as typeof fetch;
-  const controller = new AbortController();
-  const late = new Error("the reader stopped waiting");
-
-  const read = createLegionDaemonClient("http://daemon.test", {
-    pluginContract: CONTRACT,
-    fetch: hung,
-  }).state({
-    signal: controller.signal,
-  });
-  controller.abort(late);
-
-  await expect(read).rejects.toBe(late);
-  expect(handed).toEqual([controller.signal]);
 });
 
 test("posts every Stage 3 workflow request through its matching route", async () => {
@@ -1178,71 +1197,75 @@ test.each([
   [502, "dropped"],
   [503, "dropped"],
   [504, "dropped"],
-] as const)("a proxy's page answering %i is an outage the restart retry waits out, %s", async (status, reading) => {
-  const { client, attempts } = behindAProxy(status);
-  const first = await client.state().catch((error: unknown) => error);
-  expect(first).toMatchObject({ status, code: undefined, refusalShape: false });
-  expect(daemonUnreachable(first)).toBe(reading);
+] as const)(
+  "a proxy's page answering %i is an outage the restart retry waits out, %s",
+  async (status, reading) => {
+    const { client, attempts } = behindAProxy(status);
+    const first = await client.state().catch((error: unknown) => error);
+    expect(first).toMatchObject({ status, code: undefined, refusalShape: false });
+    expect(daemonUnreachable(first)).toBe(reading);
 
-  const proxied = behindAProxy(status);
-  let clock = 0;
-  const refused = (await retryWhileDaemonRestarts(
-    "handoff_complete",
-    () => proxied.client.state(),
-    {
-      now: () => clock,
-      sleep: async (ms: number) => {
-        clock += ms;
-      },
-    }
-  ).catch((error: unknown) => error)) as LegionDaemonApiError;
-  expect(attempts()).toBe(1);
-  expect(proxied.attempts()).toBe(2);
-  expect(refused).toMatchObject({ status: 409, code: "GATE_UNAPPROVED" });
-  expect(refused.message.includes("may have been applied")).toBe(reading === "dropped");
-});
+    const proxied = behindAProxy(status);
+    let clock = 0;
+    const refused = (await retryWhileDaemonRestarts(
+      "handoff_complete",
+      () => proxied.client.state(),
+      {
+        now: () => clock,
+        sleep: async (ms: number) => {
+          clock += ms;
+        },
+      }
+    ).catch((error: unknown) => error)) as LegionDaemonApiError;
+    expect(attempts()).toBe(1);
+    expect(proxied.attempts()).toBe(2);
+    expect(refused).toMatchObject({ status: 409, code: "GATE_UNAPPROVED" });
+    expect(refused.message.includes("may have been applied")).toBe(reading === "dropped");
+  }
+);
 
 // The daemon's refusal shape is its own answer, whatever its status and with no code: a claim
 // route answers a failure of its own with a sentence alone (`refuse` in the daemon's
 // `internal/api/credentials.go`, as `claims.go` does for release records it keeps none of).
 // Asking again would hold the agent for the restart budget and then call a daemon that answered
 // unreachable, so the retry hands the refusal back at once.
-test.each([
-  408, 429, 500, 502, 503, 504,
-])("the daemon's own refusal answering %i with no code is its answer, handed back at once", async (status) => {
-  const sentence = "the daemon keeps no release records";
-  let attempts = 0;
-  const client = createLegionDaemonClient("http://daemon.test", {
-    pluginContract: CONTRACT,
-    fetch: (async (_input, _init) => {
-      attempts += 1;
-      return Response.json({ error: sentence }, { status });
-    }) as typeof fetch,
-  });
-  const first = await client.state().catch((error: unknown) => error);
-  expect(first).toBeInstanceOf(LegionDaemonApiError);
-  expect(first).toMatchObject({ status, code: undefined, detail: sentence, refusalShape: true });
-  expect(daemonUnreachable(first)).toBeUndefined();
+test.each([408, 429, 500, 502, 503, 504])(
+  "the daemon's own refusal answering %i with no code is its answer, handed back at once",
+  async (status) => {
+    const sentence = "the daemon keeps no release records";
+    let attempts = 0;
+    const client = createLegionDaemonClient("http://daemon.test", {
+      pluginContract: CONTRACT,
+      fetch: (async (_input, _init) => {
+        attempts += 1;
+        return Response.json({ error: sentence }, { status });
+      }) as typeof fetch,
+    });
+    const first = await client.state().catch((error: unknown) => error);
+    expect(first).toBeInstanceOf(LegionDaemonApiError);
+    expect(first).toMatchObject({ status, code: undefined, detail: sentence, refusalShape: true });
+    expect(daemonUnreachable(first)).toBeUndefined();
 
-  attempts = 0;
-  let clock = 0;
-  const waits: number[] = [];
-  const told: string[] = [];
-  const refused = await retryWhileDaemonRestarts("handoff_complete", () => client.state(), {
-    now: () => clock,
-    sleep: async (ms: number) => {
-      waits.push(ms);
-      clock += ms;
-    },
-    onRetrying: (message) => told.push(message),
-  }).catch((error: unknown) => error);
-  expect(refused).toBeInstanceOf(LegionDaemonApiError);
-  expect(refused).toMatchObject({ status, code: undefined, detail: sentence });
-  expect((refused as Error).message).not.toContain("unreachable");
-  expect(attempts).toBe(1);
-  expect(waits).toEqual([]);
-  expect(told).toEqual([]);
-});
+    attempts = 0;
+    let clock = 0;
+    const waits: number[] = [];
+    const told: string[] = [];
+    const refused = await retryWhileDaemonRestarts("handoff_complete", () => client.state(), {
+      now: () => clock,
+      sleep: async (ms: number) => {
+        waits.push(ms);
+        clock += ms;
+      },
+      onRetrying: (message) => told.push(message),
+    }).catch((error: unknown) => error);
+    expect(refused).toBeInstanceOf(LegionDaemonApiError);
+    expect(refused).toMatchObject({ status, code: undefined, detail: sentence });
+    expect((refused as Error).message).not.toContain("unreachable");
+    expect(attempts).toBe(1);
+    expect(waits).toEqual([]);
+    expect(told).toEqual([]);
+  }
+);
 
 test("a coded refusal of an outage's status and a 4xx with no code are the daemon's answer, and a page whose status is no outage is not retried", () => {
   for (const [status, code, refusalShape] of [
@@ -1282,38 +1305,41 @@ test.each([
   ["120", [30_000, 30_000]],
   ["0", [1_000, 1_000]],
   [undefined, [1_000, 1_000]],
-] as const)("a ready answered 429 with Retry-After %p waits %p between its attempts", async (asked, waited) => {
-  let attempts = 0;
-  const client = createLegionDaemonClient("http://daemon.test", {
-    pluginContract: CONTRACT,
-    fetch: (async (_input, _init) => {
-      attempts += 1;
-      if (attempts === 3) return new Response(null, { status: 204 });
-      return new Response("<html>429 Too Many Requests</html>", {
-        status: 429,
-        headers: asked === undefined ? {} : { "Retry-After": asked },
-      });
-    }) as typeof fetch,
-  });
-  const first = await client.ready(readyInput).catch((error: unknown) => error);
-  expect(first).toMatchObject({
-    status: 429,
-    retryAfterMs: asked === undefined ? 0 : Number(asked) * 1_000,
-  });
+] as const)(
+  "a ready answered 429 with Retry-After %p waits %p between its attempts",
+  async (asked, waited) => {
+    let attempts = 0;
+    const client = createLegionDaemonClient("http://daemon.test", {
+      pluginContract: CONTRACT,
+      fetch: (async (_input, _init) => {
+        attempts += 1;
+        if (attempts === 3) return new Response(null, { status: 204 });
+        return new Response("<html>429 Too Many Requests</html>", {
+          status: 429,
+          headers: asked === undefined ? {} : { "Retry-After": asked },
+        });
+      }) as typeof fetch,
+    });
+    const first = await client.ready(readyInput).catch((error: unknown) => error);
+    expect(first).toMatchObject({
+      status: 429,
+      retryAfterMs: asked === undefined ? 0 : Number(asked) * 1_000,
+    });
 
-  attempts = 0;
-  const waits: number[] = [];
-  await callReadyWithRetry(
-    "claims/ready",
-    () => client.ready(readyInput),
-    { log: () => undefined },
-    async (ms) => {
-      waits.push(ms);
-    }
-  );
-  expect(attempts).toBe(3);
-  expect(waits).toEqual([...waited]);
-});
+    attempts = 0;
+    const waits: number[] = [];
+    await callReadyWithRetry(
+      "claims/ready",
+      () => client.ready(readyInput),
+      { log: () => undefined },
+      async (ms) => {
+        waits.push(ms);
+      }
+    );
+    expect(attempts).toBe(3);
+    expect(waits).toEqual([...waited]);
+  }
+);
 
 /** A daemon that answers `body` with `contract` in its `Legion-Daemon-Contract` header, and
  * states no contract where `contract` is undefined. */

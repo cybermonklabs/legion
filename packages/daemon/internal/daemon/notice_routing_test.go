@@ -155,9 +155,12 @@ func architectClaim(t *testing.T, sup *supervisor, issue string, state supervise
 // under its lease.
 func leasedOutboxRow(t *testing.T, pool *store.Pool, records record.Store, row record.OutboxRow) record.OutboxRow {
 	t.Helper()
-	enqueueOutbox(t, pool, records, row)
-	if err := pool.QueryRow(context.Background(), "select id from outbox order by id desc limit 1").Scan(&row.ID); err != nil {
-		t.Fatalf("read the enqueued row: %v", err)
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
+		var err error
+		row.ID, err = records.EnqueueID(ctx, tx, row)
+		return err
+	}); err != nil {
+		t.Fatalf("enqueue the row: %v", err)
 	}
 	row.LeaseToken = leaseOutboxRow(t, pool, row.ID)
 	return row
@@ -207,9 +210,9 @@ func ownerWalkTree() map[string]record.Issue {
 	}
 }
 
-// ownerWalkCase is one notice of ownerWalkTree: its issue, its kind (phase-finished where it
-// names none), the state of LEGION-2's sub-architect (none where it names none), and the issue
-// whose architect owns the notice. The root's architect is working in each.
+// ownerWalkCase is one notice of ownerWalkTree: its issue, its kind (a planner's phase-finished
+// where it names none), the state of LEGION-2's sub-architect (none where it names none), and the
+// issue whose architect owns the notice. The root's architect is working in each.
 type ownerWalkCase struct {
 	name         string
 	issue        string
@@ -229,6 +232,8 @@ var ownerWalkCases = []ownerWalkCase{
 	{name: "a child whose sub-architect was suspended", issue: "LEGION-2", subArchitect: supervise.StateSuspended, owner: "LEGION-1"},
 	{name: "a child's close under its running sub-architect", issue: "LEGION-2", kind: "child-closed", subArchitect: supervise.StateWorking, owner: "LEGION-1"},
 	{name: "a child's status change under its running sub-architect", issue: "LEGION-2", kind: "child-status", subArchitect: supervise.StateWorking, owner: "LEGION-1"},
+	{name: "a child's start under its launching sub-architect", issue: "LEGION-2", kind: "child-status", subArchitect: supervise.StateLaunching, owner: "LEGION-1"},
+	{name: "a grandchild's start under the sub-architect's child", issue: "LEGION-3", kind: "child-status", subArchitect: supervise.StateWorking, owner: "LEGION-2"},
 	{name: "a grandchild's close under the sub-architect's child", issue: "LEGION-3", kind: "child-closed", subArchitect: supervise.StateWorking, owner: "LEGION-2"},
 	{name: "the root's own close", issue: "LEGION-1", kind: "child-closed", owner: "LEGION-1"},
 	{name: "a child whose parent is not recorded", issue: "LEGION-4", owner: "LEGION-1"},
@@ -253,29 +258,35 @@ func (c ownerWalkCase) runs(t *testing.T) func(claim.Token) bool {
 	}
 }
 
-// noticeKind is c's kind, phase-finished where it names none.
-func (c ownerWalkCase) noticeKind() record.NoticeKind {
+// notice is c's notice, naming the claim to (none where to is empty): its kind, and a planner's
+// phase-finished where c names none.
+func (c ownerWalkCase) notice(to claim.Token) record.Notice {
 	if c.kind == "" {
-		return "phase-finished"
+		return record.Notice{Kind: "phase-finished", Role: claim.RolePlanner, To: to}
 	}
-	return c.kind
+	return record.Notice{Kind: c.kind, To: to}
 }
 
 // Every notice but a catch-up goes to the architect that owns its issue, by the TypeScript daemon's
 // rule (record.OwningArchitect): the nearest issue at or above it whose architect claim holds its
 // role (not failed or retired, and not suspended except by the idle release), else the tree root;
-// a child's close or status change, and a worker-died or worker-stalled about a child's
-// architect, start at its parent. A catch-up goes to the architect of its own issue alone
+// a child's close or status change, and a worker-died or worker-stalled about a child's architect,
+// start at its parent. A child's start is told with a child-status, whose walk starts at its
+// parent, so the architect above the child hears it even while the child's own architect is
+// launching. The phase-finished of a root's gate opening, the one that names no role, starts at
+// the root, whose own architect hears it. A catch-up goes to the architect of its own issue alone
 // (noticeRecipient). The walk stays inside the issue's tree: admission records a Dispatch
 // re-parent as it comes and leaves the issue's tree as it was, so a parent that is not an issue of
 // that tree — not recorded, or recorded in another tree — ends the walk at the tree's root. The
-// runs are the outbox's own (holdsRole), over the claim's state alone.
+// runs are the outbox's own (holdsRole), over the claim's state alone. A case that names no kind
+// is a planner's phase-finished.
 func TestTheArchitectThatOwnsANotice(t *testing.T) {
 	t.Parallel()
 	tree := ownerWalkTree()
 	for _, tc := range ownerWalkCases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := record.OwningArchitect("legion", tree, tree[tc.issue], record.NoticeStartsAtParent(tc.noticeKind(), ""), tc.runs(t))
+			notice := tc.notice("")
+			got, err := record.OwningArchitect("legion", tree, tree[tc.issue], record.NoticeStartsAtParent(notice.Kind, notice.Role), tc.runs(t))
 			if want := mustClaimToken(t, tc.owner, claim.RoleArchitect); err != nil || got != want {
 				t.Fatalf("owner = %s, %v; want %s", got, err, want)
 			}
@@ -294,10 +305,10 @@ func TestANoticeGoesToTheClaimItNames(t *testing.T) {
 			// The named claim is the claim a writer of To names, a sub-owner's: a claim of the
 			// notice's issue that no owner walk answers.
 			named := subOwnerToken(t, tc.issue, "f")
-			if got, err := noticeRecipient("legion", tree, tree[tc.issue], record.Notice{Kind: tc.noticeKind(), To: named}, tc.runs(t)); err != nil || got != named {
+			if got, err := noticeRecipient("legion", tree, tree[tc.issue], tc.notice(named), tc.runs(t)); err != nil || got != named {
 				t.Fatalf("the recipient of a notice to %s = %s, %v; want the claim it names", named, got, err)
 			}
-			if got, err := noticeRecipient("legion", tree, tree[tc.issue], record.Notice{Kind: tc.noticeKind()}, tc.runs(t)); err != nil || got != mustClaimToken(t, tc.owner, claim.RoleArchitect) {
+			if got, err := noticeRecipient("legion", tree, tree[tc.issue], tc.notice(""), tc.runs(t)); err != nil || got != mustClaimToken(t, tc.owner, claim.RoleArchitect) {
 				t.Fatalf("the recipient of a notice that names no claim = %s, %v; want the architect of %s", got, err, tc.owner)
 			}
 		})
@@ -478,7 +489,7 @@ func TestANoticeHeldForAnAbsentArchitectArrivesInOrderOnceItReturns(t *testing.T
 	// The held row's error carries the listener's refusal, which is what the log line and the row's
 	// last_error show an operator.
 	var lastError string
-	if err := pool.QueryRow(context.Background(), "select id, last_error from outbox order by id limit 1").Scan(&first.ID, &lastError); err != nil {
+	if err := pool.QueryRow(context.Background(), "select id, last_error from outbox where "+notStateRows+" order by id limit 1").Scan(&first.ID, &lastError); err != nil {
 		t.Fatalf("read the first held row: %v", err)
 	}
 	first.LeaseToken = leaseOutboxRow(t, pool, first.ID)
@@ -1084,9 +1095,11 @@ func TestACatchUpDroppedUnderItsLeaseIsNotPublished(t *testing.T) {
 		t.Fatalf("run the outbox: %v", err)
 	}
 	_, delivered := publisher.snapshot()
+	// The delivery states the tree again, its reason with it (deliverNotice), so each catch-up is
+	// told apart by the generation it was written for, which the row keeps.
 	var got []string
 	for _, published := range delivered {
-		got = append(got, published.payload.(record.Notice).Reason)
+		got = append(got, fmt.Sprintf("generation %d", published.payload.(record.Notice).CatchUp.Generation))
 	}
 	if fmt.Sprint(got) != "[generation 2]" || outboxRows(t, pool) != 0 {
 		t.Fatalf("delivered %v with %d rows left; want the second catch-up alone", got, outboxRows(t, pool))

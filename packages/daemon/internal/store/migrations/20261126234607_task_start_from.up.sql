@@ -33,7 +33,8 @@
 -- after such a wait counts as a move back with no phase of its own, as it did before this file.
 --
 -- This version stands above every migration of main this branch has merged (main's newest is
--- 20261126110259) and above this branch's own 20261126144204, so Migrate applies it last on every
--- database. It writes no check list, so it takes no value of either side away.
+-- 20261126163320) and above this branch's own 20261126144204; this branch's 20261127142558, which
+-- writes both check lists last, stands above it. It writes no check list, so it takes no value of
+-- either side away.
 
 alter table plan_tasks add column start_from text not null default '';

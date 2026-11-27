@@ -13,8 +13,7 @@ import {
 import { stateAtPhase } from "@legion/pi-shared/test/daemon-state"
 import { withImageManifest } from "@legion/pi-shared/test/image-manifest"
 import pkg, { name, version } from "../package.json" with { type: "json" }
-import * as legionTool from "../src/legion-tool"
-import { executeLegionTool, legionToolDefinition } from "../src/legion-tool"
+import { answerLegionTool, executeLegionTool, legionToolDefinition } from "../src/legion-tool"
 
 /** The contract this build speaks, as `legion-tool.ts` reads it (`daemonContract`): this
  * checkout's. */
@@ -184,7 +183,7 @@ const grantRequest = {
   },
 }
 
-test("answerLegionTool closes only a step and answers an update without closing a look", async () => {
+test("answerLegionTool tells the host an update answered and nothing of a completion or a look", async () => {
   const { client } = await daemon({ state: stateAtPhase("testing") })
   const calls: string[] = []
   const runtime = {
@@ -195,14 +194,11 @@ test("answerLegionTool closes only a step and answers an update without closing 
     branchHead: async () => "",
   }
   const hook = {
-    phaseClosed: () => {
-      calls.push("closed")
-    },
     updateAnswered: () => {
       calls.push("update")
     },
   }
-  await legionTool.answerLegionTool(
+  await answerLegionTool(
     runtime,
     {
       op: "handoff_complete",
@@ -212,15 +208,14 @@ test("answerLegionTool closes only a step and answers an update without closing 
     },
     hook,
   )
-  expect(calls).toEqual([])
-  await legionTool.answerLegionTool(
+  await answerLegionTool(
     runtime,
     { op: "handoff_complete", summary: "tested", verdict: "pass" },
     hook,
   )
-  expect(calls).toEqual(["closed"])
-  await legionTool.answerLegionTool(runtime, { op: "ready_for_update", round: "update-1" }, hook)
-  expect(calls).toEqual(["closed", "update"])
+  expect(calls).toEqual([])
+  await answerLegionTool(runtime, { op: "ready_for_update", round: "update-1" }, hook)
+  expect(calls).toEqual(["update"])
 })
 
 test("a named look of a running issue reaches the daemon through executeLegionTool", async () => {

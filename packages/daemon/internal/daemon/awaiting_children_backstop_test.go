@@ -21,6 +21,7 @@ import (
 // earlier release armed, as every arming does, and arms none. The control is the same release of
 // the same issue in implementing, which arms the released implementer's.
 func TestTheReleaseOfAWaitingParentsPodArmsNoBackstop(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name  string
 		at    phase.Phase
@@ -97,6 +98,7 @@ func TestTheReleaseOfAWaitingParentsPodArmsNoBackstop(t *testing.T) {
 // workflow.OpenStepsOf), where the same release in implementing, the control, arms the released
 // implementer's.
 func TestAWaitingParentsQuietPodIsReleasedAsAnyQuietPodAndArmsNoBackstop(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name  string
 		at    phase.Phase

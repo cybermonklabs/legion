@@ -373,6 +373,35 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 		}
 	})
 
+	// The repository correction's narrowing (dispatch://INFRA-3136) is a band like every other,
+	// so a caller below it is told what it lost: a caller one contract below
+	// entryNumber(repositoryCorrectionContract), which states that contract in its header as every
+	// plugin from shapedAnswersContract on does, is served at the recorded contract at or below it
+	// (recordedContractAtOrBelow), stands below that band and every band above it, and the log
+	// holds those bands' lines, the correction's among them, and nothing else. It holds no entry to
+	// be the newest (R4 of dispatch://INFRA-1569). It names the correction's line as a literal, so
+	// taking the band out of the entry and applying the strip beside the loop fails it.
+	t.Run("the repository correction narrowing writes its own line", func(t *testing.T) {
+		const droppedCorrection = "the issues' repoBefore, repoCorrectedAt, repoChangePending and repoChangeReason"
+		state := carriedState(t)
+		below := entryNumber(repositoryCorrectionContract) - 1
+		body, narrowings := stateNarrowedStating(t, state, statePodAddr+":41000", podClaims(0), below)
+
+		for key, issue := range issueViews(t, body) {
+			for _, field := range repositoryCorrectionKeys {
+				if value, carried := issue[field]; carried {
+					t.Errorf("the body served to a caller below %d carries %s's `%s`, a key that entry added: %v",
+						below+1, key, field, value)
+				}
+			}
+		}
+		want := narrowingsExpected(state, below)
+		if !slices.Contains(want, droppedCorrection) {
+			t.Fatalf("a caller at %d expects the lines %v, want the repository correction band's among them", below, want)
+		}
+		wantNarrowings(t, narrowings, below, want)
+	})
+
 	// The priority narrowing is a row of the table like every other, so a caller below it is told
 	// what it lost: a caller one contract below priorityContract, which states that contract in its
 	// header as every plugin from shapedAnswersContract on does, is served at the recorded contract
@@ -478,6 +507,31 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 			t.Fatalf("a caller at %d expects the lines %v, want the pod hold row's, the priority row's, the cause times' row's and the Dispatch credential row's first", below, want)
 		}
 		wantNarrowings(t, narrowings, below, want)
+	})
+
+	// The state sequence's narrowing is an entry's band, a row of the table like every other, so
+	// the caller below it is told what it lost: a caller one contract below
+	// entryNumber(stateSeqContract), which states that contract in its header as every plugin from
+	// shapedAnswersContract on does, is served the daemon block without the three keys. The band's
+	// line is the first of the lines narrowingsExpected counts for that caller, and it is named
+	// here as a literal rather than read from stateNarrowings, so a strip moved beside the loop,
+	// which writes no line, fails here.
+	t.Run("the state sequence narrowing writes its own line", func(t *testing.T) {
+		const dropped = "daemon.stateSeq, daemon.stateId and daemon.stateRun"
+		state := carriedState(t)
+		added := entryNumber(stateSeqContract)
+		body, narrowings := stateNarrowedStating(t, state, statePodAddr+":41000", podClaims(0), added-1)
+
+		for _, key := range []string{"stateSeq", "stateId", "stateRun"} {
+			if raw, carried := daemonKeyServed(t, body, key); carried {
+				t.Errorf("the body served to a caller below %d carries `daemon.%s`, a key that contract added: %s", added, key, raw)
+			}
+		}
+		want := narrowingsExpected(state, added-1)
+		if len(want) == 0 || want[0] != dropped {
+			t.Fatalf("a caller at %d expects the lines %v, want one that dropped %q first", added-1, want, dropped)
+		}
+		wantNarrowings(t, narrowings, added-1, want)
 	})
 
 	// The pod hold line is named as a literal for the reason the assignments line below is: take

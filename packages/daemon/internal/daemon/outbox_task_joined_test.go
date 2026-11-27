@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/githubtest"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -44,7 +45,7 @@ func seedConflictingJoin(t *testing.T) (*taskBranchRig, record.Issue) {
 // an engine that gives each working copy the directory dir names (workflow.Config.WorkspaceDir),
 // none where dir is nil. Beside x.txt, a's branch adds a.txt and c's adds c.txt, each its own work
 // alone. Each task runs one implementer step, keyed by its id.
-func seedJoin(t *testing.T, dir func(record.Issue, string) string, more ...record.PlanTask) (*taskBranchRig, record.Issue) {
+func seedJoin(t *testing.T, dir func(string, ghrepo.Repository) string, more ...record.PlanTask) (*taskBranchRig, record.Issue) {
 	t.Helper()
 	ctx := context.Background()
 	rig := &taskBranchRig{pool: isolatedOutboxPool(t), records: record.NewStore(), github: githubtest.GitRepository(t, "acme", "widgets", "main")}

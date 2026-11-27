@@ -196,7 +196,7 @@ func (e *Engine) startLook(ctx context.Context, tx pgx.Tx, issue record.Issue, c
 }
 
 // checkTaskLead opens every check task: a resumed session tells the check from its last phase
-// task by this line (the phase tasks open with "Continue"), and a test pins it.
+// task by this line (the phase tasks open with their `Working copy:` line), and a test pins it.
 const checkTaskLead = "Production check of "
 
 // checkTask is what the check's role is told at a look of the production check of a merge of the

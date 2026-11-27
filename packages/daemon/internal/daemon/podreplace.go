@@ -32,6 +32,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/store"
@@ -40,11 +41,12 @@ import (
 )
 
 // replacementRecord is the daemon's encoding of a replacement's record (store.PodReplacement's
-// Record): a round's (Round set: its recorded reasons, who made the replacement, and the read
-// before it, with the claim it was made through, none for the pod's launcher) or a launch's own
-// (Claim set with no Round: the launching claim and why it replaced the pod, and the read through
-// the pod's launcher). The read is heldRead's, whose fields the encoding carries beside the
-// record's own.
+// Record): a round's (Round set: its recorded reasons, who made the replacement, the repository the
+// round's pod was built from, and the read before it, with the claim it was made through, none for
+// the pod's launcher) or a launch's own (Claim set with no Round: the launching claim and why it
+// replaced the pod, and the read through the pod's launcher). The read is heldRead's, whose fields
+// the encoding carries beside the record's own. Its repository follows the selected read through a
+// yield or a restart, not the act that ends up telling it.
 type replacementRecord struct {
 	Round   string      `json:"round,omitempty"`
 	Reasons string      `json:"reasons,omitempty"`
@@ -60,16 +62,17 @@ type replacementRecord struct {
 // side's error (storetext.FarSideErrorEnds). work decodes it, for a pod, into the work and the
 // error it holds.
 type heldRead struct {
-	Head    string   `json:"head,omitempty"`
-	Changed bool     `json:"changed,omitempty"`
-	Commits []string `json:"commits,omitempty"`
-	Count   int      `json:"count,omitempty"`
-	Failed  string   `json:"failed,omitempty"`
+	Repository string   `json:"repository,omitempty"`
+	Head       string   `json:"head,omitempty"`
+	Changed    bool     `json:"changed,omitempty"`
+	Commits    []string `json:"commits,omitempty"`
+	Count      int      `json:"count,omitempty"`
+	Failed     string   `json:"failed,omitempty"`
 }
 
-// heldReadOf is the read a record holds of work, found, or of err, the error the read failed with.
-func heldReadOf(work runtime.WorkspaceWork, err error) heldRead {
-	return heldRead{Head: work.Head, Changed: work.Changed, Commits: work.Commits, Count: work.Count, Failed: failedText(err)}
+// heldReadOf keeps the work, the error and the repository the read concerns together.
+func heldReadOf(work runtime.WorkspaceWork, err error, repo string) heldRead {
+	return heldRead{Head: work.Head, Changed: work.Changed, Commits: work.Commits, Count: work.Count, Failed: failedText(err), Repository: repo}
 }
 
 // failedText is the error of a read as the record keeps it, "" for a read that was made.
@@ -86,8 +89,8 @@ func failedText(err error) string {
 // round's replacement is the suspension of the issue's Sandbox over the pod, so it takes the pod,
 // and the pod's uid is its target (GPT-6.1 Sol's point 4).
 func roundRecordOf(issue, pod string, read workspaceRead, reasons string) (store.PodReplacement, error) {
-	encoded, err := json.Marshal(replacementRecord{Round: read.round, Reasons: reasons, By: read.by.String(), Claim: read.claim, At: read.at.UTC(),
-		heldRead: heldReadOf(read.work, read.err)})
+	encoded, err := json.Marshal(replacementRecord{Round: read.round, Reasons: reasons, By: read.by.String(),
+		Claim: read.claim, At: read.at.UTC(), heldRead: heldReadOf(read.work, read.err, read.origin.StringOrEmpty())})
 	if err != nil {
 		return store.PodReplacement{}, err
 	}
@@ -98,7 +101,7 @@ func roundRecordOf(issue, pod string, read workspaceRead, reasons string) (store
 // operation identity the runtime gave it, with what the act takes, its target, and whether it takes
 // the live pod of its Sandbox with the volume (store.PodReplacement.WithPod, which the row holds).
 func launchRecordOf(taken runtime.TakenPod) (store.PodReplacement, error) {
-	encoded, err := json.Marshal(replacementRecord{Claim: taken.Claim, Why: taken.Why, heldRead: heldReadOf(taken.Work, taken.Err)})
+	encoded, err := json.Marshal(replacementRecord{Claim: taken.Claim, Why: taken.Why, heldRead: heldReadOf(taken.Work, taken.Err, taken.Repository)})
 	if err != nil {
 		return store.PodReplacement{}, err
 	}
@@ -115,7 +118,9 @@ func (r heldRead) work(pod string) (runtime.WorkspaceWork, error) {
 	return work, nil
 }
 
-// read is a round's record as the read it holds (workspaceRead), of pod.
+// read is a round's record as the read it holds (workspaceRead), of pod, with the repository the
+// round's pod was built from as its origin. A repository that does not parse is none, as a pod
+// that names none (repositoryDrift): this daemon writes only names that parse.
 func (r replacementRecord) read(pod string) workspaceRead {
 	by := viaProcess
 	switch r.By {
@@ -125,6 +130,9 @@ func (r replacementRecord) read(pod string) workspaceRead {
 		by = viaLaunch
 	}
 	read := workspaceRead{round: r.Round, by: by, claim: r.Claim, at: r.At}
+	if r.Repository != "" {
+		read.origin, _ = ghrepo.Parse("the repository the record's round's pod was built from", r.Repository)
+	}
 	read.work, read.err = r.work(pod)
 	return read
 }
@@ -140,8 +148,9 @@ func (r replacementRecord) taken(recorded store.PodReplacement) runtime.TakenPod
 // recordedRead is a record's read decoded from its stored form (heldRead.work): the work it found,
 // or the error it failed with, as a notice is weighed (weight) and told.
 type recordedRead struct {
-	work runtime.WorkspaceWork
-	err  error
+	work       runtime.WorkspaceWork
+	err        error
+	repository string
 }
 
 // weight is how much the read tells the issue's architect: 2 for a read that found work that no
@@ -178,6 +187,7 @@ func tellingRecord(records []store.PodReplacement) (at int, read recordedRead) {
 		}
 		var decoded recordedRead
 		decoded.work, decoded.err = rec.work(r.PodUID)
+		decoded.repository = rec.Repository
 		if decoded.weight() > 0 && decoded.weight() >= read.weight() {
 			at, read = i, decoded
 		}
@@ -217,7 +227,7 @@ func movedRead(onto store.PodReplacement, both []store.PodReplacement) ([]byte, 
 // read the notice tells (tellingRecord) in place of the launch's own.
 func launchMessage(taken runtime.TakenPod) func(recordedRead) string {
 	return func(read recordedRead) string {
-		taken.Work, taken.Err = read.work, read.err
+		taken.Work, taken.Err, taken.Repository = read.work, read.err, read.repository
 		return launchTakenMessage(taken)
 	}
 }

@@ -4,7 +4,10 @@
     "schemaVersion": 0,
     "boots": 4,
     "firstBootAt": "2126-09-18T14:03:27Z",
-    "startedAt": "2126-09-22T09:15:02Z"
+    "startedAt": "2126-09-22T09:15:02Z",
+    "stateSeq": 43,
+    "stateId": "7c1e9a4d-3b52-4f08-a6d1-2e9b0c5f8a37",
+    "stateRun": "5f0c7a3e-2b9d-4e61-8c47-1d3a9b6e2f80"
   },
   "admission": {
     "cap": 8,
@@ -542,6 +545,8 @@
       "treeRuns": true,
       "repo": "zeta/tools",
       "defaultBranch": "release/v7.1",
+      "repoBefore": "acme/widgets",
+      "repoCorrectedAt": "2126-09-22T07:40:00Z",
       "holdReason": "escalated",
       "heldFrom": "implementing",
       "priority": null,
@@ -569,6 +574,12 @@
           "pass": 1,
           "rounds": 1
         }
+      },
+      "pullRequest": {
+        "repo": "acme/widgets",
+        "number": 1243,
+        "head": "c4a7f0b36d2e18a95f7b0c43e62d1a8f94b7e305",
+        "state": "open"
       },
       "designGate": {
         "artifactId": "4e8b2a61-7d93-4c05-b1f6-8a3e5c9d2074",
@@ -677,6 +688,8 @@
       "treeRuns": true,
       "repo": "acme/widgets",
       "defaultBranch": "main",
+      "repoChangePending": "acme/gadgets",
+      "repoChangeReason": "the review App is not installed on acme/gadgets",
       "priority": 0,
       "workers": {
         "tester": {

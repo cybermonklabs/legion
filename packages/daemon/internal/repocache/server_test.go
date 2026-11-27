@@ -2399,16 +2399,7 @@ func TestCacheRepacksAfterTheDefaultBranchHistoryIsRewritten(t *testing.T) {
 	if health := c.ready(t); health.Head != old {
 		t.Fatalf("the cache serves %s, want %s before rewriting the default branch", health.Head, old)
 	}
-	work := filepath.Join(t.TempDir(), "work")
-	git(t, filepath.Dir(work), "clone", "--quiet", remote, work)
-	git(t, work, "reset", "--hard", "HEAD~1")
-	if err := os.WriteFile(filepath.Join(work, "rewritten.txt"), []byte("rewritten\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	git(t, work, "add", ".")
-	git(t, work, "commit", "--quiet", "-m", "rewritten")
-	git(t, work, "push", "--quiet", "--force", "origin", "HEAD:main")
-	rewritten := git(t, work, "rev-parse", "HEAD")
+	rewritten := forcePushMain(t, remote)
 
 	c.waitFor(t, "at the rewritten default branch", func(_ int, health Health) bool { return health.Head == rewritten })
 	narrowedBytes(t, c.log.all(), c.dir())

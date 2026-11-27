@@ -81,7 +81,8 @@ func (r *ownerStepsRig) implementAfterTheTestersFail() {
 	implementer := r.worker(claim.RoleImplementer)
 	told := implementer.take().Message
 	for _, want := range []string{
-		fmt.Sprintf("Handoff: test version %d (dispatch handoff-read --issue %s --phase test --version %d).", tested.HandoffVersion, r.key, tested.HandoffVersion),
+		fmt.Sprintf("Handoff: test version %d (dispatch handoff-read --issue %s --phase test --version %d);", tested.HandoffVersion, r.key, tested.HandoffVersion),
+		fmt.Sprintf("the newest version of that record: dispatch handoff-read --issue %s --phase test.", r.key),
 		"Tester's verdict: fail.",
 	} {
 		if !strings.Contains(told, want) {

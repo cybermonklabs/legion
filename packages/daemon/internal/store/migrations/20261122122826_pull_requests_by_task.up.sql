@@ -24,14 +24,15 @@
 -- putSettledHeads).
 --
 -- The outbox check is one list, so this migration names every kind, as 20261121165047 did: its
--- thirty-four kinds and task_pull_requests_close. Its version stands above 20261121165047 on
+-- thirty-seven kinds and task_pull_requests_close. Its version stands above 20261121165047 on
 -- purpose: Migrate applies every unrecorded migration in version order, so on a database main
 -- migrated this file runs late, after main's, and its list is the last word there. The last
 -- migration to write the list owns every value of it, main's included, so this one names main's
--- two basis seeds (pending_basis_seed and reparent_seed, main's 20261122154643) and main's
--- merge_holds_changed (main's 20261126110259), two migrations that sort above this file, beside
--- its own kinds. Without them an upgrade of a database main migrated stops on a queued row of one
--- of those three kinds (SQLSTATE 23514) and the daemon does not boot.
+-- two basis seeds (pending_basis_seed and reparent_seed, main's 20261122154643), main's
+-- merge_holds_changed (main's 20261126110259) and main's three state kinds (state_change,
+-- state_admission and state_boot, main's 20261126163320), three migrations that sort above this
+-- file, beside its own kinds. Without them an upgrade of a database main migrated stops on a
+-- queued row of one of those six kinds (SQLSTATE 23514) and the daemon does not boot.
 --
 -- There is no down file. This directory keeps none, so the way back is the transaction that ends
 -- this header, its last paragraph (migrations.WayBack), run with the daemon stopped, before the
@@ -40,10 +41,11 @@
 -- row with `on conflict (issue)`, which needs the key of one row for each issue, and decodes no
 -- task_pull_requests_close row. So the block deletes each such row first, since the check written
 -- again without the kind refuses a row that holds it, and writes that check keeping main's two basis
--- seeds (pending_basis_seed and reparent_seed) and main's merge_holds_changed, as this file's own
--- list does, since main's 20261122154643 and 20261126110259 stay recorded after the way back and a
--- queued row of any of the three kinds stays with them, which a check without its kind would
--- refuse, and the way back with it (SQLSTATE 23514); then keeps, of each issue, the row on the
+-- seeds (pending_basis_seed and reparent_seed), main's merge_holds_changed and main's three state
+-- kinds, as this file's own list does, since main's 20261122154643, 20261126110259 and
+-- 20261126163320 stay recorded after the way back and a queued row of any of the six kinds stays
+-- with them, which a check without its kind would refuse, and the way back with it (SQLSTATE
+-- 23514); then keeps, of each issue, the row on the
 -- branch of the task that merges (the one task of its plan at its generation that no task needs,
 -- on the branch its row holds or on legion/<KEY> where it holds none) or on legion/<KEY> where the
 -- issue has no plan rows there, and deletes the others, which takes the settled heads of each with
@@ -63,7 +65,7 @@
 --   'gated_steps_publish', 'claim_release', 'hook_prompt', 'design_gates_publish', 'update_ask',
 --   'merge_queue_read', 'merge_queue_removal', 'role_holders_publish', 'step_record', 'plan_record',
 --   'conflict_confirm', 'merge_forward', 'design_changes', 'pending_basis_seed', 'reparent_seed',
---   'merge_holds_changed', 'task_branch'));
+--   'merge_holds_changed', 'task_branch', 'state_change', 'state_admission', 'state_boot'));
 -- delete from pull_requests pr where pr.branch <> coalesce((select coalesce(nullif(t.branch, ''), 'legion/' || t.issue) from plan_tasks t join issues i on i.key = t.issue and i.generation = t.generation where t.issue = pr.issue and not exists (select 1 from plan_tasks u where u.issue = t.issue and u.generation = t.generation and t.task = any(u.needs)) order by t.task limit 1), 'legion/' || pr.issue);
 -- alter table pull_request_settled_heads drop constraint pull_request_settled_heads_issue_fkey,
 --   drop constraint pull_request_settled_heads_pkey;
@@ -95,4 +97,5 @@ alter table outbox add constraint outbox_kind_check check (kind in (
   'gated_steps_publish', 'claim_release', 'hook_prompt', 'design_gates_publish', 'update_ask',
   'merge_queue_read', 'merge_queue_removal', 'role_holders_publish', 'step_record', 'plan_record',
   'conflict_confirm', 'merge_forward', 'design_changes', 'task_branch', 'task_pull_requests_close',
-  'pending_basis_seed', 'reparent_seed', 'merge_holds_changed'));
+  'pending_basis_seed', 'reparent_seed', 'merge_holds_changed', 'state_change', 'state_admission',
+  'state_boot'));

@@ -524,6 +524,7 @@ func (r *personHandoverRig) openRun(held *outboxHold, names []string, opt stayin
 // with no earlier approval of R and once from the fourth run's R, whose start task names the
 // person's approval of v2, asks for a request of the latest version and names R1's path.
 func TestBasisGateStaysOnTheRootDocument(t *testing.T) {
+	// Not parallel: the scratch-Dispatch rig holds its boot (1 min), Dispatch's readiness (2 min) and each reply (10 s) to fixed spans, which rigs beside it can push it past; its five callers already parallel carry that risk until the rig waits on the events instead (#5735).
 	held := &outboxHold{}
 	r := newPersonHandoverRig(t, 16)
 	r.tune = func(o *overrides) { o.holdOutbox = held.holds }
@@ -1232,6 +1233,7 @@ func (r *personHandoverRig) basisChangesTold(run basisRun, reason string, told b
 // TestTreeRunsIsServedForEveryRootState (internal/api); R waiting on a person, in
 // TestAPendingBasisMeetsARootWaitingOnAPerson (internal/admit).
 func TestPendingBasisWaitsOnTheAncestorRequest(t *testing.T) {
+	// Not parallel: the scratch-Dispatch rig holds its boot (1 min), Dispatch's readiness (2 min) and each reply (10 s) to fixed spans, which rigs beside it can push it past; its five callers already parallel carry that risk until the rig waits on the events instead (#5735).
 	pause, held, drop := &registrationPause{}, &outboxHold{}, &consumerDrop{}
 	r := newPersonHandoverRig(t, 80)
 	r.tune = func(o *overrides) {

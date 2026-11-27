@@ -387,7 +387,7 @@ func TestALateSettlementOfAHeadWhoseFenceWasResetChangesNothing(t *testing.T) {
 		}},
 		{"a new generation cleared it", func(t *testing.T, pool *pgxpool.Pool, apply func(string, intake.Fact)) {
 			seedRecord(t, pool, func(tx pgx.Tx) error {
-				return record.NewStore().ClearGeneration(t.Context(), tx, "LEGION-208", lateApplied.Add(time.Hour))
+				return clearLateGeneration(t, tx, lateApplied.Add(time.Hour))
 			})
 		}},
 	} {

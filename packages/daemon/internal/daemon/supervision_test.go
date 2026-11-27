@@ -348,7 +348,9 @@ func TestRunFeedsTheStreamAndTheSweepIntoTheClaimsMachine(t *testing.T) {
 		return c.Pending != nil && c.Pending.DeliveredAt != nil
 	})
 	acknowledged := d.claim(token).Pending.ID
-	sh.send(shimwire.Response{ID: second.ID, Command: shimwire.TypePrompt, Success: false, Error: "Agent is already processing. Use steer() or followUp() to queue messages, or wait for completion."})
+	sh.send(shimwire.Response{ID: second.ID, Command: shimwire.TypePrompt, Success: false,
+		Error: "Agent is already processing. Use steer() or followUp() to queue messages, or wait for completion.",
+		Code:  shimwire.CodeSessionBusy})
 	testwait.Eventually(t, "the refused task to return to waiting", func() bool {
 		c := d.claim(token)
 		return c.Pending != nil && c.Pending.ID != acknowledged && c.Budgets.PromptFailures == 0
@@ -1266,18 +1268,26 @@ func TestEveryStreamEventMapsToItsSuperviseEvent(t *testing.T) {
 			supervise.StreamToolStep{Claim: token, Tool: "bash", CallID: "toolu_turn1_0", End: true, ConnSequence: 4}},
 		{stream.PromptResult{Claim: token, DeliveryID: "d1", AgentInvoked: true},
 			supervise.StreamPromptResult{Claim: token, DeliveryID: "d1", AgentInvoked: true}},
-		{stream.PromptResult{Claim: token, DeliveryID: "d1", Error: "no model"},
-			supervise.StreamPromptResult{Claim: token, DeliveryID: "d1", Error: "no model"}},
+		{stream.PromptResult{Claim: token, DeliveryID: "d1", Error: "no model", Outcome: runtime.OutcomeNoTurnRun},
+			supervise.StreamPromptResult{Claim: token, DeliveryID: "d1", Error: "no model", Outcome: runtime.OutcomeNoTurnRun}},
 		// Every member of the error object the machine decides on, Oh My Pi's class of the
 		// failure among them: a cyber_policy code dropped here is a refusal the ladder re-sends.
 		{stream.PromptResult{Claim: token, DeliveryID: "d1", AgentInvoked: true, Error: "503 cyber_policy: synthetic refusal text",
 			HTTPStatus: 503, Provider: "openai", Model: "gpt-5.5", Code: "cyber_policy"},
 			supervise.StreamPromptResult{Claim: token, DeliveryID: "d1", AgentInvoked: true, Error: "503 cyber_policy: synthetic refusal text",
 				HTTPStatus: 503, Provider: "openai", Model: "gpt-5.5", Code: "cyber_policy"}},
-		{stream.LateRefusal{Claim: token, DeliveryID: "d1", Error: "Agent is already processing. Use steer() or followUp() to queue messages, or wait for completion."},
-			supervise.StreamLateRefusal{Claim: token, DeliveryID: "d1", Error: "Agent is already processing. Use steer() or followUp() to queue messages, or wait for completion."}},
-		{stream.LateRefusal{Claim: token, DeliveryID: "d2", Error: "Agent is already processing.", Replayed: true, ConnSequence: 3},
-			supervise.StreamLateRefusal{Claim: token, DeliveryID: "d2", Error: "Agent is already processing.", Replayed: true, ConnSequence: 3}},
+		// The class and the outcome the stream minted from it travel together: a prompt that ran
+		// no turn because the agent was busy carries both, and neither is dropped for the other.
+		{stream.PromptResult{Claim: token, DeliveryID: "d1", Error: "Agent is busy", Code: shimwire.CodeSessionBusy, Outcome: runtime.OutcomeAgentBusy},
+			supervise.StreamPromptResult{Claim: token, DeliveryID: "d1", Error: "Agent is busy", Code: shimwire.CodeSessionBusy, Outcome: runtime.OutcomeAgentBusy}},
+		{stream.LateRefusal{Claim: token, DeliveryID: "d1", Error: "Agent is already processing. Use steer() or followUp() to queue messages, or wait for completion.",
+			Outcome: runtime.OutcomeAgentBusy},
+			supervise.StreamLateRefusal{Claim: token, DeliveryID: "d1", Error: "Agent is already processing. Use steer() or followUp() to queue messages, or wait for completion.",
+				Outcome: runtime.OutcomeAgentBusy}},
+		{stream.LateRefusal{Claim: token, DeliveryID: "d2", Error: "Agent is already processing.", Outcome: runtime.OutcomeAgentBusy,
+			Replayed: true, ConnSequence: 3},
+			supervise.StreamLateRefusal{Claim: token, DeliveryID: "d2", Error: "Agent is already processing.", Outcome: runtime.OutcomeAgentBusy,
+				Replayed: true, ConnSequence: 3}},
 		{stream.Closed{Claim: token}, supervise.StreamClosed{Claim: token}},
 		{stream.Answered{Claim: token, Provider: "second", Model: "second-model", Generation: 3},
 			supervise.StreamAnswered{Claim: token, Model: "second/second-model", Generation: 3}},

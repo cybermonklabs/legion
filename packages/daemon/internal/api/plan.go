@@ -130,7 +130,7 @@ func checkPlan(ctx context.Context, given plan.Plan, d plan.Deployment, bound ti
 //
 // It is a literal of its own and never DaemonAPIVersion: the number a later contract takes moves
 // that constant, and the contract these keys and values arrived at stays where it is. It moves
-// only with this change's own number, and it is a number of SupportedContracts, which names the
+// only with this change's own number. It is a number of SupportedContracts, which names the
 // constant rather than its number for that reason.
 const OwnerPlanContract = 219
 

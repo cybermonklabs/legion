@@ -51,7 +51,8 @@ func TestAnEarlierRunIsOneThatRanAStep(t *testing.T) {
 					must(t, records.PutPhase(ctx, tx, PhaseRow{Issue: tc.issue.Key, Role: role, Claim: claim.Token("claim-of-" + string(role)), Entry: 2}))
 				}
 				// A new generation clears each row and keeps it (ClearGeneration).
-				must(t, records.ClearGeneration(ctx, tx, tc.issue.Key, planGivenAt))
+				_, err := records.ClearGeneration(ctx, tx, tc.issue, forgetNothing)
+				must(t, err)
 				got, err := records.EarlierRunOf(ctx, tx, tc.issue)
 				must(t, err)
 				if got != tc.want {

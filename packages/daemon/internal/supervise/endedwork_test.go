@@ -655,7 +655,7 @@ func TestARelaunchRecordsAReportOlderThanABusyAnswersTurnAsNoReport(t *testing.T
 				h.reportActivity(row.kinds...)
 				h.advance(time.Second)
 			}
-			h.conn.RefusePrompt(busyAnswer)
+			h.conn.FailPrompt(busyRefusal())
 			h.must(RequestDeliver{Claim: h.token, Task: "the next task"})
 			h.wantState(StateWorking)
 			answered := h.clock.Now()

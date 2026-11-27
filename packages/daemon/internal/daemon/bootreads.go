@@ -47,14 +47,15 @@ type variantInstructions struct {
 }
 
 // readBoot is every refusal boot makes from the configuration, the daemon's environment (lookup,
-// and getenv for the OMP invocation) and the files they name, writing nothing: the project token,
-// the operator bearer's file, operator configuration colliding with Legion's own
-// (checkOperatorConfig), the launch secrets (readLaunchSecrets), the deployment's private-name
-// rule file among them, which it compiles (compilePrivateNameRules), the daemon's own NATS nkey
-// seed (natsauth.DaemonSeed), the instructions file, every declared variant's instructions file,
-// the file of every hook that reads its words from one (`hooks[].prompt_file`), the Dispatch
-// bearer's file, or under dispatch_token_broker the transition token's file where the
-// configuration names one, and the runtime's own reads (readTmux, readSandbox).
+// and getenv for the OMP invocation) and the files they name, writing nothing: the project key's
+// shape (config.CheckProjectKey), the project token, the operator bearer's file, operator
+// configuration colliding with Legion's own (checkOperatorConfig), the launch secrets
+// (readLaunchSecrets), the deployment's private-name rule file among them, which it compiles
+// (compilePrivateNameRules), the daemon's own NATS nkey seed (natsauth.DaemonSeed), the
+// instructions file, every declared variant's instructions file, the file of every hook that reads
+// its words from one (`hooks[].prompt_file`), the Dispatch bearer's file, or under
+// dispatch_token_broker the transition token's file where the configuration names one, and the
+// runtime's own reads (readTmux, readSandbox).
 // hostOMP is whether boot runs the host's Oh My Pi, false only for a test that replaced the
 // runtime. prepare runs it first; CheckStart is it for `legion config check`, so the check refuses
 // whatever boot refuses before its first write, with one exception: under dispatch_token_broker,
@@ -66,6 +67,9 @@ type variantInstructions struct {
 func readBoot(cfg config.Config, lookup func(string) (string, bool), getenv func(string) string, hostOMP bool, log *slog.Logger) (bootReads, error) {
 	var r bootReads
 	var err error
+	if err := config.CheckProjectKey(cfg.Project); err != nil {
+		return bootReads{}, err
+	}
 	if r.project, err = claim.ProjectToken(cfg.Project); err != nil {
 		return bootReads{}, err
 	}

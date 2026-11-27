@@ -134,6 +134,7 @@ func heldForARestingRoot(t *testing.T) (*pgxpool.Pool, *Engine) {
 // refusal. A retry of the hold is refused naming R. R's leave of the workflow ends the hold with
 // nobody acting: P's retro starts in the fact of the leave, which writes no issue of P's tree.
 func TestARootRestingOnAParentHoldsItsRetroUntilTheRootLeaves(t *testing.T) {
+	t.Parallel()
 	pool, engine := heldForARestingRoot(t)
 	if gate := gatesOf(t, pool, gatedRoot)[record.DesignStepSpec]; !gate.PendingOnBasis() || gate.Basis.Pending.Ask != "ask-100" {
 		t.Fatalf("R's spec step after P's hold = %#v, want it still waiting on ask-100: nothing accepted P", gate)
@@ -173,6 +174,7 @@ func TestARootRestingOnAParentHoldsItsRetroUntilTheRootLeaves(t *testing.T) {
 // fact writes no issue of P's tree, so its settle reads P's tree only because the end names P to
 // it (restEnded), and P's retro starts in that fact, with nobody acting.
 func TestTheEndOfAWaitOnTheParentsRequestStartsItsHeldRetro(t *testing.T) {
+	t.Parallel()
 	pool, engine := heldForARestingRoot(t)
 	apply := applyFacts(t, pool, engine)
 
@@ -212,6 +214,7 @@ func TestTheEndOfAWaitOnTheParentsRequestStartsItsHeldRetro(t *testing.T) {
 // filed after the review began: before it, an open child would have held the start of the review
 // itself (childrenHolding).
 func TestAChildNeverReleasedHoldsAParentBeforeItsRetro(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine, _ := loggedEngine()
 	stepRoot(t, pool, phase.Admitted)

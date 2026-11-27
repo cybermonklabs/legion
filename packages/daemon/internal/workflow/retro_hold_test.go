@@ -253,6 +253,7 @@ func TestAParentWithNoAcceptanceIsHeldBeforeItsRetro(t *testing.T) {
 // later read of the same run words its notice by the same move: the child's leave leaves a Dispatch
 // child it never released holding the parent, and the settle tells that hold as a move back too.
 func TestAParentMovedBackOutOfMergingIsToldTheMoveThatHeldIt(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine, _ := loggedEngine()
 	root := stepRoot(t, pool, phase.Admitted)

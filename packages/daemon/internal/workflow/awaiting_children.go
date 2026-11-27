@@ -85,7 +85,9 @@ type childrenHold struct {
 // door has read both already and the move reads them no second time. In one transaction it
 //
 //   - writes in_progress where the record shows another status (Engine.status): the parent's
-//     work is under way in its children (dispatch://INFRA-3320 R11);
+//     work is under way in its children (dispatch://INFRA-3320 R11). Where that write would
+//     replace a status that accepts the parent (record.AcceptedStatus, retro), it first ends every
+//     step of another root that waits on the parent's approval request (endsAcceptedBases);
 //   - writes the phase with the held start — its phase, its task, its reason naming the open
 //     children, the moment the wait began and the keys of those children, which the return reads
 //     for the ones that merged (record.ChildrenWait) — and the moment of the move, which outlives
@@ -153,6 +155,9 @@ func (e *Engine) awaitChildren(ctx context.Context, tx pgx.Tx, s TaskScope, hold
 		return err
 	}
 	status := PhaseStatus(phase.AwaitingChildren)
+	if err := e.endsAcceptedBases(ctx, tx, issue, status); err != nil {
+		return err
+	}
 	if err := e.status(ctx, tx, issue, status, ""); err != nil {
 		return err
 	}
@@ -220,6 +225,29 @@ func (e *Engine) awaitChildren(ctx context.Context, tx pgx.Tx, s TaskScope, hold
 	}
 	return e.enqueue(ctx, tx, issue.Key, record.PhaseEnded{Role: hold.Ended, From: from, To: phase.AwaitingChildren, Reason: reason,
 		MergeForward: ended})
+}
+
+// endsAcceptedBases ends, before awaitChildren's status write to status, every step of another
+// root that waits, closed, on a request of issue (endPendingOn), where that write is the daemon's
+// own overwrite of a status that accepts issue: Engine.status queues it only for a status the
+// record does not show, and its write lands only while Dispatch still shows the record's status
+// (record.StatusWrite.ObservedStatus), here retro (record.AcceptedStatus). The authority is what the
+// store shows now under the fact lock (record.BasisAcceptance), never that status alone, and the
+// end names it as the pending-basis seed's read would (ancestorLeft): a seed the same event queued
+// (readBasisOnCue) can run after this write lands and read issue in_progress, the same status
+// it read before the acceptance, so without this the wait would outlive the
+// acceptance (dispatch://INFRA-3320 R1). The move still enters awaiting_children and writes
+// in_progress (R11); a write from any other status ends nothing here, and its waits are left to
+// the seed's read.
+func (e *Engine) endsAcceptedBases(ctx context.Context, tx pgx.Tx, issue record.Issue, status string) error {
+	if status == issue.Status || !record.AcceptedStatus(issue.Status) {
+		return nil
+	}
+	why, _, err := record.BasisAcceptance(ctx, e.store, tx, issue.Key)
+	if err != nil || why == "" {
+		return err
+	}
+	return e.endPendingOn(ctx, tx, issue.Key, ancestorLeft(issue.Key, why, "", true))
 }
 
 // childrenHolding is the open Dispatch children of issue that hold its start of to (R9's guard),
@@ -306,7 +334,7 @@ func (e *Engine) holdForChildren(ctx context.Context, tx pgx.Tx, s TaskScope, tr
 		return err
 	}
 	from := s.issue.Phase
-	replaced := noticeFor(trigger, from, to, handoff, reason, s.walk.endingRole(from))
+	replaced := noticeFor(trigger, s.issue, from, to, handoff, reason, s.walk.endingRole(from))
 	moved := s
 	if err := e.moveTask(ctx, tx, &moved, to, place, record.TaskRunning); err != nil {
 		return err

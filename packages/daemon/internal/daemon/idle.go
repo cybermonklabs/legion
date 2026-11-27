@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"fmt"
+	"iter"
 	"log/slog"
 	"slices"
 	"strings"
@@ -47,6 +48,88 @@ type issuePods interface {
 
 // Without it, a sandbox.Runtime missing a method fails the rt.(issuePods) checks with no error.
 var _ issuePods = (*sandbox.Runtime)(nil)
+
+// issuePodRepository is the repository the pod of issue was built from, read through the claims
+// of the issue the daemon supervises (podRepository), for the idle rule's repository hold
+// (podRepositoryDrifted).
+//
+// It is the pod's own fact and not the record's: a pod clones one repository into the issue's
+// workspace at its creation and holds the gh directories and the token of that repository's
+// owner for its whole life, so this is the repository every role in it works, and the
+// repository every byte of unpushed work on its disk is of, until the pod is replaced.
+//
+// The claims are read as their machines last published them (supervise.Machine.View), never
+// waiting on a decision in flight, exactly as the capability report reads them
+// (supervision.deployment).
+//
+// It answers "" with no error where nothing can say: a daemon with no supervisor or no runtime,
+// an issue no claim of which records a process, and the tmux runtime, whose panes share no pod
+// and which answers "" itself. Each of those is an unknown rather than a statement, which is
+// the rule every reader of a pod's repository already follows (repositoryDrift).
+func issuePodRepository(ctx context.Context, sup *supervisor, issue string) (string, error) {
+	if sup == nil || sup.deps.Runtime == nil {
+		return "", nil
+	}
+	return podRepository(ctx, sup.deps.Runtime, func(yield func(supervise.Claim) bool) {
+		for _, m := range sup.supervised() {
+			if c := m.View().Claim; c.Issue == issue && !yield(c) {
+				return
+			}
+		}
+	})
+}
+
+// podRepository is the repository the pod claims run in was built from, as that pod itself
+// names it (runtime.Runtime.PodRepository), asked through the claim of claims that records a
+// process and has the lowest token. One claim answers for the whole issue: every role of an
+// issue runs in that one pod and works the one workspace its fetch cloned. The claim is chosen
+// by its token and not by the order claims arrive in, so the readers that hand it every claim of
+// the issue ask the pod through the same claim whichever list they hold: the idle rule reads the
+// claims the daemon supervises (issuePodRepository), and the update-round sweep reads the claims
+// the store answered (supervision.groupDrift). That is what lets the release and the replacement
+// agree on which pods are on a repository the issue has left (podRepositoryDrifted). It answers
+// "" with no error where no claim records a process.
+func podRepository(ctx context.Context, rt runtime.Runtime, claims iter.Seq[supervise.Claim]) (string, error) {
+	var pod supervise.Claim
+	found := false
+	for c := range claims {
+		if c.Locator != nil && (!found || c.Token < pod.Token) {
+			pod, found = c, true
+		}
+	}
+	if !found {
+		return "", nil
+	}
+	repository, err := rt.PodRepository(ctx, runtime.Known{Claim: pod.Token, Locator: pod.Locator})
+	if err != nil {
+		return "", fmt.Errorf("ask the pod through the claim %s: %w", pod.Token, err)
+	}
+	return repository, nil
+}
+
+// podRepositoryDrifted is whether the issue's pod was built from a repository the issue's
+// record no longer holds, which is the idle rule's repository hold (workflow.IdleHoldRepository)
+// and the one input of it the daemon's Postgres does not hold on its own. It is the update-round
+// sweep's reading of the same pair, through the same claim (podRepository) and the sweep's own
+// comparison (repositoryDrift), so the release and the replacement never disagree about which
+// pods are on a repository the issue has left: the sweep opens a round over exactly the pods
+// this holds.
+//
+// Anything that leaves either name unread answers false — a runtime that cannot be asked, a pod
+// that names no repository, a deployment with no workflow, a record that cannot be read — since
+// an unknown is never a statement that something drifted, and a hold on one would keep a pod
+// that nothing is going to replace.
+func (s *supervision) podRepositoryDrifted(ctx context.Context, issue string) bool {
+	pod, err := issuePodRepository(ctx, s.supervisor, issue)
+	if err != nil {
+		if ctx.Err() == nil {
+			s.log.Error("idle release: read the repository this issue's pod was built from", "issue", issue, "error", err)
+		}
+		return false
+	}
+	_, reason := s.repositoryDrift(ctx, issue, pod)
+	return reason != ""
+}
 
 // tickIdle decides every pod of the project on the daemon's own period (idleTickInterval),
 // under both release rules: the release of a pod no claim owns, whose every claim is failed,
@@ -106,8 +189,13 @@ func (w *workflowRuntime) releaseIdlePods(ctx context.Context) {
 
 // releaseIdlePod decides one issue's pod and, when the rule releases it, writes the release's
 // rows and its mark in one transaction with the view they rest on (store.ReleaseIdleIssue). The
-// pod's image is read before that transaction, from the runtime's own store of pods, because it
-// is the one input the daemon's Postgres does not hold.
+// pod's image and the repository it was built from are read before that transaction, from the
+// runtime's own store of pods, because they are the inputs the daemon's Postgres does not hold.
+// The repository, and the record it is read against, are read only for a pod on the configured
+// image: the rule holds any other pod for its image, or for an earlier reason, before it reads
+// the repository (workflow.IdleRelease), so a read there would decide nothing. A deployment that
+// wired no repository reader — a test that builds the runtime by hand — reads no drift, as a pod
+// whose repository cannot be read does.
 //
 // A pod the rule kept that was quiet for the whole idle period is recorded as a hold
 // (recordIdleHold): that is a pod release would have taken and something else stopped, which is
@@ -121,6 +209,7 @@ func (w *workflowRuntime) releaseIdlePods(ctx context.Context) {
 func (w *workflowRuntime) releaseIdlePod(ctx context.Context, issue string) {
 	now := w.clockNow().UTC()
 	onConfiguredImage := w.idleRuntime.IssuePodRunsConfiguredImage(issue)
+	repositoryDrifted := onConfiguredImage && w.idleRepositoryDrifted != nil && w.idleRepositoryDrifted(ctx, issue)
 	var decision workflow.IdleDecision
 	var quiet, holding bool
 	podUID := w.runningPod(issue)
@@ -133,7 +222,7 @@ func (w *workflowRuntime) releaseIdlePod(ctx context.Context, issue string) {
 		var err error
 		marked, err = w.idleStore.ReleaseIdleIssue(ctx, w.projectID, issue, func(view pods.IdleView) (store.IdleReleaseMark, error) {
 			view.PodUID = podUID
-			decision = workflow.IdleRelease(view, now, w.idlePeriod, onConfiguredImage, api.DaemonAPIVersion())
+			decision = workflow.IdleRelease(view, now, w.idlePeriod, onConfiguredImage, repositoryDrifted, api.DaemonAPIVersion())
 			since, found := view.QuietSince()
 			quiet = found && now.Sub(since) >= w.idlePeriod
 			holding = view.Holding
@@ -560,16 +649,16 @@ func (w *workflowRuntime) runningPod(issue string) string {
 // place a streak ends outside a hold of another reason (releaseIdlePod).
 //
 // Every other value is a reason worth a row, the ones that are working as designed
-// (background_work, in_turn, delivery_waiting, reminder_due, awaiting_person) as much as the
-// ones that are not (image, plugin_contract, unreported, unpushed_work, workspace_unread,
-// overtaken, unauthorized): a deployment reads release's health from which of them it sees, so
-// leaving the healthy ones out would leave it unable to tell a pod kept for good reason from one
-// never decided at all. IdleHoldTreeNotLive is recorded too: it holds a pod of an issue the
-// workflow has taken out only while a close of that pod is still to come or still running
-// (workflow.LeftPodClose) — a tree that lingers, a root out of the workflow, an open look of the
-// issue's production check, a role stop or a Sandbox suspension of the issue still queued — so a
-// deployment that sees it every tick past a linger's end or a look's bound is seeing a close that
-// is stuck.
+// (background_work, in_turn, delivery_waiting, reminder_due, awaiting_person, repository, which
+// is a pod the update round is about to replace) as much as the ones that are not (image,
+// plugin_contract, unreported, unpushed_work, workspace_unread, overtaken, unauthorized): a
+// deployment reads release's health from which of them it sees, so leaving the healthy ones out
+// would leave it unable to tell a pod kept for good reason from one never decided at all.
+// IdleHoldTreeNotLive is recorded too: it holds a pod of an issue the workflow has taken out only
+// while a close of that pod is still to come or still running (workflow.LeftPodClose) — a tree
+// that lingers, a root out of the workflow, an open look of the issue's production check, a role
+// stop or a Sandbox suspension of the issue still queued — so a deployment that sees it every tick
+// past a linger's end or a look's bound is seeing a close that is stuck.
 //
 // The second rule's other three — IdleHoldUnownedClaimProcess, IdleHoldUnownedSuspensionHolds
 // and IdleHoldUnownedDelivery — are recorded for the same reason, and it is the sharpest one
