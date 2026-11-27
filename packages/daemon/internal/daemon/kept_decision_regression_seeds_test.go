@@ -146,9 +146,7 @@ func TestEachKeptFaultSeedReachesTheStateOfItsFault(t *testing.T) {
 				t.Fatalf("seed %d is not in keptLongRegressionSeeds", tc.seed)
 			}
 			run := newKeptRun(t, tc.seed, 300)
-			if tc.seek != nil {
-				tc.seek(run)
-			}
+			tc.seek(run)
 			run.drive()
 			run.quiesce()
 			run.held()

@@ -15,7 +15,6 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
-	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -23,7 +22,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testlog"
-	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
 // holderPublisher is the listener as a role publish meets it: a role topic in absent has no live
@@ -927,7 +925,7 @@ func TestACatchUpDroppedUnderItsLeaseIsNotPublished(t *testing.T) {
 
 // ranPastItsLeaseLine is the lane's one line for a run that settles after the last lease it
 // committed (runRow).
-const ranPastItsLeaseLine = "outbox row ran past its lease; a drop of its issue's catch-ups keeps it while its claim stands, and its finish or retry fences on the token"
+const ranPastItsLeaseLine = "outbox row ran past its lease; its finish or retry fences on the token, and a drop of its issue's catch-ups keeps a catch-up naming kept decisions while its claim stands"
 
 // lapsingAsk is the kept decision a lapsingCatchUp names.
 const lapsingAsk = "dispatch://LEGION-1/ask/ask-1"
@@ -990,13 +988,7 @@ func (l *lapsingCatchUp) drop(launch uint64) error {
 		return fmt.Errorf("the catch-up %d is leased until %s, and the drop is at %s: want its lease lapsed",
 			l.row.ID, until.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano))
 	}
-	return store.Transact(ctx, l.pool, func(ctx context.Context, tx pgx.Tx) error {
-		stored, err := l.records.Issue(ctx, tx, "LEGION-1")
-		if err != nil || stored == nil {
-			return fmt.Errorf("read LEGION-1: %w", err)
-		}
-		return workflow.QueueCatchUp(ctx, tx, l.records, config.DesignGateRootIssues.Steps(), *stored, launch, "", now)
-	})
+	return queueKeptCatchUp(ctx, l.pool, l.records, "LEGION-1", launch, now)
 }
 
 // runDue runs every row of the outbox due at the clock's time (RunOnce), as the lanes and the

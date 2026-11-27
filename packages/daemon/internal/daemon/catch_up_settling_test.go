@@ -83,16 +83,21 @@ func (p *hookPublisher) ranHook(t *testing.T) {
 // the launch took its turn at the machine's gate, so the row is due at now.
 func keptCatchUp(t *testing.T, pool *store.Pool, records record.Store, root string, launch uint64, now time.Time) {
 	t.Helper()
-	ctx := context.Background()
-	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
+	if err := queueKeptCatchUp(context.Background(), pool, records, root, launch, now); err != nil {
+		t.Fatalf("queue the catch-up of %s for launch %d: %v", root, launch, err)
+	}
+}
+
+// queueKeptCatchUp queues keptCatchUp's catch-up and answers its error rather than failing a test,
+// for a caller that runs inside a row's run (lapsingCatchUp.drop).
+func queueKeptCatchUp(ctx context.Context, pool *store.Pool, records record.Store, root string, launch uint64, now time.Time) error {
+	return store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		stored, err := records.Issue(ctx, tx, root)
 		if err != nil || stored == nil {
 			return fmt.Errorf("read %s: %w", root, err)
 		}
 		return workflow.QueueCatchUp(ctx, tx, records, config.DesignGateRootIssues.Steps(), *stored, launch, "", now)
-	}); err != nil {
-		t.Fatalf("queue the catch-up of %s for launch %d: %v", root, launch, err)
-	}
+	})
 }
 
 // leaseCatchUp leases the one catch-up of root the outbox holds, as a lane does before it runs it

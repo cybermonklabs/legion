@@ -324,9 +324,10 @@ func keptAuditCrashedRow(t *testing.T, sites *keptAuditedSites) {
 // row holds back. The root's opening start runs first, as a leftover, so that once quiesce's
 // promotion (unblockAndPromote) admits the second root, whose start admission queues behind a row
 // that creates its issue branch, that start is the one row left to pick (the issue_branch row is
-// none of the rows the run drives). The run delivers such rows at the end of a step
-// (deliverRowsTheRunDoesNotDrive), so the start meets the branch row standing at quiesce's first
-// step alone, which is where runLeftoverRow runs it here.
+// none of the rows the run drives). Quiesce delivers such rows at the start of each of its steps
+// (deliverRowsTheRunDoesNotDrive), so the start never meets the branch row there; the case builds
+// by hand the schedule quiesce made before it did, calling runLeftoverRow directly after
+// unblockAndPromote, while the branch row stands.
 func keptAuditStartBehindABranch(t *testing.T, sites *keptAuditedSites) {
 	run := newKeptRun(t, 1, 0)
 	run.audit = sites.audit(run)

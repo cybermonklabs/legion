@@ -2192,7 +2192,7 @@ func TestDroppingCatchUpsWaitsOnNoRowAFinishIsDeleting(t *testing.T) {
 
 // A re-hold queues a copy of a catch-up and moves the row's claims onto it (reholdNotice,
 // MoveKeptClaims) while a drop of the root's catch-ups runs, and a lane then claims that copy. The
-// drop's lease check reads the outbox in a subquery, which its delete does not recheck against a
+// drop's claim check reads the outbox in a subquery, which its delete does not recheck against a
 // lease committed after the statement began, so a claim of a copy made after the drop's own reads
 // would leave the copy deleted and its lane publishing it from memory, beside the fresh catch-up
 // naming the decisions the deletion released: told twice. The claim takes the drop's advisory lock,
@@ -2364,10 +2364,11 @@ func (r *catchUpDrop) told(id int64) {
 // what that row tells is its to settle, so a drop after the lapse that deleted it would release the
 // decisions to the fresh catch-up the drop's transaction writes, which would tell them again. A
 // copy a re-hold queued and moved the claims onto (MoveKeptClaims) is kept beside its claimed
-// original. A catch-up on which no row of its telling holds a claim is dropped as before, and its
+// original. A catch-up on which no row of its telling holds a claim is dropped, and its
 // decisions released: its run was retried (RetryOutbox clears the claim), it was never claimed, or
-// it carries no kept decision. A telling already told is kept by its told mark. Every case drops at
-// a moment past the lease of each claim it took.
+// it carries no kept decision. A telling already told is kept by its told mark. Every claim is
+// taken an hour before the drop, with a lease of a minute, so the drop meets each claim with its
+// lease lapsed by the clock of the daemon and of the database alike.
 func TestDroppingCatchUpsKeepsATellingWhileARowOfItHoldsAClaim(t *testing.T) {
 	at := time.Date(2026, 10, 24, 9, 0, 0, 0, time.UTC)
 	ref := "dispatch://LEGION-1/ask/ask-1"
@@ -2412,7 +2413,7 @@ func TestDroppingCatchUpsKeepsATellingWhileARowOfItHoldsAClaim(t *testing.T) {
 			st := migratedStore(t)
 			records := NewStore()
 			r := &catchUpDrop{t: t, st: st, records: records, kept: KeptDecisions{Decisions: []DecisionMark{{Ref: ref, At: at, Issue: "LEGION-1"}}},
-				claimedAt: time.Now().UTC().Truncate(time.Microsecond), lease: time.Minute}
+				claimedAt: time.Now().UTC().Add(-time.Hour).Truncate(time.Microsecond), lease: time.Minute}
 			inTx(t, st, func(tx pgx.Tx) {
 				putRoot(t, ctx, records, tx, "LEGION-1")
 				must(t, records.AddParkedDecision(ctx, tx, ParkedDecision{Issue: "LEGION-1", Ref: ref, Decision: DecisionAskAnswered,
@@ -2420,7 +2421,6 @@ func TestDroppingCatchUpsKeepsATellingWhileARowOfItHoldsAClaim(t *testing.T) {
 			})
 			keeps, claimedBy := tc.queue(r)
 
-			dropAt := r.claimedAt.Add(r.lease + time.Second)
 			inTx(t, st, func(tx pgx.Tx) {
 				_, err := records.DropCatchUps(ctx, tx, "LEGION-1")
 				must(t, err)
@@ -2436,8 +2436,8 @@ func TestDroppingCatchUpsKeepsATellingWhileARowOfItHoldsAClaim(t *testing.T) {
 				must(t, tx.QueryRow(ctx, "select coalesce(claimed_by, 0) from parked_decisions where issue = 'LEGION-1' and ref = $1", ref).Scan(&claimed))
 			})
 			if !slices.Equal(left, keeps) || claimed != claimedBy {
-				t.Fatalf("after a drop at %s, past the lease of each claim taken at %s, the catch-ups %v are in the outbox and %s is "+
-					"claimed by row %d; want %v kept and the decision claimed by row %d", dropAt.Format(time.RFC3339Nano),
+				t.Fatalf("after a drop past the lease of each claim taken at %s, the catch-ups %v are in the outbox and %s is "+
+					"claimed by row %d; want %v kept and the decision claimed by row %d",
 					r.claimedAt.Format(time.RFC3339Nano), left, ref, claimed, keeps, claimedBy)
 			}
 		})

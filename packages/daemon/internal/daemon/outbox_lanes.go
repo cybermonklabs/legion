@@ -366,7 +366,7 @@ func (r *outbox) runRow(ctx context.Context, listed record.OutboxRow) error {
 	err := r.execute(ctx, row)
 	ended := r.now().UTC()
 	if leaseUntil := renewal.stop(); ended.After(leaseUntil) {
-		r.log.Warn("outbox row ran past its lease; a drop of its issue's catch-ups keeps it while its claim stands, and its finish or retry fences on the token",
+		r.log.Warn("outbox row ran past its lease; its finish or retry fences on the token, and a drop of its issue's catch-ups keeps a catch-up naming kept decisions while its claim stands",
 			"row", row.ID, "kind", row.Kind, "issue", row.Issue, "lease_until", leaseUntil, "ended", ended)
 	}
 	settleCtx, cancel := settleContext(ctx)

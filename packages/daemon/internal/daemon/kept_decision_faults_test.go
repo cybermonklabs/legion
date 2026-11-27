@@ -322,6 +322,12 @@ func (c keptSoughtCatchUp) leased(now time.Time) bool {
 	return c.row.LeaseUntil != nil && c.row.LeaseUntil.After(now)
 }
 
+// telling is the id the telling c publishes is known by: the row it copies
+// (record.Notice.ResendOf), or its own for a row that copies none.
+func (c keptSoughtCatchUp) telling() int64 {
+	return cmp.Or(c.notice.ResendOf, c.row.ID)
+}
+
 // soughtCatchUps is every catch-up of a driven tree that names kept decisions, in id order: the
 // root's, and those of every tree a member left the root's for, whose architects are told what
 // is kept for them as the root's is.
@@ -441,12 +447,7 @@ func (r *keptRun) clearFence(id int64) keptSeekPlan {
 // bringDue makes row id due now, as its re-hold delay or its backoff passing would
 // (record.Store.ExpediteOutbox), so a seek can run it in this step.
 func (r *keptRun) bringDue(id int64) {
-	if err := store.Transact(r.ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
-		_, err := r.records.ExpediteOutbox(r.ctx, tx, record.OutboxRow{ID: id}, time.Now().UTC())
-		return err
-	}); err != nil {
-		r.fatalf("bring outbox row %d due: %v", id, err)
-	}
+	r.expedite(id)
 	r.tracef("bring-due id=%d: its delay has passed", id)
 }
 
@@ -469,8 +470,11 @@ func (p *keptPublisher) standingMode() keptPublishMode {
 // (record.KeptToldSource under record.OutboxKey).
 func (r *keptRun) toldMarked(row int64) bool {
 	var told bool
-	if err := r.pool.QueryRow(r.ctx, "select exists (select 1 from processed_events where source = $1 and event_id = $2)",
-		record.KeptToldSource, record.OutboxKey(row)).Scan(&told); err != nil {
+	if err := store.Transact(r.ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
+		var err error
+		told, err = r.records.Processed(ctx, tx, record.KeptToldSource, record.OutboxKey(row))
+		return err
+	}); err != nil {
 		r.fatalf("read the told mark of outbox row %d: %v", row, err)
 	}
 	return told
@@ -502,8 +506,11 @@ func (r *keptRun) claimsKept(row int64) bool {
 // that row applies no second time (intake.ApplyFact marks it processed).
 func (r *keptRun) startRunningApplied(tree *keptTree, row int64) bool {
 	var applied bool
-	if err := r.pool.QueryRow(r.ctx, "select exists (select 1 from processed_events where source = 'outbox' and event_id = $1)",
-		fmt.Sprintf("start-running:%s:%d", tree.token, row)).Scan(&applied); err != nil {
+	if err := store.Transact(r.ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
+		var err error
+		applied, err = r.records.Processed(ctx, tx, "outbox", fmt.Sprintf("start-running:%s:%d", tree.token, row))
+		return err
+	}); err != nil {
 		r.fatalf("read whether start row %d applied its ready: %v", row, err)
 	}
 	return applied
@@ -531,7 +538,7 @@ func (r *keptRun) seekToldAgain() keptSeekPlan {
 	now := time.Now()
 	waiting := map[string]bool{}
 	for _, c := range catchUps {
-		telling := cmp.Or(c.notice.ResendOf, c.row.ID)
+		telling := c.telling()
 		if !r.records.tellingFailed(telling) || r.toldMarked(telling) {
 			continue
 		}
@@ -560,7 +567,7 @@ func (r *keptRun) seekToldAgain() keptSeekPlan {
 		return keptSeekPlan{steps: []func(){r.runRow}, run: c.row.ID}
 	}
 	for _, c := range catchUps {
-		telling := cmp.Or(c.notice.ResendOf, c.row.ID)
+		telling := c.telling()
 		if waiting[c.tree.key] || r.records.tellingFailed(telling) || r.toldMarked(telling) || c.leased(now) || !r.architectToHear(c.tree.key) {
 			continue
 		}
@@ -632,7 +639,7 @@ func (r *keptRun) droppingStart(tree *keptTree) int64 {
 // was told by another catch-up whose telling write failed. Its own telling, which a run of the row
 // or of a copy of it publishes again under the same key, is not another.
 func (r *keptRun) namesWhatAFailedTellingTold(c keptSoughtCatchUp) bool {
-	own := cmp.Or(c.notice.ResendOf, c.row.ID)
+	own := c.telling()
 	for _, decision := range c.notice.CatchUp.Kept.Decisions {
 		for _, telling := range r.told[decision.Ref] {
 			if telling.tree == c.tree.key && !telling.prompt && telling.row != own && r.records.tellingFailed(telling.row) {
@@ -749,15 +756,8 @@ func (r *keptRun) dropOpRank(tree *keptTree, op keptRaceOp) int {
 // unless the claim took its task (the outbox's settleKept, workflow.HandOverKept); and -1 for any
 // other row.
 func (r *keptRun) startDropRank(tree *keptTree, row record.OutboxRow) int {
-	if row.Issue != tree.key || row.Kind != record.OutboxKindSupervise {
-		return -1
-	}
-	payload, err := record.DecodeOutboxPayload(row)
-	if err != nil {
-		return -1
-	}
-	request, ok := payload.(record.SuperviseRequest)
-	if !ok || request.Op != "start" || request.News || request.Role != claim.RoleArchitect {
+	request, ok := keptArchitectStart(tree, row)
+	if !ok {
 		return -1
 	}
 	held := r.runner.supervisedClaim(tree.token).Claim
@@ -770,6 +770,23 @@ func (r *keptRun) startDropRank(tree *keptTree, row record.OutboxRow) int {
 		return 1
 	}
 	return -1
+}
+
+// keptArchitectStart is the request of row when row is a start of tree's architect that is not for
+// news alone (record.SuperviseRequest.News), and false for any other row.
+func keptArchitectStart(tree *keptTree, row record.OutboxRow) (record.SuperviseRequest, bool) {
+	if row.Issue != tree.key || row.Kind != record.OutboxKindSupervise {
+		return record.SuperviseRequest{}, false
+	}
+	payload, err := record.DecodeOutboxPayload(row)
+	if err != nil {
+		return record.SuperviseRequest{}, false
+	}
+	request, ok := payload.(record.SuperviseRequest)
+	if !ok || request.Op != "start" || request.News || request.Role != claim.RoleArchitect {
+		return record.SuperviseRequest{}, false
+	}
+	return request, true
 }
 
 // seekTheSpentRehold steers seed 701's run to its state: a catch-up's re-holds spent while its
@@ -855,15 +872,8 @@ func (r *keptRun) nothingRetells(tree *keptTree) bool {
 	generation := r.storedGeneration(tree.key)
 	delivered := r.runner.supervisedClaim(tree.token).Claim.DeliveredRows
 	for _, row := range r.rows(false) {
-		if row.Issue != tree.key || row.Kind != record.OutboxKindSupervise {
-			continue
-		}
-		payload, err := record.DecodeOutboxPayload(row)
-		if err != nil {
-			continue
-		}
-		request, ok := payload.(record.SuperviseRequest)
-		if !ok || request.Op != "start" || request.News || request.Role != claim.RoleArchitect {
+		request, ok := keptArchitectStart(tree, row)
+		if !ok {
 			continue
 		}
 		if request.Generation == generation || r.claimsKept(row.ID) && !slices.Contains(delivered, row.ID) {

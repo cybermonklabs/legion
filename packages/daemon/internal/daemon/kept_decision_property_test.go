@@ -1274,8 +1274,10 @@ func (r *keptRun) enabled() []func() {
 	if !reserved && r.orphanEnabled() {
 		ops = append(ops, r.orphanChild)
 	}
-	if !r.queued.handed && r.adoptionTarget() != nil && !r.spentHoldOn(r.adoptionTarget()) {
-		ops = append(ops, r.adoptQueued)
+	if !r.queued.handed {
+		if target := r.adoptionTarget(); target != nil && !r.spentHoldOn(target) {
+			ops = append(ops, r.adoptQueued)
+		}
 	}
 	if !reserved && r.closeEnabled() {
 		ops = append(ops, r.closeTree)
@@ -3502,12 +3504,7 @@ func (r *keptRun) runLeftoverRow() {
 	if err != nil {
 		r.fatalf("decode outbox row %d: %v", row.ID, err)
 	}
-	if err := store.Transact(r.ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
-		_, err := r.records.ExpediteOutbox(r.ctx, tx, row, time.Now().UTC())
-		return err
-	}); err != nil {
-		r.fatalf("bring outbox row %d due: %v", row.ID, err)
-	}
+	r.expedite(row.ID)
 	claimed, runErr := r.runOne(keptSiteLeftovers, &row, payload)
 	if claimed && runErr == nil {
 		if err := r.finishRow(row); err != nil {
@@ -3516,6 +3513,17 @@ func (r *keptRun) runLeftoverRow() {
 	}
 	r.tracef("run-row id=%d issue=%s kind=%s what=%s outcome=%s", row.ID, row.Issue, row.Kind, keptRowWhat(payload),
 		keptRunOutcome(claimed, runErr, false))
+}
+
+// expedite makes row id due now (record.Store.ExpediteOutbox) and traces nothing: each caller
+// traces what it brought the row due for (bringDue, runLeftoverRow).
+func (r *keptRun) expedite(id int64) {
+	if err := store.Transact(r.ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
+		_, err := r.records.ExpediteOutbox(r.ctx, tx, record.OutboxRow{ID: id}, time.Now().UTC())
+		return err
+	}); err != nil {
+		r.fatalf("bring outbox row %d due: %v", id, err)
+	}
 }
 
 // report says what the run's injected failures drove, so a reader of the test's output sees the
