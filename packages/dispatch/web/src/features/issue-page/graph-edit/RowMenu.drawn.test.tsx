@@ -13,6 +13,7 @@ import { act, cleanup, type RenderResult, render, waitFor } from "@testing-libra
 import userEvent, { type UserEvent } from "@testing-library/user-event";
 import { http } from "msw";
 import {
+  Profiler,
   type ReactNode,
   useCallback,
   useEffect,
@@ -73,6 +74,7 @@ import {
   roomBlock,
   signedIn,
 } from "./graph-edit-fixtures";
+import { newRowsOf } from "./new-rows";
 import { ROW_MENU_ATTRIBUTE } from "./RowMenu";
 import { GRAPH_EDIT_META } from "./room-writes";
 
@@ -1536,11 +1538,13 @@ function HeldOutline({
  *  - `held`, the converted read where a case gives none - held by a signed-in client under the
  *  page's row writer, so a row is edited in the issue's room as the page edits it
  *  (`model-rows/room-target.ts`), with a live room for each document, and the asks read `asks`
- *  where a case gives one. */
+ *  where a case gives one. `onCommit`, where a case gives one, is called at each commit of the
+ *  outline, once React has written it to the page. */
 function drawLive(
   path = `/issues/${KEY}/graph`,
   asks?: readonly TreeAsk[],
-  held: TreeAnswer = converted
+  held: TreeAnswer = converted,
+  onCommit?: () => void
 ): LiveOutline {
   const client = signedIn();
   client.setQueryData(outlineQuery(KEY, "graph").queryKey, held);
@@ -1551,6 +1555,7 @@ function drawLive(
   const rooms = new Map(
     [SPEC_DOCUMENT.id, TREE_ID].map((id): [string, LiveRoom] => [id, liveRoom()])
   );
+  const outline = <HeldOutline asks={asks} edited={edited} rooms={rooms} />;
   const view = render(
     <MemoryRouter initialEntries={[path]}>
       <QueryClientProvider client={client}>
@@ -1560,7 +1565,13 @@ function drawLive(
               <DocumentAdmissionProvider>
                 <OutlineWriterProvider issueKey={KEY}>
                   <DocumentStages>
-                    <HeldOutline asks={asks} edited={edited} rooms={rooms} />
+                    {onCommit === undefined ? (
+                      outline
+                    ) : (
+                      <Profiler id="outline" onRender={onCommit}>
+                        {outline}
+                      </Profiler>
+                    )}
                   </DocumentStages>
                 </OutlineWriterProvider>
               </DocumentAdmissionProvider>
@@ -1968,19 +1979,23 @@ function childKeys(view: RenderResult, parent: string): string[] {
   });
 }
 
-/** Graph's read once the block index has read the room's write of the new row `blockId`: the
- *  fixture's converted read with the node the fixture's server read for a paragraph the page
- *  wrote into the tree artifact (`owed.indexed`), named by the block id the page chose, under this
+/** The node the fixture's server read for a paragraph the page wrote into the tree artifact
+ *  (`owed.indexed`), named by the block id the page chose for the new row `blockId`, under this
  *  issue - ranked, with a placement_seq, at the end of the issue's own blocks, where the server
  *  keeps it. */
-function indexedWith(blockId: string): TreeAnswer {
+function writtenNode(blockId: string): TreeAnswerNode {
   const written = fixture.owed.indexed.body.nodes?.find((node) => node.id === "<owed-paragraph>");
   if (written === undefined)
     throw new Error("the fixture's indexed read holds no written paragraph");
-  const node = JSON.parse(
+  return JSON.parse(
     JSON.stringify(written).replaceAll("<owed-paragraph>", blockId).replaceAll("<owed-issue>", KEY)
   ) as TreeAnswerNode;
-  return { ...converted, nodes: [...(converted.nodes ?? []), node] };
+}
+
+/** Graph's read once the block index has read the room's write of the new row `blockId`: the
+ *  fixture's converted read with the new row's node (`writtenNode`). */
+function indexedWith(blockId: string): TreeAnswer {
+  return { ...converted, nodes: [...(converted.nodes ?? []), writtenNode(blockId)] };
 }
 
 /** The `placement_seq` the placing PATCH of a new row answers, the one after the indexed read's. */
@@ -2631,6 +2646,223 @@ test("a placed node drawn under another row's key takes the editing and the care
   expect(fragmentOf(placed.tree).filter((block) => block.includes(placed.id))).toEqual([
     `paragraph ${placed.id}: Qu`,
   ]);
+});
+
+/** A comment on the issue, tied to no text, which the outline draws as a row of its own, and the
+ *  node routes' name of it (`placement.ts`' `routeId`). */
+const COMMENT = "<comment-on-issue>";
+const COMMENT_ROUTE = `comment/${COMMENT}`;
+
+/** How many replies the comment holds. */
+const REPLIES = 21;
+
+/** The cursors of the second and the third page of `commentRead`'s read: each names the node its
+ *  page starts at. */
+const PAGE_CURSORS = ["<cursor:block:<tree/paragraph>>", "<cursor:block:<tree/table>>"] as const;
+
+/** `PLACED_SEQ` where a node of a read carries it: the fixture names each sequence, where the
+ *  read's type holds a number. */
+const PLACED_NODE_SEQ = PLACED_SEQ as unknown as TreeAnswerNode["placement_seq"];
+
+/**
+ * The fixture's converted read on three pages, as the read of an issue too large for one answers
+ * it, with a comment on the issue among its conversation: tied to no text, it holds its own block,
+ * `REPLIES` replies, which hold no rank, and six blocks of the issue's own fragment placed under
+ * it before, ranked, which the read answers after the replies. The first page holds the issue,
+ * its conversation and the spec's blocks under it, the second the first blocks of the issue's own
+ * fragment, and the third the rest of them, then its unranked children and the context: the node
+ * of a new row's block stands on the third, at the end of the issue's own blocks (`third`), until
+ * its PATCH places it. `across` is the three pages as a read gives them that read its first page
+ * before the move put the node under the comment and its third after the move took it from there:
+ * it holds the node on none. `placed` is the three pages read after the move, the node right after
+ * the comment's replies, first of the blocks under it.
+ */
+function commentRead() {
+  const nodes = converted.nodes ?? [];
+  const at = (id: string) => nodes.findIndex((node) => node.id === id);
+  const { anchor: _anchor, ...onNoText } = nodeOf(converted, "<comment-on-statement-3>");
+  const itsBlock = nodeOf(converted, "comment/<comment-on-statement-3>#b1");
+  const under = (id: string): TreeAnswerNode["parent"] => ({
+    first_line: itsBlock.text,
+    id,
+    kind: "comment",
+    supertag: "comment",
+  });
+  const comment = (id: string, parent: TreeAnswerNode["parent"]): TreeAnswerNode[] => [
+    { ...onNoText, id, parent },
+    { ...itsBlock, id: `comment/${id}#b1`, parent: under(id) },
+  ];
+  const replies = Array.from({ length: REPLIES }, (_, index) =>
+    comment(`<reply-${index}>`, under(COMMENT))
+  );
+  const placedBefore = ["20U", "21", "22", "23", "24", "25"].map((rank, index) => ({
+    ...PARAGRAPH,
+    block_id: `<placed-under-comment-${index}>`,
+    id: `<placed-under-comment-${index}>`,
+    parent: under(COMMENT),
+    rank,
+  }));
+  const firstNodes = (moved?: TreeAnswerNode): TreeAnswerNode[] => [
+    ...nodes.slice(0, at("<question-block>")),
+    ...comment(COMMENT, MESSAGE.parent),
+    ...replies.flat(),
+    ...(moved === undefined ? [] : [moved]),
+    ...placedBefore,
+    ...nodes.slice(at("<question-block>"), at("<tree/paragraph>")),
+  ];
+  const secondNodes = nodes.slice(at("<tree/paragraph>"), at("<tree/table>"));
+  const rest = nodes.slice(at("<tree/table>"));
+  const unranked = rest.findIndex((node) => node.id === "<constraint>");
+  const first: TreeAnswer = {
+    ...converted,
+    cursor: PAGE_CURSORS[0],
+    nodes: firstNodes(),
+    remaining: secondNodes.length + rest.length,
+  };
+  const whole = (head: TreeAnswerNode[]): TreeAnswer => ({
+    ...first,
+    cursor: null,
+    nodes: [...head, ...secondNodes, ...rest],
+    remaining: null,
+  });
+  const second: TreeAnswer = {
+    ...converted,
+    cursor: PAGE_CURSORS[1],
+    nodes: secondNodes,
+    remaining: rest.length,
+    tuples: [],
+  };
+  return {
+    across: whole(firstNodes()),
+    first,
+    placed: (written: TreeAnswerNode) =>
+      whole(
+        firstNodes({
+          ...written,
+          parent: under(COMMENT),
+          placement_seq: PLACED_NODE_SEQ,
+          rank: "20",
+        })
+      ),
+    second,
+    third: (written: TreeAnswerNode | undefined): TreeAnswer => ({
+      ...converted,
+      cursor: null,
+      nodes:
+        written === undefined
+          ? rest
+          : [...rest.slice(0, unranked), written, ...rest.slice(unranked)],
+      remaining: null,
+      tuples: [],
+    }),
+  };
+}
+
+// R3: a new row under a comment on the issue - which holds its own block, its replies, with no
+// rank, and the blocks placed under it before, ranked - in a read of three pages, whose node
+// first stands on the third, at the end of the issue's own blocks, where the page reads it. While
+// the one placing PATCH is out, a read of the three pages that was out as it went answers with the
+// node on none: its first page was read before the move put the node under the comment, its third
+// after the move took it from there. The answer is taken on that read, which holds no node to
+// write it into. Every render from the answer to the next read draws a row of the node with the
+// caret in it, and the letter the reader types goes into its block; the next read, which holds the
+// node under the comment, draws it in that same row, in the renders that tell the outline of that
+// read and then let the new row go.
+test("a new row under a comment keeps its row and its caret until a read holds its placed node", async () => {
+  const user = userEvent.setup();
+  const read = commentRead();
+  // The new row's node, once the page has chosen its block id: the third page holds it.
+  let written: TreeAnswerNode | undefined;
+  spyOn(api, "getIssueTree").mockImplementation(async (_key, query = {}) => {
+    // A read from the first page is the case's to answer, which it does by writing the read.
+    if (query.cursor === undefined) return NEVER;
+    return query.cursor === PAGE_CURSORS[0] ? read.second : read.third(written);
+  });
+  const out = Promise.withResolvers<void>();
+  const sent = answerNodeRoutes({
+    patches: [
+      {
+        body: { after: null, parent: COMMENT_ROUTE, placement_seq: PLACED_SEQ },
+        gate: out.promise,
+        status: 200,
+      },
+    ],
+  });
+  // Whether each commit of the outline from the PATCH's answer on drew a row of the node with the
+  // caret in it.
+  const commits: boolean[] = [];
+  let heard: (() => void) | undefined;
+  const live = drawLive(undefined, undefined, read.first, () => heard?.());
+  const tree = live.rooms.get(TREE_ID);
+  const commentKey = `${KEY}>${COMMENT}`;
+  const afterReplies = (keys: readonly string[]) =>
+    keys.indexOf(`${commentKey}><reply-${REPLIES - 1}>`) + 1;
+  await pickOn(live, user, nodeOf(read.first, COMMENT), CONTROL_LABELS.edit_new_under);
+  const { editable, row } = await caretInNewRow(live);
+  const id = row.dataset.nodeId ?? "";
+  const key = `${commentKey}>${id}`;
+  const drawn = childKeys(live.view, commentKey);
+  expect(drawn.indexOf(key), "New row under stands elsewhere among the comment's children").toBe(
+    afterReplies(drawn)
+  );
+  const node = writtenNode(id);
+  written = node;
+  pressIn(editable, "Q");
+  await waitFor(() => expect(sent.patches).toHaveLength(1));
+  expect(sent.patches[0]).toEqual({
+    body: { after: null, parent: COMMENT_ROUTE },
+    dryRun: false,
+    expected: null,
+    id,
+    ifMatch: '"<seq:owed-paragraph>"',
+  });
+  const view = tree?.editor?.view;
+  if (view === undefined) throw new Error("the tree artifact's editor was never made");
+  const holdsCaret = () =>
+    live.view.container
+      .querySelector(`[data-node-row][data-node-id="${CSS.escape(id)}"]`)
+      ?.contains(document.activeElement) === true;
+  const { queryKey } = outlineQuery(KEY, "graph");
+  await act(async () => {
+    live.client.setQueryData(queryKey, read.across);
+  });
+  expect(holdsCaret(), "the read out as the PATCH went took the row's caret").toBe(true);
+
+  heard = () => commits.push(holdsCaret());
+  out.resolve();
+  // A taken answer reads the outline again (`readOutlinesAgain`), which never answers here.
+  await waitFor(() =>
+    expect(live.client.isFetching({ queryKey }), "the page took no answer of the PATCH").toBe(1)
+  );
+  await waitInAct(50);
+  expect(commits, "a render after the answer drew no row of the node with the caret").not.toContain(
+    false
+  );
+  expect(row.isConnected, "the node's row was drawn anew").toBe(true);
+  expect(document.activeElement, "the row lost the caret").toBe(editable);
+  typeInEditor(view, "u");
+  expect(fragmentOf(tree).filter((block) => block.includes(id))).toEqual([`paragraph ${id}: Qu`]);
+
+  const notifications = holdNotifications();
+  try {
+    await act(async () => {
+      live.client.setQueryData(queryKey, read.placed(node));
+    });
+  } finally {
+    notifications.tell();
+  }
+  await waitInAct(50);
+  expect(commits, "a render of the next read drew no row of the node with the caret").not.toContain(
+    false
+  );
+  expect(newRowsOf(live.client, KEY), "the new row stayed once a read held its node").toEqual([]);
+  expect(row.isConnected, "the placed node is drawn in another row").toBe(true);
+  expect(row.dataset.nodeReadId, "the row is not the placed node's").toBe(id);
+  const placed = childKeys(live.view, commentKey);
+  expect(placed.indexOf(key), "the placed node's row moved").toBe(afterReplies(placed));
+  expect(document.activeElement, "the placed node's row lost the caret").toBe(editable);
+  typeInEditor(view, "i");
+  expect(fragmentOf(tree).filter((block) => block.includes(id))).toEqual([`paragraph ${id}: Qui`]);
 });
 
 // R3: Enter in the middle of a block's text is the editor's own key - in a statement's paragraph

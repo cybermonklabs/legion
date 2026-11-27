@@ -33,11 +33,18 @@ import { ownPathTo } from "./row-reveal";
  * page reads the next pages one at a time (`readNextTreePage`), since a new block waits at the
  * end of the issue's own blocks and a re-read reads only the pages loaded. The first read within
  * those 2 minutes that holds the node so sends the one `PATCH` to the row's place (`placingOf`)
- * on the node's chain (`node-writes.ts`' `placeNode`), `placing` until it ends; a taken one
- * leaves the node where its answer puts it in the held read, and the row leaves
- * this store once the outline has been told of that read, its node drawn there by the read
- * itself. A refused one leaves it where the server keeps it, with the row's line, and tells the
- * outline (`subscribeRefusedPlacings`), which keeps the focus on it. Past the 2 minutes the row is
+ * on the node's chain (`node-writes.ts`' `placeNode`), the row `placing` from then on; a taken one
+ * leaves the node where its answer puts it in the held read, where that read holds the node. The
+ * row stays `placing` until the held read holds the node under another `placement_seq` than the
+ * one its `PATCH` went under: at once where the answer was written into it, else at the first
+ * read after that which holds it so. A read of several pages that was out as the `PATCH` went,
+ * beside the page's own reads of the next pages, can read its first page before the move puts the
+ * node under its new parent and its last page after the move takes it from the end of the issue's
+ * own blocks, and so hold the node on no page; until a read holds it, the row is drawn from the
+ * words the reader left in it, its editing and its caret kept. It then leaves this store in the
+ * flush after the outline has been told of that read, its node drawn there by the read itself. A
+ * refused one leaves it where the server keeps it, with the row's line, and tells the outline
+ * (`subscribeRefusedPlacings`), which keeps the focus on it. Past the 2 minutes the row is
  * `waited`: no read and no `PATCH` goes for it, then or later, and it says that the block is saved
  * and not yet placed, drawn where it was until a read holds the node, and then where the server
  * keeps it.
@@ -105,7 +112,10 @@ interface IssueRows {
   poll: number | undefined;
   /** Whether a next-page read of Graph's tree is out for a waiting row (`readNextPage`). */
   paging: boolean;
-  /** The watch of Graph's read in the cache, while a row waits. */
+  /** The `placement_seq` each taken `PATCH` went under, by its row's block id, until the held read
+   *  holds the node under another (`letPlacedGo`). */
+  readonly placed: Map<string, number>;
+  /** The watch of Graph's read in the cache, while a row waits or is placed. */
   unwatch: (() => void) | undefined;
   readonly refused: Set<RefusedPlacing>;
   /** How many outlines of the issue hold its rows, and the let-go a last one leaving schedules. */
@@ -139,6 +149,7 @@ function issueOf(client: QueryClient, issue: string): IssueRows {
       deadlines: new Map(),
       holders: 0,
       paging: false,
+      placed: new Map(),
       poll: undefined,
       refused: new Set(),
       release: undefined,
@@ -219,21 +230,37 @@ export function typeNewRow(
   if (held.poll === undefined) {
     held.poll = window.setTimeout(() => readOwed(client, issue), NEW_ROW_READ_MS);
   }
-  if (held.unwatch === undefined) {
-    const hash = hashKey(outlineQuery(issue, "graph").queryKey);
-    held.unwatch = client.getQueryCache().subscribe((event) => {
-      if (
-        event.type === "updated" &&
-        event.action.type === "success" &&
-        event.query.queryHash === hash
-      ) {
-        // Out of the cache's own notification, so the `PATCH` it may send goes from a settled
-        // cache.
-        queueMicrotask(() => placeHeld(client, issue));
-      }
-    });
-  }
+  watchHeld(client, issue, held);
   queueMicrotask(() => placeHeld(client, issue));
+}
+
+/** Watches Graph's read of `issue` in the cache where nothing watches it yet: each answer written
+ *  into it lets go each placed row whose node it holds placed (`letPlacedGo`), and sends the
+ *  `PATCH` of each typed row whose node it holds (`placeHeld`). */
+function watchHeld(client: QueryClient, issue: string, held: IssueRows): void {
+  if (held.unwatch !== undefined) return;
+  const hash = hashKey(outlineQuery(issue, "graph").queryKey);
+  held.unwatch = client.getQueryCache().subscribe((event) => {
+    if (
+      event.type === "updated" &&
+      event.action.type === "success" &&
+      event.query.queryHash === hash
+    ) {
+      // Out of the cache's own notification, so the `PATCH` it may send goes from a settled
+      // cache, and a row it lets go leaves after the flush that tells the outline of this read.
+      queueMicrotask(() => {
+        letPlacedGo(client, issue);
+        placeHeld(client, issue);
+      });
+    }
+  });
+}
+
+/** Ends the watch of Graph's read of `issue` where no row waits for its node or is placed. */
+function unwatchIdle(held: IssueRows): void {
+  if (held.waits.size > 0 || held.placed.size > 0) return;
+  held.unwatch?.();
+  held.unwatch = undefined;
 }
 
 /** The words the reader left in the new row the row `rowKey` draws, as their latest edit of its
@@ -270,7 +297,8 @@ export function subscribeRefusedPlacings(
   };
 }
 
-/** Ends the wait of the row `blockId`, and the issue's reads and watch with the last wait. */
+/** Ends the wait of the row `blockId`, the issue's reads with the last wait, and its watch where
+ *  no row is placed either (`unwatchIdle`). */
 function stopWait(held: IssueRows, blockId: string): void {
   window.clearTimeout(held.deadlines.get(blockId));
   held.deadlines.delete(blockId);
@@ -278,8 +306,7 @@ function stopWait(held: IssueRows, blockId: string): void {
   if (held.waits.size > 0) return;
   window.clearTimeout(held.poll);
   held.poll = undefined;
-  held.unwatch?.();
-  held.unwatch = undefined;
+  unwatchIdle(held);
 }
 
 /** The 2 minutes of the row `blockId` are up: no read and no `PATCH` goes for it from now. */
@@ -330,7 +357,7 @@ export function readNodeOf(answer: TreeAnswer, blockId: string): TreeAnswerNode 
  *  missing from a held read that does not owe the tree artifact's index and names a next page.
  *  A page that answers merges into the cache and calls `placeHeld` again (so another page is read
  *  if the node still stands past it); a refused page leaves the row waiting with no retry loop of
- *  its own: the next answer of Graph's read tries again (`typeNewRow`'s watch). */
+ *  its own: the next answer of Graph's read tries again (`watchHeld`). */
 function readNextPage(client: QueryClient, issue: string, held: IssueRows): void {
   if (held.paging) return;
   held.paging = true;
@@ -375,18 +402,43 @@ function placeHeld(client: QueryClient, issue: string): void {
         change(client, issue, blockId, () => undefined);
         return;
       }
-      // The answer is in the held read already, and TanStack Query tells the outline of it in
-      // its notify manager's next flush, a timer on in a browser, where this store tells it at
-      // once: so the row leaves in the flush after that one. Left at once, the outline would draw
-      // the node where the read held it before the answer, for one render - under the issue,
-      // another row's key for a row under any other node - which ends the editing in the row
-      // (`IssueTree.tsx`), and the letters the reader types on go nowhere.
-      notifyManager.schedule(() => change(client, issue, blockId, () => undefined));
+      // An outline that let the issue's rows go while the `PATCH` was out leaves none to place.
+      if (stateOf(client).issues.get(issue) !== held) return;
+      held.placed.set(blockId, placing.placementSeq);
+      watchHeld(client, issue, held);
+      letPlacedGo(client, issue);
     });
   }
   if (missing && !owesTree(answer) && nextTreeCursor(answer) !== undefined) {
     readNextPage(client, issue, held);
   }
+}
+
+/**
+ * Lets go each placed row of `issue` (`IssueRows.placed`) whose node Graph's held read holds
+ * under another `placement_seq` than the one its `PATCH` went under: the answer written into it
+ * (`node-writes.ts`' `movedIn`), or a read since that holds the node where the move put it. A held
+ * read that holds no such node - the answer found no node to write into, its read replaced by one
+ * that holds the node on no page, or no answer was given - keeps the row, drawn from the words
+ * the reader left in it, until one does: let go then, no row would draw the node, which ends the
+ * editing in the row (`IssueTree.tsx`), and the letters the reader types on go nowhere.
+ *
+ * TanStack Query tells the outline of the read in its notify manager's next flush, a timer on in
+ * a browser, where this store tells it at once: so the row leaves in the flush after that one.
+ * Left at once, the outline would draw the read before, for one render - the node where it held
+ * it, under another row's key or on no page it holds - with the same end.
+ */
+function letPlacedGo(client: QueryClient, issue: string): void {
+  const held = stateOf(client).issues.get(issue);
+  const answer = heldRead(client, issue);
+  if (held === undefined || answer === undefined) return;
+  for (const [blockId, sent] of [...held.placed]) {
+    const node = readNodeOf(answer, blockId);
+    if (node === undefined || node.placement_seq === sent) continue;
+    held.placed.delete(blockId);
+    notifyManager.schedule(() => change(client, issue, blockId, () => undefined));
+  }
+  unwatchIdle(held);
 }
 
 /** Lets every row of `issue` go, with each of its timers and its watch. */
@@ -578,9 +630,9 @@ export function heldWithNewRows(answer: TreeAnswer, rows: readonly NewRow[]): Tr
   return added.length === 0 ? answer : { ...answer, nodes: [...nodes, ...added] };
 }
 
-/** Whether the node of read id `node` is a new row's of `rows` that no `PATCH` has placed: one
- *  named by its block id while the read does not hold it, or the node `answer` holds by that
- *  block id. */
+/** Whether the node of read id `node` is a new row's of `rows`, which the held read does not hold
+ *  placed yet (`letPlacedGo`): one named by its block id while the read does not hold it, or the
+ *  node `answer` holds by that block id. */
 export function newRowUnplaced(
   rows: readonly NewRow[],
   answer: TreeAnswer | undefined,
