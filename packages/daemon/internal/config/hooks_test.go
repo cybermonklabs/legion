@@ -148,17 +148,17 @@ func TestAHookNamingAMoveBackOfARoleAtTwoStepsLoads(t *testing.T) {
 }
 
 // A hook that names a move no task's line makes back would never fire, so the loader refuses it,
-// naming the move: each step phase, step among them, to retro or to merging, and retro to merging,
-// since the retro and the merge end every line; and implementing to testing, reviewing or
-// accepting, since every tester, reviewer and acceptance step comes after the implementer's. These
-// 16 are written out here, not read from the code under test. The twin: each of the other 41
-// pairs of MovePairs loads, a move back of today's line, one of another order and one of a step of
-// a role the deployment defines alike.
+// naming the move and the bound of the tasks the moves back are read off
+// (plan.MostEnumeratedSteps): each step phase, step among them, to retro or to merging, and retro
+// to merging, since the retro and the merge end every line, in that order. These 13 are written
+// out here, not read from the code under test. The twin: each of the other 44 pairs of MovePairs
+// loads, a move back of today's line, one of another order, one from the implementer's second
+// step and one of a step of a role the deployment defines alike.
 func TestAHookNamingAMoveNoLineMakesBackIsRefused(t *testing.T) {
 	never := []string{
 		"planning-retro", "implementing-retro", "testing-retro", "reviewing-retro", "accepting-retro",
 		"planning-merging", "implementing-merging", "testing-merging", "reviewing-merging", "accepting-merging",
-		"retro-merging", "implementing-testing", "implementing-reviewing", "implementing-accepting",
+		"retro-merging",
 		"step-retro", "step-merging",
 	}
 	loaded := 0
@@ -171,12 +171,12 @@ func TestAHookNamingAMoveNoLineMakesBackIsRefused(t *testing.T) {
 			loaded++
 			continue
 		}
-		want := fmt.Sprintf(`hooks[0].moves names %q, which no task's line makes as a move back, so the hook would never fire: retro and merging end every line, and every tester, reviewer and acceptance step comes after the implementer's`, move)
+		want := fmt.Sprintf(`hooks[0].moves names %q, which no task's line makes as a move back, so the hook would never fire: retro and merging end every line, in that order; the moves back are read off each task of at most %d steps that Legion takes (plan.MostEnumeratedSteps), and a longer task makes no move back those do not`, move, plan.MostEnumeratedSteps)
 		if err == nil || err.Error() != want {
 			t.Errorf("Load(moves: [%s]) error = %v, want %q", move, err, want)
 		}
 	}
-	if loaded != 41 {
-		t.Errorf("%d pairs were read as moves back, want 41", loaded)
+	if loaded != 44 {
+		t.Errorf("%d pairs were read as moves back, want 44", loaded)
 	}
 }

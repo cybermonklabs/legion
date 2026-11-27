@@ -258,16 +258,17 @@ func Line(steps []Step) []phase.Phase {
 // "<from>-<to>" (phase.Pair), in the order of phase.MovePairs: a pair whose to stands before its
 // from on the Line of some task that Supported and Validate take, since a task moves back from a
 // phase of its line to any phase before it (workflow's backwardRows). It is read off those two
-// checks, over every order of every choice of Legion's five roles and two roles of a deployment,
-// so a later release whose checks take another line moves the set with them. A step of a role the
-// deployment defines runs as step wherever it stands, whatever its name, so two such roles of the
-// type testing, which may stand before the implementer or after it, stand for every role a
+// checks, over every task of at most MostEnumeratedSteps steps, each step any of Legion's five
+// roles or two roles of a deployment, a role at any number of steps, so a later release whose
+// checks take another line moves the set with them. A task can name one role at two steps, so
+// implementer reviewer implementer moves back from implementing to reviewing. A step of a role
+// the deployment defines runs as step wherever it stands, whatever its name, so two such roles of
+// the type testing, which may stand before the implementer or after it, stand for every role a
 // deployment defines, and make the pairs of step, step-step among them. The other pairs are a move
 // back of no line: each step phase to retro or to merging, and retro to merging, since the retro
-// and the merge end every line; and implementing to testing, reviewing or accepting, since every
-// tester, reviewer and acceptance step comes after the implementer's (stepReasons). The
-// configuration loader takes a hook's moves from this set alone (config's readHookMoves), so no
-// hook names a move that never fires. The answer is a fresh slice.
+// and the merge end every line, in that order. The configuration loader takes a hook's moves from
+// this set alone (config's readHookMoves), so no hook names a move that never fires. The answer is
+// a fresh slice.
 func MovesBackPairs() []string {
 	return slices.Clone(movesBackPairs())
 }

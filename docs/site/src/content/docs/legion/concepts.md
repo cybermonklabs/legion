@@ -621,7 +621,7 @@ Legion uses GitHub's own review mechanisms rather than labels:
   The cap's message names both numbers, the rounds counted and the conflict rounds left out.
 - Each move back is counted by its kind, as the pair `<from>-<to>` of the phase it leaves
   and the phase it goes to — `testing-implementing`, `reviewing-implementing`, `merging-implementing`,
-  or any other of the 41 moves back a task's line can make, such as `testing-reviewing` on a
+  or any other of the 44 moves back a task's line can make, such as `testing-reviewing` on a
   task whose reviewer step comes before its tester step —
   beside the round count, and a move made while the head conflicts with its base raises no pair.
   `GET /legion/v1/state` serves the counts as `workers.implementer.backwardMoves`, left out for an

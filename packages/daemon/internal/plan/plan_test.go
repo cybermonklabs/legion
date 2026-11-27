@@ -256,13 +256,13 @@ func TestFromBlocksReadsTaskAndRoleBlocks(t *testing.T) {
 	}
 }
 
-// MovesBackPairs is every pair MovePairs holds but the 16 no line of a task Supported takes makes
+// MovesBackPairs is every pair MovePairs holds but the 13 no line of a task Supported takes makes
 // as a move back, written out here rather than read from the checks: each step phase, step among
 // them, to retro or to merging, and retro to merging, since the retro and the merge end every
-// line, and implementing to testing, reviewing or accepting, since the steps that read the
-// implementer's pull request come after it. Among the 41: a move back of another order than
-// today's (testing-reviewing, on implementer reviewer tester), a planner's move back to the
-// implementer (planning-implementing, on implementer planner), the merge's move back to the
+// line, in that order. Among the 44: a move back of another order than today's
+// (testing-reviewing, on implementer reviewer tester), a planner's move back to the implementer
+// (planning-implementing, on implementer planner), a move back from the implementer's second step
+// (implementing-reviewing, on implementer reviewer implementer), the merge's move back to the
 // retro, and the moves of a step of a role the deployment defines, which may stand before the
 // implementer or after it: step-implementing (implementer checker), implementing-step (checker
 // implementer) and step-step (implementer checker linter). CanMoveBack answers each pair as the
@@ -271,7 +271,7 @@ func TestMovesBackPairsAreTheMovesBackOfEveryLineSupportedTakes(t *testing.T) {
 	never := []string{
 		"planning-retro", "implementing-retro", "testing-retro", "reviewing-retro", "accepting-retro",
 		"planning-merging", "implementing-merging", "testing-merging", "reviewing-merging", "accepting-merging",
-		"retro-merging", "implementing-testing", "implementing-reviewing", "implementing-accepting",
+		"retro-merging",
 		"step-retro", "step-merging",
 	}
 	var want []string
