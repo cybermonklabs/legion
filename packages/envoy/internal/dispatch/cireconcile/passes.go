@@ -113,10 +113,13 @@ const prunePasses = `delete from ci_reconcile_passes where started_at < now() - 
 // never on the pass's. The pass's caller cancels the pass's context when the process shuts
 // down, and a cancellation that lands while the insert is in flight -- after Postgres has
 // committed the row, before the pass has read its id back -- fails that read and parts the pass
-// from its own row: the pass then closes nothing, and the row reads as PassStateAbandoned, a
-// process killed in the middle of a pass, where what happened is a pass its caller cancelled,
-// which records outcomeCancelled. On a context no cancellation reaches, a pass whose row was
-// written holds that row's id.
+// from its own row: the pass then closes nothing, and the row reads as PassStateAbandoned once
+// the pass is over (until then it is the newest row of a live process holding the lease, which
+// RecentPasses reads as running), a process killed in the middle of a pass, where what happened
+// is a pass its caller cancelled, which records outcomeCancelled. Within its five-second bound,
+// a pass whose row was written holds that row's id: the bound is a deadline, and pgx fails the
+// read on a deadline as it does on a cancellation, so an insert Postgres takes longer than that
+// to answer parts the pass from its row in the same way.
 func (r *Reconciler) beginPass() int64 {
 	if r.Instance == nil {
 		return 0
