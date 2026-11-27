@@ -669,14 +669,32 @@ go test -count=1 -timeout 5m -tags natslive -run "$grant" -v ./natsgrant/
 edge=$(../../{TAGGED_TESTS} natslive ./cmd/listener)
 go test -count=1 -timeout 10m -tags natslive -run "$edge" -v ./cmd/listener/"""
 # One call per package, never one union -run over the three: a name an untagged test of one
-# package shares with a natslive test of another would then run a second time unremarked.
+# package shares with a natslive test of another would then run a second time unremarked. The
+# three calls run at once, each reading its own pattern before any of them starts, each output
+# printed whole under its own heading, and the step failing by name when any of them failed
+# (.github/ci-notes/ci.md#the-envoy-infra-module-its-own-workspace-and-its-live-tests).
 INFRA_NATSLIVE_STEP = "Live tests of envoy-infra against nats-server (natslive)"
 INFRA_NATSLIVE_PACKAGES = ["./core", "./seed", "./gcp"]
 INFRA_NATSLIVE_SCRIPT = f"""\
-for pkg in {" ".join(INFRA_NATSLIVE_PACKAGES)}; do
-  pattern=$(../../../{TAGGED_TESTS} natslive "$pkg")
-  go test -count=1 -timeout 30m -tags natslive -run "$pattern" "$pkg"
-done"""
+declare -A pid=()
+for pkg in {" ".join(p.removeprefix("./") for p in INFRA_NATSLIVE_PACKAGES)}; do
+  pattern=$(../../../{TAGGED_TESTS} natslive "./$pkg")
+  go test -count=1 -timeout 30m -tags natslive -run "$pattern" "./$pkg" > "$RUNNER_TEMP/natslive-$pkg.txt" 2>&1 &
+  pid[$pkg]=$!
+done
+failed=()
+for pkg in {" ".join(p.removeprefix("./") for p in INFRA_NATSLIVE_PACKAGES)}; do
+  status=0
+  wait "${{pid[$pkg]}}" || status=$?
+  echo "::group::$pkg (exit $status)"
+  cat "$RUNNER_TEMP/natslive-$pkg.txt"
+  echo "::endgroup::"
+  [ "$status" -eq 0 ] || failed+=("$pkg (exit $status)")
+done
+if [ ${{#failed[@]}} -ne 0 ]; then
+  echo "::error::the natslive tests failed in: ${{failed[*]}}"
+  exit 1
+fi"""
 MEMORY_STEP = "Memory tests of the Dispatch server"
 MEMORY_SCRIPT = f"""\
 pattern=$(../../{TAGGED_TESTS} memory ./cmd/dispatch)
