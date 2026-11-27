@@ -140,9 +140,18 @@ func newRetrieveErrorCall(info *types.Info, call *ast.CallExpr) bool {
 	return inRedact && strings.HasSuffix(name, ".NewRetrieveError")
 }
 
+// calleeFunc is the function call calls, past an explicit instantiation
+// (redact.OAuth2[*oauth2.Token](...)), or nil.
 func calleeFunc(info *types.Info, call *ast.CallExpr) *types.Func {
+	callee := ast.Unparen(call.Fun)
+	switch index := callee.(type) {
+	case *ast.IndexExpr:
+		callee = index.X
+	case *ast.IndexListExpr:
+		callee = index.X
+	}
 	var id *ast.Ident
-	switch f := ast.Unparen(call.Fun).(type) {
+	switch f := callee.(type) {
 	case *ast.Ident:
 		id = f
 	case *ast.SelectorExpr:
