@@ -1130,6 +1130,9 @@ async function decisionsRows(): Promise<void> {
   // The spec's blocks, the one document of the issue its decisions stand in, which the view
   // reads (`decisions-entries.ts`): none, so the rows make no request for them.
   client.setQueryData(["artifact", SPEC_DOCUMENT.id, "blocks"], []);
+  // The coverage read, which part T's Decisions view waits on before it draws its entries
+  // (`decisions-entries.ts`'s `entriesHeld`): one that holds no statement.
+  client.setQueryData(issueCoverageQuery(KEY).queryKey, coverageRead([]));
   const issue = issueDetails();
   const root = issueTree(children);
   const published = publishedTree(root);

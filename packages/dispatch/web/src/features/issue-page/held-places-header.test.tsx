@@ -7,12 +7,20 @@ import { api } from "../../api/client";
 import type { Ask, AuthenticatedUser, IssueChild, IssueDetails, Project } from "../../api/types";
 import { DESKTOP_WIDTH, PHONE_WIDTH, stubViewport } from "../margin/margin-fixture";
 import { userPreferenceStorageKey } from "../shell/userPreference";
-import { issueDetails, KEY } from "./decisions-filter/decisions-fixtures";
+import {
+  decision,
+  decisionsRead,
+  issueDetails,
+  KEY,
+  shaped,
+  specRef,
+} from "./decisions-filter/decisions-fixtures";
 import { IssueOutlinePage } from "./IssueOutlinePage";
 import { presetPath } from "./issue-address";
 import { TWO_THREADS } from "./outline-fixtures";
 import { type TasksByHand, tasksByHand } from "./slices-fixtures";
 import { AppProviders, commentNodes, stubReads, treeOf } from "./slots/stage-fixtures";
+import { coverageRead } from "./spec-filter/spec-fixtures";
 import type { TreeAnswer } from "./tree-read/tree-read";
 
 /**
@@ -182,11 +190,23 @@ function boxClasses(element: Element | null): string[] {
 }
 
 // Row 2, and the approval control's slide the CI legs read. The count of what waits on the reader
-// is drawn once the reads it counts answer, the tree read among them; until then the line holds a
-// place of the count's own box where it will stand, and the count is drawn in that place, so the
-// approval control after it - "Not requested" - is the same element at the same place in the line
-// before and after.
-test("the line holds the count's box before the tree read answers, and the count is drawn in it", async () => {
+// is drawn once the reads it counts answer, and it does not wait on the tree read: while that read
+// is out, every agent's decision is marked, and the count takes "+" for them (decision 583 (1),
+// amended), here "(1+)" for the question and the one decision. When the tree read answers, the
+// decision waits on the reader too and the "+" goes, "(2)", and the count keeps its place and its
+// box, the "+"'s width included (the count holds the
+// "+"'s place, `data-plus-held`), so the approval control after it - "Not requested" - is the same
+// element at the same place in the line before and after
+// (dispatch://INFRA-5939/comment/4dd365f7-6a58-4cca-ac93-b64298f71d02).
+test("the count's + goes as the tree read answers, and the count keeps its place and box, the +'s width included", async () => {
+  // An agent's decision that shaped the spec's statement `r1`, which the coverage read holds, so
+  // the decision waits on the reader's review once the tree read says no Change stands on it.
+  stubs.push(
+    spyOn(api, "getIssueDecisions").mockResolvedValue(
+      decisionsRead([decision("asked", { links: [shaped(specRef("r1"))] })])
+    ),
+    spyOn(api, "getIssueCoverage").mockResolvedValue(coverageRead(["r1"]))
+  );
   await act(async () => whoami.resolve({ event_head: "0", kind: "user", login: READER }));
   await act(async () => projects.resolve([]));
   const view = drawPage();
@@ -194,29 +214,40 @@ test("the line holds the count's box before the tree read answers, and the count
   await waitFor(() =>
     expect(line.textContent, "the line drew no approval control").toContain("Not requested")
   );
-  const slot = line.querySelector("[data-whose-turn-slot]");
+  const held = await waitFor(() => {
+    const drawn = line.querySelector('[data-testid="issue-whose-turn"]');
+    expect(drawn?.textContent, "the count took no + while the tree read was out").toBe(
+      "Waiting on you (1+)"
+    );
+    return drawn;
+  });
   expect(
-    line.querySelector('[data-testid="issue-whose-turn"]'),
-    "the count was drawn before the tree read answered"
+    line.querySelector("[data-whose-turn-slot]"),
+    "the line held a slot beside the count"
   ).toBeNull();
-  expect(slot, "the line held no place for the count while the tree read was out").not.toBeNull();
-  expect(slot?.getAttribute("aria-hidden"), "the held place is heard").toBe("true");
   const approval = [...line.children].find((item) => item.textContent === "Not requested") ?? null;
-  const at = placeIn(line, slot);
+  const at = placeIn(line, held);
   const approvalAt = placeIn(line, approval);
+  const heldBox = boxClasses(held);
 
   await act(async () => tree.resolve(treeOf(commentNodes(TWO_THREADS))));
   await tasks.runAll();
   const chip = await waitFor(() => {
     const drawn = line.querySelector('[data-testid="issue-whose-turn"]');
-    expect(drawn, "the count was not drawn once the tree read answered").not.toBeNull();
+    expect(drawn?.textContent, "the count kept its + once the tree read answered").toBe(
+      "Waiting on you (2)"
+    );
     return drawn;
   });
-  expect(line.querySelector("[data-whose-turn-slot]"), "the held place stayed").toBeNull();
   expect(placeIn(line, chip), "the count was not drawn where the line held its place").toBe(at);
-  expect(boxClasses(chip), "the count's box is not the box its place held").toEqual(
-    boxClasses(slot)
+  expect(boxClasses(chip), "the count's box is not the box its place held").toEqual(heldBox);
+  const plusHeld = chip?.querySelector("[data-plus-held]") ?? null;
+  expect(plusHeld, "the count held no place for the + that went").not.toBeNull();
+  expect(plusHeld?.className, "the held + is not a + of its own width").toContain(
+    "after:content-['+']"
   );
+  expect(plusHeld?.className, "the held + is seen").toContain("after:invisible");
+  expect(plusHeld?.getAttribute("aria-hidden"), "the held + is heard").toBe("true");
   expect(
     [...line.children].includes(approval as Element) && placeIn(line, approval),
     "the approval control after the count moved in the line, or was drawn again"

@@ -874,15 +874,18 @@ export function markChangeUnread(
  * Whether `decision` carries the mark of a Change on a page the tree read's `answer` does not hold
  * yet (`markChangeUnread`), where `changed` says whether a Change of it is held: by its state
  * (`decisionState`), it waits for review or stands kept, and a Change of it may stand on a next
- * page of the read or on an older comment page (`changeMayBeUnloaded`). A decision whose Change
+ * page of the read or on an older comment page, or on any page while the read holds no answer
+ * (`changeMayBeUnloaded`). The outline and the Decisions view draw no decision before the read
+ * answers (`buildIssueTree`), and the header's count counts none of them then (decision
+ * 578 (2)). A decision whose Change
  * the answer holds - a comment the read hangs under its node, or one whose quote its words hold -
  * is `changed`, drawn with that Change, and never marked, whatever pages remain. A marked
  * decision waits on no reader until those pages are read (decision 563 (4), decision 574 (B)):
  * the outline's `waiting`, the header's count (`waiting.ts`) and the count of the Decisions
  * view's review list, where it stands drawn with the mark (`decisions-filter/decisions-parts.ts`'
  * `reviewWaiting`), leave it out of what waits, and the page reads the next pages and then the
- * older comment pages for it once it has drawn (`tree-read/tree-read.ts`'
- * `useReadUnloadedPages`).
+ * older comment pages for it once the stage's view has drawn (`tree-read/tree-read.ts`'
+ * `useTellViewDrawn`, `useReadUnloadedPages`).
  */
 export function changeUnread(
   decision: Partial<Pick<DecisionEntry, "changed_at" | "kept" | "replaced" | "waiting_review">>,

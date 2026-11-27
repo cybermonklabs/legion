@@ -2,7 +2,11 @@ import { useQueries, useQuery } from "@tanstack/react-query";
 import { useCallback, useMemo } from "react";
 
 import { primarySpec, roleDocument } from "../../../api/issue-cache";
-import { artifactBlocksQuery, issueAskThreadsQuery } from "../../../api/queries";
+import {
+  artifactBlocksQuery,
+  issueAskThreadsQuery,
+  issueCoverageQuery,
+} from "../../../api/queries";
 import type { IssueDetails } from "../../../api/types";
 import { compareTimestamps } from "../../../lib/timestamps";
 import { issueDecisionsQuery } from "../../doc/spec-marks";
@@ -14,7 +18,7 @@ import {
   treeComments,
 } from "../decision-review";
 import type { DocumentBlocks, TreeNode } from "../issue-tree";
-import { changeUnread, treeContext } from "../tree-drafts";
+import { changeUnread, coverageStatements, treeContext } from "../tree-drafts";
 import { nodesInOrder } from "../tree-keys";
 import { useReadUnloadedPages, useTreeRead } from "../tree-read/tree-read";
 import {
@@ -52,9 +56,9 @@ import {
  * loaded (`tree-drafts.ts`' `changeUnread`, its state's "+") stands in the review list drawn
  * with that mark, and the list's count leaves it out until that page is read
  * (`decisions-parts.ts`' `reviewWaiting`): the seam reads the next pages and then the older
- * comment pages once the page has drawn, one at a time, until each such Change is held or no such
- * page is left (`useReadUnloadedPages`, decisions 563 (4) and 574 (B)), as the header's count
- * does, and the view draws the decision by what it finds.
+ * comment pages once the stage's view has drawn (`useTellViewDrawn`), one at a time, until each
+ * such Change is held or no such page is left (`useReadUnloadedPages`, decisions 563 (4) and
+ * 574 (B)), as the header's count does, and the view draws the decision by what it finds.
  *
  * The view draws four parts. A decision another person made is no part of its own: it stands
  * under the reader's decisions, with that person's name on its row, so the model's `others` is
@@ -68,7 +72,11 @@ import {
  * draws no line that the issue holds nothing, as the outline does (`slots/body.tsx`). The
  * comments and the blocks are not waited for: they say of no entry whether it is there, only
  * whether a decision stands in the review list or in the reader's own, so a failed read of
- * either still lets an issue that holds nothing say so.
+ * either still lets an issue that holds nothing say so. The coverage read is waited for too: it
+ * places a decision whose statement the tree holds no node for yet (decision 579). No entry is
+ * drawn until the decisions, the asks and the coverage read each hold their answer or stand
+ * refused, so each question and decision is first drawn in its final part and none moves as a
+ * later read answers (decision 585).
  *
  * The seam says too which of those two reads stands refused (`unreadable`), which of them is
  * being read now (`retrying`) and how many times each has failed (`failures`), and asks one of
@@ -113,10 +121,12 @@ interface DecisionsEntries {
   /** Which entry stands in which part, each part in the order it is drawn. Another person's
    *  decisions stand in `yours`, so `others` is empty. */
   readonly parts: DecisionsParts;
-  /** Whether the decisions read and the asks each hold an answer: the reads that say which
-   *  questions and decisions there are. The comments and the blocks of the decisions' documents
-   *  only move a decision between the review list and the reader's own, so they are not waited
-   *  for. A read that failed holds none. */
+  /** Whether the decisions read and the asks each hold an answer, the reads that say which
+   *  questions and decisions there are, and the coverage read holds one or stands refused, since
+   *  it places a decision whose statement the tree holds no node for yet. The comments and the
+   *  blocks of the decisions' documents only move a decision between the review list and the
+   *  reader's own as a Change is found, so they are not waited for. A read that failed holds
+   *  none. */
   readonly readsHeld: boolean;
   /** Asks `read` alone again, by its own query's refetch. */
   readonly retry: (read: DecisionsRead) => void;
@@ -135,6 +145,16 @@ interface DecisionsEntries {
    *  refused: until both answer, the tree may not yet place a reading under the ask it reads. */
   readonly writeUps: ReadonlyMap<string, ReadonlySet<string>> | undefined;
 }
+
+/** The parts while no entry is drawn yet: the same empty parts on every render. */
+const NO_PARTS: DecisionsParts = {
+  agents: [],
+  named: [],
+  open_questions: [],
+  others: [],
+  review: [],
+  yours: [],
+};
 
 /** The Decisions view's parts and how the reads they come from stand, from the issue, the
  *  reader's login, the whole tree and the tree as the Decisions view leaves it (`presetView`). */
@@ -188,8 +208,16 @@ export function useDecisionsEntries({
       }),
     queries: documentIds.map((id) => ({ ...artifactBlocksQuery(id), ...EVENT_FRESH })),
   });
-  // The comments and the blocks only move a decision between parts, so they are not waited for.
-  const readsHeld = decisions !== undefined && asks !== undefined;
+  // The comments and the blocks only move a decision between parts as a Change is found, which a
+  // page of comments or a document's blocks can bring at any time, so they are not waited for.
+  // The coverage read is: it places a decision whose statement the tree holds no node for yet
+  // (`isCoverageStatement` below, decision 579), so a decision drawn before it answers could stand
+  // in the foot and then move. It is held once it holds an answer, or once it stands refused by
+  // the page's one rule (`standsFailed`), so a refused coverage read never holds the view.
+  const coverageRead = useQuery({ ...issueCoverageQuery(issue.key), enabled: false });
+  const coverage = coverageRead.data;
+  const coverageHeld = coverage !== undefined || standsFailed(coverageRead);
+  const readsHeld = decisions !== undefined && asks !== undefined && coverageHeld;
   // A read stands refused by the page's one rule (`standsFailed`): it holds no answer, and a
   // fetch of it failed since it last held one. Not by its status: a refetch that fails over the
   // answer the read last gave sets the error and keeps that answer, which the view draws from,
@@ -197,6 +225,16 @@ export function useDecisionsEntries({
   // again, though it stays refused until it answers.
   const decisionsRefused = standsFailed(decisionsRead);
   const asksRefused = standsFailed(asksRead);
+  // Whether the view draws its entries: once each of the three reads that place them - the
+  // decisions, the asks and the coverage - holds its answer or stands refused, so each question
+  // and decision is first drawn in its final part, and none moves as a later read answers: an
+  // answered ask stands among the reader's decisions by its time, and a decision drawn later
+  // would stand among them (decision 585). A refused read never holds the view, so the entries
+  // the other reads give are drawn beside its line, as they were.
+  const entriesHeld =
+    (decisions !== undefined || decisionsRefused) &&
+    (asks !== undefined || asksRefused) &&
+    coverageHeld;
   const unreadable = useMemo<readonly DecisionsRead[]>(
     () => [
       ...(decisionsRefused ? (["issue-decisions"] as const) : []),
@@ -243,6 +281,12 @@ export function useDecisionsEntries({
   // How this issue addresses a node, which is the one rule the tree was built with, so a
   // `shaped` tie resolves to the node it names (`tree-drafts.ts`).
   const nodeIdOf = useMemo(() => treeContext({ issue }).nodeIdOf, [issue]);
+  // The statements of the coverage read (above), as the header's count reads them (`waiting.ts`),
+  // under the key the tree reads it by, watched and never sent: the header's count and the tree's
+  // own read send it (`IssuePropertiesRow.tsx`, `useIssueTree`), so it costs no request here. They
+  // place a decision whose statement the tree holds no node for yet - it stands on a page of the
+  // outline read not read yet - where it will stand once that page lands (decision 579).
+  const isCoverageStatement = useMemo(() => coverageStatements(issue, coverage), [coverage, issue]);
   // Each write-up of an answered question the tree holds, by its node's id, with the question it
   // restates: a `reading` node at its first placement in the reading order, which is where the
   // tree places it (`placements`), under an ask that holds an answer, the ask the tree read
@@ -261,12 +305,15 @@ export function useDecisionsEntries({
   // From the model's inputs alone: how a read stands is no input of the model, so while only
   // that changes the parts keep their identity and nothing the body works out from them is
   // worked out again. A write-up the address names is no row of the view (R9): the model draws
-  // it as the node the address names (`named`), and it is left out here.
+  // it as the node the address names (`named`), and it is left out here. No entry is drawn until
+  // the reads that place them are held (`entriesHeld`, above).
   const parts = useMemo<DecisionsParts>(() => {
+    if (!entriesHeld) return NO_PARTS;
     const model = decisionsParts({
       asks,
       changes,
       decisions,
+      isCoverageStatement,
       issueKey: issue.key,
       nodeIdOf,
       reader,
@@ -282,7 +329,19 @@ export function useDecisionsEntries({
           ? model.yours
           : newestFirst([...model.yours, ...model.others], root),
     };
-  }, [asks, changes, decisions, issue.key, nodeIdOf, reader, restating, root, view]);
+  }, [
+    asks,
+    changes,
+    decisions,
+    entriesHeld,
+    isCoverageStatement,
+    issue.key,
+    nodeIdOf,
+    reader,
+    restating,
+    root,
+    view,
+  ]);
   // Until the asks read and the decisions read have answered, or stand refused, and the tree
   // holds the model built from them (`treePending`), the tree may not yet place a reading under
   // the answered ask it reads, so no write-up is told yet.

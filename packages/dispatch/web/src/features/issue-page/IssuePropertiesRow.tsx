@@ -97,13 +97,13 @@ export function IssuePropertiesRow({
   const coverage = useQuery({ ...issueCoverageQuery(issue.key), ...EVENT_FRESH });
   const treeRead = useTreeRead(issue);
   const tree = treeRead.answer;
-  // Whether every read the count is counted from has settled, with its answer or its failure:
-  // until then the count may still grow, or come at all, so the line holds its place
-  // (`WaitingSlot`) rather than draw a count that a later answer widens, or draw none and then
-  // push every control after it along the line as the count arrives (R3: on a load of a large
-  // issue the approval control slid 160 px right when the tree read answered).
-  const counted =
-    !viewerRead.isPending && !decisions.isPending && !coverage.isPending && !treeRead.pending;
+  // Whether the reads the count is counted from have settled, with their answer or their
+  // failure: until then the count may come at all, so the line holds its place (`WaitingSlot`)
+  // rather than draw none and then push every control after it along the line as the count
+  // arrives (R3: on a load of a large issue the approval control slid 160 px right when the tree
+  // read answered). The tree read is not waited on here: while it is out, the count is drawn
+  // with its "+" (`waiting.mayWait`, decision 583 (1)), in the place the slot held.
+  const counted = !viewerRead.isPending && !decisions.isPending && !coverage.isPending;
   const nodeIdOf = useMemo(() => issueNodeIdOf(issue), [issue]);
   const statements = useMemo(
     () => new Set((coverage.data?.requirements ?? []).map((one) => nodeIdOf(one.ref))),
@@ -122,10 +122,15 @@ export function IssuePropertiesRow({
   );
   // A decision whose Change may stand on a page the tree read has not loaded is left out of the
   // count until that page is read (`waiting.ts`): the header reads the next pages and then the
-  // older comment pages once the page has drawn, until each such Change is held or no such page
-  // is left (decisions 563 (4) and 574 (B)), so the count is right on every view that holds an
-  // outline read.
+  // older comment pages once the stage's view has drawn (`useTellViewDrawn`), until each such
+  // Change is held or no such page is left (decisions 563 (4) and 574 (B)), so the count is right
+  // on every view that holds an outline read.
   useReadUnloadedPages(issue, () => waiting.unread > 0);
+  // Once the count has drawn its "+", it holds the "+"'s width after the "+" goes, so the count's
+  // box, and every control after it in the line, keeps its place as the tree read answers
+  // (decision 583 (1), amended; dispatch://INFRA-5939/comment/4dd365f7-6a58-4cca-ac93-b64298f71d02).
+  const plusDrawn = useRef(false);
+  if (waiting.mayWait > 0) plusDrawn.current = true;
   // The detail carries waiting_on on every open ask; a response without it cannot say whose
   // turn it is, so the indicator stays off rather than shown wrong.
   const knowsWhoseTurn = openAsks.every((ask) => ask.waiting_on !== undefined);
@@ -159,7 +164,7 @@ export function IssuePropertiesRow({
   // document's chip. A press made on the filter already replaces its entry, so Back leaves the
   // filter rather than walking back through the presses.
   const goToWaiting = () => {
-    if (waiting.asks + waiting.decisions > 0) {
+    if (waiting.asks + waiting.decisions + waiting.mayWait > 0) {
       const press: WaitingPress = { waitingPress: performance.now() };
       const path = presetPath(issue.key, "decisions");
       navigate(path, { replace: pathname === path, state: press });
@@ -222,7 +227,7 @@ export function IssuePropertiesRow({
       <ChildrenProgress childIssues={issue.children ?? []} />
       {!counted ? (
         <WaitingSlot />
-      ) : waiting.total > 0 ? (
+      ) : waiting.total + waiting.mayWait > 0 ? (
         // The prototype's `.waitchip`: a control, because the reader acts on what it counts.
         <button
           className={`${WAITING_CHIP_BOX} ${pageWaitingChip} ${focusVisibleRing}`}
@@ -234,9 +239,26 @@ export function IssuePropertiesRow({
           <span aria-hidden="true" className={`size-2 shrink-0 rounded-full ${pageWaitingBg}`} />
           {/* The words are one item, so the flex gap is the dot's alone: as items of their own,
               the brackets and the number each took the gap and the count drew "Waiting on
-              you ( 2 )". */}
+              you ( 2 )". While a decision that may wait is marked (`waiting.mayWait`), the
+              number takes "+", as every count with more to read does (R15, decisions 580 and
+              583 (1)): "(1+)", or "(0+)" where only such decisions may wait. */}
           <span>
-            {PROPERTY_LABELS.waiting_on_you} (<span {...authorText}>{waiting.total}</span>)
+            {PROPERTY_LABELS.waiting_on_you} (
+            <span {...authorText}>
+              {waiting.total}
+              {waiting.mayWait > 0 ? (
+                "+"
+              ) : plusDrawn.current ? (
+                // The "+" that went: a "+" of its own width that is not seen or heard, and that
+                // no text of the count holds.
+                <span
+                  aria-hidden="true"
+                  className="after:invisible after:content-['+']"
+                  data-plus-held=""
+                />
+              ) : null}
+            </span>
+            )
           </span>
         </button>
       ) : agentsTurn > 0 && knowsWhoseTurn ? (

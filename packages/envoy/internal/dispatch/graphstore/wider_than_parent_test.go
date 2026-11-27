@@ -69,9 +69,9 @@ func TestAPartOfOrOnTupleWiderThanItsParentIsRefused(t *testing.T) {
 			childKind: KindLens, childID: lensInversion, parentKind: KindConstraint, parentID: constraintHidden},
 		{name: "Caused, a project risk's part_of held for the cause at a lens reserved for its author",
 			write: func(ctx context.Context, tx pgx.Tx) error {
-				return Caused(ctx, tx, Uncaused{Tuples: []UncausedTuple{
-					{Tuple: pointerTuple(KindRisk, riskAstray, TuplePartOf, KindLens, lensHidden)},
-				}}, NoEvent)
+				return Caused(ctx, tx, Holding(
+					UncausedTuple{Tuple: pointerTuple(KindRisk, riskAstray, TuplePartOf, KindLens, lensHidden)},
+				), NoEvent)
 			},
 			childKind: KindRisk, childID: riskAstray, parentKind: KindLens, parentID: lensHidden},
 	} {

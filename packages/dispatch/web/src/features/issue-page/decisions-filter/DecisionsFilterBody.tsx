@@ -53,7 +53,7 @@ import { focusIsLoose } from "../tree-focus";
 import type { DrawnRow } from "../tree-fold";
 import { nodesInOrder, rowKeyOf } from "../tree-keys";
 import { useTreeKeymap } from "../useTreeKeymap";
-import { DecisionsRow } from "./DecisionsRow";
+import { DecisionsRow, type StatementName } from "./DecisionsRow";
 import { useDecisionsEntries } from "./decisions-entries";
 import {
   conversationPath,
@@ -223,39 +223,26 @@ export function DecisionsFilterBody({
   // the line the names store projects beside its name from the reading the page published for
   // it, its first block that holds words (`KnownReferences.lines`), cut to a chip's room, which
   // each row draws as it is. One the store holds no line for yet is named by nothing until it
-  // does, as a chip draws nothing until its name comes. A statement drawn under two parents is
-  // one node, so its first placement in the page's reading order names it.
-  const known = useKnownReferences();
-  const { lines } = known;
-  const statementNames = useMemo<ReadonlyMap<string, string>>(() => {
-    const names = new Map<string, string>();
-    for (const node of nodesInOrder(root)) {
-      const reference = node.type === "requirement" ? node.reference : undefined;
-      if (reference === undefined || names.has(node.id)) continue;
-      const line = lines.get(reference);
-      if (line !== undefined) names.set(node.id, chipName(parseNodeReference(reference), line));
+  // does, as a chip draws nothing until its name comes. Each statement is named by its address
+  // (`ShapedStatement.reference`), so one the tree holds no node for yet - its page is not read
+  // yet (decision 579) - is named as one it holds; one statement shaped by two entries is named
+  // once. Beside its name goes its whole line, the title of the link its line draws, which cuts
+  // the name to the line's width (decision 583 (2), amended).
+  const { lines } = useKnownReferences();
+  const statementNames = useMemo<ReadonlyMap<string, StatementName>>(() => {
+    const names = new Map<string, StatementName>();
+    for (const part of DECISIONS_PART_ORDER) {
+      for (const { shapes } of parts[part]) {
+        for (const { id, reference } of shapes) {
+          const line = lines.get(reference);
+          if (line !== undefined && !names.has(id)) {
+            names.set(id, { name: chipName(parseNodeReference(reference), line), title: line });
+          }
+        }
+      }
     }
     return names;
-  }, [lines, root]);
-  // The statements whose name the page has asked for and the names read has not answered yet,
-  // while that read stands unrefused (`namesLine`): a row that shaped one holds its "informs"
-  // line's place until the name comes (`DecisionsRow`'s `namesOut`), so the name drawn moves no
-  // row below it (R3).
-  const namesOut = useMemo<ReadonlySet<string>>(() => {
-    const out = new Set<string>();
-    if (namesLine.length > 0) return out;
-    for (const node of nodesInOrder(root)) {
-      const reference = node.type === "requirement" ? node.reference : undefined;
-      if (reference === undefined || !known.asked.has(reference)) continue;
-      const answered =
-        known.names.has(reference) ||
-        known.gone.has(reference) ||
-        known.unnamed.has(reference) ||
-        known.ambiguous.has(reference);
-      if (!answered) out.add(node.id);
-    }
-    return out;
-  }, [known, namesLine.length, root]);
+  }, [lines, parts]);
   const setFocusedNode = useSetFocusedNode();
   const writer = useOutlineWriter();
   const body = useRef<HTMLElement | null>(null);
@@ -810,7 +797,6 @@ export function DecisionsFilterBody({
         isClosed={isClosed}
         key={id}
         level={part === "agents" ? 2 : 1}
-        namesOut={namesOut}
         onFocus={() => press.focus(entry)}
         onPin={() => pin(id)}
         // A Keep pressed or a Change sent is the press over: its click has landed, so the row

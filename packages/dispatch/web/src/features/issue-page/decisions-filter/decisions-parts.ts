@@ -103,10 +103,14 @@ export interface ShapedStatement {
   /** The statement's node id. */
   readonly id: string;
   /** The statement, whose one line a row projects from its words, as R1 cuts a row's
-   *  (`issue-tree.ts`'s `lineReading`): the page draws one line for it here. */
-  readonly node: TreeNode;
+   *  (`issue-tree.ts`'s `lineReading`): the page draws one line for it here. Absent while the tree
+   *  holds no node for it - it stands on a page of the outline read not read yet - where the
+   *  coverage read says it is a statement (decision 579). */
+  readonly node?: TreeNode;
   /** Its address in the conversation, where it has one. */
   readonly path?: string;
+  /** Its address, by which the page names it (`DecisionsFilterBody.tsx`'s `statementNames`). */
+  readonly reference: string;
   /** Whether the decision changed after it first named the statement and the statement has not
    *  changed since (`DecisionLink.stale`). */
   readonly stale: boolean;
@@ -257,13 +261,17 @@ export function reviewWaiting(parts: Pick<DecisionsParts, "review">): readonly D
  * a tie resolves to the node it names however its address is written. `changes` is the change
  * a person asked of each decision, by the decision's address (`decisionChanges`), with the
  * server's reading of its body where the tree read's comment node holds one, and `reader` who is
- * reading, which is what tells their own decisions from other people's.
+ * reading, which is what tells their own decisions from other people's. `isCoverageStatement`
+ * answers which addresses name a statement as the header's count reads one
+ * (`tree-drafts.ts`' `coverageStatements`), which places a decision whose statement the tree
+ * holds no node for yet (decision 579).
  */
 export function decisionsParts({
   asks,
   changes,
   decisions,
   issueKey,
+  isCoverageStatement,
   nodeIdOf,
   reader,
   root,
@@ -275,6 +283,7 @@ export function decisionsParts({
   readonly decisions: IssueDecisions | undefined;
   /** The issue's key, which a change's address in the conversation is built with. */
   readonly issueKey: string;
+  readonly isCoverageStatement: (reference: string) => boolean;
   readonly nodeIdOf: (reference: string) => string | undefined;
   readonly reader: string | undefined;
   /** The whole tree. */
@@ -296,8 +305,14 @@ export function decisionsParts({
     else held.push(row);
   }
   const closings = new Map((asks ?? []).map((ask) => [ask.id, ask.resolution]));
-  const isStatement = (reference: string): boolean =>
-    placed.get(nodeIdOf(reference) ?? "")?.node.type === "requirement";
+  // A tie counts where its far end is a statement of this issue: a requirement node of the tree,
+  // or, where the tree holds no node for it - it stands on a page of the outline read not read
+  // yet - a statement of the coverage read, as the header's count reads it (`waiting.ts`), so the
+  // decision stands where it will once that page lands (decision 579).
+  const isStatement = (reference: string): boolean => {
+    const held = placed.get(nodeIdOf(reference) ?? "")?.node;
+    return held === undefined ? isCoverageStatement(reference) : held.type === "requirement";
+  };
   const open: AskEntry[] = [];
   const review: DecisionEntry[] = [];
   const yours: DecisionsEntry[] = [];
@@ -320,7 +335,7 @@ export function decisionsParts({
       // A person's decision is the answered ask itself (`personDecisionAsk`): its `shaped` ties
       // are the statements the person's decision shaped, each once.
       const shaped = (personal.get(askId) ?? []).flatMap((row) => row.shaped ?? []);
-      const shapes = shapesOf({ shaped }, nodeIdOf, placed);
+      const shapes = shapesOf({ shaped }, nodeIdOf, placed, isCoverageStatement);
       const closing = closings.get(askId);
       // `question` is the ask's own `state === "open"` (`tree-read/tree-nodes.ts`' `draftAsk`).
       if (node.question) {
@@ -362,7 +377,7 @@ export function decisionsParts({
       agents.push({ ...base, ...timeOf(node.at), kind: "decision", shapes: [] });
       continue;
     }
-    const shapes = shapesOf(row, nodeIdOf, placed);
+    const shapes = shapesOf(row, nodeIdOf, placed, isCoverageStatement);
     const asked = row.replaced ? undefined : changes?.get(row.ref);
     const standing = standingOf(row, asked !== undefined);
     const keptBy: Actor | undefined =
@@ -478,7 +493,7 @@ function timeOf(at: string | null | undefined): { readonly at?: string } {
 }
 
 /** The entry's address in the conversation, where its node has one. */
-function pathOf(node: TreeNode): { readonly path?: string } {
+function pathOf(node: Pick<TreeNode, "reference">): { readonly path?: string } {
   const path = conversationPath(node);
   return path === undefined ? {} : { path };
 }
@@ -496,24 +511,31 @@ function standingOf(
   return row.kept === null ? undefined : "kept";
 }
 
-/** The statements of this issue `row`'s ties name, each once, in the ties' own order. */
+/** The statements of this issue `row`'s ties name, each once, in the ties' own order, each with
+ *  its node where the tree holds one: a tie counts where its far end is a requirement node of the
+ *  tree or, where the tree holds no node for it, a statement of the coverage read
+ *  (`isCoverageStatement`), as `decisionsParts`' `isStatement` counts a tie. */
 function shapesOf(
   row: Pick<ReadEntry, "shaped">,
   nodeIdOf: (reference: string) => string | undefined,
-  placed: ReadonlyMap<string, Placement>
+  placed: ReadonlyMap<string, Placement>,
+  isCoverageStatement: (reference: string) => boolean
 ): readonly ShapedStatement[] {
   const shapes = new Map<string, ShapedStatement>();
   for (const link of row.shaped ?? []) {
-    const statement =
-      link.to.ref === undefined ? undefined : placed.get(nodeIdOf(link.to.ref) ?? "");
-    if (statement === undefined || statement.node.type !== "requirement") continue;
-    const node = statement.node;
-    const held = shapes.get(node.id);
-    shapes.set(node.id, {
-      id: node.id,
-      node,
-      ...pathOf(node),
-      stale: link.stale || held?.stale === true,
+    const reference = link.to.ref;
+    if (reference === undefined) continue;
+    const resolved = nodeIdOf(reference);
+    const node = placed.get(resolved ?? "")?.node;
+    if (node === undefined ? !isCoverageStatement(reference) : node.type !== "requirement")
+      continue;
+    const id = resolved ?? reference;
+    shapes.set(id, {
+      id,
+      ...(node === undefined ? {} : { node }),
+      ...pathOf(node ?? { reference }),
+      reference: node?.reference ?? reference,
+      stale: link.stale || shapes.get(id)?.stale === true,
     });
   }
   return [...shapes.values()];

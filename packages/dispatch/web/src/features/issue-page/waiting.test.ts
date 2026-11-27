@@ -546,7 +546,14 @@ function changePlaces(
 // decision; an approval request is no node of it. While the login is not known, nothing waits.
 test("what waits on the reader is their open questions, the review list and their approval requests", () => {
   const counted = waitingOnReader(issue, "alice", decisions, isCoverageStatement, issueTree);
-  expect(counted).toEqual({ approvals: [spec.id], asks: 1, decisions: 1, total: 3, unread: 0 });
+  expect(counted).toEqual({
+    approvals: [spec.id],
+    asks: 1,
+    decisions: 1,
+    mayWait: 0,
+    total: 3,
+    unread: 0,
+  });
 
   const root = buildIssueTree({
     coverage,
@@ -581,7 +588,14 @@ test("a Change its author deleted leaves its decision on the review list and in 
     markedCommentNode(deleted, KEY),
   ]);
   const counted = waitingOnReader(issue, "alice", decisions, isCoverageStatement, tree);
-  expect(counted).toEqual({ approvals: [spec.id], asks: 1, decisions: 2, total: 4, unread: 0 });
+  expect(counted).toEqual({
+    approvals: [spec.id],
+    asks: 1,
+    decisions: 2,
+    mayWait: 0,
+    total: 4,
+    unread: 0,
+  });
 
   const root = buildIssueTree({
     coverage,
@@ -1045,6 +1059,50 @@ test("a decision whose Change may stand on the tree read's next page waits on no
     waits(answerOf(firstPage)),
     "once the next page that holds none of its Changes is read"
   ).toEqual({ counted: 1, marked: [], unread: 0, waiting: ["next"] });
+});
+
+// Decision 578 (2): while the tree read holds no answer, the count has read no page of it, so a
+// Change of any decision may stand on a page it has not loaded: each decision of the review list
+// with no Change held carries the mark and waits on no reader, so the count counts none of them,
+// and the outline draws no decision at all. Once the read answers, the count counts what that
+// answer makes each: the decision whose Change it holds waits on its agent, and the other on the
+// reader.
+test("no decision waits on the reader while the tree read holds no answer, and each that waits does once it answers", () => {
+  const asked = waitingDecision("asked", ["r1"]);
+  const unasked = waitingDecision("unasked", ["r1"]);
+  const read = decisionsRead([asked, unasked]);
+  const askedChange: Comment = { ...change, anchor: null, id: "c-asked" };
+  const counted = (tree: TreeAnswer | undefined) => {
+    const { decisions, mayWait, unread } = waitingOnReader(
+      issue,
+      "alice",
+      read,
+      isCoverageStatement,
+      tree
+    );
+    return { decisions, mayWait, unread };
+  };
+  // Both decisions may wait, so the count takes "+" (decision 583 (1)).
+  expect(counted(undefined), "while the tree read holds no answer").toEqual({
+    decisions: 0,
+    mayWait: 2,
+    unread: 2,
+  });
+  expect(
+    waitingIn(buildIssueTree({ coverage, decisions: read, issue, viewer: "alice" })),
+    "the outline drew a decision that waits before the tree read answered"
+  ).toEqual([]);
+  const answered = answerOf([
+    statement,
+    decisionTreeNode(asked),
+    commentNode(askedChange, "asked"),
+    decisionTreeNode(unasked),
+  ]);
+  expect(counted(answered), "once the tree read answers").toEqual({
+    decisions: 1,
+    mayWait: 0,
+    unread: 0,
+  });
 });
 
 // Two documents of an issue may share a block id. A person's comment on the statement r1 is no

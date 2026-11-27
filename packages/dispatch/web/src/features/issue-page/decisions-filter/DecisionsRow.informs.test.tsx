@@ -4,6 +4,7 @@ import { act, render } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 
 import { displayTree } from "../../../__tests__/display-trees";
+import { issueCoverageQuery } from "../../../api/queries";
 import { warmMarkdownRenderer } from "../../refs/markdown-engine";
 import { NOTHING_PUBLISHED, type PublishedReferences } from "../../refs/reference-names";
 import { artifactsBySlug } from "../issue-artifacts";
@@ -14,6 +15,7 @@ import { EMPTY_STATE_LINES } from "../page-words";
 import { presetView } from "../presets";
 import { blockReads, Publisher } from "../projection-fixture";
 import { AppProviders } from "../slots/stage-fixtures";
+import { coverageRead } from "../spec-filter/spec-fixtures";
 import { DecisionsFilterBody } from "./DecisionsFilterBody";
 import {
   decision,
@@ -101,6 +103,9 @@ test("a decision's row holds its informs line while the statements it shaped are
   // The spec's blocks, the one document of the issue its decisions stand in, which the view
   // reads (`decisions-entries.ts`): none, so the row makes no request for them.
   client.setQueryData(["artifact", SPEC_DOCUMENT.id, "blocks"], []);
+  // The coverage read, which part T's Decisions view waits on before it draws its entries
+  // (`decisions-entries.ts`'s `entriesHeld`): one that holds no statement.
+  client.setQueryData(issueCoverageQuery(KEY).queryKey, coverageRead([]));
   const view = render(body(client, NAMES_OUT));
   try {
     const row = view.container.querySelector<HTMLElement>(
@@ -112,21 +117,24 @@ test("a decision's row holds its informs line while the statements it shaped are
       held,
       "the row held no place for its informs line while the statement was still to be named"
     ).not.toBeNull();
-    expect(held?.className, "the held line holds no line's height").toContain("min-h-5");
-    expect(held?.getAttribute("aria-hidden"), "the held line is heard").toBe("true");
-    expect(
-      held?.querySelector("[data-decision-statement]"),
-      "the held line names a statement"
-    ).toBeNull();
+    // One line, 20 px, for the statement from the first drawing, with no name in it yet
+    // (`DecisionsRow.tsx`, the informs line).
+    const line = held?.querySelector("[data-decision-statement]") ?? null;
+    expect(line, "the held line holds no line for the statement").not.toBeNull();
+    expect(line?.className, "the statement's line holds no line's height").toContain("h-5");
+    expect(line?.textContent, "the held line names the statement before its name came").toBe("");
 
     await act(async () => view.rerender(body(client, namesAnswered())));
     const informs = row?.querySelector("[data-decision-informs]") ?? null;
     expect(informs, "the names drew the informs line again as another element").toBe(held);
     expect(
-      informs?.querySelector("[data-decision-statement]")?.textContent,
+      informs?.querySelector("[data-decision-statement]"),
+      "the names drew the statement's line again as another element"
+    ).toBe(line);
+    expect(
+      line?.textContent,
       "the informs line does not name the statement once the names came"
     ).toBe("The page draws s1.");
-    expect(informs?.getAttribute("aria-hidden"), "the named line is hidden").toBeNull();
   } finally {
     view.unmount();
   }

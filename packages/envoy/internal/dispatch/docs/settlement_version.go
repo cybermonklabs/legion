@@ -435,7 +435,7 @@ func (st *settlement) queueSettledQueryMark(ctx context.Context, issueKey string
 		states := st.roomTuples
 		for _, stated := range caused {
 			for _, held := range stated {
-				states = states || len(held.Tuples) > 0
+				states = states || held.Len() > 0
 			}
 		}
 		if states {
@@ -832,7 +832,7 @@ func (st *settlement) commitRoomVersions(ctx context.Context, fragments []roomFr
 	// own, which the mark of the issue's queries reads (queueSettledQueryMark).
 	st.roomTuples = false
 	for _, stated := range facts {
-		st.roomTuples = st.roomTuples || len(writes) > 0 && len(stated.Tuples) > 0
+		st.roomTuples = st.roomTuples || len(writes) > 0 && stated.Len() > 0
 	}
 	// The room's references and its blocks' links name what the pass moved, and the last event
 	// carries them, as a document's one event does.

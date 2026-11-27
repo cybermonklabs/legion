@@ -5,6 +5,7 @@ import {
   issueAskThreadsQuery,
   issueCoverageQuery,
   issueResultsQuery,
+  TREE_FILTERS,
   whoAmIQuery,
 } from "../../api/queries";
 import type { IssueAskThreadRow, IssueDetails, MessageRead } from "../../api/types";
@@ -13,7 +14,8 @@ import type { PublishedReferences } from "../refs/reference-names";
 import { EVENT_FRESH, standsFailed } from "../refs/reference-target";
 import type { TreeNode } from "./issue-tree";
 import { useOwnedIssueTree } from "./issue-tree-owner";
-import { STATE_LINES } from "./page-words";
+import { type Preset, STATE_LINES } from "./page-words";
+import { useTreeRead, viewQuery } from "./tree-read/tree-read";
 import { type IssueTreeView, issueMessagesQuery, type NamesFailure } from "./useIssueTree";
 
 /** One line the outline draws over the tree (`FailedReadLine`), with a Retry. A read the rows
@@ -364,4 +366,24 @@ export function useOutlineReads(issue: IssueDetails): OutlineReads {
     treePending: pending,
     warm,
   };
+}
+
+/**
+ * Whether every read the view `preset` draws from has answered, with its data or with its
+ * failure: the reads the tree's rows come from (`OutlineReads.readsSettled`), and under a filter
+ * that filter's view read, which `ViewReadProvider` sends. It is what the page's stage waits on
+ * for its view's first drawing where the view draws no row (`slots/stage.tsx`): the view has
+ * then drawn what it draws in their place. Each read is observed under the key and with the
+ * freshness the tree reads it by, and the view read is watched and never sent, so this costs no
+ * request and builds no tree.
+ */
+export function useReadsSettled(issue: IssueDetails, preset: Preset): boolean {
+  const { pending } = useTreeRead(issue);
+  const filter = TREE_FILTERS.find((one) => one === preset);
+  const view = useQuery({ ...viewQuery(issue.key, filter ?? TREE_FILTERS[0]), enabled: false });
+  const settled = useQueries({
+    combine: (answers) => answers.every((answer) => !answer.isPending),
+    queries: queriesOf(besideReads(issue.key)),
+  });
+  return settled && !pending && (filter === undefined || !view.isPending);
 }

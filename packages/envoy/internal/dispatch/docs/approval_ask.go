@@ -321,7 +321,7 @@ func rewriteApprovalAsk(
 			return fmt.Errorf("append approval ask edit: %w", err)
 		}
 		refs.QueueStamp(b, "ask", ask.ID)
-		if len(approves.Tuples) > 0 {
+		if approves.Len() > 0 {
 			graphstore.QueueCaused(b, approves, graphstore.LatestEvent)
 			graphstore.QueueHeads(b, graphstore.HeldHeads(approves))
 		}

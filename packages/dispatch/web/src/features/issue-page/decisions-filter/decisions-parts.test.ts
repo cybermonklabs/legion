@@ -7,7 +7,7 @@ import type { DocumentBlocks, TreeNode } from "../issue-tree";
 import { NODE_TYPE_NAMES } from "../page-words";
 import { presetView } from "../presets";
 import { parentLinkWords } from "../projection-fixture";
-import { nodeIdOf as issueNodeIdOf } from "../tree-drafts";
+import { coverageStatements, nodeIdOf as issueNodeIdOf } from "../tree-drafts";
 import {
   AGENT,
   answeredAsk,
@@ -52,6 +52,10 @@ beforeAll(async () => {
 /** How this issue addresses a node, which is the page's own rule (`tree-drafts.ts`). */
 const nodeIdOf = issueNodeIdOf(issueDetails());
 
+/** The statements of a coverage read that has not answered: none, so a tie counts only to a
+ *  statement the tree holds, as each case here builds the tree with them. */
+const NO_COVERAGE = coverageStatements(issueDetails(), undefined);
+
 /** The spec's blocks as the blocks read answers them: each agent's decision's own `decision`
  *  block, in the order the decisions were made. */
 function specBlocks(made: readonly Decision[]): DocumentBlocks[] {
@@ -84,6 +88,7 @@ function partsOf(
     asks,
     changes: decisionChanges(decisions, comments, issueDetails(), specBlocks(made)),
     decisions,
+    isCoverageStatement: NO_COVERAGE,
     issueKey: KEY,
     nodeIdOf,
     reader: READER,
@@ -595,7 +600,7 @@ test("a decision that shaped three statements is one entry that reaches all thre
   expect(
     parts.review[0]?.shapes.map(({ id, node, path, stale }) => ({
       id,
-      line: parentLinkWords(node),
+      line: node === undefined ? "no node" : parentLinkWords(node),
       path,
       stale,
     }))
@@ -722,7 +727,11 @@ test("a parent's line and a statement's line are cut from the node's first block
     reference: `dispatch://${KEY}/ask/q2`,
     type: "ask",
   });
-  expect(entry("headed")?.shapes.map((one) => parentLinkWords(one.node))).toEqual([
+  expect(
+    entry("headed")?.shapes.map((one) =>
+      one.node === undefined ? "no node" : parentLinkWords(one.node)
+    )
+  ).toEqual([
     "The page draws word1 word2 word3 word4 word5 word6 word7 word8 word9 word10 word11 word12 word13…",
     NODE_TYPE_NAMES.requirement,
   ]);
@@ -798,6 +807,7 @@ test("the parts are read before every read has answered", () => {
   const parts = decisionsParts({
     asks: undefined,
     decisions: undefined,
+    isCoverageStatement: NO_COVERAGE,
     issueKey: KEY,
     nodeIdOf,
     reader: undefined,

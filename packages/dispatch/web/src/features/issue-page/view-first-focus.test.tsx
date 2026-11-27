@@ -167,6 +167,9 @@ function drawDecisions(): RenderResult {
   client.setQueryData(["decisions", KEY], decisionsRead([]));
   client.setQueryData(["asks", KEY, "thread"], []);
   client.setQueryData(["comments", KEY], []);
+  // The coverage read, which part T's Decisions view waits on before it draws its entries
+  // (`decisions-entries.ts`'s `entriesHeld`): one that holds no statement.
+  client.setQueryData(issueCoverageQuery(KEY).queryKey, coverageRead([]));
   const issue = issueDetails();
   const root = issueTree(idsOf(12, "q").map((id) => openAsk(id)));
   const published = publishedTree(root);

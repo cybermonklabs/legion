@@ -179,7 +179,7 @@ func (s *Service) indexDeferredVersion(ctx context.Context, tx pgx.Tx, artifactI
 		return model.ReferenceChanges{}, graphstore.Uncaused{}, err
 	}
 	stated := passes.plan.Stated()
-	stated.Tuples = append(stated.Tuples, mentions...)
+	stated.State(mentions...)
 	return changes, stated, nil
 }
 
@@ -300,7 +300,7 @@ func (s *Service) indexDocument(ctx context.Context, tx pgx.Tx, artifactID strin
 		if err != nil {
 			return model.ReferenceChanges{}, graphstore.Uncaused{}, err
 		}
-		removals.Tuples = append(removals.Tuples, mentions...)
+		removals.State(mentions...)
 		return changes, removals, nil
 	}
 	return s.indexRenderedVersion(ctx, tx, artifactID, versions, versions, false, markdown, offsetBlocks(rendered.offsets, rendered.documents), rendered.tree, settled)
@@ -337,7 +337,7 @@ func ownVersion(artifactID string, versions refs.Versions) refs.Version {
 func removalsOfVersions(ctx context.Context, versions refs.Versions) graphstore.Uncaused {
 	var held []graphstore.Uncaused
 	for _, document := range slices.Sorted(maps.Keys(versions)) {
-		if removals := removalsOf(ctx, document); len(removals.Nodes) > 0 || len(removals.Tuples) > 0 {
+		if removals := removalsOf(ctx, document); len(removals.Nodes) > 0 || removals.Len() > 0 {
 			held = append(held, removals)
 		}
 	}
@@ -736,7 +736,7 @@ func (s *Service) indexRenderedVersion(ctx context.Context, tx pgx.Tx, artifactI
 	if err != nil {
 		return model.ReferenceChanges{}, graphstore.Uncaused{}, err
 	}
-	stated.Tuples = append(stated.Tuples, mentions...)
+	stated.State(mentions...)
 	return changes, stated, nil
 }
 

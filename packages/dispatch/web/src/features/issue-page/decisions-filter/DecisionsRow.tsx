@@ -58,6 +58,13 @@ interface RowPerson {
   readonly reader: boolean;
 }
 
+/** A statement's name as the body names it (`DecisionsFilterBody.tsx`'s `statementNames`): the
+ *  words its line draws, cut to a chip's room, and its whole words, which the line's title holds. */
+export interface StatementName {
+  readonly name: string;
+  readonly title: string;
+}
+
 /**
  * One row of the Decisions filter, drawn as the prototype's `.dcard` is: "outline lines, the
  * same as the conversation's".
@@ -114,7 +121,6 @@ export function DecisionsRow({
   focused,
   isClosed,
   level,
-  namesOut,
   onFocus,
   onPin,
   onReviewed,
@@ -138,10 +144,6 @@ export function DecisionsRow({
   isClosed: boolean;
   /** How deep the row sits: 1, or 2 under the foot's own row (`aria-level`). */
   level: number;
-  /** The statements, by node id, whose name the page has asked for and not read yet
-   *  (`DecisionsFilterBody.tsx`): while the entry shaped one of them, the row holds its
-   *  "informs" line's place. */
-  namesOut: ReadonlySet<string>;
   onFocus: () => void;
   onPin: () => void;
   /** Says the reader pressed Keep on this decision's row, or sent its Change form. The press
@@ -157,9 +159,9 @@ export function DecisionsRow({
   report?: string;
   /** Whether this decision is an entry of the review list, which draws Keep and Change. */
   review: boolean;
-  /** Each statement's name by its node id, as the body names it (`DecisionsFilterBody.tsx`),
-   *  drawn as it is; a statement whose name is `""` is not named. */
-  statementNames: ReadonlyMap<string, string>;
+  /** Each statement's name by its node id, as the body names it (`DecisionsFilterBody.tsx`). A
+   *  statement the map holds no name for is not named yet. */
+  statementNames: ReadonlyMap<string, StatementName>;
   /** Whether this row is the list's one tab stop. */
   tabStop: boolean;
   /** The thread whose newest write this row draws, which a dwell on the row marks read. */
@@ -199,18 +201,15 @@ export function DecisionsRow({
   const [opened, setOpened] = useState(false);
   const clamped = clamp !== undefined && !opened && !body;
   const tone = toneOf(entry);
-  // Each statement the entry shaped by its name, and none whose node holds no words: no
-  // address, slug or id is drawn in a statement's place (R22).
-  const statements = entry.shapes.flatMap((shape) => {
-    const name = statementNames.get(shape.id) ?? "";
-    return name === "" ? [] : [{ name, shape }];
-  });
-  // Whether the row holds its "informs" line's place: it names no statement yet, and one it
-  // shaped is still to be named (`namesOut`). The line held is one line high and hidden, and the
-  // names are drawn in it once they come, so the row keeps its height as they do (R3: each
-  // decision's row grew a line, and the rows under it moved, a commit after the rows were drawn).
-  const informsHeld =
-    statements.length === 0 && entry.shapes.some((shape) => namesOut.has(shape.id));
+  // Each statement the entry shaped, by its name once the page holds it, and none of its address,
+  // slug or id in a statement's place (R22). Each has a line of its own from the first drawing -
+  // one its page has not read yet among them (decision 579) - so the row's height is known from
+  // the decisions read's ties before any name comes, and the names, or a statement's page,
+  // landing move no row (decision 583 (2), amended).
+  const statements = entry.shapes.map((shape) => ({
+    named: statementNames.get(shape.id),
+    shape,
+  }));
   return (
     <div
       aria-labelledby={ids.labelledBy}
@@ -312,41 +311,49 @@ export function DecisionsRow({
             <Changed by={person(entry.change.by)} change={entry.change} focused={focused} />
           )}
           {entry.parent === undefined ? null : <EntryParentLine parent={entry.parent} />}
-          {statements.length === 0 && !informsHeld ? null : (
-            <p
-              aria-hidden={informsHeld || undefined}
-              className={`flex min-h-5 min-w-0 flex-wrap items-baseline gap-x-2 text-xs leading-5 ${pageQuietText}${informsHeld ? " invisible" : ""}`}
+          {statements.length === 0 ? null : (
+            // One line, 20 px, for each statement, whether its name has come or not: what does
+            // not fit is cut with an ellipsis, its whole words in the link's title, so no line
+            // wraps and no name of a later statement is hidden behind an earlier one.
+            <div
+              className={`flex min-w-0 items-baseline gap-x-2 text-xs leading-5 ${pageQuietText}`}
               data-decision-informs=""
             >
               <span className="shrink-0" {...pageChrome}>
                 {DECISIONS_WORDS.informs}
               </span>
-              {statements.map(({ name, shape }) => (
-                <span
-                  className="min-w-0 break-words"
-                  data-decision-statement={shape.id}
-                  key={shape.id}
-                >
-                  {/* A sentence about the statement, so a colon sets it apart from the
-                      statement's own words. */}
-                  {shape.stale ? (
-                    <span {...pageChrome}>{CONTROL_LABELS.target_stale}: </span>
-                  ) : null}
-                  {shape.path === undefined ? (
-                    <span {...authorText}>{name}</span>
-                  ) : (
-                    <Link
-                      className={`dispatch-inline-link font-semibold hover:underline ${pageKindTag.statement}`}
-                      tabIndex={-1}
-                      to={shape.path}
-                      {...authorText}
-                    >
-                      {name}
-                    </Link>
-                  )}
-                </span>
-              ))}
-            </p>
+              <span className="flex min-w-0 flex-col">
+                {statements.map(({ named, shape }) => (
+                  <span
+                    className="block h-5 min-w-0 truncate"
+                    data-decision-line=""
+                    data-decision-statement={shape.id}
+                    key={shape.id}
+                  >
+                    {/* A sentence about the statement, so a colon sets it apart from the
+                        statement's own words. */}
+                    {shape.stale ? (
+                      <span {...pageChrome}>{CONTROL_LABELS.target_stale}: </span>
+                    ) : null}
+                    {named === undefined || named.name === "" ? null : shape.path === undefined ? (
+                      <span title={named.title} {...authorText}>
+                        {named.name}
+                      </span>
+                    ) : (
+                      <Link
+                        className={`dispatch-inline-link font-semibold hover:underline ${pageKindTag.statement}`}
+                        tabIndex={-1}
+                        title={named.title}
+                        to={shape.path}
+                        {...authorText}
+                      >
+                        {named.name}
+                      </Link>
+                    )}
+                  </span>
+                ))}
+              </span>
+            </div>
           )}
           {/* Keep and Change on one line with the entry's link (the prototype's `.dbtns`); the
               form Change opens, and what a refused write says, take a line of their own. A

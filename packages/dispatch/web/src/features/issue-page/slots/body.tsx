@@ -122,10 +122,11 @@ export function BodySlot({ acts: given, issue, route }: BodySlotProps): ReactNod
   const pagesHeld = !pages.reading && !pages.refused;
   // An address that names a comment no page of the outline read holds - one older than its 200
   // newest (R15) - reads the older comment pages once the next pages are read to their end and the
-  // page has drawn, until the answer holds the comment or none is left, and is decided then as on
-  // any other address (decision 563 (4)): until that reading ends, the landing and the outline's
-  // first focus wait on it as on the next pages, and a page refused holds the landing as a next
-  // page refused does. An id written short is no node's id, so it reads none.
+  // stage's view has drawn (`useTellViewDrawn`), until the answer holds the comment or none is
+  // left, and is decided then as on any other address (decision 563 (4)): until that reading ends,
+  // the landing and the outline's first focus wait on it as on the next pages, and a page refused
+  // holds the landing as a next page refused does. An id written short is no node's id, so it
+  // reads none.
   const item = outlineItemRoute(route, search, address);
   const comment = item?.kind === "comment" && !isIdPrefix(item.id) ? item.id : undefined;
   const olderComment = useReadUnloadedPages(

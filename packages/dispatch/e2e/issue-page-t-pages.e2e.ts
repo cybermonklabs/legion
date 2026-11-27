@@ -49,9 +49,10 @@ declare global {
 /**
  * Row 10 of the rows that draw the new issue page from the tree read: an outline draws a node's
  * first 50 children and a control for the rest, and reads the older comments its read holds back
- * only when the reader asks for them (spec R15), or, once the page has drawn, where a decision's
- * Change or an address's comment may stand on them (decision 563 (4)). The head of
- * `e2e/issue-page-t-rows.ts` says what the rows read and what their gates are.
+ * only when the reader asks for them (spec R15), or, once the stage's view has drawn
+ * (`useTellViewDrawn`), where a decision's Change or an address's comment may stand on them
+ * (decision 563 (4)). The head of `e2e/issue-page-t-rows.ts` says what the rows read and what
+ * their gates are.
  */
 
 /** How many posts the seed writes first, before every other comment: the ones past the outline
@@ -435,8 +436,9 @@ test("once the page has drawn it reads the older comment pages that hold a decis
     ).toHaveText("1");
     await expect(page.getByTestId("issue-whose-turn")).toHaveText("Waiting on you (1)");
 
-    // A load sends no older comment page before the page has drawn: Conversation's first page
-    // holds the 200 newest comments and names the older page, which the page then reads, once.
+    // A load sends no older comment page before the stage's view has drawn (`useTellViewDrawn`):
+    // Conversation's first page holds the 200 newest comments and names the older page, which the
+    // page then reads, once.
     const opened = await openOutline(page, seeded.key, "conversation");
     expect(
       {

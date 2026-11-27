@@ -4,6 +4,7 @@ import { act, type RenderResult, render, waitFor } from "@testing-library/react"
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 
+import { issueCoverageQuery } from "../../../api/queries";
 import { warmMarkdownRenderer } from "../../refs/markdown-engine";
 import { artifactsBySlug } from "../issue-artifacts";
 import type { TreeNode } from "../issue-tree";
@@ -23,6 +24,7 @@ import {
   tasksByHand,
 } from "../slices-fixtures";
 import { AppProviders, focusedRow } from "../slots/stage-fixtures";
+import { coverageRead } from "../spec-filter/spec-fixtures";
 import { DecisionsFilterBody } from "./DecisionsFilterBody";
 import {
   decision,
@@ -87,6 +89,9 @@ function drawList(
   // The spec's blocks, the one document of the issue its decisions stand in, which the view
   // reads (`decisions-entries.ts`): none, so no row makes a request for them.
   client.setQueryData(["artifact", SPEC_DOCUMENT.id, "blocks"], []);
+  // The coverage read, which part T's Decisions view waits on before it draws its entries
+  // (`decisions-entries.ts`'s `entriesHeld`): one that holds no statement.
+  client.setQueryData(issueCoverageQuery(KEY).queryKey, coverageRead([]));
   const issue = issueDetails();
   const root = issueTree(children);
   const published = publishedTree(root);

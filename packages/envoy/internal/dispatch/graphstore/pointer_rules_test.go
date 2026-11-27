@@ -264,7 +264,7 @@ func TestTheStoreHoldsEachPointerToItsTypeRule(t *testing.T) {
 				kind:  TuplePartOf, names: underInversion},
 			{name: "Caused, has_kind held for the cause at a node that is no lens_kind",
 				write: func(ctx context.Context, tx pgx.Tx) error {
-					return Caused(ctx, tx, Uncaused{Tuples: []UncausedTuple{{Tuple: hasKindAtAConstraint}}}, NoEvent)
+					return Caused(ctx, tx, Holding(UncausedTuple{Tuple: hasKindAtAConstraint}), NoEvent)
 				},
 				kind: TupleHasKind, names: hasKindNames},
 			{name: "PlanUncaused and QueueNodes then Caused, constrained_by out of a paragraph",

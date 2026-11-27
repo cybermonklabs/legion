@@ -21,8 +21,9 @@ import {
 import type { TreeAnswer } from "./tree-read/tree-read";
 
 /**
- * The page reads no page the outline read has not loaded before it has drawn a row of the issue
- * (`rows-drawn.ts`, decision 538). The tree is built in a task of its own and handed to React in
+ * The page reads no page the outline read has not loaded before its stage has drawn its view's
+ * first drawing (`tree-read.ts`'s `useViewDrawn`, decision 538). The tree is built in a task of its
+ * own and handed to React in
  * a later one (`useIssueTree.ts`), so a frame after the render that holds the tree read's answer
  * the page holds no row yet: the browser row `once the page has drawn it reads the older comment
  * pages that hold a decision's Change or an address's comment` read an older comment page asked

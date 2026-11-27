@@ -14,7 +14,7 @@ import {
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { useLocation } from "react-router-dom";
 
 import { api } from "../../../api/client";
@@ -38,11 +38,11 @@ import { issueDecisionsQuery } from "../../doc/spec-marks";
 import { EVENT_FRESH } from "../../refs/reference-target";
 import { parseIssuePath } from "../../refs/routes";
 import { writesOf } from "../../writes/write-store";
+import { createHeld, type Held } from "../held-value";
 import { presetOf } from "../issue-address";
 import type { TreeNode } from "../issue-tree";
 import type { Preset } from "../page-words";
 import { isFilter } from "../presets";
-import { useRowsDrawn } from "../rows-drawn";
 import { nextTreeCursor, olderCommentsBefore } from "./comment-positions";
 import {
   blocksOfRole,
@@ -889,7 +889,8 @@ function useNextPage(
  *  what no page read yet holds stands (`useReadUntilHeld`, `useReadUnloadedPages`). */
 export interface PagesReading {
   /** Whether a page is being read: out, or asked for as the reading's effect runs, or, for the
-   *  pages the outline read has not loaded, waiting on the page's first drawing to be asked for. */
+   *  pages the outline read has not loaded, waiting on the view's first drawing to be asked for
+   *  (`useTellViewDrawn`). */
   readonly reading: boolean;
   /** Whether the page the reading last asked for was refused, while the read still names that
    *  page as its next: nothing past it is read until a read of it answers. */
@@ -949,15 +950,16 @@ export function useReadUntilHeld(
  * press, another reader, or this one asking for a page that is out joins it. Each page merged
  * draws the page again, and the caller says again whether it still wants one, so the reading ends
  * with the page that brings what it named, or once the answer names neither page. It asks for no
- * page before the page has drawn the answer that names what it wants (`useDrawnWith`), so a load
- * reads no page past its first (decision 538): a frame after a render that holds that answer and
- * in which a view of the page has drawn a row of the issue (`rows-drawn.ts`), since the page
- * draws the rows of an answer a task or more after the render that holds it. A page refused stops
- * the reading at that page, and the hook answers it refused for as long as the answer names that
- * page as its next, as `useReadUntilHeld` answers a refused cursor: the control after the
- * outline's last row, and the controls above the outline and at the foot of the Contents list,
- * read it again, and once it answers the reading goes on. Answers whether it is still reading,
- * which the address's landing waits on as on the next pages.
+ * page before the stage has drawn its view's first drawing from its reads (`useTellViewDrawn`):
+ * the view's first row, or where it draws none, what it draws in their place. A frame the page
+ * draws before that - the header's, with the answer held - starts nothing, so a load reads no page
+ * past its first (decision 538), and no view's first drawing waits on a page read here (decisions
+ * 563 (4) and 578 (2)). A page refused stops the reading at that page, and
+ * the hook answers it refused for as long as the answer names that page as its next, as
+ * `useReadUntilHeld` answers a refused cursor: the control after the outline's last row, and the
+ * controls above the outline and at the foot of the Contents list, read it again, and once it
+ * answers the reading goes on. Answers whether it is still reading, which the address's landing
+ * waits on as on the next pages.
  */
 export function useReadUnloadedPages(
   issue: IssueDetails,
@@ -982,8 +984,7 @@ export function useReadUnloadedPages(
   const [refusedAt, setRefusedAt] = useState<string | undefined>(undefined);
   const named =
     outline !== undefined && answer !== undefined && page !== undefined && wants(answer);
-  const rowsDrawn = useRowsDrawn();
-  const drawn = useDrawnWith(named && rowsDrawn);
+  const drawn = useViewDrawn(issue.key, named);
   const refused = named && page === refusedAt;
   const reading = named && !refused;
   const next = cursor !== undefined;
@@ -995,23 +996,88 @@ export function useReadUnloadedPages(
   return { reading, refused };
 }
 
-/** Whether the page has drawn a frame since a render in which `held` held: from the browser's
- *  next animation frame after that render, once it is painted (the task that frame queues), for as
- *  long as the component stays mounted. */
-function useDrawnWith(held: boolean): boolean {
-  const [drawn, setDrawn] = useState(false);
-  useEffect(() => {
-    if (!held || drawn) return;
-    let painted: number | undefined;
-    const frame = window.requestAnimationFrame(() => {
-      painted = window.setTimeout(() => setDrawn(true), 0);
-    });
-    return () => {
-      window.cancelAnimationFrame(frame);
-      window.clearTimeout(painted);
+/** The issues whose page's stage has drawn its view's first drawing, by client: how many stages
+ *  say so of each issue's key (`useTellViewDrawn`, `useViewDrawn`). */
+const viewsDrawn = new WeakMap<QueryClient, Held<ReadonlyMap<string, number>>>();
+
+/** `client`'s issues whose view has drawn (`viewsDrawn`), made on the first ask. */
+function drawnViewsOf(client: QueryClient): Held<ReadonlyMap<string, number>> {
+  let held = viewsDrawn.get(client);
+  if (held === undefined) {
+    held = createHeld<ReadonlyMap<string, number>>(new Map());
+    viewsDrawn.set(client, held);
+  }
+  return held;
+}
+
+/** How the page's stage says that its view has drawn (`useTellViewDrawn`): `tell` says it, and
+ *  `told` answers whether it has said it since the stage mounted, so what would say it again can
+ *  stop. */
+export interface ViewDrawnTeller {
+  readonly tell: () => void;
+  readonly told: () => boolean;
+}
+
+/**
+ * Answers how the page of issue `key` says that it has drawn its view's first drawing from its
+ * reads, painted: the view's first row, or, where it draws none, the line or the foot it draws in
+ * their place. The page's stage says it (`slots/stage.tsx`'s `StageSlot`), and nothing else, so
+ * the pages the outline read has not loaded are read only from then on (`useReadUnloadedPages`):
+ * a frame another surface draws first, the header's, starts no read. Said once, it holds while
+ * the caller stays mounted; asked again it does nothing; once the stage leaves, the issue's page
+ * has drawn nothing until a stage says so again. It draws nothing again of the stage itself. The
+ * teller is one for each issue, so a stage drawn for another issue says it of that one anew.
+ */
+export function useTellViewDrawn(key: string): ViewDrawnTeller {
+  const client = useQueryClient();
+  const made = useMemo(() => {
+    const held = drawnViewsOf(client);
+    // Whether the caller is mounted, and whether it has said so of `key` since it mounted.
+    let mounted = false;
+    let told = false;
+    const count = (by: number) => {
+      const drawn = new Map(held.get());
+      const now = (drawn.get(key) ?? 0) + by;
+      if (now === 0) drawn.delete(key);
+      else drawn.set(key, now);
+      held.set(drawn);
     };
-  }, [drawn, held]);
-  return drawn;
+    return {
+      mount: () => {
+        mounted = true;
+      },
+      teller: {
+        tell: () => {
+          if (!mounted || told) return;
+          told = true;
+          count(1);
+        },
+        told: () => told,
+      },
+      unmount: () => {
+        mounted = false;
+        if (!told) return;
+        told = false;
+        count(-1);
+      },
+    };
+  }, [client, key]);
+  useEffect(() => {
+    made.mount();
+    return made.unmount;
+  }, [made]);
+  return made.teller;
+}
+
+/** Whether the page of issue `key` has drawn its view's first drawing (`useTellViewDrawn`), read
+ *  while the caller `wants` a page, so a caller that wants none is drawn again for none of it. */
+function useViewDrawn(key: string, wants: boolean): boolean {
+  const held = drawnViewsOf(useQueryClient());
+  const subscribe = useCallback(
+    (listener: () => void) => (wants ? held.subscribe(listener) : () => {}),
+    [held, wants]
+  );
+  return useSyncExternalStore(subscribe, () => wants && held.get().has(key));
 }
 
 /** `make`'s value for each role, made on the first ask for that role and the same value on
