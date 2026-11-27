@@ -534,6 +534,7 @@ func (rig *copiesRig) holdRoleLaneForward(t *testing.T, eventID string) copiesHe
 // (framesNoReadCanTellTheRoleOf): the pass copies each of the first, which reaches B once, and
 // none of the second.
 func TestADifferentSessionThatTakesARoleReceivesTheUnreadRoleMessages(t *testing.T) {
+	t.Parallel()
 	t.Run("1 an outright claim by a different session after the holder crashed inside its live window", func(t *testing.T) {
 		copiesUnreadRoleMessagesRow(t, false)
 	})

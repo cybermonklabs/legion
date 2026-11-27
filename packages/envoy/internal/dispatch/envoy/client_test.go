@@ -1117,10 +1117,12 @@ func TestRoleAndIssueAgentsReportAnyOtherAnswerAsUnavailable(t *testing.T) {
 }
 
 // The successors of a session are the listener's list and the principal it names them for, read
-// from GET /v1/sessions/<session_id>/successors. A 5xx, a body that does not decode and a
-// listener that cannot be reached are ErrUnavailable: who replaced the session was not read. Any
-// other status is the listener's own answer and is not ErrUnavailable: a listener that predates
-// the route answers its GET 405 through the session delete route, and names no successor.
+// from GET /v1/sessions/<session_id>/successors. A 5xx, a listener outage from in front of it (a
+// 408 or a 429, listenerwire.Outage), a body that does not decode and a listener that cannot be
+// reached are ErrUnavailable: who replaced the session was not read, so a proxy that timed the
+// request out or limited it reads as "ask again". Any other status is the listener's own answer
+// and is not ErrUnavailable: a listener that predates the route answers its GET 405 through the
+// session delete route, and a 403 or a 404 names no successor either.
 func TestSuccessorsReadsTheListenersListAndTellsAnUnansweredRead(t *testing.T) {
 	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet || r.URL.EscapedPath() != "/v1/sessions/ses-old/successors" {
@@ -1143,7 +1145,11 @@ func TestSuccessorsReadsTheListenersListAndTellsAnUnansweredRead(t *testing.T) {
 		{http.StatusServiceUnavailable, `{"error":"envoy: the message bus did not answer: timeout"}`, true, "did not answer"},
 		{http.StatusInternalServerError, `{"error":"envoy: broken"}`, true, "broken"},
 		{http.StatusOK, `{"successors":`, true, "decode"},
+		{http.StatusRequestTimeout, `<html>408 Request Timeout</html>`, true, "408"},
+		{http.StatusTooManyRequests, `{"error":"slow down"}`, true, "slow down"},
 		{http.StatusMethodNotAllowed, `{"error":"method not allowed"}`, false, "405"},
+		{http.StatusForbidden, `{"error":"forbidden"}`, false, "it names no successor"},
+		{http.StatusNotFound, ``, false, "it names no successor"},
 	} {
 		answering := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(tc.status)
@@ -1160,11 +1166,12 @@ func TestSuccessorsReadsTheListenersListAndTellsAnUnansweredRead(t *testing.T) {
 	}
 }
 
-// Only what a listener being replaced gives - no connection, or a 502, 503 or 504 - is
-// ErrUnreachable, the failure a sender may wait out; a status the listener chose (a 401 for a token
-// it refuses, a 403, a 500) and an answer that does not decode are its answer, which asking again
-// repeats. ErrUnreachable is ErrUnavailable too, with the same text, so a caller that asks only
-// for ErrUnavailable reads a take-over exactly as before.
+// Only what says the listener could not answer now - no connection, or an outage status (a 408 or
+// a 429 from something in front of it, a 502, 503 or 504, any other 5xx but the listener's own 500,
+// listenerwire.FaultStatus) - is ErrUnreachable, the failure a sender may wait out; a status the
+// listener chose (a 401 for a token it refuses, a 403, its 500) and an answer that does not decode
+// are its answer, which asking again repeats. ErrUnreachable is ErrUnavailable too, with the same
+// text, so a caller that asks only for ErrUnavailable reads a take-over exactly as before.
 func TestOnlyATakeOverIsUnreachable(t *testing.T) {
 	calls := map[string]func(*Client) error{
 		"session": func(client *Client) error {
@@ -1196,10 +1203,17 @@ func TestOnlyATakeOverIsUnreachable(t *testing.T) {
 		{status: http.StatusServiceUnavailable, body: `{"error":"service starting"}`, unreachable: true},
 		{status: http.StatusBadGateway, body: ``, unreachable: true},
 		{status: http.StatusGatewayTimeout, body: `{"error":"upstream timed out"}`, unreachable: true},
+		{status: http.StatusRequestTimeout, body: `<html>408 Request Timeout</html>`, unreachable: true},
+		{status: http.StatusRequestTimeout, body: `{"error":"request timed out"}`, unreachable: true},
+		{status: http.StatusTooManyRequests, body: `<html>429 Too Many Requests</html>`, unreachable: true},
+		{status: http.StatusNotImplemented, body: ``, unreachable: true},
+		{status: http.StatusHTTPVersionNotSupported, body: `{"error":"HTTP version not supported"}`, unreachable: true},
+		{status: 599, body: ``, unreachable: true},
 		{status: http.StatusUnauthorized, body: `{"error":"unauthorized"}`},
 		{status: http.StatusUnauthorized, body: ``},
 		{status: http.StatusForbidden, body: `{"error":"forbidden"}`},
 		{status: http.StatusInternalServerError, body: ``},
+		{status: http.StatusInternalServerError, body: `{"error":"envoy: the claim record of role legion-planner is unreadable: …"}`},
 		{status: http.StatusOK, body: `{"session_id":`},
 	} {
 		listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

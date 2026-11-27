@@ -1725,10 +1725,12 @@ func TestAFailedLauncherBindingReadNeverLeavesASupervisedRoleChildRunning(t *tes
 // refusal of the record, RBAC's 403, charged on each try, the third failing the claim; and a
 // throttle that outlasts the launch's own deadline, charged once per try after each has sent the
 // patch again while the throttle lasted, so a server that stays overloaded fails the claim rather
-// than holding its launch for ever. Every row runs at the rig's boot timeout: a row that shortened
-// it to 300 ms, to end its tries sooner, put its setup's wait for the role launcher under that
-// bound too, and on a loaded runner the wait ran out, or the setup's launch failed once and left
-// the claim a generation ahead of the setup's events.
+// than holding its launch for ever. Every row runs at the explicit two-second boot timeout
+// (withTestBootTimeout): the throttle row's verdict is that the launch gives up at that bound after
+// three tries, so it stays a finite bound rather than the rig's deadline default. A row that
+// shortened it to 300 ms, to end its tries sooner, put its setup's wait for the role launcher under
+// that bound too, and on a loaded runner the wait ran out, or the setup's launch failed once and
+// left the claim a generation ahead of the setup's events.
 func TestAnAPIServerThrottleOnTheAddressRecordSpendsNoLaunchBudget(t *testing.T) {
 	t.Parallel()
 	for name, tc := range map[string]struct {
@@ -1768,7 +1770,7 @@ func TestAnAPIServerThrottleOnTheAddressRecordSpendsNoLaunchBudget(t *testing.T)
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
-			g := newRig(t, nil)
+			g := newRig(t, nil, withTestBootTimeout())
 			spec := workerSpec(t)
 			machine, _, _ := supervisedSandboxMachine(t, g, spec)
 			first := startSupervisedSandboxRole(t, g, machine, spec, resumeSession)
@@ -1784,7 +1786,15 @@ func TestAnAPIServerThrottleOnTheAddressRecordSpendsNoLaunchBudget(t *testing.T)
 				refused.Add(1)
 				return true, nil, answer
 			})
+			start := time.Now()
 			err := machine.Handle(g.ctx, supervise.RuntimeObservation{Observation: runtime.Observation{Locator: *first, Kind: runtime.StaleAddress, At: rigNow}})
+			// Remove the two-second bound and each throttled try runs to the test deadline: this row
+			// then passes vacuously after about 200 s, the 845 s CI failure's shape. The guard fails
+			// it by name instead. One minute is far above the three tries' ~6 s at the bound and far
+			// below the deadline.
+			if elapsed := time.Since(start); elapsed > time.Minute {
+				t.Fatalf("the relaunch took %s, want its tries bounded by the two-second boot timeout", elapsed)
+			}
 			got := machine.Claim()
 			if tc.err == "" {
 				if err != nil {
@@ -1992,7 +2002,7 @@ func TestAStartWhoseAnswerIsDelayedPastItsDeadlineIsStoppedBeforeResumeReturns(t
 		"on the same pod as its previous locator": true,
 	} {
 		t.Run(name, func(t *testing.T) {
-			g := newRig(t, nil, withWaitsToTheDeadline())
+			g := newRig(t, nil)
 			spec := workerSpec(t)
 			first := g.spawn(spec)
 			delayed := g.scriptedStartLauncher(spec.Claim, 1, func(shimwire.LauncherStart) *shimwire.LauncherStartResult { return nil })

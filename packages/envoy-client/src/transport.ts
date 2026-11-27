@@ -11,6 +11,7 @@ import {
   MINTED_DEDUPE_KEY_PATTERN,
 } from "@legion/contracts";
 import { holdUrlUserinfo } from "@legion/contracts/held-secrets";
+import { mayHaveReachedServer } from "@legion/contracts/http-status";
 import { errorClass, requestForText } from "@legion/contracts/log-text";
 import { withoutTrailingSlashes } from "@legion/contracts/trailing-slash";
 import { z } from "zod";
@@ -863,8 +864,8 @@ export class EnvoyApiError extends Error {
   /**
    * The whole seconds until the sender may send again, when the body names them: a
    * `sender_rate_limited` refusal's `retry_after_seconds`. The client never sends a refused
-   * message again by itself (`request` retries nothing below 500), so a caller that wants the
-   * message sent waits this long and sends it again.
+   * message again by itself (`request` sends no 429 again), so a caller that wants the message
+   * sent waits this long and sends it again.
    */
   readonly retryAfterSeconds: number | undefined;
   /** The topics a registration's project refusal names (`topic_not_in_project`,
@@ -921,7 +922,7 @@ export class EnvoyApiError extends Error {
       details.status === 503 && parsed?.error.startsWith(`${MESSAGE_NOT_SENT_PREFIX}: `) === true;
     const earlier =
       notSentAnswer && shown.afterUnanswered === true
-        ? " An earlier attempt got no answer or a 5xx, so that attempt may have stored the message."
+        ? " An earlier attempt got no answer, a 5xx or a 408, so that attempt may have stored the message."
         : "";
     // The reason joins the message: a refused registration must fail with the listener's own
     // machine-readable why in what the session is shown, not only in the client's field.
@@ -949,15 +950,16 @@ const mintedDedupeKey = new RegExp(MINTED_DEDUPE_KEY_PATTERN);
 /**
  * A send that ended without the listener's word that it was stored: an attempt got no answer at
  * all (the request timed out, its connection failed, or a 2xx answer's body did not arrive or did
- * not parse) or got a 5xx other than the listener's word that it sent nothing
- * (`EnvoyApiError.notSent`), so the message may or may not have reached its target, even when a
- * later attempt was refused. Every attempt carried `idempotencyKey`. The listener sends under the
- * dedupe key `agent.<target>.<idempotencyKey>`, and when that key is one a repeat is recognised by
+ * not parse), or got a 5xx or a 408 (a hop's timeout, which can come after the hop forwarded the
+ * send) other than the listener's word that it sent nothing (`EnvoyApiError.notSent`), so the
+ * message may or may not have reached its target, even when a later attempt was refused. Every
+ * attempt carried `idempotencyKey`. The listener sends under the dedupe key
+ * `agent.<target>.<idempotencyKey>`, and when that key is one a repeat is recognised by
  * (`MINTED_DEDUPE_KEY_PATTERN`: a lower-case UUID and a target with no dot), the stream stores
  * one copy and the recipient's plugin drops a repeat inside `DELIVERY_DUPLICATE_WINDOW_MS`, which
  * states the rare cases where a recipient that restarted still sees it twice (`resendSafe`). A
- * send refused with a 4xx, or answered that it was not sent, on every attempt it made stays an
- * `EnvoyApiError`. `last` (also the `cause`) is what the last attempt got.
+ * send refused with a 4xx other than a 408, or answered that it was not sent, on every attempt it
+ * made stays an `EnvoyApiError`. `last` (also the `cause`) is what the last attempt got.
  */
 export class EnvoySendUnconfirmedError extends Error {
   override readonly name = "EnvoySendUnconfirmedError";
@@ -1037,8 +1039,9 @@ export type EnvoyClient = {
 type RequestOptions = {
   readonly timeoutMs?: number;
   readonly retry?: boolean;
-  /** Called for each attempt that got no answer, or a 5xx other than the listener's word that it
-   *  sent nothing (`EnvoyApiError.notSent`): one the listener may have acted on. */
+  /** Called for each attempt that got no answer, or a 5xx or a 408 (`mayHaveReachedServer`) other
+   *  than the listener's word that it sent nothing (`EnvoyApiError.notSent`): one the listener may
+   *  have acted on. */
   readonly onUnanswered?: () => void;
   /**
    * Called when the call fails on an attempt that reached no route of the listener: its
@@ -1215,8 +1218,8 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
   ): Promise<string> => {
     const url = `${baseUrl}${path}`;
     const tries = options.retry === false ? 1 : attempts;
-    // Whether an earlier attempt got no answer or a 5xx, after which the listener may have acted
-    // on the call: a later answer that it sent nothing then speaks for that attempt alone.
+    // Whether an earlier attempt got no answer, a 5xx or a 408, after which the listener may have
+    // acted on the call: a later answer that it sent nothing then speaks for that attempt alone.
     let unanswered = false;
     for (let attempt = 0; attempt < tries; attempt += 1) {
       options.onAttempt?.();
@@ -1264,11 +1267,14 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
           afterUnanswered: unanswered,
         }
       );
-      // Only a 5xx is sent again. A 4xx is the listener's answer to this message, and so is a 429
-      // `sender_rate_limited`: the agent reads its sentence and decides when to send it again. The
-      // 503 that says nothing was sent is sent again too, under the same key, but is no attempt the
-      // listener may have acted on.
-      if (response.status >= 500) {
+      // An attempt answered with a 5xx or a 408 is sent again (`mayHaveReachedServer`). The listener
+      // writes no 408, so one is a hop's timeout, and a hop can count it after it forwarded the whole
+      // request. Such an attempt may have reached the listener, which may have acted on it
+      // (`onUnanswered`), except the listener's 503 that says nothing was sent (`notSent`), which is
+      // sent again under the same key but is no attempt the listener may have acted on. A 429 is not
+      // sent again: the listener's 429 is `sender_rate_limited`, its answer to this message, whose
+      // sentence the agent reads to decide when to send it again. Any other 4xx is its answer too.
+      if (mayHaveReachedServer(response.status)) {
         if (!error.notSent) {
           unanswered = true;
           options.onUnanswered?.();
