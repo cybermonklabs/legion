@@ -5227,9 +5227,8 @@ function setClipboard(clipboard: Pick<Clipboard, "writeText"> | undefined): void
 // through a temporary text box that takes the focus and leaves the page, and gives the focus back
 // to the copy button as the copy ends, on both surfaces: at once where the clipboard is missing,
 // and once the copy settles where the clipboard refused, on a second press made while the first
-// copy's "Copied" still shows too. Inside `NoTooltips` the button's own focus trail also puts
-// back a focus a copy left on the body.
-test("inside NoTooltips a copy pressed by Enter keeps the focus on its button", async () => {
+// copy's "Copied" still shows too.
+test("a copy pressed by Enter keeps the focus on its button", async () => {
   const user = userEvent.setup();
   await withCopyFallback(async (copied) => {
     for (const surface of ["inside", "outside"] as const) {
@@ -5275,9 +5274,8 @@ test("inside NoTooltips a copy pressed by Enter keeps the focus on its button", 
 // A reader who moves the focus to another control while a copy is out keeps it there, on both
 // surfaces: the clipboard refuses after the move, the fallback's text box takes the focus and
 // leaves the page, and `copyText` gives the focus back to where the reader put it, not to the
-// copy button. Inside `NoTooltips` the button's own focus trail also puts a focus a copy left on
-// the body back where the reader put it.
-test("inside NoTooltips a copy leaves a focus the reader moved elsewhere where it is", async () => {
+// copy button.
+test("a copy leaves a focus the reader moved elsewhere where it is", async () => {
   const user = userEvent.setup();
   await withCopyFallback(async (copied) => {
     for (const surface of ["inside", "outside"] as const) {

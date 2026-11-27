@@ -390,10 +390,10 @@ chmod +x "$work/bin/sleep"
 # under the name Runner.Worker (drive_limited runs the script under it).
 ln -s "$(type -P bash)" "$work/bin/Runner.Worker"
 
-# page <id>|<name>|<conclusion>[|<seconds>]...: the attempt's jobs, in the order the jobs API
-# lists them, which the stand-in answers in pages of the route's size (its head says how).
-# `run_attempt` is in each job because the jobs API puts it there; nothing in the script reads
-# it any more, which is what the entries this writes are held against.
+# attempt_jobs <id>|<name>|<conclusion>[|<seconds>]...: the attempt's jobs, in the order the
+# jobs API lists them, which the stand-in answers in pages of the route's size (its head says
+# how). `run_attempt` is in each job because the jobs API puts it there; nothing in the script
+# reads it any more, which is what the entries this writes are held against.
 #
 # `<seconds>` is how long that job took, and the two timestamps the jobs API answers with are
 # written from it: `started_at` at the fixed epoch below and `completed_at` that many seconds
@@ -402,7 +402,7 @@ ln -s "$(type -P bash)" "$work/bin/Runner.Worker"
 # backwards pair the API answers for a skipped job (run 43002633713's alone job, started
 # 2026-11-11T10:22:27Z and completed 10:22:26Z, read 2026-11-11).
 started_epoch=1794392547  # 2026-11-11T10:22:27Z
-page() {
+attempt_jobs() {
   jq -n --argjson started "$started_epoch" '[$ARGS.positional[] | split("|")
       | {id: (.[0] | tonumber), name: .[1],
          conclusion: (if .[2] == "null" then null else .[2] end),
@@ -431,7 +431,7 @@ page() {
 # The other caller's real and stub legs total 800 s, inside the pull-request lane's budget.
 # Neither belongs to the full lane's sum. The retired embedder job name is dropped.
 happy_page() {
-  page "10|dispatch-browser / binaries|success|150" \
+  attempt_jobs "10|dispatch-browser / binaries|success|150" \
     "11|dispatch-browser / shard (1)|success|600" \
     "12|dispatch-browser / shard (2)|failure|700" \
     "13|dispatch-browser / alone|success|200" \
@@ -461,7 +461,7 @@ two_page_attempt() {
   for ((n = 1; n <= 27; n++)); do
     ci_jobs+=("$((100 + n))|test ($n)|success|60")
   done
-  page "10|dispatch-browser / binaries|success|150" \
+  attempt_jobs "10|dispatch-browser / binaries|success|150" \
     "19|dispatch-browser-pr / real|failure|500" \
     "40|dispatch-references / shard (1)|success|157" \
     "${ci_jobs[@]}" \
@@ -642,7 +642,7 @@ echo "case: the alone leg is the bare job name, and a shard leg's number is read
 # `shard (1)`, with no caller's prefix, is no job of this lane, as `lint` is not, so the two
 # unprefixed jobs here are dropped. A shard number is read whole, so a tenth leg is `shard-10`.
 fixture 0
-page "21|dispatch-browser / alone|success" "22|alone|success" \
+attempt_jobs "21|dispatch-browser / alone|success" "22|alone|success" \
   "23|dispatch-browser / shard (10)|success" "24|shard (1)|success" \
   "25|dispatch-browser-pr / alone|skipped" "26|dispatch-browser-pr / shard (2)|success"
 drive jobs "$work/out.json" "$caller"

@@ -2041,8 +2041,9 @@ so the run is red and read again from the jobs API; it cannot pass a verdict it 
 reached.
 
 The job reads each attempt 30 jobs at a time. Run 45913688080 returned HTTP 502 at 100 jobs
-per page and returned all 95 jobs at 30 per page. The read took 13.8 s in a pod on attempt 3,
-inside the 30 s bound for all its pages. The script's head has the measurement.
+per page and returned all 95 jobs at 30 per page. Reading the four pages of run attempt 3 took
+13.8 s from a pod, inside the 30 s bound for all its pages. The head of
+.github/scripts/dispatch-browser-run-reads.sh ("Why thirty jobs to a page") has the measurement.
 .github/scripts/dispatch-browser-run-reads.test.sh checks that the full, pull-request and
 references lanes use jobs from both pages, that both budgets include them, and that a read
 whose later page never succeeds writes no jobs file.
@@ -2127,16 +2128,17 @@ the reason the shard job's head gives.
 The step's body, those exports included, is .github/scripts/dispatch-browser-merge-reports.sh.
 
 The step hands `merge-reports` a merge configuration whose one setting is testDir, the merge
-job's own packages/dispatch/e2e; the script writes it into $RUNNER_TEMP and its head says why
-that directory and why not the suite's own e2e/playwright.config.ts. A blob report records the
-test directory its leg ran from and holds its paths relative to it, and with no configuration
-Playwright 1.64.1 refuses blobs of two test directories. The pull-request lane's `real` leg
-checks out in the CI container, under /__w/<repo>/<repo>, and `stub` on the bare runner, under
-/home/runner/work/<repo>/<repo>, so run 45913634925's merge job failed on that refusal with
-both legs green. Given a configuration, `merge-reports` skips the check and resolves every leg's
-paths against its testDir: Playwright 1.64.1's merge takes the configuration's rootDir, which is
-its testDir, as the one root of every blob. packages/dispatch/e2e/__tests__/merge-reports.test.ts
-records two legs under the two roots and runs the script over them.
+job's own packages/dispatch/e2e; the script writes it into $RUNNER_TEMP and the comment above
+its `config=` line says why that testDir and why not the suite's own e2e/playwright.config.ts.
+A blob report records the test directory its leg ran from and holds its paths relative to it,
+and with no configuration Playwright 1.64.1 refuses blobs of two test directories. The
+pull-request lane's `real` leg checks out in the CI container, under /__w/<repo>/<repo>, and
+`stub` on the bare runner, under /home/runner/work/<repo>/<repo>, so run 45913634925's merge
+job failed on that refusal with both legs green. Given a configuration, `merge-reports` skips
+the check and resolves every leg's paths against its testDir: Playwright 1.64.1's merge takes
+the configuration's rootDir, which is its testDir, as the one root of every blob.
+packages/dispatch/e2e/__tests__/merge-reports.test.ts records two legs under the two roots and
+runs the script over them.
 
 What that leaves as it was, read from Playwright's source at 1.64.1 and from the readers:
 
