@@ -4953,6 +4953,21 @@ function tipMint(call: FakeCall): boolean {
   );
 }
 
+/** Whether `call` is one of the reads the rate reading of each start makes (cmd/dispatch's
+ *  ratereading.go, main's #4681): the App's installations (`GET /app/installations`, which only
+ *  githubapp.Client.ReadInstallations asks, for the rate reading), the App itself (`GET /app`,
+ *  AppIdentity, the same), the first repository of an installation (`GET
+ *  /installation/repositories` with `per_page=1`, where the reconcile's listing asks 100 a page)
+ *  and that repository's workflows, whose answer carries the rate counter. */
+function rateReadingCall(call: FakeCall): boolean {
+  return (
+    ["GET /app/installations", "GET /app", "GET /repos/{owner}/{repo}/actions/workflows"].includes(
+      call.route
+    ) ||
+    (call.route === "GET /installation/repositories" && call.asks === "per_page=1")
+  );
+}
+
 /** Runs one half of first-start-tip, and ends the process. */
 async function firstStartTipHalf(half: string): Promise<never> {
   const state = (readState()["first-start-tip"] ?? {}) as TipState;
@@ -5214,13 +5229,15 @@ async function tipSecondStart(
   // GraphQL query, the facts line's, asking for #22 alone, beside the installation lookup and the
   // token that query needs, and #22's messages are stored after the pass. Where they were stored
   // before, it calls GitHub for nothing. The webhook redelivery sweep's read
-  // (GET /app/hook/deliveries) is the App's own duty, neither the intake's nor the pass's, and is
-  // left out.
+  // (GET /app/hook/deliveries) and the start's rate reading (rateReadingCall, main's #4681) are the
+  // App's own duties, neither the intake's nor the pass's, and are left out.
   const messagesAfter = await sql(tipMessagesOfTheSecond);
   note(
     `T3 #22's commit messages: ${messagesBefore} before the second start, ${messagesAfter} after its pass`
   );
-  const counted = calls.filter((call) => call.route !== "GET /app/hook/deliveries");
+  const counted = calls.filter(
+    (call) => call.route !== "GET /app/hook/deliveries" && !rateReadingCall(call)
+  );
   const unstored = messagesBefore === "not read";
   if (unstored) {
     const queries = counted.filter((call) => call.route === "POST /graphql");

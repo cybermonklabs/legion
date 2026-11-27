@@ -502,7 +502,8 @@ function countCheckRunRead(repo: string, sha: string): void {
  *  repository the path names, the installation a token is minted for, and, for a GraphQL query,
  *  what it asks for: each pull request it asks by number (`acme/tools#22`), with `(absence)` where
  *  it asks the count of the repository's pull requests too, or `search` for a query that asks for
- *  no pull request by number. */
+ *  no pull request by number. A listing of an installation's repositories asks its page size
+ *  (`per_page=1`, the rate reading's; the reconcile lists 100 a page). */
 interface Call {
   readonly route: string;
   readonly repo?: string;
@@ -525,13 +526,17 @@ function logCall(call: Call): void {
   else callsDropped++;
 }
 
-/** The call of `method` at `pathname`, its repository, numbers and commits written as names, and
- *  the installation of a token's mint. */
-function callOf(method: string, pathname: string): Call {
+/** The call of `method` at `pathname`, its repository, numbers and commits written as names, the
+ *  installation of a token's mint, and the page size a listing of an installation's repositories
+ *  asks (`search`, the URL's query). */
+function callOf(method: string, pathname: string, search: URLSearchParams): Call {
   const named = pathname.match(/^\/repos\/([^/]+)\/([^/]+)(\/.*)?$/);
   const path = named === null ? pathname : `/repos/{owner}/{repo}${named[3] ?? ""}`;
   const route = `${method} ${path.replace(/\/[0-9a-f]{40}(?=\/|$)/g, "/{sha}").replace(/\/\d+(?=\/|$)/g, "/{n}")}`;
   if (named !== null) return { repo: `${named[1]}/${named[2]}`, route };
+  if (pathname === "/installation/repositories") {
+    return { asks: `per_page=${search.get("per_page") ?? ""}`, route };
+  }
   const minted = pathname.match(/^\/app\/installations\/(\d+)\/access_tokens$/);
   return minted === null ? { route } : { installation: Number(minted[1]), route };
 }
@@ -578,7 +583,7 @@ const server = Bun.serve({
     if (url.pathname === "/healthz") return Response.json({ ok: true });
     // A GraphQL query is logged where its body is read, below, with what it asks for.
     if (!(request.method === "POST" && url.pathname === "/graphql")) {
-      logCall(callOf(request.method, url.pathname));
+      logCall(callOf(request.method, url.pathname, url.searchParams));
     }
 
     const installation = url.pathname.match(/^\/repos\/([^/]+)\/([^/]+)\/installation$/);
