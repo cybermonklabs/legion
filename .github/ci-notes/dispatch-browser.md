@@ -19,7 +19,7 @@ on a pull request that changes what the reference rows test; the nightly workflo
 the full lane, under the job id dispatch-browser. Each caller passes its own id as `job`, which
 GitHub puts before every job name of this file (`dispatch-browser-pr / shard (1)`) and which
 starts every artifact name, so two callers of one run share no artifact. The rows are spread
-over four shard machines, the three `-alone` projects get a machine each, the two-process job,
+over the shard job's machines, the three `-alone` projects get a machine each, the two-process job,
 the fake-embedder job and the containerised visual review take one each, and one merge job
 joins what the shard and alone legs wrote into a single report and publishes the run's flake
 rate.
@@ -86,7 +86,7 @@ report step skips there and no check is posted.
 
 `references` runs the `chromium` project over every row of the eleven spec files the
 reference framework's Verification document names and the nine of the reading list's walk,
-with main's parse-count walk beside them, on the four shard machines and the merge job alone,
+with main's parse-count walk beside them, on the shard machines and the merge job alone,
 so a pull request that changes the reference framework gets those rows from CI at its head
 rather than from a run by hand. It gates nothing:
 .github/ci-notes/ci.md#the-reference-rows-preview-job
@@ -190,14 +190,15 @@ must find the artifact this job uploaded on the attempt before.
 
 ## The shard job, its stacks and its container
 
-One leg of the lane's rows. Each leg runs the lane's projects with `--shard=N/6` over four
-Playwright workers, and the run's `globalSetup` starts one stack per worker, each with a
+One leg of the lane's rows. Each leg runs the lane's projects with `--shard=N/M`, M the job's leg
+count, over four Playwright workers, and the run's `globalSetup` starts one stack per worker, each
+with a
 Postgres, a harness and a file-store bucket of its own (packages/dispatch/e2e/
 harness-pool.ts), so this job has no `postgres:` service and no job-level DATABASE_URL:
 one database cannot serve stacks that truncate it per row, and a run of more than one
 stack starts a server per stack and hands each its own (e2e/harness-postgres.ts).
 
-A leg's sixth is a sixth of the lane's row time, not of its rows. Playwright's own
+A leg's share is a share of the lane's row time, not of its rows. Playwright's own
 `--shard` cuts the rows into runs of equal count, and rows do not cost the same: at main
 f02514268a it gave the full lane's heaviest leg 1.115 to 1.225 times the mean row time.
 packages/dispatch/e2e/shard-reporter.ts, which the browser step names beside the failure
@@ -212,17 +213,17 @@ merge-group runs of 17:03Z to 23:04Z): two files that had landed after the table
 placed whole by their project's median row, held a median 853 s of the lane's 9,086 and sat on
 leg 4 and leg 2, the slowest two legs of every one of those runs. Placed row by row over those
 runs' own rows, the same table puts the heaviest leg at 1.03 times the mean at those runs' four
-legs, and at 1.10 at the six legs the job runs now.
+legs, and at 1.10 at six.
 packages/dispatch/e2e/shard-split.ts says why Playwright 1.64.1 has no split by time of its own,
-what the unit is and why, how all six legs compute one placement, and what a row with no
+what the unit is and why, how every leg computes one placement, and what a row with no
 measured time is placed by; `bun e2e/tools/shard-weights.ts --main <count>` reads the table
-again. Each leg prints its own line before its first row, `shard N of 6, placed by measured row
+again. Each leg prints its own line before its first row, `shard N of M, placed by measured row
 time: ...`, with the rows of it that were placed by an estimate.
 
 Each leg also writes two row lists into the rows/ directory its blob upload carries: every row
 of the selection it read, and the rows Playwright gave it to run
 (DISPATCH_E2E_LEG_ROWS_DIR in .github/scripts/dispatch-browser-shard-suite.sh). The merge
-job's reading one holds the six legs' lists against each other and fails by name on a row of
+job's reading one holds the legs' lists against each other and fails by name on a row of
 the selection that no leg ran or that two ran. Its row count cannot see either: a planted
 reporter that put the selection's last file on no leg ran 1,616 of the 1,617 rows, and the legs'
 count and the merged report both read 1,616.
@@ -301,8 +302,8 @@ which passed. The browser step over them, in seconds:
 
 The browser step's budget was its `timeout-minutes: 11`, that maximum by the rule in this file's
 head: 531 s, shard (2) of run 44917245139 (job 136888588252), and 531 x 1.15 = 611 s -> 11 min.
-It is a hang guard now, 18 minutes, read from the legs of 2026-11-21 and 2026-11-22 rather than
-from this census's maximum, for the reason
+It is a hang guard now, 17 minutes, read from the measured legs of the lane at its leg count
+rather than from this census's maximum, for the reason
 [the step's section](#why-the-shard-job-calls-playwright-directly-and-what-its-browser-steps-budget-is)
 gives with its derivation. The step grows with the suite, not with its rows getting slower: run
 44423948511 of 2026-11-18 ran 1,453 rows (363, 363, 364 and 363 a leg) and run 44909149810 at
@@ -384,17 +385,25 @@ pull-request lane names hold 1,252, of which that lane's `@pr` grep selects 282.
 `visual` projects hold 20, which the visual job runs one row at a time, and the 54
 wall-clock rows are the alone job's.
 
-## Why the leg count stands in two places
+## Where the leg count is written, and how it was chosen
 
-Six legs. The count is written here and in the `--shard` denominator of the browser step
-(`.github/scripts/dispatch-browser-shard-suite.sh#--shard=$shard/6`), and nowhere else, so the two move together: a denominator larger than the leg list
-would leave the rows of the missing legs unrun with nothing red. The split by row time
-(packages/dispatch/e2e/shard-reporter.ts) reads the count from that same `--shard`, so it is no
-third place.
+The shard job's matrix is the one place the leg count is written. The browser step hands its
+script `${{ strategy.job-total }}`, the number of jobs the matrix starts, and the script passes it
+to Playwright as the `--shard` denominator
+(`.github/scripts/dispatch-browser-shard-suite.sh#--shard=$shard/$legs`). The step's name reads the
+count the same way, and the split by row time (packages/dispatch/e2e/shard-reporter.ts) reads it
+from that `--shard`, so a change to the matrix moves all three and no line holds a count that can
+disagree with it. A denominator other than the jobs that run would leave the rows the placement
+gives the missing legs on no leg, and the merge job's reading one would name each of them
+(packages/dispatch/e2e/tools/leg-rows.ts). packages/dispatch/e2e/__tests__/shard-split.test.ts
+reads the matrix (`shardLegs`) to list the split at the job's count, and refuses a matrix other
+than the one key `shard` listing 1 to N: an `include` or a second key changes how many jobs
+GitHub starts without changing that list.
 
 Why six and not four, measured on 2026-11-27 with the row placement at both counts, the two arms
-of one tree differing only in the leg count (the shard matrix, this denominator and the step's
-name). Eight pairs of dispatched runs of .github/workflows/dispatch-browser-nightly.yaml, both arms
+of one tree differing only in the leg count (then written in the shard matrix, the `--shard`
+denominator and the step's name). Eight pairs of dispatched runs of
+.github/workflows/dispatch-browser-nightly.yaml, both arms
 of a pair started in one minute, timed from the run's creation to the end of `dispatch-browser /
 merge`, every runner wait of the lane counted:
 
@@ -615,15 +624,17 @@ passed and none failed, on a machine that ran them slower than another of the sa
 How the 17 minutes are read (2026-11-27, at six legs with the row-by-row placement):
 
 - The legs: every shard leg of the 12 dispatched full-lane runs of the six-leg measurement arm
-  (.github/ci-notes/dispatch-browser.md#why-the-leg-count-stands-in-two-places), read from the jobs API: 72 legs, every one of which
+  (.github/ci-notes/dispatch-browser.md#where-the-leg-count-is-written-and-how-it-was-chosen), read from the jobs API: 72 legs, every one of which
   passed. Runs 45958185479, 45958195928, 45960398549, 45960386754, 45962639657, 45962651147,
   45965076698 and 45965064293 of dispatch-browser-nightly.yaml, and 45950654812, 45950666103,
   45952714370 and 45952704161 of ci.yaml. The browser step: median 428 s, p90 502 s, maximum
   555 s.
-- Measured, not rescaled. The 21 minutes before were read from four-leg legs rescaled to the
-  balanced leg (18.7 s + 0.2610 x row time over 112 legs of 2026-11-26): that rescale put the
-  p90 at 666 s, and the four-leg arm's own 48 legs measured a p90 of 722 s. The rescale ran
-  low, so the guard now reads the measured legs of the lane at its leg count.
+- Measured, not rescaled. The 18 minutes before were read from four-leg legs of 2026-11-21 and
+  2026-11-22, each rescaled to the balanced leg the time split gives (step = 24.0 s + 0.2549 x
+  row time over 68 legs of main), a p90 of 534 s. A rescale runs low: the same method over 112
+  legs of 2026-11-26 (18.7 s + 0.2610 x row time) put the four-leg p90 at 666 s, and the
+  four-leg arm's own 48 legs measured 722 s. So the guard now reads the measured legs of the lane
+  at its leg count.
 - The factor: 1.75, the slowest runner seen. The leg that was cut ran its 401 rows at a
   per-row median 1.75 times the time job 137096931568 of run 44985911309 took for the same rows,
   started 3 s later (p10 1.42, p90 2.12; 660 s against 391 s of step).
@@ -1393,7 +1404,7 @@ The read is paginated, so gh-read.sh can read no answer of its own: after an att
 exits 1 it reads GitHub's rate_limit route, bounded by its own `timeout 30`. So each attempt
 takes up to 30 + 30 s, and the ladder 3 x 60 + 10 + 20 = 210 s at most. The step's own work
 has a measured maximum of 4 s; it now also runs
-packages/dispatch/e2e/tools/leg-rows.ts over the four shard legs' row lists (1.1 MB for the
+packages/dispatch/e2e/tools/leg-rows.ts over the shard legs' row lists (1.1 MB for the
 full lane's 1,617 rows), measured at 0.02 to 0.08 s on the development box over three runs;
 counted at a whole second, (4 + 1) x 1.15 = 5.75 s, and 210 + 5.75 = 215.75 s, at the next
 whole minute above, is the 4 min that step carries. The rule's two-minute floor does not bind.

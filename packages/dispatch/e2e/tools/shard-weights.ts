@@ -22,8 +22,8 @@
  *
  * When to run it: each sharded leg prints how many of its rows were placed by their project's
  * median because their file has no entry here (`e2e/shard-reporter.ts`). Read on 2026-11-27 over
- * the 28 full-lane merge-group runs of 2026-11-26, the row-by-row placement at the shard job's six
- * legs put the heaviest leg at 1.10 times the mean under a table four days old (at most 1.115) and
+ * the 28 full-lane merge-group runs of 2026-11-26, the row-by-row placement at six legs put the
+ * heaviest leg at 1.10 times the mean under a table four days old (at most 1.115) and
  * 1.04 under one seven days old (at most 1.05), against 1.04 for a fresh one; at four legs the
  * same tables gave 1.03 and 1.04, and placed by file 1.20 and 1.22, since each lacked files that
  * had landed since. The browser step's guard holds up to that 1.115, so each leg warns when the
@@ -36,7 +36,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
 
-import { median, type ShardWeights, titleSeparator } from "../shard-split";
+import { titleSeparator } from "../configurations";
+import { median, type ShardWeights } from "../shard-split";
 
 const usage =
   "usage: bun e2e/tools/shard-weights.ts --main <count> [--cache <dir>]\n" +

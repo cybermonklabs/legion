@@ -51,9 +51,6 @@ const weights = JSON.parse(
 const browserWorkflowPath = fileURLToPath(
   new URL("../../../../.github/workflows/dispatch-browser.yaml", import.meta.url)
 );
-const shardSuitePath = fileURLToPath(
-  new URL("../../../../.github/scripts/dispatch-browser-shard-suite.sh", import.meta.url)
-);
 
 /** The part of `.github/workflows/dispatch-browser.yaml` the leg count is read from: a part the
  *  file lacks reads as undefined, which `shardLegs` names. */
@@ -90,38 +87,15 @@ function shardLegs(workflow: BrowserWorkflow): number {
   return listed.length;
 }
 
-/** The `--shard` denominator the browser step's script passes Playwright: the second place the leg
- *  count is written (.github/ci-notes/dispatch-browser.md, why the leg count stands in two
- *  places), which must equal the matrix's. It is read from the script's one Playwright command
- *  line, never from a comment: the script's own comments spell `--shard=$shard/<legs>` too, and a
- *  reading that took the first of them would hold a sentence to the matrix instead of the command
- *  the sentence describes. A script with no such command line, or more than one, is refused. */
-function shardDenominator(script: string): number {
-  const commands = script
-    .split("\n")
-    .filter((line) => !line.trimStart().startsWith("#") && line.includes("bunx playwright test"));
-  if (commands.length !== 1) {
-    throw new Error(
-      `${shardSuitePath} has ${commands.length} uncommented \`bunx playwright test\` lines, not one`
-    );
-  }
-  const found = /--shard=\$shard\/(\d+)(?!\d)/.exec(commands[0] as string);
-  if (!found)
-    throw new Error(`the Playwright command of ${shardSuitePath} passes no --shard=$shard/<legs>`);
-  return Number(found[1]);
-}
-
 const browserWorkflow = Bun.YAML.parse(
   readFileSync(browserWorkflowPath, "utf8")
 ) as BrowserWorkflow;
 const legs = shardLegs(browserWorkflow);
 
-test("the leg count is the shard matrix's one list of 1 to N, and the script's --shard denominator is that count", () => {
-  expect(shardDenominator(readFileSync(shardSuitePath, "utf8"))).toBe(legs);
-  // The controls: each plants one fault in a parsed copy of the workflow or the script. An
-  // `include` or a second key changes how many legs GitHub starts without changing the list; a
-  // hole or an empty list numbers the legs other than `--shard` does; a denominator other than the
-  // matrix's leaves rows on legs no job runs, or none on some that do.
+test("the leg count is the shard matrix's one list of 1 to N", () => {
+  // The controls: each plants one fault in a parsed copy of the workflow. An `include` or a second
+  // key changes how many legs GitHub starts without changing the list; a hole or an empty list
+  // numbers the legs other than `--shard` does.
   const planted = (change: (matrix: Record<string, unknown>) => void) => () => {
     const copy = structuredClone(browserWorkflow);
     const matrix = copy?.jobs?.shard?.strategy?.matrix;
@@ -137,35 +111,6 @@ test("the leg count is the shard matrix's one list of 1 to N, and the script's -
   );
   expect(planted((matrix) => Object.assign(matrix, { shard: [1, 3] }))).toThrow("not 1 to N");
   expect(planted((matrix) => Object.assign(matrix, { shard: [] }))).toThrow("not 1 to N");
-  // The script's own controls: the invocation changed while every comment keeps the matrix's
-  // count, which a reading of the first `--shard=` in the file would not see, and the other way
-  // round, a comment changed while the invocation keeps it.
-  const script = readFileSync(shardSuitePath, "utf8");
-  const invocation = (line: string) =>
-    !line.trimStart().startsWith("#") && line.includes("bunx playwright test");
-  const withCommand = (count: number) =>
-    script
-      .split("\n")
-      .map((line) =>
-        invocation(line) ? line.replace(`--shard=$shard/${legs}`, `--shard=$shard/${count}`) : line
-      )
-      .join("\n");
-  const withComments = (count: number) =>
-    script
-      .split("\n")
-      .map((line) =>
-        invocation(line)
-          ? line
-          : line.replaceAll(`--shard=$shard/${legs}`, `--shard=$shard/${count}`)
-      )
-      .join("\n");
-  expect(
-    script
-      .split("\n")
-      .filter((line) => !invocation(line) && line.includes(`--shard=$shard/${legs}`)).length
-  ).toBeGreaterThan(0);
-  expect(shardDenominator(withCommand(legs - 1))).toBe(legs - 1);
-  expect(shardDenominator(withComments(legs - 1))).toBe(legs);
 });
 
 /** A table of three projects, one with a measured file and one measured row in it, for the
@@ -390,17 +335,17 @@ for (const [name, listed] of Object.entries(selections)) {
         expect(perLeg[leg - 1], `leg ${leg} of ${name} against its placement`).toEqual(expected);
       }
     },
-    rowLimit("listing", "listing", "listing", "listing", "listing")
+    rowLimit(...Array.from({ length: legs + 1 }, () => "listing" as const))
   );
 }
 
 test(
-  "a serial describe, a default-mode describe and a file of a project that is not fully parallel each stay on one leg, and free rows spread",
+  "a serial describe, a default-mode describe and a file of a project that is not fully parallel each stay on one leg, two serial describes of one title are placed apart, and free rows spread",
   async () => {
     const { faults, perLeg, whole } = legsOf(
       await listedLegs("e2e/__tests__/fixtures/shard-groups.config.ts", [])
     );
-    expect(whole).toHaveLength(28);
+    expect(whole).toHaveLength(44);
     expect(faults, `the ${legs} legs of the fixture against its whole listing`).toEqual([]);
     const legsHolding = (project: string, part: string) =>
       perLeg.flatMap((rows, index) =>
@@ -409,9 +354,18 @@ test(
     expect(legsHolding("parallel", " › serial rows › ")).toHaveLength(1);
     expect(legsHolding("parallel", " › default-mode rows › ")).toHaveLength(1);
     expect(legsHolding("sequential", " › ")).toHaveLength(1);
+    // Two `serial` describes of one title, which share one unit key: each is a unit of its own,
+    // so each stays on one leg. After the sequential project's file they are the two heaviest
+    // units, so at more than two legs each goes onto a leg that is still empty, and the two land
+    // on two legs. A placement looked up by key would put both on the leg of the later one.
+    const first = legsHolding("parallel", " › first twin row ");
+    const second = legsHolding("parallel", " › second twin row ");
+    expect(first).toHaveLength(1);
+    expect(second).toHaveLength(1);
+    expect(first).not.toEqual(second);
     // The eight free rows of the fully parallel project, each a unit of its own, are spread:
     // the old split by file put all of them on one leg.
     expect(legsHolding("parallel", " › free row ").length).toBeGreaterThan(1);
   },
-  rowLimit("listing", "listing", "listing", "listing", "listing")
+  rowLimit(...Array.from({ length: legs + 1 }, () => "listing" as const))
 );

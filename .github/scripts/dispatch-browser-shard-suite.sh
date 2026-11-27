@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # One shard leg of the Dispatch browser suite: the stacks' binaries, the lane's projects, the
-# Playwright run over this leg's sixth of their row time, the row count the merge job reads,
+# Playwright run over this leg's share of their row time, the row count the merge job reads,
 # and the memory and CPU sampler this leg starts and reads back.
 #
 # Who runs it, and what it takes:
 #
-#   .github/scripts/dispatch-browser-shard-suite.sh <shard> <lane> <connections>
+#   .github/scripts/dispatch-browser-shard-suite.sh <shard> <lane> <connections> <legs>
 #
 # <shard> is this leg's number out of the job's legs, the shard job's `${{ matrix.shard }}`: it
 # is the `--shard` numerator below, and it names the blob report this leg writes, the row count
@@ -16,8 +16,12 @@
 # <connections> is the connection limit each stack's Postgres must allow, which the binaries job
 # reads and hands on as `${{ needs.binaries.outputs.connections }}`, because this job's container
 # has no Go to compute it with; it becomes DISPATCH_E2E_PG_CONNECTIONS below.
+# <legs> is how many legs the shard job runs, its `${{ strategy.job-total }}`: the `--shard`
+# denominator below. The job's matrix is the one place the count is written, and this argument
+# is how it reaches Playwright
+# (.github/ci-notes/dispatch-browser.md#where-the-leg-count-is-written-and-how-it-was-chosen).
 #
-# All three are arguments rather than keys of the step's `env:`, for the reason
+# All four are arguments rather than keys of the step's `env:`, for the reason
 # .github/ci-notes/dispatch-browser.md#the-shard-jobs-shell-rule-its-measured-steps-and-its-budget
 # gives: a step `env:` key outside ci_filter_coverage.py's ENV_ALLOWED drops that job out
 # of check-ci-filters.sh's reduction of what a go command compiles.
@@ -30,22 +34,29 @@
 # and the stacks' binaries are read from.
 #
 # Run from packages/dispatch, with $RUNNER_TEMP and $GITHUB_WORKSPACE set:
-#   ../../.github/scripts/dispatch-browser-shard-suite.sh 1 full 100
+#   ../../.github/scripts/dispatch-browser-shard-suite.sh 1 full 100 6
 # CI runs it in dispatch-browser.yaml's shard job, at the step "Browser-test dispatch dashboard
-# (shard ${{ matrix.shard }} of 6)".
+# (shard ${{ matrix.shard }} of ${{ strategy.job-total }})".
 set -euo pipefail
 
 usage() {
   echo "::error::dispatch-browser-shard-suite.sh takes this leg's shard number, the run's" \
-    "lane and the stacks' connection limit: .github/scripts/dispatch-browser-shard-suite.sh" \
-    "<shard> <pull-request|full|references> <connections>. It was given: $*"
+    "lane, the stacks' connection limit and the job's leg count:" \
+    ".github/scripts/dispatch-browser-shard-suite.sh" \
+    "<shard> <pull-request|full|references> <connections> <legs>. It was given: $*"
   exit 1
 }
 
-[ "$#" -eq 3 ] || usage "$@"
+[ "$#" -eq 4 ] || usage "$@"
 shard=$1
 lane=$2
 connections=$3
+legs=$4
+[[ "$legs" =~ ^[1-9][0-9]*$ ]] || {
+  echo "::error::<legs> is the shard job's leg count, \${{ strategy.job-total }}, a positive" \
+    "whole number, not '$legs'"
+  exit 1
+}
 
 # $RUNNER_TEMP holds everything this step writes, the run directory the stack pool
 # makes (mkdtempSync in os.tmpdir(), in e2e/harness-pool.ts's startPool) among it, which is what
@@ -83,7 +94,7 @@ export PLAYWRIGHT_BLOB_OUTPUT_DIR="$RUNNER_TEMP/leg-report/blob-report"
 export PLAYWRIGHT_BLOB_OUTPUT_NAME="report-shard-$shard.zip"
 # Where e2e/shard-reporter.ts writes this leg's two row lists, shard-<N>.selection.jsonl and
 # shard-<N>.ran.jsonl: the rows/ directory the upload carries beside the blob report, as it
-# carries the row count written below. The merge job's reading one holds the six legs' lists
+# carries the row count written below. The merge job's reading one holds the legs' lists
 # against each other (packages/dispatch/e2e/tools/leg-rows.ts), which is what sees a row of the
 # selection that no leg ran or that two ran; the row count cannot, since it counts only what the
 # legs ran.
@@ -166,8 +177,8 @@ case "$lane" in
     ;;
 esac
 # Why the projects are named at all: a shard splits the rows of every project the run
-# selects, so a project this leg does not name is a project it would spread over these
-# six machines. `visual` and `visual-phone` are in the default selection, and their
+# selects, so a project this leg does not name is a project it would spread over the
+# job's machines. `visual` and `visual-phone` are in the default selection, and their
 # image comparisons belong to the `visual` job, which runs them one row at a time, so
 # naming the projects above is what keeps them off these machines. The three `-alone`
 # projects stay out because this list does not name them, and for no other reason:
@@ -194,12 +205,12 @@ esac
 # root (lib/cli/testActions.js:204-211).
 #
 # `./e2e/shard-reporter.ts` beside them, named here for the same reason: it is what makes
-# `--shard=$shard/6` this leg's sixth of the lane's row TIME rather than Playwright's sixth of
-# its row count. Each leg places every row of every project the lane selects by the row times
+# `--shard=$shard/$legs` this leg's share of the lane's row TIME rather than Playwright's share
+# of its row count. Each leg places every row of every project the lane selects by the row times
 # main measured (e2e/shard-weights.json) - a row on its own, or with the rows Playwright must run
 # in order beside it - and keeps its own; e2e/shard-split.ts says why the count split left one leg
-# a fifth heavier than the others, why a split by file came to do the same, and how all six legs
-# compute one placement. Without it here the legs would split by count again, every row still run
+# a fifth heavier than the others, why a split by file came to do the same, and how every leg
+# computes one placement. Without it here the legs would split by count again, every row still run
 # once, and nothing red. It prints one line to the log before the first row: this leg's rows, the
 # row time it expects of this leg and of the run, and how many of its rows it placed by an estimate.
 #
@@ -210,7 +221,7 @@ esac
 # of a pipeline is its own subshell, so a variable set in the left-hand one does not
 # survive it, which is why the status goes into a file; the script exits on it at the end.
 rm -f "$RUNNER_TEMP/suite-status"
-{ bunx playwright test --config e2e/playwright.config.ts $projects $lane_grep $lane_files --shard=$shard/6 --workers 4 \
+{ bunx playwright test --config e2e/playwright.config.ts $projects $lane_grep $lane_files --shard=$shard/$legs --workers 4 \
     --reporter=list,blob,./e2e/failure-reporter.ts,./e2e/shard-reporter.ts 2>&1 ||
     echo "$?" > "$RUNNER_TEMP/suite-status"; } | tee "$RUNNER_TEMP/playwright-log.txt"
 status=0

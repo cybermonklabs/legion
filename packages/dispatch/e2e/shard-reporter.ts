@@ -2,6 +2,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { join, sep } from "node:path";
 import type { FullConfig, Reporter, Suite, TestCase, TestRun } from "@playwright/test/reporter";
 
+import { titleSeparator } from "./configurations";
 import { rowId } from "./leg-rows";
 import {
   dependencyProjects,
@@ -9,7 +10,7 @@ import {
   type Row,
   type ShardWeights,
   tableWarnings,
-  titleSeparator,
+  type Unit,
   type UnitKind,
   unitKey,
 } from "./shard-split";
@@ -49,9 +50,14 @@ function parallelModeOf(suite: Suite): string {
  *  outermost `describe` around it that runs in `serial` or `default` mode, whose rows Playwright
  *  runs in order in one worker; or its whole file, where no suite around it runs in `parallel`
  *  mode. That is the group Playwright 1.64.1's own split would move it in (`createTestGroups`,
- *  lib/runner/index.js:2414-2440). Every project of this config is `fullyParallel` and no spec
- *  file sets a mode, so every row of it is its own group today; e2e/__tests__/shard-split.test.ts
- *  lists a fixture config that holds the other three shapes. */
+ *  lib/runner/index.js:2414-2440), or one that holds it, but in one case: a row of a `parallel`
+ *  suite that no such `describe` holds, with a `beforeAll` or `afterAll` on a suite around it,
+ *  which Playwright packs with other such rows of its file (:2421-2423 and :2443-2450) and which
+ *  this places alone. Playwright's own split spreads those rows over the legs too, so placing
+ *  them one by one cuts no group that must stay on one machine (e2e/shard-split.ts says why).
+ *  Every project of this config is `fullyParallel` and no spec file sets a mode, so every row of
+ *  it is its own unit today; e2e/__tests__/shard-split.test.ts lists a fixture config that holds
+ *  the other shapes. */
 export function groupOf(test: TestCase): { holder: TestCase | Suite; kind: UnitKind } {
   let insideParallel = false;
   let outermostSequential: Suite | undefined;
@@ -142,8 +148,9 @@ export default class ShardReporter implements Reporter {
       this.lists = { dir, leg: `shard-${shard.current}`, setups };
       this.writeList("selection", suite);
     }
-    const units = new Map<TestCase | Suite, { key: string; rows: Row[] }>();
-    const unitOfRow = new Map<TestCase, string>();
+    // One unit for each holder `groupOf` names, each carrying its own rows, so the rows a leg
+    // keeps are read off the units placed on it and never looked up by a key two units can share.
+    const units = new Map<TestCase | Suite, Unit & { rows: Row[]; tests: TestCase[] }>();
     const fileSuites: Suite[] = [];
     for (const projectSuite of suite.suites) {
       const project = projectSuite.project()?.name ?? projectSuite.title;
@@ -160,7 +167,11 @@ export default class ShardReporter implements Reporter {
             // A title path is the root's empty title, the project, the file, then the titles
             // below the file: the table's and the listing's own key.
             const titles = holder.titlePath().slice(3);
-            unit = { key: unitKey(kind, project, file, test.repeatEachIndex, titles), rows: [] };
+            unit = {
+              key: unitKey(kind, project, file, test.repeatEachIndex, titles),
+              rows: [],
+              tests: [],
+            };
             units.set(holder, unit);
           }
           unit.rows.push({
@@ -169,31 +180,30 @@ export default class ShardReporter implements Reporter {
             runs: test.expectedStatus !== "skipped",
             title: test.titlePath().slice(3).join(titleSeparator),
           });
-          unitOfRow.set(test, unit.key);
+          unit.tests.push(test);
         }
       }
     }
     const { loads, placed } = placeUnits([...units.values()], weights, shard.total);
-    const legOf = new Map(placed.map((unit) => [unit.key, unit.shard]));
-    const isMine = (test: TestCase) => legOf.get(unitOfRow.get(test) ?? "") === shard.current;
-    const keepMine = (holder: Suite): void => {
-      // A copy: `entries()` is the suite's own array, which each exclusion splices.
-      for (const entry of [...holder.entries()]) {
-        if (entry.type === "test") {
-          if (!isMine(entry)) testRun.exclude(entry);
-          continue;
-        }
-        const tests = entry.allTests();
-        if (!tests.some(isMine)) testRun.exclude(entry);
-        else if (!tests.every(isMine)) keepMine(entry);
+    const mine = placed.filter((unit) => unit.shard === shard.current);
+    const kept = new Set(mine.flatMap((unit) => unit.tests));
+    const isMine = (test: TestCase) => kept.has(test);
+    // Excludes what another leg runs under `entry`: a row of another leg, and a suite none of
+    // whose rows is this leg's as a whole, so no empty suite is left behind; a suite that holds
+    // both is walked.
+    const keepMine = (entry: Suite | TestCase): void => {
+      if (entry.type === "test") {
+        if (!isMine(entry)) testRun.exclude(entry);
+        return;
+      }
+      const tests = entry.allTests();
+      if (!tests.some(isMine)) testRun.exclude(entry);
+      else if (!tests.every(isMine)) {
+        // A copy: `entries()` is the suite's own array, which each exclusion splices.
+        for (const child of [...entry.entries()]) keepMine(child);
       }
     };
-    for (const fileSuite of fileSuites) {
-      const tests = fileSuite.allTests();
-      if (!tests.some(isMine)) testRun.exclude(fileSuite);
-      else if (!tests.every(isMine)) keepMine(fileSuite);
-    }
-    const mine = placed.filter((unit) => unit.shard === shard.current);
+    for (const fileSuite of fileSuites) keepMine(fileSuite);
     const rows = mine.reduce((sum, unit) => sum + unit.rows.length, 0);
     const estimated = mine.reduce((sum, unit) => sum + unit.estimated, 0);
     const total = loads.reduce((sum, load) => sum + load, 0);

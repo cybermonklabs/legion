@@ -13,12 +13,24 @@
  * (types/testReporter.d.ts:230-258 and :789-794), which `e2e/shard-reporter.ts` does with the
  * placement below.
  *
- * The unit is what Playwright's own split moves as one: a test group (`createTestGroups`,
- * lib/runner/index.js:2385-2463). In a project that runs its files fully parallel - every project
- * of this config, `fullyParallel: true` - a group is one row, unless a `describe` around it runs
- * in `serial` or `default` mode, when the outermost such `describe` is one group; in a project
- * that does not, a whole file is one group. `e2e/shard-reporter.ts#groupOf` reads them as
- * Playwright does, so a `describe` that must run in order on one machine is never cut across two.
+ * The unit is what Playwright's own split moves as one, a test group (`createTestGroups`,
+ * lib/runner/index.js:2385-2463), with one exception below. In a project that runs its files
+ * fully parallel - every project of this config, `fullyParallel: true` - a group is one row,
+ * unless a `describe` around it runs in `serial` or `default` mode, when the outermost such
+ * `describe` is one group; in a project that does not, a file is one group, or one for each set
+ * of worker fixtures its rows use, which a unit of the whole file holds together.
+ * `e2e/shard-reporter.ts#groupOf` reads them as Playwright does, so a `describe` that must run in
+ * order on one machine is never cut across two.
+ *
+ * The exception is a row of a fully parallel project that no such `describe` holds and that has a
+ * `beforeAll` or `afterAll` on a suite around it. Playwright packs those rows of a file into
+ * groups of ceil(rows / n) (:2443-2450): n is the leg count where it splits a run into legs
+ * (:2623), and the worker count where a leg hands its rows to its workers (:6767). `groupOf`
+ * places each such row on its own. That is safe: Playwright's own split spreads those rows over
+ * the legs too, it runs them in no fixed order, each such hook runs once in every worker that runs
+ * a row under it, and each leg packs the rows it keeps into its own groups again.
+ * e2e/accessibility.e2e.ts, whose `test.afterAll` judges the rows its own worker ran, is the one
+ * file of the shard lane in that shape.
  *
  * Why the unit is not the file, which it was until the measurements below. A file is one block
  * of time on one leg, so its weight has to be right for the legs to balance, and the weight of a
@@ -36,10 +48,10 @@
  * runs' own rows, at the four legs those runs ran, with that same four-day-old table the heaviest
  * leg holds 1.03 times the mean (at most 1.06), and with a table seven days old 1.04 (at most
  * 1.06); with the table read on 2026-11-27, on the 20 of those runs it was not read from, 1.02
- * (at most 1.03), where placing that same table by file still leaves 1.05 (at most 1.08). At the
- * six legs the shard job runs, the same error is a larger share of a smaller leg: 1.10 (at most
- * 1.115) under the four-day-old table, 1.04 (at most 1.05) under the seven-day-old one, and 1.04
- * (at most 1.05) with the table of 2026-11-27.
+ * (at most 1.03), where placing that same table by file still leaves 1.05 (at most 1.08). At six
+ * legs the same error is a larger share of a smaller leg: 1.10 (at most 1.115) under the
+ * four-day-old table, 1.04 (at most 1.05) under the seven-day-old one, and 1.04 (at most 1.05)
+ * with the table of 2026-11-27.
  *
  * A row's weight is the seconds it took on main (`e2e/shard-weights.json`, which
  * `e2e/tools/shard-weights.ts` writes from main's merged reports): the row's own median where the
@@ -54,13 +66,17 @@
  *
  * The placement is the longest-first greedy: the heaviest unit first, each onto the leg with the
  * least time so far. It is a function of the selection and the table alone - the units are sorted
- * by weight and then by their key, and a tie between legs goes to the lower number - so every leg
- * of a run, each computing it on its own machine from the same checkout, computes the same
- * placement, and each unit lands on exactly one leg. That is what keeps a row from being run
- * twice or by nobody, and `e2e/__tests__/shard-split.test.ts` holds it against the real config.
+ * by weight and then by their key, units of one weight and one key keep the order Playwright
+ * collected them in (the sort is stable), and a tie between legs goes to the lower number - so
+ * every leg of a run, each computing it on its own machine from the same checkout and the same
+ * command but for `--shard`, computes the same placement, and each unit lands on exactly one leg.
+ * That is what keeps a row from being run twice or by nobody, and
+ * `e2e/__tests__/shard-split.test.ts` holds it against the real config and a fixture config.
  *
  * Nothing here imports Playwright, so every function is callable from a plain Bun test.
  */
+
+import { titleSeparator } from "./configurations";
 
 /** What `e2e/shard-weights.json` holds. */
 export type ShardWeights = {
@@ -83,14 +99,11 @@ export type ShardWeights = {
   >;
 };
 
-/** The character Playwright joins a title path with, which a row's `title` below is joined with
- *  as `playwright test --list` and the list reporter print it. */
-export const titleSeparator = " › ";
-
 /** One row of the run's selection: its project, its file (relative to the config's root, as a
- *  report names it), its titles below the file joined by `titleSeparator`, and whether it will
- *  run. A row skipped where it is declared costs nothing, so it weighs nothing, as Playwright's
- *  own split does not count it; it is still placed, on exactly one leg, which reports it skipped. */
+ *  report names it), its titles below the file joined by `titleSeparator` (e2e/configurations.ts),
+ *  and whether it will run. A row skipped where it is declared costs nothing, so it weighs nothing,
+ *  as Playwright's own split does not count it; it is still placed, on exactly one leg, which
+ *  reports it skipped. */
 export type Row = {
   readonly project: string;
   readonly file: string;
@@ -98,13 +111,14 @@ export type Row = {
   readonly runs: boolean;
 };
 
-/** The rows Playwright keeps on one machine (the module's head says which), under a key no other
- *  unit of the run shares (`unitKey`). */
+/** The rows Playwright keeps on one machine (the module's head says which), and the key the
+ *  placement breaks a tie of weight by (`unitKey`). Two units may share a key - two `serial`
+ *  `describe`s of one title in one file - and each is still placed on its own. */
 export type Unit = { readonly key: string; readonly rows: readonly Row[] };
 
 /** A unit with what it is expected to cost, how many of its rows that will run were weighed by
  *  their project's median, and the leg it goes to, numbered from 1. */
-export type Placed = Unit & {
+export type Placed<U extends Unit = Unit> = U & {
   readonly seconds: number;
   readonly estimated: number;
   readonly shard: number;
@@ -151,14 +165,15 @@ export function rowSeconds(
   return { by: "project", seconds: projectMedian };
 }
 
-/** Every unit placed on one of `total` legs, longest first onto the least-loaded leg, with each
- *  leg's expected seconds. The same units and table give the same placement whatever order the
- *  units come in. */
-export function placeUnits(
-  units: readonly Unit[],
+/** Every unit placed on one of `total` legs, longest first onto the least-loaded leg, each
+ *  returned with its leg, and each leg's expected seconds. The same units and table give the same
+ *  placement whatever order units of distinct keys come in; units that share a key and a weight
+ *  are placed in the order they come in. */
+export function placeUnits<U extends Unit>(
+  units: readonly U[],
   weights: ShardWeights,
   total: number
-): { placed: Placed[]; loads: number[] } {
+): { placed: Placed<U>[]; loads: number[] } {
   if (!Number.isInteger(total) || total < 1) {
     throw new Error(`a run splits into a whole number of legs, at least one, not ${total}`);
   }
@@ -211,7 +226,7 @@ export function tableWarnings(read: string, now: Date, rows: number, estimated: 
   if (!(days <= tableDaysAtMost)) {
     warnings.push(
       `e2e/shard-weights.json was read ${Number.isNaN(days) ? "at no date it names" : `${days.toFixed(1)} days ago`} ` +
-        `(${read}), past the ${tableDaysAtMost} days the browser step's 18-minute guard allows for its drift; ` +
+        `(${read}), past the ${tableDaysAtMost} days of drift the browser step's hang guard allows for; ` +
         "read it again from packages/dispatch: bun e2e/tools/shard-weights.ts --main 17"
     );
   }

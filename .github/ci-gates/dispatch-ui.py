@@ -8,7 +8,7 @@ GATE = gate("dispatch_ui", "dispatch-ui", reads=reads(
     # what its two tsc programs list, so the changes job lists them into the filter's listed block
     # and check-ts-filters.sh holds the block to them (ci_ts_programs.py, LISTED).
     # why: .github/ci-notes/ci.md#dispatch_ui-the-script-whose-references-arm-lists-the-references-lanes-spec-files
-    (".github/scripts/dispatch-browser-shard-suite.sh", f"`packages/dispatch/e2e/reference-lane.ts#referencesLaneFiles` reads the spec files out of its `references)` arm, at the URL of `packages/dispatch/e2e/reference-lane.ts#LANE_SCRIPT`, for the reading walk and surface list tests that {at('dispatch-ui', 'Test dispatch dashboard')} runs; `packages/dispatch/e2e/__tests__/shard-split.test.ts#shardDenominator` reads its `--shard` denominator, which that test holds to the shard job's matrix"),
+    (".github/scripts/dispatch-browser-shard-suite.sh", f"`packages/dispatch/e2e/reference-lane.ts#referencesLaneFiles` reads the spec files out of its `references)` arm, at the URL of `packages/dispatch/e2e/reference-lane.ts#LANE_SCRIPT`, for the reading walk and surface list tests that {at('dispatch-ui', 'Test dispatch dashboard')} runs"),
     (".github/workflows/dispatch-browser.yaml",
      "`packages/dispatch/e2e/__tests__/shard-split.test.ts#shardLegs` reads the shard job's matrix out of it at a new URL, the leg count "
      f"that file's listings prove the split over, and {at('dispatch-ui', 'Test dispatch dashboard')} runs it"),
