@@ -331,10 +331,17 @@ func (g *Guard) scanThrough(ctx context.Context, what, slug string) (bool, error
 
 // value is the value of key in env, as exec reads it: the last entry of that name wins.
 func value(env []string, key string) string {
+	v, _ := lookup(env, key)
+	return v
+}
+
+// lookup is value and whether env sets key at all: an entry with an empty value sets it, which
+// value cannot tell from none.
+func lookup(env []string, key string) (string, bool) {
 	for _, entry := range slices.Backward(env) {
 		if name, v, ok := strings.Cut(entry, "="); ok && name == key {
-			return v
+			return v, true
 		}
 	}
-	return ""
+	return "", false
 }

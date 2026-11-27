@@ -33,7 +33,7 @@ func newLeakCheckCommand(stderr io.Writer) *cobra.Command {
 		Short:  "run the leak guard over a write the shell is about to make: git's pre-push hook runs its pre-push form, and the rule file's port test runs its text form (never a person)",
 		Hidden: true,
 	},
-		leakCheckCommand("pre-push <remote> <url>", 2, leakCheckPrePushUsage, "check a push before git makes it", runLeakCheckPrePush, stderr),
+		leakCheckCommand("pre-push <remote> <url>", 2, leakCheckPrePushUsage, "check a push before git makes it, and clear with no check one that can only write to a path on this machine", runLeakCheckPrePush, stderr),
 		leakCheckCommand("text <kind>", 1, leakCheckTextUsage, "check a text about to be published", runLeakCheckText, stderr),
 	)
 }
@@ -70,7 +70,11 @@ func leakCheckCommand(use string, words int, usage, short string, do func(ctx co
 
 // runLeakCheckPrePush is the hook's half: git hands it the remote's name and URL and the update
 // lines it computed, and the repository it runs the hook in is the working directory, which is
-// the repository the guard reads the push's commits from.
+// the repository the guard reads the push's commits from. A push that can only write to a path on
+// this machine (leakguard's Guard.StaysLocal) is cleared before the guard runs: no shared check is
+// found or run, no commit is read and nothing is printed, since it copies bytes already on this
+// machine's disk and a later push of them to a host meets this hook again. Every other push gets
+// the guard as it always did.
 func runLeakCheckPrePush(ctx context.Context, args []string, stderr io.Writer) int {
 	remote, url := args[0], args[1]
 	what := leakguard.PushName(remote)
@@ -83,6 +87,9 @@ func runLeakCheckPrePush(ctx context.Context, args []string, stderr io.Writer) i
 		return leakCheckReport(ctx, stderr, "", &leakguard.SetupFailure{What: what, Why: "the repository the hook runs in could not be read", Err: err})
 	}
 	guard := leakguard.New(leakguard.Options{Curl: leakguardCurl})
+	if guard.StaysLocal(ctx, dir, url) {
+		return leakguard.StatusClean
+	}
 	return leakCheckReport(ctx, stderr, "", guard.Push(ctx, leakguard.PushRequest{
 		Dir:     dir,
 		Remote:  remote,
