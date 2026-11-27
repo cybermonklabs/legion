@@ -164,7 +164,7 @@ func modulePath(path string) (string, error) {
 func unguardedInPackage(root string, writer bool, paths []string) ([]string, error) {
 	files := token.NewFileSet()
 	parsed := map[string]*ast.File{}
-	parallel, support := false, false
+	parallel, support, code := false, false, false
 	for _, path := range paths {
 		file, err := parser.ParseFile(files, path, nil, parser.SkipObjectResolution)
 		if err != nil {
@@ -175,6 +175,7 @@ func unguardedInPackage(root string, writer bool, paths []string) ([]string, err
 			parallel = parallel || callsParallel(file)
 			continue
 		}
+		code = true
 		name := file.Name.Name
 		support = support || strings.HasPrefix(name, "test") || strings.HasSuffix(name, "test")
 		if writer {
@@ -187,7 +188,7 @@ func unguardedInPackage(root string, writer bool, paths []string) ([]string, err
 	var offences []string
 	for _, path := range paths {
 		test := strings.HasSuffix(path, "_test.go")
-		if test && !parallel && !support {
+		if test && !parallel && !support && !code {
 			continue
 		}
 		relative, err := filepath.Rel(root, path)
