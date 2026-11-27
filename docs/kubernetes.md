@@ -2736,15 +2736,18 @@ Roll out the three parts in this order, which is also the order of [Rolling back
    On 2026-11-20 the INFRA daemon's whole state was 7,307,929 bytes, and the part of it that the view serves was 665,962 bytes.
    A daemon of an earlier release does not know the `view` parameter, so it answers the whole state.
 
-3. **The daemon release, on every project that has a Legion setting, at once after step 2.**
+3. **The daemon release, on every project that has a Legion setting, at once when step 2 has ended.**
+   Step 2 has ended when no Dispatch process of the earlier release is in the fleet, and the intake no longer logs `legion intake: a Dispatch process of an earlier build is in the fleet, so no starting point is taken`.
+   A process that stops cleanly leaves the fleet at once, since it deletes its `server_processes` row, and a process that is killed counts for 10 minutes after its last heartbeat.
    A daemon with a workflow writes its boot event at each start, and then an event for each change.
    A daemon with no workflow (no `dispatch_url`) writes no state event at all.
    The boot event reaches the durable that step 2 created.
    It is the daemon's first event, so the intake reads that daemon whole at it, as step 2 says, and then applies its events.
+   A daemon that boots while a process of the earlier release is still in the fleet loses that read: the intake acknowledges its boot event unapplied, and it reads the daemon whole at its next event after that process left the fleet, at a `PUT` of the project's Legion setting, or at a take-over of the durable.
 
 The cost of this order is the time between step 2 and step 3.
-In that time each project's board shows the state of its one failed read and no change after it, since the earlier daemon publishes no state event and no Dispatch of this release reads a daemon on a timer.
-That time ends by itself at each daemon's first boot on this release, which is why step 3 rolls every project's daemon at once.
+In that time each project's board shows the last read before step 3, the earlier Dispatch's or the one failed read of step 2, and no change after it, since the earlier daemon publishes no state event and no Dispatch of this release reads a daemon on a timer.
+That time ends by itself at each daemon's first boot on this release, which is why step 3 rolls every project's daemon at once when step 2 has ended.
 The other order, the daemon before Dispatch, keeps each board current, since the earlier Dispatch goes on reading each daemon once a minute.
 But each plan that the new daemon writes before Dispatch rolls then reaches a Dispatch that does not store its tasks' needs, and that plan shows its needs as not recorded until Legion takes a later version of the owner's plan, and for the whole run under a default plan ([Rolling back the release that records each task's needs](#rolling-back-the-release-that-records-each-tasks-needs)).
 
