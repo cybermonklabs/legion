@@ -223,7 +223,7 @@ func readDeliveryRules(ctx context.Context, q delivery.Querier) (*delivery.Sourc
 			continue
 		}
 		for i, source := range project.Sources {
-			repo, ok := delivery.SourceRepoOf(source, project.DefaultRepo)
+			repo, ok := delivery.SourceRepoOf(source.SourceRule, project.DefaultRepo)
 			if !ok {
 				continue
 			}
@@ -271,26 +271,22 @@ func deliveryApplies(rules *delivery.SourceRules, runs []delivery.DeliveryRun, j
 }
 
 // deliveryContainingRun is the deploy that ships pr first (delivery.ContainingRun) among applies, the
-// deploys of every source repository (deliveryApplies), and the repository that tracks it: pr's own
-// where a source reads it, and "" where none does, whose pull request no deploy ships
-// (delivery.ComputeDeployedStatus answers it not tracked).
-func deliveryContainingRun(rules *delivery.SourceRules, pr delivery.DeliveryPullRequest, applies map[string][]delivery.Apply) (*delivery.Apply, string) {
+// deploys of every source repository (deliveryApplies), and whether a source reads pr's repository:
+// a pull request of a repository no source reads is shipped by no deploy, and
+// delivery.ComputeDeployedStatus answers it not tracked.
+func deliveryContainingRun(rules *delivery.SourceRules, pr delivery.DeliveryPullRequest, applies map[string][]delivery.Apply) (*delivery.Apply, bool) {
 	if _, tracked := rules.For(pr.Repo); !tracked {
-		return nil, ""
+		return nil, false
 	}
-	return delivery.ContainingRun(pr, pr.Repo, applies[delivery.RuleKey(pr.Repo)]), pr.Repo
+	return delivery.ContainingRun(pr, pr.Repo, applies[delivery.RuleKey(pr.Repo)]), true
 }
 
-// deliveryFreshness is the freshness of the delivery reads' sources: one source's own intake and
-// reconcile times and last error; of several, the latest event, the earliest reconcile (none while
-// any source has none, since that source's runs have not been reconciled yet), and each last error
-// naming its repository; and none of them where no source reads a repository.
-func deliveryFreshness(rules *delivery.SourceRules, unfetchable int) delivery.DeliveryFreshnessView {
-	return deliveryFreshnessOf(rules.All(), unfetchable)
-}
-
-// deliveryFreshnessOf is deliveryFreshness of sources, each source repository's rule with its
-// bookkeeping, in repository order.
+// deliveryFreshnessOf is the freshness of the delivery reads' sources, all, each source
+// repository's rule with its bookkeeping in repository order (delivery.SourceRules.All): one
+// source's own intake and reconcile times and last error; of several, the latest event, the
+// earliest reconcile (none while any source has none, since that source's runs have not been
+// reconciled yet), and each last error naming its repository; and none of them where no source
+// reads a repository.
 func deliveryFreshnessOf(all []delivery.DeliverySettings, unfetchable int) delivery.DeliveryFreshnessView {
 	freshness := delivery.DeliveryFreshnessView{UnfetchableCount: unfetchable}
 	switch len(all) {
@@ -322,18 +318,6 @@ func deliveryFreshnessOf(all []delivery.DeliverySettings, unfetchable int) deliv
 		freshness.LastError = new(strings.Join(lastErrors, "; "))
 	}
 	return freshness
-}
-
-// deliveryEvals reads the evals of slugs whose targets the deployment-wide delivery answers judge
-// by (dispatch://INFRA-978, D9): the project's whose deploy sources read every source repository,
-// where one delivery-on project owns them all, and the catalogue's, whose targets are main's
-// defaults, where two or more projects own them or none is read, since no one project's targets
-// judge figures of several projects. Which project owns them is read under the published default
-// repositories (evals.Store.DeployRepoEvals), not under the rules the answer's own rows are read
-// by, so a person's move of a default repository moves the judging project only once the
-// refresher publishes it, and the project's own targets judge meanwhile.
-func (s *server) deliveryEvals(ctx context.Context, slugs []string) (map[string]evals.Entry, error) {
-	return s.registry().DeployRepoEvals(ctx, slugs)
 }
 
 // getDeliveryTimeline answers GET /api/v1/delivery/timeline: merges, deploys, pipeline failures
@@ -487,8 +471,8 @@ type deliveryPopulation struct {
 	windowShipped map[int64]int
 	unownedP0     []delivery.UnownedIssue
 	// targetEvals is the evals whose targets the measures judge them by (evals.DeliveryTargetSlugs,
-	// deliveryEvals), read with the window's rows, so a narrowed population judges by the targets
-	// it was read with.
+	// evals.Store.DeployRepoEvals), read with the window's rows, so a narrowed population judges by
+	// the targets it was read with.
 	targetEvals map[string]evals.Entry
 	// failures is the three failure measures' stored parts of the window's days, with their first
 	// day, of the one delivery-on project (evals.Store.DeploymentFailures), none where there is not
@@ -538,7 +522,7 @@ type deliveryDerived struct {
 	sessionTitles   map[string]string
 	sessionPRCounts map[string]int
 	// freshness is the timeline's and the measures' freshness object: the source repositories'
-	// intake and reconcile times and last reconcile error (deliveryFreshness), and how many
+	// intake and reconcile times and last reconcile error (deliveryFreshnessOf), and how many
 	// population pull requests can no longer be fetched from GitHub.
 	freshness delivery.DeliveryFreshnessView
 }
@@ -641,7 +625,7 @@ func (s *server) readDeliveryRows(ctx context.Context, rules *delivery.SourceRul
 				return err
 			},
 			func(ctx context.Context) (err error) {
-				pop.targetEvals, err = s.deliveryEvals(ctx, evals.DeliveryTargetSlugs)
+				pop.targetEvals, err = s.registry().DeployRepoEvals(ctx, evals.DeliveryTargetSlugs)
 				return err
 			},
 			func(ctx context.Context) (err error) {
@@ -797,7 +781,7 @@ func (p deliveryPopulation) derive(rules *delivery.SourceRules) deliveryDerived 
 			runID, completedAt := apply.RunID, apply.CompletedAt
 			deployRun, deployedAt = &runID, &completedAt
 		}
-		view := viewOf(pr, delivery.ComputeDeployedStatus(pr, tracked, apply), deployRun, deployedAt)
+		view := viewOf(pr, delivery.ComputeDeployedStatus(tracked, apply), deployRun, deployedAt)
 		if deployRun != nil {
 			shipped[*deployRun] = append(shipped[*deployRun], delivery.DeliveryShippedPRView{ID: view.ID, Title: view.Title})
 		}
@@ -825,7 +809,7 @@ func (p deliveryPopulation) derive(rules *delivery.SourceRules) deliveryDerived 
 		issueTitles:     issueTitles,
 		sessionTitles:   sessionTitles,
 		sessionPRCounts: sessionPRCounts,
-		freshness:       deliveryFreshness(rules, p.unfetchable),
+		freshness:       deliveryFreshnessOf(rules.All(), p.unfetchable),
 	}
 }
 
@@ -867,7 +851,7 @@ func (p deliveryPopulation) narrowedTo(rules *delivery.SourceRules, from time.Ti
 	applies := deliveryApplies(rules, p.applyRuns, p.jobsByRun)
 	for _, pr := range left {
 		apply, tracked := deliveryContainingRun(rules, pr, applies)
-		if tracked == "" {
+		if !tracked {
 			continue
 		}
 		waiting := delivery.WaitingPullRequest{DeliveryPullRequest: pr}

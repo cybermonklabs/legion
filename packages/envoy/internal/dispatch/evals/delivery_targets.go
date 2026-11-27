@@ -211,18 +211,20 @@ func CheckTargetOf(definition Definition, target *float64) error {
 // deployment-wide delivery answers judge by (dispatch://INFRA-978, D9), by slug, in one snapshot:
 // those of the project whose deploy sources read every deploy repository, where one delivery-on
 // project owns them all, and none of any project where two or more own them or none is read, since
-// no one project's targets judge figures of several projects. The deployment-wide answers count
-// every project's rows, so no row names their project; the one a repository names is its owner,
-// the delivery-on project whose deploy source reads it (delivery.DeployRules, compared without
-// case; dispatch://INFRA-978, D1), where a source that names no repository reads its project's
-// published default repository (eval_project_repos, the record the refresher's page commit moves
-// in the commit that makes the figures folded under it visible; owners.go), so the delivery routes
-// and the Evals tab judge by one state and a person's write of a default repository moves neither
-// until that commit: until then the project that owns every repository under the published
-// defaults judges, as it did before the write. Where no project is named, and where the project
-// holds no version of a slug yet, the slug's catalogue entry stands in: the definition and series
-// the seed writes, whose target is main's (measures.DefaultTargets). A slug neither holds is
-// absent.
+// no one project's targets judge figures of several projects. The delivery routes' measures,
+// timeline and Pipeline read their evals here (api's readDeliveryRows and readPipelinePopulation).
+// The deployment-wide answers count every project's rows, so no row names their project; the one
+// a repository names is its owner, the delivery-on project whose deploy source reads it
+// (delivery.DeployRules, compared without case; dispatch://INFRA-978, D1), where a source that
+// names no repository reads its project's published default repository (eval_project_repos, the
+// record the refresher's page commit moves in the commit that makes the figures folded under it
+// visible; owners.go), not the default under which those answers read their own rows (api's
+// readDeliveryRules). So the delivery routes and the Evals tab judge by one state, and a person's
+// write of a default repository moves neither until that commit: until then the project that owns
+// every repository under the published defaults judges, as it did before the write. Where no
+// project is named, and where the project holds no version of a slug yet, the slug's catalogue
+// entry stands in: the definition and series the seed writes, whose target is main's
+// (measures.DefaultTargets). A slug neither holds is absent.
 func (s *Store) DeployRepoEvals(ctx context.Context, slugs []string) (map[string]Entry, error) {
 	tx, err := s.BeginSnapshot(ctx)
 	if err != nil {

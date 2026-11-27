@@ -72,9 +72,10 @@ import (
 const repoRenameLockNamespace int32 = 0x524E414D
 
 // repoRenameLockTimeout is how long a statement of the pass waits for a lock: the advisory lock
-// of a line that another process is writing, the table lock a line takes first
-// (repoRenameLine.lock) while a writer of that table runs, or a row that a request holds. A line
-// that waits longer fails and is logged, and the next boot writes it.
+// of a line that another process is writing, a repository's lock a settings save holds
+// (repoRenameLine.repositories), the table lock a line takes first (repoRenameLine.lock) while a
+// writer of that table runs, or a row that a request holds. A line that waits longer fails and is
+// logged, and the next boot writes it.
 const repoRenameLockTimeout = `set local lock_timeout = '5s'`
 
 // deliverySettingsLock is the lock each line that writes project_delivery_settings or
@@ -95,6 +96,16 @@ const repoRenameLockTimeout = `set local lock_timeout = '5s'`
 // (delivery.RecordEventAt, RecordReconcileSuccess, RecordReconcileError) are one statement each and
 // take no change log's lock, so they and the line take turns. Reads go on beside the line.
 const deliverySettingsLock = `lock table project_delivery_settings, project_deploy_sources in share row exclusive mode`
+
+// LockDeployRepository is the statement that takes, for the rest of its transaction, the lock of
+// one deploy repository's delivery ownership, the repository's name in lower case at $1: the lock
+// under which a write that can make a repository the source of a delivery-on project checks that
+// no other such project's source reads it. delivery.LockRepositories takes it for each repository
+// a settings save or a move of a default repository reads, in name order, after the project's lock
+// and before any row lock, and the line of projects.default_repo takes it for each pair's old and
+// new name the same way (repoRenameLine.repositories), before its tables' lock. Its first key,
+// 6903, is its own (delivery.LockRepositories names the others).
+const LockDeployRepository = `select pg_advisory_xact_lock(6903, hashtext($1))`
 
 // repoRenamesLeftTimeout bounds each count of the rows left on an old name, the one before the
 // lines and the one after them. The count has a bound of its own, which the end of the pass's
@@ -207,9 +218,9 @@ func countRepoRenamesLeftBounded(ctx context.Context, pool *Pool, renames []repo
 }
 
 // rewriteRepoRenameLine runs line's statements for each pair in one transaction and commits it,
-// and answers the rows it wrote and the rows it deleted: after the pass's lock, the line's lock
-// where it has one, and then its steps. It logs its writes and its deletions only once they are
-// committed, so a line that fails logs nothing but its error.
+// and answers the rows it wrote and the rows it deleted: after the pass's lock, the repositories'
+// locks and the line's lock where it takes them, and then its steps. It logs its writes and its
+// deletions only once they are committed, so a line that fails logs nothing but its error.
 func rewriteRepoRenameLine(ctx context.Context, pool *Pool, line repoRenameLine, renames []repoRename) (int64, int64, error) {
 	// A line is a transaction like any other, so it is marked like any other: nothing it runs may
 	// take a second pooled connection while it is open.
@@ -224,6 +235,18 @@ func rewriteRepoRenameLine(ctx context.Context, pool *Pool, line repoRenameLine,
 	}
 	if _, err := tx.Exec(ctx, `select pg_advisory_xact_lock($1, 0)`, repoRenameLockNamespace); err != nil {
 		return 0, 0, fmt.Errorf("take the pass's lock: %w", err)
+	}
+	if line.repositories {
+		var names []string
+		for _, r := range line.renamesOf(renames) {
+			names = append(names, r.From, r.To)
+		}
+		slices.Sort(names)
+		for _, name := range slices.Compact(names) {
+			if _, err := tx.Exec(ctx, LockDeployRepository, name); err != nil {
+				return 0, 0, fmt.Errorf("lock the deploy repository %s: %w", name, err)
+			}
+		}
 	}
 	if line.lock != "" {
 		if _, err := tx.Exec(ctx, line.lock); err != nil {
@@ -388,8 +411,13 @@ func (r repoRename) tokenReplacement() string {
 type repoRenameLine struct {
 	// fields names the line's fields, as the ERROR line of a line that failed names them.
 	fields string
-	// lock, where it is set, is a statement the line runs once, after the pass's lock and before
-	// its first step, that takes a table lock its steps must hold before any row lock of theirs.
+	// repositories, where it is set, makes the line take, after the pass's lock and before lock, the
+	// lock of each pair's old and new name (LockDeployRepository, in name order), as a settings save
+	// takes the lock of each repository it reads before its first row lock.
+	repositories bool
+	// lock, where it is set, is a statement the line runs once, after the pass's lock and the
+	// repositories' and before its first step, that takes a table lock its steps must hold before
+	// any row lock of theirs.
 	lock string
 	// steps are the line's statements for one pair, in the order they run.
 	steps func(r repoRename) []repoRenameStep
@@ -805,11 +833,15 @@ var repoRenameLines = []repoRenameLine{
 	{
 		// A github_workflow source that names no repository reads its project's default
 		// repository, so the new name can make such a source read a repository another source
-		// reads already, which is deleted first (sharedSources). That delete writes
-		// project_deploy_sources, so the line takes the settings tables' lock first
-		// (deliverySettingsLock).
-		fields: "projects.default_repo",
-		lock:   deliverySettingsLock,
+		// reads already, which is deleted first (sharedSources). The line takes the lock of the old
+		// and the new name (repositories) and then the settings tables' lock (deliverySettingsLock),
+		// in the order a settings save takes its repositories' locks and then its rows, so a save
+		// that read either name's owner (delivery.RepositoryOwner) commits before the line moves a
+		// default, or reads the moved one, and neither holds what the other waits for. The delete
+		// writes project_deploy_sources, under the tables' lock.
+		fields:       "projects.default_repo",
+		repositories: true,
+		lock:         deliverySettingsLock,
 		steps: func(r repoRename) []repoRenameStep {
 			return []repoRenameStep{
 				sharedSources(r,

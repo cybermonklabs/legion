@@ -190,8 +190,8 @@ func TestComputeMatchesThePrototypeOnItsFixture(t *testing.T) {
 	assertSpread(t, "opened_to_production", result.LeadTime.OpenedToProduction, 210, 1416, 1500)
 	assertSpread(t, "opened_to_merge", result.LeadTime.OpenedToMerge, 330, 462, 1080)
 
-	if result.ChangeFailureRate != nil || result.TimeToRestore != nil || result.DeploymentReworkRate != nil {
-		t.Errorf("the failure measures with no stored part = %+v, %+v, %+v, want no value", result.ChangeFailureRate, result.TimeToRestore, result.DeploymentReworkRate)
+	if result.ChangeFailureRate != nil || result.FailedDeploymentRecovery != nil || result.DeploymentReworkRate != nil {
+		t.Errorf("the failure measures with no stored part = %+v, %+v, %+v, want no value", result.ChangeFailureRate, result.FailedDeploymentRecovery, result.DeploymentReworkRate)
 	}
 	assertFloat(t, "rework_share", result.ReworkShare, 4.0/14)
 
@@ -258,13 +258,13 @@ func TestComputeAnswersTheFailureMeasuresByTheirEvalsFolds(t *testing.T) {
 	unmeasured := Compute(prs, runs, FailureParts{}, window)
 	encoded, err := json.Marshal(struct {
 		ChangeFail any `json:"change_failure_rate"`
-		Recovery   any `json:"time_to_restore"`
+		Recovery   any `json:"failed_deployment_recovery"`
 		Rework     any `json:"deployment_rework_rate"`
-	}{unmeasured.ChangeFailureRate, unmeasured.TimeToRestore, unmeasured.DeploymentReworkRate})
+	}{unmeasured.ChangeFailureRate, unmeasured.FailedDeploymentRecovery, unmeasured.DeploymentReworkRate})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := `{"change_failure_rate":null,"time_to_restore":null,"deployment_rework_rate":null}`; string(encoded) != want {
+	if want := `{"change_failure_rate":null,"failed_deployment_recovery":null,"deployment_rework_rate":null}`; string(encoded) != want {
 		t.Errorf("the failure measures with no stored part encode %s, want %s", encoded, want)
 	}
 
@@ -279,8 +279,8 @@ func TestComputeAnswersTheFailureMeasuresByTheirEvalsFolds(t *testing.T) {
 	if rate := measured.DeploymentReworkRate; rate == nil || rate.Restoring != 0 || rate.Total != 2 || rate.Rate == nil || *rate.Rate != 0 {
 		t.Errorf("deployment_rework_rate with deploys and no restore = %+v, want a measured 0 of 2", rate)
 	}
-	if recovery := measured.TimeToRestore; recovery == nil || recovery.N != 0 || recovery.MedianMinutes != nil || recovery.NotRestored != 0 {
-		t.Errorf("time_to_restore with no restore = %+v, want no median and nothing left", recovery)
+	if recovery := measured.FailedDeploymentRecovery; recovery == nil || recovery.N != 0 || recovery.MedianMinutes != nil || recovery.NotRestored != 0 {
+		t.Errorf("failed_deployment_recovery with no restore = %+v, want no median and nothing left", recovery)
 	}
 
 	broken := []FailureDeploy{{Failures: 1}, {Restores: true}}
@@ -293,8 +293,8 @@ func TestComputeAnswersTheFailureMeasuresByTheirEvalsFolds(t *testing.T) {
 	if rate, want := failed.ChangeFailureRate, FoldChangeFailRate(parts.ChangeFail); rate == nil || rate.Failed != want.Failed || rate.Total != want.Total || *rate.Rate != 0.5 {
 		t.Errorf("change_failure_rate = %+v, want FoldChangeFailRate's 1 of 2", rate)
 	}
-	if recovery := failed.TimeToRestore; recovery == nil || recovery.MedianMinutes == nil || *recovery.MedianMinutes != 120 || recovery.N != 1 {
-		t.Errorf("time_to_restore = %+v, want FoldRecovery's 120-minute median of one restore", recovery)
+	if recovery := failed.FailedDeploymentRecovery; recovery == nil || recovery.MedianMinutes == nil || *recovery.MedianMinutes != 120 || recovery.N != 1 {
+		t.Errorf("failed_deployment_recovery = %+v, want FoldRecovery's 120-minute median of one restore", recovery)
 	}
 	if rate, want := failed.DeploymentReworkRate, FoldReworkRate(parts.Rework); rate == nil || rate.Restoring != want.Restoring || rate.Total != want.Total || *rate.Rate != 0.5 {
 		t.Errorf("deployment_rework_rate = %+v, want FoldReworkRate's 1 of 2", rate)

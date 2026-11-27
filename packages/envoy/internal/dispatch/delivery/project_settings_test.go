@@ -36,19 +36,34 @@ func workflowSource(repo *string, workflow string) SourceInput {
 
 func save(t *testing.T, ctx context.Context, pool *store.Pool, input ProjectSettingsInput) (ProjectSettings, error) {
 	t.Helper()
+	return putSettings(ctx, pool, input, settingsAuthor)
+}
+
+// putSettings saves input as actor in a transaction of its own, as the settings route's write
+// does: under the project's lock (LockProject), over the settings that lock holds
+// (StoredSettings), with a refusal that names every project (model.ServerViewer). It answers the
+// settings it stored, read in that transaction.
+func putSettings(ctx context.Context, pool *store.Pool, input ProjectSettingsInput, actor model.Actor) (ProjectSettings, error) {
 	tx, err := pool.Begin(ctx)
-	if err != nil {
-		t.Fatalf("begin: %v", err)
-	}
-	defer func() { _ = tx.Rollback(context.Background()) }()
-	saved, err := PutProjectSettings(ctx, tx, input, settingsAuthor)
 	if err != nil {
 		return ProjectSettings{}, err
 	}
-	if err := tx.Commit(ctx); err != nil {
-		t.Fatalf("commit: %v", err)
+	defer func() { _ = tx.Rollback(context.Background()) }()
+	if err := LockProject(ctx, tx, input.Project); err != nil {
+		return ProjectSettings{}, err
 	}
-	return saved, nil
+	stored, err := StoredSettings(ctx, tx, input.Project)
+	if err != nil {
+		return ProjectSettings{}, err
+	}
+	if err := PutProjectSettings(ctx, tx, input, stored, actor, model.ServerViewer); err != nil {
+		return ProjectSettings{}, err
+	}
+	saved, err := GetProjectSettings(ctx, tx, input.Project)
+	if err != nil {
+		return ProjectSettings{}, err
+	}
+	return saved, tx.Commit(ctx)
 }
 
 func refusedWith(t *testing.T, err error, code string) *SettingsError {

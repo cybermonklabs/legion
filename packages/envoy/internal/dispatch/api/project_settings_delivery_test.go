@@ -415,6 +415,71 @@ func TestTheProjectDeliverySettingsAreTheDeploymentsWrite(t *testing.T) {
 	}
 }
 
+// A refusal of a repository another delivery-on project reads names that project only to a caller
+// who sees it (requestViewer), as a shared Slack channel's refusal does (access's
+// refuseSharedSlackChannel). PRIV, a private project with delivery on, reads acme/alpha-deploy, and
+// OPEN, a public one with delivery on, reads its default repository. Two job tokens of the project
+// scope public write the deployment's settings, one listing PRIV and one listing no project, which
+// sees no private project. Each saves OPEN's settings with a source naming acme/alpha-deploy, and
+// moves OPEN's default onto it, and each write is refused 409 DELIVERY_REPOSITORY_SHARED naming
+// OPEN's source 0, writing nothing: the token listing PRIV is told PRIV reads the repository, and
+// the other that a project it cannot see does, with PRIV nowhere in its answer.
+func TestASharedRepositorysRefusalNamesTheOtherProjectOnlyToACallerWhoSeesIt(t *testing.T) {
+	rig := newDeliverySettingsRig(t, readableRepos())
+	caller := newBrokerCaller(t)
+	const seeing, blind = "a-job-token-listing-PRIV", "a-job-token-listing-no-project"
+	rig.broker.Says(seeing, liveJobPublicToken(caller.jkt, "PRIV"))
+	rig.broker.Says(blind, liveJobPublicToken(caller.jkt))
+	createTestProject(t, rig.handler, "PRIV", "OPEN")
+	savedProjectDelivery(t, rig.handler, "PRIV", map[string]any{
+		"delivery": true, "sources": []any{workflowSource("acme/alpha-deploy", ".github/workflows/deploy.yml", "release")},
+		"population_authors": []string{"octocat"},
+	})
+	setDefaultRepository(t, rig.handler, "OPEN", "acme/beta")
+	savedProjectDelivery(t, rig.handler, "OPEN", map[string]any{
+		"delivery": true, "sources": []any{workflowSource("", ".github/workflows/ship.yml", "ship")},
+		"population_authors": []string{"octocat"},
+	})
+	if _, err := rig.database.Pool.Exec(t.Context(), `update projects set visibility = 'private' where key = 'PRIV'`); err != nil {
+		t.Fatalf("mark PRIV private: %v", err)
+	}
+	writes := []struct {
+		name, path string
+		body       map[string]any
+	}{
+		{"a save of OPEN's settings", "/api/v1/projects/OPEN/settings/delivery", map[string]any{
+			"delivery": true, "sources": []any{workflowSource("acme/alpha-deploy", ".github/workflows/ship.yml", "ship")},
+			"population_authors": []string{"octocat"},
+		}},
+		{"a move of OPEN's default repository", "/api/v1/projects/OPEN/default-repository", map[string]any{"repo": "acme/alpha-deploy"}},
+	}
+	for _, write := range writes {
+		for _, row := range []struct {
+			token string
+			sees  bool
+		}{{seeing, true}, {blind, false}} {
+			t.Run(write.name+" by "+row.token, func(t *testing.T) {
+				before := readProjectDelivery(t, rig.handler, "OPEN")
+				response := rig.serve(caller.presenting(t, http.MethodPut, write.path, row.token, write.body))
+				body := response.Body.String()
+				refusal := refusedSettings(t, response, http.StatusConflict, delivery.CodeDeliveryRepositoryShared)
+				if refusal.Source == nil || *refusal.Source != 0 || refusal.Field != "repo" {
+					t.Errorf("refusal %+v, want OPEN's source 0 and its repo", refusal)
+				}
+				switch {
+				case row.sees && (refusal.Project != "PRIV" || !strings.Contains(refusal.Message, "PRIV")):
+					t.Errorf("a caller that sees PRIV is refused %s, want PRIV named in project and in the message", body)
+				case !row.sees && (strings.Contains(body, "PRIV") || !strings.Contains(refusal.Message, "a project you cannot see")):
+					t.Errorf("a caller that does not see PRIV is refused %s, want no PRIV and a project it cannot see", body)
+				}
+				if after := readProjectDelivery(t, rig.handler, "OPEN"); string(after) != string(before) {
+					t.Errorf("the refused write left OPEN's settings %s, want %s", after, before)
+				}
+			})
+		}
+	}
+}
+
 // A null target is neither a number nor "off": the save is refused naming the target, and writes
 // neither the settings nor a version of the eval, where read as a number it would set a target of 0.
 func TestANullTargetIsRefused(t *testing.T) {
@@ -848,11 +913,25 @@ func (w *settingsLockWatch) release(t *testing.T, holder pgx.Tx) {
 }
 
 // workflowSourceInput is a github_workflow source naming repo as delivery.PutProjectSettings takes
-// it, for a write the test makes beside the route's.
+// it, for a write the test makes beside the route's (putBeside).
 func workflowSourceInput(repo string) delivery.SourceInput {
 	return delivery.SourceInput{
 		Kind: delivery.SourceKindGitHubWorkflow, Repo: new(repo), DeployWorkflowPath: new(".github/workflows/ship.yml"),
 		ProductionJobNames: []string{"ship"}, PRChecksWorkflowPath: new(".github/workflows/ci.yml"),
+	}
+}
+
+// putBeside saves input in holder, which holds input's project's lock (delivery.LockProject), as
+// the settings route's write does: over the settings holder holds (delivery.StoredSettings), as
+// bob.
+func putBeside(t *testing.T, holder pgx.Tx, input delivery.ProjectSettingsInput) {
+	t.Helper()
+	stored, err := delivery.StoredSettings(t.Context(), holder, input.Project)
+	if err != nil {
+		t.Fatalf("read %s's stored settings: %v", input.Project, err)
+	}
+	if err := delivery.PutProjectSettings(t.Context(), holder, input, stored, model.Actor{Kind: "user", ID: "bob"}, model.ServerViewer); err != nil {
+		t.Fatalf("save %s's settings beside the route: %v", input.Project, err)
 	}
 }
 
@@ -876,13 +955,14 @@ func TestAPartialPutThatWaitedForAnotherSaveKeepsWhatThatSaveWrote(t *testing.T)
 
 	holder := watch.hold(t, "ALPHA")
 	since := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
-	other, err := delivery.PutProjectSettings(t.Context(), holder, delivery.ProjectSettingsInput{
+	putBeside(t, holder, delivery.ProjectSettingsInput{
 		Project: "ALPHA", Delivery: true, Sources: []delivery.SourceInput{workflowSourceInput("acme/alpha")},
 		PopulationAuthors: []string{"octocat"}, ExcludedRepos: []string{"acme/other"},
 		FailureSources: []string{delivery.FailureSourceReverts}, FailuresMeasuredSince: &since,
-	}, model.Actor{Kind: "user", ID: "bob"})
+	})
+	other, err := delivery.GetProjectSettings(t.Context(), holder, "ALPHA")
 	if err != nil {
-		t.Fatalf("the other save: %v", err)
+		t.Fatalf("read the other save: %v", err)
 	}
 	from := len(watch.askedSince(0))
 	answered := make(chan *httptest.ResponseRecorder, 1)
@@ -929,11 +1009,7 @@ func TestAnEnableThatWaitedForAWriteOfItsRepositoryProvesTheRepositoryThatWriteL
 	watch.database = rig.database
 	saveWithDeliveryOff := func(t *testing.T, holder pgx.Tx, project, repo string) {
 		t.Helper()
-		if _, err := delivery.PutProjectSettings(t.Context(), holder, delivery.ProjectSettingsInput{
-			Project: project, Sources: []delivery.SourceInput{workflowSourceInput(repo)},
-		}, model.Actor{Kind: "user", ID: "bob"}); err != nil {
-			t.Fatalf("save %s's settings with delivery off and a source reading %s: %v", project, repo, err)
-		}
+		putBeside(t, holder, delivery.ProjectSettingsInput{Project: project, Sources: []delivery.SourceInput{workflowSourceInput(repo)}})
 	}
 	moveDefault := func(t *testing.T, holder pgx.Tx, project, repo string) {
 		t.Helper()

@@ -223,14 +223,15 @@ func (x ShippingIndex) Containing(pr DeliveryPullRequest, deployRepo string) *Ap
 	return &x.byCreated[x.first[at]]
 }
 
-// ComputeDeployedStatus is the PR's deploy state: DeployedStatusNotTracked for any PR outside the
-// deploy repository, compared in any case as ContainingRun compares it (there is nothing watching
-// it -- never "waiting", which would inflate a count that should only ever shrink to zero as
-// deploys catch up); DeployedStatusDeployed when apply is non-nil; DeployedStatusWaiting
-// otherwise. Named distinctly from the DeployedStatus type (model.go) it returns, since Go does not
-// allow a function and a type to share one identifier.
-func ComputeDeployedStatus(pr DeliveryPullRequest, deployRepo string, apply *Apply) DeployedStatus {
-	if !strings.EqualFold(pr.Repo, deployRepo) {
+// ComputeDeployedStatus is a PR's deploy state: DeployedStatusNotTracked where tracked is false, a
+// PR of a repository no source's rule reads (there is nothing watching it -- never "waiting",
+// which would inflate a count that should only ever shrink to zero as deploys catch up);
+// DeployedStatusDeployed when apply, the deploy that ships it first, is non-nil;
+// DeployedStatusWaiting otherwise. The caller decides tracked from the rules it reads the PR by.
+// Named distinctly from the DeployedStatus type (model.go) it returns, since Go does not allow a
+// function and a type to share one identifier.
+func ComputeDeployedStatus(tracked bool, apply *Apply) DeployedStatus {
+	if !tracked {
 		return DeployedStatusNotTracked
 	}
 	if apply != nil {

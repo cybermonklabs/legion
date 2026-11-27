@@ -305,7 +305,7 @@ func WriteFailures(ctx context.Context, pool *store.Pool, project string, now ti
 			return FailuresResult{}, err
 		}
 		for _, source := range saved.Sources {
-			reads, _ := delivery.SourceRepoOf(source, saved.DefaultRepo)
+			reads, _ := delivery.SourceRepoOf(source.SourceRule, saved.DefaultRepo)
 			result.Sources[input.Project] = append(result.Sources[input.Project], FailureSource{Kind: source.Kind, Names: source.Repo, Reads: reads})
 		}
 	}
@@ -346,12 +346,8 @@ func WriteFailures(ctx context.Context, pool *store.Pool, project string, now ti
 		{key: bug, number: 2, project: project, repo: appRepo, title: "A bug the first project tracks", labels: []string{"bug"},
 			link: pullURL(appRepo, 3), created: at(1, 15, 30)},
 	}
-	var keywordFill bool
-	if err := pool.QueryRow(ctx, `select to_regclass('public.search_text_versions_fill') is not null`).Scan(&keywordFill); err != nil {
-		return FailuresResult{}, fmt.Errorf("read whether the database has a keyword fill: %w", err)
-	}
 	for _, issue := range issues {
-		if err := writeFailureIssue(ctx, pool, issue, keywordFill); err != nil {
+		if err := writeFailureIssue(ctx, pool, issue); err != nil {
 			return FailuresResult{}, err
 		}
 	}
@@ -510,7 +506,7 @@ func WriteFailures(ctx context.Context, pool *store.Pool, project string, now ti
 	// the failure rows of the three automatic signals the loop writes: the check_fail, the revert
 	// and the incident.
 	for _, issue := range filed {
-		if err := writeFailureIssue(ctx, pool, issue, keywordFill); err != nil {
+		if err := writeFailureIssue(ctx, pool, issue); err != nil {
 			return FailuresResult{}, err
 		}
 	}
@@ -748,10 +744,10 @@ func (o failureOracle) measures(project string, deploys []FailureDeploy, failure
 // issue with labels (the incidents feed's input) and, for each check result, its result.recorded
 // event and then its row naming that event, the issue's last_seq at its last event. An issue held
 // already is the fixture's where its title is, and was written whole with it; one of another title
-// refuses the load. The events are dated in the fixture's past, so, where the database has the
-// keyword fill, the statement that writes them nulls the fill's stored reach (legionseed's write
-// says why).
-func writeFailureIssue(ctx context.Context, pool *store.Pool, issue failureIssue, keywordFill bool) error {
+// refuses the load. The events are dated in the fixture's past, so they are written through the
+// seeded events' one statement (legionseed.WriteIssueEvents), which says what it does to a keyword
+// fill serving the database.
+func writeFailureIssue(ctx context.Context, pool *store.Pool, issue failureIssue) error {
 	tx, err := pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("begin the issue %s: %w", issue.key, err)
@@ -818,7 +814,7 @@ func writeFailureIssue(ctx context.Context, pool *store.Pool, issue failureIssue
 			},
 		})
 	}
-	if err := legionseed.WriteIssueEvents(ctx, tx, issue.key, seeded, keywordFill); err != nil {
+	if err := legionseed.WriteIssueEvents(ctx, tx, issue.key, seeded); err != nil {
 		return err
 	}
 	tester, err := json.Marshal(failuresTester)

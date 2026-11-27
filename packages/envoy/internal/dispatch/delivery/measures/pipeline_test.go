@@ -277,13 +277,18 @@ func failingFixture() ciRuns {
 	return c
 }
 
+// rollsUp is a roll-up lookup (FailingJobs' rollupOf) that answers name for every repository.
+func rollsUp(name string) func(repo string) string {
+	return func(string) string { return name }
+}
+
 // TestFailingJobsCoverTheLast24HoursWithoutTheRollup is test_pipeline.py:114-137 and
 // dump-failing.py: the roll-up and a skipped job add no result, a cancelled run's failed job adds
 // no failure, and a failure before the last 24 hours is absent.
 func TestFailingJobsCoverTheLast24HoursWithoutTheRollup(t *testing.T) {
 	c := failingFixture()
 	run, _ := PRChecksTimings(c.runs, c.jobs, pipelineDays, SlowestMinResults)
-	failing := FailingJobs(c.runs, c.jobs, pipelineNow, "checks-complete")
+	failing := FailingJobs(c.runs, c.jobs, pipelineNow, rollsUp("checks-complete"))
 
 	lastFailed := time.Date(2026, 10, 2, 10, 30, 0, 0, time.UTC)
 	want := []FailingJob{
@@ -307,7 +312,7 @@ func TestFailingJobsCoverTheLast24HoursWithoutTheRollup(t *testing.T) {
 // the others' result is tallied like any other.
 func TestFailingJobsWithoutARollupLeaveNothingOut(t *testing.T) {
 	c := failingFixture()
-	failing := FailingJobs(c.runs, c.jobs, pipelineNow, "")
+	failing := FailingJobs(c.runs, c.jobs, pipelineNow, nil)
 	names := make([]string, len(failing))
 	for i, j := range failing {
 		names[i] = j.Name
@@ -317,13 +322,34 @@ func TestFailingJobsWithoutARollupLeaveNothingOut(t *testing.T) {
 	}
 }
 
+// TestEachRunLeavesOutItsOwnRepositorysRollup: a run leaves out the roll-up job its own
+// repository's rule names (rollupOf of its repository), and tallies a job named as another
+// repository's roll-up like any other. acme/widgets rolls up on checks-complete and acme/gadgets on
+// all-green, a failing run of each holds both jobs failed, and the one failure each name keeps is
+// the run of the repository that does not roll up on it.
+func TestEachRunLeavesOutItsOwnRepositorysRollup(t *testing.T) {
+	var c ciRuns
+	c.add(1, 32, 30, "failure", 9, job("checks-complete", 1, "failure"), job("all-green", 1, "failure"))
+	c.add(2, 32, 30, "failure", 10, job("checks-complete", 1, "failure"), job("all-green", 1, "failure"))
+	c.runs[1].Repo = "acme/gadgets"
+	rollups := map[string]string{"acme/widgets": "checks-complete", "acme/gadgets": "all-green"}
+	failing := FailingJobs(c.runs, c.jobs, pipelineNow, func(repo string) string { return rollups[repo] })
+	got := make([]string, len(failing))
+	for i, j := range failing {
+		got[i] = j.Name + " " + strconv.Itoa(j.Failures) + " " + j.LastRunURL
+	}
+	if want := []string{"all-green 1 " + runURL(1), "checks-complete 1 " + runURL(2)}; !slices.Equal(got, want) {
+		t.Fatalf("failing = %v, want %v", got, want)
+	}
+}
+
 // TestFailingJobsStopAtNow: the failing-jobs table covers the 24 hours before now and nothing
 // after it, so a pinned `at` in the past never counts a run that completed later that day.
 func TestFailingJobsStopAtNow(t *testing.T) {
 	c := failingFixture()
 	// Completed at 12:30 on Oct 2, half an hour after pipelineNow.
 	c.add(6, 32, 20, "failure", 12, job("build / unit", 19, "failure"), job("lint", 5, "failure"), job("typecheck", 3, "failure"))
-	failing := FailingJobs(c.runs, c.jobs, pipelineNow, "checks-complete")
+	failing := FailingJobs(c.runs, c.jobs, pipelineNow, rollsUp("checks-complete"))
 
 	byName := map[string]FailingJob{}
 	for _, f := range failing {
@@ -353,7 +379,7 @@ func TestAFailingJobsLastRunIsTheSameInEveryRunOrder(t *testing.T) {
 		for i, run := range runs {
 			ids[i] = run.RunID
 		}
-		failing := FailingJobs(runs, c.jobs, pipelineNow, "")
+		failing := FailingJobs(runs, c.jobs, pipelineNow, nil)
 		if len(failing) != 1 || failing[0].Failures != 3 || !failing[0].LastFailedAt.Equal(lastFailed) || failing[0].LastRunURL != runURL(9) {
 			t.Fatalf("failing jobs of runs listed %v = %+v, want build / unit failing 3 times, last in run 9 at %s", ids, failing, lastFailed)
 		}
@@ -433,12 +459,12 @@ func TestDeployJobTimingsFollowEachNamedJob(t *testing.T) {
 		jobsByRun[id] = rows
 	}
 
-	timings := DeployJobs(runs, jobsByRun, []DeployJobCard{
+	timings := DeployJobsOf([]SourceDeployRuns{{Runs: runs, Jobs: jobsByRun, Cards: []DeployJobCard{
 		{CardID: "staging_e2e", Production: delivery.Production{JobNames: []string{stagingE2EJob}}},
 		{CardID: "staging_apply", Production: delivery.Production{JobNames: []string{stagingApplyJob}}},
 		{CardID: "production_apply", Production: delivery.Production{JobNames: []string{productionApplyJob}}},
 		{CardID: "never", Production: delivery.Production{JobNames: []string{"never-run / job"}}},
-	}, pipelineDays)
+	}}}, pipelineDays)
 	if len(timings) != 4 {
 		t.Fatalf("timings = %d, want one per card", len(timings))
 	}
@@ -465,14 +491,14 @@ func TestDeployCardsReadTheRepositorysOwnRule(t *testing.T) {
 	rules := delivery.DeployRules([]delivery.ProjectSettings{{
 		Project: "ACME", Delivery: true, DefaultRepo: new("acme/widgets"),
 		Sources: []delivery.DeploySource{
-			{
+			{SourceRule: delivery.SourceRule{
 				Kind: delivery.SourceKindGitHubWorkflow, DeployWorkflowPath: new("deploy.yml"), ProductionJobNames: []string{productionApplyJob},
 				StagingE2EJobName: new(stagingE2EJob), StagingApplyJobName: new(stagingApplyJob), PRChecksWorkflowPath: new("ci.yml"),
-			},
-			{
+			}},
+			{SourceRule: delivery.SourceRule{
 				Kind: delivery.SourceKindGitHubWorkflow, Repo: new("acme/gadgets"), DeployWorkflowPath: new("ship.yml"), ProductionJobNames: []string{"ship"},
 				ProductionApplyStepName: new("Apply gadgets"), PRChecksWorkflowPath: new("ci.yml"),
-			},
+			}},
 		},
 	}})
 	want := map[string][]DeployJobCard{
@@ -517,7 +543,9 @@ func TestTheProductionCardMergesItsNamesAndCountsOnlyAppliedJobs(t *testing.T) {
 		runs = append(runs, run)
 		jobsByRun[id] = rows
 	}
-	timings := DeployJobs(runs, jobsByRun, []DeployJobCard{{CardID: "production_apply", Production: delivery.Production{JobNames: []string{newName, oldName}, ApplyStep: new(step)}}}, pipelineDays)
+	timings := DeployJobsOf([]SourceDeployRuns{{Runs: runs, Jobs: jobsByRun, Cards: []DeployJobCard{
+		{CardID: "production_apply", Production: delivery.Production{JobNames: []string{newName, oldName}, ApplyStep: new(step)}},
+	}}}, pipelineDays)
 	if timings["production_apply"].Job != newName+" or "+oldName {
 		t.Errorf("job = %q, want both names", timings["production_apply"].Job)
 	}
@@ -533,12 +561,12 @@ func TestProductionCardUsesOneAppliedListedJobPerRun(t *testing.T) {
 		Repo: "acme/widgets", RunID: 5, Kind: delivery.DeliveryRunKindDeploy, StartedAt: started,
 		CompletedAt: new(appliedAt), Conclusion: new(delivery.DeliveryRunConclusionSuccess), URL: runURL(5),
 	}
-	timings := DeployJobs([]delivery.DeliveryRun{run}, map[int64][]delivery.DeliveryRunJob{run.RunID: {
+	timings := DeployJobsOf([]SourceDeployRuns{{Runs: []delivery.DeliveryRun{run}, Jobs: map[int64][]delivery.DeliveryRunJob{run.RunID: {
 		{Name: stoodDownName, StartedAt: new(at(32, 9, 0)), CompletedAt: new(stoodDownAt), Conclusion: new(delivery.DeliveryJobConclusionSuccess), ApplyStep: new(step), ApplyStepConclusion: new(delivery.DeliveryJobConclusionSkipped)},
 		{Name: appliedName, StartedAt: new(at(32, 9, 0)), CompletedAt: new(appliedAt), Conclusion: new(delivery.DeliveryJobConclusionSuccess), ApplyStep: new(step), ApplyStepConclusion: new(delivery.DeliveryJobConclusionSuccess)},
-	}}, []DeployJobCard{{
+	}}, Cards: []DeployJobCard{{
 		CardID: "production_apply", Production: delivery.Production{JobNames: []string{stoodDownName, appliedName}, ApplyStep: new(step)},
-	}}, pipelineDays)
+	}}}}, pipelineDays)
 	assertCell(t, "production_apply.total", timings["production_apply"].Total, 1, new(30.0), new(30.0), 1, 0, 0, new(1.0))
 }
 

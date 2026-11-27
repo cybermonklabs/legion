@@ -202,14 +202,9 @@ func putTestRule(ctx context.Context, pool *store.Pool, rule DeliverySettings, a
 // default repository, and the first rule's population, as one project holds one. The project must
 // exist. It answers the project's rules as DeployRules gives them, ordered by repository.
 func saveProjectRules(ctx context.Context, pool *store.Pool, project string, actor model.Actor, rules ...DeliverySettings) ([]DeliverySettings, error) {
-	tx, err := pool.Begin(ctx)
+	defaultRepo, err := DefaultRepo(ctx, pool, project)
 	if err != nil {
 		return nil, err
-	}
-	defer func() { _ = tx.Rollback(context.Background()) }()
-	var defaultRepo *string
-	if err := tx.QueryRow(ctx, `select default_repo from projects where key = $1`, project).Scan(&defaultRepo); err != nil {
-		return nil, fmt.Errorf("read the default repository of %s: %w", project, err)
 	}
 	input := ProjectSettingsInput{Project: project, Delivery: true}
 	if len(rules) > 0 {
@@ -227,11 +222,8 @@ func saveProjectRules(ctx context.Context, pool *store.Pool, project string, act
 		}
 		input.Sources = append(input.Sources, source)
 	}
-	saved, err := PutProjectSettings(ctx, tx, input, actor)
+	saved, err := putSettings(ctx, pool, input, actor)
 	if err != nil {
-		return nil, err
-	}
-	if err := tx.Commit(ctx); err != nil {
 		return nil, err
 	}
 	return DeployRules([]ProjectSettings{saved}), nil

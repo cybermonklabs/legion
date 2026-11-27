@@ -62,12 +62,7 @@ func sourceRulesOf(rules ...delivery.DeliverySettings) *delivery.SourceRules {
 	project := delivery.ProjectSettings{Project: deliveryRuleProject, Delivery: true}
 	for _, rule := range rules {
 		project.PopulationAuthors = append(project.PopulationAuthors, rule.PopulationAuthors...)
-		project.Sources = append(project.Sources, delivery.DeploySource{
-			Kind: delivery.SourceKindGitHubWorkflow, Repo: new(rule.DeployRepo), DeployWorkflowPath: new(rule.DeployWorkflowPath),
-			ProductionJobNames: rule.ProductionJobNames, ProductionApplyStepName: rule.ProductionApplyStepName,
-			StagingE2EJobName: rule.StagingE2EJobName, StagingApplyJobName: rule.StagingApplyJobName,
-			PRChecksWorkflowPath: new(rule.PRChecksWorkflowPath), PRChecksRollupJobName: rule.PRChecksRollupJobName,
-		})
+		project.Sources = append(project.Sources, delivery.DeploySource{SourceRule: deliveryseed.SourceOf(rule, new(rule.DeployRepo))})
 	}
 	return delivery.NewSourceRules([]delivery.ProjectSettings{project})
 }
@@ -285,8 +280,9 @@ func TestDeliveryProductionRuleSelectsLaterAppliedListedJob(t *testing.T) {
 	if len(waiting) != 1 || waiting[0].DeployRun == nil || *waiting[0].DeployRun != run.RunID || waiting[0].DeployedAt == nil || !waiting[0].DeployedAt.Equal(appliedAt) {
 		t.Fatalf("SQL waiting result = %+v, want run %d at %s", waiting, run.RunID, appliedAt)
 	}
-	timing := measures.DeployJobs([]delivery.DeliveryRun{run}, map[int64][]delivery.DeliveryRunJob{run.RunID: jobs}, []measures.DeployJobCard{{
-		CardID: "production_apply", Production: production,
+	timing := measures.DeployJobsOf([]measures.SourceDeployRuns{{
+		Runs: []delivery.DeliveryRun{run}, Jobs: map[int64][]delivery.DeliveryRunJob{run.RunID: jobs},
+		Cards: []measures.DeployJobCard{{CardID: "production_apply", Production: production}},
 	}}, measures.ShownDays(appliedAt))["production_apply"]
 	if timing.Total.N != 1 || timing.Total.Success != 1 {
 		t.Fatalf("Pipeline production timing = %+v, want one applied job", timing.Total)

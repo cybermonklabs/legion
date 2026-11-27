@@ -1184,7 +1184,8 @@ func (s *server) failingJobRows(ctx context.Context, read evalItemsRead) ([]eval
 			return nil, err
 		}
 		runs := slices.DeleteFunc(ci.Checks.Runs, func(run delivery.DeliveryRun) bool { return members[evals.RunMember(run.Repo, run.RunID)] == nil })
-		for _, job := range measures.FailingJobs(runs, ci.Checks.Jobs, end, deref(rule.PRChecksRollupJobName)) {
+		rollup := deref(rule.PRChecksRollupJobName)
+		for _, job := range measures.FailingJobs(runs, ci.Checks.Jobs, end, func(string) string { return rollup }) {
 			failing = append(failing, repoJob{repo: rule.DeployRepo, job: job})
 		}
 	}

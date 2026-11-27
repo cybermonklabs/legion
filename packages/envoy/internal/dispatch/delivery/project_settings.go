@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"slices"
 	"strings"
 	"time"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // The kinds of deploy source a project may hold (dispatch://INFRA-978, R1): a deploy workflow's
@@ -34,23 +36,34 @@ const (
 // FailureSources is every failure source, in the order the editor lists them.
 var FailureSources = []string{FailureSourceCheckResults, FailureSourceReverts, FailureSourceIncidentLabel, FailureSourceEvents}
 
-// DeploySource is one row of project_deploy_sources (migration 20261123010254): its kind, the
-// repository it names (nil for the project's default repository), its rule, and the bookkeeping the
-// intake and the reconcile write for its repository.
+// SourceRule is one deploy source's rule (dispatch://INFRA-978, R1): its kind, the repository it
+// names (nil for the project's default repository), its deploy workflow, production jobs and apply
+// step, its staging jobs, and its pull-request checks workflow and roll-up job. A stored source
+// holds one (DeploySource), a save names one for each source (SourceInput), and the settings
+// route's body is one for each source (api's projectDeploySourceInput), so each field is declared
+// once: a save that leaves its sources out takes each stored rule whole, and a save keeps a stored
+// row whose rule is its input's (sameRule). The route's body must name the kind, which its
+// `required` tag tells the emitter; every answer holds it.
+type SourceRule struct {
+	Kind                    string   `json:"kind" required:"true" enum:"github_workflow,events"`
+	Repo                    *string  `json:"repo"`
+	DeployWorkflowPath      *string  `json:"deploy_workflow_path"`
+	ProductionJobNames      []string `json:"production_job_names"`
+	ProductionApplyStepName *string  `json:"production_apply_step_name"`
+	StagingE2EJobName       *string  `json:"staging_e2e_job_name"`
+	StagingApplyJobName     *string  `json:"staging_apply_job_name"`
+	PRChecksWorkflowPath    *string  `json:"pr_checks_workflow_path"`
+	PRChecksRollupJobName   *string  `json:"pr_checks_rollup_job_name"`
+}
+
+// DeploySource is one row of project_deploy_sources (migration 20261123010254): its id, its rule,
+// and the bookkeeping the intake and the reconcile write for its repository.
 type DeploySource struct {
-	ID                      string     `json:"id"`
-	Kind                    string     `json:"kind" enum:"github_workflow,events"`
-	Repo                    *string    `json:"repo"`
-	DeployWorkflowPath      *string    `json:"deploy_workflow_path"`
-	ProductionJobNames      []string   `json:"production_job_names"`
-	ProductionApplyStepName *string    `json:"production_apply_step_name"`
-	StagingE2EJobName       *string    `json:"staging_e2e_job_name"`
-	StagingApplyJobName     *string    `json:"staging_apply_job_name"`
-	PRChecksWorkflowPath    *string    `json:"pr_checks_workflow_path"`
-	PRChecksRollupJobName   *string    `json:"pr_checks_rollup_job_name"`
-	LastEventAt             *time.Time `json:"last_event_at"`
-	LastReconcileAt         *time.Time `json:"last_reconcile_at"`
-	LastError               *string    `json:"last_error"`
+	ID string `json:"id"`
+	SourceRule
+	LastEventAt     *time.Time `json:"last_event_at"`
+	LastReconcileAt *time.Time `json:"last_reconcile_at"`
+	LastError       *string    `json:"last_error"`
 }
 
 // ProjectSettings is one project's row of project_delivery_settings, its deploy sources in their
@@ -68,10 +81,10 @@ type ProjectSettings struct {
 	UpdatedAt             time.Time      `json:"updated_at"`
 }
 
-// SourceRepoOf is the repository a github_workflow source reads (R2): the one it names, else the
-// project's default repository, and false where it names none and the project has none. Every
+// SourceRepoOf is the repository a github_workflow source reads (R2): the one its rule names, else
+// the project's default repository, and false where it names none and the project has none. Every
 // reader that names a source's repository asks here.
-func SourceRepoOf(source DeploySource, defaultRepo *string) (string, bool) {
+func SourceRepoOf(source SourceRule, defaultRepo *string) (string, bool) {
 	if source.Kind != SourceKindGitHubWorkflow {
 		return "", false
 	}
@@ -93,7 +106,7 @@ func (s ProjectSettings) Rules() []DeliverySettings {
 	}
 	var rules []DeliverySettings
 	for _, source := range s.Sources {
-		repo, ok := SourceRepoOf(source, s.DefaultRepo)
+		repo, ok := SourceRepoOf(source.SourceRule, s.DefaultRepo)
 		if !ok {
 			continue
 		}
@@ -392,18 +405,8 @@ func ListProjectSettings(ctx context.Context, q Querier) ([]ProjectSettings, err
 // route state, so a save is refused with the reason rather than written past it.
 const maxSources = 50
 
-// SourceInput is one deploy source of a save, as the editor sends it.
-type SourceInput struct {
-	Kind                    string
-	Repo                    *string
-	DeployWorkflowPath      *string
-	ProductionJobNames      []string
-	ProductionApplyStepName *string
-	StagingE2EJobName       *string
-	StagingApplyJobName     *string
-	PRChecksWorkflowPath    *string
-	PRChecksRollupJobName   *string
-}
+// SourceInput is one deploy source of a save, as the editor sends it: its rule.
+type SourceInput = SourceRule
 
 // ProjectSettingsInput is one save of a project's delivery settings: every field the editor sends.
 type ProjectSettingsInput struct {
@@ -417,8 +420,9 @@ type ProjectSettingsInput struct {
 }
 
 // SettingsError is a save the delivery rules refuse (D1): its code, its reason, the field and the
-// source's index where the refusal is about one, and the other project where one shares a
-// repository.
+// source's index where the refusal is about one, and, where it is about a repository two sources
+// read, the project whose source reads it: this project for two of its own sources, and another
+// delivery-on project only where the caller sees that project (sharedRepository).
 type SettingsError struct {
 	Code    string `json:"code"`
 	Message string `json:"error"`
@@ -429,8 +433,40 @@ type SettingsError struct {
 
 func (e *SettingsError) Error() string { return e.Code + ": " + e.Message }
 
-// ErrProjectNotFound is a save of a project no row holds.
+// ErrProjectNotFound is a project no row holds: a save of it, and a read of its default repository
+// (DefaultRepo).
 var ErrProjectNotFound = errors.New("no such project")
+
+// DefaultRepo reads project's default repository in q (projects.default_repo), nil for none, or
+// ErrProjectNotFound where no project has the key. Every reader of the default alone asks here; a
+// reader of the settings reads it beside them (GetProjectSettings, StoredSettings).
+func DefaultRepo(ctx context.Context, q Querier, project string) (*string, error) {
+	var repo *string
+	if err := q.QueryRow(ctx, `select default_repo from projects where key = $1`, project).Scan(&repo); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrProjectNotFound
+		}
+		return nil, fmt.Errorf("read the default repository of %s: %w", project, err)
+	}
+	return repo, nil
+}
+
+// StoredSettings is what a save of project's delivery settings writes over, read in q: its stored
+// settings and sources (GetProjectSettings), or, where it has saved none, its default repository
+// (DefaultRepo) with delivery off and no source; ErrProjectNotFound where no project has the key.
+// A save reads it once under the project's lock (LockProject) and hands it to PutProjectSettings,
+// which reads neither again.
+func StoredSettings(ctx context.Context, q Querier, project string) (ProjectSettings, error) {
+	settings, err := GetProjectSettings(ctx, q, project)
+	if !errors.Is(err, ErrNoSettings) {
+		return settings, err
+	}
+	defaultRepo, err := DefaultRepo(ctx, q, project)
+	if err != nil {
+		return ProjectSettings{}, err
+	}
+	return ProjectSettings{Project: project, DefaultRepo: defaultRepo}, nil
+}
 
 // The codes of a refused save. DELIVERY_SETTINGS_ACCESS is the settings route's own, for a source
 // whose repository the GitHub App cannot read, which the route proves before it saves.
@@ -453,15 +489,16 @@ func LockProject(ctx context.Context, tx pgx.Tx, project string) error {
 	return nil
 }
 
-// LockRepositories takes the transaction-scoped lock of each repository's delivery ownership, in
-// name order so two transactions taking two of them cannot wait on each other: a save and a
-// default-repository write that would each make one repository the source of a delivery-on project
-// see each other's commit. Its first key, 6903, is its own: 6900 is the change log's lock
+// LockRepositories takes the transaction-scoped lock of each repository's delivery ownership
+// (store.LockDeployRepository), in name order so two transactions taking two of them cannot wait
+// on each other: a save, a default-repository write and the rename pass's line of a default
+// repository, each of which can make one repository the source of a delivery-on project, see each
+// other's commit. Its first key, 6903, is its own: 6900 is the change log's lock
 // (lockChangesStatement), 6901 the Legion observations' (legion.ObservationsLockKey) and 6902 a
 // project's (LockProject), so no repository's name can hash onto another family's lock.
 func LockRepositories(ctx context.Context, tx pgx.Tx, repos []string) error {
 	for _, repo := range lowerSortedSet(repos) {
-		if _, err := tx.Exec(ctx, `select pg_advisory_xact_lock(6903, hashtext($1))`, repo); err != nil {
+		if _, err := tx.Exec(ctx, store.LockDeployRepository, repo); err != nil {
 			return fmt.Errorf("lock the deploy repository %s: %w", repo, err)
 		}
 	}
@@ -486,71 +523,69 @@ func RepositoryOwner(ctx context.Context, tx pgx.Tx, repo, project string) (stri
 	return other, true, nil
 }
 
-func sharedRepository(repo, other string, index *int) *SettingsError {
-	return &SettingsError{
+// sharedRepository is the refusal DELIVERY_REPOSITORY_SHARED of repo for the source of index,
+// where a source of other, a delivery-on project, reads repo. It names other, in its reason and in
+// Project, only where viewer sees it (All, or other among Sees: the rule access's
+// refuseSharedSlackChannel names a private project by), the viewer the request resolved before its
+// transaction opened; to any other caller it says that a project it cannot see reads repo, so the
+// refusal tells it neither the key of a project it cannot see nor that the project deploys from
+// repo. A nil viewer sees no project.
+func sharedRepository(repo, other string, index *int, viewer *model.Viewer) *SettingsError {
+	refusal := &SettingsError{
 		Code:    CodeDeliveryRepositoryShared,
-		Message: fmt.Sprintf("%s is already a deploy source of project %s, which has delivery on; a repository is the deploy source of one project at most", repo, other),
+		Message: fmt.Sprintf("%s is already a deploy source of a project you cannot see, which has delivery on; a repository is the deploy source of one project at most", repo),
+		Field:   "repo",
 		Source:  index,
-		Project: other,
 	}
+	if viewer != nil && (viewer.All || slices.Contains(viewer.Sees, other)) {
+		refusal.Message = fmt.Sprintf("%s is already a deploy source of project %s, which has delivery on; a repository is the deploy source of one project at most", repo, other)
+		refusal.Project = other
+	}
+	return refusal
 }
 
-// PutProjectSettings saves input as its project's delivery settings in tx and answers the stored
-// settings. With delivery on, a github_workflow source that names no repository needs the project's
-// default repository (R2, DELIVERY_NO_DEFAULT_REPOSITORY), and no repository may be a source of
-// another delivery-on project (D1, DELIVERY_REPOSITORY_SHARED); the checks and the write run under
-// each repository's lock. Whatever the switch says, two github_workflow sources may not read one
-// repository (DELIVERY_SETTINGS_INPUT), and two that name none read one, the project's default
-// repository, whether the project has one or not. The save replaces the project's sources: a
-// source whose repository and rule are both unchanged keeps its row, its id and its bookkeeping;
-// every other source is written afresh, and its repository's reconcile progress is cleared, so the
-// next reconcile imports it from the start, as the singleton's save did.
-func PutProjectSettings(ctx context.Context, tx pgx.Tx, input ProjectSettingsInput, actor model.Actor) (ProjectSettings, error) {
-	input.Sources = slices.Clone(input.Sources)
-	for i, source := range input.Sources {
-		if source.Repo != nil {
-			input.Sources[i].Repo = new(strings.ToLower(strings.TrimSpace(*source.Repo)))
-		}
-	}
-	if err := ValidateProjectSettings(input); err != nil {
-		return ProjectSettings{}, err
-	}
-	if err := LockProject(ctx, tx, input.Project); err != nil {
-		return ProjectSettings{}, err
-	}
-	var defaultRepo *string
-	if err := tx.QueryRow(ctx, `select default_repo from projects where key = $1`, input.Project).Scan(&defaultRepo); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return ProjectSettings{}, ErrProjectNotFound
-		}
-		return ProjectSettings{}, fmt.Errorf("read the default repository of %s: %w", input.Project, err)
-	}
-	repos := make([]string, len(input.Sources))
+// checkSources holds sources, the deploy sources of stored's project as a write leaves them, each
+// that names no repository reading defaultRepo (SourceRepoOf), to the delivery rules, under the
+// lock of every repository they read and every repository stored's sources read
+// (LockRepositories), which it takes: a save of the settings (PutProjectSettings) and a move of the
+// project's default repository (MoveDefaultRepository) both check here, so R2's and D1's rules are
+// stated once. Whether delivery is on or off, two github_workflow sources may not read one
+// repository, and two that name none read one, defaultRepo, whether there is one or not: the
+// refusal of the second has the code duplicate, each caller's own, and names it and the project.
+// With delivery on (on), a github_workflow source that reads no repository is refused
+// DELIVERY_NO_DEFAULT_REPOSITORY, and one whose repository a source of another delivery-on
+// project reads (RepositoryOwner) DELIVERY_REPOSITORY_SHARED, naming that project where viewer
+// sees it (sharedRepository). It answers a refusal as a *SettingsError, and nil where the sources
+// keep the rules.
+func checkSources(ctx context.Context, tx pgx.Tx, stored ProjectSettings, on bool, sources []SourceRule, defaultRepo *string, duplicate string, viewer *model.Viewer) error {
+	project := stored.Project
+	repos := make([]string, len(sources))
 	var lock []string
 	// unnamed is the first github_workflow source that reads no repository, which a project with
 	// delivery off and no default repository keeps: a second is the same repository as far as the
 	// one-repository-per-source index is concerned (migration 20261123010254).
 	unnamed := -1
-	for i, source := range input.Sources {
-		repo, ok := SourceRepoOf(DeploySource{Kind: source.Kind, Repo: source.Repo}, defaultRepo)
+	for i, source := range sources {
 		if source.Kind != SourceKindGitHubWorkflow {
 			continue
 		}
+		repo, ok := SourceRepoOf(source, defaultRepo)
 		if !ok {
-			if input.Delivery {
-				return ProjectSettings{}, &SettingsError{
+			if on {
+				return &SettingsError{
 					Code:    CodeDeliveryNoDefaultRepository,
-					Message: fmt.Sprintf("source %d of project %s names no repository and the project has no default repository: name the source's repository, or set the project's default repository in Settings -> Projects", i, input.Project),
+					Message: fmt.Sprintf("source %d of project %s names no repository and the project has no default repository: name the source's repository, or set the project's default repository in Settings -> Projects", i, project),
 					Field:   "repo",
 					Source:  new(i),
 				}
 			}
 			if unnamed >= 0 {
-				return ProjectSettings{}, &SettingsError{
-					Code:    CodeDeliverySettingsInput,
-					Message: fmt.Sprintf("sources %d and %d both name no repository, so both read the project's default repository: a repository is one source of a project", unnamed, i),
+				return &SettingsError{
+					Code:    duplicate,
+					Message: fmt.Sprintf("sources %d and %d of project %s both name no repository, so both read the project's default repository: a repository is one source of a project", unnamed, i, project),
 					Field:   "repo",
 					Source:  new(i),
+					Project: project,
 				}
 			}
 			unnamed = i
@@ -558,46 +593,74 @@ func PutProjectSettings(ctx context.Context, tx pgx.Tx, input ProjectSettingsInp
 		}
 		for j := range i {
 			if repos[j] != "" && strings.EqualFold(repos[j], repo) {
-				return ProjectSettings{}, &SettingsError{
-					Code:    CodeDeliverySettingsInput,
-					Message: fmt.Sprintf("sources %d and %d both read %s: a repository is one source of a project", j, i, repo),
+				return &SettingsError{
+					Code:    duplicate,
+					Message: fmt.Sprintf("sources %d and %d of project %s both read %s: a repository is one source of a project", j, i, project, repo),
 					Field:   "repo",
 					Source:  new(i),
+					Project: project,
 				}
 			}
 		}
 		repos[i] = repo
 		lock = append(lock, repo)
 	}
-	previous, err := GetProjectSettings(ctx, tx, input.Project)
-	if err != nil && !errors.Is(err, ErrNoSettings) {
-		return ProjectSettings{}, err
-	}
-	for _, source := range previous.Sources {
-		if repo, ok := SourceRepoOf(source, defaultRepo); ok {
+	for _, source := range stored.Sources {
+		if repo, ok := SourceRepoOf(source.SourceRule, stored.DefaultRepo); ok {
 			lock = append(lock, repo)
 		}
 	}
 	if err := LockRepositories(ctx, tx, lock); err != nil {
-		return ProjectSettings{}, err
+		return err
 	}
-	if input.Delivery {
-		for i, repo := range repos {
-			if repo == "" {
-				continue
-			}
-			other, shared, err := RepositoryOwner(ctx, tx, repo, input.Project)
-			if err != nil {
-				return ProjectSettings{}, err
-			}
-			if shared {
-				return ProjectSettings{}, sharedRepository(repo, other, new(i))
-			}
+	if !on {
+		return nil
+	}
+	for i, repo := range repos {
+		if repo == "" {
+			continue
 		}
+		other, shared, err := RepositoryOwner(ctx, tx, repo, project)
+		if err != nil {
+			return err
+		}
+		if shared {
+			return sharedRepository(repo, other, new(i), viewer)
+		}
+	}
+	return nil
+}
+
+// PutProjectSettings saves input as its project's delivery settings in tx over stored, what the
+// project held as StoredSettings read it in tx under the project's lock (LockProject), which the
+// caller holds: a save reads the stored settings and the default repository once, and this reads
+// neither again. It answers a refusal or an error alone; a caller that shows the stored settings
+// reads them (GetProjectSettings). With delivery on, a github_workflow source that names no
+// repository needs the project's default repository (R2, DELIVERY_NO_DEFAULT_REPOSITORY), and no
+// repository may be a source of another delivery-on project (D1, DELIVERY_REPOSITORY_SHARED);
+// whatever the switch says, two github_workflow sources may not read one repository
+// (DELIVERY_SETTINGS_INPUT), and two that name none read one, the project's default repository,
+// whether the project has one or not. The checks (checkSources) run under each repository's lock,
+// before any write. The save replaces the project's sources: a source whose repository and rule
+// are both unchanged keeps its row, its id and its bookkeeping; every other source is written
+// afresh, and its repository's reconcile progress is cleared, so the next reconcile imports it
+// from the start, as the singleton's save did.
+func PutProjectSettings(ctx context.Context, tx pgx.Tx, input ProjectSettingsInput, stored ProjectSettings, actor model.Actor, viewer *model.Viewer) error {
+	input.Sources = slices.Clone(input.Sources)
+	for i, source := range input.Sources {
+		if source.Repo != nil {
+			input.Sources[i].Repo = new(strings.ToLower(strings.TrimSpace(*source.Repo)))
+		}
+	}
+	if err := ValidateProjectSettings(input); err != nil {
+		return err
+	}
+	if err := checkSources(ctx, tx, stored, input.Delivery, input.Sources, stored.DefaultRepo, CodeDeliverySettingsInput, viewer); err != nil {
+		return err
 	}
 	actorJSON, err := json.Marshal(actor)
 	if err != nil {
-		return ProjectSettings{}, fmt.Errorf("encode the delivery settings author: %w", err)
+		return fmt.Errorf("encode the delivery settings author: %w", err)
 	}
 	var since *string
 	if input.FailuresMeasuredSince != nil {
@@ -618,22 +681,74 @@ func PutProjectSettings(ctx context.Context, tx pgx.Tx, input ProjectSettingsInp
 			updated_at = now()
 	`, input.Project, input.Delivery, nonNil(input.PopulationAuthors), nonNil(input.ExcludedRepos),
 		nonNil(input.FailureSources), since, actorJSON); err != nil {
-		return ProjectSettings{}, fmt.Errorf("save the delivery settings of %s: %w", input.Project, err)
+		return fmt.Errorf("save the delivery settings of %s: %w", input.Project, err)
 	}
-	if err := replaceSources(ctx, tx, input, previous.Sources, defaultRepo); err != nil {
-		return ProjectSettings{}, err
-	}
-	return GetProjectSettings(ctx, tx, input.Project)
+	return replaceSources(ctx, tx, input, stored.Sources, stored.DefaultRepo)
 }
 
-// sameRule is whether a stored source and an input name one repository and one rule, so the save
-// keeps the stored row and its bookkeeping.
+// MoveDefaultRepository holds a write of project's default repository to next (nil: a clear) to
+// the delivery rules (D1), in tx, which holds the project's owner lock and has not yet written the
+// row, and answers the refusal (*SettingsError) where the move would break one. It applies to a
+// delivery-on project holding a github_workflow source that names no repository, which reads the
+// default; every other project moves its default freely, a project whose every source names its
+// own repository among them. It takes the project's delivery lock first (LockProject), so it reads
+// the sources a save of the project wrote. It refuses a clear, DELIVERY_NEEDS_REPOSITORY, since the
+// source would read no repository, and holds the project's sources under next to the save's rules
+// (checkSources, under the lock of every repository they read under the old default and the new,
+// taken after the project's lock as the save takes them), where another source of the project that
+// names next is refused DELIVERY_REPOSITORY_SHARED. A move it lets through clears the reconcile
+// progress of the old and the new repository (ClearRepositoryProgress), as a save that changes a
+// source's repository does, so the next reconcile imports the new one's runs from the start; no
+// other delivery-on project's source reads either. An unknown project, a project with no settings,
+// and a write of the value the row holds are none of its business, and it answers nil.
+func MoveDefaultRepository(ctx context.Context, tx pgx.Tx, project string, next *string, viewer *model.Viewer) error {
+	if err := LockProject(ctx, tx, project); err != nil {
+		return err
+	}
+	settings, err := GetProjectSettings(ctx, tx, project)
+	if errors.Is(err, ErrNoSettings) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	current := settings.DefaultRepo
+	if !settings.Delivery || ((current == nil) == (next == nil) && deref(current) == deref(next)) {
+		return nil
+	}
+	defaulting := slices.IndexFunc(settings.Sources, func(source DeploySource) bool {
+		return source.Kind == SourceKindGitHubWorkflow && source.Repo == nil
+	})
+	if defaulting < 0 {
+		return nil
+	}
+	if next == nil {
+		return &SettingsError{
+			Code: CodeDeliveryNeedsRepository, Field: "repo", Source: new(defaulting), Project: project,
+			Message: fmt.Sprintf("project %s has delivery on and its source %d names no repository, so it reads the default repository: name the source's repository in the project's delivery settings, or turn delivery off, before clearing the default", project, defaulting),
+		}
+	}
+	rules := make([]SourceRule, len(settings.Sources))
+	for i, source := range settings.Sources {
+		rules[i] = source.SourceRule
+	}
+	if err := checkSources(ctx, tx, settings, true, rules, next, CodeDeliveryRepositoryShared, viewer); err != nil {
+		return err
+	}
+	moved := []string{*next}
+	if current != nil {
+		moved = append(moved, *current)
+	}
+	return ClearRepositoryProgress(ctx, tx, moved)
+}
+
+// sameRule is whether a stored source and an input are one rule, every field of SourceRule equal,
+// so the save keeps the stored row and its bookkeeping. reflect.DeepEqual compares a nil slice with
+// an empty one as two values, which no stored rule and no input of a save differ by: the table
+// holds a github_workflow source's production jobs as one name or more and an events source's as
+// null, and ValidateProjectSettings refuses an input of any other shape.
 func sameRule(stored DeploySource, input SourceInput) bool {
-	eq := func(a, b *string) bool { return deref(a) == deref(b) && (a == nil) == (b == nil) }
-	return stored.Kind == input.Kind && eq(stored.Repo, input.Repo) && eq(stored.DeployWorkflowPath, input.DeployWorkflowPath) &&
-		slices.Equal(stored.ProductionJobNames, input.ProductionJobNames) && eq(stored.ProductionApplyStepName, input.ProductionApplyStepName) &&
-		eq(stored.StagingE2EJobName, input.StagingE2EJobName) && eq(stored.StagingApplyJobName, input.StagingApplyJobName) &&
-		eq(stored.PRChecksWorkflowPath, input.PRChecksWorkflowPath) && eq(stored.PRChecksRollupJobName, input.PRChecksRollupJobName)
+	return reflect.DeepEqual(stored.SourceRule, input)
 }
 
 // replaceSources makes the project's sources input's, in its order: a stored source with the same
@@ -659,7 +774,7 @@ func replaceSources(ctx context.Context, tx pgx.Tx, input ProjectSettingsInput, 
 		if _, err := tx.Exec(ctx, `delete from project_deploy_sources where id = $1`, old.ID); err != nil {
 			return fmt.Errorf("delete a deploy source of %s: %w", input.Project, err)
 		}
-		if repo, ok := SourceRepoOf(old, defaultRepo); ok {
+		if repo, ok := SourceRepoOf(old.SourceRule, defaultRepo); ok {
 			moved = append(moved, repo)
 		}
 	}
@@ -717,7 +832,7 @@ func replaceSources(ctx context.Context, tx pgx.Tx, input ProjectSettingsInput, 
 			source.PRChecksWorkflowPath, source.PRChecksRollupJobName); err != nil {
 			return fmt.Errorf("save a deploy source of %s: %w", input.Project, err)
 		}
-		if repo, ok := SourceRepoOf(DeploySource{Kind: source.Kind, Repo: source.Repo}, defaultRepo); ok {
+		if repo, ok := SourceRepoOf(source, defaultRepo); ok {
 			moved = append(moved, repo)
 		}
 	}

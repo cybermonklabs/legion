@@ -206,7 +206,11 @@ const ChangesChannel = "delivery_changes"
 //     while it waits for the lock the save holds, so the line takes both tables' own locks first,
 //     before any row lock, in share row exclusive mode (store's deliverySettingsLock): it waits for
 //     each running save, which holds project_delivery_settings' row exclusive lock from its first
-//     write on, and a later save waits for the line before that write.
+//     write on, and a later save waits for the line before that write. The line of
+//     projects.default_repo takes the lock of each pair's old and new name before those (store's
+//     LockDeployRepository, as LockRepositories takes it), as a save takes its repositories'
+//     before its writes, so it waits for a save that reads either name and a later such save waits
+//     for it.
 //   - Last, in the statement that ends its transaction: the issue.deployed write
 //     (recordDeployedEvent), which appends the event and then marks its pull request's row, in
 //     the update that locks the row.
@@ -229,9 +233,13 @@ const ChangesChannel = "delivery_changes"
 // first, for the rest of its transaction, so those transactions are short and do their reads
 // before it.
 //
-// No eval, refresher, Legion facts or production event write takes it: their changes wait in the
-// outbox (delivery_changes_pending, migration 20261117100001), and the drain moves them into the
-// log in a short transaction of its own after they commit. The production event writers
+// No refresher, Legion facts or production event write takes it, and no eval write but one: their
+// changes wait in the outbox (delivery_changes_pending, migration 20261117100001), and the drain
+// moves them into the log in a short transaction of its own after they commit. The one is the
+// delivery settings save, an eval write (evals.Store.RegisterWith, api's settingsSave.write) whose
+// settings tables' triggers take this lock at the first write that moves a logged column
+// (delivery_change_log, migration 20261123010254) and hold it to the save's commit; its target
+// writes' changes wait in the outbox as every eval write's do. The production event writers
 // (dispatch://INFRA-978) write in transactions of their own that take no lock: the GitHub adapter
 // (prodevents/signals) reads the change a run, job or pull request write logged, once that write
 // has committed, and only then writes the deploy row, and the signals and the record's routes write

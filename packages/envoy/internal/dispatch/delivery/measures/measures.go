@@ -115,20 +115,20 @@ type DeployRunSuccess struct {
 }
 
 // Result is every number the measures panel and GET /api/v1/delivery/measures show for one window
-// and population. The three failure measures are the folds of their evals' stored day parts
-// (FailureParts), one fold per measure, so the answer and the eval read of the same parts agree:
-// each is null where no part was folded, "no data" as the eval reads it. 0 is a measured value
-// and never a stand-in for one, so a rate nothing measured reads no value rather than a 0 a target
-// would judge met.
+// and population, which the API writes through a projection of its own (api's deliveryMeasuresOf).
+// The three failure measures are the folds of their evals' stored day parts (FailureParts), one
+// fold per measure, so the answer and the eval read of the same parts agree: each is nil where no
+// part was folded, "no data" as the eval reads it. 0 is a measured value and never a stand-in for
+// one, so a rate nothing measured reads no value rather than a 0 a target would judge met.
 type Result struct {
-	DeployFrequency      DeployFrequency  `json:"deploy_frequency"`
-	LeadTime             LeadTime         `json:"lead_time"`
-	ChangeFailureRate    *ChangeFailRate  `json:"change_failure_rate"`    // FoldChangeFailRate
-	TimeToRestore        *Recovery        `json:"time_to_restore"`        // FoldRecovery
-	DeploymentReworkRate *ReworkRate      `json:"deployment_rework_rate"` // FoldReworkRate
-	ReworkShare          float64          `json:"rework_share"`
-	DeployRunSuccess     DeployRunSuccess `json:"deploy_run_success"`
-	Daily                []DailyPoint     `json:"daily"`
+	DeployFrequency          DeployFrequency
+	LeadTime                 LeadTime
+	ChangeFailureRate        *ChangeFailRate // FoldChangeFailRate
+	FailedDeploymentRecovery *Recovery       // FoldRecovery
+	DeploymentReworkRate     *ReworkRate     // FoldReworkRate
+	ReworkShare              float64
+	DeployRunSuccess         DeployRunSuccess
+	Daily                    []DailyPoint
 }
 
 // Target is one measure's target as the eval that states it holds it: its value, whether the value
@@ -529,9 +529,9 @@ func Compute(prs []PR, runs []Run, failures FailureParts, window Window) Result 
 			OpenedToProduction:      spread(openedToProduction),
 			OpenedToMerge:           spread(openedToMerge),
 		},
-		ChangeFailureRate:    FoldChangeFailRate(failures.ChangeFail),
-		TimeToRestore:        FoldRecovery(failures.Recovery),
-		DeploymentReworkRate: FoldReworkRate(failures.Rework),
+		ChangeFailureRate:        FoldChangeFailRate(failures.ChangeFail),
+		FailedDeploymentRecovery: FoldRecovery(failures.Recovery),
+		DeploymentReworkRate:     FoldReworkRate(failures.Rework),
 		// The panel's share reads 0 for a window with no pull request (dora.ts:215).
 		ReworkShare:      ValueOrZero(FoldReworkShare(rework)),
 		DeployRunSuccess: *FoldDeployRunSuccess(success),

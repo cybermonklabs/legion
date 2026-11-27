@@ -654,15 +654,15 @@ func deliverySettingsOf(deployRepo string) delivery.DeliverySettings {
 }
 
 // PutDeliverySettings saves settings as project's delivery settings (project_delivery_settings and
-// project_deploy_sources, through delivery.PutProjectSettings in a transaction of its own):
-// delivery on, settings' population rule, and one github_workflow source holding settings' rule,
-// which names no repository where settings.DeployRepo is the project's default repository, so it
-// reads that default and moves with it, and names settings.DeployRepo otherwise. The project's row
-// exists first.
+// project_deploy_sources, through SaveSettings): delivery on, settings' population rule, and one
+// github_workflow source holding settings' rule, which names no repository where
+// settings.DeployRepo is the project's default repository (delivery.DefaultRepo), so it reads that
+// default and moves with it, and names settings.DeployRepo otherwise. The project's row exists
+// first.
 func PutDeliverySettings(ctx context.Context, pool *store.Pool, project string, settings delivery.DeliverySettings, by model.Actor) (delivery.ProjectSettings, error) {
-	var defaultRepo *string
-	if err := pool.QueryRow(ctx, `select default_repo from projects where key = $1`, project).Scan(&defaultRepo); err != nil {
-		return delivery.ProjectSettings{}, fmt.Errorf("read the default repository of %s: %w", project, err)
+	defaultRepo, err := delivery.DefaultRepo(ctx, pool, project)
+	if err != nil {
+		return delivery.ProjectSettings{}, err
 	}
 	var repo *string
 	if defaultRepo == nil || !strings.EqualFold(*defaultRepo, settings.DeployRepo) {
@@ -674,21 +674,13 @@ func PutDeliverySettings(ctx context.Context, pool *store.Pool, project string, 
 	}, by)
 }
 
-// SaveSettings saves input through delivery.PutProjectSettings in a transaction of its own, as the
-// settings route does, and drains the change rows it logged after the commit. The fixture's modes
-// and evalbench's k14 projects save their settings through it.
+// SaveSettings saves input in a transaction of its own, as the settings route does
+// (deliveryseed.SaveSettings), and drains the change rows it logged after the commit. The
+// fixture's modes and evalbench's k14 projects save their settings through it.
 func SaveSettings(ctx context.Context, pool *store.Pool, input delivery.ProjectSettingsInput, by model.Actor) (delivery.ProjectSettings, error) {
-	tx, err := pool.Begin(ctx)
-	if err != nil {
-		return delivery.ProjectSettings{}, fmt.Errorf("begin the delivery settings of %s: %w", input.Project, err)
-	}
-	defer tx.Rollback(ctx)
-	saved, err := delivery.PutProjectSettings(ctx, tx, input, by)
+	saved, err := deliveryseed.SaveSettings(ctx, pool, input, by)
 	if err != nil {
 		return delivery.ProjectSettings{}, fmt.Errorf("save the delivery settings of %s: %w", input.Project, err)
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return delivery.ProjectSettings{}, fmt.Errorf("commit the delivery settings of %s: %w", input.Project, err)
 	}
 	delivery.DrainAfterCommit(ctx, pool, "drain the change rows of the fixture's delivery settings")
 	return saved, nil

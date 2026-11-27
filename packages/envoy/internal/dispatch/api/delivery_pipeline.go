@@ -51,9 +51,9 @@ type deliveryPipelineStatus struct {
 // timing, its slowest jobs and the jobs that failed in the last 24 hours, both lists never null,
 // and the timed results over the shown days a job needed to be ranked among the slowest: the
 // min_n of pr-ci's job series in the project whose deploy sources read every source repository
-// (deliveryEvals), or measures.SlowestMinResults where two or more projects own them, none is
-// read, or that project holds no pr-ci eval yet (evals.PipelineMinN), and 1 where that min_n is
-// null, no minimum, since a job needs a timed result to have a median to rank by
+// (evals.Store.DeployRepoEvals), or measures.SlowestMinResults where two or more projects own
+// them, none is read, or that project holds no pr-ci eval yet (evals.PipelineMinN), and 1 where
+// that min_n is null, no minimum, since a job needs a timed result to have a median to rank by
 // (measures.FoldSlowestJobs); so the page says what it ranked by.
 type deliveryPipelinePRChecks struct {
 	Run               measures.Timing       `json:"run"`
@@ -120,9 +120,9 @@ func parsePipelineAt(query url.Values, fallback time.Time) (time.Time, error) {
 // pipelinePopulation is every read the Pipeline page's answer for one `at` makes: every source
 // repository's PR-checks pull_request runs and deploy push runs on main started in the shown days,
 // each with its jobs and carrying its repository, the population pull requests merged in them
-// (their lead times), and the evals of evals.PipelineSlugs the answer judges by (deliveryEvals):
-// the targets the page states and its lead-time cards are judged by, and pr-ci, whose job series'
-// min_n its slowest jobs are ranked by (evals.PipelineMinN).
+// (their lead times), and the evals of evals.PipelineSlugs the answer judges by
+// (evals.Store.DeployRepoEvals): the targets the page states and its lead-time cards are judged
+// by, and pr-ci, whose job series' min_n its slowest jobs are ranked by (evals.PipelineMinN).
 type pipelinePopulation struct {
 	checks, deploys delivery.RunsWithJobs
 	leadTimes       deliveryPopulation
@@ -150,7 +150,7 @@ func (s *server) readPipelinePopulation(ctx context.Context, rules *delivery.Sou
 			return err
 		},
 		func(ctx context.Context) (err error) {
-			pop.deployRepoEvals, err = s.deliveryEvals(ctx, evals.PipelineSlugs)
+			pop.deployRepoEvals, err = s.registry().DeployRepoEvals(ctx, evals.PipelineSlugs)
 			return err
 		},
 	}
@@ -196,26 +196,6 @@ func pipelineDeploys(rules *delivery.SourceRules, deploys delivery.RunsWithJobs)
 	return bySource
 }
 
-// pipelineJobsBesideRollups is the jobs of each PR-checks run that completed in the failing jobs'
-// window up to at (measures.InFailingWindow, the runs whose jobs measures.FailingJobs reads) but
-// the roll-up job its repository's rule names (PRChecksRollupJobName), which the failing-jobs table
-// leaves out: every repository names its own.
-func pipelineJobsBesideRollups(rules *delivery.SourceRules, checks delivery.RunsWithJobs, at time.Time) map[int64][]delivery.DeliveryRunJob {
-	jobs := map[int64][]delivery.DeliveryRunJob{}
-	for _, run := range checks.Runs {
-		runJobs, held := checks.Jobs[run.RunID]
-		if !held || !measures.InFailingWindow(run, at) {
-			continue
-		}
-		if rule, ok := rules.For(run.Repo); ok && rule.PRChecksRollupJobName != nil {
-			rollup := *rule.PRChecksRollupJobName
-			runJobs = slices.DeleteFunc(slices.Clone(runJobs), func(job delivery.DeliveryRunJob) bool { return job.Name == rollup })
-		}
-		jobs[run.RunID] = runJobs
-	}
-	return jobs
-}
-
 // deliveryPipelineCompute is GET /api/v1/delivery/pipeline's body as of at, from a population read
 // for at or narrowed to it, each source repository's runs judged by its own rule of rules. It reads
 // nothing; now is only computed_at. The PR checks, the deploy cards and the lead times build each
@@ -224,18 +204,22 @@ func pipelineJobsBesideRollups(rules *delivery.SourceRules, checks delivery.Runs
 // pr-ci's min_n through the ranking pr-ci's items sorted by median read (measures.FoldSlowestJobs),
 // and each lead-time card judged by its eval's target over the shown days' figures
 // (deliveryVerdict); the failing-jobs table is read from the run jobs themselves, each run's
-// without its repository's roll-up job (measures.FailingJobs, pipelineJobsBesideRollups). A card
-// no source's rule names is null, and the production deploy card, which every github_workflow
-// source names, is empty where no source reads a repository.
+// without the roll-up job its repository's rule names (measures.FailingJobs). A card no source's
+// rule names is null, and the production deploy card, which every github_workflow source names, is
+// empty where no source reads a repository.
 func deliveryPipelineCompute(rules *delivery.SourceRules, pop pipelinePopulation, at, now time.Time) deliveryPipelineResponse {
 	days := measures.ShownDays(at)
 	minN := evals.PipelineMinN(pop.deployRepoEvals[evals.SlugPRCI])
 	run, slowest := measures.PRChecksTimings(pop.checks.Runs, pop.checks.Jobs, days, minN)
-	failing := measures.FailingJobs(pop.checks.Runs, pipelineJobsBesideRollups(rules, pop.checks, at), at, "")
+	rollupOf := func(repo string) string {
+		rule, _ := rules.For(repo)
+		return deref(rule.PRChecksRollupJobName)
+	}
+	failing := measures.FailingJobs(pop.checks.Runs, pop.checks.Jobs, at, rollupOf)
 	timings := measures.DeployJobsOf(pipelineDeploys(rules, pop.deploys), days)
 	production, named := timings[measures.CardProductionApply]
 	if !named {
-		production = measures.DeployJobs(nil, nil, []measures.DeployJobCard{{CardID: measures.CardProductionApply}}, days)[measures.CardProductionApply]
+		production = measures.DeployJobsOf([]measures.SourceDeployRuns{{Cards: []measures.DeployJobCard{{CardID: measures.CardProductionApply}}}}, days)[measures.CardProductionApply]
 	}
 	stagingE2E := optionalDeployJobTiming(timings, measures.CardStagingE2E)
 	stagingApply := optionalDeployJobTiming(timings, measures.CardStagingApply)

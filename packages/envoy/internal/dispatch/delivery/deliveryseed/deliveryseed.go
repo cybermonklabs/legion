@@ -786,9 +786,9 @@ func (s *seeding) write(ctx context.Context, pool *store.Pool) error {
 // The project must exist. Two projects saved with a rule each give two repositories two rules (a
 // repository is the source of one delivery-on project at most, delivery.PutProjectSettings).
 func SaveRules(ctx context.Context, pool *store.Pool, project string, rules ...delivery.DeliverySettings) (delivery.ProjectSettings, error) {
-	var defaultRepo *string
-	if err := pool.QueryRow(ctx, `select default_repo from projects where key = $1`, project).Scan(&defaultRepo); err != nil {
-		return delivery.ProjectSettings{}, fmt.Errorf("read the default repository of %s: %w", project, err)
+	defaultRepo, err := delivery.DefaultRepo(ctx, pool, project)
+	if err != nil {
+		return delivery.ProjectSettings{}, err
 	}
 	input := delivery.ProjectSettingsInput{Project: project, Delivery: true}
 	if len(rules) > 0 {
@@ -815,15 +815,28 @@ func SourceOf(rule delivery.DeliverySettings, repo *string) delivery.SourceInput
 	}
 }
 
-// SaveSettings saves input as its project's delivery settings, as actor, through
-// delivery.PutProjectSettings in a transaction of its own, and answers what it stored.
+// SaveSettings saves input as its project's delivery settings, as actor, in a transaction of its
+// own, as the settings route saves them: under the project's lock (delivery.LockProject), over the
+// settings that lock holds (delivery.StoredSettings), through delivery.PutProjectSettings, whose
+// refusal names every project, as the server's own viewer sees them (model.ServerViewer). It
+// answers what it stored.
 func SaveSettings(ctx context.Context, pool *store.Pool, input delivery.ProjectSettingsInput, actor model.Actor) (delivery.ProjectSettings, error) {
 	tx, err := pool.Begin(ctx)
 	if err != nil {
 		return delivery.ProjectSettings{}, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	saved, err := delivery.PutProjectSettings(ctx, tx, input, actor)
+	if err := delivery.LockProject(ctx, tx, input.Project); err != nil {
+		return delivery.ProjectSettings{}, err
+	}
+	stored, err := delivery.StoredSettings(ctx, tx, input.Project)
+	if err != nil {
+		return delivery.ProjectSettings{}, err
+	}
+	if err := delivery.PutProjectSettings(ctx, tx, input, stored, actor, model.ServerViewer); err != nil {
+		return delivery.ProjectSettings{}, err
+	}
+	saved, err := delivery.GetProjectSettings(ctx, tx, input.Project)
 	if err != nil {
 		return delivery.ProjectSettings{}, err
 	}

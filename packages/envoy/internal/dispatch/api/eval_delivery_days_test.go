@@ -293,12 +293,12 @@ func foldedMeasures(parts map[string][]measures.DayPart, window measures.Window)
 			OpenedToProduction:      leadSpread(parts[evals.SlugOpenToProduction]),
 			OpenedToMerge:           leadSpread(parts[evals.SlugPROpenToMerge]),
 		},
-		ChangeFailureRate:    measures.FoldChangeFailRate(parts[evals.SlugChangeFailRate]),
-		TimeToRestore:        measures.FoldRecovery(parts[evals.SlugFailedDeployRecovery]),
-		DeploymentReworkRate: measures.FoldReworkRate(parts[evals.SlugDeploymentReworkRate]),
-		ReworkShare:          *share,
-		DeployRunSuccess:     *success,
-		Daily:                measures.DailySeries(parts[evals.SlugDeployFrequency], parts[evals.SlugDeployRunSuccess], window),
+		ChangeFailureRate:        measures.FoldChangeFailRate(parts[evals.SlugChangeFailRate]),
+		FailedDeploymentRecovery: measures.FoldRecovery(parts[evals.SlugFailedDeployRecovery]),
+		DeploymentReworkRate:     measures.FoldReworkRate(parts[evals.SlugDeploymentReworkRate]),
+		ReworkShare:              *share,
+		DeployRunSuccess:         *success,
+		Daily:                    measures.DailySeries(parts[evals.SlugDeployFrequency], parts[evals.SlugDeployRunSuccess], window),
 	}, ""
 }
 
@@ -497,14 +497,14 @@ func compareDayRowsWithRoutes(t *testing.T, handler http.Handler, registry *eval
 			differ("%s: %s", repo, missing)
 			continue
 		}
-		tree := oracleTree(t, folded)
+		tree := oracleTree(t, deliveryMeasuresOf(folded))
 		compare("the lead times of "+repo, subtree(tree, "lead_time"), subtree(faceted, "measures.lead_time"))
 		compare("the rework share of "+repo, subtree(tree, "rework_share"), subtree(faceted, "measures.rework_share"))
 		if repo != fixture.DeployRepo {
 			continue
 		}
 		for _, field := range []string{"deploy_frequency", "deploy_run_success", "daily"} {
-			compare("the "+field+" of "+repo, subtree(oracleTree(t, folded), field), subtree(wholeMeasures, "measures."+field))
+			compare("the "+field+" of "+repo, subtree(tree, field), subtree(wholeMeasures, "measures."+field))
 		}
 		cutPipeline := subtree(oracleTree(t, foldedPipeline(read([]string{repo}, pipelineSpan), jobParts(fixture.Project, stored, repo, pipelineSpan.From, pipelineSpan.To), settings, pipelineDays, minN, pipelineEvals)), "", pipelineDropped...)
 		for _, field := range []string{"pr_checks", "staging_e2e", "staging_apply", "production_apply"} {

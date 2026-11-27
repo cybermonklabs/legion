@@ -115,7 +115,7 @@ type deliveryRetiredTimeToRestore struct {
 func deliveryMeasuresOf(result measures.Result) deliveryMeasures {
 	written := deliveryMeasures{
 		DeployFrequency: result.DeployFrequency, LeadTime: result.LeadTime,
-		FailedDeploymentRecovery: result.TimeToRestore, DeploymentReworkRate: result.DeploymentReworkRate,
+		FailedDeploymentRecovery: result.FailedDeploymentRecovery, DeploymentReworkRate: result.DeploymentReworkRate,
 		ReworkShare: result.ReworkShare, DeployRunSuccess: result.DeployRunSuccess, Daily: result.Daily,
 	}
 	if rate := result.ChangeFailureRate; rate != nil {

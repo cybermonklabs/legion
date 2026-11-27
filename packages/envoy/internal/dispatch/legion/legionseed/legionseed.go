@@ -770,15 +770,8 @@ func (s *seeding) waiting(issue, kind string, since, answered time.Time) {
 // last_seq + 1, and events_issue_key_seq_key holds one event to each, so an issue left at 0 beside
 // events 1..n would refuse the next write the API makes to it.
 //
-// The events are dated in the history's past. A keyword fill serving the database, as a kit's
-// server does when evalfixture loads into it, may have stored a reach above those dates, which
-// says that every event up to it has its keyword rows. Its batches would then log each of these
-// events as a breach of that reach. So where the database has the fill's cursor table (this
-// head's schema; the base head's lacks it), the events statement also nulls the stored reach. The
-// table's migration (20261120021308) names only a reset of the event log as lowering the reach; a
-// seed of events dated in the past is a second case. The reach is nulled in the same statement as
-// the insert, and so in the same transaction, so no fill batch can store a reach between the two.
-// The fill computes the reach again once the events are committed.
+// The events are dated in the history's past, so their statement is eventsInsert's, which says
+// what it does to a keyword fill serving the database.
 func (s *seeding) write(ctx context.Context, pool *store.Pool) error {
 	exec := func(what, statement string, args ...any) error {
 		if _, err := pool.Exec(ctx, statement, args...); err != nil {
@@ -820,18 +813,9 @@ func (s *seeding) write(ctx context.Context, pool *store.Pool) error {
 			return err
 		}
 	}
-	events := `
-		insert into events (issue_key, seq, type, actor, payload, notify, created_at)
-		select issue, seq, kind, actor::jsonb, payload::jsonb, false, at
-		from unnest($1::text[], $2::int[], $3::text[], $4::text[], $5::text[], $6::timestamptz[])
-			as seeded(issue, seq, kind, actor, payload, at)`
-	var keywordFill bool
-	if err := pool.QueryRow(ctx, `select to_regclass('public.search_text_versions_fill') is not null`).Scan(&keywordFill); err != nil {
-		return fmt.Errorf("read whether the database has a keyword fill: %w", err)
-	}
-	if keywordFill {
-		events = `
-		with reset as (update public.search_text_versions_fill set reach = null where id = 1)` + events
+	events, err := eventsInsert(ctx, pool)
+	if err != nil {
+		return err
 	}
 	if err := exec("events", events, s.rows.eventIssues, s.rows.eventSeqs, s.rows.eventTypes, s.rows.eventActors,
 		s.rows.eventPayloads, s.rows.eventAt); err != nil {
@@ -863,6 +847,42 @@ func (s *seeding) write(ctx context.Context, pool *store.Pool) error {
 	})
 }
 
+// rowReader is what eventsInsert reads through: a pool or a transaction.
+type rowReader interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
+
+// eventsInsert is the statement both writers of seeded events run (seeding.write and
+// WriteIssueEvents): it inserts one event, unnotified, for each element of its six arrays, $1 the
+// issue keys, $2 the sequences, $3 the types, $4 the actors and $5 the payloads as JSON text, and
+// $6 the times. It reads through q whether the database has the keyword fill's cursor table.
+//
+// The events are dated in the history's past. A keyword fill serving the database, as a kit's
+// server does when evalfixture loads into it, may have stored a reach above those dates, which
+// says that every event up to it has its keyword rows. Its batches would then log each of these
+// events as a breach of that reach. So where the database has the fill's cursor table (this
+// head's schema; the base head's lacks it), the statement also nulls the stored reach. The
+// table's migration (20261120021308) names only a reset of the event log as lowering the reach; a
+// seed of events dated in the past is a second case. The reach is nulled in the same statement as
+// the insert, and so in the same transaction, so no fill batch can store a reach between the two.
+// The fill computes the reach again once the events are committed.
+func eventsInsert(ctx context.Context, q rowReader) (string, error) {
+	statement := `
+		insert into events (issue_key, seq, type, actor, payload, notify, created_at)
+		select issue, seq, kind, actor::jsonb, payload::jsonb, false, at
+		from unnest($1::text[], $2::int[], $3::text[], $4::text[], $5::text[], $6::timestamptz[])
+			as seeded(issue, seq, kind, actor, payload, at)`
+	var keywordFill bool
+	if err := q.QueryRow(ctx, `select to_regclass('public.search_text_versions_fill') is not null`).Scan(&keywordFill); err != nil {
+		return "", fmt.Errorf("read whether the database has a keyword fill: %w", err)
+	}
+	if keywordFill {
+		statement = `
+		with reset as (update public.search_text_versions_fill set reach = null where id = 1)` + statement
+	}
+	return statement, nil
+}
+
 // SeededIssueEvent is one backdated issue event WriteIssueEvents stores for a fixture issue.
 type SeededIssueEvent struct {
 	Type    string
@@ -871,13 +891,14 @@ type SeededIssueEvent struct {
 	At      time.Time
 }
 
-// WriteIssueEvents inserts events for issueKey in tx with sequences 1..len(events) and settles the
-// issue's last_seq. The events are dated in the fixture's past, so where keywordFill is true the
-// insert nulls the keyword fill's stored reach in the same statement (as seeding.write does).
-func WriteIssueEvents(ctx context.Context, tx pgx.Tx, issueKey string, events []SeededIssueEvent, keywordFill bool) error {
+// WriteIssueEvents inserts events for issueKey in tx with sequences 1..len(events), through the
+// statement seeding.write runs (eventsInsert, which nulls a keyword fill's stored reach as it
+// says), and settles the issue's last_seq.
+func WriteIssueEvents(ctx context.Context, tx pgx.Tx, issueKey string, events []SeededIssueEvent) error {
 	if len(events) == 0 {
 		return nil
 	}
+	issues := make([]string, len(events))
 	seqs := make([]int32, len(events))
 	kinds := make([]string, len(events))
 	actors := make([]string, len(events))
@@ -892,21 +913,18 @@ func WriteIssueEvents(ctx context.Context, tx pgx.Tx, issueKey string, events []
 		if err != nil {
 			return fmt.Errorf("encode the payload of %s event %d: %w", issueKey, i+1, err)
 		}
+		issues[i] = issueKey
 		seqs[i] = int32(i + 1)
 		kinds[i] = event.Type
 		actors[i] = string(actorJSON)
 		payloads[i] = string(payloadJSON)
 		times[i] = event.At
 	}
-	statement := `
-		insert into events (issue_key, seq, type, actor, payload, notify, created_at)
-		select $1, seq, kind, actor::jsonb, payload::jsonb, false, at
-		from unnest($2::int[], $3::text[], $4::text[], $5::text[], $6::timestamptz[]) as seeded(seq, kind, actor, payload, at)`
-	if keywordFill {
-		statement = `
-		with reset as (update public.search_text_versions_fill set reach = null where id = 1)` + statement
+	statement, err := eventsInsert(ctx, tx)
+	if err != nil {
+		return err
 	}
-	if _, err := tx.Exec(ctx, statement, issueKey, seqs, kinds, actors, payloads, times); err != nil {
+	if _, err := tx.Exec(ctx, statement, issues, seqs, kinds, actors, payloads, times); err != nil {
 		return fmt.Errorf("write the events of %s: %w", issueKey, err)
 	}
 	if _, err := tx.Exec(ctx, `update issues set last_seq = $2 where key = $1`, issueKey, len(events)); err != nil {

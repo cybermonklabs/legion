@@ -48,7 +48,8 @@ They are:
 
 A repository is the deploy source of one delivery-on project at most, and of one source of that project, so each repository has one rule and one owner.
 The save checks this under a lock of each repository involved, taken in name order, so two saves cannot both take one repository.
-A move of the default repository of a delivery-on project whose `github_workflow` source names no repository, and so reads the default, is held to the same rule: `PUT /api/v1/projects/{key}/default-repository` refuses a move onto a repository that another delivery-on project's source reads or that another source of the project names (`409 DELIVERY_REPOSITORY_SHARED`), and refuses to clear it (`409 DELIVERY_NEEDS_REPOSITORY`).
+A move of the default repository of a delivery-on project whose `github_workflow` source names no repository, and so reads the default, is held to the same rule, checked by the same code as a save: `PUT /api/v1/projects/{key}/default-repository` refuses a move onto a repository that another delivery-on project's source reads or that another source of the project names (`409 DELIVERY_REPOSITORY_SHARED`), and refuses to clear it (`409 DELIVERY_NEEDS_REPOSITORY`).
+Its refusal body is the save's, `{code, error, field?, source?, project?}`, and names the project that reads the repository as the save's `409 DELIVERY_REPOSITORY_SHARED` does, below.
 Any other project moves its default repository freely.
 
 A save that names `sources` replaces the project's sources with that list, and a save that leaves `sources` out keeps them.
@@ -64,11 +65,14 @@ A reader that wants a source's numbers after a save waits until its `reconciled_
 `delivery` is never empty, so a save that sends it as `null` is refused rather than read as `false`; send `false` to turn delivery off.
 `PUT` answers the settings as `GET` does.
 The settings belong to the deployment rather than to one project, so a credential the broker scoped to one project is refused `403 PROJECT_SCOPE_DEPLOYMENT`, the project its path names included.
-A person saves them, and so does an agent token that no broker scoped to a project; a broker token that acts for a service and no person is refused `403 SIGN_IN_REQUIRED`, as it is refused every write.
+A person saves them, and so does an agent token that no broker scoped to a project.
+A broker token that acts for a service and no person saves them as that service under the project scope `public`, which a job's token carries, and under `named` where it names no project, as an exchange account entry's token does; a job's `named` token names its one project, so it is refused as above.
+Under any other project scope such a token is refused `403 SIGN_IN_REQUIRED`, as it is refused every write.
 A refused save writes nothing, and its body is `{code, error, field?, source?, project?}`:
 
 - `400 DELIVERY_SETTINGS_INPUT`: a field no reader could read, named in `field`, with the source's index in `source` for a field of a source.
   Delivery on with no source, `delivery` sent as `null`, more than 50 sources, a kind that is neither `github_workflow` nor `events`, a `github_workflow` source with no deploy workflow, no production job, an empty production job name, a production job named twice or no pull-request checks workflow, a repository that is not `owner/name`, a second `events` source or one that names a repository or a workflow field, two sources that read one repository, a blank population author, an excluded repository that is not `owner/name`, a failure source that is not one of the four or is named twice, a failure source with no `failures_measured_since` or a day that is not `YYYY-MM-DD`, and a target of another eval, of an eval the project does not hold, that is neither a number nor `"off"` (`null` included), or that lies outside the range its eval's unit holds (named `targets.<slug>`) are each refused this way.
+  The refusal of two sources that read one repository names the second source in `source` and this project in `project`.
 
 - `409 DELIVERY_SETTINGS_ACCESS`: with delivery on, a `github_workflow` source whose repository Dispatch's GitHub App cannot read, named in `source`.
   Dispatch asks GitHub before it writes anything, and a save whose settings have delivery off asks nothing, so a project whose repository the App can no longer read can still turn delivery off.
@@ -76,7 +80,9 @@ A refused save writes nothing, and its body is `{code, error, field?, source?, p
 - `409 DELIVERY_NO_DEFAULT_REPOSITORY`: with delivery on, a `github_workflow` source that names no repository, of a project with no default repository.
   The message says to name the source's repository or to set the project's default repository in **Settings → Projects**.
 
-- `409 DELIVERY_REPOSITORY_SHARED`: with delivery on, a repository that a source of another delivery-on project reads, that project named in `project`.
+- `409 DELIVERY_REPOSITORY_SHARED`: with delivery on, a repository that a source of another delivery-on project reads, with `field` `repo` and the source's index in `source`.
+  That project is named in `project` and in the message only where the caller sees it, as a person or a token that may read that project does.
+  A caller that does not see it, such as a job's token whose list leaves out that private project, gets no `project`, and the message says that a project it cannot see reads the repository.
 
 - `409 DELIVERY_SETTINGS_CHANGED`: another write moved what the save rests on under each of its two attempts: the repository a source reads, which the save has then not proved the App can read, or a target the save names.
   Read the settings again and save again.

@@ -21,7 +21,7 @@ import (
 // its run's start). Only results that ended in success or failure are timed; a cancelled one is
 // counted beside them, and anything else (skipped, still running) is not counted at all.
 //
-// Each card is a day builder and a fold (parts.go): PRChecksTimings, DeployJobs and LeadTimes put
+// Each card is a day builder and a fold (parts.go): PRChecksTimings, DeployJobsOf and LeadTimes put
 // their rows on the shown UTC days, build each day's parts (PRChecksDay, DeployJobsDay and the
 // lead-time builders of measures.go), and fold each day's parts alone and the shown days' together
 // (FoldTiming, FoldSlowestJobs, FoldLeadTime), the folds the CI and delivery evals read stored
@@ -384,8 +384,7 @@ func prChecksParts(runs []delivery.DeliveryRun, jobsByRun map[int64][]delivery.D
 // FoldTiming; and slowest, the first SlowestJobs of FoldSlowestJobs' ranking of the jobs with
 // slowestMinResults timed results. A run on no shown day adds to no cell. The caller passes the
 // shown days' runs, each with its event and branch already selected. Their failing jobs are
-// FailingJobs', which a reader of several repositories' runs hands each run's jobs without its own
-// repository's roll-up job.
+// FailingJobs'.
 func PRChecksTimings(runs []delivery.DeliveryRun, jobsByRun map[int64][]delivery.DeliveryRunJob, days []string, slowestMinResults int) (run Timing, slowest []JobTiming) {
 	parts := prChecksParts(runs, jobsByRun, days)
 	ranked := FoldSlowestJobs(parts, days, slowestMinResults)
@@ -396,11 +395,13 @@ func PRChecksTimings(runs []delivery.DeliveryRun, jobsByRun map[int64][]delivery
 // failed in a run completed in the FailingWindow up to end (InFailingWindow: a run that completed
 // after end, which a pinned `at` or a range in the past can read, is not counted), most failures
 // first, then by name. It reads only runs that ended in success or failure (a cancelled run's jobs
-// are not the prototype's to count) and only their jobs that did, and leaves out rollupJob (none
-// when empty) and every summary or guard job (delivery.IsSummaryOrGuardJob). It is no day part:
-// the 24 hours it looks back over end at any instant, not at a UTC day's end, so it is read from
-// the run jobs themselves, the rows the PR-checks parts are built from, as an items read is.
-func FailingJobs(runs []delivery.DeliveryRun, jobsByRun map[int64][]delivery.DeliveryRunJob, end time.Time, rollupJob string) []FailingJob {
+// are not the prototype's to count) and only their jobs that did, and leaves out each run's
+// roll-up job, the one rollupOf answers for the run's repository, since each repository's rule
+// names its own (none where it answers "" or rollupOf is nil), and every summary or guard job
+// (delivery.IsSummaryOrGuardJob). It is no day part: the 24 hours it looks back over end at any
+// instant, not at a UTC day's end, so it is read from the run jobs themselves, the rows the
+// PR-checks parts are built from, as an items read is.
+func FailingJobs(runs []delivery.DeliveryRun, jobsByRun map[int64][]delivery.DeliveryRunJob, end time.Time, rollupOf func(repo string) string) []FailingJob {
 	var recent []delivery.DeliveryRun
 	for _, run := range runs {
 		outcome, ok := OutcomeOf(run.Conclusion)
@@ -415,6 +416,10 @@ func FailingJobs(runs []delivery.DeliveryRun, jobsByRun map[int64][]delivery.Del
 	})
 	tallies := map[string]*FailingJob{}
 	for _, run := range recent {
+		rollupJob := ""
+		if rollupOf != nil {
+			rollupJob = rollupOf(run.Repo)
+		}
 		for _, job := range jobsByRun[run.RunID] {
 			outcome, ok := OutcomeOf(job.Conclusion)
 			if !ok || !outcome.timed() || (rollupJob != "" && job.Name == rollupJob) || delivery.IsSummaryOrGuardJob(job.Name) {
@@ -557,15 +562,6 @@ func DeployJobsDay(day time.Time, runs []delivery.DeliveryRun, jobsByRun map[int
 	return parts
 }
 
-// DeployJobs is each card's timing keyed by its CardID, from the parts DeployJobsDay builds of each
-// shown day's runs, each day folded alone and the shown days together by FoldTiming. The caller
-// passes the deploy workflow's push runs on main started in the shown days; a run on no shown day
-// adds nothing. Every card gets a timing, all of its days empty when no run lists its jobs, and
-// its job field is its names joined by " or ".
-func DeployJobs(runs []delivery.DeliveryRun, jobsByRun map[int64][]delivery.DeliveryRunJob, cards []DeployJobCard, days []string) map[DeployJobCardID]DeployJobTiming {
-	return DeployJobsOf([]SourceDeployRuns{{Runs: runs, Jobs: jobsByRun, Cards: cards}}, days)
-}
-
 // SourceDeployRuns is one source repository's deploy workflow push runs on main with their jobs,
 // and the cards its own rule follows (DeployCards).
 type SourceDeployRuns struct {
@@ -574,12 +570,15 @@ type SourceDeployRuns struct {
 	Cards []DeployJobCard
 }
 
-// DeployJobsOf is DeployJobs over several source repositories, each repository's runs judged by its
-// own cards (dispatch://INFRA-978, D9): each shown day's parts of a card are built of each
-// repository's runs under that repository's card of the id (DeployJobsDay), and folded together,
-// so a card times every repository's runs of it. A card gets a timing where any repository's rule
-// names it, and its job field is every name a repository's card of it follows, each once in the
-// order the repositories and their cards name them, joined by " or ".
+// DeployJobsOf is each card's timing keyed by its CardID over several source repositories, each
+// repository's runs judged by its own cards (dispatch://INFRA-978, D9): each shown day's parts of a
+// card are built of each repository's runs under that repository's card of the id
+// (DeployJobsDay), each day folded alone and the shown days together by FoldTiming, so a card
+// times every repository's runs of it. The caller passes each repository's deploy workflow push
+// runs on main started in the shown days; a run on no shown day adds nothing. A card gets a timing
+// where any repository's cards name it, all of its days empty when no run lists its jobs, and its
+// job field is every name a repository's card of it follows, each once in the order the
+// repositories and their cards name them, joined by " or ".
 func DeployJobsOf(sources []SourceDeployRuns, days []string) map[DeployJobCardID]DeployJobTiming {
 	parts := map[DeployJobCardID][]DayPart{}
 	names := map[DeployJobCardID][]string{}

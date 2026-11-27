@@ -174,16 +174,15 @@ func TestDeliveryPipelineCardKeysSurviveReorderedCards(t *testing.T) {
 		{CardID: measures.CardProductionApply, Production: delivery.Production{JobNames: []string{"widgets-release / widgets-release"}}},
 		{CardID: measures.CardStagingE2E, Production: delivery.Production{JobNames: []string{"staging-e2e / run"}}},
 	}
-	timings := measures.DeployJobs(
-		[]delivery.DeliveryRun{{RunID: 1, StartedAt: started}},
-		map[int64][]delivery.DeliveryRunJob{1: {
+	timings := measures.DeployJobsOf([]measures.SourceDeployRuns{{
+		Runs: []delivery.DeliveryRun{{RunID: 1, StartedAt: started}},
+		Jobs: map[int64][]delivery.DeliveryRunJob{1: {
 			{Name: "staging-e2e / run", StartedAt: new(started), CompletedAt: new(started.Add(4 * time.Minute)), Conclusion: new(delivery.DeliveryJobConclusionSuccess)},
 			{Name: "staging-release / apply", StartedAt: new(started), CompletedAt: new(started.Add(7 * time.Minute)), Conclusion: new(delivery.DeliveryJobConclusionSuccess)},
 			{Name: "widgets-release / widgets-release", StartedAt: new(started), CompletedAt: new(started.Add(9 * time.Minute)), Conclusion: new(delivery.DeliveryJobConclusionSuccess)},
 		}},
-		cards,
-		measures.ShownDays(pipelineFixtureTime(32, 12, 0)),
-	)
+		Cards: cards,
+	}}, measures.ShownDays(pipelineFixtureTime(32, 12, 0)))
 	stagingE2E := optionalDeployJobTiming(timings, measures.CardStagingE2E)
 	stagingApply := optionalDeployJobTiming(timings, measures.CardStagingApply)
 	production := timings[measures.CardProductionApply]
@@ -365,9 +364,9 @@ func TestGetDeliveryPipelineAnswersEmptyListsAsArrays(t *testing.T) {
 
 // TestThePipelineRanksBy50WhereItsDeployRepositoryMapsToNoProject: the deployment-wide Pipeline
 // ranks its slowest jobs by the min_n of pr-ci's job series in the project whose deploy sources
-// read every deploy repository (deliveryEvals; a source that names no repository reads its
-// project's published default repository, eval_days_defaults, which the evals refresher's page
-// commit moves and the test writes as it does, publishDefaultRepos), states it in
+// read every deploy repository (evals.Store.DeployRepoEvals; a source that names no repository
+// reads its project's published default repository, eval_days_defaults, which the evals
+// refresher's page commit moves and the test writes as it does, publishDefaultRepos), states it in
 // slowest_min_results, and ranks by measures.SlowestMinResults (50) where no source reads a
 // repository, or two or more projects' sources read them, whatever min_n another project's pr-ci
 // holds. Over a deliverytest history whose deploy repository DELIV's source reads as its default, a

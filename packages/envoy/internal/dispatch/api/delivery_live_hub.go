@@ -436,7 +436,7 @@ func (f *deliveryFreshnessHeard) heardRules(rules *delivery.SourceRules) {
 }
 
 // combine states the sources' freshness together (deliveryFreshnessOf), in the rules' order, the
-// order the GET routes state it in (deliveryFreshness), so a page reads one last error from both.
+// order the GET routes state it in (rules.All), so a page reads one last error from both.
 func (f *deliveryFreshnessHeard) combine() {
 	rules := f.rules.All()
 	all := make([]delivery.DeliverySettings, 0, len(rules))

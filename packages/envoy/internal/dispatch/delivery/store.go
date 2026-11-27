@@ -1316,7 +1316,7 @@ type RunsWithJobs struct {
 
 // listRunsWithJobsStartedIn is listRunsStartedIn's runs with ListRunJobsForRuns' jobs named names
 // of them: the Pipeline page's deploy runs of its shown days, read for the jobs its deploy cards
-// follow (measures.DeployJobs reads no other), and the measures' deploys of a window, read for the
+// follow (measures.DeployJobsOf reads no other), and the measures' deploys of a window, read for the
 // jobs a deploy is judged by (ReadDeploys).
 func listRunsWithJobsStartedIn(ctx context.Context, q Querier, repo string, kind DeliveryRunKind, branch, event string, from, to time.Time, names []string) (RunsWithJobs, error) {
 	return runsWithJobsStartedIn(ctx, q, repo, kind, branch, event, from, to, func(runIDs []int64) (map[int64][]DeliveryRunJob, error) {
