@@ -14,24 +14,27 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
-// releasedClaimSelect reads the columns a wake needs of a released claim: a claim this daemon's
-// project holds, suspended with the source `released` (supervise.Claim.Released), which is the
-// one state a wake acts on. Every other suspended claim is somebody else's to resume — an
-// operator's, a close's — and a path that takes a released claim over (an operator's suspend, a
-// linger) re-stamps its source, which takes it out of every read here.
-//
-// It is deliberately not claimSelect: a wake reads no delivery and no launch state, only who the
-// claim is, the session it kept and the run it was serving.
-const releasedClaimSelect = `select token, project, tree, issue, role, session, serving_generation
-	from claims where project = $1 and state = $2 and suspended_by = $3`
+// wakeClaimSelect reads a claim of this daemon's project as a wake reads it. It is deliberately
+// not claimSelect: a wake reads no delivery and no launch state, only who the claim is, the
+// session it kept, the run it was serving, and its state with the source of a suspension, which
+// together say whether a wake brings it back (supervise.Claim.Released).
+const wakeClaimSelect = `select token, project, tree, issue, role, session, serving_generation, state, suspended_by
+	from claims where project = $1`
 
-func scanReleasedClaims(rows pgx.Rows) ([]supervise.Claim, error) {
+// releasedClaimSelect reads the released claims among them: suspended with the source `released`
+// (supervise.Claim.Released), which is the one state a wake acts on. Every other suspended claim
+// is somebody else's to resume — an operator's, a close's — and a path that takes a released
+// claim over (an operator's suspend, a linger) re-stamps its source, which takes it out of every
+// read of it.
+const releasedClaimSelect = wakeClaimSelect + ` and state = $2 and suspended_by = $3`
+
+func scanWakeClaims(rows pgx.Rows) ([]supervise.Claim, error) {
 	defer rows.Close()
 	var out []supervise.Claim
 	for rows.Next() {
-		c := supervise.Claim{State: supervise.StateSuspended, SuspendedBy: supervise.SuspendedByReleased}
+		var c supervise.Claim
 		var generation int64
-		if err := rows.Scan(&c.Token, &c.Project, &c.Tree, &c.Issue, &c.Role, &c.Session, &generation); err != nil {
+		if err := rows.Scan(&c.Token, &c.Project, &c.Tree, &c.Issue, &c.Role, &c.Session, &generation, &c.State, &c.SuspendedBy); err != nil {
 			return nil, err
 		}
 		if generation > 0 {
@@ -50,32 +53,104 @@ func ReleasedClaimsOf(ctx context.Context, tx pgx.Tx, project, issue string) ([]
 	if err != nil {
 		return nil, fmt.Errorf("read the released claims of %s: %w", issue, err)
 	}
-	claims, err := scanReleasedClaims(rows)
+	claims, err := scanWakeClaims(rows)
 	if err != nil {
 		return nil, fmt.Errorf("read the released claims of %s: %w", issue, err)
 	}
 	return claims, nil
 }
 
-// oneReleasedClaim is the one released claim of project that where selects, and whether there is
-// one.
-func oneReleasedClaim(ctx context.Context, tx pgx.Tx, where, project, value, what string) (supervise.Claim, bool, error) {
+// ClaimByToken is the claim a listener's report names by the token of the role topic a message
+// was published to, a claim token, which names the claim's agent, in whatever state the claim is,
+// and whether this daemon's project holds one. The listener knows nothing of which daemon owns a
+// token, so every daemon reads its own claims and the one that holds the claim is the one that
+// acts. The report marks the claim whatever its state
+// (MarkMessage), since its wake may wait in the pacing in any of them, and wakes it only where it
+// is released.
+func (p *PodRecords) ClaimByToken(ctx context.Context, tx pgx.Tx, token string) (supervise.Claim, bool, error) {
+	return p.listenerClaim(ctx, tx, `and token = $2`, token, "role token")
+}
+
+// ClaimBySession is the claim that keeps session, the session a listener's report names a message
+// was sent to, and whether this daemon's project holds one. A released claim keeps its session
+// id, which is what lets a message addressed to that session find the pod that must come back
+// for it.
+func (p *PodRecords) ClaimBySession(ctx context.Context, tx pgx.Tx, session string) (supervise.Claim, bool, error) {
+	return p.listenerClaim(ctx, tx, `and session = $2`, session, "session")
+}
+
+func (p *PodRecords) listenerClaim(ctx context.Context, tx pgx.Tx, where, value, what string) (supervise.Claim, bool, error) {
 	if value == "" {
 		return supervise.Claim{}, false, nil
 	}
-	rows, err := tx.Query(ctx, releasedClaimSelect+" "+where+` order by token limit 1`,
-		project, string(supervise.StateSuspended), string(supervise.SuspendedByReleased), value)
+	rows, err := tx.Query(ctx, wakeClaimSelect+" "+where+` order by token limit 1`, p.project, value)
 	if err != nil {
-		return supervise.Claim{}, false, fmt.Errorf("read the released claim of %s %s: %w", what, value, err)
+		return supervise.Claim{}, false, fmt.Errorf("read the claim of %s %s: %w", what, value, err)
 	}
-	claims, err := scanReleasedClaims(rows)
+	claims, err := scanWakeClaims(rows)
 	if err != nil {
-		return supervise.Claim{}, false, fmt.Errorf("read the released claim of %s %s: %w", what, value, err)
+		return supervise.Claim{}, false, fmt.Errorf("read the claim of %s %s: %w", what, value, err)
 	}
 	if len(claims) == 0 {
 		return supervise.Claim{}, false, nil
 	}
 	return claims[0], true, nil
+}
+
+// MarkMessage is MarkClaimMessageTx, as the workflow reaches it for a listener's report.
+func (p *PodRecords) MarkMessage(ctx context.Context, tx pgx.Tx, token claim.Token, at time.Time) (time.Time, error) {
+	return MarkClaimMessageTx(ctx, tx, token, at)
+}
+
+// MarkClaimMessage is MarkClaimMessageTx in a transaction of its own: the write the outbox makes
+// before it runs a start row whose wake carried a message.
+func MarkClaimMessage(ctx context.Context, pool *Pool, token claim.Token, at time.Time) (time.Time, error) {
+	var mark time.Time
+	err := Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
+		var err error
+		mark, err = MarkClaimMessageTx(ctx, tx, token, at)
+		return err
+	})
+	return mark, err
+}
+
+// MarkClaimMessageTx marks the claim token for an Envoy message that has waited since at
+// (claims.message_mark_at, dispatch://INFRA-5682 R1), and answers the mark it wrote, or else the
+// mark that stands once it has run, the zero time for neither. A mark stands while it is later
+// than the claim's last turn start (supervise.Claim.MessageMarked), and of two that stand the
+// earlier is kept, since it is the message that has waited longest and the first one Envoy drops.
+// So at replaces a mark the role has worked past, and never an earlier one that stands. Where no
+// mark stands, at is written even when the role has taken a turn since it, and the answer is then
+// a mark that does not stand, which moves no wake (the machine moves one only for a mark that
+// stands, Claim.MessageMarked).
+//
+// A retired claim takes no mark, and neither does a token of no claim. Nothing waits for a
+// retired claim and nothing is coming, and its token's next run is another run's: a mark left on
+// it would put that run's first wake in the message queue and call it late for a message Envoy
+// dropped long before (PutClaim clears the mark a claim holds as it retires).
+//
+// It is the only write of the column but that clear. A machine writes the whole claim it holds in
+// memory (PutClaim), so a mark written with the claim would be undone by the next write of a
+// machine that read the claim before the mark was made.
+func MarkClaimMessageTx(ctx context.Context, tx pgx.Tx, token claim.Token, at time.Time) (time.Time, error) {
+	var mark *time.Time
+	err := tx.QueryRow(ctx, `with marked as (
+			update claims set message_mark_at = $2 where token = $1 and state <> $3 and (
+				message_mark_at is null or message_mark_at <= last_turn_start or
+				($2 < message_mark_at and (last_turn_start is null or $2 > last_turn_start)))
+			returning message_mark_at)
+		select message_mark_at from marked
+		union all
+		select message_mark_at from claims where token = $1 and state <> $3
+			and message_mark_at > coalesce(last_turn_start, '-infinity') and not exists (select 1 from marked)`,
+		string(token), at, string(supervise.StateRetired)).Scan(&mark)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return time.Time{}, nil
+	}
+	if err != nil {
+		return time.Time{}, fmt.Errorf("mark the message wake of %s: %w", token, err)
+	}
+	return orZero(mark), nil
 }
 
 // CloseOpenResumes closes every resume of issue no first turn has stamped: what the transaction
@@ -131,9 +206,10 @@ func (s *Store) CancelPodBackstopsOf(ctx context.Context, project, issue string,
 }
 
 // TakePodWake takes one wake outside any fact transaction, for the wakes the outbox takes: a
-// notice, a hook prompt, a merge-queue removal or a merge forward's message that found the role it
-// is for released (internal/daemon's wakeForDelivery). Inside a fact's transaction the workflow
-// takes its wakes through PodRecords.TakePodWake, which is where taking a wake is written out.
+// notice, a phase-ended message, a hook prompt, a merge-queue removal, a merge holds change or a
+// merge forward's message that found the role it is for released (internal/daemon's
+// wakeForDelivery). Inside a fact's transaction the workflow takes its wakes through
+// PodRecords.TakePodWake, which is where taking a wake is written out.
 //
 // token is the claim the wake brings back and role the role that claim holds now (claims.role),
 // which the caller has read with the claim: a claim's token names its agent and no role, so it is
@@ -460,15 +536,16 @@ func CloseRoleOpenResumeTx(ctx context.Context, tx pgx.Tx, project, issue string
 }
 
 // SetResumeClock moves the stuck clock (pod_resumes.clock_at) of the open resume that names
-// token, whatever role the claim held at its wake, to at, the moment the wake pacing lets that
-// claim's launch out (decision 14), and answers whether the claim had an open resume. Two claims
-// can hold one role, and the let-out is one claim's, so another claim's resume keeps its clock. It
-// never moves a clock backwards (greatest): a clock a resume of the project or a later reservation
-// already moved stays. project is the project token, as pod_resumes holds it.
+// token, whatever role the claim held at its wake, to at, the moment that claim's launch stopped
+// waiting for the wake pacing (decision 14), and starts a clock that wait had stopped
+// (pod_resumes.queued, SetResumeQueued). It answers whether the claim had an open resume. Two
+// claims can hold one role, and the let-out is one claim's, so another claim's resume keeps its
+// clock. It never moves a clock backwards (greatest): a clock a resume of the project already
+// moved stays. project is the project token, as pod_resumes holds it.
 func (s *Store) SetResumeClock(ctx context.Context, project, issue string, token claim.Token, at time.Time) (bool, error) {
 	var changed bool
 	err := Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
-		tag, err := tx.Exec(ctx, `update pod_resumes set clock_at = greatest(clock_at, $3)
+		tag, err := tx.Exec(ctx, `update pod_resumes set clock_at = greatest(clock_at, $3), queued = false
 			where project = $1 and issue = $2 and claim = $4 and first_turn_at is null and closed_at is null`,
 			project, issue, at, string(token))
 		if err != nil {
@@ -478,6 +555,45 @@ func (s *Store) SetResumeClock(ctx context.Context, project, issue string, token
 		return nil
 	})
 	return changed, err
+}
+
+// SetResumeQueued stops the stuck clock of the open resume that names token, whatever role the
+// claim held at its wake (pod_resumes.queued): that claim's launch has begun to wait in the wake
+// pacing's queue, where it has no moment until the pacer lets it out, so there is none to move the
+// clock to (dispatch://INFRA-5682 R1). Two claims can hold one role, and the wait is one claim's,
+// so another claim's resume keeps its clock running. The stuck warning and the stranded report
+// pass over a resume whose clock is stopped (podResumesWithoutAFirstTurn), and the end of the wait
+// starts it again (SetResumeClock). project is the project token, as pod_resumes holds it.
+func (s *Store) SetResumeQueued(ctx context.Context, project, issue string, token claim.Token) error {
+	return Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `update pod_resumes set queued = true
+			where project = $1 and issue = $2 and claim = $3 and first_turn_at is null and closed_at is null and not queued`,
+			project, issue, string(token))
+		if err != nil {
+			return fmt.Errorf("stop the stuck clock of %s's claim %s: %w", issue, token, err)
+		}
+		return nil
+	})
+}
+
+// StartQueuedResumeClocks starts every stuck clock of project that a wait in the wake pacing's
+// queue had stopped (pod_resumes.queued), at at and never backwards, and answers how many it
+// started. It is the boot's: the queue is the daemon's memory, so the launches the previous daemon
+// left waiting in it wait in none now, and a clock nothing starts again would keep its resume out
+// of the stuck warning and the stranded report for good. project is the project token, as
+// pod_resumes holds it.
+func (s *Store) StartQueuedResumeClocks(ctx context.Context, project string, at time.Time) (int64, error) {
+	var started int64
+	err := Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+		tag, err := tx.Exec(ctx, `update pod_resumes set clock_at = greatest(clock_at, $2), queued = false
+			where project = $1 and queued`, project, at)
+		if err != nil {
+			return fmt.Errorf("start the stopped stuck clocks of %s: %w", project, err)
+		}
+		started = tag.RowsAffected()
+		return nil
+	})
+	return started, err
 }
 
 // SetProjectResumeClocksTx moves the stuck clock of every open resume of project to at, the
@@ -582,22 +698,6 @@ func (p *PodRecords) RecordListenerReady(ctx context.Context, tx pgx.Tx, at time
 		return fmt.Errorf("record the listener's report for %s: %w", p.project, err)
 	}
 	return nil
-}
-
-// ReleasedClaimByToken is the released claim whose token is token, and whether this daemon's
-// project holds one. The listener reports the token of a role topic it saw a message published
-// to, a claim token, which names the claim's agent, and knows nothing of which daemon owns it, so
-// every daemon reads its own claims and the one that holds a released claim of that token is the
-// one that acts.
-func (p *PodRecords) ReleasedClaimByToken(ctx context.Context, tx pgx.Tx, token string) (supervise.Claim, bool, error) {
-	return oneReleasedClaim(ctx, tx, `and token = $4`, p.project, token, "role token")
-}
-
-// ReleasedClaimBySession is the released claim that kept session, and whether this daemon's
-// project holds one. A released claim keeps its session id, which is what lets a message
-// addressed to that session find the pod that must come back for it.
-func (p *PodRecords) ReleasedClaimBySession(ctx context.Context, tx pgx.Tx, session string) (supervise.Claim, bool, error) {
-	return oneReleasedClaim(ctx, tx, `and session = $4`, p.project, session, "session")
 }
 
 // TakePodWake takes one wake of issue's role inside the caller's transaction, and is the whole
@@ -735,6 +835,14 @@ func (p *PodRecords) FirePodBackstop(ctx context.Context, tx pgx.Tx, id int64) (
 	return tag.RowsAffected() > 0, nil
 }
 
+// CancelPodBackstops drops every open backstop of issue inside the caller's transaction: a
+// parent that moves into awaiting_children has no phase for a backstop to wake any claim of it
+// into, so the move cancels every backstop a release armed before it (workflow's awaitChildren,
+// dispatch://INFRA-3320 R11).
+func (p *PodRecords) CancelPodBackstops(ctx context.Context, tx pgx.Tx, issue string) error {
+	return CancelPodBackstops(ctx, tx, p.project, issue, "")
+}
+
 // OpenPodBackstop is whether issue's claim token has a backstop armed and not yet fired
 // (pod_wake_backstops, `not fired`). The release that suspended the claim with its phase open armed
 // it, and it wakes the claim when it comes due unless a wake takes it first (TakePodWake cancels
@@ -748,4 +856,31 @@ func (p *PodRecords) OpenPodBackstop(ctx context.Context, tx pgx.Tx, issue strin
 		return false, fmt.Errorf("read the open backstop of %s's claim %s: %w", issue, token, err)
 	}
 	return open, nil
+}
+
+// WaitsForItsSlot is whether issue owes a worker a start that waits for its admission slot while
+// no slot of the issue stands (slotWaitingStart): the issue gave its slot back to wait on another,
+// or had its work come back, and waits in the admission line. The outbox holds that start back
+// until the slot comes, and the start then wakes the worker an idle release suspended. So a
+// backstop of such an issue wakes no one (the workflow's podBackstopDue): a wake would put the
+// worker to its phase's work while the admission cap says the issue may not run.
+//
+// Only a start of the issue's current phase and generation counts. An older one stays in the
+// outbox until admission finishes it without acting (admit's finishFencedStarts), which a pause
+// defers and a dead lane's lease delays, so it brings no worker back; a backstop it silenced
+// would leave the released worker with nothing to wake it once that row goes. Phase and
+// generation are the whole fence here although finishFencedStarts also finishes a row whose
+// issue left the workflow or whose tree lingers, and one a retired claim's stop outlived: the
+// backstop's wake refuses the first two itself (the workflow's wakeReleased reads
+// InWorkflowNotLingering), and a retired claim is never the released claim the backstop wakes.
+func (p *PodRecords) WaitsForItsSlot(ctx context.Context, tx pgx.Tx, issue string) (bool, error) {
+	var waits bool
+	if err := tx.QueryRow(ctx, `select exists (select 1 from outbox where issue = $1 and `+slotWaitingStart+`
+		and exists (select 1 from issues i where i.key = outbox.issue
+			and i.phase = outbox.payload->>'phase'
+			and i.generation = coalesce((outbox.payload->>'generation')::bigint, 0)))`,
+		issue).Scan(&waits); err != nil {
+		return false, fmt.Errorf("read whether %s waits for its admission slot: %w", issue, err)
+	}
+	return waits, nil
 }

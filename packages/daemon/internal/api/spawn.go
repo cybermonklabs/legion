@@ -37,7 +37,7 @@ type SpawnRequest struct {
 func (s *server) refuseMovedSpawn(w http.ResponseWriter, r *http.Request, issue string, role claim.Role, token claim.Token) {
 	now, err := s.workerToken(r.Context(), issue, role)
 	if err != nil {
-		s.operatorFailure(w, r, "spawn", token, err)
+		s.operationFailure(w, r, supervise.SuspendedByOperator, "spawn", token, err)
 		return
 	}
 	s.refuse(w, r, http.StatusConflict, fmt.Sprintf(
@@ -83,7 +83,7 @@ func (s *server) spawn(w http.ResponseWriter, r *http.Request) {
 	}
 	token, err := s.workerToken(r.Context(), req.Issue, req.Role)
 	if err != nil {
-		s.operatorFailure(w, r, "spawn", token, err)
+		s.operationFailure(w, r, supervise.SuspendedByOperator, "spawn", token, err)
 		return
 	}
 	ctx, decided := s.decision(r, token)
@@ -97,18 +97,18 @@ func (s *server) spawn(w http.ResponseWriter, r *http.Request) {
 	if s.refusedWhilePaused(w, r, "spawn", c) {
 		return
 	}
-	if req.Tree == req.Issue && req.Role == claim.RoleArchitect {
+	if claim.IsTreeArchitect(req.Role, req.Issue, req.Tree) {
 		if _, err := s.trees.OpenOperatorTreeLifecycle(ctx, s.project, req.Tree, s.drawExperiments(req.Tree)); errors.Is(err, treelifecycle.ErrCleanupReserved) {
 			s.refuse(w, r, http.StatusConflict, fmt.Sprintf("operator tree %s is waiting for durable cleanup: %v", req.Tree, err))
 			return
 		} else if err != nil {
-			s.operatorFailure(w, r, "spawn", token, err)
+			s.operationFailure(w, r, supervise.SuspendedByOperator, "spawn", token, err)
 			return
 		}
 	}
 	m, created, err := s.supervisor.Create(ctx, c, req.Prompt)
 	if err != nil {
-		s.operatorFailure(w, r, "spawn", token, err)
+		s.operationFailure(w, r, supervise.SuspendedByOperator, "spawn", token, err)
 		return
 	}
 	// The operator is waiting on this answer, so the wake pacing never holds this launch
@@ -125,12 +125,12 @@ func (s *server) spawn(w http.ResponseWriter, r *http.Request) {
 			s.refuseMovedSpawn(w, r, req.Issue, req.Role, token)
 			return
 		}
-		s.operatorFailure(w, r, "spawn", token, err)
+		s.operationFailure(w, r, supervise.SuspendedByOperator, "spawn", token, err)
 		return
 	}
 	if req.Task != "" {
 		if err := m.Handle(judged, supervise.RequestDeliver{Claim: token, Task: req.Task}); err != nil {
-			s.operatorFailure(w, r, "deliver", token, err)
+			s.operationFailure(w, r, supervise.SuspendedByOperator, "deliver", token, err)
 			return
 		}
 	}

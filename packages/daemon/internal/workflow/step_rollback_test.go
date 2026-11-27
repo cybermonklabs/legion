@@ -64,7 +64,7 @@ func TestAStepTheEarlierReleaseStartedEndsInARecordOfItsOwn(t *testing.T) {
 					if err != nil {
 						return err
 					}
-					_, err = engine.recordPass(ctx, tx, *issue, w.Task, phase.Testing, phase.Implementing, nil)
+					_, err = engine.recordPass(ctx, tx, *issue, w.Task, phase.Testing, phase.Implementing, nil, false)
 					return err
 				})
 			}

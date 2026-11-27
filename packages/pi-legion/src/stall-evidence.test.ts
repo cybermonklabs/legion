@@ -463,36 +463,53 @@ test("a phase worker falls back to the tree's architect, as the reminder does", 
   expect(silent.published[0]?.topic).toBe("notifications.role.legion-legion-infra-1000-architect");
 });
 
-test("a root architect's own session tells the controller role", async () => {
-  const rig = tellerRig({
+/** A root architect's own session, on its root. */
+function rootArchitectRig(): TellerRig {
+  return tellerRig({
     session: { kind: "root-architect", tree: "INFRA-1000" },
     claim: claimOf({ issue: "INFRA-1000", role: "architect", sessionID: "ses_root" }),
   });
-  await rig.teller.tellOverdue(evidenceOf());
+}
+
+test("a root architect's overdue call publishes nothing, and its evidence is written", async () => {
+  const rig = rootArchitectRig();
+  expect(await rig.teller.tellOverdue(evidenceOf())).toEqual({
+    evidenceWritten: true,
+    ownerTold: false,
+  });
+  expect(rig.published).toEqual([]);
+  expect((rig.entries[0] as StallEvidenceRecord).kind).toBe("evidence");
+});
+
+test("a root architect's ladder that stops short tells the controller role", async () => {
+  const rig = rootArchitectRig();
+  await rig.teller.tellStopped(callOf(), "the exit cap was reached");
   expect(rig.published).toHaveLength(1);
   expect(rig.published[0]?.topic).toBe("notifications.role.legion-legion-controller");
   expect(rig.published[0]?.message).toContain("The architect of INFRA-1000");
 });
 
 // The notice sends no `keep` field, so a listener keeps it for an owner's role that no live
-// session holds, and answers 202 kept. That has told no owner yet, and the teller does not send a
-// kept notice again, so it reports `ownerTold: false`: for the architect, and for the
-// controller, which owns a root architect's own call (dispatch://INFRA-2846, R6).
+// session holds, and answers 202 kept. That has told no owner yet, and the teller does not
+// send a kept notice again, so it logs that no owner has taken the notice, and an overdue
+// notice reports `ownerTold: false`. That holds for the architect's notice, and for the
+// controller's, which hears of a root architect's own call once its ladder stops short (the
+// kept-role-message spec's rule R6).
 test("the owner notice is kept", async () => {
   const architect = tellerRig();
-  const controller = tellerRig({
-    session: { kind: "root-architect", tree: "INFRA-1000" },
-    claim: claimOf({ issue: "INFRA-1000", role: "architect", sessionID: "ses_root" }),
+  const controller = rootArchitectRig();
+  for (const rig of [architect, controller]) {
+    rig.publishAnswer = { kept: true, keptUntil: START + 60 * MINUTE };
+  }
+  expect(await architect.teller.tellOverdue(evidenceOf())).toEqual({
+    evidenceWritten: true,
+    ownerTold: false,
   });
+  await controller.teller.tellStopped(callOf(), "the exit cap was reached");
   for (const [rig, topic] of [
     [architect, "notifications.role.legion-legion-infra-1274-architect"],
     [controller, "notifications.role.legion-legion-controller"],
   ] as const) {
-    rig.publishAnswer = { kept: true, keptUntil: START + 60 * MINUTE };
-    expect(await rig.teller.tellOverdue(evidenceOf())).toEqual({
-      evidenceWritten: true,
-      ownerTold: false,
-    });
     expect(rig.published).toHaveLength(1);
     expect(rig.published[0]?.topic).toBe(topic);
     expect(rig.published[0]).not.toHaveProperty("keep");
@@ -544,6 +561,7 @@ test("a session never publishes to the role its own session holds", async () => 
       claim: undefined,
       project: "legion",
       liveArchitect: true,
+      notice: "overdue",
     })
   ).toEqual({
     kind: "none",
@@ -569,6 +587,7 @@ test("a session's own token is the one it registered, whatever role its claim ho
       }),
       project: "p",
       liveArchitect: true,
+      notice: "overdue",
     })
   ).toEqual({ kind: "topic", topic: "notifications.role.legion-p-infra-1-architect" });
   expect(
@@ -582,6 +601,7 @@ test("a session's own token is the one it registered, whatever role its claim ho
       }),
       project: "p",
       liveArchitect: true,
+      notice: "overdue",
     })
   ).toEqual({ kind: "topic", topic: "notifications.role.legion-p-infra-1-architect" });
 });

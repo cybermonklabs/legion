@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -147,6 +146,23 @@ func TestTheHubAdmitsASessionThroughTheService(t *testing.T) {
 	if served, err := other.NextMsg(500 * time.Millisecond); err == nil {
 		t.Fatalf("ses_a received %q on session ses_b's channel", served.Data)
 	}
+}
+
+// Through the service, the hub refuses the connection of a session whose person Dispatch holds,
+// whose token the broker's introspection answers live and held, and admits a session whose person
+// it does not hold, on the same hub at the same time: a held person's broker token opens no NATS
+// connection, as it opens no broker route.
+func TestTheHubRefusesASessionWhosePersonDispatchHolds(t *testing.T) {
+	keys := testnats.NewCalloutKeys(t)
+	url := testnats.StartWithCallout(t, keys)
+	served, held := newSession(t, "ses_served", 15*time.Minute), newSession(t, "ses_held", 15*time.Minute)
+	held.answer.Held = true
+	startService(t, url, keys, Deps{Introspect: introspector(served, held)}, Decide)
+
+	_, err := connectSession(t, url, held, nil)
+	require.ErrorIs(t, err, nats.ErrAuthorization, "the hub admitted a session whose person Dispatch holds")
+	_, err = connectSession(t, url, served, nil)
+	require.NoError(t, err, "the hub refused a session whose person Dispatch does not hold")
 }
 
 // Through the service, a session answers a request asked on a reply subject naming it
@@ -337,10 +353,10 @@ func TestASessionCannotSubscribeTheAuthSubject(t *testing.T) {
 }
 
 // Two replicas answer in one queue group, so the server sends each request to one of them: with
-// both up, every connection is decided once. With one of them closed, every connection is
-// admitted within a second: the closed replica left the group, so the server sends it nothing.
-// The control is a replica that stops answering but keeps its place in the group, which the
-// server keeps sending requests to: some connection then waits out the authorization timeout.
+// both up, every connection is decided once. After one closes, every client is still admitted:
+// the closed replica left the group, so the server sends it nothing. The control closes the healthy
+// replica too, then lets the sole queued replica receive a request without answering it. Its
+// callback proves the plant fired, and the client's refusal proves the missing answer mattered.
 func TestOneStoppedReplicaDelaysNoConnection(t *testing.T) {
 	keys := testnats.NewCalloutKeys(t)
 	url := testnats.StartWithCallout(t, keys)
@@ -348,55 +364,54 @@ func TestOneStoppedReplicaDelaysNoConnection(t *testing.T) {
 	for index := range sessions {
 		sessions[index] = newSession(t, "ses_"+strings.Repeat("a", index+1), 15*time.Minute)
 	}
-	var decided atomic.Int64
+	var stoppedDecided, healthyDecided atomic.Int64
 	introspect := introspector(sessions...)
-	deps := Deps{Introspect: func(ctx context.Context, token string) (oauthwire.Introspection, error) {
-		decided.Add(1)
-		return introspect(ctx, token)
-	}}
-	stopped := startService(t, url, keys, deps, Decide)
-	startService(t, url, keys, deps, Decide)
+	deps := func(decided *atomic.Int64) Deps {
+		return Deps{Introspect: func(ctx context.Context, token string) (oauthwire.Introspection, error) {
+			decided.Add(1)
+			return introspect(ctx, token)
+		}}
+	}
+	stopped := startService(t, url, keys, deps(&stoppedDecided), Decide)
+	healthy := startService(t, url, keys, deps(&healthyDecided), Decide)
 
 	for _, s := range sessions[:10] {
 		nc, err := connectSession(t, url, s, nil)
 		require.NoError(t, err, "%s was not admitted", s.id)
 		nc.Close()
 	}
-	require.EqualValues(t, 10, decided.Load(), "ten connections were decided %d times: the replicas do not share one queue group", decided.Load())
+	require.EqualValues(t, 10, stoppedDecided.Load()+healthyDecided.Load(),
+		"ten connections were decided %d times: the replicas do not share one queue group", stoppedDecided.Load()+healthyDecided.Load())
 	stopped.Close()
+	stoppedAtClose := stoppedDecided.Load()
 
 	for _, s := range sessions {
-		began := time.Now()
 		_, err := connectSession(t, url, s, nil)
 		require.NoError(t, err, "%s was not admitted", s.id)
-		require.Less(t, time.Since(began), time.Second, "%s waited %s to be admitted", s.id, time.Since(began))
 	}
+	require.EqualValues(t, stoppedAtClose, stoppedDecided.Load(),
+		"the closed replica decided %d authorization requests after it left the queue group", stoppedDecided.Load()-stoppedAtClose)
 
-	t.Run("control: a replica that keeps its place and stops answering", func(t *testing.T) {
+	t.Run("control: the sole replica receives but does not answer", func(t *testing.T) {
+		healthy.Close()
 		hung, err := testnats.ConnectSeed(t, url, keys.ServiceSeed)
 		require.NoError(t, err)
 		defer hung.Close()
-		_, err = hung.QueueSubscribe(authSubject, queueGroup, func(*nats.Msg) {})
+		received := make(chan struct{})
+		_, err = hung.QueueSubscribe(authSubject, queueGroup, func(*nats.Msg) { close(received) })
 		require.NoError(t, err)
 		require.NoError(t, hung.Flush())
-		var slow atomic.Int32
-		var wait sync.WaitGroup
-		for _, s := range sessions[:10] {
-			wait.Add(1)
-			go func() {
-				defer wait.Done()
-				began := time.Now()
-				nc, err := connectSession(t, url, s, nil)
-				if err == nil {
-					nc.Close()
-				}
-				if err != nil || time.Since(began) >= time.Second {
-					slow.Add(1)
-				}
-			}()
-		}
-		wait.Wait()
-		require.Positive(t, slow.Load(), "no connection waited on the replica that stopped answering: the test cannot see a delay")
+
+		result := make(chan error, 1)
+		go func() {
+			nc, err := connectSession(t, url, sessions[0], nil)
+			if err == nil {
+				nc.Close()
+			}
+			result <- err
+		}()
+		testwait.Receive(t, "the non-answering replica to receive the broker's authorization request", received)
+		require.Error(t, testwait.Receive(t, "the client connection to be refused after its auth request had no answer", result))
 	})
 }
 

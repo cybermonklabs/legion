@@ -309,6 +309,41 @@
             "custom": true,
             "customTimeouts": {},
             "dependencies": [
+              "urn:pulumi:stack::project::envoy-infra:gcp:Dispatch$gcp:container/cluster:Cluster::example-dispatch",
+              "urn:pulumi:stack::project::envoy-infra:gcp:Dispatch$kubernetes:core/v1:ServiceAccount::example-dispatch-listener"
+            ],
+            "name": "example-dispatch-listener-nats-seed-uid-accessor",
+            "object": {
+              "member": "principal://iam.googleapis.com/projects/123456789012/locations/global/workloadIdentityPools/example-project.svc.id.goog/kubernetes.serviceaccount.uid/example-dispatch-listener-uid",
+              "role": "roles/secretmanager.secretAccessor",
+              "secretId": "projects/example-project/secrets/example-nats-seed-example-dispatch"
+            },
+            "parent": "urn:pulumi:stack::project::envoy-infra:gcp:Dispatch::example-dispatch",
+            "propertyDependencies": {
+              "member": {
+                "urns": [
+                  "urn:pulumi:stack::project::envoy-infra:gcp:Dispatch$gcp:container/cluster:Cluster::example-dispatch",
+                  "urn:pulumi:stack::project::envoy-infra:gcp:Dispatch$kubernetes:core/v1:ServiceAccount::example-dispatch-listener"
+                ]
+              },
+              "role": {},
+              "secretId": {}
+            },
+            "provider": "urn:pulumi:s::p::pulumi:providers:gcp::gcp-example::",
+            "supportsResultReporting": true,
+            "type": "gcp:secretmanager/secretIamMember:SecretIamMember",
+            "version": "10.1.0"
+          },
+          "urn": "urn:pulumi:stack::project::envoy-infra:gcp:Dispatch$gcp:secretmanager/secretIamMember:SecretIamMember::example-dispatch-listener-nats-seed-uid-accessor"
+        },
+        {
+          "register": {
+            "acceptResources": true,
+            "acceptSecrets": true,
+            "acceptsByteString": true,
+            "custom": true,
+            "customTimeouts": {},
+            "dependencies": [
               "urn:pulumi:stack::project::envoy-infra:gcp:Dispatch$gcp:container/cluster:Cluster::example-dispatch"
             ],
             "name": "example-dispatch-nats-seed-accessor",
@@ -333,6 +368,41 @@
             "version": "10.1.0"
           },
           "urn": "urn:pulumi:stack::project::envoy-infra:gcp:Dispatch$gcp:secretmanager/secretIamMember:SecretIamMember::example-dispatch-nats-seed-accessor"
+        },
+        {
+          "register": {
+            "acceptResources": true,
+            "acceptSecrets": true,
+            "acceptsByteString": true,
+            "custom": true,
+            "customTimeouts": {},
+            "dependencies": [
+              "urn:pulumi:stack::project::envoy-infra:gcp:Dispatch$gcp:container/cluster:Cluster::example-dispatch",
+              "urn:pulumi:stack::project::envoy-infra:gcp:Dispatch$kubernetes:core/v1:ServiceAccount::example-dispatch"
+            ],
+            "name": "example-dispatch-nats-seed-uid-accessor",
+            "object": {
+              "member": "principal://iam.googleapis.com/projects/123456789012/locations/global/workloadIdentityPools/example-project.svc.id.goog/kubernetes.serviceaccount.uid/example-dispatch-uid",
+              "role": "roles/secretmanager.secretAccessor",
+              "secretId": "projects/example-project/secrets/example-nats-seed-example-dispatch"
+            },
+            "parent": "urn:pulumi:stack::project::envoy-infra:gcp:Dispatch::example-dispatch",
+            "propertyDependencies": {
+              "member": {
+                "urns": [
+                  "urn:pulumi:stack::project::envoy-infra:gcp:Dispatch$gcp:container/cluster:Cluster::example-dispatch",
+                  "urn:pulumi:stack::project::envoy-infra:gcp:Dispatch$kubernetes:core/v1:ServiceAccount::example-dispatch"
+                ]
+              },
+              "role": {},
+              "secretId": {}
+            },
+            "provider": "urn:pulumi:s::p::pulumi:providers:gcp::gcp-example::",
+            "supportsResultReporting": true,
+            "type": "gcp:secretmanager/secretIamMember:SecretIamMember",
+            "version": "10.1.0"
+          },
+          "urn": "urn:pulumi:stack::project::envoy-infra:gcp:Dispatch$gcp:secretmanager/secretIamMember:SecretIamMember::example-dispatch-nats-seed-uid-accessor"
         },
         {
           "register": {
@@ -546,6 +616,7 @@
             "dependencies": [
               "urn:pulumi:stack::project::envoy-infra:gcp:Dispatch$gcp:container/cluster:Cluster::example-dispatch",
               "urn:pulumi:stack::project::envoy-infra:gcp:Dispatch$gcp:secretmanager/secretIamMember:SecretIamMember::example-dispatch-nats-seed-accessor",
+              "urn:pulumi:stack::project::envoy-infra:gcp:Dispatch$gcp:secretmanager/secretIamMember:SecretIamMember::example-dispatch-nats-seed-uid-accessor",
               "urn:pulumi:stack::project::envoy-infra:gcp:Dispatch$gcp:sql/databaseInstance:DatabaseInstance::example-dispatch",
               "urn:pulumi:stack::project::envoy-infra:gcp:Dispatch$kubernetes:core/v1:Secret::example-dispatch-dispatch",
               "urn:pulumi:stack::project::envoy-infra:gcp:Dispatch$kubernetes:core/v1:Secret::example-dispatch-listener",
@@ -1037,6 +1108,7 @@
             "dependencies": [
               "urn:pulumi:stack::project::envoy-infra:gcp:Dispatch$gcp:container/cluster:Cluster::example-dispatch",
               "urn:pulumi:stack::project::envoy-infra:gcp:Dispatch$gcp:secretmanager/secretIamMember:SecretIamMember::example-dispatch-listener-nats-seed-accessor",
+              "urn:pulumi:stack::project::envoy-infra:gcp:Dispatch$gcp:secretmanager/secretIamMember:SecretIamMember::example-dispatch-listener-nats-seed-uid-accessor",
               "urn:pulumi:stack::project::envoy-infra:gcp:Dispatch$kubernetes:core/v1:Secret::example-dispatch-listener",
               "urn:pulumi:stack::project::envoy-infra:gcp:Dispatch$kubernetes:scheduling.k8s.io/v1:PriorityClass::example-dispatch-priority-class"
             ],
@@ -3390,6 +3462,7 @@
         "principal": "principal://iam.googleapis.com/projects/123456789012/locations/global/workloadIdentityPools/example-project.svc.id.goog/subject/ns/example-dispatch/sa/example-dispatch",
         "serviceAccountIssuer": "https://container.googleapis.com/v1/projects/example-project/locations/us-central1/clusters/example-dispatch",
         "serviceAccountSubject": "system:serviceaccount:example-dispatch:example-dispatch",
+        "serviceAccountUid": "example-dispatch-uid",
         "url": "https://example-dispatch.example-tailnet.ts.net"
       },
       "type": "envoy-infra:gcp:Dispatch"
@@ -3703,6 +3776,41 @@
             "custom": true,
             "customTimeouts": {},
             "dependencies": [
+              "urn:pulumi:stack::project::envoy-infra:gcp:Dispatch$gcp:container/cluster:Cluster::example-dispatch",
+              "urn:pulumi:stack::project::envoy-infra:gcp:Dispatch$kubernetes:core/v1:ServiceAccount::example-dispatch-listener"
+            ],
+            "name": "example-dispatch-listener-nats-seed-uid-accessor",
+            "object": {
+              "member": "principal://iam.googleapis.com/projects/123456789012/locations/global/workloadIdentityPools/example-project.svc.id.goog/kubernetes.serviceaccount.uid/example-dispatch-listener-uid",
+              "role": "roles/secretmanager.secretAccessor",
+              "secretId": "projects/example-project/secrets/example-nats-seed-example-dispatch"
+            },
+            "parent": "urn:pulumi:stack::project::envoy-infra:gcp:Dispatch::example-dispatch",
+            "propertyDependencies": {
+              "member": {
+                "urns": [
+                  "urn:pulumi:stack::project::envoy-infra:gcp:Dispatch$gcp:container/cluster:Cluster::example-dispatch",
+                  "urn:pulumi:stack::project::envoy-infra:gcp:Dispatch$kubernetes:core/v1:ServiceAccount::example-dispatch-listener"
+                ]
+              },
+              "role": {},
+              "secretId": {}
+            },
+            "provider": "urn:pulumi:s::p::pulumi:providers:gcp::gcp-example::",
+            "supportsResultReporting": true,
+            "type": "gcp:secretmanager/secretIamMember:SecretIamMember",
+            "version": "10.1.0"
+          },
+          "urn": "urn:pulumi:stack::project::envoy-infra:gcp:Dispatch$gcp:secretmanager/secretIamMember:SecretIamMember::example-dispatch-listener-nats-seed-uid-accessor"
+        },
+        {
+          "register": {
+            "acceptResources": true,
+            "acceptSecrets": true,
+            "acceptsByteString": true,
+            "custom": true,
+            "customTimeouts": {},
+            "dependencies": [
               "urn:pulumi:stack::project::envoy-infra:gcp:Dispatch$gcp:container/cluster:Cluster::example-dispatch"
             ],
             "name": "example-dispatch-nats-seed-accessor",
@@ -3727,6 +3835,41 @@
             "version": "10.1.0"
           },
           "urn": "urn:pulumi:stack::project::envoy-infra:gcp:Dispatch$gcp:secretmanager/secretIamMember:SecretIamMember::example-dispatch-nats-seed-accessor"
+        },
+        {
+          "register": {
+            "acceptResources": true,
+            "acceptSecrets": true,
+            "acceptsByteString": true,
+            "custom": true,
+            "customTimeouts": {},
+            "dependencies": [
+              "urn:pulumi:stack::project::envoy-infra:gcp:Dispatch$gcp:container/cluster:Cluster::example-dispatch",
+              "urn:pulumi:stack::project::envoy-infra:gcp:Dispatch$kubernetes:core/v1:ServiceAccount::example-dispatch"
+            ],
+            "name": "example-dispatch-nats-seed-uid-accessor",
+            "object": {
+              "member": "principal://iam.googleapis.com/projects/123456789012/locations/global/workloadIdentityPools/example-project.svc.id.goog/kubernetes.serviceaccount.uid/example-dispatch-uid",
+              "role": "roles/secretmanager.secretAccessor",
+              "secretId": "projects/example-project/secrets/example-nats-seed-example-dispatch"
+            },
+            "parent": "urn:pulumi:stack::project::envoy-infra:gcp:Dispatch::example-dispatch",
+            "propertyDependencies": {
+              "member": {
+                "urns": [
+                  "urn:pulumi:stack::project::envoy-infra:gcp:Dispatch$gcp:container/cluster:Cluster::example-dispatch",
+                  "urn:pulumi:stack::project::envoy-infra:gcp:Dispatch$kubernetes:core/v1:ServiceAccount::example-dispatch"
+                ]
+              },
+              "role": {},
+              "secretId": {}
+            },
+            "provider": "urn:pulumi:s::p::pulumi:providers:gcp::gcp-example::",
+            "supportsResultReporting": true,
+            "type": "gcp:secretmanager/secretIamMember:SecretIamMember",
+            "version": "10.1.0"
+          },
+          "urn": "urn:pulumi:stack::project::envoy-infra:gcp:Dispatch$gcp:secretmanager/secretIamMember:SecretIamMember::example-dispatch-nats-seed-uid-accessor"
         },
         {
           "register": {
@@ -3940,6 +4083,7 @@
             "dependencies": [
               "urn:pulumi:stack::project::envoy-infra:gcp:Dispatch$gcp:container/cluster:Cluster::example-dispatch",
               "urn:pulumi:stack::project::envoy-infra:gcp:Dispatch$gcp:secretmanager/secretIamMember:SecretIamMember::example-dispatch-nats-seed-accessor",
+              "urn:pulumi:stack::project::envoy-infra:gcp:Dispatch$gcp:secretmanager/secretIamMember:SecretIamMember::example-dispatch-nats-seed-uid-accessor",
               "urn:pulumi:stack::project::envoy-infra:gcp:Dispatch$gcp:sql/databaseInstance:DatabaseInstance::example-dispatch",
               "urn:pulumi:stack::project::envoy-infra:gcp:Dispatch$kubernetes:core/v1:Secret::example-dispatch-dispatch",
               "urn:pulumi:stack::project::envoy-infra:gcp:Dispatch$kubernetes:core/v1:Secret::example-dispatch-listener",
@@ -4440,6 +4584,7 @@
             "dependencies": [
               "urn:pulumi:stack::project::envoy-infra:gcp:Dispatch$gcp:container/cluster:Cluster::example-dispatch",
               "urn:pulumi:stack::project::envoy-infra:gcp:Dispatch$gcp:secretmanager/secretIamMember:SecretIamMember::example-dispatch-listener-nats-seed-accessor",
+              "urn:pulumi:stack::project::envoy-infra:gcp:Dispatch$gcp:secretmanager/secretIamMember:SecretIamMember::example-dispatch-listener-nats-seed-uid-accessor",
               "urn:pulumi:stack::project::envoy-infra:gcp:Dispatch$kubernetes:core/v1:Secret::example-dispatch-listener",
               "urn:pulumi:stack::project::envoy-infra:gcp:Dispatch$kubernetes:scheduling.k8s.io/v1:PriorityClass::example-dispatch-priority-class"
             ],
@@ -6793,6 +6938,7 @@
         "principal": "principal://iam.googleapis.com/projects/123456789012/locations/global/workloadIdentityPools/example-project.svc.id.goog/subject/ns/example-dispatch/sa/example-dispatch",
         "serviceAccountIssuer": "https://container.googleapis.com/v1/projects/example-project/locations/us-central1/clusters/example-dispatch",
         "serviceAccountSubject": "system:serviceaccount:example-dispatch:example-dispatch",
+        "serviceAccountUid": "example-dispatch-uid",
         "url": "https://example-dispatch.example-tailnet.ts.net"
       },
       "type": "envoy-infra:gcp:Dispatch"
@@ -7046,6 +7192,15 @@
                 "endpoints": [
                   {
                     "interval": "30s",
+                    "metricRelabeling": [
+                      {
+                        "action": "drop",
+                        "regex": "nats_consumer_.+",
+                        "sourceLabels": [
+                          "__name__"
+                        ]
+                      }
+                    ],
                     "port": "prom-metrics"
                   }
                 ],
@@ -8483,6 +8638,15 @@
                 "endpoints": [
                   {
                     "interval": "30s",
+                    "metricRelabeling": [
+                      {
+                        "action": "drop",
+                        "regex": "nats_consumer_.+",
+                        "sourceLabels": [
+                          "__name__"
+                        ]
+                      }
+                    ],
                     "port": "prom-metrics"
                   }
                 ],
@@ -9226,8 +9390,10 @@
                     "      set -u",
                     "      marker=$1",
                     "      key=$2",
+                    "      command -v jq >/dev/null 2>&1 ||",
+                    "        { echo 'tailnet-joined: no jq on this machine, so the node status cannot be read' >&2; exit 1; }",
                     "      until docker exec tailscaled tailscale --socket=/tmp/tailscaled.sock status --json 2>/dev/null |",
-                    "        jq -e '.BackendState == \"Running\"' >/dev/null; do",
+                    "        jq -es 'length == 1 and .[0].BackendState == \"Running\"' >/dev/null 2>&1; do",
                     "        sleep 5",
                     "      done",
                     "      : >\"$key\" && touch \"$marker\"",

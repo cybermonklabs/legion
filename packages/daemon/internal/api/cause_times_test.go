@@ -293,20 +293,17 @@ func TestAnOlderContractIsServedNoCauseTimes(t *testing.T) {
 		})
 	}
 
-	// A caller below causeTimesContract is below dispatchCredentialContract, the frozen row above
-	// it, and below every entry's band too, so it is told of each of them, in the table's order:
-	// the cause times' line, the Dispatch credential's, then one line for each band of an entry
-	// that takes something off this state. It counts no entry (R4 of dispatch://INFRA-1569).
-	below := causeTimesContract - 1
-	_, narrowings := stateNarrowedStating(t, populatedState(t), statePodAddr+":41000", podClaims(0), below)
+	// A caller below causeTimesContract is below dispatchCredentialContract too, the one frozen row
+	// above it, and below each entry's band, so it is told of each of those rows, in the table's
+	// order: this band's line, the Dispatch credential's, then the line of each entry's band that
+	// found its keys on the golden (narrowingsExpected), which holds no entry to be the newest.
+	golden := populatedState(t)
+	_, narrowings := stateNarrowedStating(t, golden, statePodAddr+":41000", podClaims(0), causeTimesContract-1)
 	const dropped = "the claim views' lastDeathAt and lastStartFailureAt"
-	if len(narrowings) < 2 || narrowings[0].Dropped != dropped || narrowings[1].Dropped != "dispatchCredential" {
-		t.Errorf("the daemon wrote the narrowing lines %+v for a caller stating %d, want the first one saying it dropped %q and the second %q",
-			narrowings, below, dropped, "dispatchCredential")
-	}
-	want := narrowingsExpected(populatedState(t), below)
+	want := narrowingsExpected(golden, causeTimesContract-1)
 	if len(want) < 2 || want[0] != dropped || want[1] != "dispatchCredential" {
-		t.Fatalf("a caller at %d expects the lines %v, want the cause times' row's and the Dispatch credential's row's first", below, want)
+		t.Fatalf("a caller at %d expects the lines %v, want one that dropped %q and then one that dropped %q first",
+			causeTimesContract-1, want, dropped, "dispatchCredential")
 	}
-	wantNarrowings(t, narrowings, below, want)
+	wantNarrowings(t, narrowings, causeTimesContract-1, want)
 }

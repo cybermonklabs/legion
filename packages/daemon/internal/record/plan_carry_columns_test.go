@@ -117,8 +117,9 @@ func TestACarriedPlanHoldsEveryColumnOfItsVersionsAndTasks(t *testing.T) {
 			st := migratedStore(t)
 			inTx(t, st, func(tx pgx.Tx) {
 				for _, statement := range []string{
-					`insert into issue_plans (issue, generation, version, source, artifact_id, given_by, given_at)
-						values ('LEGION-208', 1, 2, 'owner', 'artifact-plan', 'legion-legion-legion-207-architect', now() - interval '1 hour')`,
+					`insert into issue_plans (issue, generation, version, source, artifact_id, given_by, given_at, earlier_givers)
+						values ('LEGION-208', 1, 2, 'owner', 'artifact-plan', 'legion-legion-legion-207-architect', now() - interval '1 hour',
+						'{legion-legion-legion-206-architect}')`,
 					`insert into plan_tasks (issue, generation, task, plan_version, block_text, needs, part_of, owner_role, merges, steps_by_default,
 						state, stopped_reason, running_kind, position, pass, rounds, conflict_rounds, backward_moves, cap_told)
 						values ('LEGION-208', 1, 'b', 2, 'Build the widget.', '{a}', 'a', 'architect', true, true,

@@ -8,7 +8,7 @@ The implementer merges the base into the issue branch on only three triggers:
 
 - GitHub reports the pull request `CONFLICTING`.
   The daemon's merge-forward message counts as this trigger because two reads of GitHub confirmed the conflict (*The daemon's ask*, below).
-  A controller request counts only if it identifies a conflict GitHub reports.
+  A request from your own architect, for a conflict another tree reported, counts only if it identifies a conflict GitHub reports.
 
 - The change needs something only the base has, such as a fix for its only red check.
 

@@ -32,10 +32,10 @@ func TestTheOperatorsRetryRelaunchesAStoppedClaim(t *testing.T) {
 			h.reach(StateIdle)
 			resumes := len(h.calls("Resume"))
 
-			h.must(RequestStop{Claim: h.token})
+			h.must(RequestStop{Claim: h.token, By: SuspendedByOperator})
 			h.wantState(StateRetired)
 
-			h.must(RequestOperatorRetry{Claim: h.token})
+			h.must(RequestAskedRetry{Claim: h.token, By: SuspendedByOperator})
 
 			h.wantState(StateLaunching)
 			h.wantBudgets(Budgets{})
@@ -71,10 +71,10 @@ func TestTheOperatorsRetryStartsTheSessionTheClaimRecords(t *testing.T) {
 			h.wantState(StateFailed)
 			spawns, resumes := len(h.calls("Spawn")), len(h.calls("Resume"))
 			if tc.fresh {
-				h.must(RequestForgetSession{Claim: h.token, Session: session})
+				h.must(RequestForgetSession{Claim: h.token, Session: session, By: SuspendedByOperator})
 			}
 
-			h.must(RequestOperatorRetry{Claim: h.token})
+			h.must(RequestAskedRetry{Claim: h.token, By: SuspendedByOperator})
 
 			h.wantState(StateLaunching)
 			if !tc.fresh {

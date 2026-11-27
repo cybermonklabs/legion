@@ -32,7 +32,16 @@ import (
 // testMainEnv makes this package's test binary the real `legion`: with it set, TestMain is main()
 // — its argv, its signal handling, its exit status — so a test can run a command as its own
 // process; workspace-init's tests run several contending for one tree volume, the way two pods'
-// init containers do.
+// init containers do. Only TestMain makes `legion` of a copy a test starts: in a build of these
+// tests without it, such a copy runs the tests, each of which starts copies that run them again.
+// Every copy is started from legionCopy, which refuses to start one in such a process
+// (legionCopyRefusal), and TestACopyStartedAsLegionRunsAsLegion fails in such a build by name.
+// Three tests set testMainEnv=1 in their own process:
+// TestLeakCheckPrePushTellsAVisibilityRead404AsNotFound and
+// TestLeakCheckPrePushPrintsNoCredentialItsRemoteCarries, through pushVisibilityReadEnv, and
+// TestLeakCheckPrePushReadsAnUnservedOwnersVisibilityWithNoCredential. The `gh` wrapper they put
+// first on PATH must be exactly the script `legion gh` accepts (isGhWrapper), so it cannot set the
+// variable for the copy, which inherits it from the test. Each starts its copies before it sets it.
 const testMainEnv = "LEGION_CMD_TEST_MAIN"
 
 // testCurlEnv names, to this package's test binary run as `legion` (TestMain), the stand-in curl
@@ -140,6 +149,56 @@ func TestMain(m *testing.M) {
 	// cloned once the run ends; a run that clones nothing, as every other test here, costs nothing,
 	// and with no LEGION_TEST_PG_DSN the cloning test is skipped (testpg.Clone).
 	os.Exit(testpg.Main("legion_cmd_test", func() int { return runWithoutTheOperatorsJJConfig(m) }))
+}
+
+// legionCopy is the path of this test binary, which a test runs as `legion` with testMainEnv=1 in
+// the copy's environment. It fails t where legionCopyRefusal refuses.
+func legionCopy(t testing.TB) string {
+	t.Helper()
+	if err := legionCopyRefusal(); err != nil {
+		t.Fatal(err)
+	}
+	return os.Args[0]
+}
+
+// legionCopyRefusal is why this process may start no copy of this test binary, nil when it may. A
+// process that has testMainEnv=1 was started as `legion`, and TestMain runs such a process as
+// `legion`, so one that runs the tests runs in a build without TestMain, and a copy started there
+// would run the tests again. The one other way a test process holds it is a test that set it and
+// then started a copy, which the message names too.
+func legionCopyRefusal() error {
+	if os.Getenv(testMainEnv) == "1" {
+		return fmt.Errorf("this process has %s=1: a test started it as legion, but it runs the tests, so this build of the tests has no TestMain that runs legion and a copy started here would run the tests again; or a test set %s=1 in its own process and then started a copy, which it must start before", testMainEnv, testMainEnv)
+	}
+	return nil
+}
+
+// A copy started with testMainEnv=1 runs as legion: on -h it prints legion's help. In a build
+// without TestMain, the testing package reads -h before any test runs, prints its own flag usage
+// and exits, so this test fails there by name and its copy starts no copy of its own.
+func TestACopyStartedAsLegionRunsAsLegion(t *testing.T) {
+	t.Parallel()
+	cmd := exec.Command(legionCopy(t), "-h")
+	cmd.Env = append(os.Environ(), testMainEnv+"=1")
+	out, err := cmd.CombinedOutput()
+	if want := newRoot(io.Discard, io.Discard, processWorkspace()).Short + "\n"; err != nil || !strings.HasPrefix(string(out), want) {
+		t.Fatalf("a copy started as legion with -h: %v, want exit 0 and legion's help, which starts %q\n%s", err, want, out)
+	}
+}
+
+// legionCopyRefusal, which legionCopy asks before any copy starts, refuses a process that has
+// testMainEnv=1 and no other. While TestMain is in the build no copy reaches it, so this test is
+// what holds the refusal.
+func TestAProcessStartedAsLegionStartsNoCopy(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (fixtureenv.Unset, t.Setenv).
+	fixtureenv.Unset(t, testMainEnv)
+	if err := legionCopyRefusal(); err != nil {
+		t.Fatalf("with %s unset: %v, want no refusal", testMainEnv, err)
+	}
+	t.Setenv(testMainEnv, "1")
+	if err := legionCopyRefusal(); err == nil || !strings.Contains(err.Error(), testMainEnv+"=1") {
+		t.Fatalf("with %s=1: %v, want a refusal that names it", testMainEnv, err)
+	}
 }
 
 // runWithoutTheOperatorsJJConfig runs the package's tests with a jj configuration directory of
@@ -427,7 +486,7 @@ func heldSocket(t *testing.T) (*os.File, int) {
 // and stderr once it exits. The test's copy of descriptor is closed once the process has started.
 func startOnDescriptor(t *testing.T, config string, descriptor *os.File) (int, string) {
 	t.Helper()
-	command := exec.Command(os.Args[0], "start", "--config", config)
+	command := exec.Command(legionCopy(t), "start", "--config", config)
 	command.Env = append(os.Environ(), testMainEnv+"=1", "LEGION_LISTEN_FD=3")
 	command.ExtraFiles = []*os.File{descriptor}
 	var stderr bytes.Buffer
@@ -562,7 +621,7 @@ func TestHelpListsEveryCommand(t *testing.T) {
 		if code != tc.code {
 			t.Fatalf("%v = %d, want %d; stderr %q", tc.argv, code, tc.code, errb.String())
 		}
-		for _, command := range newRoot(io.Discard, io.Discard).Commands() {
+		for _, command := range newRoot(io.Discard, io.Discard, processWorkspace()).Commands() {
 			if listedHere := strings.Contains(listed, "\n  "+command.Name()+" "); listedHere == command.Hidden {
 				t.Errorf("%v lists %s: %t, want %t: %q", tc.argv, command.Name(), listedHere, !command.Hidden, listed)
 			}
@@ -1569,6 +1628,38 @@ func TestConfigCheckReportsTheConfigurationsCapabilityGaps(t *testing.T) {
 	}
 }
 
+// `legion config check` names the ServiceAccount the controller's pod runs as when the file names
+// runtime.kubernetes.pod.controller_service_account, beside the one every other pod runs as — the
+// namespace's default where service_account is unset — and, while the repository cache's bucket is
+// set, the one a repository cache's pod runs as, just before the repository cache's line, and exits
+// 0. A file that names no controller account prints no such line
+// (TestConfigCheckReportsTheConfigurationsCapabilityGaps): its controller runs as
+// runtime.kubernetes.pod.service_account.
+func TestConfigCheckNamesTheControllersOwnServiceAccount(t *testing.T) {
+	legionState(t)
+	const secretsGap = "capability secrets is open: runtime.kubernetes.agent_secrets is not configured; to record a decision, add to legion.yaml: capabilities.decided.secrets: \"<reason>\"\n"
+	const pluginsGap = "plugins: none — set runtime.kubernetes.plugins or run a release build; a daemon that knows none relaunches no process on another plugin contract\n"
+	for _, tc := range []struct{ name, extra, want string }{
+		{"beside the pods' own account", "    pod: {service_account: legion-worker, controller_service_account: legion-controller}\ncontroller: daemon\n",
+			"controller service account: the controller's pod runs as legion-controller (runtime.kubernetes.pod.controller_service_account); every other pod runs as legion-worker (runtime.kubernetes.pod.service_account)\n"},
+		{"beside no pods' account", "    pod: {controller_service_account: legion-controller}\ncontroller: daemon\n",
+			"controller service account: the controller's pod runs as legion-controller (runtime.kubernetes.pod.controller_service_account); every other pod runs as the namespace's default (runtime.kubernetes.pod.service_account is unset)\n"},
+		{"beside the pods' own account and the cache's", "    pod: {service_account: legion-worker, controller_service_account: legion-controller}\n    repository_cache: {bucket: example-legion-packs, service_account: legion-cache}\ncontroller: daemon\n",
+			"controller service account: the controller's pod runs as legion-controller (runtime.kubernetes.pod.controller_service_account); every other pod but a repository cache's runs as legion-worker (runtime.kubernetes.pod.service_account); a repository cache's pod runs as legion-cache (runtime.kubernetes.repository_cache.service_account)\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			config := kubernetesCheckConfig(t, tc.extra)
+
+			var out, errb bytes.Buffer
+			code := run(context.Background(), []string{"legion", "config", "check", "--config", config}, &out, &errb)
+
+			if want := demoCheckConfigOK + secretsGap + tc.want + defaultCacheLine + pluginsGap; code != 0 || out.String() != want || errb.Len() != 0 {
+				t.Fatalf("exit code = %d, stdout %q, stderr %q; want 0 and %q", code, out.String(), errb.String(), want)
+			}
+		})
+	}
+}
+
 // `legion config check` (`legion start --check-config` before the CLI moved onto cobra, which this
 // test's name, cited by dispatch://INFRA-4425's check K1, keeps) takes dispatch_token_broker from
 // the file alone (dispatch://INFRA-4425 R1): with none of the identity variables the daemon's own
@@ -2237,16 +2328,16 @@ func TestPlainStateNamesTheRootsWaitingOnAPerson(t *testing.T) {
 // daemon does not build, and every root at all against a daemon below contract 58, which
 // serves no place. 0 is the true answer for a caller that cannot see the line.
 //
-// The operator's guide prints this line as its sample and says what the count is, so the sample
-// is built here from the state the guide describes and read back out of awaiting_summary_extract.txt,
-// the copy of those lines committed beside this package. It is read there and never in the guide
-// itself: a test that reads the guide puts the guide in this job's filter — a declared read
-// applies to every compiled source file of a run — and a documentation edit would then start the
-// whole daemon Go lane. What holds the copy to the guide is internal/textcheck's
-// TestTheAwaitingSummaryExtractIsTheGuidesWaitingLineSample, in the job whose subject is a
-// file's words (INFRA-1413). That the guide also names the words of the wait itself is one rule
-// held in one place, workflow's TestTheShippedWordsNameTheWaitingLineBand, which reads each
-// out of the source that declares it. (INFRA-1100.)
+// The operator's guide prints this line as its sample, with the `P0:` line under `admission:`, and
+// says what the count is, so the sample is built here from the state the guide describes and read
+// back out of awaiting_summary_extract.txt, the copy of those lines committed beside this package.
+// It is read there and never in the guide itself: a test that reads the guide puts the guide in
+// this job's filter — a declared read applies to every compiled source file of a run — and a
+// documentation edit would then start the whole daemon Go lane. What holds the copy to the guide
+// is internal/textcheck's TestTheAwaitingSummaryExtractIsTheGuidesWaitingLineSample, in the job
+// whose subject is a file's words (INFRA-1413). That the guide also names the words of the wait
+// itself is one rule held in one place, workflow's TestTheShippedWordsNameTheWaitingLineBand,
+// which reads each out of the source that declares it. (INFRA-1100.)
 func TestTheShippedWordsNameTheWaitingLineCount(t *testing.T) {
 	t.Parallel()
 	answered := time.Date(2026, 10, 25, 12, 0, 0, 0, time.UTC)
@@ -2298,6 +2389,15 @@ func TestTheShippedWordsNameTheWaitingLineCount(t *testing.T) {
 	if !strings.Contains(quoted, sample) {
 		t.Errorf("%s does not carry %q, the line the guide's `legion state` sample prints for a "+
 			"state with one unanswered root", extract, sample)
+	}
+	// The `P0:` line the sample prints under `admission:` for the same state: three issues hold a
+	// slot under a cap of 4, none of them P0, and no P0 bound stands in legion.yaml or was set
+	// while the daemon runs.
+	p0Line := p0AdmissionLine(api.Admission{Cap: 4, Active: []string{"WIDGETS-11", "WIDGETS-12", "WIDGETS-13"},
+		P0Holders: new(0), P0Bound: &api.P0BoundView{}})
+	if !strings.Contains(quoted, p0Line) {
+		t.Errorf("%s does not carry %q, the line the guide's `legion state` sample prints for three "+
+			"holders of a slot, none of them P0, and no P0 bound", extract, p0Line)
 	}
 }
 

@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/clock"
 	"github.com/sjawhar/legion/daemon/internal/clock/clocktest"
 	"github.com/sjawhar/legion/daemon/internal/envlisting"
+	"github.com/sjawhar/legion/daemon/internal/procgroup"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
@@ -90,7 +91,7 @@ func TestWarmCodegraphIndexBuildsAnIndexWhenTheCliIsOnPath(t *testing.T) {
 	stubCodegraph(t, callLog)
 	dir := t.TempDir()
 
-	WarmCodegraphIndex(context.Background(), dir, time.Now())
+	WarmCodegraphIndex(context.Background(), procgroup.NoReaper, dir, time.Now())
 	if _, err := os.Stat(filepath.Join(dir, ".codegraph", ".codegraph-initialized")); err != nil {
 		t.Fatalf("workspace left uninitialized after warming: %v", err)
 	}
@@ -105,7 +106,7 @@ func TestWarmCodegraphIndexBuildsAnIndexWhenTheCliIsOnPath(t *testing.T) {
 	// Warming the same directory again is a no-op re-index: codegraph runs status again, but
 	// never a second init, since the marker already reports initialized.
 	before := len(strings.Split(strings.TrimSpace(string(calls)), "\n"))
-	WarmCodegraphIndex(context.Background(), dir, time.Now())
+	WarmCodegraphIndex(context.Background(), procgroup.NoReaper, dir, time.Now())
 	calls, err = os.ReadFile(callLog)
 	if err != nil {
 		t.Fatalf("read codegraph call log after the second warm-up: %v", err)
@@ -145,14 +146,14 @@ esac
 	// The stub holds its init until the release below, so a call that waited on the build never
 	// returns and this wait fails.
 	testwait.Receive(t, "WarmCodegraphIndexInBackground to return while codegraph init still runs", inFlight(func() struct{} {
-		WarmCodegraphIndexInBackground(dir)
+		WarmCodegraphIndexInBackground(procgroup.NoReaper, dir)
 		return struct{}{}
 	}))
 	waitFor(t, func() bool {
 		calls, _ := os.ReadFile(callLog)
 		return strings.Contains(string(calls), "init")
 	}, "codegraph init to start")
-	WarmCodegraphIndexInBackground(dir)
+	WarmCodegraphIndexInBackground(procgroup.NoReaper, dir)
 	if err := os.WriteFile(release, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -183,7 +184,7 @@ func TestWarmCodegraphIndexNeverFailsWhenTheCliIsMissing(t *testing.T) {
 	// machine (like this one) that has a real `codegraph` on its ordinary PATH.
 	t.Setenv("PATH", t.TempDir())
 
-	WarmCodegraphIndex(context.Background(), dir, time.Now())
+	WarmCodegraphIndex(context.Background(), procgroup.NoReaper, dir, time.Now())
 	if _, err := os.Stat(filepath.Join(dir, ".codegraph", ".codegraph-initialized")); !os.IsNotExist(err) {
 		t.Fatalf("stat .codegraph/.codegraph-initialized = %v, want it absent with no codegraph on PATH", err)
 	}
@@ -210,7 +211,7 @@ func TestWarmCodegraphIndexGivesCodegraphNoSecretLikeVariable(t *testing.T) {
 	t.Setenv("LEGION_GRANT", grant)
 	dir := t.TempDir()
 
-	WarmCodegraphIndex(context.Background(), dir, time.Now())
+	WarmCodegraphIndex(context.Background(), procgroup.NoReaper, dir, time.Now())
 	calls, err := os.ReadFile(callLog)
 	if err != nil {
 		t.Fatalf("read codegraph call log: %v", err)
@@ -267,7 +268,7 @@ esac
 	}
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
-	WarmCodegraphIndex(context.Background(), dir, time.Now())
+	WarmCodegraphIndex(context.Background(), procgroup.NoReaper, dir, time.Now())
 	calls, err := os.ReadFile(callLog)
 	if err != nil {
 		t.Fatalf("read codegraph call log: %v", err)
@@ -306,7 +307,7 @@ esac
 	}
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
-	WarmCodegraphIndex(context.Background(), dir, time.Now())
+	WarmCodegraphIndex(context.Background(), procgroup.NoReaper, dir, time.Now())
 	calls, err := os.ReadFile(callLog)
 	if err != nil {
 		t.Fatalf("read codegraph call log: %v", err)
@@ -335,13 +336,13 @@ func TestWarmCodegraphIndexInitializesAnUntrackedCodegraphDirectoryAgainstTheRea
 		t.Fatal(err)
 	}
 
-	WarmCodegraphIndex(context.Background(), dir, time.Now())
+	WarmCodegraphIndex(context.Background(), procgroup.NoReaper, dir, time.Now())
 
 	codegraphPath, err := exec.LookPath("codegraph")
 	if err != nil {
 		t.Fatal(err)
 	}
-	status, err := runCodegraph(context.Background(), clock.Real(), codegraphPath, dir, "status", "--json")
+	status, err := runCodegraph(context.Background(), clock.Real(), procgroup.NoReaper, codegraphPath, dir, "status", "--json")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -399,7 +400,7 @@ esac
 		t.Fatal(err)
 	}
 
-	WarmCodegraphIndex(context.Background(), dir, time.Now())
+	WarmCodegraphIndex(context.Background(), procgroup.NoReaper, dir, time.Now())
 	calls, err := os.ReadFile(callLog)
 	if err != nil {
 		t.Fatalf("read codegraph call log: %v", err)
@@ -460,7 +461,7 @@ esac
 			}
 			t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
-			WarmCodegraphIndex(context.Background(), dir, time.Now())
+			WarmCodegraphIndex(context.Background(), procgroup.NoReaper, dir, time.Now())
 			calls, err := os.ReadFile(callLog)
 			if err != nil {
 				t.Fatalf("read codegraph call log: %v", err)
@@ -492,8 +493,8 @@ esac
 	}
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
-	WarmCodegraphIndex(context.Background(), dir, time.Now())
-	WarmCodegraphIndex(context.Background(), dir, time.Now())
+	WarmCodegraphIndex(context.Background(), procgroup.NoReaper, dir, time.Now())
+	WarmCodegraphIndex(context.Background(), procgroup.NoReaper, dir, time.Now())
 	calls, err := os.ReadFile(callLog)
 	if err != nil {
 		t.Fatalf("read codegraph call log: %v", err)
@@ -565,7 +566,7 @@ func TestWarmCodegraphIndexHoldsACrossProcessLease(t *testing.T) {
 		dir := t.TempDir()
 		lease := leaseOf(t, dir, 0)
 
-		WarmCodegraphIndex(context.Background(), dir, time.Now())
+		WarmCodegraphIndex(context.Background(), procgroup.NoReaper, dir, time.Now())
 		if calls := stubCalls(t, callLog); calls != nil {
 			t.Fatalf("codegraph calls = %v, want none while another process holds the lease", calls)
 		}
@@ -579,7 +580,7 @@ func TestWarmCodegraphIndexHoldsACrossProcessLease(t *testing.T) {
 		dir := t.TempDir()
 		leaseOf(t, dir, warmLeaseStale+time.Minute)
 
-		WarmCodegraphIndex(context.Background(), dir, time.Now())
+		WarmCodegraphIndex(context.Background(), procgroup.NoReaper, dir, time.Now())
 		if calls := stubCalls(t, callLog); !slices.Equal(calls, []string{"status --json", "init"}) {
 			t.Fatalf("codegraph calls = %v, want status --json then init behind the taken-over lease", calls)
 		}
@@ -592,7 +593,7 @@ func TestWarmCodegraphIndexHoldsACrossProcessLease(t *testing.T) {
 		stubCodegraph(t, callLog)
 		dir := t.TempDir()
 
-		WarmCodegraphIndex(context.Background(), dir, time.Now())
+		WarmCodegraphIndex(context.Background(), procgroup.NoReaper, dir, time.Now())
 		if calls := stubCalls(t, callLog); !slices.Equal(calls, []string{"status --json", "init"}) {
 			t.Fatalf("codegraph calls = %v, want status --json then init", calls)
 		}
@@ -1052,7 +1053,7 @@ esac
 	}
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
-	WarmCodegraphIndex(context.Background(), dir, time.Now())
+	WarmCodegraphIndex(context.Background(), procgroup.NoReaper, dir, time.Now())
 	calls, err := os.ReadFile(callLog)
 	if err != nil {
 		t.Fatalf("read codegraph call log: %v", err)
@@ -1109,7 +1110,7 @@ func TestWarmCodegraphIndexLogsOneSuccessLine(t *testing.T) {
 		dir := t.TempDir()
 		captured := captureStderr(t)
 
-		WarmCodegraphIndex(context.Background(), dir, time.Now())
+		WarmCodegraphIndex(context.Background(), procgroup.NoReaper, dir, time.Now())
 		stderr := captured()
 		lines := success.FindAllStringSubmatch(stderr, -1)
 		if len(lines) != 1 {
@@ -1131,7 +1132,7 @@ func TestWarmCodegraphIndexLogsOneSuccessLine(t *testing.T) {
 		}
 		captured := captureStderr(t)
 
-		WarmCodegraphIndex(context.Background(), dir, time.Now())
+		WarmCodegraphIndex(context.Background(), procgroup.NoReaper, dir, time.Now())
 		if stderr := captured(); success.MatchString(stderr) {
 			t.Fatalf("a warm-up that built nothing logged a success line:\n%s", stderr)
 		}
@@ -1154,7 +1155,7 @@ esac
 		t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 		captured := captureStderr(t)
 
-		WarmCodegraphIndex(context.Background(), dir, time.Now())
+		WarmCodegraphIndex(context.Background(), procgroup.NoReaper, dir, time.Now())
 		stderr := captured()
 		if success.MatchString(stderr) {
 			t.Fatalf("a warm-up whose init failed logged a success line:\n%s", stderr)
@@ -1190,7 +1191,7 @@ func TestWarmCodegraphIndexReadsACodegraphASignalEndedAsOneThatAnsweredNothing(t
 		}
 		fake(t, callLog, "status) kill -KILL $$ ;;\nindex) exit 0 ;;\n")
 
-		WarmCodegraphIndex(context.Background(), dir, time.Now())
+		WarmCodegraphIndex(context.Background(), procgroup.NoReaper, dir, time.Now())
 		calls, err := os.ReadFile(callLog)
 		if err != nil {
 			t.Fatalf("read codegraph call log: %v", err)
@@ -1205,7 +1206,7 @@ func TestWarmCodegraphIndexReadsACodegraphASignalEndedAsOneThatAnsweredNothing(t
 		fake(t, callLog, "status) echo '{\"initialized\":false}' ;;\ninit) echo 'parsing 512 files' >&2; kill -KILL $$ ;;\n")
 		captured := captureStderr(t)
 
-		WarmCodegraphIndex(context.Background(), dir, time.Now())
+		WarmCodegraphIndex(context.Background(), procgroup.NoReaper, dir, time.Now())
 		want := "[legion] codegraph init for " + dir + " was ended by signal: killed: parsing 512 files\n"
 		if stderr := captured(); !strings.Contains(stderr, want) {
 			t.Fatalf("stderr lacks the line %q:\n%s", want, stderr)
@@ -1284,7 +1285,7 @@ func newBoundRow(t *testing.T, fake func(t *testing.T, callLog, cases string), s
 			r.reached("the stub's child to leave once released", "left")
 		}
 	})
-	go func() { defer close(r.done); warmCodegraphIndexOn(ctx, r.c, r.dir, time.Now()) }()
+	go func() { defer close(r.done); warmCodegraphIndexOn(ctx, r.c, procgroup.NoReaper, r.dir, time.Now()) }()
 	return r
 }
 

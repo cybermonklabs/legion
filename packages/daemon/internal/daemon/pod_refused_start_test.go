@@ -211,7 +211,7 @@ func TestALaunchItsPodRefusesAfterItsStartRowFinishedQueuesAStartOfTheClaim(t *t
 		{
 			name: "the turn of a resume the wake pacing held",
 			deps: func(d *supervise.Deps) {
-				d.WakePace = supervise.WakePace{Rate: 1, Burst: 1, Reserve: func(now time.Time) time.Time { return now.Add(parkedTurn) }}
+				d.WakePace = parkedFor(d.Clock, parkedTurn)
 			},
 			launchingAfterItsRow: func(t *testing.T, r *podRefusalRig) time.Duration {
 				drainAt(t, r.runner, 0, "the start row's attempt")
@@ -467,9 +467,10 @@ func (r *podRefusalRig) outboxSettles() {
 	}
 }
 
-// pacedTurn is the wake pacing that gives every launch its turn parkedTurn on.
+// pacedTurn is the wake pacing that lets the first launch out parkedTurn after the rig's clock
+// reads now (parkedFor). Each later launch waits one more interval behind the launch before it.
 func pacedTurn(d *supervise.Deps) {
-	d.WakePace = supervise.WakePace{Rate: 1, Burst: 1, Reserve: func(now time.Time) time.Time { return now.Add(parkedTurn) }}
+	d.WakePace = parkedFor(d.Clock, parkedTurn)
 }
 
 // refusedWhileItsRowFinishes drives the rig, under pacedTurn, to the moment a start row's attempt
@@ -854,11 +855,14 @@ func TestAStartAnEarlierRefusalQueuedAsksAgainWhenAnotherPodRefusesItsLaunch(t *
 	if err := r.runner.execute(ctx, row); err != nil {
 		t.Fatalf("the owed entry's attempt once pod-2 stands: %v", err)
 	}
-	if held := r.machine.View(); held.State != supervise.StateLaunching || held.WakeWaiting == nil {
+	held := r.machine.View()
+	if held.State != supervise.StateLaunching || held.WakeWaiting == nil {
 		t.Fatalf("after the owed entry's attempt the tester is %s with wake %+v, want it launching under the resume the pacing parked", held.State, held.WakeWaiting)
 	}
-	if fired := r.clock.fire(parkedTurn); fired != 1 {
-		t.Fatalf("fired %d timers for the wake's turn, want the one the pacing armed", fired)
+	// The pacing lets this second launch out one interval behind the first (pacedTurn). So the
+	// test fires the turn that the claim's view names.
+	if fired := r.clock.fireAt(held.WakeWaiting.At); fired != 1 {
+		t.Fatalf("fired %d timers for the wake's turn at %s, want the one the pacing armed", fired, held.WakeWaiting.At)
 	}
 	r.toldTheControllerTimes(2)
 	if got := r.starts(); len(got) != 1 {

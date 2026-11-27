@@ -815,22 +815,22 @@ timeout_hook=report_stall_entries
 until_true 600 "the implementer's turn to end with its phase open and the reminder to reach it as Stop hook feedback" \
   reminded_or_completed "$stall_offset"
 stop_hook_reminded "$stall_offset" ||
-  fail "the implementer completed its phase (handoff $(role_handoff "$issue" implementer implementing)) before the proof's stall instruction left it a turn ending with the phase open: it did the work of the task that started its phase, against the proof's instructions, so there was no open phase for the Stop hook to remind"
+  fail "the implementer completed its phase (handoff $(role_handoff "$issue" implementer implementing testing)) before the proof's stall instruction left it a turn ending with the phase open: it did the work of the task that started its phase, against the proof's instructions, so there was no open phase for the Stop hook to remind"
 until_true 300 "the blocked turn to be continued in the same session" reminded_turn_continued "$stall_offset"
 timeout_hook=
 until_true 300 "the reminded implementer's turn to end" issue_worker_state "$issue" implementer idle
 note "the implementer ended a turn with implementing still open: Claude Code carried its Stop hook's block back as Stop hook feedback naming \"$stall_reminder_needle\", and took one more turn on it"
 pass
 
-# The daemon refuses a completion of implementing while no pull request is open on the issue branch
-# (HANDOFF_NO_PULL_REQUEST, packages/daemon/internal/api/handoff.go), so the implementer opens one
-# before handoff_complete, and exactly one is open on the branch; the teardown closes it
-# (remove_run_branch).
+# The daemon refuses a completion of implementing with no open pull request, unless GitHub cannot
+# be read or the daemon recorded a merged pull request. This proof opens one before handoff_complete
+# and checks that exactly one is open on the branch; the teardown closes it (remove_run_branch).
 begin claude-implementer-handoff
 marker="claude-proof-marker-$ptoken-$RANDOM$RANDOM"
 send_agent "$issue" implementer "Claude backend proof implementation operation ($marker): make the smallest one-file change this issue's spec describes in your $repo workspace, commit it on legion/$issue, push the branch to origin, write the required implementation handoff with dispatch handoff-write, open a pull request from legion/$issue to the repository's default branch, then call the legion tool's handoff_complete with a concise summary. Do not merge."
-until_true 900 "the daemon to record the implementer's handoff_complete" handoff_recorded
-commit=$(role_handoff "$issue" implementer implementing)
+wait_for_phase "$issue" testing 900
+commit=$(role_handoff "$issue" implementer testing)
+assert_round_handoff "$issue" 0
 assert_handoff_record "$issue" implementer implementing 0
 files=$(smoke_commit_files "$commit") || exit 1
 ! grep -q '^\.legion/' <<<"$files" || fail "the implementer's commit $commit changes files under .legion/, where no handoff goes now: $(tr '\n' ' ' <<<"$files")"

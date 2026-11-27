@@ -22,11 +22,18 @@ import (
 //   - the tmux form: the bin directory that workerbin.Install writes for that legion, first on
 //     PATH, with the real jj (or a recording jj ahead of it) after it.
 //
-// Every test runs under both forms, through the fixture of jj_push_fixture_test.go, but
-// TestAFailingReadOfThePushsConfigurationSendsNothing, of a read that only the pane's legion jj
-// makes, which runs under the tmux form alone. Neither file names anything the step's change adds:
-// the fixture writes out the table's variable and those of the test binary's bounds of the step,
-// and builds every command's environment. So both compile and run at the base too, where
+// A case that tests a form (its expansion of the line, a global flag in front of the command word
+// among it, its wrapper's refusals and its filtering of warnings, which jj or git it runs, its own
+// help) runs under both forms, as does each row whose line holds a configuration layer, an alias
+// or a `--` of the role's, which the pod's wrapper reads itself, each quiet row (the dry run puts
+// its own quiet layer in a different place in each form), and one row or test of each family of
+// the step's own logic, the check that the two forms agree; each such case says why where it runs
+// both. Every other case of the step's own logic runs under the pod's form alone; the fixture's
+// comment above rolePushEachForm says, from the code, what a form changes and what it does not.
+// TestAFailingReadOfThePushsConfigurationSendsNothing, of a read that only the pane's
+// legion jj makes, runs under the tmux form alone. Neither file names anything the step's change
+// adds: the fixture writes out the table's variable and those of the test binary's bounds of the
+// step, and builds every command's environment. So both compile and run at the base too, where
 // docker/jj hands no push to `legion jj` and workerbin.Install writes no jj; there the tests of a
 // change fail, and those of what stays pass.
 
@@ -35,7 +42,8 @@ import (
 func rolePushAuthorRows() []rolePushRow {
 	impl, rev := rolePushImplementer, rolePushReviewer
 	rows := []rolePushRow{
-		{name: "made by the other role's jj new", args: rolePushBookmark, setup: func(f *rolePushFixture) rolePushWant {
+		// The authors family's check that the two forms agree (rolePushRow.bothForms).
+		{name: "made by the other role's jj new", bothForms: true, args: rolePushBookmark, setup: func(f *rolePushFixture) rolePushWant {
 			c := f.commitOn(rev, impl, "main", rolePushMessage("work", "implementer"))
 			f.bookmark("legion/K-1", c.commit)
 			return rolePushSends("legion/K-1", c, "implementer", impl)
@@ -111,7 +119,7 @@ func rolePushAuthorRows() []rolePushRow {
 			f.bookmark("legion/K-1", c.commit)
 			return rolePushSends("legion/K-1", c, "implementer", impl)
 		}},
-		{name: "the push's own --config user.email", args: []string{"git", "push", "--bookmark", "legion/K-1", "--config", "user.name=Another Name", "--config", "user.email=another@example.invalid"},
+		{name: "the push's own --config user.email", bothForms: true, args: []string{"git", "push", "--bookmark", "legion/K-1", "--config", "user.name=Another Name", "--config", "user.email=another@example.invalid"},
 			setup: func(f *rolePushFixture) rolePushWant {
 				c := f.commitOn(rev, impl, "main", rolePushMessage("work", "implementer"))
 				f.bookmark("legion/K-1", c.commit)
@@ -277,7 +285,8 @@ func rolePushFormRows() []rolePushRow {
 			}
 		}},
 		{name: "--change <change id>", args: []string{"git", "push", "--change", "{change:@-}"}, setup: underChange},
-		{name: "--change <commit id>", args: []string{"git", "push", "--change", "{commit:@-}"}, setup: byID(underChange)},
+		// The revisions family's check that the two forms agree (rolePushRow.bothForms).
+		{name: "--change <commit id>", bothForms: true, args: []string{"git", "push", "--change", "{commit:@-}"}, setup: byID(underChange)},
 		{name: "--named nm=<commit id>", args: []string{"git", "push", "--named", "nm={commit:@-}"}, setup: byID(named)},
 		{name: "--revisions <commit id>", args: []string{"git", "push", "--revisions", "{commit:@-}"}, setup: byID(onTracked)},
 		{name: "--change=<commit id>", args: []string{"git", "push", "--change={commit:@-}"}, setup: byID(underChange)},
@@ -286,9 +295,9 @@ func rolePushFormRows() []rolePushRow {
 		{name: "-r<commit id>", args: []string{"git", "push", "-r{commit:@-}"}, setup: byID(onTracked)},
 		// The push's own --config in front of `git push`, which jj keeps where no --config
 		// follows the pair, defines the alias that -r names: the step's dry run reads it too.
-		{name: "-r <an alias of the push's own --config in front of git push>", args: []string{"--config", `revset-aliases.sendme="@-"`, "git", "push", "-r", "sendme"}, setup: onTracked},
+		{name: "-r <an alias of the push's own --config in front of git push>", bothForms: true, args: []string{"--config", `revset-aliases.sendme="@-"`, "git", "push", "-r", "sendme"}, setup: onTracked},
 		// A `--` ends the options: the step's dry run puts its own words in front of it.
-		{name: "--bookmark, then --", args: []string{"git", "push", "--bookmark", "legion/K-1", "--"}, setup: onBookmark},
+		{name: "--bookmark, then --", bothForms: true, args: []string{"git", "push", "--bookmark", "legion/K-1", "--"}, setup: onBookmark},
 		// A tag makes its commit immutable, so the step leaves it as it is and the push goes on. A
 		// jj with no --tag refuses the push itself, and the row expects that refusal.
 		{name: "--tag", args: []string{"git", "push", "--tag", "v1"}, setup: func(f *rolePushFixture) rolePushWant {
@@ -338,7 +347,7 @@ func TestEveryPushFormSendsTheRewrittenCommit(t *testing.T) {
 	for _, first := range rolePushTwoRemoteFirsts {
 		t.Run("two remotes, "+first.name, func(t *testing.T) {
 			t.Parallel()
-			rolePushEachForm(t, func(t *testing.T, form rolePushForm) {
+			rolePushStepLogic(t, func(t *testing.T, form rolePushForm) {
 				rolePushTwoRemotes(t, newRolePushFixture(t, form, ""), first.args)
 			})
 		})
@@ -546,7 +555,7 @@ func TestARevisionJJMovesToTheRewrittenCommitGoesToThePushAsWritten(t *testing.T
 func TestACommitIDBesideARefusedNumberSendsTheRewrittenCommit(t *testing.T) {
 	t.Parallel()
 	impl, rev := rolePushImplementer, rolePushReviewer
-	rolePushEachForm(t, func(t *testing.T, form rolePushForm) {
+	rolePushStepLogic(t, func(t *testing.T, form rolePushForm) {
 		f := newRolePushFixture(t, form, "")
 		message := rolePushMessage("work", "implementer")
 		c := f.commitOn(rev, impl, "main", message)
@@ -568,7 +577,7 @@ func TestAQuotedCommitIDSendsTheRewrittenCommit(t *testing.T) {
 	for _, quote := range []string{`"`, `'`} {
 		t.Run(quote, func(t *testing.T) {
 			t.Parallel()
-			rolePushEachForm(t, func(t *testing.T, form rolePushForm) {
+			rolePushStepLogic(t, func(t *testing.T, form rolePushForm) {
 				f := newRolePushFixture(t, form, "")
 				c := f.commitOn(rev, impl, "main", rolePushMessage("work", "implementer"))
 				want := rolePushSends("push-"+c.change[:12], c, "implementer", impl)
@@ -650,7 +659,7 @@ func TestARefusedPushLeavesNoBookmarkAndItsRetrySends(t *testing.T) {
 	for _, row := range rolePushRefusedRows() {
 		t.Run(row.name, func(t *testing.T) {
 			t.Parallel()
-			rolePushEachForm(t, func(t *testing.T, form rolePushForm) {
+			rolePushStepLogic(t, func(t *testing.T, form rolePushForm) {
 				f := newRolePushFixture(t, form, "")
 				want := row.setup(f)
 				args := f.resolve(row.args)
@@ -693,7 +702,7 @@ func rolePushNextSecond() {
 func TestASameSecondRetrySendsTheCommitTheRefusedPushMade(t *testing.T) {
 	t.Parallel()
 	row := rolePushDivergentRefusedRow()
-	rolePushEachForm(t, func(t *testing.T, form rolePushForm) {
+	rolePushStepLogic(t, func(t *testing.T, form rolePushForm) {
 		f := newRolePushFixture(t, form, "")
 		f.timestamp = rolePushFixedTimestamp
 		want := row.setup(f)
@@ -727,7 +736,7 @@ func TestASameSecondRetrySendsTheCommitTheRefusedPushMade(t *testing.T) {
 func TestARetryAfterARestoreStopsThePushWithJJsError(t *testing.T) {
 	t.Parallel()
 	impl, rev := rolePushImplementer, rolePushReviewer
-	rolePushEachForm(t, func(t *testing.T, form rolePushForm) {
+	rolePushStepLogic(t, func(t *testing.T, form rolePushForm) {
 		f := newRolePushFixture(t, form, rolePushRecords)
 		f.timestamp = rolePushFixedTimestamp
 		c := f.commitOn(rev, impl, "main", rolePushMessage("work", "implementer"))
@@ -797,7 +806,7 @@ var rolePushUnimportedRows = []struct {
 // prints no line of a dry run it cannot read (rolePushGitMade).
 func TestAPushOfACommitJJHasNotImportedSendsIt(t *testing.T) {
 	t.Parallel()
-	rolePushGitMade(t, func(f *rolePushFixture) (string, []rolePushCommit, bool) {
+	rolePushGitMade(t, false, func(f *rolePushFixture) (string, []rolePushCommit, bool) {
 		return f.gitCommitWrite(rolePushImplementer, "--quiet", "-m", rolePushMessage("work", "implementer")), nil, false
 	})
 }
@@ -828,7 +837,8 @@ func rolePushUntouchedRows() []rolePushRow {
 		return rolePushRef{ref: "refs/heads/legion/K-1", commits: []rolePushCommit{{change: d1.change}}}
 	}
 	return []rolePushRow{
-		{name: "no Legion-Role trailer", args: rolePushBookmark, setup: func(f *rolePushFixture) rolePushWant {
+		// The family's check that the two forms agree (rolePushRow.bothForms).
+		{name: "no Legion-Role trailer", bothForms: true, args: rolePushBookmark, setup: func(f *rolePushFixture) rolePushWant {
 			k := f.commitOn(rev, impl, "main", "work with no trailer\n")
 			f.bookmark("legion/K-1", k.commit)
 			return keeps(rolePushRef{ref: "refs/heads/legion/K-1", commits: []rolePushCommit{{change: k.change, author: rev, commit: k.commit}}},
@@ -1039,7 +1049,7 @@ func TestADryRunsShortCommitIDIsReadAmongTheCommitsThePushCanSend(t *testing.T) 
 	for _, row := range rolePushShortIDRows() {
 		t.Run(row.name, func(t *testing.T) {
 			t.Parallel()
-			rolePushEachForm(t, func(t *testing.T, form rolePushForm) {
+			rolePushStepLogic(t, func(t *testing.T, form rolePushForm) {
 				f := newRolePushFixture(t, form, rolePushShortensDryRun)
 				f.pushAndCheck(row.args, row.setup(f))
 			})
@@ -1065,7 +1075,7 @@ func TestADryRunsShortCommitIDIsReadAmongTheCommitsThePushCanSend(t *testing.T) 
 func TestAFilledCommitsShortIDIsReadAmongTheCommitsThePushCanSend(t *testing.T) {
 	t.Parallel()
 	impl := rolePushImplementer
-	rolePushEachForm(t, func(t *testing.T, form rolePushForm) {
+	rolePushStepLogic(t, func(t *testing.T, form rolePushForm) {
 		f := newRolePushFixture(t, form, rolePushShortensDryRun)
 		p := f.shortIDPushed(rolePushNobody, rolePushNobody, rolePushMessage("work", "implementer"))
 		f.bookmark("legion/K-1", p.commit)
@@ -1082,7 +1092,7 @@ func TestAFilledCommitsShortIDIsReadAmongTheCommitsThePushCanSend(t *testing.T) 
 func TestAConflictedBookmarkIsJJsOwnRefusal(t *testing.T) {
 	t.Parallel()
 	impl, rev := rolePushImplementer, rolePushReviewer
-	rolePushEachForm(t, func(t *testing.T, form rolePushForm) {
+	rolePushStepLogic(t, func(t *testing.T, form rolePushForm) {
 		f := newRolePushFixture(t, form, "")
 		a := f.commitOn(rev, impl, "main", rolePushMessage("A", "implementer"))
 		b := f.commitOn(rev, impl, "main", rolePushMessage("B", "implementer"))
@@ -1200,15 +1210,19 @@ func rolePushCannotReadRows() []struct {
 	}{
 		{rolePushRow{name: "a line of neither shape in the block", args: rolePushBookmark, setup: asWritten(rolePushUnreadableLine)}, rolePushUnreadableDryRun},
 		{rolePushRow{name: "a dry run that exits 0 with no block", args: rolePushBookmark, setup: asWritten("")}, rolePushDryRunWithNoBlock},
-		{rolePushRow{name: "--quiet on the push", args: []string{"git", "push", "--quiet", "--bookmark", "legion/K-1"}, setup: reads}, ""},
-		{rolePushRow{name: "ui.quiet = true in the repository's configuration", args: rolePushBookmark, setup: func(f *rolePushFixture) rolePushWant {
+		// The quiet rows run in both forms (rolePushRow.bothForms): the dry run that must not be
+		// silenced puts its --config ui.quiet=false in front of `git` in a pod, after the wrapper's
+		// level-0 layer, and on a line with no --config of the role's in front of --dry-run in a
+		// pane (jjStep.dryRun, configEnd).
+		{rolePushRow{name: "--quiet on the push", bothForms: true, args: []string{"git", "push", "--quiet", "--bookmark", "legion/K-1"}, setup: reads}, ""},
+		{rolePushRow{name: "ui.quiet = true in the repository's configuration", bothForms: true, args: rolePushBookmark, setup: func(f *rolePushFixture) rolePushWant {
 			f.jj(impl, "config", "set", "--repo", "ui.quiet", "true")
 			return reads(f)
 		}}, ""},
 		// The push's own --config-file sets ui.quiet = true after its own --config, both in front
 		// of `git push`: the dry run's --config goes after both. The file is in .jj, which jj never
 		// snapshots, and the push runs in the repository, so the row names it by a relative path.
-		{rolePushRow{name: "ui.quiet = true in the push's own --config-file, after its own --config", args: []string{"--config", "ui.color=never", "--config-file", ".jj/quiet.toml", "git", "push", "--bookmark", "legion/K-1"}, setup: func(f *rolePushFixture) rolePushWant {
+		{rolePushRow{name: "ui.quiet = true in the push's own --config-file, after its own --config", bothForms: true, args: []string{"--config", "ui.color=never", "--config-file", ".jj/quiet.toml", "git", "push", "--bookmark", "legion/K-1"}, setup: func(f *rolePushFixture) rolePushWant {
 			f.writeFile(filepath.Join(f.repo, ".jj", "quiet.toml"), "ui.quiet = true\n")
 			return reads(f)
 		}}, ""},
@@ -1277,7 +1291,7 @@ func TestADryRunTheStepCannotReadChangesNothing(t *testing.T) {
 	for _, row := range rolePushCannotReadRows() {
 		t.Run(row.name, func(t *testing.T) {
 			t.Parallel()
-			rolePushEachForm(t, func(t *testing.T, form rolePushForm) {
+			rolePushForEach(t, row.bothForms, func(t *testing.T, form rolePushForm) {
 				f := newRolePushFixture(t, form, row.behaviour)
 				want := row.setup(f)
 				f.pushAndCheck(row.args, want)
@@ -1350,7 +1364,7 @@ func TestARoleIdentityTableThatDoesNotParseChangesNothing(t *testing.T) {
 	for _, row := range rolePushTableRows {
 		t.Run(row.name, func(t *testing.T) {
 			t.Parallel()
-			rolePushEachForm(t, func(t *testing.T, form rolePushForm) {
+			rolePushStepLogic(t, func(t *testing.T, form rolePushForm) {
 				f := newRolePushFixture(t, form, "")
 				c := f.commitOn(rev, impl, "main", rolePushMessage("work", "implementer"))
 				f.bookmark("legion/K-1", c.commit)
@@ -1380,6 +1394,9 @@ func TestAPushWithNothingToChangeAddsNoOperation(t *testing.T) {
 		f.bookmark("legion/K-1", c.commit)
 		return c
 	}
+	// Both forms: a push whose snapshot is due takes none of the step's here, and the step's git
+	// reads (gitMoved) run the first git on the form's PATH, the git wrapper in a pod and bin/git in
+	// a pane.
 	rolePushEachForm(t, func(t *testing.T, form rolePushForm) {
 		twin := newRolePushFixture(t, form, "")
 		setup(twin)
@@ -1408,8 +1425,12 @@ func TestAPushWithNothingToChangeAddsNoOperation(t *testing.T) {
 
 // rolePushFailingRows are the step's jj commands that fail, each a recording jj's behaviour and the
 // error it prints.
-var rolePushFailingRows = []struct{ name, behaviour, error string }{
-	{name: "a metaedit that fails", behaviour: rolePushFailsMetaedit, error: "Error: legion test: this metaedit fails"},
+var rolePushFailingRows = []struct {
+	name, behaviour, error string
+	// bothForms runs the row in each form, the family's check that the two forms agree.
+	bothForms bool
+}{
+	{name: "a metaedit that fails", behaviour: rolePushFailsMetaedit, error: "Error: legion test: this metaedit fails", bothForms: true},
 	{name: "a read of the set that fails", behaviour: rolePushFailsSetRead, error: "Error: legion test: this read of the set fails"},
 	{name: "a snapshot that fails", behaviour: rolePushFailsSnapshot, error: "Error: legion test: this snapshot fails"},
 }
@@ -1437,7 +1458,7 @@ func TestAFailingStepSendsNothing(t *testing.T) {
 	for _, row := range rolePushFailingRows {
 		t.Run(row.name, func(t *testing.T) {
 			t.Parallel()
-			rolePushEachForm(t, func(t *testing.T, form rolePushForm) {
+			rolePushForEach(t, row.bothForms, func(t *testing.T, form rolePushForm) {
 				rolePushFailingPush(t, form, row.behaviour, row.error)
 			})
 		})
@@ -1555,7 +1576,8 @@ func TestThePanesJJNeverRunsItselfAgain(t *testing.T) {
 func rolePushStartedRows() []rolePushRow {
 	impl, rev := rolePushImplementer, rolePushReviewer
 	return []rolePushRow{
-		{name: "jj util exec -- jj git push --bookmark", args: []string{"util", "exec", "--", "jj", "git", "push", "--bookmark", "legion/K-1"}, setup: func(f *rolePushFixture) rolePushWant {
+		// The inner jj is the form's own: a case of the forms, so in both.
+		{name: "jj util exec -- jj git push --bookmark", bothForms: true, args: []string{"util", "exec", "--", "jj", "git", "push", "--bookmark", "legion/K-1"}, setup: func(f *rolePushFixture) rolePushWant {
 			c := f.commitOn(rev, impl, "main", rolePushMessage("work", "implementer"))
 			f.bookmark("legion/K-1", c.commit)
 			return rolePushSends("legion/K-1", c, "implementer", impl)

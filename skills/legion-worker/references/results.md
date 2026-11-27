@@ -27,6 +27,13 @@ The pull request body's `Checks` lines are in `skill://legion-worker/references/
   So after a push, record each `before_merge` check with no `ci_check` again.
   Run it again only when the change since its pass can affect what it drives; otherwise record its earlier pass at the new head with `--observed 'carried from <old sha>: <why the change cannot affect it>'`.
 
+## Where a check runs
+
+Every role writes the one workspace, so a file can change under your check.
+Run checks from a copy of the head (`git archive`, or a clone under `$TMPDIR`) unless the check needs the workspace itself, and run `git diff --quiet <head> -- <files the check reads>` before you record a result.
+A script that fails in the workspace is a finding only when it fails again with `sha256sum <script>` unchanged before and after.
+A run whose output you did not capture can be neither confirmed nor cleared.
+
 ## The rules every phase's evidence follows
 
 - The tester tries to break the changed surface (wrong and boundary inputs, the second and the concurrent run, the party it must refuse) and writes a failing test for each way it breaks that no existing test catches.

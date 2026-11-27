@@ -22,14 +22,17 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
-// Scheduling is where Legion's pods may run, beyond the Legion pool every one of them selects.
+// Scheduling is the placement the operator gives Legion's pods, which share the cluster's general
+// nodes: a pod selects and tolerates what this names and, in a microVM, its ComputeClass, and
+// nothing else (placement).
 type Scheduling struct {
-	// NodeSelector is added to {legion.dev/pool: legion}; it may not set legion.dev/pool itself. A
+	// NodeSelector is every pod's node selector; it may not set legion.dev/pool (poolKey). A
 	// microVM pod, an issue's or the project controller's, names its own ComputeClass in place of
 	// any this names (placement).
 	NodeSelector map[string]string
-	// Tolerations are appended to the Legion pool's own toleration, less one of another
-	// ComputeClass on a microVM pod, an issue's or the project controller's (placement).
+	// Tolerations are every pod's tolerations, less one of another ComputeClass on a microVM pod,
+	// an issue's or the project controller's, which tolerates its own class's taint after them
+	// (placement).
 	Tolerations   []corev1.Toleration
 	PriorityClass string
 }
@@ -131,14 +134,19 @@ type Tools struct{ GH, Git, JJ, Legion, AgentSecrets string }
 // Pod is what the operator adds to every pod Legion runs, the image probe's included
 // (runtime.kubernetes.pod): variables and volume mounts for the agent's container (the worker's,
 // or the probe's), never an init container, the volumes those mounts name, beside Legion's own, and
-// the ServiceAccount the pods run as, the namespace's default when unset. A variable's value reaches the
-// process as written: the kubelet's `$(NAME)` expansion does not apply (kubeletLiteral). CheckPod
-// refuses a name or path of Legion's own or the worker image's.
+// the ServiceAccount the pods run as, the namespace's default when unset. ControllerServiceAccount
+// is the one the project controller's pod runs as in its place when set (controllerPod's
+// serviceAccount); unset, that pod runs as ServiceAccount like every issue pod, and a repository
+// cache's pod runs as ServiceAccount too while the cache's bucket is off (RepositoryCache). A
+// variable's value reaches the process as written: the kubelet's `$(NAME)` expansion does not apply
+// (kubeletLiteral). CheckPod refuses a name or path of Legion's own or the worker image's. Its
+// fields are config.PodConfig's, one for one, since the daemon converts the one into the other.
 type Pod struct {
-	Env            map[string]string
-	Volumes        []corev1.Volume
-	VolumeMounts   []corev1.VolumeMount
-	ServiceAccount string
+	Env                      map[string]string
+	Volumes                  []corev1.Volume
+	VolumeMounts             []corev1.VolumeMount
+	ServiceAccount           string
+	ControllerServiceAccount string
 }
 
 // ProvisionTokens mints the installation token a pod's workspace-fetch container clones the
@@ -464,6 +472,26 @@ type Options struct {
 	// (internal/daemon's launchRounds). nil keeps every such pod, as every launch kept it before
 	// the hook existed.
 	RoundPodEnds runtime.RoundPodEnds
+	// LaunchTakes is the daemon's record of a launch's own replacement of an issue pod
+	// (runtime.LaunchTakes, R7 of #5285): relaunch hands it what LaunchTook will be
+	// handed, before the replacement takes anything, and a record that cannot be written fails
+	// the launch, which then takes nothing. nil records nothing.
+	LaunchTakes runtime.LaunchTakes
+	// LaunchTook is the daemon's word of a launch's own replacement of an issue pod
+	// (runtime.LaunchTook, R7 of #5285): relaunch hands it the pod, why the launch
+	// replaced it rather than keep it — the pod is not live, a facet fixed for its life moved
+	// (movedInPod), its Sandbox has another disk shape (supersededDisk) or a kept volume to reset
+	// (volumeReset), its launchers are not bound to it (launcherBound), or its stored template
+	// cannot be read (keptBy) — and what the read of its workspace through a launcher of the pod
+	// found before the replacement, or why no read could be made (runtime.TakenPod), once the act
+	// that takes the disk is done: the suspension for a disk that dies with its pod, the delete of
+	// the Sandbox for a volume it owns. A Sandbox that runs no pod of its own is handed where the
+	// launch deletes the volume it keeps, with no read made (launchTaken). A round's own
+	// replacement (RoundPodEnds) is the daemon's own and is not handed here, nor is a replacement
+	// that keeps the issue's kept volume, which takes no disk. The daemon builds the runtime
+	// before its supervision opens, so it binds this through the holder RoundPodEnds goes through
+	// (internal/daemon's launchRounds). nil tells nobody.
+	LaunchTook runtime.LaunchTook
 	// LeakCheck reads the shared public leak check at the tag a pod's launcher names in its hello
 	// (shimwire.LauncherHello.LeakCheckTag), which the runtime pushes to that launcher before it
 	// starts any role of it (launchers.serveLeakCheck): the launcher installs the check once for

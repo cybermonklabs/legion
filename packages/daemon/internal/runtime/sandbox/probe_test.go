@@ -18,6 +18,7 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -27,8 +28,10 @@ import (
 	k8stesting "k8s.io/client-go/testing"
 
 	"github.com/sjawhar/legion/daemon/internal/bootprobe"
+	"github.com/sjawhar/legion/daemon/internal/clock/clocktest"
 	"github.com/sjawhar/legion/daemon/internal/promptrefs"
 	"github.com/sjawhar/legion/daemon/internal/redact"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // The probe Sandbox testImage gets in testProject: the project, then the digest's first 12 hex.
@@ -58,8 +61,10 @@ type probeRig struct {
 
 func newProbeRig(t *testing.T, objects []k8sruntime.Object, options ...rigOption) *probeRig {
 	t.Helper()
-	g := &probeRig{rig: newRig(t, objects, options...), finishedUID: map[types.UID]bool{}}
-	g.autoStart.Store(false)
+	// The controller stand-in starts no pod from its first pass (withoutAutoStart): the probe rig
+	// finishes its pods itself, and an autoStart turned off once newRig had returned left a pass in
+	// that gap that could make a seeded Running Sandbox's pod scheduled and Running.
+	g := &probeRig{rig: newRig(t, objects, append([]rigOption{withoutAutoStart()}, options...)...), finishedUID: map[types.UID]bool{}}
 	g.kube.PrependReactor("get", "pods", func(action k8stesting.Action) (bool, k8sruntime.Object, error) {
 		if action.GetSubresource() != "log" {
 			return false, nil, nil
@@ -339,9 +344,9 @@ func TestProbeImageRefusesRoleReferencesTheImageWouldRefuseBeforeAnyPod(t *testi
 }
 
 // The probe is a Sandbox named for the project and the image, running the image's Go `legion
-// probe-image` with the daemon's contract on the Legion pool; it passes on the OK line confirming
-// that contract — which names no model: Legion's probe makes no model round trip — and it deletes
-// its Sandbox when it is done.
+// probe-image` with the daemon's contract on the cluster's general nodes; it passes on the OK line
+// confirming that contract — which names no model: Legion's probe makes no model round trip — and
+// it deletes its Sandbox when it is done.
 func TestProbeImagePassesOnTheOKLineConfirmingTheContract(t *testing.T) {
 	t.Parallel()
 	g := newProbeRig(t, nil)
@@ -530,6 +535,7 @@ const lineBeforeTheOmpMarks = "probe-image: OK (/opt/omp/bin/omp) session-storag
 // refused once, naming what the line says of the image's Oh My Pi (its version, or that its legion
 // reports none), the flag, the setting, why the setting needs the flag, and both remedies.
 func TestProbeImageRefusesAnOhMyPiWithoutSessionIDUnderAnExchangeAudience(t *testing.T) {
+	t.Parallel()
 	why := []string{
 		"runtime.kubernetes.agent_secrets.exchange_audience is set, so the daemon starts each new Oh My Pi role with --session-id <id> and resumes one by its recorded file with --resume <id>, " +
 			"and an Oh My Pi without the flag stops at it (unknown flag: --session-id), so no role would start",
@@ -569,6 +575,7 @@ func TestProbeImageRefusesAnOhMyPiWithoutSessionIDUnderAnExchangeAudience(t *tes
 // enrollment with no exchange audience as with none, and so does an older image's line with
 // neither mark, whose pass logs none.
 func TestProbeImagePassesAnOhMyPiThatTakesSessionIDOrNoExchangeAudience(t *testing.T) {
+	t.Parallel()
 	for _, testCase := range []struct {
 		name               string
 		option             rigOption
@@ -724,18 +731,89 @@ func TestProbeImageHoldsTheProvidersSecretToTheDaemonsSeed(t *testing.T) {
 	}
 }
 
+// neverFinishedBudget is the attempt budget of TestProbeImageRetriesAProbeThatNeverFinished's rows,
+// on the rig's fake clock: longer than one recheckInterval, so a check of the attempt's wait runs
+// after what the row planted reaches the store and before the budget runs out (runsOut).
+const neverFinishedBudget = 4 * recheckInterval
+
+// runsOut drives one attempt of the probe under test on fc, the clock the rig's runtime waits on
+// (g.r.clock), to the end of budget: once the attempt is in its wait for the pod to start
+// (onPhase, reported on phases), the runtime's store holds what the row's stand-ins planted
+// (planted), the attempt has moved on to its wait for a started pod to finish, and a check of the
+// attempt's wait has run after all that (step), it moves fc past budget. So the attempt's verdict
+// reads what the row planted, and a status the probe refused would have been refused by that check.
+// It returns at once when the probe under test has ended (ended): a probe that refused its pod runs
+// no further attempt.
+func (g *probeRig) runsOut(fc *clocktest.Fake, phases <-chan string, budget time.Duration, ended func() bool) {
+	g.t.Helper()
+	if !g.reaches(phases, "startup", ended) {
+		return
+	}
+	g.eventually("the runtime's store to hold what the row planted", func() bool { return ended() || g.planted() })
+	if ended() {
+		return
+	}
+	if pod := g.r.storedPod(probeSandboxName); pod != nil && probeStarted(pod) && !g.reaches(phases, "command", ended) {
+		return
+	}
+	g.step(fc, ended)
+	fc.Advance(budget)
+}
+
+// reaches reads phases until the attempt in progress reports phase (onPhase), skipping any other,
+// and reports false once the probe under test has ended (ended) before it did.
+func (g *probeRig) reaches(phases <-chan string, phase string, ended func() bool) bool {
+	g.t.Helper()
+	got := testwait.Until(g.t, "the probe's attempt to reach its "+phase+" phase", func() (string, bool) {
+		select {
+		case reported := <-phases:
+			return reported, reported == phase
+		default:
+			return "", ended()
+		}
+	})
+	return got == phase
+}
+
+// planted is whether the runtime's store holds what the row's stand-ins planted for the probe pod of
+// the attempt in progress, the one of the Sandbox the API holds now: that Sandbox's pod as finish
+// leaves it, or, where the rig makes no pod (hold), that Sandbox and no pod of it. A pod of an
+// earlier attempt's Sandbox, which a lagging store may still hold, is never the answer.
+func (g *probeRig) planted() bool {
+	current := g.sandbox(probeSandboxName)
+	if current == nil {
+		return false
+	}
+	pod := g.r.storedPod(probeSandboxName)
+	g.mu.Lock()
+	finish := g.finish
+	g.mu.Unlock()
+	if g.hold.Load() || finish == nil {
+		s, _ := g.r.storedSandbox(probeSandboxName)
+		return s != nil && s.UID == current.UID && !ownedBy(pod, current.UID)
+	}
+	if !ownedBy(pod, current.UID) {
+		return false
+	}
+	want := pod.DeepCopy()
+	finish(want)
+	return equality.Semantic.DeepEqual(want.Status, pod.Status) && want.Spec.NodeName == pod.Spec.NodeName
+}
+
 // A pod that never finished within the budget, or a Sandbox that never got one, says nothing
-// about the image: the probe runs again, and gives up only when its retry does.
+// about the image: the probe runs again, and gives up only when its retry does. Each attempt's
+// waits run on the rig's fake clock, which is moved past the attempt's budget only once a check of
+// its wait has read what the row planted (runsOut): a probe that refused one of these pods would
+// refuse it there, on any machine.
 func TestProbeImageRetriesAProbeThatNeverFinished(t *testing.T) {
-	// Not parallel: each row's 300 ms attempts must read the status the row planted before they run
-	// out, and other tests' load could delay that read past them.
+	t.Parallel()
 	for _, testCase := range []struct {
 		name  string
 		setup func(*probeRig)
 		want  []string
 	}{
 		{"an image still being pulled", func(g *probeRig) { g.waits("ImagePullBackOff") },
-			[]string{"probe pod " + probeSandboxName + " did not start within 300ms (phase Pending) (container probe waiting: ImagePullBackOff)"}},
+			[]string{"probe pod " + probeSandboxName + " did not start within " + neverFinishedBudget.String() + " (phase Pending) (container probe waiting: ImagePullBackOff)"}},
 		// A pull that failed for any reason but the registry not having the image says nothing
 		// about the image: credentials, the network and a rate limit may all change by the next
 		// attempt.
@@ -787,8 +865,8 @@ func TestProbeImageRetriesAProbeThatNeverFinished(t *testing.T) {
 		{"a missing manifest met on one pull", func(g *probeRig) {
 			g.waitsSaying("ErrImagePull", pullFailure("ErrImagePull", "NotFound", resolving(testImage+": not found"))).pullsFailed(1, "NotFound", resolving(testImage+": not found"))
 		}, []string{"(container probe waiting: ErrImagePull)"}},
-		{"no pod at all", func(g *probeRig) { g.hold.Store(true) },
-			[]string{"probe pod " + probeSandboxName + " did not start within 300ms: no pod"}},
+		{"no pod at all", func(g *probeRig) { g.setHold(true) },
+			[]string{"probe pod " + probeSandboxName + " did not start within " + neverFinishedBudget.String() + ": no pod"}},
 		// A pod whose probe outlasts the attempt: what it logged so far is quoted.
 		{"a pod still probing", func(g *probeRig) {
 			g.with(func() {
@@ -799,17 +877,26 @@ func TestProbeImageRetriesAProbeThatNeverFinished(t *testing.T) {
 					Name: probeContainer, State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{}},
 				}}}
 			})
-		}, []string{"probe pod " + probeSandboxName + " still Running after 300ms", "log tail: probe-image: pi.agents answered",
+		}, []string{"probe pod " + probeSandboxName + " still Running after " + neverFinishedBudget.String(), "log tail: probe-image: pi.agents answered",
 			"the load probe is waiting"}},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
+			fc := clocktest.New(rigNow)
 			g := newProbeRig(t, nil)
+			g.r.clock = fc
 			testCase.setup(g)
-
+			phases := make(chan string, 8)
 			p := probeOptions(t)
-			p.Budget = unfinishedBudget
+			p.Budget = neverFinishedBudget
+			p.onPhase = func(phase string) { phases <- phase }
+			result := make(chan error, 1)
+			go func() { result <- g.probe(p) }()
+			ended := func() bool { return len(result) > 0 }
+			for range 2 {
+				g.runsOut(fc, phases, p.Budget, ended)
+			}
 
-			err := g.probe(p)
+			err := testwait.Receive(t, "the probe", result)
 
 			wantContains(t, err, append([]string{"the worker image probe never completed within its retry budget (2 attempts)"}, testCase.want...)...)
 			if n := g.creates.Load(); n != 2 {
@@ -1064,9 +1151,10 @@ func TestProbeImageReplacesOnlyItsOwnProjectsLeftover(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			// No pod: the fakes' watches ignore label selectors, so a pod of another project's
-			// Sandbox would reach the runtime's store, which a real API server never sends it.
-			g := newProbeRig(t, []k8sruntime.Object{sandboxObject(t, probeSandboxName, "uid-foreign", modeRunning, labels)})
-			g.hold.Store(true)
+			// Sandbox would reach the runtime's store, which a real API server never sends it. So
+			// the controller stand-in is held from its first pass (withHeld): a hold set once the
+			// rig is made let a pass make that pod first.
+			g := newProbeRig(t, []k8sruntime.Object{sandboxObject(t, probeSandboxName, "uid-foreign", modeRunning, labels)}, withHeld())
 
 			err := g.probe(probeOptions(t))
 
