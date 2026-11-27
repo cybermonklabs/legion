@@ -4238,8 +4238,11 @@ describe("envoy OMP extension", () => {
         },
       };
       await fixture.handlers.get("session_start")?.({}, resumedContext);
-      // The resume opened them, and the own-id refusal kept them.
       expect(registrations.some((call) => call.topics.includes(alerts))).toBe(true);
+      // The resume opened them, and the own-id refusal kept them: still followed, and nothing
+      // was taken out of the row. A change that closed them on that refusal fails here.
+      expect(await followedTopics(fixture.tools, resumedContext)).toContain(alerts);
+      expect(unregistered).toEqual([]);
 
       // `/new`: another session, which records no role and wants none.
       const moved = sessionContext(fresh);
@@ -4250,6 +4253,82 @@ describe("envoy OMP extension", () => {
       expect(await followedTopics(fixture.tools, moved)).not.toContain(alerts);
       expect(registrations.some((call) => call.session === fresh)).toBe(true);
       await fixture.handlers.get("session_shutdown")?.({}, moved);
+    } finally {
+      if (previous === undefined) delete process.env.ENVOY_ROLE_TOPICS;
+      else process.env.ENVOY_ROLE_TOPICS = previous;
+    }
+  });
+
+  // A resumed session whose role is named only by its own row's lane, with no claim record and no
+  // launch role. An own-id refusal leaves the role unsettled, so the pass keeps its topics and the
+  // next pass reads the rows again and claims afresh; settling it there would leave the role
+  // claimed by nobody in this process, since `desiredRole` reads no rows once a host is settled.
+  test("a lane-only role keeps its topics through an own-id refusal, and the next pass claims it again", async () => {
+    const alerts = "notifications.slack.*.C0ALERTS.message";
+    const role = "legion-controller";
+    const session = "ses_lane_only";
+    const claims: string[] = [];
+    const unregistered: string[][] = [];
+    globalThis.fetch = async (input, init) => {
+      const url = new URL(input.toString());
+      const body = init?.body === undefined ? undefined : JSON.parse(init.body.toString());
+      if (url.pathname === `/v1/interests/${session}`) {
+        // The row names the role on its lane alone: no claim record, no launch role.
+        return response({
+          session_id: session,
+          machine_id: "test",
+          dir: "/tmp",
+          topics: [`notifications.role.${role}`],
+        });
+      }
+      if (url.pathname === `/v1/roles/${role}` && (init?.method ?? "GET") === "GET") {
+        return response({ role, holder: session, last_seen: Date.now(), state: "live" });
+      }
+      if (url.pathname === "/v1/roles/set") {
+        claims.push(String(body?.role ?? ""));
+        // Another process's standing claim under this same session id.
+        return Response.json(
+          { error: `role ${role} is held by ${session}`, role, holder: session },
+          { status: 409 }
+        );
+      }
+      if (url.pathname === "/v1/interests/unsubscribe") {
+        unregistered.push(Array.isArray(body?.topics) ? body.topics : []);
+        return response({});
+      }
+      return responseWithRegistration(input, init, {});
+    };
+    const previous = process.env.ENVOY_ROLE_TOPICS;
+    process.env.ENVOY_ROLE_TOPICS = JSON.stringify({ [role]: [alerts] });
+    try {
+      // A fresh module instance, as every row of this file takes one: the query keys the cache,
+      // and this instance must read the ENVOY_ROLE_TOPICS set above when it is created.
+      const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?lane-only-role");
+      const fixture = createPi();
+      await envoyExtension(fixture.pi);
+      // A branch with no role record: the session is resumed, so the pass reads the rows, and
+      // its row's lane is the only thing that names the role.
+      const context = {
+        ...sessionContext(session),
+        sessionManager: {
+          ...sessionContext(session).sessionManager,
+          getBranch: () => [{ type: "text", text: "resumed" }],
+        },
+      };
+      await fixture.handlers.get("session_start")?.({}, context);
+
+      // The pass claimed the lane's role and was refused by its own id: the topics stay followed,
+      // nothing left the row, and the role is unsettled.
+      expect(claims).toEqual([role]);
+      expect(await followedTopics(fixture.tools, context)).toContain(alerts);
+      expect(unregistered).toEqual([]);
+
+      // The next pass reads the rows again and claims the same role, rather than leaving it to
+      // nobody.
+      await fixture.handlers.get("session_start")?.({}, context);
+      expect(claims).toEqual([role, role]);
+      expect(await followedTopics(fixture.tools, context)).toContain(alerts);
+      await fixture.handlers.get("session_shutdown")?.({}, context);
     } finally {
       if (previous === undefined) delete process.env.ENVOY_ROLE_TOPICS;
       else process.env.ENVOY_ROLE_TOPICS = previous;

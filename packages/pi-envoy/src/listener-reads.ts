@@ -7,12 +7,14 @@ import {
 } from "@legion/envoy-client/transport";
 import type { RegistrationStateDeps } from "./registration-state";
 
-/** What a role lookup answered: `known` is false where the read failed, so a caller tells
- *  "nobody holds it" from "nobody could be asked". */
-export interface RoleHolderRead {
-  readonly known: boolean;
-  readonly holder?: string;
-}
+/**
+ * What a role lookup answered. A failed read is `{ known: false }` and names no holder, so a
+ * caller tells "nobody holds it" from "nobody could be asked", and the type refuses the third
+ * state: a holder nobody could ask for.
+ */
+export type RoleHolderRead =
+  | { readonly known: false }
+  | { readonly known: true; readonly holder: string | undefined };
 
 /** The sentences a failed unregistration is warned under: one for a bus that did not answer, and
  *  one for any other failure. */

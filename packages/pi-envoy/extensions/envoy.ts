@@ -4222,9 +4222,10 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
     // this session would be shown it before its claim was refused. A read that fails, or one
     // whose 404 names a lapsed holder that is another session, opens nothing for the same
     // reason: a lapsed holder was shown those posts, and a failed read says nothing about who
-    // was. The pass's claim opens them where it lands, so an alert is late rather than read
-    // twice. The pass drops them once a refusal names another holder (`settleRoleTopics`), and
-    // keeps them through one naming this session's own id.
+    // was. The pass's claim opens them where it lands, but a follow stamped at the claim answers
+    // done every post the stream kept meanwhile, so those posts are lost to this session rather
+    // than read twice by two. The pass drops them once a refusal names another holder
+    // (`settleRoleTopics`), and keeps them through one naming this session's own id.
     const wanted = await desiredRole(
       handle,
       sessionID,
@@ -4272,15 +4273,16 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
   const settleRoleTopics = async (
     handle: TaskHandle,
     host: string,
-    branch: readonly unknown[]
+    wanted: string | undefined
   ): Promise<void> => {
-    // The row is read once, where a resume left one to read, and serves both readers: the role
-    // this host wants, whose lane the row may be the only record of, and the role topics the row
-    // still holds that nothing follows. Where none is read, the wanted role is the transcript's
-    // and the launch's alone, and no row sweep is due.
+    // `wanted` is the role the pass decided to claim, never decided again here: once a host is
+    // settled the rows are not read, so a role only a row's lane names would read as none and its
+    // topics would close on the pass of an own-id refusal.
+    //
+    // The row is read where a resume left one to read, for the sweep alone: the role topics it
+    // still holds that nothing follows, which a process that ended never closed.
     const row = roleRowCheck === host ? await handle.readInterest(host) : undefined;
     handle.check();
-    const wanted = await desiredRole(handle, host, branch, row ?? false);
     const opened = roleTopicFollows.role();
     const unregister = new Set<string>();
     if (
@@ -4339,9 +4341,10 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
   //    no pass undoes.
   //  - Otherwise the role this process holds, when its hold is under `id` or a session `id`
   //    continues (a tree navigation to before the claim, or a fork from before it).
-  //  - Otherwise, once when a pass establishes a resumed or switched session, or when its caller
-  //    hands in the row it read (`rows`), the listener's rows for `id` (a same-id resume inside
-  //    the reap window) and for the sessions it continues.
+  //  - Otherwise, when `rows` says to read them: `true` reads the listener's rows for `id` (a
+  //    same-id resume inside the reap window) and for the sessions it continues, which is what a
+  //    pass establishing a resumed or switched session does; a row hands in `id`'s own, already
+  //    read by the caller, and is read for `id` alone.
   // None of them while the listener has refused that role to `id`, and never the launch's role
   // for a session the launch did not name (`sessionRoleRefusal`): a fork's branch records it, and
   // a fork is another session. The pass claims every role but the launch's softly (`settleRole`):
@@ -4374,15 +4377,18 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
     const holdID = registrationState.holdSessionID();
     const lineage = continuedBy(id);
     if (held !== undefined && holdID !== undefined && lineage.includes(holdID)) return want(held);
-    if (rows === false) return undefined;
+    // The role a row's lane names, if it holds one.
+    const laneRole = (row: Interest | undefined): string | undefined => {
+      const topic = row?.topics.find((candidate) => candidate.startsWith(ROLE_TOPIC_PREFIX));
+      return topic?.slice(ROLE_TOPIC_PREFIX.length);
+    };
     if (rows !== true) {
-      const topic = rows?.topics.find((candidate) => candidate.startsWith(ROLE_TOPIC_PREFIX));
-      return topic === undefined ? undefined : want(topic.slice(ROLE_TOPIC_PREFIX.length));
+      const lane = laneRole(rows === false ? undefined : rows);
+      return lane === undefined ? undefined : want(lane);
     }
     for (const source of lineage) {
-      const registry = await handle.readInterest(source);
-      const topic = registry?.topics.find((candidate) => candidate.startsWith(ROLE_TOPIC_PREFIX));
-      if (topic !== undefined) return want(topic.slice(ROLE_TOPIC_PREFIX.length));
+      const lane = laneRole(await handle.readInterest(source));
+      if (lane !== undefined) return want(lane);
     }
     return undefined;
   };
@@ -4637,8 +4643,14 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
     handle.check();
     // Every pass, not only a move that decided: a move decides nothing for a session that holds
     // no role and wants none, and the topics a resumed session opened must not outlive the host
-    // move away from it.
-    await settleRoleTopics(handle, host, context.sessionManager.getBranch?.() ?? []);
+    // move away from it. The role is the one the move decided to claim (`passRole`), so the
+    // settle never decides it a second time with rows a settled host no longer reads; a move that
+    // did not reach that decision for this host leaves the role to the next pass.
+    await settleRoleTopics(
+      handle,
+      host,
+      passRole.host === host ? passRole.role : roleTopicFollows.role()?.role
+    );
     // The role move above was the last call for every session this process has left, so each
     // one's key pair and token go now (`leftSessions`), whether or not the move decided, but for
     // a session a delivery still holds (`underWay`), which stays for the next pass. The session
@@ -4734,6 +4746,9 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
     // the role under another process, which it grants as soon as that process stops renewing
     // it: nothing latches it, so the pass below claims again.
     const desired = await desiredRole(handle, host, branch, readRows);
+    // The role this pass decided to claim, for the settle of its topics: reading it again there
+    // would answer undefined for a role only the rows name, since a settled host reads no rows.
+    passRole = { host, role: desired };
     const unheard = lastHeard !== host;
     const held = registrationState.heldRole();
     if (held !== undefined && held !== desired) {
@@ -4818,6 +4833,12 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
       const { holder } = await handle.readRoleHolder(desired);
       if (holder !== undefined && holder !== host && lineage.includes(holder)) supersedes = holder;
     }
+    // A claim the listener refused naming this session's own id is another process's claim under
+    // it, standing until its live window ends, and a claim that threw decided nothing: the role
+    // is not settled in either case, so the next pass reads the rows again and claims afresh.
+    // Settling it there would leave a role the session's row names on its lane alone claimed by
+    // nobody in this process, since `desiredRole` reads no rows once a host is settled.
+    let roleSettled = true;
     try {
       const claimed = await handle.claimRole(
         desired,
@@ -4827,7 +4848,11 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
         unsettledPredecessor = undefined;
       }
       if (claimed.claimed && unheard) handle.noteNoticesClosed(desired);
+      // An own-id refusal latches nothing (`claimRole` returns before `endRole`), so it reads
+      // as undecided; a refusal naming another holder latches the role, which is a decision.
+      roleSettled = claimed.claimed || registrationState.refusalFor(host) === desired;
     } catch (error) {
+      roleSettled = false;
       if (!launched && supersedes !== undefined) {
         unsettledPredecessor = { host, role: desired, previous: supersedes };
       }
@@ -4842,8 +4867,15 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
       });
     }
     await registerRoleTopics(handle, host);
-    handle.markRoleSettled(host);
+    if (roleSettled) handle.markRoleSettled(host);
     return true;
+  };
+
+  // The role the newest pass decided to claim for its host (`settleRole`), which the settle of the
+  // role topics reads rather than deciding again.
+  let passRole: { readonly host: string; readonly role: string | undefined } = {
+    host: "",
+    role: undefined,
   };
 
   // A bridge call for a session no pass has established yet runs one first. NATS being down does

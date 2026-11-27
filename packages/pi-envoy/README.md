@@ -145,7 +145,10 @@ its own. The topics of the role it wants (its launch's role, its transcript's, e
 its own row holds) it opens before its first registration, so the follow stamps the transcript
 restored carry over and a post the stream kept while it was down is shown, but only where the
 listener names this session or nobody as the role's holder: where another session holds the role,
-the backlog on its topics is that session's, and nothing opens. A claim refused naming this same
+the backlog on its topics is that session's, and nothing opens. A read that fails, and a 404 that
+names a lapsed holder which is another session, open nothing for the same reason; the claim opens
+them where it lands, so what the stream kept meanwhile is lost to this session rather than read by
+two. A claim refused naming this same
 session id (another process's claim, standing until its live window ends) keeps them open, so a
 post sent meanwhile is shown once the claim lands; a claim refused naming another holder closes
 them. Once after a resume, the pass reads the session's row and takes out every role topic nothing

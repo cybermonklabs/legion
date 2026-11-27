@@ -219,6 +219,18 @@ describe("createRoleTopicFollows", () => {
     expect(open.open("reviewer", "ses_a")).toEqual([]);
   });
 
+  test("a subject two roles name stays followed and becomes the new role's", () => {
+    const open = follows();
+    expect(open.open("ops-owner", "ses_a")).toEqual([]);
+    // `reviewer` names BUILDS, which `ops-owner` also named and this open followed: only ALERTS,
+    // which `reviewer` does not name, comes back for the caller to close. BUILDS stays followed
+    // and is the new role's alone, since the session never wanted it itself.
+    expect(open.open("reviewer", "ses_a")).toEqual([ALERTS]);
+    expect(open.has(BUILDS)).toBe(true);
+    expect(open.roleOnly(BUILDS)).toBe(true);
+    expect(open.subjects()).toEqual([BUILDS]);
+  });
+
   test("owes a registration until one carries every subject it followed", () => {
     const open = follows();
     expect(open.owed()).toBe(false);
