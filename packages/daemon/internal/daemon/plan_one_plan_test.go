@@ -390,8 +390,8 @@ func (r *ownerStepsRig) standsAsItWas(after, task, before string) {
 // no block default. The owner's version adds default and gives each block the parent default. The
 // answer is 200, the three blocks keep their ids, and Legion carries out the one task default.
 //
-// Issue F is as E, but the owner's version leaves t1 at the top. Legion refuses it, naming default
-// and t1 and neither block under default, and records nothing.
+// Issue F is as E, but the owner's version leaves t1 at the top. Legion refuses it, each reason
+// naming default and t1 and neither block under default, and records nothing.
 //
 // Issue G runs default steps that name no planner and has no plan.md. While the implementer works,
 // the owner writes plan.md with the one block default and gives it. The answer is 200, and the
@@ -557,12 +557,17 @@ func (r *ownerStepsRig) ownerLeavesABlockAtTheTop() {
 	before := r.taskRow("default")
 	given := r.upload("plan.md", plannerTasks(r.key, "Owner text six", "t2", "t3"), r.live(doc).Token)
 	refusal := r.refused(given.id, given.version)
-	if len(refusal.Reasons) != 1 {
-		t.Fatalf("Legion refuses the version that leaves t1 at the top with %+v, want one reason", refusal.Reasons)
+	// Each reason names the block at the top: how many kinds of cause the version gives (a plan of
+	// two tasks, and of two tasks that no task needs) is the plan package's, so the test holds what
+	// every reason says, not how many there are.
+	if len(refusal.Reasons) == 0 {
+		t.Fatalf("Legion refuses the version that leaves t1 at the top with no reason, want each reason to name default and t1")
 	}
-	if reason := refusal.Reasons[0].Reason; !strings.Contains(reason, "default") || !strings.Contains(reason, "t1") ||
-		strings.Contains(reason, "t2") || strings.Contains(reason, "t3") {
-		t.Fatalf("Legion refuses the version that leaves t1 at the top with %q, want it to name default and t1 and neither block under default", reason)
+	for _, each := range refusal.Reasons {
+		if reason := each.Reason; !strings.Contains(reason, "default") || !strings.Contains(reason, "t1") ||
+			strings.Contains(reason, "t2") || strings.Contains(reason, "t3") {
+			t.Fatalf("Legion refuses the version that leaves t1 at the top with %q among %+v, want each reason to name default and t1 and neither block under default", reason, refusal.Reasons)
+		}
 	}
 	r.standsAsItWas("the refused version", "default", before)
 }
