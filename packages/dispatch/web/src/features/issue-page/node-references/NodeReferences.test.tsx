@@ -7,7 +7,7 @@ import { MemoryRouter } from "react-router-dom";
 import { commentDeliveryFields } from "../../../__tests__/comment-fixture";
 import { graphNode } from "../../../__tests__/graph-fixture";
 import { api } from "../../../api/client";
-import type { CommentWithTrees, GraphEdge, GraphReferences } from "../../../api/types";
+import type { CommentWithTrees, DisplayTree, GraphEdge, GraphReferences } from "../../../api/types";
 import { emulateChromiumFocusFixup } from "../chromium-focus-fixup";
 import { MarginSlotProvider } from "../margin-slot";
 import { ANSWER_LINES, CONTROL_LABELS, NODE_REFERENCES_WORDS } from "../page-words";
@@ -538,9 +538,10 @@ test("a comment's block that mentions the row reads as that comment, with where 
 });
 
 // The read's excerpt is the citing node's stored text, the markdown its author typed with the
-// addresses it cites, and the page holds no words of a node of another issue. Such a node is
-// named by its word, with its issue and its time.
-test("a citing node of another issue is drawn by its kind's word with its issue and its time, never its excerpt", async () => {
+// addresses it cites, which no row draws. A citing node of another issue whose excerpt the read
+// sent no reading of - a server from before the excerpt's reading sends none - is named by its
+// word, with its issue and its time.
+test("a citing node of another issue whose excerpt has no reading is drawn by its kind's word with its issue and its time, never its excerpt", async () => {
   const stored = "The **rail** follows [the statement](dispatch://LAY-2/spec#b-r1) closely.";
   const elsewhere: GraphEdge = {
     created_at: november(13, 10),
@@ -607,6 +608,116 @@ test("a node the read gives no words for is drawn by its word alone, with no add
   // The word is drawn once, as the link, and not beside it as well.
   expect(text.startsWith(NODE_REFERENCES_WORDS.edges.serves)).toBe(true);
   expect(text.split(NODE_REFERENCES_WORDS.edges.serves)).toHaveLength(2);
+});
+
+/** A task of the plan document `plan-md` that serves the statement, as the read answers it: its
+ *  excerpt is the task's stored text, the directive its author typed with the statement's
+ *  address, and the server's reading of it (`text_tree`), the task holding `content`, one
+ *  paragraph of `words` where the caller names no other. */
+function servingTask(
+  block: string,
+  words: string,
+  content: readonly DisplayTree[] = [
+    { content: [{ text: words, type: "text" }], type: "paragraph" },
+  ]
+): NonNullable<GraphReferences["edges"]>[number] {
+  return {
+    created_at: november(15, 9),
+    direction: "in",
+    excerpt: {
+      block_id: block,
+      text: `:::plan_task{#${block} serves="${STATEMENT}"}\n${words}\n:::`,
+      text_tree: {
+        content: [{ attrs: { blockId: block, serves: [STATEMENT] }, content, type: "plan_task" }],
+        type: "doc",
+      },
+    },
+    kind: "serves",
+    node: graphNode({
+      block_id: block,
+      document: "dispatch://LAY-2/artifact/plan-md",
+      id: `plan-md#${block}`,
+      issue_key: "LAY-2",
+      kind: "block",
+      ref: `dispatch://LAY-2/artifact/plan-md#b-${block}`,
+    }),
+    source_seq: null,
+  };
+}
+
+// Decision 560: each row names the node that references the focused one by the first line of its
+// own words, as the outline names a row, beside its tie's word and its day. Two tasks of one plan
+// that serve the statement drew two rows that each read "served by" and a day alone, which a
+// reader cannot tell apart. Each now reads its own task's first line, cut at its first sentence
+// end as the outline's line is, and neither draws the task's stored text, an address, the plan's
+// slug or the task's id.
+test("two tasks of one plan that serve the row are each named by the first line of its own words", async () => {
+  const first = "Draw the history in Details.";
+  const second = "Read the history from the event log.";
+  draw(true, STATEMENT_ROW, {
+    ...ANSWER,
+    edges: [
+      servingTask("t1", `${first} Each entry keeps its day.`),
+      servingTask("t2", `${second} It pages two hundred at a time.`),
+    ],
+  });
+  await userEvent.click(
+    await screen.findByRole("button", { name: NODE_REFERENCES_WORDS.what_references })
+  );
+  await waitFor(() =>
+    expect(screen.queryAllByRole("listitem"), "the list does not draw the two tasks").toHaveLength(
+      2
+    )
+  );
+  const items = screen.getAllByRole("listitem");
+  const names = items.map((item) => within(item).getByRole("link").textContent);
+  expect(names, "each task's row is not named by its own first line").toEqual([first, second]);
+  expect(new Set(names).size, "the two tasks' rows read the same").toBe(2);
+  expect(
+    within(items[0] as HTMLElement)
+      .getByRole("link")
+      .getAttribute("href")
+  ).toBe("/issues/LAY-2/artifacts/plan-md#b-t1");
+  for (const item of items) {
+    const text = (item.textContent ?? "").replace(/\s+/g, " ");
+    expect(text, "a task's row does not say what the task does for the row").toContain(
+      NODE_REFERENCES_WORDS.edges.serves
+    );
+    expect(item.querySelector("[data-reference-time]")?.textContent).toBe("15 Nov");
+    for (const held of [
+      "Each entry",
+      "two hundred",
+      ":::",
+      "dispatch://",
+      "plan-md",
+      "#b-",
+      "t1",
+    ]) {
+      expect(text, `a task's row draws "${held}"`).not.toContain(held);
+    }
+  }
+});
+
+// A task whose words hold none - a rule alone - is named by its tie's word alone, which is then
+// its link, as a node the read sends no excerpt of is: its stored text is markup, and its
+// address, the plan's slug and its id are no name.
+test("a citing block whose reading holds no word is drawn by its tie's word alone", async () => {
+  draw(true, STATEMENT_ROW, {
+    ...ANSWER,
+    edges: [servingTask("t3", "---", [{ type: "horizontal_rule" }])],
+  });
+  await userEvent.click(
+    await screen.findByRole("button", { name: NODE_REFERENCES_WORDS.what_references })
+  );
+  const link = await screen.findByRole("link", { name: NODE_REFERENCES_WORDS.edges.serves });
+  expect(link.getAttribute("href")).toBe("/issues/LAY-2/artifacts/plan-md#b-t3");
+  const items = screen.getAllByRole("listitem");
+  expect(items).toHaveLength(1);
+  const text = (items[0]?.textContent ?? "").replace(/\s+/g, " ").trim();
+  for (const name of ["---", ":::", "dispatch://", "plan-md", "t3", "#b-"]) {
+    expect(text, `the row names the task by "${name}"`).not.toContain(name);
+  }
+  expect(text.split(NODE_REFERENCES_WORDS.edges.serves), "the word is drawn twice").toHaveLength(2);
 });
 
 // A comment of this issue that cites the row is named by every one of its words, however many:

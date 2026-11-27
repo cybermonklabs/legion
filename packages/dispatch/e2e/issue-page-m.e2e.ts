@@ -49,6 +49,7 @@ import {
   followAsk,
   getAsk,
   getIssue,
+  getIssueCoverage,
   getIssueEvents,
   getMyState,
   patchIssue,
@@ -5347,6 +5348,113 @@ test("what references the focused row opens from its facts, and each row leads t
         references.length,
         "a failed read was asked more than three times"
       ).toBeLessThanOrEqual(3);
+    }
+  );
+});
+
+/** The first lines of the two tasks of the plan the row below seeds, each serving the statement:
+ *  each task holds a second sentence after it, which its row does not draw. */
+const SERVING_TASK_LINES = [
+  "Draw the history in Details.",
+  "Read the history from the event log.",
+] as const;
+
+// Decision 560: each row of what references the focused row names the node that references it by
+// the first line of its own words, as the outline names a row, beside its tie's word and its day.
+// A statement that two tasks of one plan serve drew two rows that each read "served by" and a day
+// alone, which a reader cannot tell apart; each now reads its own task's first line, the two
+// differ, and no row draws an address, a slug, an id or the task's words past its first line.
+// SLOW(>=2s): a statement and a plan of two tasks written, the plan's index waited for, and one
+// load of the issue with the list opened.
+test("what references the focused row names each task that serves it by the task's first line", async ({
+  browser,
+}) => {
+  await phase(
+    browser,
+    async () => {
+      await createProject({ key: "CORE", name: "Core" });
+      const issue = await createIssue({
+        project: "CORE",
+        spec: ":::requirement{#r-served}\nThe history is drawn in Details.\n:::\n",
+        title: "Two tasks serve a statement",
+      });
+      const statement = `dispatch://${issue.key}/spec#b-r-served`;
+      const plan = await createIssueArtifact(issue.key, {
+        content:
+          `How ${issue.key} is built.\n\n` +
+          `:::plan_task{#t-draw serves="${statement}"}\n` +
+          `${SERVING_TASK_LINES[0]} Each entry keeps its day.\n:::\n\n` +
+          `:::plan_task{#t-read serves="${statement}"}\n` +
+          `${SERVING_TASK_LINES[1]} It pages two hundred at a time.\n:::\n`,
+        name: "plan.md",
+      });
+      // The serving edges are read from the block index of the version just written, which the
+      // coverage read counts too: the list is read once, when the reader opens it, so the seed
+      // waits for both tasks to stand there first.
+      await expect
+        .poll(
+          async () =>
+            (await getIssueCoverage(issue.key)).requirements?.find(
+              (row) => row.block_id === "r-served"
+            )?.plan_tasks,
+          `the plan's two tasks never came to serve ${statement}`
+        )
+        .toBe(2);
+      const spec = ((await getIssue(issue.key)).artifacts ?? []).find(
+        (artifact) => artifact.primary
+      );
+      if (spec === undefined) throw new Error(`${issue.key} holds no spec`);
+      return {
+        key: issue.key,
+        planSlug: plan.artifact.slug,
+        specSlug: spec.slug,
+        statement: blockNode(spec.slug, "r-served"),
+      };
+    },
+    async (page, seeded) => {
+      await gotoIssue(page, `/issues/${seeded.key}`);
+      await expect(tree(page)).toBeVisible();
+      const facts = await focusedRowFacts(page, seeded.statement);
+      const references = facts.locator("[data-node-references]");
+      await references
+        .getByRole("button", { exact: true, name: NODE_REFERENCES_WORDS.what_references })
+        .click();
+      const rows = references.locator("li");
+      await expect(rows, "the list does not draw one row per serving task").toHaveCount(2);
+      // Each row's link names its task by the task's first line alone, beside "served by".
+      for (const line of SERVING_TASK_LINES) {
+        await expect(
+          rows.getByRole("link", { exact: true, name: line }),
+          `no row names its task by the task's first line "${line}"`
+        ).toHaveCount(1);
+      }
+      // The rows are drawn and settled: each link was found by its line above, so one read of
+      // their text is the state the row means to check.
+      const names = (await rows.getByRole("link").allTextContents()).map((name) => name.trim());
+      expect(new Set(names).size, `the two tasks' rows read the same: ${names.join(" | ")}`).toBe(
+        2
+      );
+      for (const text of await rows.allTextContents()) {
+        expect(text, "a task's row does not say what the task does for the statement").toContain(
+          NODE_REFERENCES_WORDS.edges.serves
+        );
+        for (const name of [
+          "dispatch://",
+          seeded.planSlug,
+          seeded.specSlug,
+          "#b-",
+          "t-draw",
+          "t-read",
+          ":::",
+          "Each entry keeps its day.",
+          "It pages two hundred at a time.",
+        ]) {
+          expect(
+            text,
+            `a row of what references the statement names its task by "${name}"`
+          ).not.toContain(name);
+        }
+      }
     }
   );
 });
