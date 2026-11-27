@@ -5,6 +5,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -114,4 +115,65 @@ func TestTheFirstRecomputeKeepsTheFreshnessItsListenersConnectionRead(t *testing
 	release()
 	conn.snapshot(t, "p")
 	rig.waitFreshnessHeard(t, "the hub to keep the pass its connection read once its first recompute answered", reconciledAt(passed))
+}
+
+// Once the hub's listener has connected and the row has stopped moving, the freshness the hub holds
+// is the row's. The connection's read of the row (readFreshness) and a notification (applyFreshness)
+// both write it; were they on two goroutines, a pass whose notification was applied between the
+// read's snapshot and its write would be written over by that older snapshot, and stay unheard
+// until the next freshness change (INFRA-3904: the hub heard 12:00:00.06 and then wrote its read of
+// 12:00:00.004). The first recompute answers before the listener dials here, so it is not one of
+// the writers this row reads. Unforced, the window between the read and the write is one query
+// wide; the forcing kit commits a pass inside it.
+func TestTheHubsFreshnessIsTheRowsOnceItsListenerHasConnected(t *testing.T) {
+	t.Parallel()
+	dialing := make(chan struct{})
+	rig := newHubRig(t, func(hub *deliveryHub) {
+		dial := hub.dial
+		hub.dial = func(ctx context.Context) (*pgx.Conn, error) {
+			select {
+			case <-dialing:
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+			return dial(ctx)
+		}
+	})
+	letDial := sync.OnceFunc(func() { close(dialing) })
+	t.Cleanup(letDial)
+	seedHubSettings(t, rig.database)
+	if err := delivery.RecordReconcileSuccess(t.Context(), rig.database.Pool, rig.clock.Now()); err != nil {
+		t.Fatalf("record a reconcile: %v", err)
+	}
+	conn := newFakeLiveConn()
+	rig.hub.Subscribe(conn, subscribeFrame("p", presetView(deliveryLiveTimeline, 7, "")))
+	conn.snapshot(t, "p")
+
+	since := rig.mark()
+	letDial()
+	rig.waitForEvent(t, since, "the hub's listener to connect", func(note deliveryHubNote) bool { return note.what == "connected" })
+	type reading struct {
+		row   delivery.DeliverySettings
+		heard deliveryFreshnessHeard
+	}
+	testwait.Until(t, "the hub's freshness to be the settings row's", func() (reading, bool) {
+		row, err := delivery.GetSettings(t.Context(), rig.database.Pool)
+		if err != nil {
+			t.Fatalf("read the settings row: %v", err)
+		}
+		rig.hub.mu.Lock()
+		heard := rig.hub.generation.fresh
+		rig.hub.mu.Unlock()
+		return reading{row: row, heard: heard},
+			sameMoment(heard.lastReconcileAt, row.LastReconcileAt) && sameMoment(heard.lastEventAt, row.LastEventAt) &&
+				equalStringPointers(heard.lastError, row.LastError)
+	})
+}
+
+// sameMoment is whether a and b are both unset or both the same moment.
+func sameMoment(a, b *time.Time) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	return a.Equal(*b)
 }
