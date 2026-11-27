@@ -35,10 +35,10 @@ import (
 // (the seed's fact id is built from what its read found, outbox.go:4601 at 1341b5f8) and nothing
 // further cues R: R waits on P's request, P waits on its open child R, and P's sign-off is refused
 // while R waits. Each proof holds one of the two rows through the rig's own outbox hold
-// (overrides.holdOutbox), so each order runs on purpose rather than as the machine's load falls.
-// The proof of the order that hangs, the seed held until P's status rows are done, fails at
-// 1341b5f8 and lands with the fix (dispatch://INFRA-3904). These pass there:
+// (overrides.holdOutbox), so each order runs on purpose rather than as the machine's load falls:
 //
+//   - TestAPersonsRetroEndsTheWaitWhenTheSeedRunsAfterPsStatusWrite holds the seed until P's
+//     status rows are done;
 //   - TestAPersonsRetroEndsTheWaitWhenTheSeedRunsBeforePsStatusWrite holds P's status write until
 //     the wait ended;
 //   - TestAPersonsRetroWhileTheDaemonIsDownEndsTheWaitAfterTheBoot moves P to retro while no daemon
@@ -141,6 +141,24 @@ func (r *personHandoverRig) waitEndedAfterTheSeed(run pendingRun, shown string) 
 			"had read, its fact was a duplicate, and nothing will cue %s again (dispatch://INFRA-3904)\nstate %s",
 			run.root.Key, run.parent.Key, run.parent.Key, shown, run.root.Key, run.ask, step.Status, run.parent.Key, run.root.Key, body)
 	}
+}
+
+// A person's retro ends the wait when R's pending-basis seed runs after P's status write: the
+// outbox holds the seed until P's status rows are done, as the outbox's lanes ran them in CI job
+// 140311446907 at f1db1daf.
+func TestAPersonsRetroEndsTheWaitWhenTheSeedRunsAfterPsStatusWrite(t *testing.T) {
+	// Not parallel: the scratch-Dispatch rig holds its boot (1 min), Dispatch's readiness (2 min) and each reply (10 s) to fixed spans, which rigs beside it can push it past; its five callers already parallel carry that risk until the rig waits on the events instead (#5735).
+	held := &outboxHold{}
+	r, run := retroWorld(t, held, []string{"Compost bay thermometer", "Allotment soil stewardship"})
+	held.hold(run.root.Key, record.OutboxKindPendingBasisSeed)
+	r.setStatus(run.parent.Key, "retro")
+	// The settle of the person's move queues the seed and P's status write in one transaction, so
+	// the seed held in the outbox says the status write, if any, is queued too.
+	testwait.Eventually(t, "the person's move of "+run.parent.Key+" to queue the pending-basis seed of "+run.root.Key, func() bool {
+		return r.outboxCount(run.root.Key, record.OutboxKindPendingBasisSeed) > 0
+	})
+	r.seedRanAfterStatusWrite(held, run)
+	t.Logf("the person's retro of %s ended the wait of %s with the seed run after %s's status rows", run.parent.Key, run.root.Key, run.parent.Key)
 }
 
 // A person's retro ends the wait when R's pending-basis seed runs before P's status write: the
