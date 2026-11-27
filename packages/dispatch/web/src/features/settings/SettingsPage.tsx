@@ -12,6 +12,7 @@ import { useDocumentTitle } from "../shell/useDocumentTitle";
 import { AgentTokensSection } from "./AgentTokensSection";
 import { ArchitectureSourcesSection } from "./ArchitectureSourcesSection";
 import { settingsSectionGap } from "./classes";
+import { KeyboardShortcutsSection } from "./KeyboardShortcutsSection";
 import { LegionDaemonsSection } from "./LegionDaemonsSection";
 import { ProjectsSection } from "./ProjectsSection";
 
@@ -121,6 +122,7 @@ export function SettingsPage(): ReactNode {
           <DeliverySettingsForm />
         </section>
         <IssuePagePreference />
+        <KeyboardShortcutsSection />
         <LegionDaemonsSection />
       </div>
     </section>

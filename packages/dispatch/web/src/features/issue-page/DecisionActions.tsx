@@ -4,15 +4,19 @@ import {
   createContext,
   type ReactNode,
   useContext,
+  useEffect,
   useLayoutEffect,
   useMemo,
   useRef,
   useState,
 } from "react";
 
-import { api } from "../../api/client";
+import { api, NetworkError, RequestTimeoutError } from "../../api/client";
+import { useUnsettledRead } from "../../api/read-bound";
 import type { Artifact, Decision, DisplayTree, IssueDecisions } from "../../api/types";
+import { heldPress } from "../../components/held-press";
 import { useTooltips } from "../../components/tooltips";
+import { useFocusBack } from "../../hooks/useFocusBack";
 import {
   borderDefault,
   dangerText,
@@ -32,19 +36,21 @@ import {
   anchorBlock,
   anchorQuote,
   type ChangeAnchor,
+  changeAnchor,
   changeCommentInput,
   keptDecisions,
-  readChangeAnchor,
 } from "../decision-card/change-anchor";
 import { issueDecisionsQuery } from "../doc/spec-marks";
 import { useDecisionHeadingWords } from "../issue/decision-heading";
 import { usePlainHeadline } from "../refs/plain-text";
 import { EVENT_FRESH } from "../refs/reference-target";
 import { type TextSource, textSourceOf } from "../refs/text-references";
-import { useKeyedWrite } from "../writes/useKeyedWrite";
+import { SEND_DEADLINE_MS } from "../writes/keyed-write";
+import { useKeyedWrite, usePendingKeyedPress } from "../writes/useKeyedWrite";
+import { useOneCreateOut } from "../writes/useOneCreateOut";
 import { useNoteOwnAct } from "./own-act";
 import { authorText, pageChrome } from "./page-structure";
-import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
+import { ANSWER_LINES, CONTROL_LABELS, STATE_LINES } from "./page-words";
 
 /** One control a row of the tree draws of its own: Keep and Change on a decision. */
 export type RowAction = "change" | "keep";
@@ -94,13 +100,13 @@ const TONES = {
 } as const;
 
 /**
- * Moves the focus off `control` onto its decision's own row, where `control` holds it, before a
- * write disables or removes `control`. A focused control that is disabled drops the focus to the
- * document body (measured in Chromium: a `focusout` from Keep with no related target 45 ms
- * after its write went out), which loses a keyboard reader's place on the page, and the tree
- * then closes the body the focus held (`IssueTree.tsx`), taking Change with it. On the row the
- * focus has not left the tree, so the body stays open. The row is `NodeRow`'s `data-node-row`,
- * and the move takes no scroll: the reader is already looking at it.
+ * Moves the focus off `control` onto its decision's own row, where `control` holds it, before
+ * the write it pressed takes `control` away: Keep goes once its Keep lands, and the Change form
+ * once its change lands. Neither is disabled while its write is out (`heldPress`), but a focused
+ * control that goes drops the focus to the document body, which loses a keyboard reader's place
+ * on the page, and the tree then closes the body the focus held (`IssueTree.tsx`), taking Change
+ * with it. On the row the focus has not left the tree, so the body stays open. The row is
+ * `NodeRow`'s `data-node-row`, and the move takes no scroll: the reader is already looking at it.
  */
 function keepFocusOnRow(control: HTMLElement): void {
   if (!control.contains(document.activeElement)) return;
@@ -183,6 +189,7 @@ function DecisionControls({
   issueKey: string;
   tabStops: boolean;
 }): ReactNode {
+  const keepButton = useRef<HTMLButtonElement>(null);
   const queryClient = useQueryClient();
   const noteOwnAct = useNoteOwnAct();
   const tones = TONES[useTooltips() ? "main" : "page"];
@@ -198,6 +205,10 @@ function DecisionControls({
     if (open) drafts?.set(decision.ref, "");
     else drafts?.delete(decision.ref);
   };
+  // Cancel, a button inside the form, ends it with the focus back on the Change that opened it,
+  // which the form's going would leave on the page's body (`useFocusBack`); a change sent ends it
+  // with the focus on the decision's row (`keepFocusOnRow`).
+  const focusBack = useFocusBack(changing);
   // Read once per answer of the decisions read, which is when the decision is a new object: the
   // block a Change is anchored to, and its words, which the write anchors to.
   const block = useMemo(() => anchorBlock(decision), [decision]);
@@ -214,6 +225,7 @@ function DecisionControls({
     // A write's label holds no markup: the reading list's `decision-heading-words`.
     label: () => `${CONTROL_LABELS.keep_decision} ${name}`,
     method: "POST",
+    readsLate: true,
     // The sum of the text this node showed: a decision the agent changed since is refused
     // (`409 DECISION_CHANGED`), so a Keep never stands over words the reader did not see.
     write: (id: string, bounds) =>
@@ -239,14 +251,17 @@ function DecisionControls({
         {decision.waiting_review ? (
           // Out of the tab order, as every control inside a row is, unless `tabStops` holds,
           // and found by its mark: the tree is one tab stop and the row's own key presses this
-          // (R9, WCAG 2.1.1, `useTreeKeymap.ts`'s `tree-keep`).
+          // (R9, WCAG 2.1.1, `useTreeKeymap.ts`'s `tree-keep`). Held, not disabled, while its
+          // Keep is out within its deadline (`heldPress`): it keeps the focus, and a second press
+          // keeps nothing more. A Keep past its deadline (`KeyedWriteResult.late`) holds it no
+          // longer.
           <button
             className={`${DECISION_BUTTON} bg-page-decision text-page-paper`}
-            disabled={keep.isPending}
-            onClick={(event) => {
-              keepFocusOnRow(event.currentTarget);
+            {...heldPress(keep.isPending && !keep.late, () => {
+              if (keepButton.current !== null) keepFocusOnRow(keepButton.current);
               keep.mutate(documentId);
-            }}
+            })}
+            ref={keepButton}
             tabIndex={tabStops ? undefined : -1}
             type="button"
             {...ROW_ACTION_MARKS.keep}
@@ -260,6 +275,7 @@ function DecisionControls({
             aria-expanded={changing}
             className={`${DECISION_BUTTON} bg-page-paper text-page-decision`}
             onClick={() => change(!changing)}
+            ref={focusBack.opener}
             tabIndex={tabStops ? undefined : -1}
             type="button"
             {...ROW_ACTION_MARKS.change}
@@ -282,6 +298,10 @@ function DecisionControls({
           issueKey={issueKey}
           focusField={!restored}
           name={name}
+          onCancel={() => {
+            focusBack.handBack();
+            change(false);
+          }}
           onDone={() => change(false)}
           quote={quote}
           source={source}
@@ -302,6 +322,7 @@ function ChangeComposer({
   focusField,
   issueKey,
   name,
+  onCancel,
   onDone,
   quote,
   source,
@@ -317,6 +338,9 @@ function ChangeComposer({
   /** The decision's heading as plain words (`useDecisionHeadingWords`), which the form and its
    *  write are named after. */
   name: string;
+  /** Cancel's: ends the form, dropping what was typed in it. */
+  onCancel: () => void;
+  /** Ends the form once the change it sent lands. */
   onDone: () => void;
   /** The words of `block` as the decisions document holds them, which the change is anchored to
    *  (`anchorQuote`). */
@@ -339,11 +363,49 @@ function ChangeComposer({
   const queryClient = useQueryClient();
   const tones = TONES[useTooltips() ? "main" : "page"];
   const field = useRef<MentionFieldHandle | null>(null);
+  // Whether the send is reading the decisions document's text, which it does before the comment
+  // goes out: Send is held while it does, as it is while the comment is out within its deadline.
+  // `readingRef` is the same fact for a press that lands before the render shows it.
+  const [reading, setReading] = useState(false);
+  const readingRef = useRef(false);
+  // The latest press's document read, as every form of the decisions document sees it: each
+  // form's Send change reads that one document (`api.getArtifactText`), so they take one hold of
+  // its read (`useUnsettledRead`), whichever decision's form pressed, and a form drawn again while
+  // its read is out finds that hold. Its reason is this form's while this form's press made the
+  // latest read (`ownRead`): the form says why the change it sent named no place until that read
+  // settles or the next press of Send change, on any form of the document, reads it again.
+  // `useReadBound` is not used here, since its hold on the press's hand-off would end with the
+  // read, before the comment the press sends has answered.
+  const [documentRead, waitWithinBound] = useUnsettledRead(["artifact", documentId, "text"]);
+  const ownRead = documentRead?.row === decision.ref ? documentRead : undefined;
+  const unsettled = ownRead?.unsettled;
+  // What the form says of the latest press's document read that failed, which left the change it
+  // sent no place, from the moment the read fails: before its bound, or after the bound ended it,
+  // in the place of why it had not settled. The line is the press's own: it goes at the next
+  // press of Send change, on any form of the document (`ownRead`), and with the form, and a
+  // refusal of the comment leaves it.
+  const [readFailed, setReadFailed] = useState<string>();
+  const failed = ownRead === undefined ? undefined : readFailed;
+  // How many presses of this form's Send change read the document: a read that fails says so only
+  // while its press is still the latest.
+  const presses = useRef(0);
+  // Whether this press has spent `SEND_DEADLINE_MS` across its document read and its comment
+  // together: a read that runs to its own deadline followed by an offline comment must not hold
+  // Send for a second one. The timer is the press's, and goes once the write settles.
+  const [pressLate, setPressLate] = useState(false);
+  const pressDeadline = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  useEffect(() => () => clearTimeout(pressDeadline.current), []);
+  // The comment goes under the decision's name, so a form drawn again while it is out, before it
+  // lands - the body closed and opened, and Change pressed again - finds it, and holds Send until
+  // that comment's deadline, as the form it was sent from did (`usePendingKeyedPress`).
+  const mutationKey = ["decision-change", issueKey, decision.ref];
+  const sentChange = usePendingKeyedPress(mutationKey);
   const send = useKeyedWrite({
     inline: true,
     // A write's label holds no markup: the reading list's `decision-heading-words`.
     label: () => `${CONTROL_LABELS.change_decision} ${name}`,
     method: "POST",
+    mutationKey,
     write: (input: { anchor: ChangeAnchor; body: string }, bounds) =>
       api.createComment(issueKey, changeCommentInput(documentId, input), bounds),
     // The change is a comment of the issue's, and the comments read is what tells the page a
@@ -363,10 +425,22 @@ function ChangeComposer({
     onError: (_error, input) => {
       drafts?.set(decision.ref, input.body);
     },
+    onSettled: () => {
+      clearTimeout(pressDeadline.current);
+      pressDeadline.current = undefined;
+      setPressLate(false);
+    },
   });
-  // Whether the send is reading the decisions document's text, which it does before the comment
-  // goes out: Send is off while it does, as it is while the comment is out.
-  const [reading, setReading] = useState(false);
+  // A press past its deadline (`pressLate`, or the comment's own `late`, for a comment sent at
+  // once) holds Send no longer. A press then would post the change twice, so it sends nothing
+  // while that comment is out, and the form says so (`oneChange`). A form drawn again while its
+  // press's document read is out holds Send through that read's hold (`ownRead`), whose press
+  // posts its change once the hold ends, and one drawn again while the comment is out holds Send
+  // until that comment's deadline (`sentChange`), and then sends nothing while it is out.
+  const sendHeld =
+    !pressLate &&
+    (reading || ownRead?.holding === true || (sentChange.isPending && !sentChange.late));
+  const oneChange = useOneCreateOut(sentChange);
   // The one place inside a row that takes the tab order, and only while it is open: this is a
   // form a reader is typing in, so Tab walks its field, Send change and Cancel as it does in
   // every other form of the app. At rest - no form open - the tree is still one tab stop (R9).
@@ -388,23 +462,70 @@ function ChangeComposer({
       className="flex min-w-0 flex-col gap-1"
       onSubmit={(event) => {
         event.preventDefault();
-        if (body.trim() === "" || reading) return;
-        // Send is disabled while the comment is out, and the form goes once it lands. The draft
-        // goes while the send is out: a body that closes then comes back with Change closed, and
-        // the shell's pending-writes indicator holds the send, so a second press cannot write the
-        // change twice. A refusal gives the words back to the draft (`onError`).
+        if (body.trim() === "" || sendHeld || readingRef.current || oneChange.refuse()) return;
+        // Send is held while the send reads the document and while the comment is out, and this
+        // sends nothing then; the form goes once the comment lands. The draft goes while the send
+        // is out: a body that closes then comes back with Change closed, and the shell's
+        // pending-writes indicator holds the send, so a second press cannot write the change
+        // twice, nor can one made past its deadline (`oneChange`). A refusal gives the words back
+        // to the draft (`onError`).
         keepFocusOnRow(event.currentTarget);
         drafts?.delete(decision.ref);
         // Which of the quote's places in the decisions document is this decision's own, counted
-        // here, at the send, over the document's own reading, which the send reads once now:
-        // `changeAnchor` walks every decision above this one, which no render of a row pays for
-        // (decision 92). With no reading - the read failed - the anchor names no place: Dispatch
-        // takes it where the quote stands once, and refuses it where the quote stands more than
-        // once, which the form says in the page's words with the draft kept.
+        // here, at the send, over the document's own reading, which the send reads once now
+        // directly through the API client (`api.getArtifactText`, as `captureUploadBase` does):
+        // a direct GET bypasses TanStack's offline pause and carries the client's exchange
+        // deadline, and the bound of `waitWithinBound` (`readWithinBound`) ensures the press
+        // proceeds once even if the read does not settle in time, so a late read can never post a
+        // second comment. `changeAnchor` walks every decision above this one, which no render of a
+        // row pays for (decision 92).
+        // With no reading - the read failed, or the bound ended it - the anchor names no place:
+        // Dispatch takes it where the quote stands once, and refuses it where the quote stands
+        // more than once, which the form says in the page's words with the draft kept. Beside
+        // Send change the form then says why, in the words the page says for a read of the
+        // decisions document that failed. A read that failed adds its `RequestTimeoutError`'s or
+        // `NetworkError`'s message, and nothing for any other failure, whose text is the server's
+        // (`readFailed`): the client sets its own deadline (`REQUEST_DEADLINE_MS`) as the read
+        // starts, before the bound, so a read Dispatch never answers fails as a timeout. A read
+        // the bound ended adds why it has not settled, until it does or the next press of any
+        // form of the document reads it again (`unsettled`); if it then fails, the line says why
+        // it failed in that place (`readFailed`). No press of this form starts while `readingRef`
+        // holds, and only the end of the press's wait (`waitWithinBound`) clears it, so a read
+        // that fails before its bound is always this form's latest press's; one the bound ended
+        // says so only while its press is still the latest (`presses`), and either says so only
+        // while no other form's press has read the document since (`ownRead`).
+        readingRef.current = true;
         setReading(true);
-        void readChangeAnchor(queryClient, decision, documentId, issueKey, quote).then((anchor) => {
+        setPressLate(false);
+        setReadFailed(undefined);
+        presses.current += 1;
+        const press = presses.current;
+        clearTimeout(pressDeadline.current);
+        pressDeadline.current = setTimeout(() => setPressLate(true), SEND_DEADLINE_MS);
+        let tree: DisplayTree | undefined;
+        const read = api.getArtifactText(documentId).then(
+          (text) => {
+            tree = text.markdown_tree;
+          },
+          (error: unknown) => {
+            if (press !== presses.current) return;
+            setReadFailed(
+              error instanceof RequestTimeoutError || error instanceof NetworkError
+                ? `${STATE_LINES.decisions_document_unreadable} ${error.message}.`
+                : STATE_LINES.decisions_document_unreadable
+            );
+          }
+        );
+        void waitWithinBound(decision.ref, read).then(() => {
+          readingRef.current = false;
           setReading(false);
-          send.mutate({ anchor, body });
+          const anchor = changeAnchor(
+            decision,
+            queryClient.getQueryData<IssueDecisions>(issueDecisionsQuery(issueKey, true).queryKey)
+              ?.decisions,
+            tree
+          );
+          send.mutate({ anchor: anchor ?? { quote }, body });
         });
       }}
     >
@@ -432,15 +553,33 @@ function ChangeComposer({
         rows={3}
         writing={dispatchWritingBox("decisions-change", "comment")}
       />
+      {/* One line says why a change named no place: the latest press's failed read, else why a
+          read the bound ended has not settled. */}
+      {(failed ?? unsettled) === undefined ? null : (
+        <p className={`text-xs ${tones.failed}`} role="alert" {...pageChrome}>
+          {failed ?? `${STATE_LINES.decisions_document_unreadable} ${unsettled}.`}
+        </p>
+      )}
       {send.error === null ? null : (
         <p className={`text-xs ${tones.failed}`} role="alert" {...pageChrome}>
           {ANSWER_LINES.change_not_sent}
         </p>
       )}
+      {oneChange.refused ? (
+        <p className={`text-xs ${tones.muted}`} role="status" {...pageChrome}>
+          {ANSWER_LINES.change_still_sending}
+        </p>
+      ) : null}
       <p className="flex min-w-0 flex-wrap items-baseline gap-2">
+        {/* The document read and the comment are both this press's own send, so Send is held
+            while either is out, until the press's own deadline, which runs across both
+            (`pressLate`), never disabled: it keeps the focus the press gave it (`heldPress`), and
+            the form's submit sends nothing then. Only an empty field, which has nothing to send,
+            disables it. */}
         <button
+          aria-disabled={sendHeld || undefined}
           className={`rounded border px-1 text-xs ${tones.rule} ${tones.muted}`}
-          disabled={send.isPending || reading || body.trim() === ""}
+          disabled={body.trim() === ""}
           type="submit"
           {...pageChrome}
         >
@@ -448,7 +587,7 @@ function ChangeComposer({
         </button>
         <button
           className={`rounded border px-1 text-xs ${tones.rule} ${tones.muted}`}
-          onClick={onDone}
+          onClick={onCancel}
           type="button"
           {...pageChrome}
         >

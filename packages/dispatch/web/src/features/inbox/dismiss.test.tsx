@@ -16,7 +16,9 @@ import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
-import { realClock, settle } from "../../__tests__/fake-clock";
+import { realClock, settle, tick } from "../../__tests__/fake-clock";
+import { heldUntilLate, pressesOf } from "../../__tests__/held-until-late";
+import { pickIn } from "../../__tests__/issue-picks";
 import { answerAskSnoozes, answerInboxDismisses } from "../../__tests__/send-answers";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
@@ -41,8 +43,12 @@ import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { plannerAgentRow, replyRow } from "../threads/replies-fixture";
 import { stoppedWriteNote } from "../writes/keyed-write";
+import { writesOf } from "../writes/write-store";
+import { DismissControl, RowDismissContext } from "./DismissControl";
 import { Inbox } from "./Inbox";
 import { issueAsk } from "./inbox-fixture";
+import { address, RouteProbe } from "./inbox-page-fixture";
+import { type InboxListRow, rowId } from "./list-row";
 import {
   dismissesThread,
   dismissRefusalText,
@@ -50,6 +56,7 @@ import {
   inboxDismissBody,
   useInboxDismiss,
 } from "./useInboxDismiss";
+import { useInboxSelection } from "./useInboxSelection";
 
 // A thread row's checkbox is named after its subject's plain-text reading (`PlainText`), which
 // reads nothing until the lazy Markdown engine has loaded, and the rows find each checkbox by that
@@ -102,11 +109,13 @@ function seeded(rows: readonly MyReplyRow[], asks: readonly InboxRow[] = []): Qu
   return client;
 }
 
-function renderInbox(client: QueryClient, address = "/"): void {
+/** The Inbox at `path`, with the router's address drawn beside it (`RouteProbe`). */
+function renderInbox(client: QueryClient, path = "/"): void {
   render(
-    <MemoryRouter initialEntries={[address]}>
+    <MemoryRouter initialEntries={[path]}>
       <QueryClientProvider client={client}>
         <KeymapProvider>
+          <RouteProbe />
           <Inbox />
         </KeymapProvider>
       </QueryClientProvider>
@@ -201,6 +210,71 @@ test("a refused dismiss puts the row back where it stood and says so", async () 
   expect(rowIds()).toEqual(["reply:c1", "reply:c9"]);
 });
 
+/** `thread`'s Dismiss, drawn by the Inbox's dismiss write as a row's head draws it, whether or
+ *  not the read still lists the row. */
+function DismissOf({ thread }: { thread: MyReplyRow }): ReactNode {
+  const write = useInboxDismiss();
+  return (
+    <RowDismissContext
+      value={{
+        dismiss: (row) => write.submit({ rows: [row] }),
+        held: write.held,
+        pending: write.pending,
+        show: "inbox",
+      }}
+    >
+      <DismissControl shown thread={thread} />
+    </RowDismissContext>
+  );
+}
+
+// A dismiss that never answers - offline, each try failing at the network - holds the row's
+// Dismiss until its deadline and no longer: past it the dismiss is still tried, and the control
+// still says so, and a press then dismisses again, behind it on the dismiss line.
+test("Dismiss lets go at the dismiss write deadline and dismisses again", async () => {
+  const dismissed = answerInboxDismisses();
+  dismissed.mockRejectedValue(
+    new NetworkError("/api/v1/me/inbox/dismiss", new TypeError("Failed to fetch"))
+  );
+  const thread = replyRow("c1");
+  const client = seeded([thread]);
+  render(
+    <MemoryRouter>
+      <QueryClientProvider client={client}>
+        <KeymapProvider>
+          <DismissOf thread={thread} />
+        </KeymapProvider>
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  const button = document.querySelector<HTMLButtonElement>('[data-inbox-dismiss="reply:c1"]');
+  if (button === null) throw new Error("no Dismiss is drawn for reply:c1");
+  jest.useFakeTimers();
+  try {
+    const user = userOnFakeClock();
+    await heldUntilLate(user, button, {
+      label: "Threads dismissed",
+      name: "Dismiss",
+      queryClient: client,
+      sent: () => pressesOf([dismissed]),
+    });
+    expect(button, "Dismiss, past the deadline").toHaveTextContent("Dismissing…");
+    await user.keyboard("{Enter}");
+    await tick(1_000);
+    expect(
+      writesOf(client)
+        .rows()
+        .filter((row) => row.label === "Threads dismissed")
+        .map((row) => row.status),
+      "a press past the deadline dismisses again, behind the late one"
+    ).toEqual(["late", "queued"]);
+    expect(button, "Dismiss, behind the late dismiss").not.toHaveAttribute("aria-disabled");
+  } finally {
+    realClock();
+    client.clear();
+  }
+});
+
 test("below 1280 px a dismiss refused from the reading view's head is said where the reader is", async () => {
   const user = userEvent.setup();
   const dismissed = answerInboxDismisses();
@@ -251,17 +325,20 @@ test("below 1280 px a plain click on a thread row's title opens the row in place
   }
 });
 
-test("below 1280 px `o` on a focused thread row goes to the thread's own page, not the row's view", async () => {
+// `o` goes where the row's title links, the thread's own page, through the app's own navigation:
+// the router's address moves and the browser loads no page, so the app keeps what it holds in
+// memory, a write still out included, as `o` beside the column does by its router link.
+test("below 1280 px `o` on a focused thread row goes to the thread's own page, not the row's view, with no page load", async () => {
   const user = userEvent.setup();
   const assign = spyOn(window.location, "assign").mockImplementation(() => undefined);
   renderInbox(seeded([replyRow("c1"), replyRow("c9")]));
   try {
     await waitFor(() => expect(rowIds()).toEqual(["reply:c1", "reply:c9"]));
     const row = document.querySelector<HTMLElement>('[data-inbox-row="reply:c9"]') as HTMLElement;
-    const title = row.querySelector<HTMLAnchorElement>("a[data-inbox-owner]") as HTMLAnchorElement;
     row.focus();
     await user.keyboard("o");
-    expect(assign).toHaveBeenCalledWith(title.href);
+    await waitFor(() => expect(address()).toBe("/issues/CORE-1/comments/c9"));
+    expect(assign).not.toHaveBeenCalled();
     expect(screen.queryByTestId("inbox-reading-view")).not.toBeInTheDocument();
   } finally {
     assign.mockRestore();
@@ -378,6 +455,70 @@ test("a read of either view or the count asked while a dismiss is out waits for 
       inboxThreads: ["c9", "c5"],
     })
   );
+});
+
+/** The selection one list keeps, over one listed Reply row, `c1`, with the client that serves it:
+ *  `dismissedHere` and `forgetDismissed` are read off it. */
+function renderSelection() {
+  const client = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
+  client.setQueryData(whoAmIQuery().queryKey, { event_head: "0", kind: "user", login: "alice" });
+  const row: InboxListRow = { kind: "thread", thread: replyRow("c1") };
+  const id = rowId(row);
+  const { result } = renderHook(
+    () =>
+      useInboxSelection({
+        asOf: undefined,
+        candidates: [row],
+        drawnIds: new Set([id]),
+        filters: {},
+        rows: new Map([[id, row]]),
+        showDismissed: false,
+      }),
+    {
+      wrapper: ({ children }: { children: ReactNode }) => (
+        <QueryClientProvider client={client}>{children}</QueryClientProvider>
+      ),
+    }
+  );
+  return { id, result };
+}
+
+// INFRA-3135, round 29 (the architect's ruling of 2026-11-26 06:2xZ): the bar's hand-off parks the
+// focus in the row the reader marked last while its Dismiss is out, and the list's hand hold skips
+// a row named here (`dismissedHere`). A name that ended when Dispatch took the press, while a read
+// still drew the row, let that hold keep the row for the parked focus, and in WebKit the row never
+// left the page (builds Job `infra-3135-infra-3135-r30e-d70p`). So the name stands until the page
+// no longer draws the row.
+test("a Dismiss Dispatch took names its row until the page no longer draws it", async () => {
+  const dismissed = answerInboxDismisses();
+  const answer = Promise.withResolvers<{ dismissed: number }>();
+  dismissed.mockReturnValue(answer.promise);
+  const { id, result } = renderSelection();
+  act(() => result.current.dismissRows([dismissThreadRow(replyRow("c1"))]));
+  await waitFor(() => expect(dismissed).toHaveBeenCalledTimes(1));
+  expect(result.current.dismissedHere(id)).toBe(true);
+
+  await act(async () => {
+    answer.resolve({ dismissed: 1 });
+    await settle();
+  });
+  // Dispatch took it, and the page still draws the row: a read has not dropped it yet.
+  act(() => result.current.forgetDismissed((drawn) => drawn === id));
+  expect(result.current.dismissedHere(id)).toBe(true);
+  // The page has let the row go.
+  act(() => result.current.forgetDismissed(() => false));
+  expect(result.current.dismissedHere(id)).toBe(false);
+});
+
+// The rollback of a refused Dismiss puts the row back as an ordinary row, so nothing of the press
+// is left to wait for, and its name ends at once, whatever the page draws.
+test("a Dismiss Dispatch refused no longer names its row", async () => {
+  const dismissed = answerInboxDismisses();
+  dismissed.mockRejectedValue(new ApiError(409, { error: "conflict" }));
+  const { id, result } = renderSelection();
+  act(() => result.current.dismissRows([dismissThreadRow(replyRow("c1"))]));
+  await waitFor(() => expect(dismissed).toHaveBeenCalledTimes(1));
+  await waitFor(() => expect(result.current.dismissedHere(id)).toBe(false));
 });
 
 /** A `user_thread_state.updated` the live feed delivers: `payload.login`'s read of the Inbox's
@@ -527,7 +668,7 @@ test("the bulk bar offers Snooze for the asks among the selection and Dismiss fo
   // A thread row takes the mark `x` makes, as an ask does.
   await user.click(screen.getAllByLabelText("Select Root")[0] as HTMLElement);
   await screen.findByText("1 selected");
-  expect(screen.queryByLabelText("Snooze selected asks")).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Snooze selected asks" })).not.toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Dismiss selected threads" })).toBeTruthy();
 
   const asksMark = [...document.querySelectorAll<HTMLElement>('input[type="checkbox"]')].find(
@@ -535,7 +676,10 @@ test("the bulk bar offers Snooze for the asks among the selection and Dismiss fo
   );
   await user.click(asksMark as HTMLElement);
   await screen.findByText("2 selected");
-  expect(screen.getByLabelText("Snooze selected asks")).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Snooze selected asks" })).toHaveAttribute(
+    "aria-haspopup",
+    "listbox"
+  );
 
   await user.click(screen.getByRole("button", { name: "Dismiss selected threads" }));
   await waitFor(() => expect(rowIds()).not.toContain("reply:c1"));
@@ -739,10 +883,8 @@ test("a bulk snooze the reader stopped says it may have been saved, not that it 
     await user.click(asksMark as HTMLElement);
     await screen.findByText("1 selected");
     jest.useFakeTimers();
-    await userOnFakeClock().selectOptions(
-      screen.getByLabelText("Snooze selected asks"),
-      "tomorrow"
-    );
+    const picker = screen.getByLabelText("Snooze selected asks");
+    await pickIn(userOnFakeClock(), () => picker, "Tomorrow");
     await stopTheLateWrite(client);
     await waitFor(() =>
       expect(screen.getByRole("alert").textContent).toBe(

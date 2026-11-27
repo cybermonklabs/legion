@@ -7,8 +7,10 @@ import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
-import { realClock, settle } from "../../__tests__/fake-clock";
+import { realClock, settle, tick } from "../../__tests__/fake-clock";
 import { graphNode } from "../../__tests__/graph-fixture";
+import { heldNotDisabled, pressHeld } from "../../__tests__/held-press";
+import { heldUntilLate, pressesOf } from "../../__tests__/held-until-late";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api, type DeclineAskInput, NetworkError } from "../../api/client";
@@ -20,6 +22,7 @@ import { KeymapProvider } from "../shell/KeymapProvider";
 import { stoppedWriteNote } from "../writes/keyed-write";
 import { AskCard } from "./AskCard";
 import { issueAsk } from "./inbox-fixture";
+import { AskDeclineWritesContext, useOutstandingAnswerWrites } from "./outstanding-answers";
 
 // The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
 // random order, so the file loads the engine before its first row, whichever row that is.
@@ -164,6 +167,69 @@ function renderCard(
   );
   return { queryClient, view };
 }
+
+/** An Inbox's declines around `children`, as the Inbox provides them: a card under it makes its
+ *  decline through the Inbox's write of its ask. */
+function InboxDeclines({ children }: { children: ReactNode }): ReactNode {
+  return (
+    <AskDeclineWritesContext value={useOutstandingAnswerWrites()}>
+      {children}
+    </AskDeclineWritesContext>
+  );
+}
+
+/** Declines an open question on its card, drawn inside an Inbox's declines where `inbox` says
+ *  so, the decline never answering, and checks the dialog and its opener are held until the
+ *  write's deadline and no longer, and that a press then declines again. */
+async function declineLetsGo(inbox: boolean): Promise<void> {
+  const ask = openAsk();
+  const decline = spyOn(api, "declineAsk").mockRejectedValue(
+    new NetworkError("/api/v1/asks/ask-1/decline", new TypeError("Failed to fetch"))
+  );
+  const card = <AskCard ask={ask} initialThread={thread(ask)} />;
+  const { queryClient, view } = renderCard(inbox ? <InboxDeclines>{card}</InboxDeclines> : card);
+  const drawn = within(view.container);
+  try {
+    const prepare = userEvent.setup();
+    const opener = await drawn.findByRole("button", { name: "Decline to answer" });
+    await prepare.click(opener);
+    const dialog = within(drawn.getByRole("dialog", { name: "Decline to answer" }));
+    const button = dialog.getByRole<HTMLButtonElement>("button", { name: "Decline to answer" });
+    const note = dialog.getByLabelText<HTMLTextAreaElement>("Note (optional)");
+    const cancel = dialog.getByRole("button", { name: "Cancel" });
+    jest.useFakeTimers();
+    const user = userOnFakeClock();
+    const sent = () => pressesOf([decline]);
+    await heldUntilLate(user, button, {
+      alongside: (held) => {
+        expect(note.readOnly, "the note").toBe(held);
+        expect(opener.getAttribute("aria-disabled"), "the opener").toBe(held ? "true" : null);
+        expect(opener, "the opener").toHaveTextContent(held ? "Declining…" : "Decline to answer");
+        expect(cancel.getAttribute("aria-disabled"), "Cancel").toBe(held ? "true" : null);
+      },
+      label: "Decline of “Which release path?”",
+      name: "Decline to answer",
+      queryClient,
+      sent,
+    });
+    await user.keyboard("{Enter}");
+    await tick(1_000);
+    expect(sent()).toBe(2);
+  } finally {
+    realClock();
+    view.unmount();
+    queryClient.clear();
+    decline.mockRestore();
+  }
+}
+
+test("Decline to answer lets go at the decline write deadline and sends again", () =>
+  declineLetsGo(false));
+
+// Inside an Inbox the decline is the Inbox's write of the ask, which holds the dialog as the
+// card's own does: until its deadline and no longer.
+test("Decline to answer in an Inbox lets go at the decline write deadline and sends again", () =>
+  declineLetsGo(true));
 
 /** The sheet under the dialog, which a click anywhere on closes it. It is the dialog's own, not
  *  a card's: nothing else is drawn across the whole viewport. */
@@ -357,8 +423,8 @@ test("a note past the bound sends by neither the button nor Ctrl+Enter", async (
   }
 });
 
-// Escape and the backdrop close the dialog as Cancel does, and Cancel is disabled while the
-// decline is out. The two must refuse with it: a close lets the write's hold go, and the dialog
+// Escape and the backdrop close the dialog as Cancel does, and Cancel is held while the decline
+// is out. The two must refuse with it: a close lets the write's hold go, and the dialog
 // is the one surface the refusal is shown on, so a decline the server refuses after a press on
 // Escape would leave the person with no word of it.
 test("a decline out keeps its dialog through Escape and the backdrop, and shows the refusal", async () => {
@@ -395,6 +461,64 @@ test("a decline out keeps its dialog through Escape and the backdrop, and shows 
     );
     // The question is still the person's to answer: the refusal left the card where it was.
     expect(card.getByRole("dialog", { name: "Decline to answer" })).toBeTruthy();
+  } finally {
+    view.unmount();
+  }
+});
+
+// While the decline is out, the dialog's note, Cancel and Decline to answer are held, never
+// disabled: the browser takes the focus off a control that turns disabled, which would drop the
+// keyboard reader who pressed Decline to answer onto the page behind the open dialog, where a Tab
+// reaches the card. Held, the pressed control keeps the focus, a second press sends nothing, and
+// the dialog's Tab cycle still holds all three, so a Tab and a Shift+Tab stay inside it.
+test("Decline to answer keeps the focus inside its dialog while the decline is out, and a press then sends nothing", async () => {
+  const user = userEvent.setup();
+  const open = openAsk();
+  // The decline the server has not answered yet.
+  const out = Promise.withResolvers<Ask>();
+  const sent: DeclineAskInput[] = [];
+  const { view } = renderCard(
+    <AskCard
+      ask={open}
+      declineAsk={(_id, input) => {
+        sent.push(input);
+        return out.promise;
+      }}
+      getAskThread={async () => thread(open)}
+      initialThread={thread(open)}
+    />
+  );
+  const card = within(view.container);
+  try {
+    await user.click(await card.findByRole("button", { name: "Decline to answer" }));
+    const dialog = card.getByRole("dialog", { name: "Decline to answer" });
+    const note = within(dialog).getByLabelText("Note (optional)") as HTMLTextAreaElement;
+    await user.click(note);
+    await user.paste("Not ours to decide.");
+    const decline = within(dialog).getByRole("button", {
+      name: "Decline to answer",
+    }) as HTMLButtonElement;
+    await pressHeld(user, decline, { name: "Decline to answer", sent: () => sent.length });
+    expect(sent).toEqual([{ note: "Not ours to decide." }]);
+    const cancel = within(dialog).getByRole("button", { name: "Cancel" }) as HTMLButtonElement;
+    expect(heldNotDisabled(note, "the note")).toBe(true);
+    expect(heldNotDisabled(cancel, "Cancel")).toBe(true);
+
+    // Where the focus is, named, as a failed check prints it.
+    const where = () => {
+      const active = document.activeElement;
+      if (active === note) return "the note";
+      if (active === decline) return "Decline to answer";
+      if (active === cancel) return "Cancel";
+      return `${active?.tagName ?? "nothing"}, outside the dialog`;
+    };
+    await user.tab();
+    expect(where()).toBe("the note");
+    await user.tab({ shift: true });
+    expect(where()).toBe("Decline to answer");
+    await user.tab({ shift: true });
+    expect(where()).toBe("Cancel");
+    expect(card.getByRole("dialog", { name: "Decline to answer" })).toBe(dialog);
   } finally {
     view.unmount();
   }
@@ -444,17 +568,18 @@ test("a read of the thread asked before a decline answered does not put back the
     // The read answers as Dispatch held the ask when it was asked: open.
     await act(async () => {
       reads[0]?.resolve(thread(open));
-      await asked;
     });
     // The decline's answer gave that read up and asked for the thread again, after the decline.
     await waitFor(() => expect(reads).toHaveLength(2));
     expect(badge()).toBe("Declined");
     expect(card.queryByRole("button", { name: "Decline to answer" })).not.toBeInTheDocument();
 
-    // It answers the ask declined. The decline's own refresh of the thread waited behind it, and
-    // asks once it is in: Dispatch still holds the decline then.
+    // It answers the ask declined, and the refresh asked before the decline, whose read was given
+    // up, answers with it (`DispatchQueryClient`). The decline's own refresh of the thread waited
+    // behind it, and asks once it is in: Dispatch still holds the decline then.
     await act(async () => {
       reads[1]?.resolve(thread(declined));
+      await asked;
     });
     await waitFor(() => expect(reads).toHaveLength(3));
     await act(async () => {

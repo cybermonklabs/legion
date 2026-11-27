@@ -1,23 +1,37 @@
 import { afterEach, beforeAll, beforeEach, expect, jest, type Mock, spyOn, test } from "bun:test";
-import { type DispatchWritingBox, IDEMPOTENCY_KEY_TTL_MS } from "@legion/contracts";
-import { type MutationKey, QueryClient, QueryClientProvider } from "@tanstack/react-query";
-// biome-ignore lint/style/noRestrictedImports: a paste and a drop of files, an IME composition key, a key and an edit into the control a send holds disabled, the same-batch pairs inside act, and the hand-made beforeinput an edit's blocks are followed by
+import {
+  type DispatchWritingBox,
+  dispatchWritingBox,
+  IDEMPOTENCY_KEY_TTL_MS,
+} from "@legion/contracts";
+import {
+  type MutationKey,
+  onlineManager,
+  QueryClient,
+  QueryClientProvider,
+} from "@tanstack/react-query";
+// biome-ignore lint/style/noRestrictedImports: a paste and a drop of files, an IME composition key, an edit into the control a send holds read-only, the same-batch pairs inside act, and the hand-made beforeinput an edit's blocks are followed by
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
-import { createRef, type ReactNode, useState } from "react";
+import { type ComponentProps, createRef, type ReactNode, useState } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { displayTree } from "../../__tests__/display-trees";
 import { jump, realClock, settle, tick } from "../../__tests__/fake-clock";
+import { runFocusFixup } from "../../__tests__/focus-fixup";
 import { graphNode } from "../../__tests__/graph-fixture";
+import { heldNotDisabled } from "../../__tests__/held-press";
+import { INPUT_METHOD_MARKS } from "../../__tests__/input-method-marks";
 import { messageCorrectionFields } from "../../__tests__/message-fixture";
+import { recordEscapes } from "../../__tests__/record-escapes";
 import {
   architectureTree,
   issueCollaborators,
   searchResponse,
 } from "../../__tests__/search-fixture";
+import { untilAttempted } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
-import { ApiError, api } from "../../api/client";
+import { ApiError, api, NetworkError } from "../../api/client";
 import type {
   Agent,
   AskRead,
@@ -29,12 +43,14 @@ import type {
   Message,
 } from "../../api/types";
 import { useSending } from "../../hooks/useSending";
+import { emulateChromiumFocusFixup } from "../issue-page/chromium-focus-fixup";
 import type { AgentText } from "../refs/AgentName";
 import { MarkdownBody } from "../refs/MarkdownBody";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { mentionOptions, stoppedRoleOptions } from "../refs/party-options";
 import { settleRefPickerSearch } from "../refs/ref-picker-fixture";
 import { recordedRoles, roleHolders } from "../refs/role-holders";
+import { IS_MAC } from "../shell/key-text";
 import {
   KEYED_SEND_ATTEMPT_MS,
   SEND_DEADLINE_MS,
@@ -144,6 +160,7 @@ interface ComposerOptions {
   outline?: OutlineLook;
   owner?: ComposerOwner;
   replyTo?: (Omit<ReplyTarget, "parentKind"> & { parentKind?: ReplyTarget["parentKind"] }) | null;
+  inMain?: boolean;
   /** The host's copy of the post `replyTo` answers, as its read holds it now. */
   replyParent?: ReplyParent;
 }
@@ -161,50 +178,65 @@ function boxFor(props: ComposerOptions): DispatchWritingBox {
 }
 
 /** Renders the composer, and hands back `rerender` for a host that changes its props on the live
- *  instance - an Agents row's owner and seed when the reader picks an issue. */
+ *  instance - an Agents row's owner and seed when the reader picks an issue. `inMain` draws it in
+ *  the shell's main content, as the app shell draws it. */
 function renderComposer(options: ComposerOptions = {}) {
   const queryClient = new QueryClient({
     defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
   });
-  const composer = (props: ComposerOptions) => (
-    <MemoryRouter future={{ v7_relativeSplatPath: true, v7_startTransition: true }}>
-      <QueryClientProvider client={queryClient}>
-        <MentionComposer
-          agents={props.agents}
-          anchor={props.anchor}
-          box={props.box ?? boxFor(props)}
-          closed={props.closed}
-          edit={props.edit}
-          kind={props.kind}
-          seedMentions={props.seedMentions}
-          mutationKey={props.mutationKey}
-          onCancelReply={props.onCancelReply}
-          onClose={() => {}}
-          onKindChange={props.onKindChange}
-          onSent={props.onSent ?? (() => {})}
-          outline={props.outline}
-          owner={props.owner ?? { issueKey: "CORE-1", kind: "issue" }}
-          replyParent={props.replyParent}
-          replyTo={
-            props.replyTo === null
-              ? null
-              : props.replyTo === undefined
-                ? undefined
-                : { ...props.replyTo, parentKind: props.replyTo.parentKind ?? "comment" }
-          }
-        />
-      </QueryClientProvider>
-    </MemoryRouter>
-  );
+  const composer = (props: ComposerOptions) => {
+    const field = (
+      <MentionComposer
+        agents={props.agents}
+        anchor={props.anchor}
+        box={props.box ?? boxFor(props)}
+        closed={props.closed}
+        edit={props.edit}
+        kind={props.kind}
+        seedMentions={props.seedMentions}
+        mutationKey={props.mutationKey}
+        onCancelReply={props.onCancelReply}
+        onClose={() => {}}
+        onKindChange={props.onKindChange}
+        onSent={props.onSent ?? (() => {})}
+        outline={props.outline}
+        owner={props.owner ?? { issueKey: "CORE-1", kind: "issue" }}
+        replyParent={props.replyParent}
+        replyTo={
+          props.replyTo === null
+            ? null
+            : props.replyTo === undefined
+              ? undefined
+              : { ...props.replyTo, parentKind: props.replyTo.parentKind ?? "comment" }
+        }
+      />
+    );
+    return (
+      <MemoryRouter future={{ v7_relativeSplatPath: true, v7_startTransition: true }}>
+        <QueryClientProvider client={queryClient}>
+          {props.inMain ? <main>{field}</main> : field}
+        </QueryClientProvider>
+      </MemoryRouter>
+    );
+  };
   const view = render(composer(options));
   return { queryClient, rerender: (next: ComposerOptions) => view.rerender(composer(next)), view };
 }
 
-function holdControls(): HTMLFieldSetElement {
+/** Whether a send holds the composer's controls: their fieldset is `aria-disabled`. It is never
+ *  `disabled`, which takes the focus off the control the reader sent from. */
+function composerHeld(): boolean {
   const controls = screen.getByRole("form", { name: "Comment composer" }).querySelector("fieldset");
   if (!(controls instanceof HTMLFieldSetElement))
     throw new Error("expected composer control fieldset");
-  return controls;
+  return heldNotDisabled(controls, "the composer's control fieldset");
+}
+
+/** What holds the focus, as a failed check prints it: a control's accessible label or its text. */
+function focusedName(): string {
+  const active = document.activeElement;
+  if (active === null || active === document.body) return "the page's body";
+  return active.getAttribute("aria-label") ?? active.textContent ?? active.tagName;
 }
 
 /** Every source the picker reads when a door opens over the composer, and a read no handler
@@ -708,9 +740,7 @@ test("a seeded mention with /btw posts the canonical target and stripped body", 
 
   try {
     const field = screen.getByLabelText<HTMLTextAreaElement>("Comment");
-    act(() => {
-      field.focus();
-    });
+    act(() => field.focus());
     field.setSelectionRange(0, 0);
     await user.paste("/btw ");
     await waitFor(() => expect(field.value).toBe("/btw [@Planner](dispatch://agent/A) "));
@@ -771,9 +801,7 @@ test("a draft naming one party twice names it once and sends one mode", async ()
   try {
     const field = screen.getByLabelText<HTMLTextAreaElement>("Comment");
     await waitFor(() => expect(field.value).toBe("[@Planner](dispatch://agent/A) "));
-    act(() => {
-      field.focus();
-    });
+    act(() => field.focus());
     field.setSelectionRange(field.value.length, field.value.length);
     await user.paste("and [Planner](dispatch://agent/A) again");
     expect(
@@ -1034,6 +1062,257 @@ test("a reply kept for a message its host no longer lists waits for an empty fie
     view.unmount();
   }
 });
+
+/** Draws the composer `props` describe with `queryClient`'s store, where a row has kept a draft
+ *  first, and answers what draws it again with other props on the live instance. */
+function drawOverStore(queryClient: QueryClient, props: ComponentProps<typeof MentionComposer>) {
+  const tree = (next: ComponentProps<typeof MentionComposer>) => (
+    <MemoryRouter future={{ v7_relativeSplatPath: true, v7_startTransition: true }}>
+      <QueryClientProvider client={queryClient}>
+        <MentionComposer {...next} />
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  const view = render(tree(props));
+  return {
+    rerender: (next: ComponentProps<typeof MentionComposer>) => view.rerender(tree(next)),
+    view,
+  };
+}
+
+/** A composer drawn with an offer beside its field (`KeptDraftOffers`): its field, and what ends
+ *  the row, unmounting the composer and putting back what the row replaced. */
+interface OfferRow {
+  readonly end: () => void;
+  readonly field: HTMLTextAreaElement;
+}
+
+const OFFER_OWNER: ComposerOwner = { issueKey: "CORE-1", kind: "issue" };
+const KEPT_FOR_OTHER_WORDS = "Half a thought";
+const MY_EDIT = "Original comment, as I edited it";
+const KEPT_REPLY = "Reply to the status";
+
+/** A margin compose of `kind` at the words "brown", whose name keeps a draft written at the words
+ *  "quick" of the same document: it offers that draft beside its empty field. On an issue that is
+ *  `closed`, a suggestion's compose offers it with Discard my draft alone. */
+async function offerKeptForOtherWords(
+  kind: "comment" | "suggestion",
+  closed = false
+): Promise<OfferRow> {
+  const queryClient = new QueryClient({
+    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+  });
+  const sendKey: MutationKey = ["margin-compose", "artifact-1"];
+  unsentDraftsOf(queryClient).keepAway(composerNameOf(sendKey), {
+    anchor: { artifact: "artifact-1", mark_id: "mark-1", quote: "quick" },
+    draft: { body: KEPT_FOR_OTHER_WORDS, replacement: "" },
+    owner: OFFER_OWNER,
+    replyTo: null,
+  });
+  const { view } = drawOverStore(queryClient, {
+    anchor: { artifact: "artifact-1", mark_id: "mark-2", quote: "brown" },
+    box: "margin-composer",
+    closed,
+    kind,
+    mutationKey: sendKey,
+    onClose: () => {},
+    onSent: () => {},
+    owner: OFFER_OWNER,
+  });
+  await screen.findByText(/for other words: “quick”/);
+  return {
+    end: () => view.unmount(),
+    field: screen.getByLabelText<HTMLTextAreaElement>(kind === "comment" ? "Comment" : "Reason"),
+  };
+}
+
+/** An edit another writer changed the comment under: the field shows the comment as it reads now,
+ *  and the reader's edit waits beside it. Its host keeps the editor drawn after its `onClose`. */
+async function offerChangedEdit(user: UserEvent): Promise<OfferRow> {
+  // The editor reads the comment's blocks when it opens: this comment carries none.
+  const commentBlocks = spyOn(api, "commentBlocks").mockResolvedValue(alphaBetaBlocks(false));
+  const queryClient = new QueryClient({
+    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+  });
+  const editOf = (body: string): ComponentProps<typeof MentionComposer> => ({
+    box: "margin-comment-edit",
+    edit: { body, id: "comment-1" },
+    kind: "comment",
+    mutationKey: ["comment-edit", "comment-1"],
+    onClose: () => {},
+    onSent: () => {},
+    owner: OFFER_OWNER,
+  });
+  const { rerender, view } = drawOverStore(queryClient, editOf("Original comment"));
+  const field = screen.getByLabelText<HTMLTextAreaElement>("Edit comment");
+  await user.click(field);
+  await user.keyboard("{Control>}a{/Control}");
+  await user.paste(MY_EDIT);
+  rerender(editOf("Changed by another writer"));
+  await screen.findByText(/This comment changed since you wrote your edit/);
+  return {
+    end: () => {
+      view.unmount();
+      commentBlocks.mockRestore();
+    },
+    field,
+  };
+}
+
+/** A composer at the issue's own address, whose name keeps a reply for a message its host lists
+ *  no longer: it draws that reply beside its empty field, with Discard my draft and Use it here. */
+async function offerGoneReply(): Promise<OfferRow> {
+  const queryClient = new QueryClient({
+    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+  });
+  const sendKey: MutationKey = ["conversation-composer", "CORE-1"];
+  unsentDraftsOf(queryClient).keepAway(composerNameOf(sendKey), {
+    draft: { body: KEPT_REPLY, replacement: "" },
+    owner: OFFER_OWNER,
+    replyTo: { actor: plannerAuthor, excerpt: "Status?", id: "message-1", parentKind: "message" },
+  });
+  const { view } = drawOverStore(queryClient, {
+    box: "conversation-composer",
+    listed: new Map(),
+    mutationKey: sendKey,
+    onClose: () => {},
+    onSent: () => {},
+    owner: OFFER_OWNER,
+  });
+  await screen.findByText(/that your reply answered is no longer listed/);
+  return {
+    end: () => view.unmount(),
+    field: screen.getByLabelText<HTMLTextAreaElement>("Comment"),
+  };
+}
+
+// Each press of an offer beside the field (`KeptDraftOffers`) takes the offer away, and with it
+// the button that held the focus. The field the offer stood beside takes the focus then, with no
+// scroll, and the caret at the end of what the field holds: a draft taken in is ready to go on.
+// Discard my edit is the composer's own Discard, which ends it (`onClose`); a host that keeps the
+// editor drawn, as this one does, has its field take the focus the same way.
+for (const row of [
+  {
+    draw: () => offerKeptForOtherWords("comment"),
+    offer: "a draft kept for other words",
+    press: "Discard my draft",
+    text: "",
+  },
+  {
+    draw: () => offerKeptForOtherWords("comment"),
+    offer: "a draft kept for other words",
+    press: "Use my draft",
+    text: KEPT_FOR_OTHER_WORDS,
+  },
+  {
+    draw: offerChangedEdit,
+    offer: "an edit its comment changed under",
+    press: "Discard my edit",
+    text: "",
+  },
+  {
+    draw: offerChangedEdit,
+    offer: "an edit its comment changed under",
+    press: "Use my edit",
+    text: MY_EDIT,
+  },
+  {
+    draw: offerGoneReply,
+    offer: "a reply kept for a message no longer listed",
+    press: "Discard my draft",
+    text: "",
+  },
+  {
+    draw: offerGoneReply,
+    offer: "a reply kept for a message no longer listed",
+    press: "Use it here",
+    text: KEPT_REPLY,
+  },
+]) {
+  test(`${row.press} on ${row.offer} hands the focus to the field, with no scroll and the caret at the end`, async () => {
+    const user = userEvent.setup();
+    const { end, field } = await row.draw(user);
+    const focuses = spyOn(field, "focus");
+
+    try {
+      await user.click(screen.getByRole("button", { name: row.press }));
+      expect({
+        caret: [field.selectionStart, field.selectionEnd],
+        focused: focusedName(),
+        focuses: focuses.mock.calls,
+        offered: screen.queryByRole("button", { name: row.press }) !== null,
+        text: field.value,
+      }).toEqual({
+        caret: [row.text.length, row.text.length],
+        focused: field.getAttribute("aria-label") ?? "",
+        focuses: [[{ preventScroll: true }]],
+        offered: false,
+        text: row.text,
+      });
+    } finally {
+      focuses.mockRestore();
+      end();
+    }
+  });
+}
+
+// An edit its comment changed under holds the field beside it read only until the reader uses it
+// or drops it, as a draft kept for other words holds a suggestion's Replace with as well as its
+// Reason. A key typed there writes nothing: the field names the offer as its description, after
+// the hint its row of the writing list gives every box (`DISPATCH_WRITING_BOXES`), so a screen
+// reader says why it takes no text, and the key has the offer say what the field waits for,
+// after the offer's own words, by the presses it draws: on a closed issue a suggestion's compose
+// draws Discard my draft alone, and Use my draft only once the issue reopens.
+for (const row of [
+  {
+    draw: offerChangedEdit,
+    field: "Edit comment",
+    hint: dispatchWritingBox("margin-comment-edit", "comment-edit").hint,
+    offer: `This comment changed since you wrote your edit. The field shows the comment as it reads now. Your edit is kept here: ${MY_EDIT}`,
+    text: "Changed by another writer",
+    why: "Use or discard your kept edit first.",
+  },
+  {
+    draw: () => offerKeptForOtherWords("suggestion"),
+    field: "Replacement",
+    hint: dispatchWritingBox("suggestion-replacement", "suggestion").hint,
+    offer: `You wrote this draft for other words: “quick”. It is kept here: ${KEPT_FOR_OTHER_WORDS}`,
+    text: "",
+    why: "Use or discard your kept draft first.",
+  },
+  {
+    draw: () => offerKeptForOtherWords("suggestion", true),
+    field: "Reason",
+    hint: dispatchWritingBox("margin-composer", "suggestion").hint,
+    offer: `You wrote this draft for other words: “quick”. It is kept here: ${KEPT_FOR_OTHER_WORDS}`,
+    text: "",
+    why: "Reopen the issue to use your kept draft, or discard it.",
+  },
+]) {
+  test(`a key typed in ${row.field} beside the offer that holds it read only says why, and the field's description names the offer`, async () => {
+    const user = userEvent.setup();
+    const { end } = await row.draw(user);
+
+    try {
+      const field = screen.getByLabelText<HTMLTextAreaElement>(row.field);
+      expect({
+        readOnly: field.getAttribute("aria-readonly"),
+        why: screen.queryByText(row.why) !== null,
+      }).toEqual({ readOnly: "true", why: false });
+      expect(field).toHaveAccessibleDescription(`${row.hint} ${row.offer}`);
+
+      await user.click(field);
+      await user.keyboard("x");
+      expect({ text: field.value, why: screen.queryByText(row.why) !== null }).toEqual({
+        text: row.text,
+        why: true,
+      });
+      expect(field).toHaveAccessibleDescription(`${row.hint} ${row.offer} ${row.why}`);
+    } finally {
+      end();
+    }
+  });
+}
 
 /** A draft as the build before this one kept it in the tab: its body holds only the cosmetic
  *  `@Planner` that build drew, and the party it names stands in a `mentions` array beside it. */
@@ -1319,9 +1598,7 @@ test("a refusal held for a reply to a message deleted since names no Reply to go
  *  that presses this way installs the fake clock before it renders. */
 async function pressSend(user: UserEvent, field: HTMLElement): Promise<void> {
   await user.click(screen.getByRole("button", { name: "Send" }));
-  act(() => {
-    field.focus();
-  });
+  act(() => field.focus());
   await user.keyboard("{Control>}{Enter}{/Control}");
   await tick(20);
 }
@@ -1551,9 +1828,7 @@ test("every mention in the draft survives the edits around it", async () => {
   try {
     const field = screen.getByLabelText<HTMLTextAreaElement>("Comment");
     await waitFor(() => expect(field.value).toBe(`${planners} ${workers} `));
-    act(() => {
-      field.focus();
-    });
+    act(() => field.focus());
     field.setSelectionRange(0, 0);
     await user.paste("/btw ");
     await waitFor(() => expect(field.value).toBe(`/btw ${planners} ${workers} `));
@@ -1887,9 +2162,7 @@ test("two seeded mentions receive one comment-level delivery mode", async () => 
         "[@Planner](dispatch://agent/A) [@legion-planner](dispatch://role/legion-planner) "
       )
     );
-    act(() => {
-      field.focus();
-    });
+    act(() => field.focus());
     field.setSelectionRange(0, 0);
     await user.paste("/aside ");
     await user.click(screen.getByRole("button", { name: "Send" }));
@@ -1919,9 +2192,7 @@ test("/btw in the body and /btwx stay ordinary text despite a mention", async ()
   try {
     const field = screen.getByLabelText<HTMLTextAreaElement>("Comment");
     await waitFor(() => expect(field.value).toBe("[@Planner](dispatch://agent/A) "));
-    act(() => {
-      field.focus();
-    });
+    act(() => field.focus());
     field.setSelectionRange(0, 0);
     await user.paste("hello /btw ");
     await user.click(screen.getByRole("button", { name: "Send" }));
@@ -2198,7 +2469,7 @@ test("a failed send keeps its draft and retries", async () => {
     await user.click(field);
     await user.keyboard("{Control>}a{/Control}");
     await user.paste("keep me");
-    field.focus();
+    act(() => field.focus());
     await user.keyboard("{Control>}{Enter}{/Control}");
     expect(await screen.findByRole("alert")).toHaveTextContent("Couldn't send — boom");
     expect(field.value).toBe("keep me");
@@ -2221,7 +2492,7 @@ test("Ctrl+Enter sends while Enter, whitespace, and IME composition leave the dr
     await user.click(field);
     await user.keyboard("{Control>}a{/Control}");
     await user.paste("   ");
-    field.focus();
+    act(() => field.focus());
     await user.keyboard("{Control>}{Enter}{/Control}");
     await user.click(field);
     await user.keyboard("{Control>}a{/Control}");
@@ -2233,12 +2504,139 @@ test("Ctrl+Enter sends while Enter, whitespace, and IME composition leave the dr
     // user-event has no form for this: it cannot mark a key as an IME composition.
     fireEvent.keyDown(field, { isComposing: true, key: "Enter" });
     expect(createComment).not.toHaveBeenCalled();
-    field.focus();
+    act(() => field.focus());
     await user.keyboard("{Control>}{Enter}{/Control}");
     await waitFor(() => expect(createComment).toHaveBeenCalledTimes(1));
   } finally {
     view.unmount();
     createComment.mockRestore();
+  }
+});
+
+// The hint under an issue's comment box names its send key as the reader's platform draws it
+// (`keyText`): `$mod+Enter` sends. Away from a Mac `$mod` is Ctrl; `key-text.test.ts` reads the
+// same key as a Mac draws it.
+test("away from a Mac the comment box's hint says Ctrl+Enter sends", async () => {
+  const user = userEvent.setup();
+  const { view } = renderComposer();
+  try {
+    expect(IS_MAC, "the unit tests' browser names a Mac").toBe(false);
+    await user.click(screen.getByLabelText("Comment"));
+    await user.paste("hello");
+    expect(screen.getByText(/to send · Enter for a new line$/).textContent).toBe(
+      "Ctrl+Enter to send · Enter for a new line"
+    );
+  } finally {
+    view.unmount();
+  }
+});
+
+// Safari sends the Enter that ends an input method's composition with `isComposing` false and
+// keyCode 229. A Ctrl+Enter so marked is the input method's, and sends nothing; a plain Ctrl+Enter
+// after it sends.
+test("a Ctrl+Enter that ends an IME composition in Safari, at keyCode 229, sends nothing", async () => {
+  jest.useFakeTimers();
+  const user = userOnFakeClock();
+  const createComment = spyOn(api, "createComment").mockResolvedValue(createdComment);
+  const { view } = renderComposer();
+
+  try {
+    const field = screen.getByLabelText<HTMLTextAreaElement>("Comment");
+    await user.click(field);
+    await user.paste("composed");
+    // user-event has no form for this: it cannot mark a key as an IME composition.
+    fireEvent.keyDown(field, { ctrlKey: true, isComposing: false, key: "Enter", keyCode: 229 });
+    // A send's mutation function runs a task after the press (`pressSend`).
+    await tick(20);
+    expect(createComment).not.toHaveBeenCalled();
+
+    await user.keyboard("{Control>}{Enter}{/Control}");
+    await tick(20);
+    expect(createComment).toHaveBeenCalledTimes(1);
+  } finally {
+    realClock();
+    view.unmount();
+    createComment.mockRestore();
+  }
+});
+
+// A key an input method takes - one marked `isComposing`, or the one that ends a composition - is
+// the input method's. An Enter in an ask option's label adds no option then, and a plain Enter
+// still does.
+test.each(INPUT_METHOD_MARKS)(
+  "an Enter that ends an IME composition in an ask option's label, marked by %s, adds no option",
+  async (_mark, composing) => {
+    const user = userEvent.setup();
+    const { view } = renderComposer({ kind: "ask" });
+
+    try {
+      const label = screen.getByLabelText<HTMLTextAreaElement>("Option 1 label");
+      await user.click(label);
+      await user.keyboard("Yes");
+      // user-event has no form for this: it cannot mark a key as an IME composition.
+      fireEvent.keyDown(label, { ...composing, key: "Enter" });
+      expect(screen.queryAllByLabelText(/^Option \d+ label$/)).toHaveLength(1);
+
+      await user.keyboard("{Enter}");
+      expect(screen.queryAllByLabelText(/^Option \d+ label$/)).toHaveLength(2);
+      expect(focusedName()).toBe("Option 2 label");
+    } finally {
+      view.unmount();
+    }
+  }
+);
+
+// The same for Escape: one that ends an input method's composition raises no `Discard draft?`
+// over the draft, and a plain Escape still does.
+test.each(INPUT_METHOD_MARKS)(
+  "an Escape that ends an IME composition in the box, marked by %s, asks nothing",
+  async (_mark, composing) => {
+    const user = userEvent.setup();
+    const { view } = renderComposer();
+
+    try {
+      const field = screen.getByLabelText<HTMLTextAreaElement>("Comment");
+      await user.click(field);
+      await user.paste("a draft");
+      // user-event has no form for this: it cannot mark a key as an IME composition.
+      fireEvent.keyDown(field, { ...composing, key: "Escape" });
+      expect(screen.queryByRole("button", { name: "Discard" })).not.toBeInTheDocument();
+
+      await user.keyboard("{Escape}");
+      expect(screen.getByRole("button", { name: "Discard" })).toBeTruthy();
+    } finally {
+      view.unmount();
+    }
+  }
+);
+
+// Each Escape the comment box takes is marked taken (`defaultPrevented`) beside what it does: the
+// reference picker's close, on the field's own listener (`MentionField`), and the
+// `Discard draft?` over a draft. The mark lets the key registry (`keymap.ts`) and the rest of the
+// page pass over the press.
+test("the Escape that closes the reference picker, or asks Discard draft?, is marked taken", async () => {
+  const user = userEvent.setup();
+  const listAgents = spyOn(api, "listAgents").mockResolvedValue([planner]);
+  const { view } = renderComposer({ agents: [planner, worker] });
+  const escapes = recordEscapes();
+
+  try {
+    const field = screen.getByLabelText<HTMLTextAreaElement>("Comment");
+    await user.click(field);
+    await user.paste("a draft @");
+    await screen.findByTestId("ref-picker");
+    await user.keyboard("{Escape}");
+    expect(screen.queryByTestId("ref-picker"), "the picker").toBeNull();
+    expect(screen.queryByRole("button", { name: "Discard" }), "the picker's Escape").toBeNull();
+
+    await user.keyboard("{Escape}");
+    expect(screen.getByRole("button", { name: "Discard" }), "Discard draft?").toBeTruthy();
+    expect(field).toHaveValue("a draft @");
+    expect(escapes.presses.map((press) => press.defaultPrevented)).toEqual([true, true]);
+  } finally {
+    escapes.stop();
+    view.unmount();
+    listAgents.mockRestore();
   }
 });
 
@@ -2281,9 +2679,7 @@ test("reply mode shows the quote, sends reply_to, and cancels by chip or Escape"
       )
     );
     await user.click(screen.getByRole("button", { name: "Cancel reply" }));
-    act(() => {
-      field.focus();
-    });
+    act(() => field.focus());
     await user.keyboard("{Escape}");
     expect(cancelled).toBe(2);
   } finally {
@@ -2721,9 +3117,7 @@ test("a draft entering a channel that owes a mention is seeded in front of it", 
   try {
     const field = screen.getByLabelText<HTMLTextAreaElement>("Comment");
     await waitFor(() => expect(field.value).toBe(`${workerLink} `));
-    act(() => {
-      field.focus();
-    });
+    act(() => field.focus());
     field.setSelectionRange(0, 0);
     await user.paste("hello ");
     await waitFor(() => expect(field.value).toBe(`hello ${workerLink} `));
@@ -2758,9 +3152,7 @@ test("a draft that already holds the channel's mention is not seeded twice, wher
   try {
     const field = screen.getByLabelText<HTMLTextAreaElement>("Comment");
     await waitFor(() => expect(field.value).toBe(`${plannerLink} `));
-    act(() => {
-      field.focus();
-    });
+    act(() => field.focus());
     field.setSelectionRange(0, 0);
     await user.paste("y");
     field.setSelectionRange(field.value.length, field.value.length);
@@ -2878,13 +3270,63 @@ test("Discard clears the draft to what a mount shows, wherever the host takes fo
     await user.click(field);
     await user.keyboard("{Control>}a{/Control}");
     await user.paste("Discard me");
-    field.focus();
+    act(() => field.focus());
     await user.keyboard("{Escape}");
     await user.click(screen.getByRole("button", { name: "Discard" }));
 
     expect(field.value).toBe(`${plannerLink} `);
   } finally {
     view.unmount();
+  }
+});
+
+// Keep, which takes `Discard draft?` away, gives the focus back to the box the reader was writing
+// in, and a pick in the reference picker leaves it there. The browser's own scroll of a focused
+// box centres one that is not wholly in view in Chromium and Firefox, a scroll the reader asked
+// for nowhere: Keep gives that focus with no scroll of the browser's own, and brings the box into
+// view only where the reader cannot see it whole (`focusIntoView`). A pick moves no focus at all:
+// a row of the list keeps the focus in the box while it is clicked (`RefPickerList`).
+test("Keep gives the focus back to the box with no scroll of the browser's own, and a picked reference leaves it there", async () => {
+  const user = userEvent.setup();
+  const listAgents = spyOn(api, "listAgents").mockResolvedValue([planner]);
+  /** Each focus that moved the focus to the box since the last read: whether it was asked to
+   *  scroll nothing. A focus of the box while it already holds the focus moves nothing and
+   *  scrolls nothing (the focusing steps end at once), as the field's own focus after a pick
+   *  does (`MentionField`'s `takePick`). */
+  let given: boolean[] = [];
+  const focus = HTMLElement.prototype.focus;
+  const spy = spyOn(HTMLElement.prototype, "focus").mockImplementation(function (
+    this: HTMLElement,
+    options?: FocusOptions
+  ) {
+    if (this.getAttribute("aria-label") === "Comment" && document.activeElement !== this) {
+      given.push(options?.preventScroll === true);
+    }
+    focus.call(this, options);
+  });
+  const { view } = renderComposer({ agents: [planner] });
+
+  try {
+    const field = screen.getByLabelText<HTMLTextAreaElement>("Comment");
+    await user.click(field);
+    await user.paste("Keep me");
+    await user.keyboard("{Escape}");
+    given = [];
+    await user.click(screen.getByRole("button", { name: "Keep" }));
+    expect(field).toHaveFocus();
+    expect(given, "Keep gave the box the focus with the browser's own scroll").toEqual([true]);
+
+    await user.paste(" @");
+    const row = await screen.findByRole("option", { name: /^Planner\b/ });
+    given = [];
+    await user.click(row);
+    await waitFor(() => expect(field.value).toBe("Keep me [@Planner](dispatch://agent/A)"));
+    expect(field).toHaveFocus();
+    expect(given, "the pick moved the focus out of the box and back").toEqual([]);
+  } finally {
+    view.unmount();
+    spy.mockRestore();
+    listAgents.mockRestore();
   }
 });
 
@@ -2913,7 +3355,7 @@ test("a refused send's Retry asks what Send asks, and Discard takes the notice w
     await user.click(field);
     await user.keyboard("{Control>}a{/Control}");
     await user.paste("@Planner hello");
-    field.focus();
+    act(() => field.focus());
     await user.keyboard("{Escape}");
     await user.click(screen.getByRole("button", { name: "Discard" }));
     expect(field.value).toBe(`${plannerLink} `);
@@ -2926,10 +3368,198 @@ test("a refused send's Retry asks what Send asks, and Discard takes the notice w
   }
 });
 
+// While a send is out the composer is held, never disabled: the browser takes the focus off a
+// control that turns disabled (`emulateChromiumFocusFixup` does so here), which would leave a
+// reader who sent by Ctrl+Enter on the page's body. The box keeps the focus through the send and
+// takes no typing, a second Ctrl+Enter sends nothing, and Tab still leaves it for Send, which is
+// held as well: Enter or a click on it sends nothing, and it keeps the focus.
+test("the box Ctrl+Enter sent from keeps the focus through the send, and no key or press sends again", async () => {
+  jest.useFakeTimers();
+  const user = userOnFakeClock();
+  const answer = Promise.withResolvers<Comment>();
+  const createComment = spyOn(api, "createComment").mockReturnValueOnce(answer.promise);
+  const restoreFocus = emulateChromiumFocusFixup();
+  const { view } = renderComposer();
+
+  try {
+    const field = screen.getByLabelText<HTMLTextAreaElement>("Comment");
+    await user.click(field);
+    await user.paste("Ship it.");
+    await user.keyboard("{Control>}{Enter}{/Control}");
+    await tick(20);
+    expect(createComment).toHaveBeenCalledTimes(1);
+    expect(focusedName()).toBe("Comment");
+    expect(composerHeld()).toBe(true);
+    expect(field).toHaveAttribute("aria-disabled", "true");
+    expect(field.readOnly).toBe(true);
+
+    await user.keyboard("x");
+    expect(field.value).toBe("Ship it.");
+    await user.keyboard("{Control>}{Enter}{/Control}");
+    await tick(20);
+    expect(createComment).toHaveBeenCalledTimes(1);
+    expect(focusedName()).toBe("Comment");
+
+    await user.tab();
+    expect(focusedName()).toBe("Sending…");
+    await user.keyboard("{Enter}");
+    await user.click(screen.getByRole("button", { name: "Sending…" }));
+    await tick(20);
+    expect(createComment).toHaveBeenCalledTimes(1);
+    expect(focusedName()).toBe("Sending…");
+
+    await act(async () => answer.resolve(createdComment));
+    await tick(20);
+    expect(field.value).toBe("");
+    expect(composerHeld()).toBe(false);
+  } finally {
+    restoreFocus();
+    realClock();
+    view.unmount();
+    createComment.mockRestore();
+  }
+});
+
+// While a send holds the box, a key the hold stops reaches no handler of the composer's, and the
+// browser keeps its own action for every key the composer neither acts on nor types with: Ctrl+C
+// copies from the held draft, Ctrl+F finds in the page and F5 reloads it. A character, Backspace,
+// Escape and Ctrl+Enter are the composer's, and the hold takes them from the browser too: the draft
+// takes no character, Escape raises no Discard prompt, and Ctrl+Enter sends nothing more.
+test("while a send is out, Ctrl+C, Ctrl+F and F5 in the box reach the browser, and a character, Escape and Ctrl+Enter do nothing", async () => {
+  jest.useFakeTimers();
+  const user = userOnFakeClock();
+  const answer = Promise.withResolvers<Comment>();
+  const createComment = spyOn(api, "createComment").mockReturnValueOnce(answer.promise);
+  const { view } = renderComposer();
+  // Each key but Control, read from the window's capture phase, before the composer's own capture
+  // can stop it. Whether a handler cancelled the browser's action is read once the press is over.
+  const pressed: KeyboardEvent[] = [];
+  const record = (event: KeyboardEvent) => {
+    if (event.key !== "Control") pressed.push(event);
+  };
+
+  try {
+    const field = screen.getByLabelText<HTMLTextAreaElement>("Comment");
+    await user.click(field);
+    await user.paste("Ship it.");
+    await user.keyboard("{Control>}{Enter}{/Control}");
+    await tick(20);
+    expect(createComment).toHaveBeenCalledTimes(1);
+    expect(composerHeld()).toBe(true);
+
+    window.addEventListener("keydown", record, true);
+    await user.keyboard(
+      "{Control>}c{/Control}{Control>}f{/Control}{F5}x{Backspace}{Escape}{Control>}{Enter}{/Control}"
+    );
+    await tick(20);
+    expect(
+      pressed.map(
+        (event) =>
+          `${event.ctrlKey ? "Ctrl+" : ""}${event.key}: ${event.defaultPrevented ? "taken" : "the browser's"}`
+      )
+    ).toEqual([
+      "Ctrl+c: the browser's",
+      "Ctrl+f: the browser's",
+      "F5: the browser's",
+      "x: taken",
+      "Backspace: taken",
+      "Escape: taken",
+      "Ctrl+Enter: taken",
+    ]);
+    expect(field.value).toBe("Ship it.");
+    expect(screen.queryByRole("button", { name: "Discard" })).not.toBeInTheDocument();
+    expect(createComment).toHaveBeenCalledTimes(1);
+
+    await act(async () => answer.resolve(createdComment));
+    await tick(20);
+    expect(composerHeld()).toBe(false);
+  } finally {
+    window.removeEventListener("keydown", record, true);
+    realClock();
+    view.unmount();
+    createComment.mockRestore();
+  }
+});
+
+// Offline a send can be out longer than the write deadline (`SEND_DEADLINE_MS`). The box the
+// reader sent from never loses the focus: the focus is on the box past that deadline, and still
+// there once the send lands.
+test("offline, the box a send went from keeps the focus while the send is out past the write deadline", async () => {
+  const online = onlineManager.isOnline();
+  const answer = Promise.withResolvers<Comment>();
+  const createComment = spyOn(api, "createComment").mockReturnValueOnce(answer.promise);
+  const restoreFocus = emulateChromiumFocusFixup();
+  jest.useFakeTimers();
+  const user = userOnFakeClock();
+  const { queryClient, view } = renderComposer({ inMain: true });
+
+  try {
+    act(() => onlineManager.setOnline(false));
+    const field = screen.getByLabelText<HTMLTextAreaElement>("Comment");
+    await user.click(field);
+    await user.paste("Sent offline");
+    await user.keyboard("{Control>}{Enter}{/Control}");
+    await tick(20);
+    expect(createComment).toHaveBeenCalledTimes(1);
+    expect(focusedName()).toBe("Comment");
+
+    await tick(SEND_DEADLINE_MS + 5_000);
+    expect(screen.getByText(KEYED_SEND_LATE_TEXT)).toBeTruthy();
+    expect(composerHeld()).toBe(true);
+    expect(focusedName()).toBe("Comment");
+
+    await act(async () => answer.resolve(createdComment));
+    await tick(20);
+    expect(field.value).toBe("");
+    expect(composerHeld()).toBe(false);
+    expect(focusedName()).toBe("Comment");
+  } finally {
+    view.unmount();
+    queryClient.clear();
+    onlineManager.setOnline(online);
+    realClock();
+    restoreFocus();
+    createComment.mockRestore();
+  }
+});
+
+// A file pasted or dropped into the box while a send is out goes into no draft: the send holds the
+// box, and its paste and its drop upload nothing until the send answers.
+test("a file pasted or dropped into the box while a send is out uploads nothing", async () => {
+  const answer = Promise.withResolvers<Comment>();
+  const createComment = spyOn(api, "createComment").mockReturnValueOnce(answer.promise);
+  const uploadArtifact = spyOn(api, "uploadArtifact").mockResolvedValue(
+    uploaded("shot-png", "shot.png", 1)
+  );
+  const user = userEvent.setup();
+  const { view } = renderComposer();
+
+  try {
+    const field = screen.getByLabelText<HTMLTextAreaElement>("Comment");
+    await user.click(field);
+    await user.paste("Ship it.");
+    await user.keyboard("{Control>}{Enter}{/Control}");
+    await waitFor(() => expect(createComment).toHaveBeenCalledTimes(1));
+    const file = new File([new Uint8Array([137, 80, 78, 71])], "shot.png", { type: "image/png" });
+    // user-event's paste carries text, never files.
+    fireEvent.paste(field, { clipboardData: { files: [file] } });
+    // user-event has no drop: it sends no DragEvent and carries no dataTransfer.
+    fireEvent.drop(field, { dataTransfer: { files: [file] } });
+
+    await act(async () => answer.resolve(createdComment));
+    await waitFor(() => expect(field.value).toBe(""));
+    expect(uploadArtifact).not.toHaveBeenCalled();
+  } finally {
+    view.unmount();
+    createComment.mockRestore();
+    uploadArtifact.mockRestore();
+  }
+});
+
 // A message on its way is the server's until it answers, so its draft is not the reader's to
 // discard: sending takes a `Discard draft?` already up with it, and Escape raises none while the
-// send is out - from a control that stays enabled then, such as a margin composer's Replacement.
-// The outcome then lands on the draft that was sent: a refusal hands it back with its notice.
+// send is out - from the held box, which keeps taking the focus then. The outcome then lands on
+// the draft that was sent: a refusal hands it back with its notice.
 test("a send takes the Discard prompt with it and Escape raises none until the server answers", async () => {
   const refused = Promise.withResolvers<Comment>();
   const createComment = spyOn(api, "createComment").mockReturnValueOnce(refused.promise);
@@ -2941,15 +3571,15 @@ test("a send takes the Discard prompt with it and Escape raises none until the s
     await user.click(field);
     await user.keyboard("{Control>}a{/Control}");
     await user.paste("@Planner hello");
-    field.focus();
+    act(() => field.focus());
     await user.keyboard("{Escape}");
     expect(screen.getByRole("button", { name: "Discard" })).toBeDefined();
     await user.click(screen.getByRole("button", { name: "Send" }));
-    await waitFor(() => expect(holdControls().disabled).toBe(true));
+    await waitFor(() => expect(composerHeld()).toBe(true));
     expect(screen.queryByRole("button", { name: "Discard" })).not.toBeInTheDocument();
-    // user-event has no form for this: the send holds the field disabled, and a disabled control
-    // takes no focus and no key - the guard this line reaches past.
-    fireEvent.keyDown(field, { key: "Escape" });
+    // The held field keeps the focus, and Escape in it raises no prompt.
+    act(() => field.focus());
+    await user.keyboard("{Escape}");
     expect(screen.queryByRole("button", { name: "Discard" })).not.toBeInTheDocument();
 
     refused.reject(commentRefused);
@@ -2958,6 +3588,77 @@ test("a send takes the Discard prompt with it and Escape raises none until the s
     expect(screen.getByRole("button", { name: "Retry" })).toBeDefined();
     expect(screen.queryByRole("button", { name: "Discard" })).not.toBeInTheDocument();
   } finally {
+    view.unmount();
+    createComment.mockRestore();
+  }
+});
+
+// A keyboard reader who sends with Ctrl+Enter keeps their place in the box while the send is out,
+// so their next key reaches the composer rather than the page's body. While it is out the composer
+// says it is held, a key changes nothing, and a second Ctrl+Enter or a press of Send sends nothing.
+test("a send by Ctrl+Enter keeps the focus in the box, which takes no key and sends nothing while it is out", async () => {
+  const sent = Promise.withResolvers<Comment>();
+  const createComment = spyOn(api, "createComment").mockReturnValueOnce(sent.promise);
+  const user = userEvent.setup();
+  const { view } = renderComposer();
+  const stopFocusFixup = runFocusFixup();
+
+  try {
+    const field = screen.getByLabelText<HTMLTextAreaElement>("Comment");
+    await user.click(field);
+    await user.keyboard("{Control>}a{/Control}");
+    await user.paste("Status please");
+    await user.keyboard("{Control>}{Enter}{/Control}");
+    await waitFor(() => expect(createComment).toHaveBeenCalledTimes(1));
+    // The send is out: the composer says it is held (`aria-disabled`, never `disabled`), and the
+    // box keeps the focus.
+    await waitFor(() => expect(composerHeld()).toBe(true));
+    expect(field).toHaveFocus();
+    await user.keyboard("x");
+    await user.keyboard("{Control>}{Enter}{/Control}");
+    expect(field.value).toBe("Status please");
+    await user.click(screen.getByRole("button", { name: "Sending…" }));
+    expect(createComment).toHaveBeenCalledTimes(1);
+
+    await act(async () => sent.resolve(createdComment));
+    await waitFor(() => expect(composerHeld()).toBe(false));
+    expect(createComment).toHaveBeenCalledTimes(1);
+  } finally {
+    stopFocusFixup();
+    view.unmount();
+    createComment.mockRestore();
+  }
+});
+
+// The same for a reader who pressed Send itself with Space: Send keeps the focus while the send
+// is out, and a second Space sends nothing.
+test("a send by Space on Send keeps the focus on Send, and a second Space sends nothing while it is out", async () => {
+  const sent = Promise.withResolvers<Comment>();
+  const createComment = spyOn(api, "createComment").mockReturnValueOnce(sent.promise);
+  const user = userEvent.setup();
+  const { view } = renderComposer();
+  const stopFocusFixup = runFocusFixup();
+
+  try {
+    const field = screen.getByLabelText<HTMLTextAreaElement>("Comment");
+    await user.click(field);
+    await user.keyboard("{Control>}a{/Control}");
+    await user.paste("Status please");
+    const send = screen.getByRole("button", { name: "Send" });
+    act(() => send.focus());
+    await user.keyboard(" ");
+    await waitFor(() => expect(createComment).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(composerHeld()).toBe(true));
+    expect(send).toHaveTextContent("Sending…");
+    expect(send).toHaveFocus();
+    await user.keyboard(" ");
+    expect(createComment).toHaveBeenCalledTimes(1);
+
+    await act(async () => sent.resolve(createdComment));
+    await waitFor(() => expect(composerHeld()).toBe(false));
+    expect(createComment).toHaveBeenCalledTimes(1);
+  } finally {
+    stopFocusFixup();
     view.unmount();
     createComment.mockRestore();
   }
@@ -2984,10 +3685,15 @@ test("a send holds every suggestion control and a refusal restores the replaceme
     await user.keyboard("{Control>}a{/Control}");
     await user.paste("quick");
     await user.click(screen.getByRole("button", { name: "Send" }));
-    // user-event refuses to write into a disabled control, which the send holds this one.
+    // user-event refuses to write into a read-only control, which the send holds this one.
     fireEvent.change(replacement, { target: { value: "quick edited while sending" } });
 
-    await waitFor(() => expect(holdControls().disabled).toBe(true));
+    await waitFor(() => expect(composerHeld()).toBe(true));
+    expect(replacement).toHaveAttribute("aria-disabled", "true");
+    expect(replacement.readOnly).toBe(true);
+    act(() => replacement.focus());
+    await user.keyboard("x");
+    expect(replacement.value).toBe("quick");
 
     refused.reject(commentRefused);
     await screen.findByText(`Couldn't send — ${COMMENT_REFUSED}`);
@@ -3036,6 +3742,58 @@ test("an Escape in Send's task cannot offer Discard", async () => {
   }
 });
 
+// Enter can reach the old list in Send's task, before React draws the field held. It must not
+// pick into a draft that is on the wire, whether the send clears the draft or returns it.
+test.each(["refused", "successful"] as const)(
+  "Enter in Send's task cannot take a reference from the picker over a %s send",
+  async (outcome) => {
+    const answer = Promise.withResolvers<Comment>();
+    const createComment = spyOn(api, "createComment").mockReturnValueOnce(answer.promise);
+    const listAgents = spyOn(api, "listAgents").mockResolvedValue([planner]);
+    const user = userEvent.setup();
+    const { view } = renderComposer({ agents: [planner], seedMentions: [plannerMention] });
+
+    try {
+      const field = screen.getByLabelText<HTMLTextAreaElement>("Comment");
+      const draft = "See @Pl";
+      await user.clear(field);
+      await user.paste(draft);
+      await screen.findByRole("option", { name: /^Planner\b/ });
+      act(() => {
+        // One React batch: user-event renders between its own interactions.
+        fireEvent.click(screen.getByRole("button", { name: "Send" }));
+        expect(composerHeld()).toBe(false);
+        // The same batch: Enter reaches the field before React renders the hold.
+        fireEvent.keyDown(field, { key: "Enter" });
+      });
+      await waitFor(() => expect(createComment).toHaveBeenCalledTimes(1));
+      expect(createComment).toHaveBeenCalledWith("CORE-1", { body: draft }, keyedAttempt);
+      expect(composerHeld()).toBe(true);
+      expect(field).toHaveValue(draft);
+      expect(screen.queryByTestId("ref-picker")).not.toBeInTheDocument();
+
+      if (outcome === "refused") {
+        answer.reject(commentRefused);
+        await screen.findByText(`Couldn't send — ${COMMENT_REFUSED}`);
+        expect(field).toHaveValue(draft);
+        expect(screen.queryByTestId("ref-picker")).not.toBeInTheDocument();
+        await user.clear(field);
+        await user.paste(draft);
+        await user.click(await screen.findByRole("option", { name: /^Planner\b/ }));
+        expect(field).toHaveValue(`See ${plannerLink}`);
+      } else {
+        await act(async () => answer.resolve(createdComment));
+        await waitFor(() => expect(field).toHaveValue(`${plannerLink} `));
+        expect(screen.queryByTestId("ref-picker")).not.toBeInTheDocument();
+      }
+    } finally {
+      view.unmount();
+      listAgents.mockRestore();
+      createComment.mockRestore();
+    }
+  }
+);
+
 // The picker writes into the draft too: a list open when the message goes would put a reference
 // into a draft its refusal then replaces. Sending closes it.
 test("a send closes the reference picker open over its draft", async () => {
@@ -3051,7 +3809,7 @@ test("a send closes the reference picker open over its draft", async () => {
     await user.paste("hello @Pl");
     await screen.findByTestId("ref-picker");
     await user.click(screen.getByRole("button", { name: "Send" }));
-    await waitFor(() => expect(holdControls().disabled).toBe(true));
+    await waitFor(() => expect(composerHeld()).toBe(true));
     expect(screen.queryByTestId("ref-picker")).not.toBeInTheDocument();
 
     refused.reject(commentRefused);
@@ -3089,7 +3847,7 @@ test("a refused reply keeps the reply its send started with until the server ans
     await user.click(screen.getByRole("button", { name: "Send" }));
     await waitFor(() => expect(createComment).toHaveBeenCalledTimes(1));
     const cancel = screen.getByRole("button", { name: "Cancel reply" }) as HTMLButtonElement;
-    expect(holdControls().disabled).toBe(true);
+    expect(composerHeld()).toBe(true);
     await user.click(cancel);
     expect(cancelled).toBe(0);
 
@@ -3312,11 +4070,14 @@ test("a send the server answers at 35 s posts once: the deadline offers no Retry
     expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
     expect(screen.getByText(stillSending)).toBeTruthy();
     expect(field.value).toBe("Slow but sure");
-    expect(holdControls().disabled).toBe(true);
+    expect(composerHeld()).toBe(true);
     expect(holds()).toBe("Reply held, Back free");
-    // Ctrl+Enter is Send's other way in, and the send is still out. user-event has no form for
-    // this: the send holds the field disabled, and it takes no focus and no key.
-    fireEvent.keyDown(field, { ctrlKey: true, key: "Enter" });
+    // The held field keeps the focus and takes its keys: one writes nothing, and Ctrl+Enter,
+    // Send's other way in, sends nothing while the send is still out.
+    act(() => field.focus());
+    await user.keyboard("x");
+    expect(field.value).toBe("Slow but sure");
+    await user.keyboard("{Control>}{Enter}{/Control}");
 
     await act(async () => {
       jest.advanceTimersByTime(5_000);
@@ -3363,7 +4124,7 @@ test("a refusal after the deadline hands the draft back with Retry", async () =>
     expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
     expect(screen.queryByText(stillSending)).not.toBeInTheDocument();
     expect(field.value).toBe("Refused late");
-    expect(holdControls().disabled).toBe(false);
+    expect(composerHeld()).toBe(false);
     expect(screen.getByTestId("host-holds").textContent).toBe("Reply free, Back free");
   } finally {
     realClock();
@@ -3592,7 +4353,7 @@ test("a send kept failing shows Stop trying once late, which stops it for Retry 
     expect(screen.getByText(stoppedText)).toBeTruthy();
     expect(screen.queryByText(KEYED_SEND_LATE_TEXT)).not.toBeInTheDocument();
     expect(field.value).toBe("Status please");
-    expect(holdControls().disabled).toBe(false);
+    expect(composerHeld()).toBe(false);
     expect(screen.getByRole("button", { name: "Discard draft" })).toBeTruthy();
     await jump(30 * 60_000);
     expect(createAgentMessage).toHaveBeenCalledTimes(5);
@@ -3976,7 +4737,11 @@ test("a closed suggestion composer shows only a send of its own still out, then 
     await waitFor(() => expect(createComment).toHaveBeenCalledTimes(1));
     rerender({ anchor, closed: true, kind: "suggestion" });
     expect(screen.getByRole("form", { name: "Comment composer" })).toBeTruthy();
-    expect(holdControls().disabled).toBe(true);
+    expect(composerHeld()).toBe(true);
+    const heldReplacement = screen.getByLabelText<HTMLTextAreaElement>("Replacement");
+    act(() => heldReplacement.focus());
+    await user.keyboard("x");
+    expect(heldReplacement.value).toBe("red");
 
     refused.reject(new ApiError(409, { code: "ISSUE_CLOSED", error: "issue is closed" }));
     await screen.findByText("Couldn't send — issue is closed");
@@ -3988,6 +4753,50 @@ test("a closed suggestion composer shows only a send of its own still out, then 
 
     await user.click(screen.getByRole("button", { name: "Discard draft" }));
     expect(screen.queryByRole("form", { name: "Comment composer" })).not.toBeInTheDocument();
+  } finally {
+    view.unmount();
+    createComment.mockRestore();
+  }
+});
+
+// A thread's box the Inbox keeps standing under its thread (`ThreadBody`), whose host's `onClose`
+// moves nothing: a reply Dispatch refused offers Discard draft beside the refusal, and the press
+// takes the refusal's row away with the button that held the focus. The box stays, so the caret
+// goes back to its field, as the Discard of `Discard draft?` puts it back.
+test("a refusal's Discard draft in a box that stays puts the caret back in its field", async () => {
+  const user = userEvent.setup();
+  const createComment = spyOn(api, "createComment").mockRejectedValueOnce(commentRefused);
+  const queryClient = new QueryClient({
+    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+  });
+  const view = render(
+    <MemoryRouter future={{ v7_relativeSplatPath: true, v7_startTransition: true }}>
+      <QueryClientProvider client={queryClient}>
+        <MentionComposer
+          box="inbox-thread-reply"
+          inline
+          kind="comment"
+          mutationKey={["inbox-thread", "thread-1"]}
+          onClose={() => {}}
+          onSent={() => {}}
+          owner={{ issueKey: "CORE-1", kind: "issue" }}
+          replyTo={{ actor: plannerAuthor, excerpt: "", id: "comment-9", parentKind: "comment" }}
+          standing
+        />
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+
+  try {
+    const field = screen.getByLabelText<HTMLTextAreaElement>("Reply");
+    await user.click(field);
+    await user.paste("A reply Dispatch refuses");
+    await user.click(screen.getByRole("button", { name: "Send" }));
+    await screen.findByText(`Couldn't send — ${COMMENT_REFUSED}`);
+    await user.click(screen.getByRole("button", { name: "Discard draft" }));
+    expect(screen.queryByText(`Couldn't send — ${COMMENT_REFUSED}`)).not.toBeInTheDocument();
+    expect(field.value).toBe("");
+    expect(document.activeElement, `the focus is on ${focusedName()}`).toBe(field);
   } finally {
     view.unmount();
     createComment.mockRestore();
@@ -4239,11 +5048,10 @@ test("a send waits for a pasted picture still uploading, by Send and by Ctrl+Ent
     fireEvent.paste(field, { clipboardData: { files: [file] } });
 
     const send = await screen.findByRole("button", { name: "Uploading file…" });
-    expect(send.hasAttribute("disabled")).toBe(true);
+    expect(send).toHaveAttribute("aria-disabled", "true");
+    expect(send).not.toHaveAttribute("disabled");
     await user.click(send);
-    act(() => {
-      field.focus();
-    });
+    act(() => field.focus());
     await user.keyboard("{Control>}{Enter}{/Control}");
     // A send's mutation function runs a task after the press (`pressSend`).
     await tick(20);
@@ -4252,11 +5060,64 @@ test("a send waits for a pasted picture still uploading, by Send and by Ctrl+Ent
     land();
     const body = "Look ![shot.png](dispatch://CORE-1/artifact/shot-png@v1)";
     await waitFor(() => expect(field.value).toBe(body));
-    field.focus();
+    act(() => field.focus());
     await user.keyboard("{Control>}{Enter}{/Control}");
     await waitFor(() =>
       expect(createComment).toHaveBeenCalledWith("CORE-1", { body }, keyedAttempt)
     );
+  } finally {
+    realClock();
+    view.unmount();
+    uploadArtifact.mockRestore();
+    createComment.mockRestore();
+  }
+});
+
+// The same wait ends at the upload's deadline: an upload that never answers - offline, each try
+// failing at the network - is still tried, and its text joins the draft if it lands, but Send and
+// Ctrl+Enter take the draft as it stands, and the field still says the file is uploading.
+test("a send waits for a pasted picture only until its upload's deadline", async () => {
+  jest.useFakeTimers();
+  const uploadArtifact = spyOn(api, "uploadArtifact").mockRejectedValue(
+    new NetworkError("/api/v1/issues/CORE-1/artifacts", new TypeError("Failed to fetch"))
+  );
+  const createComment = spyOn(api, "createComment").mockResolvedValue(createdComment);
+  const user = userOnFakeClock();
+  const { view } = renderComposer();
+
+  try {
+    const field = screen.getByLabelText<HTMLTextAreaElement>("Comment");
+    await user.click(field);
+    await user.keyboard("{Control>}a{/Control}");
+    await user.paste("Look");
+    const file = new File([new Uint8Array([137, 80, 78, 71])], "shot.png", { type: "image/png" });
+    // user-event's paste carries text, never files.
+    fireEvent.paste(field, { clipboardData: { files: [file] } });
+    await untilAttempted(uploadArtifact, 1);
+
+    await tick(SEND_DEADLINE_MS - 1_000);
+    const send = screen.getByRole("button", { name: "Uploading file…" });
+    expect(send, "Send, a second short of the upload's deadline").toHaveAttribute(
+      "aria-disabled",
+      "true"
+    );
+
+    await tick(1_000);
+    expect(screen.getByRole("status"), "the upload, past its deadline").toHaveTextContent(
+      "Uploading file…"
+    );
+    expect(
+      screen.getByRole("button", { name: "Send" }),
+      "Send, past the upload's deadline"
+    ).not.toHaveAttribute("aria-disabled");
+    field.focus();
+    await user.keyboard("{Control>}{Enter}{/Control}");
+    // A send's mutation function runs a task after the press (`pressSend`).
+    await tick(20);
+    expect(
+      createComment,
+      "Ctrl+Enter past the upload's deadline sends the draft"
+    ).toHaveBeenCalledWith("CORE-1", { body: "Look" }, keyedAttempt);
   } finally {
     realClock();
     view.unmount();
@@ -4381,7 +5242,11 @@ test("a reply composer mounted again while its send is out holds it, and then sh
     await toggle();
     await toggle();
     expect(screen.getByLabelText<HTMLTextAreaElement>("Reply").value).toBe("Out of view");
-    expect(holdControls().disabled).toBe(true);
+    expect(composerHeld()).toBe(true);
+    const heldReply = screen.getByLabelText<HTMLTextAreaElement>("Reply");
+    heldReply.focus();
+    await user.keyboard("x");
+    expect(heldReply.value).toBe("Out of view");
 
     await toggle();
     await act(async () => {
@@ -4391,7 +5256,7 @@ test("a reply composer mounted again while its send is out holds it, and then sh
     await toggle();
     expect(screen.getByText(`Couldn't send — ${COMMENT_REFUSED}`)).toBeTruthy();
     expect(screen.getByLabelText<HTMLTextAreaElement>("Reply").value).toBe("Out of view");
-    expect(holdControls().disabled).toBe(false);
+    expect(composerHeld()).toBe(false);
 
     await user.click(screen.getByRole("button", { name: "Retry" }));
     await waitFor(() => expect(createComment).toHaveBeenCalledTimes(2));
@@ -4432,7 +5297,7 @@ test("a reply that lands while its composer is unmounted refreshes the thread an
 
     await toggle();
     expect(screen.getByLabelText<HTMLTextAreaElement>("Reply").value).toBe("");
-    expect(holdControls().disabled).toBe(false);
+    expect(composerHeld()).toBe(false);
     expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
   } finally {
     view.unmount();

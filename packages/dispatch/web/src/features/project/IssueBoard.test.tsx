@@ -1,4 +1,5 @@
 import { beforeAll, expect, jest, spyOn, test } from "bun:test";
+import { SEARCH_QUERY_MAX } from "@legion/contracts/dispatch-tools";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
   act,
@@ -14,8 +15,11 @@ import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 
+import { installCountingStorage } from "../../__tests__/counting-storage";
 import { realClock, settle, tick } from "../../__tests__/fake-clock";
+import { afterFrameAndTasks } from "../../__tests__/frames";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
+import { panelOf, pickNamed } from "../../__tests__/list-picks";
 import { answerIssuePatches } from "../../__tests__/send-answers";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
@@ -29,7 +33,10 @@ import {
 } from "../issue/parent-status/status-change-fixtures";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { KeymapProvider } from "../shell/KeymapProvider";
-import { stoppedWriteNote } from "../writes/keyed-write";
+import { useDialog } from "../shell/useDialog";
+import { userPreferenceStorageKey } from "../shell/userPreference";
+import { MAX_BACKOFF_MS, SEND_DEADLINE_MS, stoppedWriteNote } from "../writes/keyed-write";
+import { refusedNote } from "../writes/useKeyedWrite";
 import { issueStatuses } from "./board-model";
 import { staleBoardMessage, useBoardMoves } from "./board-moves";
 import { IssueBoard } from "./IssueBoard";
@@ -120,6 +127,14 @@ function renderBoard(
   };
 }
 
+/** Puts the focus on `card`'s own title link and returns it. */
+function focusTitleLink(card: Element, key: string): HTMLElement {
+  const link = card.querySelector<HTMLElement>("[data-issue-link]");
+  if (link === null) throw new Error(`${key}'s card draws no title link`);
+  act(() => link.focus());
+  return link;
+}
+
 test("board collapses Icebox and Done into droppable rails by default", async () => {
   const { cleanup } = renderBoard();
   try {
@@ -166,7 +181,9 @@ test("the whole card is the drag activator: no Reorder button, no status pill, s
     // The column header names the status; the card does not repeat it.
     expect(within(card).queryByText("Triage")).not.toBeInTheDocument();
     expect(within(card).getByRole("link", { name: /CORE-1/ })).toBeDefined();
-    expect(within(card).getByRole("combobox", { name: "Priority of CORE-1" })).toBeDefined();
+    expect(
+      within(card).getByRole("button", { name: pickNamed("Priority of CORE-1") })
+    ).toHaveAttribute("aria-haspopup", "listbox");
   } finally {
     cleanup();
   }
@@ -510,6 +527,28 @@ test("without the lanes prop the board renders the flat columns, no lane heading
   }
 });
 
+// Firefox makes a box that scrolls a Tab stop of its own, and every engine one that holds no
+// control, as a lane with no card does: a stop that reads as nothing. The roving keys reach each
+// column, rail and card, so neither the board's box nor a lane's is a Tab stop.
+test("the board's box that scrolls sideways is no Tab stop of its own, flat or in lanes", async () => {
+  const flat = renderBoard({}, undefined, laneIssues);
+  try {
+    await screen.findByRole("region", { name: "Project board" });
+    expect(screen.getByTestId("board-scroll-container")).toHaveAttribute("tabindex", "-1");
+  } finally {
+    flat.cleanup();
+  }
+  const laned = renderBoard({}, undefined, laneIssues, "/projects/CORE", true);
+  try {
+    await screen.findByRole("region", { name: "P0 lane" });
+    const boxes = screen.getAllByTestId("board-lane-scroll-container");
+    expect(boxes.length).toBeGreaterThan(1);
+    for (const box of boxes) expect(box).toHaveAttribute("tabindex", "-1");
+  } finally {
+    laned.cleanup();
+  }
+});
+
 test("within a lane, Shift+L moves a card to the next status in the same lane without touching priority", async () => {
   const user = userEvent.setup();
   const patchIssue = patchInFlight();
@@ -644,6 +683,46 @@ test("a board refetch asked for while a move is unanswered waits for the answer,
   }
 });
 
+// A Board card is a row of its column's list. A refetch that takes the card holding the focus off
+// the board - another reader moved its issue on - is a loss the reader did not cause, so with the
+// board in the page's main content, as the shell draws it, the focus goes into no other card: the
+// reader's next key acts on no card they did not pick.
+test("a card a refetch takes away from under the focus hands it to no other card", async () => {
+  const listIssues = spyOn(api, "listIssues").mockResolvedValue(keyboardIssues);
+  const getMyState = spyOn(api, "getMyState").mockResolvedValue({});
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const view = render(
+    <MemoryRouter initialEntries={["/projects/CORE"]}>
+      <QueryClientProvider client={queryClient}>
+        <KeymapProvider>
+          <main>
+            <IssueBoard project="CORE" />
+          </main>
+        </KeymapProvider>
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  try {
+    const board = await screen.findByRole("region", { name: "Project board" });
+    const bravo = within(board).getByRole("article", { name: "CORE-2 Bravo" });
+    focusTitleLink(bravo, "CORE-2");
+
+    listIssues.mockResolvedValue(keyboardIssues.filter((entry) => entry.key !== "CORE-2"));
+    await act(async () => {
+      await queryClient.refetchQueries({ queryKey: boardListKey });
+    });
+    await waitFor(() => expect(bravo).not.toBeInTheDocument());
+    await afterFrameAndTasks();
+
+    expect(document.activeElement?.closest("[data-board-card]") ?? null).toBeNull();
+    expect(within(board).getByRole("article", { name: "CORE-3 Charlie" })).toBeInTheDocument();
+  } finally {
+    view.unmount();
+    listIssues.mockRestore();
+    getMyState.mockRestore();
+  }
+});
+
 test("j/k/h/l rove real focus over cards, columns and rails", async () => {
   const user = userEvent.setup();
   const { cleanup } = renderBoard({}, undefined, keyboardIssues);
@@ -680,7 +759,7 @@ test("j/k/h/l rove real focus over cards, columns and rails", async () => {
   }
 });
 
-test("Enter and o open the focused card once, p focuses its priority select, Escape returns to the card and then out", async () => {
+test("Enter and o open the focused card once, p opens its priority menu, Escape returns to the card and then out", async () => {
   const user = userEvent.setup();
   const { cleanup } = renderBoard({}, undefined, keyboardIssues);
   try {
@@ -692,12 +771,17 @@ test("Enter and o open the focused card once, p focuses its priority select, Esc
     act(() => alpha.focus());
 
     await user.keyboard("p");
-    const select = within(alpha).getByRole("combobox", { name: "Priority of CORE-1" });
-    expect(select).toHaveFocus();
-    // Single letters never fire on an editable target.
+    const trigger = within(alpha).getByRole("button", { name: pickNamed("Priority of CORE-1") });
+    expect(screen.getByRole("listbox", { name: "Priority of CORE-1 options" })).toBeTruthy();
+    const menu = panelOf(trigger);
+    expect(menu).toContainElement(document.activeElement as HTMLElement);
+    // The list's keys are its own: a single letter there moves no card.
     await user.keyboard("j");
-    expect(select).toHaveFocus();
+    expect(menu).toContainElement(document.activeElement as HTMLElement);
     await user.keyboard("{Escape}");
+    expect(
+      screen.queryByRole("listbox", { name: "Priority of CORE-1 options" })
+    ).not.toBeInTheDocument();
     expect(alpha).toHaveFocus();
     await user.keyboard("{Escape}");
     expect(document.body).toHaveFocus();
@@ -708,6 +792,31 @@ test("Enter and o open the focused card once, p focuses its priority select, Esc
     expect(screen.getByTestId("current-route").textContent).toBe("/issues/CORE-1");
   } finally {
     cleanup();
+  }
+});
+
+// dispatch://INFRA-2160, R20: Shift+O is `o` in a new tab, and the Board stays where it is.
+test("Shift+O opens the focused card's issue in a new tab, and the Board keeps its address and its focus", async () => {
+  const user = userEvent.setup();
+  const open = spyOn(window, "open").mockImplementation(() => null);
+  const { cleanup } = renderBoard({}, undefined, keyboardIssues);
+  try {
+    const board = await screen.findByRole("region", { name: "Project board" });
+    const alpha = within(board).getByRole("article", { name: "CORE-1 Alpha" });
+    await user.keyboard("{Shift>}O{/Shift}");
+    expect(open).not.toHaveBeenCalled();
+    await user.keyboard("j");
+    expect(alpha).toHaveFocus();
+    await user.keyboard("{Shift>}O{/Shift}");
+    expect(open).toHaveBeenCalledTimes(1);
+    const [href, target, features] = open.mock.calls[0] ?? [];
+    expect(new URL(String(href)).pathname).toBe("/issues/CORE-1");
+    expect([target, features]).toEqual(["_blank", "noopener"]);
+    expect(screen.getByTestId("current-route").textContent).toBe("/projects/CORE");
+    expect(alpha).toHaveFocus();
+  } finally {
+    cleanup();
+    open.mockRestore();
   }
 });
 
@@ -926,9 +1035,9 @@ test("a drop's mark never cancels a click outside the board", async () => {
   }
 });
 
-// The strip's filters on the board: Todo holds Alpha, Bravo, Charlie; only Alpha and Charlie
+// The control row's filters on the board: Todo holds Alpha, Bravo, Charlie; only Alpha and Charlie
 // contain an "h", so `?q=h` hides Bravo (and In progress's Delta).
-test("the strip's search hides board cards, counts the visible column, and drags name visible neighbours", async () => {
+test("the control row's search hides board cards, counts the visible column, and drags name visible neighbours", async () => {
   const user = userEvent.setup();
   const patchIssue = patchInFlight();
   const { cleanup } = renderBoard({}, undefined, keyboardIssues, "/projects/CORE?q=h");
@@ -1038,6 +1147,525 @@ test("a labelled move writes the rendered list, names its neighbours, and refetc
   }
 });
 
+// What `IssueFilters.test.tsx` proved about the Board's filter strip, now that the Board draws
+// that strip itself as the one shared control row (INFRA-3135): the trigger over the filter
+// panel, the chips of the narrowings that are on, and the open-or-closed state the reader's
+// browser keeps under `project.issue-filters`.
+function LocationSearch(): ReactNode {
+  return <output data-testid="location-search">{useLocation().search}</output>;
+}
+
+/** Opens the row's filter panel if it is closed. */
+async function openFilters(): Promise<void> {
+  const user = userEvent.setup();
+  const disclosure = await screen.findByRole("button", { name: /^Filters · \d+$/ });
+  if (disclosure.getAttribute("aria-expanded") === "false") {
+    await user.click(disclosure);
+  }
+}
+
+/** Opens the `Labels` picker inside the filter panel if it is closed and toggles one option. */
+async function pickOption(picker: "Labels", option: string): Promise<void> {
+  const user = userEvent.setup();
+  const trigger = screen.getByRole("button", { name: new RegExp(`^${picker}( · \\d+)?$`) });
+  if (trigger.getAttribute("aria-expanded") === "false") {
+    await user.click(trigger);
+  }
+  await user.click(screen.getByRole("option", { name: option }));
+}
+
+function renderControlRow(
+  list: IssueSummary[],
+  state: UserState = {},
+  initialEntry = "/projects/CORE",
+  login = "alice"
+) {
+  const listIssues = spyOn(api, "listIssues").mockImplementation(async (options = {}) => {
+    const labels = options.label ?? [];
+    return labels.length === 0
+      ? list
+      : list.filter((entry) => labels.every((label) => (entry.labels ?? []).includes(label)));
+  });
+  const getMyState = spyOn(api, "getMyState").mockResolvedValue(state);
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  queryClient.setQueryData(["whoami"], { kind: "user", login });
+  const view = render(
+    <MemoryRouter initialEntries={[initialEntry]}>
+      <QueryClientProvider client={queryClient}>
+        <KeymapProvider>
+          <IssueBoard project="CORE" showEdges />
+          <LocationSearch />
+        </KeymapProvider>
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  return { getMyState, listIssues, view };
+}
+
+test("Needs you keeps only issues with open asks and lives in the URL", async () => {
+  const user = userEvent.setup();
+  const { getMyState, listIssues, view } = renderControlRow([
+    issue({ key: "CORE-1", open_asks: 1, title: "Answer me" }),
+    issue({ key: "CORE-2", title: "Quiet" }),
+  ]);
+
+  try {
+    await screen.findByText("Answer me");
+    await openFilters();
+    await user.click(screen.getByRole("button", { name: "Needs you" }));
+    expect(screen.getByText("Answer me")).toBeTruthy();
+    expect(screen.queryByText("Quiet")).not.toBeInTheDocument();
+    expect(screen.getByTestId("location-search").textContent).toBe("?needs-you=1");
+    await user.click(screen.getByRole("button", { name: "Remove Needs you filter" }));
+    expect(screen.getByTestId("location-search").textContent).toBe("");
+    expect(await screen.findByText("Quiet")).toBeTruthy();
+  } finally {
+    view.unmount();
+    getMyState.mockRestore();
+    listIssues.mockRestore();
+  }
+});
+
+test("Unread keeps only issues with events past last_read_seq and lives in the URL", async () => {
+  const user = userEvent.setup();
+  const { getMyState, listIssues, view } = renderControlRow(
+    [
+      issue({ key: "CORE-1", last_seq: 4, title: "Unread" }),
+      issue({ key: "CORE-2", last_seq: 3, title: "Read" }),
+    ],
+    {
+      "CORE-1": { dismissed: [], last_read_seq: 3, pinned: false, seq: 0 },
+      "CORE-2": { dismissed: [], last_read_seq: 3, pinned: false, seq: 0 },
+    }
+  );
+
+  try {
+    await screen.findByRole("link", { name: /CORE-1.*Unread/ });
+    await openFilters();
+    await user.click(screen.getByRole("button", { name: "Unread" }));
+    expect(screen.getByRole("link", { name: /CORE-1.*Unread/ })).toBeTruthy();
+    expect(screen.queryByText("Read")).not.toBeInTheDocument();
+    expect(screen.getByTestId("location-search").textContent).toBe("?unread=1");
+  } finally {
+    view.unmount();
+    getMyState.mockRestore();
+    listIssues.mockRestore();
+  }
+});
+
+test("label chips send every selection to the API and retain only AND matches", async () => {
+  const { getMyState, listIssues, view } = renderControlRow([
+    issue({ key: "CORE-1", labels: ["frontend", "api"], title: "Navigation" }),
+    issue({ key: "CORE-2", labels: ["frontend", "docs"], title: "Guidance" }),
+    issue({ key: "CORE-3", labels: ["backend", "docs"], title: "Endpoint" }),
+  ]);
+
+  try {
+    await screen.findByText("Navigation");
+    await openFilters();
+    await pickOption("Labels", "frontend");
+    await waitFor(() =>
+      expect(listIssues).toHaveBeenCalledWith({ label: ["frontend"], project: "CORE" })
+    );
+    await pickOption("Labels", "docs");
+    await waitFor(() =>
+      expect(listIssues).toHaveBeenCalledWith({ label: ["frontend", "docs"], project: "CORE" })
+    );
+    // The board draws the labelled list once that request has answered, not when it is made.
+    expect(await screen.findByText("Guidance")).toBeTruthy();
+    expect(screen.queryByText("Navigation")).not.toBeInTheDocument();
+    expect(screen.queryByText("Endpoint")).not.toBeInTheDocument();
+  } finally {
+    view.unmount();
+    getMyState.mockRestore();
+    listIssues.mockRestore();
+  }
+});
+
+test("restores every filter from the URL and writes changes back to it", async () => {
+  const user = userEvent.setup();
+  const { getMyState, listIssues, view } = renderControlRow(
+    [
+      issue({ key: "CORE-1", labels: ["docs"], title: "Guidance" }),
+      issue({ key: "CORE-2", labels: ["frontend"], title: "Navigation" }),
+    ],
+    {},
+    "/projects/CORE?label=docs"
+  );
+
+  try {
+    await screen.findByText("Guidance");
+    await openFilters();
+    await waitFor(() =>
+      expect(listIssues).toHaveBeenCalledWith({ label: ["docs"], project: "CORE" })
+    );
+    await user.click(screen.getByRole("button", { name: "Labels · 1" }));
+    expect(screen.getByRole("option", { name: "docs" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByTestId("location-search").textContent).toBe("?label=docs");
+
+    await pickOption("Labels", "frontend");
+    await waitFor(() =>
+      expect(listIssues).toHaveBeenCalledWith({ label: ["docs", "frontend"], project: "CORE" })
+    );
+    expect(screen.getByTestId("location-search").textContent).toBe("?label=docs&label=frontend");
+
+    await user.click(screen.getByRole("searchbox", { name: "Search issues" }));
+    await user.paste("guid");
+    expect(screen.getByTestId("location-search").textContent).toBe(
+      "?label=docs&label=frontend&q=guid"
+    );
+    await user.click(screen.getByRole("button", { name: "Remove Search: guid filter" }));
+
+    // Clicking into the search box closed the label picker, as it does in a browser, and the
+    // press on the chip beside it closed the filter panel the picker was in; Clear labels is
+    // inside that panel, so the reader opens it again.
+    await openFilters();
+    await user.click(screen.getByRole("button", { name: "Labels · 2" }));
+    await user.click(screen.getByRole("button", { name: "Clear labels" }));
+    expect(screen.getByTestId("location-search").textContent).toBe("");
+  } finally {
+    view.unmount();
+    getMyState.mockRestore();
+    listIssues.mockRestore();
+    window.localStorage.clear();
+  }
+});
+
+test("a search restored from ?q= narrows the list before anyone types", async () => {
+  const { getMyState, listIssues, view } = renderControlRow(
+    [issue({ key: "CORE-1", title: "Guidance" }), issue({ key: "CORE-2", title: "Navigation" })],
+    {},
+    "/projects/CORE?q=guid"
+  );
+
+  try {
+    await screen.findByText("Guidance");
+    expect(screen.queryByText("Navigation")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Remove Search: guid filter" })).toBeTruthy();
+  } finally {
+    view.unmount();
+    getMyState.mockRestore();
+    listIssues.mockRestore();
+  }
+});
+
+test("the search filter writes at most SEARCH_QUERY_MAX characters into the page URL", async () => {
+  const user = userEvent.setup();
+  const { getMyState, listIssues, view } = renderControlRow([
+    issue({ key: "CORE-1", title: "Guidance" }),
+  ]);
+
+  try {
+    await screen.findByText("Guidance");
+    await openFilters();
+    await user.click(screen.getByRole("searchbox", { name: "Search issues" }));
+    await user.paste("x".repeat(SEARCH_QUERY_MAX + 500));
+    const written = new URLSearchParams(screen.getByTestId("location-search").textContent ?? "");
+    expect(written.get("q")).toBe("x".repeat(SEARCH_QUERY_MAX));
+  } finally {
+    view.unmount();
+    getMyState.mockRestore();
+    listIssues.mockRestore();
+    window.localStorage.clear();
+  }
+});
+
+test("a ?q= over the cap from a link is cut on a code point, never leaving half an emoji", async () => {
+  const user = userEvent.setup();
+  const long = `${"x".repeat(SEARCH_QUERY_MAX - 1)}😀`;
+  const { getMyState, listIssues, view } = renderControlRow(
+    [issue({ key: "CORE-1", title: "Guidance" })],
+    {},
+    `/projects/CORE?q=${encodeURIComponent(long)}`
+  );
+
+  try {
+    await openFilters();
+    const search = screen.getByRole("searchbox", { name: "Search issues" });
+    await user.clear(search);
+    await user.click(search);
+    await user.paste(`${long}y`);
+    const written = new URLSearchParams(screen.getByTestId("location-search").textContent ?? "");
+    expect(written.get("q")).toBe("x".repeat(SEARCH_QUERY_MAX - 1));
+  } finally {
+    view.unmount();
+    getMyState.mockRestore();
+    listIssues.mockRestore();
+    window.localStorage.clear();
+  }
+});
+
+test("collapses filter controls by default and retains the disclosure preference per login", async () => {
+  const user = userEvent.setup();
+  window.localStorage.clear();
+  const { getMyState, listIssues, view } = renderControlRow([issue({ title: "Core work" })]);
+
+  try {
+    await screen.findByText("Core work");
+    const disclosure = screen.getByRole("button", { name: "Filters · 0" });
+    expect(disclosure).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByRole("button", { name: "Labels" })).not.toBeInTheDocument();
+
+    await user.click(disclosure);
+    await user.click(screen.getByRole("button", { name: "Needs you" }));
+    expect(screen.getByRole("button", { name: "Filters · 1" })).toHaveAttribute(
+      "aria-expanded",
+      "true"
+    );
+
+    await user.click(screen.getByRole("button", { name: "Filters · 1" }));
+    await user.click(screen.getByRole("button", { name: "Remove Needs you filter" }));
+    expect(screen.getByRole("button", { name: "Filters · 0" })).toBeTruthy();
+    expect(
+      window.localStorage.getItem(userPreferenceStorageKey("alice", "project.issue-filters"))
+    ).toBe("collapsed");
+  } finally {
+    view.unmount();
+    getMyState.mockRestore();
+    listIssues.mockRestore();
+    window.localStorage.clear();
+  }
+});
+
+test("collapses a saved filter disclosure when no filters are active", async () => {
+  window.localStorage.setItem(
+    userPreferenceStorageKey("alice", "project.issue-filters"),
+    "expanded"
+  );
+  const { getMyState, listIssues, view } = renderControlRow([issue({ title: "Core work" })]);
+
+  try {
+    await screen.findByText("Core work");
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Filters · 0" })).toHaveAttribute(
+        "aria-expanded",
+        "false"
+      )
+    );
+  } finally {
+    view.unmount();
+    getMyState.mockRestore();
+    listIssues.mockRestore();
+    window.localStorage.clear();
+  }
+});
+
+test("a pending viewer keeps a URL-only filter disclosure collapsed without persisting", async () => {
+  const pendingKey = "dispatch.project.issue-filters:undefined";
+  window.localStorage.removeItem(pendingKey);
+  const whoAmI = spyOn(api, "whoAmI").mockImplementation(
+    () => Promise.withResolvers<never>().promise
+  );
+  const listIssues = spyOn(api, "listIssues").mockResolvedValue([
+    issue({ key: "CORE-1", title: "Guidance" }),
+  ]);
+  const getMyState = spyOn(api, "getMyState").mockResolvedValue({});
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const view = render(
+    <MemoryRouter initialEntries={["/projects/CORE?q=guid"]}>
+      <QueryClientProvider client={queryClient}>
+        <KeymapProvider>
+          <IssueBoard project="CORE" showEdges />
+        </KeymapProvider>
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+
+  try {
+    const disclosure = await screen.findByRole("button", { name: "Filters · 1" });
+    expect(disclosure).toHaveAttribute("aria-expanded", "false");
+    expect(window.localStorage.getItem(pendingKey)).toBeNull();
+  } finally {
+    view.unmount();
+    getMyState.mockRestore();
+    listIssues.mockRestore();
+    whoAmI.mockRestore();
+    window.localStorage.removeItem(pendingKey);
+  }
+});
+
+test("a ?status= in the URL is neither counted nor chipped by the control row", async () => {
+  const { getMyState, listIssues, view } = renderControlRow(
+    [issue({ title: "Core work" })],
+    {},
+    "/projects/CORE?label=x&status=done"
+  );
+
+  try {
+    await screen.findByRole("button", { name: "Filters · 1" });
+    expect(screen.queryByRole("button", { name: "Status" })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Remove Status: Done filter" })
+    ).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Remove Label: x filter" })).toBeTruthy();
+  } finally {
+    view.unmount();
+    getMyState.mockRestore();
+    listIssues.mockRestore();
+    window.localStorage.clear();
+  }
+});
+
+// INFRA-3135, review round 1 (the architect's rule of 2026-11-15): the stored choice opens or
+// shuts the panel as the Board loads and takes no focus, and only the reader's own open or close
+// writes it.
+const PANEL_CHOICE = userPreferenceStorageKey("alice", "project.issue-filters");
+
+test("a panel the stored choice opens as the Board loads takes no focus, and a press opens it into the focus", async () => {
+  const user = userEvent.setup();
+  window.localStorage.clear();
+  const { getMyState, listIssues, view } = renderControlRow(
+    [issue({ labels: ["bug"], title: "Core work" })],
+    {},
+    "/projects/CORE?label=bug"
+  );
+
+  try {
+    await screen.findByText("Core work");
+    const trigger = screen.getByRole("button", { name: "Filters · 1" });
+    // Nothing is stored and a filter is on: the panel stands open, as the stored choice says.
+    expect(trigger).toHaveAttribute("aria-expanded", "true");
+    const panel = screen.getByRole("dialog", { name: "Filters" });
+    // The focus starts where the page starts, not on the panel's first control.
+    expect(within(panel).getByRole("button", { name: "Labels · 1" })).not.toHaveFocus();
+    expect(document.activeElement).toBe(document.body);
+    expect(window.localStorage.getItem(PANEL_CHOICE)).toBeNull();
+
+    // The reader's own press closes it, and their next one opens it with the focus in it.
+    await user.click(trigger);
+    expect(window.localStorage.getItem(PANEL_CHOICE)).toBe("collapsed");
+    await user.click(trigger);
+    expect(window.localStorage.getItem(PANEL_CHOICE)).toBe("expanded");
+    expect(
+      within(screen.getByRole("dialog", { name: "Filters" })).getByRole("button", {
+        name: "Labels · 1",
+      })
+    ).toHaveFocus();
+  } finally {
+    view.unmount();
+    getMyState.mockRestore();
+    listIssues.mockRestore();
+    window.localStorage.clear();
+  }
+});
+
+// dispatch://INFRA-2160, R24: Shift+F opens the panel into the focus, and on the panel the stored
+// choice opened it moves the focus there and closes nothing; Escape gives the focus back.
+test("Shift+F opens the filter panel on its first control, and on the panel the stored choice opened puts the focus in it and closes nothing", async () => {
+  const user = userEvent.setup();
+  window.localStorage.clear();
+  const { getMyState, listIssues, view } = renderControlRow(
+    [issue({ labels: ["bug"], title: "Core work" })],
+    {},
+    "/projects/CORE?label=bug"
+  );
+
+  try {
+    await screen.findByText("Core work");
+    const trigger = screen.getByRole("button", { name: "Filters · 1" });
+    const panel = screen.getByRole("dialog", { name: "Filters" });
+    const labels = within(panel).getByRole("button", { name: "Labels · 1" });
+    expect(document.activeElement).toBe(document.body);
+    await user.keyboard("{Shift>}F{/Shift}");
+    expect(screen.getByRole("dialog", { name: "Filters" })).toBe(panel);
+    expect(trigger).toHaveAttribute("aria-expanded", "true");
+    expect(labels).toHaveFocus();
+    // Nothing the key did is the reader's open or close, so the stored choice stays unwritten.
+    expect(window.localStorage.getItem(PANEL_CHOICE)).toBeNull();
+    await user.keyboard("{Escape}");
+    expect(trigger).toHaveAttribute("aria-expanded", "false");
+    expect(document.activeElement).toBe(document.body);
+
+    // Shut, Shift+F opens it into the focus, as a press does.
+    await user.keyboard("{Shift>}F{/Shift}");
+    expect(trigger).toHaveAttribute("aria-expanded", "true");
+    expect(
+      within(screen.getByRole("dialog", { name: "Filters" })).getByRole("button", {
+        name: "Labels · 1",
+      })
+    ).toHaveFocus();
+  } finally {
+    view.unmount();
+    getMyState.mockRestore();
+    listIssues.mockRestore();
+    window.localStorage.clear();
+  }
+});
+
+test("the trigger's press either way, Escape and a press outside that closes the panel each write the stored choice", async () => {
+  const user = userEvent.setup();
+  window.localStorage.clear();
+  const { getMyState, listIssues, view } = renderControlRow([issue({ title: "Core work" })]);
+
+  try {
+    await screen.findByText("Core work");
+    const trigger = screen.getByRole("button", { name: "Filters · 0" });
+    await user.click(trigger);
+    expect(window.localStorage.getItem(PANEL_CHOICE)).toBe("expanded");
+    await user.click(trigger);
+    expect(window.localStorage.getItem(PANEL_CHOICE)).toBe("collapsed");
+
+    await user.click(trigger);
+    expect(window.localStorage.getItem(PANEL_CHOICE)).toBe("expanded");
+    await user.keyboard("{Escape}");
+    expect(trigger).toHaveAttribute("aria-expanded", "false");
+    expect(window.localStorage.getItem(PANEL_CHOICE)).toBe("collapsed");
+
+    await user.click(trigger);
+    expect(window.localStorage.getItem(PANEL_CHOICE)).toBe("expanded");
+    await user.click(screen.getByRole("searchbox", { name: "Search issues" }));
+    expect(trigger).toHaveAttribute("aria-expanded", "false");
+    expect(window.localStorage.getItem(PANEL_CHOICE)).toBe("collapsed");
+  } finally {
+    view.unmount();
+    getMyState.mockRestore();
+    listIssues.mockRestore();
+    window.localStorage.clear();
+  }
+});
+
+test("nothing but the reader's open and close writes the stored choice: not a press while the panel is shut, a chip's removal or a press in the Labels list", async () => {
+  const user = userEvent.setup();
+  // Every write of the stored choice, in order, kept by a storage that counts them.
+  const storage = installCountingStorage({ [PANEL_CHOICE]: "collapsed" });
+  const { getMyState, listIssues, view } = renderControlRow(
+    [issue({ labels: ["bug"], title: "Core work" })],
+    {},
+    "/projects/CORE?label=bug&needs-you=1"
+  );
+
+  try {
+    await screen.findByRole("button", { name: "Filters · 2" });
+    const trigger = screen.getByRole("button", { name: "Filters · 2" });
+    expect(trigger).toHaveAttribute("aria-expanded", "false");
+    // A press while the panel is shut.
+    await user.click(screen.getByRole("searchbox", { name: "Search issues" }));
+    // A chip's removal.
+    await user.click(screen.getByRole("button", { name: "Remove Needs you filter" }));
+    expect(screen.getByRole("button", { name: "Filters · 1" })).toBe(trigger);
+    expect(storage.writes.filter(([key]) => key === PANEL_CHOICE)).toEqual([]);
+
+    // One open, one close, and between them a pick in the Labels list and the Escape that
+    // closes that list alone.
+    await user.click(trigger);
+    await pickOption("Labels", "bug");
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+    expect(trigger).toHaveAttribute("aria-expanded", "true");
+    await user.keyboard("{Escape}");
+    expect(trigger).toHaveAttribute("aria-expanded", "false");
+    expect(storage.writes.filter(([key]) => key === PANEL_CHOICE)).toEqual([
+      [PANEL_CHOICE, "expanded"],
+      [PANEL_CHOICE, "collapsed"],
+    ]);
+  } finally {
+    view.unmount();
+    storage.restore();
+    getMyState.mockRestore();
+    listIssues.mockRestore();
+  }
+});
+
 // A move the reader stopped may have been made: the board goes back to where the page read it,
 // reads itself again, and says so, rather than a failure it cannot know of.
 test("a move the reader stopped says it may have been made, not that it failed", async () => {
@@ -1098,14 +1726,15 @@ function statusChangeOf(input: { dry_run?: boolean; include_children?: boolean }
   return `${input.dry_run === true ? "dry run" : "write"} with ${option}`;
 }
 
-/** A move that asks: its own dry run is refused by the rule (ACME-4's child in work),
- *  `include_children`'s dry run answers, `unlink_children`'s is held, and `write` answers the
- *  status change with the option. */
-function answerTheQuestion(write: () => Promise<StatusChangeAnswer>) {
+/** A move that asks: its own dry run is refused by the rule (ACME-4's child in work), once `held`
+ *  settles where a row holds it, `include_children`'s dry run answers, `unlink_children`'s is held,
+ *  and `write` answers the status change with the option. */
+function answerTheQuestion(write: () => Promise<StatusChangeAnswer>, held?: Promise<void>) {
   return answerStatusChanges().mockImplementation(async (_key, input) => {
     if (input.dry_run !== true) return write();
     if (input.include_children === true) return fixtureAnswer("dry-run");
     if (input.unlink_children === true) return new Promise<StatusChangeAnswer>(() => {});
+    if (held !== undefined) await held;
     throw fixtureRefusal("conflict");
   });
 }
@@ -1151,6 +1780,148 @@ test("board: checking - a second drop while the first is checking waits behind i
     statusChanges.mockRestore();
   }
 });
+
+/** A dialog of another part of the page, open over the board: `useDialog` takes the focus as it
+ *  opens and gives it to its control a frame later. */
+function AnotherDialog(): ReactNode {
+  const dialog = useDialog<HTMLDivElement>({ onClose: () => {}, open: true });
+  return (
+    <div aria-label="Another dialog" ref={dialog.containerRef} role="dialog">
+      <button type="button">In another dialog</button>
+    </div>
+  );
+}
+
+// INFRA-3135: a keyboard move the rule's dry run checks first places the card only once the dry
+// run answers. The focus follows the card then only while it stands in the card the reader's press
+// moved: on the card itself, or on a control inside it, as a Tab onto the card's own link leaves
+// it. The board's draw of the card in its new column takes that control away with the card, so
+// the focus goes with the card. A reader who has moved on keeps their place: here `j` to the next
+// card, or a blur that puts the focus on the body, as a click on a blank spot of the page's shell
+// does in Chromium and WebKit. That draw removes the node the press focused, so after it the body
+// tells nothing: only what the move read as it placed the card tells the reader's blur from the
+// card's going. Another dialog open over the board is no place the press left the focus: with the
+// focus on the body under it, as a press on its text leaves it, the move takes no focus to the
+// card behind it.
+for (const reader of [
+  "stayed",
+  "put the focus on the card's own link",
+  "moved on",
+  "put the focus on the body",
+  "opened another dialog and put the focus on the body",
+] as const) {
+  test(`board: checking - focus follows a checked keyboard move only while it stands in the card the press moved (the reader ${reader})`, async () => {
+    const user = userEvent.setup();
+    const dryRun = Promise.withResolvers<StatusChangeAnswer>();
+    const statusChanges = answerStatusChanges().mockImplementation(() => dryRun.promise);
+    const patchIssue = patchInFlight();
+    const { cleanup } = renderBoard({}, undefined, parentIssues);
+    let closeAnother: (() => void) | undefined;
+    try {
+      const board = await screen.findByRole("region", { name: "Project board" });
+      const pressed = within(board).getByRole("article", { name: "CORE-1 Parent" });
+      act(() => pressed.focus());
+      await user.keyboard("{Shift>}L{/Shift}");
+      await waitFor(() => expect(statusChanges).toHaveBeenCalledTimes(1));
+      const bravo = within(board).getByRole("article", { name: "CORE-2 Bravo" });
+      if (reader === "moved on") {
+        await user.keyboard("j");
+        expect(bravo).toHaveFocus();
+      }
+      if (reader === "put the focus on the card's own link") {
+        expect(focusTitleLink(pressed, "CORE-1")).toHaveFocus();
+      }
+      if (reader === "put the focus on the body") {
+        act(() => pressed.blur());
+        expect(document.body).toHaveFocus();
+      }
+      if (reader === "opened another dialog and put the focus on the body") {
+        closeAnother = render(<AnotherDialog />).unmount;
+        await afterFrameAndTasks();
+        const control = screen.getByRole("button", { name: "In another dialog" });
+        expect(control).toHaveFocus();
+        act(() => control.blur());
+        expect(document.body).toHaveFocus();
+      }
+      await act(async () => {
+        dryRun.resolve(fixtureAnswer("dry-run"));
+        await settle();
+      });
+      const inProgress = within(board).getByRole("region", { name: "In progress" });
+      await waitFor(() =>
+        expect(within(inProgress).getByRole("article", { name: "CORE-1 Parent" })).toBeDefined()
+      );
+      expect(pressed).not.toBeInTheDocument();
+      await afterFrameAndTasks();
+      const kept = {
+        "moved on": bravo,
+        "opened another dialog and put the focus on the body": document.body,
+        "put the focus on the body": document.body,
+        "put the focus on the card's own link": within(inProgress).getByRole("article", {
+          name: "CORE-1 Parent",
+        }),
+        stayed: within(inProgress).getByRole("article", { name: "CORE-1 Parent" }),
+      };
+      expect(kept[reader]).toHaveFocus();
+    } finally {
+      closeAnother?.();
+      cleanup();
+      patchIssue.mockRestore();
+      statusChanges.mockRestore();
+    }
+  });
+}
+
+// The rule's question takes the focus as it opens and gives it back as it closes
+// (`useDialog`). A keyboard move whose card a choice of the question places takes the focus to
+// that card only where the question took the focus from the card the press moved, or from a
+// control inside it, as a Tab onto the card's own link leaves it while the move's dry run is out.
+// A reader who puts the focus on the body while the move's dry run is out has the question open
+// on the body: once the choice has placed the card and the question has closed, the focus stays
+// on the body.
+for (const opener of ["the pressed card", "the pressed card's own link", "the body"] as const) {
+  test(`board: asking - a choice that places a keyboard move's card takes the focus to it only where the question took the focus from that card or a control inside it (the question opened on ${opener})`, async () => {
+    const user = userEvent.setup();
+    const refusal = Promise.withResolvers<void>();
+    const statusChanges = answerTheQuestion(async () => fixtureAnswer("changed"), refusal.promise);
+    const patchIssue = patchInFlight();
+    const { cleanup } = renderBoard({}, undefined, parentIssues);
+    try {
+      const board = await screen.findByRole("region", { name: "Project board" });
+      const pressed = within(board).getByRole("article", { name: "CORE-1 Parent" });
+      act(() => pressed.focus());
+      await user.keyboard("{Shift>}L{/Shift}");
+      await waitFor(() => expect(statusChanges).toHaveBeenCalledTimes(1));
+      if (opener === "the body") {
+        act(() => pressed.blur());
+        expect(document.body).toHaveFocus();
+      }
+      if (opener === "the pressed card's own link") {
+        expect(focusTitleLink(pressed, "CORE-1")).toHaveFocus();
+      }
+      refusal.resolve();
+      const question = await screen.findByRole("dialog", { name: "Move CORE-1 to In progress?" });
+      const moveThem = within(question).getByRole("button", { name: "Move them with it" });
+      await waitFor(() => expect(moveThem).toBeEnabled());
+      await user.click(moveThem);
+      const inProgress = within(board).getByRole("region", { name: "In progress" });
+      await waitFor(() =>
+        expect(within(inProgress).getByRole("article", { name: "CORE-1 Parent" })).toBeDefined()
+      );
+      await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+      await afterFrameAndTasks();
+      expect(
+        opener === "the body"
+          ? document.body
+          : within(inProgress).getByRole("article", { name: "CORE-1 Parent" })
+      ).toHaveFocus();
+    } finally {
+      cleanup();
+      patchIssue.mockRestore();
+      statusChanges.mockRestore();
+    }
+  });
+}
 
 test("board: checking - the dry run answers 200, and the move goes as today", async () => {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -1328,6 +2099,56 @@ test("board: asking - the board going away ends the move, leaves no board move p
         ?.status
     ).toBe("todo");
   } finally {
+    hook.unmount();
+    patchIssue.mockRestore();
+    statusChanges.mockRestore();
+  }
+});
+
+// A choice whose write the question was closed on past its deadline goes on being tried, and the
+// board's move ends with the question, so its turn of the board's scope ends. Dispatch's refusal
+// of that write comes once the question has gone, and is said over the board in the words the
+// issue headers say it in (`IssueStatusNotes`).
+test("board: writing - a choice left behind past its deadline that Dispatch then refuses is said over the board", async () => {
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const queryKey = ["issues", "project", "CORE"] as const;
+  queryClient.setQueryData(queryKey, parentIssues);
+  const refusal = fixtureRefusal("browser-only");
+  // The chosen write fails at the network at each try until the test lets Dispatch refuse it.
+  let write = (): Promise<StatusChangeAnswer> =>
+    Promise.reject(
+      new NetworkError("/api/v1/issues/CORE-1/status-change", new TypeError("Failed to fetch"))
+    );
+  const statusChanges = answerTheQuestion(() => write());
+  const patchIssue = answerIssuePatches().mockResolvedValue(patched);
+  const hook = renderMoves(queryClient);
+  try {
+    let moved: Promise<void> = Promise.resolve();
+    await act(async () => {
+      moved = hook.result.current.moveCard("CORE-1", "in_progress", 1);
+      await settle();
+    });
+    jest.useFakeTimers();
+    await act(async () => {
+      hook.result.current.question?.choose("include_children");
+      await settle();
+    });
+    await tick(SEND_DEADLINE_MS + 1_000);
+    expect(hook.result.current.question?.writingLate).toBe(true);
+    await act(async () => {
+      hook.result.current.question?.close();
+      await moved;
+    });
+    expect(hook.result.current.question).toBeUndefined();
+    expect(boardMovesPending(queryClient)).toBe(0);
+    expect(hook.result.current.error).toBeUndefined();
+
+    write = () => Promise.reject(refusal);
+    await tick(MAX_BACKOFF_MS);
+    expect(hook.result.current.error).toBe(refusedNote("change the status of CORE-1", refusal));
+    expect(patchIssue).not.toHaveBeenCalled();
+  } finally {
+    realClock();
     hook.unmount();
     patchIssue.mockRestore();
     statusChanges.mockRestore();

@@ -104,7 +104,7 @@ export interface NodeChip {
    *  though it carries the marks. A view that draws a comment's or a message's chip carrying this
    *  draws the deleted line in its italic, as a link to the post does (`RefLink`), and names the
    *  actor from `deletedBy` as the page names an author, as a row's chip does (`NodeRow.tsx`'s
-   *  `Chip`, issue page decision 342). */
+   *  `NodeReference`, issue page decision 342). */
   readonly deletedAt?: string;
   /** Who deleted it (`ReferenceTarget.deleted_by`); absent where `deletedAt` is absent, and where
    *  the read names nobody. */
@@ -114,8 +114,8 @@ export interface NodeChip {
    *  edited, for a deleted one and for every other target. The chip's `reading` is of the words
    *  alone: a view that draws the name of a chip carrying this must cut the words to its own
    *  length first and then add ` · edited`, so no cut takes the mark: the row's chip draws the
-   *  mark as an element of its own (`NodeRow.tsx`'s `Chip`, with `EditedMark`), and a place that
-   *  names the post in one string writes it with `editedName`. */
+   *  mark as an element of its own (`NodeRow.tsx`'s `NodeReference`, with `EditedMark`), and a
+   *  place that names the post in one string writes it with `editedName`. */
   readonly editedAt?: string;
   /** Whether nothing answers to this reference now. */
   readonly gone: boolean;

@@ -1,16 +1,23 @@
-import { beforeAll, expect, spyOn, test } from "bun:test";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { beforeAll, expect, jest, spyOn, test } from "bun:test";
+import { onlineManager, QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: the dropped file below is a drop, which user-event has no form for
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, useLocation } from "react-router-dom";
 
 import { displayTree } from "../../__tests__/display-trees";
+import { realClock, tick } from "../../__tests__/fake-clock";
 import { graphNode } from "../../__tests__/graph-fixture";
+import { heldAnswers } from "../../__tests__/held-answers";
+import { heldNotDisabled } from "../../__tests__/held-press";
+import { heldUntilLate, pressesOf } from "../../__tests__/held-until-late";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
-import { ApiError, api } from "../../api/client";
+import { userOnFakeClock } from "../../__tests__/user";
+import { ApiError, api, NetworkError, REQUEST_DEADLINE_MS } from "../../api/client";
+import { DispatchQueryClient } from "../../api/query-client";
 import type {
   Artifact,
+  ArtifactUploadResponse,
   DisplayTree,
   IssueReferences,
   IssueReferencesAnswer,
@@ -18,6 +25,7 @@ import type {
 } from "../../api/types";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { buildIssuePath } from "../refs/routes";
+import { SEND_DEADLINE_MS } from "../writes/keyed-write";
 import { ArtifactsTab } from "./ArtifactsTab";
 
 // The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
@@ -71,14 +79,33 @@ const noReferences: IssueReferences = {
   truncated: false,
 };
 
+/** The tab's own address: its path, and its query, which is where its filter lives. */
 function Location() {
-  return <output data-testid="location">{useLocation().pathname}</output>;
+  const { pathname, search } = useLocation();
+  return (
+    <>
+      <output data-testid="location">{pathname}</output>
+      <output data-testid="location-search">{search}</output>
+    </>
+  );
 }
 
 function renderTab(
   artifacts: Artifact[],
   references: IssueReferencesAnswer | Error = noReferences,
-  isClosed = false
+  {
+    isClosed = false,
+    queryClient = new QueryClient({
+      defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+    }),
+    search = "",
+  }: {
+    readonly isClosed?: boolean;
+    /** The query client the tab reads through, a plain one unless the case needs the app's own. */
+    readonly queryClient?: QueryClient;
+    /** The query the tab is opened at, as a reload or a shared link hands it over. */
+    readonly search?: string;
+  } = {}
 ) {
   const listArtifacts = spyOn(api, "listArtifacts").mockResolvedValue(artifacts);
   const getIssueReferences = spyOn(api, "getIssueReferences");
@@ -87,19 +114,73 @@ function renderTab(
   } else {
     getIssueReferences.mockResolvedValue(references);
   }
-  const queryClient = new QueryClient({
-    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
-  });
-  const view = render(
-    <MemoryRouter initialEntries={[buildIssuePath({ key: "CORE-1", kind: "artifacts" })]}>
+  const tab = (drawn: boolean) => (
+    <MemoryRouter
+      initialEntries={[`${buildIssuePath({ key: "CORE-1", kind: "artifacts" })}${search}`]}
+    >
       <QueryClientProvider client={queryClient}>
-        <ArtifactsTab isClosed={isClosed} />
+        {drawn ? <ArtifactsTab isClosed={isClosed} /> : null}
         <Location />
       </QueryClientProvider>
     </MemoryRouter>
   );
-  return { getIssueReferences, listArtifacts, view };
+  const view = render(tab(true));
+  /** Takes the tab off the page and draws it again, as the issue page does on a switch to
+   *  another tab and back. */
+  const drawAgain = () => {
+    view.rerender(tab(false));
+    view.rerender(tab(true));
+  };
+  return { drawAgain, getIssueReferences, listArtifacts, view };
 }
+
+test("Create and Cancel let go at the document write deadline without making a second document", async () => {
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const { getIssueReferences, listArtifacts, view } = renderTab([artifact], noReferences, {
+    queryClient,
+  });
+  const upload = spyOn(api, "uploadArtifact").mockRejectedValue(
+    new NetworkError("/api/v1/artifacts", new TypeError("Failed to fetch"))
+  );
+  try {
+    const prepare = userEvent.setup();
+    await prepare.click(await screen.findByRole("button", { name: "New document" }));
+    await prepare.paste("Rollout");
+    const button = screen.getByRole<HTMLButtonElement>("button", { name: "Create" });
+    const cancel = screen.getByRole<HTMLButtonElement>("button", { name: "Cancel" });
+    jest.useFakeTimers();
+    const user = userOnFakeClock();
+    const sent = () => pressesOf([upload]);
+    await heldUntilLate(user, button, {
+      alongside: (held) => {
+        expect(cancel.getAttribute("aria-disabled"), "Cancel").toBe(held ? "true" : null);
+      },
+      label: "New document Rollout",
+      name: "Create",
+      queryClient,
+      sent,
+    });
+    await user.keyboard("{Enter}");
+    await tick(1_000);
+    expect(sent()).toBe(1);
+    const stillSending = /Create sent nothing:.*still being sent/;
+    expect(screen.getByText(stillSending)).toBeInTheDocument();
+    upload.mockRejectedValue(new ApiError(403, { error: "Document limits reached" }));
+    await tick(30_000);
+    expect(screen.queryByText(stillSending)).toBeNull();
+    expect(screen.getByRole("alert")).toHaveTextContent("Document limits reached");
+    await user.keyboard("{Enter}");
+    await tick(1_000);
+    expect(sent()).toBe(2);
+  } finally {
+    realClock();
+    view.unmount();
+    queryClient.clear();
+    upload.mockRestore();
+    listArtifacts.mockRestore();
+    getIssueReferences.mockRestore();
+  }
+});
 
 test("renders one row per artifact with no compare controls", async () => {
   const notes: Artifact = {
@@ -133,7 +214,9 @@ test("renders one row per artifact with no compare controls", async () => {
 // keyboard path opens a chooser whose file is ignored.
 test("a closed issue's Artifacts tab refuses a new document and an upload before a file is picked", async () => {
   const user = userEvent.setup();
-  const { getIssueReferences, listArtifacts, view } = renderTab([artifact], noReferences, true);
+  const { getIssueReferences, listArtifacts, view } = renderTab([artifact], noReferences, {
+    isClosed: true,
+  });
   // Spied on HTMLElement, the prototype that owns the method: spying on HTMLInputElement would
   // leave an own property behind that shadows every later spy on HTMLElement.
   const pick = spyOn(HTMLElement.prototype, "click");
@@ -237,6 +320,91 @@ test("New document on an issue refuses a title the issue already holds", async (
       "An artifact on this issue already holds that title: diagram.png."
     );
     expect(uploadArtifact).not.toHaveBeenCalled();
+  } finally {
+    view.unmount();
+    listArtifacts.mockRestore();
+    getIssueReferences.mockRestore();
+    uploadArtifact.mockRestore();
+  }
+});
+
+// INFRA-3135. The focus follows the form: New document opens it with the focus in Title, so the
+// title is typed at once, and Cancel closes it with the focus back on New document, the control
+// that opened it, rather than dropped on the page.
+test("New document puts the focus in Title, and Cancel gives it back to New document", async () => {
+  const user = userEvent.setup();
+  const { getIssueReferences, listArtifacts, view } = renderTab([]);
+
+  try {
+    await screen.findByText("No artifacts yet.");
+    await user.click(screen.getByRole("button", { name: "New document" }));
+    expect(screen.getByRole("textbox", { name: "Title" })).toHaveFocus();
+
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(screen.getByRole("button", { name: "New document" })).toHaveFocus();
+  } finally {
+    view.unmount();
+    listArtifacts.mockRestore();
+    getIssueReferences.mockRestore();
+  }
+});
+
+// INFRA-3135. The same by the keyboard alone: Tab reaches the filter box and then New document,
+// and Enter opens the form with the focus in Title; Tab twice reaches Cancel, and Enter closes
+// the form with the focus back on New document, so the next Tab goes on to Upload rather than
+// starting again from the top of the page.
+test("New document by the keyboard: Enter puts the focus in Title, and Cancel gives it back", async () => {
+  const user = userEvent.setup();
+  const { getIssueReferences, listArtifacts, view } = renderTab([]);
+
+  try {
+    await screen.findByText("No artifacts yet.");
+    await user.tab();
+    await user.tab();
+    await user.keyboard("{Enter}");
+    expect(screen.getByRole("textbox", { name: "Title" })).toHaveFocus();
+
+    await user.tab();
+    await user.tab();
+    await user.keyboard("{Enter}");
+    expect(screen.getByRole("button", { name: "New document" })).toHaveFocus();
+    await user.tab();
+    expect(screen.getByRole("button", { name: "Upload" })).toHaveFocus();
+  } finally {
+    view.unmount();
+    listArtifacts.mockRestore();
+    getIssueReferences.mockRestore();
+  }
+});
+
+// A close the reader has moved away from is not the form's to undo. While Create is out they go
+// to the filter box; the write answers, the form closes and the document opens, and the focus
+// stays in the filter box rather than going back to New document.
+test("New document leaves the focus where the reader moved it while Create was out", async () => {
+  const user = userEvent.setup();
+  const { getIssueReferences, listArtifacts, view } = renderTab([]);
+  const answer = Promise.withResolvers<ArtifactUploadResponse>();
+  const uploadArtifact = spyOn(api, "uploadArtifact").mockReturnValue(answer.promise);
+
+  try {
+    await screen.findByText("No artifacts yet.");
+    await user.click(screen.getByRole("button", { name: "New document" }));
+    // The title goes where the opening put the focus.
+    expect(screen.getByRole("textbox", { name: "Title" })).toHaveFocus();
+    await user.paste("Design notes");
+    await user.click(screen.getByRole("button", { name: "Create" }));
+    await waitFor(() => expect(uploadArtifact).toHaveBeenCalled());
+    const filter = screen.getByRole("searchbox", { name: "Filter artifacts" });
+    await user.click(filter);
+
+    answer.resolve(madeResponse());
+    await waitFor(() =>
+      expect(screen.getByTestId("location").textContent).toBe(
+        "/issues/CORE-1/artifacts/design-notes"
+      )
+    );
+    expect(screen.queryByRole("form", { name: "New document" })).not.toBeInTheDocument();
+    expect(filter).toHaveFocus();
   } finally {
     view.unmount();
     listArtifacts.mockRestore();
@@ -401,6 +569,53 @@ test("the filter input narrows rows by name and kind", async () => {
     view.unmount();
     listArtifacts.mockRestore();
     getIssueReferences.mockRestore();
+  }
+});
+
+// The tab's filter is part of the address, so a reader who reloads, shares the tab or walks
+// back to it finds the same narrowed list rather than the whole one.
+test("the filter rides in the address: absent until set, and found again after a reload", async () => {
+  const user = userEvent.setup();
+  const notes: Artifact = {
+    ...artifact,
+    id: "artifact-notes",
+    kind: "doc",
+    name: "notes.md",
+    slug: "notes-md",
+  };
+  const typed = renderTab([artifact, notes]);
+
+  try {
+    await screen.findByTestId("artifact-diagram-png");
+    // Nothing the reader has not asked for: the address holds no `q` until one is typed.
+    expect(screen.getByTestId("location-search").textContent).toBe("");
+
+    const filter = screen.getByRole("searchbox", { name: "Filter artifacts" });
+    await user.click(filter);
+    await user.paste("notes");
+    await waitFor(() => expect(screen.getByTestId("location-search").textContent).toBe("?q=notes"));
+    expect(screen.queryByTestId("artifact-diagram-png")).not.toBeInTheDocument();
+
+    await user.clear(filter);
+    await waitFor(() => expect(screen.getByTestId("location-search").textContent).toBe(""));
+  } finally {
+    typed.view.unmount();
+    typed.listArtifacts.mockRestore();
+    typed.getIssueReferences.mockRestore();
+  }
+
+  // The same address opened afresh, as a reload hands it over: the box holds those words and
+  // the list is already narrowed by them, before anybody types.
+  const reloaded = renderTab([artifact, notes], noReferences, { search: "?q=notes" });
+
+  try {
+    await screen.findByTestId("artifact-notes-md");
+    expect(screen.getByRole("searchbox", { name: "Filter artifacts" })).toHaveValue("notes");
+    expect(screen.queryByTestId("artifact-diagram-png")).not.toBeInTheDocument();
+  } finally {
+    reloaded.view.unmount();
+    reloaded.listArtifacts.mockRestore();
+    reloaded.getIssueReferences.mockRestore();
   }
 });
 
@@ -1098,15 +1313,322 @@ test("a refused removal shows the server's sentence on the row", async () => {
   }
 });
 
+// `DispatchQueryClient` answers the invalidation of the idle document list after a removal with
+// the list's own fetch, which TanStack pauses while the browser is offline, and no request
+// deadline runs while a fetch is paused. So Remove's hold through that read has a timer of its
+// own, the request deadline (`REQUEST_DEADLINE_MS`): a row's Remove whose removal landed offline
+// is free again then, and the row says the list is not read yet and why. Once the network
+// returns, the list is read and the row goes.
+test("offline, a row's Remove whose removal landed is free again at the request deadline, and the row says why", async () => {
+  const online = onlineManager.isOnline();
+  const notes: Artifact = { ...madeDocument, versions: artifact.versions.slice(0, 1) };
+  const queryClient = new DispatchQueryClient({
+    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+  });
+  const { getIssueReferences, listArtifacts, view } = renderTab([notes], noReferences, {
+    queryClient,
+  });
+  // The removal's answer, held until the case moves the clock, so what it sets off runs in `act`.
+  const removal = Promise.withResolvers<void>();
+  const deleteArtifact = spyOn(api, "deleteArtifact").mockImplementation(() => {
+    listArtifacts.mockResolvedValue([]);
+    return removal.promise;
+  });
+  const row = await screen.findByTestId("artifact-design-notes");
+  const remove = within(row).getByRole("button", { name: "Remove" });
+  const reads = listArtifacts.mock.calls.length;
+  jest.useFakeTimers();
+  try {
+    const user = userOnFakeClock();
+    onlineManager.setOnline(false);
+    await user.click(remove);
+    await tick(0);
+    expect(deleteArtifact).toHaveBeenCalledTimes(1);
+    removal.resolve();
+    await tick(1_000);
+    expect(queryClient.getQueryState(["artifacts", "CORE-1"])?.fetchStatus).toBe("paused");
+    expect(remove.textContent).toBe("Removing…");
+    // Held, never disabled, so a Remove pressed by keyboard keeps the focus: a press of it does
+    // nothing.
+    expect(remove).toHaveAttribute("aria-disabled", "true");
+    expect(remove).not.toBeDisabled();
+    await user.click(remove);
+    await tick(0);
+    expect(deleteArtifact).toHaveBeenCalledTimes(1);
+
+    // The removal landed within the second before, which is when the hold's timer started.
+    await tick(REQUEST_DEADLINE_MS - 2_000);
+    expect(remove.textContent).toBe("Removing…");
+
+    await tick(2_000);
+    expect(remove.textContent).toBe("Remove");
+    expect(remove).not.toHaveAttribute("aria-disabled");
+    expect(listArtifacts.mock.calls.length).toBe(reads);
+    expect(within(row).getByRole("alert").textContent).toBe(
+      "Could not load artifacts. Dispatch could not be reached."
+    );
+
+    act(() => onlineManager.setOnline(true));
+    await tick(0);
+    expect(screen.queryByTestId("artifact-design-notes")).toBeNull();
+  } finally {
+    // The tab and its reads go before the network returns, so no read paused offline goes on.
+    view.unmount();
+    queryClient.clear();
+    onlineManager.setOnline(online);
+    realClock();
+    listArtifacts.mockRestore();
+    getIssueReferences.mockRestore();
+    deleteArtifact.mockRestore();
+  }
+});
+
+// The line a removal's row draws for a list read the bound ended is that removal's own: the next
+// press of Remove takes it away as its removal lands, though the earlier read is still out, and
+// the read after it, once answered, takes the row away. Dispatch holds the first removal's read
+// until the row answers it, so the next removal's read, which waits for that one
+// (`DispatchQueryClient`), answers after it.
+test("the line a removal's read the bound ended draws goes as the next removal lands, whose read takes the row away", async () => {
+  const notes: Artifact = { ...madeDocument, versions: artifact.versions.slice(0, 1) };
+  const queryClient = new DispatchQueryClient({
+    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+  });
+  const { getIssueReferences, listArtifacts, view } = renderTab([notes], noReferences, {
+    queryClient,
+  });
+  // Each removal's answer, held until the row moves the clock, so what it sets off runs in `act`.
+  const { answers: removals, next } = heldAnswers<void>();
+  const deleteArtifact = spyOn(api, "deleteArtifact").mockImplementation(next);
+  const row = await screen.findByTestId("artifact-design-notes");
+  const remove = within(row).getByRole("button", { name: "Remove" });
+  const reread = Promise.withResolvers<Artifact[]>();
+  listArtifacts.mockResolvedValue([]);
+  listArtifacts.mockReturnValueOnce(reread.promise);
+  jest.useFakeTimers();
+  try {
+    const user = userOnFakeClock();
+    await user.click(remove);
+    await tick(0);
+    removals[0]?.();
+    await tick(0);
+    expect(remove.textContent).toBe("Removing…");
+    await tick(REQUEST_DEADLINE_MS);
+    expect(remove.textContent).toBe("Remove");
+    expect(within(row).getByRole("alert").textContent).toBe(
+      "Could not load artifacts. Dispatch did not answer within 30 seconds."
+    );
+
+    await user.click(remove);
+    await tick(0);
+    expect(deleteArtifact).toHaveBeenCalledTimes(2);
+    removals[1]?.();
+    await tick(0);
+    expect(remove.textContent).toBe("Removing…");
+    expect(
+      within(row).queryByRole("alert"),
+      "the earlier removal's read kept its line past the next removal"
+    ).toBeNull();
+
+    await act(async () => reread.resolve([]));
+    await tick(0);
+    expect(screen.queryByTestId("artifact-design-notes")).toBeNull();
+  } finally {
+    view.unmount();
+    queryClient.clear();
+    realClock();
+    listArtifacts.mockRestore();
+    getIssueReferences.mockRestore();
+    deleteArtifact.mockRestore();
+  }
+});
+
+// Every removal reads the one document list again, so the line the first document's row draws
+// for a read the bound ended goes as a second document's removal lands, though that read is still
+// out: the list's one hold forgets it then (`useListReadBound`), and the second row alone says why
+// the read its own removal made has not settled, once that read's bound ends.
+test("the line one document's removal leaves goes as another document's removal lands", async () => {
+  const notes: Artifact = { ...madeDocument, versions: artifact.versions.slice(0, 1) };
+  const more: Artifact = {
+    ...notes,
+    id: "artifact-more-notes",
+    name: "More notes",
+    ref_key: "CORE-1/more-notes",
+    slug: "more-notes",
+  };
+  const queryClient = new DispatchQueryClient({
+    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+  });
+  const { getIssueReferences, listArtifacts, view } = renderTab([notes, more], noReferences, {
+    queryClient,
+  });
+  // Each removal's answer, held until the row moves the clock, so what it sets off runs in `act`.
+  const { answers: removals, next } = heldAnswers<void>();
+  const deleteArtifact = spyOn(api, "deleteArtifact").mockImplementation(next);
+  const firstRow = await screen.findByTestId("artifact-design-notes");
+  const secondRow = screen.getByTestId("artifact-more-notes");
+  const first = within(firstRow).getByRole("button", { name: "Remove" });
+  const second = within(secondRow).getByRole("button", { name: "Remove" });
+  const why = "Could not load artifacts. Dispatch did not answer within 30 seconds.";
+  // Dispatch answers no read of the list after the first removal while the row runs.
+  listArtifacts.mockReturnValue(Promise.withResolvers<Artifact[]>().promise);
+  jest.useFakeTimers();
+  try {
+    const user = userOnFakeClock();
+    await user.click(first);
+    await tick(0);
+    removals[0]?.();
+    await tick(0);
+    await tick(REQUEST_DEADLINE_MS);
+    expect(within(firstRow).getByRole("alert").textContent).toBe(why);
+
+    await user.click(second);
+    await tick(0);
+    expect(deleteArtifact).toHaveBeenCalledTimes(2);
+    removals[1]?.();
+    await tick(0);
+    expect(second.textContent).toBe("Removing…");
+    expect(
+      within(firstRow).queryByRole("alert"),
+      "the first removal's read kept its line on its row past the second removal"
+    ).toBeNull();
+
+    await tick(REQUEST_DEADLINE_MS);
+    expect(within(secondRow).getByRole("alert").textContent).toBe(why);
+    expect(within(firstRow).queryByRole("alert")).toBeNull();
+  } finally {
+    view.unmount();
+    queryClient.clear();
+    realClock();
+    listArtifacts.mockRestore();
+    getIssueReferences.mockRestore();
+    deleteArtifact.mockRestore();
+  }
+});
+
+// The issue page draws the Artifacts tab only on its own address (`ArtifactRoutePanel`), so a
+// switch to the Spec tab and back draws a new tab while a removal's list read is still out.
+// Every Remove of the issue takes the document list's one hold (`RemoveDocument`), so the tab
+// drawn again holds the removed document's Remove through that read, as the tab it was pressed on
+// did, and says why on its row at the bound and after, until the read answers and takes the row
+// away (the tester's row of `artifacts.e2e.ts`).
+test("a tab drawn again while a removal's list read is out holds that row's Remove, and says why on it at the bound until the read takes the row away", async () => {
+  const notes: Artifact = { ...madeDocument, versions: artifact.versions.slice(0, 1) };
+  const queryClient = new DispatchQueryClient({
+    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+  });
+  const { drawAgain, getIssueReferences, listArtifacts, view } = renderTab([notes], noReferences, {
+    queryClient,
+  });
+  // Each removal's answer, held until the row moves the clock, so what it sets off runs in `act`.
+  const { answers: removals, next } = heldAnswers<void>();
+  const deleteArtifact = spyOn(api, "deleteArtifact").mockImplementation(next);
+  await screen.findByTestId("artifact-design-notes");
+  // The removal's read of the list, held until the row answers it.
+  const reread = Promise.withResolvers<Artifact[]>();
+  listArtifacts.mockReturnValueOnce(reread.promise);
+  const why = "Could not load artifacts. Dispatch did not answer within 30 seconds.";
+  const row = () => screen.getByTestId("artifact-design-notes");
+  const removeOf = () => within(row()).getByRole("button", { name: /^(Remove|Removing…)$/ });
+  jest.useFakeTimers();
+  try {
+    await userOnFakeClock().click(removeOf());
+    await tick(0);
+    removals[0]?.();
+    await tick(0);
+
+    drawAgain();
+    await tick(0);
+    expect(
+      removeOf().textContent,
+      "the tab drawn again let Remove go while the removal's read was out"
+    ).toBe("Removing…");
+    expect(removeOf()).toHaveAttribute("aria-disabled", "true");
+
+    await tick(REQUEST_DEADLINE_MS);
+    expect(removeOf().textContent).toBe("Remove");
+    expect(within(row()).getByRole("alert").textContent).toBe(why);
+    drawAgain();
+    await tick(0);
+    expect(
+      within(row()).queryByRole("alert")?.textContent,
+      "the tab drawn again after the bound said nothing of the read still out"
+    ).toBe(why);
+
+    await act(async () => reread.resolve([]));
+    await tick(0);
+    expect(screen.queryByTestId("artifact-design-notes")).toBeNull();
+  } finally {
+    view.unmount();
+    queryClient.clear();
+    realClock();
+    listArtifacts.mockRestore();
+    getIssueReferences.mockRestore();
+    deleteArtifact.mockRestore();
+  }
+});
+
+// The tab drawn again after the Spec tab and back may be drawn while a removal's write is still
+// out, before it lands. Its row's Remove holds from that removal's own state
+// (`usePendingKeyedPress`), as the Remove pressed did: `Removing…`, a press of it sends nothing
+// more, and it lets go at the removal's deadline (`SEND_DEADLINE_MS`). Dispatch never answers it:
+// each try fails at the network and is tried again under its key.
+test("a tab drawn again while a removal's write is out holds that row's Remove until the removal's deadline and sends nothing more", async () => {
+  const notes: Artifact = { ...madeDocument, versions: artifact.versions.slice(0, 1) };
+  const queryClient = new QueryClient({
+    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+  });
+  const { drawAgain, getIssueReferences, listArtifacts, view } = renderTab([notes], noReferences, {
+    queryClient,
+  });
+  const deleteArtifact = spyOn(api, "deleteArtifact").mockRejectedValue(
+    new NetworkError("/api/v1/artifacts", new TypeError("Failed to fetch"))
+  );
+  await screen.findByTestId("artifact-design-notes");
+  const removeOf = () =>
+    within(screen.getByTestId("artifact-design-notes")).getByRole<HTMLButtonElement>("button", {
+      name: /^(Remove|Removing…)$/,
+    });
+  const sent = () => pressesOf([deleteArtifact]);
+  jest.useFakeTimers();
+  try {
+    const user = userOnFakeClock();
+    await user.click(removeOf());
+    await tick(0);
+    expect(sent()).toBe(1);
+
+    drawAgain();
+    await tick(0);
+    expect(
+      removeOf().textContent,
+      "the tab drawn again let Remove go while the removal's write was out"
+    ).toBe("Removing…");
+    expect(heldNotDisabled(removeOf(), "Remove")).toBe(true);
+    await user.click(removeOf());
+    await tick(0);
+    expect(sent(), "a press of the Remove drawn again sent a second removal").toBe(1);
+
+    await tick(SEND_DEADLINE_MS - 1_000);
+    expect(heldNotDisabled(removeOf(), "Remove")).toBe(true);
+    await tick(1_000);
+    expect(heldNotDisabled(removeOf(), "Remove")).toBe(false);
+    expect(removeOf().textContent).toBe("Remove");
+  } finally {
+    view.unmount();
+    queryClient.clear();
+    realClock();
+    listArtifacts.mockRestore();
+    getIssueReferences.mockRestore();
+    deleteArtifact.mockRestore();
+  }
+});
+
 // A file artifact is refused by the same test a document that holds writing is refused by, so
 // its row offers no press that is always refused; a closed issue says why before the press.
 test("a file's row offers no removal, and a closed issue refuses the document's", async () => {
   const notes: Artifact = { ...madeDocument, versions: artifact.versions.slice(0, 1) };
-  const { getIssueReferences, listArtifacts, view } = renderTab(
-    [artifact, notes],
-    noReferences,
-    true
-  );
+  const { getIssueReferences, listArtifacts, view } = renderTab([artifact, notes], noReferences, {
+    isClosed: true,
+  });
 
   try {
     const picture = await screen.findByTestId("artifact-diagram-png");

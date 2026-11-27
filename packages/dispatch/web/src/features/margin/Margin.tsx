@@ -1,6 +1,7 @@
 import { type ReactNode, useEffect, useLayoutEffect, useRef } from "react";
 import { useLocation } from "react-router-dom";
 
+import { takesText } from "../../components/key-targets";
 import {
   borderDefault,
   focusVisibleRing,
@@ -269,18 +270,17 @@ function DetailsDrawer({
     onClose: () => setOpenNow.current(false),
     open: open && isPhoneViewport,
   });
-  // An open dialog masks every global binding, `Shift+M` among them, so the sheet binds its own
-  // in the dialog's scope: it closes Details, as the global one does at every other width, while
-  // Details is the innermost dialog the focus is in. A dialog over it - another layer, or a
-  // thread's own dialog drawn inside it - holds the focus, and the key leaves Details open.
+  // An open dialog masks every global binding, `Shift+M` among them, so the sheet registers the
+  // frame's own action, Open or close Details, in the dialog's scope, with the person's keys for
+  // it: it closes Details, as the frame's does at every other width, while Details is the
+  // innermost dialog the focus is in. A dialog over it - another layer, or a thread's own dialog
+  // drawn inside it - holds the focus, and the key leaves Details open.
   useKeymap(
     DIALOG_SCOPE,
     open && isPhoneViewport
       ? [
           {
-            id: "details.close",
-            keys: "Shift+M",
-            label: "Open or close Details",
+            action: "global.toggle-details",
             run: () => setOpenNow.current(false),
             when: () => document.activeElement?.closest('[role="dialog"]') === box.current,
           },
@@ -305,23 +305,24 @@ function DetailsDrawer({
         : null;
     closeButton.current?.focus({ preventScroll: true });
     // Escape closes the drawer before the page's own Escape does anything else: the press is the
-    // drawer's alone. A field keeps its own Escape, which leaves the field, wherever it is -
-    // inside the drawer or beside it. So does a layer over the drawer or inside it: an open
-    // dialog - the navigation's sheet, the list of keys - closes on its own Escape and leaves the
-    // drawer open under it, with the focus on the dialog itself (its first frame), on its field,
-    // or gone to the page (a press on the list's text), and a menu open in the drawer closes
-    // before the drawer does, since Escape closes the innermost layer.
+    // drawer's alone. A field that takes text keeps its own Escape, which leaves the field,
+    // wherever it is - inside the drawer or beside it - by the field test the keymap reads
+    // (`takesText`), as the header's actions menu reads it for its own Escape
+    // (`IssueActionsMenu.tsx`). So does a layer over the drawer or inside it: an open dialog -
+    // the navigation's sheet, the list of keys - closes on its own Escape and leaves the drawer
+    // open under it, with the focus on the dialog itself (its first frame), on its field, or gone
+    // to the page (a press on the list's text), and a menu open in the drawer closes before the
+    // drawer does, since Escape closes the innermost layer. So does a menu open beside the
+    // drawer - the header's Issue actions, the view row's menu - which takes the press in the
+    // capture phase and marks it taken (`defaultPrevented`): the drawer opened first, so its
+    // listener, added first, would else hear the press before the menu's. A `<select>` and a
+    // list's trigger take no text, so an Escape on one closes the drawer, as on a button: shut,
+    // neither holds a text of the reader's for Escape to leave, and a list's open panel takes its
+    // Escape before the drawer hears it (`AnchoredPanel`).
     const closeOnEscape = (event: KeyboardEvent) => {
       if (event.key !== "Escape" || event.defaultPrevented) return;
       const target = event.target;
-      const field =
-        target instanceof HTMLElement &&
-        (target.isContentEditable ||
-          target.tagName === "SELECT" ||
-          target.tagName === "TEXTAREA" ||
-          (target instanceof HTMLInputElement &&
-            !["button", "checkbox", "radio", "reset", "submit"].includes(target.type)));
-      if (field) return;
+      if (target instanceof Element && takesText(target)) return;
       if (target instanceof Element && target.closest('[role="dialog"]') !== null) return;
       if (dialogOpen()) return;
       if (box.current?.querySelector('[role="menu"]') != null) return;

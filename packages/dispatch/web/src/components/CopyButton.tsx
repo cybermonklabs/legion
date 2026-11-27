@@ -1,6 +1,7 @@
 import { type MouseEvent, type ReactNode, useEffect, useRef, useState } from "react";
 
 import { focusOnDocument } from "../features/shell/roving";
+import { ControlKeyHint, keyshortcutsOf } from "../features/shell/ShortcutHelp";
 import { useCopyFeedback } from "../hooks/useCopyFeedback";
 import {
   dangerText,
@@ -23,17 +24,24 @@ import { useTooltips } from "./tooltips";
  *
  *  `value` may be a function of the click, for a button whose modifier keys choose what it
  *  copies; such a button names itself through `label`, since the default `Copy <what> <value>`
- *  needs one value to print. */
+ *  needs one value to print. `marks` are the host's own handles on the button, by which its
+ *  keys find and press it (the Inbox's command bar, `data-inbox-action`), and `shortcutKeys` the
+ *  keys that press it where the host draws them: named in its `aria-keyshortcuts`, the first
+ *  drawn inside it after the glyph (`ControlKeyHint`). */
 export function CopyButton({
   children,
   className,
   label,
+  marks,
+  shortcutKeys,
   value,
   what,
 }: {
   children?: ReactNode;
   className?: string;
   label?: string;
+  marks?: Readonly<Record<`data-${string}`, string>>;
+  shortcutKeys?: readonly string[];
   value: string | ((event: MouseEvent<HTMLButtonElement>) => string);
   what: string;
 }): ReactNode {
@@ -48,8 +56,9 @@ export function CopyButton({
   // would drop the focus to the page's body in a browser) and a press of it does nothing. The
   // press records where the focus is meanwhile: its button, then each element the focus lands on
   // after it. `copyText`'s fallback, which runs where the clipboard is missing or refuses, puts
-  // the focus in a temporary text box and removes it, which leaves the focus on the document
-  // (`focusOnDocument`); the focus then goes back to the last of those still on the page, the
+  // the focus in a temporary text box and gives it back to the element that had it once the box
+  // goes. Where that element had left the page before the fallback ran, the focus is left on the
+  // document (`focusOnDocument`); it then goes back to the last of those still on the page, the
   // button or wherever the reader moved it while the copy was out: right after `copy` returns,
   // where the fallback ran at once, and once `status` leaves `idle`, where it ran after the
   // clipboard refused. A press clears `status` first, so a copy that lands "Copied" while the
@@ -80,8 +89,10 @@ export function CopyButton({
     <>
       <button
         aria-disabled={copyOut || undefined}
+        aria-keyshortcuts={keyshortcutsOf(shortcutKeys)}
         aria-label={name}
         className={`inline-flex min-h-11 ${width} items-center rounded-lg md:min-h-8 ${shape} ${look} ${className ?? ""}`}
+        {...marks}
         onClick={(event) => {
           if (!tooltips && trail.current !== null) return;
           const text = typeof value === "string" ? value : value(event);
@@ -116,6 +127,7 @@ export function CopyButton({
             strokeWidth="1.5"
           />
         </svg>
+        <ControlKeyHint keys={shortcutKeys} />
       </button>
       {status === "idle" ? null : (
         <span

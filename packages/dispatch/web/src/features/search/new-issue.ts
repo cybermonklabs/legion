@@ -54,10 +54,11 @@ async function writeOnto<T>(
   what: string,
   label: string,
   method: WriteMethod,
-  write: Attempt<T>
+  write: Attempt<T>,
+  waitOn: (key: string) => void
 ): Promise<RefusedWrite | undefined> {
   try {
-    await press(writes, label, method, write);
+    await press(writes, label, method, write, waitOn);
     return undefined;
   } catch (error) {
     return { ...unconfirmedWrite(error, "the write did not reach Dispatch."), what };
@@ -77,17 +78,24 @@ async function writeOnto<T>(
  * issue and the row is still the way to make one.
  *
  * Answers `undefined` for a create Dispatch made and had no answer to give for: the issue is
- * made, and nothing here knows which one, so the rest is the person's to write on it.
+ * made, and nothing here knows which one, so the rest is the person's to write on it. Each write
+ * tells `waitOn` the key it goes out under as it is made (`press`).
  */
 export async function fileNewIssue(
   writes: Writes,
-  { project, settings, words }: NewIssueWrite
+  { project, settings, words }: NewIssueWrite,
+  waitOn: (key: string) => void
 ): Promise<FiledIssue | undefined> {
-  const issue = await press(writes, `New issue “${words}”`, "POST", (bounds) =>
-    api.createIssue(
-      { project, title: words, ...(settings.label === "" ? {} : { labels: [settings.label] }) },
-      bounds
-    )
+  const issue = await press(
+    writes,
+    `New issue “${words}”`,
+    "POST",
+    (bounds) =>
+      api.createIssue(
+        { project, title: words, ...(settings.label === "" ? {} : { labels: [settings.label] }) },
+        bounds
+      ),
+    waitOn
   );
   if (issue === null) {
     return undefined;
@@ -107,7 +115,8 @@ export async function fileNewIssue(
         { issue: issue.key },
         { content: firstCriterion(words), name: "verification.md" },
         bounds
-      )
+      ),
+    waitOn
   );
   if (criterion !== undefined || settings.session === "") {
     return filed(criterion);
@@ -118,7 +127,8 @@ export async function fileNewIssue(
     `its route to the session ${settings.session}`,
     `${issue.key} to ${settings.session}`,
     "PATCH",
-    (bounds) => api.patchIssue(issue.key, { route: target }, bounds)
+    (bounds) => api.patchIssue(issue.key, { route: target }, bounds),
+    waitOn
   );
   if (route !== undefined) {
     return filed(route);
@@ -129,7 +139,8 @@ export async function fileNewIssue(
       "its first message",
       `The first message on ${issue.key}`,
       "POST",
-      (bounds) => api.createMessage(issue.key, { body: words, delivery: "aside", target }, bounds)
+      (bounds) => api.createMessage(issue.key, { body: words, delivery: "aside", target }, bounds),
+      waitOn
     )
   );
 }

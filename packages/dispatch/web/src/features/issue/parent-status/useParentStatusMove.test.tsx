@@ -8,12 +8,16 @@ import type { ReactNode } from "react";
 import { MemoryRouter, type NavigateFunction, useNavigate } from "react-router-dom";
 
 import { realClock, settle, tick } from "../../../__tests__/fake-clock";
+import { heldNotDisabled } from "../../../__tests__/held-press";
 import { keyedAttempt } from "../../../__tests__/keyed-attempt";
 import { answerRequests } from "../../../__tests__/network";
-import { ApiError } from "../../../api/client";
+import { userOnFakeClock } from "../../../__tests__/user";
+import { ApiError, NetworkError } from "../../../api/client";
 import type { IssueDetails, StatusChangeAnswer, StatusChangeInput } from "../../../api/types";
 import { KeymapProvider } from "../../shell/KeymapProvider";
+import { MAX_BACKOFF_MS, SEND_DEADLINE_MS } from "../../writes/keyed-write";
 import { refusedNote } from "../../writes/useKeyedWrite";
+import { writesOf } from "../../writes/write-store";
 import { ParentStatusDialog } from "./ParentStatusDialog";
 import {
   answerStatusChanges,
@@ -132,7 +136,8 @@ function closeAcme4(patch = mock(() => {})): StatusMove & { patch: typeof patch 
 
 const pendingStatus = () => screen.getByRole("status", { name: "Pending status" });
 const question = () => screen.getByRole("dialog", { name: "Move ACME-4 to Done?" });
-const choice = (name: string) => within(question()).getByRole("button", { name });
+const choice = (name: string) =>
+  within(question()).getByRole<HTMLButtonElement>("button", { name });
 
 test("idle: a status picked for an issue with no parent and no open child sends the PATCH as today, and no dry run", async () => {
   const statusChanges = answerStatusChanges();
@@ -204,8 +209,9 @@ test("checking: the dry run answers 409 PARENT_STATUS_CONFLICT, and the dialog l
         .map((item) => item.textContent)
     ).toEqual(["ACME-5 Child in work (child, Todo)"]);
     // A listed child offers the children's two choices, and no parent's.
-    expect(choice("Move them with it")).toBeDisabled();
-    expect(choice("Unlink them")).toBeDisabled();
+    // Each choice is held (`aria-disabled`), never disabled, until its dry run answers.
+    expect(choice("Move them with it")).toHaveAttribute("aria-disabled", "true");
+    expect(choice("Unlink them")).toHaveAttribute("aria-disabled", "true");
     expect(
       within(question()).queryByRole("button", { name: "Move the parents into work too" })
     ).not.toBeInTheDocument();
@@ -243,7 +249,7 @@ test("checking: a 409 that names the parent offers to move the parents into work
     const dialog = screen.getByRole("dialog", { name: "Move ACME-2 to In progress?" });
     expect(
       within(dialog).getByRole("button", { name: "Move the parents into work too" })
-    ).toBeEnabled();
+    ).not.toHaveAttribute("aria-disabled");
     expect(
       within(dialog).queryByRole("button", { name: "Move them with it" })
     ).not.toBeInTheDocument();
@@ -456,7 +462,7 @@ test("asking: a choice's dry run answers, and the choice lists its changes and c
       "ACME-5: Done, under ACME-4",
       "ACME-4: Done, no parent",
     ]);
-    expect(choice("Move them with it")).toBeEnabled();
+    expect(choice("Move them with it")).not.toHaveAttribute("aria-disabled");
   } finally {
     surface.unmount();
   }
@@ -473,7 +479,7 @@ test("asking: a choice whose dry run is still out cannot be confirmed yet", asyn
   try {
     await surface.start(closeAcme4());
     const unlink = choice("Unlink them");
-    expect(unlink).toBeDisabled();
+    expect(unlink).toHaveAttribute("aria-disabled", "true");
     expect(within(question()).getByText("Checking what this changes…")).toBeInTheDocument();
     await user.click(unlink);
     expect(requests(statusChanges)).not.toContain("write of done with unlink_children");
@@ -645,9 +651,10 @@ test("asking: a choice confirmed sends the status change with that option", asyn
         keyedAttempt
       )
     );
-    // While it is out, nothing else of the question can be pressed.
-    expect(choice("Saving…")).toBeDisabled();
-    expect(choice("Cancel")).toBeDisabled();
+    // While it is out, nothing else of the question can be pressed: the choice pressed and Cancel
+    // are held (`aria-disabled`), never disabled, so the focus stays in the question.
+    expect(choice("Saving…")).toHaveAttribute("aria-disabled", "true");
+    expect(heldNotDisabled(choice("Cancel"), "Cancel")).toBe(true);
     expect(move.patch).not.toHaveBeenCalled();
   } finally {
     surface.unmount();
@@ -707,7 +714,7 @@ test("writing: answered 409 PARENT_STATUS_CONFLICT with what changed, the questi
         .getAllByRole("listitem")
         .map((item) => item.textContent)
     ).toEqual(["ACME-10 Filed between two steps (child, Triage)"]);
-    await waitFor(() => expect(choice("Move them with it")).toBeEnabled());
+    await waitFor(() => expect(choice("Move them with it")).not.toHaveAttribute("aria-disabled"));
     expect(requests(statusChanges)).toEqual([
       "dry run of done with no option",
       "dry run of done with include_children",
@@ -735,13 +742,194 @@ test("writing: answered another refusal, the question shows it, writes nothing m
     const { ended } = await surface.start(closeAcme4());
     await user.click(choice("Move them with it"));
     expect(await within(question()).findByRole("alert")).toHaveTextContent(refusal.message);
-    expect(choice("Move them with it")).toBeDisabled();
+    expect(choice("Move them with it")).toHaveAttribute("aria-disabled", "true");
     await user.click(choice("Move them with it"));
     expect(requests(statusChanges).filter((request) => request.startsWith("write"))).toEqual([
       "write of done with include_children",
     ]);
     await user.click(choice("Cancel"));
     expect(await ended).toEqual({ kind: "kept" });
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  } finally {
+    surface.unmount();
+  }
+});
+
+/** The question with Move them with it confirmed, its write never answered, and the clock past
+ *  that write's deadline: `table` answers the route, and the test may answer the write itself
+ *  through it since. A check that fails here puts the clock and the surface away. */
+async function pastTheChosenWritesDeadline(
+  table: Record<string, () => Promise<StatusChangeAnswer>>
+) {
+  const statusChanges = answerBy(table);
+  const surface = renderSurface();
+  try {
+    const { ended } = await surface.start(closeAcme4());
+    jest.useFakeTimers();
+    const user = userOnFakeClock();
+    await user.click(choice("Move them with it"));
+    await tick(SEND_DEADLINE_MS - 1_000);
+    expect(
+      writesOf(surface.client)
+        .rows()
+        .map((row) => row.status)
+    ).toEqual(["sending"]);
+    expect(
+      heldNotDisabled(choice("Cancel"), "Cancel"),
+      "Cancel, a second short of the deadline"
+    ).toBe(true);
+    await tick(1_000);
+    expect(
+      writesOf(surface.client)
+        .rows()
+        .map((row) => row.status)
+    ).toEqual(["late"]);
+    return { ended, statusChanges, surface, user };
+  } catch (error) {
+    realClock();
+    surface.unmount();
+    throw error;
+  }
+}
+
+/** The routes' answers of the question's cases past the chosen write's deadline: the chosen
+ *  write never answers, each try failing at the network and the next waiting out its backoff. */
+function withAnUnansweredChoice(): Record<string, () => Promise<StatusChangeAnswer>> {
+  return {
+    "dry run of done with no option": refuse(fixtureRefusal("conflict")),
+    "dry run of done with include_children": async () => fixtureAnswer("dry-run"),
+    "dry run of done with unlink_children": never,
+    "write of done with include_children": () =>
+      Promise.reject(
+        new NetworkError("/api/v1/issues/ACME-4/status-change", new TypeError("Failed to fetch"))
+      ),
+  };
+}
+
+// A chosen write that never answers holds Keep as it is and Cancel until its deadline, and no
+// longer: offline they would stay held for good. Past it each way out closes the question, while
+// the choices stay held, and the write goes on being tried under its key, as Pending changes shows.
+for (const [name, close] of closes) {
+  test(`writing: past the chosen write's deadline ${name} closes the question, and the write goes on being tried`, async () => {
+    const { ended, statusChanges, surface, user } = await pastTheChosenWritesDeadline(
+      withAnUnansweredChoice()
+    );
+    const tries = () => requests(statusChanges).filter((request) => request.startsWith("write"));
+    try {
+      expect(choice("Saving…"), "the choice, past the deadline").toHaveAttribute(
+        "aria-disabled",
+        "true"
+      );
+      expect(heldNotDisabled(choice("Cancel"), "Cancel"), "Cancel, past the deadline").toBe(false);
+      await close(user);
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+      expect(await ended).toMatchObject({ kind: "left" });
+      expect(pendingStatus()).toHaveTextContent("");
+
+      const before = tries().length;
+      await tick(MAX_BACKOFF_MS);
+      expect(
+        tries().length,
+        "no try of the write was made once the question closed"
+      ).toBeGreaterThan(before);
+      expect(
+        writesOf(surface.client)
+          .rows()
+          .map((row) => row.status)
+      ).toEqual(["late"]);
+    } finally {
+      realClock();
+      surface.unmount();
+    }
+  });
+}
+
+test("writing: a chosen write the question was left behind past its deadline reads the issues again as it lands, and opens nothing", async () => {
+  const answer = fixtureAnswer("changed");
+  const table = withAnUnansweredChoice();
+  const { ended, surface, user } = await pastTheChosenWritesDeadline(table);
+  const invalidated = spyOn(surface.client, "invalidateQueries");
+  try {
+    await user.click(choice("Keep as it is"));
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(await ended).toMatchObject({ kind: "left" });
+
+    table["write of done with include_children"] = async () => answer;
+    await tick(MAX_BACKOFF_MS);
+    expect(writesOf(surface.client).rows()).toEqual([]);
+    expect(invalidated.mock.calls.map(([filters]) => filters?.queryKey)).toEqual([
+      ["issue", "ACME-1"],
+      ["issue", "ACME-3"],
+      ["issue", "ACME-2"],
+      ["issues"],
+    ]);
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(pendingStatus()).toHaveTextContent("");
+  } finally {
+    invalidated.mockRestore();
+    realClock();
+    surface.unmount();
+  }
+});
+
+test("writing: a chosen write the question was left behind past its deadline that Dispatch then refuses is said as a refused dry run is", async () => {
+  const refusal = fixtureRefusal("browser-only");
+  const table = withAnUnansweredChoice();
+  const { ended, surface, user } = await pastTheChosenWritesDeadline(table);
+  try {
+    await user.click(choice("Keep as it is"));
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(await ended).toMatchObject({ kind: "left" });
+
+    table["write of done with include_children"] = refuse(refusal);
+    await tick(MAX_BACKOFF_MS);
+    expect(writesOf(surface.client).rows()).toEqual([]);
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      `Couldn't change the status of ACME-4 — ${refusal.message}`
+    );
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  } finally {
+    realClock();
+    surface.unmount();
+  }
+});
+
+// Escape, a press on the backdrop and a navigation close the question at any time: while the
+// chosen write is out within its deadline, the question is left behind it, and the write goes on
+// in the write store and lands there as it would have under the question.
+test("writing: Escape while the chosen write is out, short of its deadline, closes the question, and the write goes on and lands", async () => {
+  const answer = fixtureAnswer("changed");
+  const write = Promise.withResolvers<StatusChangeAnswer>();
+  answerBy({
+    "dry run of done with no option": refuse(fixtureRefusal("conflict")),
+    "dry run of done with include_children": async () => fixtureAnswer("dry-run"),
+    "dry run of done with unlink_children": never,
+    "write of done with include_children": () => write.promise,
+  });
+  const user = userEvent.setup();
+  const surface = renderSurface();
+  const statuses = () =>
+    writesOf(surface.client)
+      .rows()
+      .map((row) => row.status);
+  try {
+    const { ended } = await surface.start(closeAcme4());
+    await user.click(choice("Move them with it"));
+    await waitFor(() => expect(statuses()).toEqual(["sending"]));
+
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog"), "the question, after Escape").not.toBeInTheDocument();
+    expect(await ended).toMatchObject({ kind: "left" });
+    expect(pendingStatus()).toHaveTextContent("");
+    expect(statuses(), "the write, once the question closed").toEqual(["sending"]);
+
+    await act(async () => {
+      write.resolve(answer);
+      await settle();
+    });
+    const { written } = (await ended) as Extract<StatusMoveEnd, { kind: "left" }>;
+    expect(await written).toEqual(answer);
+    expect(statuses(), "the write, once it landed").toEqual([]);
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   } finally {
     surface.unmount();
@@ -760,7 +948,7 @@ test("idle: a PATCH answered 409 PARENT_STATUS_CONFLICT opens the question as a 
       await settle();
     });
     expect(within(question()).getByText("ACME-5")).toBeInTheDocument();
-    expect(choice("Move them with it")).toBeEnabled();
+    expect(choice("Move them with it")).not.toHaveAttribute("aria-disabled");
     expect(pendingStatus()).toHaveTextContent("done");
     expect(requests(statusChanges)).toEqual([
       "dry run of done with include_children",

@@ -16,12 +16,14 @@ import {
   useState,
 } from "react";
 
+import { heldField } from "../../components/held-press";
 import {
   inputClasses,
   textMutedOnSurface,
   textPrimaryOnSurface,
   textSecondaryOnSurface,
 } from "../../theme/classes";
+import { fitToText, refitOnNewWidth } from "../priorities/InPlaceField";
 import { draftParties } from "../refs/party-references";
 import { RefPickerList } from "../refs/RefPickerList";
 import {
@@ -90,6 +92,7 @@ export function MentionField({
   disabled = false,
   fieldClassName,
   fieldRef,
+  held = false,
   hintClassName,
   inline = false,
   issueKey,
@@ -109,6 +112,7 @@ export function MentionField({
   placeholder,
   project,
   readOnly = false,
+  replyBox = false,
   rows = 1,
   targets,
   writing,
@@ -138,13 +142,17 @@ export function MentionField({
   /** How the host reaches this field (`MentionFieldHandle`): a ref it holds, or, for a host
    *  with a field per row, a callback that files the handle under its row. */
   readonly fieldRef?: Ref<MentionFieldHandle | null>;
+  /** Held while a write that holds the form this box is part of is out: `aria-disabled` and
+   *  read-only (`heldField`), never disabled, so the box the reader submitted from keeps the
+   *  focus. The picker is shut with it. */
+  readonly held?: boolean;
   /** What this host's layout asks of the line under the box, in place of the field's own
    *  classes. A host whose box sits in a layout of its own places that line as it places the
    *  label; a panel held to a share of a phone's screen (the Agents broadcast composer) makes
    *  it the box's description there rather than a line of its own, which costs it none of that
    *  share and still reaches a reader who cannot see the box. */
   readonly hintClassName?: string;
-  /** A one-line field that grows with what is typed, as a reply's does. */
+  /** A one-line field that grows with the text it holds, as a reply's does. */
   readonly inline?: boolean;
   /** The issue this box writes on, where it has one: the picker offers that issue's people. A
    *  box with none offers everyone who has signed in (`DISPATCH_WRITING_BOXES`'s `issueRows`). */
@@ -192,10 +200,16 @@ export function MentionField({
   /** The project whose components the picker offers, where the box names one of its own; a box
    *  on an issue needs none, the issue's key holding it. */
   readonly project?: string;
-  /** Keeps its focus and its text but takes no typing: inside `NoTooltips`, a box whose write is
-   *  out, which `disabled` would drop the focus from in a browser. The picker is shut with it,
-   *  so a pick writes nothing into the box either. */
+  /** Keeps its focus and its text but takes no typing, and says so (`aria-readonly`): inside
+   *  `NoTooltips`, a box whose write is out, which `disabled` would drop the focus from in a
+   *  browser, or a box a host holds read only for a reason of its own, as a reply box beside a
+   *  kept draft's offer. The picker is shut with it, so a pick writes nothing into the box
+   *  either. */
   readonly readOnly?: boolean;
+  /** Whether this box is a reply box, which writes `data-reply-box` on the textarea: the handle
+   *  a page's reply key finds the box by to put the caret in it (`REPLY_BOX`, the Inbox's and
+   *  the Conversation tab's `r`). */
+  readonly replyBox?: boolean;
   /** How tall the box starts, in lines. */
   readonly rows?: number;
   /** How the list of who this box's write is delivered to names itself and each of them, where
@@ -231,7 +245,7 @@ export function MentionField({
   const picker = useRefPicker({
     caret,
     delivers: delivered,
-    enabled: !disabled && !readOnly && focused,
+    enabled: !disabled && !readOnly && !held && focused,
     issueKey,
     project,
     text: body,
@@ -321,6 +335,25 @@ export function MentionField({
       element.current = null;
     };
   }, []);
+  // An inline box is as tall as the text it holds, whoever changed that text: the reader's edit,
+  // and the host's own change, which fires no edit of the box - a pick put in, the text cleared
+  // after a send, a draft put back. So the box is fitted as each text is drawn, before it is
+  // painted, and only then: an edit fitted again as it is typed (`onInput`) would measure the
+  // same text at the same width a second time. A box in a host's look fits by its own rule below.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `body` is the trigger; the box is read as it stands
+  useLayoutEffect(() => {
+    const node = element.current;
+    if (!inline || look !== undefined || node === null) return;
+    fitToText(node);
+  }, [body, inline, look]);
+  // A width the box changes to - the window resized, or a composer's field that takes the whole
+  // line as it takes the focus below 761 px - wraps the text on more lines or fewer, so the box is
+  // made as tall as its text again, as a priority's heading box is (`refitOnNewWidth`).
+  useLayoutEffect(() => {
+    const node = element.current;
+    if (!inline || look !== undefined || node === null) return;
+    return refitOnNewWidth(node);
+  }, [inline, look]);
 
   // A box in a host's look grows with what is typed and shrinks back once a send or a discard
   // empties it, so it is measured whenever the draft changes, the host's own writes included,
@@ -358,9 +391,11 @@ export function MentionField({
       >
         {labelHidden ? null : label}
         <textarea
+          {...heldField(held)}
           aria-activedescendant={picker.activeId}
           aria-controls={open ? listboxId : undefined}
           aria-describedby={[hintId, ...(describedBy ?? [])].join(" ")}
+          aria-readonly={readOnly || undefined}
           aria-label={label}
           className={
             look === undefined
@@ -371,14 +406,6 @@ export function MentionField({
           maxLength={maxLength}
           onChange={(event) => changed(event.target.value, event.target.selectionStart)}
           onDrop={onDrop}
-          onInput={
-            inline && look === undefined
-              ? (event: SyntheticEvent<HTMLTextAreaElement>) => {
-                  event.currentTarget.style.height = "auto";
-                  event.currentTarget.style.height = `${event.currentTarget.scrollHeight}px`;
-                }
-              : undefined
-          }
           // The list closes with the box the reader leaves. A row of it keeps the focus here
           // while it is clicked (`RefPickerList` stops the mouse down), so a pick is no blur.
           onBlur={() => {
@@ -399,11 +426,12 @@ export function MentionField({
             setCaret(event.currentTarget.selectionStart)
           }
           placeholder={placeholder}
-          readOnly={readOnly}
+          readOnly={readOnly || held}
           ref={bodyFieldRef}
           rows={rows}
           value={body}
           {...(askAnswer ? { "data-ask-answer": "" } : {})}
+          {...(replyBox ? { "data-reply-box": "" } : {})}
         />
       </label>
       {parties.length === 0 ? null : (

@@ -1,4 +1,5 @@
 import type { InboxRow } from "../../api/types";
+import type { MenuDigit } from "../../components/MultiSelect";
 
 const HOUR_MS = 60 * 60 * 1000;
 
@@ -14,11 +15,13 @@ const RETURN_HOUR = 9;
  * row back. The server takes any future RFC3339 timestamp and stores one column, so an
  * indefinite snooze is this timestamp rather than a second, nullable shape to carry everywhere.
  */
-export const SNOOZE_INDEFINITE = "9999-12-31T00:00:00.000Z";
+const SNOOZE_INDEFINITE = "9999-12-31T00:00:00.000Z";
 
 const INDEFINITE_AT = Date.parse(SNOOZE_INDEFINITE);
 
-export interface SnoozePreset {
+interface SnoozePreset {
+  /** The digit that picks it while the list is open. */
+  readonly digit: MenuDigit;
   readonly id: string;
   readonly label: string;
   /** The moment to snooze until, as RFC3339, computed when the reader picks it. */
@@ -65,21 +68,45 @@ function laterToday(now: Date): string {
     : returnMorning(now, 1);
 }
 
-/** The Snooze menu, in the order it is offered. */
-export const SNOOZE_PRESETS: readonly SnoozePreset[] = [
+/** The Snooze list's presets, in the order it offers them, on `1` to `4`. */
+const SNOOZE_PRESETS: readonly SnoozePreset[] = [
+  { digit: "1", id: "later-today", label: "Later today", until: laterToday },
+  { digit: "2", id: "tomorrow", label: "Tomorrow", until: (now) => returnMorning(now, 1) },
   {
-    id: "later-today",
-    label: "Later today",
-    until: laterToday,
-  },
-  { id: "tomorrow", label: "Tomorrow", until: (now) => returnMorning(now, 1) },
-  {
+    digit: "3",
     id: "next-week",
     label: "Next week",
     until: (now) => returnMorning(now, daysToNextMonday(now)),
   },
-  { id: "indefinite", label: "Until I clear it", until: () => SNOOZE_INDEFINITE },
+  { digit: "4", id: "indefinite", label: "Until I clear it", until: () => SNOOZE_INDEFINITE },
 ];
+
+/** The Snooze list's choice that ends a snooze the row is in. */
+const UNSNOOZE = "unsnooze";
+
+/** One choice of the Snooze list: the value a pick hands back, its words, and the digit that
+ *  writes it at once while the list is open (`MultiSelect`'s `menu`). */
+export interface SnoozeChoice {
+  readonly digit: MenuDigit;
+  readonly label: string;
+  readonly value: string;
+}
+
+/** The Snooze list (`SnoozePick`): the presets in order on `1` to `4`, and on a row already
+ *  snoozed, Un-snooze on `0`. The selection bar's list snoozes only, so it asks for none. */
+export function snoozeChoices(snoozed: boolean): SnoozeChoice[] {
+  const presets = SNOOZE_PRESETS.map(({ digit, id, label }) => ({ digit, label, value: id }));
+  return snoozed ? [...presets, { digit: "0", label: "Un-snooze", value: UNSNOOZE }] : presets;
+}
+
+/** What a pick of the Snooze list writes, worked out as the reader picks it: the moment its
+ *  preset names, or null, the end of the snooze, for Un-snooze. */
+export function snoozeOf(choice: string, now: Date): string | null {
+  if (choice === UNSNOOZE) return null;
+  const preset = SNOOZE_PRESETS.find(({ id }) => id === choice);
+  if (preset === undefined) throw new Error(`The Snooze list has no choice ${choice}.`);
+  return preset.until(now);
+}
 
 /**
  * Whether the reader has deferred this row and its moment is still ahead. The window is

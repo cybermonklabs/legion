@@ -1,5 +1,7 @@
+import { keyText } from "../web/src/features/shell/key-text";
 import { type FakeSession, setLiveSessions, setSessionSendStatus } from "./agents";
 import { createIssue, createProject, listComments } from "./api";
+import { namesMac } from "./keyboard-palette";
 import { selectMention } from "./mention";
 import { expect, type Page, test } from "./test";
 import { asUser } from "./users";
@@ -132,7 +134,11 @@ test("/btw with nothing after it keeps an agent's direct composer from sending, 
     await card.getByRole("button", { exact: true, name: "worker" }).click();
     const field = card.getByRole("textbox", { name: "Comment" });
     const send = card.getByRole("button", { exact: true, name: "Send" });
-    const hint = card.getByText("Ctrl/Cmd+Enter to send · Enter for a new line", { exact: true });
+    // The hint names the page's `$mod`, `⌘` under a Mac's user agent and `Ctrl` elsewhere.
+    const hint = card.getByText(
+      `${keyText("$mod+Enter", await namesMac(page))} to send · Enter for a new line`,
+      { exact: true }
+    );
     const reason = card.getByText("Type the message after /btw.", { exact: true });
 
     // The box holds text, and the command strips to an empty message: Send refuses, and says why.

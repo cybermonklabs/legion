@@ -30,6 +30,9 @@ import {
 } from "../../api/client";
 import type { Agent, AskUrgency } from "../../api/types";
 import { Chip } from "../../components/Chip";
+import { focusIntoView } from "../../components/focus-place";
+import { heldPress } from "../../components/held-press";
+import { MOVING_KEYS, writesText } from "../../components/key-targets";
 import { QueryError } from "../../components/QueryError";
 import { RefusableButton } from "../../components/RefusableButton";
 import { submitOnModifiedEnter } from "../../hooks/submitOnModifiedEnter";
@@ -84,6 +87,7 @@ import { postDeletion } from "../refs/post-marks";
 import { isCompositionKey, type RefPickerWords } from "../refs/ref-picker";
 import { partyOfAddress } from "../refs/routes";
 import { textSourceOf } from "../refs/text-references";
+import { keyText } from "../shell/key-text";
 import {
   retriesUnderItsKey,
   SendExpiredError,
@@ -133,7 +137,7 @@ import {
 } from "./delivery";
 import { DraftPills, draftSource, useDraftPills } from "./draft-pills";
 import type { HeldSend } from "./held-sends";
-import { DraftOffer, KeptDraftOffers } from "./KeptDraftOffers";
+import { DraftOffer, handFocusOn, KeptDraftOffers } from "./KeptDraftOffers";
 import { type GoneReplyWords, type KeptReplyWords, keptAwayLine } from "./KeptReply";
 import { MentionField, type MentionFieldChange, type MentionFieldHandle } from "./MentionField";
 import { ReplyQuote } from "./ReplyQuote";
@@ -171,13 +175,14 @@ function oneOrMany(named: readonly unknown[]): "many" | "one" {
 }
 
 /** Whether Send takes the draft now: nothing refuses it (`draftRefusal`, the one rule for what an
- *  empty draft is) and no save or upload it waits on is in flight. */
+ *  empty draft is) and no save it waits on is in flight, nor an upload within its deadline
+ *  (`DraftUpload.holding`). */
 export function canSubmitComposer(
   refusal: string | undefined,
   isSaving: boolean,
-  pendingUploads: number
+  holdingUploads: number
 ): boolean {
-  return refusal === undefined && !isSaving && pendingUploads === 0;
+  return refusal === undefined && !isSaving && holdingUploads === 0;
 }
 
 /**
@@ -657,7 +662,8 @@ function OutlineRefusal({
   /** Omitted for a refusal a retry cannot get past; no Retry is drawn then. */
   readonly onRetry?: () => void;
   readonly retryLabel: string;
-  /** Holds Retry while the retried request is out. */
+  /** Holds Retry while the retried request is out (`heldPress`): it keeps the focus and its Tab
+   *  stop, and a press of it sends nothing then. */
   readonly retrying: boolean;
 }): ReactNode {
   return (
@@ -669,9 +675,8 @@ function OutlineRefusal({
       <p>{message}</p>
       {onRetry === undefined ? null : (
         <button
-          className={`font-medium underline disabled:cursor-not-allowed disabled:opacity-50 ${pageComposerControl}`}
-          disabled={retrying}
-          onClick={onRetry}
+          className={`font-medium underline refused:cursor-not-allowed refused:opacity-50 ${pageComposerControl}`}
+          {...heldPress(retrying, onRetry)}
           type="button"
         >
           {retryLabel}
@@ -717,6 +722,12 @@ interface MentionComposerProps {
    *  nothing of its own to show renders neither. */
   readonly frame?: string;
   readonly edit?: { readonly body: string; readonly id: string };
+  /** The box's reply is its own and nothing ends it - the Inbox thread's box, which stands for its
+   *  thread (`standing`) and whose host has no way back to give - so Escape in its field is the
+   *  page's: the composer neither takes the key nor ends the reply, and the page's keys take the
+   *  reader out of the box with the draft kept in it (the Inbox's `back` and `leave-reading`). An
+   *  open picker still takes the Escape that shuts it (`MentionField`). */
+  readonly escapeToPage?: boolean;
   /** Where the host hands this composer a draft the reader carried from another one with that
    *  composer's own control: the phone thread composer's Cancel reply, whose draft goes to the
    *  docked composer at the issue's own address (`usePhoneThread`'s `cancelReply`). */
@@ -749,7 +760,8 @@ interface MentionComposerProps {
   /** Ends the reply, handed the draft the field holds as the reader ends it. Cancel reply drops
    *  nothing itself: an inline reply's draft stays under its send name - typed, as a standing
    *  box's does, and refused or stopped, in its held send - so the reply composer that mounts
-   *  when the thread opens again shows it, and the host decides where the reader goes. */
+   *  when the thread opens again shows it, and the host decides where the reader goes. The caret
+   *  is in the field by then (`cancelReply`), so a host that keeps the composer leaves it there. */
   readonly onCancelReply?: (draft: SentDraft) => void;
   readonly onClose: () => void;
   readonly onSent: () => void;
@@ -787,8 +799,10 @@ interface MentionComposerProps {
    *  the reader types into a standing box and does not send is its thread's, kept under the
    *  box's send name (`unsent-drafts.ts`), so the box drawn when the column comes back to the
    *  thread shows it again, and a newer message the host moves the box onto leaves it in the
-   *  field rather than prefilling over it. Escape in its field leaves the draft there, since
-   *  nothing ends that reply. */
+   *  field rather than prefilling over it. Escape in its field ends the reply with the draft
+   *  kept where it is (`cancelReply`), which closes the Conversation tab's thread its Enter
+   *  opened (`ThreadCard`'s `endReply`), unless its host leaves the key to the page, as the
+   *  Inbox's does (`escapeToPage`). */
   readonly standing?: boolean;
   /** The send of this composer's that the reader stopped, waiting aside since its host gave the
    *  composer a newer address that carries nothing - the margin's compose at other words of the
@@ -803,6 +817,20 @@ interface MentionComposerProps {
   readonly onKindChange?: (kind: ComposerKind) => string | undefined;
 }
 
+/** Whether a key the send's hold stops (`stopHeldComposerKey`) is one the hold keeps from the
+ *  browser too, as one the composer or the page acts on or one that would type: Enter, with a
+ *  modifier or none; Escape; `$mod+K`, the page's search, which the hold keeps from the page's
+ *  keymap as it keeps every key it stops, so the browser's own search bar would take it; and
+ *  every key that writes text (`writesText`). Every other Ctrl/Cmd chord and every function key
+ *  stay the browser's, so find, copy, select all, reload, print and zoom still work while the
+ *  send is out. */
+function heldFromBrowser(event: KeyboardEvent): boolean {
+  const { key } = event;
+  if (key === "Enter" || key === "Escape") return true;
+  if (event.ctrlKey || event.metaKey) return key.toLowerCase() === "k";
+  return writesText(event);
+}
+
 export function MentionComposer({
   agentNames = "live",
   agents: suppliedAgents,
@@ -815,6 +843,7 @@ export function MentionComposer({
   finishing = false,
   frame,
   edit,
+  escapeToPage = false,
   seedMentions = [],
   inline = false,
   intake,
@@ -1085,11 +1114,23 @@ export function MentionComposer({
   /** How many times the reader has ended the reply here (Cancel reply, or Escape): a move of the
    *  address with the composer's own control, which the draft goes with (`ownMoves`). */
   const [cancels, setCancels] = useState(0);
+  /** Puts the caret in the field ahead of a press that takes the control holding the focus away
+   *  with what it ends - Cancel reply with the reply, a refusal's Discard draft with the refusal -
+   *  as the Discard of `Discard draft?` puts it back (`focusAskedField`): a composer that stays
+   *  keeps it there - an Agents row's, the Inbox's standing box, the Conversation's docked one
+   *  once the Reply that started its reply has gone - and a host that ends the composer or moves
+   *  the focus on moves it from there. */
+  const focusField = () => {
+    const element = field.current?.textarea() ?? null;
+    if (element !== null) focusIntoView(element);
+  };
   /** Ends the reply, handing the host the draft as the field holds it. The draft stays where it
    *  is kept - the field, the unsent draft under the send name, the held send - so nothing the
    *  reader wrote goes with no word: the host moves the reader, and an own move carries the
-   *  draft's send with it (`ownMoves`). */
+   *  draft's send with it (`ownMoves`). The reply's controls go with it, Cancel reply among them,
+   *  so the caret goes to the field first (`focusField`). */
   const cancelReply = () => {
+    focusField();
     keepNothing();
     setCancels((count) => count + 1);
     onCancelReply?.({ body, replacement });
@@ -1131,6 +1172,13 @@ export function MentionComposer({
   // re-bound each render for it.
   const closeOrAskNow = useRef(closeOrAsk);
   closeOrAskNow.current = closeOrAsk;
+  /** Back to the field the reader was writing in before `Discard draft?` (`closeOrAsk`), with no
+   *  scroll of the browser's own, which would centre a field not wholly in view: it is brought
+   *  into view only where the reader cannot see it whole (`focusIntoView`). */
+  const focusAskedField = () => {
+    const field = lastFocusedField.current;
+    if (field !== null) focusIntoView(field);
+  };
   /** Adds `texts` to the end of the field - the references of files that landed into the draft it
    *  shows (`useDraftHomes`) - where the reader did not type them, so their next edit is measured
    *  from here (`previousBody`). A pick is the field's own edit, which `onBodyChange` measures. */
@@ -1192,6 +1240,15 @@ export function MentionComposer({
     stoppedAside,
     unsent,
   });
+  // An edit or a draft waiting beside the field holds it read only (`KeptDraftOffers`) until the
+  // reader takes it in or drops it, and the field names that offer as its description
+  // (`heldId`), so a screen reader says why it takes no text. A key typed there writes nothing, so
+  // from that key on the offer says, after its own words, what the field waits for, until nothing
+  // waits there.
+  const heldByOffer = changed !== undefined || offered !== undefined;
+  const heldId = useId();
+  const [typedOver, setTypedOver] = useState(false);
+  if (typedOver && !heldByOffer) setTypedOver(false);
   // Closed to this kind or finishing, with no send out, no refusal to show and no draft offered
   // beside the field: nothing of this composer is on screen. A margin compose its closed issue
   // refuses stays while it offers a draft (`useMarginSheet`), and shows that draft until the
@@ -1201,6 +1258,8 @@ export function MentionComposer({
   useEffect(() => {
     const form = formRef.current;
     if (form === null || dormant) return;
+    // Each Escape the composer takes is marked taken beside what it does, so the rest of the page
+    // and the key registry pass over it (`shell/keymap.ts`).
     const handleEscape = (event: globalThis.KeyboardEvent) => {
       // A key that ends an IME composition is the input method's, not the composer's
       // (`isCompositionKey`): it closes nothing, cancels no reply and asks nothing, as
@@ -1217,8 +1276,11 @@ export function MentionComposer({
         endTargetNow.current();
         return;
       }
+      // A box whose reply nothing ends leaves the key to the page, whose keys take the reader out
+      // of the box with the draft kept in its field (`escapeToPage`).
+      if (escapeToPage) return;
+      event.preventDefault();
       if (replyTo !== null) {
-        event.preventDefault();
         cancelReplyNow.current();
         return;
       }
@@ -1230,6 +1292,7 @@ export function MentionComposer({
   }, [
     // A dormant composer renders no form; the one it renders when it wakes takes the listener.
     dormant,
+    escapeToPage,
     outlined,
     replyTo,
   ]);
@@ -1415,7 +1478,7 @@ export function MentionComposer({
       (offered === undefined ? undefined : "Use your draft or discard it before you send.") ??
       draftRefusal(kind, body, replacement, outbound, refusalWords));
   const footId = useId();
-  const canSubmit = canSubmitComposer(submitReason, sending, upload.pending);
+  const canSubmit = canSubmitComposer(submitReason, sending, upload.holding);
   // What the issue page's line says under it of why Send refuses, before any press, in the order
   // Send says it: a reply to a post deleted since, or a refusal written for an address the line
   // has moved from.
@@ -1446,9 +1509,9 @@ export function MentionComposer({
   };
   /** Sends the draft as it stands, its whole request frozen here (`sentRequest`), so nothing done
    *  after this call can change where it goes. Until the server answers, one fieldset holds every
-   *  control that could change or discard the draft; the held send covers that hold in this task
-   *  before React can disable the fieldset. From here on the held send keeps the draft, so the
-   *  unsent copy under the send name goes. */
+   *  control that could change or discard the draft (`stopHeldComposerInput`,
+   *  `stopHeldComposerKey`), from this task on, before React draws the fieldset held. From here
+   *  on the held send keeps the draft, so the unsent copy under the send name goes. */
   const send = () =>
     outgoing.send((refused) => {
       setConfirmingDiscard(false);
@@ -1456,13 +1519,27 @@ export function MentionComposer({
       forgetUnsent();
       return sentRequest(refused);
     });
-  /** The hold on the draft from Send's own task on, before React can disable the fieldset: the
-   *  fieldset's capture stops every key, click, input and change bound for a control in it - so
-   *  Escape raises no Discard prompt over a draft that is out. */
+  /** The hold on the draft from Send's own task on, before React draws the fieldset held: the
+   *  fieldset's capture stops every click, input, change, paste and drop bound for a control in
+   *  it - so no file goes into a draft that is out, and no press acts - and every key but the
+   *  ones that only move the focus or the caret (`stopHeldComposerKey`), so no key writes into the
+   *  box, Escape raises no Discard prompt and Ctrl+Enter sends nothing over a draft that is out.
+   *  A key it stops reaches no handler of the composer's, nor the page's keymap behind it. The
+   *  browser's own action for that key is cancelled only for a key the composer or the page acts
+   *  on, or one that would type (`heldFromBrowser`). While React shows the hold the fieldset is
+   *  `aria-disabled` and its fields read-only. It is never `disabled`: a browser takes the focus
+   *  off a control that becomes disabled under it, which would drop a keyboard reader who sent
+   *  from the box or from Send to the page's body. Tab goes through, so the hold keeps the
+   *  reader's place and never traps them in it. */
   const stopHeldComposerInput = (event: SyntheticEvent) => {
     if (!outgoing.sendingNow()) return;
     event.preventDefault();
     event.stopPropagation();
+  };
+  const stopHeldComposerKey = (event: KeyboardEvent) => {
+    if (MOVING_KEYS[event.key] === true || !outgoing.sendingNow()) return;
+    event.stopPropagation();
+    if (heldFromBrowser(event)) event.preventDefault();
   };
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -1576,14 +1653,25 @@ export function MentionComposer({
       role="alert"
     >
       <span>Discard draft?</span>
-      <button className="font-semibold underline" onClick={discard} type="button">
+      <button
+        className="font-semibold underline"
+        onClick={() => {
+          // Back to the field, as Keep gives it back (`focusAskedField`), and ahead of the host's
+          // `onClose`: the Discard that held the focus goes with the question, so a composer that
+          // stays - the Conversation's docked one - keeps the caret in its field, and a host whose
+          // `onClose` ends the composer or moves the focus moves it on from there.
+          focusAskedField();
+          discard();
+        }}
+        type="button"
+      >
         Discard
       </button>
       <button
         className="underline"
         onClick={() => {
           setConfirmingDiscard(false);
-          lastFocusedField.current?.focus();
+          focusAskedField();
         }}
         type="button"
       >
@@ -1597,8 +1685,10 @@ export function MentionComposer({
   const keptOffers = (
     <KeptDraftOffers
       changed={changed}
+      field={field}
       gone={goneAway}
       goneTakes={awayTakes}
+      heldId={heldId}
       kind={kind}
       offered={offered}
       onDiscardChanged={discard}
@@ -1607,6 +1697,7 @@ export function MentionComposer({
       onTakeChanged={takeChanged}
       onTakeGone={takeAway}
       onTakeOffered={refusedKind ? undefined : takeOffered}
+      typedOver={typedOver}
       words={
         answers === undefined
           ? undefined
@@ -1621,7 +1712,9 @@ export function MentionComposer({
   // with nothing of its own, Use it here, which puts it in the field as a comment on the issue.
   // It answers no reply, so the drafts named with a kept line (`keptAway`) hold it, and it is
   // taken out of them here. Each is keyed by its whole address (`awayKey`): two kept on one row -
-  // its words before a new version and after - are two drafts.
+  // its words before a new version and after - are two drafts. Either press takes its offer away,
+  // and the field takes the focus it leaves, as it takes one a kept reply's press leaves
+  // (`handFocusOn`).
   const statementLook = outline?.statements;
   const statementGone = (away: AwayDraft): boolean =>
     away.statement !== undefined && statementLook?.drawn(away.statement) === false;
@@ -1637,13 +1730,27 @@ export function MentionComposer({
       : goneStatements.map((away) => (
           <DraftOffer
             body={away.draft.body}
-            drop={{ label: statementLook.drop, press: () => dropAway(away) }}
+            drop={{
+              label: statementLook.drop,
+              press: () =>
+                handFocusOn(
+                  () => dropAway(away),
+                  () => field.current?.textarea() ?? null
+                ),
+            }}
             key={awayKey(away)}
             lead={awayTakes === "once empty" ? statementLook.goneWaits : statementLook.gone}
             replacement={away.draft.replacement}
             take={
               awayTakes === "here"
-                ? { label: statementLook.take, press: () => takeAway(away) }
+                ? {
+                    label: statementLook.take,
+                    press: () =>
+                      handFocusOn(
+                        () => takeAway(away),
+                        () => field.current?.textarea() ?? null
+                      ),
+                  }
                 : undefined
             }
           />
@@ -1837,7 +1944,16 @@ export function MentionComposer({
                   ? `text-sm font-medium underline ${pageFailedText} ${pageComposerControl}`
                   : `text-sm font-medium underline ${dangerText}`
               }
-              onClick={discard}
+              onClick={() => {
+                // The refusal's row goes with the refusal this drops, and with it this button
+                // and the focus it holds: the caret goes to the field first (`focusField`). A
+                // composer that goes `dormant` once the refusal has gone draws no field, and its
+                // host's `onClose` hands the focus on from there: the margin's compose to the
+                // words it was about (`closeComposer`), a decided suggestion's reply box to its
+                // card's preview or its thread's turn (`ThreadCard`'s `endReply`).
+                focusField();
+                discard();
+              }}
               // A press on the issue page's box leaves the focus where it is, as one on the
               // refusal beside it does (`keepFocusOnPress`).
               onMouseDown={outlined ? keepFocusOnPress : undefined}
@@ -1851,20 +1967,26 @@ export function MentionComposer({
     </>
   );
   // Send's busy word: the page's own in the issue page's look (`OutlineLook`), the composer's
-  // everywhere else.
+  // everywhere else. An upload holds Send only within its deadline (`DraftUpload.holding`).
   const sendBusy = sending
     ? (outline?.sending ?? "Sending…")
-    : upload.pending > 0
+    : upload.holding > 0
       ? (outline?.uploading ?? "Uploading file…")
       : undefined;
   // What both looks hand their held fieldset alike: the hold on every control of the draft while
-  // a send is out (`stopHeldComposerInput`).
+  // a send is out. The fieldset is held, never disabled: `aria-disabled` on it, each text field in
+  // it read-only (`MentionField`'s `held`) and each press refused by its capture
+  // (`stopHeldComposerInput`, `stopHeldComposerKey`). The browser takes the focus off a control
+  // that turns disabled, so a disabled fieldset would drop the reader who sent from the box or
+  // from Send onto the page.
   const heldFieldset = {
-    disabled: sending,
+    "aria-disabled": sending || undefined,
     onChangeCapture: stopHeldComposerInput,
     onClickCapture: stopHeldComposerInput,
+    onDropCapture: stopHeldComposerInput,
     onInputCapture: stopHeldComposerInput,
-    onKeyDownCapture: stopHeldComposerInput,
+    onKeyDownCapture: stopHeldComposerKey,
+    onPasteCapture: stopHeldComposerInput,
   };
   // The issue page's line reads each party its write is delivered to by its name, where its host
   // names the list (`OutlineNames.targets`): a role by its own name, and a session by its name as
@@ -1902,26 +2024,34 @@ export function MentionComposer({
       <div className={`${pageComposer.line} flex-wrap`}>
         <MentionField
           body={body}
+          describedBy={heldByOffer ? [heldId] : undefined}
           description={outline.names?.description}
           fieldRef={field}
+          held={sending}
           issueKey={pickerIssue}
           label={bodyLabel}
           labelHidden
           look={pageComposer.field}
           onChange={onBodyChange}
           onDrop={homes.drop}
-          onKeyDown={(event: KeyboardEvent<HTMLTextAreaElement>) =>
-            // A draft whose file is still uploading sends nothing.
+          onKeyDown={(event: KeyboardEvent<HTMLTextAreaElement>) => {
+            // A key typed while an offer holds the field read only writes nothing: the offer
+            // says why (`typedOver`).
+            if (heldByOffer && writesText(event)) setTypedOver(true);
+            // A draft whose file is still uploading within its deadline sends nothing
+            // (`DraftUpload.holding`).
             sendOnEnter(event, pickerOpen, () => {
-              if (upload.pending === 0) event.currentTarget.form?.requestSubmit();
-            })
-          }
+              if (upload.holding === 0) event.currentTarget.form?.requestSubmit();
+            });
+          }}
           onPaste={homes.paste}
           onPickerOpenChange={setPickerOpen}
           pickerWords={outline.picker}
           placeholder={outline.placeholder}
           project={pickerProject}
-          readOnly={changed !== undefined || offered !== undefined}
+          // Read only while an edit or a draft waits beside the field, which it names as its
+          // description then (`heldId`); a send that is out holds it as well (`held`).
+          readOnly={heldByOffer}
           targets={
             outline.names === undefined
               ? undefined
@@ -2026,8 +2156,9 @@ export function MentionComposer({
               reply: the control would do nothing there, and the draft stays in the field. */}
           {standing ? null : (
             <button
+              aria-disabled={sending || undefined}
               aria-label="Cancel reply"
-              className={`inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-lg text-lg leading-none disabled:cursor-not-allowed disabled:opacity-50 md:min-h-8 md:min-w-8 ${textMutedOnSurfaceMuted}`}
+              className={`inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-lg text-lg leading-none refused:cursor-not-allowed refused:opacity-50 md:min-h-8 md:min-w-8 ${textMutedOnSurfaceMuted}`}
               onClick={cancelReply}
               type="button"
             >
@@ -2079,23 +2210,34 @@ export function MentionComposer({
       {kind === "suggestion" ? (
         <MentionField
           body={replacement}
+          describedBy={offered === undefined ? undefined : [heldId]}
           fieldRef={replacementField}
+          held={sending}
           issueKey={pickerIssue}
           label="Replacement"
           onChange={(change) => {
             setReplacement(change.body);
             setConfirmingDiscard(false);
           }}
-          onKeyDown={submitOnModifiedEnter}
+          onKeyDown={(event: KeyboardEvent<HTMLTextAreaElement>) => {
+            // A key typed while the offer holds the field read only writes nothing: the offer
+            // says why (`typedOver`).
+            if (offered !== undefined && writesText(event)) setTypedOver(true);
+            submitOnModifiedEnter(event);
+          }}
           project={pickerProject}
+          // Read only while a draft is offered beside the field, which it names as its
+          // description then (`heldId`); a send that is out holds it as well (`held`).
           readOnly={offered !== undefined}
           writing={dispatchWritingBox("suggestion-replacement", "suggestion")}
         />
       ) : null}
       <MentionField
         body={body}
+        describedBy={heldByOffer ? [heldId] : undefined}
         fieldClassName={tones.field}
         fieldRef={field}
+        held={sending}
         hintClassName={tones.hint}
         inline={inline}
         issueKey={pickerIssue}
@@ -2104,13 +2246,20 @@ export function MentionComposer({
         labelHidden={compact}
         onChange={onBodyChange}
         onDrop={homes.drop}
-        onKeyDown={(event: KeyboardEvent<HTMLTextAreaElement>) =>
-          submitOnModifiedEnter(event, { disabled: upload.pending > 0 })
-        }
+        onKeyDown={(event: KeyboardEvent<HTMLTextAreaElement>) => {
+          // A key typed while an offer holds the field read only writes nothing: the offer says
+          // why (`typedOver`).
+          if (heldByOffer && writesText(event)) setTypedOver(true);
+          submitOnModifiedEnter(event, { disabled: upload.holding > 0 });
+        }}
         onPaste={homes.paste}
         onPickerOpenChange={setPickerOpen}
         project={pickerProject}
-        readOnly={changed !== undefined || offered !== undefined}
+        // Read only while an edit or a draft waits beside the field, which it names as its
+        // description then (`heldId`); a send that is out holds it as well (`held`).
+        readOnly={heldByOffer}
+        // The box a page's reply key hands the caret (the Inbox's `r`, `REPLY_BOX`).
+        replyBox
         writing={dispatchWritingBox(box, writes)}
       />
       {keptOffers}
@@ -2138,9 +2287,13 @@ export function MentionComposer({
           <label
             className={`flex items-center gap-2 text-sm font-medium ${textSecondaryOnSurface}`}
           >
+            {/* A held box is dimmed as the browser dims a disabled one. `aria-disabled:` reads the
+                send's hold alone: `refused:` also reads the native disable of the fieldset around
+                it while a draft is offered, where the browser dims the box already. */}
             <input
+              aria-disabled={sending || undefined}
               checked={multiple}
-              className={`size-4 rounded ${borderStrong} ${checkboxAccent} ${focusRing}`}
+              className={`size-4 rounded aria-disabled:opacity-50 ${borderStrong} ${checkboxAccent} ${focusRing}`}
               onChange={(event) => setMultiple(event.target.checked)}
               type="checkbox"
             />
@@ -2165,6 +2318,7 @@ export function MentionComposer({
                     fieldRef={(handle) => {
                       optionLabelFields.current[index] = handle;
                     }}
+                    held={sending}
                     inline
                     issueKey={pickerIssue}
                     label={`Option ${index + 1} label`}
@@ -2188,6 +2342,7 @@ export function MentionComposer({
                   />
                   <MentionField
                     body={option.description}
+                    held={sending}
                     inline
                     issueKey={pickerIssue}
                     label={`Option ${index + 1} description`}
@@ -2224,6 +2379,8 @@ export function MentionComposer({
         </>
       )}
       {sendState}
+      {/* An upload holds Send only within its deadline (`DraftUpload.holding`); past it the
+          status under the field still says it is uploading. */}
       <RefusableButton
         busy={sendBusy}
         refusal={submitReason ?? null}
@@ -2235,7 +2392,7 @@ export function MentionComposer({
       {/* While Send refuses, the line under it says why - on screen, for a reader with no
           pointer to hover it - and once the draft can go, how to send it. */}
       <p className={`text-xs ${textMutedOnSurfaceMuted}`} id={footId}>
-        {submitReason ?? "Ctrl/Cmd+Enter to send · Enter for a new line"}
+        {submitReason ?? `${keyText("$mod+Enter")} to send · Enter for a new line`}
       </p>
     </fieldset>
   );

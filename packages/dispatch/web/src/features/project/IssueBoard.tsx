@@ -12,16 +12,23 @@ import {
 } from "@dnd-kit/core";
 import { SortableContext, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import type { CSSProperties, ReactNode } from "react";
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { CSSProperties, ReactNode, RefObject } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 
 import { projectIssuesQuery, userStateQuery } from "../../api/queries";
 import type { IssueSummary, UserState } from "../../api/types";
 import { AttentionBadge } from "../../components/Badge";
+import { Chip } from "../../components/Chip";
+import { ControlRow } from "../../components/ControlRow";
 import { EmptyState } from "../../components/EmptyState";
+import { filterChips } from "../../components/filter-chips";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
+import { MultiSelect } from "../../components/MultiSelect";
+import { PanelTrigger } from "../../components/PanelTrigger";
 import { LabelPill, Pill, StatusPill } from "../../components/Pill";
+import { SearchBox } from "../../components/SearchBox";
+import { useNestedPanels } from "../../components/useNestedPanels";
 import { copyText } from "../../lib/clipboard";
 import {
   borderDefault,
@@ -39,14 +46,18 @@ import {
 } from "../../theme/classes";
 import { ClaimChip } from "../issue/ClaimChip";
 import { issuePriority } from "../issue/issue-priority";
-import { PriorityControl } from "../issue/PriorityControl";
+import { PRIORITY_TRIGGER_SELECTOR, PriorityControl } from "../issue/PriorityControl";
 import { ProgressChips } from "../issue/ProgressChips";
 import { ParentStatusDialog } from "../issue/parent-status/ParentStatusDialog";
 import { UnreachableRouteMarker } from "../issue/RouteReach";
 import { closeRefPreview, referenceTriggerProps } from "../refs/RefPreview";
 import { buildDispatchReference, buildIssuePath } from "../refs/routes";
+import { keyText, listed } from "../shell/key-text";
 import { useKeymap, useKeymapScope } from "../shell/keymap";
-import { closestMatching } from "../shell/roving";
+import { useActionKeys } from "../shell/keymap-keys";
+import { openLinkInNewTab } from "../shell/new-tab";
+import { closestMatching, focusOnDocument } from "../shell/roving";
+import { useUserPreference } from "../shell/userPreference";
 import {
   announceMove,
   type BoardFocus,
@@ -72,6 +83,7 @@ import {
 } from "./board-model";
 import { useBoardMoves } from "./board-moves";
 import { CollapsedColumn } from "./CollapsedColumn";
+import { IssueFlagChips, UnclaimedUnchecked } from "./IssueFlags";
 import { projectIssuesQueryKey, useIssueFilters } from "./issue-filters";
 import { issueIsUnread, UnreadDot } from "./UnreadDot";
 
@@ -85,6 +97,8 @@ const CARD_SELECTOR = "[data-board-card]";
  *  agent), so "the first link" is not the issue's. */
 const ISSUE_LINK = "[data-issue-link]";
 const COLUMN_SELECTOR = "[data-board-column]";
+/** A card's priority trigger, where the card draws it unheld: `p` presses it. */
+const CARD_PRIORITY = `${PRIORITY_TRIGGER_SELECTOR}:not([aria-disabled="true"])`;
 
 /** The focus ring every board focus target draws: cards, columns and rails alike. */
 const boardFocusRing = `outline-none focus-visible:ring-2 ${focusVisibleRing}`;
@@ -95,6 +109,28 @@ function cardAround(node: Element | null): HTMLElement | null {
 
 function columnAround(node: Element | null): HTMLElement | null {
   return closestMatching(node, COLUMN_SELECTOR);
+}
+
+/** What a screen reader hears of a draggable card: the keys that move the focused card, read
+ *  `Shift with J, K, H or L` (`⇧ with J, K, H or L` on a Mac) while each is Shift and a letter, as
+ *  they are by default, else each as the platform draws it (`keyText`), and the key of the
+ *  shortcut help. Both are the person's keys (`useActionKeys`). */
+function dragInstructions(
+  moveKeys: readonly (string | undefined)[],
+  helpKey: string | undefined
+): string {
+  const keys = moveKeys.filter((key): key is string => key !== undefined);
+  const shifted = keys.every((key) => /^Shift\+[A-Za-z]$/.test(key));
+  const named = shifted
+    ? keys.map((key) => key.slice("Shift+".length).toUpperCase())
+    : keys.map((key) => keyText(key));
+  const move =
+    keys.length === 0
+      ? "Focus a card"
+      : `Focus a card and press ${shifted ? `${keyText("Shift")} with ` : ""}${listed(named, "or")} to move it`;
+  return helpKey === undefined
+    ? `${move}.`
+    : `${move}; press ${keyText(helpKey)} for every shortcut.`;
 }
 
 /**
@@ -279,9 +315,13 @@ const BoardLaneRow = memo(function BoardLaneRow({
         {laneLabel(boardLane.lane)}
         <Pill>{count}</Pill>
       </h2>
+      {/* No Tab stop of its own, which Firefox gives a box that scrolls, with no name, and every
+          engine where a lane holds no card: `h`/`l` and `j`/`k` rove the focus over its columns,
+          rails and cards, which brings each into view (`IssueBoard`'s registry rows). */}
       <div
         className={`overflow-x-auto pb-3 ${dragging ? "" : "snap-x snap-mandatory"}`}
         data-testid="board-lane-scroll-container"
+        tabIndex={-1}
       >
         <div className="flex w-max items-stretch gap-4">
           {boardLane.columns.map((column) =>
@@ -302,6 +342,25 @@ const BoardLaneRow = memo(function BoardLaneRow({
   );
 });
 
+/**
+ * Draws nothing. While the rule's question is open, `tookFocusFrom` holds the element the question
+ * took the focus from as it opened, which the question gives the focus back to as it closes
+ * (`useDialog`). Once the question has closed, it holds `null`. The board draws this just before
+ * the question, in one fragment with it. A commit runs the layout effects of siblings in their
+ * order, so this effect reads the focus before the question's own effect takes it. A development
+ * build's StrictMode runs the effects of a new subtree a second time, the whole fragment at once:
+ * the question has given the focus back by then, so the second read finds the same element.
+ */
+function QuestionOpening({ tookFocusFrom }: { tookFocusFrom: RefObject<Element | null> }): null {
+  useLayoutEffect(() => {
+    tookFocusFrom.current = document.activeElement;
+    return () => {
+      tookFocusFrom.current = null;
+    };
+  }, [tookFocusFrom]);
+  return null;
+}
+
 export function IssueBoard({
   project,
   showEdges = false,
@@ -316,7 +375,8 @@ export function IssueBoard({
   lanes?: boolean;
 }): ReactNode {
   const queryClient = useQueryClient();
-  const { labels, matches } = useIssueFilters();
+  const filters = useIssueFilters();
+  const { activeFilterCount, activeFilters, labels, matches, setLabels } = filters;
   // The same query-key pair the List keeps: the plain project list, or the server-filtered
   // list while labels are active - shared keys, shared caches.
   const queryKey = projectIssuesQueryKey(project, labels);
@@ -327,7 +387,48 @@ export function IssueBoard({
   });
   const issues = labels.length === 0 ? allIssues : labelledIssues;
   const userState = useQuery(userStateQuery());
-  /** The strip's client-side filters against this viewer's read state: what the board renders,
+  const availableLabels = useMemo(
+    () =>
+      [...new Set((allIssues.data ?? []).flatMap((issue) => issue.labels ?? []))].sort(
+        (left, right) => left.localeCompare(right)
+      ),
+    [allIssues.data]
+  );
+  const noIdentityFiltersExpanded = labels.length > 0;
+  // The saved preference is the only owner of the panel's open state: the Board reads it when it
+  // mounts and when the signed-in identity resolves, never because the filter count moved.
+  // Arriving from another page, tab or project mounts a new board, so that read covers the
+  // filters the route brings. On a board that is up the count moves when the reader filters in
+  // it, and when Back or Forward crosses entries of the Issues tab. A re-read would close the
+  // panel the moment the last filter goes (clearing the search box), taking the control being
+  // typed in with it, or open or close it against the reader's choice on the others, while its
+  // trigger and chips already show every filter. So it stays as they left it until they close it
+  // or leave the project or its Issues tab.
+  const [filtersExpanded, setFiltersExpanded] = useUserPreference(
+    "project.issue-filters",
+    (stored) => activeFilterCount > 0 && stored !== "collapsed",
+    (open) => (open ? "expanded" : "collapsed"),
+    { failed: noIdentityFiltersExpanded, pending: noIdentityFiltersExpanded }
+  );
+  const filterPanel = useNestedPanels<"labels">(filtersExpanded);
+  // Whether the panel stands open because the reader pressed it open. A panel the stored choice
+  // opens - as the Board mounts, or as the signed-in identity resolves - moves no focus into
+  // itself, so the focus starts where the page starts and the reader is not put in a panel they
+  // did not open.
+  const [pressedOpen, setPressedOpen] = useState(false);
+  /** The reader's own open or close of the panel - the trigger's press either way, Escape, Tab
+   *  past either end, a press outside it that closes it - which is the one thing that writes the
+   *  stored choice, and only when it changes what the panel shows. A press while the panel is
+   *  shut, a chip's removal while it is shut or from the keyboard beside a panel the stored
+   *  choice opened, and the choice read again on a new identity write nothing. A pointer press on
+   *  a chip while the panel is open is a press outside it - the chips sit in the control row, and
+   *  the panel is portalled over the page - so it closes the panel and writes that close, as any
+   *  press outside it does. */
+  const openFilterPanel = (open: boolean) => {
+    setPressedOpen(open);
+    if (open !== filtersExpanded) setFiltersExpanded(open);
+  };
+  /** The control row's client-side filters against this viewer's read state: what the board renders,
    *  what drop indices count, and what the PATCH names as neighbours. */
   const isVisible = useCallback(
     (issue: IssueSummary) => matches(issue, userState.data?.[issue.key]?.last_read_seq ?? 0),
@@ -437,16 +538,37 @@ export function IssueBoard({
   // One `aria-live` sentence per keyboard move; `focusAfterMove` names the card focus follows
   // once the optimistic list has rendered (a status move remounts the article under its new
   // column, so the old node cannot keep focus; a card moved into a rail has no node, and focus
-  // lands on the rail). A move sets it only once it has placed the card (its `onPlaced`), so a
-  // move that ends without placing it takes no focus later. The effect runs on the
-  // `columns`/`boardLanes` render - the announcement's own render comes first, before the query
-  // observer has notified, and would focus the doomed node.
+  // lands on the rail). A move sets it only once it has placed the card (its `onPlaced`), and only
+  // while the focus then stands in the card the press moved (`pressed`): on the card itself, or on
+  // a control inside it, such as the card's link that a Tab reaches while the move's dry run is
+  // out. The move draws the card in its new column, which takes that control away with the card,
+  // so the focus goes with the card. A move sets it too where the rule's question took the focus
+  // from that card or from a control inside it (`questionTookFocusFrom`). The question's choice
+  // places the card, and the question gives the focus back where it took it from as it closes
+  // (`useDialog`). The plan's `from` is the element the focus stood on in that card, or the one
+  // the question took it from. Another dialog gives a move no focus, and nor does a question that
+  // took the focus from the body or from another control. The move reads this as it places the
+  // card, before the board draws the card in its new place and so takes the focus off that card.
+  // So a move that ends without placing the card takes no focus later, and nor does a move the
+  // rule's dry run checks first, placed once the dry run answers, where the reader has moved the
+  // focus out of the card by then - a key to another card, a Tab out of the card, a click, a
+  // click on a blank spot that leaves the focus on the body too. A move that takes no focus
+  // leaves the plan of an earlier move as it is: the effect checks that plan against its own
+  // press. The effect runs on the `columns`/`boardLanes` render - the announcement's own render
+  // comes first, before the query observer has notified, and would focus the doomed node. It
+  // moves the focus only while the focus still stands on the plan's `from`, or on the body where
+  // that element's going with the card left it, or where the question's hand-back left it once
+  // that element had gone.
   const [announcement, setAnnouncement] = useState("");
   const focusAfterMove = useRef<{
     key: string;
     status: IssueStatus;
     laneId: string | null;
+    from: Element | null;
   } | null>(null);
+  /** The element the rule's question took the focus from as it opened, while the question is
+   *  open, else `null` (`QuestionOpening`). */
+  const questionTookFocusFrom = useRef<Element | null>(null);
   const boardNode = (selector: string) => boardRef.current?.querySelector<HTMLElement>(selector);
   /** The `data-board-column` selector for `status`, scoped to `laneId` (`null` outside a
    *  swimlane). */
@@ -461,6 +583,9 @@ export function IssueBoard({
       return;
     }
     focusAfterMove.current = null;
+    const { from } = pending;
+    const stands = document.activeElement === from || (!from?.isConnected && focusOnDocument());
+    if (!stands) return;
     (
       boardNode(`[data-board-card="${pending.key}"]`) ??
       boardNode(laneColumnSelector(pending.status, pending.laneId))
@@ -514,8 +639,10 @@ export function IssueBoard({
     )?.focus();
   };
   const move = (direction: MoveDirection) => {
-    const key = cardAround(document.activeElement)?.dataset.boardCard;
-    if (key === undefined) {
+    // The card the press moves: the focus stands on it, or on a control inside it.
+    const pressed = cardAround(document.activeElement);
+    const key = pressed?.dataset.boardCard;
+    if (pressed === null || key === undefined) {
       return;
     }
     const laneId = currentLaneId();
@@ -532,8 +659,9 @@ export function IssueBoard({
     // the card (kept, cancelled or refused) says nothing and takes no focus.
     const lane: PriorityLane | undefined = laneId === null ? undefined : laneFromKey(laneId);
     /** Says where the card stands now - its position and count in the visible cell, the one the
-     *  user sees, or nothing while it is not in that cell - and has focus follow it once the
-     *  board has drawn it there (`focusAfterMove`). */
+     *  user sees, or nothing while it is not in that cell - and, while the focus stands in the
+     *  card the press moved, has focus follow the card once the board has drawn it there
+     *  (`focusAfterMove`). */
     const placed = () => {
       const column = (queryClient.getQueryData<IssueSummary[]>(queryKey) ?? []).filter(
         (issue) =>
@@ -545,7 +673,15 @@ export function IssueBoard({
       if (position !== -1) {
         setAnnouncement(announceMove(key, target.status, position + 1, column.length));
       }
-      focusAfterMove.current = { key, status: target.status, laneId };
+      // Read now, before the query observer notifies the board: the draw that follows takes the
+      // focus off the press's card, so after it a focus on the body cannot tell that draw from a
+      // reader's click. A choice of the question places the card while the question is still
+      // open, so `questionTookFocusFrom` still holds what the question took the focus from.
+      const active = document.activeElement;
+      const stood = pressed.contains(active) ? active : questionTookFocusFrom.current;
+      if (pressed.contains(stood)) {
+        focusAfterMove.current = { from: stood, key, laneId, status: target.status };
+      }
     };
     if (lanes && lane !== undefined) {
       void moveCardToLane(key, target.status, lane, target.insertionIndex, placed);
@@ -570,62 +706,26 @@ export function IssueBoard({
   useKeymapScope("board");
   useKeymap("board", [
     // Movement is what the arrow keys are for; a palette row that moves the cursor helps nobody.
-    { id: "next", keys: "j", label: "Next card", palette: false, run: () => rove("j") },
-    { id: "previous", keys: "k", label: "Previous card", palette: false, run: () => rove("k") },
-    { id: "column", keys: "l", label: "Next column", palette: false, run: () => rove("l") },
+    { action: "board.next", run: () => rove("j") },
+    { action: "board.previous", run: () => rove("k") },
+    { action: "board.column", run: () => rove("l") },
+    { action: "board.previous-column", run: () => rove("h") },
     {
-      id: "previous-column",
-      keys: "h",
-      label: "Previous column",
-      palette: false,
-      run: () => rove("h"),
-    },
-    {
-      id: "arrows-vertical",
-      keys: ["ArrowDown", "ArrowUp"],
-      label: "Next / previous card while one is focused",
+      action: "board.arrows-vertical",
       run: (event) => rove(event.key === "ArrowDown" ? "j" : "k"),
       when: focusedBoardNode,
     },
     {
-      id: "arrows-horizontal",
-      keys: ["ArrowRight", "ArrowLeft"],
-      label: "Next / previous column while one is focused",
+      action: "board.arrows-horizontal",
       run: (event) => rove(event.key === "ArrowRight" ? "l" : "h"),
       when: focusedBoardNode,
     },
+    { action: "board.move-down", run: () => move("down"), when: focusedCard },
+    { action: "board.move-up", run: () => move("up"), when: focusedCard },
+    { action: "board.move-next", run: () => move("next"), when: focusedCard },
+    { action: "board.move-previous", run: () => move("prev"), when: focusedCard },
     {
-      id: "move-down",
-      keys: "Shift+J",
-      label: "Move card down",
-      run: () => move("down"),
-      when: focusedCard,
-    },
-    {
-      id: "move-up",
-      keys: "Shift+K",
-      label: "Move card up",
-      run: () => move("up"),
-      when: focusedCard,
-    },
-    {
-      id: "move-next",
-      keys: "Shift+L",
-      label: "Move card to the next status",
-      run: () => move("next"),
-      when: focusedCard,
-    },
-    {
-      id: "move-previous",
-      keys: "Shift+H",
-      label: "Move card to the previous status",
-      run: () => move("prev"),
-      when: focusedCard,
-    },
-    {
-      id: "open",
-      keys: "o",
-      label: "Open issue",
+      action: "board.open",
       run: () =>
         cardAround(document.activeElement)?.querySelector<HTMLElement>(ISSUE_LINK)?.click(),
       when: focusedCard,
@@ -633,40 +733,30 @@ export function IssueBoard({
     {
       // Only from the card itself: Enter on the title link is the browser's own navigation. Out of
       // the palette, where `open` above is already the row for the same action.
-      id: "open-enter",
-      keys: "Enter",
-      label: "Open the focused card's issue",
-      palette: false,
+      action: "board.open-enter",
       run: () =>
         cardAround(document.activeElement)?.querySelector<HTMLElement>(ISSUE_LINK)?.click(),
       when: () => document.activeElement?.matches(CARD_SELECTOR) === true,
     },
     {
-      id: "priority",
-      keys: "p",
-      label: "Focus the card's priority",
-      run: () => cardAround(document.activeElement)?.querySelector("select")?.focus(),
+      // R20: `o` in a new tab, from the card itself or a control of it; this page stays.
+      action: "board.open-new-tab",
+      run: () =>
+        openLinkInNewTab(cardAround(document.activeElement)?.querySelector(ISSUE_LINK) ?? null),
       when: focusedCard,
     },
     {
-      id: "copy-ref",
-      keys: "y",
-      label: "Copy the card's issue reference",
-      run: () => copyFocusedCard("reference"),
-      when: focusedCard,
+      // A card in Done holds its priority (`aria-disabled`), so the key is offered on the cards
+      // whose list would open.
+      action: "board.priority",
+      run: () =>
+        cardAround(document.activeElement)?.querySelector<HTMLElement>(CARD_PRIORITY)?.click(),
+      when: () => cardAround(document.activeElement)?.querySelector(CARD_PRIORITY) != null,
     },
+    { action: "board.copy-ref", run: () => copyFocusedCard("reference"), when: focusedCard },
+    { action: "board.copy-key", run: () => copyFocusedCard("key"), when: focusedCard },
     {
-      id: "copy-key",
-      keys: "Shift+Y",
-      label: "Copy the card's issue key",
-      run: () => copyFocusedCard("key"),
-      when: focusedCard,
-    },
-    {
-      id: "back",
-      inEditable: true,
-      keys: "Escape",
-      label: "Back to the card, then out",
+      action: "board.back",
       run: () => {
         const active = document.activeElement;
         const card = cardAround(active);
@@ -681,10 +771,81 @@ export function IssueBoard({
         columnAround(document.activeElement) === document.activeElement,
     },
   ]);
+  const instructions = dragInstructions(
+    [
+      useActionKeys("board.move-down")[0],
+      useActionKeys("board.move-up")[0],
+      useActionKeys("board.move-previous")[0],
+      useActionKeys("board.move-next")[0],
+    ],
+    useActionKeys("global.help")[0]
+  );
+  // One row holds the Board's search and filtering, above whatever the board itself is showing
+  // - its cards, the skeleton or a refusal - so a reader who has narrowed the list keeps the
+  // controls that did it. Nothing they can press here makes the header taller:
+  // the filter panel is portalled over the page (`AnchoredPanel`), and the chips are the one
+  // part of the row that may take a second line.
+  const controls = (
+    <>
+      <ControlRow
+        chips={filterChips(activeFilters)}
+        className="mb-4"
+        keyScope="board"
+        search={
+          <SearchBox
+            className="w-full"
+            label="Search issues"
+            onChange={filters.setSearch}
+            placeholder="Issue key or title"
+            value={filters.search}
+          />
+        }
+        trigger={
+          <PanelTrigger
+            count={activeFilterCount}
+            focusOnOpen={pressedOpen}
+            label="Filters"
+            onOpenChange={openFilterPanel}
+            open={filtersExpanded}
+            stacked
+          >
+            {() => (
+              <>
+                <MultiSelect
+                  {...filterPanel("labels")}
+                  emptyMessage="No labels yet."
+                  label="Labels"
+                  onChange={setLabels}
+                  options={availableLabels}
+                  searchLabel="Search labels"
+                  selected={labels}
+                />
+                <IssueFlagChips />
+                <Chip
+                  onClick={() => filters.setUnclaimed(!filters.unclaimed)}
+                  selected={filters.unclaimed}
+                >
+                  Unclaimed
+                </Chip>
+              </>
+            )}
+          </PanelTrigger>
+        }
+      />
+      <UnclaimedUnchecked reason={filters.unclaimedUnchecked} />
+    </>
+  );
   // The question belongs to the board's moves (`useBoardMoves`), not to the list: it is drawn
   // whatever the list read shows, so a read that fails while it is open leaves it to be answered,
-  // and its answer ends the move that holds every later read of the list.
-  const questionDialog = question === undefined ? null : <ParentStatusDialog question={question} />;
+  // and its answer ends the move that holds every later read of the list. `QuestionOpening` comes
+  // first, so it reads what the question takes the focus from (`focusAfterMove`).
+  const questionDialog =
+    question === undefined ? null : (
+      <>
+        <QuestionOpening tookFocusFrom={questionTookFocusFrom} />
+        <ParentStatusDialog question={question} />
+      </>
+    );
   const body = issues.isPending ? (
     <LoadingSkeleton label="Loading board" />
   ) : issues.isError ? (
@@ -715,8 +876,7 @@ export function IssueBoard({
         <DndContext
           accessibility={{
             screenReaderInstructions: {
-              draggable:
-                "Focus a card and press Shift with J, K, H or L to move it; press ? for every shortcut.",
+              draggable: instructions,
             },
           }}
           collisionDetection={boardCollisionDetection}
@@ -738,9 +898,11 @@ export function IssueBoard({
               ))}
             </div>
           ) : (
+            // No Tab stop of its own, as a lane's row has none (`BoardLaneRow`).
             <div
               className={`overflow-x-auto pb-3 ${dragging ? "" : "snap-x snap-mandatory"}`}
               data-testid="board-scroll-container"
+              tabIndex={-1}
             >
               <div className="flex w-max items-stretch gap-4">
                 {columns.map((column) =>
@@ -764,6 +926,7 @@ export function IssueBoard({
   return (
     <>
       {questionDialog}
+      {controls}
       {body}
     </>
   );

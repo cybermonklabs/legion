@@ -58,11 +58,11 @@ decides it.
 ## 4. Approve it
 
 The request is at the top of alice's Inbox, under **Credential requests**, and counts toward
-**Needs you** beside the sidebar's Inbox. The row is a link to the request's page on the secrets
+the number beside the sidebar's Inbox. The row is a link to the request's page on the secrets
 broker. The stills in this step come from Dispatch's browser test harness, whose request is a pod's
 request for alice's secret `ALICE_DEPLOY_KEY`; the page is the same for any request.
 
-![The Inbox, with a secret request for ALICE_DEPLOY_KEY under Credential requests, Needs you 1 beside Inbox in the sidebar, and Blocked on you: 1 item](/legion/media/broker/inbox-credential-request.png)
+![The Inbox, with a secret request for ALICE_DEPLOY_KEY under Credential requests, the count 1 beside Inbox in the sidebar, and Blocked on you · 1 in the Inbox's row of controls, between Filter and View](/legion/media/broker/inbox-credential-request.png)
 
 The link opens the request's page on the broker. The browser in the video holds no broker session
 yet, so the link passes through the broker's sign-in, which signs alice in and brings her to the

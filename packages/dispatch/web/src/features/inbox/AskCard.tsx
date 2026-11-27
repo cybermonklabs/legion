@@ -41,10 +41,11 @@ import { composerFirst } from "../threads/thread-layout";
 import { useThreadOrder } from "../threads/thread-order";
 import { askRepliesOwner, useMarkThreadRead } from "../threads/useMarkThreadRead";
 import { AskRecipients } from "./AskRecipients";
-import { AskThread } from "./AskThread";
+import { AskThread, takesReply } from "./AskThread";
 import { AskThreadDisclosure } from "./AskThreadDisclosure";
 import type { OwnedAsk } from "./ask-name";
 import { askUrgency } from "./ask-urgency";
+import { inboxActionMark } from "./inbox-action-mark";
 import { useAskAnswerForm } from "./useAskAnswerForm";
 
 export interface AskCardProps {
@@ -243,6 +244,7 @@ export function AskCard({
           controls={referencesPanelId}
           count={referencedByCount}
           expanded={referencesOpen}
+          marks={inboxActionMark("inbox.referenced-by")}
           onToggle={() => setReferencesOpen((open) => !open)}
         />
         {referencesOpen ? (
@@ -288,21 +290,33 @@ export function AskCard({
       <div
         className={`mt-1.5 flex flex-wrap items-center gap-x-1.5 text-xs ${tooltips ? textMutedOnSurface : ON_PAGE.line}`}
       >
-        {reference === undefined ? null : <CopyRefButton route={reference} />}
+        {reference === undefined ? null : <CopyRefButton item route={reference} />}
         {!handlesOpen ? null : (
           <span className="flex basis-full flex-wrap items-center gap-x-1.5">
             {sessionAuthor === undefined ? null : (
-              <CopyButton value={sessionAuthor.id} what={ASK_CARD_WORDS.copy_id_what}>
+              <CopyButton
+                marks={inboxActionMark("inbox.copy-session-id")}
+                value={sessionAuthor.id}
+                what={ASK_CARD_WORDS.copy_id_what}
+              >
                 {ASK_CARD_WORDS.copy_id}
               </CopyButton>
             )}
             {sessionTitle === undefined || sessionTitle === "" ? null : (
-              <CopyButton value={sessionTitle} what={ASK_CARD_WORDS.copy_title_what}>
+              <CopyButton
+                marks={inboxActionMark("inbox.copy-session-title")}
+                value={sessionTitle}
+                what={ASK_CARD_WORDS.copy_title_what}
+              >
                 {ASK_CARD_WORDS.copy_title}
               </CopyButton>
             )}
             {tmuxTarget === undefined ? null : (
-              <CopyButton value={tmuxTarget} what={ASK_CARD_WORDS.copy_tmux_what}>
+              <CopyButton
+                marks={inboxActionMark("inbox.copy-tmux-target")}
+                value={tmuxTarget}
+                what={ASK_CARD_WORDS.copy_tmux_what}
+              >
                 {tmuxTarget}
               </CopyButton>
             )}
@@ -319,6 +333,7 @@ export function AskCard({
         <button
           aria-expanded={handlesOpen}
           className={`flex min-w-0 items-center gap-1 ${tooltips ? textMutedHoverToSecondary : ON_PAGE.quietAct}`}
+          {...inboxActionMark("inbox.asker-handles")}
           onClick={() => setHandlesOpen((open) => !open)}
           type="button"
         >
@@ -362,8 +377,13 @@ export function AskCard({
       // key that must not fire while the reader is answering an ask (the issue page's priority
       // digits, beside this card's own options) matches the bare attribute, and the Inbox's
       // answer keys find the selected question's own card by its value (`answerHand` in
-      // `Inbox.tsx`). Neither asks for a test id.
+      // `useInboxKeymap.ts`). Neither asks for a test id.
       data-ask-card={displayedAsk.id}
+      // A question still open takes no reply, so its thread draws no reply box and no "Write a
+      // reply" (`takesReply`, `AskThread`, `AskThreadDisclosure`): the mark says so, by the
+      // ask's thread, and the reading view's `r` lands at its scroller rather than waiting for a
+      // box (`noReplyBoxSelector` in `ReadingView.tsx`).
+      data-inbox-no-reply-box={takesReply(currentAsk) ? undefined : currentAsk.id}
       data-testid={`ask-${displayedAsk.id}`}
     >
       {questionReads}

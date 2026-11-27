@@ -1,10 +1,13 @@
 import type { ReactNode } from "react";
 
 import { borderDefault, linkHoverText, linkText } from "../theme/classes";
+import { heldPress } from "./held-press";
 
 /** The button at the foot of an offset-paged list: it reads the next page and says so while that
  *  read is in flight. A list with no next page renders none, so a caller hands it the infinite
- *  query's own two flags and its fetcher and writes no condition of its own. */
+ *  query's own two flags and its fetcher and writes no condition of its own. While the read is out
+ *  the button is held, not disabled (`heldPress`), so a reader who pressed it from the keyboard
+ *  keeps the focus on it. */
 export function ShowMore({
   fetching,
   hasMore,
@@ -20,8 +23,7 @@ export function ShowMore({
   return (
     <button
       className={`mt-4 min-h-11 rounded-lg border px-3 py-2 text-sm font-medium ${borderDefault} ${linkText} ${linkHoverText}`}
-      disabled={fetching}
-      onClick={onFetch}
+      {...heldPress(fetching, onFetch)}
       type="button"
     >
       {fetching ? "Loading…" : "Show more"}

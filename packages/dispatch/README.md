@@ -1172,7 +1172,9 @@ command builds no `web/dist` for its server to serve. `webkit` and `firefox` sel
 well, `@webkit` and `@firefox`: each tagged row exercises one engine behaviour the comment above
 the project in `e2e/playwright.config.ts` names, and a comment beside the tag names which.
 `webkit` covers where a caret lands beside a collaborator's cursor, and `firefox` covers text
-typed over what follows a block's last line break, which that engine's own editing mishandles.
+typed over what follows a block's last line break, which that engine's own editing mishandles,
+and the click it sends on a link, whose fields say which path opens the link (`k-link-click`
+and `k-link-keys`).
 Both run `e2e/download-names.e2e.ts`, which reads how the engine names a download from the
 `filename*` and `filename` of its `Content-Disposition`, and whether it asks the server again
 for a download address it holds. WebKit writes each space of the name it reads from `filename*`

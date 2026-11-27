@@ -1,9 +1,10 @@
 import { useQuery } from "@tanstack/react-query";
-import type { ButtonHTMLAttributes, Ref, RefObject } from "react";
+import type { Ref, RefObject } from "react";
 import { type ReactNode, useId, useState } from "react";
 import { Link } from "react-router-dom";
 
 import type { DisplayTree, GraphEdge, GraphReferences } from "../../api/types";
+import { heldPress } from "../../components/held-press";
 import {
   borderDefault,
   linkHoverText,
@@ -279,6 +280,9 @@ function Excerpt({
  *  so a card or a header costs no graph request until the reader opens its panel. A count of
  *  zero is a fact, not an affordance: it renders as plain text, since opening it would only say
  *  nothing references the node. `controls` names the panel the host renders when expanded.
+ *  `marks` are the host's own handles on the button, by which its keys find and press it: the
+ *  Inbox's ask card passes the mark its command bar presses it by (`inboxActionMark`), inside the
+ *  item in hand.
  *
  *  A block of a document has no such count - no listing the tabs read carries one - so `count`
  *  is left out there and the control offers itself without one, the panel's own read being the
@@ -287,11 +291,13 @@ export function ReferencedByToggle({
   controls,
   count,
   expanded,
+  marks,
   onToggle,
 }: {
   controls: string;
   count?: number;
   expanded: boolean;
+  marks?: Readonly<Record<`data-${string}`, string>>;
   onToggle: () => void;
 }): ReactNode {
   if (count === 0) {
@@ -309,6 +315,7 @@ export function ReferencedByToggle({
       aria-controls={controls}
       aria-expanded={expanded}
       className={`flex min-h-11 shrink-0 items-center gap-2 rounded-lg px-2 py-1 text-sm font-medium ${linkText} ${linkHoverText}`}
+      {...marks}
       onClick={onToggle}
       type="button"
     >
@@ -334,12 +341,11 @@ export function ReferencedBy({
    *  the read the press sent, or joined, has ended, since that press then took nothing away. Where
    *  it is passed, the failure line stands while the list holds no answer and a read of it has
    *  failed (`standsFailed`), in place of the loading line, as Details' own lines do, so the line
-   *  stays while the read Retry sent is out, and Retry keeps its focus then: it is drawn
-   *  `aria-disabled`, in place of `disabled`, since Chromium moves the focus of a control that
-   *  turns disabled to the page's body, and a press while the read is out joins it
-   *  (`cancelRefetch: false`) and sends nothing new. The new issue page's Details passes it.
-   *  Elsewhere the line stands while the last read failed, and Retry is `disabled` while its read
-   *  is out. */
+   *  stays while the read Retry sent is out, and Retry keeps its focus then, and a press while
+   *  the read is out joins it (`cancelRefetch: false`) and sends nothing new. The new issue
+   *  page's Details passes it. Elsewhere the line stands while the last read failed, and a press
+   *  while the read is out does nothing. On every page Retry is held while its read is out, as
+   *  `heldPress` holds a control: `aria-disabled`, never `disabled`. */
   retried?: RefObject<boolean>;
   /** Takes Retry, so the host can hand the focus it holds on as it goes (`useFocusHandOff`). */
   retryRef?: Ref<HTMLButtonElement>;
@@ -360,16 +366,18 @@ export function ReferencedBy({
       Object.hasOwn(NODE_LABELS, edge.node.kind)
   );
   const groups = groupBySource(edges ?? []);
-  // Retry's attributes where the host notes its press (`retried`), spread over the ones it has on
-  // every page.
-  const retryInDetails:
-    | Pick<ButtonHTMLAttributes<HTMLButtonElement>, "aria-disabled" | "disabled" | "onClick">
-    | undefined =
+  // Retry's attributes, one object for each host, spread whole. Every page holds Retry while its
+  // read is out (`aria-disabled`), as `heldPress` does, and outside Details a held Retry's press
+  // does nothing. Details' held Retry still takes a press, which joins the read that is out
+  // (`cancelRefetch: false`), so it sends nothing new, and notes the press for the host's hand-off
+  // (`retried`): Details keeps the failure line, and Retry its focus, while Retry's read is out
+  // (below), so the reader can press Retry again then, and the hand-off reads that press once the
+  // read has ended.
+  const retryPress =
     retried === undefined
-      ? undefined
+      ? heldPress(query.isFetching, () => void query.refetch())
       : {
           "aria-disabled": query.isFetching || undefined,
-          disabled: false,
           onClick: () => {
             retried.current = true;
             void query.refetch({ cancelRefetch: false }).then((answer) => {
@@ -399,11 +407,11 @@ export function ReferencedBy({
       {failed ? (
         <p className={`flex flex-wrap items-center gap-2 text-sm ${textMutedOnSurface}`}>
           <span>Referenced by unavailable.</span>
+          {/* Held while a read of the list is out (`heldPress`), never disabled: it keeps the
+              focus and its Tab stop, and a press of it sends nothing then. */}
           <button
-            className={`font-medium underline ${linkText} ${linkHoverText}`}
-            disabled={query.isFetching}
-            onClick={() => void query.refetch()}
-            {...retryInDetails}
+            className={`font-medium underline refused:cursor-not-allowed refused:opacity-50 ${linkText} ${linkHoverText}`}
+            {...retryPress}
             ref={retryRef}
             type="button"
           >

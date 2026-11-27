@@ -1,8 +1,10 @@
 import { createContext, type ReactNode, useContext } from "react";
 
 import type { MyReplyRow } from "../../api/types";
+import { heldPress } from "../../components/held-press";
 import { linkHoverText, linkText } from "../../theme/classes";
 import type { InboxShow } from "../refs/routes";
+import { ControlKeyHint, keyshortcutsOf } from "../shell/ShortcutHelp";
 import { ThreadLine } from "./ThreadTitle";
 import { dismissThreadRow, type InboxDismissRow } from "./useInboxDismiss";
 
@@ -15,6 +17,8 @@ export interface RowDismiss {
   dismiss: (row: InboxDismissRow) => void;
   /** The row ids whose own press is still out. */
   pending: ReadonlySet<string>;
+  /** The row ids whose own press is out within its deadline, which holds the control. */
+  held: ReadonlySet<string>;
   /** Which view the row is drawn in, which is what its control is called. */
   show: InboxShow;
 }
@@ -43,12 +47,18 @@ export const RowDismissContext = createContext<RowDismiss | undefined>(undefined
  * it, so a hidden Dismiss would be a control a reader taps without seeing it - below 1280 px in a
  * row they meant to open, and beside the column, on a tablet held wide, in a row they meant to
  * select. The column's own head and the card draw it beside their other controls, where there is
- * room for it.
+ * room for it. It is held while its write is out within its deadline (`heldPress`), and says
+ * what it is doing until that write is decided.
  */
 export function DismissControl({
+  shortcutKeys,
   shown = false,
   thread,
 }: {
+  /** The keys that press it, where the host draws them on the button (the reading pane's head:
+   *  `e`, or the person's own): named in its `aria-keyshortcuts`, the first drawn after its
+   *  label (`ControlKeyHint`). */
+  shortcutKeys?: readonly string[];
   /** Whether the control is drawn whatever the reader's hand is doing: the head's and the card's
    *  always are, and so is the selected row's. */
   shown?: boolean;
@@ -69,6 +79,7 @@ export function DismissControl({
     <ThreadLine thread={thread}>
       {(line) => (
         <button
+          aria-keyshortcuts={keyshortcutsOf(shortcutKeys)}
           aria-label={`${label}: ${line ?? ""}`}
           className={`min-h-11 shrink-0 text-sm font-medium md:min-h-8 ${linkText} ${linkHoverText} ${
             shown
@@ -76,11 +87,11 @@ export function DismissControl({
               : "opacity-0 group-focus-within:opacity-100 group-hover:opacity-100 [@media(hover:none)]:opacity-100 [@media(any-pointer:coarse)]:opacity-100"
           }`}
           data-inbox-dismiss={named.id}
-          disabled={live}
-          onClick={() => dismiss.dismiss(named)}
+          {...heldPress(dismiss.held.has(named.id), () => dismiss.dismiss(named))}
           type="button"
         >
           {live ? (restoring ? "Moving…" : "Dismissing…") : label}
+          <ControlKeyHint keys={shortcutKeys} />
         </button>
       )}
     </ThreadLine>

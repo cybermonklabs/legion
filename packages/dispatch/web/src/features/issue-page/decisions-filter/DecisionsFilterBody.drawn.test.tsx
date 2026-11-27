@@ -7,6 +7,7 @@ import { MemoryRouter, useLocation } from "react-router-dom";
 
 import { displayTree } from "../../../__tests__/display-trees";
 import { nextFrame } from "../../../__tests__/frames";
+import { watchMoves } from "../../../__tests__/laid-out-rows";
 import { ApiError, api } from "../../../api/client";
 import type {
   Actor,
@@ -1443,6 +1444,139 @@ test("a focused entry that another person deletes gives the focus to its neighbo
   });
   await waitFor(() => expect(rowOf(alone, D("first"))).toBeTruthy());
   expect(rowOf(alone, D("first")).querySelector("[data-node-body]")).toBeNull();
+});
+
+// A read that moves the entry the reader is on to another part, or takes it away, hands the focus
+// on, an address that names an entry puts the focus on its row (R19), and Left on a row of the
+// foot puts it on the foot's control; the browser's own scroll of a focused element would move
+// the page under the reader: Chromium and Firefox centre a row, the tree or the foot's control
+// that is not wholly in view. So each focus the body gives is without that scroll
+// (`preventScroll`): the row it lands on brings itself on screen by the page's one rule only
+// where the reader cannot see it whole (`useRowOnScreen`), the tree takes the focus only to pass
+// it on, and the foot's control scrolls to its nearest edge only where it is not wholly in sight
+// (`focusIntoView`).
+test("a hand-off as a read moves or takes away the reader's entry, an address's landing, and Left from a foot row give every focus with no scroll of the browser's own", async () => {
+  // Each focus given since the last `handOff()`, with the options it was asked with.
+  const moves = watchMoves();
+  /** The focuses the hand-off gave, each by its element's node id or its role, and whether it
+   *  scrolled nothing; empties the record for the next hand-off. */
+  const handOff = () =>
+    moves.focused.splice(0).map(({ options, target }) => ({
+      at:
+        target.getAttribute("data-node-id") ??
+        target.getAttribute("role") ??
+        target.textContent?.trim(),
+      still: options?.preventScroll === true,
+    }));
+  const deleted = async (
+    view: Drawn,
+    issue: { children: TreeNode[]; made: Decision[] },
+    block: string
+  ) => {
+    await act(async () => {
+      view.client.setQueryData(
+        ["decisions", KEY],
+        decisionsRead(issue.made.filter((made) => made.block_id !== block))
+      );
+      view.again({ children: issue.children.filter((child) => child.id !== D(block)) });
+    });
+  };
+  const whole = wholeIssue();
+  try {
+    // The entry moves: another person answers the open question the reader is on, and it goes
+    // under Your decisions, where it keeps the focus.
+    const moved = renderBody(whole);
+    await act(async () => rowOf(moved, "q-open").focus());
+    handOff();
+    moved.again({
+      children: whole.children.map((child) =>
+        child.id === "q-open"
+          ? answeredAsk(
+              "q-open",
+              { at: "2026-11-16T09:00:00Z", by: { id: "bob", kind: "user" }, text: "At 1280 px." },
+              { options: [{ label: "1280 px" }, { label: "1024 px" }], text: "Which width?" }
+            )
+          : child
+      ),
+    });
+    await waitFor(() => expect(rowsOfPart(moved, "yours")).toContain("q-open"));
+    await waitFor(() => expect(focusedRow(moved)).toBe("q-open"));
+    expect(handOff()).toEqual([{ at: "q-open", still: true }]);
+    moved.unmount();
+
+    // The entry goes: the focus goes to its neighbour.
+    const next = renderBody(whole);
+    await act(async () => rowOf(next, D("second")).focus());
+    handOff();
+    await deleted(next, whole, "second");
+    await waitFor(() => expect(focusedRow(next)).toBe(D("first")));
+    expect(handOff()).toEqual([{ at: D("first"), still: true }]);
+    next.unmount();
+
+    // The entry and its part go: the tree takes the focus and passes it to the view's first row.
+    const own = {
+      children: [statement("s1"), openAsk("q-open"), decisionNode("first"), decisionNode("kept")],
+      made: [
+        decision("first", { links: [shaped(specRef("s1"))] }),
+        decision("kept", { kept: KEPT, links: [shaped(specRef("s1"))], waiting_review: false }),
+      ],
+    };
+    const only = renderBody(own);
+    await act(async () => rowOf(only, D("kept")).focus());
+    handOff();
+    await deleted(only, own, "kept");
+    await waitFor(() => expect(focusedRow(only)).toBe("q-open"));
+    expect(handOff()).toEqual([
+      { at: "tree", still: true },
+      { at: "q-open", still: true },
+    ]);
+    only.unmount();
+
+    // The last row goes, and the folded foot is all the list holds: the tree passes the focus to
+    // the foot's control.
+    const footed = {
+      children: [statement("s1"), decisionNode("first"), decisionNode("minor")],
+      made: [decision("first", { links: [shaped(specRef("s1"))] }), decision("minor")],
+    };
+    const foot = renderBody(footed);
+    await act(async () => rowOf(foot, D("first")).focus());
+    handOff();
+    await deleted(foot, footed, "first");
+    const control = foot.getByRole("button", {
+      name: (name: string) => name.endsWith(DECISIONS_WORDS.agents_one),
+    });
+    await waitFor(() => expect(document.activeElement).toBe(control));
+    expect(handOff()).toEqual([
+      { at: "tree", still: true },
+      { at: control.textContent?.trim(), still: true },
+    ]);
+    foot.unmount();
+
+    // The address names an entry: its row takes the focus as the list draws it.
+    handOff();
+    const named = renderBody(whole, { reveal: D("second") });
+    await waitFor(() => expect(focusedRow(named)).toBe(D("second")));
+    expect(handOff()).toEqual([{ at: D("second"), still: true }]);
+    named.unmount();
+
+    // Left on a row of the foot goes up to the foot's control.
+    const unfolded = renderBody(whole);
+    const footControl = footControlOf(unfolded) as HTMLElement;
+    await act(async () => footControl.click());
+    const footRow = rowOf(unfolded, D("replaced"));
+    await act(async () => footRow.focus());
+    handOff();
+    await act(async () => {
+      footRow.dispatchEvent(
+        new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "ArrowLeft" })
+      );
+    });
+    expect(footControl).toHaveFocus();
+    expect(handOff()).toEqual([{ at: footControl.textContent?.trim(), still: true }]);
+    unfolded.unmount();
+  } finally {
+    moves.restore();
+  }
 });
 
 // R2, R9, c-decisions: an answered ask draws its question and its options, and the person's

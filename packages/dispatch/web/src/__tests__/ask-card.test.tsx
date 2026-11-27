@@ -20,10 +20,13 @@ import { AskCard } from "../features/inbox/AskCard";
 import { AskReplyComposer } from "../features/inbox/AskThread";
 import type { OwnedAsk } from "../features/inbox/ask-name";
 import { Inbox } from "../features/inbox/Inbox";
+import { emulateChromiumFocusFixup } from "../features/issue-page/chromium-focus-fixup";
 import { warmMarkdownRenderer } from "../features/refs/markdown-engine";
 import { commentDeliveryFields } from "./comment-fixture";
 import { realClock, tick } from "./fake-clock";
 import { graphNode } from "./graph-fixture";
+import { pressHeld } from "./held-press";
+import { INPUT_METHOD_MARKS } from "./input-method-marks";
 import { keyedAttempt } from "./keyed-attempt";
 import { userOnFakeClock } from "./user";
 
@@ -879,7 +882,7 @@ test("AskCard submits on Ctrl+Enter but not on plain Enter", async () => {
   }
 });
 
-test("AskCard submits a selected Other option with free text", async () => {
+test("AskCard submits a selected Other option with free text, its pick putting the caret in the box", async () => {
   const user = userEvent.setup();
   const submitted: AnswerAskInput[] = [];
   const input = ask({ options: [{ label: "Ship" }, { label: "Hold" }] });
@@ -899,7 +902,8 @@ test("AskCard submits a selected Other option with free text", async () => {
     const other = await view.findByRole("radio", { name: "Other" });
     await user.click(other);
     expect(submit.hasAttribute("disabled")).toBe(true);
-    await user.click(view.getByLabelText("Your answer"));
+    // The pick of Other is a move into the box its words go in (R17).
+    expect(view.getByLabelText("Your answer")).toHaveFocus();
     await user.paste("Try a hybrid");
     expect(submit).not.toHaveAttribute("disabled");
     await user.click(submit);
@@ -955,6 +959,40 @@ test("AskCard offers to ask back for a question-shaped answer without closing th
     );
     expect(answerCalls).toEqual([]);
     expect(view.getByTestId("ask-ask-1")).toBeTruthy();
+  } finally {
+    view.unmount();
+  }
+});
+
+// INFRA-3135's review round 1, R10: Ask back instead takes the focus once, as it appears. The
+// reader who moves on to Answer with it anyway keeps the focus there through any later render of
+// the card - a refetch, a parent's own render - rather than being pulled back to Ask back
+// instead at each one.
+test("AskCard gives Ask back instead the focus once, and a later render leaves the focus where the reader moved it", async () => {
+  const user = userEvent.setup();
+  const input = ask({ options: [{ label: "Ship" }, { label: "Hold" }] });
+  const getAskThread = emptyThread(input);
+  // A new element each time, so the second render is a render of the card itself.
+  const card = () => <AskCard ask={input} getAskThread={getAskThread} />;
+  const { queryClient, view } = renderCard(card());
+
+  try {
+    await user.click(view.getByLabelText("Your answer"));
+    await user.paste("Why wait?");
+    await user.click(view.getByRole("button", { name: "Answer" }));
+    const instead = await view.findByRole("button", { name: "Ask back instead" });
+    expect(instead).toHaveFocus();
+    await user.tab();
+    const anyway = view.getByRole("button", { name: "Answer with it anyway" });
+    expect(anyway).toHaveFocus();
+
+    view.rerender(
+      <MemoryRouter>
+        <QueryClientProvider client={queryClient}>{card()}</QueryClientProvider>
+      </MemoryRouter>
+    );
+    expect(view.getByRole("button", { name: "Ask back instead" })).toBe(instead);
+    expect(anyway).toHaveFocus();
   } finally {
     view.unmount();
   }
@@ -1202,6 +1240,138 @@ test("an approval-kind ask names the reason Request changes needs, focuses its f
   }
 });
 
+// The Inbox's `a` and Shift+R pick an approval request's two options by their marks; a question's
+// options, whatever their labels, carry none.
+test("an approval-kind ask marks its Approve and Request changes options for the keys", async () => {
+  const approval = ask({
+    kind: "approval",
+    options: [{ label: "Approve" }, { label: "Request changes" }],
+  });
+  const question = ask({
+    id: "ask-2",
+    options: [{ label: "Approve" }, { label: "Request changes" }],
+  });
+  const { view } = renderCard(
+    <>
+      <AskCard ask={approval} getAskThread={emptyThread(approval)} />
+      <AskCard ask={question} getAskThread={emptyThread(question)} />
+    </>
+  );
+
+  try {
+    const approvalCard = view.getByTestId("ask-ask-1");
+    expect(await within(approvalCard).findByRole("radio", { name: "Approve" })).toHaveAttribute(
+      "data-ask-approval",
+      "approve"
+    );
+    expect(within(approvalCard).getByRole("radio", { name: "Request changes" })).toHaveAttribute(
+      "data-ask-approval",
+      "request-changes"
+    );
+    const questionCard = view.getByTestId("ask-ask-2");
+    for (const name of ["Approve", "Request changes", "Other"]) {
+      expect(within(questionCard).getByRole("radio", { name })).not.toHaveAttribute(
+        "data-ask-approval"
+      );
+    }
+  } finally {
+    view.unmount();
+  }
+});
+
+// Escape in the reason Request changes asks for lets go of the pick and sends nothing; what was
+// typed stays in the box. It neither stops the key nor takes it, so the Inbox's own Escape still
+// puts the focus back on the row.
+test("Escape in an approval's Request changes reason drops that pick and sends nothing", async () => {
+  const user = userEvent.setup();
+  const submitted: AnswerAskInput[] = [];
+  const input = ask({
+    kind: "approval",
+    options: [{ label: "Approve" }, { label: "Request changes" }],
+  });
+  const { view } = renderCard(
+    <AskCard
+      ask={input}
+      answerAsk={async (_id, submission) => {
+        submitted.push(submission);
+        return answered(input, submission.selected, submission.text ?? null);
+      }}
+      getAskThread={emptyThread(input)}
+    />
+  );
+  const reachedPage: KeyboardEvent[] = [];
+  const listen = (event: KeyboardEvent) => reachedPage.push(event);
+  window.addEventListener("keydown", listen);
+
+  try {
+    const requestChanges = await view.findByRole("radio", { name: "Request changes" });
+    await user.click(requestChanges);
+    const reasonField = view.getByLabelText("Reason (required)");
+    expect(reasonField).toHaveFocus();
+    await user.paste("Needs another pass");
+    await user.keyboard("{Escape}");
+    expect((requestChanges as HTMLInputElement).checked).toBe(false);
+    const field = view.getByLabelText("Reason");
+    expect(field).toHaveValue("Needs another pass");
+    expect(view.getByRole("button", { name: "Answer" }).hasAttribute("disabled")).toBe(true);
+    // The key went on to the page, untaken.
+    expect(reachedPage.filter((event) => event.key === "Escape")).toHaveLength(1);
+    expect(reachedPage.find((event) => event.key === "Escape")?.defaultPrevented).toBe(false);
+    expect(submitted).toEqual([]);
+
+    // Escape in the box with Approve picked lets go of nothing.
+    await user.click(view.getByRole("radio", { name: "Approve" }));
+    await user.click(field);
+    await user.keyboard("{Escape}");
+    expect((view.getByRole("radio", { name: "Approve" }) as HTMLInputElement).checked).toBe(true);
+  } finally {
+    window.removeEventListener("keydown", listen);
+    view.unmount();
+  }
+});
+
+// The Escape that ends an input method's composition in that reason is the input method's
+// (`INPUT_METHOD_MARKS`): it cancels what the reader was composing, and the Request changes pick
+// stays. A plain Escape after it drops the pick.
+test.each(INPUT_METHOD_MARKS)(
+  "an Escape that ends an IME composition in an approval's Request changes reason, marked by %s, keeps that pick",
+  async (_mark, composing) => {
+    const user = userEvent.setup();
+    const input = ask({
+      kind: "approval",
+      options: [{ label: "Approve" }, { label: "Request changes" }],
+    });
+    const { view } = renderCard(
+      <AskCard
+        ask={input}
+        answerAsk={async (_id, submission) =>
+          answered(input, submission.selected, submission.text ?? null)
+        }
+        getAskThread={emptyThread(input)}
+      />
+    );
+
+    try {
+      const requestChanges = (await view.findByRole("radio", {
+        name: "Request changes",
+      })) as HTMLInputElement;
+      await user.click(requestChanges);
+      const reasonField = view.getByLabelText("Reason (required)");
+      expect(reasonField).toHaveFocus();
+      // The key that ends a composition: user-event has no form for `isComposing` or keyCode 229.
+      fireEvent.keyDown(reasonField, { ...composing, key: "Escape" });
+      expect(requestChanges.checked, "the Escape that ended a composition dropped the pick").toBe(
+        true
+      );
+
+      await user.keyboard("{Escape}");
+      expect(requestChanges.checked).toBe(false);
+    } finally {
+      view.unmount();
+    }
+  }
+);
+
 test("a Done / Can't question is an ordinary question: Other stays, Can't needs no reason", async () => {
   const user = userEvent.setup();
   const submitted: AnswerAskInput[] = [];
@@ -1308,7 +1478,7 @@ test("AskCard submits selected options alongside a typed note", async () => {
   }
 });
 
-test("AskCard requires text when Other is selected with real multiple options", async () => {
+test("AskCard requires text when Other is selected with real multiple options, and only Other turned on moves the caret", async () => {
   const user = userEvent.setup();
   const submitted: AnswerAskInput[] = [];
   const input = ask({ multiple: true, options: [{ label: "Docs" }, { label: "Tests" }] });
@@ -1324,11 +1494,20 @@ test("AskCard requires text when Other is selected with real multiple options", 
   );
 
   try {
-    await user.click(await view.findByRole("checkbox", { name: "Docs" }));
-    await user.click(view.getByRole("checkbox", { name: "Other" }));
+    const docs = await view.findByRole("checkbox", { name: "Docs" });
+    await user.click(docs);
+    expect(docs).toHaveFocus();
+    const other = view.getByRole("checkbox", { name: "Other" });
+    await user.click(other);
+    const field = view.getByLabelText("Your answer");
+    expect(field).toHaveFocus();
+    // Turned off, Other asks for no words: the reader stays on the box they pressed.
+    await user.click(other);
+    expect(other).toHaveFocus();
+    await user.click(other);
+    expect(field).toHaveFocus();
     const answer = view.getByRole("button", { name: "Answer" });
     expect(answer.hasAttribute("disabled")).toBe(true);
-    await user.click(view.getByLabelText("Your answer"));
     await user.paste("Also update the guide.");
     expect(answer).not.toHaveAttribute("disabled");
     await user.click(answer);
@@ -1645,6 +1824,36 @@ test("AskCard renders replies under the question without an open-ask thread comp
     ).toBeTruthy();
     expect(view.queryByLabelText("Reply")).not.toBeInTheDocument();
     expect(view.queryByText("Replying does not answer the question.")).not.toBeInTheDocument();
+  } finally {
+    view.unmount();
+  }
+});
+
+test("AskCard draws a Copy reference on each reply of an ask on an issue, and none on a reply on no issue", async () => {
+  const input = ask();
+  const { view } = renderCard(
+    <AskCard
+      ask={input}
+      getAskThread={async () => ({
+        ...(await emptyThread(input)()),
+        replies: [
+          reply({ body: "On the issue", id: "comment-1" }),
+          reply({ body: "On no issue", id: "comment-2", issue_key: null }),
+        ],
+      })}
+    />
+  );
+
+  try {
+    const thread = await view.findByTestId("thread-ask-1");
+    await waitFor(() => expect(thread).toHaveTextContent("On no issue"));
+    expect(
+      within(thread)
+        .getAllByRole("button", { name: /^Copy reference / })
+        .map((button) => button.getAttribute("aria-label"))
+    ).toEqual(["Copy reference dispatch://CORE-1/comment/comment-1"]);
+    // Outside the Conversation tab a reply takes no focus of its own.
+    expect(thread.querySelector("[data-reply][tabindex]")).toBeNull();
   } finally {
     view.unmount();
   }
@@ -2150,7 +2359,7 @@ test("AskCard with no replies offers Write a reply only once the ask is not open
   }
 });
 
-test("a reply composer remounted while its send is out shows the draft disabled and posts once", async () => {
+test("a reply composer remounted while its send is out shows the draft held and posts once", async () => {
   const user = userEvent.setup();
   const input = answered(ask(), []);
   const sent = Promise.withResolvers<Comment>();
@@ -2179,16 +2388,20 @@ test("a reply composer remounted while its send is out shows the draft disabled 
   try {
     const field = second.getByRole("textbox", { name: "Reply" }) as HTMLTextAreaElement;
     expect(field.value).toBe("hello");
-    expect(field.disabled).toBe(true);
-    const send = second.getByRole("button", { name: /^Repl/ }) as HTMLButtonElement;
-    expect(send.disabled).toBe(true);
-    // The send holds this one disabled, and user-event refuses a disabled control; the point of
-    // this line is that the press the browser still delivers posts nothing a second time.
-    fireEvent.click(send);
+    expect(field).toHaveAttribute("aria-disabled", "true");
+    expect(field.readOnly).toBe(true);
+    // Held while the send is out by `aria-disabled`, not `disabled`, so it would keep a reader's
+    // focus; a press of it posts nothing a second time.
+    const send = second.getByRole("button", { name: /^Repl/ });
+    expect(send).toHaveAttribute("aria-disabled", "true");
+    expect(send).not.toBeDisabled();
+    await user.click(send);
+    expect(bodies).toEqual(["hello"]);
 
     await act(async () => sent.resolve(reply({ body: "hello" })));
     await waitFor(() => expect(field.value).toBe(""));
-    expect(field.disabled).toBe(false);
+    await waitFor(() => expect(field.readOnly).toBe(false));
+    expect(field).not.toHaveAttribute("aria-disabled");
     expect(bodies).toEqual(["hello"]);
   } finally {
     second.unmount();
@@ -2221,8 +2434,13 @@ test("two reply composers for one ask share its draft and its send", async () =>
 
     await user.click(view.getAllByRole("button", { name: "Reply" })[1] as HTMLElement);
     await waitFor(() => expect(bodies).toEqual(["One draft"]));
-    expect(margin.disabled).toBe(true);
-    expect(block.disabled).toBe(true);
+    expect(margin).toHaveAttribute("aria-disabled", "true");
+    expect(block).toHaveAttribute("aria-disabled", "true");
+    expect(margin.readOnly).toBe(true);
+    expect(block.readOnly).toBe(true);
+    // Either composer's Reply is held while the shared send is out: a press posts nothing more.
+    await user.click(view.getAllByRole("button", { name: /^Repl/ })[0] as HTMLElement);
+    expect(bodies).toEqual(["One draft"]);
 
     await act(async () => sent.resolve(reply({ body: "One draft" })));
     await waitFor(() => expect(margin.value).toBe(""));
@@ -2230,6 +2448,84 @@ test("two reply composers for one ask share its draft and its send", async () =>
     expect(bodies).toEqual(["One draft"]);
   } finally {
     view.unmount();
+  }
+});
+
+// Ctrl+Enter in the reply box sends the reply, and the box is held while it is out: read-only and
+// `aria-disabled`, never `disabled`, which drops the focus to the body in a browser (emulated
+// here, as happy-dom keeps it). So the focus stays in the box through the hold, typing changes
+// nothing then, and the box is the reader's again, empty, once the reply lands.
+test("Ctrl+Enter in the reply box keeps the focus in the box through the reply's hold", async () => {
+  const user = userEvent.setup();
+  const unemulate = emulateChromiumFocusFixup();
+  const input = answered(ask(), []);
+  const sent = Promise.withResolvers<Comment>();
+  const bodies: (string | undefined)[] = [];
+  const createReply = async (_issueKey: string, body: CreateCommentInput) => {
+    bodies.push(body.body);
+    return sent.promise;
+  };
+  const { view } = renderCard(<AskReplyComposer ask={input} createReply={createReply} />);
+  try {
+    const field = view.getByRole("textbox", { name: "Reply" }) as HTMLTextAreaElement;
+    await user.click(field);
+    await user.paste("Shipping it");
+    await user.keyboard("{Control>}{Enter}{/Control}");
+    await waitFor(() => expect(bodies).toEqual(["Shipping it"]));
+    await waitFor(() => expect(field).toHaveAttribute("aria-disabled", "true"));
+    expect(field.readOnly).toBe(true);
+    expect(field).toHaveFocus();
+    await user.keyboard("x");
+    expect(field.value).toBe("Shipping it");
+
+    await act(async () => sent.resolve(reply({ body: "Shipping it" })));
+    await waitFor(() => expect(field.value).toBe(""));
+    await waitFor(() => expect(field).not.toHaveAttribute("aria-disabled"));
+    expect(field.readOnly).toBe(false);
+    expect(field).toHaveFocus();
+    expect(bodies).toEqual(["Shipping it"]);
+  } finally {
+    view.unmount();
+    unemulate();
+  }
+});
+
+// Reply pressed sends the reply, and the landing clears the draft: Reply then has nothing to send.
+// It is held by `aria-disabled` for that, as while the reply is out, never `disabled`, which drops
+// the focus to the body in a browser (emulated here, as happy-dom keeps it). So the focus stays on
+// Reply, and a press of it then sends nothing.
+test("Reply pressed keeps the focus when the reply lands and clears the draft, and a press then sends nothing", async () => {
+  const user = userEvent.setup();
+  const unemulate = emulateChromiumFocusFixup();
+  const input = answered(ask(), []);
+  const sent = Promise.withResolvers<Comment>();
+  const bodies: (string | undefined)[] = [];
+  const createReply = async (_issueKey: string, body: CreateCommentInput) => {
+    bodies.push(body.body);
+    return sent.promise;
+  };
+  const { view } = renderCard(<AskReplyComposer ask={input} createReply={createReply} />);
+  try {
+    const field = view.getByRole("textbox", { name: "Reply" }) as HTMLTextAreaElement;
+    await user.click(field);
+    await user.paste("Shipping it");
+    const send = view.getByRole("button", { name: "Reply" });
+    await user.click(send);
+    await waitFor(() => expect(bodies).toEqual(["Shipping it"]));
+    expect(send).toHaveFocus();
+
+    await act(async () => sent.resolve(reply({ body: "Shipping it" })));
+    await waitFor(() => expect(field.value).toBe(""));
+    await waitFor(() => expect(send.textContent).toBe("Reply"));
+    // Still the reader's focus, held for its empty draft.
+    expect(send).toHaveFocus();
+    expect(send).toHaveAttribute("aria-disabled", "true");
+    expect(send).not.toBeDisabled();
+    await user.click(send);
+    expect(bodies).toEqual(["Shipping it"]);
+  } finally {
+    view.unmount();
+    unemulate();
   }
 });
 
@@ -2258,7 +2554,12 @@ test("a picture pasted into a reply composer joins its draft and holds the send 
     // user-event's paste carries text, never the file this row uploads.
     fireEvent.paste(field, { clipboardData: { files: [png("shot.png")] } });
     await view.findByText("Uploading file…");
-    expect((view.getByRole("button", { name: "Reply" }) as HTMLButtonElement).disabled).toBe(true);
+    // Held while the upload is out, by `aria-disabled`, and a press sends nothing.
+    const send = view.getByRole("button", { name: "Reply" });
+    expect(send).toHaveAttribute("aria-disabled", "true");
+    expect(send).not.toBeDisabled();
+    await user.click(send);
+    expect(bodies).toEqual([]);
     expect(uploadArtifact.mock.calls[0]?.[0]).toEqual({ issue: "CORE-1" });
     // Typed while the upload is out: the picture lands after it, not over it. The draft is
     // replaced in one edit, since a clear would be an edit of its own for the upload to land on.
@@ -2458,6 +2759,24 @@ test("the compact card's answer box stands in place, and picking an option leave
   }
 });
 
+// R17 on every surface that draws the compact card (the margin, a decision block): the pick of
+// Other puts the caret in the answer box, which always stands in place under the options.
+test("the compact card's Other puts the caret in the note box, whether the box was shut or open", async () => {
+  const user = userEvent.setup();
+  const input = ask({ options: [{ label: "Ship" }, { label: "Hold" }] });
+  const open = renderCard(
+    <AskCard ask={input} getAskThread={emptyThread(input)} variant="compact" />
+  );
+  try {
+    const card = open.view.getByTestId("ask-ask-1");
+    const field = await within(card).findByLabelText("Your answer");
+    await user.click(await within(card).findByRole("radio", { name: "Other" }));
+    expect(field).toHaveFocus();
+  } finally {
+    open.view.unmount();
+  }
+});
+
 test("AskCard compact variant renders long options as the same wrapping choice rows as the full card", async () => {
   const user = userEvent.setup();
   const label =
@@ -2545,18 +2864,22 @@ test("AskCard compact variant keeps an open note visible when a real option is p
   }
 });
 
-test("AskCard compact variant hands focus to the row when Answer disables under it", async () => {
+// While its answer is out Answer is held (`aria-disabled`), never disabled: the browser takes the
+// focus off a button that turns disabled, which would drop the keyboard reader who pressed it onto
+// the page. Held, it keeps the focus, and a second press sends nothing. Once the answer lands its
+// record takes the form's place, and the card hands the focus the form held to the row.
+test("AskCard compact variant keeps the focus on Answer while its answer is out, and hands it to the row when the answer lands", async () => {
   const user = userEvent.setup();
   const input = ask({ options: [{ label: "Ship" }, { label: "Hold" }] });
-  let release: (value: Ask) => void = () => {};
+  const answering = Promise.withResolvers<Ask>();
+  let sent = 0;
   const { view } = renderCard(
     <div data-testid="row" tabIndex={-1}>
       <AskCard
-        answerAsk={() =>
-          new Promise<Ask>((resolve) => {
-            release = resolve;
-          })
-        }
+        answerAsk={() => {
+          sent += 1;
+          return answering.promise;
+        }}
         ask={input}
         getAskThread={emptyThread(input)}
         variant="compact"
@@ -2568,13 +2891,10 @@ test("AskCard compact variant hands focus to the row when Answer disables under 
     const card = view.getByTestId("ask-ask-1");
     await user.click(await within(card).findByRole("radio", { name: "Ship" }));
     const answer = within(card).getByRole("button", { name: "Answer" });
-    answer.focus();
-    expect(answer).toHaveFocus();
-    await user.click(answer);
-    await waitFor(() => expect(answer.hasAttribute("disabled")).toBe(true));
-    expect(view.getByTestId("row")).toHaveFocus();
-    release(answered(input, ["Ship"]));
+    await pressHeld(user, answer, { name: "Answer", sent: () => sent });
+    answering.resolve(answered(input, ["Ship"]));
     await view.findByRole("img", { name: "Selected" });
+    expect(view.getByTestId("row")).toHaveFocus();
   } finally {
     view.unmount();
   }

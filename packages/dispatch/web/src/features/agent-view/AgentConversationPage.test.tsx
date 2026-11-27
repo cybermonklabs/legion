@@ -22,6 +22,8 @@ import type { ReactNode } from "react";
 import { Link, MemoryRouter, Route, Routes, useParams } from "react-router-dom";
 
 import { jump, onFakeClock, tick } from "../../__tests__/fake-clock";
+import { heldNotDisabled } from "../../__tests__/held-press";
+import { listOpen, optionsOffered, pickFromList, pickNamed } from "../../__tests__/list-picks";
 import {
   errorFrame,
   type FakeLiveSocket,
@@ -500,6 +502,21 @@ test("the live view's header names the agent with its running state and no link"
   await waitFor(() => expect(document.title).toContain("Planner"));
 });
 
+// The transcript scrolls in a box of its own, which is a Tab stop of its own - Firefox's for any
+// box that scrolls, and every engine's where the turns hold no control - and that stop is how a
+// keyboard reader scrolls turns of prose. Unnamed, the stop read as nothing: it is a region named
+// for what it holds.
+test("the live view's transcript is a region named for what it holds", async () => {
+  renderLiveView({
+    agentState: {},
+    messages: [],
+    putAgentState: spyOn(api, "putAgentState").mockResolvedValue({ unread_replies: 0 }),
+  });
+
+  const thread = await screen.findByTestId("agent-thread");
+  expect(screen.getByRole("region", { name: "Transcript" })).toBe(thread);
+});
+
 // Stored times carry microseconds, so two messages written within one millisecond still have an
 // order, and the view keeps it whatever order the exchanges arrive in.
 test("the live view orders two stored messages in one millisecond by their microseconds", async () => {
@@ -860,6 +877,20 @@ test("a person's message embedding a picture shows once, with or without the mar
   expect(within(thread).getAllByTestId("agent-message-user")).toHaveLength(2);
 });
 
+/** The live view's Delivery mode: the shared list's single pick, whose trigger is named for the
+ *  list and then for the mode it holds ("Delivery mode Send"). */
+function deliveryPick(): Promise<HTMLElement> {
+  return screen.findByRole("button", { name: pickNamed("Delivery mode") });
+}
+
+/** Waits for the Delivery mode to hold the mode `shown` names, as its trigger shows it ("Send"),
+ *  and returns its trigger. */
+async function modeHeld(shown: string): Promise<HTMLElement> {
+  const mode = await deliveryPick();
+  await waitFor(() => expect(mode).toHaveAccessibleName(`Delivery mode ${shown}`));
+  return mode;
+}
+
 // Send is the terminal's Enter: the default wherever the session takes a steer. A session that
 // advertises Aside and no Send would refuse one, so Aside is its default.
 test("the live view sends as Send by default where the session takes it, and as Aside where it does not", async () => {
@@ -874,15 +905,8 @@ test("the live view sends as Send by default where the session takes it, and as 
     putAgentState: answerAgentStates().mockResolvedValue({ unread_replies: 0 }),
   });
 
-  const mode = (await screen.findByRole("combobox", {
-    name: "Delivery mode",
-  })) as HTMLSelectElement;
-  await waitFor(() => expect(mode.value).toBe("steer"));
-  expect(
-    within(mode)
-      .getAllByRole("option")
-      .map((option) => option.textContent)
-  ).toEqual(["Send", "Aside", "BTW"]);
+  const mode = await modeHeld("Send");
+  expect(await optionsOffered(user, mode)).toEqual(["Send", "Aside", "BTW"]);
   await user.click(screen.getByPlaceholderText(/delivered as Send/));
   await user.paste("try the other branch");
   await user.click(
@@ -904,15 +928,67 @@ test("the live view sends as Send by default where the session takes it, and as 
     messages: [],
     putAgentState: answerAgentStates().mockResolvedValue({ unread_replies: 0 }),
   });
-  const asideOnly = (await screen.findByRole("combobox", {
-    name: "Delivery mode",
-  })) as HTMLSelectElement;
-  await waitFor(() => expect(asideOnly.value).toBe("aside"));
-  expect(
-    within(asideOnly)
-      .getAllByRole("option")
-      .map((option) => option.textContent)
-  ).toEqual(["Aside"]);
+  const asideOnly = await modeHeld("Aside");
+  expect(await optionsOffered(user, asideOnly)).toEqual(["Aside"]);
+});
+
+// The live view's Delivery mode is the shared list's single pick, as every other Delivery mode
+// picker is (#3729): a button that opens a list of the modes this session takes and no other,
+// and the mode picked there is the one the next send goes in.
+test("the live view's Delivery mode is the shared single pick of the session's modes, and a pick is the next send's mode", async () => {
+  const user = userEvent.setup();
+  const createAgentMessage = spyOn(api, "createAgentMessage").mockImplementation(
+    async (_session, input) => message("sent", input.body)
+  );
+  spies.push(createAgentMessage);
+  renderLiveView({
+    agentState: {},
+    capabilities: ["btw", "aside"],
+    messages: [],
+    putAgentState: answerAgentStates().mockResolvedValue({ unread_replies: 0 }),
+  });
+
+  const mode = await modeHeld("Aside");
+  expect(mode).toHaveAttribute("aria-haspopup", "listbox");
+  expect(mode).toHaveAttribute("data-testid", "agent-delivery-picker");
+  expect(await optionsOffered(user, mode)).toEqual(["Aside", "BTW"]);
+
+  await pickFromList(user, mode, "BTW");
+  expect(mode).toHaveAccessibleName("Delivery mode BTW");
+  expect(listOpen()).toBe(false);
+  await user.click(screen.getByPlaceholderText(/delivered as BTW/));
+  await user.paste("is the build green?");
+  await user.click(
+    within(screen.getByTestId("agent-composer")).getByRole("button", { name: "Send" })
+  );
+  await waitFor(() =>
+    expect(createAgentMessage).toHaveBeenCalledWith(
+      SESSION,
+      { body: "is the build green?", delivery: "btw" },
+      keyedAttempt
+    )
+  );
+});
+
+// The row's panels all open upwards over the transcript from the same corner, the Delivery mode's
+// list among them, so opening one closes whichever other stands open: from the keyboard, where no
+// press outside closes the panel left behind, as from the pointer.
+test("opening the Delivery mode list closes the row's open panel, and opening a panel closes the list", async () => {
+  const user = userEvent.setup();
+  await renderWithPickers([settingsFrame(1), commandsFrame(2, SWITCHES)]);
+  const mode = await deliveryPick();
+
+  await user.click(screen.getByRole("button", { name: "What the message box does" }));
+  expect(screen.getByTestId("agent-help-popover")).toBeTruthy();
+  act(() => mode.focus());
+  await user.keyboard("{Enter}");
+  expect(listOpen()).toBe(true);
+  expect(screen.queryByTestId("agent-help-popover")).not.toBeInTheDocument();
+
+  await user.click(screen.getByRole("button", { name: "What the message box does" }));
+  expect(screen.getByTestId("agent-help-popover")).toBeTruthy();
+  expect(listOpen()).toBe(false);
+  expect(mode).toHaveAttribute("aria-expanded", "false");
 });
 
 /** A fetch that failed, as the client hands it on: no answer from Dispatch at all. */
@@ -943,10 +1019,7 @@ test("the live view's send retries under one key", async () => {
     messages: [],
     putAgentState: answerAgentStates().mockResolvedValue({ unread_replies: 0 }),
   });
-  const mode = (await screen.findByRole("combobox", {
-    name: "Delivery mode",
-  })) as HTMLSelectElement;
-  await waitFor(() => expect(mode.value).toBe("steer"));
+  await modeHeld("Send");
 
   await onFakeClock(async () => {
     await sendFromLiveView(userOnFakeClock(), "try the other branch");
@@ -981,10 +1054,7 @@ test("leaving the live view leaves its send being tried, under its key", async (
     messages: [],
     putAgentState: answerAgentStates().mockResolvedValue({ unread_replies: 0 }),
   });
-  const mode = (await screen.findByRole("combobox", {
-    name: "Delivery mode",
-  })) as HTMLSelectElement;
-  await waitFor(() => expect(mode.value).toBe("steer"));
+  await modeHeld("Send");
 
   await onFakeClock(async () => {
     await sendFromLiveView(userOnFakeClock(), "try the other branch");
@@ -1014,10 +1084,7 @@ async function renderSendingView(): Promise<void> {
     messages: [],
     putAgentState: answerAgentStates().mockResolvedValue({ unread_replies: 0 }),
   });
-  const mode = (await screen.findByRole("combobox", {
-    name: "Delivery mode",
-  })) as HTMLSelectElement;
-  await waitFor(() => expect(mode.value).toBe("steer"));
+  await modeHeld("Send");
 }
 
 // W25 / INFRA-442. Send is pressable whenever the box holds text: each press is its own write under
@@ -1049,7 +1116,7 @@ test("Send stays open with text while an earlier send is out or late, and each p
     expect(input.value).toBe("");
     await user.click(input);
     await user.paste("and this");
-    expect(sendButton().disabled).toBe(false);
+    expect(sendHeld()).toBe(false);
     expect(sendButton().getAttribute("aria-disabled")).toBeNull();
     await user.click(sendButton());
     await tick(0);
@@ -1181,7 +1248,7 @@ test("the live view says a session advertising no delivery mode takes no message
     "This session advertises no delivery mode, so a message sent here records a failed attempt. None of the capabilities it lists is a delivery mode this Dispatch knows."
   );
   // The capability is no mode, so the composer offers what it offers a session listing none.
-  await modeSettled("aside");
+  await modeSettled("Aside");
 
   cleanup();
   for (const spy of spies.splice(0)) spy.mockRestore();
@@ -1191,7 +1258,7 @@ test("the live view says a session advertising no delivery mode takes no message
     messages: [],
     putAgentState: answerAgentStates().mockResolvedValue({ unread_replies: 0 }),
   });
-  await screen.findByRole("combobox", { name: "Delivery mode" });
+  await deliveryPick();
   expect(screen.queryByTestId("agent-takes-no-messages")).not.toBeInTheDocument();
 });
 
@@ -1199,11 +1266,7 @@ test("the live view says a session advertising no delivery mode takes no message
 // one Dispatch could not read says that; neither narrows the delivery modes to none.
 test("the live view says the session may have ended only from a current agent list", async () => {
   const putAgentState = () => spyOn(api, "putAgentState").mockResolvedValue({ unread_replies: 0 });
-  const modes = async () =>
-    [
-      ...((await screen.findByRole("combobox", { name: "Delivery mode" })) as HTMLSelectElement)
-        .options,
-    ].map((option) => option.textContent);
+  const modes = async () => optionsOffered(userEvent.setup(), await deliveryPick());
 
   renderLiveView({
     agentState: {},
@@ -1470,10 +1533,7 @@ async function renderWithCommands(commands?: AgentStreamCommand[]): Promise<HTML
     putAgentState: answerAgentStates().mockResolvedValue({ unread_replies: 0 }),
     replay: commands === undefined ? [] : [commandsFrame(1, commands)],
   });
-  const mode = (await screen.findByRole("combobox", {
-    name: "Delivery mode",
-  })) as HTMLSelectElement;
-  await waitFor(() => expect(mode.value).toBe("steer"));
+  await modeHeld("Send");
   return within(screen.getByTestId("agent-composer")).getByRole("textbox") as HTMLTextAreaElement;
 }
 
@@ -1622,7 +1682,7 @@ test("no completion is offered without a command list or in BTW", async () => {
   for (const spy of spies.splice(0)) spy.mockRestore();
   const input = await renderWithCommands(COMMANDS);
 
-  await user.selectOptions(screen.getByRole("combobox", { name: "Delivery mode" }), "btw");
+  await pickFromList(user, await deliveryPick(), "BTW");
   await waitFor(() => expect(input.placeholder).toContain("delivered as BTW"));
   expect(input.placeholder).not.toContain("/");
   await onFakeClock(async () => {
@@ -1789,8 +1849,9 @@ const SWITCHES: AgentStreamCommand[] = [
   { name: "effort", source: "builtin" },
 ];
 
-/** The live view of a session reporting `replay`, once its model picker is on screen. */
-async function renderWithPickers(replay: AgentStreamFrame[]): Promise<LiveView> {
+/** The live view of a session reporting `replay`, once its model picker is on screen, with the
+ *  query client it is drawn over (`renderLiveView`), whose write store a row reads. */
+async function renderWithPickers(replay: AgentStreamFrame[]): Promise<QueryClient & LiveView> {
   const view = renderLiveView({
     agentState: {},
     messages: [],
@@ -2216,7 +2277,7 @@ test("a pick sends /model or /effort as a Send for a running session, whatever S
   const user = userEvent.setup();
   const createAgentMessage = spyOnSwitchSends();
   const view = await renderWithPickers([settingsFrame(1), commandsFrame(2, SWITCHES)]);
-  await user.selectOptions(screen.getByRole("combobox", { name: "Delivery mode" }), "btw");
+  await pickFromList(user, await deliveryPick(), "BTW");
 
   await user.selectOptions(picker("Model"), "custom/model@v2:high");
   await waitFor(() =>
@@ -2257,7 +2318,7 @@ test("while a switch waits the pickers and Send hold, and its reply and frame la
     "textbox"
   ) as HTMLTextAreaElement;
   await type(user, input, "and then run the tests");
-  await waitFor(() => expect(sendButton().disabled).toBe(false));
+  await waitFor(() => expect(sendHeld()).toBe(false));
 
   // The reply before the frame.
   await user.selectOptions(picker("Model"), "anthropic/model-b");
@@ -2266,7 +2327,9 @@ test("while a switch waits the pickers and Send hold, and its reply and frame la
   );
   await waitFor(() => expect(held(picker("Model"))).toBe(true));
   expect(held(picker("Thinking level"))).toBe(true);
-  expect(sendButton().disabled).toBe(true);
+  expect(sendHeld()).toBe(true);
+  // A press of a held Send sends nothing.
+  await user.click(sendButton());
   expect(createAgentMessage).toHaveBeenCalledTimes(1);
   expect(screen.getByTestId("agent-switch-status").textContent).toBe(
     "Switching model to anthropic/model-b…"
@@ -2287,13 +2350,13 @@ test("while a switch waits the pickers and Send hold, and its reply and frame la
   );
   expect(picker("Model").value).toBe("anthropic/model-a");
   expect(held(picker("Model"))).toBe(false);
-  expect(sendButton().disabled).toBe(false);
+  expect(sendHeld()).toBe(false);
   view.frame(settingsFrame(3, { model: "anthropic/model-b" }));
   await waitFor(() => expect(picker("Model").value).toBe("anthropic/model-b"));
 
   // The frame before the reply.
   await user.selectOptions(picker("Thinking level"), "high");
-  await waitFor(() => expect(sendButton().disabled).toBe(true));
+  await waitFor(() => expect(sendHeld()).toBe(true));
   view.frame(
     settingsFrame(4, {
       model: "anthropic/model-b",
@@ -2304,7 +2367,7 @@ test("while a switch waits the pickers and Send hold, and its reply and frame la
   expect(screen.getByTestId("agent-switch-status").textContent).toBe(
     "Switching thinking level to high…"
   );
-  expect(sendButton().disabled).toBe(true);
+  expect(sendHeld()).toBe(true);
   expect(held(picker("Thinking level"))).toBe(true);
   await view.storeThread([
     { message: first, replies: [sessionReply("switch-1", "Model set to anthropic/model-b.")] },
@@ -2318,7 +2381,7 @@ test("while a switch waits the pickers and Send hold, and its reply and frame la
       "The session answered: Thinking set to high."
     )
   );
-  expect(sendButton().disabled).toBe(false);
+  expect(sendHeld()).toBe(false);
   expect(picker("Thinking level").value).toBe("high");
 });
 
@@ -2408,6 +2471,53 @@ test("a switch the reader stopped says picking again sends a new switch", async 
   });
 });
 
+// A switch whose send never answers - offline, each try failing at the network - holds the
+// pickers and Send until that send's deadline and no longer: past it the switch is still tried,
+// and a pick made then sends a switch of its own, which waits behind it in the session's line.
+test("a switch lets go of the pickers and Send at its send's deadline, and a pick sends again", async () => {
+  const user = userEvent.setup();
+  const createAgentMessage = answerAgentMessages().mockRejectedValue(
+    new NetworkError("/api/v1/agents/planner/messages", new TypeError("Failed to fetch"))
+  );
+  spies.push(createAgentMessage);
+  const view = await renderWithPickers([settingsFrame(1), commandsFrame(2, SWITCHES)]);
+  await type(user, composerInput(), "and then run the tests");
+  await waitFor(() => expect(sendHeld()).toBe(false));
+
+  await onFakeClock(async () => {
+    const clockUser = userOnFakeClock();
+    await clockUser.selectOptions(picker("Model"), "anthropic/model-b");
+    await tick(0);
+    expect(createAgentMessage).toHaveBeenCalledTimes(1);
+    const switches = () =>
+      writesOf(view)
+        .rows()
+        .filter((row) => row.label.startsWith("Switch "))
+        .map((row) => row.status);
+
+    await jump(SEND_DEADLINE_MS - 1_000);
+    expect(switches(), "the switch, a second short of its deadline").toEqual(["sending"]);
+    expect(held(picker("Model")), "the Model picker, a second short of the deadline").toBe(true);
+    expect(sendHeld(), "Send, a second short of the deadline").toBe(true);
+
+    await jump(1_000);
+    expect(switches(), "the switch, past its deadline").toEqual(["late"]);
+    expect(held(picker("Model")), "the Model picker, past the deadline").toBe(false);
+    expect(held(picker("Thinking level")), "the Thinking level picker, past the deadline").toBe(
+      false
+    );
+    expect(sendHeld(), "Send, past the deadline").toBe(false);
+
+    await clockUser.selectOptions(picker("Thinking level"), "high");
+    await tick(0);
+    expect(switches(), "a pick past the deadline sends a switch behind the late one").toEqual([
+      "late",
+      "queued",
+    ]);
+    expect(held(picker("Model")), "the Model picker, behind the late switch").toBe(false);
+  });
+});
+
 /** A turn the session is still producing: the thread is mid-turn while it lasts. */
 const MID_TURN = [
   assistantFrame(1, Date.parse("2026-09-27T21:16:16Z"), "Working", undefined, true),
@@ -2432,13 +2542,18 @@ function sendButton(name = "Send"): HTMLButtonElement {
   return within(composer()).getByRole("button", { name }) as HTMLButtonElement;
 }
 
-/** Waits for the session list to settle the delivery mode on `expected`, then returns the
- *  composer's input. */
-async function modeSettled(expected: string): Promise<HTMLTextAreaElement> {
-  const mode = (await screen.findByRole("combobox", {
-    name: "Delivery mode",
-  })) as HTMLSelectElement;
-  await waitFor(() => expect(mode.value).toBe(expected));
+/** Whether a pending switch holds Send: `aria-disabled`, never `disabled`, so a Send the reader
+ *  pressed keeps the focus and its keys, and a press of it sends nothing, with no refusal of its
+ *  own, since the one refusal, an empty box, is never Send's while a switch holds it. */
+function sendHeld(): boolean {
+  const send = sendButton();
+  return heldNotDisabled(send, "Send") && !send.hasAttribute("title");
+}
+
+/** Waits for the session list to settle the delivery mode on the one `shown` names, as its trigger
+ *  shows it ("Send"), then returns the composer's input. */
+async function modeSettled(shown: string): Promise<HTMLTextAreaElement> {
+  await modeHeld(shown);
   return composerInput();
 }
 
@@ -2496,7 +2611,7 @@ test("Send stays pressable while the session is mid-turn, and a click sends at o
     putAgentState: answerAgentStates().mockResolvedValue({ unread_replies: 0 }),
     replay: MID_TURN,
   });
-  const input = await modeSettled("steer");
+  const input = await modeSettled("Send");
   await midTurnShown();
 
   await type(user, input, "try the other branch");
@@ -2523,7 +2638,7 @@ test("Enter sends while the session is mid-turn", async () => {
     putAgentState: answerAgentStates().mockResolvedValue({ unread_replies: 0 }),
     replay: MID_TURN,
   });
-  const input = await modeSettled("steer");
+  const input = await modeSettled("Send");
   await midTurnShown();
 
   await type(user, input, "stop after this file");
@@ -2551,7 +2666,7 @@ test("with an empty box Send is refused, says why on screen, and sends nothing",
     messages: [],
     putAgentState: answerAgentStates().mockResolvedValue({ unread_replies: 0 }),
   });
-  const input = await modeSettled("steer");
+  const input = await modeSettled("Send");
 
   const send = sendButton();
   expect(send).toHaveAttribute("aria-disabled", "true");
@@ -2609,7 +2724,7 @@ test("a refused send keeps the message on screen and says why", async () => {
     messages: [],
     putAgentState: answerAgentStates().mockResolvedValue({ unread_replies: 0 }),
   });
-  const input = await modeSettled("steer");
+  const input = await modeSettled("Send");
 
   await type(user, input, "try the other branch");
   await user.click(sendButton());
@@ -2637,7 +2752,7 @@ test("a held message reads as the message it becomes, never as the source typed"
     messages: [],
     putAgentState: answerAgentStates().mockResolvedValue({ unread_replies: 0 }),
   });
-  const input = await modeSettled("steer");
+  const input = await modeSettled("Send");
 
   await type(user, input, "try the **other** branch");
   await user.click(sendButton());
@@ -2659,7 +2774,7 @@ test("a refusal that lands after switching sessions stays with the session that 
     other: {},
     putAgentState: answerAgentStates().mockResolvedValue({ unread_replies: 0 }),
   });
-  const input = await modeSettled("steer");
+  const input = await modeSettled("Send");
 
   await type(user, input, "hold this");
   await user.click(sendButton());
@@ -2673,7 +2788,7 @@ test("a refusal that lands after switching sessions stays with the session that 
 
   const other = await switchTo(user, "Reviewer");
   await type(user, other, "Reviewer's own words");
-  expect(sendButton()).not.toHaveAttribute("disabled");
+  expect(sendHeld()).toBe(false);
   // The rejection and the 50 ms it is given to reach the screen run on the fake clock, so the
   // wait costs no real time. The checks below then hold that nothing of the refusal reached the
   // session on screen; the refusal itself is read after switching back.
@@ -2708,7 +2823,7 @@ test("a send pressed while another is out waits its turn, and a refused one is r
     messages: [],
     putAgentState: answerAgentStates().mockResolvedValue({ unread_replies: 0 }),
   });
-  const input = await modeSettled("steer");
+  const input = await modeSettled("Send");
   const refusal = new ApiError(400, { code: "MESSAGE_INPUT", error: "Dispatch refused it" });
 
   await type(user, input, "first");
@@ -2778,7 +2893,7 @@ test("a draft stays with its session across a switch to another", async () => {
     other: {},
     putAgentState: answerAgentStates().mockResolvedValue({ unread_replies: 0 }),
   });
-  const input = await modeSettled("steer");
+  const input = await modeSettled("Send");
 
   await type(user, input, "draft for the planner");
   const other = await switchTo(user, "Reviewer");
@@ -2797,21 +2912,21 @@ test("a draft outlives the view it was written in and comes back when it wakes",
     messages: [],
     putAgentState: answerAgentStates().mockResolvedValue({ unread_replies: 0 }),
   });
-  await type(user, await modeSettled("steer"), "half a question for the planner");
+  await type(user, await modeSettled("Send"), "half a question for the planner");
 
   // The view sleeps: nothing of it is mounted.
   cleanup();
   expect(screen.queryByTestId("agent-conversation")).not.toBeInTheDocument();
 
   renderPage(queryClient, SESSION, true);
-  expect((await modeSettled("steer")).value).toBe("half a question for the planner");
+  expect((await modeSettled("Send")).value).toBe("half a question for the planner");
 });
 
 // A model or thinking switch pending on a session holds that session's Send (it keeps reading
 // "Send", and the line under the box says what its placeholder says) and holds no other's; a
-// message out on another session holds nothing there either, and Enter sends nothing while a
-// switch holds. What the switch's own answer then does is the row above's
-// (`while a switch waits the pickers and Send hold`), on the one session.
+// message out on another session holds nothing there either, and neither a press of Send nor
+// Enter sends anything while a switch holds. What the switch's own answer then does is the row
+// above's (`while a switch waits the pickers and Send hold`), on the one session.
 test("a pending switch holds its own session's Send, and a send out on another holds nothing there", async () => {
   const user = userEvent.setup();
   const { createAgentMessage, held: answers } = holdSends();
@@ -2823,7 +2938,7 @@ test("a pending switch holds its own session's Send, and a send out on another h
     replay: [settingsFrame(1), commandsFrame(2, SWITCHES)],
   });
   await screen.findByRole("combobox", { name: "Model" });
-  await modeSettled("steer");
+  await modeSettled("Send");
 
   await user.selectOptions(picker("Model"), "anthropic/model-b");
   await waitFor(() =>
@@ -2833,7 +2948,7 @@ test("a pending switch holds its own session's Send, and a send out on another h
       keyedAttempt
     )
   );
-  await waitFor(() => expect(sendButton().disabled).toBe(true));
+  await waitFor(() => expect(sendHeld()).toBe(true));
   const wait = "Waiting for the session to answer the switch…";
   const describedBy = (sendButton().getAttribute("aria-describedby") ?? "")
     .split(" ")
@@ -2842,22 +2957,25 @@ test("a pending switch holds its own session's Send, and a send out on another h
   expect(describedBy).toBe(wait);
   expect(within(composer()).queryByText("Type a message first.")).not.toBeInTheDocument();
   await type(user, composerInput(), "and then run the tests");
-  expect(sendButton().disabled).toBe(true);
+  expect(sendHeld()).toBe(true);
   expect(within(composer()).getByText(wait)).toBeTruthy();
   expect(composerHint()).toBe(wait);
-  // The press and the 50 ms it is given run on the fake clock, so the wait costs no real time and
-  // a send the Enter put out at once is counted below. That the Enter sent nothing at all is held
-  // after the switch back, where the box still holds the draft.
+  // The presses and the 50 ms they are given run on the fake clock, so the wait costs no real time
+  // and a send a press put out at once is counted below. That the presses sent nothing at all is
+  // held after the switch back, where the box still holds the draft.
   await onFakeClock(async () => {
+    const clockUser = userOnFakeClock();
     // The paste left the caret in the box: a switch holds this press, and nothing is sent.
-    await userOnFakeClock().keyboard("{Enter}");
+    await clockUser.keyboard("{Enter}");
+    // Nor does a press of Send itself.
+    await clockUser.click(sendButton());
     await jump(50);
   });
   expect(createAgentMessage).toHaveBeenCalledTimes(1);
 
   const other = await switchTo(user, "Reviewer");
   await type(user, other, "review the diff");
-  await waitFor(() => expect(sendButton().disabled).toBe(false));
+  await waitFor(() => expect(sendHeld()).toBe(false));
   await user.click(sendButton());
   await waitFor(() =>
     expect(createAgentMessage).toHaveBeenLastCalledWith(
@@ -2886,7 +3004,7 @@ test("a pending switch holds its own session's Send, and a send out on another h
     await jump(50);
   });
   await switchTo(user, "Reviewer");
-  expect(sendButton().disabled).toBe(false);
+  expect(sendHeld()).toBe(false);
 });
 
 // A session advertising no delivery mode keeps today's behaviour mid-turn too: Send is
@@ -3120,6 +3238,15 @@ test("one row under the message box holds the delivery picker, the machine, the 
   ).toEqual(["agent-composer", "agent-composer-footer"]);
 });
 
+// The facts scroll sideways at a phone width, and Firefox makes a box that scrolls a Tab stop of
+// its own, which here would read as nothing: the delivery picker and the session's pickers are
+// the row's stops.
+test("the row's facts, which scroll sideways at a phone width, are no Tab stop of their own", async () => {
+  await renderWithPickers([settingsFrame(1), commandsFrame(2, SWITCHES)]);
+
+  expect(screen.getByTestId("agent-composer-facts")).toHaveAttribute("tabindex", "-1");
+});
+
 // R3, R6. The ring reports what the session said about its window, so a session that published
 // no `context` frame has no ring at all - never one drawn at zero - and one appears where it
 // belongs the moment the session publishes.
@@ -3246,7 +3373,7 @@ test("the line under the message box reads nothing at rest and carries Send's re
     messages: [],
     putAgentState: answerAgentStates().mockResolvedValue({ unread_replies: 0 }),
   });
-  const input = await modeSettled("steer");
+  const input = await modeSettled("Send");
 
   expect(composerHint()).toBe("");
 

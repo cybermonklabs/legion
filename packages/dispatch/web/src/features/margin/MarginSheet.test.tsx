@@ -96,6 +96,7 @@ test("an issue margin offers Comments and Pinned, Comments first", () => {
         sheet: {
           closeThread: () => {},
           expanded: false,
+          keepFocusOnClose: () => false,
           replySending: false,
           thread: undefined,
           toggle: () => {},
@@ -207,6 +208,7 @@ test("a document owner shows the Comments tab and comment composer only", () => 
           sheet: {
             closeThread: () => {},
             expanded: true,
+            keepFocusOnClose: () => false,
             replySending: false,
             thread: undefined,
             toggle: () => {},
@@ -348,6 +350,7 @@ test("MarginSheet shows the selected phone thread in a full-height view with a B
                 closed = true;
               },
               expanded: true,
+              keepFocusOnClose: () => false,
               replySending: false,
               thread: {
                 anchor: root.anchor,
@@ -372,7 +375,12 @@ test("MarginSheet shows the selected phone thread in a full-height view with a B
   try {
     const thread = screen.getByRole("dialog", { name: "Thread" });
     expect(thread.className).toContain("inset-0");
-    expect(within(thread).getByTestId(`margin-comment-${root.id}`)).not.toBeNull();
+    const box = within(thread).getByTestId("margin-thread-box");
+    expect(within(box).getByTestId(`margin-comment-${root.id}`)).not.toBeNull();
+    // The view's box scrolls a long thread, and Firefox makes a box that scrolls a Tab stop of its
+    // own, which here would read as nothing: the card's controls are the stops.
+    expect(box.parentElement).toBe(thread);
+    expect(box).toHaveAttribute("tabindex", "-1");
     await user.keyboard("{Escape}");
     expect(closed).toBe(true);
     expect(sheetClosed).toBe(false);
@@ -512,6 +520,7 @@ test("the standalone document phone sheet shows each suggestion's diff and Accep
             sheet: {
               closeThread: () => {},
               expanded: true,
+              keepFocusOnClose: () => false,
               replySending: false,
               thread: undefined,
               toggle: () => {},

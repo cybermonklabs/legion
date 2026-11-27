@@ -1,4 +1,4 @@
-import { type ReactNode, useRef, useState } from "react";
+import { type ReactNode, useCallback, useRef, useState } from "react";
 
 import {
   backdrop50,
@@ -7,10 +7,11 @@ import {
   textMutedOnSurface,
   textPrimaryOnSurface,
 } from "../../theme/classes";
-import type { InboxRoute } from "../refs/routes";
-import { DIALOG_SCOPE } from "../shell/keymap";
-import { useCloseOnNavigation, useDialog } from "../shell/useDialog";
+import { useShortcutHelpOpener } from "../issue-page/shortcut-help-opener";
+import { DIALOG_SCOPE, KeymapGateContext, useKeymap } from "../shell/keymap";
+import { noDialogOver, useCloseOnNavigation, useDialog } from "../shell/useDialog";
 import { Inbox } from "./Inbox";
+import type { InboxRoute } from "./inbox-route";
 
 /**
  * The Inbox as a peek over whatever page is open (LEGION-547): the same list, cards and actions
@@ -31,6 +32,10 @@ import { Inbox } from "./Inbox";
  * moves nothing here, and the row the reader's hand is on jumps by a card's height. What the
  * reader's browser keeps - the thread order, and which bands they folded - is theirs rather than
  * the address's, so the drawer and the page agree.
+ *
+ * Every key of its tree is gated on no dialog standing over the drawer (`KeymapGateContext`):
+ * the Inbox's keys share the `dialog` scope with any dialog opened over the drawer - the `?`
+ * help, a card's Decline box - and would otherwise act behind it.
  */
 export function InboxDrawer({ onClose, open }: { onClose: () => void; open: boolean }): ReactNode {
   const closeButtonRef = useRef<HTMLButtonElement>(null);
@@ -39,6 +44,25 @@ export function InboxDrawer({ onClose, open }: { onClose: () => void; open: bool
   const [filter, setFilter] = useState<InboxRoute>({});
   const dialog = useDialog<HTMLElement>({ initialFocusRef: closeButtonRef, onClose, open });
   useCloseOnNavigation(open, onClose);
+  // Whether no dialog stands over the drawer: what every key of its tree needs, and its `?`. That
+  // holds from the commit that opens it, before `useDialog`'s effect counts it among the open
+  // dialogs, so a key pressed at once after `i` is the drawer's.
+  const uncovered = useCallback(
+    () => noDialogOver(dialog.containerRef.current),
+    [dialog.containerRef]
+  );
+  // `?` opens the help over the drawer (R13), which lists the Inbox's keys under Inbox. The drawer
+  // is the one dialog that registers a page's keys, and the dialog scope it pushes masks the
+  // shell's own `?` (`app.tsx`), so it binds the action again in that scope, on the person's keys
+  // for it. The key stands down under a dialog opened over the drawer, the help among them, and in
+  // a text field, the action not being `inEditable`.
+  const openHelp = useShortcutHelpOpener();
+  useKeymap(
+    DIALOG_SCOPE,
+    open && openHelp !== undefined
+      ? [{ action: "global.help", run: openHelp, when: uncovered }]
+      : []
+  );
 
   if (!open) {
     return null;
@@ -54,24 +78,26 @@ export function InboxDrawer({ onClose, open }: { onClose: () => void; open: bool
         ref={dialog.containerRef}
         role="dialog"
       >
-        <div className={`mb-4 flex items-center justify-between border-b pb-3 ${borderDefault}`}>
-          <h2 className={`text-base font-semibold ${textPrimaryOnSurface}`}>Inbox</h2>
-          <button
-            className={`min-h-11 rounded-lg px-3 text-sm font-medium ${textMutedOnSurface}`}
-            onClick={onClose}
-            ref={closeButtonRef}
-            type="button"
-          >
-            Close
-          </button>
-        </div>
-        <Inbox
-          filter={filter}
-          keymapScope={DIALOG_SCOPE}
-          onFilterChange={setFilter}
-          pane={false}
-          scroller={dialog.containerRef}
-        />
+        <KeymapGateContext.Provider value={uncovered}>
+          <div className={`mb-4 flex items-center justify-between border-b pb-3 ${borderDefault}`}>
+            <h2 className={`text-base font-semibold ${textPrimaryOnSurface}`}>Inbox</h2>
+            <button
+              className={`min-h-11 rounded-lg px-3 text-sm font-medium ${textMutedOnSurface}`}
+              onClick={onClose}
+              ref={closeButtonRef}
+              type="button"
+            >
+              Close
+            </button>
+          </div>
+          <Inbox
+            filter={filter}
+            keymapScope={DIALOG_SCOPE}
+            onFilterChange={setFilter}
+            pane={false}
+            scroller={dialog.containerRef}
+          />
+        </KeymapGateContext.Provider>
       </aside>
     </>
   );

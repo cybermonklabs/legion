@@ -24,6 +24,7 @@ import {
 } from "../../theme/classes";
 import { useAgentPinWrite, usePinnedAgents } from "../agents/pins";
 import { useMarkRepliesRead } from "../agents/unread";
+import { DeliveryModePick } from "../conversation/DeliveryModePick";
 import { deliveryModesOf, MODE_LABELS, noDeliveryLine } from "../conversation/delivery";
 import { useAgents } from "../conversation/useAgents";
 import { useSessionSends } from "../conversation/useSessionSends";
@@ -283,9 +284,11 @@ export function AgentConversationPage({
   // the page, and a pick the session does not advertise would be refused.
   const [picked, setPicked] = useState<MessageDeliveryMode | null>(null);
   const mode = picked !== null && modes.includes(picked) ? picked : (modes[0] ?? "aside");
-  // Which panel of the footer row stands open, since both open upwards over the transcript from
-  // the same corner: one at a time, as a `MultiSelect`'s host holds its list.
-  const [panel, setPanel] = useState<"context" | "help" | null>(null);
+  // Which panel of the footer row stands open, since all three open upwards over the transcript
+  // from the same corner: the Delivery mode's list, the ring's and the question mark's. One at a
+  // time, so opening one closes the other, from the keyboard too, where no press outside closes
+  // the one left open; it is the list's open state as a `MultiSelect`'s host holds it.
+  const [panel, setPanel] = useState<"context" | "help" | "mode" | null>(null);
   // The ring's panel goes with the ring: a session that stops reporting its window takes the ring
   // away, and its next reading draws the ring closed rather than reopening a panel by itself.
   if (panel === "context" && conversation.context === undefined) setPanel(null);
@@ -326,6 +329,7 @@ export function AgentConversationPage({
   const queryClient = useQueryClient();
   const switchWrite = useKeyedWrite<Message, { request: SwitchRequest; session: string }>({
     inline: true,
+    readsLate: true,
     label: ({ request }) =>
       request.kind === "model"
         ? `Switch ${label}'s model to ${request.value}`
@@ -359,10 +363,16 @@ export function AgentConversationPage({
   );
   const switchRefusal =
     switchWrite.isError && switchWrite.variables?.session === sessionId ? switchWrite.error : null;
-  // A switch holds only the session it went to, from the press until the session answers.
+  // A switch holds only the session it went to, from the press until the session answers. Its
+  // send is a keyed write, tried until Dispatch decides it: past that write's deadline (`late`)
+  // the switch holds the pickers and Send no longer, so a send that never answers locks neither,
+  // and a pick or a message made then goes behind it in the session's line. The wait for the
+  // session's answer after Dispatch has the switch keeps its own deadline (`useSessionSwitch`).
+  const switchLate = switchWrite.late && switchWrite.variables?.session === sessionId;
   const switchPending =
-    sessionSwitch.pending ||
-    (switchWrite.isPending && switchWrite.variables?.session === sessionId);
+    !switchLate &&
+    (sessionSwitch.pending ||
+      (switchWrite.isPending && switchWrite.variables?.session === sessionId));
   const presence = shown === undefined ? undefined : STATUS[shown];
   // The warning of a session whose capabilities hold no delivery mode; undefined for one that
   // takes a mode.
@@ -503,23 +513,24 @@ export function AgentConversationPage({
             the box's right edge however far the facts scroll, and their panels open upwards
             from here rather than inside a clipped scroller. */}
         <div className="mt-2 flex items-center gap-2 text-xs" data-testid="agent-composer-footer">
+          {/* No Tab stop of its own, which Firefox gives a box that scrolls, with no name: the
+              Delivery mode's trigger and the session's pickers are the stops that bring each into
+              view as it takes the focus. The mode's list is portalled out of this scroller, so
+              it opens whole over the transcript rather than clipped inside the row. */}
           <div
             className="flex min-w-0 flex-1 flex-nowrap items-center gap-x-3 gap-y-1 overflow-x-auto sm:flex-wrap sm:overflow-x-visible"
             data-testid="agent-composer-facts"
+            tabIndex={-1}
           >
-            <select
-              aria-label="Delivery mode"
-              className={`min-h-8 shrink-0 rounded-lg px-2 py-1 text-xs ${inputClasses(false)}`}
-              data-testid="agent-delivery-picker"
-              onChange={(event) => setPicked(event.target.value as MessageDeliveryMode)}
+            <DeliveryModePick
+              marks={{ trigger: { "data-testid": "agent-delivery-picker" } }}
+              modes={modes}
+              onOpenChange={(next) => setPanel(next ? "mode" : null)}
+              onPick={setPicked}
+              open={panel === "mode"}
+              triggerClassName={`min-h-8 shrink-0 rounded-lg px-2 py-1 text-xs ${inputClasses(false)}`}
               value={mode}
-            >
-              {modes.map((candidate) => (
-                <option key={candidate} value={candidate}>
-                  {MODE_LABELS[candidate]}
-                </option>
-              ))}
-            </select>
+            />
             {/* A claim that the session is gone starts only from a current list. The header's
                 presence and the transcript's line keep that fact through a failed read, from the
                 kept rows of the last read that returned a list; this line waits for a current

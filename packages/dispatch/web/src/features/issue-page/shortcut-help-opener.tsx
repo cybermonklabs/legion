@@ -3,7 +3,8 @@ import { createContext, useContext } from "react";
 /**
  * Opens the list of the keys the page binds (`ShortcutHelp.tsx`), which `?` opens, for a page
  * that draws a control of its own for it: the issue page's Keys, at the right of its filter row
- * (R11 and the 1440 px picture). `undefined` outside the shell, where no
+ * (R11 and the 1440 px picture). The Inbox drawer opens it too, from its own `?`: the dialog
+ * scope it pushes masks the shell's (`InboxDrawer.tsx`). `undefined` outside the shell, where no
  * list is drawn to open.
  */
 export const ShortcutHelpOpener = createContext<(() => void) | undefined>(undefined);

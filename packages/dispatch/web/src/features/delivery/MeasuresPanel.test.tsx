@@ -4,6 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 
 import type { DeliveryDailyPoint, DeliveryMeasuresResponse } from "../../api/types";
+import { borderDefault } from "../../theme/classes";
 import { MeasuresPanel } from "./MeasuresPanel";
 
 afterEach(cleanup);
@@ -266,6 +267,23 @@ test("the definitions fold opens to the definition cards and the per-day table, 
     "100.0%",
     "0",
   ]);
+});
+
+test("the per-day table pads its cells 2 px above and below, in a box with a rounded border", async () => {
+  const user = userEvent.setup();
+  renderPanel(fixtureMeasures);
+  await user.click(screen.getByRole("button", { name: "Definitions & alternatives" }));
+  const table = screen.getByRole("table", { name: "Per day (UTC), newest first" });
+  const cells = Array.from(table.querySelectorAll("tbody td"));
+  // Every one of the window's 29 days, six cells each.
+  expect(cells.length).toBe(29 * 6);
+  // `py-0.5` is 0.125rem: a row is the 16 px line, 2 px above and below it, and its top border.
+  const unpadded = cells.filter((cell) => !cell.classList.contains("py-0.5"));
+  expect(unpadded.map((cell) => `${cell.textContent}: ${cell.className}`)).toEqual([]);
+  const box = table.closest('[data-control="table-shell"]');
+  expect(box?.className.split(" ")).toEqual(
+    expect.arrayContaining(["rounded", "border", ...borderDefault.split(" ")])
+  );
 });
 
 test("a pending read shows the six cards' frame with an ellipsis for each number", () => {

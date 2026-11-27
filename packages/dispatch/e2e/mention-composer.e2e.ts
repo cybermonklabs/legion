@@ -174,7 +174,7 @@ test("a conversation send holds Reply from the same task", async ({ browser }) =
       sendButton.click();
     });
 
-    await expect(reply).toBeDisabled();
+    await expect(reply).toHaveAttribute("aria-disabled", "true");
     send.release();
     await expect(field).toHaveValue("");
   } finally {
@@ -254,7 +254,7 @@ test("a conversation thread's own reply holds Collapse thread while it is out", 
 
     await expect(field).toHaveValue("Thread reply");
     await expect(field).toBeDisabled();
-    await expect(collapse).toBeDisabled();
+    await expect(collapse).toHaveAttribute("aria-disabled", "true");
     refuse();
     await expect(form.getByText(WRITE_REFUSED_TEXT)).toBeVisible();
     await expect(field).toHaveValue("Thread reply");

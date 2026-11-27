@@ -83,7 +83,6 @@ import { suggestionsPlugins } from 'proof-sdk-upstream/src/editor/plugins/sugges
 import { markPopoverPlugin } from 'proof-sdk-upstream/src/editor/plugins/mark-popover';
 import { arrowCommentPlugin } from 'proof-sdk-upstream/src/editor/plugins/arrow-comment';
 import { findHighlightsPlugin } from 'proof-sdk-upstream/src/editor/plugins/find-highlights';
-import { markdownLinkClickPlugin } from 'proof-sdk-upstream/src/editor/plugins/markdown-link-click';
 import { mermaidCodeBlockPlugin } from './mermaid-code-block-view';
 import type { MermaidDrawer } from './mermaid-svg';
 import { taskCheckboxesPlugin } from 'proof-sdk-upstream/src/editor/plugins/task-checkboxes';
@@ -103,6 +102,8 @@ import { commentOnSelection, dispatchActionBarPlugin, setAccess } from './dispat
 import type { ProofEditorAccess } from './dispatch-action-bar';
 import { registerPopoverHookInstance } from './dispatch-popover-hook';
 import { dispatchMarkEventsPlugin } from './dispatch-mark-events';
+import { dispatchLinkOpenPlugin, linkAtCaret } from './dispatch-link-open';
+import type { OpenLink } from './dispatch-link-open';
 import { remarkSoftBreakAsSpace } from './dispatch-soft-breaks';
 import { configureDispatchLinks } from './dispatch-links';
 import { trailingNewlineInputPlugin } from './trailing-newline-input';
@@ -121,6 +122,7 @@ import {
 import type { ChangeDecorations } from './editor-change-decorations';
 import {
   referenceDecorationsPlugin,
+  setReferenceAccess,
   setReferences as applyReferences,
 } from './reference-decorations';
 import type { EditorReferences } from './reference-decorations';
@@ -135,6 +137,7 @@ import type { RemarkOutcome, RetypeOutcome } from './record-mark-retype';
 
 export type { MarkAction, RecordMarkPlacement, SelectionBarActionKind, PopoverActionKind } from './dispatch-marks';
 export type { ProofEditorAccess } from './dispatch-action-bar';
+export type { OpenLink } from './dispatch-link-open';
 export type { RemarkOutcome, RemarkRefusal, RetypedMark, RetypeRefusal, RetypeOutcome } from './record-mark-retype';
 export type { BlockWidget, ChangeDecorations, TextDecoration } from './editor-change-decorations';
 export type { EditorReferences, OfferedReference, ReferenceCandidate, ReferenceTarget } from './reference-decorations';
@@ -206,6 +209,10 @@ export interface CreateProofEditorOptions {
   /** The host's Mermaid renderer, which draws each mermaid code block's diagram. Without one a
    *  document's mermaid blocks show their source. */
   drawMermaid?: MermaidDrawer;
+  /** The host's link opener, which a click on a link of the document calls - a plain primary
+   *  click in every access mode, a Ctrl, Cmd or middle click for a new tab - and the handle's
+   *  `openLinkAtCaret` (./dispatch-link-open.ts). Without one, the editor opens no link. */
+  openLink?: OpenLink;
   /** Whether the editor writes Proof's marks of its own. Defaults to true. Turned off, it
    *  offers no mark action - neither the selection bar's Comment, Suggest and Ask, nor the mark
    *  popover's actions, nor the " ->" comment shortcut, nor the popover hook - and records no
@@ -300,6 +307,13 @@ export interface ProofEditorHandle extends TypedBlockCommands {
    *  the editor reports the document's candidate keys to, in one value that replaces the last
    *  one; `null` draws none. See ./reference-decorations.ts. */
   setReferences(references: EditorReferences | null): void;
+  /** The target of the link the caret is in or beside, or of the reference whose title stands
+   *  for the text there: what `openLinkAtCaret` opens, null where there is none. A host's key
+   *  for that action applies only where this answers one. */
+  linkAtCaret(): string | null;
+  /** Opens what `linkAtCaret` answers through the host's `openLink`, in the same tab, changing
+   *  no text; answers whether it opened one - false with no link there or no `openLink`. */
+  openLinkAtCaret(): boolean;
   /** Hosts the reference picker in the document, in place of the last one; `null` hosts none.
    *  The host is told what stands before the caret and is offered the focused document's keys,
    *  and writes a pick through `insertReference`. See ./reference-picker.ts. */
@@ -504,7 +518,9 @@ export async function createProofEditor(
     .use(findHighlightsPlugin)
     .use(taskCheckboxesPlugin)
     .use(mermaidCodeBlockPlugin(opts.drawMermaid))
-    .use(markdownLinkClickPlugin)
+    // The document's links open through the host (./dispatch-link-open.ts), in place of
+    // upstream's markdownLinkClickPlugin and its Open link card.
+    .use(opts.openLink ? dispatchLinkOpenPlugin(opts.openLink) : [])
     // Register unified marks plugin
     .use(marksPlugins)
     // Allow Backspace to delete empty table rows
@@ -546,6 +562,7 @@ export async function createProofEditor(
     currentAccess = access;
     setAccess(view, access);
     view.setProps({ editable: () => access === 'edit' });
+    setReferenceAccess(view, access === 'edit');
   };
   applyAccess(currentAccess);
 
@@ -708,6 +725,15 @@ export async function createProofEditor(
     },
     setReferences(references: EditorReferences | null): void {
       applyReferences(view, references);
+    },
+    linkAtCaret(): string | null {
+      return view.isDestroyed ? null : (linkAtCaret(view) ?? null);
+    },
+    openLinkAtCaret(): boolean {
+      const target = view.isDestroyed ? undefined : linkAtCaret(view);
+      if (target === undefined || opts.openLink === undefined) return false;
+      opts.openLink(target, { newTab: false });
+      return true;
     },
     setReferencePicker(picker: EditorReferencePicker | null): void {
       applyReferencePicker(view, picker);

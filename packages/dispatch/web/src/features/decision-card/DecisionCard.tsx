@@ -3,6 +3,7 @@ import { type FormEvent, type ReactNode, useState } from "react";
 import { Link } from "react-router-dom";
 
 import type { Actor, DisplayTree } from "../../api/types";
+import { heldPress } from "../../components/held-press";
 import { PAGE_LOOKS } from "../../components/RefusableButton";
 import { Dot, KindBullet } from "../../components/RowMarks";
 import type { PageWords } from "../../components/tooltips";
@@ -177,6 +178,7 @@ export interface CardPaths {
 export interface CardKeepAct {
   readonly error: Error | null;
   readonly keep: () => void;
+  /** Whether Keep is held: its write is out within its deadline. */
   readonly pending: boolean;
 }
 
@@ -185,9 +187,14 @@ export interface CardChangeAct {
   /** Sends the change `body`. `sent` runs once the write lands. */
   readonly change: (body: string, sent: () => void) => void;
   readonly error: Error | null;
+  /** Whether Send change is held: the change, or the read of the document it is anchored over,
+   *  is out within its deadline. */
   readonly pending: boolean;
   /** The decision's words the change is anchored on, which the form quotes. */
   readonly quote: string;
+  /** Whether the last press of Send change sent nothing, since the change sent before is still
+   *  out past its deadline (`useOneCreateOut`). */
+  readonly stillSending: boolean;
 }
 
 /** The decision's heading as its caller hands it to the card: drawn by the caller's renderer
@@ -530,8 +537,8 @@ function DecisionActs({
         {keep === undefined ? null : (
           <button
             className={tones.secondary}
-            disabled={keep.pending}
-            onClick={keep.keep}
+            // Held while its Keep is out within its deadline (`heldPress`), and no longer.
+            {...heldPress(keep.pending, keep.keep)}
             type="button"
             {...marks?.pageChrome}
           >
@@ -639,10 +646,18 @@ function ChangeForm({
             : change.error.message}
         </p>
       )}
+      {change.stillSending ? (
+        <p className={`text-sm ${tones.ink}`} role="status" {...marks?.pageChrome}>
+          {`${DECISION_ACT_WORDS.send_change} ${DECISION_ACT_WORDS.still_sending}`}
+        </p>
+      ) : null}
       <div className="flex gap-2">
         <button
+          // Held, not disabled, while the change is out within its deadline (`pending`): it
+          // keeps the focus the press gave it, and Enter or a second press sends nothing more.
+          aria-disabled={change.pending || undefined}
           className={tones.filled}
-          disabled={change.pending || body.trim() === ""}
+          disabled={body.trim() === ""}
           type="submit"
           {...marks?.pageChrome}
         >

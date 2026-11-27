@@ -1,19 +1,33 @@
 import { beforeAll, expect, jest, spyOn, test } from "bun:test";
 import { MAX_ISSUE_ADVANCES } from "@legion/contracts";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import {
+  onlineManager,
+  QueryClient,
+  QueryClientProvider,
+  QueryObserver,
+} from "@tanstack/react-query";
+import { act, cleanup, render, renderHook, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
-import { realClock } from "../../__tests__/fake-clock";
+import { holdNotifications } from "../../__tests__/commits";
+import { realClock, settle, tick } from "../../__tests__/fake-clock";
+import { heldAnswers } from "../../__tests__/held-answers";
+import { heldNotDisabled } from "../../__tests__/held-press";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
+import { textBoxes } from "../../__tests__/list-picks";
 import { answerIssuePatches } from "../../__tests__/send-answers";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
-import { ApiError, api, NetworkError } from "../../api/client";
-import type { Issue, Priorities, PriorityRow } from "../../api/types";
+import { ApiError, api, NetworkError, REQUEST_DEADLINE_MS } from "../../api/client";
+import { DispatchQueryClient } from "../../api/query-client";
+import type { Issue, IssueDetails, Priorities, PriorityRow } from "../../api/types";
+import { useIssueComponents } from "../issue/useIssueComponents";
+import { emulateChromiumFocusFixup } from "../issue-page/chromium-focus-fixup";
+import { NoTooltips } from "../issue-page/NoTooltips";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
-import { stoppedWriteNote } from "../writes/keyed-write";
+import { SEND_DEADLINE_MS, stoppedWriteNote } from "../writes/keyed-write";
 import { writesOf } from "../writes/write-store";
 import { IssuePriorityLine, PRIORITY_TRIGGER_AFTER_CHIP } from "./IssuePriorityLine";
 
@@ -67,23 +81,36 @@ const REVISION = 41;
 // The line's own queries are scoped to this render's container: bun runs every test file in one
 // document, and a sibling file's un-unmounted render would otherwise leak its links into a
 // `screen`-wide query. The picker's list is portalled to the body, so it is found there by its
-// own name, which no other surface carries, and read within itself.
-function renderLine(advances: Issue["advances"], closed = false, read: Priorities = body) {
+// own name, which no other surface carries, and read within itself. `page` draws the line inside
+// the new issue page's `NoTooltips`, through `queryClient` where given.
+function renderLine(
+  advances: Issue["advances"],
+  closed = false,
+  read: Priorities = body,
+  {
+    page = false,
+    queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } }),
+  }: { page?: boolean; queryClient?: QueryClient } = {}
+) {
   const listPriorities = spyOn(api, "listPriorities").mockResolvedValue(read);
   const patchIssue = answerIssuePatches();
   patchIssue.mockResolvedValue({} as never);
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const invalidations = spyOn(queryClient, "invalidateQueries");
-  const line = (entries: Issue["advances"], revision: number) => (
-    <MemoryRouter>
-      <QueryClientProvider client={queryClient}>
-        <IssuePriorityLine
-          disabled={closed}
-          issue={{ advances: entries, advances_revision: revision, key: "CORE-9" }}
-        />
-      </QueryClientProvider>
-    </MemoryRouter>
-  );
+  const line = (entries: Issue["advances"], revision: number) => {
+    const drawn = (
+      <IssuePriorityLine
+        disabled={closed}
+        issue={{ advances: entries, advances_revision: revision, key: "CORE-9" }}
+      />
+    );
+    return (
+      <MemoryRouter>
+        <QueryClientProvider client={queryClient}>
+          {page ? <NoTooltips>{drawn}</NoTooltips> : drawn}
+        </QueryClientProvider>
+      </MemoryRouter>
+    );
+  };
   const view = render(line(advances, REVISION));
   const q = within(view.container);
   return {
@@ -440,11 +467,426 @@ test("a write the reader stopped says it may have been saved, not that it failed
   }
 });
 
+/** Opens the picker, unticks the issue's one own priority and closes the picker with Escape under
+ *  a held clock: the close writes the set, and the write is left out for the case to answer. The
+ *  trigger then holds the focus and is held (`aria-disabled`, never `disabled`), and a press of it,
+ *  by the keyboard and by the pointer, opens no picker and sends nothing more. */
+async function closeAndHold(
+  view: {
+    picker: () => Promise<HTMLElement>;
+    trigger: () => HTMLElement;
+    patchIssue: { mock: { calls: readonly unknown[] } };
+  },
+  name: string,
+  beforeClose?: () => void
+): Promise<void> {
+  const trigger = view.trigger() as HTMLButtonElement;
+  const user = userEvent.setup();
+  await user.click(trigger);
+  const listbox = await view.picker();
+  await user.click(
+    await within(listbox).findByRole("option", { name: "#1 Evals collecting data now" })
+  );
+  jest.useFakeTimers();
+  beforeClose?.();
+  const held = userOnFakeClock();
+  await held.keyboard("{Escape}");
+  await waitFor(() => expect(view.patchIssue).toHaveBeenCalledTimes(1));
+  expect(trigger).toHaveFocus();
+  expect(heldNotDisabled(trigger, name)).toBe(true);
+  await held.keyboard("{Enter}");
+  await held.click(trigger);
+  expect(screen.queryByRole("listbox", { name: "Priorities options" })).toBeNull();
+  expect(view.patchIssue).toHaveBeenCalledTimes(1);
+  expect(trigger).toHaveFocus();
+}
+
+// Offline, a write of the line is tried under its key until Dispatch answers it: each try fails at
+// the network, and the next waits out its backoff. At its deadline (`SEND_DEADLINE_MS`) the write
+// goes late, still tried and now stoppable at the shell's indicator, and the line's hold ends
+// there, so a write that never answers holds none of its controls for good, as the Legion daemons
+// form's hold ends (`LegionDaemonsSection`). The picker's trigger keeps the focus while it is
+// held and once it is let go, under `emulateChromiumFocusFixup` throughout.
+test("offline, the priorities picker's trigger is held until its write's deadline, let go there, and keeps the focus throughout", async () => {
+  const view = renderLine([{ id: "evals-now", inherited: false }]);
+  view.patchIssue.mockRejectedValue(
+    new NetworkError("/api/v1/issues/CORE-9", new TypeError("Failed to fetch"))
+  );
+  const name = "Edit priorities";
+  const online = onlineManager.isOnline();
+  const stopFocusFixup = emulateChromiumFocusFixup();
+  try {
+    const trigger = view.trigger() as HTMLButtonElement;
+    await closeAndHold(view, name, () => onlineManager.setOnline(false));
+
+    // A second short of the deadline the write is still within it, and the trigger still held.
+    await tick(SEND_DEADLINE_MS - 1_000);
+    expect(writesOf(view.queryClient).rows()[0]?.status).toBe("sending");
+    expect(heldNotDisabled(trigger, name)).toBe(true);
+    expect(trigger).toHaveFocus();
+
+    // Past it the write is late and still tried, and the trigger is let go with the focus on it.
+    await tick(1_000);
+    expect(writesOf(view.queryClient).rows()[0]?.status).toBe("late");
+    expect(heldNotDisabled(trigger, name)).toBe(false);
+    expect(trigger).toHaveFocus();
+  } finally {
+    // The line and its reads go before the network returns, so no read goes on after it.
+    cleanup();
+    view.unmountAll();
+    view.queryClient.clear();
+    onlineManager.setOnline(online);
+    stopFocusFixup();
+    realClock();
+  }
+});
+
+// Inside `NoTooltips` the line holds its trigger through the reads its write makes again. A write
+// that lands just as the browser goes offline has those reads paused by the network, with no
+// deadline of their own running: the app's client holds a read of an idle query until its paused
+// fetch answers (`DispatchQueryClient`). So the line holds the trigger only up to the request
+// deadline (`REQUEST_DEADLINE_MS`), and lets it go there, with the focus on it.
+test("offline, inside NoTooltips, the priorities picker's trigger is held through the reads its landed write made only until the request deadline", async () => {
+  const view = renderLine([{ id: "evals-now", inherited: false }], false, body, {
+    page: true,
+    queryClient: new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } }),
+  });
+  const answer = Promise.withResolvers<never>();
+  view.patchIssue.mockImplementation(() => answer.promise);
+  const name = "Edit priorities";
+  const online = onlineManager.isOnline();
+  const stopFocusFixup = emulateChromiumFocusFixup();
+  try {
+    const trigger = view.trigger() as HTMLButtonElement;
+    await closeAndHold(view, name);
+    onlineManager.setOnline(false);
+    await act(async () => answer.resolve({} as never));
+
+    // A second short of the request deadline the reads are still paused, and the trigger held.
+    await tick(REQUEST_DEADLINE_MS - 1_000);
+    expect(heldNotDisabled(trigger, name)).toBe(true);
+    expect(trigger).toHaveFocus();
+
+    // At it the line lets the trigger go, with the focus on it.
+    await tick(1_000);
+    expect(heldNotDisabled(trigger, name)).toBe(false);
+    expect(trigger).toHaveFocus();
+  } finally {
+    cleanup();
+    view.unmountAll();
+    view.queryClient.clear();
+    onlineManager.setOnline(online);
+    stopFocusFixup();
+    realClock();
+  }
+});
+
+// Inside `NoTooltips` a write that lands while the reads it made stale go unanswered: the line
+// holds its trigger through them up to the request deadline, lets it go there, with the focus on
+// it, and says why, in the words it says for a read of the priorities that failed and then the
+// error such a read ends with. The line goes once those reads settle.
+test("inside NoTooltips, a landed write whose reads have not answered by the request deadline lets the picker's trigger go there, and the line says why until they settle", async () => {
+  const view = renderLine([{ id: "evals-now", inherited: false }], false, body, { page: true });
+  const answer = Promise.withResolvers<never>();
+  view.patchIssue.mockImplementation(() => answer.promise);
+  const reread = Promise.withResolvers<Priorities>();
+  const name = "Edit priorities";
+  const why = "Could not load the priorities. Dispatch did not answer within 30 seconds.";
+  const stopFocusFixup = emulateChromiumFocusFixup();
+  try {
+    const trigger = view.trigger() as HTMLButtonElement;
+    await closeAndHold(view, name);
+    view.listPriorities.mockImplementation(() => reread.promise);
+    await act(async () => answer.resolve({} as never));
+    await tick(0);
+    expect(view.listPriorities).toHaveBeenCalledTimes(2);
+
+    // A second short of the request deadline the priorities' read is still out, the trigger
+    // held, and nothing said.
+    await tick(REQUEST_DEADLINE_MS - 1_000);
+    expect(heldNotDisabled(trigger, name)).toBe(true);
+    expect(view.q.queryByText(why)).toBeNull();
+
+    // At it the line lets the trigger go, with the focus on it, and says why.
+    await tick(1_000);
+    expect(heldNotDisabled(trigger, name)).toBe(false);
+    expect(trigger).toHaveFocus();
+    expect(view.q.getByRole("alert").textContent).toBe(why);
+
+    // The read answers, and the line goes.
+    await act(async () => reread.resolve(body));
+    await tick(0);
+    expect(view.q.queryByText(why)).toBeNull();
+    expect(view.q.queryByRole("alert")).toBeNull();
+  } finally {
+    reread.resolve(body);
+    cleanup();
+    view.unmountAll();
+    view.queryClient.clear();
+    stopFocusFixup();
+    realClock();
+  }
+});
+
+// Inside `NoTooltips` the request deadline ends the line's hold and draws why in one change of
+// the hold's store, and the write, which `onSettled` keeps pending through that hold, stops
+// pending as it ends. The trigger lets go in that same task, so an Enter pressed once the line
+// says why opens the picker (the tester's row of `issue-page-h.e2e.ts`). A browser tells
+// TanStack's observers of the write's end a timer later (`holdNotifications`), so the row holds
+// those notifications back. The reads start as the write lands, before the clock moves, so one
+// jump of the deadline lands on the bound's own timer, and only microtasks run after it.
+test("inside NoTooltips, the picker's trigger is let go in the task the line says why at the request deadline, and Enter there opens the picker", async () => {
+  const view = renderLine([{ id: "evals-now", inherited: false }], false, body, { page: true });
+  const answer = Promise.withResolvers<never>();
+  view.patchIssue.mockImplementation(() => answer.promise);
+  const reread = Promise.withResolvers<Priorities>();
+  const name = "Edit priorities";
+  const why = "Could not load the priorities. Dispatch did not answer within 30 seconds.";
+  try {
+    const trigger = view.trigger() as HTMLButtonElement;
+    await closeAndHold(view, name);
+    view.listPriorities.mockImplementation(() => reread.promise);
+    await act(async () => answer.resolve({} as never));
+    expect(view.listPriorities).toHaveBeenCalledTimes(2);
+    expect(heldNotDisabled(trigger, name)).toBe(true);
+
+    const notifications = holdNotifications();
+    try {
+      await act(async () => {
+        jest.advanceTimersByTime(REQUEST_DEADLINE_MS);
+        await settle();
+      });
+      expect(view.q.getByRole("alert").textContent).toBe(why);
+      expect(heldNotDisabled(trigger, name), "the line said why while its trigger was held").toBe(
+        false
+      );
+      await userOnFakeClock().keyboard("{Enter}");
+      expect(screen.queryByRole("listbox", { name: "Priorities options" })).not.toBeNull();
+    } finally {
+      notifications.tell();
+    }
+  } finally {
+    reread.resolve(body);
+    cleanup();
+    view.unmountAll();
+    view.queryClient.clear();
+    realClock();
+  }
+});
+
+// Inside `NoTooltips` the line a write's reads the bound ended draws is that write's own: the next
+// write takes it away as it lands, though the earlier reads are still out, and that write's reads
+// answering say nothing more. Dispatch holds the first write's read of the priorities until the
+// row answers it, so the next write's read, which waits for that one (`DispatchQueryClient`),
+// answers after it.
+test("inside NoTooltips, the line a write's reads the bound ended draws goes as the next write lands, whose reads answer", async () => {
+  const view = renderLine([{ id: "evals-now", inherited: false }], false, body, {
+    page: true,
+    queryClient: new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } }),
+  });
+  // Each write's answer, held until the row gives it, so what it sets off runs in `act`.
+  const { answers, next } = heldAnswers<never>();
+  view.patchIssue.mockImplementation(next);
+  const reread = Promise.withResolvers<Priorities>();
+  const name = "Edit priorities";
+  const why = "Could not load the priorities. Dispatch did not answer within 30 seconds.";
+  try {
+    const trigger = view.trigger() as HTMLButtonElement;
+    await closeAndHold(view, name);
+    view.listPriorities.mockImplementationOnce(() => reread.promise);
+    await act(async () => answers[0]?.({} as never));
+    await tick(0);
+    expect(view.listPriorities).toHaveBeenCalledTimes(2);
+    await tick(REQUEST_DEADLINE_MS);
+    expect(heldNotDisabled(trigger, name)).toBe(false);
+    expect(view.q.getByRole("alert").textContent).toBe(why);
+
+    const user = userOnFakeClock();
+    await user.click(trigger);
+    const listbox = screen.getByRole("listbox", { name: "Priorities options" });
+    await user.click(within(listbox).getByRole("option", { name: "#1 Evals collecting data now" }));
+    await user.keyboard("{Escape}");
+    await tick(0);
+    expect(view.patchIssue).toHaveBeenCalledTimes(2);
+    await act(async () => answers[1]?.({} as never));
+    await tick(0);
+    expect(heldNotDisabled(trigger, name)).toBe(true);
+    expect(
+      view.q.queryByText(why),
+      "the earlier write's reads kept their line past the next write"
+    ).toBeNull();
+
+    await act(async () => reread.resolve(body));
+    await tick(0);
+    expect(heldNotDisabled(trigger, name)).toBe(false);
+    expect(view.q.queryByRole("alert")).toBeNull();
+  } finally {
+    cleanup();
+    view.unmountAll();
+    view.queryClient.clear();
+    realClock();
+  }
+});
+
+// A components save gives the issue's read up as it shows its change (`useIssueComponents`), and
+// asks nothing then. A cancel is no answer (`DispatchQueryClient`): inside `NoTooltips` a landed
+// write of the line, which reads the issue again among its reads, still holds the trigger through
+// that read until a later read of the issue answers or the bound comes.
+test("inside NoTooltips, a components save that gives the issue's read up leaves the trigger held through its landed write's reads", async () => {
+  const view = renderLine([{ id: "evals-now", inherited: false }], false, body, {
+    page: true,
+    queryClient: new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } }),
+  });
+  // Each write's answer, the line's and the components save's, held until the row gives it, so
+  // what it sets off runs in `act`.
+  const { answers, next } = heldAnswers<never>();
+  view.patchIssue.mockImplementation(next);
+  // The issue, as the page around the line reads it: its first read answers, and every later one
+  // is held until the row answers it.
+  const issueRead = Promise.withResolvers<IssueDetails>();
+  let issueReads = 0;
+  const page = new QueryObserver(view.queryClient, {
+    queryFn: () => {
+      issueReads += 1;
+      return issueReads === 1 ? Promise.resolve({} as IssueDetails) : issueRead.promise;
+    },
+    queryKey: ["issue", "CORE-9"],
+  });
+  const stopPage = page.subscribe(() => {});
+  const components = renderHook(
+    () => useIssueComponents({ key: "CORE-9", project: "CORE", status: "todo", title: "Work" }),
+    {
+      wrapper: ({ children }: { children: ReactNode }) => (
+        <QueryClientProvider client={view.queryClient}>{children}</QueryClientProvider>
+      ),
+    }
+  );
+  const name = "Edit priorities";
+  try {
+    await waitFor(() => expect(issueReads).toBe(1));
+    const trigger = view.trigger() as HTMLButtonElement;
+    await closeAndHold(view, name);
+    await act(async () => answers[0]?.({} as never));
+    await tick(0);
+    expect(issueReads).toBe(2);
+    expect(heldNotDisabled(trigger, name)).toBe(true);
+
+    act(() => void components.result.current.submit({ mode: "none", reason: "Hiring" }));
+    await tick(0);
+    expect(view.patchIssue).toHaveBeenCalledTimes(2);
+    expect(
+      heldNotDisabled(trigger, name),
+      "a components save let the trigger go with no read of the issue answered"
+    ).toBe(true);
+  } finally {
+    await act(async () => {
+      answers[1]?.({} as never);
+      issueRead.resolve({} as IssueDetails);
+    });
+    stopPage();
+    components.unmount();
+    cleanup();
+    view.unmountAll();
+    view.queryClient.clear();
+    realClock();
+  }
+});
+
+// Inside `NoTooltips` the line reads the priorities only while its picker is open or the issue
+// advances one. The first priority added to an issue that advances none is written with the
+// picker closed, so the invalidation after it reads no priorities, though the line the next issue
+// read draws names that priority from them: the write reads them itself, and its hold waits on
+// that read too. The trigger stays held until the read answers or the request deadline, and at
+// the deadline the line says why the priorities are not read, until the read answers (the
+// tester's row of `issue-page-h.e2e.ts`).
+test("inside NoTooltips, the first priority added to an issue that advances none holds through the priorities read, and the line says why at the bound until it answers", async () => {
+  const view = renderLine([], false, body, { page: true });
+  const answer = Promise.withResolvers<never>();
+  view.patchIssue.mockImplementation(() => answer.promise);
+  const reread = Promise.withResolvers<Priorities>();
+  const name = "Edit priorities";
+  const why = "Could not load the priorities. Dispatch did not answer within 30 seconds.";
+  try {
+    const trigger = view.trigger() as HTMLButtonElement;
+    const user = userEvent.setup();
+    await user.click(trigger);
+    const listbox = await view.picker();
+    await user.click(
+      await within(listbox).findByRole("option", { name: "#1 Evals collecting data now" })
+    );
+    expect(view.listPriorities).toHaveBeenCalledTimes(1);
+    jest.useFakeTimers();
+    view.listPriorities.mockImplementation(() => reread.promise);
+    await userOnFakeClock().keyboard("{Escape}");
+    await tick(0);
+    expect(view.patchIssue).toHaveBeenCalledTimes(1);
+    await act(async () => answer.resolve({} as never));
+    await tick(0);
+    // The write read the priorities itself: the line, its picker closed and its issue advancing
+    // none, reads none, and the issue read again below would turn the line's own read on.
+    expect(view.listPriorities).toHaveBeenCalledTimes(2);
+    // The issue read again names the priority added, from the priorities' read.
+    view.reread([{ id: "evals-now", inherited: false }], REVISION + 1);
+    await tick(0);
+    expect(
+      heldNotDisabled(trigger, name),
+      "the first add let the trigger go before the priorities were read"
+    ).toBe(true);
+
+    await tick(REQUEST_DEADLINE_MS);
+    expect(heldNotDisabled(trigger, name)).toBe(false);
+    expect(view.q.getByRole("alert").textContent).toBe(why);
+
+    await act(async () => reread.resolve(body));
+    await tick(0);
+    expect(view.q.queryByRole("alert")).toBeNull();
+  } finally {
+    reread.resolve(body);
+    cleanup();
+    view.unmountAll();
+    view.queryClient.clear();
+    realClock();
+  }
+});
+
 test("a closed issue reads its priorities and writes none of them", async () => {
   const view = renderLine([{ id: "rocq-lean", inherited: false }], true);
   try {
     await view.q.findByRole("link", { name: "#2 Rocq and Lean speed work restarted" });
     expect(view.trigger()).toBeDisabled();
+  } finally {
+    view.unmountAll();
+  }
+});
+
+// INFRA-3135, R3: "Every list of options a reader picks from holds a text box that narrows the
+// options." The issue header's priorities picker is such a list: its options are every live
+// priority, which grow with the priorities page. Opened, it holds a text box of its own, and a
+// word typed into it leaves only the priorities that match.
+test("the priorities picker holds a text box that narrows the priorities", async () => {
+  const user = userEvent.setup();
+  const view = renderLine([{ id: "evals-now", inherited: false }]);
+  try {
+    const before = new Set(textBoxes());
+    await user.click(view.trigger());
+    const listbox = await view.picker();
+    await waitFor(() =>
+      expect(within(listbox).queryAllByRole("option", { name: /OSS Verify\b/ })).toHaveLength(1)
+    );
+    const own = textBoxes().filter((box) => !before.has(box));
+    expect(own, "the priorities picker holds no text box of its own").toHaveLength(1);
+    await user.type(own[0] as HTMLElement, "oss");
+    await waitFor(() =>
+      expect(
+        within(listbox).queryAllByRole("option", { name: /Evals collecting data now$/ }),
+        `"oss" leaves #1 in the priorities picker`
+      ).toHaveLength(0)
+    );
+    expect(
+      within(listbox).queryAllByRole("option", { name: /Rocq and Lean speed work restarted$/ }),
+      `"oss" leaves #2 in the priorities picker`
+    ).toHaveLength(0);
+    expect(within(listbox).getAllByRole("option", { name: /OSS Verify\b/ })).toHaveLength(1);
   } finally {
     view.unmountAll();
   }

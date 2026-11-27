@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import type { ReactNode } from "react";
+import { type ReactNode, useState } from "react";
 
 import { issueQuery } from "../../api/queries";
 import type { IssueDetails } from "../../api/types";
@@ -8,6 +8,8 @@ import { claimHoldingFromRead } from "../issue/ClaimChip";
 import { AgentParts, useAgentText } from "../refs/AgentName";
 import { type AgentRegistry, useAgentRegistry } from "../refs/agent-registry";
 import { stoppedWriteNote } from "../writes/keyed-write";
+import { useLateWrites } from "../writes/useKeyedWrite";
+import { useOneCreateOut } from "../writes/useOneCreateOut";
 import { useWrites } from "../writes/write-store";
 import {
   barNoteClassName,
@@ -23,11 +25,12 @@ import { type SendToAgent, type SendToAgentOutcome, sendToAgent } from "./send-t
 export const SEND_TO_AGENT_GROUP_ID = "search-group-send-to-agent";
 export const SEND_TO_AGENT_OPTION_ID = "search-option-send-to-agent";
 
-/** Where the offer stands once a press has been made: the send out, the message sent or queued
- *  for a session that has stopped, a refusal in the person's words, or a send the person stopped
- *  before Dispatch confirmed it. Nothing pressed is no state at all (`useWordsState`). */
+/** Where the offer stands once a press has been made: the send out, from the press made `at`,
+ *  the message sent or queued for a session that has stopped, a refusal in the person's words,
+ *  or a send the person stopped before Dispatch confirmed it. Nothing pressed is no state at all
+ *  (`useWordsState`). */
 type OfferState =
-  | { readonly kind: "sending"; readonly words: string }
+  | { readonly at: number; readonly kind: "sending"; readonly words: string }
   | {
       readonly agent: string;
       readonly kind: Exclude<SendToAgentOutcome["kind"], "refused">;
@@ -90,6 +93,19 @@ export function useSendToAgentOffer({
   const registry = useAgentRegistry(claim?.actor.kind === "session");
   const text = useAgentText();
   const [here, setState] = useWordsState<OfferState>(words);
+  // The send out now, with the press it is of (`at`), which tells its key as it is made.
+  const [writing, setWriting] = useState<{ readonly at: number; readonly key: string }>();
+  const sending = here?.kind === "sending" ? here : undefined;
+  const writingKey = sending !== undefined && writing?.at === sending.at ? writing.key : undefined;
+  const lateKeys = useLateWrites(writingKey === undefined ? [] : [writingKey]);
+  // The send is tried until Dispatch decides it, so past its deadline the row is listed again
+  // rather than withheld for good; a press of it while the send is out sends no second message,
+  // and the line says so (`useOneCreateOut`).
+  const sendingLate = writingKey !== undefined && lateKeys.has(writingKey);
+  const oneSend = useOneCreateOut({
+    isPending: sending !== undefined,
+    submittedAt: sending?.at ?? 0,
+  });
   const holder = liveHolderOf(detail.data, registry);
   // Nothing to offer and nothing to say: no words, or no live agent on the issue. Once a press
   // has been made the offer stays, so a poll that finds the agent gone does not take back the
@@ -98,8 +114,10 @@ export function useSendToAgentOffer({
     return undefined;
   }
   const approve = (session: string) => {
-    setState({ kind: "sending", words });
-    send(writes, { block, issue, session, words }).then(
+    if (oneSend.refuse()) return;
+    const at = Date.now();
+    setState({ at, kind: "sending", words });
+    send(writes, { block, issue, session, words }, (key) => setWriting({ at, key })).then(
       (outcome) => {
         setState(
           outcome.kind === "refused"
@@ -113,14 +131,15 @@ export function useSendToAgentOffer({
     );
   };
   // The session to send to, carried rather than tested twice: the row is offered only while an
-  // agent is live on the issue and no send of these words is out. The row is gone from the
-  // press onward: one approval sends one message, so there is no second press to make, and the
-  // line below says what became of it. A refused send puts the row back, because then nothing
-  // was sent; so does one the person stopped, which may have been sent, and whose line says a
-  // press sends it again as a new message.
+  // agent is live on the issue and no send of these words is out within its deadline. The row is
+  // gone from the press onward: one approval sends one message, so there is no second press to
+  // make, and the line below says what became of it. Past the send's deadline it is listed again,
+  // and its press sends nothing while the send is out (`approve`). A refused send puts the row
+  // back, because then nothing was sent; so does one the person stopped, which may have been
+  // sent, and whose line says a press sends it again as a new message.
   const sendable =
     holder !== undefined &&
-    (here === undefined || here.kind === "refused" || here.kind === "stopped")
+    (here === undefined || here.kind === "refused" || here.kind === "stopped" || sendingLate)
       ? holder
       : undefined;
   return {
@@ -133,17 +152,21 @@ export function useSendToAgentOffer({
             label: `Send this to the agent on ${issue}`,
             select: () => approve(sendable),
           },
-    said: <SendToAgentSaid issue={issue} state={here} />,
+    said: <SendToAgentSaid issue={issue} state={here} stillSending={oneSend.refused} />,
   };
 }
 
-/** The one line the bar says about the message it is sending, sent, queued, or could not send. */
+/** The one line the bar says about the message it is sending, sent, queued, or could not send.
+ *  While the send is out, a press of the row it lists again past its deadline sent nothing
+ *  (`stillSending`), which the line says. */
 function SendToAgentSaid({
   issue,
   state,
+  stillSending,
 }: {
   readonly issue: string;
   readonly state: OfferState | undefined;
+  readonly stillSending: boolean;
 }): ReactNode {
   if (state === undefined) {
     return null;
@@ -151,7 +174,9 @@ function SendToAgentSaid({
   if (state.kind === "sending") {
     return (
       <p className={barNoteClassName} role="status">
-        Sending to the agent on {issue}…
+        {stillSending
+          ? `Send this to the agent on ${issue} sent nothing: your message is still being sent. This line says what became of it once Dispatch answers, and if it fails, pressing Send this to the agent again sends it as a new message.`
+          : `Sending to the agent on ${issue}…`}
       </p>
     );
   }

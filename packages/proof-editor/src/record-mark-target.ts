@@ -15,7 +15,7 @@ import { findRecordMark } from "./record-mark-retype";
 const MARK_SELECTOR = "span[data-proof][data-id], span[data-dispatch][data-id]";
 
 /** `target` as an element, or null for a target that is not one. */
-function asElement(target: EventTarget | null): Element | null {
+export function asElement(target: EventTarget | null): Element | null {
   return target !== null && typeof (target as Partial<Element>).closest === "function"
     ? (target as Element)
     : null;

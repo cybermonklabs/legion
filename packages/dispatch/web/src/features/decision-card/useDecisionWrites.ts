@@ -6,6 +6,7 @@ import { replaceQueryData } from "../../api/query-client";
 import type { Decision, IssueDecisions } from "../../api/types";
 import { issueDecisionsQuery } from "../doc/spec-marks";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
+import { useOneCreateOut } from "../writes/useOneCreateOut";
 import {
   anchorQuote,
   type ChangeAnchor,
@@ -33,6 +34,13 @@ import { DECISION_ACT_WORDS } from "./decision-card-words";
  * once, and counts which of the quote's places is the decision's own over its reading
  * (`readChangeAnchor`). With no reading - the read failed - the anchor names no place.
  * `undefined` for a decision whose heading is all it holds, which has no words to anchor on.
+ *
+ * Each write holds its control while it is out within its deadline, and no longer
+ * (`KeyedWriteResult.late`, read here through `readsLate`): a write that never answers holds
+ * nothing for good. A Change pressed again while the one sent before is still out past its
+ * deadline would post the change twice, so it sends nothing then, and the card says so
+ * (`useOneCreateOut`, `CardChangeAct.stillSending`). The holds are the writes', which outlive the
+ * Change form: a form closed and opened again while its change is out is held as it was.
  */
 export function useDecisionWrites({
   decision,
@@ -57,6 +65,7 @@ export function useDecisionWrites({
     // A write's label holds no markup: the reading list's `decision-heading-words`.
     label: () => `${DECISION_ACT_WORDS.keep} ${name}`,
     method: "POST",
+    readsLate: true,
     write: (id: string, bounds) =>
       api.keepDecision(id, decision.block_id, decision.text_sha256, bounds),
     onSuccess: (kept) => {
@@ -75,11 +84,13 @@ export function useDecisionWrites({
     // write as today's Decisions tab named it on `main`: "Change to <heading>".
     label: () => `${DECISION_ACT_WORDS.change_to} ${name}`,
     method: "POST",
+    readsLate: true,
     write: (input: { anchor: ChangeAnchor; body: string }, bounds) =>
       api.createComment(issueKey, changeCommentInput(documentId, input), bounds),
   });
+  const oneChange = useOneCreateOut(send);
   // Whether the send is reading the decisions document's text, which it does before the comment
-  // goes out: Send change is off while it does, as it is while the comment is out.
+  // goes out: Send change is held while it does, as it is while the comment is out.
   const [reading, setReading] = useState(false);
   return {
     change:
@@ -87,6 +98,7 @@ export function useDecisionWrites({
         ? undefined
         : {
             change: (body, sent) => {
+              if (oneChange.refuse()) return;
               setReading(true);
               void readChangeAnchor(queryClient, decision, documentId, issueKey, quote).then(
                 (anchor) => {
@@ -96,9 +108,14 @@ export function useDecisionWrites({
               );
             },
             error: send.error,
-            pending: reading || send.isPending,
+            pending: reading || (send.isPending && !send.late),
             quote,
+            stillSending: oneChange.refused,
           },
-    keep: { error: keep.error, keep: () => keep.mutate(documentId), pending: keep.isPending },
+    keep: {
+      error: keep.error,
+      keep: () => keep.mutate(documentId),
+      pending: keep.isPending && !keep.late,
+    },
   };
 }

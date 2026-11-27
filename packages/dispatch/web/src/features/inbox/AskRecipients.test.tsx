@@ -1,12 +1,34 @@
-import { expect, spyOn, test } from "bun:test";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor, within } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
+import { expect, mock, spyOn, test } from "bun:test";
+import {
+  onlineManager,
+  QueryClient,
+  QueryClientProvider,
+  QueryObserver,
+} from "@tanstack/react-query";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
+import userEvent, { type UserEvent } from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 
-import { AGENT_LIST_REFILLING, ApiError, api } from "../../api/client";
-import type { Agent, AskFollower } from "../../api/types";
-import { AskRecipients, reachLabel, reachRows } from "./AskRecipients";
+import { holdNotifications } from "../../__tests__/commits";
+import { onFakeClock, tick } from "../../__tests__/fake-clock";
+import { afterFrameAndTasks } from "../../__tests__/frames";
+import { heldAnswers } from "../../__tests__/held-answers";
+import { heldNotDisabled } from "../../__tests__/held-press";
+import { pressesOf } from "../../__tests__/held-until-late";
+import { userOnFakeClock } from "../../__tests__/user";
+import {
+  AGENT_LIST_REFILLING,
+  ApiError,
+  api,
+  NetworkError,
+  REQUEST_DEADLINE_MS,
+  type WriteBounds,
+} from "../../api/client";
+import { DispatchQueryClient } from "../../api/query-client";
+import type { Agent, AskFollower, Subscriber } from "../../api/types";
+import { emulateChromiumFocusFixup } from "../issue-page/chromium-focus-fixup";
+import { SEND_DEADLINE_MS } from "../writes/keyed-write";
+import { AskRecipients, type AskRecipientsProps, reachLabel, reachRows } from "./AskRecipients";
 import { followers, renderRecipients, subscriber } from "./ask-recipients-fixture";
 
 function agent(sessionId: string, title: string): Agent {
@@ -49,7 +71,8 @@ test("AskRecipients folds its routing list at rest and still names the count", a
   );
 
   try {
-    const toggle = screen.getByRole("button", { name: "Reaches 2" });
+    // The count waits on the issue's subscriber read, which answers with nobody more.
+    const toggle = await screen.findByRole("button", { name: "Reaches 2" });
     expect(toggle).toHaveAttribute("aria-expanded", "false");
     expect(screen.queryByRole("list", { name: "Followers" })).not.toBeInTheDocument();
 
@@ -223,6 +246,511 @@ test("AskRecipients adds the issue's subscribers once each, removes one through 
   } finally {
     page.unmount();
     unsubscribeIssueSession.mockRestore();
+  }
+});
+
+// An Unfollow is confirmed in a dialog, which closes in the confirming press and hands the focus
+// back to the Unfollow that opened it. Every Unfollow is held while the write is out, never
+// disabled: the browser takes the focus off a control that turns disabled, so the dialog's
+// hand-back would find nothing to take the focus and leave the keyboard reader on the page's
+// body. Held, the Unfollow takes the focus back and keeps it, and a press of it opens nothing.
+test("an Unfollow confirmed keeps the focus while its write is out, and a press of it then opens nothing", async () => {
+  const out = Promise.withResolvers<void>();
+  const removed: string[] = [];
+  const page = await renderRecipients({
+    removeFollower: (_askId, sessionId) => {
+      removed.push(sessionId);
+      return out.promise;
+    },
+  });
+  const stopFocusFixup = emulateChromiumFocusFixup();
+  try {
+    const section = screen.getByRole("region", { name: "Recipients" });
+    const unfollow = within(section).getAllByRole("button", {
+      name: "Unfollow",
+    })[1] as HTMLButtonElement;
+    // Where the focus is, named, as a failed check prints it.
+    const where = () =>
+      document.activeElement === unfollow
+        ? "the Unfollow pressed"
+        : (document.activeElement?.textContent ?? "nothing");
+    act(() => unfollow.focus());
+    await page.user.keyboard("{Enter}");
+    const dialog = screen.getByRole("dialog", { name: "Unfollow" });
+    act(() => within(dialog).getByRole("button", { name: "Confirm" }).focus());
+    await page.user.keyboard("{Enter}");
+    await waitFor(() => expect(removed).toEqual(["fedcba9876543210"]));
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    // A frame and two tasks, by when the browser would have moved the focus of a control that
+    // turned disabled.
+    await afterFrameAndTasks();
+    expect(where()).toBe("the Unfollow pressed");
+    expect(heldNotDisabled(unfollow, "Unfollow")).toBe(true);
+
+    await page.user.keyboard("{Enter}");
+    await page.user.click(unfollow);
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(removed).toHaveLength(1);
+    expect(where()).toBe("the Unfollow pressed");
+  } finally {
+    stopFocusFixup();
+    out.resolve();
+    page.unmount();
+  }
+});
+
+// An Unsubscribe is held from its confirming press until the commit after its write's answer,
+// which takes in the read of the subscribers its landing starts. So the dialog hands the focus
+// back to it while the write is out, and it keeps the focus through that read until the read
+// takes its chip away. The read is held past the press's own frame and task, as a read over the
+// network takes longer than those, so only the hold keeps the Unsubscribe held that long.
+test("an Unsubscribe confirmed keeps the focus through its write and the read after it, until that read takes its chip away", async () => {
+  const out = Promise.withResolvers<void>();
+  const unsubscribed: string[] = [];
+  const unsubscribeIssueSession = spyOn(api, "unsubscribeIssueSession").mockImplementation(
+    (_key, sessionId) => {
+      unsubscribed.push(sessionId);
+      return out.promise;
+    }
+  );
+  const page = await renderRecipients({
+    subscribers: [subscriber("b0b0b0b0b0b0b0b0", "Platform PO")],
+  });
+  const stopFocusFixup = emulateChromiumFocusFixup();
+  try {
+    const section = screen.getByRole("region", { name: "Recipients" });
+    const viaIssue = await within(section).findByRole("list", { name: "Via issue subscription" });
+    const unsubscribe = within(viaIssue).getByRole("button", {
+      name: "Unsubscribe",
+    }) as HTMLButtonElement;
+    // Where the focus is, named, as a failed check prints it.
+    const where = () => {
+      const active = document.activeElement;
+      if (active === unsubscribe) return "the Unsubscribe pressed";
+      return active?.textContent || (active?.tagName ?? "nothing");
+    };
+    act(() => unsubscribe.focus());
+    await page.user.keyboard("{Enter}");
+    const dialog = screen.getByRole("dialog", { name: "Unsubscribe" });
+    act(() => within(dialog).getByRole("button", { name: "Confirm" }).focus());
+    await page.user.keyboard("{Enter}");
+    await waitFor(() => expect(unsubscribed).toEqual(["b0b0b0b0b0b0b0b0"]));
+    await afterFrameAndTasks();
+    expect(where()).toBe("the Unsubscribe pressed");
+    expect(heldNotDisabled(unsubscribe, "Unsubscribe")).toBe(true);
+    await page.user.keyboard("{Enter}");
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(unsubscribed).toHaveLength(1);
+
+    // The read of the subscribers the landing starts, held until the case answers it.
+    const reread = Promise.withResolvers<Subscriber[]>();
+    page.getIssueSubscribers.mockImplementationOnce(() => reread.promise);
+    await act(async () => out.resolve());
+    await afterFrameAndTasks();
+    expect(where()).toBe("the Unsubscribe pressed");
+    await act(async () => reread.resolve([]));
+    await waitFor(() =>
+      expect(
+        within(section).queryByRole("list", { name: "Via issue subscription" })
+      ).not.toBeInTheDocument()
+    );
+  } finally {
+    stopFocusFixup();
+    out.resolve();
+    page.unmount();
+    unsubscribeIssueSession.mockRestore();
+  }
+});
+
+// Offline, the read of the subscribers an Unsubscribe's landing starts waits for the network:
+// the app's query client fetches the idle query itself, and TanStack pauses that fetch until the
+// browser is back online. The hold through that read has a bound of its own, the request deadline
+// (`REQUEST_DEADLINE_MS`), so the Unsubscribe is let go there rather than held until the network
+// returns, and the card says why its recipients are not read.
+test("offline, an Unsubscribe's hold through the read after its write ends at the request deadline, and the card says why", async () => {
+  const out = Promise.withResolvers<void>();
+  const unsubscribeIssueSession = spyOn(api, "unsubscribeIssueSession").mockImplementation(
+    () => out.promise
+  );
+  const client = new DispatchQueryClient({
+    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+  });
+  const page = await renderRecipients({
+    client,
+    subscribers: [subscriber("b0b0b0b0b0b0b0b0", "Platform PO")],
+  });
+  const online = onlineManager.isOnline();
+  try {
+    const section = screen.getByRole("region", { name: "Recipients" });
+    const viaIssue = await within(section).findByRole("list", { name: "Via issue subscription" });
+    const unsubscribe = within(viaIssue).getByRole("button", { name: "Unsubscribe" });
+    await page.user.click(unsubscribe);
+    const dialog = screen.getByRole("dialog", { name: "Unsubscribe" });
+    await page.user.click(within(dialog).getByRole("button", { name: "Confirm" }));
+    await waitFor(() => expect(unsubscribeIssueSession).toHaveBeenCalledTimes(1));
+    // The Unsubscribe as the reader meets it, and what the card says of its recipients' read.
+    const drawn = () => ({
+      said: within(section).queryByText(/^Could not load the recipients\./)?.textContent ?? null,
+      unsubscribe: unsubscribe.getAttribute("aria-disabled") === "true" ? "held" : "free",
+    });
+    await onFakeClock(async () => {
+      onlineManager.setOnline(false);
+      await act(async () => out.resolve());
+      await tick(REQUEST_DEADLINE_MS - 1_000);
+      expect(drawn()).toEqual({ said: null, unsubscribe: "held" });
+
+      await tick(2_000);
+      expect(drawn()).toEqual({
+        said: "Could not load the recipients. Dispatch could not be reached.",
+        unsubscribe: "free",
+      });
+    });
+  } finally {
+    page.unmount();
+    // The paused read goes with the cache, so the network's return starts no request.
+    client.clear();
+    onlineManager.setOnline(online);
+    out.resolve();
+    unsubscribeIssueSession.mockRestore();
+  }
+});
+
+// The line a recipients read the bound ended draws is that write's own: the next Unsubscribe
+// takes it away as it lands, though the earlier read is still out, and the read after it, once
+// answered, takes the chip away. Dispatch holds the first Unsubscribe's read until the row answers
+// it, so the next one's read, which waits for that one (`DispatchQueryClient`), answers after it.
+test("the line an Unsubscribe's read the bound ended draws goes as the next Unsubscribe lands, whose read takes the chip away", async () => {
+  // Each Unsubscribe's answer, held until the row gives it, so what it sets off runs in `act`.
+  const { answers, next } = heldAnswers<void>();
+  const unsubscribeIssueSession = spyOn(api, "unsubscribeIssueSession").mockImplementation(next);
+  const client = new DispatchQueryClient({
+    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+  });
+  const page = await renderRecipients({
+    client,
+    subscribers: [subscriber("b0b0b0b0b0b0b0b0", "Platform PO")],
+  });
+  const note = /^Could not load the recipients\./;
+  try {
+    const section = screen.getByRole("region", { name: "Recipients" });
+    const viaIssue = await within(section).findByRole("list", { name: "Via issue subscription" });
+    const unsubscribe = within(viaIssue).getByRole("button", {
+      name: "Unsubscribe",
+    }) as HTMLButtonElement;
+    const reread = Promise.withResolvers<Subscriber[]>();
+    page.getIssueSubscribers.mockResolvedValue([]);
+    page.getIssueSubscribers.mockReturnValueOnce(reread.promise);
+    await onFakeClock(async () => {
+      const user = userOnFakeClock();
+      /** Presses Unsubscribe, confirms it, and lands its write. */
+      const unsubscribeOnce = async () => {
+        await user.click(unsubscribe);
+        const dialog = screen.getByRole("dialog", { name: "Unsubscribe" });
+        await user.click(within(dialog).getByRole("button", { name: "Confirm" }));
+        await tick(0);
+        await act(async () => answers.at(-1)?.());
+        await tick(0);
+      };
+
+      await unsubscribeOnce();
+      await tick(REQUEST_DEADLINE_MS);
+      expect(heldNotDisabled(unsubscribe, "Unsubscribe")).toBe(false);
+      expect(within(section).getByText(note).textContent).toBe(
+        "Could not load the recipients. Dispatch did not answer within 30 seconds."
+      );
+
+      await unsubscribeOnce();
+      expect(unsubscribeIssueSession).toHaveBeenCalledTimes(2);
+      expect(heldNotDisabled(unsubscribe, "Unsubscribe")).toBe(true);
+      expect(
+        within(section).queryByText(note),
+        "the earlier Unsubscribe's read kept its line past the next Unsubscribe"
+      ).toBeNull();
+
+      await act(async () => reread.resolve([]));
+      await tick(0);
+      expect(within(section).queryByRole("list", { name: "Via issue subscription" })).toBeNull();
+      expect(within(section).queryByText(note)).toBeNull();
+    });
+  } finally {
+    page.unmount();
+    client.clear();
+    unsubscribeIssueSession.mockRestore();
+  }
+});
+
+// Below 1280 px the ask's card is drawn in the reading view only while its row is open, and the
+// window resized across 1280 px draws it in the other place: either way a new card is drawn while
+// an Unfollow's read of the ask's thread is still out. The read has one hold for every card of it
+// (`useReadBound`), so the card drawn again holds its Unfollow through that read as the card it
+// was pressed on did, and says why at the bound and after, until the read answers (the tester's
+// rows of `followers.e2e.ts`).
+test("a card drawn again while an Unfollow's read of the ask is out holds Unfollow through it, and says why at the bound until the read answers", async () => {
+  const client = new QueryClient({
+    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+  });
+  // The ask's thread, which lists its followers, as its card's host reads it: the read the
+  // Unfollow's landing starts is held until the row answers it.
+  client.setQueryData(["ask-thread", "ask-1"], { followers: [] });
+  const reread = Promise.withResolvers<object>();
+  const thread = new QueryObserver(client, {
+    queryFn: () => reread.promise,
+    queryKey: ["ask-thread", "ask-1"],
+    staleTime: Number.POSITIVE_INFINITY,
+  });
+  const unsubscribe = thread.subscribe(() => {});
+  const page = await renderRecipients({ client });
+  const why = "Could not load the recipients. Dispatch did not answer within 30 seconds.";
+  const section = () => screen.getByRole("region", { name: "Recipients" });
+  /** The second follower's Unfollow, with the routing list of the card as drawn now unfolded. */
+  const unfollowOfDrawn = async (user: UserEvent) => {
+    const toggle = within(section()).getByRole("button", { name: /^Reaches/ });
+    if (toggle.getAttribute("aria-expanded") === "false") await user.click(toggle);
+    return within(section()).getAllByRole("button", { name: "Unfollow" })[1] as HTMLButtonElement;
+  };
+  try {
+    await onFakeClock(async () => {
+      const user = userOnFakeClock();
+      await user.click(await unfollowOfDrawn(user));
+      await user.click(
+        within(screen.getByRole("dialog", { name: "Unfollow" })).getByRole("button", {
+          name: "Confirm",
+        })
+      );
+      await tick(0);
+
+      page.drawAgain();
+      const unfollow = await unfollowOfDrawn(user);
+      expect(
+        heldNotDisabled(unfollow, "Unfollow"),
+        "the card drawn again let Unfollow go while the read of the ask was out"
+      ).toBe(true);
+      expect(within(section()).queryByText(why)).toBeNull();
+
+      await tick(REQUEST_DEADLINE_MS);
+      expect(heldNotDisabled(unfollow, "Unfollow")).toBe(false);
+      expect(within(section()).getByText(why)).toBeInTheDocument();
+      page.drawAgain();
+      expect(
+        within(section()).queryByText(why),
+        "the card drawn again after the bound said nothing of the read still out"
+      ).toBeInTheDocument();
+
+      await act(async () => reread.resolve({ followers: [] }));
+      await tick(0);
+      expect(within(section()).queryByText(why)).toBeNull();
+    });
+  } finally {
+    unsubscribe();
+    page.unmount();
+    client.clear();
+  }
+});
+
+// The card drawn again - the reading view closed and opened, the window resized across 1280 px -
+// may be drawn while an Unfollow's write and an Unsubscribe's are still out, before either lands.
+// It holds each from that write's own state (`usePendingKeyedPress`), as the card they were
+// pressed on did: a press of either opens no dialog, so none can confirm a second write, and each
+// lets go at its write's deadline (`SEND_DEADLINE_MS`). Dispatch never answers either: each try
+// fails at the network and is tried again under its key.
+test("a card drawn again while an Unfollow's and an Unsubscribe's writes are out holds both, opens nothing on a press, and lets go at their deadline", async () => {
+  const dropped = new NetworkError("/api/v1/asks/ask-1", new TypeError("Failed to fetch"));
+  const removeFollower = mock((_askId: string, _sessionId: string, _bounds: WriteBounds) =>
+    Promise.reject<void>(dropped)
+  );
+  const unsubscribeIssueSession = spyOn(api, "unsubscribeIssueSession").mockRejectedValue(dropped);
+  const page = await renderRecipients({
+    removeFollower,
+    subscribers: [subscriber("b0b0b0b0b0b0b0b0", "Platform PO")],
+  });
+  const section = () => screen.getByRole("region", { name: "Recipients" });
+  /** The second follower's Unfollow and the subscriber's Unsubscribe of the card as drawn now,
+   *  its routing list unfolded. */
+  const controlsOfDrawn = async (user: UserEvent) => {
+    const toggle = within(section()).getByRole("button", { name: /^Reaches/ });
+    if (toggle.getAttribute("aria-expanded") === "false") await user.click(toggle);
+    return {
+      unfollow: within(section()).getAllByRole("button", {
+        name: "Unfollow",
+      })[1] as HTMLButtonElement,
+      unsubscribe: within(section()).getByRole<HTMLButtonElement>("button", {
+        name: "Unsubscribe",
+      }),
+    };
+  };
+  const sent = () => ({
+    unfollow: pressesOf([removeFollower]),
+    unsubscribe: pressesOf([unsubscribeIssueSession]),
+  });
+  try {
+    await onFakeClock(async () => {
+      const user = userOnFakeClock();
+      const first = await controlsOfDrawn(user);
+      await user.click(first.unfollow);
+      await user.click(
+        within(screen.getByRole("dialog", { name: "Unfollow" })).getByRole("button", {
+          name: "Confirm",
+        })
+      );
+      await user.click(first.unsubscribe);
+      await user.click(
+        within(screen.getByRole("dialog", { name: "Unsubscribe" })).getByRole("button", {
+          name: "Confirm",
+        })
+      );
+      await tick(0);
+      expect(sent()).toEqual({ unfollow: 1, unsubscribe: 1 });
+
+      page.drawAgain();
+      const { unfollow, unsubscribe } = await controlsOfDrawn(user);
+      expect(
+        {
+          unfollow: heldNotDisabled(unfollow, "Unfollow"),
+          unsubscribe: heldNotDisabled(unsubscribe, "Unsubscribe"),
+        },
+        "the card drawn again let a control go while its write was out"
+      ).toEqual({ unfollow: true, unsubscribe: true });
+      await user.click(unfollow);
+      await user.click(unsubscribe);
+      expect(screen.queryByRole("dialog")).toBeNull();
+
+      await tick(SEND_DEADLINE_MS - 1_000);
+      expect(heldNotDisabled(unfollow, "Unfollow")).toBe(true);
+      expect(heldNotDisabled(unsubscribe, "Unsubscribe")).toBe(true);
+      await tick(1_000);
+      expect(heldNotDisabled(unfollow, "Unfollow")).toBe(false);
+      expect(heldNotDisabled(unsubscribe, "Unsubscribe")).toBe(false);
+      expect(sent()).toEqual({ unfollow: 1, unsubscribe: 1 });
+    });
+  } finally {
+    page.unmount();
+    page.queryClient.clear();
+    unsubscribeIssueSession.mockRestore();
+  }
+});
+
+// A host draws one card for one ask after another, and the card finds the press out on the ask it
+// shows by the press's own values (`usePendingKeyedPress`). Drawn for another ask while an Unfollow
+// of the first is out, the card lets its Unfollow go; drawn back for the first, with no other press
+// made meanwhile, it holds that Unfollow again in the commit that draws it, so a press of it opens
+// no dialog and no second write can be confirmed. A browser tells TanStack's observers of a change
+// a timer after it (`holdNotifications`), so that commit is what the reader has until then.
+// Dispatch never answers the Unfollow: each try fails at the network and is tried again under its
+// key.
+test("a card drawn for another ask and back while the first ask's Unfollow is out holds that Unfollow again at once, and a press of it opens nothing", async () => {
+  const dropped = new NetworkError("/api/v1/asks/ask-1", new TypeError("Failed to fetch"));
+  const removeFollower = mock((_askId: string, _sessionId: string, _bounds: WriteBounds) =>
+    Promise.reject<void>(dropped)
+  );
+  const page = await renderRecipients({ removeFollower });
+  /** The second follower's Unfollow of the card as drawn now. */
+  const unfollowOfDrawn = () =>
+    within(screen.getByRole("region", { name: "Recipients" })).getAllByRole<HTMLButtonElement>(
+      "button",
+      { name: "Unfollow" }
+    )[1] as HTMLButtonElement;
+  try {
+    await onFakeClock(async () => {
+      const user = userOnFakeClock();
+      await user.click(unfollowOfDrawn());
+      await user.click(
+        within(screen.getByRole("dialog", { name: "Unfollow" })).getByRole("button", {
+          name: "Confirm",
+        })
+      );
+      await tick(0);
+      expect(pressesOf([removeFollower])).toBe(1);
+
+      page.rerender({ askId: "ask-2" });
+      await tick(0);
+      expect(
+        heldNotDisabled(unfollowOfDrawn(), "Unfollow"),
+        "the card drawn for another ask held its Unfollow for the first ask's write"
+      ).toBe(false);
+
+      const notifications = holdNotifications();
+      try {
+        page.rerender({ askId: "ask-1" });
+        const unfollow = unfollowOfDrawn();
+        expect(
+          heldNotDisabled(unfollow, "Unfollow"),
+          "the card drawn back let the Unfollow go while its write was out"
+        ).toBe(true);
+        await user.click(unfollow);
+        expect(screen.queryByRole("dialog")).toBeNull();
+      } finally {
+        notifications.tell();
+      }
+      await tick(0);
+      expect(pressesOf([removeFollower])).toBe(1);
+    });
+  } finally {
+    page.unmount();
+    page.queryClient.clear();
+  }
+});
+
+// `Reaches N` counts the owner's subscribers with the rest, so it waits on their read: while that
+// read is out, a count would be of the followers alone and grow once the read answers. An ask whose
+// owner has no subscribers to read counts at once.
+test("AskRecipients draws no Reaches count while the subscriber read is out, and counts at once with none to read", async () => {
+  const listAgents = spyOn(api, "listAgents").mockResolvedValue([]);
+  const held = Promise.withResolvers<Subscriber[]>();
+  const getIssueSubscribers = spyOn(api, "getIssueSubscribers").mockImplementation(
+    () => held.promise
+  );
+  const getArtifactSubscribers = spyOn(api, "getArtifactSubscribers").mockResolvedValue([]);
+  const draw = (owner: AskRecipientsProps["owner"]) => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    queryClient.setQueryData(["whoami"], { kind: "user", login: "alice" });
+    return render(
+      <MemoryRouter>
+        <QueryClientProvider client={queryClient}>
+          <AskRecipients
+            askId="ask-1"
+            claimant={null}
+            followers={followers}
+            owner={owner}
+            route={null}
+            routeHolder={null}
+            routeStatus={null}
+          />
+        </QueryClientProvider>
+      </MemoryRouter>
+    );
+  };
+
+  try {
+    const view = draw({ artifact_id: null, issue_key: "CORE-1" });
+    try {
+      const section = screen.getByRole("region", { name: "Recipients" });
+      await waitFor(() => expect(getIssueSubscribers).toHaveBeenCalledWith("CORE-1"));
+      expect(
+        within(section).queryByRole("button", { name: /^Reaches \d/ })
+      ).not.toBeInTheDocument();
+      expect(within(section).getByRole("button", { name: "Recipients" })).toBeTruthy();
+
+      await act(async () => held.resolve([subscriber("b0b0b0b0b0b0b0b0", "Platform PO")]));
+      expect(await within(section).findByRole("button", { name: "Reaches 3" })).toBeTruthy();
+    } finally {
+      view.unmount();
+    }
+
+    // Neither an issue nor a document: no subscriber read runs, so the count is whole at once.
+    const unowned = draw({ artifact_id: null, issue_key: null });
+    try {
+      const section = screen.getByRole("region", { name: "Recipients" });
+      expect(within(section).getByRole("button", { name: "Reaches 2" })).toBeTruthy();
+      expect(getIssueSubscribers).toHaveBeenCalledTimes(1);
+      expect(getArtifactSubscribers).not.toHaveBeenCalled();
+    } finally {
+      unowned.unmount();
+    }
+  } finally {
+    held.resolve([]);
+    listAgents.mockRestore();
+    getIssueSubscribers.mockRestore();
+    getArtifactSubscribers.mockRestore();
   }
 });
 

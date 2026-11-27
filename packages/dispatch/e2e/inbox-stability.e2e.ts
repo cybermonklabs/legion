@@ -107,8 +107,8 @@ async function nextFrame(page: Page): Promise<void> {
 
 /**
  * The row the viewport anchor's centre fallback lands on, read the way the anchor reads it
- * (`rowAtCenter`): the probe is the centre of what the list shows, which is the list column's
- * own box where the rows scroll inside one and the window's where they do not.
+ * (`rowAtHeight`, given no height): the probe is the centre of what the list shows, which is the
+ * list column's own box where the rows scroll inside one and the window's where they do not.
  */
 async function rowAtCentre(page: Page): Promise<string | null> {
   return page.evaluate(() => {

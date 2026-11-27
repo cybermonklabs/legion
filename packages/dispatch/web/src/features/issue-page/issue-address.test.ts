@@ -182,8 +182,8 @@ test("Conversation's address is /conversation from each place that writes it", a
   );
   for (const chord of CHORDS) {
     const active = PRESET_ORDER.find((view) => view === chord.tab);
-    if (active === undefined) throw new Error(`the chord ${chord.keys} names no view`);
-    expect(chord.path(KEY, active), `${chord.keys} on its own view`).toBe(conversation);
+    if (active === undefined) throw new Error(`the chord ${chord.action} names no view`);
+    expect(chord.path(KEY, active), `${chord.action} on its own view`).toBe(conversation);
   }
   const reads = stubReads();
   const view = drawStage("#b-no-such-block", { preset: "conversation" });

@@ -16,9 +16,14 @@ import {
   textOptionDescription,
   textPrimaryOnSurface,
 } from "../../theme/classes";
+import { type OptionDigit, ROW_IN_HAND_CLASS } from "../inbox/option-digits";
 import type { TextSource } from "../refs/text-references";
+import { digitKbdClass } from "../shell/ShortcutHelp";
 import { ASK_RECORD_WORDS } from "./ask-body-words";
 import type { AskPalette, AskTextRenderer } from "./ask-text";
+
+/** Which of an approval request's two options a row is: Approve, or Request changes. */
+export type AskApprovalAction = "approve" | "request-changes";
 
 /** The shape of an option's row, whichever palette draws it. */
 const ROW_SHAPE = "flex min-h-11 items-start gap-3 rounded-lg border px-3 py-2 text-sm";
@@ -98,12 +103,18 @@ function OptionText({
 }
 
 /** A choosable option: a radio or checkbox row. The `name` groups radios per ask. `hotkey` marks
- * the input `data-ask-option` so the Inbox's number keys 1–9 pick it (the real options of the
- * focused ask, not Other). */
+ * the input `data-ask-option` so the Inbox's digit keys pick it - every option of the ask in hand,
+ * Other included as the digit after the last real option - and `digit` is the key the row draws
+ * for that, beside its text and hidden from assistive tech, whose name for the option stays its
+ * label (`inbox/option-digits.ts`). `approval` marks one of an approval request's two options
+ * `data-ask-approval`, which the Inbox's `a` and Shift+R pick it by. While the body's answer is
+ * out the options are held by their group (`AskBody`), so the row puts no attribute of its own on
+ * its input. */
 export function AskChoiceRow({
+  approval,
   checked,
   className = "",
-  disabled = false,
+  digit,
   hotkey = false,
   multiple,
   name,
@@ -113,9 +124,10 @@ export function AskChoiceRow({
   renderText,
   source,
 }: {
+  approval?: AskApprovalAction;
   checked: boolean;
   className?: string;
-  disabled?: boolean;
+  digit?: OptionDigit;
   hotkey?: boolean;
   multiple: boolean;
   name: string;
@@ -137,13 +149,22 @@ export function AskChoiceRow({
     <label className={`${ROW_SHAPE} ${checked ? tones.chosen : tones.choice} ${className}`}>
       <input
         checked={checked}
+        data-ask-approval={approval}
         data-ask-option={hotkey ? "" : undefined}
-        disabled={disabled}
         name={name}
         onChange={onChange}
         type={multiple ? "checkbox" : "radio"}
       />
       <OptionText option={option} palette={palette} renderText={renderText} source={source} />
+      {/* The digit is for the eye: the option's name stays its label. */}
+      {digit === undefined ? null : (
+        <span
+          aria-hidden="true"
+          className={`ml-auto shrink-0 ${digit.whileRowInHand ? ROW_IN_HAND_CLASS : ""}`}
+        >
+          <kbd className={digitKbdClass}>{digit.key}</kbd>
+        </span>
+      )}
     </label>
   );
 }

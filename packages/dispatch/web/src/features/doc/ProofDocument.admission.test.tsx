@@ -1,10 +1,15 @@
 import { beforeAll, beforeEach, expect, jest, spyOn, test } from "bun:test";
-import { act, screen, waitFor, within } from "@testing-library/react";
+import type { ArtifactRebuildReport } from "@legion/contracts";
+import { onlineManager, QueryClientProvider, useQuery } from "@tanstack/react-query";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import manifest from "../../../../../envoy/internal/dispatch/pmdoc/schema/blocks.json";
 import { fakeDocumentRuntime } from "../../__tests__/document-runtime";
-import { realClock } from "../../__tests__/fake-clock";
+import { realClock, tick } from "../../__tests__/fake-clock";
+import { heldAnswers } from "../../__tests__/held-answers";
+import { heldNotDisabled, pressHeld } from "../../__tests__/held-press";
+import { heldUntilLate, pressesOf } from "../../__tests__/held-until-late";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerRequests } from "../../__tests__/network";
 import {
@@ -17,10 +22,13 @@ import {
 } from "../../__tests__/proof-document";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
-import { ApiError, api, NetworkError } from "../../api/client";
-import type { ArtifactText } from "../../api/types";
+import { ApiError, api, NetworkError, REQUEST_DEADLINE_MS } from "../../api/client";
+import { DispatchQueryClient } from "../../api/query-client";
+import type { ArtifactReview, ArtifactText } from "../../api/types";
+import { emulateChromiumFocusFixup } from "../issue-page/chromium-focus-fixup";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
-import { stoppedWriteNote } from "../writes/keyed-write";
+import { SEND_DEADLINE_MS, stoppedWriteNote } from "../writes/keyed-write";
+import { ApprovalChip } from "./ApprovalChip";
 import { deletePendingEdits, openPendingEdits } from "./pending-edits";
 import { compiledSchemaCreatable } from "./schema";
 
@@ -357,6 +365,16 @@ test("ProofDocument starts the refusal backoff again once a socket syncs", async
   }
 });
 
+/** What Dispatch answers a rebuild that restored the document's latest saved version. */
+const REBUILT_REPORT: ArtifactRebuildReport = {
+  head: 1,
+  removed_checkpoints: 0,
+  removed_snapshots: 0,
+  removed_updates: 3,
+  source_version: 1,
+  validation_error: "decode live document: unexpected end of input",
+};
+
 // Only a stored history that cannot load is rebuilt: the page offers the rebuild for the code the
 // server answers that state with, and the read after the rebuild admits the editor again.
 test("ProofDocument offers a rebuild for a history that cannot load and reconnects after it", async () => {
@@ -364,14 +382,7 @@ test("ProofDocument offers a rebuild for a history that cannot load and reconnec
   const getArtifactText = spyOn(api, "getArtifactText").mockRejectedValue(
     new ApiError(409, { code: "DOCUMENT_UNLOADABLE", error: UNLOADABLE_REFUSAL })
   );
-  const rebuildArtifact = spyOn(api, "rebuildArtifact").mockResolvedValue({
-    head: 1,
-    removed_checkpoints: 0,
-    removed_snapshots: 0,
-    removed_updates: 3,
-    source_version: 1,
-    validation_error: "decode live document: unexpected end of input",
-  });
+  const rebuildArtifact = spyOn(api, "rebuildArtifact").mockResolvedValue(REBUILT_REPORT);
   const confirm = spyOn(window, "confirm").mockReturnValue(true);
   const { connections, view } = renderProofDocument();
   try {
@@ -433,6 +444,530 @@ test("a rebuild the reader stopped says it may have been made, not a message's w
     confirm.mockRestore();
     rebuildArtifact.mockRestore();
     getArtifactText.mockRestore();
+  }
+});
+
+test("Rebuild lets go at the document write deadline and sends again", async () => {
+  const getArtifactText = spyOn(api, "getArtifactText").mockRejectedValue(
+    new ApiError(409, { code: "DOCUMENT_UNLOADABLE", error: UNLOADABLE_REFUSAL })
+  );
+  const rebuild = spyOn(api, "rebuildArtifact").mockRejectedValue(
+    new NetworkError("/api/v1/artifacts/rebuild", new TypeError("Failed to fetch"))
+  );
+  const confirm = spyOn(window, "confirm").mockReturnValue(true);
+  const queryClient = createQueryClient();
+  const { view } = renderProofDocument({ queryClient });
+  try {
+    const name = "Rebuild from the latest version";
+    const button = await screen.findByRole<HTMLButtonElement>("button", { name });
+    jest.useFakeTimers();
+    const user = userOnFakeClock();
+    const sent = () => pressesOf([rebuild]);
+    await heldUntilLate(user, button, {
+      label: `Rebuild of ${artifact.name}`,
+      name,
+      queryClient,
+      sent,
+    });
+    await user.keyboard("{Enter}");
+    await tick(1_000);
+    expect(sent()).toBe(2);
+  } finally {
+    realClock();
+    view.unmount();
+    queryClient.clear();
+    confirm.mockRestore();
+    rebuild.mockRestore();
+    getArtifactText.mockRestore();
+  }
+});
+
+/** The app's own query client, with reads fresh until a write invalidates them, as the other rows
+ *  of this file give the page theirs (`createQueryClient`). */
+function freshReadsQueryClient(): DispatchQueryClient {
+  return new DispatchQueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
+  });
+}
+
+// A rebuild that lands as the browser goes offline has the reads it made stale paused by the
+// network, with no deadline of their own running: the app's client holds a read of an idle query
+// until its paused fetch answers (`DispatchQueryClient`). Inside `NoTooltips` Rebuild is held
+// through them, so it holds them only up to the request deadline (`REQUEST_DEADLINE_MS`), and
+// lets go there with the focus on it. Once the network returns the text reads, and the offer goes.
+test("offline, inside NoTooltips, Rebuild is held through the reads its landed rebuild made only until the request deadline", async () => {
+  const getArtifact = spyOn(api, "getArtifact").mockResolvedValue(artifact);
+  const getArtifactBlocks = spyOn(api, "getArtifactBlocks").mockResolvedValue([]);
+  const getArtifactText = spyOn(api, "getArtifactText").mockRejectedValue(
+    new ApiError(409, { code: "DOCUMENT_UNLOADABLE", error: UNLOADABLE_REFUSAL })
+  );
+  const rebuilt = Promise.withResolvers<ArtifactRebuildReport>();
+  const rebuildArtifact = spyOn(api, "rebuildArtifact").mockImplementation(() => rebuilt.promise);
+  const confirm = spyOn(window, "confirm").mockReturnValue(true);
+  const queryClient = freshReadsQueryClient();
+  const { view } = renderProofDocument({ noTooltips: true, queryClient });
+  const online = onlineManager.isOnline();
+  const stopFocusFixup = emulateChromiumFocusFixup();
+  try {
+    const name = "Rebuild from the latest version";
+    const button = await screen.findByRole<HTMLButtonElement>("button", { name });
+    jest.useFakeTimers();
+    await pressHeld(userOnFakeClock(), button, {
+      name,
+      sent: () => rebuildArtifact.mock.calls.length,
+    });
+
+    getArtifactText.mockResolvedValue({
+      markdown: "The live document",
+      token: "sha256:live-document",
+      version: 1,
+    });
+    onlineManager.setOnline(false);
+    await act(async () => rebuilt.resolve(REBUILT_REPORT));
+    await tick(0);
+    expect(queryClient.getQueryState(["artifact", artifact.id, "text"])?.fetchStatus).toBe(
+      "paused"
+    );
+
+    // The rebuild landed in the step before, which is when the hold's timer started: two seconds
+    // short of the request deadline the reads are still paused, and Rebuild held.
+    await tick(REQUEST_DEADLINE_MS - 2_000);
+    expect(heldNotDisabled(button, name)).toBe(true);
+    expect(button).toHaveFocus();
+
+    // At it Rebuild lets go, with the focus on it, and the rebuild is not sent again.
+    await tick(2_000);
+    expect(heldNotDisabled(button, name)).toBe(false);
+    expect(button).toHaveFocus();
+    expect(rebuildArtifact).toHaveBeenCalledTimes(1);
+
+    // The network returns, the text reads, and the offer leaves the page.
+    act(() => onlineManager.setOnline(true));
+    await waitFor(() => expect(screen.queryByRole("button", { name })).not.toBeInTheDocument());
+  } finally {
+    // The page and its reads go before the network returns, so no read paused offline goes on.
+    view.unmount();
+    queryClient.clear();
+    onlineManager.setOnline(online);
+    stopFocusFixup();
+    realClock();
+    confirm.mockRestore();
+    rebuildArtifact.mockRestore();
+    getArtifactText.mockRestore();
+    getArtifactBlocks.mockRestore();
+    getArtifact.mockRestore();
+  }
+});
+
+// The same hold where the network answers: Rebuild stays held, with the focus, through the read
+// of the rebuilt document's text for as long as that read takes, so a press then sends no second
+// rebuild; once it answers, the offer leaves the page and the editor connects.
+test("inside NoTooltips, Rebuild stays held through the read after its rebuild until that read answers", async () => {
+  const getArtifact = spyOn(api, "getArtifact").mockResolvedValue(artifact);
+  const getArtifactBlocks = spyOn(api, "getArtifactBlocks").mockResolvedValue([]);
+  const getArtifactText = spyOn(api, "getArtifactText").mockRejectedValue(
+    new ApiError(409, { code: "DOCUMENT_UNLOADABLE", error: UNLOADABLE_REFUSAL })
+  );
+  const rebuilt = Promise.withResolvers<ArtifactRebuildReport>();
+  const rebuildArtifact = spyOn(api, "rebuildArtifact").mockImplementation(() => rebuilt.promise);
+  const confirm = spyOn(window, "confirm").mockReturnValue(true);
+  const reread = Promise.withResolvers<ArtifactText>();
+  const queryClient = freshReadsQueryClient();
+  const { connections, view } = renderProofDocument({ noTooltips: true, queryClient });
+  const stopFocusFixup = emulateChromiumFocusFixup();
+  try {
+    const name = "Rebuild from the latest version";
+    const button = await screen.findByRole<HTMLButtonElement>("button", { name });
+    await pressHeld(userEvent.setup(), button, {
+      name,
+      sent: () => rebuildArtifact.mock.calls.length,
+    });
+
+    const readsBefore = getArtifactText.mock.calls.length;
+    getArtifactText.mockImplementation(() => reread.promise);
+    await act(async () => rebuilt.resolve(REBUILT_REPORT));
+    await waitFor(() => expect(getArtifactText.mock.calls.length).toBeGreaterThan(readsBefore));
+    expect(heldNotDisabled(button, name)).toBe(true);
+    expect(button).toHaveFocus();
+    expect(rebuildArtifact).toHaveBeenCalledTimes(1);
+
+    await act(async () =>
+      reread.resolve({ markdown: "The live document", token: "sha256:live-document", version: 1 })
+    );
+    await waitFor(() => expect(connections).toHaveLength(1));
+    expect(screen.queryByRole("button", { name })).not.toBeInTheDocument();
+    expect(rebuildArtifact).toHaveBeenCalledTimes(1);
+  } finally {
+    view.unmount();
+    queryClient.clear();
+    stopFocusFixup();
+    confirm.mockRestore();
+    rebuildArtifact.mockRestore();
+    getArtifactText.mockRestore();
+    getArtifactBlocks.mockRestore();
+    getArtifact.mockRestore();
+  }
+});
+
+// Inside `NoTooltips` a read of the rebuilt document that has not answered by the request deadline
+// lets Rebuild go there, with the focus on it, and the offer says why beside Rebuild, in the words
+// of the error such a read ends with. The line goes once that read settles: here it answers with
+// the same refusal, so the offer stays and Rebuild with it.
+test("inside NoTooltips, a rebuild whose read has not answered by the request deadline lets Rebuild go there, and the offer says why until that read settles", async () => {
+  const getArtifact = spyOn(api, "getArtifact").mockResolvedValue(artifact);
+  const getArtifactBlocks = spyOn(api, "getArtifactBlocks").mockResolvedValue([]);
+  const getArtifactText = spyOn(api, "getArtifactText").mockRejectedValue(
+    new ApiError(409, { code: "DOCUMENT_UNLOADABLE", error: UNLOADABLE_REFUSAL })
+  );
+  const rebuilt = Promise.withResolvers<ArtifactRebuildReport>();
+  const rebuildArtifact = spyOn(api, "rebuildArtifact").mockImplementation(() => rebuilt.promise);
+  const confirm = spyOn(window, "confirm").mockReturnValue(true);
+  const reread = Promise.withResolvers<ArtifactText>();
+  const queryClient = freshReadsQueryClient();
+  const { view } = renderProofDocument({ noTooltips: true, queryClient });
+  const stopFocusFixup = emulateChromiumFocusFixup();
+  const why = "The rebuilt document is not read yet. Dispatch did not answer within 30 seconds.";
+  try {
+    const name = "Rebuild from the latest version";
+    const button = await screen.findByRole<HTMLButtonElement>("button", { name });
+    jest.useFakeTimers();
+    await pressHeld(userOnFakeClock(), button, {
+      name,
+      sent: () => rebuildArtifact.mock.calls.length,
+    });
+
+    getArtifactText.mockImplementation(() => reread.promise);
+    await act(async () => rebuilt.resolve(REBUILT_REPORT));
+    await tick(0);
+
+    // The rebuild landed in the step before, which is when the hold's timer started: two seconds
+    // short of the request deadline the read is still out, Rebuild held, and nothing said.
+    await tick(REQUEST_DEADLINE_MS - 2_000);
+    expect(heldNotDisabled(button, name)).toBe(true);
+    expect(screen.queryByText(why)).toBeNull();
+
+    // At it Rebuild lets go, with the focus on it, and the offer says why beside it.
+    await tick(2_000);
+    expect(heldNotDisabled(button, name)).toBe(false);
+    expect(button).toHaveFocus();
+    expect(screen.getByText(why).parentElement).toBe(button.parentElement);
+
+    // The read settles, refused again: the line goes, and the offer and its Rebuild stay.
+    await act(async () =>
+      reread.reject(new ApiError(409, { code: "DOCUMENT_UNLOADABLE", error: UNLOADABLE_REFUSAL }))
+    );
+    await tick(0);
+    expect(screen.queryByText(why)).toBeNull();
+    expect(screen.getByRole("button", { name })).toBe(button);
+    expect(rebuildArtifact).toHaveBeenCalledTimes(1);
+  } finally {
+    view.unmount();
+    queryClient.clear();
+    stopFocusFixup();
+    realClock();
+    confirm.mockRestore();
+    rebuildArtifact.mockRestore();
+    getArtifactText.mockRestore();
+    getArtifactBlocks.mockRestore();
+    getArtifact.mockRestore();
+  }
+});
+
+// Rebuild reads the document again (`["artifact", id]`), and a review of the document's approval
+// reads its reviews, the Inbox, its asks and every read its approval is drawn from: two reads that
+// differ, each with a hold of its own. So a Rebuild whose read answers takes nothing of the line
+// the same document's approval chip draws once the bound ended the hold through its review's
+// reads, which are still out, and the line goes once they answer (the tester's row of
+// `issue-page-i.e2e.ts`).
+test("inside NoTooltips, a Rebuild whose read answers leaves the line the same document's approval chip draws for its review's reads", async () => {
+  const getArtifact = spyOn(api, "getArtifact").mockResolvedValue(artifact);
+  const getArtifactBlocks = spyOn(api, "getArtifactBlocks").mockResolvedValue([]);
+  const getArtifactText = spyOn(api, "getArtifactText").mockRejectedValue(
+    new ApiError(409, { code: "DOCUMENT_UNLOADABLE", error: UNLOADABLE_REFUSAL })
+  );
+  // The rebuild's answer and the review's, held until the row gives each, so what each sets off
+  // runs in `act`.
+  const rebuilt = Promise.withResolvers<ArtifactRebuildReport>();
+  const rebuildArtifact = spyOn(api, "rebuildArtifact").mockImplementation(() => rebuilt.promise);
+  const reviewed = Promise.withResolvers<ArtifactReview>();
+  const createReview = spyOn(api, "createArtifactVersionReview").mockImplementation(
+    () => reviewed.promise
+  );
+  const confirm = spyOn(window, "confirm").mockReturnValue(true);
+  const queryClient = freshReadsQueryClient();
+  const { view } = renderProofDocument({ noTooltips: true, queryClient });
+  // The document's reviews, as the chip's list of them reads them: the first read answers, and
+  // the one its review makes is held until the row answers it.
+  const reviews = Promise.withResolvers<ArtifactReview[]>();
+  let reviewReads = 0;
+  function DetailsChip() {
+    useQuery({
+      queryFn: () => {
+        reviewReads += 1;
+        return reviewReads === 1 ? Promise.resolve([]) : reviews.promise;
+      },
+      queryKey: ["artifact-reviews", artifact.id],
+    });
+    return (
+      <ApprovalChip
+        artifact={{ ...artifact, approval: { latest_version: 3, state: "awaiting" } }}
+        variant="header"
+      />
+    );
+  }
+  const details = render(
+    <QueryClientProvider client={queryClient}>
+      <DetailsChip />
+    </QueryClientProvider>
+  );
+  const chip = within(details.container);
+  const why = "The new approval is not read yet. Dispatch did not answer within 30 seconds.";
+  try {
+    const name = "Rebuild from the latest version";
+    const rebuild = await screen.findByRole<HTMLButtonElement>("button", { name });
+    const approve = await chip.findByRole("button", { name: "Approve" });
+    await waitFor(() => expect(reviewReads).toBe(1));
+    jest.useFakeTimers();
+    const user = userOnFakeClock();
+    await user.click(approve);
+    await tick(0);
+    expect(createReview).toHaveBeenCalledTimes(1);
+    await act(async () =>
+      reviewed.resolve({
+        actor: { id: "alice", kind: "user" },
+        artifact_id: artifact.id,
+        ask_id: null,
+        content_sha256: null,
+        content_sha256_source: null,
+        created_at: "2026-09-11T00:00:00Z",
+        id: "review-1",
+        kind: "person",
+        reason: null,
+        state: "approved",
+        version: 3,
+      })
+    );
+    await tick(0);
+    expect(reviewReads).toBe(2);
+    await tick(REQUEST_DEADLINE_MS);
+    expect(chip.getByRole("alert").textContent).toBe(why);
+
+    await user.click(rebuild);
+    await tick(0);
+    expect(rebuildArtifact).toHaveBeenCalledTimes(1);
+    await act(async () => rebuilt.resolve(REBUILT_REPORT));
+    await tick(0);
+    expect(heldNotDisabled(rebuild, name), "Rebuild's read has answered").toBe(false);
+    expect(
+      chip.queryByRole("alert")?.textContent,
+      "Rebuild's answered read took the line of the approval's reads still out"
+    ).toBe(why);
+
+    await act(async () => reviews.resolve([]));
+    await tick(0);
+    expect(chip.queryByRole("alert")).toBeNull();
+  } finally {
+    reviews.resolve([]);
+    details.unmount();
+    view.unmount();
+    queryClient.clear();
+    realClock();
+    confirm.mockRestore();
+    createReview.mockRestore();
+    rebuildArtifact.mockRestore();
+    getArtifactText.mockRestore();
+    getArtifactBlocks.mockRestore();
+    getArtifact.mockRestore();
+  }
+});
+
+// A row's editor is drawn only while a row is edited in it, so the editor closed and opened again
+// is a new one while a rebuild's read of the document is still out. Its own admission waits on
+// that read, so it draws no offer and no Rebuild to press a second time until the read settles.
+// The read has one hold for every editor of the document (`useReadBound`): at the bound the
+// editor drawn again says why the read has not settled, as the editor it was pressed in would
+// have, until the read settles and the admission draws the offer again, with Rebuild free and the
+// rebuild sent once (the tester's row of `issue-page-i.e2e.ts`).
+test("inside NoTooltips, an editor drawn again while its rebuild's read is out says why at the bound until the read settles", async () => {
+  const getArtifact = spyOn(api, "getArtifact").mockResolvedValue(artifact);
+  const getArtifactBlocks = spyOn(api, "getArtifactBlocks").mockResolvedValue([]);
+  const refusal = () =>
+    new ApiError(409, { code: "DOCUMENT_UNLOADABLE", error: UNLOADABLE_REFUSAL });
+  const getArtifactText = spyOn(api, "getArtifactText").mockRejectedValue(refusal());
+  const rebuilt = Promise.withResolvers<ArtifactRebuildReport>();
+  const rebuildArtifact = spyOn(api, "rebuildArtifact").mockImplementation(() => rebuilt.promise);
+  const confirm = spyOn(window, "confirm").mockReturnValue(true);
+  const reread = Promise.withResolvers<ArtifactText>();
+  const queryClient = freshReadsQueryClient();
+  // The editor as it is drawn now: the one the press is made in, then the one drawn again.
+  let drawn = renderProofDocument({ noTooltips: true, queryClient }).view;
+  const why = "The rebuilt document is not read yet. Dispatch did not answer within 30 seconds.";
+  const rebuildOf = () =>
+    screen.getByRole<HTMLButtonElement>("button", {
+      name: /^(Rebuild from the latest version|Rebuilding…)$/,
+    });
+  try {
+    await screen.findByRole("button", { name: "Rebuild from the latest version" });
+    jest.useFakeTimers();
+    await userOnFakeClock().click(rebuildOf());
+    await tick(0);
+    expect(rebuildArtifact).toHaveBeenCalledTimes(1);
+    getArtifactText.mockImplementation(() => reread.promise);
+    await act(async () => rebuilt.resolve(REBUILT_REPORT));
+    await tick(0);
+
+    drawn.unmount();
+    drawn = renderProofDocument({ noTooltips: true, queryClient }).view;
+    await tick(1_000);
+    expect(
+      screen.queryByRole("button", { name: /^Rebuild/ }),
+      "the editor drawn again offered Rebuild while the rebuild's read was out"
+    ).toBeNull();
+    expect(screen.queryByText(why)).toBeNull();
+
+    await tick(REQUEST_DEADLINE_MS);
+    expect(
+      screen.queryByText(why),
+      "the editor drawn again said nothing of the rebuild's read at the bound"
+    ).toBeInTheDocument();
+
+    await act(async () => reread.reject(refusal()));
+    await tick(0);
+    expect(screen.queryByText(why)).toBeNull();
+    expect(heldNotDisabled(rebuildOf(), "Rebuild")).toBe(false);
+    expect(rebuildArtifact).toHaveBeenCalledTimes(1);
+  } finally {
+    drawn.unmount();
+    queryClient.clear();
+    realClock();
+    confirm.mockRestore();
+    rebuildArtifact.mockRestore();
+    getArtifactText.mockRestore();
+    getArtifactBlocks.mockRestore();
+    getArtifact.mockRestore();
+  }
+});
+
+// The row's editor closed and opened again while a rebuild's write is still out, before it lands,
+// draws the offer again: the rebuild has not landed, so the document's text is refused as before.
+// Its Rebuild holds from that rebuild's own state (`usePendingKeyedPress`), as the Rebuild pressed
+// did: `Rebuilding…`, a press of it asks nothing and sends no second rebuild, and it lets go at
+// the rebuild's deadline (`SEND_DEADLINE_MS`). Dispatch never answers the rebuild: each try fails
+// at the network and is tried again under its key.
+test("inside NoTooltips, an editor drawn again while its rebuild's write is out holds Rebuild until the rebuild's deadline and sends no second rebuild", async () => {
+  const getArtifact = spyOn(api, "getArtifact").mockResolvedValue(artifact);
+  const getArtifactBlocks = spyOn(api, "getArtifactBlocks").mockResolvedValue([]);
+  const getArtifactText = spyOn(api, "getArtifactText").mockRejectedValue(
+    new ApiError(409, { code: "DOCUMENT_UNLOADABLE", error: UNLOADABLE_REFUSAL })
+  );
+  const rebuild = spyOn(api, "rebuildArtifact").mockRejectedValue(
+    new NetworkError("/api/v1/artifacts/rebuild", new TypeError("Failed to fetch"))
+  );
+  const confirm = spyOn(window, "confirm").mockReturnValue(true);
+  const queryClient = freshReadsQueryClient();
+  // The editor as it is drawn now: the one the press is made in, then the one drawn again.
+  let drawn = renderProofDocument({ noTooltips: true, queryClient }).view;
+  const rebuildOf = () =>
+    screen.getByRole<HTMLButtonElement>("button", {
+      name: /^(Rebuild from the latest version|Rebuilding…)$/,
+    });
+  const sent = () => pressesOf([rebuild]);
+  try {
+    await screen.findByRole("button", { name: "Rebuild from the latest version" });
+    jest.useFakeTimers();
+    const user = userOnFakeClock();
+    await user.click(rebuildOf());
+    await tick(0);
+    expect(sent()).toBe(1);
+
+    drawn.unmount();
+    drawn = renderProofDocument({ noTooltips: true, queryClient }).view;
+    await tick(1_000);
+    expect(
+      rebuildOf().textContent,
+      "the editor drawn again let Rebuild go while the rebuild's write was out"
+    ).toBe("Rebuilding…");
+    expect(heldNotDisabled(rebuildOf(), "Rebuild")).toBe(true);
+    await user.click(rebuildOf());
+    await tick(0);
+    expect(sent(), "a press of the Rebuild drawn again sent a second rebuild").toBe(1);
+    expect(confirm).toHaveBeenCalledTimes(1);
+
+    // A second short of the rebuild's deadline, counted from its press.
+    await tick(SEND_DEADLINE_MS - 2_000);
+    expect(heldNotDisabled(rebuildOf(), "Rebuild")).toBe(true);
+    await tick(2_000);
+    expect(heldNotDisabled(rebuildOf(), "Rebuild")).toBe(false);
+  } finally {
+    drawn.unmount();
+    queryClient.clear();
+    realClock();
+    confirm.mockRestore();
+    rebuild.mockRestore();
+    getArtifactText.mockRestore();
+    getArtifactBlocks.mockRestore();
+    getArtifact.mockRestore();
+  }
+});
+
+// The line a rebuild's read the bound ended draws is that rebuild's own: the next rebuild takes it
+// away as it lands, though the earlier read is still out, and that rebuild's read answering says
+// nothing more. Dispatch holds the first rebuild's read of the text until the row answers it, so
+// the next rebuild's read, which waits for that one (`DispatchQueryClient`), answers after it:
+// here refused again, so the offer and its Rebuild stay.
+test("inside NoTooltips, the line a rebuild's read the bound ended draws goes as the next rebuild lands, whose read answers", async () => {
+  const getArtifact = spyOn(api, "getArtifact").mockResolvedValue(artifact);
+  const getArtifactBlocks = spyOn(api, "getArtifactBlocks").mockResolvedValue([]);
+  const refusal = () =>
+    new ApiError(409, { code: "DOCUMENT_UNLOADABLE", error: UNLOADABLE_REFUSAL });
+  const getArtifactText = spyOn(api, "getArtifactText").mockRejectedValue(refusal());
+  // Each rebuild's answer, held until the row gives it, so what it sets off runs in `act`.
+  const { answers: rebuilds, next } = heldAnswers<ArtifactRebuildReport>();
+  const rebuildArtifact = spyOn(api, "rebuildArtifact").mockImplementation(next);
+  const confirm = spyOn(window, "confirm").mockReturnValue(true);
+  const reread = Promise.withResolvers<ArtifactText>();
+  const queryClient = freshReadsQueryClient();
+  const { view } = renderProofDocument({ noTooltips: true, queryClient });
+  const why = "The rebuilt document is not read yet. Dispatch did not answer within 30 seconds.";
+  try {
+    const name = "Rebuild from the latest version";
+    const button = await screen.findByRole<HTMLButtonElement>("button", { name });
+    jest.useFakeTimers();
+    const user = userOnFakeClock();
+    await user.click(button);
+    await tick(0);
+    getArtifactText.mockImplementationOnce(() => reread.promise);
+    await act(async () => rebuilds[0]?.(REBUILT_REPORT));
+    await tick(0);
+    await tick(REQUEST_DEADLINE_MS);
+    expect(heldNotDisabled(button, name)).toBe(false);
+    expect(screen.getByText(why).parentElement).toBe(button.parentElement);
+
+    await user.click(button);
+    await tick(0);
+    expect(rebuildArtifact).toHaveBeenCalledTimes(2);
+    await act(async () => rebuilds[1]?.(REBUILT_REPORT));
+    await tick(0);
+    expect(heldNotDisabled(button, name)).toBe(true);
+    expect(
+      screen.queryByText(why),
+      "the earlier rebuild's read kept its line past the next rebuild"
+    ).toBeNull();
+
+    await act(async () => reread.reject(refusal()));
+    await tick(0);
+    expect(heldNotDisabled(button, name)).toBe(false);
+    expect(screen.queryByText(why)).toBeNull();
+    expect(screen.getByRole("button", { name })).toBe(button);
+  } finally {
+    view.unmount();
+    queryClient.clear();
+    realClock();
+    confirm.mockRestore();
+    rebuildArtifact.mockRestore();
+    getArtifactText.mockRestore();
+    getArtifactBlocks.mockRestore();
+    getArtifact.mockRestore();
   }
 });
 

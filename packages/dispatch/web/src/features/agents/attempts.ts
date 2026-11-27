@@ -1,7 +1,18 @@
+import type { MutationKey } from "@tanstack/react-query";
+
 import type { MessageDelivery } from "../../api/types";
 import { deliveryMode, deliveryOutcomeState, rowAnsweredWithError } from "../conversation/delivery";
 import type { TargetedMessageAttempt } from "../conversation/TargetedMessageCard";
 import type { AgentPart } from "../refs/AgentName";
+
+/** The name a retry of message `messageId`'s delivery goes under (`useKeyedWrite`'s
+ *  `mutationKey`), on every page that offers one - an agent's conversation on the Agents page, a
+ *  broadcast's recipients, an issue's Conversation - so whichever of them draws the message while
+ *  a retry of it is out, before it lands, holds its Retry and its mode changes from that press
+ *  until the retry's deadline, as the page it was made on did (`usePendingKeyedPress`). */
+export function messageDeliveryRetryKey(messageId: string): MutationKey {
+  return ["message-delivery-retry", messageId];
+}
 
 /** A message's delivery attempts as `TargetedMessageCard` shows them. Each names the session it
  *  reached (an agent part, drawn by `AgentName`), so an earlier attempt keeps naming that session

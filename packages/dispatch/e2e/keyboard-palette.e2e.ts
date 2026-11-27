@@ -1,9 +1,12 @@
 import { setTimeout as sleep } from "node:timers/promises";
 
-import { openAgents, plannerMention, seedAgents, shownAgentRows } from "./agents";
+import { issueSearchIn, openAgents, plannerMention, seedAgents, shownAgentRows } from "./agents";
 import { createIssue, createProject, getIssue, patchIssue } from "./api";
-import { openIssue, searchPath } from "./keyboard-palette";
-import { expect, test } from "./test";
+import { listTrigger } from "./filters";
+import { nextFrames } from "./frames";
+import { inboxSearchBox } from "./inbox-filter";
+import { modKey, openIssue, searchPath } from "./keyboard-palette";
+import { devices, expect, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -83,7 +86,7 @@ test("the palette lists the issue page's actions, guarded like their buttons, an
     await expect.poll(() => getIssue(issue.key).then((read) => read.status)).toBe("done");
 
     // The guards follow the buttons: the closed issue offers Reopen and neither Close nor a
-    // priority, exactly as its header renders Reopen and disables the priority select.
+    // priority, exactly as its header renders Reopen and holds the priority's list.
     await page.reload();
     await expect(page.getByRole("button", { name: "Reopen issue" })).toBeVisible();
     await page.locator("body").focus();
@@ -99,10 +102,10 @@ test("the palette lists the issue page's actions, guarded like their buttons, an
     await expect.poll(() => getIssue(issue.key).then((read) => read.status)).toBe("backlog");
 
     // A filtered action runs the same write its control does. The rows are taken when the palette
-    // opens, and the Set priority rows, like the priority select, are withheld until the page has
-    // taken in the Reopen answer, which under load can come after the server already reads
-    // `backlog`: so open once the select takes a pick again.
-    await expect(page.getByLabel(`Priority of ${issue.key}`)).toBeEnabled();
+    // opens, and the Set priority rows, like the priority list's trigger, are withheld until the
+    // page has taken in the Reopen answer, which under load can come after the server already
+    // reads `backlog`: so open once the trigger takes a pick again.
+    await expect(listTrigger(page, `Priority of ${issue.key}`)).toBeEnabled();
     await page.locator("body").focus();
     await page.keyboard.press("Control+k");
     await input.fill("priority p2");
@@ -121,7 +124,9 @@ test("the palette lists the issue page's actions, guarded like their buttons, an
     );
     await input.press("Enter");
     await expect(dialog).toHaveCount(0);
-    await expect(page.getByLabel(`Priority of ${issue.key}`)).toHaveValue("2");
+    await expect(listTrigger(page, `Priority of ${issue.key}`)).toHaveAccessibleName(
+      `Priority of ${issue.key} P2`
+    );
     await expect.poll(() => getIssue(issue.key).then((read) => read.priority)).toBe(2);
   } finally {
     await context.close();
@@ -309,9 +314,7 @@ test("a query that holds a card move further in moves no card on Enter", async (
   }
 });
 
-test("a header write in flight withdraws the rows whose buttons it disables", async ({
-  browser,
-}) => {
+test("a header write in flight withdraws the rows whose buttons it holds", async ({ browser }) => {
   await createProject({ key: "CORE", name: "Core" });
   const issue = await createIssue({ project: "CORE", title: "In-flight guard" });
   const context = await asUser(browser, "alice");
@@ -330,8 +333,13 @@ test("a header write in flight withdraws the rows whose buttons it disables", as
 
     const closeButton = page.getByRole("button", { name: "Close issue" });
     await closeButton.click();
-    await expect(closeButton).toBeDisabled();
-    await expect(page.getByLabel(`Priority of ${issue.key}`)).toBeDisabled();
+    // Held, not disabled: the Close button keeps the focus the click gave it.
+    await expect(closeButton).toHaveAttribute("aria-disabled", "true");
+    await expect(closeButton).toBeFocused();
+    await expect(listTrigger(page, `Priority of ${issue.key}`)).toHaveAttribute(
+      "aria-disabled",
+      "true"
+    );
 
     await page.locator("body").focus();
     await page.keyboard.press("Control+k");
@@ -381,15 +389,16 @@ test("a Set priority row the server refuses is reported by the header, in the di
     await expect(dialog).toHaveCount(0);
 
     // The row writes through the page's one priority write, so the header reports its refusal
-    // and the badge rolls back, exactly as for the picker and the digit keys.
+    // and the badge rolls back, exactly as for the menu and the digit keys.
     const header = page.getByTestId("issue-header");
+    const priority = listTrigger(header, `Priority of ${issue.key}`);
     const failure = header
       .getByRole("alert")
       .filter({ hasText: `Could not update the priority of ${issue.key}.` });
     await expect(failure).toBeVisible();
     await expect(failure).toHaveCount(1);
     await expect(failure.getByRole("button", { name: "Retry" })).toBeVisible();
-    await expect(header.locator("span", { hasText: /^Priority$/ })).toBeVisible();
+    await expect(priority).toHaveAccessibleName(`Priority of ${issue.key} Priority`);
     await expect.poll(() => getIssue(issue.key)).toMatchObject({ priority: null });
     expect(patches).toBe(1);
 
@@ -398,7 +407,7 @@ test("a Set priority row the server refuses is reported by the header, in the di
     await page.keyboard.press("3");
     await expect.poll(() => patches).toBe(2);
     await expect(failure).toHaveCount(1);
-    await expect(header.locator("span", { hasText: /^Priority$/ })).toBeVisible();
+    await expect(priority).toHaveAccessibleName(`Priority of ${issue.key} Priority`);
   } finally {
     await context.close();
   }
@@ -437,9 +446,9 @@ test("the Agents page offers a row's picker, which then commits a keyboard pick 
     await input.press("Enter");
     await expect(dialog).toHaveCount(0);
 
-    // The row lands in the picker exactly as `i` does, and the picker's own rule holds: the
-    // arrows only move the selection, and Enter commits it and hands the reader to the composer.
-    const picker = row.getByRole("combobox", { name: "Issue" });
+    // The row lands in the Issue list exactly as `i` does, and the list's own rule holds: the
+    // arrows only move the active issue, and Enter picks it and hands the reader to the composer.
+    const picker = issueSearchIn(row);
     const toggle = row.getByRole("button", { name: "Choose issue" });
     await expect(picker).toBeFocused();
     await page.keyboard.press("ArrowDown");
@@ -672,6 +681,109 @@ test("a row whose control has gone since the palette opened does nothing", async
     await sleep(100);
     expect((await getIssue(issue.key)).status).toBe("in_progress");
     expect(patches).toBe(0);
+  } finally {
+    await context.close();
+  }
+});
+
+// A key pressed the moment a page draws reaches the keymap: its one window listener is attached
+// in the commit that first draws the shell (`KeymapProvider.tsx`), so no page is drawn before it
+// listens. The row sends the page's Search key, Control+k or Cmd+k under a Mac's user agent
+// (`modKey`), from inside the page as the Inbox heading enters the DOM,
+// before the browser has painted it, on five fresh loads, and each one opens the bar. The
+// listener attached in a passive effect came 6 to 30 ms after the heading, since `AuthGate` draws
+// the shell in a render its own passive effect starts, and every one of those presses was lost
+// (dispatch://INFRA-2160/artifact/keymap-listener-order-md).
+// @webkit @firefox: when each engine delivers a key the page sends as the heading enters the DOM
+// (from a mutation observer's callback) against the layout effects of the first commit that draws
+// the shell, in which `features/shell/KeymapProvider.tsx` attaches its window listener.
+test("a Ctrl+K (Cmd+K on a Mac) sent as the Inbox heading enters the page opens the bar @firefox @webkit", async ({
+  browser,
+}) => {
+  const context = await asUser(browser, "alice");
+  try {
+    const page = await context.newPage();
+    const mod = await modKey(page);
+    await page.addInitScript((modifier) => {
+      new MutationObserver((_records, observer) => {
+        const drawn = Array.from(document.querySelectorAll("h1")).some(
+          (heading) => heading.textContent?.trim() === "Inbox"
+        );
+        if (!drawn) return;
+        observer.disconnect();
+        document.body.dispatchEvent(
+          new KeyboardEvent("keydown", {
+            bubbles: true,
+            cancelable: true,
+            code: "KeyK",
+            ctrlKey: modifier === "Control",
+            key: "k",
+            metaKey: modifier === "Meta",
+          })
+        );
+      }).observe(document, { childList: true, subtree: true });
+    }, mod);
+    for (let load = 1; load <= 5; load += 1) {
+      await page.goto("/");
+      await expect(
+        page.getByRole("dialog", { name: "Search" }),
+        `load ${load}: the Control+k sent as the Inbox heading entered the page opened no bar`
+      ).toBeVisible();
+    }
+  } finally {
+    await context.close();
+  }
+});
+
+// `$mod` is Cmd on a Mac and Control elsewhere (`matchesCombo`, web/src/features/shell/keymap.ts).
+// A Mac's text field keeps Control+K, which deletes to the end of the line, so under a Mac's user
+// agent Control+K in the Inbox's search box opens no bar and the box keeps the focus, and Cmd+K
+// opens the bar. The app reads the Mac from the page's user agent (`IS_MAC`), so this row sets
+// Desktop Safari's on the project's Chromium.
+test("under a Mac's user agent Control+K in the Inbox's search box opens no bar and the box keeps the focus, and Cmd+K opens the bar", async ({
+  browser,
+}) => {
+  const context = await asUser(browser, "alice", {
+    userAgent: devices["Desktop Safari"].userAgent,
+  });
+  try {
+    const page = await context.newPage();
+    await page.goto("/");
+    expect(await modKey(page), "the page's user agent names no Mac").toBe("Meta");
+    const box = inboxSearchBox(page);
+    await box.focus();
+    await expect(box).toBeFocused();
+    const bar = page.getByRole("dialog", { name: "Search" });
+
+    await page.keyboard.press("Control+k");
+    // The registry runs a key in the press's own task, so a bar it opened is drawn by the second
+    // frame after it.
+    await nextFrames(page);
+    await expect(bar, "Control+K opened the bar under a Mac's user agent").toHaveCount(0);
+    await expect(box, "Control+K took the focus from the search box").toBeFocused();
+
+    await page.keyboard.press("Meta+k");
+    await expect(bar, "Cmd+K opened no bar under a Mac's user agent").toBeVisible();
+  } finally {
+    await context.close();
+  }
+});
+
+// The same box under the project's own user agent, which names no Mac: there `$mod` is Control.
+test("under a user agent that names no Mac Control+K in the Inbox's search box opens the bar", async ({
+  browser,
+}) => {
+  const context = await asUser(browser, "alice");
+  try {
+    const page = await context.newPage();
+    await page.goto("/");
+    expect(await modKey(page), "the project's user agent names a Mac").toBe("Control");
+    const box = inboxSearchBox(page);
+    await box.focus();
+    await expect(box).toBeFocused();
+
+    await page.keyboard.press("Control+k");
+    await expect(page.getByRole("dialog", { name: "Search" })).toBeVisible();
   } finally {
     await context.close();
   }

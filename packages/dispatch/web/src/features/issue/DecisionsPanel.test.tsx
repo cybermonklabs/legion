@@ -6,8 +6,9 @@ import { MemoryRouter } from "react-router-dom";
 
 import { quietConsoleError } from "../../__tests__/act-warnings";
 import { displayTree } from "../../__tests__/display-trees";
-import { realClock, settle } from "../../__tests__/fake-clock";
+import { realClock, settle, tick } from "../../__tests__/fake-clock";
 import { graphNode } from "../../__tests__/graph-fixture";
+import { heldUntilLate, pressesOf } from "../../__tests__/held-until-late";
 import { answerQuestionOf, NAMED_ASK, NAMED_QUESTION } from "../../__tests__/question-answers";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
@@ -608,6 +609,139 @@ test("a change the reader stopped says it may have been posted, not a message's 
     read.mockRestore();
     comment.mockRestore();
     text.mockRestore();
+  }
+});
+
+// A Keep that never answers - each try fails at the network, and the next waits out its backoff -
+// holds Keep until its deadline (`SEND_DEADLINE_MS`), and no longer: past it the Keep is late and
+// still tried, and Keep is let go, with the focus on it. A press then sends a Keep of its own.
+test("Keep, held until its Keep's deadline, is let go there, and a press then sends a Keep again", async () => {
+  const read = spyOn(api, "getIssueDecisions").mockResolvedValue(issueView());
+  const keep = spyOn(api, "keepDecision").mockRejectedValue(
+    new NetworkError("/api/v1/decisions/keep", new TypeError("Failed to fetch"))
+  );
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  try {
+    renderPanel(queryClient);
+    const waiting = await screen.findByRole("region", { name: "Waiting for your review" });
+    jest.useFakeTimers();
+    const user = userOnFakeClock();
+    await heldUntilLate(
+      user,
+      within(waiting).getByRole<HTMLButtonElement>("button", { name: "Keep" }),
+      {
+        label: "Keep Store notices in a table",
+        name: "Keep",
+        queryClient,
+        sent: () => pressesOf([keep]),
+      }
+    );
+    await user.keyboard("{Enter}");
+    await tick(1_000);
+    expect(pressesOf([keep]), "a press past the deadline sent no Keep").toBe(2);
+  } finally {
+    realClock();
+    queryClient.clear();
+    read.mockRestore();
+    keep.mockRestore();
+  }
+});
+
+/** What the Change form says beside Send change of a press it refused while the change is out. */
+const STILL_POSTING =
+  "Send change sent nothing: your change is still being sent. This form closes once Dispatch posts it; if it fails, this form says why and you can press Send change again.";
+/**
+ * Sends "Use a queue instead." from the waiting decision's Change form, by Enter on Send, to a
+ * Dispatch that never answers while `refusing` is false - each try fails at the network - and
+ * refuses once it is true, and checks Send is held until that change's deadline and let go past
+ * it (`heldUntilLate`), with the change still out. Answers the form, how many presses posted a
+ * change, and what puts the page and the fake clock away (`restore`).
+ */
+async function changeUntilLate(refusing: () => boolean) {
+  const read = spyOn(api, "getIssueDecisions").mockResolvedValue(issueView());
+  const text = spyDecisionsText();
+  const comment = spyOn(api, "createComment").mockImplementation(() =>
+    Promise.reject(
+      refusing()
+        ? new ApiError(422, { code: "QUOTE_NOT_FOUND", error: "the quote is not in the document" })
+        : new NetworkError("/api/v1/issues/CORE-1/comments", new TypeError("Failed to fetch"))
+    )
+  );
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const restore = () => {
+    realClock();
+    cleanup();
+    queryClient.clear();
+    read.mockRestore();
+    text.mockRestore();
+    comment.mockRestore();
+  };
+  try {
+    renderPanel(queryClient);
+    const waiting = await screen.findByRole("region", { name: "Waiting for your review" });
+    jest.useFakeTimers();
+    const user = userOnFakeClock();
+    await user.click(within(waiting).getByRole("button", { name: "Change" }));
+    const composer = within(waiting).getByRole("form", { name: "Change Store notices in a table" });
+    await user.click(within(composer).getByLabelText("Your change"));
+    await user.paste("Use a queue instead.");
+    await heldUntilLate(
+      user,
+      within(composer).getByRole<HTMLButtonElement>("button", { name: "Send change" }),
+      {
+        label: "Change to Store notices in a table",
+        name: "Send change",
+        queryClient,
+        sent: () => pressesOf([comment]),
+      }
+    );
+    return { composer, presses: () => pressesOf([comment]), restore, user };
+  } catch (error) {
+    restore();
+    throw error;
+  }
+}
+
+// A change that never answers holds Send until its deadline, and no longer. A press then would
+// post the change a second time while the first is still tried under its key, so it sends
+// nothing, and the line beside Send says why and what comes: the first is still being sent, and
+// the form closes once Dispatch posts it.
+test("Send is let go at its change's deadline, and a press while that change is out posts no second one and says so", async () => {
+  const page = await changeUntilLate(() => false);
+  try {
+    expect(within(page.composer).queryByRole("status")).toBeNull();
+    await page.user.keyboard("{Enter}");
+    await tick(1_000);
+    expect(page.presses(), "a press while the change is out posted one").toBe(1);
+    expect(within(page.composer).getByRole("status").textContent).toBe(STILL_POSTING);
+    expect(within(page.composer).getByRole("button", { name: "Send change" })).toHaveFocus();
+  } finally {
+    page.restore();
+  }
+});
+
+// The line goes once the first change is decided. Refused, the form shows Dispatch's reason, and
+// Send takes a press again, which posts a change of its own.
+test("once a change out past its deadline is refused, Send posts it again", async () => {
+  let refusing = false;
+  const page = await changeUntilLate(() => refusing);
+  try {
+    await page.user.keyboard("{Enter}");
+    await tick(1_000);
+    expect(within(page.composer).getByRole("status").textContent).toBe(STILL_POSTING);
+
+    refusing = true;
+    // Past the next try, half a minute at the longest backoff.
+    await tick(30_000);
+    expect(within(page.composer).getByRole("alert")).toHaveTextContent(
+      "the quote is not in the document"
+    );
+    expect(within(page.composer).queryByRole("status")).toBeNull();
+    await page.user.keyboard("{Enter}");
+    await tick(1_000);
+    expect(page.presses(), "a press after the refusal posted no change").toBe(2);
+  } finally {
+    page.restore();
   }
 });
 

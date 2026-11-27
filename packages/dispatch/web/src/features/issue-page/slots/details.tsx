@@ -4,8 +4,8 @@ import { createPortal } from "react-dom";
 
 import { primarySpec } from "../../../api/issue-cache";
 import { userStateQuery } from "../../../api/queries";
-import { labelsControlName } from "../../issue/IssueLabels";
 import { stateForIssue } from "../../issue/pins";
+import { propertyControlSelector } from "../../issue/property-control";
 import { useMargin } from "../../margin/margin-context";
 import { useKeymap } from "../../shell/keymap";
 import { DETAILS_ROW_ATTRIBUTE, useOpenDetailsAt } from "../details-rows";
@@ -13,13 +13,9 @@ import type { IssueField } from "../IssueFieldForms";
 import { IssueMarginCards, IssueMarginPanel } from "../IssueMargin";
 import { DETAILS_ATTRIBUTE, useFillMarginSlot } from "../margin-slot";
 import { NoTooltips } from "../NoTooltips";
-import { ANSWER_LINES, CONTROL_LABELS } from "../page-words";
 import type { SlotProps } from "../slot-props";
 import { usableControl } from "../usable-control";
 import { useIssueHeaderWrites } from "../useIssueHeaderWrites";
-
-/** The key `l`'s name in the list of keys. */
-const LABELS_CONTROL_NAME = "Edit labels";
 
 /**
  * Details' properties: the one panel `IssueMarginPanel` draws, filled into the shell's Details
@@ -35,8 +31,9 @@ const LABELS_CONTROL_NAME = "Edit labels";
  *
  * Slots share no state, so this slot keeps which of the two editors of its rows is open and
  * makes its own set of the issue's writes; the header's writes reach the same keyed line of the
- * issue (`useIssueHeaderWrites.ts`). It binds `l`, which opens Details at the Labels row with
- * the labels' control pressed.
+ * issue (`useIssueHeaderWrites.ts`). It binds the catalogue's Edit labels (`issue.labels`, `l`
+ * unless the person gave it another key), which opens Details at the Labels row with the labels'
+ * control pressed.
  */
 export function DetailsSlot({ issue }: SlotProps): ReactNode {
   const state = useQuery(userStateQuery()).data;
@@ -76,30 +73,21 @@ export function DetailsSlot({ issue }: SlotProps): ReactNode {
     {
       // The labels' control is in Details' Labels row: the key opens Details there and presses
       // it, as a reader does.
-      id: "labels",
-      keys: "l",
-      label: LABELS_CONTROL_NAME,
+      action: "issue.labels",
       run: () => openDetailsAt("labels", true),
-      when: () => {
-        // The control, by the name it has for the issue as it is now (`labelsControlName`):
-        // "Add a label to CORE-1" while it has no label, "Edit labels" once it has one, and
-        // "Saving labels of CORE-1" while a save of them is out, which the panel's labels read
-        // from these same writes. While that save is out the control is busy, `aria-disabled` and
-        // refusing to open, so `l` acts only while the control takes a press (`usableControl`),
-        // which counts no refusal from Details being closed: the key opens Details at the row
-        // first. A closed Development is a refusal: it keeps the row on the page but `hidden`
-        // (`details-leaves.tsx`'s `PropertySection`), so `l` is off while Development is closed.
-        const name = labelsControlName(issue.key, {
-          labels: issue.labels ?? [],
-          saving: writes.labels.isPending,
-          words: { ANSWER_LINES, CONTROL_LABELS },
-        });
-        return usableControl(
+      // The control, by its mark (`property-control.ts`), which it carries whatever its name says
+      // of its state. While a save of the labels is out the control is busy, `aria-disabled` and
+      // refusing to open, so the key acts only while the control takes a press
+      // (`usableControl`), which counts no refusal from Details being closed: the key opens
+      // Details at the row first. A closed Development is a refusal: it keeps the row on the page
+      // but `hidden` (`details-leaves.tsx`'s `PropertySection`), so the key is off while
+      // Development is closed.
+      when: () =>
+        usableControl(
           document.querySelector(
-            `[${DETAILS_ROW_ATTRIBUTE}="labels"] button[aria-label="${CSS.escape(name)}"]`
+            `[${DETAILS_ROW_ATTRIBUTE}="labels"] ${propertyControlSelector("labels", issue.key)}`
           )
-        );
-      },
+        ),
     },
   ]);
   return (

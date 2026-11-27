@@ -31,6 +31,7 @@ import {
   textPrimaryOnSurface,
 } from "../../theme/classes";
 import type { AgentNames } from "../conversation/CachedAuthor";
+import { inboxActionMark } from "../inbox/inbox-action-mark";
 import { askResolutionBadge, askResolutionReason } from "../refs/actor";
 import { buildIssuePath } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
@@ -114,7 +115,10 @@ export function AskEditHistory({
       </p>
       {edits.length === 0 ? null : (
         <details className="mt-1">
-          <summary className={`cursor-pointer font-medium ${tones.link}`}>
+          <summary
+            className={`cursor-pointer font-medium ${tones.link}`}
+            {...inboxActionMark("inbox.previous-versions")}
+          >
             {edits.length === 1
               ? ASK_RECORD_WORDS.previous_version
               : `${ASK_RECORD_WORDS.previous_versions.before} ${edits.length} ${ASK_RECORD_WORDS.previous_versions.after}`}
@@ -181,7 +185,10 @@ export function AskAnswerHistory({
         <Timestamp at={latest.at} />
       </p>
       <details className="mt-1">
-        <summary className={`cursor-pointer font-medium underline ${tones.answeredInk}`}>
+        <summary
+          className={`cursor-pointer font-medium underline ${tones.answeredInk}`}
+          {...inboxActionMark("inbox.earlier-answers")}
+        >
           {earlier.length === 1
             ? ASK_RECORD_WORDS.earlier_answer
             : `${ASK_RECORD_WORDS.earlier_answers.before} ${earlier.length} ${ASK_RECORD_WORDS.earlier_answers.after}`}
@@ -393,6 +400,7 @@ function AnsweredAsk({
         {onChangeAnswer === undefined ? null : (
           <button
             className={`mt-2 min-h-11 text-sm font-semibold underline ${tones.answeredInk}`}
+            {...inboxActionMark("inbox.change-answer")}
             onClick={onChangeAnswer}
             type="button"
           >

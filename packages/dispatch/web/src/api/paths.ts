@@ -101,7 +101,14 @@ function pathSegment(value: string): string {
   return encodeURIComponent(value);
 }
 
-function pathWithQuery(path: string, values: object): string {
+/**
+ * The query string `values` makes: an array's items are repeated under one name, a string,
+ * number or boolean is written once, and anything else (an absent value) says nothing. The
+ * names are the server's own, so this is a request's query rather than a page's address
+ * (`lib/page-address.ts` holds that one): the Delivery page builds the filtered read it
+ * subscribes to through this, under the names `GET /api/v1/delivery` reads.
+ */
+export function queryString(values: object): string {
   const query = new URLSearchParams();
 
   for (const [key, value] of Object.entries(values)) {
@@ -118,7 +125,11 @@ function pathWithQuery(path: string, values: object): string {
     }
   }
 
-  const search = query.toString();
+  return query.toString();
+}
+
+function pathWithQuery(path: string, values: object): string {
+  const search = queryString(values);
   return search ? `${path}?${search}` : path;
 }
 

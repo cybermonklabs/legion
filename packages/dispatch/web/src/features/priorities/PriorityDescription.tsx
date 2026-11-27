@@ -13,12 +13,21 @@ import {
 } from "../../theme/classes";
 import { colorForLogin } from "../doc/connection";
 import { DocumentRefPicker } from "../doc/DocumentRefPicker";
-import { DocumentReferences, useReferenceClick } from "../doc/document-references";
+import { DocumentReferences } from "../doc/document-references";
 import { createDoc, type EditorHandle } from "../doc/editor";
 import { DocumentRuntime } from "../doc/runtime";
 import { compiledBlockSchema } from "../doc/schema";
+import { useLinkOpener } from "../refs/link-open";
 import { watchPicturePath } from "../refs/reference-target";
-import { answered, arrival, NOTHING_KEPT, type SentText, usedOn } from "./field-arrival";
+import {
+  answered,
+  arrival,
+  NOT_KNOWN,
+  NOTHING_KEPT,
+  type SentText,
+  usedOn,
+  type WriteAnswer,
+} from "./field-arrival";
 import { ChangedMeanwhile, SAVE_AFTER_MS } from "./InPlaceField";
 
 const NONE_WRITTEN = "No description is written.";
@@ -58,15 +67,17 @@ interface Held {
   from: string;
   /** The texts written that the server has not answered with yet, oldest first: its answer
    *  with one of them is the reader's own write coming back, not another person's text. The
-   *  page's answer marks one that landed, and takes out one that did not (`answered`). */
+   *  page's answer marks one that landed, and one whose landing is not known, which a read may
+   *  still show, and takes out one that did not land (`answered`). */
   sent: readonly SentText[];
   /** The write waiting for the typing to rest. */
   timer: number | undefined;
   /** Whether the editor drew its text from the server's reading of it (`draw`), rather than
    *  taking it in as markdown. It then holds nothing of the reader's, and writes nothing (`write`).
    *  No write of theirs is counted out (`sent`) while it does: it draws a reading once none is
-   *  (`follow`), or as it takes another person's text in, which ends them all (`arrival`), so the
-   *  answer to a write that lands then is the server's text, taken in as any other is. */
+   *  (`follow`), letting go of each text whose landing is not known, or as it takes another
+   *  person's text in, which ends them all (`arrival`), so the answer to a write that lands then
+   *  is the server's text, taken in as any other is. */
   fromTree: boolean;
 }
 
@@ -169,15 +180,19 @@ function redraw(
 
 /** Moves an open editor between the server's text as its markdown and the server's reading of
  *  it, as `latest` draws it now (`redraw`, and the component's own doc), once the writer is
- *  settled: no write of theirs is out, and none of their typing is unwritten. So the answer to a
- *  write of theirs comes back to the markdown it was written from, never to a reading drawn over
- *  it, and a reading is drawn over nothing they typed that is not written. The editor asks it
- *  again whenever one of those may have changed - the server's text or the form it is drawn in,
- *  the typing at rest, the editor or the page left, and a write of theirs ending without landing
- *  - so a move held back is made once the writer is settled. */
+ *  settled: no write of theirs is out or landed unread - one whose landing is not known waits for
+ *  no answer, and goes as the editor moves - and none of their typing is unwritten. So the answer
+ *  to a write of theirs comes back to the markdown it was written from, never to a reading drawn
+ *  over it, and a reading is drawn over nothing they typed that is not written. The editor asks
+ *  it again whenever one of those may have changed - the server's text or the form it is drawn
+ *  in, the typing at rest, the editor or the page left, and a write of theirs ending without
+ *  landing, or with its landing not known - so a move held back is made once the writer is
+ *  settled. */
 function follow(held: Held, latest: Latest, fail: (failure: Failure) => void): void {
-  if (held.fromTree === (latest.reading !== undefined) || held.sent.length > 0) return;
+  if (held.fromTree === (latest.reading !== undefined)) return;
+  if (held.sent.some((one) => one.landed !== NOT_KNOWN)) return;
   if (heldText(held) !== held.base) return;
+  held.sent = [];
   redraw(held, latest.description, latest.reading, fail);
 }
 
@@ -269,9 +284,9 @@ function rest(held: Held, latest: Latest, fail: (failure: Failure) => void): voi
  * settled (`follow`): with a write of theirs out, its answer would come back to a reading drawn
  * over the markdown it was written from, and a reading would draw over typing not yet written.
  * So the typing is written, as typed, and the editor moves once the answer is in, or once the page
- * says the write ended without landing (`onSave`'s answer), when no answer is coming. An editor
- * drawn from a reading holds nothing of the reader's: no text of it is kept beside the editor as
- * theirs, and none is written.
+ * says the write ended without landing, or that whether it landed is not known (`onSave`'s
+ * answer), when no answer it can wait for is coming. An editor drawn from a reading holds nothing
+ * of the reader's: no text of it is kept beside the editor as theirs, and none is written.
  */
 export function PriorityDescription({
   boxed = true,
@@ -314,8 +329,9 @@ export function PriorityDescription({
    *  which the write names as the text it goes over (`expected`) unless a write of the page's own
    *  goes before it, made on `on`: the text the editor held as the edit began, or, for Use my text
    *  of a text whose own write is known, what that write was made on. Answers whether the write
-   *  landed: until it does, the editor counts the write as out (`sent`). */
-  onSave: (next: string, from: string, on: string) => Promise<boolean>;
+   *  landed, or that it is not known (`WriteAnswer`): until the page says, the editor counts the
+   *  write as out (`sent`). */
+  onSave: (next: string, from: string, on: string) => Promise<WriteAnswer>;
 }): ReactNode {
   const root = useRef<HTMLDivElement>(null);
   const held = useRef<Held | undefined>(undefined);
@@ -345,13 +361,14 @@ export function PriorityDescription({
   // A text the editor could not take in, with the reason, until the server's text changes.
   const [failure, setFailure] = useState<Failure>();
   // Each write the editor makes goes through the page (`onSave`), which answers whether that very
-  // write landed (`answered`): one that did not never comes back, so the editor waits for no
-  // answer with it, and moves to the form the server's text is drawn in where that waited on it
-  // (`follow`), while it is still the editor drawn.
+  // write landed (`answered`): one that did not never comes back, and one whose landing is not
+  // known may come back or not, so the editor waits for no answer with either, and moves to the
+  // form the server's text is drawn in where that waited on it (`follow`), while it is still the
+  // editor drawn.
   const send = (current: Held, entry: SentText, on: string) => {
     void onSave(entry.text, current.from, on).then((landed) => {
       current.sent = answered(current.sent, entry, landed);
-      if (!landed && held.current === current) follow(current, latest.current, setFailure);
+      if (landed !== true && held.current === current) follow(current, latest.current, setFailure);
     });
   };
   const latest = useRef({ description, kept, reading, send, setKept, writes });
@@ -359,7 +376,7 @@ export function PriorityDescription({
   const { createEditor } = useContext(DocumentRuntime);
   const login = useQuery(whoAmIQuery()).data?.login;
   const queryClient = useQueryClient();
-  const followReference = useReferenceClick();
+  const openLink = useLinkOpener();
   // The id of the line under a reading of a description the server's parser does not take whole,
   // which the editor names as its description.
   const why = useId();
@@ -401,6 +418,7 @@ export function PriorityDescription({
         heatMapMode: "hidden",
         // A description is no document: it holds no decision block a card is drawn for.
         onAskBlockHosts: () => {},
+        openLink,
         proofMarks: false,
         user: { color: colorForLogin(login), name: login },
         watchPicture: (route, onPicture) => watchPicturePath(queryClient, route, onPicture),
@@ -450,7 +468,7 @@ export function PriorityDescription({
       ydoc?.destroy();
       setEditor(undefined);
     };
-  }, [createEditor, drawn, login, queryClient]);
+  }, [createEditor, drawn, login, openLink, queryClient]);
 
   // The documents' editor is named "Document editor"; this one is named for the description it
   // holds, says it is read-only where the reader does not write in it, and is described by the
@@ -555,7 +573,7 @@ export function PriorityDescription({
         </p>
       )}
       {drawn ? (
-        // biome-ignore lint/a11y/useKeyWithClickEvents lint/a11y/noStaticElementInteractions: dispatch:// link clicks bubble here, as they do on a document; the editor handles the keyboard's activation of its own links.
+        // biome-ignore lint/a11y/noStaticElementInteractions: nothing here is made interactive - the blur handler only notes that the focus left the editor inside, to write what it holds; the editor opens its own links (`openLink`).
         <div
           className={`dispatch-doc dispatch-description rounded-md px-2 py-1 has-focus-visible:ring-2 ${boxed ? `border ${borderDefault}` : "-mx-2"} ${hasFocusVisibleRing}`}
           data-read-only={!writes}
@@ -567,7 +585,6 @@ export function PriorityDescription({
               return;
             if (held.current !== undefined) rest(held.current, latest.current, setFailure);
           }}
-          onClick={followReference}
         >
           <div ref={root} />
           <DocumentReferences editor={editor} source={undefined} />

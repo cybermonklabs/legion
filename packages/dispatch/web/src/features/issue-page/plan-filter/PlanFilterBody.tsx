@@ -538,19 +538,19 @@ interface DrawnPlace {
  * plan, and its curves are drawn to the bars drawn beside it.
  *
  * It is the outline the page draws under this view, so it is one tree named as the outline is,
- * and its rows are its items: the outline's own keys work it, under the ids the outline
- * registers them with (`useTreeKeymap.ts`), so `?` names each once. Each takes the outline's
- * label but `tree-link` and `tree-edit`, whose labels say what they do here ("Move to the next
- * link on the focused row", "Go to the focused step in the conversation"). Tab from the page
- * itself enters the chart at its one tab stop, the arrows and `j`/`k` reach the bars in order
- * and pass over a cycle's row, Home and End the first and the last bar, `f` steps through the
- * focused row's links, Escape gives a row back from its link and leaves the chart from the row,
- * and Enter goes to the row's task in the conversation, where it is edited. The focus on a row
- * puts its task in Details. A focus anywhere inside a row - the row's own, or a link of it that
- * a pointer went down on - is the focus on that row, as it is on the outline's (`NodeRow.tsx`):
- * the row takes the mark, the heavier curves, Details and the Tab stop, and the keys, which find
- * the row that holds the focus (`at`), move from there. The focus leaving the chart lets go of
- * its row by the outline's rule (`releaseFocus`, below).
+ * and its rows are its items: the outline's own actions work it (`useTreeKeymap.ts`'s
+ * `issue.tree-*`), so `?` names each once and a key a person gives one in Settings works here
+ * too. Enter is the one action of its own (`issue.plan-go-to-step`): it goes to the step's task
+ * in the conversation, where the outline's Enter puts the caret in the row. With the default
+ * keys, Tab from the page itself enters the chart at its one tab stop, the arrows and `j`/`k`
+ * reach the bars in order and pass over a cycle's row, Home and End the first and the last bar,
+ * `f` steps through the focused row's links, Escape gives a row back from its link and leaves
+ * the chart from the row, and Enter goes to the row's task in the conversation, where it is
+ * edited. The focus on a row puts its task in Details. A focus anywhere inside a row - the row's
+ * own, or a link of it that a pointer went down on - is the focus on that row, as it is on the
+ * outline's (`NodeRow.tsx`): the row takes the mark, the heavier curves, Details and the Tab
+ * stop, and the keys, which find the row that holds the focus (`at`), move from there. The focus
+ * leaving the chart lets go of its row by the outline's rule (`releaseFocus`, below).
  *
  * A cycle's row takes the focus too, as a bar's does: a press on it, an address naming one of
  * its tasks, and the Tab stop where the chart draws no bar. It stands for the task the address
@@ -764,10 +764,7 @@ function PlanChart({
     // after Escape the same Tab goes back to the row under either drawing.
     treeEnterKey({ moveTo: (index) => moveTo(items(), index), rows: items }),
     {
-      id: "tree-next",
-      keys: ["j", "ArrowDown"],
-      label: "Move to the next row",
-      palette: false,
+      action: "issue.tree-next",
       run: () => {
         const held = items();
         moveTo(held, barFrom(held, at(held), 1));
@@ -776,10 +773,7 @@ function PlanChart({
     },
     {
       // Up from the page itself goes to the first bar, as down does.
-      id: "tree-previous",
-      keys: ["k", "ArrowUp"],
-      label: "Move to the previous row",
-      palette: false,
+      action: "issue.tree-previous",
       run: () => {
         const held = items();
         const on = at(held);
@@ -788,10 +782,7 @@ function PlanChart({
       when: () => reading() && items().length > 0,
     },
     {
-      id: "tree-first",
-      keys: "Home",
-      label: "Move to the first row",
-      palette: false,
+      action: "issue.tree-first",
       run: () => {
         const held = items();
         moveTo(held, barFrom(held, -1, 1));
@@ -799,10 +790,7 @@ function PlanChart({
       when: () => at(items()) !== -1,
     },
     {
-      id: "tree-last",
-      keys: "End",
-      label: "Move to the last row",
-      palette: false,
+      action: "issue.tree-last",
       run: () => {
         const held = items();
         moveTo(held, barFrom(held, held.length, -1));
@@ -814,10 +802,7 @@ function PlanChart({
       // one tab stop, so a key reaches them; Enter on the link it left the focus on is the
       // browser's own. The link is focused as the outline's f focuses one, letting the browser
       // bring it on screen, so a row the reader scrolled away does not keep its link off screen.
-      id: "tree-link",
-      keys: "f",
-      label: "Move to the next link on the focused row",
-      palette: false,
+      action: "issue.tree-link",
       run: () => {
         const held = items();
         const links = [...(held[at(held)]?.querySelectorAll<HTMLElement>("a[href]") ?? [])];
@@ -833,10 +818,7 @@ function PlanChart({
       // Enter on a row goes to its task in the conversation, where it is edited: the chart
       // draws each step and edits none. A cycle's row goes to the task it stands for. On a link
       // inside the row Enter is the link's own.
-      id: "tree-edit",
-      keys: "Enter",
-      label: "Go to the focused step in the conversation",
-      palette: false,
+      action: "issue.plan-go-to-step",
       run: () => {
         const task = rows[items().indexOf(document.activeElement as HTMLElement)]?.task;
         const path = task === undefined ? undefined : conversationPath(task);
@@ -848,11 +830,8 @@ function PlanChart({
       // From a link the reader reached inside a row, Escape gives the row back, since the row
       // is where the keys that move through the chart are; from the row itself it leaves the
       // chart, once the page has cleared its words filter, which comes first in the key table's
-      // order. The outline's own Escape, under its id (`useTreeKeymap.ts`'s `tree-leave`).
-      id: "tree-leave",
-      keys: "Escape",
-      label: "Leave the control, then the tree",
-      palette: false,
+      // order. The outline's own Escape (`useTreeKeymap.ts`'s `issue.tree-leave`).
+      action: "issue.tree-leave",
       run: () => {
         const held = items();
         const active = document.activeElement as HTMLElement | null;

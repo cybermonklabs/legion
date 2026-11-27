@@ -104,6 +104,7 @@ const CHANGE: CardChangeAct = {
   error: null,
   pending: false,
   quote: "A table keeps them queryable.",
+  stillSending: false,
 };
 
 test("the first line is the bullet, the heading, and the kind and the time at its right end", () => {

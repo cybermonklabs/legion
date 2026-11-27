@@ -5,6 +5,8 @@ import { Link } from "react-router-dom";
 
 import { apiErrorMessage, issuePatchRequest } from "../../api/client";
 import { prioritiesQuery } from "../../api/queries";
+import { waitingForPausedReads } from "../../api/query-client";
+import { useListReadBound } from "../../api/read-bound";
 import type { Issue, PriorityRow } from "../../api/types";
 import { CappedGroup } from "../../components/CappedGroup";
 import { MultiSelect } from "../../components/MultiSelect";
@@ -23,8 +25,14 @@ import {
   secondaryButtonText,
 } from "../../theme/classes";
 import { useDetailsRefusal } from "../issue/HeaderDetails";
+import { propertyControl } from "../issue/property-control";
 import { stoppedWriteNote } from "../writes/keyed-write";
-import { endedStopped, useKeyedWrite } from "../writes/useKeyedWrite";
+import {
+  endedStopped,
+  type KeyedWriteResult,
+  useKeyedWrite,
+  usePendingKeyedPress,
+} from "../writes/useKeyedWrite";
 import { PriorityChip } from "./PriorityChip";
 import { priorityName } from "./priorities-model";
 import { priorityPath } from "./priority-routes";
@@ -42,10 +50,9 @@ function priorityPlaces(
 
 /** The name of the control that places `issueKey` under a priority while the issue advances
  *  none, as the picker's trigger carries it in a row of the new issue page's Details: the words
- *  it draws there, the joining word and the issue's key ("Add a priority to CORE-1"). The new
- *  issue page's one add control finds it by that name. The page's words (`add_priority`,
- *  `control_name_to`) are written out here as a literal, as `main` writes them, since no control
- *  imports the page's word list (`components/tooltips.tsx`). */
+ *  it draws there, the joining word and the issue's key ("Add a priority to CORE-1"). The page's
+ *  words (`add_priority`, `control_name_to`) are written out here as a literal, as `main` writes
+ *  them, since no control imports the page's word list (`components/tooltips.tsx`). */
 export function addPriorityControlName(issueKey: string): string {
   return `Add a priority to ${issueKey}`;
 }
@@ -55,7 +62,8 @@ export function addPriorityControlName(issueKey: string): string {
  *  none, where it draws "Add a priority" - and "Edit priorities" everywhere else, since there it
  *  adds and takes off alike, as the labels' trigger is named "Edit labels". That is the page's
  *  word `edit_priorities` (`shared-writes.test.ts` holds the two equal), written out here for the
- *  same reason. The hand-offs of Details find the trigger by this name (`usePriorityHandOffs`). */
+ *  same reason. The new issue page itself finds the trigger by its mark (`propertyControl`), never
+ *  by this name. */
 export function priorityTriggerName(issueKey: string, adds: boolean): string {
   return adds ? addPriorityControlName(issueKey) : "Edit priorities";
 }
@@ -73,6 +81,105 @@ interface Draft {
   readonly ids: string[];
   readonly from: readonly string[];
   readonly revision: number;
+}
+
+/** A write of the line: the issue's own set, and the revision of the read it was drawn from. */
+interface AdvancesWrite {
+  readonly advances: string[];
+  readonly advances_revision: number;
+}
+
+/** What the line draws from its write (`usePriorityLineWrite`). */
+interface PriorityLineWrite {
+  /** Whether the trigger is held: a write of the line is out within its deadline, or the hold
+   *  through the reads it made stale is on. */
+  readonly held: boolean;
+  /** Why the reads the latest write made stale have not settled, once the hold over them ran
+   *  out (`useListReadBound`). */
+  readonly unsettled: string | undefined;
+  /** The write of the issue's own set, whose refusal the line says. */
+  readonly write: KeyedWriteResult<Issue, AdvancesWrite, unknown>;
+}
+
+/**
+ * The line's write of the set `issueKey` advances, and its hold through the reads that write made
+ * stale. Details draws the line in one of two places - the Advances row while the issue advances
+ * a priority, beside Add while it advances none - and the first priority added and the last one
+ * removed move it from the place the write was made in to the other as the read after that write
+ * is drawn. So Details holds this once and hands it to the line in both places
+ * (`IssueMargin.tsx`): held in the line, the write's hold, its refusal and why its reads have not
+ * settled would go with the place it leaves. Every other line holds its own.
+ */
+export function usePriorityLineWrite(issueKey: string): PriorityLineWrite {
+  const page = usePageWords();
+  const queryClient = useQueryClient();
+  // The hold of the line's write through the reads it made stale is the priorities read's, which
+  // the line says is not read, as the issue's line whose write made it (`useListReadBound`): a
+  // line drawn again while it is on finds it, and no other issue's line says why for it.
+  const [unsettledOf, holdThrough, holdingOf] = useListReadBound(prioritiesQuery().queryKey);
+  // The line's press, read from TanStack's mutation cache, which tells its listeners at once
+  // (`usePendingKeyedPress`). The observer `useMutation` reads is told a timer later, a task after
+  // the bound that ends the write's hold has drawn why the reads have not settled, so a trigger
+  // held by that observer would refuse a key pressed once the line says why.
+  const mutationKey = ["issue-advances", issueKey];
+  const writeOut = usePendingKeyedPress(mutationKey);
+  const write = useKeyedWrite({
+    // The line says why a write was refused, beside its trigger.
+    inline: true,
+    label: () => `Advances of ${issueKey}`,
+    // One write to the issue, in press order with every other (`issue:<KEY>`).
+    target: () => `issue:${issueKey}`,
+    readsLate: true,
+    mutationKey,
+    // The set and the revision of the read it was drawn from, both taken when the picker
+    // opened: a retry sends the same pair, never a revision read after the set was chosen.
+    request: (input: AdvancesWrite) => issuePatchRequest(issueKey, input),
+    onSettled: (_answer, refusal, written) => {
+      // Every open issue, this one included: a descendant inherits the change with no event of
+      // its own, and a refused write leaves this issue's read stale, so the next write must
+      // carry the revision it holds now. The priorities body and the rail's two counts move with
+      // the relation as well.
+      const reread = () =>
+        Promise.all([
+          queryClient.invalidateQueries({ queryKey: ["issue"] }),
+          queryClient.invalidateQueries({ queryKey: ["priorities"] }),
+        ]);
+      // Outside `NoTooltips` the write stops pending as it lands and these reads go on after it,
+      // as on `main`. Inside, `onSettled` returns them, which TanStack Query awaits before the
+      // write stops pending: the trigger stays `aria-disabled`, and refuses to open, until the
+      // issue it draws is the one read after the write, or until the request deadline where
+      // that read has not settled - one the network paused while the browser is offline - so no
+      // read holds the line for good, and the line says why until the reads settle or the next
+      // write lands (`useListReadBound`). There they wait on a fetch the network had already
+      // paused, and past one another press's cancel gives up - a components save's of the issue
+      // - which the deadline ends as well (`waitingForPausedReads`).
+      if (page === null) {
+        void reread();
+        return;
+      }
+      const rereads = waitingForPausedReads(queryClient, reread);
+      // The line reads the priorities only while its picker is open or the issue advances one
+      // (`PriorityLine`), so the invalidation reads them only then. A set that lands with a
+      // priority in it, written by a line that read none - the first priority added, the picker
+      // closed - leaves the line the next issue read draws to name that priority from a read
+      // nothing started: so the write reads them itself, and its hold waits on that read too.
+      // While the line reads them, that read is the invalidation's own (`fetchQuery` joins it).
+      const named =
+        refusal === null && written.advances.length > 0
+          ? [queryClient.fetchQuery(prioritiesQuery()).catch(() => undefined)]
+          : [];
+      return holdThrough(issueKey, Promise.all([rereads, ...named]));
+    },
+  });
+  // Held while a write is out within its deadline: the trigger keeps the focus and sends nothing
+  // more until the write lands (`MultiSelect`'s `ariaDisabled`). Past the deadline (`late`) it is
+  // let go. A line drawn again while the write or its hold is out holds by it, by the write's key
+  // (`mutationKey`) and by the hold's row (`holdingOf`).
+  return {
+    held: (writeOut.isPending && !writeOut.late) || holdingOf(issueKey),
+    unsettled: unsettledOf(issueKey),
+    write,
+  };
 }
 
 /**
@@ -107,24 +214,61 @@ interface Draft {
  * line has an entry to name or the picker is open, as the components line reads the
  * architecture tree only while its picker is open.
  *
+ * The trigger is held, never disabled, while a write of the line is out within its deadline: it
+ * is `aria-disabled`, so it keeps the focus and its Tab stop, and no press and no key opens the
+ * picker then. The line's own `disabled`, which a closed issue sets, disables it. A write past its
+ * deadline (`late`) holds the trigger no longer: it is still tried under its key, and the shell's
+ * indicator offers to stop it, but one that never answers - the browser offline - would otherwise
+ * hold the line for good. A press made then waits its turn behind it on the issue's line
+ * (`target`), late as well.
+ *
  * Inside `NoTooltips` (`components/tooltips.tsx`) it says the new issue page's words with their
  * marks and carries no `title`: each priority is a link of its order and title, with the word
  * that it is inherited after it, and the line's own label before them all. There `inRow` draws
  * it as the value of a row of Details, which draws the label: no `Advances` of its own, a line
  * that wraps and cuts no word, and "Add a priority" on the picker's trigger while the issue
- * advances none, which is then named by `addPriorityControlName`.
+ * advances none, which is then named by `addPriorityControlName`. There the write stays out
+ * until the issue is read again, as far as the request deadline, and a read that has not
+ * settled by then is said beside the trigger until it does.
  */
 export function IssuePriorityLine({
-  disabled,
-  inRow = false,
-  issue,
-}: {
+  priorityWrite,
+  ...line
+}: IssuePriorityLineProps & {
+  /** The line's write and its hold, where the page holds them rather than the line
+   *  (`usePriorityLineWrite`): Details, which draws the line in one of two places. Absent, the
+   *  line holds its own (`LineWithOwnWrite`). */
+  priorityWrite?: PriorityLineWrite;
+}): ReactNode {
+  return priorityWrite === undefined ? (
+    <LineWithOwnWrite {...line} />
+  ) : (
+    <PriorityLine {...line} priorityWrite={priorityWrite} />
+  );
+}
+
+/** The line where the page holds no write for it: the line holds its own. */
+function LineWithOwnWrite(line: IssuePriorityLineProps): ReactNode {
+  const priorityWrite = usePriorityLineWrite(line.issue.key);
+  return <PriorityLine {...line} priorityWrite={priorityWrite} />;
+}
+
+/** What a page draws the line with, beside its write (`IssuePriorityLine`). */
+interface IssuePriorityLineProps {
   disabled: boolean;
   /** Whether the line is the value of a row of the new issue page's Details. It acts inside
    *  `NoTooltips` alone. */
   inRow?: boolean;
   issue: Pick<Issue, "advances" | "advances_revision" | "key">;
-}): ReactNode {
+}
+
+/** The line itself, drawn from the write it is handed (`IssuePriorityLine`). */
+function PriorityLine({
+  disabled,
+  inRow = false,
+  issue,
+  priorityWrite,
+}: IssuePriorityLineProps & { priorityWrite: PriorityLineWrite }): ReactNode {
   const page = usePageWords();
   const inDetails = page !== null && inRow;
   const advances = issue.advances ?? [];
@@ -132,7 +276,6 @@ export function IssuePriorityLine({
   const [draft, setDraft] = useState<Draft | null>(null);
   const [inputError, setInputError] = useState<string | null>(null);
   const open = draft !== null;
-  const queryClient = useQueryClient();
   const priorities = useQuery({
     ...prioritiesQuery(),
     enabled: open || advances.length > 0,
@@ -144,34 +287,7 @@ export function IssuePriorityLine({
     const known = places.get(id);
     return priorityName(id, known?.place, known?.title);
   };
-  const write = useKeyedWrite({
-    // The line says why a write was refused, beside the control it came from.
-    inline: true,
-    label: () => `Advances of ${issue.key}`,
-    // One write to the issue, in press order with every other (`issue:<KEY>`).
-    target: () => `issue:${issue.key}`,
-    // The set and the revision of the read it was drawn from, both taken when the picker
-    // opened: a retry sends the same pair, never a revision read after the set was chosen.
-    request: (input: { advances: string[]; advances_revision: number }) =>
-      issuePatchRequest(issue.key, input),
-    onSettled: () => {
-      // Every open issue, this one included: a descendant inherits the change with no event of
-      // its own, and a refused write leaves this issue's read stale, so the next write must
-      // carry the revision it holds now. The priorities body and the rail's two counts move with
-      // the relation as well.
-      const rereads = [
-        queryClient.invalidateQueries({ queryKey: ["issue"] }),
-        queryClient.invalidateQueries({ queryKey: ["priorities"] }),
-      ];
-      // Outside `NoTooltips` the write stops pending as it lands and these reads go on after it,
-      // as on `main`. Inside, `onSettled` returns them, which TanStack Query awaits before the
-      // write stops pending: the trigger stays `aria-disabled`, and refuses to open, until the
-      // issue it draws is the one read after the write.
-      if (page === null) return;
-      return Promise.all(rereads);
-    },
-  });
-  const saving = write.isPending;
+  const { held, unsettled, write } = priorityWrite;
 
   // What the picker offers: the live priorities in rank order, less those the issue inherits,
   // which are no choice here; and each of the issue's own, even one the read does not hold, so a
@@ -183,7 +299,7 @@ export function IssuePriorityLine({
 
   const setOpen = (next: boolean) => {
     if (next) {
-      if (disabled || saving) return;
+      if (disabled || held) return;
       setDraft({ from: own, ids: [...own], revision: issue.advances_revision });
       setInputError(null);
       return;
@@ -231,6 +347,10 @@ export function IssuePriorityLine({
       })
     : apiErrorMessage(write.error, notSaved);
   const failureIsPageWords = stopped || saveFailure === notSaved;
+  // What the line says when the priorities could not be read: on the line, and before why the
+  // reads a write made stale have not settled (`unsettled`).
+  const prioritiesUnreadable =
+    page?.ANSWER_LINES.priorities_unreadable ?? "Could not load the priorities.";
   // A refused save stands under the header while Details is closed, named by its row; a stopped
   // write is no refusal.
   useDetailsRefusal(write.error !== null && !stopped ? saveFailure : null);
@@ -250,7 +370,9 @@ export function IssuePriorityLine({
       // focus, so Escape's return to the trigger would be undone by the save's own render.
       // `setOpen` is what refuses to reopen until the save has landed, and `aria-disabled` is
       // how the reader is told it is busy without focus being taken away.
-      ariaDisabled={saving}
+      ariaDisabled={held}
+      // The trigger draws its own look, a square holding "+", so it ends in no chevron.
+      chevron={false}
       disabled={disabled}
       emptyMessage={
         priorities.isPending
@@ -259,6 +381,9 @@ export function IssuePriorityLine({
       }
       error={inputError}
       label="Priorities"
+      // The new issue page's add menu and Details' priority hand-offs find the trigger by this
+      // mark, in either place the line is drawn, never by its name (`property-control.ts`).
+      marks={{ trigger: propertyControl("advances", issue.key) }}
       onChange={changeDraft}
       onOpenChange={setOpen}
       open={open}
@@ -286,11 +411,12 @@ export function IssuePriorityLine({
       // the two meet. After a "+N" control, or with no chip, it stands at the line's gap. The
       // square lights under the pointer and dims while the trigger is `disabled` or
       // `aria-disabled`: the trigger is the `group` its states are read from, since the square
-      // itself is never disabled.
+      // itself is never disabled. Inside `NoTooltips` the trigger itself dims and shows the
+      // refused cursor while it is held.
       triggerClassName={
         page === null
           ? `group inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-lg outline-none focus-visible:ring-2 max-md:relative ${PRIORITY_TRIGGER_AFTER_CHIP} md:min-h-8 md:min-w-8 ${focusVisibleRing}`
-          : `inline-flex min-h-11 shrink-0 items-center rounded-full px-2 py-2 text-sm whitespace-nowrap outline-none ${pagePaneBg} ${pageMutedText} hover:text-page-ink md:min-h-7 md:py-1`
+          : `inline-flex min-h-11 shrink-0 items-center rounded-full px-2 py-2 text-sm whitespace-nowrap outline-none refused:cursor-not-allowed refused:opacity-50 ${pagePaneBg} ${pageMutedText} hover:text-page-ink md:min-h-7 md:py-1`
       }
     >
       {page === null ? (
@@ -315,7 +441,7 @@ export function IssuePriorityLine({
           role="alert"
           {...page?.pageChrome}
         >
-          {page?.ANSWER_LINES.priorities_unreadable ?? "Could not load the priorities."}
+          {prioritiesUnreadable}
         </span>
       ) : null}
       {write.error === null ? null : (
@@ -325,6 +451,18 @@ export function IssuePriorityLine({
           {...(failureIsPageWords ? page?.pageChrome : page?.authorText)}
         >
           {saveFailure}
+        </span>
+      )}
+      {/* Only inside `NoTooltips` does the line hold through the reads its write made stale, so
+          only there does a read outlive its hold and say why here, until it settles or the next
+          write lands. */}
+      {unsettled === undefined ? null : (
+        <span
+          className={`max-w-full [overflow-wrap:anywhere] text-xs ${failed}`}
+          role="alert"
+          {...page?.pageChrome}
+        >
+          {`${prioritiesUnreadable} ${unsettled}.`}
         </span>
       )}
     </>

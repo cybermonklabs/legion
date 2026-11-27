@@ -3,6 +3,7 @@ import { type ReactNode, useRef } from "react";
 import { Link } from "react-router-dom";
 
 import type { DispatchEvent, DisplayTree } from "../../api/types";
+import { focusIntoView } from "../../components/focus-place";
 import { PinButton } from "../../components/PinButton";
 import { pageInkText, pageMutedText, pageQuietText } from "../../theme/classes";
 import { EventEditedMark } from "../activity/EventBody";
@@ -116,15 +117,23 @@ export function IssuePins({
   // An Unpin takes its pin's row away, and the focus with it: the focus goes on to the next
   // pin's link, else the one before, else the section's heading, rather than falling to the
   // page. Every row holds its pin's link as a child of its own; an event pin's actor is a link
-  // further in, inside its line.
+  // further in, inside its line. None takes the browser's own scroll, which centres a control not
+  // wholly in view: the next pin's link moves up into the place of the row the reader pressed in
+  // once that row has gone, so it scrolls nowhere, and the one before and the heading stay where
+  // they stand, so each is scrolled to its nearest edge where the reader cannot see it whole.
   const unpin = (id: string) => {
     const rows = [...(list.current?.children ?? [])];
     const at = rows.findIndex((row) => row instanceof HTMLElement && row.dataset.pin === id);
-    const neighbour = rows[at + 1] ?? (at > 0 ? rows[at - 1] : undefined);
-    const next = [...(neighbour?.children ?? [])].find(
+    const after = rows[at + 1];
+    const neighbour = after ?? (at > 0 ? rows[at - 1] : undefined);
+    const pinLink = [...(neighbour?.children ?? [])].find(
       (child) => child instanceof HTMLAnchorElement
     );
-    (next ?? heading.current)?.focus();
+    if (pinLink !== undefined && neighbour === after) pinLink.focus({ preventScroll: true });
+    else {
+      const stays = pinLink ?? heading.current;
+      if (stays !== null) focusIntoView(stays);
+    }
     writePin(queryClient, issueKey, { id, op: "unpin" });
   };
   const link = `dispatch-inline-link ${ROW_LINK} ${pageInkText}`;

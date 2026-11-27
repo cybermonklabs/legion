@@ -1,25 +1,32 @@
-import type { ReactNode } from "react";
+import { type ReactNode, useRef } from "react";
 
+import { heldPress } from "../../components/held-press";
 import { linkHoverText, linkText } from "../../theme/classes";
 
 /** The Reply action on a message turn: an icon-only button whose 44 px tap target shrinks to
- *  32 px on desktop like the copy-reference and pin controls beside it. `disabled` holds it while
- *  the composer it would address is busy with a send. */
+ *  32 px on desktop like the copy-reference and pin controls beside it. `held` holds it while
+ *  the composer it would address is busy with a send (`heldPress`). `onClick` is handed the
+ *  pressed button itself, since a WebKit click focuses no button and so the focus cannot name
+ *  it: the Conversation's docked composer gives the focus back to it as the reply it started
+ *  ends (`ConversationTab`'s `beginReply`). */
 export function ReplyButton({
   className = "",
-  disabled = false,
+  held = false,
   onClick,
 }: {
   className?: string;
-  disabled?: boolean;
-  onClick: () => void;
+  held?: boolean;
+  onClick: (button: HTMLButtonElement) => void;
 }): ReactNode {
+  const button = useRef<HTMLButtonElement>(null);
   return (
     <button
       aria-label="Reply"
-      className={`inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-lg disabled:cursor-not-allowed disabled:opacity-50 md:min-h-8 md:min-w-8 ${linkText} ${linkHoverText} ${className}`}
-      disabled={disabled}
-      onClick={onClick}
+      className={`inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-lg refused:cursor-not-allowed refused:opacity-50 md:min-h-8 md:min-w-8 ${linkText} ${linkHoverText} ${className}`}
+      {...heldPress(held, () => {
+        if (button.current !== null) onClick(button.current);
+      })}
+      ref={button}
       title="Reply"
       type="button"
     >

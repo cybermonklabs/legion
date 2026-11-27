@@ -119,6 +119,7 @@ const {
   clarification_failed,
   saving,
   sending,
+  still_sending,
   stopped: answerStopped,
   ...formWords
 } = ASK_FORM_WORDS;
@@ -130,7 +131,11 @@ const {
   stopped: declineStopped,
   ...declineWords
 } = ASK_DECLINE_WORDS;
-const { stopped: decisionStopped, ...actWords } = DECISION_ACT_WORDS;
+const {
+  still_sending: changeStillSending,
+  stopped: decisionStopped,
+  ...actWords
+} = DECISION_ACT_WORDS;
 
 /**
  * The ask body's words that it draws wherever it draws the part that holds them, which is on
@@ -157,7 +162,15 @@ export const ASK_BODY_ANSWERS = freeze({
   approval: { diff_failed, diff_loading },
   card: { unsent_answer },
   decline: { again: declineAgain, declining, failed: declineFailed, stopped: declineStopped },
-  form: { answering, changed, clarification_failed, saving, sending, stopped: answerStopped },
+  form: {
+    answering,
+    changed,
+    clarification_failed,
+    saving,
+    sending,
+    still_sending,
+    stopped: answerStopped,
+  },
   hand_on: { failed: handOnFailed, handing_on },
 } as const);
 
@@ -171,9 +184,13 @@ export const DECISION_CARD_WORDS = freeze({
   state: DECISION_STATE_WORDS,
 } as const);
 
-/** The decision card's words for a Keep or a Change that stopped on its way, which it says only
- *  after the reader's act. */
-export const DECISION_CARD_ANSWERS = freeze({ stopped: decisionStopped } as const);
+/** The decision card's words for a Keep or a Change that stopped on its way, and for a Send
+ *  change that sent nothing while the change before it is still out, which it says only after
+ *  the reader's act. */
+export const DECISION_CARD_ANSWERS = freeze({
+  still_sending: changeStillSending,
+  stopped: decisionStopped,
+} as const);
 
 export default {
   add: {

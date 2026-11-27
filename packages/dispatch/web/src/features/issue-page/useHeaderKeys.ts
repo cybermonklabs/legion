@@ -1,10 +1,11 @@
 import type { IssuePriority } from "../../api/types";
 import { outsideAskCard } from "../inbox/ask-card";
+import { PRIORITY_TRIGGER_SELECTOR } from "../issue/PriorityControl";
+import { STATUS_TRIGGER_SELECTOR } from "../issue/status-pick";
 import type { IssuePriorityWrite } from "../issue/useIssuePriority";
 import { useKeymap } from "../shell/keymap";
 import { ACTION_WORDS, CHIP_ACTIONS, chipBox } from "./approval-chip-box";
 import { EDIT_TITLE_BUTTON } from "./IssueTitleRow";
-import { PROPERTY_LABELS } from "./page-structure";
 import { usableControl } from "./usable-control";
 
 /**
@@ -15,8 +16,6 @@ import { usableControl } from "./usable-control";
  */
 const HEADER = "[data-issue-header]";
 const PIN_TOGGLE = 'button[data-issue-action="pin"]';
-const PRIORITY_SELECT = 'select[aria-label^="Priority of "]';
-const STATUS_SELECT = `select[aria-label="${PROPERTY_LABELS.status}"]`;
 
 /** The group around `node` that a control of the header opens and shuts (`aria-expanded`) and
  *  names by `aria-controls`: the actions menu's, hidden while the menu is shut
@@ -105,60 +104,59 @@ function outsideInputsAndAskCards(): boolean {
 
 /**
  * The header's keys: the ones today's header binds, each with its target on the new header (`s`
- * focuses the status and `p` the priority, `0` to `3` set the priority, `e` puts the caret in the
- * title, `Shift+P` pins and unpins, and Escape leaves a focused status or priority), and `a` and
- * `Shift+R`, which approve and open Request changes on the focused approval chip or entry.
+ * opens the status list and `p` the priority list, `0` to `3` set the priority, `e` puts the
+ * caret in the title, `Shift+P` pins and unpins), and `a` and `Shift+R`, which approve and open
+ * Request changes on the focused approval chip or entry. Each is the catalogue's action of
+ * today's page (`keymap-catalogue.ts`), so its label and its keys are the ones the person sees
+ * and sets there. A list's keys are its own while it is open, Escape among them, which closes
+ * it: the status and the priority lists take D5's rules (`MultiSelect`'s `menu`), so a key that
+ * presses a trigger leaves it the element the focus was on as the place every close gives the
+ * focus back to - the page itself where nothing had it, so the next key is the page's.
  *
  * They register into the `issue` scope the view row pushes (`useIssueKeymap.ts`); this hook
- * pushes none. The digits go through the header's one priority write, the one its picker and the
+ * pushes none. The digits go through the header's one priority write, the one its list and the
  * palette's Set priority rows use, so a refusal of any of them is said once, by the header.
  *
  * `s`, `p` and `e` are offered exactly while their control takes a press by the page's one rule
  * (`usable-control.ts`, read through `headerControl` here), and the digits and `Shift+P` exactly
  * while theirs does and the focus is where those two may write (`outsideInputsAndAskCards`). The
- * rule refuses a control that is disabled (a closed issue, a save in flight), and also one that
- * is busy (`aria-disabled`), `aria-hidden` or not drawn. The pin is read only up to the shut
- * actions menu (`headerControl`), so the menu's `hidden` does not refuse it, nor does its not
- * being drawn there: `Shift+P` is offered while the shut menu hides the pin.
+ * rule refuses a control that is disabled (a closed issue), one that is busy (`aria-disabled`:
+ * held while its save is in flight, `heldPress`), and one that is `aria-hidden` or not drawn.
+ * The pin is read only up to the shut actions menu (`headerControl`), so the menu's `hidden`
+ * does not refuse it, nor does its not being drawn there: `Shift+P` is offered while the shut
+ * menu hides the pin.
  */
 export function useHeaderKeys(priorityWrite: IssuePriorityWrite): void {
   useKeymap("issue", [
     {
-      id: "status",
-      keys: "s",
-      label: "Focus the status",
-      run: () => headerControl(STATUS_SELECT)?.focus(),
-      when: () => headerControl(STATUS_SELECT) !== null,
+      action: "issue.status",
+      run: () => headerControl(STATUS_TRIGGER_SELECTOR)?.click(),
+      when: () => headerControl(STATUS_TRIGGER_SELECTOR) !== null,
     },
     {
-      id: "priority",
-      keys: "p",
-      label: "Focus the priority",
-      run: () => headerControl(PRIORITY_SELECT)?.focus(),
-      when: () => headerControl(PRIORITY_SELECT) !== null,
+      action: "issue.priority",
+      run: () => headerControl(PRIORITY_TRIGGER_SELECTOR)?.click(),
+      when: () => headerControl(PRIORITY_TRIGGER_SELECTOR) !== null,
     },
     {
-      id: "set-priority",
-      keys: ["0", "1", "2", "3"],
-      label: "Set priority P0–P3",
+      // While the list is open the focus is in its text box, whose keys are its own, so a digit
+      // there is the list's and never this second write.
+      action: "issue.set-priority",
       run: (event) => priorityWrite.submit(Number(event.key) as IssuePriority),
-      when: () => headerControl(PRIORITY_SELECT) !== null && outsideInputsAndAskCards(),
+      when: () => headerControl(PRIORITY_TRIGGER_SELECTOR) !== null && outsideInputsAndAskCards(),
     },
     {
       // Edit title's click opens the editor, and a focus does not, so the key clicks it: a
       // button that already holds the focus - where Escape and Enter leave it - takes no new
       // focus. The title row draws the button only while the issue is open and its title not
       // edited (`IssueTitleRow.tsx`), so the key is offered exactly while a click opens it.
-      id: "title",
-      keys: "e",
-      label: "Edit the title",
+      action: "issue.title",
       run: () => headerControl(EDIT_TITLE_BUTTON)?.click(),
       when: () => headerControl(EDIT_TITLE_BUTTON) !== null,
     },
     {
-      id: "pin",
-      keys: "Shift+P",
-      label: "Pin or unpin the issue",
+      // Held while its write is out (`heldPress`), when it takes no press, and so no key.
+      action: "issue.pin",
       run: () => headerControl(PIN_TOGGLE)?.click(),
       when: () => headerControl(PIN_TOGGLE) !== null && outsideInputsAndAskCards(),
     },
@@ -172,33 +170,14 @@ export function useHeaderKeys(priorityWrite: IssuePriorityWrite): void {
     // focus is still on the chip and runs the one chosen once the focus is back on it
     // (`SearchPalette.tsx`), and neither key walks a list or repeats an action with a row.
     {
-      id: "approve",
-      keys: "a",
-      label: "Approve the focused approval request",
+      action: "issue.approve",
       run: () => focusedApprovalAction("approve")?.click(),
       when: () => focusedApprovalAction("approve") !== null,
     },
     {
-      id: "request-changes",
-      keys: "Shift+R",
-      label: "Request changes on the focused approval request",
+      action: "issue.request-changes",
       run: () => focusedApprovalAction("request-changes")?.click(),
       when: () => focusedApprovalAction("request-changes") !== null,
-    },
-    {
-      // `s` and `p` put focus in a native select, where every single-key binding is suspended
-      // and the next keystroke is the select's own type-ahead - `t` would pick Todo or Testing
-      // rather than start a view's chord. Escape is the way back out, as it is on the Inbox
-      // rows, the board's cards and the architecture rows.
-      id: "back",
-      inEditable: true,
-      keys: "Escape",
-      label: "Back out of the focused header control",
-      run: () => (document.activeElement as HTMLElement | null)?.blur(),
-      when: () => {
-        const active = document.activeElement;
-        return active === headerControl(STATUS_SELECT) || active === headerControl(PRIORITY_SELECT);
-      },
     },
   ]);
 }

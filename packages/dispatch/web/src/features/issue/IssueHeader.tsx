@@ -1,6 +1,6 @@
 import { ISSUE_TITLE_MAX } from "@legion/contracts";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { type KeyboardEvent, type ReactNode, useId, useState } from "react";
+import { type KeyboardEvent, type ReactNode, useId, useRef, useState } from "react";
 
 import {
   AGENT_LIST_REFILLING,
@@ -12,7 +12,7 @@ import {
   removedEvenIfGone,
 } from "../../api/client";
 import { mergeIssue } from "../../api/issue-cache";
-import { projectsQuery, userStateQuery } from "../../api/queries";
+import { projectsQuery, userStateQuery, whoAmIQuery } from "../../api/queries";
 import { replaceQueryData } from "../../api/query-client";
 import type {
   Artifact,
@@ -22,9 +22,14 @@ import type {
   UserState,
 } from "../../api/types";
 import { CappedGroup } from "../../components/CappedGroup";
+import { focusableIn, focusOnMount } from "../../components/focus-place";
+import { heldPress } from "../../components/held-press";
+import { MultiSelect } from "../../components/MultiSelect";
 import { PinButton } from "../../components/PinButton";
 import { QueryError } from "../../components/QueryError";
-import { useSubmitGuard } from "../../hooks/useSubmitGuard";
+import { useFocusBack } from "../../hooks/useFocusBack";
+import { useFocusHandOff } from "../../hooks/useFocusHandOff";
+import { useReleaseWhenLate, useSubmitGuard } from "../../hooks/useSubmitGuard";
 import { inputMethodKey } from "../../lib/input-method-key";
 import {
   badgePrimary,
@@ -39,6 +44,7 @@ import {
   dangerText,
   focusBorder,
   focusVisibleRing,
+  hasFocusVisibleRing,
   secondaryButtonBorder,
   secondaryButtonDisabledText,
   secondaryButtonHoverBorder,
@@ -50,10 +56,18 @@ import {
   textPrimaryOnSurface,
   textSecondaryHoverToPrimary,
 } from "../../theme/classes";
+import { TURN_ROW } from "../conversation/turn-keys";
 import { ApprovalChip } from "../doc/ApprovalChip";
+import { outsideAskCard } from "../inbox/ask-card";
 import { waitingOnHuman } from "../inbox/BlockedOnYou";
+import { useRetryHandOff } from "../issue-page/details-error";
 import { IssuePriorityLine } from "../priorities/IssuePriorityLine";
-import { issueStatuses, openIssueStatuses, statusLabel } from "../project/board-model";
+import {
+  isIssueStatus,
+  issueStatuses,
+  openIssueStatuses,
+  statusText,
+} from "../project/board-model";
 import { AgentName, useAgentText } from "../refs/AgentName";
 import { CopyRefButton } from "../refs/CopyRefButton";
 import { ReferencedBy } from "../refs/ReferencedBy";
@@ -67,6 +81,7 @@ import { ClaimChip } from "./ClaimChip";
 import { GitHubLink, isPullRequestLink } from "./GitHubLink";
 import { gatedStepEntries, isProjectRoot } from "./gated-steps";
 import { HeaderDetails, type HeaderDetailsRow } from "./HeaderDetails";
+import { usableControl } from "./header-control";
 import { IssueComponentsLine } from "./IssueComponentsLine";
 import { IssueParentDetails, IssueRouteDetails } from "./IssueHeaderForms";
 import { IssueLabels } from "./IssueLabels";
@@ -82,10 +97,16 @@ import {
   UnresponsiveRouteMarker,
 } from "./RouteReach";
 import { SubscribedAgents } from "./SubscribedAgents";
+import { STATUS_MENU, statusMarksShowing } from "./status-pick";
 import { type IssueUpdateInput, useIssueDrafts } from "./useIssueDrafts";
 import type { IssuePriorityWrite } from "./useIssuePriority";
 
 const titleRefusals = new Set(["CAP_EXCEEDED", "ISSUE_CLOSED"]);
+
+/** A turn of the Conversation tab, or a reply inside one (`turn-keys.ts`). While the focus is on
+ *  one the reader is on that turn, not on the header, so the header's Approve and Request
+ *  changes keys stand down. */
+const CONVERSATION_TURN = `#issue-conversation-panel :is(${TURN_ROW})`;
 
 /** Whether `input` is the Status pill's pick alone: that control shows its write in the shell's
  *  indicator and rolls back on a refusal, where every other header field holds its draft and
@@ -136,6 +157,7 @@ export function IssueHeader({
 }): ReactNode {
   const queryClient = useQueryClient();
   const [editingTitle, setEditingTitle] = useState(false);
+  const titleFocus = useFocusBack(editingTitle);
   // Whether the route's and the parent's editors in Details are open: the header holds them,
   // since Details closing closes them. The Advances picker saves its draft as it closes, which a
   // press outside it does, so it needs no such hold.
@@ -173,23 +195,74 @@ export function IssueHeader({
       void queryClient.invalidateQueries({ queryKey: ["subscribers", issue.key] });
     },
   });
+  // The reader's press of Release, or of Retry after a refused release, noted as it sends the
+  // release and forgotten as that release is refused, or as the claim's box leaves the page
+  // (`claimLeft`).
+  const released = useRef(false);
   const releaseClaim = useKeyedWrite({
     // A release made again after one that landed needs no `removedEvenIfGone`: Dispatch answers a
     // release of an issue nobody holds with the issue, as it answers the first.
     method: "DELETE",
+    readsLate: true,
     write: (_variables, bounds) => api.releaseIssueClaim(issue.key, bounds),
     inline: true,
     label: () => `Claim on ${issue.key} released`,
+    // The write's own callback, not the press's: Retry sends the release again with none of its
+    // own (`retry`).
+    onError: () => {
+      released.current = false;
+    },
     onSuccess: (next) => {
       if (next !== null) mergeIssue(queryClient, next);
       void queryClient.invalidateQueries({ queryKey: ["issues"] });
     },
   });
-  // Every status write of the header - the select, Close, Reopen and the palette's rows - goes
-  // through the rule's question (`useIssueStatusMove`): a dry run first for an issue with a
+  const releasing = releaseClaim.isPending && !releaseClaim.late;
+  // Release is drawn beside the claim only while the issue has one, so the release its press
+  // makes takes the claim's box off the page as it lands, with the focus Release holds. The focus
+  // goes on, with no scroll, to the control now at Release's place in the header's order
+  // (`releasePlace`): the first after the State and Attention groups (`stateActions`), the first
+  // of the header's last line - the labels' own, or Details where they take no press
+  // (`useFocusHandOff`). Only a release of the reader's own hands it on (`released`, which a press
+  // of Release or of Retry sets and the release's refusal clears): the box taken away by a release
+  // made elsewhere leaves the focus on the page's body, as the new issue page's claim does
+  // (`IssueClaimControl`). A refused release draws its line with Retry, and Retry's press takes the
+  // line away, with the focus Retry holds, as it sends the release again: the focus goes on to
+  // Release, held beside the claim while that release is out, and from there to Release's place
+  // once it lands, as after a first release; or to Release's place at once where the release has
+  // already taken the claim's box (`useRetryHandOff`, which Retry's press arms).
+  const headerElement = useRef<HTMLElement>(null);
+  const stateActions = useRef<HTMLDivElement>(null);
+  const releaseControl = useRef<HTMLButtonElement>(null);
+  const releasePlace = () => {
+    const groups = stateActions.current;
+    if (groups === null || headerElement.current === null) return null;
+    return focusableIn(headerElement.current).find(
+      (control) =>
+        !groups.contains(control) &&
+        (groups.compareDocumentPosition(control) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0
+    );
+  };
+  const claimLeft = useFocusHandOff(releasePlace, released);
+  const retry = useRetryHandOff(() => releaseControl.current ?? releasePlace());
+  const pressRelease = () => {
+    released.current = true;
+    releaseClaim.mutate();
+  };
+  const retryRelease = () => {
+    retry.retried.current = true;
+    released.current = true;
+    releaseClaim.retry();
+  };
+  // Every status write of the header - the status list, Close, Reopen and the palette's rows -
+  // goes through the rule's question (`useIssueStatusMove`): a dry run first for an issue with a
   // parent or an open child, then the write below, or the question where Dispatch's rule would
-  // refuse it.
-  const statusMove = useIssueStatusMove(issue);
+  // refuse it. One that ends with nothing written takes back the focus that a press of Close issue
+  // or Reopen asked for (`closeFocus`, `reopenFocus`, below).
+  const statusMove = useIssueStatusMove(issue, () => {
+    closeFocus.letGo();
+    reopenFocus.letGo();
+  });
   // A title, route, parent or close the header shows refused itself, beside its draft; a status
   // pick is a control, so its refusal is the shell's (`PendingWritesIndicator`), and the pick
   // rolls back. Every field write goes in the issue's line (`issue:<key>`), so an older one still
@@ -198,6 +271,7 @@ export function IssueHeader({
   const updateIssue = useKeyedWrite({
     inline: (input) => !statusPickOnly(input),
     label: (input) => issueUpdateLabel(issue.key, input),
+    readsLate: true,
     target: () => `issue:${issue.key}`,
     request: (input: IssueUpdateInput) => issuePatchRequest(issue.key, input),
     // A status the page took for one the rule could not refuse, which Dispatch refused under it
@@ -221,8 +295,12 @@ export function IssueHeader({
       void queryClient.invalidateQueries({ queryKey: ["issues"] });
     },
   });
+  // One labels write goes out at a time: the labels' control is held while one is out within its
+  // deadline. Past it (`late`) the control is let go, as every hold on a write is, and a set saved
+  // then goes behind the late one in the issue's line.
   const labelsMutation = useKeyedWrite({
     label: () => `Labels of ${issue.key}`,
+    readsLate: true,
     target: () => `issue:${issue.key}`,
     request: (labels: string[]) => issuePatchRequest(issue.key, { labels }),
     onSuccess: (next) => {
@@ -230,47 +308,93 @@ export function IssueHeader({
       void queryClient.invalidateQueries({ queryKey: ["issues"] });
     },
   });
+  // The labels the labels' control draws and starts from: past the deadline of a labels write
+  // still tried, the set it carries, so the set saved next keeps that write's change rather than
+  // undo it; else the issue's.
+  const labelsShown =
+    (labelsMutation.late ? labelsMutation.variables : undefined) ?? issue.labels ?? [];
   const drafts = useIssueDrafts(issue, updateIssue);
+  // A status the rule's question lets go while a title, route or parent save is out within its
+  // deadline waits behind that save (`requestStatusSubmit`), and goes once it lands; where that
+  // save is refused it is let go unsent, and the press hears so, which takes back the focus its
+  // Close issue or Reopen asked for (`unwritten`).
   const requestStatus = (status: string) => {
-    statusMove.move(status, () => drafts.requestStatusSubmit(status));
+    statusMove.move(status, () => {
+      const sent = Promise.withResolvers<boolean>();
+      drafts.requestStatusSubmit(status, sent.resolve);
+      return sent.promise;
+    });
   };
-  // A status write is out, or the rule's question is checking or asking about one: no second
-  // status write can start.
-  const statusBusy = updateIssue.isPending || statusMove.pending !== undefined;
-  // Palette-only: closing and reopening an issue are too consequential for a single key, so they
-  // are reachable from `$mod+k` alone, through the same handlers and the same guards as the
-  // Close and Reopen buttons below. `IssuePage` pushes the `issue` scope these are offered under.
+  // Close issue is drawn only while the issue is open and Reopen only while it is closed, so the
+  // status write each one asks for takes it off the page as it lands, with the focus it holds.
+  // Each press asks for the focus back (`useFocusBack`), and the commit that draws the other one
+  // in its place gives it the focus with no scroll, from the page's body alone, where the going
+  // left it: Reopen after a close (`closeFocus`), Close issue after a reopen (`reopenFocus`). The
+  // command bar's rows of the two ask the same: the bar runs one once it has given the focus
+  // back, to the page's body where nothing held it as the bar opened, and the focus goes on from
+  // there. Where the rule's question asks first, its dialog holds the focus, and the page can draw
+  // the issue closed or reopened before the dialog goes - its read of the change Dispatch made can
+  // answer before the chosen write does - so the ask waits for the dialog too (`asking`): the
+  // dialog gives the focus back to the control pressed, or to the page's body where that control
+  // has gone, and the focus goes on from there. A status write refused, or a question closed
+  // unanswered, takes the ask back (`letGo`): the issue closed or reopened later in another
+  // session, which the page draws as it reads it, moves no focus, as a claim released elsewhere
+  // moves none (`released`).
+  const asking = statusMove.question !== undefined;
+  const closeFocus = useFocusBack(!isClosed || asking);
+  const reopenFocus = useFocusBack(isClosed || asking);
+  const closeIssue = () => {
+    closeFocus.handBack();
+    requestStatus("done");
+  };
+  const reopenIssue = () => {
+    reopenFocus.handBack();
+    requestStatus("backlog");
+  };
+  // While a field write is out within its deadline every header control that writes the issue is
+  // held rather than disabled: it keeps the focus the press gave it (`heldPress`). Past the
+  // deadline (`KeyedWriteResult.late`) it holds none of them, and a status pressed then is a write
+  // of its own, which waits behind it in the issue's line (`requestStatusSubmit`). The route and
+  // parent forms' submits need no guard of their own: `useIssueDrafts` keeps a draft submitted
+  // meanwhile and sends it once the writes out have landed, never beside one.
+  const fieldHeld = updateIssue.isPending && !updateIssue.late;
+  // A write of the header's fields (its status, title, route or parent) is out within its
+  // deadline, or the rule's question is checking or asking about a status write: no second status
+  // write can start. The check is a dry run held to the request deadline (`dryRunStatusChange`),
+  // so it holds no longer than the write does.
+  const statusBusy = fieldHeld || statusMove.pending !== undefined;
+  // No default key: closing and reopening an issue are too consequential for a single key, so
+  // they are rows of `$mod+k` until a person gives them a key, through the same handlers and the
+  // same guards as the Close and Reopen buttons below. The four Set priority rows have none
+  // either: the page's digits `0`–`3` set the priority (`issue.set-priority`), which is no row,
+  // since each digit writes its own priority. `IssuePage` pushes the `issue` scope these are
+  // offered under.
   useKeymap("issue", [
     {
-      id: "close",
-      keys: [],
-      label: "Close issue",
-      run: () => requestStatus("done"),
-      // `disabled={statusBusy}` on the button, and `isClosed` decides whether it is rendered at
+      action: "issue.close",
+      run: closeIssue,
+      // The button is held while `statusBusy`, and `isClosed` decides whether it is rendered at
       // all; a row offered while a status write is in flight would submit a second one.
       when: () => !isClosed && !statusBusy,
     },
     {
-      id: "reopen",
-      keys: [],
-      label: "Reopen issue",
-      run: () => requestStatus("backlog"),
+      action: "issue.reopen",
+      run: reopenIssue,
       when: () => isClosed && !statusBusy,
     },
     ...([0, 1, 2, 3] as const).map((level) => ({
-      id: `set-p${level}`,
-      keys: [],
-      label: `Set priority P${level}`,
+      action: `issue.set-p${level}` as const,
       run: () => priorityWrite.submit(level),
-      // The same condition as `PriorityEditor`'s `disabled` below.
-      when: () => !(isClosed || updateIssue.isPending),
+      // The same condition as `PriorityEditor`'s `disabled` and `held` below.
+      when: () => !(isClosed || fieldHeld),
     })),
   ]);
-  // The status the select and the closed line show while it is out: the one the rule's question
-  // is checking or asking about, else the one the write is saving.
-  const checkingStatus = statusMove.pending;
+  // The status the status list and the closed line show while it is out: the one the rule's
+  // question is checking or asking about, else the one waiting behind the write out, else the one
+  // the write is saving.
+  const unsentStatus = statusMove.pending ?? drafts.statusQueued;
   const statusSaving =
-    checkingStatus !== undefined ||
+    unsentStatus !== undefined ||
     (updateIssue.isPending && updateIssue.variables?.status !== undefined);
   const routeSaving = updateIssue.isPending && updateIssue.variables?.route !== undefined;
   // A route saved with no answer stands for the issue until the issue is read again: until then
@@ -279,9 +403,19 @@ export function IssueHeader({
     routeUnread !== null &&
     routeUnread.seq === issue.last_seq &&
     routeUnread.route !== (issue.route ?? "");
-  const pendingStatus =
-    checkingStatus ?? (statusSaving ? updateIssue.variables?.status : undefined);
+  const pendingStatus = unsentStatus ?? (statusSaving ? updateIssue.variables?.status : undefined);
+  // What the status list's trigger shows: the status a pick is checking or saving, else the
+  // issue's.
+  const statusValue = pendingStatus ?? issue.status;
+  const statusShown = statusText(statusValue);
   const selectableStatuses = isClosed ? issueStatuses : openIssueStatuses;
+  const [statusOpen, setStatusOpen] = useState(false);
+  // A closed issue's Status takes no pick, and neither does it while a write of the header's
+  // fields (its status, title, route or parent) is out within its deadline or the rule's question
+  // is checking or asking about a status write (`statusBusy`). Either way it is held
+  // (`aria-disabled`), never disabled: it keeps the focus the reader's pick handed back to it, and
+  // a press of it or `s` opens nothing.
+  const statusHeld = isClosed || statusBusy;
   const openAsks = (issue.open_asks ?? []).filter((ask) => ask.state === "open");
   // The detail carries waiting_on on every open ask; a response without it cannot say whose
   // turn it is, so the indicator stays off rather than shown wrong.
@@ -315,6 +449,42 @@ export function IssueHeader({
   const showApprovalActions =
     documentArtifact?.approval !== undefined &&
     (documentArtifact.approval.state !== "draft" || approvalRequestOpen);
+  // `a` and Shift+R press the header's Approve and Request changes (R7) while the primary
+  // document's own approval request waits on the reader: its `ask_id` names an open ask of this
+  // issue whose turn is a person's, and that person is the reader. `showApprovalActions` is not
+  // that test: it draws Request changes on an approved spec while only another document of the
+  // issue waits, whose request the reader reaches on the Artifacts tab. Inside an ask card the
+  // card's controls own the keys, and on a turn of the Conversation tab the reader is on that
+  // turn; a text field keeps both keys already, since neither fires while one has the focus.
+  const viewer = useQuery(whoAmIQuery()).data?.login;
+  const approvalAskId = documentArtifact?.approval?.ask_id;
+  const approvalWaitsOnReader =
+    viewer !== undefined &&
+    waitingForHuman.some((ask) => ask.id === approvalAskId && ask.waiting_on_person === viewer);
+  /** The header's Approve or Request changes, while the key that presses it is the reader's:
+   *  drawn, taking a press, and the request waiting on them. */
+  const approvalControl = (action: "approve" | "request-changes"): HTMLElement | null =>
+    approvalWaitsOnReader &&
+    outsideAskCard() &&
+    document.activeElement?.closest(CONVERSATION_TURN) == null
+      ? usableControl(`[data-approval-action="${action}"]`)
+      : null;
+  useKeymap("issue", [
+    {
+      // Approve stays held from the press until the page reads the approval again
+      // (`ApprovalChip`), so a second press meanwhile presses nothing.
+      action: "issue.approve",
+      run: () => approvalControl("approve")?.click(),
+      when: () => approvalControl("approve") !== null,
+    },
+    {
+      // Request changes opens its box with the focus in the reason, where Ctrl or Cmd+Enter
+      // sends and Escape closes it sending nothing (`ApprovalChip`).
+      action: "issue.request-changes",
+      run: () => approvalControl("request-changes")?.click(),
+      when: () => approvalControl("request-changes") !== null,
+    },
+  ]);
   const pinGuard = useSubmitGuard();
   const updateState = useKeyedWrite({
     // A read of the state asked while the pin is out could be answered before Dispatch takes it,
@@ -323,6 +493,7 @@ export function IssueHeader({
     holds: () => ({ keys: [userStateQuery().queryKey] }),
     label: (pinned: boolean) => `${issue.key} ${pinned ? "pinned" : "unpinned"}`,
     method: "PUT",
+    readsLate: true,
     write: (pinned: boolean, bounds) => api.putIssueState(issue.key, { pinned }, bounds),
     onSettled: () => {
       pinGuard.release();
@@ -355,13 +526,20 @@ export function IssueHeader({
       }));
     },
   });
+  useReleaseWhenLate(pinGuard, updateState.late);
+  // Enter ends the edit as the editor's blur does, and gives the focus back to Edit title. The
+  // press is marked taken: the browser sends the key's keypress to the element focused by then,
+  // and on Edit title that keypress would press it and open the editor again.
   const saveTitleOnEnter = (event: KeyboardEvent<HTMLInputElement>) => {
     if (event.key === "Enter") {
+      event.preventDefault();
+      titleFocus.handBack();
       event.currentTarget.blur();
     }
   };
   // The one way each editor of Details gives up an edit: its own Cancel and Escape, and Details
-  // closing over it.
+  // closing over it. Its own Cancel and Escape also give the focus back to the control that
+  // opened it (`IssueHeaderForms.tsx`); Details closing leaves the focus on Details.
   const cancelRouteEdit = () => {
     drafts.discardRoute();
     setRouteEditing(false);
@@ -392,6 +570,7 @@ export function IssueHeader({
       : null;
   const issueReference = buildDispatchReference({ key: issue.key, kind: "issue" });
   const referencesPanelId = useId();
+  const titleId = useId();
   const pullRequests: ExternalLink[] = [];
   const otherLinks: ExternalLink[] = [];
   for (const link of issue.external_links ?? []) {
@@ -431,10 +610,10 @@ export function IssueHeader({
         <IssueRouteDetails
           drafts={drafts}
           editing={routeEditing}
+          held={fieldHeld}
           isClosed={isClosed}
           onCancel={cancelRouteEdit}
           onEditingChange={setRouteEditing}
-          saving={updateIssue.isPending}
         />
       ),
     },
@@ -479,12 +658,12 @@ export function IssueHeader({
         <IssueParentDetails
           drafts={drafts}
           editing={parentEditing}
+          held={fieldHeld}
           isClosed={isClosed}
           onCancel={cancelParentEdit}
           onEditingChange={setParentEditing}
           parent={issue.parent}
           project={issue.project}
-          saving={updateIssue.isPending}
         />
       ),
     },
@@ -493,7 +672,8 @@ export function IssueHeader({
       label: "Repository",
       value: (
         <RepoControl
-          disabled={isClosed || updateIssue.isPending}
+          disabled={isClosed}
+          held={fieldHeld}
           issueKey={issue.key}
           project={issue.project}
           repo={issue.repo}
@@ -545,6 +725,7 @@ export function IssueHeader({
       className={`mb-3 min-w-0 rounded-xl border p-3 ${card}`}
       data-issue-header=""
       data-testid="issue-header"
+      ref={headerElement}
     >
       {isClosed ? (
         <div
@@ -554,12 +735,15 @@ export function IssueHeader({
           <button
             aria-label="Reopen issue"
             className={`min-h-11 rounded-lg px-3 py-2 text-sm font-medium ${secondaryButtonBorder} ${secondaryButtonHoverBorder} ${secondaryButtonDisabledText}`}
-            disabled={statusBusy}
-            onClick={() => requestStatus("backlog")}
+            // Held, not disabled, while a write of the header's fields within its deadline or the
+            // rule's question is out (`statusBusy`): the pressed Reopen keeps the keyboard focus,
+            // and a second press sends nothing. A close hands the focus on to it (`closeFocus`).
+            {...heldPress(statusBusy, reopenIssue)}
+            ref={closeFocus.opener}
             title="Reopen into Backlog"
             type="button"
           >
-            {pendingStatus === "backlog" ? "Reopening…" : "Reopen"}
+            {statusBusy && pendingStatus === "backlog" ? "Reopening…" : "Reopen"}
           </button>
         </div>
       ) : null}
@@ -585,6 +769,12 @@ export function IssueHeader({
                 aria-describedby={drafts.titleError === null ? undefined : "issue-title-help"}
                 aria-label="Issue title"
                 className={`min-w-0 flex-1 rounded-lg border px-2 py-1 text-[22px] leading-7 font-semibold tracking-tight outline-none md:py-0 ${borderTransparent} ${bgTransparent} ${textPrimaryOnSurface} ${borderStrongHover} ${focusBorder}`}
+                // The heading's 22 px type at every width, so the title is written in the size it
+                // is read in. Below 1280 px `styles.css` sets every input's type to 16 px
+                // (`font-size: 1rem`, the floor that keeps a phone from zooming in), in no layer,
+                // over `text-[22px]`: a set size, not a minimum. `data-own-type` takes it off this
+                // box.
+                data-own-type=""
                 disabled={isClosed}
                 maxLength={ISSUE_TITLE_MAX}
                 onBlur={() => {
@@ -599,43 +789,53 @@ export function IssueHeader({
                   // compositionend, with `isComposing` false and keyCode 229 (`inputMethodKey`).
                   if (inputMethodKey(event.nativeEvent)) return;
                   if (event.key === "Escape") {
+                    // The press is the editor's: marked taken, so the key registry passes over it
+                    // (`shell/keymap.ts`). The focus goes back to Edit title (`useFocusBack`).
+                    event.preventDefault();
+                    titleFocus.handBack();
                     drafts.discardTitle();
                     setEditingTitle(false);
                     return;
                   }
                   saveTitleOnEnter(event);
                 }}
-                ref={(node) => node?.focus()}
+                ref={focusOnMount}
                 value={drafts.title}
               />
             ) : (
-              <h1
-                className={`min-w-0 flex-1 break-words rounded-lg border px-2 py-1 text-[22px] leading-7 font-semibold tracking-tight md:py-0 ${borderTransparent} ${textPrimaryOnSurface} ${
-                  isClosed ? "" : `cursor-text ${borderStrongHover}`
-                }`}
-                onClick={() => {
-                  if (!isClosed) {
-                    setEditingTitle(true);
-                  }
-                }}
-                onFocus={() => {
-                  if (!isClosed) {
-                    setEditingTitle(true);
-                  }
-                }}
-                onKeyDown={(event) => {
-                  if (!isClosed && (event.key === "Enter" || event.key === " ")) {
-                    event.preventDefault();
-                    setEditingTitle(true);
-                  }
-                }}
-                tabIndex={isClosed ? -1 : 0}
-              >
-                {drafts.title}
-              </h1>
+              // The heading holds the title and takes no Tab stop and no press. The Edit title
+              // button laid over the heading's box is the control: a screen reader reads it as
+              // "Edit title, button", with the title as its description. The button shows no text
+              // of its own, since a button that showed the title under the name "Edit title" would
+              // leave its visible words out of its name (WCAG 2.5.3, Label in Name). It stands
+              // beside the heading and not inside it, since a heading's name is computed from
+              // what it holds, a button's `aria-label` included. It opens the editor when the
+              // reader activates it - a click, Enter or Space - and never as it takes the focus:
+              // an editor that opens on focus changes the page on focus (WCAG 2.2, 3.2.1 On
+              // Focus), and a focus can come to the button with no act of the reader's. Escape and
+              // Enter in the editor give the focus back to it (`useFocusBack`). A closed issue's
+              // title edits nothing, so it is the heading alone.
+              <div className="relative min-w-0 flex-1">
+                <h1
+                  className={`break-words rounded-lg border px-2 py-1 text-[22px] leading-7 font-semibold tracking-tight md:py-0 ${borderTransparent} ${textPrimaryOnSurface}`}
+                  id={titleId}
+                >
+                  {drafts.title}
+                </h1>
+                {isClosed ? null : (
+                  <button
+                    aria-describedby={titleId}
+                    aria-label="Edit title"
+                    className={`absolute inset-0 cursor-text rounded-lg border outline-none focus-visible:ring-2 ${borderTransparent} ${borderStrongHover} ${focusVisibleRing}`}
+                    onClick={() => setEditingTitle(true)}
+                    ref={titleFocus.opener}
+                    type="button"
+                  />
+                )}
+              </div>
             )}
             <PinButton
-              disabled={updateState.isPending}
+              held={updateState.isPending && !updateState.late}
               label={state.pinned ? "Unpin issue" : "Pin issue"}
               onClick={() => pinGuard.guard(() => updateState.mutate(!state.pinned))}
               pinned={state.pinned}
@@ -645,37 +845,65 @@ export function IssueHeader({
         <div
           className="flex w-full min-w-0 flex-wrap items-center gap-x-4 gap-y-2 md:w-auto"
           data-testid="issue-state-actions"
+          ref={stateActions}
         >
           <div className={headerGroup} data-testid="issue-state">
-            <label
-              className={`flex min-h-11 shrink-0 items-center gap-2 rounded-full border px-2 text-sm font-semibold uppercase tracking-wide sm:px-3 md:min-h-8 xl:px-2 ${borderDefault} ${statusPill.bg} ${statusPill.text}`}
+            {/* The Status is the shared list's single pick, whose text box narrows the statuses
+                as the reader types. Its trigger fills the pill, which draws the keyboard focus
+                ring round it as `badge-select.ts`'s wrappers do. On an open issue it lists every
+                open status, since Close issue is an open issue's one way into Done; on a closed
+                issue every status, its own Done among them, and it takes no pick, since its way
+                back is Reopen. A pick goes through the rule's question (`requestStatus`), then
+                writes through `updateIssueGuard` (`requestStatusSubmit`), and a pick of the
+                status it shows writes nothing, as a select set to the value it holds fires
+                nothing. Held on a closed issue and while a write of the header's fields within
+                its deadline or the rule's question is out (`statusHeld`), so the focus a status
+                pick hands back stays where it went, and a list that stood open as the hold began
+                picks nothing. It takes D5's rules (`STATUS_MENU`): the issue page's `s` opens it
+                on the status held, and every close gives the focus back where it was as the list
+                opened. */}
+            <span
+              className={`flex min-h-11 shrink-0 items-center rounded-full border text-sm font-semibold uppercase tracking-wide md:min-h-8 has-focus-visible:ring-2 ${hasFocusVisibleRing} ${borderDefault} ${statusPill.bg} ${statusPill.text}`}
             >
-              <span
-                aria-hidden="true"
-                className={`hidden h-2 w-2 rounded-full sm:block ${statusPillDot}`}
-              />
-              <select
-                aria-label="Status"
-                className={`min-w-0 appearance-none font-inherit outline-none disabled:cursor-not-allowed disabled:opacity-50 ${bgTransparent} ${statusPill.text}`}
-                disabled={isClosed || statusBusy}
-                onChange={(event) => requestStatus(event.target.value)}
-                value={pendingStatus ?? issue.status}
+              <MultiSelect
+                ariaDisabled={statusHeld}
+                chevron={false}
+                emptyMessage="No status matches that."
+                label="Status"
+                marks={statusMarksShowing(statusValue)}
+                menu={STATUS_MENU}
+                mode="single"
+                onOpenChange={(next) => setStatusOpen(next && !statusHeld)}
+                onPick={(picked) => {
+                  if (statusHeld || picked === statusValue || !isIssueStatus(picked)) return;
+                  requestStatus(picked);
+                }}
+                open={statusOpen}
+                optionLabel={statusText}
+                options={selectableStatuses}
+                searchLabel="Search statuses"
+                triggerClassName="flex cursor-pointer items-center self-stretch rounded-full px-2 outline-none sm:px-3 xl:px-2 refused:cursor-not-allowed refused:opacity-50"
+                value={statusValue}
               >
-                {selectableStatuses.map((status) => (
-                  <option key={status} value={status}>
-                    {statusLabel(status)}
-                  </option>
-                ))}
-              </select>
-            </label>
+                <span className="flex items-center gap-2">
+                  <span
+                    aria-hidden="true"
+                    className={`hidden h-2 w-2 rounded-full sm:block ${statusPillDot}`}
+                  />
+                  {statusShown}
+                </span>
+              </MultiSelect>
+            </span>
             <PriorityEditor
-              disabled={isClosed || updateIssue.isPending}
+              disabled={isClosed}
+              held={fieldHeld}
               issueKey={issue.key}
               write={priorityWrite}
             />
             <AssigneeControl
               assignee={issue.assignee}
-              disabled={isClosed || updateIssue.isPending}
+              disabled={isClosed}
+              held={fieldHeld}
               issueKey={issue.key}
             />
             <ProgressChips bar progress={issue.progress} />
@@ -725,17 +953,20 @@ export function IssueHeader({
               </>
             ) : null}
             {issue.claim === null ? null : (
-              <span className="flex min-w-0 max-w-full grow basis-64 items-center gap-2">
+              <span
+                className="flex min-w-0 max-w-full grow basis-64 items-center gap-2"
+                ref={claimLeft}
+              >
                 <ClaimChip claim={issue.claim} liveness={issue} />
                 <button
                   aria-label={`Release the claim on ${issue.key}`}
                   className={`min-h-11 shrink-0 rounded-lg px-2 py-2 text-sm font-medium sm:px-3 md:min-h-8 md:py-1 xl:px-2 ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder} ${secondaryButtonDisabledText}`}
-                  disabled={releaseClaim.isPending}
-                  onClick={() => releaseClaim.mutate()}
+                  {...heldPress(releasing, pressRelease)}
+                  ref={releaseControl}
                   title="Release this claim so another agent can take the issue"
                   type="button"
                 >
-                  {releaseClaim.isPending ? "Releasing…" : "Release"}
+                  {releasing ? "Releasing…" : "Release"}
                 </button>
               </span>
             )}
@@ -765,10 +996,10 @@ export function IssueHeader({
           <div className="min-w-0 max-w-full" data-testid="issue-labels-group">
             <IssueLabels
               disabled={isClosed}
-              labels={issue.labels ?? []}
+              labels={labelsShown}
               onSave={(labels) => labelsMutation.mutateAsync(labels)}
               project={issue.project}
-              saving={labelsMutation.isPending}
+              saving={labelsMutation.isPending && !labelsMutation.late}
             />
           </div>
         }
@@ -779,11 +1010,15 @@ export function IssueHeader({
               <button
                 aria-label="Close issue"
                 className={`min-h-11 shrink-0 rounded-lg px-2 py-2 text-sm font-medium sm:px-3 md:min-h-8 md:py-1 xl:px-2 ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder} ${secondaryButtonDisabledText}`}
-                disabled={statusBusy}
-                onClick={() => requestStatus("done")}
+                // Held, not disabled, while a write of the header's fields within its deadline
+                // or the rule's question is out (`statusBusy`): the pressed Close keeps the
+                // keyboard focus, and a second press sends nothing. A reopen hands the focus on
+                // to it (`reopenFocus`).
+                {...heldPress(statusBusy, closeIssue)}
+                ref={reopenFocus.opener}
                 type="button"
               >
-                {pendingStatus === "done" ? (
+                {statusBusy && pendingStatus === "done" ? (
                   "Closing…"
                 ) : (
                   <>
@@ -839,14 +1074,18 @@ export function IssueHeader({
         />
       ) : null}
       {releaseClaim.isError ? (
-        <QueryError
-          message={
-            stoppedNote(releaseClaim, "the release of this claim", "made") ??
-            "Could not release this claim."
-          }
-          onRetry={releaseClaim.retry}
-          retrying={releaseClaim.isPending}
-        />
+        // Retry's press takes this line away as it sends the release again, and the focus Retry
+        // holds goes on to Release, or to Release's place (`useRetryHandOff`).
+        <div className="contents" ref={retry.retryRef}>
+          <QueryError
+            message={
+              stoppedNote(releaseClaim, "the release of this claim", "made") ??
+              "Could not release this claim."
+            }
+            onRetry={retryRelease}
+            retrying={releaseClaim.isPending}
+          />
+        </div>
       ) : null}
       {updateIssue.isError && !statusPickOnly(updateIssue.variables) ? (
         parentSaveFailed ? (
@@ -870,7 +1109,7 @@ export function IssueHeader({
                 : "Could not update this issue."
             }
             onRetry={drafts.retry}
-            retrying={updateIssue.isPending}
+            retrying={fieldHeld}
           />
         )
       ) : null}

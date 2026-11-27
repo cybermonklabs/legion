@@ -12,6 +12,7 @@ import userEvent from "@testing-library/user-event";
 
 import { endAsAReload, planner } from "./__tests__/draft-matrix-fixture";
 import { onRealTurns, realClock, tick } from "./__tests__/fake-clock";
+import { heldUntilLate } from "./__tests__/held-until-late";
 import { keptWrites } from "./__tests__/kept-sends-harness";
 import { answerAgentStates } from "./__tests__/send-answers";
 import { userOnFakeClock } from "./__tests__/user";
@@ -142,6 +143,38 @@ test("a sign-out the reader stopped does not say the person is still signed in",
         anew: "Every change is still here. Retry ends your session, or finds it ended, and signs you out here.",
       })} Retry`
     );
+  } finally {
+    realClock();
+    app.teardown();
+  }
+});
+
+// A sign-out that never answers - each try fails at the network, and the next waits out its
+// backoff - holds Sign out until its deadline (`SEND_DEADLINE_MS`), and no longer: past it the
+// sign-out is late and still tried, and Sign out is let go, with the focus on it. A press then
+// signs out again, a write of its own.
+test("Sign out, held until its sign-out's deadline, is let go there, and a press then signs out again", async () => {
+  jest.useFakeTimers();
+  const user = userOnFakeClock();
+  const app = renderApp({
+    logout: () =>
+      Promise.reject(new NetworkError("/auth/logout", new TypeError("Failed to fetch"))),
+    whoAmI: async () => ({ event_head: "0", kind: "user", login: "alice" }),
+  });
+  const signOuts = () =>
+    writesOf(app.queryClient)
+      .rows()
+      .filter((row) => row.label === "Sign out").length;
+  try {
+    await screen.findByText(wholeText("Signed in as alice"));
+    await heldUntilLate(user, screen.getByRole<HTMLButtonElement>("button", { name: "Sign out" }), {
+      label: "Sign out",
+      name: "Sign out",
+      queryClient: app.queryClient,
+      sent: signOuts,
+    });
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(signOuts(), "a press past the deadline signed nothing out").toBe(2));
   } finally {
     realClock();
     app.teardown();

@@ -10,6 +10,8 @@ import { dangerText, pageFailedText, pageQuietText, textMutedOnSurface } from ".
 import type { AgentNames } from "../conversation/CachedAuthor";
 import { ChangeView } from "../doc/ChangeView";
 import { cutDecisionBlocks } from "../doc/decision-blocks";
+import { inboxActionMark } from "../inbox/inbox-action-mark";
+import { ControlKeyHint, keyshortcutsOf } from "../shell/ShortcutHelp";
 import { AskAgent } from "./ask-agent";
 import { ASK_APPROVAL_WORDS } from "./ask-body-words";
 import { type AskPalette, authored, ownPart, type TextMarks } from "./ask-text";
@@ -92,19 +94,108 @@ function ApprovedChangeView({
   );
 }
 
+/** The approval an approval request follows, in one line: `Approved at version N on <date> by
+ *  <who>`, with no full stop at its end. Inside `NoTooltips` its date carries no `title`, as no
+ *  time there does. `marks` and `agentNames` are `EarlierApproval`'s. */
+function ApprovedLine({
+  agentNames,
+  approved,
+  marks,
+}: {
+  agentNames: AgentNames;
+  approved: NonNullable<AskApproval["approved"]>;
+  marks: TextMarks | undefined;
+}): ReactNode {
+  const tooltips = useTooltips();
+  return (
+    <p {...marks?.pageChrome}>
+      {`${ASK_APPROVAL_WORDS.approved.at_version} `}
+      {authored(marks, approved.version)}
+      {` ${ASK_APPROVAL_WORDS.approved.on}`}{" "}
+      <time
+        dateTime={approved.at}
+        title={tooltips ? approved.at : undefined}
+        {...marks?.authorText}
+      >
+        {approved.at.slice(0, 10)}
+      </time>{" "}
+      {`${ASK_APPROVAL_WORDS.approved.by} `}
+      <AskAgent actor={approved.by} agentNames={agentNames} inline marks={marks} />
+    </p>
+  );
+}
+
+/** The earlier approval's **Show diff** in `main`'s palette, which reveals what changed since it
+ *  and reads **Hide diff** while it does, marked as the control the Inbox's Show the earlier
+ *  approval's diff presses (`inboxActionMark`). The reading pane's head draws it in the place at
+ *  the end of its controls, apart from what it reveals (`EarlierApprovalDetails`, under the
+ *  title). */
+export function EarlierApprovalToggle({
+  diffOpen,
+  onToggle,
+  shortcutKeys,
+}: {
+  diffOpen: boolean;
+  onToggle: () => void;
+  /** The keys that press it, where the host draws them on it (the reading pane's head, with a
+   *  key a person gave it). */
+  shortcutKeys?: readonly string[];
+}): ReactNode {
+  return (
+    <DisclosureToggle
+      expanded={diffOpen}
+      keyHint={<ControlKeyHint keys={shortcutKeys} />}
+      keyshortcuts={keyshortcutsOf(shortcutKeys)}
+      label={diffOpen ? ASK_APPROVAL_WORDS.hide_diff : ASK_APPROVAL_WORDS.show_diff}
+      marks={inboxActionMark("inbox.earlier-approval-diff")}
+      onToggle={onToggle}
+      textClassName={TONES.main.quiet}
+    />
+  );
+}
+
+/** The reading pane's half of `EarlierApproval`, under the title: the line, then what changed
+ *  since that approval while its toggle has it open, in `main`'s palette with the names every
+ *  surface of today's pages draws. Nothing for a first request. */
+export function EarlierApprovalDetails({
+  approval,
+  diffOpen,
+}: {
+  approval: AskApproval;
+  diffOpen: boolean;
+}): ReactNode {
+  const { approved } = approval;
+  if (approved === undefined) {
+    return null;
+  }
+  return (
+    <div className={`text-xs ${TONES.main.quiet}`}>
+      <ApprovedLine agentNames="live" approved={approved} marks={undefined} />
+      {diffOpen ? (
+        <ApprovedChangeView
+          approvedVersion={approved.version}
+          artifactId={approval.artifact_id}
+          marks={undefined}
+          palette="main"
+          version={approval.version}
+        />
+      ) : null}
+    </div>
+  );
+}
+
 /**
- * The approval an approval request follows, when the document has one: `Approved at version N
- * on <date> by <who>`, with no full stop at its end, and a **Show diff** control that reveals
+ * The approval an approval request follows, when the document has one, under the question of an
+ * ask body: its line (`ApprovedLine`) and a **Show diff** control that reveals
  * `ApprovedChangeView`. Renders nothing for a first request, whose `approval` carries no
- * `approved`. Inside `NoTooltips` its date carries no `title`, as no time there does.
- * `agentNames` is how the ask body names the approver (`ask-agent.tsx`); the reading pane's
- * head, which draws it beside its own approval chip, names it as every surface of today's pages
- * does. A host that hands `marks` (`AskBodyProps.marks`) gets the line and Show diff each in the
- * mark of the body's own words, and the version, the date and the approver inside the line in
- * the mark of a value, and one that hands the page's palette its colours (`TONES`).
- * `DisclosureToggle` takes no class for its chevron, which it draws in `main`'s disclosure grey,
- * so in the page's palette Show diff is drawn as that toggle draws it - the same button, words
- * and chevron - in the page's quiet grey.
+ * `approved`. `agentNames` is how the ask body names the approver (`ask-agent.tsx`). A host that
+ * hands `marks` (`AskBodyProps.marks`) gets the line and Show diff each in the mark of the body's
+ * own words, and the version, the date and the approver inside the line in the mark of a value,
+ * and one that hands the page's palette its colours (`TONES`). `DisclosureToggle` takes no class
+ * for its chevron, which it draws in `main`'s disclosure grey, so in the page's palette Show diff
+ * is drawn as that toggle draws it - the same button, words and chevron - in the page's quiet
+ * grey. The Inbox's reading pane head draws the toggle and the rest apart, beside its own
+ * approval chip (`EarlierApprovalToggle`, `EarlierApprovalDetails`).
  */
 export function EarlierApproval({
   agentNames = "live",
@@ -119,29 +210,14 @@ export function EarlierApproval({
   palette?: AskPalette;
 }): ReactNode {
   const [diffOpen, setDiffOpen] = useState(false);
-  const tooltips = useTooltips();
   const tones = TONES[palette];
   const { approved } = approval;
   if (approved === undefined) {
     return null;
   }
-  const label = diffOpen ? ASK_APPROVAL_WORDS.hide_diff : ASK_APPROVAL_WORDS.show_diff;
   return (
     <div className={`mt-1 text-xs ${tones.quiet}`}>
-      <p {...marks?.pageChrome}>
-        {`${ASK_APPROVAL_WORDS.approved.at_version} `}
-        {authored(marks, approved.version)}
-        {` ${ASK_APPROVAL_WORDS.approved.on}`}{" "}
-        <time
-          dateTime={approved.at}
-          title={tooltips ? approved.at : undefined}
-          {...marks?.authorText}
-        >
-          {approved.at.slice(0, 10)}
-        </time>{" "}
-        {`${ASK_APPROVAL_WORDS.approved.by} `}
-        <AskAgent actor={approved.by} agentNames={agentNames} inline marks={marks} />
-      </p>
+      <ApprovedLine agentNames={agentNames} approved={approved} marks={marks} />
       {palette === "page" ? (
         <button
           aria-expanded={diffOpen}
@@ -150,17 +226,15 @@ export function EarlierApproval({
           type="button"
           {...marks?.pageChrome}
         >
-          {label}
+          {diffOpen ? ASK_APPROVAL_WORDS.hide_diff : ASK_APPROVAL_WORDS.show_diff}
           <ChevronIcon expanded={diffOpen} />
         </button>
       ) : (
         ownPart(
           marks,
-          <DisclosureToggle
-            expanded={diffOpen}
-            label={label}
+          <EarlierApprovalToggle
+            diffOpen={diffOpen}
             onToggle={() => setDiffOpen((open) => !open)}
-            textClassName={tones.quiet}
           />
         )
       )}

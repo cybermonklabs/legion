@@ -17,19 +17,21 @@ import { NODE_TYPE_NAMES, type NodeType } from "./page-words";
 /**
  * A node's one line (R1), as every place that draws one draws it - a folded branch's line
  * (`FirstLine`), a parent's line under a filter (`NodeParentLine`), a crumb above a zoom
- * (`IssueTree.tsx`'s `CrumbName`), a pin in Details (`IssuePins.tsx`'s `PinLine`) and a task's
- * line in the Plan view (`plan-filter/PlanFilterBody.tsx`'s `useTaskLine`): its node's first
- * line, projected from its words by the shared plain-text projection (`lineReading`) and cut by
- * R1's first-line rule (`firstLineOf`), with an ellipsis only where the cut ended inside a
- * sentence (`drawnLine`), so a heading never runs into the paragraph after it. A reference in it
- * reads as the same reference in the node's row does (`RowText.tsx`): as its target's current
- * name once it resolves, and as the words its author wrote until then (R8, issue page decision
- * 350); and a numbered step keeps its number (decisions 66 and 88). The issue's own line is its
- * key and then its projected title, the key handed to R1's rule apart from the title, which reads
- * a label after it (`LineReading.key`). Each role is read by the issue the node's record is on.
- * `line` is `undefined` until the projection has answered, which is one pre-paint commit on a
- * page whose engine is loaded, and `""` for a node whose words hold none. `reads` draws nothing
- * and the caller mounts it where it draws the line.
+ * (`IssueTree.tsx`'s `CrumbName`), a pin in Details (`IssuePins.tsx`'s `PinLine`), a task's
+ * line in the Plan view (`plan-filter/PlanFilterBody.tsx`'s `useTaskLine`) and the name of a
+ * check's facts control in the Verification view (`VerificationFilterBody.tsx`'s `Check`): its
+ * node's first line, projected from its words by the shared plain-text projection
+ * (`lineReading`) and cut by R1's first-line rule (`firstLineOf`), with an ellipsis only where
+ * the cut ended inside a sentence (`drawnLine`), so a heading never runs into the paragraph
+ * after it. A reference in it reads as the same reference in the node's row does
+ * (`RowText.tsx`): as its target's current name once it resolves, and as the words its author
+ * wrote until then (R8, issue page decision 350); and a numbered step keeps its number
+ * (decisions 66 and 88). The issue's own line is its key and then its projected title, the key
+ * handed to R1's rule apart from the title, which reads a label after it (`LineReading.key`).
+ * Each role is read by the issue the node's record is on. `line` is `undefined` until the
+ * projection has answered, which is one pre-paint commit on a page whose engine is loaded, and
+ * `""` for a node whose words hold none. `reads` draws nothing and the caller mounts it where it
+ * draws the line.
  */
 export function useNodeLine(
   node: Pick<TreeNode, "id" | "source" | "text" | "tree" | "type">,
@@ -41,7 +43,8 @@ export function useNodeLine(
       | "node-row-first-line"
       | "node-row-parent-line"
       | "outline-crumb"
-      | "plan-task-line";
+      | "plan-task-line"
+      | "verification-check-facts";
   }
 ): { line: string | undefined; reads: ReactNode } {
   const { id, source, text: stored, tree, type } = node;

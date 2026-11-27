@@ -1,13 +1,24 @@
-import { beforeAll, expect, spyOn, test } from "bun:test";
+import { beforeAll, expect, jest, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor, waitForElementToBeRemoved, within } from "@testing-library/react";
+import {
+  act,
+  render,
+  screen,
+  waitFor,
+  waitForElementToBeRemoved,
+  within,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, useLocation } from "react-router-dom";
 
 import { displayTree } from "../../__tests__/display-trees";
+import { realClock, tick } from "../../__tests__/fake-clock";
+import { afterFrameAndTasks } from "../../__tests__/frames";
+import { heldUntilLate, pressesOf } from "../../__tests__/held-until-late";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerIssuePatches } from "../../__tests__/send-answers";
-import { ApiError, api } from "../../api/client";
+import { userOnFakeClock } from "../../__tests__/user";
+import { ApiError, api, NetworkError } from "../../api/client";
 import type {
   ArchitectureTree,
   ArchitectureTreeComponent,
@@ -145,17 +156,24 @@ function LocationProbe() {
   return <output data-testid="location">{location.search}</output>;
 }
 
-function renderPane(tree: ArchitectureTree, search = "") {
+/** The page on `tree` at `search`; `inMain` draws it in the shell's main content, as the app
+ *  shell draws it. */
+function renderPane(
+  tree: ArchitectureTree,
+  search = "",
+  { inMain = false }: { inMain?: boolean } = {}
+) {
   const getArchitecture = spyOn(api, "getArchitecture").mockResolvedValue(tree);
   const syncArchitectureSource = spyOn(api, "syncArchitectureSource");
   const patchIssue = answerIssuePatches();
   const getIssue = spyOn(api, "getIssue");
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const page = <ArchitecturePage project="CORE" />;
   const view = render(
     <MemoryRouter initialEntries={[`/projects/CORE/architecture${search}`]}>
       <QueryClientProvider client={queryClient}>
         <KeymapProvider>
-          <ArchitecturePage project="CORE" />
+          {inMain ? <main>{page}</main> : page}
           <LocationProbe />
         </KeymapProvider>
       </QueryClientProvider>
@@ -178,6 +196,34 @@ function renderPane(tree: ArchitectureTree, search = "") {
     view,
   };
 }
+
+test("Refresh lets go at the architecture write deadline and sends again", async () => {
+  const pane = renderPane(fixture());
+  pane.syncArchitectureSource.mockRejectedValue(
+    new NetworkError("/api/v1/projects/CORE", new TypeError("Failed to fetch"))
+  );
+  try {
+    const button = await screen.findByRole<HTMLButtonElement>("button", {
+      name: "Refresh legion/legion",
+    });
+    jest.useFakeTimers();
+    const user = userOnFakeClock();
+    const sent = () => pressesOf([pane.syncArchitectureSource]);
+    await heldUntilLate(user, button, {
+      label: "Refresh of CORE's architecture source legion/legion",
+      name: "Refresh",
+      queryClient: pane.queryClient,
+      sent,
+    });
+    await user.keyboard("{Enter}");
+    await tick(1_000);
+    expect(sent()).toBe(2);
+  } finally {
+    realClock();
+    pane.restore();
+    pane.queryClient.clear();
+  }
+});
 
 const rowFor = (title: string) => screen.getByRole("article", { name: new RegExp(`^${title},`) });
 
@@ -284,6 +330,64 @@ test("j/k rove the rows, l/h descend and ascend, Enter opens a parent's children
     await user.click(rowFor("Docs"));
     await user.keyboard("{Escape}");
     expect(document.body).toHaveFocus();
+  } finally {
+    pane.restore();
+  }
+});
+
+// dispatch://INFRA-2160, R20: Shift+O opens what `o` opens, the row's own link, in a new tab.
+test("Shift+O opens the row's own link in a new tab, on a component with children and on a leaf, and the page stays where it is", async () => {
+  const user = userEvent.setup();
+  const open = spyOn(window, "open").mockImplementation(() => null);
+  const pane = renderPane(fixture());
+  const opened = (call: number) => new URL(String(open.mock.calls[call]?.[0])).search;
+  try {
+    await screen.findByRole("list", { name: "Components" });
+    await user.keyboard("{Shift>}O{/Shift}");
+    expect(open).not.toHaveBeenCalled();
+    await user.keyboard("j");
+    expect(rowFor("Legion")).toHaveFocus();
+    await user.keyboard("{Shift>}O{/Shift}");
+    expect(open).toHaveBeenCalledTimes(1);
+    expect(opened(0)).toBe("?component=legion");
+    expect(open.mock.calls[0]?.slice(1)).toEqual(["_blank", "noopener"]);
+    await user.keyboard("j");
+    expect(rowFor("Docs")).toHaveFocus();
+    await user.keyboard("{Shift>}O{/Shift}");
+    expect(opened(1)).toBe("?component=docs");
+    expect(screen.getByTestId("location").textContent).toBe("");
+    expect(rowFor("Docs")).toHaveFocus();
+  } finally {
+    pane.restore();
+    open.mockRestore();
+  }
+});
+
+// An Architecture row is a row of its list. A refetch that takes the row holding the focus away -
+// a sync that dropped its component - is a loss the reader did not cause, so with the page in the
+// shell's main content, as the shell draws it, the focus goes into no other row: the reader's next
+// key acts on no component they did not pick.
+test("a row a refetch takes away from under the focus hands it to no other row", async () => {
+  const roots = ["Alpha", "Bravo", "Charlie"].map((title) =>
+    component({ id: title.toLowerCase(), title })
+  );
+  const pane = renderPane(fixture({ components: roots }), "", { inMain: true });
+  try {
+    const list = await screen.findByRole("list", { name: "Components" });
+    const title = within(rowFor("Bravo")).getByRole("link", { name: "Bravo" });
+    act(() => title.focus());
+
+    pane.getArchitecture.mockResolvedValue(
+      fixture({ components: roots.filter((root) => root.id !== "bravo") })
+    );
+    await act(async () => {
+      await pane.queryClient.refetchQueries();
+    });
+    await waitFor(() => expect(title).not.toBeInTheDocument());
+    await afterFrameAndTasks();
+
+    expect(document.activeElement?.closest("[data-component-row]") ?? null).toBeNull();
+    expect(within(list).getByRole("article", { name: /^Charlie,/ })).toBeInTheDocument();
   } finally {
     pane.restore();
   }
@@ -428,7 +532,10 @@ test("never synced: the source line says so and an empty model shows the Refresh
       name: "Refreshing legion/legion…",
     });
     expect(refreshing.textContent).toBe("Refreshing…");
-    expect(refreshing.hasAttribute("disabled")).toBe(true);
+    // Held while the sync is out: it keeps its focus, and a second press sends no second sync.
+    expect(refreshing).toHaveAttribute("aria-disabled", "true");
+    await user.click(refreshing);
+    expect(pane.syncArchitectureSource).toHaveBeenCalledTimes(1);
     settle?.();
     await screen.findByRole("button", { name: "Refresh legion/legion" });
   } finally {

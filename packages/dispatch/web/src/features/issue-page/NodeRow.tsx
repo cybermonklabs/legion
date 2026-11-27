@@ -1213,7 +1213,7 @@ export function NodeEdges({
   return (
     <>
       {node.alsoUnder.map((chip) => (
-        <Chip
+        <NodeReference
           chip={chip}
           issue={issue}
           key={`also:${chip.ref}`}
@@ -1222,7 +1222,13 @@ export function NodeEdges({
         />
       ))}
       {node.chips.map((chip) => (
-        <Chip chip={chip} issue={issue} key={chip.ref} label={chip.label} tabStops={tabStops} />
+        <NodeReference
+          chip={chip}
+          issue={issue}
+          key={chip.ref}
+          label={chip.label}
+          tabStops={tabStops}
+        />
       ))}
       {node.gaps.map((gap) => (
         <span data-gap="" data-gap-kind={gap} key={gap} {...pageChrome}>
@@ -1267,7 +1273,7 @@ export function NodeEdges({
  * length, then ` · edited` (`EditedMark`), drawn after the cut, so no cut takes the mark
  * (deleted-post R2 and R3).
  */
-function Chip({
+function NodeReference({
   chip,
   issue,
   label,

@@ -32,9 +32,10 @@ type ReportRefusal = (refusal: string | null) => void;
 const RowRefusal = createContext<ReportRefusal | null>(null);
 
 /** Says, from a control drawn in a row of Details, the words of a write of it that Dispatch
- *  refused, or of a value it refused, while they stand, and null once none does: Details says them
- *  under the header while it is closed. A stopped write is no refusal. Drawn anywhere else, the
- *  control says them in its own line alone. */
+ *  refused, or of a value the control itself refused while that value stands in its row, and null
+ *  once none does: Details says them under the header while it is closed. A stopped write is no
+ *  refusal, and neither is a value a list refused in its own open panel, which closing Details
+ *  closes. Drawn anywhere else, the control says them in its own line alone. */
 export function useDetailsRefusal(refusal: string | null): void {
   const report = useContext(RowRefusal);
   useEffect(() => {
@@ -66,8 +67,9 @@ const writeOpen = (open: boolean) => (open ? "open" : "closed");
  * mounted and hidden, so each row keeps what it holds - a write in flight, a refusal - and shows
  * it again when the reader opens Details. `onClose` runs when the reader closes it: the route and
  * parent editors give up an edit not saved, as their Cancel does, and the Advances add form
- * closes with its pick; the repository box has saved what was typed as it lost focus to the
- * press, and a labels or components picker saves its staged set on any press outside it.
+ * closes with its pick; the repository list, open over the press, closes on it and gives up what
+ * was typed in its text box, as any press outside it does, and a labels or components picker
+ * saves its staged set on any press outside it.
  *
  * While Details is closed, the refusal a row's control holds (`useDetailsRefusal`) is said under
  * the header's last line, named by its row (`Repository: …`), as the route's and the parent's

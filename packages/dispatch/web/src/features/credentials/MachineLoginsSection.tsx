@@ -2,6 +2,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 
 import { api } from "../../api/client";
+import { invalidateWaitingForPaused } from "../../api/query-client";
 import type { LauncherCredentialResp } from "../../api/types";
 import { textSecondaryOnSurface } from "../../theme/classes";
 import { Timestamp } from "../refs/Timestamp";
@@ -100,11 +101,14 @@ export function MachineLoginsSection(): ReactNode {
       heading="Machine logins"
       headingId="machine-logins-heading"
       noun="machine logins"
-      onRevoked={() => {
-        void queryClient.invalidateQueries({ queryKey: machineLoginsQuery().queryKey });
-        void queryClient.invalidateQueries({ queryKey: credentialGrantsQuery().queryKey });
-      }}
+      onRevoked={() =>
+        Promise.all([
+          invalidateWaitingForPaused(queryClient, machineLoginsQuery().queryKey),
+          invalidateWaitingForPaused(queryClient, credentialGrantsQuery().queryKey),
+        ])
+      }
       query={logins}
+      readKey={machineLoginsQuery().queryKey}
       revoke={(login, bounds) => api.revokeMachineLogin(login.credential_id, bounds)}
       rowKey={(login) => login.credential_id}
       rowName={(login) => `the machine login for ${machineName(login)}`}

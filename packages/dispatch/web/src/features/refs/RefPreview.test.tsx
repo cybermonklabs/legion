@@ -7,7 +7,9 @@ import { Link, MemoryRouter } from "react-router-dom";
 
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
 import { graphNodeFields } from "../../__tests__/graph-fixture";
+import { INPUT_METHOD_MARKS } from "../../__tests__/input-method-marks";
 import { messageCorrectionFields } from "../../__tests__/message-fixture";
+import { installResizeObserver } from "../../__tests__/scroll-box";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api } from "../../api/client";
 import type {
@@ -18,10 +20,12 @@ import type {
   IssueDetails,
   IssueReferenceSummary,
 } from "../../api/types";
+import { IssueActionsMenu } from "../issue-page/IssueActionsMenu";
+import { CONTROL_LABELS } from "../issue-page/page-words";
 import { MarkdownBody } from "./MarkdownBody";
 import { warmMarkdownRenderer } from "./markdown-engine";
 import { closeRefPreview, RefPreviewHost, referenceTriggerProps } from "./RefPreview";
-import { NO_HOVER_PREVIEW_ATTRIBUTE } from "./ref-preview-card";
+import { NO_HOVER_PREVIEW_ATTRIBUTE, REF_PREVIEW_CARD_ID } from "./ref-preview-card";
 import { REF_PREVIEW_CLOSE_DELAY_MS, REF_PREVIEW_OPEN_DELAY_MS } from "./ref-preview-timing";
 import { shortForm } from "./routes";
 
@@ -462,15 +466,12 @@ test("Escape closes the open card", async () => {
   }
 });
 
-// The Escape that ends an IME composition is the composition's (decision 325): the open card stays
-// open and the key goes on to the page, which the card's capture listener on `document` would
-// stop. An Escape after the composition closes the card and stops there.
-test("an Escape that ends an IME composition leaves the open card open", () => {
+// The card takes the Escape that closes it: it is the topmost layer, so the press is marked taken
+// (`defaultPrevented`) as it is stopped. The mark lets the key registry (`keymap.ts`), and a
+// listener on `document` that reads it, pass over the press.
+test("the Escape that closes the open card is marked taken", () => {
   const getIssue = mockIssues();
   jest.useFakeTimers();
-  const behind: KeyboardEvent[] = [];
-  const hearBehind = (event: KeyboardEvent) => behind.push(event);
-  window.addEventListener("keydown", hearBehind);
   const view = render(<Harness />);
   try {
     const first = screen.getByRole("link", { name: "first" });
@@ -480,35 +481,116 @@ test("an Escape that ends an IME composition leaves the open card open", () => {
       jest.advanceTimersByTime(REF_PREVIEW_OPEN_DELAY_MS);
     });
     expect(screen.getByRole("tooltip")).toBeTruthy();
-    // user-event has no form for a key that ends a composition, so the event is made by hand.
+    const press = new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "Escape" });
     act(() => {
-      document.dispatchEvent(
-        new KeyboardEvent("keydown", {
-          bubbles: true,
-          cancelable: true,
-          isComposing: true,
-          key: "Escape",
-        })
-      );
+      document.dispatchEvent(press);
     });
-    expect(
-      screen.queryByRole("tooltip"),
-      "the Escape that ended a composition closed the card"
-    ).toBeInTheDocument();
-    expect(behind.length, "the Escape that ended a composition stopped short of the page").toBe(1);
-    act(() => {
-      document.dispatchEvent(
-        new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "Escape" })
-      );
-    });
-    expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
-    expect(behind.length, "the card's Escape reached the page").toBe(1);
+    expect(screen.queryByRole("tooltip"), "the Escape closed the card").not.toBeInTheDocument();
+    expect(press.defaultPrevented, "the card took the Escape").toBe(true);
   } finally {
     view.unmount();
-    window.removeEventListener("keydown", hearBehind);
     getIssue.mockRestore();
   }
 });
+
+// Escape closes the innermost layer. A card a pointer opened over an open menu is that layer, and
+// the shell adds the card's listener as it mounts, so it hears the press before the menu's, which
+// the menu adds as it opens: the card takes the press (`defaultPrevented`), and the menu, which
+// reads that mark, stays open with the focus where it was. The next Escape closes the menu.
+test("with a card open over the open Issue actions menu, one Escape closes the card alone, and the next closes the menu", async () => {
+  const getIssue = mockIssues();
+  jest.useFakeTimers();
+  const user = userOnFakeClock();
+  const view = render(
+    <Harness>
+      <IssueActionsMenu actions={[{ id: "pin", run: () => undefined, text: "Pin" }]} />
+    </Harness>
+  );
+  try {
+    const trigger = screen.getByRole("button", { name: CONTROL_LABELS.issue_actions });
+    await user.click(trigger);
+    const pin = screen.getByRole("button", { name: "Pin" });
+    act(() => pin.focus());
+    // A hover-intent pointer: user-event's hover names no pointerType, which this site needs.
+    fireEvent.pointerOver(screen.getByRole("link", { name: "first" }), { pointerType: "mouse" });
+    act(() => {
+      jest.advanceTimersByTime(REF_PREVIEW_OPEN_DELAY_MS);
+    });
+    expect(screen.getByRole("tooltip")).toBeTruthy();
+
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("tooltip"), "the Escape left the card open").not.toBeInTheDocument();
+    expect(trigger, "the card's Escape closed the menu under it").toHaveAttribute(
+      "aria-expanded",
+      "true"
+    );
+    expect(pin, "the card's Escape moved the focus out of the menu").toHaveFocus();
+
+    await user.keyboard("{Escape}");
+    expect(trigger, "an Escape with no card open left the menu open").toHaveAttribute(
+      "aria-expanded",
+      "false"
+    );
+    expect(trigger).toHaveFocus();
+  } finally {
+    view.unmount();
+    getIssue.mockRestore();
+  }
+});
+
+// The Escape that ends an IME composition is the composition's (decision 325): the open card stays
+// open and the key goes on to the page, which the card's capture listener on `document` would
+// stop. An Escape after the composition closes the card and stops there. Chromium and Firefox mark
+// that Escape `isComposing`.
+test.each(INPUT_METHOD_MARKS)(
+  "an Escape that ends an IME composition, marked by %s, leaves the open card open",
+  (_mark, composing) => {
+    const getIssue = mockIssues();
+    jest.useFakeTimers();
+    const behind: KeyboardEvent[] = [];
+    const hearBehind = (event: KeyboardEvent) => behind.push(event);
+    window.addEventListener("keydown", hearBehind);
+    const view = render(<Harness />);
+    try {
+      const first = screen.getByRole("link", { name: "first" });
+      // A hover-intent pointer: user-event's hover names no pointerType, which this site needs.
+      fireEvent.pointerOver(first, { pointerType: "mouse" });
+      act(() => {
+        jest.advanceTimersByTime(REF_PREVIEW_OPEN_DELAY_MS);
+      });
+      expect(screen.getByRole("tooltip")).toBeTruthy();
+      // user-event has no form for a key that ends a composition, so the event is made by hand.
+      act(() => {
+        document.dispatchEvent(
+          new KeyboardEvent("keydown", {
+            bubbles: true,
+            cancelable: true,
+            ...composing,
+            key: "Escape",
+          })
+        );
+      });
+      expect(
+        screen.queryByRole("tooltip"),
+        "the Escape that ended a composition closed the card"
+      ).toBeInTheDocument();
+      expect(behind.length, "the Escape that ended a composition stopped short of the page").toBe(
+        1
+      );
+      act(() => {
+        document.dispatchEvent(
+          new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "Escape" })
+        );
+      });
+      expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
+      expect(behind.length, "the card's Escape reached the page").toBe(1);
+    } finally {
+      view.unmount();
+      window.removeEventListener("keydown", hearBehind);
+      getIssue.mockRestore();
+    }
+  }
+);
 
 test("only one card is open at a time: hovering a second reference replaces the first", async () => {
   const getIssue = mockIssues();
@@ -568,6 +650,67 @@ test("keyboard focus opens the card at once, scrolling under it repositions rath
   } finally {
     view.unmount();
     getIssue.mockRestore();
+  }
+});
+
+// dispatch://INFRA-2160, R1: a card opened above a reference low in the window, at the height of
+// its heading alone, grew down over the reference when its read landed, so a press on the
+// reference came up on the card and followed nothing.
+test("a card placed above its reference is placed again when it grows, so it never covers the reference", async () => {
+  const resizes = installResizeObserver();
+  // The card's height: its heading alone while its read is out, its status row too once it lands.
+  let cardHeight = 46;
+  const own = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "offsetHeight");
+  Object.defineProperty(HTMLElement.prototype, "offsetHeight", {
+    configurable: true,
+    get() {
+      return this.id === REF_PREVIEW_CARD_ID ? cardHeight : (own?.get?.call(this) ?? 0);
+    },
+  });
+  const reads: Array<(details: IssueDetails) => void> = [];
+  const getIssue = spyOn(api, "getIssue").mockImplementation(() => {
+    const read = Promise.withResolvers<IssueDetails>();
+    reads.push(read.resolve);
+    return read.promise;
+  });
+  const view = render(<Harness />);
+  try {
+    const first = screen.getByRole("link", { name: "first" });
+    // Near the window's foot, where the card fits only above the reference.
+    const top = window.innerHeight - 70;
+    first.getBoundingClientRect = () =>
+      ({
+        bottom: top + 16,
+        height: 16,
+        left: 100,
+        right: 280,
+        top,
+        width: 180,
+        x: 100,
+        y: top,
+      }) as DOMRect;
+    act(() => {
+      first.focus();
+    });
+    const card = screen.getByRole("tooltip");
+    expect(card).toHaveTextContent("CORE-1");
+    expect(card.style.top).toBe(`${top - 6 - 46}px`);
+
+    // The read lands and the preview inside the card draws it, which grows the card with no
+    // render of the card itself; the browser then reports the card's new size.
+    cardHeight = 78;
+    await act(async () => {
+      for (const land of reads) land(issues["CORE-1"] as IssueDetails);
+    });
+    expect(card).toHaveTextContent("Design decision");
+    resizes.resize(card);
+    expect(card.style.top).toBe(`${top - 6 - 78}px`);
+  } finally {
+    view.unmount();
+    getIssue.mockRestore();
+    resizes.restore();
+    if (own === undefined) Reflect.deleteProperty(HTMLElement.prototype, "offsetHeight");
+    else Object.defineProperty(HTMLElement.prototype, "offsetHeight", own);
   }
 });
 

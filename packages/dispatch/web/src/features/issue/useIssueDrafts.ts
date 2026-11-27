@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useReducer, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useReducer, useRef, useState } from "react";
 
 import type { Issue } from "../../api/types";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
@@ -11,6 +11,9 @@ export interface IssueUpdateMutation {
    *  reader stopped it. */
   retry: () => void;
   variables: IssueUpdateInput | undefined;
+  /** Whether the newest press is past its deadline, or waits behind a write that is
+   *  (`KeyedWriteResult.late`), where the write reads it (`readsLate`); left out, never. */
+  late?: boolean;
 }
 
 export interface IssueDrafts {
@@ -21,7 +24,15 @@ export interface IssueDrafts {
   onIssueSuccess: (next: Issue, input: IssueUpdateInput) => void;
   requestParentSubmit: () => boolean;
   requestRouteSubmit: () => boolean;
-  requestStatusSubmit: (status: string) => boolean;
+  /** Asks for a status to be written (`IssueUpdateMutation`), and tells `answered` once whether
+   *  it was: `true` once the write of it goes, `false` once it will not go. With nothing out it
+   *  goes at once, and past the deadline of the write out it goes as a write of its own behind
+   *  it. Within that deadline a press of the status the write out carries is in hand, and hears
+   *  `true` at once; any other waits behind that write (`statusQueued`), as a title ended then
+   *  does, and goes once it lands. A refusal of that write lets it go unsent, since the line stops
+   *  at a refusal and a status has no field to wait in, and so does a press of another status
+   *  meanwhile, which takes its place. */
+  requestStatusSubmit: (status: string, answered?: (sent: boolean) => void) => void;
   /** Asks for the title's draft to be sent, answering whether it was sent or queued behind the
    *  write out. */
   requestTitleSubmit: () => boolean;
@@ -36,6 +47,9 @@ export interface IssueDrafts {
   titleError: string | null;
   /** Whether a title the reader chose at the end of an edit waits to be sent. */
   titleQueued: boolean;
+  /** The status a press asked for that waits behind the write out (`requestStatusSubmit`): the
+   *  header shows it as the issue's pending status. */
+  statusQueued: string | undefined;
   writeParent: (next: string) => void;
   writeRoute: (next: string) => void;
   writeTitle: (next: string) => void;
@@ -280,6 +294,43 @@ export function useIssueDrafts(issue: Issue, updateIssue: IssueUpdateMutation): 
   const [, drawAgain] = useReducer((count: number) => count + 1, 0);
   const [titleError, setTitleError] = useState<string | null>(null);
   const updateIssueGuard = useSubmitGuard();
+  // The writes made here that have not settled: one within its deadline, which the guard holds
+  // every other press back behind, and past that deadline the status presses made meanwhile
+  // (`requestStatusSubmit`). The guard lets go once none is out, so a draft never goes beside one.
+  const writesOut = useRef(0);
+  // Whether the newest write is late, as of the last commit: a press reads it whenever it runs,
+  // a status press after the rule's dry run included (`useIssueStatusMove`).
+  const late = useRef(false);
+  useLayoutEffect(() => {
+    late.current = updateIssue.late === true;
+  }, [updateIssue.late]);
+  // The status the newest write made here carries, or none. The issue's line settles these writes
+  // in the order they went, so while the guard holds that write is still out, and a press of the
+  // status it carries is in hand.
+  const newestStatus = useRef<string | undefined>(undefined);
+  // A status pressed while a write is out within its deadline, waiting behind it, and what each
+  // press of it hands to hear whether it went (`requestStatusSubmit`).
+  const queuedStatus = useRef<{ status: string; answers: ((sent: boolean) => void)[] } | null>(
+    null
+  );
+  const send = (input: IssueUpdateInput) => {
+    writesOut.current += 1;
+    newestStatus.current = input.status;
+    updateIssue.mutate(input);
+  };
+  // Lets the queued status go as `going` goes, or as nothing goes: each press of it hears whether
+  // a write of its status went.
+  const settleQueuedStatus = (going: string | undefined) => {
+    const queued = queuedStatus.current;
+    if (queued === null) return;
+    queuedStatus.current = null;
+    drawAgain();
+    for (const answered of queued.answers) answered(queued.status === going);
+  };
+  const sendStatus = (status: string) => {
+    send({ status });
+    settleQueuedStatus(status);
+  };
 
   const apply = useCallback((field: Field, event: FieldEvent) => {
     const state = states.current[field];
@@ -298,17 +349,21 @@ export function useIssueDrafts(issue: Issue, updateIssue: IssueUpdateMutation): 
   }, []);
 
   // A value is marked out inside the guard, as its write goes: a write the guard holds back is
-  // not out, and its value stays queued.
+  // not out, and its value stays queued. The fields go before a queued status: a close sent first
+  // would leave a title queued meanwhile to a closed issue, which Dispatch refuses
+  // (`ISSUE_CLOSED`).
   function drainPendingSubmits(): void {
     for (const field of fields) {
       const value = states.current[field].queued;
       if (value === null) continue;
       updateIssueGuard.guard(() => {
         apply(field, { type: "sent", value });
-        updateIssue.mutate(fieldRules[field].wire(value));
+        send(fieldRules[field].wire(value));
       });
       return;
     }
+    const queued = queuedStatus.current;
+    if (queued !== null) updateIssueGuard.guard(() => sendStatus(queued.status));
   }
 
   // The end of an edit: a changed draft is queued, and the drain sends it at once if the guard
@@ -346,12 +401,19 @@ export function useIssueDrafts(issue: Issue, updateIssue: IssueUpdateMutation): 
     }
   };
   // One write of these fields is out at a time (the guard), so one field at most has a value out,
-  // and `settled` leaves the others as they are.
+  // and `settled` leaves the others as they are. A status press made past the deadline of the write
+  // out carries no field, and the guard holds every draft back until it too has settled. A
+  // refusal drains nothing (decision 315): a value queued behind it stays in its field for the
+  // reader's next end, and a status queued behind it, which has no field to wait in, is let go.
   const onIssueSettled = (error: unknown) => {
     for (const field of fields) apply(field, { type: "settled", landed: error === null });
+    writesOut.current = Math.max(0, writesOut.current - 1);
+    if (writesOut.current > 0) return;
     updateIssueGuard.release();
     if (error === null) {
       drainPendingSubmits();
+    } else {
+      settleQueuedStatus(undefined);
     }
   };
   const retry = () => {
@@ -371,7 +433,14 @@ export function useIssueDrafts(issue: Issue, updateIssue: IssueUpdateMutation): 
       drainPendingSubmits();
       return;
     }
-    updateIssueGuard.retryLast(updateIssue);
+    updateIssueGuard.retryLast({
+      retry: () => {
+        writesOut.current += 1;
+        newestStatus.current = variables?.status;
+        updateIssue.retry();
+      },
+      variables,
+    });
   };
   const discardTitle = () => {
     apply("title", { type: "discard" });
@@ -385,8 +454,35 @@ export function useIssueDrafts(issue: Issue, updateIssue: IssueUpdateMutation): 
   };
   const writeRoute = (next: string) => apply("route", { type: "write", text: next });
   const writeParent = (next: string) => apply("parent", { type: "write", text: next });
-  const requestStatusSubmit = (status: string): boolean =>
-    updateIssueGuard.guard(() => updateIssue.mutate({ status }));
+  // A status press past the deadline of the write out is a write of its own, as a press then is
+  // (`KeyedWriteResult.late`): it waits behind that write in the issue's line, which sends them in
+  // press order, so one status write is out at a time. Within that deadline a press of the status
+  // the write out carries - one made before the page drew the first press held - is in hand, and
+  // sends no second write; any other waits here, as an ended title does, so each settle is of its
+  // own write. Each press hears whether its status went (`answered`).
+  const requestStatusSubmit = (status: string, answered?: (sent: boolean) => void) => {
+    if (updateIssueGuard.guard(() => sendStatus(status))) {
+      answered?.(true);
+      return;
+    }
+    if (late.current) {
+      sendStatus(status);
+      answered?.(true);
+      return;
+    }
+    if (newestStatus.current === status) {
+      settleQueuedStatus(status);
+      answered?.(true);
+      return;
+    }
+    const queued = queuedStatus.current;
+    if (queued?.status !== status) {
+      settleQueuedStatus(status);
+      queuedStatus.current = { answers: [], status };
+      drawAgain();
+    }
+    if (answered !== undefined) queuedStatus.current?.answers.push(answered);
+  };
 
   useEffect(() => {
     apply("title", { type: "server", value: issue.title });
@@ -419,6 +515,7 @@ export function useIssueDrafts(issue: Issue, updateIssue: IssueUpdateMutation): 
     titleDirty: changed(fieldRules.title, title),
     titleError,
     titleQueued: title.queued !== null,
+    statusQueued: queuedStatus.current?.status,
     writeParent,
     writeRoute,
     writeTitle,

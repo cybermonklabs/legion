@@ -1,11 +1,12 @@
-import { beforeAll, beforeEach, expect, spyOn, test } from "bun:test";
+import { beforeAll, beforeEach, expect, jest, spyOn, test } from "bun:test";
 import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http } from "msw";
 import { type Node as ProseMirrorNode, Schema } from "prosemirror-model";
 
 import { type FakeDocumentRuntime, fakeDocumentRuntime } from "../../__tests__/document-runtime";
-import { settle } from "../../__tests__/fake-clock";
+import { realClock, settle, tick } from "../../__tests__/fake-clock";
+import { heldUntilLate, pressesOf } from "../../__tests__/held-until-late";
 import { answerRequests } from "../../__tests__/network";
 import {
   answerTextReadsWithTheSeededText,
@@ -14,7 +15,14 @@ import {
   documentSurfaceHandlers,
   renderProofDocument,
 } from "../../__tests__/proof-document";
-import { ApiError, api } from "../../api/client";
+import {
+  architectureTree,
+  issueCollaborators,
+  plannerAgent,
+  searchResponse,
+} from "../../__tests__/search-fixture";
+import { userOnFakeClock } from "../../__tests__/user";
+import { ApiError, api, NetworkError } from "../../api/client";
 import type { Artifact, Ask, IssueDetails, IssueReferenceSummary, Version } from "../../api/types";
 import { heldSends } from "../conversation/held-sends";
 import { marginComposeSendKey } from "../margin/margin-context";
@@ -156,6 +164,57 @@ test("a version named with its answer lost closes the dialog and says it was mad
   }
 });
 
+test.each(["Save", "What changed?"] as const)(
+  "%s lets go at the version write deadline without naming a second version",
+  async (name) => {
+    const create = spyOn(api, "createArtifactVersion").mockRejectedValue(
+      new NetworkError("/api/v1/artifacts/versions", new TypeError("Failed to fetch"))
+    );
+    const queryClient = createQueryClient();
+    const { toolbar, view } = renderProofDocument({ queryClient });
+    try {
+      act(() => toolbar.current?.requestNamedVersion());
+      const dialog = within(await screen.findByRole("dialog", { name: "Name this version" }));
+      const field = dialog.getByRole<HTMLInputElement>("textbox", { name: "What changed?" });
+      const prepare = userEvent.setup();
+      await prepare.click(field);
+      await prepare.paste("Settled the rollout");
+      const control =
+        name === "Save" ? dialog.getByRole<HTMLButtonElement>("button", { name }) : field;
+      jest.useFakeTimers();
+      const user = userOnFakeClock();
+      const sent = () => pressesOf([create]);
+      await heldUntilLate(user, control, {
+        alongside: (held) => {
+          expect(toolbar.current?.isNamingVersion, "the toolbar's naming").toBe(held);
+          expect(field.readOnly, "What changed?").toBe(held);
+        },
+        label: `New version of ${artifact.name}`,
+        name,
+        queryClient,
+        sent,
+      });
+      await user.keyboard("{Enter}");
+      await tick(1_000);
+      expect(sent()).toBe(1);
+      const stillSending = /Save sent nothing:.*still being sent/;
+      expect(dialog.getByText(stillSending)).toBeInTheDocument();
+      create.mockRejectedValue(new ApiError(403, { error: "Cannot name another version" }));
+      await tick(30_000);
+      expect(dialog.queryByText(stillSending)).toBeNull();
+      expect(dialog.getByRole("alert")).toHaveTextContent("Could not name this version");
+      await user.keyboard("{Enter}");
+      await tick(1_000);
+      expect(sent()).toBe(2);
+    } finally {
+      realClock();
+      view.unmount();
+      queryClient.clear();
+      create.mockRestore();
+    }
+  }
+);
+
 // A read of the document asked before a version is named answers the versions from before it.
 // Landing after the version's answer, it would take the new version back off the toolbar's list.
 test("a read of the document asked before a version is named does not take the version back off the list", async () => {
@@ -280,8 +339,7 @@ test("ProofDocument highlights a routed search term again after route and docume
   }
 });
 
-test("ProofDocument opens a hover card for a dispatch:// link in the live editor and navigates in-app", async () => {
-  const user = userEvent.setup();
+test("ProofDocument opens a hover card for a dispatch:// link in the live editor, and its link opener navigates in-app", async () => {
   const issue: IssueDetails = {
     route_status: null,
     route_holder: null,
@@ -356,7 +414,11 @@ test("ProofDocument opens a hover card for a dispatch:// link in the live editor
     });
     expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
 
-    await user.click(anchor);
+    // A click on the link is the editor's (`@legion/proof-editor`'s `src/dispatch-link-open.ts`,
+    // whose own suite holds it), which opens the target through the page's opener.
+    act(() => {
+      editors[0]?.options.openLink?.("dispatch://CORE-1", { newTab: false });
+    });
     expect(within(view.container).getByTestId("current-route").textContent).toBe("/issues/CORE-1");
   } finally {
     getIssue.mockRestore();
@@ -364,28 +426,20 @@ test("ProofDocument opens a hover card for a dispatch:// link in the live editor
   }
 });
 
-// A link's target is a node its author named, so a click on a link to a document whose name is
-// past the bound text is held to (2683 characters, which a new upload's reference key still
-// holds) opens that document in-app, rather than leaving the browser to follow the sanitized
-// mark's empty href.
-test("ProofDocument opens an explicit link to a long-named document in-app", async () => {
-  const user = userEvent.setup();
+// A link's target is a node its author named, so the opener the editor calls for a link to a
+// document whose name is past the bound text is held to (2683 characters, which a new upload's
+// reference key still holds) opens that document in-app, rather than leaving the browser to
+// follow the sanitized mark's empty href.
+test("ProofDocument's link opener opens an explicit link to a long-named document in-app", async () => {
   const slug = "a".repeat(2683);
   const { editors, sync, view } = renderProofDocument();
 
   try {
     await sync();
     await waitFor(() => expect(editors).toHaveLength(1));
-    const root = editors[0]?.root;
-    if (root === undefined) throw new Error("editor root missing");
-    // What the proof-editor serializer emits for a dispatch:// link mark (the test above says why).
     act(() => {
-      root.innerHTML = `<p><a href="" data-dispatch-href="dispatch://CORE-1/artifact/${slug}">design</a></p>`;
+      editors[0]?.options.openLink?.(`dispatch://CORE-1/artifact/${slug}`, { newTab: false });
     });
-    const anchor = root.querySelector("a");
-    if (anchor === null) throw new Error("anchor missing");
-
-    await user.click(anchor);
     expect(within(view.container).getByTestId("current-route").textContent).toBe(
       `/issues/CORE-1/artifacts/${slug}`
     );
@@ -1130,6 +1184,198 @@ test("Ctrl+Alt+M comments on the selection while the editor has focus, and nowhe
     view.unmount();
   }
   expect(appKeymap.describe().some((entry) => entry.id === "comment-on-selection")).toBe(false);
+});
+
+/** Presses the key `init` names on `target` through the application's registry, as
+ *  `KeymapProvider`'s window listener does, and answers whether a binding claimed it; a
+ *  navigation or a focus move it makes is drawn. */
+function pressThroughRegistry(target: Element, init: KeyboardEventInit): boolean {
+  const event = new KeyboardEvent("keydown", { ...init, bubbles: true, cancelable: true });
+  act(() => {
+    target.dispatchEvent(event);
+    appKeymap.handleKeyDown(event);
+  });
+  return event.defaultPrevented;
+}
+
+const ALT_ENTER: KeyboardEventInit = { altKey: true, code: "Enter", key: "Enter" };
+const ESCAPE: KeyboardEventInit = { code: "Escape", key: "Escape" };
+
+test("Alt+Enter opens the link at the caret while the editor has focus and takes edits, and nowhere else", async () => {
+  const { editors, rerender, sync, view } = renderProofDocument();
+  const composer = document.body.appendChild(document.createElement("textarea"));
+
+  try {
+    await sync();
+    await waitFor(() => expect(editors).toHaveLength(1));
+    const editor = editors[0];
+    if (editor === undefined) throw new Error("no editor");
+    expect(appKeymap.describe().filter((entry) => entry.id === "open-link")).toMatchObject([
+      { keys: ["Alt+Enter"], label: "Open the link at the caret", scope: "document" },
+    ]);
+    editor.root.contentEditable = "true";
+    editor.root.tabIndex = 0;
+    editor.root.focus();
+
+    // No link at the caret: the key is the editor's own, and opens nothing.
+    expect(pressThroughRegistry(editor.root, ALT_ENTER)).toBe(false);
+
+    // Focus in a comment composer: the key is the composer's.
+    editor.caretLink = "dispatch://CORE-1";
+    composer.focus();
+    expect(pressThroughRegistry(composer, ALT_ENTER)).toBe(false);
+
+    // A closed issue's document takes no edits, and its links are in the tab order instead.
+    editor.root.focus();
+    rerender({ isClosed: true });
+    expect(pressThroughRegistry(editor.root, ALT_ENTER)).toBe(false);
+    expect(within(view.container).getByTestId("current-route").textContent).not.toBe(
+      "/issues/CORE-1"
+    );
+
+    rerender({ isClosed: false });
+    expect(pressThroughRegistry(editor.root, ALT_ENTER)).toBe(true);
+    expect(within(view.container).getByTestId("current-route").textContent).toBe("/issues/CORE-1");
+  } finally {
+    composer.remove();
+    view.unmount();
+  }
+  expect(appKeymap.describe().some((entry) => entry.id === "open-link")).toBe(false);
+});
+
+test("Escape takes the focus out of the editor the reader edits onto the document, and nowhere else does anything", async () => {
+  const { editors, rerender, sync, view } = renderProofDocument();
+  const composer = document.body.appendChild(document.createElement("textarea"));
+
+  try {
+    await sync();
+    await waitFor(() => expect(editors).toHaveLength(1));
+    const editor = editors[0];
+    if (editor === undefined) throw new Error("no editor");
+    // ProseMirror leaves a plain Escape to the page, whose registry reads it; an Escape with a
+    // modifier, an input method's Escape - one pressed in a composition, or the one that ends it,
+    // which Safari sends unmarked with keyCode 229 - and every other key stay the editor's.
+    const { keydown } = editor.viewProps.handleDOMEvents as {
+      keydown(view: unknown, event: KeyboardEvent): boolean;
+    };
+    expect(keydown(null, new KeyboardEvent("keydown", { key: "Escape" }))).toBe(true);
+    expect(keydown(null, new KeyboardEvent("keydown", { key: "Escape", shiftKey: true }))).toBe(
+      false
+    );
+    expect(
+      keydown(null, new KeyboardEvent("keydown", { isComposing: true, key: "Escape" })),
+      "Escape in a composition"
+    ).toBe(false);
+    expect(
+      keydown(null, new KeyboardEvent("keydown", { key: "Escape", keyCode: 229 })),
+      "Escape at keyCode 229"
+    ).toBe(false);
+    expect(keydown(null, new KeyboardEvent("keydown", { key: "Enter" }))).toBe(false);
+    expect(appKeymap.describe().filter((entry) => entry.id === "leave-editor")).toMatchObject([
+      { keys: ["Escape"], label: "Take the focus out of the editor", scope: "document" },
+    ]);
+    const article = within(view.container).getByRole("article", { name: "Document" });
+    // The document is no Tab stop of its own: the focus Escape gives it is the only way in, and
+    // the next Tab from it goes into the editor it holds.
+    expect(article.tabIndex).toBe(-1);
+    editor.root.contentEditable = "true";
+    editor.root.tabIndex = 0;
+    editor.root.focus();
+
+    // The registry leaves the Escape that ends a composition in Safari to the input method too:
+    // the focus stays in the editor.
+    expect(
+      pressThroughRegistry(editor.root, { ...ESCAPE, keyCode: 229 }),
+      "Escape at keyCode 229"
+    ).toBe(false);
+    expect(document.activeElement, "Escape at keyCode 229").toBe(editor.root);
+
+    expect(pressThroughRegistry(editor.root, ESCAPE)).toBe(true);
+    expect(document.activeElement).toBe(article);
+    // Out of the editor the key is not the document's any more.
+    expect(pressThroughRegistry(article, ESCAPE)).toBe(false);
+    expect(document.activeElement).toBe(article);
+
+    // Focus in a comment composer: Escape is the composer's.
+    composer.focus();
+    expect(pressThroughRegistry(composer, ESCAPE)).toBe(false);
+    expect(document.activeElement).toBe(composer);
+
+    // A closed issue's document takes no edits, so there is no typing to leave.
+    editor.root.focus();
+    rerender({ isClosed: true });
+    expect(pressThroughRegistry(editor.root, ESCAPE)).toBe(false);
+    expect(document.activeElement).toBe(editor.root);
+  } finally {
+    composer.remove();
+    view.unmount();
+  }
+  expect(appKeymap.describe().some((entry) => entry.id === "leave-editor")).toBe(false);
+
+  // A pane's editor takes no edits: its document binds no Escape and takes no focus.
+  const pane = renderProofDocument({ surface: "pane" });
+  try {
+    await pane.sync();
+    await waitFor(() => expect(pane.editors).toHaveLength(1));
+    expect(appKeymap.describe().some((entry) => entry.id === "leave-editor")).toBe(false);
+    expect(pane.editors[0]?.viewProps.handleDOMEvents).toBeUndefined();
+    expect(
+      within(pane.view.container).getByRole("article", { name: "Document" })
+    ).not.toHaveAttribute("tabindex");
+  } finally {
+    pane.view.unmount();
+  }
+});
+
+// The reference list the editor hosts (`DocumentRefPicker`) is what an Escape pressed while it
+// stands open closes: ProseMirror offers a key to the plugins' `handleKeyDown`, the picker's among
+// them, only when no `handleDOMEvents` handler took it, so the page's handler leaves that press to
+// the editor. With the list shut, the next Escape takes the focus out of the editor as before.
+test("Escape with the document's reference list open is the list's, which closes with the focus in the editor, and the next Escape leaves the editor", async () => {
+  const restore = [
+    spyOn(api, "listAgents").mockResolvedValue([plannerAgent()]),
+    spyOn(api, "getIssueCollaborators").mockResolvedValue(issueCollaborators()),
+    spyOn(api, "getArchitecture").mockResolvedValue(architectureTree()),
+    spyOn(api, "search").mockResolvedValue(searchResponse([])),
+  ];
+  const { editors, sync, view } = renderProofDocument();
+  try {
+    await sync();
+    await waitFor(() => expect(editors).toHaveLength(1));
+    const editor = editors[0];
+    if (editor === undefined) throw new Error("no editor");
+    await waitFor(() => expect(editor.referencePicker).toBeTruthy());
+    const { keydown } = editor.viewProps.handleDOMEvents as {
+      keydown(view: unknown, event: KeyboardEvent): boolean;
+    };
+    editor.root.contentEditable = "true";
+    editor.root.tabIndex = 0;
+    editor.root.focus();
+
+    // The editor reports the door the reader typed, as its picker plugin does.
+    act(() => editor.referencePicker?.onCaret({ bottom: 20, left: 0, text: "@p", top: 10 }));
+    await screen.findByRole("option", { name: /^Planner\b/ });
+    expect(
+      keydown(null, new KeyboardEvent("keydown", { key: "Escape" })),
+      "the page took the Escape the open list closes on"
+    ).toBe(false);
+    // ProseMirror offers that press to the picker plugin, which hands it to the list.
+    act(() => {
+      expect(editor.referencePicker?.pressKey("Escape")).toBe(true);
+    });
+    expect(screen.queryByRole("listbox", { name: "References" })).toBeNull();
+    expect(document.activeElement).toBe(editor.root);
+
+    // The list shut, Escape is the page's again, and takes the focus out of the editor.
+    expect(keydown(null, new KeyboardEvent("keydown", { key: "Escape" }))).toBe(true);
+    expect(pressThroughRegistry(editor.root, ESCAPE)).toBe(true);
+    expect(document.activeElement).toBe(
+      within(view.container).getByRole("article", { name: "Document" })
+    );
+  } finally {
+    view.unmount();
+    for (const spy of restore) spy.mockRestore();
+  }
 });
 
 // ---------------------------------------------------------------------------------------------

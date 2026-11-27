@@ -10,17 +10,16 @@ import {
 
 import type { IssueDetails } from "../../api/types";
 import { pageHeaderControl, pageMenu, pageMenuItem } from "../../theme/classes";
-import { assigneeControlName } from "../issue/AssigneeControl";
-import { componentsControlName } from "../issue/IssueComponentsLine";
-import { labelsControlName } from "../issue/IssueLabels";
-import { repoControlName, repoTextControlName } from "../issue/RepoControl";
-import { addPriorityControlName } from "../priorities/IssuePriorityLine";
+import {
+  type MarkedProperty,
+  PROPERTY_CONTROL_ATTRIBUTE,
+  propertyControlSelector,
+} from "../issue/property-control";
 import { roveFocus } from "../shell/roving";
-import { blockedByControlName } from "./details-names";
 import type { IssueField } from "./IssueFieldForms";
 import { useMarginDrawer } from "./margin-slot";
 import { PROPERTY_LABELS, pageChrome } from "./page-structure";
-import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
+import { CONTROL_LABELS } from "./page-words";
 import { USABLE_CONTROL_ATTRIBUTES, usableControl } from "./usable-control";
 
 /**
@@ -32,24 +31,27 @@ import { USABLE_CONTROL_ATTRIBUTES, usableControl } from "./usable-control";
  * Six of the fields it lists are edited by a control drawn elsewhere on the page (the assignee,
  * the labels, the issues this one waits on, the repository, the components and the priorities
  * it advances), so the menu presses those rather than holding a second copy of them. It finds
- * each by the name exported for that control - `assigneeControlName`, `labelsControlName`,
- * `blockedByControlName`, `repoControlName` and `repoTextControlName`, `componentsControlName`,
- * `addPriorityControlName` - so the two sides cannot drift apart, and lists one only while that
- * control takes a press (`usableControl`). A press on an entry opens that property's control, and
- * a control that takes no press opens nothing: Advances presses "Add a priority to CORE-1", the
- * trigger of the priorities' picker, which opens the picker; while the picker's save is out that
- * trigger takes no press (`aria-disabled`), and an Advances listed then would leave the picker
- * shut and the focus on the body when pressed. A control of Details still takes a press while
- * Details is closed, since the reach opens Details first.
+ * each by the mark that control carries, the property it sets and the issue's key
+ * (`propertyControl`, `features/issue/property-control.ts`), which the control writes and the menu
+ * reads through the one module, so the two sides cannot drift apart. It never finds one by its
+ * accessible name: a name changes with the control's state ("Saving labels of CORE-1") and its
+ * surface, and the header's assignee, the shared list's single pick, is named through
+ * `aria-labelledby` by its list's name and then what it shows, so a lookup by `aria-label` never
+ * found it and Add never listed Assignee. It lists one only while that control takes a press
+ * (`usableControl`). A press on an entry opens that property's control, and a control that takes
+ * no press opens nothing: while the priorities' trigger is held (`aria-disabled`), it takes no
+ * press, and an Advances listed then would leave the picker shut and the focus on the body.
+ * A control of Details still takes a press while Details is closed, since the reach opens
+ * Details first.
  *
  * Which entries can be reached - which decides whether Add is drawn at all, and what its open
  * menu lists - is read from the page, never while the menu renders: during a render the page
- * still holds the previous commit, so a control renamed in the same commit as the issue's value
- * is not found by its new name. Read during the render, removing an issue's last label drew no
- * Add: in the render where the save landed the labels' control was still "Saving labels of
- * CORE-1", that render's commit renamed it "Add a label to CORE-1", and nothing drew the menu
+ * still holds the previous commit, so a control freed in the same commit as the issue's value
+ * still takes no press there. Read during the render, removing an issue's last label drew no
+ * Add: in the render where the save landed the labels' control was still busy saving ("Saving
+ * labels of CORE-1", `aria-disabled`), that render's commit freed it, and nothing drew the menu
  * again. So it is read after each commit of the menu, and again on each change that can draw,
- * rename or remove a control an entry reaches, or change whether it takes a press, which a
+ * re-mark or remove a control an entry reaches, or change whether it takes a press, which a
  * `MutationObserver` over Details and the header reports: most such changes are a commit of the
  * control's own component alone, which draws the menu no further time. Read after the menu's
  * own commits only, Add would stay gone once a refused priorities' save gave "Add a priority to
@@ -99,10 +101,13 @@ export function IssueAddMenu({
     // (`components/AnchoredPanel.tsx`): the menu takes a press from inside it or from Add,
     // closes and gives the focus back to Add. It reads the press in the capture phase and marks
     // it taken, so neither the phone's Details sheet, which holds the menu, nor Details' own
-    // Escape at every other width closes Details on it.
+    // Escape at every other width closes Details on it. A press a layer over the menu took
+    // first - the hover card's, whose listener the shell adds as it mounts, so it hears the press
+    // before the menu's (`RefPreview.tsx`) - is that layer's, and leaves the menu open.
     const closeOnEscape = (event: KeyboardEvent) => {
       if (
         event.key !== "Escape" ||
+        event.defaultPrevented ||
         !(event.target instanceof Node) ||
         wrapper.current?.contains(event.target) !== true
       ) {
@@ -123,9 +128,9 @@ export function IssueAddMenu({
 
   const fields = emptyFields(issue);
   // The fields of the latest commit, which `read` reads: which entries the issue lists and the
-  // names their controls have both follow the issue, and the observer that calls `read` is not
-  // set up again on each render, so `read` takes them from here rather than from the render it
-  // was made in.
+  // key their controls are marked with both follow the issue, and the observer that calls `read`
+  // is not set up again on each render, so `read` takes them from here rather than from the
+  // render it was made in.
   const committed = useRef(fields);
   const read = useCallback(() => {
     const found = committed.current
@@ -138,22 +143,22 @@ export function IssueAddMenu({
     );
   }, []);
   // A render reads the previous commit, so the page is read once a commit is on it: after every
-  // commit of the menu, since the issue's value and a control's name can change in the same one,
-  // and on each change the observer reports, since a control drawn, renamed, removed, disabled or
-  // hidden by another component's own commit draws the menu no further time: a refused save of
-  // the priorities gives their control back in a commit of `IssuePriorityLine` alone. Every
-  // control an entry reaches is under the panel or the header (the assignee's), so those two are
-  // watched, for each attribute `usableControl` reads. `usableControl` reads `hidden` and `inert`
-  // on every element around a control (`canHoldFocus`), and `aria-hidden` from a control of
-  // Details up to Details' own `aside`, and the `aside` itself, which is hidden while Details is
-  // closed; an element between them can be hidden too, as the phone's sheet hides the box that
-  // holds the panel while a margin thread is open (`features/margin/MarginSheet.tsx`). So where an
-  // `aside` holds the panel (`drawerBox`), the whole `aside` is watched in the panel's place. An
-  // element above the watched box is not watched: a hide or an inert set there is read at Add's
-  // next commit. Nothing above Details' `aside` sets either today: in the shell (`app.tsx`,
-  // `features/shell`) and the margin (`features/margin`), `hidden` is set on that `aside`, on
-  // elements inside it and on the margin's column, which is drawn only where Details is not, and
-  // `inert` on nothing.
+  // commit of the menu, since the issue's value and whether a control takes a press can change in
+  // the same one, and on each change the observer reports, since a control drawn, re-marked,
+  // removed, disabled or hidden by another component's own commit draws the menu no further time:
+  // a refused save of the priorities gives their control back in a commit of `IssuePriorityLine`
+  // alone. Every control an entry reaches is under the panel or the header (the assignee's), so
+  // those two are watched, for the controls' mark and each attribute `usableControl` reads.
+  // `usableControl` reads `hidden` and `inert` on every element around a control
+  // (`canHoldFocus`), and `aria-hidden` from a control of Details up to Details' own `aside`, and
+  // the `aside` itself, which is hidden while Details is closed; an element between them can be
+  // hidden too, as the phone's sheet hides the box that holds the panel while a margin thread is
+  // open (`features/margin/MarginSheet.tsx`). So where an `aside` holds the panel (`drawerBox`),
+  // the whole `aside` is watched in the panel's place. An element above the watched box is not
+  // watched: a hide or an inert set there is read at Add's next commit. Nothing above Details'
+  // `aside` sets either today: in the shell (`app.tsx`, `features/shell`) and the margin
+  // (`features/margin`), `hidden` is set on that `aside`, on elements inside it and on the
+  // margin's column, which is drawn only where Details is not, and `inert` on nothing.
   useLayoutEffect(() => {
     committed.current = fields;
     read();
@@ -263,49 +268,40 @@ export function IssueAddMenu({
 
   /** Every property of `issue` with no value, each with the control that sets it. */
   function emptyFields(details: IssueDetails): readonly AddableField[] {
-    // The name of a control the panel draws is that control's own, built by the function it
-    // exports: neither side spells it, so renaming one renames both and the entry cannot go
-    // missing on a word nobody meant to change. A control of the header - the assignee - is
+    // A control drawn elsewhere on the page is found by its mark, the property it sets and this
+    // issue's key (`controlOf`): the control writes the mark and this reads it through the one
+    // module, so the entry cannot go missing on a word nobody meant to change, nor on a name the
+    // control's state or its surface changes. A control of the header - the assignee - is
     // reached with Details closed, since on a phone Details covers it; a control of Details is
     // reached with Details open, since shut it takes neither a press nor the focus. Either is
-    // reached only while it takes a press (`controlNamed`): a press on an entry opens that
+    // reached only while it takes a press (`controlOf`): a press on an entry opens that
     // property's control, and a control that would not take it opens nothing, so its entry
-    // is not listed and a press finds nothing to reach. A row that draws one of two controls
-    // for its property names both, and the first of them that takes a press is the one
-    // reached. The control is scrolled into view first, since its popover is placed from the
-    // control's place on the screen. A select or a text box is focused rather than clicked,
-    // since a script's click opens no select's list and puts no focus in a text box.
-    const atControl = (...names: readonly string[]) => {
-      const reached = () => {
-        for (const name of names) {
-          const control = controlNamed(name);
-          if (control !== null) return control;
-        }
-        return null;
-      };
-      return {
-        open: () => {
-          const control = reached();
-          const reach = () => {
-            control?.scrollIntoView({ block: "nearest" });
-            if (control instanceof HTMLSelectElement || control instanceof HTMLInputElement) {
-              control.focus();
-            } else {
-              control?.click();
-            }
-          };
-          const inHeader = control?.closest(ISSUE_HEADER) != null;
-          const shut = control?.closest("[hidden]") != null;
-          if (drawer !== undefined && (inHeader ? drawer.open : shut && !drawer.open)) {
-            drawer.setOpen(!inHeader);
-            requestAnimationFrame(() => requestAnimationFrame(reach));
-            return;
+    // is not listed and a press finds nothing to reach. The control is scrolled into view
+    // first, since its popover is placed from the control's place on the screen. The
+    // repository's box is focused rather than clicked, since a script's click puts no focus in a
+    // text box; every other control is a button, which the click opens.
+    const atControl = (property: MarkedProperty) => ({
+      open: () => {
+        const control = controlOf(property, details.key);
+        const reach = () => {
+          control?.scrollIntoView({ block: "nearest" });
+          if (control instanceof HTMLInputElement) {
+            control.focus();
+          } else {
+            control?.click();
           }
-          reach();
-        },
-        reachable: () => reached() !== null,
-      };
-    };
+        };
+        const inHeader = control?.closest(ISSUE_HEADER) != null;
+        const shut = control?.closest("[hidden]") != null;
+        if (drawer !== undefined && (inHeader ? drawer.open : shut && !drawer.open)) {
+          drawer.setOpen(!inHeader);
+          requestAnimationFrame(() => requestAnimationFrame(reach));
+          return;
+        }
+        reach();
+      },
+      reachable: () => controlOf(property, details.key) !== null,
+    });
     const fields: AddableField[] = [];
     if (details.parent === null) {
       fields.push({
@@ -315,26 +311,10 @@ export function IssueAddMenu({
       });
     }
     if (details.assignee === null) {
-      fields.push({
-        label: PROPERTY_LABELS.assignee,
-        ...atControl(assigneeControlName(details.key)),
-      });
+      fields.push({ label: PROPERTY_LABELS.assignee, ...atControl("assignee") });
     }
     if ((details.labels ?? []).length === 0) {
-      // Listed only while the issue has no label, so the control is found by the name it has
-      // then: the words it draws and the issue's key ("Add a label to CORE-1"). A save in flight
-      // renames it ("Saving labels of CORE-1"), and the busy control is not reached, so the name
-      // is the one it has with no save in flight (`saving: false`).
-      fields.push({
-        label: PROPERTY_LABELS.labels,
-        ...atControl(
-          labelsControlName(details.key, {
-            labels: [],
-            saving: false,
-            words: { ANSWER_LINES, CONTROL_LABELS },
-          })
-        ),
-      });
+      fields.push({ label: PROPERTY_LABELS.labels, ...atControl("labels") });
     }
     if (details.route === null || details.route === "") {
       fields.push({
@@ -344,50 +324,22 @@ export function IssueAddMenu({
       });
     }
     if ((details.blocked_by ?? []).length === 0) {
-      fields.push({
-        label: PROPERTY_LABELS.blocked_by,
-        ...atControl(blockedByControlName(details.key, 0)),
-      });
+      fields.push({ label: PROPERTY_LABELS.blocked_by, ...atControl("blocked_by") });
     }
     if (details.repo === null) {
       // Inside `NoTooltips` the row of an issue with no repository of its own draws text, whose
       // press draws the repository's box with the focus in it: "None" while the issue resolves to
-      // no repository, else the repository it inherits. Outside it, and inside it while the box
-      // is open or holds a draft or a write that is out, the row draws the box itself. The text
-      // is tried first, so the entry presses it rather than finding no box.
-      fields.push({
-        label: PROPERTY_LABELS.repository,
-        ...atControl(
-          repoTextControlName(details.key, {
-            resolvedRepo: details.resolved_repo,
-            words: { CONTROL_LABELS },
-          }),
-          repoControlName(details.key)
-        ),
-      });
+      // no repository, else the repository it inherits. While the box is open or holds a draft or
+      // a write that is out, the row draws the box itself. The text and the box carry the one
+      // mark and the row draws one of them at a time, so the entry presses the text where it is
+      // drawn and focuses the box where that is.
+      fields.push({ label: PROPERTY_LABELS.repository, ...atControl("repository") });
     }
     if ((details.components.ids ?? []).length === 0) {
-      // Listed only while the issue names no component, so the picker's trigger is found by the
-      // name it has then, from the attachment the components line draws: the words it draws
-      // and the issue's key ("Set components of CORE-1" on an issue not attached, or attached
-      // to none). A save in flight renames it, and the busy trigger is not reached, so the name
-      // is the one it has with no save in flight (`saving: false`).
-      fields.push({
-        label: PROPERTY_LABELS.components,
-        ...atControl(
-          componentsControlName(details.key, {
-            components: details.components,
-            saving: false,
-            words: { ANSWER_LINES, CONTROL_LABELS },
-          })
-        ),
-      });
+      fields.push({ label: PROPERTY_LABELS.components, ...atControl("components") });
     }
     if ((details.advances ?? []).length === 0) {
-      fields.push({
-        label: PROPERTY_LABELS.advances,
-        ...atControl(addPriorityControlName(details.key)),
-      });
+      fields.push({ label: PROPERTY_LABELS.advances, ...atControl("advances") });
     }
     return fields;
   }
@@ -405,20 +357,22 @@ interface AddableField {
 const ISSUE_HEADER = "[data-issue-header]";
 
 /** What Add watches under Details and the header: each element drawn or removed, and each
- *  attribute that names a control or that `usableControl` reads. */
+ *  attribute that marks a control (`propertyControl`) or that `usableControl` reads. */
 const WATCHED: MutationObserverInit = {
-  attributeFilter: ["aria-label", ...USABLE_CONTROL_ATTRIBUTES],
+  attributeFilter: [PROPERTY_CONTROL_ATTRIBUTE, ...USABLE_CONTROL_ATTRIBUTES],
   attributes: true,
   childList: true,
   subtree: true,
 };
 
-/** The control named `name`, anywhere on the page, while it takes a press (`usableControl`),
- *  else `null`: the one lookup both an entry's listing and its press read, so Add lists an entry
- *  exactly while a press on it opens its control. A control in the closed drawer still takes a
+/** The control that sets `property` of the issue `issueKey`, found anywhere on the page by the
+ *  mark it carries (`propertyControl`), while it takes a press (`usableControl`), else `null`:
+ *  the one lookup both an entry's listing and its press read, so Add lists an entry exactly while
+ *  a press on it opens its control. The issue's key in the mark keeps another issue's control out
+ *  of reach, as the key in the control's name did. A control in the closed drawer still takes a
  *  press, and the press opens Details first. The fields the panel draws are edited by their own
  *  controls; this is how the add menu reaches one instead of drawing it twice. */
-function controlNamed(name: string): HTMLElement | null {
-  const control = document.querySelector<HTMLElement>(`[aria-label="${CSS.escape(name)}"]`);
+function controlOf(property: MarkedProperty, issueKey: string): HTMLElement | null {
+  const control = document.querySelector<HTMLElement>(propertyControlSelector(property, issueKey));
   return usableControl(control) ? control : null;
 }

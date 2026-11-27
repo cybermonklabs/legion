@@ -33,6 +33,7 @@ import { MarkdownBody } from "../refs/MarkdownBody";
 import { buildIssuePath } from "../refs/routes";
 import { ARCHITECTURE_SOURCES_HEADING_ID } from "../settings/ArchitectureSourcesSection";
 import { useDetailsRefusal } from "./HeaderDetails";
+import { propertyControl } from "./property-control";
 import { useIssueComponents } from "./useIssueComponents";
 
 /** What the line says while the project's architecture sources are read, in place of a control
@@ -53,9 +54,7 @@ function editsOwnSet(components: Pick<IssueComponents, "inherited_from" | "mode"
 }
 
 /** The name the components picker's trigger answers to: what it opens and the issue it is on, so
- *  a voice user saying what they read presses it (WCAG 2.5.3). The new issue page's add menu
- *  reaches this trigger by this name rather than drawing a second picker, so a word changed here
- *  changes both sides at once.
+ *  a voice user saying what they read presses it (WCAG 2.5.3).
  *
  *  `inside` is required: the trigger's state inside `NoTooltips`, or `null` outside it, where the
  *  name is `main`'s "Edit components of CORE-1" in every state. Inside it carries the
@@ -281,6 +280,9 @@ export function IssueComponentsLine({
           components={tree.data?.components ?? []}
           error={tree.error === null ? null : tree.error.message}
           loading={tree.data === undefined && tree.error === null}
+          // The new issue page's add menu reaches the trigger by this mark rather than drawing a
+          // second picker (`IssueAddMenu.tsx`), whatever the name says of the trigger's state.
+          marks={{ trigger: propertyControl("components", issue.key) }}
           onOpenChange={setPickerOpen}
           onSave={(ids) =>
             void write.submit(ids.length === 0 ? { mode: "inherit" } : { ids, mode: "explicit" })
@@ -288,8 +290,8 @@ export function IssueComponentsLine({
           saving={write.pending}
           selected={editsOwnSet(components) ? (components.ids ?? []) : []}
           // Inside `NoTooltips` the name begins with the words the trigger draws, the page's
-          // "Saving components…" while it saves among them, so a voice user says what they read;
-          // the page's add menu finds it by the same name. Outside it is `main`'s.
+          // "Saving components…" while it saves among them, so a voice user says what they read.
+          // Outside it is `main`'s.
           triggerAriaLabel={componentsControlName(
             issue.key,
             page === null ? null : { components, saving: write.pending, words: page }

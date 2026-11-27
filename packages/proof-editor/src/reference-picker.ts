@@ -241,6 +241,14 @@ export const referencePickerPlugin = $prose(
         // A keydown reaches the document only while the reader is typing in it, so the key is
         // offered whenever a picker is hosted: what the list does with it is the host's to say.
         handleKeyDown(view, event) {
+          // A modified Enter (Alt+Enter opens the link at the caret, Ctrl/Cmd+Enter, Shift+Enter)
+          // is not the picker's to pick a row with, matching `MentionField`.
+          if (
+            event.key === "Enter" &&
+            (event.ctrlKey || event.metaKey || event.altKey || event.shiftKey)
+          ) {
+            return false;
+          }
           return pickerKey.getState(view.state)?.picker?.pressKey(event.key) === true;
         },
         handleDOMEvents: {

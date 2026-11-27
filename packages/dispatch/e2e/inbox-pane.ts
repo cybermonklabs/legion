@@ -23,9 +23,10 @@ import { settledState } from "./settled";
  * under `chromium` (1280 px, the column on) and `iphone` (390 px, the reading view).
  */
 
-/** The list column, which is the whole Inbox where no row is open below the column's width. */
-export function inboxList(page: Page): Locator {
-  return page.getByTestId("inbox-list");
+/** The list column, which is the whole Inbox where no row is open below the column's width,
+ *  inside `within`: the page, or a drawer. */
+export function inboxList(within: Page | Locator): Locator {
+  return within.getByTestId("inbox-list");
 }
 
 /** The open row's surface: the reading column, or below its width the reading view's body.

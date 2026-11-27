@@ -4,6 +4,7 @@ import { Link } from "react-router-dom";
 import type { UserState } from "../../api/types";
 import { AttentionBadge } from "../../components/Badge";
 import { LabelPill, StatusPill } from "../../components/Pill";
+import type { LayoutColumns } from "../../components/table-layout";
 import { issueProject } from "../../lib/issue-key";
 import { compareTimestamps } from "../../lib/timestamps";
 import {
@@ -26,7 +27,6 @@ import { buildIssuePath } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
 import { type IssueStatus, issueStatuses, statusLabel } from "./board-model";
 import type { IssueListing } from "./issues-table-data";
-import type { LayoutColumns } from "./issues-table-layout";
 import {
   COLUMN_MIN,
   COLUMNS,
@@ -70,9 +70,10 @@ const inPicks: FilterFn<Item> = (row, id, value: string[]) =>
  *  `wraps`). Keyed by the registry's own ids, so a typo or a column with no rendering fails to
  *  compile. Everything else about a column — whether it filters, what a row files under, what
  *  it groups by, how wide it starts and how narrow it may go — comes from `COLUMNS` in the
- *  model, so the two never disagree. */
+ *  model, so the two never disagree. A row's own checkbox tells `onMark` the row it marks. */
 const renderings = (
   userState: UserState | undefined,
+  onMark: (key: string) => void,
   wrapTitles: boolean
 ): Record<ColumnId, Partial<ColumnDef<Item>>> => ({
   select: {
@@ -90,7 +91,10 @@ const renderings = (
         aria-label={`Select ${row.original.issue.key}`}
         checked={row.getIsSelected()}
         className={checkboxAccent}
-        onChange={row.getToggleSelectedHandler()}
+        onChange={(event) => {
+          if (event.target.checked) onMark(row.id);
+          row.toggleSelected(event.target.checked);
+        }}
         type="checkbox"
       />
     ),
@@ -498,9 +502,13 @@ export function issueTableLayout(
   return layout;
 }
 
+/** The List's columns, and a scoped table's listing columns beside them (`issueTableLayout`).
+ *  `onMark` is told the row a row's own checkbox marks; it is a dependency of the columns, so a
+ *  caller hands a stable one. */
 export function useIssueTableColumns(
   userState: UserState | undefined,
   compact: boolean,
+  onMark: (key: string) => void,
   /** The table's layout (`issueTableLayout`): which listing columns it has, and the narrowest
    *  each column may be drawn at, its `widths` included. */
   layout: LayoutColumns,
@@ -519,7 +527,7 @@ export function useIssueTableColumns(
   }
 ): ColumnDef<Item>[] {
   return useMemo<ColumnDef<Item>[]>(() => {
-    const rendering = renderings(userState, wrapTitles);
+    const rendering = renderings(userState, onMark, wrapTitles);
     const places = new Map([...(priorityTitles?.keys() ?? [])].map((id, at) => [id, at + 1]));
     const priorityOf: PriorityOf = (id) => ({
       place: places.get(id),
@@ -569,5 +577,5 @@ export function useIssueTableColumns(
     // Beside the title, which is what a reader reads a row of every project's issues by.
     const after = registered.findIndex(({ id }) => id === "title") + 1;
     return [...registered.slice(0, after), ...listing, ...registered.slice(after)];
-  }, [userState, compact, layout, priorityTitles, wrapTitles]);
+  }, [userState, compact, onMark, layout, priorityTitles, wrapTitles]);
 }

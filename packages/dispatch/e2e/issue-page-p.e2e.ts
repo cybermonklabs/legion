@@ -16,7 +16,8 @@ import {
   reviewArtifact,
   setGatedSteps,
 } from "./api";
-import { closeDetails, gotoIssue, phase } from "./issue-page";
+import { listOf, pickFromList } from "./filters";
+import { closeDetails, gotoIssue, openDetails, phase } from "./issue-page";
 import { expectOpeningLanded, focusThePage } from "./issue-page-g";
 import { withIssuePage } from "./issue-page-option";
 import {
@@ -69,7 +70,8 @@ import {
 } from "./issue-page-p";
 import { onBody } from "./keyboard-issue";
 import { boxesApart } from "./layout";
-import { answeredPost, holdPosts, navigateInApp } from "./sends";
+import { expectHighlight, expectOpenOn } from "./menus";
+import { holdPosts, navigateInApp } from "./sends";
 import { expect, type Locator, type Page, type Request, test } from "./test";
 import { assertPageFits, assertWhole } from "./unclipped";
 import { asUser } from "./users";
@@ -199,8 +201,12 @@ test("the header holds its list and its limits at every width @phone", async ({ 
     await requestApproval(seeded.specArtifactId, { summary: "Read it back." });
     // The header's list, each part of the header by what it is: nothing else may be drawn there.
     // Its one link is the parent's, named exactly. The words it draws outside a control are in it:
-    // the project, the crumbs' separators, the key, the priority and the assignee each drawn under
-    // its select, and the one chip's "Not requested". The status's shape is an svg with no words.
+    // the project, the crumbs' separators, the key and the one chip's "Not requested". The status
+    // is a trigger named for its menu (dispatch://INFRA-2160), and the priority and the assignee
+    // are each the shared list's single pick, a button named for its list; each is named then for
+    // the value it shows. The status's shape is an svg with no words. The title is a heading, and
+    // its control is Edit title, a button laid over it and named for what it does
+    // (`IssueTitleRow`).
     const named = [
       new RegExp(`^a ${seeded.parentKey}$`),
       /^button Open navigation$/,
@@ -209,9 +215,9 @@ test("the header holds its list and its limits at every width @phone", async ({ 
       /^button Details$/,
       /^h1 /,
       exactly(`button ${CONTROL_LABELS.edit_title}`),
-      /^select Status$/,
-      new RegExp(`^select Priority of ${seeded.key}$`),
-      new RegExp(`^select Assignee of ${seeded.key}$`),
+      /^button Status In progress$/,
+      new RegExp(`^button Priority of ${seeded.key} P1$`),
+      new RegExp(`^button Assignee of ${seeded.key} alice$`),
       /^issue-header$/,
       /^issue-details-control$/,
       /^issue-state-actions$/,
@@ -226,8 +232,6 @@ test("the header holds its list and its limits at every width @phone", async ({ 
       exactly(`text ${HEADER_PROJECT}`),
       exactly("text ›"),
       exactly(`text ${seeded.key}`),
-      exactly("text P1"),
-      exactly("text alice"),
       exactly(`text ${CONTROL_LABELS.not_requested}`),
     ];
 
@@ -252,7 +256,7 @@ test("the header holds its list and its limits at every width @phone", async ({ 
           header.getByRole("button", { exact: true, name: CONTROL_LABELS.issue_actions }),
         ],
         ["Details", header.getByTestId("issue-details-control"), CONTROL_LABELS.details],
-        ["the status", header.getByRole("combobox", { name: "Status" })],
+        ["the status", badgeValue(page, "Status"), "In progress"],
         ["the priority", badgeValue(page, `Priority of ${seeded.key}`), "P1"],
         ["the assignee", badgeValue(page, `Assignee of ${seeded.key}`), "alice"],
         [
@@ -320,13 +324,13 @@ test("the header holds its list and its limits at every width @phone", async ({ 
         await expect(first, `the first label is outside the ${width} px viewport`).toBeInViewport();
         await assertWhole(first);
       }
-      expect(
-        await header.getByRole("combobox", { name: "Status" }).inputValue(),
+      await expect(
+        badgeValue(page, "Status"),
         `the status reads otherwise at ${width} px`
-      ).toBe("in_progress");
+      ).toHaveText("In progress");
       // The status draws its shape beside its word, as an svg that names the shape it draws.
       await expect(
-        header.locator('label:has(> select[aria-label="Status"]) svg[data-status-glyph]'),
+        badgeValue(page, "Status").locator("svg[data-status-glyph]"),
         `the status draws another shape, or none, at ${width} px`
       ).toHaveAttribute("data-status-glyph", statusGlyph("in_progress"));
       // Approve is filled with the page's ink, its words the paper's (row 17).
@@ -352,9 +356,9 @@ test("the header holds its list and its limits at every width @phone", async ({ 
         `the header's parts leave out the words it draws as text at ${width} px`
       ).toEqual([]);
       const order = [
-        "select Status",
-        `select Priority of ${seeded.key}`,
-        `select Assignee of ${seeded.key}`,
+        "button Status In progress",
+        `button Priority of ${seeded.key} P1`,
+        `button Assignee of ${seeded.key} alice`,
         "issue-progress-children",
         "issue-whose-turn",
         "issue-header-labels",
@@ -1110,7 +1114,8 @@ test("the count of what waits holds only what waits on the reader", async ({ bro
   });
 });
 
-// Row (6): a press on the status straight out of the title's editor lands on the status.
+// Row (6): a press on the status straight out of the title's editor lands on the status, whose
+// list opens (dispatch://INFRA-2160).
 // SLOW(>=2s): 2,814 ms (one worker, Job e2e-rows-rdf2g at 43949bc0): three typed edits of the
 // title and two picks of the status, each saved through Dispatch and four of them polled there,
 // a pick made behind a title write a route holds, and 500 ms watched for a second write of it.
@@ -1122,28 +1127,37 @@ test("a press on the status straight out of the title's editor lands on the stat
     await expectHeaderDrawn(page);
     const edit = editTitleButton(page);
     const editor = issueHeader(page).getByRole("textbox", { name: "Issue title" });
-    const status = issueHeader(page).getByRole("combobox", { name: "Status" });
+    const status = badgeValue(page, "Status");
 
-    // The control: with nothing edited, the press out of the editor focuses the status.
+    // The control: with nothing edited, the press out of the editor opens the status's list on
+    // the status the issue holds, and Escape closes it, giving the focus back to the status.
     await edit.click();
     await expect(editor).toBeFocused();
     await status.click();
-    await expect(status, "the status took no focus with nothing edited").toBeFocused();
+    await expectOpenOn(
+      status,
+      "In progress",
+      "the press with nothing edited opened no status list"
+    );
     await page.keyboard.press("Escape");
-    await page.keyboard.press("Escape");
+    await expect(status, "Escape left the status list open").toHaveAttribute(
+      "aria-expanded",
+      "false"
+    );
+    await expect(status).toBeFocused();
 
     // The same press with the title edited, and no Enter: the title saves and the press lands.
     await edit.click();
     await expect(editor).toBeFocused();
     await editor.pressSequentially("edited ");
     await status.click();
-    await expect(status, "the press out of an edited title landed on nothing").toBeFocused();
+    await expectOpenOn(status, "In progress", "the press out of an edited title landed on nothing");
     await expect
       .poll(async () => (await getIssue(seeded.key)).title, {
         message: "the title the reader left was not saved",
       })
       .toContain("edited");
-    await status.selectOption("todo");
+    await listOf(status).getByRole("option", { exact: true, name: "Todo" }).click();
     await expect
       .poll(async () => (await getIssue(seeded.key)).status, {
         message: "the status picked straight after the title was not written",
@@ -1151,8 +1165,8 @@ test("a press on the status straight out of the title's editor lands on the stat
       .toBe("todo");
 
     // A status picked while the title's write is still out waits behind it in the issue's line:
-    // the select draws the pick at once, and it is written once, after the title.
-    // The issue is at `todo` already, so the pick is `testing`, which the select reads only if
+    // the list's trigger draws the pick at once, and it is written once, after the title.
+    // The issue is at `todo` already, so the pick is `testing`, which the trigger shows only if
     // the pick was drawn.
     let statusWrites = 0;
     const countStatusWrite = (request: Request) => {
@@ -1176,9 +1190,9 @@ test("a press on the status straight out of the title's editor lands on the stat
     await editor.pressSequentially("held ");
     await status.click();
     await expect.poll(() => holding, { message: "the title's write was not sent" }).toBe(true);
-    await status.selectOption("testing");
-    await expect(status, "the status picked while the title saved was not drawn").toHaveValue(
-      "testing"
+    await listOf(status).getByRole("option", { exact: true, name: "Testing" }).click();
+    await expect(status, "the status picked while the title saved was not drawn").toHaveText(
+      "Testing"
     );
     release.resolve();
     await expect
@@ -1268,18 +1282,22 @@ test("the press that ends a title edit reaches the control under it @phone", asy
         ).toHaveURL(decisionsAddress(seeded.key));
 
         // The same press on the status, straight out of an edit of the same title, lands too,
-        // and the status takes the focus.
+        // and opens the status's list (dispatch://INFRA-2160), which Escape closes.
         await gotoIssue(page, `/issues/${seeded.key}/conversation`);
         await expectHeaderDrawn(page);
         await editTitleButton(page).click();
         await expect(editor).toBeFocused();
-        const status = issueHeader(page).getByRole("combobox", { name: "Status" });
+        const status = badgeValue(page, "Status");
         await pressOutOfTheEdit(page, status, "the status", tap);
         await expect(
           status,
           `the press out of a ${lines}-line title's edit at ${width} px did not reach the status`
-        ).toBeFocused();
+        ).toHaveAttribute("aria-expanded", "true");
         await page.keyboard.press("Escape");
+        await expect(status, "Escape left the status list open").toHaveAttribute(
+          "aria-expanded",
+          "false"
+        );
 
         // An edit the keyboard opens and ends after the one that press ended: the press is
         // over, so nothing holds the heading at the editor's height, and at 1440 px the title
@@ -1394,23 +1412,39 @@ test("the header's keys and the palette reach their controls", async ({ browser 
     await expectOpeningLanded(page);
     await focusThePage(page);
     const header = issueHeader(page);
-    const priority = header.getByRole("combobox", { name: `Priority of ${key}` });
-    const status = header.getByRole("combobox", { name: "Status" });
+    const priority = badgeValue(page, `Priority of ${key}`);
+    const status = badgeValue(page, "Status");
     const patched: string[] = [];
     page.on("request", (request) => {
       if (request.method() === "PATCH") patched.push(new URL(request.url()).pathname);
     });
 
-    // p and s reach their own control, and Escape gives the focus back to the page.
+    // p and s open their own control's list on the value it holds (dispatch://INFRA-2160), and
+    // Escape closes it with nothing written, giving the focus back to the page the key was
+    // pressed on, since nothing had the focus (D5).
     await page.keyboard.press("p");
-    await expect(priority, "p did not put the focus on the priority").toBeFocused();
+    await expectOpenOn(priority, "P1", "p did not open the priority's list");
     await page.keyboard.press("Escape");
-    await expect.poll(() => onBody(page)).toBe(true);
+    await expect(priority, "Escape left the priority's list open").toHaveAttribute(
+      "aria-expanded",
+      "false"
+    );
+    await expect
+      .poll(() => onBody(page), { message: "Escape did not give the focus back to the page" })
+      .toBe(true);
+    await focusThePage(page);
     await page.keyboard.press("s");
-    await expect(status, "s did not put the focus on the status").toBeFocused();
+    await expectOpenOn(status, "In progress", "s did not open the status's list");
     await page.keyboard.press("Escape");
-    await expect.poll(() => onBody(page)).toBe(true);
-    expect(patched, "a key that focuses a control wrote the issue").toEqual([]);
+    await expect(status, "Escape left the status's list open").toHaveAttribute(
+      "aria-expanded",
+      "false"
+    );
+    await expect
+      .poll(() => onBody(page), { message: "Escape did not give the focus back to the page" })
+      .toBe(true);
+    await focusThePage(page);
+    expect(patched, "a key that opens a list wrote the issue").toEqual([]);
 
     // A refused write: the digit and the picker are one write, so the refusal is said once, in
     // the header, with Retry, and the issue keeps its priority.
@@ -1432,15 +1466,15 @@ test("the header's keys and the palette reach their controls", async ({ browser 
       .filter({ hasText: `Could not update the priority of ${key}.` });
     await expect(failure).toHaveCount(1);
     await expect(failure.getByRole("button", { name: "Retry" })).toBeVisible();
-    // The picker's write is refused too, and only then is the alert counted: the one the digit
-    // drew is on the screen before the picker's write has been sent.
+    // The menu's write is refused too, and only then is the alert counted: the one the digit
+    // drew is on the screen before the menu's write has been sent.
     const pickerRefused = page.waitForResponse(
       (response) =>
         response.request().method() === "PATCH" &&
         new URL(response.url()).pathname === `/api/v1/issues/${key}` &&
         response.status() === 400
     );
-    await priority.selectOption("3");
+    await pickFromList(priority, "P3");
     await pickerRefused;
     await expect(failure).toHaveCount(1);
     await expect(failure.getByRole("button", { name: "Retry" })).toBeVisible();
@@ -1459,7 +1493,7 @@ test("the header's keys and the palette reach their controls", async ({ browser 
     );
     await page.keyboard.press("2");
     expect((await write).postDataJSON()).toEqual({ priority: 2 });
-    await expect(badgeValue(page, `Priority of ${key}`)).toHaveText("P2");
+    await expect(priority).toHaveText("P2");
     await expect.poll(() => getIssue(key)).toMatchObject({ priority: 2 });
     await focusThePage(page);
     const pinned = page.waitForResponse(
@@ -1475,7 +1509,7 @@ test("the header's keys and the palette reach their controls", async ({ browser 
     expect((await pinned).ok()).toBe(true);
     await gotoIssue(page, `/issues/${key}/conversation`);
     await expectHeaderDrawn(page);
-    await expect(badgeValue(page, `Priority of ${key}`)).toHaveText("P2");
+    await expect(priority).toHaveText("P2");
     await expect(header.locator('[data-issue-action="pin"]')).toHaveAttribute(
       "aria-pressed",
       "true"
@@ -1560,9 +1594,13 @@ test("the header's keys and the palette reach their controls", async ({ browser 
       }
       await route.continue();
     });
-    await status.selectOption("todo");
+    await pickFromList(status, "Todo");
     await expect.poll(() => holding, { message: "the status's write was not sent" }).toBe(1);
     await expect(priority, "the priority refuses input while the status is saved").toBeEnabled();
+    await expect(priority, "the priority is held while the status is saved").not.toHaveAttribute(
+      "aria-disabled",
+      "true"
+    );
     await focusThePage(page);
     await page.keyboard.press("Control+k");
     await expect(
@@ -2156,17 +2194,18 @@ test("a focus given back to Edit title opens no editor", async ({ browser }) => 
   });
 });
 
-// On the new page a keyboard pick of the status keeps the focus on the status (WCAG 2.4.3). The
-// select was disabled while its own write saved, and the browser moves the focus off a disabled
-// control, so after `s` and one arrow key the focus was on the page's body: a second arrow key
-// did nothing, Tab started from the top, and an Escape pressed before the select was disabled
-// was not taken. Each focus is read once, after the pick is drawn, because a retrying read
-// passes in the frame before the pick disables the select. The status's writes are held open
-// with a route, so the save stays in flight while the row reads it.
+// On the new page a keyboard pick of the status leaves the focus where `s` was pressed while the
+// pick saves (WCAG 2.4.3). The status is the shared single pick with D5's rules
+// (dispatch://INFRA-2160): `s` opens its list, an arrow moves its highlight and writes nothing,
+// and Enter writes the highlighted status and gives the focus back to the page, where `s` was
+// pressed with the focus on nothing. No write holds or disables the trigger, so the focus stays
+// there while the pick saves, and a second pick by `s` goes behind the first. Each focus is read
+// once, after the pick is drawn. The status's writes are held open with a route, so the save
+// stays in flight while the row reads it.
 // SLOW(>=2s): 2,085 ms in one of three one-worker runs, Job e2e-rows-2chx9 at 2e3f0319 (1,573 and
 // 1,748 ms in the others): one load, the status's writes held open by a route, and keyboard picks
 // each followed by two frames and a read of the focus.
-test("a keyboard pick of the status keeps the focus on the status while it saves", async ({
+test("a keyboard pick of the status gives the focus back to the page while it saves", async ({
   browser,
 }) => {
   test.setTimeout(120_000);
@@ -2177,9 +2216,8 @@ test("a keyboard pick of the status keeps the focus on the status while it saves
     await expectHeaderDrawn(page);
     await expectOpeningLanded(page);
     await focusThePage(page);
-    const status = issueHeader(page).getByRole("combobox", { name: "Status" });
-    await expect(status).toHaveValue("in_progress");
-    const statusFocused = () => status.evaluate((select) => select === document.activeElement);
+    const status = badgeValue(page, "Status");
+    await expect(status).toHaveText("In progress");
 
     const held: (() => void)[] = [];
     const writes: unknown[] = [];
@@ -2196,31 +2234,31 @@ test("a keyboard pick of the status keeps the focus on the status while it saves
     });
 
     await page.keyboard.press("s");
-    await expect(status, "s did not put the focus on the status").toBeFocused();
+    await expectOpenOn(status, "In progress", "s did not open the status's list");
     await page.keyboard.press("ArrowDown");
-    await expect(status).toHaveValue("testing");
+    await expectHighlight(listOf(status), "Testing", "ArrowDown did not highlight Testing");
+    expect(writes, "an arrow key in the status's list wrote the status").toEqual([]);
+    await page.keyboard.press("Enter");
+    await expect(status).toHaveText("Testing");
     await framesDrawn(page, 2);
     expect(
-      await statusFocused(),
-      "a keyboard pick of the status moved the focus off the status"
+      await onBody(page),
+      "a keyboard pick of the status did not give the focus back to the page"
     ).toBe(true);
 
-    // A second arrow key while the first pick saves picks again, and the focus stays.
+    // A second pick while the first saves picks again, and the focus goes back to the page again.
+    await page.keyboard.press("s");
+    await expectOpenOn(status, "Testing", "s did not open the status's list again");
     await page.keyboard.press("ArrowDown");
-    await expect(status, "a second arrow key while the status saved picked nothing").toHaveValue(
-      "needs_review"
+    await page.keyboard.press("Enter");
+    await expect(status, "a second pick while the status saved picked nothing").toHaveText(
+      "Needs review"
     );
     await framesDrawn(page, 2);
     expect(
-      await statusFocused(),
-      "a second keyboard pick of the status moved the focus off the status"
+      await onBody(page),
+      "a second keyboard pick of the status did not give the focus back to the page"
     ).toBe(true);
-
-    // Escape, while the save is still in flight, gives the focus back to the page.
-    await page.keyboard.press("Escape");
-    await expect
-      .poll(() => onBody(page), { message: "Escape did not leave the status while it saved" })
-      .toBe(true);
 
     // Once the writes are let through, the issue holds the last status picked.
     await expect.poll(() => held.length).toBeGreaterThan(0);
@@ -2573,7 +2611,7 @@ test("the header's menu closes once Tab takes the focus out of it, leaving the f
     // On from there to Edit title and then the Status, each found by its role and name.
     for (const [what, target] of [
       ["Edit title", editTitleButton(page)],
-      ["the Status select", header.getByRole("combobox", { name: "Status" })],
+      ["the Status", badgeValue(page, "Status")],
     ] as const) {
       let reached = false;
       for (let press = 1; press <= 6 && !reached; press += 1) {
@@ -2584,6 +2622,60 @@ test("the header's menu closes once Tab takes the focus out of it, leaving the f
       }
       expect(reached, `six Tabs did not take the focus on to ${what} at 390 px`).toBe(true);
     }
+  });
+});
+
+// The tester's red row of round 21 (one Escape closes two layers, the header's Issue actions menu
+// and Details beside it. Both hear the press on the document, in the bubble phase: Details'
+// `closeOnEscape` (Margin.tsx:319-329), added as Details opens and so before the menu's, finds no
+// `[role="menu"]` in its own box (:325) - the menu is in the header, and a group of buttons, no
+// `role="menu"` (IssueActionsMenu.tsx:22) - marks the press `defaultPrevented` and closes Details;
+// then the menu's `closeOnEscape` (IssueActionsMenu.tsx:73-79, added at :91), which reads no
+// `defaultPrevented`, closes the menu and gives the focus to Issue actions; the architect's
+// ruling of 2026-11-26T05:17Z). The row opens Details by Shift+M, the menu by Enter on Issue
+// actions, Tabs onto its first action, the pin, and presses Escape once. At c3b536cc that one
+// Escape closes the menu and Details both, at 1440 px, in Chromium (4 of 4) and Firefox (2 of 2).
+// SLOW(>=2s): one seeded issue page open at 1440 px, Details opened by Shift+M, the menu opened by
+// Enter, one Tab and one Escape; no write.
+// @firefox: the engine's focus after the element that held it is removed (playwright.config.ts names the clause).
+test("one Escape in the header's Issue actions menu closes the menu alone and leaves Details open @firefox", async ({
+  browser,
+}) => {
+  test.setTimeout(120_000);
+  await phase(browser, seedHeader, async (page, seeded) => {
+    const step = (text: string) => `Issue actions menu with Details open: ${text}`;
+    await page.setViewportSize(DESKTOP);
+    await gotoIssue(page, `/issues/${seeded.key}`);
+    await expectOpeningLanded(page);
+    await expectHeaderDrawn(page);
+    await openDetails(page);
+    const header = issueHeader(page);
+    const trigger = header.getByRole("button", { exact: true, name: CONTROL_LABELS.issue_actions });
+    const pin = header.locator('button[data-issue-action="pin"]');
+    await trigger.focus();
+    await expect(trigger, step("Issue actions takes the focus.")).toBeFocused();
+    await page.keyboard.press("Enter");
+    await expect(trigger, step("Enter on Issue actions opens its menu.")).toHaveAttribute(
+      "aria-expanded",
+      "true"
+    );
+    await page.keyboard.press("Tab");
+    await expect(
+      pin,
+      step("Tab puts the focus on the menu's first action, the pin.")
+    ).toBeFocused();
+    await expect(details(page), step("Details is open under the menu.")).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(trigger, step("one Escape closes the menu.")).toHaveAttribute(
+      "aria-expanded",
+      "false"
+    );
+    await expect(pin, step("one Escape hides the menu's actions.")).toBeHidden();
+    await expect(trigger, step("one Escape gives the focus back to Issue actions.")).toBeFocused();
+    await expect(
+      details(page),
+      step("after one Escape, which the open menu takes, the Details drawer is still open.")
+    ).toBeVisible();
   });
 });
 
@@ -2771,19 +2863,79 @@ test("Details closed after an answer elsewhere removed Approve leaves the focus 
   });
 });
 
+// The keeper's hand-off moves the focus and nothing else: a write that takes the focused labels'
+// count away while the reader has scrolled the header out of the window hands the focus to "Issue
+// actions" (decision 216), with no scroll of the browser's own, which brought the header back
+// over what the reader was reading. At 390 px the whole header scrolls away with the page. The
+// page is given room below it, so the window scrolls the header wholly out of sight.
+// SLOW(>=2s): 2.4 s in Job infra-2160-fixc-before-z2ndv: one load with twenty labels, a scroll,
+// and a label write through the API, waited on until the count goes and the fallback takes focus.
+test("a write that takes the focused labels' count away while the header is out of sight hands the focus on with no scroll", async ({
+  browser,
+}) => {
+  test.setTimeout(120_000);
+  await phase(browser, seedHeader, async (page, seeded) => {
+    await page.setViewportSize(IPHONE_13);
+    await patchIssue(seeded.key, { labels: [...TWENTY_LABELS] });
+    await gotoIssue(page, `/issues/${seeded.key}`);
+    await expectOpeningLanded(page);
+    await expectHeaderDrawn(page);
+    const count = labelsLeft(page);
+    await expect(count, "twenty labels draw no labels' count at 390 px").toBeVisible();
+    await count.focus();
+    await page.evaluate(() => {
+      document.body.style.minHeight = "5000px";
+      window.scrollTo(0, 1500);
+    });
+    const actions = issueHeader(page).getByRole("button", {
+      exact: true,
+      name: CONTROL_LABELS.issue_actions,
+    });
+    const bottomOfActions = () =>
+      actions.evaluate((button) => button.getBoundingClientRect().bottom);
+    await expect
+      .poll(bottomOfActions, { message: "the header did not scroll out of the window" })
+      .toBeLessThan(0);
+    await patchIssue(seeded.key, { labels: ["dispatch"] });
+    await expect(count, "one label still draws the labels' count").toHaveCount(0);
+    await expect(actions, "the count's going left the focus off Issue actions").toBeFocused();
+    await framesDrawn(page, 2);
+    expect(
+      await bottomOfActions(),
+      "the hand-off scrolled the header back into the window"
+    ).toBeLessThan(0);
+  });
+});
+
+/** A review's path, `/api/v1/artifacts/{id}/versions/{number}/reviews`, the write Approve and
+ *  Request changes make of the version the page read (dispatch://INFRA-2160), with the
+ *  document's id as its group. */
+const REVIEW_PATH = /^\/api\/v1\/artifacts\/([^/]+)\/versions\/\d+\/reviews$/;
+
 /** The documents the page sends a review of, in the order it sends them: each `POST` of
- *  `/api/v1/artifacts/{id}/reviews`, the write Approve and Request changes make. */
+ *  `REVIEW_PATH`. */
 function reviewsSent(page: Page): string[] {
   const sent: string[] = [];
   page.on("request", (request) => {
-    const reviewed = /^\/api\/v1\/artifacts\/([^/]+)\/reviews$/.exec(
-      new URL(request.url()).pathname
-    );
+    const reviewed = REVIEW_PATH.exec(new URL(request.url()).pathname);
     if (request.method() === "POST" && reviewed !== null) {
       sent.push(decodeURIComponent(reviewed[1] ?? ""));
     }
   });
   return sent;
+}
+
+/** Dispatch's answer `status` to the page's next review of the document `artifactId`, at the
+ *  version it reviews. */
+function reviewAnswered(page: Page, artifactId: string, status: number) {
+  return page.waitForResponse((response) => {
+    const reviewed = REVIEW_PATH.exec(new URL(response.url()).pathname);
+    return (
+      response.request().method() === "POST" &&
+      decodeURIComponent(reviewed?.[1] ?? "") === artifactId &&
+      response.status() === status
+    );
+  });
 }
 
 // With the focus on the approval chip of a document whose request waits on the reader, `a`
@@ -2997,9 +3149,11 @@ test("the key card and the palette offer the approval chip's two keys while the 
       "the chip carries no Approve while its request waits"
     ).toBeVisible();
     const chip = approvalChip(page, seeded.specArtifactId);
+    // The catalogue's labels of the two keys (`keymap-catalogue.ts`), today's page's and the new
+    // header's alike (dispatch://INFRA-2160).
     const lines = [
-      ["Approve the focused approval request", "a"],
-      ["Request changes on the focused approval request", "Shift+R"],
+      ["Approve", "a"],
+      ["Request changes", "Shift+R"],
     ] as const;
 
     const help = page.getByRole("dialog", { name: "Keyboard shortcuts" });
@@ -3096,9 +3250,9 @@ test("the palette's Close issue, run from a header control, leaves the focus in 
     await closeOpenChildren(seeded);
     const header = issueHeader(page);
     for (const [name, control] of [
-      ["the status", header.getByRole("combobox", { name: "Status" })],
-      ["the priority", header.getByRole("combobox", { name: `Priority of ${key}` })],
-      ["the assignee", header.getByRole("combobox", { name: `Assignee of ${key}` })],
+      ["the status", badgeValue(page, "Status")],
+      ["the priority", badgeValue(page, `Priority of ${key}`)],
+      ["the assignee", badgeValue(page, `Assignee of ${key}`)],
     ] as const) {
       await patchIssue(key, { status: "in_progress" });
       await gotoIssue(page, `/issues/${key}/conversation`);
@@ -3274,7 +3428,10 @@ test("Approve by Enter on the header's chip leaves the focus on the approved chi
     await expect(approve, "the chip carries no Approve while its request waits").toBeVisible();
     const chip = approvalChip(page, seeded.specArtifactId);
 
-    const review = await holdPosts(page, `**/api/v1/artifacts/${seeded.specArtifactId}/reviews`);
+    const review = await holdPosts(
+      page,
+      `**/api/v1/artifacts/${seeded.specArtifactId}/versions/*/reviews`
+    );
 
     await approve.focus();
     await expect(approve).toBeFocused();
@@ -3452,7 +3609,7 @@ test("Approve pressed again by Enter before its approval is drawn sends no secon
     await approve.focus();
     await expect(approve).toBeFocused();
     reads.hold();
-    const answered = answeredPost(page, `/api/v1/artifacts/${seeded.specArtifactId}/reviews`, 201);
+    const answered = reviewAnswered(page, seeded.specArtifactId, 201);
     await page.keyboard.press("Enter");
     await (await answered).finished();
     expect(
@@ -3537,7 +3694,7 @@ test("Request changes in its dialog pressed again by Enter before the change req
     await expect(submit).toBeFocused();
 
     reads.hold();
-    const answered = answeredPost(page, `/api/v1/artifacts/${seeded.specArtifactId}/reviews`, 201);
+    const answered = reviewAnswered(page, seeded.specArtifactId, 201);
     await page.keyboard.press("Enter");
     await (await answered).finished();
     expect(

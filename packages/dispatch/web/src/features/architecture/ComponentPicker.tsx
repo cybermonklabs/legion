@@ -1,7 +1,7 @@
 import { type ReactNode, useMemo, useState } from "react";
 
 import type { ArchitectureTreeComponent } from "../../api/types";
-import { MultiSelect } from "../../components/MultiSelect";
+import { type ListMarks, MultiSelect } from "../../components/MultiSelect";
 import { usePageWords } from "../../components/tooltips";
 import {
   pageLineBorder,
@@ -25,6 +25,8 @@ export interface ComponentPickerProps {
   readonly error?: string | null;
   /** `components` is still on its way: the empty list says so instead of `No components`. */
   readonly loading?: boolean;
+  /** Marks the host's own code finds the trigger by (`MultiSelect`'s `marks`). */
+  readonly marks?: ListMarks;
   /** The popover opened or closed; a host that fetches `components` only on demand gates on it. */
   readonly onOpenChange?: (open: boolean) => void;
   /** Called once, when the popover closes with a set that differs from `selected`. */
@@ -45,6 +47,7 @@ export function ComponentPicker({
   disabled = false,
   error = null,
   loading = false,
+  marks,
   onOpenChange,
   onSave,
   saving,
@@ -103,6 +106,7 @@ export function ComponentPicker({
       emptyMessage={loading ? "Loading components…" : "No components to attach to."}
       error={error}
       label="Components"
+      marks={marks}
       onChange={setDraft}
       onOpenChange={setOpenState}
       open={open}

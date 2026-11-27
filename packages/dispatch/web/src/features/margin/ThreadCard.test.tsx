@@ -1,6 +1,6 @@
 import { afterEach, beforeAll, expect, jest, spyOn, test } from "bun:test";
 import { hashKey, QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { type RenderResult, render, screen, waitFor, within } from "@testing-library/react";
+import { act, type RenderResult, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { type ComponentProps, useState } from "react";
 import { MemoryRouter } from "react-router-dom";
@@ -15,6 +15,7 @@ import { heldDraftWords, stopReplySend } from "../../__tests__/stop-late-write";
 import { ApiError, api } from "../../api/client";
 import type { Comment } from "../../api/types";
 import { heldSends } from "../conversation/held-sends";
+import { ConversationTurns } from "../conversation/turn-keys";
 import { unsentDraftsOf } from "../conversation/unsent-drafts";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { userPreferenceStorageKey } from "../shell/userPreference";
@@ -418,11 +419,204 @@ test("Escape with an empty inline reply collapses the thread", async () => {
   }
 });
 
-/** A card its host opens and closes as the margin's list does: its toggle flips `expanded`. */
-function ToggledCard(props: Omit<EditableCardProps, "expanded" | "onToggle">) {
-  const [expanded, setExpanded] = useState(true);
+test("a reply box a key opened stands, taking no focus, and its Escape goes where the host says, the thread staying open", async () => {
+  const user = userEvent.setup();
+  let collapsed = false;
+  let cancelled = false;
+  const view = renderCard(undefined, {
+    onReplyCancel: () => {
+      cancelled = true;
+    },
+    onToggle: () => {
+      collapsed = true;
+    },
+    replyStanding: true,
+  });
+  try {
+    const box = await screen.findByLabelText("Reply");
+    expect(box).not.toHaveFocus();
+    await user.click(box);
+    await user.keyboard("{Escape}");
+    expect(cancelled).toBe(true);
+    expect(collapsed).toBe(false);
+  } finally {
+    view.unmount();
+  }
+});
+
+test("every reply draws its own Copy reference, and the root's is drawn only where the host draws none", () => {
+  const name = (id: string) => `Copy reference dispatch://CORE-1/comment/${id}`;
+  const own = renderCard();
+  try {
+    expect(screen.getAllByRole("button", { name: name(root.id) })).toHaveLength(1);
+    expect(screen.getAllByRole("button", { name: name(reply.id) })).toHaveLength(1);
+  } finally {
+    own.unmount();
+  }
+  const hosted = renderCard(undefined, { showRootReference: false });
+  try {
+    expect(screen.queryByRole("button", { name: name(root.id) })).toBeNull();
+    expect(screen.getAllByRole("button", { name: name(reply.id) })).toHaveLength(1);
+  } finally {
+    hosted.unmount();
+  }
+});
+
+test("a collapsed card draws its root's Copy reference beside its preview, outside the button that opens it", () => {
+  const view = renderCard(undefined, { expanded: false });
+  try {
+    const copy = screen.getByRole("button", {
+      name: `Copy reference dispatch://CORE-1/comment/${root.id}`,
+    });
+    const preview = view.container.querySelector('button[aria-expanded="false"]');
+    expect(preview).not.toBeNull();
+    expect(preview?.contains(copy)).toBe(false);
+  } finally {
+    view.unmount();
+  }
+});
+
+/** A collapsed card, as its host draws it, whose root holds a web link, once its preview has
+ *  drawn the link; `onToggle` hears each toggle the host makes. */
+async function foldedLinkedCard() {
+  const onToggle = jest.fn();
+  const linked = comment(
+    "root-1",
+    "Read [a page elsewhere](https://elsewhere.test/page) first.",
+    "2026-09-10T00:00:00Z"
+  );
+  const view = render(
+    <MemoryRouter>
+      <QueryClientProvider client={new QueryClient()}>
+        <ToggledCard
+          actionFailure={undefined}
+          artifactSlug="spec"
+          folded
+          hovered={false}
+          isClosed={false}
+          onAction={() => {}}
+          onEdit={async () => undefined}
+          onRetryAction={() => {}}
+          onToggle={onToggle}
+          owner={{ key: "CORE-1", kind: "issue" }}
+          pendingAction={false}
+          thread={thread({ replies: [], root: { comment: linked, kind: "comment" } })}
+          viewerLogin="alice"
+        />
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  const card = screen.getByTestId(`margin-comment-${linked.id}`);
+  const preview = card.querySelector<HTMLElement>('button[aria-expanded="false"]');
+  if (preview === null) throw new Error("The collapsed card draws no preview button.");
+  const link = await waitFor(() => {
+    const drawn = preview.querySelector("a");
+    if (drawn === null) throw new Error("The preview has not drawn its link yet.");
+    return drawn;
+  });
+  expect(link.textContent).toBe("a page elsewhere");
+  // The test document follows no link; the press itself is what reaches the card.
+  link.addEventListener("click", (event) => event.preventDefault());
+  return { card, link, onToggle, preview, view };
+}
+
+test("a click and a Ctrl+click on a link in a collapsed card's preview leave the card folded, and a click on its words opens it", async () => {
+  // The preview is Markdown (`MarkdownPreview`), empty until the lazy Markdown engine loads.
+  await warmMarkdownRenderer();
+  const user = userEvent.setup();
+  // What each press left, on a card of its own, in one comparison, so a row that fails says
+  // which press opened the card.
+  const left: Record<string, unknown> = {};
+  for (const press of ["click", "Ctrl+click"] as const) {
+    const { card, link, onToggle, view } = await foldedLinkedCard();
+    try {
+      if (press === "Ctrl+click") await user.keyboard("{Control>}");
+      await user.click(link);
+      if (press === "Ctrl+click") await user.keyboard("{/Control}");
+      left[press] = {
+        expanded: card.getAttribute("aria-expanded"),
+        linkInPage: link.isConnected,
+        replyBox: within(card).queryByRole("textbox", { name: "Reply" }) !== null,
+        toggles: onToggle.mock.calls.length,
+      };
+    } finally {
+      view.unmount();
+    }
+  }
+  const folded = { expanded: "false", linkInPage: true, replyBox: false, toggles: 0 };
+  expect(left).toEqual({ "Ctrl+click": folded, click: folded });
+
+  const { card, onToggle, preview, view } = await foldedLinkedCard();
+  try {
+    await user.click(within(preview).getByText("first.", { exact: false }));
+    expect(onToggle).toHaveBeenCalledTimes(1);
+    expect(card).toHaveAttribute("aria-expanded", "true");
+  } finally {
+    view.unmount();
+  }
+});
+
+test("on the Conversation tab each reply is a turn its keys reach, and elsewhere no reply takes the focus", async () => {
+  const inTab = render(
+    <ConversationTurns value>
+      <MemoryRouter>
+        <QueryClientProvider client={new QueryClient()}>
+          <EditableCard
+            actionFailure={undefined}
+            artifactSlug="spec"
+            expanded
+            hovered={false}
+            isClosed={false}
+            onAction={() => {}}
+            onEdit={async () => undefined}
+            onRetryAction={() => {}}
+            onToggle={() => {}}
+            owner={{ key: "CORE-1", kind: "issue" }}
+            pendingAction={false}
+            thread={thread()}
+            viewerLogin="alice"
+          />
+        </QueryClientProvider>
+      </MemoryRouter>
+    </ConversationTurns>
+  );
+  try {
+    const row = (await screen.findByText("First reply")).closest("[data-reply]");
+    expect(row).toHaveAttribute("tabindex", "-1");
+    expect(row).toHaveAttribute("data-turn-ref", `dispatch://CORE-1/comment/${reply.id}`);
+  } finally {
+    inTab.unmount();
+  }
+  const margin = renderCard();
+  try {
+    const row = (await screen.findByText("First reply")).closest("[data-reply]");
+    expect(row).not.toHaveAttribute("tabindex");
+    expect(row).not.toHaveAttribute("data-turn-ref");
+  } finally {
+    margin.unmount();
+  }
+});
+
+/** A card its host opens and closes as the margin's list does: its toggle flips `expanded`, which
+ *  starts open unless `folded`, and `onToggle` hears each toggle. */
+function ToggledCard({
+  folded = false,
+  onToggle,
+  ...props
+}: Omit<EditableCardProps, "expanded" | "onToggle"> & {
+  folded?: boolean;
+  onToggle?: () => void;
+}) {
+  const [expanded, setExpanded] = useState(!folded);
   return (
-    <EditableCard {...props} expanded={expanded} onToggle={() => setExpanded((open) => !open)} />
+    <EditableCard
+      {...props}
+      expanded={expanded}
+      onToggle={() => {
+        onToggle?.();
+        setExpanded((open) => !open);
+      }}
+    />
   );
 }
 
@@ -525,6 +719,217 @@ for (const kept of ["typed", "refused", "stopped"] as const) {
     } finally {
       view.unmount();
       createComment.mockRestore();
+    }
+  });
+}
+
+/** An open margin card its host folds and opens as the margin's list does (`ToggledCard`), under
+ *  the thread's reply send name. */
+function renderMarginCard() {
+  const queryClient = new QueryClient({
+    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+  });
+  return render(
+    <MemoryRouter>
+      <QueryClientProvider client={queryClient}>
+        <ToggledCard
+          actionFailure={undefined}
+          artifactSlug="spec"
+          hovered={false}
+          isClosed={false}
+          onAction={() => {}}
+          onEdit={async () => undefined}
+          onRetryAction={() => {}}
+          owner={{ key: "CORE-1", kind: "issue" }}
+          pendingAction={false}
+          replyMutationKey={replyKey}
+          thread={thread()}
+          viewerLogin="alice"
+        />
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+}
+
+// A key or a button in a margin card's reply box that ends the reply folds the card (`onToggle`),
+// which takes the box away with the focus it holds: the preview drawn again in its place, which
+// opened the thread, takes the focus back, never the page's body (`foldFromReply`;
+// dispatch://INFRA-2160, E1). Escape and Cancel reply end the reply the box holds.
+for (const ends of ["Escape", "Cancel reply"] as const) {
+  test(`${ends} in a margin card's reply box folds the card with the focus on its preview`, async () => {
+    const user = userEvent.setup();
+    const view = renderMarginCard();
+    const card = screen.getByTestId(`margin-comment-${root.id}`);
+    try {
+      await user.click(within(card).getByRole("textbox", { name: "Reply" }));
+      if (ends === "Escape") {
+        await user.keyboard("{Escape}");
+      } else {
+        await user.click(within(card).getByRole("button", { name: "Cancel reply" }));
+      }
+      expect(card).toHaveAttribute("aria-expanded", "false");
+      expect(within(card).getByRole("button", { expanded: false })).toHaveFocus();
+    } finally {
+      view.unmount();
+    }
+  });
+}
+
+// Discard draft under a reply Dispatch refused drops the reply and ends it, as Cancel reply does:
+// the card folds with the focus on its preview (`foldFromReply`).
+test("Discard draft over a margin reply Dispatch refused folds the card with the focus on its preview", async () => {
+  const user = userEvent.setup();
+  const createComment = spyOn(api, "createComment").mockRejectedValue(
+    new ApiError(409, { code: "UNAVAILABLE", error: "the server is down" })
+  );
+  const view = renderMarginCard();
+  const card = screen.getByTestId(`margin-comment-${root.id}`);
+  try {
+    await user.click(within(card).getByRole("textbox", { name: "Reply" }));
+    await user.paste("A reply Dispatch refuses");
+    await user.click(within(card).getByRole("button", { name: "Send" }));
+    await within(card).findByText(refusedText);
+    await user.click(within(card).getByRole("button", { name: "Discard draft" }));
+    expect(card).toHaveAttribute("aria-expanded", "false");
+    expect(within(card).getByRole("button", { expanded: false })).toHaveFocus();
+  } finally {
+    view.unmount();
+    createComment.mockRestore();
+  }
+});
+
+// Two editors open in one card: the root's, held open by a save Dispatch refused, and a reply's.
+// A second Escape over Discard draft? in the reply's editor ends that edit alone, and the reply's
+// Edit takes the focus back while the root's editor stays open (`useFocusBack`, which reads the
+// ended editor alone).
+test("a second Escape over Discard draft? in one of a card's two open editors gives the focus back to that comment's Edit", async () => {
+  const user = userEvent.setup();
+  // These comments are not indexed, so a save carries no block ids.
+  const commentBlocks = spyOn(api, "commentBlocks").mockImplementation(async (id) => ({
+    blocks: [],
+    indexed: false,
+    item: graphNode({ id, issue_key: "CORE-1", kind: "comment" }),
+  }));
+  const onEdit = jest.fn(async () => {
+    throw new ApiError(409, { code: "UNAVAILABLE", error: "the server is down" });
+  });
+  const view = renderCard(undefined, { onEdit });
+  const card = screen.getByTestId(`margin-comment-${root.id}`);
+  try {
+    const [rootEdit] = within(card).getAllByRole("button", { name: "Edit" });
+    if (rootEdit === undefined) throw new Error("The root comment has no Edit button.");
+    await user.click(rootEdit);
+    await user.click(within(card).getByRole("textbox", { name: "Edit comment" }));
+    await user.keyboard("{Control>}a{/Control}");
+    await user.paste("Root comment, refused");
+    await user.click(within(card).getByRole("button", { name: "Save" }));
+    await within(card).findByText(refusedText);
+
+    const replyRow = card.querySelector<HTMLElement>("[data-reply]");
+    if (replyRow === null) throw new Error("The card draws no reply.");
+    await user.click(within(replyRow).getByRole("button", { name: "Edit" }));
+    await user.click(within(replyRow).getByRole("textbox", { name: "Edit comment" }));
+    await user.keyboard(" And a second thought.");
+    await user.keyboard("{Escape}");
+    expect(within(replyRow).getByRole("alert")).toHaveTextContent("Discard draft?");
+    await user.keyboard("{Escape}");
+    expect(within(replyRow).queryByRole("textbox", { name: "Edit comment" })).toBeNull();
+    expect(within(card).getAllByRole("textbox", { name: "Edit comment" })).toHaveLength(1);
+    expect(within(replyRow).getByRole("button", { name: "Edit" })).toHaveFocus();
+  } finally {
+    view.unmount();
+    commentBlocks.mockRestore();
+  }
+});
+
+// A second Escape over Discard draft? asks the edit to end, but a save Dispatch refused holds the
+// editor open. The reader presses Retry, then puts the focus in the thread's Reply box while the
+// save is out. When it lands, the editor closes; the Edit takes nothing, since the focus was not
+// lost with the editor (`useFocusBack`, `focusOnDocument`), and stays in the Reply box.
+test("an edit held open by a refused save that ends after the reader moved the focus leaves the focus where they put it", async () => {
+  const user = userEvent.setup();
+  // This comment is not indexed, so a save carries no block ids.
+  const commentBlocks = spyOn(api, "commentBlocks").mockResolvedValue({
+    blocks: [],
+    indexed: false,
+    item: graphNode({ id: root.id, issue_key: "CORE-1", kind: "comment" }),
+  });
+  const retried = Promise.withResolvers<Comment>();
+  const onEdit = jest
+    .fn(async (): Promise<Comment> => retried.promise)
+    .mockRejectedValueOnce(new ApiError(409, { code: "UNAVAILABLE", error: "the server is down" }));
+  const view = renderCard(undefined, { onEdit });
+  const card = screen.getByTestId(`margin-comment-${root.id}`);
+  try {
+    const [rootEdit] = within(card).getAllByRole("button", { name: "Edit" });
+    if (rootEdit === undefined) throw new Error("The root comment has no Edit button.");
+    await user.click(rootEdit);
+    await user.click(within(card).getByRole("textbox", { name: "Edit comment" }));
+    await user.keyboard("{Control>}a{/Control}");
+    await user.paste("Root comment, saved at last");
+    await user.click(within(card).getByRole("button", { name: "Save" }));
+    await within(card).findByText(refusedText);
+    await user.keyboard("{Escape}");
+    expect(within(card).getByText("Discard draft?")).toBeTruthy();
+    await user.keyboard("{Escape}");
+    // The refused save holds the editor open.
+    expect(within(card).getByRole("textbox", { name: "Edit comment" })).toBeTruthy();
+
+    await user.click(within(card).getByRole("button", { name: "Retry" }));
+    const replyBox = within(card).getByRole("textbox", { name: "Reply" });
+    await user.click(replyBox);
+    await act(async () => {
+      retried.resolve({ ...root, body: "Root comment, saved at last" });
+      await retried.promise;
+    });
+    await waitFor(() =>
+      expect(within(card).queryByRole("textbox", { name: "Edit comment" })).toBeNull()
+    );
+    expect(replyBox).toHaveFocus();
+  } finally {
+    retried.resolve(root);
+    view.unmount();
+    commentBlocks.mockRestore();
+  }
+});
+
+// Save in a reply's editor, and Ctrl+Enter in its field, end the edit once the save lands, and
+// take the editor away with the focus it holds: the reply's Edit, drawn again in the editor's
+// place, takes the focus back, as after a second Escape over Discard draft? (`useFocusBack`;
+// dispatch://INFRA-2160, S1).
+for (const saves of ["Save", "Ctrl+Enter"] as const) {
+  test(`${saves} in a margin comment's edit composer gives the focus back to the comment's Edit once the save lands`, async () => {
+    const user = userEvent.setup();
+    // This comment is not indexed, so a save carries no block ids.
+    const commentBlocks = spyOn(api, "commentBlocks").mockResolvedValue({
+      blocks: [],
+      indexed: false,
+      item: graphNode({ id: reply.id, issue_key: "CORE-1", kind: "comment" }),
+    });
+    const saved = "First reply, and a second thought";
+    const onEdit = jest.fn(async (): Promise<Comment> => ({ ...reply, body: saved }));
+    const view = renderCard(undefined, { onEdit });
+    const card = screen.getByTestId(`margin-comment-${root.id}`);
+    try {
+      const replyRow = card.querySelector<HTMLElement>("[data-reply]");
+      if (replyRow === null) throw new Error("The card draws no reply.");
+      await user.click(within(replyRow).getByRole("button", { name: "Edit" }));
+      await user.click(within(replyRow).getByRole("textbox", { name: "Edit comment" }));
+      await user.keyboard("{Control>}a{/Control}");
+      await user.paste(saved);
+      if (saves === "Save") {
+        await user.click(within(replyRow).getByRole("button", { name: "Save" }));
+      } else {
+        await user.keyboard("{Control>}{Enter}{/Control}");
+      }
+      await waitFor(() =>
+        expect(within(replyRow).queryByRole("textbox", { name: "Edit comment" })).toBeNull()
+      );
+      expect(onEdit).toHaveBeenCalledWith(reply.id, saved, undefined, keyedAttempt);
+      expect(within(replyRow).getByRole("button", { name: "Edit" })).toHaveFocus();
+    } finally {
+      view.unmount();
+      commentBlocks.mockRestore();
     }
   });
 }
@@ -1067,6 +1472,73 @@ for (const kept of ["typed", "refused", "stopped"] as const) {
   });
 }
 
+/** What holds the focus, by the name `named` gives it, else the page's body, else its markup. */
+function focusedAs(named: ReadonlyMap<string, HTMLElement>): string {
+  const focused = document.activeElement;
+  return (
+    [...named].find(([, control]) => control === focused)?.[0] ??
+    (focused === document.body ? "the page's body" : (focused?.outerHTML ?? "nothing"))
+  );
+}
+
+// Discard my draft takes the kept reply's offer away, and with it the button that held the focus.
+// The focus goes on, with no scroll, to the control now at the offer's place in the card, else to
+// the nearest one before it (`handFocusFrom`): on the folded card nothing follows the offer, so the
+// root's Copy reference beside the preview takes it.
+test("Discard my draft on a margin reply kept under a deleted root hands the focus to the root's Copy reference, with no scroll", async () => {
+  const user = userEvent.setup();
+  const queryClient = new QueryClient({
+    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+  });
+  const tree = (current: Thread) => (
+    <MemoryRouter>
+      <QueryClientProvider client={queryClient}>
+        <ToggledCard
+          actionFailure={undefined}
+          artifactSlug="spec"
+          hovered={false}
+          isClosed={false}
+          onAction={() => {}}
+          onEdit={async () => undefined}
+          onRetryAction={() => {}}
+          owner={{ key: "CORE-1", kind: "issue" }}
+          pendingAction={false}
+          replyMutationKey={replyKey}
+          thread={current}
+          viewerLogin="alice"
+        />
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  const view = render(tree(thread()));
+  const card = () => screen.getByTestId(`margin-comment-${root.id}`);
+
+  try {
+    await user.click(within(card()).getByRole("textbox", { name: "Reply" }));
+    await user.paste("A reply the root's delete leaves kept");
+    await user.click(within(card()).getByRole("button", { name: "Cancel reply" }));
+    view.rerender(tree(thread({ root: { comment: deletedRoot, kind: "comment" } })));
+    const target = within(card()).getByRole("button", { name: /^Copy reference / });
+    const focuses = spyOn(target, "focus");
+    try {
+      await user.click(within(card()).getByRole("button", { name: "Discard my draft" }));
+      expect({
+        focused: focusedAs(new Map([["the root's Copy reference", target]])),
+        focuses: focuses.mock.calls,
+        offered: within(card()).queryByRole("button", { name: "Discard my draft" }) !== null,
+      }).toEqual({
+        focused: "the root's Copy reference",
+        focuses: [[{ preventScroll: true }]],
+        offered: false,
+      });
+    } finally {
+      focuses.mockRestore();
+    }
+  } finally {
+    view.unmount();
+  }
+});
+
 /** The line a kept edit over a comment deleted since is announced by, which says it is the
  *  reader's own. */
 const KEPT_EDIT_LINE =
@@ -1312,6 +1784,26 @@ test("a Copy my edit the browser refuses says so in words and keeps the edit", a
       value: originalExecCommand,
     });
     Object.defineProperty(navigator, "clipboard", { configurable: true, value: originalClipboard });
+    kept.done();
+  }
+});
+
+// Discard my edit takes the kept edit's offer away, and with it the button that held the focus.
+// The focus goes on, with no scroll, to the control now at the offer's place in the card, else to
+// the nearest one before it (`handFocusFrom`): the root's Resolve, which follows the offer.
+test("Discard my edit on an edit kept over a deleted comment hands the focus to the control at its place, with no scroll", async () => {
+  const kept = await editKeptOverDeletedRoot("Root comment, said again.");
+  const target = within(kept.card()).getByRole("button", { name: "Resolve" });
+  const focuses = spyOn(target, "focus");
+  try {
+    await kept.user.click(within(kept.card()).getByRole("button", { name: "Discard my edit" }));
+    expect({
+      focused: focusedAs(new Map([["Resolve", target]])),
+      focuses: focuses.mock.calls,
+      kept: kept.kept(),
+    }).toEqual({ focused: "Resolve", focuses: [[{ preventScroll: true }]], kept: false });
+  } finally {
+    focuses.mockRestore();
     kept.done();
   }
 });

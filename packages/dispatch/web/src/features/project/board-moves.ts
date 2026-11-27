@@ -4,6 +4,7 @@ import { useCallback, useState } from "react";
 import { ApiError, issuePatchRequest } from "../../api/client";
 import { boardMoveMutationKey } from "../../api/queries";
 import type { Issue, IssueSummary, StatusChangeAnswer, UpdateIssueInput } from "../../api/types";
+import { statusRefusalNote } from "../issue/parent-status/IssueStatusNotes";
 import {
   cardHasParentOrOpenChild,
   isParentStatusConflict,
@@ -96,9 +97,12 @@ function withStatusChange(
  * Where the rule would refuse it, the board asks the question (`question`), and a choice confirmed
  * sends the status change with that option, then a PATCH of the card's place (`rank`, and
  * `priority` for a lane move), and only then is the card placed. That PATCH's refusal leaves the
- * status as Dispatch changed it. A move of a card the board knew no parent or open child of that
- * Dispatch refuses under the rule asks the same question. A move tells its caller each time it
- * places the card (`OnPlaced`).
+ * status as Dispatch changed it. A choice whose write the question was closed on past that write's
+ * deadline ends the move with the question, and the write goes on (`left`): its landing reads the
+ * board again, and its refusal, which comes once the question has gone, is said over the board in
+ * the words the issue headers say it in (`IssueStatusNotes`). A move of a card the board knew no
+ * parent or open child of that Dispatch refuses under the rule asks the same question. A move
+ * tells its caller each time it places the card (`OnPlaced`).
  *
  * With filters active, `labels` names the query the board actually renders (the same key the
  * List shares), so the optimistic write, rollback and refetch hit the list on screen; a
@@ -229,6 +233,17 @@ export function useBoardMoves(
     },
     [place, placedMove, refetch]
   );
+  /** A choice whose write the question was closed on past its deadline (`left`): that write's
+   *  refusal is said over the board as the issue headers say it. One the reader stopped is said
+   *  in Pending changes, where they stopped it; a landing reads the board again by itself
+   *  (`useParentStatusMove`). */
+  const leftBehind = useCallback((key: string, written: Promise<unknown>) => {
+    written.catch((refusal: unknown) => {
+      if (!(refusal instanceof SendStoppedError)) {
+        setError(statusRefusalNote(key, refusal));
+      }
+    });
+  }, []);
   /** The question for a move Dispatch refused under the rule, and the card's place once a
    *  choice landed. */
   const asked = useCallback(
@@ -241,8 +256,9 @@ export function useBoardMoves(
     ) => {
       const end = await ask({ key, status }, conflict);
       if (end.kind === "changed") await placeAfterChange(key, plan, end.answer, onPlaced);
+      if (end.kind === "left") leftBehind(key, end.written);
     },
-    [ask, placeAfterChange]
+    [ask, leftBehind, placeAfterChange]
   );
   /** A move of the status of a card with a parent or an open child, inside the board's scope. */
   const checked = useCallback(
@@ -259,8 +275,9 @@ export function useBoardMoves(
       });
       if (end.kind === "refused") setError(moveFailure(end.refusal, key));
       if (end.kind === "changed") await placeAfterChange(key, plan, end.answer, onPlaced);
+      if (end.kind === "left") leftBehind(key, end.written);
     },
-    [asked, move, place, placeAfterChange, placedMove, refetch]
+    [asked, leftBehind, move, place, placeAfterChange, placedMove, refetch]
   );
   /** Commits a move `plan` makes of the list: through the question where the rule could refuse
    *  it, else optimistic write, PATCH, rollback-and-refetch on failure, refetch on success - the

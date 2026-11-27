@@ -136,10 +136,14 @@ test("open-asks names the person each ask waits on, before and after a hand-on",
     await page.getByRole("tab", { name: "Conversation" }).click();
     const card = page.locator("#issue-conversation-panel").getByTestId(`ask-${issueAsk}`);
     await expect(card).toContainText("Asked of alice");
-    const control = card.locator(`select[data-ask-hand-on="${issueAsk}"]`);
-    await control.focus();
-    await expect(control.locator('option[value="bob"]')).toHaveCount(1);
-    await control.selectOption("bob");
+    await card
+      .locator(`[data-ask-hand-on="${issueAsk}"]`)
+      .getByRole("button", { name: "Hand this question to" })
+      .click();
+    await page
+      .getByRole("listbox", { name: "Hand this question to options" })
+      .getByRole("option", { exact: true, name: "bob" })
+      .click();
     await expect(card).toContainText("Asked of bob");
     await expect
       .poll(async () => (await getAsk(issueAsk, { login: "bob" })).ask.asked_of)

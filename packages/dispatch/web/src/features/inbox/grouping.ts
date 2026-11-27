@@ -228,16 +228,7 @@ export function group(
       band(dimensionValue(row, by, viewer)).push(row);
     }
   }
-  const keys = [...bands.keys()];
-  if (by === "waiting-on") {
-    keys.sort(
-      (left, right) =>
-        (INBOX_SECTIONS as readonly string[]).indexOf(left) -
-        (INBOX_SECTIONS as readonly string[]).indexOf(right)
-    );
-  } else if (by !== "none") {
-    keys.sort((left, right) => compareValues(by, left, right));
-  }
+  const keys = [...bands.keys()].sort(bandOrder(by));
   const groups: InboxGroup[] = keys.map((key) => ({
     key,
     label: bandLabel(by, key, titles),
@@ -247,6 +238,17 @@ export function group(
     groups.push({ key: LATER_GROUP_KEY, label: titles.later, rows: later });
   }
   return groups;
+}
+
+/** The order `group` draws its bands in, Later aside: the turn bands top to bottom, every other
+ *  field by its own value, and **None**'s one band as it is. */
+function bandOrder(by: InboxGroupBy): (left: string, right: string) => number {
+  if (by === "none") return () => 0;
+  if (by === "waiting-on") {
+    const sections = INBOX_SECTIONS as readonly string[];
+    return (left, right) => sections.indexOf(left) - sections.indexOf(right);
+  }
+  return (left, right) => compareValues(by, left, right);
 }
 
 /**
@@ -268,6 +270,11 @@ export function filterCounts(
   }
   return counts;
 }
+
+/** The chosen values of every field the address carries as a comma list: the Inbox's whole
+ *  field narrowing, as its filter panel writes it and as every press that names the list's own
+ *  narrowing rather than ids sends it (`mark-all.ts`, `useInboxDismiss.ts`). */
+export type InboxFilters = Partial<Record<InboxFilterField, readonly string[]>>;
 
 /** Whether a row survives one filter field's chosen values; nothing chosen keeps every row. */
 export function inFieldFilter(

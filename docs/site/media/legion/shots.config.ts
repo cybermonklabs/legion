@@ -6,7 +6,7 @@
 // controller's daily report, which takes the project's next key.
 import type { Page } from "@playwright/test";
 
-import { dispatchApi, expect } from "../harness";
+import { expect } from "../harness";
 import type { ShotSet } from "../shot-runner";
 import {
   accept,
@@ -18,12 +18,14 @@ import {
   file,
   handOver,
   linkPullRequest,
+  markRequirements,
   PHASE_STATUSES,
   postDailyReport,
   requestSpecApproval,
   SAVED_CART,
   seedProject,
   setStatus,
+  statusOf,
   type Tracked,
   writeDesign,
 } from "./journey";
@@ -33,54 +35,6 @@ interface LegionJourney extends Tracked {
   approval?: string;
   /** The project's daily report issue, once the controller has posted to it. */
   report?: string;
-}
-
-/** The requirements each example issue's spec marks, in the words of its own subject. A spec
- *  states them before its acceptance criteria, which check them. They are written here rather
- *  than into `journey.ts`'s examples, which the committed walkthrough video was recorded from.
- *  The Spec tab lists a spec's requirements under the document
- *  (`web/src/features/issue/SpecRequirements.tsx`), so the shots of this issue's spec would
- *  otherwise photograph an empty panel. Each requirement is flagged `has no check`: the example
- *  issues carry no Verification document, and the issue page's documentation describes that
- *  flag. */
-const SAVED_CART_REQUIREMENTS = `## Requirements
-
-:::requirement{#r1}
-A signed-in shopper saves the cart they are building, and the saved cart holds every line of it and its quantity.
-:::
-
-:::requirement{#r2}
-A saved cart belongs to the shopper's account rather than to the device that saved it, so any device they sign in on opens it.
-:::
-
-:::requirement{#r3}
-A saved cart nobody has touched for 30 days is removed, and the shopper is told a week before it goes.
-:::
-`;
-
-const DELIVERY_DATE_REQUIREMENTS = `## Requirements
-
-:::requirement{#r1}
-Checkout shows a delivery date beside every shipping option, before the shopper pays.
-:::
-
-:::requirement{#r2}
-Each date is the one that shipping option would deliver on, so a shopper who picks another option sees that option's date.
-:::
-`;
-
-/** The human who filed the issue states its requirements, above the acceptance criteria that
- *  check them, and the seed waits for the Spec tab's list to hold them: it is read out of the
- *  block index that the accepted write fills. */
-async function markRequirements(issue: Tracked, markdown: string, count: number): Promise<void> {
-  const api = await dispatchApi();
-  await api.editArtifact(issue.spec, {
-    ops: [{ before: "heading:Acceptance criteria", markdown, op: "insert" }],
-    summary: "Mark the requirements",
-  });
-  await expect
-    .poll(async () => (await api.getIssueCoverage(issue.key)).requirements?.length ?? 0)
-    .toBe(count);
 }
 
 /** Files both of the walkthrough's issues, with the requirements each one's spec marks, so the
@@ -93,8 +47,8 @@ async function seed(): Promise<LegionJourney> {
   if (issue.key !== "SHOP-1" || next.key !== "SHOP-2") {
     throw new Error(`legion shots: the seed made ${issue.key} and ${next.key}`);
   }
-  await markRequirements(issue, SAVED_CART_REQUIREMENTS, 3);
-  await markRequirements(next, DELIVERY_DATE_REQUIREMENTS, 2);
+  await markRequirements(issue, SAVED_CART);
+  await markRequirements(next, DELIVERY_DATE);
   await handOver(issue);
   return { ...issue };
 }
@@ -257,7 +211,7 @@ const legion: ShotSet<LegionJourney> = {
       prepare: (journey) => closeAtMerge(journey),
       ready: async (page) => {
         await expect(turns(page)).toContainText("Signed off.");
-        await expect(page.getByRole("combobox", { name: "Status" })).toHaveValue("done");
+        await expect(statusOf(page)).toHaveAttribute("data-issue-status", "done");
       },
       steps: headerOnTop,
     },
@@ -272,7 +226,7 @@ const legion: ShotSet<LegionJourney> = {
       },
       ready: async (page) => {
         await titled(page, "Legion daily report");
-        await expect(page.getByRole("combobox", { name: "Status" })).toHaveValue("icebox");
+        await expect(statusOf(page)).toHaveAttribute("data-issue-status", "icebox");
         await expect(turns(page)).toContainText("Finished:");
       },
     },

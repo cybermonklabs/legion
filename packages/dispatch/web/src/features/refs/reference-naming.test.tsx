@@ -908,7 +908,9 @@ test("a #id in an Inbox thread subject projects as its question where the row na
   answerTheAsk();
   const thread = { ...threadRow, subject: "Decide #q2 now" } as MyReplyRow;
   const view = draw(
-    <RowDismissContext.Provider value={{ dismiss: () => {}, pending: new Set(), show: "inbox" }}>
+    <RowDismissContext.Provider
+      value={{ dismiss: () => {}, held: new Set(), pending: new Set(), show: "inbox" }}
+    >
       <DismissControl shown thread={thread} />
       <Line markdown={thread.subject} />
     </RowDismissContext.Provider>

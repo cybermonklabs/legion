@@ -120,6 +120,7 @@ export type DispatchReadingSurface =
   | "outline-crumb"
   | "issue-pin"
   | "plan-task-line"
+  | "verification-check-facts"
   | "document-page-title"
   | "agent-artifact-page-title"
   | "write-label"
@@ -568,10 +569,11 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
     surface: "node-row-child-title",
   },
   // The new issue page's one line of a node, drawn as plain words: a folded branch's line, the
-  // line a filter's row names a node's parent by, a crumb above a zoom, a pin in Details and a
-  // task's line in the Plan view, each projected from the node's own words and cut by R1's
-  // first-line rule; and a chip, which names a tie's target - in a row of the outline, in the
-  // Plan chart's needs and serves, and on a check's "Also under" line in the Verification view.
+  // line a filter's row names a node's parent by, a crumb above a zoom, a pin in Details, a
+  // task's line in the Plan view and the name of a check's facts control in the Verification
+  // view, each projected from the node's own words and cut by R1's first-line rule; and a chip,
+  // which names a tie's target - in a row of the outline, in the Plan chart's needs and serves,
+  // and on a check's "Also under" line in the Verification view.
   {
     cannotCarry: NODE_LINE_NO_QUESTION_ID,
     files: ["packages/dispatch/web/src/features/issue-page/node-line.tsx"],
@@ -679,6 +681,22 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
     record: true,
     rendered: false,
     surface: "plan-task-line",
+  },
+  {
+    cannotCarry: NODE_LINE_NO_QUESTION_ID,
+    files: [
+      "packages/dispatch/web/src/features/issue-page/verification-filter/VerificationFilterBody.tsx",
+    ],
+    proof: {
+      file: "packages/dispatch/web/src/features/issue-page/verification-filter/VerificationFilterBody.drawn.test.tsx",
+      test: "each control of the view is a tab stop",
+    },
+    reach:
+      "/issues/<ISSUE>/verification with the new issue page on, a check's facts control beside its words",
+    reason: `A check's facts control is named in an \`aria-label\`: the page's words for it, then the check's first line cut by R1's first-line rule and to a chip's room, read as the check's folded line in the outline is (\`node-row-first-line\`). ${PLAIN_WORDS_REASON}`,
+    record: true,
+    rendered: false,
+    surface: "verification-check-facts",
   },
   // The reason a reviewer asked for changes: in a document's Reviews dialog, and on the line
   // under the design gate's steps in a root issue's header.
@@ -931,7 +949,7 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
   // A document version's summary, in the spec's version picker and on an artifact's page.
   {
     files: ["packages/dispatch/web/src/features/issue/SpecToolbar.tsx"],
-    reach: "/issues/<ISSUE>/spec, the version picker's options",
+    reach: "/issues/<ISSUE>/spec, the options of the version pick (`components/MultiSelect.tsx`)",
     reason: `A version's summary names the version it was given to. ${ONE_LINE_FIELD_REASON}`,
     record: false,
     rendered: false,
@@ -1316,11 +1334,13 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
     rendered: false,
     surface: "ref-picker-row-label",
   },
-  // The five places a record's text is still written into an element that can hold no markup.
+  // The places a record's text is still written as the characters it is: four into an element that
+  // can hold no markup, and the shared pick's own option, which takes its label as a string.
   {
     files: ["packages/dispatch/web/src/features/agents/AgentMessageComposer.tsx"],
-    reach: "/agents, a row composer's issue `<option>`",
-    reason: `${NO_MARKUP_REASON} An \`<option>\` can hold no markup, and an issue's key and title are that one line; the plain-text projection (\`PlainText\`) is for a record's own markdown, which a title is not.`,
+    reach: "/agents, the options of a row composer's issue pick (`components/MultiSelect.tsx`)",
+    reason:
+      "The shared pick takes each option's label as a string (`optionLabel`) and draws it as the characters it is, so an issue's key and title are that one line; the plain-text projection (`PlainText`) is for a record's own markdown, which a title is not.",
     record: false,
     rendered: false,
     surface: "agent-message-issue-option",

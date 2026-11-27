@@ -1,15 +1,18 @@
 import { beforeAll, expect, jest, spyOn, test } from "bun:test";
 import { DELIVERY_DUPLICATE_WINDOW_MS } from "@legion/contracts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { realClock, tick } from "../../__tests__/fake-clock";
+import { heldNotDisabled, pressHeld } from "../../__tests__/held-press";
+import { heldUntilLate, pressesOf } from "../../__tests__/held-until-late";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { messageCorrectionFields } from "../../__tests__/message-fixture";
 import { answerAgentStates } from "../../__tests__/send-answers";
+import { userOnFakeClock } from "../../__tests__/user";
 import { wholeText } from "../../__tests__/whole-text";
-import { ApiError, api } from "../../api/client";
+import { ApiError, api, NetworkError } from "../../api/client";
 import type {
   Agent,
   BroadcastExclusion,
@@ -19,6 +22,7 @@ import type {
   UserAgentStates,
 } from "../../api/types";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
+import { SEND_DEADLINE_MS } from "../writes/keyed-write";
 import { BroadcastPage } from "./BroadcastPage";
 import { messageDeliveryFields } from "./delivery-fixture";
 
@@ -118,6 +122,7 @@ function renderBroadcast(
   );
   return {
     createMessageDelivery,
+    getBroadcast,
     putAgentState,
     queryClient,
     restore: () => {
@@ -287,6 +292,126 @@ test("a pending attempt nobody is carrying offers a same-mode retry and no mode 
     );
   } finally {
     page.view.unmount();
+    page.restore();
+  }
+});
+
+// A stranded recipient's Retry is held while its retry is out: by `aria-disabled`, not
+// `disabled`, which Chromium answers by taking the focus off the button (`pressHeld`). So the
+// keyboard reader who pressed it stays on it, and a press of it then, by key or by pointer, sends
+// nothing.
+test("a stranded recipient's Retry keeps the keyboard focus while its retry is out, and a second press sends nothing", async () => {
+  const stranded = attempt({ created_at: new Date(Date.now() - 5 * 60_000).toISOString() });
+  const page = renderBroadcast(broadcast([stranded]));
+  // Dispatch answers the retry only once the case lets it.
+  const delivered = Promise.withResolvers<MessageDelivery>();
+  page.createMessageDelivery.mockImplementation(() => delivered.promise);
+  try {
+    const row = await screen.findByRole("article", { name: "Planner" });
+    const retry = within(row).getByRole("button", { name: "Retry" });
+    await pressHeld(userEvent.setup(), retry, {
+      name: "Retry",
+      sent: () => page.createMessageDelivery.mock.calls.length,
+    });
+    expect(retry).toBeEnabled();
+    await act(async () => delivered.resolve(attempt({ attempt: 2, state: "sent" })));
+    await waitFor(() => expect(retry).not.toHaveAttribute("aria-disabled"));
+  } finally {
+    page.view.unmount();
+    page.restore();
+  }
+});
+
+test.each([
+  { name: "Retry", mode: "Send", stranded: true },
+  { name: "Retry", mode: "Aside", stranded: false },
+  { name: "Use BTW instead", mode: "BTW", stranded: false },
+  { name: "Use Send instead", mode: "Send", stranded: false },
+] as const)(
+  "$name ($mode) lets go at the broadcast retry deadline and sends again",
+  async ({ name, mode, stranded }) => {
+    const delivery = stranded
+      ? attempt({ created_at: new Date(Date.now() - 5 * 60_000).toISOString() })
+      : attempt({ delivery: "aside", error: "no live session planner-session", state: "failed" });
+    const page = renderBroadcast(broadcast([delivery]));
+    page.createMessageDelivery.mockRejectedValue(
+      new NetworkError("/api/v1/messages", new TypeError("Failed to fetch"))
+    );
+    try {
+      const row = await screen.findByRole("article", { name: "Planner" });
+      const button = within(row).getByRole<HTMLButtonElement>("button", { name });
+      jest.useFakeTimers();
+      const user = userOnFakeClock();
+      const sent = () => pressesOf([page.createMessageDelivery]);
+      await heldUntilLate(user, button, {
+        label: `Delivery to Planner again, as ${mode}`,
+        name,
+        queryClient: page.queryClient,
+        sent,
+      });
+      await user.keyboard("{Enter}");
+      await tick(1_000);
+      expect(sent()).toBe(2);
+    } finally {
+      realClock();
+      page.view.unmount();
+      page.queryClient.clear();
+      page.restore();
+    }
+  }
+);
+
+// No move of the reader's draws a recipient's row again within the page: the rows are keyed by
+// their session and the page has no fold or tab. A broadcast read that fails does: the page
+// draws its failure in place of every row (`BroadcastPage`), and the read that answers next
+// draws the rows again, here while a Retry's write is still out. The Retry drawn again holds
+// from that press's own state (`usePendingKeyedPress`), as the one pressed did: a press of it
+// sends no second retry, and it lets go at the retry's deadline (`SEND_DEADLINE_MS`). Dispatch
+// never answers the retry: each try fails at the network and is tried again under its key.
+test("a recipient's Retry drawn again after a failed broadcast read while its retry's write is out holds until the retry's deadline and sends no second retry", async () => {
+  const stranded = attempt({ created_at: new Date(Date.now() - 5 * 60_000).toISOString() });
+  const page = renderBroadcast(broadcast([stranded]));
+  page.createMessageDelivery.mockRejectedValue(
+    new NetworkError("/api/v1/messages", new TypeError("Failed to fetch"))
+  );
+  const retryOf = () =>
+    within(screen.getByRole("article", { name: "Planner" })).getByRole<HTMLButtonElement>(
+      "button",
+      { name: "Retry" }
+    );
+  const sent = () => pressesOf([page.createMessageDelivery]);
+  try {
+    await screen.findByRole("article", { name: "Planner" });
+    jest.useFakeTimers();
+    const user = userOnFakeClock();
+    await user.click(retryOf());
+    await tick(0);
+    expect(sent()).toBe(1);
+
+    page.getBroadcast.mockRejectedValueOnce(
+      new NetworkError("/api/v1/broadcasts/broadcast-1", new TypeError("Failed to fetch"))
+    );
+    await act(() => page.queryClient.invalidateQueries({ queryKey: ["broadcast"] }));
+    await tick(0);
+    expect(screen.queryByRole("article", { name: "Planner" })).toBeNull();
+    await act(() => page.queryClient.invalidateQueries({ queryKey: ["broadcast"] }));
+    await tick(0);
+    expect(
+      heldNotDisabled(retryOf(), "Retry"),
+      "the Retry drawn again let go while its retry was out"
+    ).toBe(true);
+    await user.click(retryOf());
+    await tick(0);
+    expect(sent(), "a press of the Retry drawn again sent a second retry").toBe(1);
+
+    await tick(SEND_DEADLINE_MS - 1_000);
+    expect(heldNotDisabled(retryOf(), "Retry")).toBe(true);
+    await tick(1_000);
+    expect(heldNotDisabled(retryOf(), "Retry")).toBe(false);
+  } finally {
+    realClock();
+    page.view.unmount();
+    page.queryClient.clear();
     page.restore();
   }
 });

@@ -3,14 +3,22 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
-import { realClock } from "../../__tests__/fake-clock";
+import { holdNotifications } from "../../__tests__/commits";
+import { realClock, settle, tick } from "../../__tests__/fake-clock";
+import { afterFrameAndTasks } from "../../__tests__/frames";
+import { heldAnswers } from "../../__tests__/held-answers";
+import { pressHeld } from "../../__tests__/held-press";
+import { heldUntilLate } from "../../__tests__/held-until-late";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
+import { listOf, panelOf, pickFromLabelled, textBoxes } from "../../__tests__/list-picks";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
-import { ApiError, api, NetworkError } from "../../api/client";
-import type { ArchitectureSource } from "../../api/types";
+import { ApiError, api, NetworkError, REQUEST_DEADLINE_MS } from "../../api/client";
+import { DispatchQueryClient } from "../../api/query-client";
+import type { ArchitectureSource, Project } from "../../api/types";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
+import { writesOf } from "../writes/write-store";
 import { ArchitectureSourcesSection } from "./ArchitectureSourcesSection";
 
 // The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
@@ -30,6 +38,15 @@ const architectureSource: ArchitectureSource = {
   last_sync_at: null,
   project: "CORE",
   repo: "legion/arch",
+};
+
+const core: Project = {
+  created_at: "2026-09-01T00:00:00Z",
+  gated_steps: [],
+  key: "CORE",
+  name: "Core",
+  open_asks: 0,
+  proven_sessions: false,
 };
 
 /** The architecture source routes' server state as the Settings page reaches it: one row per
@@ -101,7 +118,7 @@ test("a human adds an architecture source and the verified row appears", async (
     const section = within(await screen.findByRole("region", { name: "Architecture sources" }));
     expect(await section.findByText("No architecture sources yet.")).toBeDefined();
 
-    await user.selectOptions(section.getByLabelText("Source project"), "CORE");
+    await pickFromLabelled(user, "Source project", "CORE · Core");
     await user.click(section.getByLabelText("Source repository"));
     await user.paste("legion/arch");
     await user.click(section.getByRole("button", { name: "Add source" }));
@@ -153,7 +170,7 @@ test("a failed architecture source access check shows the server's reason inline
     );
 
     const section = within(await screen.findByRole("region", { name: "Architecture sources" }));
-    await user.selectOptions(await section.findByLabelText("Source project"), "CORE");
+    await pickFromLabelled(user, "Source project", "CORE · Core");
     await user.click(section.getByLabelText("Source repository"));
     await user.paste("legion/arch");
     await user.click(section.getByRole("button", { name: "Add source" }));
@@ -240,7 +257,7 @@ test("each architecture source of a project is its own row, refreshed and delete
     await waitFor(() =>
       expect(
         section.getByRole("button", { name: "Delete architecture source legion/arch for CORE" })
-      ).not.toHaveAttribute("disabled")
+      ).not.toHaveAttribute("aria-disabled")
     );
 
     await user.click(
@@ -254,7 +271,7 @@ test("each architecture source of a project is its own row, refreshed and delete
     expect(section.getByRole("cell", { name: "acme/infra" })).toBeDefined();
 
     // Saving a repository the project already has changes that source's branch: still one row.
-    await user.selectOptions(section.getByLabelText("Source project"), "CORE");
+    await pickFromLabelled(user, "Source project", "CORE · Core");
     await user.click(section.getByLabelText("Source repository"));
     await user.paste("acme/infra");
     await user.clear(section.getByLabelText("Branch"));
@@ -281,6 +298,172 @@ test("each architecture source of a project is its own row, refreshed and delete
   }
 });
 
+// A source's Refresh and Delete, and the form's Add source, repository and branch, are each held
+// while their write is out, by `aria-disabled`, never `disabled` (`pressHeld`): the control the
+// reader pressed or submitted from keeps the focus, and a second press sends nothing.
+test.each([
+  { label: "Refresh architecture source legion/arch for CORE", role: "button" },
+  { label: "Delete architecture source legion/arch for CORE", role: "button" },
+  { label: "Add source", role: "button" },
+  { label: "Source repository", role: "textbox" },
+  { label: "Branch", role: "textbox" },
+] as const)(
+  "$label, held while its write is out, keeps the focus, and a second press sends nothing",
+  async ({ label, role }) => {
+    const user = userEvent.setup();
+    const listArchitectureSources = spyOn(api, "listArchitectureSources").mockResolvedValue([
+      architectureSource,
+    ]);
+    const listProjects = spyOn(api, "listProjects").mockResolvedValue([core]);
+    // The writes' answer, held until the case refuses it inside `act`.
+    const answer = Promise.withResolvers<never>();
+    const writes = [
+      spyOn(api, "syncArchitectureSource").mockReturnValue(answer.promise),
+      spyOn(api, "deleteArchitectureSource").mockReturnValue(answer.promise),
+      spyOn(api, "putArchitectureSource").mockReturnValue(answer.promise),
+    ];
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+    try {
+      render(
+        <QueryClientProvider client={queryClient}>
+          <ArchitectureSourcesSection />
+        </QueryClientProvider>
+      );
+      const section = within(await screen.findByRole("region", { name: "Architecture sources" }));
+      await section.findByRole("cell", { name: "legion/arch" });
+      await pickFromLabelled(user, "Source project", "CORE · Core");
+      await user.click(section.getByLabelText("Source repository"));
+      await user.paste("acme/infra");
+      await pressHeld(user, section.getByRole(role, { name: label }), {
+        name: label,
+        sent: () => writes.reduce((count, write) => count + write.mock.calls.length, 0),
+      });
+    } finally {
+      await act(async () => answer.reject(new ApiError(403, { code: "FORBIDDEN", error: "no" })));
+      cleanup();
+      queryClient.clear();
+      listArchitectureSources.mockRestore();
+      listProjects.mockRestore();
+      for (const write of writes) write.mockRestore();
+    }
+  }
+);
+
+/** The section over CORE and OPS, with no source yet and every save answered as the server would
+ *  answer it. */
+function renderSourceForm() {
+  const server = sourceServer([]);
+  const stubs = {
+    listArchitectureSources: spyOn(api, "listArchitectureSources").mockImplementation(server.list),
+    listProjects: spyOn(api, "listProjects").mockResolvedValue([
+      core,
+      { ...core, key: "OPS", name: "Operations" },
+    ]),
+    putArchitectureSource: spyOn(api, "putArchitectureSource").mockImplementation(server.put),
+  };
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  render(
+    <QueryClientProvider client={queryClient}>
+      <ArchitectureSourcesSection />
+    </QueryClientProvider>
+  );
+  return {
+    putArchitectureSource: stubs.putArchitectureSource,
+    done: () => {
+      cleanup();
+      queryClient.clear();
+      for (const stub of Object.values(stubs)) stub.mockRestore();
+    },
+  };
+}
+
+// INFRA-3135, R3: "Every list of options a reader picks from holds a text box that narrows the
+// options." The Source project list's options are every project, which grow with the deployment:
+// opened from its trigger it holds a text box of its own, a word typed there leaves only the
+// projects it matches, Escape closes it with nothing picked, and a pick puts the focus back on
+// the trigger and is the project the source is saved for.
+test("the Source project list holds a text box that narrows the projects, and a pick saves the source there", async () => {
+  const user = userEvent.setup();
+  const view = renderSourceForm();
+  try {
+    const section = within(await screen.findByRole("region", { name: "Architecture sources" }));
+    const trigger = await section.findByLabelText("Source project");
+    const before = new Set(textBoxes());
+    await user.click(trigger);
+    const own = textBoxes().filter((box) => !before.has(box));
+    expect(own, "the Source project list holds no text box of its own").toHaveLength(1);
+    const list = listOf(own[0] as HTMLElement);
+    expect(within(list).getAllByRole("option")).toHaveLength(2);
+    await user.type(own[0] as HTMLElement, "oper");
+    await waitFor(() =>
+      expect(
+        within(list).queryAllByRole("option", { name: /^CORE\b/ }),
+        `"oper" leaves CORE in the Source project list`
+      ).toHaveLength(0)
+    );
+    expect(within(list).getByRole("option", { name: "OPS · Operations" })).toBeDefined();
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("listbox", { name: "Source project options" })).toBeNull();
+    expect(trigger).toHaveFocus();
+    expect(trigger).toHaveTextContent("Choose a project");
+
+    await user.click(trigger);
+    await user.type(within(panelOf(trigger)).getByRole("combobox"), "oper");
+    await user.keyboard("{Enter}");
+    expect(trigger).toHaveFocus();
+    expect(trigger).toHaveTextContent("OPS · Operations");
+
+    await user.click(section.getByLabelText("Source repository"));
+    await user.paste("legion/arch");
+    await user.click(section.getByRole("button", { name: "Add source" }));
+    await waitFor(() =>
+      expect(view.putArchitectureSource).toHaveBeenCalledWith(
+        "OPS",
+        "legion/arch",
+        { branch: "main" },
+        keyedAttempt
+      )
+    );
+  } finally {
+    view.done();
+  }
+});
+
+// The Source project list is a button, which no `required` holds as the select it replaced held
+// the form: with no project picked the form files nothing and says to choose one, as the browser
+// said for the select, until a project is picked.
+test("with no project picked, Add source files nothing and says to choose a project", async () => {
+  const user = userEvent.setup();
+  const view = renderSourceForm();
+  try {
+    const section = within(await screen.findByRole("region", { name: "Architecture sources" }));
+    const trigger = await section.findByLabelText("Source project");
+    expect(trigger).toHaveTextContent("Choose a project");
+    await user.click(section.getByLabelText("Source repository"));
+    await user.paste("legion/arch");
+    await user.click(section.getByRole("button", { name: "Add source" }));
+    await act(async () => {});
+    expect(view.putArchitectureSource, "a source was saved for no project").not.toHaveBeenCalled();
+    expect(section.getByRole("alert")).toHaveTextContent("Choose a project.");
+
+    await pickFromLabelled(user, "Source project", "CORE · Core");
+    expect(section.queryByRole("alert")).toBeNull();
+    await user.click(section.getByRole("button", { name: "Add source" }));
+    await waitFor(() =>
+      expect(view.putArchitectureSource).toHaveBeenCalledWith(
+        "CORE",
+        "legion/arch",
+        { branch: "main" },
+        keyedAttempt
+      )
+    );
+    expect(view.putArchitectureSource).toHaveBeenCalledTimes(1);
+  } finally {
+    view.done();
+  }
+});
+
 /** The section over the sources `list` answers, its save and its removal answered by `put` and
  *  `remove`. Answers the section once it has drawn. */
 async function sourcesOf(
@@ -290,16 +473,7 @@ async function sourcesOf(
 ) {
   const mocks = [
     spyOn(api, "listArchitectureSources").mockImplementation(list),
-    spyOn(api, "listProjects").mockResolvedValue([
-      {
-        created_at: "2026-09-01T00:00:00Z",
-        gated_steps: [],
-        key: "CORE",
-        name: "Core",
-        open_asks: 0,
-        proven_sessions: false,
-      },
-    ]),
+    spyOn(api, "listProjects").mockResolvedValue([core]),
     spyOn(api, "putArchitectureSource").mockImplementation(put),
     spyOn(api, "deleteArchitectureSource").mockImplementation(remove),
   ];
@@ -326,6 +500,204 @@ async function sourcesOf(
 const dropped = () =>
   Promise.reject(new NetworkError("/api/v1/projects/CORE", new TypeError("Failed to fetch")));
 
+test.each([
+  { name: "Add source", label: "CORE's architecture source legion/arch" },
+  {
+    name: "Delete architecture source legion/arch for CORE",
+    label: "CORE's architecture source legion/arch removed",
+  },
+  {
+    name: "Refresh architecture source legion/arch for CORE",
+    label: "Refresh of CORE's architecture source legion/arch",
+  },
+] as const)("$name is released at its write's deadline", async ({ name, label }) => {
+  const sync = spyOn(api, "syncArchitectureSource").mockImplementation(dropped);
+  const page = await sourcesOf(async () => [architectureSource], dropped, dropped);
+  try {
+    const button = await page.section.findByRole<HTMLButtonElement>("button", { name });
+    if (name === "Add source") {
+      const user = userEvent.setup();
+      await pickFromLabelled(user, "Source project", "CORE · Core");
+      await user.click(page.section.getByLabelText("Source repository"));
+      await user.paste("legion/arch");
+    }
+    jest.useFakeTimers();
+    const user = userOnFakeClock();
+    const sent = () => writesOf(page.queryClient).rows().length;
+    await heldUntilLate(user, button, { label, name, queryClient: page.queryClient, sent });
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(sent()).toBe(2));
+  } finally {
+    realClock();
+    page.restore();
+    sync.mockRestore();
+  }
+});
+
+test("Delete hands focus to the preceding source's Delete after the re-read removes its row", async () => {
+  const user = userEvent.setup();
+  const before = { ...architectureSource, repo: "acme/infra" };
+  const updatedList = Promise.withResolvers<ArchitectureSource[]>();
+  let removed = false;
+  const page = await sourcesOf(
+    () => (removed ? updatedList.promise : Promise.resolve([before, architectureSource])),
+    dropped,
+    async () => {
+      removed = true;
+    }
+  );
+  try {
+    const pressed = await page.section.findByRole("button", {
+      name: "Delete architecture source legion/arch for CORE",
+    });
+    const preceding = page.section.getByRole("button", {
+      name: "Delete architecture source acme/infra for CORE",
+    });
+    act(() => pressed.focus());
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(removed).toBe(true));
+    // The re-read remains out past the frame and task a press with no hold waits.
+    await afterFrameAndTasks();
+    expect(pressed).toHaveFocus();
+    await act(async () => updatedList.resolve([before]));
+    await waitFor(() => expect(pressed).not.toBeInTheDocument());
+    expect(preceding).toHaveFocus();
+  } finally {
+    await act(async () => updatedList.resolve([before]));
+    page.restore();
+  }
+});
+
+// The line a removal's list read the bound ended draws is that removal's own: the next Delete
+// takes it away as its removal lands, though the earlier read is still out, and the read after
+// it, once answered, takes the row away. Dispatch holds the first removal's read until the row
+// answers it, so the next removal's read, which waits for that one (`DispatchQueryClient`),
+// answers after it.
+test("the line a removal's list read the bound ended draws goes as the next Delete lands, whose read takes the row away", async () => {
+  const listArchitectureSources = spyOn(api, "listArchitectureSources").mockResolvedValue([
+    architectureSource,
+  ]);
+  const listProjects = spyOn(api, "listProjects").mockResolvedValue([core]);
+  // Each removal's answer, held until the row gives it, so what it sets off runs in `act`.
+  const { answers: removals, next } = heldAnswers<void>();
+  const deleteArchitectureSource = spyOn(api, "deleteArchitectureSource").mockImplementation(next);
+  const queryClient = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
+  render(
+    <QueryClientProvider client={queryClient}>
+      <ArchitectureSourcesSection />
+    </QueryClientProvider>
+  );
+  const name = "Delete architecture source legion/arch for CORE";
+  const note = /^Couldn't load architecture sources\./;
+  try {
+    const section = within(await screen.findByRole("region", { name: "Architecture sources" }));
+    const remove = await section.findByRole("button", { name });
+    const reread = Promise.withResolvers<ArchitectureSource[]>();
+    listArchitectureSources.mockResolvedValue([]);
+    listArchitectureSources.mockReturnValueOnce(reread.promise);
+    jest.useFakeTimers();
+    const user = userOnFakeClock();
+    await user.click(remove);
+    await tick(0);
+    await act(async () => removals[0]?.());
+    await tick(0);
+    expect(remove).toHaveAttribute("aria-disabled", "true");
+    await tick(REQUEST_DEADLINE_MS);
+    expect(remove).not.toHaveAttribute("aria-disabled");
+    expect(section.getByText(note).textContent).toBe(
+      "Couldn't load architecture sources. Dispatch did not answer within 30 seconds."
+    );
+
+    await user.click(remove);
+    await tick(0);
+    expect(deleteArchitectureSource).toHaveBeenCalledTimes(2);
+    await act(async () => removals[1]?.());
+    await tick(0);
+    expect(remove).toHaveAttribute("aria-disabled", "true");
+    expect(
+      section.queryByText(note),
+      "the earlier removal's read kept its line past the next removal"
+    ).toBeNull();
+
+    await act(async () => reread.resolve([]));
+    await tick(0);
+    expect(section.queryByRole("button", { name })).toBeNull();
+    expect(section.queryByText(note)).toBeNull();
+  } finally {
+    cleanup();
+    queryClient.clear();
+    realClock();
+    deleteArchitectureSource.mockRestore();
+    listProjects.mockRestore();
+    listArchitectureSources.mockRestore();
+  }
+});
+
+// The request deadline ends a removal's hold and draws the line under the table in one change of
+// the hold's store, and the removal, which `onSuccess` keeps pending through that hold, stops
+// pending as it ends. Delete lets go in that same task, so a press of it once the line says why
+// sends the next removal. A browser tells TanStack's observers of the removal's end a timer later
+// (`holdNotifications`), so the row holds those notifications back. The list's read starts as
+// the removal lands, before the clock moves, so one jump of the deadline lands on the bound's own
+// timer, and only microtasks run after it.
+test("Delete is let go in the task the line under the table says why at the request deadline, and a press there removes again", async () => {
+  const listArchitectureSources = spyOn(api, "listArchitectureSources").mockResolvedValue([
+    architectureSource,
+  ]);
+  const listProjects = spyOn(api, "listProjects").mockResolvedValue([core]);
+  // Each removal's answer, held until the row gives it, so what it sets off runs in `act`.
+  const { answers: removals, next } = heldAnswers<void>();
+  const deleteArchitectureSource = spyOn(api, "deleteArchitectureSource").mockImplementation(next);
+  const queryClient = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
+  const reread = Promise.withResolvers<ArchitectureSource[]>();
+  render(
+    <QueryClientProvider client={queryClient}>
+      <ArchitectureSourcesSection />
+    </QueryClientProvider>
+  );
+  try {
+    const section = within(await screen.findByRole("region", { name: "Architecture sources" }));
+    const remove = await section.findByRole("button", {
+      name: "Delete architecture source legion/arch for CORE",
+    });
+    listArchitectureSources.mockReturnValueOnce(reread.promise);
+    jest.useFakeTimers();
+    const user = userOnFakeClock();
+    await user.click(remove);
+    await tick(0);
+    await act(async () => removals[0]?.());
+    expect(listArchitectureSources).toHaveBeenCalledTimes(2);
+    expect(remove).toHaveAttribute("aria-disabled", "true");
+
+    const notifications = holdNotifications();
+    try {
+      await act(async () => {
+        jest.advanceTimersByTime(REQUEST_DEADLINE_MS);
+        await settle();
+      });
+      expect(section.getByText(/^Couldn't load architecture sources\./).textContent).toBe(
+        "Couldn't load architecture sources. Dispatch did not answer within 30 seconds."
+      );
+      expect(remove, "the line said why while Delete was held").not.toHaveAttribute(
+        "aria-disabled"
+      );
+      await user.click(remove);
+    } finally {
+      notifications.tell();
+    }
+    await tick(0);
+    expect(deleteArchitectureSource).toHaveBeenCalledTimes(2);
+  } finally {
+    reread.resolve([]);
+    cleanup();
+    queryClient.clear();
+    realClock();
+    deleteArchitectureSource.mockRestore();
+    listProjects.mockRestore();
+    listArchitectureSources.mockRestore();
+  }
+});
+
 // A save or a removal the reader stopped may have been made: the section says so, and that its
 // Retry sends the same change again - a `PUT` or a `DELETE` sends no key - rather than that it
 // failed.
@@ -333,9 +705,7 @@ test("a source save the reader stopped says Retry sends it again, not that it fa
   const server = sourceServer([]);
   const page = await sourcesOf(server.list, dropped, server.remove);
   try {
-    await userEvent
-      .setup()
-      .selectOptions(await page.section.findByLabelText("Source project"), "CORE");
+    await pickFromLabelled(userEvent.setup(), "Source project", "CORE · Core");
     jest.useFakeTimers();
     const user = userOnFakeClock();
     await user.click(page.section.getByLabelText("Source repository"));

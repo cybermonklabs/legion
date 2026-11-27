@@ -2,10 +2,11 @@ import { beforeAll, expect, jest, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { MemoryRouter } from "react-router-dom";
+import { MemoryRouter, useLocation } from "react-router-dom";
 
 import { realClock, tick } from "./__tests__/fake-clock";
 import { graphNode } from "./__tests__/graph-fixture";
+import { details as issueDetails } from "./__tests__/issue-picks";
 import { keptWrites } from "./__tests__/kept-sends-harness";
 import { installFakeLiveSockets } from "./__tests__/live-socket-harness";
 import { answerIssuePatches } from "./__tests__/send-answers";
@@ -13,17 +14,24 @@ import { userOnFakeClock } from "./__tests__/user";
 import { wholeText } from "./__tests__/whole-text";
 import { ApiError, api, NetworkError } from "./api/client";
 import { liveSocketFor } from "./api/live-socket";
-import type { AuthenticatedUser } from "./api/types";
+import type { Artifact, AuthenticatedUser } from "./api/types";
 import { AuthGate } from "./app";
-// The Answers, document and project pages are lazy routes of the app, and the margin a lazy part
-// of its shell (`MarginColumn.tsx`, which mounts it on every route). A page module's first
-// compile is not what a wait is for, and a load a row starts and ends before lands in a later row
-// as React's report of a suspended resource outside `act`. So the modules are loaded here, with
-// the test file, and no row starts or waits for that load.
+import { appKeymap } from "./features/shell/keymap";
+// The pages below are lazy routes of the app, and the margin a lazy part of its shell
+// (`MarginColumn.tsx`, which mounts it on every route). A page module's first compile is not what
+// a wait is for, and a load a row starts and ends before lands in a later row as React's report
+// of a suspended resource outside `act`. So the modules are loaded here, with the test file, and
+// no row starts or waits for that load.
+import "./features/agents/AgentsPage";
 import "./features/answers/AnswersPage";
+import "./features/delivery/DeliveryPage";
+import "./features/delivery/PipelinePage";
 import "./features/document/DocumentPage";
+import "./features/issue-page/IssuePage";
 import "./features/margin/Margin";
+import "./features/priorities/PrioritiesPage";
 import "./features/project/ProjectPage";
+import "./features/settings/SettingsPage";
 import { warmMarkdownRenderer } from "./features/refs/markdown-engine";
 import { SendStoppedError } from "./features/writes/keyed-write";
 import { plainWrite, writesOf } from "./features/writes/write-store";
@@ -417,9 +425,11 @@ test("signing out asks first, then drops every write here and tells every other 
     expect(keptWrites()).toHaveLength(2);
 
     answer = true;
-    // The declined question leaves the sign-out's write settling, and the control disabled until
-    // it has: a press lands on it once it is pressable again.
-    await waitFor(() => expect(screen.getByRole("button", { name: "Sign out" })).toBeEnabled());
+    // The declined question leaves the sign-out's write settling, and the control held until it
+    // has (`aria-disabled`, a press on it doing nothing): a press lands on it once it lets go.
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Sign out" })).not.toHaveAttribute("aria-disabled")
+    );
     await user.click(screen.getByRole("button", { name: "Sign out" }));
     await waitFor(() => expect(writesOf(queryClient).rows()).toEqual([]));
     await screen.findByRole("link", { name: "Sign in with Google" });
@@ -703,6 +713,210 @@ test("project routes render the project page and a project document route", asyn
     listProjects.mockRestore();
     whoAmI.mockRestore();
     window.matchMedia = originalMatchMedia;
+  }
+});
+
+/** The one version a document the rows below make or open is made with. */
+const firstVersion: NonNullable<Artifact["versions"]>[number] = {
+  authors: [{ id: "alice", kind: "user" }],
+  created_at: "2026-09-10T00:05:00Z",
+  named: false,
+  number: 1,
+  summary: null,
+};
+
+/** "Design notes", the document the rows below make or open: CORE's, or the issue's that
+ *  `issueKey` names. */
+function designNotes(issueKey: string | null = null): Artifact {
+  return {
+    created_at: "2026-09-10T00:00:00Z",
+    created_by: { id: "alice", kind: "user" },
+    id: "artifact-design-notes",
+    issue_key: issueKey,
+    kind: "doc",
+    name: "Design notes",
+    primary: false,
+    project: "CORE",
+    ref_key: `${issueKey ?? "CORE"}/design-notes`,
+    session_id: null,
+    slug: "design-notes",
+    versions: [firstVersion],
+  };
+}
+
+/** The shell at `path`, signed in as alice, with CORE its one project and `artifact` answered
+ *  wherever a document's page reads it, with no text, blocks, discussion or graph edges;
+ *  `reads` are the row's own answers, which the teardown it returns restores with the rest. */
+function drawShellAt(path: string, artifact: Artifact, reads: readonly Restorable[]): () => void {
+  const originalMatchMedia = window.matchMedia;
+  window.matchMedia = (() =>
+    ({
+      addEventListener: () => {},
+      addListener: () => {},
+      dispatchEvent: () => true,
+      matches: false,
+      media: "",
+      onchange: null,
+      removeEventListener: () => {},
+      removeListener: () => {},
+    }) as MediaQueryList) as typeof window.matchMedia;
+  const spies: Restorable[] = [
+    ...reads,
+    spyOn(api, "whoAmI").mockResolvedValue({ event_head: "0", kind: "user", login: "alice" }),
+    spyOn(api, "getInbox").mockResolvedValue([]),
+    spyOn(api, "getMyState").mockResolvedValue({}),
+    spyOn(api, "listIssues").mockResolvedValue([]),
+    spyOn(api, "listProjects").mockResolvedValue([
+      {
+        created_at: "2026-09-10T00:00:00Z",
+        key: "CORE",
+        name: "Core",
+        open_asks: 0,
+        gated_steps: [],
+        proven_sessions: false,
+      },
+    ]),
+    spyOn(api, "listProjectArchitectureSources").mockResolvedValue([]),
+    spyOn(api, "getProjectArtifact").mockResolvedValue(artifact),
+    spyOn(api, "getArtifact").mockResolvedValue(artifact),
+    spyOn(api, "getArtifactText").mockResolvedValue({
+      markdown: "",
+      token: "sha256:design-notes",
+      version: null,
+    }),
+    spyOn(api, "getArtifactBlocks").mockResolvedValue([]),
+    spyOn(api, "listArtifactComments").mockResolvedValue([]),
+    spyOn(api, "listArtifactAsks").mockResolvedValue([]),
+    spyOn(api, "getArtifactSubscribers").mockResolvedValue([]),
+    spyOn(api, "getReferences").mockResolvedValue({
+      edges: [],
+      node: graphNode({ id: artifact.id, kind: "artifact" }),
+    }),
+  ];
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const view = render(
+    <MemoryRouter initialEntries={[path]}>
+      <QueryClientProvider client={queryClient}>
+        <AuthGate />
+        <LocationProbe />
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  return () => {
+    view.unmount();
+    liveSocketFor(queryClient).close();
+    for (const spy of spies) spy.mockRestore();
+    window.matchMedia = originalMatchMedia;
+  };
+}
+
+/** A spy a row hands `drawShellAt`, which restores it. */
+interface Restorable {
+  mockRestore(): void;
+}
+
+/** Whether the keyboard focus is in the page's content: the shell's main region or inside it. */
+function focusInMain(): boolean {
+  return document.getElementById("main-content")?.contains(document.activeElement) === true;
+}
+
+// A move within a page that takes away the control holding the focus puts the focus in the
+// page's main region, as a change of page does. A project's Documents list and its documents are
+// one page to the shell (`pageIdentity`): New document, a title and Create make the document and
+// open its page in the list's place, which takes the form and New document with it.
+test("New document on a project's Documents list opens the document's page with the focus in the main region", async () => {
+  const user = userEvent.setup();
+  const made = designNotes();
+  const teardown = drawShellAt("/projects/CORE/documents", made, [
+    spyOn(api, "listProjectArtifacts").mockResolvedValue([]),
+    spyOn(api, "uploadArtifact").mockResolvedValue({ artifact: made, version: firstVersion }),
+  ]);
+  try {
+    await user.click(await screen.findByRole("button", { name: "New document" }));
+    expect(screen.getByRole("textbox", { name: "Title" })).toHaveFocus();
+    await user.paste("Design notes");
+    await user.click(screen.getByRole("button", { name: "Create" }));
+    await screen.findByTestId("artifact-header");
+    expect(screen.getByTestId("location").textContent).toBe(
+      "/projects/CORE/documents/design-notes"
+    );
+    expect(focusInMain(), "the document's page opened with the focus outside its content").toBe(
+      true
+    );
+  } finally {
+    teardown();
+  }
+});
+
+// The same for a document's link on the list: the list goes with the link that held the focus.
+test("a document's link on a project's Documents list opens its page with the focus in the main region", async () => {
+  const user = userEvent.setup();
+  const listed = designNotes();
+  const teardown = drawShellAt("/projects/CORE/documents", listed, [
+    spyOn(api, "listProjectArtifacts").mockResolvedValue([listed]),
+  ]);
+  try {
+    await user.click(await screen.findByRole("link", { name: "Design notes" }));
+    await screen.findByTestId("artifact-header");
+    expect(screen.getByTestId("location").textContent).toBe(
+      "/projects/CORE/documents/design-notes"
+    );
+    expect(focusInMain(), "the document's page opened with the focus outside its content").toBe(
+      true
+    );
+  } finally {
+    teardown();
+  }
+});
+
+// And for New document on an issue's Artifacts tab: the made document opens on the issue's page,
+// in the artifacts panel, where it takes the list's place, the form and New document with it.
+test("New document on an issue's Artifacts tab opens the document with the focus in the main region", async () => {
+  const user = userEvent.setup();
+  const made = designNotes("CORE-1");
+  // The page draws an issue only with its primary document, which the Artifacts tab does not
+  // open, and it reads more of CORE-1 than its artifacts. No row here is about those reads, so
+  // they are answered at the client with a dropped connection's failure.
+  const primary: Artifact = { ...made, id: "artifact-1", name: "spec.md", slug: "spec-md" };
+  const unread = new NetworkError("/api/v1/issues/CORE-1", new TypeError("Failed to fetch"));
+  const teardown = drawShellAt("/issues/CORE-1/artifacts", made, [
+    spyOn(api, "getIssue").mockResolvedValue({ ...issueDetails, artifacts: [primary] }),
+    spyOn(api, "listArtifacts").mockResolvedValue([]),
+    spyOn(api, "getIssueReferences").mockResolvedValue({
+      linked_from: [],
+      links: [],
+      members: [],
+      truncated: false,
+    }),
+    spyOn(api, "uploadArtifact").mockResolvedValue({ artifact: made, version: firstVersion }),
+    spyOn(api, "listComments").mockRejectedValue(unread),
+    spyOn(api, "listIssueAsks").mockRejectedValue(unread),
+    spyOn(api, "listIssueMessages").mockRejectedValue(unread),
+    spyOn(api, "getIssueCoverage").mockRejectedValue(unread),
+    spyOn(api, "getIssueDecisions").mockRejectedValue(unread),
+    spyOn(api, "getIssueResults").mockRejectedValue(unread),
+    spyOn(api, "getReferenceTargets").mockRejectedValue(unread),
+    spyOn(api, "getIssueSubscribers").mockRejectedValue(unread),
+  ]);
+  try {
+    await user.click(await screen.findByRole("button", { name: "New document" }));
+    expect(screen.getByRole("textbox", { name: "Title" })).toHaveFocus();
+    await user.paste("Design notes");
+    await user.click(screen.getByRole("button", { name: "Create" }));
+    await waitFor(() =>
+      expect(screen.getByTestId("location").textContent).toBe(
+        "/issues/CORE-1/artifacts/design-notes"
+      )
+    );
+    await waitFor(() =>
+      expect(screen.queryByRole("form", { name: "New document" })).not.toBeInTheDocument()
+    );
+    expect(
+      focusInMain(),
+      "the made document opened with the focus outside the page's content"
+    ).toBe(true);
+  } finally {
+    teardown();
   }
 });
 
@@ -1113,5 +1327,79 @@ test("a live socket refused once the person is signed out takes the page to sign
   } finally {
     teardown();
     sockets.restore();
+  }
+});
+
+/** The address the app is at, for a test that moves it. */
+function LocationProbe() {
+  const location = useLocation();
+  return <output data-testid="location">{location.pathname}</output>;
+}
+
+// R11: every page the navigation always shows is a command bar row, "Go to" and its name, with
+// no key of its own where it has none, and each moves the page to its address.
+test("the command bar's Go to rows reach every page the navigation always shows", async () => {
+  const originalMatchMedia = window.matchMedia;
+  window.matchMedia = (() =>
+    ({
+      addEventListener: () => {},
+      addListener: () => {},
+      dispatchEvent: () => true,
+      matches: false,
+      media: "",
+      onchange: null,
+      removeEventListener: () => {},
+      removeListener: () => {},
+    }) as MediaQueryList) as typeof window.matchMedia;
+  const whoAmI = spyOn(api, "whoAmI").mockResolvedValue({
+    event_head: "0",
+    kind: "user",
+    login: "alice",
+  });
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue([]);
+  const getMyState = spyOn(api, "getMyState").mockResolvedValue({});
+  const listIssues = spyOn(api, "listIssues").mockResolvedValue([]);
+  const listProjects = spyOn(api, "listProjects").mockResolvedValue([]);
+
+  try {
+    for (const [label, keys, address] of [
+      ["Go to Inbox", ["g i"], "/"],
+      ["Go to Agents", ["g a"], "/agents"],
+      ["Go to Priorities", [], "/priorities"],
+      ["Go to Delivery", [], "/delivery"],
+      ["Go to Pipeline", [], "/pipeline"],
+      ["Go to Settings", ["g s"], "/settings"],
+    ] as const) {
+      const view = render(
+        <MemoryRouter initialEntries={["/answers-elsewhere"]}>
+          <QueryClientProvider
+            client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}
+          >
+            <AuthGate />
+            <LocationProbe />
+          </QueryClientProvider>
+        </MemoryRouter>
+      );
+      try {
+        await screen.findByText(wholeText("Signed in as alice"));
+        const row = appKeymap.actions().find((action) => action.label === label);
+        expect(row?.keys).toEqual(keys);
+        act(() => row?.run());
+        // Read at once and left at once: the move is the row's, and the page it reaches is that
+        // page's own test's to draw.
+        expect(screen.getByTestId("location").textContent).toBe(address);
+      } finally {
+        // The lazy page the move reached suspends until its module, loaded above, resolves; it
+        // resolves inside this act, after the unmount, so no page draws and React says nothing.
+        await act(async () => view.unmount());
+      }
+    }
+  } finally {
+    getInbox.mockRestore();
+    getMyState.mockRestore();
+    listIssues.mockRestore();
+    listProjects.mockRestore();
+    whoAmI.mockRestore();
+    window.matchMedia = originalMatchMedia;
   }
 });

@@ -10,7 +10,17 @@ import type {
   DispatchScope,
   DispatchTokenScope,
 } from "../../api/types";
+import { heldPress } from "../../components/held-press";
 import { QueryError } from "../../components/QueryError";
+import {
+  TableBody,
+  TableCell,
+  TableEmpty,
+  TableHead,
+  TableHeadCell,
+  TableRow,
+  TableShell,
+} from "../../components/TableShell";
 import { useCopyFeedback } from "../../hooks/useCopyFeedback";
 import { compareTimestamps } from "../../lib/timestamps";
 import {
@@ -34,12 +44,8 @@ import {
 import { Timestamp } from "../refs/Timestamp";
 import { LandedWithoutAnswer } from "../writes/LandedWithoutAnswer";
 import { stoppedNote, useKeyedWrite } from "../writes/useKeyedWrite";
-import {
-  settingsSubmitButton,
-  settingsTableHead,
-  settingsTableRow,
-  settingsTableWrapper,
-} from "./classes";
+import { useOneCreateOut } from "../writes/useOneCreateOut";
+import { settingsSubmitButton } from "./classes";
 
 const agentTokensQueryKey = ["agent-tokens"] as const;
 
@@ -182,16 +188,20 @@ function scopesAfterChoice<Id extends DispatchTokenScope>(
 }
 
 /** The scope boxes `offered`, for a token's row and for the mint form. `subject` is the token
- *  they belong to, so the boxes of one row are told from another row's by name. */
+ *  they belong to, so the boxes of one row are told from another row's by name. `disabled` boxes
+ *  are a revoked token's; `held` boxes keep the focus and their Tab stop while a write of theirs
+ *  is out, and a press on one then changes nothing (`heldPress`). */
 function TokenScopeChoices<Id extends DispatchTokenScope>({
   chosen,
-  disabled,
+  disabled = false,
+  held,
   offered,
   onChoose,
   subject,
 }: {
   chosen: readonly Id[];
-  disabled: boolean;
+  disabled?: boolean;
+  held: boolean;
   offered: readonly TokenScope<Id>[];
   onChoose: (scopes: Id[]) => void;
   subject: string;
@@ -204,13 +214,16 @@ function TokenScopeChoices<Id extends DispatchTokenScope>({
             className={`flex items-center gap-2 text-sm font-medium ${textSecondaryOnSurface}`}
           >
             <input
+              aria-disabled={held || undefined}
               aria-label={`${scope.label} (${subject})`}
               checked={chosen.includes(scope.id)}
-              className={`size-4 shrink-0 rounded ${checkboxAccent}`}
+              className={`size-4 shrink-0 rounded aria-disabled:opacity-50 ${checkboxAccent}`}
               disabled={disabled}
-              onChange={(event) =>
-                onChoose(scopesAfterChoice(offered, chosen, scope.id, event.target.checked))
-              }
+              onChange={(event) => {
+                // Held, a change writes nothing, and the box, controlled, shows the set as it was.
+                if (held) return;
+                onChoose(scopesAfterChoice(offered, chosen, scope.id, event.target.checked));
+              }}
               type="checkbox"
             />
             {scope.label}
@@ -263,7 +276,8 @@ export function AgentTokensSection(): ReactNode {
   });
   const offersP0 = callerScopes.data?.includes("p0") === true;
   const mintScopes = offersP0 ? MINT_SCOPES : MINT_SCOPES_WITHOUT_P0;
-  // The form shows a refused mint beside the name it was refused over.
+  // The form shows a refused mint beside the name it was refused over. Every write here is read
+  // late (`readsLate`): each holds its controls only while it is out within its deadline.
   const createToken = useKeyedWrite({
     inline: true,
     label: (input: {
@@ -272,6 +286,7 @@ export function AgentTokensSection(): ReactNode {
       scopes: readonly DispatchTokenScope[];
     }) => `New agent token ${input.name}`,
     method: "POST",
+    readsLate: true,
     // The whole set the boxes hold, `read` among them for a read-only token.
     write: ({ name: label, scopes }, bounds) =>
       api.createAgentToken({ name: label, scopes: [...scopes] }, bounds),
@@ -302,6 +317,7 @@ export function AgentTokensSection(): ReactNode {
   const revokeToken = useKeyedWrite({
     label: (id: string) => `Agent token ${id} revoked`,
     method: "DELETE",
+    readsLate: true,
     write: (id: string, bounds) => api.revokeAgentToken(id, bounds),
     onSuccess: (_result, id) => {
       replaceQueryData<AgentToken[]>(queryClient, agentTokensQueryKey, (current = []) =>
@@ -319,6 +335,7 @@ export function AgentTokensSection(): ReactNode {
     label: (input: { id: string; name: string; scopes: DispatchScope[] }) =>
       `What agent token ${input.name} may do`,
     method: "PATCH",
+    readsLate: true,
     write: (input, bounds) => api.setAgentTokenScopes(input.id, input.scopes, bounds),
     onSuccess: (updated, input) => {
       replaceQueryData<AgentToken[]>(queryClient, agentTokensQueryKey, (current = []) =>
@@ -328,12 +345,22 @@ export function AgentTokensSection(): ReactNode {
       );
     },
   });
+  // Each write holds its controls while it is out within its deadline, by `aria-disabled`, so the
+  // control the reader pressed keeps the focus and a press of it then sends nothing. A write past
+  // its deadline (`KeyedWriteResult.late`) holds them no longer. A mint let go that way is still
+  // out, so New token then sends no second token, and the form says so (`oneMint`).
+  const minting = createToken.isPending && !createToken.late;
+  const revoking = revokeToken.isPending && !revokeToken.late;
+  const scoping = setTokenScopes.isPending && !setTokenScopes.late;
+  const oneMint = useOneCreateOut(createToken);
   /** Every token the page lists now, read at a press. */
   const listedIds = () => (tokens.data ?? []).map((token) => token.id);
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    // An emptied form - a mint that landed - sends nothing, whatever submits it.
-    if (name.trim() === "") return;
+    // An emptied form - a mint that landed - sends nothing, whatever submits it, and so does one
+    // whose mint is out: a held New token is only `aria-disabled`, so its press still submits, and
+    // one let go past the mint's deadline says why it sent nothing (`oneMint`).
+    if (name.trim() === "" || minting || oneMint.refuse()) return;
     // The boxes the form draws now, and no word it does not: a Set P0 ticked before a later read
     // of whoami named no p0 is no longer drawn, so the reader no longer sees it, and it is not sent.
     const drawn = newScopes.filter((scope) => mintScopes.some(({ id }) => id === scope));
@@ -372,7 +399,7 @@ export function AgentTokensSection(): ReactNode {
         }),
     });
   };
-  const replacing = revokeToken.isPending || createToken.isPending;
+  const replacing = revoking || minting;
   const copyToken = () => {
     if (shownToken === undefined) {
       return;
@@ -409,95 +436,77 @@ export function AgentTokensSection(): ReactNode {
         </div>
       ) : null}
       {tokens.isSuccess ? (
-        <div className={settingsTableWrapper}>
-          <table className="w-full text-left text-sm">
-            <thead className={settingsTableHead}>
-              <tr>
-                <th className="px-4 py-3 font-semibold" scope="col">
-                  Name
-                </th>
-                <th className="px-4 py-3 font-semibold" scope="col">
-                  Token
-                </th>
-                <th className="px-4 py-3 font-semibold" scope="col">
-                  Created
-                </th>
-                <th className="px-4 py-3 font-semibold" scope="col">
-                  Last used
-                </th>
-                <th className="px-4 py-3 font-semibold" scope="col">
-                  What it may do
-                </th>
-                <th className="px-4 py-3" scope="col">
-                  <span className="sr-only">Actions</span>
-                </th>
-              </tr>
-            </thead>
-            <tbody>
-              {tokens.data.length === 0 ? (
-                <tr>
-                  <td className={`px-4 py-5 ${textMutedOnSurface}`} colSpan={6}>
-                    No agent tokens yet.
-                  </td>
-                </tr>
-              ) : (
-                tokens.data.map((token) => {
-                  const held = heldScopes(token.scopes);
-                  return (
-                    <tr className={settingsTableRow} key={token.id}>
-                      <td className={`px-4 py-3 font-medium ${textPrimaryOnSurface}`}>
-                        {token.name}
-                      </td>
-                      <td className={`px-4 py-3 font-mono ${textSecondaryOnSurface}`}>
-                        {`dsp_${token.prefix}…`}
-                      </td>
-                      <td className={`px-4 py-3 ${textSecondaryOnSurface}`}>
-                        <Timestamp at={token.created_at} />
-                      </td>
-                      <td className={`px-4 py-3 ${textSecondaryOnSurface}`}>
-                        {token.last_used_at === null ? (
-                          "Never used"
-                        ) : (
-                          <Timestamp at={token.last_used_at} />
-                        )}
-                      </td>
-                      <td className="px-4 py-3">
-                        {held.includes("read") ? (
-                          <ReadOnlyScopes held={held} subject={token.name} />
-                        ) : (
-                          <TokenScopeChoices
-                            chosen={DISPATCH_SCOPES.filter((scope) => held.includes(scope))}
-                            disabled={token.revoked_at !== null || setTokenScopes.isPending}
-                            offered={offersP0 ? WRITING_SCOPES : WRITING_SCOPES_WITHOUT_P0}
-                            onChoose={(scopes) =>
-                              setTokenScopes.mutate({ id: token.id, name: token.name, scopes })
-                            }
-                            subject={token.name}
-                          />
-                        )}
-                      </td>
-                      <td className="px-4 py-3 text-right">
-                        {token.revoked_at === null ? (
-                          <button
-                            aria-label={`Revoke ${token.name}`}
-                            className={`min-h-11 px-2 font-medium disabled:cursor-not-allowed disabled:opacity-50 ${dangerText} ${dangerHoverText}`}
-                            disabled={revokeToken.isPending}
-                            onClick={() => revoke(token)}
-                            type="button"
-                          >
-                            Revoke
-                          </button>
-                        ) : (
-                          <span className={textMutedOnSurface}>Revoked</span>
-                        )}
-                      </td>
-                    </tr>
-                  );
-                })
-              )}
-            </tbody>
-          </table>
-        </div>
+        <TableShell className="mt-6" label="Agent tokens">
+          <TableHead>
+            <TableHeadCell>Name</TableHeadCell>
+            <TableHeadCell>Token</TableHeadCell>
+            <TableHeadCell>Created</TableHeadCell>
+            <TableHeadCell>Last used</TableHeadCell>
+            <TableHeadCell>What it may do</TableHeadCell>
+            <TableHeadCell>
+              <span className="sr-only">Actions</span>
+            </TableHeadCell>
+          </TableHead>
+          <TableBody>
+            {tokens.data.length === 0 ? (
+              <TableEmpty colSpan={6}>No agent tokens yet.</TableEmpty>
+            ) : (
+              tokens.data.map((token) => {
+                const tokenScopes = heldScopes(token.scopes);
+                return (
+                  <TableRow key={token.id}>
+                    <TableCell tone="primary" weight="medium">
+                      {token.name}
+                    </TableCell>
+                    <TableCell mono tone="secondary">
+                      {`dsp_${token.prefix}…`}
+                    </TableCell>
+                    <TableCell tone="secondary">
+                      <Timestamp at={token.created_at} />
+                    </TableCell>
+                    <TableCell tone="secondary">
+                      {token.last_used_at === null ? (
+                        "Never used"
+                      ) : (
+                        <Timestamp at={token.last_used_at} />
+                      )}
+                    </TableCell>
+                    <TableCell>
+                      {tokenScopes.includes("read") ? (
+                        <ReadOnlyScopes held={tokenScopes} subject={token.name} />
+                      ) : (
+                        <TokenScopeChoices
+                          chosen={DISPATCH_SCOPES.filter((scope) => tokenScopes.includes(scope))}
+                          disabled={token.revoked_at !== null}
+                          held={scoping}
+                          offered={offersP0 ? WRITING_SCOPES : WRITING_SCOPES_WITHOUT_P0}
+                          onChoose={(scopes) =>
+                            setTokenScopes.mutate({ id: token.id, name: token.name, scopes })
+                          }
+                          subject={token.name}
+                        />
+                      )}
+                    </TableCell>
+                    <TableCell align="right">
+                      {token.revoked_at === null ? (
+                        <button
+                          aria-label={`Revoke ${token.name}`}
+                          className={`min-h-11 px-2 font-medium refused:cursor-not-allowed refused:opacity-50 ${dangerText} ${dangerHoverText}`}
+                          {...heldPress(revoking, () => revoke(token))}
+                          type="button"
+                        >
+                          Revoke
+                        </button>
+                      ) : (
+                        <span className={textMutedOnSurface}>Revoked</span>
+                      )}
+                    </TableCell>
+                  </TableRow>
+                );
+              })
+            )}
+          </TableBody>
+        </TableShell>
       ) : null}
 
       <form
@@ -522,13 +531,24 @@ export function AgentTokensSection(): ReactNode {
               value={name}
             />
           </label>
-          <button className={settingsSubmitButton} disabled={createToken.isPending} type="submit">
+          <button
+            aria-disabled={minting || undefined}
+            className={settingsSubmitButton}
+            type="submit"
+          >
             New token
           </button>
         </div>
+        {oneMint.refused ? (
+          <p className={`text-sm ${textSecondaryOnCanvas}`} role="status">
+            New token sent nothing: the token “{createToken.variables?.name}” is still being sent.
+            It shows here once Dispatch makes it; if it fails, this form says why and you can press
+            New token again.
+          </p>
+        ) : null}
         <TokenScopeChoices
           chosen={newScopes}
-          disabled={createToken.isPending}
+          held={minting}
           offered={mintScopes}
           onChoose={setNewScopes}
           subject="new token"
@@ -552,8 +572,9 @@ export function AgentTokensSection(): ReactNode {
           ) : candidates.length === 1 ? (
             <button
               className={settingsSubmitButton}
-              disabled={replacing}
-              onClick={() => candidates[0] !== undefined && replaceLost(candidates[0])}
+              {...heldPress(replacing, () => {
+                if (candidates[0] !== undefined) replaceLost(candidates[0]);
+              })}
               type="button"
             >
               Revoke it and mint another
@@ -569,8 +590,7 @@ export function AgentTokensSection(): ReactNode {
                   <li key={token.id}>
                     <button
                       className={settingsSubmitButton}
-                      disabled={replacing}
-                      onClick={() => replaceLost(token)}
+                      {...heldPress(replacing, () => replaceLost(token))}
                       type="button"
                     >
                       Revoke the one created {new Date(token.created_at).toLocaleString()}

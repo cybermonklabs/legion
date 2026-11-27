@@ -5,8 +5,8 @@ import { asUser } from "./users";
 
 /**
  * The live view's header pickers switch an Oh My Pi session's model and thinking level (INFRA-195),
- * and each change of a picker is a switch the session runs, so they keep the Agents issue picker's
- * keyboard-step rule (`markKeyStep` in `AgentMessageComposer.tsx`, `keyboard-agents-picker.e2e.ts`):
+ * and each change of a picker is a switch the session runs, so they keep a keyboard-step rule
+ * (`useKeySteps` in `SessionSettings.tsx`):
  * a closed select's own keys (the arrows, `Home`/`End`, the page keys, type-ahead) only move its
  * choice and send nothing, `Enter` switches to the choice reached, and leaving the picker without
  * `Enter` puts it back on the value the session reported. While a switch is pending the pickers
@@ -172,11 +172,10 @@ function answer(sessionID: string, messageID: string, body: string): Promise<unk
   );
 }
 
-// A2: a picker whose change switches a live session follows the rule the issue picker already
-// keeps (`markKeyStep` in `AgentMessageComposer.tsx`, `keyboard-agents-picker.e2e.ts`): the arrows
-// choose and Enter commits, so a keyboard reader can pass the next model to reach the one after
-// it. An engine that commits a closed select's arrow step would switch the session to every model
-// it passes on the way.
+// A2: a picker whose change switches a live session keeps the keyboard-step rule (`useKeySteps`
+// in `SessionSettings.tsx`): the arrows choose and Enter commits, so a keyboard reader can pass
+// the next model to reach the one after it. An engine that commits a closed select's arrow step
+// would switch the session to every model it passes on the way.
 // SLOW(>=2s): two switches through the fake Envoy and back, each read from the server, in every
 // engine the rule has to hold in.
 // @webkit @firefox: a closed select's `change` dispatched inside the key's own task.

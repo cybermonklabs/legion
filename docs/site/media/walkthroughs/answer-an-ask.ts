@@ -10,10 +10,20 @@ import { highlight, linger, pointTo, ring, scrollBy, type Walkthrough } from "..
 const ISSUE_TITLE = "Retry failed webhook deliveries";
 /** The key the seed's issue gets, which the narration names as the Inbox shows it. */
 const ISSUE_KEY = "CORE-8";
+/** The spec alice files: what is wrong, and the requirements the fix must meet. The Spec tab lists
+ *  a spec's requirements under the document (`web/src/features/issue/SpecRequirements.tsx`), and a
+ *  spec that marks none shows an empty panel there, which a capture refuses. */
 const SPEC =
   `# ${ISSUE_TITLE}\n\n` +
   "When a customer's endpoint answers with an error, the delivery is dropped. Retry it with " +
-  "backoff, and tell the endpoint's owner when it keeps failing.\n";
+  "backoff, and tell the endpoint's owner when it keeps failing.\n\n" +
+  "## Requirements\n\n" +
+  ":::requirement{#r1}\n" +
+  "A delivery the customer's endpoint answers with an error is tried again with backoff rather " +
+  "than dropped.\n:::\n\n" +
+  ":::requirement{#r2}\n" +
+  "The endpoint's owner is told when deliveries to it keep failing.\n:::\n";
+const REQUIREMENTS = 2;
 /** The Planner's two decisions, written into the spec one after the other. The Inbox lists the
  *  newer first, so the retry limit is the one answered on camera, and the alert channel is the
  *  next question on the same spec, whose link opens it. */
@@ -46,6 +56,10 @@ async function seed(): Promise<Seeded> {
   if (issue.key !== ISSUE_KEY) {
     throw new Error(`answer-an-ask: the narration names ${ISSUE_KEY}, the seed made ${issue.key}`);
   }
+  // The Spec tab reads the requirements out of the block index, which the accepted write fills.
+  await expect
+    .poll(async () => (await api.getIssueCoverage(issue.key)).requirements?.length ?? 0)
+    .toBe(REQUIREMENTS);
   await api.patchIssue(issue.key, { priority: 1, status: "in_progress" });
   for (const [count, block] of [ALERT_CHANNEL, RETRY_LIMIT].entries()) {
     await api.editArtifact(
@@ -71,14 +85,17 @@ const row = (page: Page, question: string) =>
 const retryRow = (page: Page) => row(page, "How many times should a failed delivery be retried?");
 const alertRow = (page: Page) =>
   row(page, "Where should the endpoint's owner hear about failures?");
-const needsYou = (page: Page) => page.getByText(/^Needs you \d+$/);
+/** The Inbox's count of what waits on the viewer: its Blocked on you control in the row of
+ *  controls, found by its role and its accessible name, the words of the banner it replaced
+ *  (`Blocked on you: 2 items, oldest 3m`). It reads `Blocked on you · 2`. */
+const blockedOnYou = (page: Page) =>
+  page.getByRole("button", { name: /^Blocked on you: \d+ items?\b/ });
 const openInDocument = (page: Page) =>
   alertRow(page).getByRole("link", { name: "Open in document" });
 const answeredBlock = (page: Page) => page.locator('[data-dispatch-ask-block="retry-limit"]');
 
-/** The top bar's count of asks waiting on the viewer. */
-async function needsYouCount(page: Page): Promise<number> {
-  return Number((await needsYou(page).textContent())?.replace("Needs you ", ""));
+async function blockedOnYouCount(page: Page): Promise<number> {
+  return Number((await blockedOnYou(page).textContent())?.replace("Blocked on you · ", ""));
 }
 
 /** Where the pointer moves once the answer is sent: off the row, which the Inbox holds while the
@@ -108,13 +125,13 @@ const answerAnAsk: Walkthrough<Seeded> = {
         await page.goto("/");
         await expect(page.getByRole("heading", { level: 1, name: "Inbox" })).toBeVisible();
         // The payoff is the first frame: the count, the heading and the Planner's whole question.
-        await expect(needsYou(page)).toBeInViewport({ ratio: 1 });
+        await expect(blockedOnYou(page)).toBeInViewport({ ratio: 1 });
         await expect(
           retryRow(page).getByRole("button", { exact: true, name: "Answer" })
         ).toBeInViewport({ ratio: 1 });
       },
       act: async (page, _seeded, cue) => {
-        const countBefore = await needsYouCount(page);
+        const countBefore = await blockedOnYouCount(page);
         const card = retryRow(page);
         await linger(page, 1.5);
         // The pointer moves to the question as the first line names it, and to its asker as the
@@ -143,10 +160,10 @@ const answerAnAsk: Walkthrough<Seeded> = {
         await answer.click();
         await page.mouse.move(RESTING.x, RESTING.y);
         await expect(retryRow(page)).toHaveCount(0);
-        await expect(needsYou(page)).toHaveText(`Needs you ${countBefore - 1}`);
+        await expect(blockedOnYou(page)).toHaveText(`Blocked on you · ${countBefore - 1}`);
         // The Inbox's own count, one lower, is ringed as the line says the ask left.
         await linger(page, 0.9);
-        await ring(page, page.getByText(`Blocked on you: ${countBefore - 1} items`));
+        await ring(page, blockedOnYou(page));
         await linger(page, 1.2);
         // The ring moves to the next question's link, which opens the same spec, as its line
         // names the spec; the pointer goes to the link as the next line says to open it, and the

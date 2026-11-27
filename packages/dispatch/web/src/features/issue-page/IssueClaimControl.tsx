@@ -22,9 +22,9 @@ export const RELEASE_FAILED = "Could not release this claim.";
  * the reader stopped says it may have been made, as the header says it.
  *
  * No control here is disabled while its release is out, since Chromium moves the focus of a
- * control that turns disabled to the page's body, which would lose a reader who pressed it by
- * keyboard: Release and Retry take no press while it is out (`aria-disabled`), and the failure's
- * line stays until the release Retry sent again is answered (`useSaidFailure`). A focus on a
+ * control that turns disabled to the page's body. Release and Retry are held (`aria-disabled`)
+ * until the write settles or reaches its deadline. The failure's line stays until the release
+ * Retry sent again is answered (`useSaidFailure`). A focus on a
  * control the reader's own press takes away goes on in the row (`useFocusHandOff`), and one a
  * change the reader did not make takes away stays on the page's body, as on every page of
  * Dispatch, so nothing in the row takes it. Retry hands its focus to Release where the reader's
@@ -86,11 +86,14 @@ export function IssueClaimControl({
   // line goes too when the issue is claimed again in another session, which no Retry did.
   const retry = useRetryHandOff(() => (onHeld ? releaseControl.current : null));
   const claimLeft = useFocusHandOff(() => none.current, released);
-  // Release and Retry send the one release, and a press while it is out sends nothing: the guard
-  // drops a press made before React has drawn the release out, and `isPending` one made after
-  // this row was drawn afresh, with a guard that starts free.
+  // The guard drops a press made before React draws the release as pending. The release's
+  // deadline ends both the hold and the guard, so a press then sends a release of its own.
+  const releasing = releaseClaim.isPending && !releaseClaim.late;
+  useLayoutEffect(() => {
+    if (releaseClaim.late) press.release();
+  }, [releaseClaim.late, press]);
   const release = () => {
-    if (releaseClaim.isPending) return;
+    if (releasing) return;
     setPressedOn(held);
     press.guard(() => {
       released.current = true;
@@ -113,7 +116,7 @@ export function IssueClaimControl({
     <div className="contents" ref={claimLeft}>
       <ClaimChip author claim={issue.claim} inRow liveness={issue} />
       <button
-        aria-disabled={releaseClaim.isPending || undefined}
+        aria-disabled={releasing || undefined}
         aria-label={`Release the claim on ${issue.key}`}
         className={`${pageHeaderControl} refused:cursor-not-allowed refused:opacity-50`}
         onClick={release}
@@ -121,7 +124,7 @@ export function IssueClaimControl({
         type="button"
         {...pageChrome}
       >
-        {releaseClaim.isPending ? ANSWER_LINES.saving_release : CONTROL_LABELS.release_claim}
+        {releasing ? ANSWER_LINES.saving_release : CONTROL_LABELS.release_claim}
       </button>
       {failure === null ? null : (
         <DetailsErrorLine
@@ -133,7 +136,7 @@ export function IssueClaimControl({
             releaseFailedLine(apiErrorMessage(failure.error, ""))
           }
           onRetry={release}
-          refused={releaseClaim.isPending}
+          refused={releasing}
           {...retry}
         />
       )}

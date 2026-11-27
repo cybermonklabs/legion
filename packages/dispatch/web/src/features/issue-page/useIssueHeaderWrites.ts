@@ -5,7 +5,7 @@ import { landIssueWrite, mergeIssue } from "../../api/issue-cache";
 import { userStateQuery } from "../../api/queries";
 import { replaceQueryData } from "../../api/query-client";
 import type { Issue, IssueDetails, UserIssueState, UserState } from "../../api/types";
-import { type SubmitGuard, useSubmitGuard } from "../../hooks/useSubmitGuard";
+import { type SubmitGuard, useReleaseWhenLate, useSubmitGuard } from "../../hooks/useSubmitGuard";
 import {
   type IssueStatusMove,
   useIssueStatusMove,
@@ -84,18 +84,38 @@ export interface IssueHeaderWrites {
    *  pill's pick is a write of its own (`pickStatus`). Each press names its issue
    *  (`IssueFieldsSave`). */
   readonly updateIssue: KeyedWriteResult<Issue, IssueFieldsSave, unknown>;
+  /** Whether a write of `updateIssue` holds every control that writes the issue's fields: Close,
+   *  Reopen and their palette rows, the editors' Save and Details' Retry of a refused route. It
+   *  holds while the write is out within its deadline. Past it (`KeyedWriteResult.late`) it holds
+   *  none of them: a status pressed then is a write of its own, which waits behind it in the
+   *  issue's line, and a draft saved then waits for it to land, one write of the fields at a time
+   *  (`useIssueDrafts`). */
+  readonly fieldHeld: boolean;
   /** The labels, which the popover saves as one set when it closes. */
   readonly labels: KeyedWriteResult<Issue, IssueLabelsSave, unknown>;
+  /** Whether a labels write holds the labels' control: while it is out within its deadline, so
+   *  one labels write goes out at a time. Past it (`late`) it holds the control no longer, and a
+   *  set saved then goes behind it in the issue's line. */
+  readonly labelsHeld: boolean;
+  /** The labels the labels' control draws and starts from: past the deadline of a labels write of
+   *  this issue still tried, the set it carries, so the set saved next keeps that write's change
+   *  rather than undo it; else the issue's. */
+  readonly labelsShown: readonly string[];
   /** The pin, applied to the person's state at once and rolled back on a refusal. */
   readonly pin: KeyedWriteResult<UserIssueState, IssuePinSave, PinRollback>;
   /** One press at a time on the pin, whose write is optimistic. */
   readonly pinGuard: SubmitGuard;
+  /** Whether the pin's write holds Pin and its Retry: while it is out within its deadline. Past it
+   *  (`late`) it holds them no longer. */
+  readonly pinHeld: boolean;
   /** The release of the claim on the issue a press names, by its key. */
   readonly releaseClaim: KeyedWriteResult<Issue, string, unknown>;
   /** The status a pick is saving right now, which the pill and the closed line show: the newest
    *  pending write of this issue's fields that holds a status, whichever caller on the page made
    *  it, so the header and Details show one status. A pick waiting in the issue's line behind an
-   *  earlier write is pending from the moment it is made (`pickStatus`), so it shows at once. */
+   *  earlier write is pending from the moment it is made (`pickStatus`), so it shows at once, and
+   *  so is a Close or a Reopen waiting in the drafts behind a write of the fields
+   *  (`drafts.statusQueued`). */
   readonly pendingStatus: string | undefined;
   /** Whether a pick is waiting its turn or being saved: `pendingStatus` stands. */
   readonly statusSaving: boolean;
@@ -116,7 +136,9 @@ export interface IssueHeaderWrites {
   readonly pickStatus: (next: string) => void;
   /** Close, Reopen and the palette's two rows: the status sent through the drafts
    *  (`drafts.requestStatusSubmit`, a write of `updateIssue`), through the rule's question as the
-   *  pick goes. That write, refused by the rule, asks the same question. */
+   *  pick goes. Let go by the question while a title, route or parent write is out within its
+   *  deadline, it waits behind that write and goes once it lands. That write, refused by the rule,
+   *  asks the same question. */
   readonly requestStatus: (next: string) => void;
   /** The rule's question every status write of the header (`pickStatus`, `requestStatus`) goes
    *  through: the question while Dispatch's rule would refuse a write, and why the dry run of the
@@ -169,6 +191,7 @@ export function useIssueHeaderWrites(
     // A release made again after one that landed needs no `removedEvenIfGone`: Dispatch answers a
     // release of an issue nobody holds with the issue, as it answers the first.
     method: "DELETE",
+    readsLate: true,
     write: (issueKey: string, bounds) => api.releaseIssueClaim(issueKey, bounds),
     inline: true,
     label: (issueKey) => `Claim on ${issueKey} released`,
@@ -205,6 +228,7 @@ export function useIssueHeaderWrites(
   const updateIssue = useKeyedWrite({
     ...fieldWrite,
     inline: ({ input }) => !statusPickOnly(input),
+    readsLate: true,
     onError: (error, { input, issueKey }) => {
       statusMove.onError(error, issueKey, input);
     },
@@ -230,6 +254,7 @@ export function useIssueHeaderWrites(
   // (`landIssueWrite`).
   const labels = useKeyedWrite({
     label: ({ issueKey }: IssueLabelsSave) => `Labels of ${issueKey}`,
+    readsLate: true,
     target: ({ issueKey }) => `issue:${issueKey}`,
     request: ({ issueKey, labels: next }) => issuePatchRequest(issueKey, { labels: next }),
     onSuccess: (next, { issueKey }) => {
@@ -239,6 +264,7 @@ export function useIssueHeaderWrites(
   // The drafts save the fields of the issue this hook is drawn for, so each of their presses
   // names that issue, and reads back the change its newest press carried.
   const drafts = useIssueDrafts(issue, {
+    late: updateIssue.late,
     mutate: (input) => updateIssue.mutate({ input, issueKey: issue.key }),
     retry: updateIssue.retry,
     variables: updateIssue.variables?.input,
@@ -251,6 +277,7 @@ export function useIssueHeaderWrites(
     holds: () => ({ keys: [userStateQuery().queryKey] }),
     label: ({ issueKey, pinned }: IssuePinSave) => `${issueKey} ${pinned ? "pinned" : "unpinned"}`,
     method: "PUT",
+    readsLate: true,
     write: ({ issueKey, pinned }, bounds) => api.putIssueState(issueKey, { pinned }, bounds),
     onSettled: () => {
       pinGuard.release();
@@ -286,6 +313,7 @@ export function useIssueHeaderWrites(
       }));
     },
   });
+  useReleaseWhenLate(pinGuard, pin.late);
 
   // Every pending write of this issue's fields on the page - `updateIssue`'s and `statusWrite`'s,
   // which carry one mutation key, of every caller of this hook - in the order they were made, so
@@ -307,13 +335,24 @@ export function useIssueHeaderWrites(
   const requestStatus = (next: string) => {
     statusMove.move(next, () => drafts.requestStatusSubmit(next));
   };
-  // A status the rule's question is checking or asking about is pending too, so the pill shows it.
+  // A status the rule's question is checking or asking about is pending too, so the pill shows it,
+  // and so is one waiting in the drafts behind a write of the fields, newer than every write out.
   const pendingStatus =
-    statusMove.pending ?? pendingStatuses.filter((status) => status !== undefined).at(-1);
+    statusMove.pending ??
+    drafts.statusQueued ??
+    pendingStatuses.filter((status) => status !== undefined).at(-1);
   const statusSaving = pendingStatus !== undefined;
   return {
     drafts,
+    fieldHeld: updateIssue.isPending && !updateIssue.late,
     labels,
+    labelsHeld: labels.isPending && !labels.late,
+    labelsShown:
+      (labels.late && labels.variables?.issueKey === issue.key
+        ? labels.variables.labels
+        : undefined) ??
+      issue.labels ??
+      [],
     // A refused parent save (PARENT_INPUT, ISSUE_CLOSED) renders the server's reason inline,
     // like a route validation error, instead of the generic update failure line. One the reader
     // stopped may have been saved; the editor has closed, and saving it again is a press of its
@@ -329,6 +368,7 @@ export function useIssueHeaderWrites(
     pickStatus,
     pin,
     pinGuard,
+    pinHeld: pin.isPending && !pin.late,
     releaseClaim,
     requestStatus,
     statusMove,

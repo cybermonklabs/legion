@@ -18,6 +18,7 @@ import { useLiveSocketPill } from "./api/live-socket";
 import { userAgentStateQuery, whoAmIQuery } from "./api/queries";
 import { askSignInAgain } from "./api/query-client";
 import type { AuthenticatedUser } from "./api/types";
+import { heldPress } from "./components/held-press";
 import { useLiveViews } from "./features/agent-view/live-views";
 import { LiveViewRoute, MountedLiveViews } from "./features/agent-view/MountedLiveViews";
 import { legacyPinnedIds, useAgentPinWrite, usePinnedAgents } from "./features/agents/pins";
@@ -29,6 +30,7 @@ import { DraftsNotKept } from "./features/inbox/DraftsNotKept";
 import { useInboxFillsViewport } from "./features/inbox/fills-viewport";
 import { Inbox } from "./features/inbox/Inbox";
 import { InboxDrawer } from "./features/inbox/InboxDrawer";
+import { buildInboxPath } from "./features/inbox/inbox-route";
 import { useInboxCount } from "./features/inbox/useInboxCount";
 import { CreateIssueDialog } from "./features/issue/CreateIssueDialog";
 import { ISSUE_TAB_LABELS } from "./features/issue/issue-tab-list";
@@ -47,7 +49,9 @@ import { ShortcutHelpOpener } from "./features/issue-page/shortcut-help-opener";
 import { MarginColumn } from "./features/margin/MarginColumn";
 import { MarginProvider } from "./features/margin/margin-context";
 import { DEFAULT_MARGIN_WIDTH } from "./features/margin/margin-width";
+import { PRIORITIES_PATH } from "./features/priorities/priority-routes";
 import { AgentRegistryPoller } from "./features/refs/agent-registry";
+import { LinkClickHost } from "./features/refs/link-open";
 import { TextAskCard } from "./features/refs/markdown-cards";
 import { RefPreviewHost } from "./features/refs/RefPreview";
 import { NO_HOVER_PREVIEW_ATTRIBUTE } from "./features/refs/ref-preview-card";
@@ -56,7 +60,6 @@ import {
   AGENT_ARTIFACT_PATH,
   AGENT_LIVE_PATH,
   ANSWERS_PATH,
-  buildInboxPath,
   buildPersonPath,
   buildProjectPath,
   liveViewSessionOf,
@@ -72,14 +75,10 @@ import { useRecordRecents } from "./features/search/recents";
 import { SearchPalette } from "./features/search/SearchPalette";
 import { ErrorBoundary } from "./features/shell/ErrorBoundary";
 import { KeymapProvider } from "./features/shell/KeymapProvider";
-import {
-  appKeymap,
-  type KeyBindingDescription,
-  MOD_KEY_LABEL,
-  useKeymap,
-} from "./features/shell/keymap";
+import { appKeymap, type KeyBindingDescription, useKeymap } from "./features/shell/keymap";
 import { NotFoundPage } from "./features/shell/NotFoundPage";
 import { RailButton } from "./features/shell/RailButton";
+import { focusOnDocument } from "./features/shell/roving";
 import { ShortcutHelp } from "./features/shell/ShortcutHelp";
 import {
   SIGN_OUT_SETTLE_MS,
@@ -452,26 +451,24 @@ function NavigationContents({
         ) : null}
       </div>
       <RailButton
-        ariaKeyshortcuts="Control+K Meta+K"
+        action="global.search"
         className="mt-4"
         label="Search"
         onOpen={() => {
           onClose();
           onSearch();
         }}
-        shortcut={MOD_KEY_LABEL === "⌘" ? "⌘K" : "Ctrl K"}
       />
-      {/* The hint is `AppShell`'s global `create` binding, written as `?` and the palette write
-          it (`c`); `aria-keyshortcuts` names the same key in ARIA's uppercase form. */}
+      {/* The hint is `AppShell`'s global `create` action, in the person's keys, as `?` and the
+          palette write them. */}
       <RailButton
-        ariaKeyshortcuts="C"
+        action="global.create"
         className="mt-1"
         label="New issue"
         onOpen={() => {
           onClose();
           onCreateIssue();
         }}
-        shortcut="c"
       />
       <Sidebar
         onHide={compact ? undefined : onHideSidebar}
@@ -496,9 +493,8 @@ function NavigationContents({
           </Link>
         </p>
         <button
-          className={`mt-1 px-2 text-sm font-medium disabled:cursor-not-allowed disabled:opacity-50 ${railAccentText} ${railAccentHoverText}`}
-          disabled={signOutPending}
-          onClick={onSignOut}
+          className={`mt-1 px-2 text-sm font-medium refused:cursor-not-allowed refused:opacity-50 ${railAccentText} ${railAccentHoverText}`}
+          {...heldPress(signOutPending, onSignOut)}
           type="button"
         >
           Sign out
@@ -547,6 +543,39 @@ function ShellProviders({
       </ReferenceNamesProvider>
     </MarginProvider>
   );
+}
+
+/**
+ * The shell's rule for a move within the page, to another address of the same page (`identity`,
+ * the shell's `pageIdentity`): another of an issue's tabs, a document of a project's list. The
+ * focus stays where the page put it, so a tab that manages its own focus keeps it. Only a focus
+ * the move left on the page's body goes to the main region (`main`), as on a page change, with no
+ * scroll: the page the move drew decides what it shows. Such a move took the control holding the
+ * focus away with what the new address replaces - a list's link to a document that opens in the
+ * list's place, the New document form whose made document opens there. A move to another page is
+ * the page-change rule's. It is drawn inside the main region's `Suspense`, beside the routes, so
+ * its effect runs in the commit that draws the page the move reached: a lazy page whose module is
+ * not in yet suspends the move, and the page it replaces stays, hidden and holding the focus,
+ * until the commit that draws the new page takes it away.
+ */
+function FocusMainOnMove({
+  identity,
+  main,
+}: {
+  identity: string;
+  main: RefObject<HTMLElement | null>;
+}): null {
+  const { pathname } = useLocation();
+  const shown = useRef({ identity, pathname });
+  useEffect(() => {
+    const before = shown.current;
+    if (before.pathname === pathname) return;
+    shown.current = { identity, pathname };
+    if (before.identity === identity && focusOnDocument()) {
+      main.current?.focus({ preventScroll: true });
+    }
+  }, [identity, main, pathname]);
+  return null;
 }
 
 /**
@@ -750,38 +779,27 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
   useKeymap("global", [
     {
       // Opens only: while the bar is open the `dialog` scope is the only one consulted, and
-      // the bar's own `$mod+k` binding closes it. It fires while the reader is writing, so
-      // the key reaches the bar from inside a document's editor too.
-      id: "search",
-      inEditable: true,
-      keys: "$mod+k",
-      label: "Search and actions",
+      // the bar's own binding of the person's keys for Search and actions closes it.
+      action: "global.search",
       run: () => setBarOpen(true),
     },
     {
-      // The same bar. No row: chosen from the bar it would only reopen the bar. Not
-      // `inEditable`, so a slash typed into a document stays a slash, and the Agents page
-      // shadows it with its own filter box.
-      id: "search-only",
-      keys: "/",
-      label: "Search",
-      palette: false,
+      // The same bar.
+      action: "global.search-only",
       run: () => setBarOpen(true),
     },
+    { action: "global.help", run: () => setHelpSnapshot(appKeymap.describe()) },
+    { action: "global.create", run: () => setCreateOpen(true) },
+    { action: "global.go-inbox", run: () => navigate("/") },
+    { action: "global.go-agents", run: () => navigate("/agents") },
+    { action: "global.go-settings", run: () => navigate("/settings") },
+    // The other pages the navigation always shows, which are command bar rows with no key of
+    // their own (R11): the sidebar's own addresses.
+    { action: "global.go-priorities", run: () => navigate(PRIORITIES_PATH) },
+    { action: "global.go-delivery", run: () => navigate("/delivery") },
+    { action: "global.go-pipeline", run: () => navigate("/pipeline") },
     {
-      id: "help",
-      keys: "?",
-      label: "Keyboard shortcuts",
-      run: () => setHelpSnapshot(appKeymap.describe()),
-    },
-    { id: "create", keys: "c", label: "Create issue", run: () => setCreateOpen(true) },
-    { id: "go-inbox", keys: "g i", label: "Go to Inbox", run: () => navigate("/") },
-    { id: "go-agents", keys: "g a", label: "Go to Agents", run: () => navigate("/agents") },
-    { id: "go-settings", keys: "g s", label: "Go to Settings", run: () => navigate("/settings") },
-    {
-      id: "go-documents",
-      keys: "g d",
-      label: "Go to Documents",
+      action: "global.go-documents",
       run: () => {
         if (routeProject !== undefined) {
           navigate(buildProjectPath({ kind: "documents", project: routeProject }));
@@ -791,46 +809,43 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
     },
     {
       // The same bar again, where a reader after a project types its name: its projects are
-      // rows of the one list. No row, for `/`'s reason.
-      id: "go-project",
-      keys: "g p",
-      label: "Go to project…",
-      palette: false,
+      // rows of the one list.
+      action: "global.go-project",
       run: () => setBarOpen(true),
     },
     {
-      id: "inbox-drawer",
-      keys: "i",
-      label: "Open the inbox",
+      action: "global.inbox-drawer",
       run: () => setInboxDrawerOpen((open) => !open),
       // The Inbox page already shows everything the drawer would, so a peek over itself is
       // never offered; `g i` still gets the reader there from anywhere else.
       when: () => !routeIsInbox(location.pathname),
     },
     {
-      id: "toggle-sidebar",
-      keys: "Shift+S",
-      label: "Toggle sidebar",
+      action: "global.toggle-sidebar",
       run: () => setSidebarHidden(!sidebarHidden),
       // Below `xl` the sidebar is a sheet with its own Menu control, and the preference is inert;
       // so it is in the new issue page's frame, whose navigation is its icon rail.
       when: () => !isCompactViewport && !issueFrame,
     },
-    {
-      // In the new issue page's frame the margin is Details, which this key opens and closes at
-      // every width. Its id follows the gate, so that crossing it registers the binding again
-      // and the list of keys reads the label of the shell it is in.
-      id: detailsDrawer === undefined ? "toggle-margin" : "toggle-details",
-      keys: "Shift+M",
-      label: detailsDrawer === undefined ? "Toggle margin" : "Open or close Details",
-      run: () =>
-        detailsDrawer === undefined
-          ? setMarginHidden(!marginHidden)
-          : detailsDrawer.setOpen(!detailsDrawer.open),
-      // Below `xl` the margin is a sheet the route opens itself: `Margin` reads the preference
-      // only from `xl`, so a toggle there would change nothing on screen and flip it for later.
-      when: () => detailsDrawer !== undefined || (!isCompactViewport && hasMargin),
-    },
+    // In the new issue page's frame the margin is Details, which Shift+M opens and closes at
+    // every width: the catalogue's Open or close Details, an action apart from Toggle margin, so
+    // a key a person gives one of the two leaves the other as it was (R14). Its id differs from
+    // the margin's, so that crossing the gate registers the binding again and the list of keys
+    // reads the label of the shell it is in. On today's pages Shift+M is the catalogue's Toggle
+    // margin, whose key a person can change too.
+    detailsDrawer === undefined
+      ? {
+          action: "global.toggle-margin",
+          run: () => setMarginHidden(!marginHidden),
+          // Below `xl` the margin is a sheet the route opens itself: `Margin` reads the
+          // preference only from `xl`, so a toggle there would change nothing on screen and flip
+          // it for later.
+          when: () => !isCompactViewport && hasMargin,
+        }
+      : {
+          action: "global.toggle-details",
+          run: () => detailsDrawer.setOpen(!detailsDrawer.open),
+        },
   ]);
   const login = user.login;
   // Each press signs out the person signed in when it was made, and carries their login: the
@@ -860,6 +875,8 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
     // A reload never takes the sign-out up again: no request of it goes through `api.send` to be
     // kept.
     method: "POST",
+    // Sign out is held only while the sign-out is out within its deadline (`signOutPending`).
+    readsLate: true,
     // Dispatch's own 401 (`NO_IDENTITY`) says the session the sign-out would end is already gone
     // - an earlier attempt ended it and its answer was lost, or a sign-out in another browser
     // revoked it - so the sign-out has done what it was for, whatever the sign-in check can be
@@ -884,9 +901,10 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
   //
   // Whether the page is asking the other tabs what a sign-out would discard there.
   const [askingTabs, setAskingTabs] = useState(false);
-  // Tabs within the same issue manage their own focus (roving tabindex); only a
-  // genuine page change — a different issue, or a different top-level route —
-  // should move focus to the main region.
+  // Tabs within the same issue manage their own focus (roving tabindex), so only a genuine page
+  // change — a different issue, or a different top-level route — moves the focus to the main
+  // region wherever it is. A move within the page moves it there only from the page's body
+  // (`FocusMainOnMove`).
   const pageIdentity =
     parseIssuePath(location.pathname)?.key ??
     parseProjectPath(location.pathname)?.project ??
@@ -939,7 +957,10 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
       signOutError={
         signOutRefused && signOut.error !== null ? signOutFailure(signOut.error) : undefined
       }
-      signOutPending={signOut.isPending || askingTabs}
+      // Sign out is held while the other tabs are asked, and while the sign-out is out within its
+      // deadline. A sign-out past it (`KeyedWriteResult.late`) holds it no longer, and a press then
+      // signs out again, which ends the session or finds it ended (`isNoIdentity`).
+      signOutPending={(signOut.isPending && !signOut.late) || askingTabs}
       user={user}
     />
   );
@@ -947,10 +968,12 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
   // One count on one control: the work waiting on the reader and the threads they have not
   // read, which the Inbox lists together now. On the Inbox page it stays plain text - the page
   // is the Inbox already, so there is nowhere for it to go. The peek that opened the drawer
-  // from this bar stays beside it, without the count it used to carry.
-  const inboxLabel = inboxCount === 0 ? "Inbox" : `Inbox ${inboxCount}`;
+  // from this bar stays beside it, without the count it used to carry. Until every read the
+  // count adds up has answered (`useInboxCount`) the control is drawn without a number.
+  const counted = inboxCount !== undefined && inboxCount !== 0;
+  const inboxLabel = counted ? `Inbox ${inboxCount}` : "Inbox";
   const inboxBadgeClass = `whitespace-nowrap rounded-full px-2 py-1 text-xs font-semibold ${
-    inboxCount === 0 ? railHoverBg : `${railNeedsYouBadgeBg} ${railNeedsYouBadgeText}`
+    counted ? `${railNeedsYouBadgeBg} ${railNeedsYouBadgeText}` : railHoverBg
   }`;
 
   return (
@@ -1162,6 +1185,7 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
                 <Route element={<PersonPage />} path={PERSON_PATH} />
                 <Route element={<NotFoundPage />} path="*" />
               </Routes>
+              <FocusMainOnMove identity={pageIdentity} main={mainRef} />
             </Suspense>
           </ErrorBoundary>
           {/* The live views the person has open, inside `<main>` so each takes the layout and
@@ -1184,6 +1208,7 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
         <ShortcutHelp onClose={() => setHelpSnapshot(null)} snapshot={helpSnapshot} />
         {createOpen ? <CreateIssueDialog onClose={() => setCreateOpen(false)} /> : null}
         <RefPreviewHost surface="reference-hover-card" />
+        <LinkClickHost />
       </div>
     </ShellProviders>
   );
@@ -1204,7 +1229,7 @@ function AuthenticatedApp({ user }: { user: AuthenticatedUser }): ReactNode {
   // Every Markdown body the shell renders - routes, the margin, the inbox drawer, previews and
   // dialogs - draws a decision block in its text as the read-only card (`TextAskCard`).
   return (
-    <KeymapProvider>
+    <KeymapProvider login={login}>
       <AgentRegistryPoller />
       <TextAskCard.Provider value={TextAskBlockCard}>
         <AppShell user={user} />

@@ -17,6 +17,7 @@ import { writePin } from "../issue/pin-write";
 import { eventItemId } from "../issue/pins";
 import { useMarginDrawer } from "../issue-page/margin-slot";
 import { DECISIONS_DOCUMENT_SLUG, parseIssuePath, parseProjectPath } from "../refs/routes";
+import { focusOnDocument } from "../shell/roving";
 import { COMPACT_VIEWPORT_QUERY, PHONE_VIEWPORT_QUERY } from "../shell/useDialog";
 import type { MarginComposer } from "./CommentsTab";
 import type { MarginSheetModel } from "./MarginSheet";
@@ -64,6 +65,13 @@ function focusedItemFor(
   }
   const item = items.find((candidate) => marginItemMarkId(candidate) === request.markId);
   return item === undefined ? undefined : { itemId: marginItemId(item), seq: request.seq };
+}
+
+/** Whether the focus is in the margin's composer, or on nothing - the page's body, where a
+ *  composer that unmounted or a dialog that closed leaves it: the reader is still at the comment,
+ *  and its end may take them back to the document. */
+function focusAtComposer(): boolean {
+  return focusOnDocument() || document.activeElement?.closest("[data-margin-composer]") != null;
 }
 
 /**
@@ -400,17 +408,55 @@ export function useMarginSheet(): MarginSheetModel {
     },
     [closeThread, ownerId, sheetExpanded]
   );
-  // The composer's Close, Escape and Discard. The open compose ends unsaved; a refusal the store
-  // holds for the document goes, its draft and its mark with it (`MarginProvider` takes the mark).
-  // A draft the compose offered beside its field the composer's own Discard has dropped already
-  // (`dropOffered`), since Close and Escape ask over it. A send still out is not the reader's to
-  // drop, and one that landed has left the store already.
+  // Whether the sheet's dialog is closing for a comment's end that put the caret back in the
+  // commented document (`closeComposer`): that close leaves the focus there. Every other close of
+  // the sheet - its close control, its backdrop, its own Escape - gives the focus back to what
+  // held it as the sheet opened (`useDialog`). Set only as the sheet's dialog closes, and read
+  // once, by that close (`keepFocusOnClose`), so it never reaches a later one.
+  const sheetClosedForDocument = useRef(false);
+  const keepFocusOnSheetClose = useCallback(() => {
+    const keep = sheetClosedForDocument.current;
+    sheetClosedForDocument.current = false;
+    return keep;
+  }, []);
+  // The composer's Close, Escape and Discard, and its send landing. The open compose ends
+  // unsaved; a refusal the store holds for the document goes, its draft and its mark with it
+  // (`MarginProvider` takes the mark). A draft the compose offered beside its field the
+  // composer's own Discard has dropped already (`dropOffered`), since Close and Escape ask over
+  // it. A send still out is not the reader's to drop, and one that landed has left the store
+  // already. The comment is over, so the reader goes back to the words they commented on: the
+  // commented document takes the caret at once, at the selection its editor kept, before the
+  // composer's box goes. The focus then moves from the box to the editor directly, and the box's
+  // going leaves no loss of focus. Below 1280 px the sheet over the document closes too.
+  // Its dialog would give the focus back to what held it as the sheet opened (`useDialog`): the
+  // editor after Ctrl+Alt+M, but the selection bar's Comment after a press on it, which would take
+  // the caret off the words. So this close leaves the focus where the editor took it
+  // (`sheetClosedForDocument`). A frame later, with the focus still on nothing - the editor did
+  // not take it, and the box's going left it on the body - the editor takes the caret again. Only
+  // while the reader is still at the comment, the focus in its composer or on nothing and no phone
+  // thread over it: a send that lands after they went on elsewhere takes neither the sheet nor the
+  // focus from them.
   const closeComposer = useCallback(
     (composer: MarginComposer) => {
       if (composer.seq !== undefined) cancelCompose(composer.anchor.artifact, composer.seq);
       store.discard(marginComposeSendKey(composer.anchor.artifact));
+      if (sheetThreadKey !== undefined || !focusAtComposer()) return;
+      const compact = window.matchMedia(COMPACT_VIEWPORT_QUERY).matches;
+      const bridge = documentBridge;
+      const toDocument = bridge?.artifactId === composer.anchor.artifact;
+      if (compact) {
+        // The sheet's dialog is open while the sheet is expanded, outside Details (`MarginSheet`).
+        sheetClosedForDocument.current = toDocument && sheetExpanded && drawer === undefined;
+        setExpandedOwnerId(undefined);
+      }
+      if (!toDocument) return;
+      bridge.focus();
+      if (!compact) return;
+      window.requestAnimationFrame(() => {
+        if (focusAtComposer()) bridge.focus();
+      });
     },
-    [cancelCompose, store]
+    [cancelCompose, documentBridge, drawer, sheetExpanded, sheetThreadKey, store]
   );
   // Each compose the margin shows - a new one, one a newer selection-bar action had to wait on, or
   // one held for the document the reader came back to - is shown on the Comments tab, and on a
@@ -749,6 +795,7 @@ export function useMarginSheet(): MarginSheetModel {
     sheet: {
       closeThread,
       expanded: sheetExpanded,
+      keepFocusOnClose: keepFocusOnSheetClose,
       replySending: sheetReplySending,
       thread: sheetThreadKey === undefined ? undefined : threadsByKey.get(sheetThreadKey),
       toggle: toggleSheet,

@@ -3,7 +3,7 @@ import { useQueryClient } from "@tanstack/react-query";
 
 import { ApiError, issuePatchRequest } from "../../api/client";
 import { landIssueWrite } from "../../api/issue-cache";
-import { useSubmitGuard } from "../../hooks/useSubmitGuard";
+import { useReleaseWhenLate, useSubmitGuard } from "../../hooks/useSubmitGuard";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import type { BlockedByRefusalWords } from "./page-words";
@@ -90,6 +90,7 @@ export function useIssueBlockedBy(issueKey: string, onSaved: () => void): Blocke
     inline: true,
     label: (keys: readonly string[]) =>
       keys.length === 0 ? `${issueKey} waits on nothing` : `${issueKey} waits on ${keys.join(" ")}`,
+    readsLate: true,
     target: () => `issue:${issueKey}`,
     request: (keys: readonly string[]) => issuePatchRequest(issueKey, { blocked_by: [...keys] }),
     onSettled: () => guard.release(),
@@ -99,6 +100,8 @@ export function useIssueBlockedBy(issueKey: string, onSaved: () => void): Blocke
       onSaved();
     },
   });
+  const pending = write.isPending && !write.late;
+  useReleaseWhenLate(guard, write.late);
   const stopped = write.error instanceof SendStoppedError;
   // What ended the last save, unless the reader stopped it, which says its own sentence. Only an
   // `ApiError` carries Dispatch's answer; any other error is the page's own and has no words a
@@ -112,8 +115,9 @@ export function useIssueBlockedBy(issueKey: string, onSaved: () => void): Blocke
     forgetRefusal: () => {
       if (write.isError) write.reset();
     },
-    pending: write.isPending,
+    pending,
     save: (keys) => {
+      if (pending) return;
       guard.guard(() => write.mutate(keys));
     },
     unansweredLine: stopped

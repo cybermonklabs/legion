@@ -1,11 +1,13 @@
 import type { MessageDeliveryMode } from "@legion/contracts";
-import type { ReactNode } from "react";
+import { type ReactNode, useContext } from "react";
 
 import type { Actor, DisplayTree, ReplyBlockWithTrees } from "../../api/types";
 import { secondaryButtonBorder, textSecondaryOnSurface } from "../../theme/classes";
 import { AgentName, type AgentPart } from "../refs/AgentName";
+import { CopyRefButton } from "../refs/CopyRefButton";
 import { EditedMark } from "../refs/PostMarks";
 import type { PostDeletion } from "../refs/post-marks";
+import type { DispatchReferenceRoute } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
 import type { TextSource } from "../refs/text-references";
 import type { DwellRef } from "../shell/useDwell";
@@ -19,6 +21,7 @@ import {
   type TargetedMessageAttempt,
   takenAsUserTurn,
 } from "./TargetedMessageCard";
+import { ConversationTurns, turnFocusRing, turnMarks } from "./turn-keys";
 
 /** A turn's action icons - copy-reference, Reply, Pin - beside its body: a row on desktop, a
  *  column on the phone so three 44 px targets do not squeeze the text to a sliver. The column
@@ -59,12 +62,13 @@ interface ReplyDelivery {
 }
 
 /** One reply in a thread: author, time, the quoted parent, the body, and - when the reply was
- *  itself delivered to a session - what became of that delivery. `actions` sit beside the Reply
- *  button (the Conversation adds copy-reference). `edited` marks the byline where the reply's
- *  author replaced its body, and `deleted` keeps that mark off a reply whose author then deleted
- *  it; the deleted line itself is in `body`, which its host draws through `PostBody`. */
+ *  itself delivered to a session - what became of that delivery. A reply of an issue draws its
+ *  Copy reference beside the Reply button (`reference`); one to a session that names no issue
+ *  has none. On the Conversation tab the row is a turn its keys reach (`turn-keys.ts`). `edited`
+ *  marks the byline where the reply's author replaced its body, and `deleted` keeps that mark off
+ *  a reply whose author then deleted it; the deleted line itself is in `body`, which its host
+ *  draws through `PostBody`. */
 export function ReplyTurn({
-  actions,
   at,
   author,
   body,
@@ -75,10 +79,10 @@ export function ReplyTurn({
   markRef,
   onReply,
   quote,
-  replyDisabled = false,
+  reference,
+  replyHeld = false,
   turnID,
 }: {
-  actions?: ReactNode;
   at: string;
   author: Actor;
   body: ReactNode;
@@ -95,7 +99,8 @@ export function ReplyTurn({
   /** The shared thread read mark (`useMarkThreadRead`), on the newest reply of a thread: the
    *  element it watches. */
   markRef?: DwellRef;
-  onReply?: () => void;
+  /** Starts a reply to this one, handed the Reply pressed (`ReplyButton`). */
+  onReply?: (button: HTMLButtonElement) => void;
   /** The parent the reply quotes: its author, its body, the block of it the reply answers (its
    *  `reply_block`), the record that text is (`TextSource`), its deletion and its edit, and its
    *  turn's path. */
@@ -109,10 +114,13 @@ export function ReplyTurn({
     readonly source?: TextSource;
     readonly to?: string;
   };
+  /** The reply's own reference, which its Copy reference copies. */
+  reference?: DispatchReferenceRoute;
   /** Holds the Reply button while the composer it would address is busy with a send. */
-  replyDisabled?: boolean;
+  replyHeld?: boolean;
   turnID: string;
 }): ReactNode {
+  const inTab = useContext(ConversationTurns);
   // The retry row a delivered reply keeps until the session answers it or took it as its turn,
   // and while its author has not deleted it.
   const retry =
@@ -125,10 +133,11 @@ export function ReplyTurn({
   return (
     <li
       aria-current={current ? "true" : undefined}
-      className="flex gap-3 rounded-lg py-1"
+      className={`flex gap-3 rounded-lg py-1 ${inTab ? turnFocusRing : ""}`}
       data-reply=""
       data-turn={turnID}
       ref={markRef}
+      {...turnMarks(inTab, reference)}
     >
       <Avatar actor={author} />
       <div className="min-w-0 flex-1">
@@ -176,9 +185,9 @@ export function ReplyTurn({
         )}
       </div>
       <TurnActions>
-        {actions}
+        {reference === undefined ? null : <CopyRefButton route={reference} />}
         {onReply === undefined || (deleted ?? null) !== null ? null : (
-          <ReplyButton disabled={replyDisabled} onClick={onReply} />
+          <ReplyButton held={replyHeld} onClick={onReply} />
         )}
       </TurnActions>
     </li>

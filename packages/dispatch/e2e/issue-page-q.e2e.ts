@@ -1,15 +1,17 @@
 import { isIdPrefix } from "@legion/contracts";
-import type { Locator, Page } from "@playwright/test";
+import type { Locator, Page, Route } from "@playwright/test";
 
 import { IDENTITY_HEIGHT_PROPERTY } from "../web/src/features/issue-page/identity-block";
 import { presetPath } from "../web/src/features/issue-page/issue-address";
 import {
+  ANSWER_LINES,
   CONTROL_LABELS,
   DECISIONS_WORDS,
   NODE_STATE_WORDS,
+  STATE_LINES,
 } from "../web/src/features/issue-page/page-words";
 import { blockNodeId } from "../web/src/features/issue-page/statement-rules";
-import { getArtifact, getAsk, getIssueDecisions, listComments } from "./api";
+import { getArtifact, getAsk, getIssueDecisions, listComments, listIssueArtifacts } from "./api";
 import { nextFrames } from "./frames";
 import { seedDecisionsFilter, seedReviewList } from "./issue-layout-seed";
 import { OPEN_QUESTION_BLOCK_ID } from "./issue-layout-seed-text";
@@ -18,6 +20,7 @@ import {
   DESKTOP,
   drawnRows,
   expectIssuePageDrawn,
+  expectOpeningLanded,
   expectRowGroups,
   expectRowLayouts,
   focusRow,
@@ -1130,3 +1133,380 @@ async function expectFallbackLine(
   ).toBeFocused();
   await expect(view, `${what} draws the view beside the line`).toHaveCount(0);
 }
+
+// The tester's red row of round 17 (the class of every hold on a write letting go at the write's
+// request deadline, REQUEST_DEADLINE_MS, 30 s): offline, the Decisions view's Send change lets its
+// hold go within that deadline. At 1e21af01 it is still held 32 s after the press: its hold
+// (`DecisionActions.tsx`, `sendHeld`) waits on a read of the document's text that has no bound,
+// and offline that read pauses and never settles.
+// SLOW(>=2s): a seeded issue whose Decisions view is loaded, a Change sent offline, and its hold
+// read past the request deadline.
+test("a change sent offline on a decision lets its Send change go within the request deadline", async ({
+  browser,
+}) => {
+  test.setTimeout(150_000);
+  await phase(browser, seedReviewList, async (page, seeded) => {
+    const id = (block: string) => blockNodeId(seeded.decisionsSlug, block);
+    const changed = id(seeded.tiedNewer);
+    await page.setViewportSize(DESKTOP);
+    await openPreset(page, seeded.key, "decisions");
+    await expect
+      .poll(() => decisionsPartRows(page, "review"), {
+        message: "the review list before the Change",
+      })
+      .toEqual([changed, id(seeded.tiedOlder)]);
+    const row = nodeRow(page, changed).first();
+    await row.locator('button[data-row-action="change"]').click();
+    await row.getByLabel(CONTROL_LABELS.your_change).fill("Tie it to the first statement instead.");
+    await page.context().setOffline(true);
+    const send = row.getByRole("button", { exact: true, name: CONTROL_LABELS.send_change });
+    await send.click();
+    // The hold is read once the 30 s request deadline and two seconds more have passed.
+    await page.waitForTimeout(32_000);
+    await expect(
+      send,
+      "Send change is no longer held past the request deadline"
+    ).not.toHaveAttribute("aria-disabled", "true");
+  });
+});
+
+// The tester's red row of round 19 (27b5a621: Send change says why its document read has not
+// settled, `DecisionActions.tsx`'s `unsettled`). A Change whose read of the decisions document is
+// never answered is sent at the request deadline with no place counted, and the form says why
+// beside Send change, in the words of a read of that document that failed and then the error such
+// a read ends with. At c6dc939c it never does: the read is a direct GET (`api.getArtifactText`)
+// whose own 30 s deadline (`client.ts`'s `exchange`) is set before `readWithinBound`'s bound and
+// ends the read first, and the send takes that failure for a settled read (`() => undefined`), so
+// `readWithinBound` answers no reason. Dispatch's refusal of the change is stubbed, so the form
+// stays drawn with what it says. Measured in Chromium and Firefox.
+// SLOW(>=2s): a seeded issue whose Decisions view is loaded, and its document read left
+// unanswered past the 30 s request deadline.
+// @firefox: the bound and the read's own deadline are two timers, which each engine runs.
+test("a change whose document read is never answered says why beside Send change at the request deadline @firefox", async ({
+  browser,
+}) => {
+  test.setTimeout(120_000);
+  await phase(browser, seedReviewList, async (page, seeded) => {
+    const step = (text: string) => `a document read never answered: ${text}`;
+    const row = nodeRow(page, blockNodeId(seeded.decisionsSlug, seeded.tiedNewer)).first();
+    await page.setViewportSize(DESKTOP);
+    await openPreset(page, seeded.key, "decisions");
+    await row.locator('button[data-row-action="change"]').click();
+    await row.getByLabel(CONTROL_LABELS.your_change).fill("Tie it to the first statement instead.");
+    const commentsPath = `/api/v1/issues/${seeded.key}/comments`;
+    let pressed = false;
+    await page.route(
+      (url) => url.pathname.startsWith("/api/"),
+      async (route) => {
+        const request = route.request();
+        const path = new URL(request.url()).pathname;
+        if (request.method() === "POST" && path === commentsPath) {
+          await route.fulfill({
+            body: JSON.stringify({
+              code: "TARGET_AMBIGUOUS",
+              error:
+                '"Tie it" matches 2 places; pass a zero-based occurrence, or quote more of the surrounding text',
+            }),
+            contentType: "application/json",
+            status: 409,
+          });
+          return;
+        }
+        // Once Send change is pressed, no read of a document's text is answered.
+        if (
+          pressed &&
+          request.method() === "GET" &&
+          /^\/api\/v1\/artifacts\/[^/]+\/text$/.test(path)
+        ) {
+          return;
+        }
+        await route.fallback();
+      }
+    );
+    const send = row.getByRole("button", { exact: true, name: CONTROL_LABELS.send_change });
+    pressed = true;
+    await send.click();
+    await expect(send, step("Send change is held while the document is read")).toHaveAttribute(
+      "aria-disabled",
+      "true"
+    );
+    await expect(
+      row.getByText(ANSWER_LINES.change_not_sent),
+      step("the change goes at the request deadline, and its refusal is said")
+    ).toBeVisible({ timeout: 35_000 });
+    await expect(send, step("Send change lets go at the request deadline")).not.toHaveAttribute(
+      "aria-disabled",
+      "true"
+    );
+    await expect(
+      row.getByText(
+        `${STATE_LINES.decisions_document_unreadable} Dispatch did not answer within 30 seconds.`
+      ),
+      step("the form says why the document read has not settled")
+    ).toBeVisible();
+  });
+});
+
+// The tester's red row of round 20 (b45cd7f8, DecisionActions.tsx: "The line is the press's own:
+// it goes at the next press of Send change and with the form"). When a press's document read is
+// ended by the 30 s bound (`readWithinBound`) while the read is still out - its first attempt
+// answered 404 at 26 s, which restarts `client.ts`'s 30 s silence deadline, and its retry stays
+// unanswered - `keepUnsettled` holds the reason in `useUnsettledRead`. At the next press of Send
+// change, whose read is answered 200, DecisionActions.tsx:421 clears `readFailed` alone and leaves
+// `unsettled` drawn, so the form still shows "Dispatch did not answer within 30 seconds." after
+// the second change goes. Measured in Chromium and Firefox, twice each.
+// SLOW(>=2s): a seeded issue's Decisions view, a read held past the 30 s bound, and a second press.
+// @firefox: the bound and the read's own deadline are two timers, which each engine runs.
+test("a Change whose document read the bound ended loses that read's line at the next press of Send change @firefox", async ({
+  browser,
+}) => {
+  test.setTimeout(150_000);
+  await phase(browser, seedReviewList, async (page, seeded) => {
+    const step = (text: string) => `a press after the bound: ${text}`;
+    const row = nodeRow(page, blockNodeId(seeded.decisionsSlug, seeded.tiedNewer)).first();
+    await page.setViewportSize(DESKTOP);
+    await openPreset(page, seeded.key, "decisions");
+    await row.locator('button[data-row-action="change"]').click();
+    await row.getByLabel(CONTROL_LABELS.your_change).fill("Tie it to the first statement instead.");
+    const commentsPath = `/api/v1/issues/${seeded.key}/comments`;
+    const held: Route[] = [];
+    let posts = 0;
+    let reads = 0;
+    let pressed = false;
+    await page.route(
+      (url) => url.pathname.startsWith("/api/"),
+      async (route) => {
+        const request = route.request();
+        const path = new URL(request.url()).pathname;
+        if (request.method() === "POST" && path === commentsPath) {
+          posts += 1;
+          await route.fulfill({
+            body: JSON.stringify({ code: "TARGET_AMBIGUOUS", error: '"Tie it" matches 2 places' }),
+            contentType: "application/json",
+            status: 409,
+          });
+          return;
+        }
+        if (
+          pressed &&
+          request.method() === "GET" &&
+          /^\/api\/v1\/artifacts\/[^/]+\/text$/.test(path)
+        ) {
+          reads += 1;
+          if (reads === 1) {
+            // Held 26 s before answering 404 so the client's 30 s silence deadline restarts on its
+            // retry and readWithinBound ends the wait at 30 s while that retry is still out.
+            const waited = Promise.withResolvers<void>();
+            setTimeout(waited.resolve, 26_000);
+            await waited.promise;
+            await route.fulfill({
+              body: JSON.stringify({ code: "NOT_FOUND", error: `no route for GET ${path}` }),
+              contentType: "application/json",
+              status: 404,
+            });
+            return;
+          }
+          if (reads === 2) {
+            held.push(route);
+            return;
+          }
+        }
+        await route.fallback();
+      }
+    );
+    const send = row.getByRole("button", { exact: true, name: CONTROL_LABELS.send_change });
+    const unread = STATE_LINES.decisions_document_unreadable;
+    const readLine = row.getByRole("alert").filter({ hasText: unread });
+    pressed = true;
+    await send.click();
+    await expect(
+      readLine,
+      step("at the 30 s bound the form says why the read has not settled")
+    ).toHaveText([`${unread} Dispatch did not answer within 30 seconds.`], { timeout: 45_000 });
+    await expect
+      .poll(() => posts, { message: step("the first change goes"), timeout: 10_000 })
+      .toBe(1);
+    await expect.poll(() => held.length, { message: step("the read's retry is held") }).toBe(1);
+    try {
+      await send.click();
+      await expect
+        .poll(() => posts, { message: step("the second press sends its change"), timeout: 15_000 })
+        .toBe(2);
+      await expect(
+        readLine,
+        step("the next press of Send change, whose read is answered, takes the line away")
+      ).toHaveCount(0, { timeout: 2_000 });
+    } finally {
+      await held[0]?.abort("internetdisconnected").catch(() => undefined);
+    }
+  });
+});
+
+// The tester's red row of round 22 (B1: a line a form left for its document read stays when
+// another form's press reads the same document again; the architect's ruling of
+// 2026-11-26T23:11Z). Each decision's Change form holds its own `useUnsettledRead`
+// (DecisionActions.tsx:374), though every form's Send change reads the one decisions document
+// (`api.getArtifactText`), so a press of Send change on a second form begins a new read of that
+// document and takes nothing away from the line the first form left for the read before it. At
+// e4ece294 the first form still says "Could not load the decisions document. Dispatch did not
+// answer within 30 seconds." for the whole 15 s the row waits after the second form's read was
+// answered and its change went out. Measured in Chromium and Firefox, twice each.
+// SLOW(>=2s): a seeded issue's Decisions view, two Change forms opened, the first form's document
+// read held past the 30 s bound on the page's clock, and two changes sent.
+// @firefox: the bound and the read's own deadline are two timers, which each engine runs.
+test("a Change whose document read the bound ended loses that read's line when another decision's Send change reads the document again @firefox", async ({
+  browser,
+}) => {
+  test.setTimeout(120_000);
+  await phase(browser, seedReviewList, async (page, seeded) => {
+    const step = (text: string) => `Send change on two decisions' forms: ${text}`;
+    const first = nodeRow(page, blockNodeId(seeded.decisionsSlug, seeded.tiedNewer)).first();
+    const second = nodeRow(page, blockNodeId(seeded.decisionsSlug, seeded.tiedOlder)).first();
+    const decisions = (await listIssueArtifacts(seeded.key)).find(
+      (artifact) => artifact.slug === seeded.decisionsSlug
+    );
+    expect(decisions, step("the issue holds its decisions document.")).toBeDefined();
+    const textPath = `/api/v1/artifacts/${decisions?.id ?? ""}/text`;
+    const commentsPath = `/api/v1/issues/${seeded.key}/comments`;
+    await page.setViewportSize(DESKTOP);
+    await page.clock.install();
+    await openPreset(page, seeded.key, "decisions");
+    for (const [which, row] of [
+      ["the first", first],
+      ["the second", second],
+    ] as const) {
+      await row.locator('button[data-row-action="change"]').click();
+      await row
+        .getByLabel(CONTROL_LABELS.your_change)
+        .fill("Tie it to the first statement instead.");
+      await expect(
+        row.getByLabel(CONTROL_LABELS.your_change),
+        step(`${which} decision's Change form is open and written in.`)
+      ).toHaveValue("Tie it to the first statement instead.");
+    }
+    await expect(
+      first.getByLabel(CONTROL_LABELS.your_change),
+      step("the first form is still open beside the second: two Change forms are open at once.")
+    ).toBeVisible();
+    // Each change is refused as a quote that stands in two places, so each form stays drawn.
+    let posts = 0;
+    await page.route(
+      (url) => url.pathname === commentsPath,
+      (route) => {
+        if (route.request().method() !== "POST") return route.fallback();
+        posts += 1;
+        return route.fulfill({
+          body: JSON.stringify({ code: "TARGET_AMBIGUOUS", error: '"Tie it" matches 2 places' }),
+          contentType: "application/json",
+          status: 409,
+        });
+      }
+    );
+    // The first press's reads of the document are held until the row lets them go; every later
+    // read goes through.
+    const held: Route[] = [];
+    let holding = true;
+    await page.route(
+      (url) => url.pathname === textPath,
+      (route) => {
+        if (!holding || route.request().method() !== "GET") return route.fallback();
+        held.push(route);
+        return undefined;
+      }
+    );
+    const sendOf = (row: Locator) =>
+      row.getByRole("button", { exact: true, name: CONTROL_LABELS.send_change });
+    const unread = STATE_LINES.decisions_document_unreadable;
+    const lineOf = (row: Locator) => row.getByRole("alert").filter({ hasText: unread });
+
+    await sendOf(first).click();
+    await expect
+      .poll(() => held.length, { message: step("the first form's document read is out.") })
+      .toBe(1);
+    // Answered "no route" 26 s on, which restarts the read's own 30 s silence deadline at the
+    // answer (`retryNoRoute`), so its next attempt is out still when the press's 30 s bound ends.
+    await page.clock.fastForward(26_000);
+    await held[0]?.fulfill({
+      body: JSON.stringify({ code: "NOT_FOUND", error: `no route for GET ${textPath}` }),
+      contentType: "application/json",
+      status: 404,
+    });
+    await page.clock.runFor(1_500);
+    await expect
+      .poll(() => held.length, {
+        message: step("the first form's read is asked again after its no-route answer, and held."),
+      })
+      .toBe(2);
+    await page.clock.fastForward(4_000);
+    await expect(
+      lineOf(first),
+      step("at the 30 s bound the first form says why its document read has not settled.")
+    ).toHaveText([`${unread} Dispatch did not answer within 30 seconds.`]);
+    await expect
+      .poll(() => posts, { message: step("the first form's change goes out at the bound.") })
+      .toBe(1);
+
+    holding = false;
+    await sendOf(second).click();
+    await expect
+      .poll(() => posts, {
+        message: step("the second form's change goes out once its read is answered."),
+      })
+      .toBe(2);
+    await expect(
+      lineOf(second),
+      step("the second form, whose read was answered, says nothing of a read.")
+    ).toHaveCount(0);
+    try {
+      await expect(
+        lineOf(first),
+        step(
+          "the second form's Send change, which read the same document again and was answered, takes the first form's line away."
+        )
+      ).toHaveCount(0);
+    } finally {
+      await held[1]?.abort("internetdisconnected").catch(() => undefined);
+    }
+  });
+});
+
+// The tester's red row of round 21 (an inline form a button ends leaves the focus on the page's
+// body: DecisionActions.tsx:567-574, the Change form's Cancel, `onClick={onDone}`, whose `onDone`
+// (:293) is `() => change(false)`, and `change` (:192-197) sets `changing` and the draft and
+// moves no focus, so the form goes with the Cancel that held the focus and nothing gives it back
+// to the decision's Change (:267-277) that opened the form; the architect's ruling of
+// 2026-11-26T05:17Z). The row opens the Change form of the newer decision that waits for review
+// by a click on its Change, types a change and clicks Cancel. At c3b536cc the focus is then on
+// the page's body, at 1440 and at 390 px, in Chromium (4 of 4) and Firefox (2 of 2).
+// SLOW(>=2s): one seeded issue whose Decisions view is loaded once, and one Change form opened,
+// typed in and cancelled; no write.
+// @firefox: the engine's focus after the element that held it is removed (playwright.config.ts names the clause).
+test("a decision's Change form ended by its Cancel gives the focus back to the Change that opened it @firefox", async ({
+  browser,
+}) => {
+  test.setTimeout(120_000);
+  await phase(browser, seedReviewList, async (page, seeded) => {
+    const step = (text: string) => `the Decisions view's Change form ended by Cancel: ${text}`;
+    const row = nodeRow(page, blockNodeId(seeded.decisionsSlug, seeded.tiedNewer)).first();
+    const change = row.locator('button[data-row-action="change"]');
+    const field = row.getByLabel(CONTROL_LABELS.your_change);
+    await page.setViewportSize(DESKTOP);
+    await openPreset(page, seeded.key, "decisions");
+    await expectOpeningLanded(page);
+    await expect(
+      change,
+      step("the newer decision waits for review and draws its Change.")
+    ).toBeVisible();
+    await change.click();
+    await expect(field, step("Change opens the form with the caret in Your change.")).toBeFocused();
+    await field.fill("Tie it to the first statement instead.");
+    await row.getByRole("button", { exact: true, name: CONTROL_LABELS.cancel }).click();
+    await expect(field, step("Cancel takes the form away.")).toHaveCount(0);
+    await expect(
+      change,
+      step(
+        "after Cancel the focus is on the decision's Change that opened the form, not on the page's body."
+      )
+    ).toBeFocused();
+  });
+});

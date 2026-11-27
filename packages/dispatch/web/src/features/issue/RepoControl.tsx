@@ -2,10 +2,14 @@ import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, useEffect, useId, useRef, useState } from "react";
 
 import { projectsQuery } from "../../api/queries";
+import { MultiSelect } from "../../components/MultiSelect";
 import { QueryError } from "../../components/QueryError";
 import type { PageWords } from "../../components/tooltips";
 import { usePageWords, useTooltips } from "../../components/tooltips";
+import { inputMethodKey } from "../../lib/input-method-key";
 import {
+  badgeLow,
+  badgePrimary,
   dangerText,
   focusBorder,
   focusVisibleRing,
@@ -22,9 +26,20 @@ import {
 import type { EVENT_FRESH } from "../refs/reference-target";
 import { NOT_OWNER_NAME, wholeValue } from "../settings/classes";
 import { focusOnDocument } from "../shell/roving";
+import {
+  badgeReachHandlers,
+  badgeSelectPageTrigger,
+  badgeSelectPageWrapper,
+  badgeSelectTruncatedBadge,
+} from "./badge-select";
 import { useDetailsRefusal } from "./HeaderDetails";
 import { pickLook } from "./issue-field-looks";
+import { propertyControl } from "./property-control";
 import { useIssueRepo } from "./useIssueRepo";
+
+/** The option of the shared list that clears the issue's own repository, so it resolves to its
+ *  nearest ancestor's in its own project, else to the project's default, again. */
+const INHERIT = "";
 
 /** Where the control is drawn, which decides how its parts lay out. */
 type RepoLayoutMode = "page-details" | "page-inline" | "today";
@@ -51,7 +66,9 @@ interface RepoLayout {
  *   or the server's with its Retry - moves whole onto the next line under the box rather than
  *   squeezing it (dispatch://INFRA-5200). The box takes the row's width up to 28 rem, with an
  *   ellipsis for a name longer still, and keeps `pr-8` beside the clear control laid over its
- *   right end.
+ *   right end. On this branch the box is drawn inside `NoTooltips` alone (`RepoControl`), so of
+ *   this mode only `line` is read, by the shared list (`RepositoryList`) that today's header
+ *   draws in that row; its other fields are `main`'s, for a box outside `NoTooltips`.
  * - `page-details`: the value of a row of the new issue page's Details (`NoTooltips`, `inRow`).
  *   The line is as wide as the row's value, which is a flex row, in which a line of no width of
  *   its own is only as wide as what it holds, so the place's `w-full` and the box's would fill no
@@ -105,9 +122,9 @@ const REPO_LAYOUTS: Readonly<Record<RepoLayoutMode, RepoLayout>> = {
  *  holds the box. */
 const ownerRepoPattern = "[A-Za-z0-9][A-Za-z0-9_\\-]{0,38}/(?!\\.{1,2}$)[A-Za-z0-9._\\-]{1,100}";
 
-/** `ownerRepoPattern` as a test of a whole value: the check this control makes before it writes.
- *  The server says the same thing as `NOT_OWNER_NAME` in its own words for anything that reaches
- *  it. */
+/** `ownerRepoPattern` as a test of a whole value: the check this control makes before it writes,
+ *  at the box or in the list. The server says the same thing as `NOT_OWNER_NAME` in its own words
+ *  for anything that reaches it. */
 const ownerRepo = wholeValue(ownerRepoPattern);
 
 /** What clearing the issue's own repository does: the clear control's `title`, and inside
@@ -131,10 +148,8 @@ const ON_PAGE = {
   own: pageInkText,
 } as const;
 
-/** The name the repository box answers to, in its words on every page: the property it sets
- *  and the issue it is on, so a voice user saying what they read reaches it (WCAG 2.5.3). The
- *  new issue page's add menu reaches this box by this name rather than drawing a second one,
- *  so a word changed here changes both sides at once. */
+/** The name the repository control answers to, in its words on every page: the property it sets
+ *  and the issue it is on, so a voice user saying what they read reaches it (WCAG 2.5.3). */
 export function repoControlName(issueKey: string): string {
   return `Repository of ${issueKey}`;
 }
@@ -142,10 +157,9 @@ export function repoControlName(issueKey: string): string {
 /** The name of the button a row of Details draws in the box's place: the text it shows, then the
  *  box's name - `None, Repository of <KEY>` while the issue resolves to no repository, else
  *  `<owner/name>, Repository of <KEY>`. It takes the issue's state rather than the text, so the
- *  rule for which text the button shows is written here once, and the new issue page's add menu,
- *  which finds the button by this name, names the text the button draws. The words are the
- *  page's list's, passed in, since this file imports nothing of that list
- *  (`components/tooltips.tsx`). */
+ *  rule for which text the button shows is written here once, and a test that finds the button by
+ *  this name names the text the button draws. The words are the page's list's, passed in, since
+ *  this file imports nothing of that list (`components/tooltips.tsx`). */
 export function repoTextControlName(
   issueKey: string,
   state: {
@@ -167,6 +181,255 @@ export type RepoControlFailure = {
    *  (`IssueFieldWrite.stopped`), rather than Dispatch refusing it. */
   readonly stopped: boolean;
 };
+
+/**
+ * The issue's repository. It has two shapes, one per surface: the shared list
+ * (`RepositoryList`) on every page today, and `main`'s box (`RepositoryBox`) inside `NoTooltips`,
+ * the new issue page's design, which that page's own tree decides. `inRow`,
+ * `projectsFreshness` and `sayFailure` act inside `NoTooltips` alone, so only the box reads them,
+ * and `held` outside it alone, so only the list reads it. `RepositoryBox` is `main`'s text: its
+ * arms for outside `NoTooltips` cannot run here, and it stays apart from `RepositoryList` until
+ * the new page's repository is decided there.
+ */
+export function RepoControl({
+  disabled = false,
+  held = false,
+  inRow = false,
+  issueKey,
+  project,
+  projectsFreshness,
+  repo,
+  resolvedRepo,
+  sayFailure,
+}: {
+  disabled?: boolean;
+  /** The host's own write out (`RepositoryList`). It acts outside `NoTooltips` alone. */
+  held?: boolean;
+  /** Whether the control is the value of a row of the new issue page's Details. It acts inside
+   *  `NoTooltips` alone. */
+  inRow?: boolean;
+  issueKey: string;
+  project: string;
+  /** The options of the read of the project list, in place of the app's defaults
+   *  (`RepositoryBox`). It acts inside `NoTooltips` alone. */
+  projectsFreshness?: typeof EVENT_FRESH;
+  repo: string | null;
+  resolvedRepo: string | null;
+  /** Says a failed write in the host's own line, in place of `QueryError` (`RepositoryBox`). It
+   *  acts inside `NoTooltips` alone. */
+  sayFailure?: (failure: RepoControlFailure) => ReactNode;
+}): ReactNode {
+  const shared = { disabled, issueKey, project, repo, resolvedRepo };
+  return useTooltips() ? (
+    <RepositoryList {...shared} held={held} />
+  ) : (
+    <RepositoryBox
+      {...shared}
+      inRow={inRow}
+      projectsFreshness={projectsFreshness}
+      sayFailure={sayFailure}
+    />
+  );
+}
+
+/**
+ * The issue's repository as the value of the Repository row of today's issue header's Details
+ * (`HeaderDetails`), which names it, so it draws no `Repository:` of its own: a badge naming the
+ * repository the issue resolves to (its own, else its nearest ancestor's in its own project, else
+ * the project's default, muted when not its own; "No repository" when none resolves), which is the
+ * trigger of the shared list's single pick (`MultiSelect`), laid over the badge as
+ * `AssigneeControl`'s is, and ends in the shared chevron, since the control it replaced was a
+ * visible text box. Labelled `Repository of <KEY>`. The badge is hidden from assistive technology;
+ * the trigger's name goes on from its label to the words that read what it shows: the repository,
+ * `, inherited or the project's default` when it is not the issue's own, or `No repository`.
+ *
+ * The line is the box's in that row (`REPO_LAYOUTS.today`): as wide as the row, and it wraps, so
+ * a refusal moves whole onto the next line under the badge rather than squeezing it. The badge
+ * narrows to the row and ends a name longer than the row in an ellipsis; its title gives back
+ * the whole name with what it means (`, inherited or the project's default` where it is not the
+ * issue's own). For an inherited name the trigger's own title says only what it means, so the
+ * badge's title is the one place a cut name can be read back; for the issue's own repository the
+ * trigger's title is the whole name too. A write Dispatch refused is said to Details as well
+ * (`useDetailsRefusal`), which says it under the header while it is closed.
+ *
+ * The list holds Inherit first, which clears the issue's own repository, then the project's
+ * default repository (Settings → Projects), then the issue's own repository where it is another;
+ * its text box narrows them as the reader types. The default is a suggestion rather than the set
+ * of values: any `owner/name` may be given, which is what the server takes. So a typed text that
+ * matches no option gets a row of its own, `Use "<typed>"`. A pick writes at once through
+ * `useIssueRepo`, and a pick of the value the issue holds writes nothing. A typed text GitHub could
+ * hold no repository at (`ownerRepo` above) writes nothing: the list stays open with the text in
+ * its box and says so under the options until the text changes. A typed text that passes is
+ * written as typed, less the spaces at its ends, and the server's own refusal shows beside the
+ * trigger with the write rolled back (`useIssueFieldWrite`). Leaving the list picks nothing; a
+ * typed repository is given by its row or Enter.
+ *
+ * Its closed trigger takes the list's keys (`keysOnTrigger`): an arrow, Home, End, Page Up, Page
+ * Down or a letter opens the list and moves its highlight, and only Enter or a click on a row
+ * writes. Escape, Tab and a press outside write nothing and leave the badge showing what the
+ * issue holds, as every choice control of the page does (INFRA-2160's R6): a key or a move of the
+ * focus is no act on the issue.
+ *
+ * The item renders whenever the issue can carry a repository, which is always: a project with no
+ * default repository has nothing to suggest, and its issues still take any repository. The
+ * default comes from the project list (`projectsQuery`), the read the sidebar and the issue
+ * header share, as the box reads it, so the control reads no route of its own. The list reads it
+ * once the reader reaches for the control (pointer over it, a touch on it, or focus), and at once
+ * while the issue resolves to no repository at all, which is the issue most likely to be given
+ * one; where the sidebar or the header has read it, its answer is there already. Until it
+ * answers, the list says the repositories are loading where a typed word matches no option. A
+ * read that fails costs the suggestion and nothing else: the failure shows beside the trigger
+ * with a Retry, and in the list, which still takes a typed repository.
+ *
+ * `held` is the host's own write out (the issue page's other field writes): the trigger keeps the
+ * focus and its Tab stop (`aria-disabled`), and neither a press nor a key on it opens the list
+ * while it lasts, as the ask card's hand-on refuses its open (`AskHandOn`). A list opened before
+ * the hold began writes nothing while it lasts: a pick is dropped, and a typed repository stays in
+ * the list's text box for the next Enter.
+ */
+function RepositoryList({
+  disabled,
+  held,
+  issueKey,
+  project,
+  repo: hostRepo,
+  resolvedRepo: hostResolvedRepo,
+}: {
+  disabled: boolean;
+  held: boolean;
+  issueKey: string;
+  project: string;
+  repo: string | null;
+  resolvedRepo: string | null;
+}): ReactNode {
+  const [wanted, setWanted] = useState(false);
+  const write = useIssueRepo(issueKey, hostRepo);
+  // A name that is no `owner/name` is refused in the open list alone, which Details cannot be
+  // closed over, so the write Dispatch refused is the one refusal Details is told.
+  useDetailsRefusal(
+    write.failed && write.stopped === undefined
+      ? (write.error ?? `Could not update the repository of ${issueKey}.`)
+      : null
+  );
+  // The issue's own repository and the one it resolves to, as every part of the control draws
+  // them: the write's `shown` (`IssueFieldWrite.shown`), and while that is a pick the host does
+  // not pass, the repository the pick resolves to as the caches draw it (`pickLook`), which for
+  // an inherited one is the host's until Dispatch answers.
+  const repo = write.shown;
+  const resolvedRepo =
+    repo === hostRepo
+      ? hostResolvedRepo
+      : (pickLook({ field: "repo", issueKey, value: repo }).fields.resolved_repo ??
+        hostResolvedRepo);
+  const projects = useQuery({
+    ...projectsQuery(),
+    enabled: wanted || resolvedRepo === null,
+    select: (listed) => listed.find((candidate) => candidate.key === project)?.default_repo,
+  });
+  const defaultRepo = projects.data;
+  const [open, setOpen] = useState(false);
+  /** Whether the typed repository was refused here, for not being `owner/name`. */
+  const [refused, setRefused] = useState(false);
+  const failure = projects.isError ? "Could not load projects." : null;
+  // The issue's own repository stays in the list whether or not it is the project's default, so
+  // the list never lacks the value it marks picked.
+  const options = [
+    ...(defaultRepo === undefined ? [] : [defaultRepo]),
+    ...(repo === null || repo === defaultRepo ? [] : [repo]),
+  ];
+  const value = repo ?? INHERIT;
+  const tone = repo === null ? badgeLow : badgePrimary;
+  const spoken =
+    resolvedRepo === null
+      ? "No repository"
+      : repo === null
+        ? `${resolvedRepo}, inherited or the project's default`
+        : resolvedRepo;
+  // The badge's tooltip says what the badge means, which the picked row's text does not: an
+  // issue with no repository of its own has Inherit picked. "No repository" says all there is,
+  // so it shows none.
+  const title =
+    repo !== null ? repo : resolvedRepo !== null ? "Inherited or the project's default" : "";
+  // What is read is what the server reads: it drops a `.git` suffix before it judges the name
+  // (canonicalRepo), so a clone URL's name is no longer to the list than to the server. The list
+  // offers no row for a text that names an option, so the typed text is never the value the
+  // issue holds.
+  const give = (typed: string): boolean => {
+    if (held) return false;
+    if (!ownerRepo.test(typed.replace(/\.git$/i, ""))) {
+      setRefused(true);
+      return false;
+    }
+    write.submit(typed);
+    return true;
+  };
+  return (
+    <div
+      className={`flex ${REPO_LAYOUTS.today.line} items-center gap-2 text-sm ${textSecondaryOnSurface}`}
+    >
+      <span
+        className={`${badgeSelectPageWrapper} ${disabled || held ? "opacity-50" : ""}`}
+        {...badgeReachHandlers(() => setWanted(true))}
+      >
+        <MultiSelect
+          ariaDisabled={held}
+          createLabel={(typed) => `Use "${typed}"`}
+          disabled={disabled}
+          emptyMessage={
+            projects.isPending ? "Loading repositories…" : "No repository matches that."
+          }
+          error={refused ? NOT_OWNER_NAME : failure}
+          keysOnTrigger
+          label={repoControlName(issueKey)}
+          mode="single"
+          onCreate={give}
+          onOpenChange={(next) => {
+            setOpen(next && !held);
+            setRefused(false);
+          }}
+          onPick={(picked) => {
+            if (held || picked === value) return;
+            write.submit(picked === INHERIT ? null : picked);
+          }}
+          onQueryChange={() => setRefused(false)}
+          open={open}
+          optionLabel={(candidate) => (candidate === INHERIT ? "Inherit" : candidate)}
+          options={[INHERIT, ...options]}
+          searchLabel="Search repositories"
+          triggerClassName={badgeSelectPageTrigger}
+          triggerTitle={title}
+          value={value}
+        >
+          {/* A single pick's trigger is named for its list and then for what it shows, and the
+              badge is hidden from that name: a screen reader hears the words beside it, the
+              target as well as Inherit. */}
+          <span
+            aria-hidden="true"
+            className={`${badgeSelectTruncatedBadge} font-mono ${tone.bg} ${tone.text}`}
+            title={resolvedRepo === null ? undefined : spoken}
+          >
+            {resolvedRepo ?? "No repository"}
+          </span>
+          <span className="sr-only">{spoken}</span>
+        </MultiSelect>
+      </span>
+      {failure === null ? null : (
+        <QueryError
+          message={failure}
+          onRetry={() => void projects.refetch()}
+          retrying={projects.isFetching}
+        />
+      )}
+      {write.failed ? (
+        <QueryError
+          message={write.error ?? `Could not update the repository of ${issueKey}.`}
+          onRetry={write.retry}
+          retrying={write.pending}
+        />
+      ) : null}
+    </div>
+  );
+}
 
 /**
  * The issue's repository: one combobox, labelled `Repository of <KEY>`, holding the issue's own
@@ -240,16 +503,18 @@ export type RepoControlFailure = {
  * control, and the row is given back to the text once the focus leaves both. A press of the
  * control, from the keyboard as from the pointer, leaves the focus in the box while its write is
  * out. Whichever of the text and the box takes the other's place takes the focus the other held,
- * the clear control's included, where that focus fell to the document with it. Outside a row of
- * Details the box is drawn whether or not a repository resolves, and its description says
- * `No repository` when none does. Outside `NoTooltips` the control is the value of the Repository
- * row of today's issue header's Details, which names it, so it draws no `Repository:` of its own;
- * the box fills the row up to 28 rem and ends a longer name, the project's default it shows as a
- * placeholder among them, with an ellipsis. Its groups, in this order: the box (or the text in
- * its place) with its clear control, one group; the words that say the repository is inherited;
- * then the line that says a refusal (`owner/name`, or Dispatch's).
+ * the clear control's included, where that focus fell to the document with it, and so does the
+ * "None" or the text that takes the place of the text a clear's end drew, once the host draws
+ * what Dispatch answered for that clear. Outside a row of Details the box is drawn whether or not
+ * a repository resolves, and its description says `No repository` when none does. Outside
+ * `NoTooltips` the control is the value of the Repository row of today's issue header's Details,
+ * which names it, so it draws no `Repository:` of its own; the box fills the row up to 28 rem and
+ * ends a longer name, the project's default it shows as a placeholder among them, with an
+ * ellipsis. Its groups, in this order: the box (or the text in its place) with its clear control,
+ * one group; the words that say the repository is inherited; then the line that says a refusal
+ * (`owner/name`, or Dispatch's).
  */
-export function RepoControl({
+function RepositoryBox({
   disabled = false,
   inRow = false,
   issueKey,
@@ -384,21 +649,44 @@ export function RepoControl({
   // text, drawn in each other's place as the issue's repository changes under them, hand nothing
   // on, since that change is no press of the reader's: where the row drew text in its last commit
   // (`wasText`) and draws text again, the focus the one leaving held stays on the page's body, as
-  // for every change the reader did not make, and the row no longer counts it as held. Between
-  // the text and the box, only a focus still on the document is taken (`focusOnDocument`):
-  // anywhere else, the reader put it there.
+  // for every change the reader did not make, and the row no longer counts it as held. The one
+  // such change that is the reader's is the rest of a clear's end (`landing`). The commit that
+  // ends a clear made from the box draws, as the repository the issue resolves to, the one it
+  // showed before, marked as not its own, until Dispatch's answer names the one it inherits
+  // (`useIssueRepo`), and the host draws that answer in the commit after it: TanStack Query tells
+  // it a timer after the clear's answer. So the text that took the focus from the box as the
+  // clear ended hands it on to "None" or the text drawn in its place in that commit, while the
+  // focus is still that text's, and in no later one: an answer that leaves the issue a repository
+  // it inherits keeps the text, with that repository, and a change drawn after it, another
+  // session's, is no press of the reader's. Between the text and the box, only a focus still on
+  // the document is taken (`focusOnDocument`): anywhere else, the reader put it there.
   const focusHeld = useRef(false);
   const wasText = useRef(showsText);
+  // Whether the last commit drew the box for a clear made from it that is out, and whether the
+  // text the row draws took the focus from the box as that clear ended, through the commit after
+  // the clear's end alone.
+  const clearOut = useRef(false);
+  const landing = useRef(false);
   useEffect(() => {
     const drewText = wasText.current;
     wasText.current = showsText;
-    if (drewText && showsText) {
+    const landed = landing.current;
+    landing.current = false;
+    if (drewText && showsText && !landed) {
       focusHeld.current = false;
       return;
     }
     if (!focusHeld.current || !focusOnDocument()) return;
     (showsNone ? noneControl : showsText ? textControl : box).current?.focus();
+    landing.current = showsText && clearOut.current;
   }, [showsNone, showsText]);
+  // Recorded after every commit, once the hand-off above has read what the commit before it left:
+  // a commit that follows one with no clear out follows no clear's end either, so the rest of an
+  // earlier clear's end is over.
+  useEffect(() => {
+    if (!clearOut.current) landing.current = false;
+    clearOut.current = write.pending && repo === null;
+  });
   // What the row's text does, "None" and the repository alike: a press draws the box in its
   // place. A click focuses no button in some browsers, and the box takes the focus all the same.
   const opensBox = {
@@ -425,6 +713,9 @@ export function RepoControl({
       {showsNone ? (
         <button
           aria-label={repoTextControlName(issueKey, { resolvedRepo, words: page })}
+          // The new issue page's add menu reaches the row's control by this mark, which the text
+          // and the box carry alike, since the row draws one of them at a time (`IssueAddMenu.tsx`).
+          {...propertyControl("repository", issueKey)}
           className={`min-h-11 rounded-sm outline-none focus-visible:ring-2 disabled:opacity-50 md:min-h-7 ${ON_PAGE.none} ${focusVisibleRing}`}
           disabled={disabled}
           ref={noneControl}
@@ -447,7 +738,8 @@ export function RepoControl({
               : (event) => {
                   // A press that ends an IME composition gives up what the reader was composing,
                   // not the box: the place leaves it alone, unmarked, as the key registry does.
-                  if (event.key !== "Escape" || event.nativeEvent.isComposing) return;
+                  // Safari sends it with `isComposing` false and keyCode 229 (`inputMethodKey`).
+                  if (event.key !== "Escape" || inputMethodKey(event.nativeEvent)) return;
                   // Inside `NoTooltips` the press is the box's, from the box or from its clear
                   // control: it puts back what the issue holds, closes the box in a row of
                   // Details, and closes nothing around it. On a phone the box sits in Details, a
@@ -472,6 +764,7 @@ export function RepoControl({
             <button
               aria-describedby={descriptionId}
               aria-label={repoTextControlName(issueKey, { resolvedRepo, words: page })}
+              {...propertyControl("repository", issueKey)}
               className={`min-h-11 min-w-0 max-w-full rounded-sm text-left font-mono text-xs [overflow-wrap:anywhere] outline-none focus-visible:ring-2 disabled:opacity-50 md:min-h-7 ${repo === null ? ON_PAGE.inherited : ON_PAGE.own} ${focusVisibleRing}`}
               disabled={disabled}
               ref={textControl}
@@ -487,6 +780,7 @@ export function RepoControl({
                 aria-describedby={descriptionId}
                 aria-invalid={refused || undefined}
                 aria-label={repoControlName(issueKey)}
+                {...propertyControl("repository", issueKey)}
                 autoComplete="off"
                 className={`min-h-11 ${layout.box} rounded-sm border py-0.5 pl-1.5 font-mono text-xs outline-none focus-visible:ring-2 disabled:opacity-50 md:min-h-7 ${repo === null || inDetails ? "pr-1.5" : "pr-8"} ${page === null ? inputClasses(false) : ON_PAGE.box} ${focusVisibleRing}`}
                 disabled={disabled}

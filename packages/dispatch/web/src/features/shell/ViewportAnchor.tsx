@@ -1,6 +1,9 @@
 import { Component, type ReactNode, type RefObject } from "react";
 
+import { CONTROL, controlIn } from "../../components/control-names";
+import { openerOf, pressArmed, pressMadeIn, scrollToNearest } from "../../components/focus-place";
 import { refPreviewCardContains, refPreviewOpenedIn } from "../refs/ref-preview-card";
+import { focusOnDocument, hearPressCancellation } from "./roving";
 
 export interface AnchorRow {
   id: string;
@@ -9,11 +12,76 @@ export interface AnchorRow {
   via: "center" | "focus" | "pointer";
 }
 
-interface Snapshot extends AnchorRow {
+/** A row above the current one that a press of the reader's is taking away (`leaving`), as the
+ *  commit's snapshot reads it, immediately before the row goes. */
+interface Leaving {
+  /** How far the current row moves up once this row has gone from above it: the whole space the
+   *  row takes in the list (`spaceTaken`), the part above the view's top included. */
+  by: number;
+  id: string;
+  /** The element right before the row where that element is no row (a group's heading), and how
+   *  far the current row moves up once that element has gone too, read as `by` is. Null where a
+   *  row, or nothing, stands right before the row. A group's heading goes with the last row of
+   *  its group. */
+  lead: { by: number; element: Element } | null;
+}
+
+/** A row whose place a commit keeps, as it stands immediately before the commit. */
+interface Place {
   /** The row's `group` attribute value immediately before the commit; null without one. */
   group: string | null;
+  id: string;
+  /** The rows above this one that a press of the reader's is taking away; empty where the host
+   *  names none. */
+  leaving: readonly Leaving[];
   /** The row's top, in viewport pixels, immediately before the commit. */
   top: number;
+}
+
+interface Snapshot extends AnchorRow, Place {
+  /** Whether a press of the reader's is taking the current row itself away, as a thread's own
+   *  Dismiss does: the row `leaving` names is the row the hand is on, not one above it. */
+  selfLeaving: boolean;
+  /** Where `selfLeaving`, the row that keeps the current row's place once it has gone
+   *  (`standInFor`), with the current row among the rows leaving above it; null otherwise, and
+   *  where no row can. */
+  standIn: Place | null;
+  /** The window's offset immediately before a commit in which this component holds the
+   *  browser's own anchoring off for the window (`holdNativeAnchoring`), else null. */
+  windowTop: number | null;
+}
+
+/** The page's control row (`components/ControlRow.tsx`) a press of the reader's is live in, on a
+ *  control of that row or at its root (`pressMadeIn`), and the row's top, in viewport pixels,
+ *  immediately before the commit: the reader's place in that press's commit (`pressedRow`). */
+interface PressedRow {
+  row: Element;
+  top: number;
+}
+
+/** What the reader can see of the rows, top and bottom, in viewport pixels. */
+interface View {
+  bottom: number;
+  top: number;
+}
+
+/** Where the control that holds the focus in a row stands against the reader's sight (`View`). */
+interface FocusSight {
+  focused: Element;
+  /** Whether the reader can see a part of it: an edge that only touches the view's edge counts
+   *  as in sight. */
+  meets: boolean;
+  /** Whether the reader can see the whole of it. */
+  whole: boolean;
+}
+
+/** The space `element` takes in its list, in pixels: from its own top to the top of the element
+ *  after it, the gap between them included, else to its own bottom. What a row a press of the
+ *  reader's takes away frees for the rows after it (`ViewportAnchor`'s `leaving`). */
+function spaceTaken(element: Element): number {
+  const box = element.getBoundingClientRect();
+  const after = element.nextElementSibling;
+  return (after === null ? box.bottom : after.getBoundingClientRect().top) - box.top;
 }
 
 export interface ViewportAnchorProps {
@@ -29,6 +97,14 @@ export interface ViewportAnchorProps {
   group?: string;
   /** Attribute naming each row and carrying its id, e.g. `data-inbox-row`. */
   item: string;
+  /** Whether a press of the reader's is taking row `id` away from its place: for example a
+   *  Dismiss, or a write that moves the row into another group once it lands. The anchor does not
+   *  hold the current row in place against the going of such a row above it: the current row and
+   *  the rows after it move up by the whole space the row took, and the view does not scroll. It
+   *  is asked of the render that last drew the rows and of the render being committed alike,
+   *  because a write can stop naming its rows in the same commit that moves them. With no
+   *  function, no row is named. */
+  leaving?: (id: string) => boolean;
   label?: string;
   /** Receives the rendered root element, for a host that also queries the rows itself. */
   rootRef?: RefObject<HTMLElement | null>;
@@ -42,24 +118,26 @@ export interface ViewportAnchorProps {
 const probeSteps = 5;
 const probeStepPx = 8;
 
-// An O(1) hit test for the row nearest the centre of the list's own visible portion, rather than
-// a getBoundingClientRect scan over every row (hundreds of forced layout reads per update on a
-// long list). The probe point is derived from the list's bounding rect - not
-// window.innerWidth/innerHeight - because the main column is rarely centred in (or as wide as)
-// the viewport: the sidebar and margin panel narrow it well before the window itself is narrow,
-// and hit-testing the window's centre can land in a neighbouring column entirely, missing every
-// probe. elementFromPoint at the exact centre can still miss within the column - landing on a
-// gap, heading, or composer - in which case this probes downward first, then upward, in small
-// steps: a content change lands between two rows more often than exactly on one, and probing
-// downward first means the answer for a point in the gap is consistently "whichever row is
-// below", matching reading order. What is visible is the window's own box, or `scroller`'s when
-// the rows scroll in one: a list scrolled inside an element reaches above and below that
-// element's edges, not the window's, and probing a point the scroller clips lands on whatever
-// covers it instead.
-function rowAtCenter(
+// An O(1) hit test for the row nearest a height of the list's own visible portion - its centre, or
+// the height a press landed at (`y`) - rather than a getBoundingClientRect scan over every row
+// (hundreds of forced layout reads per update on a long list). The probe point is derived from
+// the list's bounding rect - not window.innerWidth/innerHeight - because the main column is rarely
+// centred in (or as wide as) the viewport: the sidebar and margin panel narrow it well before the
+// window itself is narrow, and hit-testing the window's centre can land in a neighbouring column
+// entirely, missing every probe. Its x is the middle of the list's own column for a press too: a
+// press in the page's margin beside the list is level with the row it was made beside.
+// elementFromPoint there can still miss within the column - landing on a gap, heading, or
+// composer - in which case this probes downward first, then upward, in small steps: a content
+// change lands between two rows more often than exactly on one, and probing downward first means
+// the answer for a point in the gap is consistently "whichever row is below", matching reading
+// order. What is visible is the window's own box, or `scroller`'s when the rows scroll in one: a
+// list scrolled inside an element reaches above and below that element's edges, not the
+// window's, and probing a point the scroller clips lands on whatever covers it instead.
+function rowAtHeight(
   root: HTMLElement,
   selector: string,
-  scroller: HTMLElement | null
+  scroller: HTMLElement | null,
+  y: number | null
 ): HTMLElement | null {
   const rect = root.getBoundingClientRect();
   const box = scroller === null ? null : scroller.getBoundingClientRect();
@@ -68,9 +146,9 @@ function rowAtCenter(
   const x = (visibleLeft + visibleRight) / 2;
   const visibleTop = Math.max(rect.top, box === null ? 0 : box.top);
   const visibleBottom = Math.min(rect.bottom, box === null ? window.innerHeight : box.bottom);
-  const y = (visibleTop + visibleBottom) / 2;
+  const at = y ?? (visibleTop + visibleBottom) / 2;
   const hit = (offset: number): HTMLElement | null =>
-    document.elementFromPoint(x, y + offset)?.closest<HTMLElement>(selector) ?? null;
+    document.elementFromPoint(x, at + offset)?.closest<HTMLElement>(selector) ?? null;
 
   let found = hit(0);
   for (let step = 1; found === null && step <= probeSteps; step += 1) {
@@ -97,7 +175,58 @@ function rowWithin(root: HTMLElement, selector: string, node: Element | null): H
  * its place for another `group` (a section) is not followed: the reader's place is where the row
  * was, not where it went. The pointer moving from a row onto the hover card a reference in that
  * row opened keeps that row the current one while the card is open: the card is the row's own
- * doing and sits outside the list only because it is `fixed`.
+ * doing and sits outside the list only because it is `fixed`. So does the focus in a menu or a
+ * list a control of a row opened - the priority's menu, the hand-on's list - which the page
+ * portals out of the list and which hands the focus back into the row as it closes: while it is
+ * open the focus is the hand on that row (`openerOf`). And the focus on its way from one element
+ * to another is already the hand on the row it goes to (`focusGoingTo`). A press of the pointer
+ * that takes the focus to no row - the list's background, the page's margin beside it - is the
+ * hand where it landed while it is in flight, with neither the focus nor a resting pointer on a
+ * row: the row it landed on, else the row nearest the height it landed at, else the one nearest
+ * the centre. Neither of the last two is ever the row the focus left in that press, which the
+ * press may be letting go: where that row is the one found, the row before it keeps its place,
+ * and the rows after it move up into the place it leaves (`pressing`). Where this component
+ * scrolls to keep the row's place, a control that holds the focus in that row and stood whole in
+ * the reader's sight just before the scroll is brought whole into sight again at its nearest
+ * edge: the scroll keeps the row's place, not the focus's (`keepPlace`).
+ *
+ * One shift is not compensated: a row that a press of the reader's takes away from above the
+ * current row (`leaving`: for example a Dismiss, or a snooze that moves its rows into another
+ * group), with the heading of a group its going empties. The reader asked for that row to go, so
+ * the current row and the rows after it move up by the whole space the row took, the part above
+ * the view's top included: the view is not scrolled to hold them. Every other change of height
+ * above the current row in the same commit, growing or shrinking, is compensated, so the place
+ * the row left stays where it stood on screen: the Inbox's **Mark all read** goes with the last
+ * unread rows, and below `sm` the header loses the line it stood on, so the view scrolls up by
+ * that line.
+ * Where the press takes the current row itself away, as a thread's own Dismiss does, the row that
+ * keeps its place once it has gone (`standInFor`) is held the same way: the row after it, which
+ * moves up into its place, else the row before it. A current row that holds the focus and is left
+ * partly in sight is then brought whole into sight at its nearest edge, and a focus left wholly
+ * out of sight is not scrolled to: while such rows are leaving, the selection bar's hand-off parks
+ * the focus, and it lands only once they have gone and the foot's pass has run, by the least
+ * scroll of its own (`useLastMarkedPlace`'s `parkOrLand` and `landAfterFootPass`). The browser's
+ * own scroll anchoring is turned off on the box that scrolls the rows in every commit in which a
+ * row above the current one is named as leaving, and in every commit in which the current row
+ * itself is named: a thread's own Dismiss takes away the row the reader's hand is on, and the
+ * browser holds the view against its going as much as against a row's above. The snapshot taken
+ * before the commit cannot tell whether that row goes in it, and the browser would hold the view
+ * against that going. It is turned back on as soon as this component has kept its place. Where
+ * the window scrolls the rows and moved in such a commit all the same, it is put back where the
+ * press found it (`keepPlace`). A row that goes in the same commit without the reader's press,
+ * by a live update or another device, is compensated as any other shift is, so the rows in view
+ * do not jump under it.
+ *
+ * A press of the reader's in the page's control row (`components/ControlRow.tsx`), while that
+ * row stands outside the list in the box that scrolls it, makes the row their place for the
+ * commit, ahead of every row: a press live on a control of the row or at its root
+ * (`pressMadeIn`), wherever the focus is. The reader's place is the control they pressed, so the
+ * row is put back where it stood (`pressedRow`): the rows the press brings back into the list or
+ * takes out of it, and the list growing or shrinking under the row, move nothing above them, and
+ * the control the row hands the focus to as a chip goes stays where it stood. A change above the
+ * row in the same commit is made up for. A commit the reader did not make while the focus rests
+ * in that row, by a live update or another device, is made up for around the row they are on, as
+ * any other is.
  *
  * Rows are the elements matching `[item]`, identified by that attribute's value, and must keep
  * their identity across the commit (a remounted row is a new node and cannot be found again).
@@ -116,7 +245,11 @@ function rowWithin(root: HTMLElement, selector: string, node: Element | null): H
  * such a scroll drops it instead of being undone by it. `componentDidUpdate` then compensates
  * exactly once, before paint.
  */
-export class ViewportAnchor extends Component<ViewportAnchorProps, object, Snapshot | null> {
+export class ViewportAnchor extends Component<
+  ViewportAnchorProps,
+  object,
+  Snapshot | PressedRow | null
+> {
   private root: HTMLElement | null = null;
   private hovered: HTMLElement | null = null;
   /** Set while the pointer left the hovered row for the hover card a reference in that row
@@ -156,12 +289,120 @@ export class ViewportAnchor extends Component<ViewportAnchorProps, object, Snaps
    *  coordinates: that is the list moving under the hand, which is the thing being compensated
    *  for, so it must not be read as the reader looking somewhere new. */
   private pointerAt: { x: number; y: number } | null = null;
+  /** The boxes whose own scroll anchoring is turned off for a press's commit, each with the
+   *  inline `overflow-anchor` it had before (`holdNativeAnchoring`). Empty while it is on. */
+  private nativeAnchoring: { box: HTMLElement; priority: string; value: string }[] = [];
+  /** The frame request that gives the box its scroll anchoring back once a rendering update has
+   *  run with it off (`releaseAfterRendering`). Null while none is pending. */
+  private releaseFrame: number | null = null;
+  /** Where the focus is going while it moves: the `relatedTarget` of the `focusout` that leaves an
+   *  element, until the `focusin` on the element it lands on. A commit made inside that move - one
+   *  a row's own `blur` asks for, as the Inbox's does as the focus leaves the row it holds - finds
+   *  the focus on no element, the body, and the hand is where the focus is going. On a phone a
+   *  tap's `mousedown` moves the focus, and its `mouseup` and `click` follow on whatever then
+   *  stands under the finger, which has left the screen: right after a tap on P1 held the picked
+   *  card in its band, a tap on another card's Snooze let that card go inside the move, the commit
+   *  kept the row at the list's centre - the very card it moved up its group - and the window
+   *  followed it 1,700 px up, so the tap opened nothing. */
+  private focusGoingTo: Element | null = null;
+  /** The pointer's press in flight, from its `mousedown` to its `mouseup`, or until the browser
+   *  ends it without a release (`hearPressCancellation`). Without those other endings, a drag
+   *  of a link could hold its row as the reader's place in every later commit, even at the top
+   *  of the page. It holds the element the press landed on, the height
+   *  it landed at in viewport pixels, and the row the focus left as the press moved it
+   *  (`focusLeaving`), null while it left none. The press's `mousedown` moves the focus, and a
+   *  press on no row - the list's background, the page's margin beside it - takes it to the
+   *  page's `main` or to none, where it is the hand on no row, while a row its host holds as long
+   *  as the focus is in it is let go inside that move: the Inbox lets go of a card a priority pick
+   *  moved into another band (`releaseOnFocusOut`), and the commit moves the card up its group.
+   *  Measured with that card at the list's centre: the centre was that card, and the
+   *  view followed it up, 1,351 px in the Inbox's cards at 1024 px and 1,375 px in its drawer at
+   *  1440 px on a click on the list's background, and 1,711 px on a phone on a tap on the page's
+   *  margin. So while the press is in flight it is the hand on the row it landed on, else on the
+   *  row nearest the height it landed at, and the row the focus left is never the place to keep
+   *  (`current`). Nor is holding no row: the browser's own anchoring takes that card for its
+   *  anchor - React moves the rows above it, not the card - and followed it all the same,
+   *  1,711 px, on a tap on the page's margin level with the card's middle. */
+  private pressing: { left: HTMLElement | null; target: Element; y: number } | null = null;
+  private stopHearingCancellations: (() => void) | null = null;
 
   /** The box the host named, while it holds one: what this anchor reads its offset from and
    *  what it moves. Null where the rows scroll in the document, which is the window's own
    *  scroll and the browser's own anchoring. */
   private scrollerElement(): HTMLElement | null {
     return this.props.scroller?.current ?? null;
+  }
+
+  /** What the reader can see of the rows: the box the host named, cut to the window, else the
+   *  window. */
+  private view(): View {
+    const box = this.scrollerElement()?.getBoundingClientRect();
+    return {
+      bottom: Math.min(window.innerHeight, box?.bottom ?? window.innerHeight),
+      top: Math.max(0, box?.top ?? 0),
+    };
+  }
+
+  /** Turns the browser's own scroll anchoring off on the box that scrolls the rows for the
+   *  commit in flight: the box the host named, else the window, whose anchoring the document's
+   *  root sets and, while a dialog's scroll lock puts `overflow: hidden` on the body
+   *  (`useDialog`), the body too: Chromium then takes the window's anchoring from the body, and
+   *  held the view at 390 px against the going of the Inbox row a Decline dialog went with. The
+   *  browser would hold the view against the going of the rows a press of the reader's takes
+   *  away, which is the shift this component lets happen. The value is read back at once, so it
+   *  is in force before React removes the rows. A hold still pending from an earlier press keeps
+   *  the value each box had before it. `releaseAfterRendering` turns it back on. */
+  private holdNativeAnchoring(): void {
+    this.cancelRelease();
+    const scroller = this.scrollerElement();
+    const boxes = scroller === null ? [document.documentElement, document.body] : [scroller];
+    if (this.nativeAnchoring[0]?.box !== boxes[0]) {
+      this.releaseNativeAnchoring();
+      this.nativeAnchoring = boxes.map((box) => ({
+        box,
+        priority: box.style.getPropertyPriority("overflow-anchor"),
+        value: box.style.getPropertyValue("overflow-anchor"),
+      }));
+    }
+    for (const box of boxes) box.style.setProperty("overflow-anchor", "none");
+    for (const box of boxes) void getComputedStyle(box).overflowAnchor;
+  }
+
+  /** Gives the box its scroll anchoring back once a rendering update has run with it off: two
+   *  frames on, since a frame's callbacks run before that frame's layout. WebKit adjusts for the
+   *  shift a commit made at a layout after it rather than in it, so anchoring turned back on in
+   *  the commit's own task let it scroll the window against the going of the rows a press took
+   *  away, a move this component had already let happen. */
+  private releaseAfterRendering(): void {
+    if (this.nativeAnchoring.length === 0) return;
+    this.cancelRelease();
+    this.releaseFrame = requestAnimationFrame(() => {
+      this.releaseFrame = requestAnimationFrame(() => {
+        this.releaseFrame = null;
+        this.releaseNativeAnchoring();
+      });
+    });
+  }
+
+  private cancelRelease(): void {
+    if (this.releaseFrame === null) return;
+    cancelAnimationFrame(this.releaseFrame);
+    this.releaseFrame = null;
+  }
+
+  /** Gives each box back the scroll anchoring `holdNativeAnchoring` turned off, with the inline
+   *  value it had, at once. */
+  private releaseNativeAnchoring(): void {
+    this.cancelRelease();
+    const held = this.nativeAnchoring;
+    this.nativeAnchoring = [];
+    for (const { box, priority, value } of held) {
+      if (value === "") {
+        box.style.removeProperty("overflow-anchor");
+      } else {
+        box.style.setProperty("overflow-anchor", value, priority);
+      }
+    }
   }
 
   /** The group `row` is in, null where the host names none. A kept place belongs to one: a row
@@ -202,14 +443,18 @@ export class ViewportAnchor extends Component<ViewportAnchorProps, object, Snaps
     return holds ? held.top : null;
   }
 
-  /** Called once a compensation has put `id` back at `top`: the row is at the kept place again,
-   *  so that place belongs to the offset the compensation left behind. Without this the first
-   *  compensation would invalidate the kept place for every later one. */
-  private restampHeld(id: string, top: number): void {
+  /** Called once a compensation has put `id` at `to` from the place it was kept at, `from`. `to`
+   *  is `from` save where rows a press of the reader's took away let the row move up
+   *  (`leaving`). The row is at its kept place again, so that place belongs to the offset the
+   *  compensation left behind. Without this the first compensation would invalidate the kept
+   *  place for every later one, and the next commit would put a row the press let move up back
+   *  where it stood before. */
+  private restampHeld(id: string, from: number, to: number): void {
     const held = this.held;
     const scroller = this.scrollerElement();
-    if (held === null || scroller === null || held.id !== id || held.top !== top) return;
+    if (held === null || scroller === null || held.id !== id || held.top !== from) return;
     held.scrollTop = scroller.scrollTop;
+    held.top = to;
   }
 
   /** True when this pointer event is the hand moving rather than the list moving under it. */
@@ -254,9 +499,7 @@ export class ViewportAnchor extends Component<ViewportAnchorProps, object, Snaps
     // No box check of its own: nothing is ever held without one (`rememberHeld`), and `heldTop`
     // below answers null where the host names none.
     if (held === null || root === null) return;
-    const element = root.querySelector<HTMLElement>(
-      `[${this.props.item}="${CSS.escape(held.id)}"]`
-    );
+    const element = this.rowById(root, held.id);
     if (element === null) {
       this.held = null;
       return;
@@ -266,19 +509,54 @@ export class ViewportAnchor extends Component<ViewportAnchorProps, object, Snaps
     const delta = element.getBoundingClientRect().top - top;
     if (delta === 0) return;
     this.scrollBy(delta);
-    this.restampHeld(held.id, top);
+    this.restampHeld(held.id, top, top);
+  };
+
+  private readonly focusLeaving = (event: FocusEvent): void => {
+    this.focusGoingTo = event.relatedTarget instanceof Element ? event.relatedTarget : null;
+    const press = this.pressing;
+    if (press !== null && event.target instanceof Element) press.left = this.handRow(event.target);
+  };
+
+  private readonly focusArrived = (): void => {
+    this.focusGoingTo = null;
+  };
+
+  private readonly pressStarted = (event: MouseEvent): void => {
+    const { clientY: y, target } = event;
+    this.pressing = target instanceof Element ? { left: null, target, y } : null;
+  };
+
+  private readonly pressEnded = (): void => {
+    this.pressing = null;
   };
 
   componentDidMount(): void {
     // Capture, because `scroll` does not bubble: one listener catches the window's and the
-    // named box's alike, and the handler reads a rect only for the box this anchor owns.
+    // named box's alike, and the handler reads a rect only for the box this anchor owns. The
+    // focus's move is read at the document's capture phase too, before a row's own `blur`
+    // handler asks for the commit that reads it (`focusGoingTo`), and so is a press of the
+    // pointer, whose `mousedown` comes before the move it makes (`pressing`).
     window.addEventListener("scroll", this.viewScrolled, true);
+    document.addEventListener("focusout", this.focusLeaving, true);
+    document.addEventListener("focusin", this.focusArrived, true);
+    document.addEventListener("mousedown", this.pressStarted, true);
+    document.addEventListener("mouseup", this.pressEnded, true);
+    this.stopHearingCancellations = hearPressCancellation(document, this.pressEnded);
   }
 
   componentWillUnmount(): void {
     window.removeEventListener("scroll", this.viewScrolled, true);
+    document.removeEventListener("focusout", this.focusLeaving, true);
+    document.removeEventListener("focusin", this.focusArrived, true);
+    document.removeEventListener("mousedown", this.pressStarted, true);
+    document.removeEventListener("mouseup", this.pressEnded, true);
+    this.stopHearingCancellations?.();
+    this.stopHearingCancellations = null;
+    this.pressing = null;
     this.contentSize?.disconnect();
     this.contentSize = null;
+    this.releaseNativeAnchoring();
   }
 
   // Both listeners hang off the rendered root, not `document`: `pointerover`/`pointerout` bubble,
@@ -337,13 +615,25 @@ export class ViewportAnchor extends Component<ViewportAnchorProps, object, Snaps
     if (rootRef !== undefined) rootRef.current = node;
   };
 
-  /** The row the reader's hand is on: focus within a row, else the pointer resting on one. No
-   *  layout reads, so a parent may call it on every render. */
+  /** The row a focus on `element` is the hand on: the row of the list `element` is in, else the
+   *  row of the control that opened the menu or the list `element` is in (`openerOf`). */
+  private handRow(element: Element | null): HTMLElement | null {
+    const root = this.root;
+    if (root === null || element === null) return null;
+    const selector = `[${this.props.item}]`;
+    return rowWithin(root, selector, element) ?? rowWithin(root, selector, openerOf(element));
+  }
+
+  /** The row the reader's hand is on: focus within a row, or within a menu or a list a control
+   *  of a row opened (`openerOf`), else the pointer resting on one. While the focus moves, and is
+   *  on no element but the body, it is on the element it is going to (`focusGoingTo`), while that
+   *  element is still on the page. No layout reads, so a parent may call it on every render. */
   interacted(): (AnchorRow & { row: HTMLElement }) | null {
     const root = this.root;
     if (root === null) return null;
-    const selector = `[${this.props.item}]`;
-    const focused = rowWithin(root, selector, document.activeElement);
+    const going = this.focusGoingTo;
+    const inTransit = going?.isConnected === true && focusOnDocument();
+    const focused = this.handRow(inTransit ? going : document.activeElement);
     const resting =
       this.hovered !== null && (!this.onOwnCard || refPreviewOpenedIn(this.hovered))
         ? this.hovered
@@ -358,19 +648,52 @@ export class ViewportAnchor extends Component<ViewportAnchorProps, object, Snaps
     return chosen === null ? null : { ...chosen, id: this.idOf(chosen.row) };
   }
 
-  /** `interacted()`, else - only once the reader has scrolled - the row nearest the list's
-   *  visible centre (a hit-test probe: layout reads). The row a commit will anchor to. The box
-   *  that scrolls is `scroller`'s element while the host gave one and it holds one, else the
-   *  window, and `componentDidUpdate` moves whichever this read. */
+  /** `interacted()`, else, while a press of the pointer is in flight, the row it landed on or the
+   *  one nearest the height it landed at (`pressing`), else - only once the reader has scrolled -
+   *  the row nearest the list's visible centre (both hit-test probes: layout reads), each probe's
+   *  row kept for by another where it is the row the focus left in that press (`keptFor`). The
+   *  row a commit will anchor to. The box that scrolls is `scroller`'s element while the host
+   *  gave one and it holds one, else the window, and `componentDidUpdate` moves whichever this
+   *  read. */
   current(): (AnchorRow & { row: HTMLElement }) | null {
     const interacted = this.interacted();
     if (interacted !== null) return interacted;
     const root = this.root;
     if (root === null) return null;
+    const selector = `[${this.props.item}]`;
     const scroller = this.scrollerElement();
+    const press = this.pressing;
+    const letGo = press?.left ?? null;
+    const pressed =
+      press === null
+        ? null
+        : (rowWithin(root, selector, press.target) ??
+          this.keptFor(rowAtHeight(root, selector, scroller, press.y), letGo));
+    if (pressed !== null) return { id: this.idOf(pressed), row: pressed, via: "pointer" };
     if ((scroller === null ? window.scrollY : scroller.scrollTop) <= 0) return null;
-    const row = rowAtCenter(root, `[${this.props.item}]`, scroller);
+    const row = this.keptFor(rowAtHeight(root, selector, scroller, null), letGo);
     return row === null ? null : { id: this.idOf(row), row, via: "center" };
+  }
+
+  /** `found`, or, where it is `letGo` - the row the focus left in a press, which the press may be
+   *  letting go (`pressing`) - the row that keeps the place around it as it goes: the row before
+   *  it, which stays where it stood while the rows after it move up into the place it leaves,
+   *  else the row after it. Null where the list holds no other row. */
+  private keptFor(found: HTMLElement | null, letGo: HTMLElement | null): HTMLElement | null {
+    const root = this.root;
+    if (found === null || found !== letGo || root === null) return found;
+    let passed = false;
+    let before: HTMLElement | null = null;
+    for (const each of root.querySelectorAll<HTMLElement>(`[${this.props.item}]`)) {
+      if (each === found) {
+        if (before !== null) return before;
+        passed = true;
+      } else if (!each.contains(found) && !found.contains(each)) {
+        if (passed) return each;
+        before = each;
+      }
+    }
+    return null;
   }
 
   private idOf(row: HTMLElement): string {
@@ -381,9 +704,161 @@ export class ViewportAnchor extends Component<ViewportAnchorProps, object, Snaps
     return id;
   }
 
-  getSnapshotBeforeUpdate(): Snapshot | null {
+  /** The row of `root` whose `item` attribute is `id`, else null. */
+  private rowById(root: HTMLElement, id: string): HTMLElement | null {
+    return root.querySelector<HTMLElement>(`[${this.props.item}="${CSS.escape(id)}"]`);
+  }
+
+  /** The rows above `row` that the host names as leaving (`leaving`), in the render that last
+   *  drew them (`previous`) or in this one, each with how far `row` moves up once it has gone:
+   *  the whole space it takes (`spaceTaken`), the part above the view's top included. Layout
+   *  reads for the rows named alone; none where the host names none. */
+  private leavingAbove(row: HTMLElement, previous: Readonly<ViewportAnchorProps>): Leaving[] {
+    const root = this.root;
+    if (root === null || (previous.leaving === undefined && this.props.leaving === undefined)) {
+      return [];
+    }
+    const selector = `[${this.props.item}]`;
+    const found: Leaving[] = [];
+    for (const each of root.querySelectorAll<HTMLElement>(selector)) {
+      if (each === row) break;
+      const id = this.idOf(each);
+      if (!this.named(id, previous)) continue;
+      const lead = each.previousElementSibling;
+      found.push({
+        by: spaceTaken(each),
+        id,
+        lead:
+          lead === null || lead.matches(selector) ? null : { by: spaceTaken(lead), element: lead },
+      });
+    }
+    return found;
+  }
+
+  /** Whether the host names row `id` as leaving (`leaving`), in the render that last drew the
+   *  rows (`previous`) or in this one: a write can stop naming its rows in the same commit that
+   *  moves them. */
+  private named(id: string, previous: Readonly<ViewportAnchorProps>): boolean {
+    return previous.leaving?.(id) === true || this.props.leaving?.(id) === true;
+  }
+
+  /** The row that keeps the place of `row` once a press of the reader's has taken `row` away: the
+   *  first row after it that the host does not name as leaving, which moves up into its place,
+   *  else the nearest such row before it. Measured as `measure` measures the current row, so the
+   *  rows named above it, `row` among them where it stands before, free their space. Null where
+   *  the host names every other row. Layout reads for that row and the rows named above it
+   *  alone. */
+  private standInFor(row: HTMLElement, previous: Readonly<ViewportAnchorProps>): Place | null {
+    const root = this.root;
+    if (root === null) return null;
+    let before: HTMLElement | null = null;
+    let after: HTMLElement | null = null;
+    let passed = false;
+    for (const each of root.querySelectorAll<HTMLElement>(`[${this.props.item}]`)) {
+      if (each === row) {
+        passed = true;
+      } else if (!row.contains(each) && !this.named(this.idOf(each), previous)) {
+        if (passed) {
+          after = each;
+          break;
+        }
+        before = each;
+      }
+    }
+    const stands = after ?? before;
+    if (stands === null) return null;
+    return {
+      group: this.groupOf(stands),
+      id: this.idOf(stands),
+      leaving: this.leavingAbove(stands, previous),
+      top: stands.getBoundingClientRect().top,
+    };
+  }
+
+  /** How far the rows `leaving` names let `row` move up, now the commit is in: each row no longer
+   *  above `row` - gone from the list, or moved to a place after it - its own `by`, and the
+   *  element before it its `by` too where that element went as well. */
+  private freedAbove(root: HTMLElement, row: HTMLElement, leaving: readonly Leaving[]): number {
+    let freed = 0;
+    for (const { by, id, lead } of leaving) {
+      const now = this.rowById(root, id);
+      const above =
+        now !== null && (row.compareDocumentPosition(now) & Node.DOCUMENT_POSITION_PRECEDING) !== 0;
+      if (above) continue;
+      freed += by;
+      if (lead !== null && !lead.element.isConnected) freed += lead.by;
+    }
+    return freed;
+  }
+
+  /** Where the control that holds the focus in `row` stands against the reader's sight; null
+   *  where the focus is not in `row`. */
+  private focusSight(row: HTMLElement): FocusSight | null {
+    const focused = document.activeElement;
+    if (focused === null || !row.contains(focused)) return null;
+    const { bottom, top } = this.view();
+    const box = focused.getBoundingClientRect();
+    return {
+      focused,
+      meets: box.bottom >= top && box.top <= bottom,
+      whole: box.top >= top && box.bottom <= bottom,
+    };
+  }
+
+  /** Brings the control that holds the focus in `row` whole into sight at its nearest edge where
+   *  the reader can see a part of it, which the page's sight rule allows for a landing partly in
+   *  sight (`components/focus-place.ts`). Uses `scrollToNearest` rather than `scrollIntoView` so
+   *  the root's scroll padding cannot scroll the window past the cut. A control wholly in sight,
+   *  or wholly out of it, is left where it is. */
+  private showFocused(row: HTMLElement): void {
+    const sight = this.focusSight(row);
+    if (sight?.meets && !sight.whole) scrollToNearest(sight.focused);
+  }
+
+  getSnapshotBeforeUpdate(
+    previousProps: Readonly<ViewportAnchorProps>
+  ): Snapshot | PressedRow | null {
+    const snapshot = this.measure(previousProps);
+    // A commit no press of the reader's takes rows away in is one the browser's own anchoring
+    // holds the view through, so a hold still pending from a press ends before it. A press in the
+    // control row takes no row away from above the place it keeps, which is that row.
+    if (
+      snapshot === null ||
+      "row" in snapshot ||
+      (snapshot.leaving.length === 0 && !snapshot.selfLeaving)
+    ) {
+      this.releaseNativeAnchoring();
+    }
+    return snapshot;
+  }
+
+  /** The page's control row (`components/ControlRow.tsx`) and its top, where a press of the
+   *  reader's is live on a control of that row or at its root (`pressMadeIn`), while the row stands
+   *  outside the list in the box that scrolls it - the first control row in that box; else null.
+   *  The press is read from the row rather than from the focus, which WebKit leaves on the body
+   *  after a click on a button. Measured in the Inbox at 390x664 with the window at 30 px: Enter on
+   *  the only chip, or on Clear filters, drew the threads the narrowing had left out above the row
+   *  nearest the list's centre, and holding that row scrolled the window to 1,269 px, which left
+   *  the Filter trigger the control row hands the focus to at -1,140 px, in Chromium, Firefox and
+   *  WebKit. The page is searched for the row only while a press is armed (`pressArmed`), so a
+   *  commit with none searches nothing. */
+  private pressedRow(): PressedRow | null {
+    const root = this.root;
+    if (root === null || !pressArmed()) return null;
+    const row = controlIn(this.scrollerElement() ?? document, CONTROL.controlRow);
+    if (row === null || root.contains(row) || !pressMadeIn(row)) return null;
+    return { row, top: row.getBoundingClientRect().top };
+  }
+
+  /** The row the reader's hand is on and where it stands before the commit, with the rows a
+   *  press of theirs takes away above it, the native anchoring held off where there are any and
+   *  where the press is taking that row itself away, and then the row that stands in for it; or,
+   *  ahead of every row, the control row a press of theirs was made in (`pressedRow`). */
+  private measure(previousProps: Readonly<ViewportAnchorProps>): Snapshot | PressedRow | null {
     const { enabled } = this.props;
     if (enabled !== undefined && !enabled()) return null;
+    const pressed = this.pressedRow();
+    if (pressed !== null) return pressed;
     const current = this.current();
     if (current === null) return null;
     const at = this.groupOf(current.row);
@@ -391,31 +866,110 @@ export class ViewportAnchor extends Component<ViewportAnchorProps, object, Snaps
     // a change no commit of this component's saw may already have moved it (`held`), and
     // measuring again there would take that drift for the place to keep.
     const held = this.heldTop(current.id, at);
+    const leaving = this.leavingAbove(current.row, previousProps);
+    // Whether the press is taking the current row itself away, named in the render that last
+    // drew the rows or in this one, as a row above it is. The reader asked for that row to go,
+    // so it frees its whole height: the browser's own anchoring, which would hold the view
+    // against its going, is turned off for the commit just as for a row above, and the row that
+    // stands in for it keeps its place. Measured in the Inbox at 390x664: a thread's own Dismiss
+    // moved the window from 437 px to 0 in Chromium, Firefox and WebKit, and the view held at 437
+    // with the anchoring off.
+    const selfLeaving = this.named(current.id, previousProps);
+    const top = held ?? current.row.getBoundingClientRect().top;
+    const standIn = selfLeaving ? this.standInFor(current.row, previousProps) : null;
+    const holding = leaving.length > 0 || selfLeaving;
+    if (holding) this.holdNativeAnchoring();
+    const windowTop = holding && this.scrollerElement() === null ? window.scrollY : null;
     return {
       group: at,
       id: current.id,
-      top: held ?? current.row.getBoundingClientRect().top,
+      leaving,
+      selfLeaving,
+      standIn,
+      top,
       via: current.via,
+      windowTop,
     };
   }
 
   componentDidUpdate(
     _previousProps: Readonly<ViewportAnchorProps>,
     _previousState: Readonly<object>,
-    snapshot: Snapshot | null
+    snapshot: Snapshot | PressedRow | null
   ): void {
+    try {
+      this.keepPlace(snapshot);
+    } finally {
+      this.releaseAfterRendering();
+    }
+  }
+
+  /** Puts the row `snapshot` measured back at its top, less the space the rows a press of the
+   *  reader's took away from above it freed, once the commit is in: every other change of height
+   *  above it in that commit, growing or shrinking, is made up for. Where that press took the row
+   *  itself away, the row that stands in for it (`standIn`) is put back the same way. Where the
+   *  window scrolls the rows and the browser moved it in a commit whose anchoring this component
+   *  held off, the window is put back first: Firefox holds the view against the going of the rows
+   *  a press took away while a dialog's scroll lock is on (`useDialog`), `overflow-anchor: none`
+   *  on the root and the body notwithstanding, and moved the window 730 px up at 390 px when the
+   *  Inbox's Decline dialog went with its row. Once those rows have gone, a place kept for the
+   *  hand's row (`held`) that is another row than the one put back - the pointer resting on a row
+   *  while the focus stands in another - is let go, as a press in the control row lets it go
+   *  (`keepPressedRow`). */
+  private keepPlace(snapshot: Snapshot | PressedRow | null): void {
     const root = this.root;
     if (snapshot === null || root === null) return;
-    const element = root.querySelector<HTMLElement>(
-      `[${this.props.item}="${CSS.escape(snapshot.id)}"]`
-    );
-    if (element === null) return;
+    if ("row" in snapshot) {
+      this.keepPressedRow(snapshot);
+      return;
+    }
+    const { windowTop } = snapshot;
+    if (windowTop !== null && Math.abs(window.scrollY - windowTop) > 0.5) {
+      this.scrollBy(windowTop - window.scrollY);
+    }
+    const current = this.rowById(root, snapshot.id);
+    const place = current === null ? snapshot.standIn : snapshot;
+    const element = current ?? (place === null ? null : this.rowById(root, place.id));
+    if (place === null || element === null) return;
     const { group } = this.props;
-    if (group !== undefined && element.getAttribute(group) !== snapshot.group) return;
-    const delta = element.getBoundingClientRect().top - snapshot.top;
-    if (delta === 0) return;
-    this.scrollBy(delta);
-    this.restampHeld(snapshot.id, snapshot.top);
+    if (group !== undefined && element.getAttribute(group) !== place.group) return;
+    const freed = this.freedAbove(root, element, place.leaving);
+    const top = place.top - freed;
+    const delta = element.getBoundingClientRect().top - top;
+    if (delta === 0 && freed === 0) return;
+    // Whether the control that holds the focus in this row stands whole in the reader's sight just
+    // before this component's own scroll: read once the commit is in, with every landing a child
+    // made in it, so a control it finds whole and leaves cut was cut by that scroll alone.
+    const wholeBefore = delta !== 0 && this.focusSight(element)?.whole === true;
+    if (delta !== 0) this.scrollBy(delta);
+    this.restampHeld(place.id, place.top, top);
+    // The rows the press took away moved every row after them up, as the press asked, and a place
+    // kept for another row is the place it had before they went: the resize this commit makes of
+    // the list would put that row back there (`contentResized`), and scroll the whole list back by
+    // their height. In the Inbox at 1440x900, with the pointer resting on a row below the rows the
+    // bar's Snooze took and the focus on the mark the bar's hand-off parked it on, that moved the
+    // row the hand-off had just landed on by 134 px (builds Job `infra-3135-i-h5-g6tnd`).
+    if (freed > 0 && this.held?.id !== place.id) this.held = null;
+    // The rows a press of the reader's took away moved this row up, and a focus in it must end
+    // in the reader's sight. So must a focus this component's own scroll took out of it: the
+    // scroll keeps the row's place, not the focus's. Measured in WebKit in the Inbox at 390x664:
+    // after the bar's Dismiss the hand-off landed the focus on a mark at the window's bottom edge,
+    // and the scroll of -1.33 px that kept its row's place left the mark 0.6 px past that edge.
+    // Where this component did not scroll, or its scroll found the focus cut or out of sight, the
+    // second reason adds nothing.
+    if ((freed > 0 && snapshot.via === "focus") || wholeBefore) this.showFocused(element);
+  }
+
+  /** Puts the control row a press of the reader's was made in (`pressedRow`) back at its top once
+   *  the commit is in, so what the press changed below it moves nothing above it, and a change
+   *  above it is made up for. The place kept for the hand's row (`held`) is let go: the commit
+   *  moved that row with the list, as the press asked, and a resize after it must not put the row
+   *  back (`contentResized`). */
+  private keepPressedRow({ row, top }: PressedRow): void {
+    this.held = null;
+    if (!row.isConnected) return;
+    const delta = row.getBoundingClientRect().top - top;
+    if (delta !== 0) this.scrollBy(delta);
   }
 
   render(): ReactNode {

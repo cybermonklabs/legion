@@ -3,11 +3,14 @@ import { type ReactNode, useCallback, useEffect, useLayoutEffect, useRef } from 
 
 import type { ArtifactOwner, DeclineAskInput, WriteBounds } from "../../api/client";
 import type { Ask } from "../../api/types";
+import { focusableIn, focusIntoView } from "../../components/focus-place";
+import { heldPress } from "../../components/held-press";
 import { QueryError } from "../../components/QueryError";
 import { Dot, KindBullet } from "../../components/RowMarks";
 import { TruncatedText } from "../../components/TruncatedText";
 import { useTooltips } from "../../components/tooltips";
 import { submitOnModifiedEnter } from "../../hooks/submitOnModifiedEnter";
+import { inputMethodKey } from "../../lib/input-method-key";
 import {
   borderDefault,
   cardHoverBorder,
@@ -39,19 +42,21 @@ import { UnsentBox } from "../inbox/AskThread";
 import type { OwnedAsk } from "../inbox/ask-name";
 import { askTurnHolder } from "../inbox/ask-turn";
 import { askUrgency } from "../inbox/ask-urgency";
-import type { AskAnswerForm } from "../inbox/useAskAnswerForm";
+import { inboxActionMark } from "../inbox/inbox-action-mark";
+import { useOptionDigits } from "../inbox/option-digits";
+import { type AskAnswerForm, clarificationRefusal } from "../inbox/useAskAnswerForm";
 import { AgentName, useAgentText } from "../refs/AgentName";
 import { Timestamp } from "../refs/Timestamp";
 import { textSourceOf } from "../refs/text-references";
+import { focusOnDocument } from "../shell/roving";
 import type { DwellRef } from "../shell/useDwell";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
-import { stoppedNote } from "../writes/useKeyedWrite";
 import { AskAnchorHeader } from "./AskAnchorLink";
 import { AskApprovalLink } from "./AskApprovalLink";
 import { AskBlockLink } from "./AskBlockLink";
 import { AskCompletionCard, type AskFrame, OrphanedAnchorNotice } from "./AskCompletionCard";
 import { AskHandOn } from "./AskHandOn";
-import { AskChoiceRow } from "./AskOptionRow";
+import { type AskApprovalAction, AskChoiceRow } from "./AskOptionRow";
 import { AskAgent } from "./ask-agent";
 import {
   ASK_APPROVAL_WORDS,
@@ -99,19 +104,49 @@ const ON_PAGE = {
   warning: pageStateText.waiting,
 } as const;
 
-/** Moves focus from inside the form to the nearest focusable ancestor (in the Inbox, the row, so
- *  j/k/Escape still start from the same place) instead of letting it fall to the document body. */
+/** The mark of each of an approval request's two options, by its label: the labels are the
+ *  server's own (`docs.ApprovalOptionApprove`, `docs.ApprovalOptionRequestChanges`), and the
+ *  Inbox's `a` and Shift+R find the inputs by the mark (`data-ask-approval`). */
+const APPROVAL_ACTIONS: Readonly<Record<string, AskApprovalAction>> = {
+  Approve: "approve",
+  "Request changes": "request-changes",
+};
+
+/** Moves focus from inside the form to the form's nearest focusable ancestor instead of letting
+ *  it fall to the document body, so the Inbox's keys (j, k, Enter and Escape by default) still
+ *  start from the same place: whoever caused the loss, and with no scroll. In the Inbox's list
+ *  layout that ancestor is the ask's own row, the reader's own place, so the focus goes to no
+ *  other row; a row whose ask was answered or withdrawn elsewhere stays in the list, with the
+ *  card's closed state, while it holds the focus. In the reading column it is the column's own
+ *  focus stop. The Inbox's keys answer from either. Where the loss is the reader's own answer
+ *  landing, the Inbox then hands them on to the item after it while they have not moved on (R8,
+ *  `pane-selection.ts`'s `landHandOff`), whose focus effect runs after every commit, so its
+ *  target wins over this hand-off. */
 function handOffFocus(form: HTMLElement): void {
   if (!form.contains(document.activeElement)) return;
   form.parentElement?.closest<HTMLElement>("[tabindex]")?.focus({ preventScroll: true });
 }
 
-/** The form's callback ref. When the form leaves while a control inside it has focus - the ask
- *  was answered or resolved elsewhere and the body swaps to its record - focus is handed off
- *  without any event; React detaches a ref before removing its node, so the form is still in the
- *  document when this cleanup runs. The form is also kept in `formRef` for the disabled-control
- *  hand-off below. The callback must be stable across renders: React re-runs a changed callback
- *  ref's cleanup on every commit, and that cleanup moves focus. */
+/** The control Tab reaches first in `form`: its first control the focus can reach
+ *  (`focusableIn`), save that in a group of options Tab stops on the option that is picked, where
+ *  one is. */
+function firstTabStop(form: HTMLFormElement): HTMLElement | undefined {
+  const first = focusableIn(form)[0];
+  if (!(first instanceof HTMLInputElement) || first.type !== "radio") return first;
+  const picked = [...form.querySelectorAll<HTMLInputElement>('input[type="radio"]:checked')].find(
+    (option) => option.name === first.name
+  );
+  return picked ?? first;
+}
+
+/** The form's callback ref. When the form leaves while a control inside it has focus - the body
+ *  swapping to its record once the ask is answered, or resolved elsewhere - its cleanup runs the
+ *  hand-off without any event, which moves the focus to the form's nearest focusable ancestor,
+ *  the list layout's row or the reading column's focus stop, with no scroll (`handOffFocus`);
+ *  React detaches a ref before removing its node, so the form is still in the document when this
+ *  cleanup runs. The form is also kept in `formRef` for the disabled-control hand-off below. The
+ *  callback must be stable across renders: React re-runs a changed callback ref's cleanup on
+ *  every commit, and that cleanup can move focus. */
 function useFormRef(): [
   { current: HTMLFormElement | null },
   (form: HTMLFormElement | null) => (() => void) | undefined,
@@ -271,10 +306,13 @@ export function AskBody({
     changing,
     choiceShown,
     clarification,
+    clarificationStillOut,
     completed,
-    disabledWhileOut,
     displayedAsk,
+    dropReasonPick,
     edits,
+    focusFormOnChange,
+    held,
     isApproval,
     mutation,
     nothingToAskBack,
@@ -282,7 +320,6 @@ export function AskBody({
     reasonFieldShownBefore,
     reasonRequired,
     refusedWhileOut,
-    refusing,
     selectRealOption,
     selected,
     sendAnswer,
@@ -303,7 +340,8 @@ export function AskBody({
   // the one its block is on, the one it is anchored to, else its issue's spec (`refs.ScopeOf`).
   const source = textSourceOf("ask", displayedAsk.id, displayedAsk.issue_key);
   const uploadOwner = askUploadOwner(ask, displayedAsk, owner);
-  const uploading = upload.pending > 0;
+  // An upload holds Answer and Ask back only within its deadline (`DraftUpload.holding`).
+  const uploading = upload.holding > 0;
   const answerFieldRef = useRef<MentionFieldHandle | null>(null);
   // Picking Request changes moves the person straight to the field the server insists on. The
   // form keeps whether the field stood for a reason at the last commit
@@ -316,12 +354,14 @@ export function AskBody({
       answerFieldRef.current?.textarea()?.focus();
     }
   }, [reasonRequired, reasonFieldShownBefore]);
-  // A control that disables itself under the reader's focus - Ask back while sending and once
-  // its text is sent - would have the browser drop focus to the document body (in the Inbox, out
-  // of the row, which then lets the row go) with nothing the body could act on afterwards; the
-  // same hand-off as a vanishing form, in the commit that disables it, before the browser looks.
-  // While the form refuses a press inside `NoTooltips` (`refusing`, `useAskAnswerForm`), its
-  // controls are `aria-disabled`, not `disabled`, so this moves no focus then.
+  // The digit each option row draws where an Inbox holds this body in hand (`option-digits.ts`).
+  const digitOf = useOptionDigits(displayedAsk.id);
+  // A control that disables itself under the reader's focus - Ask back once its text is sent and
+  // the form no longer holds - would have the browser drop focus to the document body (in the
+  // Inbox, out of the row, which then lets the row go) with nothing the body could act on
+  // afterwards; the same hand-off as a vanishing form, in the commit that disables it, before the
+  // browser looks. While the form holds (`held`, `useAskAnswerForm`), its controls are
+  // `aria-disabled`, not `disabled`, so this moves no focus then.
   const [formRef, trackForm] = useFormRef();
   useLayoutEffect(() => {
     const form = formRef.current;
@@ -330,16 +370,31 @@ export function AskBody({
       handOffFocus(form);
     }
   });
+  // A card mounted in `change` mode is one the reader's press of Change answer opened in the
+  // place of the button they pressed (the Answers page), which took the focus away with it to the
+  // page's body. The form takes that focus as it opens, on the control Tab reaches first in it
+  // (`firstTabStop`), and shows that control whole with the least scroll (`focusIntoView`): the
+  // form opens under the pressed row, which can stand at the window's foot. A focus the reader has
+  // put elsewhere while the ask was being read stays where they put it. The form keeps whether it
+  // still owes that focus (`focusFormOnChange`), so a body drawn again for it moves none.
+  useLayoutEffect(() => {
+    if (!changing || !focusFormOnChange.current) return;
+    focusFormOnChange.current = false;
+    const form = formRef.current;
+    if (form === null || !focusOnDocument()) return;
+    const first = firstTabStop(form);
+    if (first !== undefined) focusIntoView(first);
+  }, [changing, focusFormOnChange, formRef]);
   const tooltips = useTooltips();
-  const holdsFocus = !tooltips;
-  // Ask back instead takes the focus as it is drawn. Outside `NoTooltips` its callback is a new
-  // one at each render, which focuses it again at each render, as on `main`. Inside it is this
-  // one callback, stable across renders as `useFormRef`'s is, which focuses it once: a focus
-  // taken at each render would move the reader's focus while a write is out - from Answer with
-  // it anyway, say, whose answer is out. The choice leaves the page, and the button with it, as
-  // the clarification lands outside `NoTooltips`, and inside once the ask is read again after it;
-  // a focus the button still holds then goes where the form's own hand-off puts it, not to the
-  // body.
+  // Ask back instead takes the focus as it is drawn, once, through this one callback, stable
+  // across renders as `useFormRef`'s is: a focus taken at each render would move the reader's
+  // focus while a write is out - from Answer with it anyway, say, whose answer is out. The choice
+  // leaves the page, and the button with it, once the form stops holding after the clarification
+  // lands; a focus the button still holds then is handed off as the form's is (`handOffFocus`),
+  // whoever caused the loss: in the reading column to the column's own focus stop, in the list
+  // layout to the ask's own row. The button is held, never `disabled`, while the clarification is
+  // out, so no other hand-off takes that focus first. A question back hands the reader on to no
+  // next item: the Inbox's R8 hand-off follows an answer, never a question back.
   const focusAskBackInstead = useCallback(
     (button: HTMLButtonElement | null) => {
       if (button === null) return undefined;
@@ -400,18 +455,18 @@ export function AskBody({
   const answerField = (
     <>
       {/* Inside `NoTooltips` the box is the page's (`ON_PAGE.field`), with its label and the line
-          under it in the page's words, and while the body refuses it is `readOnly` rather than
-          `disabled`, and takes no Ctrl+Enter, paste or drop (`refusing`). Outside it is
-          `disabled` while the write is out, as on `main`. The Inbox's Enter puts the caret in the
-          box by its `data-ask-answer` (`askAnswer`), as its 1 to 9 find an option by
-          `data-ask-option` (`Inbox.tsx`). */}
+          under it in the page's words. While the form holds the box is held (`held`): it keeps
+          its focus and its text, takes no typing, and its picker is shut, and it takes no
+          Ctrl+Enter, paste or drop. The Inbox's Enter puts the caret in the box by its
+          `data-ask-answer` (`askAnswer`), as its digits find an option by `data-ask-option`
+          (`useInboxKeymap.ts`). */}
       <MentionField
         askAnswer={true}
         body={answerText}
-        className="font-normal"
-        disabled={disabledWhileOut}
+        className="font-normal aria-disabled:opacity-50"
         fieldClassName={tooltips ? undefined : ON_PAGE.field}
         fieldRef={answerFieldRef}
+        held={held}
         hintClassName={tooltips ? undefined : `text-xs ${ON_PAGE.quiet}`}
         issueKey={displayedAsk.issue_key ?? undefined}
         label={
@@ -428,23 +483,32 @@ export function AskBody({
           setQuestionChoice(false);
         }}
         onDrop={
-          uploadOwner === undefined
+          uploadOwner === undefined || held
             ? undefined
-            : (event) => {
-                if (!refusing) upload.drop(event, uploadOwner, ask.id);
-              }
+            : (event) => upload.drop(event, uploadOwner, ask.id)
         }
-        onKeyDown={(event) => submitOnModifiedEnter(event, { disabled: uploading || refusing })}
+        onKeyDown={(event) => {
+          // Escape in the reason an approval's Request changes asks for lets go of that pick,
+          // and sends nothing: the Inbox's own Escape then moves the focus one level out - to the
+          // row beside the column, and to the view's scroller in the reading view below 1280 px
+          // (`useInboxKeymap`'s `inbox.leave-reading`) - which is why this neither stops the key
+          // nor calls `preventDefault`. The box stays, with what was typed in it, so nothing
+          // under the reader's focus unmounts. The Escape that ends an input method's
+          // composition cancels what the reader was composing and keeps the pick: Safari sends
+          // it with `isComposing` false and keyCode 229 (`inputMethodKey`). An Escape that closes
+          // the open picker never reaches here (`MentionField`), so it keeps the pick too.
+          if (event.key === "Escape" && reasonRequired && !inputMethodKey(event.nativeEvent)) {
+            dropReasonPick();
+          }
+          submitOnModifiedEnter(event, { disabled: uploading || held });
+        }}
         onPaste={
-          uploadOwner === undefined
+          uploadOwner === undefined || held
             ? undefined
-            : (event) => {
-                if (!refusing) upload.paste(event, uploadOwner, ask.id);
-              }
+            : (event) => upload.paste(event, uploadOwner, ask.id)
         }
         placeholder={answerPlaceholder}
         project={askDocumentProject(ask, displayedAsk, owner)}
-        readOnly={holdsFocus && refusing}
         rows={2}
         writing={dispatchWritingBox("ask-answer", "ask-answer")}
       />
@@ -453,12 +517,12 @@ export function AskBody({
   );
   const submitButton = (
     <button
-      // While nothing can be sent it is `disabled` alone, on both sides of `NoTooltips`; while the
-      // body refuses, that is read from the form as the refusal found it (`held`).
+      // While nothing can be sent it is `disabled` alone; while the body holds, that is read from
+      // the form as the hold found it (`refusedForm`).
       aria-disabled={cannotAnswer || uploading ? undefined : refusedWhileOut}
       aria-describedby={submitHint === undefined ? undefined : submitHintId}
       className={`min-h-11 rounded-lg px-3 py-2 text-sm font-semibold ${filledLook}`}
-      disabled={cannotAnswer || disabledWhileOut || uploading}
+      disabled={cannotAnswer || uploading}
       title={tooltips ? submitHint : undefined}
       type="submit"
       {...marks?.pageChrome}
@@ -485,25 +549,19 @@ export function AskBody({
   const answerActions = choiceShown ? (
     <fieldset aria-label={ASK_FORM_WORDS.question_shaped} className="flex gap-2">
       <button
-        aria-disabled={refusedWhileOut}
         className={`min-h-11 rounded-lg px-3 py-2 text-sm font-semibold ${filledLook}`}
-        disabled={disabledWhileOut}
-        onClick={() => {
-          if (!refusing) sendClarification();
-        }}
-        ref={tooltips ? (node) => node?.focus() : focusAskBackInstead}
+        {...inboxActionMark("inbox.ask-back-instead")}
+        {...heldPress(held, sendClarification)}
+        ref={focusAskBackInstead}
         type="button"
         {...marks?.pageChrome}
       >
         {clarification.isPending ? ASK_FORM_WORDS.sending : ASK_FORM_WORDS.ask_back_instead}
       </button>
       <button
-        aria-disabled={refusedWhileOut}
-        className={`min-h-11 rounded-lg border px-3 py-2 text-sm font-medium ${secondaryLook}`}
-        disabled={disabledWhileOut}
-        onClick={() => {
-          if (!refusing) sendAnswer(answerText);
-        }}
+        className={`min-h-11 rounded-lg border px-3 py-2 text-sm font-medium refused:cursor-not-allowed refused:opacity-50 ${secondaryLook}`}
+        {...inboxActionMark("inbox.answer-anyway")}
+        {...heldPress(held, () => sendAnswer(answerText))}
         type="button"
         {...marks?.pageChrome}
       >
@@ -516,12 +574,9 @@ export function AskBody({
         {submitButton}
         {changing ? (
           <button
-            aria-disabled={refusedWhileOut}
-            className={`min-h-11 rounded-lg border px-3 py-2 text-sm font-medium ${secondaryLook}`}
-            disabled={disabledWhileOut}
-            onClick={() => {
-              if (!refusing) cancelChanging();
-            }}
+            className={`min-h-11 rounded-lg border px-3 py-2 text-sm font-medium refused:cursor-not-allowed refused:opacity-50 ${secondaryLook}`}
+            {...inboxActionMark("inbox.cancel")}
+            {...heldPress(held, cancelChanging)}
             type="button"
             {...marks?.pageChrome}
           >
@@ -529,14 +584,15 @@ export function AskBody({
           </button>
         ) : (
           <button
-            // While it has no text to send it is `disabled` alone, on both sides of `NoTooltips`;
-            // while the body refuses, that is read from the form as the refusal found it (`held`),
-            // so the text the landing clears leaves it refused and not `disabled`.
+            // While it has no text to send it is `disabled` alone; while the body holds, that is
+            // read from the form as the hold found it (`refusedForm`), so the text the landing
+            // clears leaves it held and not `disabled`.
             aria-disabled={nothingToAskBack || uploading ? undefined : refusedWhileOut}
-            className={`min-h-11 rounded-lg border px-3 py-2 text-sm font-medium ${secondaryLook}`}
-            disabled={nothingToAskBack || disabledWhileOut || uploading}
+            className={`min-h-11 rounded-lg border px-3 py-2 text-sm font-medium refused:cursor-not-allowed refused:opacity-50 ${secondaryLook}`}
+            {...inboxActionMark("inbox.ask-back")}
+            disabled={nothingToAskBack || uploading}
             onClick={() => {
-              if (!refusing) sendClarification();
+              if (!held) sendClarification();
             }}
             type="button"
             {...marks?.pageChrome}
@@ -745,33 +801,34 @@ export function AskBody({
       {/* The options, and under them the answer box, which always stands in place. */}
       <form
         className="mt-3 space-y-3"
-        // While the body refuses a submit sends nothing: inside `NoTooltips` a press of Answer,
-        // or Enter in an option, still reaches it then (`refusing`).
+        // While the body holds a submit sends nothing: a press of Answer, or Enter in an option,
+        // still reaches it then (`held`).
         onSubmit={(event) => {
-          if (refusing) event.preventDefault();
+          if (held) event.preventDefault();
           else submit(event);
         }}
         ref={trackForm}
         {...marks?.authorText}
       >
         {(displayedAsk.options ?? []).length === 0 ? null : (
-          // Inside `NoTooltips`, while the body refuses, the options are refused by their group's
-          // `aria-disabled`, which ARIA passes to each option in it: an option row puts no
-          // attribute of its own on its input (`AskChoiceRow`).
+          // While the body holds, the options are held by their group's `aria-disabled`, which
+          // ARIA passes to each option in it, and a pick of one changes nothing: an option row puts
+          // no attribute of its own on its input (`AskChoiceRow`).
           <fieldset aria-disabled={refusedWhileOut} className="min-w-0 space-y-2">
             <legend className="sr-only" {...marks?.pageChrome}>
               {ASK_FORM_WORDS.options}
             </legend>
-            {(displayedAsk.options ?? []).map((option) => (
+            {(displayedAsk.options ?? []).map((option, index) => (
               <AskChoiceRow
+                approval={isApproval ? APPROVAL_ACTIONS[option.label] : undefined}
                 checked={selected.includes(option.label)}
-                disabled={disabledWhileOut}
+                digit={digitOf(index)}
                 hotkey
                 key={option.label}
                 multiple={displayedAsk.multiple}
                 name={`ask-${displayedAsk.id}`}
                 onChange={() => {
-                  if (!refusing) selectRealOption(option.label);
+                  if (!held) selectRealOption(option.label);
                 }}
                 option={option}
                 palette={palette}
@@ -782,11 +839,18 @@ export function AskBody({
             {isApproval ? null : (
               <AskChoiceRow
                 checked={otherSelected}
-                disabled={disabledWhileOut}
+                digit={digitOf((displayedAsk.options ?? []).length)}
+                hotkey
                 multiple={displayedAsk.multiple}
                 name={`ask-${displayedAsk.id}`}
                 onChange={() => {
-                  if (!refusing) toggleOther();
+                  if (held) return;
+                  toggleOther();
+                  // A pick of Other is a move into the box its words go in, by a click or by the
+                  // Inbox's digit, which presses the same input (R17); the box always stands in
+                  // place under the options. A multiple-choice Other turned off asks for no
+                  // words, so it moves nobody.
+                  if (!otherSelected) answerFieldRef.current?.textarea()?.focus();
                 }}
                 option={{ label: ASK_FORM_WORDS.other }}
                 palette={palette}
@@ -798,6 +862,15 @@ export function AskBody({
         )}
         {answerField}
         {answerActions}
+        {clarificationStillOut ? (
+          <p
+            className={`text-sm ${tooltips ? textMutedOnSurface : ON_PAGE.quiet}`}
+            role="status"
+            {...marks?.pageChrome}
+          >
+            {`${choiceShown ? ASK_FORM_WORDS.ask_back_instead : ASK_FORM_WORDS.ask_back} ${ASK_FORM_WORDS.still_sending}`}
+          </p>
+        ) : null}
         {answerFailure === null ? null : (
           <QueryError
             message={answerFailure.message}
@@ -805,21 +878,13 @@ export function AskBody({
             retrying={mutation.isPending}
           />
         )}
-        {clarification.isError ? (
+        {clarification.error === null ? null : (
           <QueryError
-            message={
-              // A question back the reader stopped may have been sent, and Retry makes that very
-              // press again (`retryLast`).
-              stoppedNote(
-                clarification,
-                ASK_FORM_WORDS.stopped.clarification,
-                ASK_FORM_WORDS.stopped.clarification_done
-              ) ?? ASK_FORM_WORDS.clarification_failed
-            }
+            message={clarificationRefusal(clarification)}
             onRetry={() => submitGuard.retryLast(clarification)}
             retrying={clarification.isPending}
           />
-        ) : null}
+        )}
       </form>
       {/* The person's way out of a question they will not answer, under the form that answers
           it. An approval request draws none: it is answered with Approve or Request changes. */}

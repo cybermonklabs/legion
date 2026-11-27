@@ -1,44 +1,26 @@
 import { mentionDrawn } from "@legion/contracts";
 import type { EditorReferences, OfferedReference, ReferenceTarget } from "@legion/proof-editor";
-import { useQueryClient } from "@tanstack/react-query";
-import {
-  type MouseEvent as ReactMouseEvent,
-  type ReactNode,
-  useCallback,
-  useEffect,
-  useMemo,
-  useState,
-} from "react";
-import { useNavigate } from "react-router-dom";
+import { type ReactNode, useCallback, useEffect, useMemo, useState } from "react";
 
 import { isPartyRoute } from "../refs/party-references";
-import {
-  fetchReferenceHref,
-  needsSpecSlug,
-  useReferenceLabel,
-  useReferenceTarget,
-} from "../refs/reference-target";
+import { useReferenceLabel, useReferenceTarget } from "../refs/reference-target";
 import { RecordIssue } from "../refs/role-holders";
-import {
-  type DispatchReferenceRoute,
-  parseNodeReference,
-  referenceHref,
-  shortForm,
-} from "../refs/routes";
+import { type DispatchReferenceRoute, referenceHref, shortForm } from "../refs/routes";
 import { readTextReferences, type TextSource } from "../refs/text-references";
 import { useTextReferences } from "../refs/useTextReferences";
 import type { EditorHandle } from "./editor";
 
 /**
- * What a document editor shows for the references its own text holds, and what a click on one
- * opens. The live editor and a past version both draw them, and both read them the one way the
- * dashboard reads what a text cites (`features/refs/text-references.ts`), so a bare issue key, a
- * `#id`, a bare `dispatch://` reference and a link whose text is its own address resolve under
- * exactly the rules a rendered body resolves them under. A party's mention - a link whose words
- * open with the mention sign and whose address names a party (`@legion/contracts`'s
- * `referenceReading`) - reads as that sign and the party's current name (`mentionDrawn`), as it
- * does in a rendered body (`RefLink`); a link whose text its author wrote another way keeps
- * those words.
+ * What a document editor shows for the references its own text holds. The live editor and a past
+ * version both draw them, and both read them the one way the dashboard reads what a text cites
+ * (`features/refs/text-references.ts`), so a bare issue key, a `#id`, a bare `dispatch://`
+ * reference and a link whose text is its own address resolve under exactly the rules a rendered
+ * body resolves them under. A party's mention - a link whose words open with the mention sign and
+ * whose address names a party (`@legion/contracts`'s `referenceReading`) - reads as that sign and
+ * the party's current name (`mentionDrawn`), as it does in a rendered body (`RefLink`); a link
+ * whose text its author wrote another way keeps those words. Each title links to its target's
+ * page, and the editor opens it through the page's link opener, as it opens every link of the
+ * document (`features/refs/link-open.ts`).
  *
  * The editor owns the positions and this owns the grammar: the plugin hands each text block's own
  * text to `scan`, which is the one reader, and offers the distinct references it found, each a
@@ -239,10 +221,15 @@ export function DocumentReferences({
         continue;
       }
       const { length, reference, route } = one;
+      // The page the title links to, which a new tab opens; a click opens the reference itself
+      // through the page's link opener (`features/refs/link-open.ts`), which reads the spec's
+      // slug a pinned block of it needs, as this path does not. A person opens no page, so their
+      // name is drawn as words and no link (R5).
+      const path = referenceHref(route);
       (one.mention ? answers.mentions : answers.targets).set(one.words, {
-        // A person opens no page, so their name is drawn as words and no link (R5).
-        href: route.kind === "person" ? undefined : reference,
+        href: path === undefined ? undefined : reference,
         length,
+        path,
         title,
         titleKey: route.kind === "issue" ? route.key : undefined,
       });
@@ -278,68 +265,5 @@ export function DocumentReferences({
         <ReferenceTitle key={reference} onName={onName} reference={reference} route={route} />
       ))}
     </RecordIssue.Provider>
-  );
-}
-
-/** A rendered link mark's `dispatch://` target, if any. `@legion/proof-editor`'s Markdown
- * serializer sanitizes a `dispatch://` href to `""` (Milkdown's link sanitizer only allows
- * http/https/mailto/tel/ftp — a document strangers can edit should never render an
- * attacker-chosen non-http scheme as a clickable href) and tags the anchor with
- * `data-dispatch-href` carrying the original target instead; a title the editor draws over a
- * reference carries the same attribute. */
-function dispatchHrefOf(anchor: Element): string | null {
-  const href = anchor.getAttribute("data-dispatch-href") ?? anchor.getAttribute("href");
-  return href?.startsWith("dispatch://") ? href : null;
-}
-
-/**
- * What a click inside a document's container does with a `dispatch://` link: the editor's own
- * link marks and the titles it draws over the references in its text both carry their target in
- * `data-dispatch-href`, and both open it in the dashboard. A past version's container takes the
- * same handler as the live editor's, so a reference in a version a reader is reading opens what
- * it names.
- */
-export function useReferenceClick(): (event: ReactMouseEvent<HTMLElement>) => void {
-  const navigate = useNavigate();
-  const queryClient = useQueryClient();
-  return useCallback(
-    (event: ReactMouseEvent<HTMLElement>) => {
-      // A modifier click (open in new tab/window) or a drag-selection that happens to end
-      // on the link should reach the browser/editor's own handling, not steal the click.
-      const modified = event.ctrlKey || event.metaKey || event.shiftKey || event.altKey;
-      if (event.button !== 0 || modified) {
-        return;
-      }
-      const selection = window.getSelection();
-      if (selection !== null && !selection.isCollapsed) {
-        return;
-      }
-      const anchor = (event.target as HTMLElement).closest<HTMLAnchorElement>("a");
-      // The link's target is a node its author named, and opening it is a read, so it is read
-      // as a node's reference, whatever the length of its name.
-      const target = anchor === null ? null : dispatchHrefOf(anchor);
-      const route = target === null ? undefined : parseNodeReference(target);
-      if (route === undefined) {
-        return;
-      }
-      event.preventDefault();
-      // A block of a spec pinned to a version opens that version under the spec's slug, which
-      // only the issue names; every other reference's href is known at once. A reference that
-      // opens no page of this dashboard - a person, whom nothing shows (R5) - goes nowhere:
-      // the click is taken all the same and stops here, rather than navigating to the empty
-      // path, which React Router reads as this page without the version and the block the
-      // reader is on.
-      if (needsSpecSlug(route)) {
-        void fetchReferenceHref(queryClient, route).then((href) => {
-          if (href !== undefined) navigate(href);
-        });
-        return;
-      }
-      const href = referenceHref(route);
-      if (href !== undefined) {
-        navigate(href);
-      }
-    },
-    [navigate, queryClient]
   );
 }

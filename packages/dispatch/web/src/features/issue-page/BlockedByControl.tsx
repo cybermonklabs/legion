@@ -2,6 +2,7 @@ import { type FormEvent, type ReactNode, type RefObject, useEffect, useRef } fro
 import { Link } from "react-router-dom";
 
 import type { IssueDetails } from "../../api/types";
+import { inputMethodKey } from "../../lib/input-method-key";
 import {
   pageFailedText,
   pageField,
@@ -9,6 +10,7 @@ import {
   pageInkText,
   pageQuietText,
 } from "../../theme/classes";
+import { propertyControl } from "../issue/property-control";
 import { buildIssuePath } from "../refs/routes";
 import { focusOnDocument } from "../shell/roving";
 import { blockedByControlName } from "./details-names";
@@ -132,9 +134,10 @@ export function BlockedByControl({
         )}
         {isClosed || editing ? null : (
           <button
-            // The name is `blockedByControlName`'s, which the add menu reaches this control by
-            // rather than drawing a second copy of it (`IssueAddMenu.tsx`).
             aria-label={blockedByControlName(issue.key, blockers.length)}
+            // The add menu reaches this control by this mark rather than drawing a second copy of
+            // it, and Details' Retry hands the focus back to it by the same mark (`property-control.ts`).
+            {...propertyControl("blocked_by", issue.key)}
             className={pageHeaderControl}
             onClick={open}
             ref={control}
@@ -150,8 +153,9 @@ export function BlockedByControl({
           className="flex min-w-0 flex-wrap items-center gap-2"
           onKeyDown={(event) => {
             // A press that ends an IME composition gives up what the reader was composing, not
-            // the editor: the form leaves it alone, unmarked, as the key registry does.
-            if (event.key !== "Escape" || event.nativeEvent.isComposing) return;
+            // the editor: the form leaves it alone, unmarked, as the key registry does. Safari
+            // sends it with `isComposing` false and keyCode 229 (`inputMethodKey`).
+            if (event.key !== "Escape" || inputMethodKey(event.nativeEvent)) return;
             // Escape anywhere in the editor, its box, its Save or its Cancel, is Cancel's, and is
             // held as Cancel is while the save is out. It is marked taken: the page's own Escape,
             // which closes Details and the phone's Details sheet with it, passes over a press a

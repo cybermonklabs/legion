@@ -13,6 +13,7 @@ import {
 import { useNavigate } from "react-router-dom";
 
 import type { Artifact, IssueDetails } from "../../../api/types";
+import { focusIntoView } from "../../../components/focus-place";
 import {
   focusVisibleRing,
   pageInkText,
@@ -28,6 +29,7 @@ import {
 } from "../../refs/reference-names";
 import { parseNodeReference } from "../../refs/routes";
 import { focusOnDocument } from "../../shell/roving";
+import { FoldMark } from "../FoldMark";
 import { chipName } from "../first-line";
 import { useSetFocusedNode } from "../focused-node";
 import { focusedNodeOf, type OutlineRequest, useReleaseFocus } from "../IssueTree";
@@ -371,10 +373,13 @@ export function DecisionsFilterBody({
     },
     [partOf]
   );
+  // The row takes the focus with no scroll of the browser's own, which would centre a row not
+  // wholly in view: it brings itself on screen by the page's one rule, only where the reader
+  // cannot see it whole, as it takes the focus (`useRowOnScreen`).
   useEffect(() => {
     if (wanted === undefined) return;
     setWanted(undefined);
-    rowOf(body.current, wanted)?.focus();
+    rowOf(body.current, wanted)?.focus({ preventScroll: true });
   }, [wanted]);
 
   // What the page asked for, each ask acted on once. The page holds what an outline or a view
@@ -412,7 +417,9 @@ export function DecisionsFilterBody({
   // focus on the first row the list draws of a question it answers, and lands nowhere where the
   // list draws none of them. A decision the list draws before the asks read has answered may
   // yet turn out to be a write-up, which leaves the list once it does, so the address lands on
-  // no decision until the seam can tell.
+  // no decision until the seam can tell. The row takes the focus with no scroll of the browser's
+  // own, as every hand-off of the body gives it: it brings itself on screen as it takes the focus
+  // (`useRowOnScreen`).
   const taken = useRef<string | undefined>(undefined);
   useEffect(() => {
     if (reveal === undefined || taken.current === reveal) return;
@@ -429,7 +436,7 @@ export function DecisionsFilterBody({
     const row = rowOf(body.current, entry.node.id);
     if (row === null) return;
     taken.current = reveal;
-    row.focus();
+    row.focus({ preventScroll: true });
   }, [drawn, partOf, reveal, writeUps]);
   // Whether the list draws the node the address names, which the page is told
   // (`onRevealDrawn`), so that where it does not the outline is drawn in the view's place and
@@ -468,13 +475,14 @@ export function DecisionsFilterBody({
   // either the focus the tree holds (`slots/stage.tsx`), which the control would hold from
   // them. Every place that hands the control the focus on its own goes through here, so that
   // rule is kept in one place. The tab stop is looked for in the whole list, since the foot's
-  // rows stand after the tree element and are its rows all the same (`aria-owns`).
+  // rows stand after the tree element and are its rows all the same (`aria-owns`). The control
+  // scrolls to its nearest edge only where the reader cannot see it whole (`focusIntoView`), so
+  // a list that hands it the focus moves no page the reader sees whole.
   const placeFoot = useCallback((): boolean => {
     const control = footControl.current;
     if (!readsHeld || control === null) return false;
     if (body.current?.querySelector(STOP_ROW) != null) return false;
-    control.focus();
-    footPlaced.current = document.activeElement === control;
+    footPlaced.current = focusIntoView(control);
     return true;
   }, [readsHeld]);
   // The tree element takes the focus only to pass it on: to the list's tab stop, else to the
@@ -482,12 +490,13 @@ export function DecisionsFilterBody({
   // tab stop in it (`useIssueKeymap.ts`), and a list that holds only the foot has none. Where
   // neither takes it the tree keeps the focus, which leaves it in the list: until the reads
   // hold, and on an issue the view draws nothing for. A focus that came up from a row is the
-  // row's own.
+  // row's own. Neither the tree nor the tab stop takes a scroll of the browser's own: the row
+  // brings itself on screen as it takes the focus (`useRowOnScreen`).
   const passFocus = useCallback(
     (event: FocusEvent<HTMLDivElement>) => {
       if (event.target !== event.currentTarget) return;
       const stopRow = body.current?.querySelector<HTMLElement>(STOP_ROW);
-      if (stopRow != null) stopRow.focus();
+      if (stopRow != null) stopRow.focus({ preventScroll: true });
       else placeFoot();
     },
     [placeFoot]
@@ -532,7 +541,9 @@ export function DecisionsFilterBody({
   useEffect(() => {
     if (!footPlaced.current || drawn.length === 0) return;
     footPlaced.current = false;
-    if (document.activeElement === footControl.current) tree.current?.focus();
+    if (document.activeElement === footControl.current) {
+      tree.current?.focus({ preventScroll: true });
+    }
   });
   // The reads can answer while the tree holds the focus: `t d` gave it before they did, or the
   // stage did as a refused read's line left. Where they answer with no row to draw and the foot
@@ -567,7 +578,11 @@ export function DecisionsFilterBody({
     )
       return;
     event.preventDefault();
-    footControl.current?.focus();
+    // The control can stand out of sight above the row the reader is on: it scrolls to its
+    // nearest edge only where the reader cannot see it whole, with no scroll of the browser's
+    // own, which would centre it (`focusIntoView`).
+    const control = footControl.current;
+    if (control !== null) focusIntoView(control);
   };
   // The foot leaves the page where its last decision moves up to another part, as when a read
   // ties it to a statement, and the browser moves the focus its control held to the page's
@@ -586,7 +601,9 @@ export function DecisionsFilterBody({
       if (document.activeElement !== control) return;
       queueMicrotask(() => {
         if (!focusOnDocument()) return;
-        (body.current?.querySelector<HTMLElement>(STOP_ROW) ?? tree.current)?.focus();
+        (body.current?.querySelector<HTMLElement>(STOP_ROW) ?? tree.current)?.focus({
+          preventScroll: true,
+        });
       });
     };
   }, []);
@@ -613,7 +630,10 @@ export function DecisionsFilterBody({
   // which hands it to the list's tab stop - the view's first row, since the entry the stop
   // rested on is drawn nowhere - else to the foot's control, else keeps it, so it is never left
   // on the page (decision 110). A reader who has moved somewhere else on the page keeps their
-  // place.
+  // place. Each focus the hand-off gives is without the browser's own scroll, which would centre
+  // a row or the tree that is not wholly in view and move the page under a reader who sees the
+  // rows still: the row it lands on brings itself on screen only where they cannot see it whole
+  // (`useRowOnScreen`), and the foot's control likewise (`placeFoot`).
   const stood = useRef(partOf);
   useLayoutEffect(() => {
     const before = stood.current;
@@ -641,7 +661,7 @@ export function DecisionsFilterBody({
       neighbourOf(focused, was, before, partOf) ?? (now === undefined ? undefined : focused);
     const row = next === undefined ? null : rowOf(body.current, next);
     if (row !== null) {
-      row.focus();
+      row.focus({ preventScroll: true });
       return;
     }
     // No row named here takes it: the focus is off every row, so what a row's focus opened goes,
@@ -649,7 +669,7 @@ export function DecisionsFilterBody({
     // stop, which falls back to the view's first row, else, once the reads hold, to the foot's
     // control, else keeps it.
     footFocused();
-    tree.current?.focus();
+    tree.current?.focus({ preventScroll: true });
   }, [focused, footFocused, goTo, partOf, parts, reader]);
 
   // What `q` and `w` walk (`tree-keys.ts`), in the order a reader reads this list: its entries
@@ -955,25 +975,6 @@ export function DecisionsFilterBody({
     </section>
   );
   return <PublishedReferenceNames published={published}>{drawnBody}</PublishedReferenceNames>;
-}
-
-/** The foot control's mark: a triangle that points right while the foot's decisions are folded
- *  and down while they are drawn, one em square so it takes the size of the control's text, in
- *  its colour. It is a shape and not text, as `IssuePresets.tsx`'s `MenuMark` is, because the
- *  page's typeface keeps neither triangle: as text, each is drawn in a face of the reader's own
- *  machine, at that face's width. The control's `aria-expanded` says whether the foot is open,
- *  so the shape is hidden from assistive technology. */
-function FoldMark({ open }: { open: boolean }): ReactNode {
-  return (
-    <svg
-      aria-hidden="true"
-      className="inline-block size-[1em] shrink-0 align-middle"
-      focusable="false"
-      viewBox="0 0 16 16"
-    >
-      <path d={open ? "M4.5 6.5h7L8 10.5z" : "M6.5 4.5v7L10.5 8z"} fill="currentColor" />
-    </svg>
-  );
 }
 
 /** The row of node `id` inside `container`, or null where it draws none. */

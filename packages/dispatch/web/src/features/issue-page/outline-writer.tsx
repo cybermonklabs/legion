@@ -132,6 +132,10 @@ export interface Landing {
   readonly under:
     | { readonly id: string; readonly kind: "ask" | "comment" | "message" | "statement" }
     | undefined;
+  /** Set where the reader moved the focus on while the write was out (`IssueComposer.tsx`'s
+   *  `finish`): the outline still draws what they wrote, its branch unfolded, and leaves the
+   *  focus where they put it, as it does where they act once the landing has begun. */
+  readonly movedOn?: true;
 }
 
 /** The answer the writer holds (`OutlineWriter.answer`, which says what reads it). */

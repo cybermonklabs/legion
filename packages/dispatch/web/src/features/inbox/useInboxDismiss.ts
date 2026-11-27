@@ -22,7 +22,7 @@
 
 import { INBOX_DISMISS_ROW_PREFIXES, inboxThreadRow } from "@legion/contracts";
 import { useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
+import { useRef, useState } from "react";
 
 import { inboxDismissRequest } from "../../api/client";
 import {
@@ -43,7 +43,7 @@ import { inboxThreadsWritten } from "../../api/write-events";
 import { compareTimestamps } from "../../lib/timestamps";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
-import type { InboxFilters } from "./InboxBar";
+import type { InboxFilters } from "./grouping";
 import { type InboxListRow, rowId } from "./list-row";
 import { inboxWriteScope, inWriteScope } from "./write-scope";
 
@@ -234,6 +234,10 @@ export interface InboxDismiss {
   /** The row ids whose own press is still out, so each control says what it is doing. Empty for
    *  a press made under the narrowing, which names no row. */
   readonly pending: ReadonlySet<string>;
+  /** The row ids whose own press is out within its deadline, which hold the row's control. Past
+   *  it (`KeyedWriteResult.lateOf`) the control is let go: the press is still tried, and one made
+   *  then goes behind it on the dismiss line. */
+  readonly held: ReadonlySet<string>;
   /** What the reader is told about the last refused press, until the next one starts. */
   readonly refusal: string | undefined;
   /** Dismisses, or restores, the rows one press names. */
@@ -246,17 +250,20 @@ export interface InboxDismiss {
  * with it every control drawn on it - off the page, so a refusal owned by the row would be
  * unmounted before it arrived. The drawer mounts its own Inbox, so it gets its own.
  *
- * `onSettled` is told the rows one press named once Dispatch has decided it, either way: the
- * Inbox keeps those rows out of its hand-hold while the press is out, and a row the rollback put
- * back is an ordinary row again.
+ * `onSettled` is told the rows one press named once Dispatch has decided it, and whether it
+ * refused them: a row the rollback put back is an ordinary row again at once, and a row Dispatch
+ * took is still leaving until the page no longer draws it.
  */
 export function useInboxDismiss({
   onSettled,
 }: {
-  readonly onSettled?: (ids: readonly string[]) => void;
+  readonly onSettled?: (ids: readonly string[], refused: boolean) => void;
 } = {}): InboxDismiss {
   const queryClient = useQueryClient();
   const [pending, setPending] = useState<ReadonlySet<string>>(() => new Set());
+  // The presses out that name their rows, from the press until Dispatch decides each: the rows
+  // whose press is not late are `held`.
+  const out = useRef(new Set<InboxDismissInput>());
   const [refusal, setRefusal] = useState<string | undefined>(undefined);
   const inboxKey = inboxThreadsQuery().queryKey;
   const dismissedKey = dismissedThreadsQuery().queryKey;
@@ -279,6 +286,7 @@ export function useInboxDismiss({
     // rows it took out still in.
     holds: () => ({ endsOn: inboxThreadsWritten, keys: [inboxKey, dismissedKey, countKey] }),
     inline: true,
+    readsLate: true,
     label: (input) => (input.restore === true ? "Threads moved to the Inbox" : "Threads dismissed"),
     onError: (error, input, rollback) => {
       // What the press did not do, which is what the reader is told. A press under the
@@ -358,27 +366,38 @@ export function useInboxDismiss({
       void queryClient.invalidateQueries({ queryKey: myRepliesKey });
       void queryClient.invalidateQueries({ queryKey: userAgentStateQuery().queryKey });
     },
-    onSettled: (_data, _error, input, context) => {
+    onSettled: (_data, error, input, context) => {
+      const refused = error !== null;
       if ("rows" in input) {
         const ids = input.rows.map(({ id }) => id);
+        out.current.delete(input);
         live(ids, false);
-        onSettled?.(ids);
+        onSettled?.(ids, refused);
         return;
       }
       // A press under the narrowing names no row, so the rows it settles are the ones its own
       // optimistic apply took out of the view.
-      onSettled?.(droppedRows(context).map(({ row }) => rowId({ kind: "thread", thread: row })));
+      onSettled?.(
+        droppedRows(context).map(({ row }) => rowId({ kind: "thread", thread: row })),
+        refused
+      );
     },
     request: (input) => inboxDismissRequest(inboxDismissBody(input)),
     target: () => "inbox:dismiss",
   });
 
   return {
+    held: new Set(
+      [...out.current]
+        .filter((input) => !write.lateOf(input))
+        .flatMap((input) => ("rows" in input ? input.rows.map(({ id }) => id) : []))
+    ),
     pending,
     refusal,
     submit: (input) => {
       if ("rows" in input) {
         if (input.rows.length === 0) return;
+        out.current.add(input);
         live(
           input.rows.map(({ id }) => id),
           true

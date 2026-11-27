@@ -8,7 +8,8 @@ import {
   useRef,
 } from "react";
 
-import { apiErrorMessage } from "../../api/client";
+import { apiErrorMessage, NETWORK_ERROR_MESSAGE } from "../../api/client";
+import { ARM_ON_PRESS, causedByReader, inSightNow, outOfSight } from "../../components/focus-place";
 import { useCopyFeedback } from "../../hooks/useCopyFeedback";
 import {
   borderDefault,
@@ -30,7 +31,7 @@ import { useWriteSelection, useWrites, type Write, writeDraft } from "./write-st
  *  a `PUT` or a `DELETE` sends none, so no Retry of one asks under a key. */
 function refusalReason(keyed: boolean, refusal: Error): string {
   if (!(refusal instanceof SendStoppedError)) {
-    return apiErrorMessage(refusal, "Dispatch could not be reached");
+    return apiErrorMessage(refusal, NETWORK_ERROR_MESSAGE);
   }
   const retry = retryNote(keyed, refusal, "saved");
   return refusal instanceof SendInterruptedError
@@ -108,37 +109,60 @@ function focusFirst(candidates: Iterable<HTMLElement | null>): boolean {
   return false;
 }
 
+/** The buttons of `row`, then the rest of the panel's (`box`, which holds `row`), each in sight
+ *  now (`inSightNow`) and each measured once, as the hand-off reaches it: it stops at the first
+ *  that takes the focus. */
+function* buttonsInSight(
+  row: Element | null | undefined,
+  box: Element | null,
+  clips: Map<Element, boolean>
+): Generator<HTMLElement> {
+  for (const control of row?.querySelectorAll<HTMLElement>("button") ?? []) {
+    if (inSightNow(control, clips)) yield control;
+  }
+  for (const control of box?.querySelectorAll<HTMLElement>("button") ?? []) {
+    if (row?.contains(control) !== true && inSightNow(control, clips)) yield control;
+  }
+}
+
 /**
- * Hands on the focus a press in the panel takes away. A press here can take the control it was
- * made on off the page - Stop trying once its write is refused, Retry or Discard once their row
- * goes, any of them as the panel goes once nothing is pending - and the browser then leaves the
- * focus on the page's body, which loses a keyboard reader's place. So the panel notes the row the
- * focus is in and where the focus came from as it entered the panel, and once the element that
- * held the focus in the panel has left the page while the focus is on the body, the focus goes to
- * the first control that takes it: while the panel is still drawn, one in that element's row (the
- * Retry a stopped write's row offers once Stop trying has gone), else the panel's first; only once
- * the panel is gone or holds none, the element the focus came from, else the page's main region
- * (`app.tsx`'s `main-content`), which the shell focuses on a page change too. A focus the reader
- * takes out of the panel, by a Tab or by a press that leaves the focus outside it, is forgotten,
- * so nothing moves a focus the reader put somewhere else; a press elsewhere that leaves the focus
- * in the panel, as on a control whose `mousedown` is prevented or on a scrollbar, forgets nothing.
- * A focus a pointer press puts in the panel is forgotten too, never noted: Chromium focuses a
- * pressed button and draws it no focus ring, so a hand-off would move that focus, unseen, onto
- * another row's control, and the next Space or Enter would press it - Discard, first in a row
- * waiting to send. A press lasts from its `pointerdown` until its `click` has been dispatched, or
- * it is cancelled: on a touch screen the browser moves the focus only once the finger lifts, on
- * the `mousedown` it sends after the `pointerup`, which can come well after the press began; and a
- * touch that scrolls the panel's list ends in a `pointercancel` and no `click`, after which a press
- * still under way would forget every focus that enters the panel, the hand-off's own too. A key
- * pressed in between ends it as well, so the focus the keyboard moves is noted even after a press
- * no `click` ended.
+ * Hands on the focus a press of the reader's in the panel takes away. A press here can take the
+ * control it was made on off the page - Stop trying once its write is refused, Retry or Discard
+ * once their row goes, any of them as the panel goes once nothing is pending - and the browser
+ * then leaves the focus on the page's body, which loses a keyboard reader's place. So the panel
+ * arms the hand-off at its root for each press made in it (`armOnPress`), notes the row the focus
+ * is in and where the focus came from as it entered the panel, and once the element that held the
+ * focus in the panel has left the page while the focus is on the body, it reads who caused the
+ * loss. A loss the reader caused (`causedByReader`), of a control they had not scrolled out of
+ * their sight (`outOfSight`), moves the focus, with no scroll, to the first control the reader can
+ * see now (`inSightNow`): while the panel is still drawn, one in that element's row (the Retry a
+ * stopped write's row offers once Stop trying has gone), else one of the panel's, passing over a
+ * row scrolled out of the panel's list; only once none of the panel's is in sight, the element the
+ * focus came from, where it is in sight, else the page's main region (`app.tsx`'s
+ * `main-content`), which the shell focuses on a page change too. A loss the reader did not cause -
+ * a write that lands by itself, a refusal that comes in, with nothing armed - leaves the focus
+ * where the browser puts it, on the body, and scrolls nothing: a control they did not choose, and
+ * may not see, never takes it.
+ * A focus the reader takes out of the panel, by a Tab or by a press that leaves the focus outside
+ * it, is forgotten, so nothing moves a focus the reader put somewhere else; a press elsewhere that
+ * leaves the focus in the panel, as on a control whose `mousedown` is prevented or on a scrollbar,
+ * forgets nothing. A focus a pointer press puts in the panel is forgotten too, never noted:
+ * Chromium focuses a pressed button and draws it no focus ring, so a hand-off would move that
+ * focus, unseen, onto another row's control, and the next Space or Enter would press it - Discard,
+ * first in a row waiting to send. A press lasts from its `pointerdown` until its `click` has been
+ * dispatched, or it is cancelled: on a touch screen the browser moves the focus only once the
+ * finger lifts, on the `mousedown` it sends after the `pointerup`, which can come well after the
+ * press began; and a touch that scrolls the panel's list ends in a `pointercancel` and no `click`,
+ * after which a press still under way would forget every focus that enters the panel, the
+ * hand-off's own too. A key pressed in between ends it as well, so the focus the keyboard moves is
+ * noted even after a press no `click` ended.
  * Returns the panel's ref.
  */
 function usePanelFocusReturn(): RefObject<HTMLElement | null> {
   const panel = useRef<HTMLElement>(null);
   // The element that holds the focus in the panel, the write whose row it is in, and the element
   // that held the focus before it came in.
-  const held = useRef<Node | null>(null);
+  const held = useRef<Element | null>(null);
   const heldRow = useRef<string | null>(null);
   const from = useRef<HTMLElement | null>(null);
   // Forgets all three at once: a focus the reader takes out of the panel, and the hand-off below
@@ -149,8 +173,8 @@ function usePanelFocusReturn(): RefObject<HTMLElement | null> {
     from.current = null;
   }, []);
   useEffect(() => {
-    const inPanel = (target: EventTarget | null): target is Node =>
-      target instanceof Node && panel.current?.contains(target) === true;
+    const inPanel = (target: EventTarget | null): target is Element =>
+      target instanceof Element && panel.current?.contains(target) === true;
     // Where the pointer press under way began - in the panel or elsewhere - from its
     // `pointerdown` until its `click` has been dispatched, until it is cancelled, or until a key
     // is pressed; null between presses.
@@ -166,9 +190,7 @@ function usePanelFocusReturn(): RefObject<HTMLElement | null> {
       }
       held.current = target;
       heldRow.current =
-        target instanceof Element
-          ? (target.closest("[data-pending-write]")?.getAttribute("data-pending-write") ?? null)
-          : null;
+        target.closest("[data-pending-write]")?.getAttribute("data-pending-write") ?? null;
     };
     const pressed = (event: PointerEvent) => {
       press = inPanel(event.target) ? "panel" : "elsewhere";
@@ -212,18 +234,19 @@ function usePanelFocusReturn(): RefObject<HTMLElement | null> {
     const row = rowSelector === null ? null : box?.querySelector(rowSelector);
     const back = from.current;
     forget();
-    if (!focusOnDocument()) return;
-    const controls = [
-      ...(row?.querySelectorAll<HTMLElement>("button") ?? []),
-      ...(box?.querySelectorAll<HTMLElement>("button") ?? []),
-    ];
-    if (focusFirst(controls)) {
+    if (!focusOnDocument() || outOfSight(left) || !causedByReader(left)) return;
+    // One read of each box's style for the whole hand-off (`inSightNow`).
+    const clips = new Map<Element, boolean>();
+    if (focusFirst(buttonsInSight(row, box, clips))) {
       // The focus listener took that move for the focus entering the panel afresh; it came in
       // from where it did before.
       from.current = back;
       return;
     }
-    focusFirst([back, document.getElementById("main-content")]);
+    focusFirst([
+      back !== null && inSightNow(back, clips) ? back : null,
+      document.getElementById("main-content"),
+    ]);
   });
   return panel;
 }
@@ -271,6 +294,7 @@ export function PendingWritesIndicator(): ReactNode {
         actionable ? calloutWarningBorder : borderDefault
       }`}
       data-testid="pending-writes"
+      {...ARM_ON_PRESS}
       ref={panel}
     >
       {out.length === 0 ? null : (
@@ -279,49 +303,43 @@ export function PendingWritesIndicator(): ReactNode {
         </p>
       )}
       {named.length === 0 ? null : (
-        <ul className={`max-h-48 space-y-1 overflow-y-auto ${out.length === 0 ? "" : "mt-2"}`}>
-          {named.map((row) => {
-            const uploaded = uploadedPercent(row);
-            const conflict = row.status === "refused" ? conflictWords(row.refusal) : undefined;
-            const draft = conflict === undefined ? undefined : writeDraft(row);
-            return (
-              <li
-                className="flex min-h-8 flex-wrap items-center gap-x-2 gap-y-1"
-                data-pending-write={row.id}
-                key={row.id}
-              >
-                {row.status === "refused" ? (
-                  <>
-                    <span className={`min-w-0 flex-1 ${dangerText}`}>
-                      {conflict ?? "Not saved"}: {row.label}
-                      {conflict === undefined
-                        ? ` — ${refusalReason(row.keyed, row.refusal)}`
-                        : null}
-                    </span>
-                    {draft === undefined ? null : <DraftToCopy text={draft} />}
-                    {conflict === undefined ? (
-                      <button
-                        className={secondaryButtonCompact}
-                        onClick={() => writes.retry(row.id)}
-                        type="button"
-                      >
-                        Retry
-                      </button>
-                    ) : null}
-                    <button
-                      className={secondaryButtonCompact}
-                      onClick={() => writes.discard(row.id)}
-                      type="button"
-                    >
-                      Discard
-                    </button>
-                  </>
-                ) : heldForSignOut(row) ? (
-                  <>
-                    <span className={`min-w-0 flex-1 ${textSecondaryOnSurface}`}>
-                      {row.label} — Waiting for a sign-out in another tab
-                    </span>
-                    {waitingToSend(row) ? (
+        // A box that scrolls is a Tab stop of its own in Firefox, so it is a region with a name,
+        // not a stop that reads as nothing: a row of an upload in progress or of a write held for
+        // a sign-out holds no control, and a list of only those has no other stop to scroll it
+        // from. Its name is not the panel's, "Pending changes", so the two regions read apart.
+        <section
+          aria-label="Each pending change"
+          className={`max-h-48 overflow-y-auto ${out.length === 0 ? "" : "mt-2"}`}
+        >
+          <ul className="space-y-1">
+            {named.map((row) => {
+              const uploaded = uploadedPercent(row);
+              const conflict = row.status === "refused" ? conflictWords(row.refusal) : undefined;
+              const draft = conflict === undefined ? undefined : writeDraft(row);
+              return (
+                <li
+                  className="flex min-h-8 flex-wrap items-center gap-x-2 gap-y-1"
+                  data-pending-write={row.id}
+                  key={row.id}
+                >
+                  {row.status === "refused" ? (
+                    <>
+                      <span className={`min-w-0 flex-1 ${dangerText}`}>
+                        {conflict ?? "Not saved"}: {row.label}
+                        {conflict === undefined
+                          ? ` — ${refusalReason(row.keyed, row.refusal)}`
+                          : null}
+                      </span>
+                      {draft === undefined ? null : <DraftToCopy text={draft} />}
+                      {conflict === undefined ? (
+                        <button
+                          className={secondaryButtonCompact}
+                          onClick={() => writes.retry(row.id)}
+                          type="button"
+                        >
+                          Retry
+                        </button>
+                      ) : null}
                       <button
                         className={secondaryButtonCompact}
                         onClick={() => writes.discard(row.id)}
@@ -329,37 +347,52 @@ export function PendingWritesIndicator(): ReactNode {
                       >
                         Discard
                       </button>
-                    ) : null}
-                  </>
-                ) : waitingToSend(row) ? (
-                  <>
-                    <span className={`min-w-0 flex-1 ${textSecondaryOnSurface}`}>
-                      {row.label} — Waiting to send
-                    </span>
-                    <button
-                      className={secondaryButtonCompact}
-                      onClick={() => writes.discard(row.id)}
-                      type="button"
-                    >
-                      Discard
-                    </button>
-                  </>
-                ) : (
-                  <>
-                    <span className={`min-w-0 flex-1 ${textSecondaryOnSurface}`}>
-                      {uploaded === undefined
-                        ? row.label
-                        : `${row.label} — Uploading… ${uploaded}%`}
-                    </span>
-                    {row.status === "late" ? (
-                      <StopTrying onStop={() => writes.stop(row.id)} stopping={row.stopping} />
-                    ) : null}
-                  </>
-                )}
-              </li>
-            );
-          })}
-        </ul>
+                    </>
+                  ) : heldForSignOut(row) ? (
+                    <>
+                      <span className={`min-w-0 flex-1 ${textSecondaryOnSurface}`}>
+                        {row.label} — Waiting for a sign-out in another tab
+                      </span>
+                      {waitingToSend(row) ? (
+                        <button
+                          className={secondaryButtonCompact}
+                          onClick={() => writes.discard(row.id)}
+                          type="button"
+                        >
+                          Discard
+                        </button>
+                      ) : null}
+                    </>
+                  ) : waitingToSend(row) ? (
+                    <>
+                      <span className={`min-w-0 flex-1 ${textSecondaryOnSurface}`}>
+                        {row.label} — Waiting to send
+                      </span>
+                      <button
+                        className={secondaryButtonCompact}
+                        onClick={() => writes.discard(row.id)}
+                        type="button"
+                      >
+                        Discard
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      <span className={`min-w-0 flex-1 ${textSecondaryOnSurface}`}>
+                        {uploaded === undefined
+                          ? row.label
+                          : `${row.label} — Uploading… ${uploaded}%`}
+                      </span>
+                      {row.status === "late" ? (
+                        <StopTrying onStop={() => writes.stop(row.id)} stopping={row.stopping} />
+                      ) : null}
+                    </>
+                  )}
+                </li>
+              );
+            })}
+          </ul>
+        </section>
       )}
     </section>
   );

@@ -1,6 +1,6 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { ReactNode } from "react";
-import { Link, useLocation, useParams } from "react-router-dom";
+import { Link, useParams } from "react-router-dom";
 
 import { api } from "../../api/client";
 import type {
@@ -10,8 +10,10 @@ import type {
   MessageDeliveryMode,
 } from "../../api/types";
 import { EmptyState } from "../../components/EmptyState";
+import { heldPress } from "../../components/held-press";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import { LabelPill } from "../../components/Pill";
+import { useNavigationState } from "../../lib/page-address";
 import {
   borderDefault,
   card,
@@ -19,6 +21,7 @@ import {
   linkHoverText,
   linkText,
   secondaryButtonBorder,
+  secondaryButtonDisabledText,
   secondaryButtonText,
   textMutedOnCanvas,
   textPrimaryOnCanvas,
@@ -40,9 +43,9 @@ import { AgentName, type AgentPart, AgentParts, useAgentText } from "../refs/Age
 import { MarkdownBody } from "../refs/MarkdownBody";
 import { Timestamp } from "../refs/Timestamp";
 import { textSourceOf } from "../refs/text-references";
-import { useKeyedWrite } from "../writes/useKeyedWrite";
+import { useKeyedWrite, usePendingKeyedPress } from "../writes/useKeyedWrite";
 
-import { deliveryAttempts } from "./attempts";
+import { deliveryAttempts, messageDeliveryRetryKey } from "./attempts";
 import { excludedParts } from "./broadcast-plan";
 import { useMarkShownRepliesRead } from "./unread";
 
@@ -84,12 +87,20 @@ function BroadcastRecipientRow({
   // names it, and the row's accessible name is the same name as text.
   const recipientAgent: AgentPart = { sessionId: recipient.session_id, storedTitle: undefined };
   const label = text.sessionText(recipient.session_id, undefined);
+  // The retry goes under the recipient's message's name (`messageDeliveryRetryKey`), so a row
+  // drawn again while it is out, before it lands - after a broadcast read that failed draws the
+  // page's failure in place of every row - holds Retry and the mode changes from that press until
+  // its deadline, as the row it was made on did (`usePendingKeyedPress`).
+  const retryKey = messageDeliveryRetryKey(recipient.message.id);
+  const retryOut = usePendingKeyedPress(retryKey);
   const retry = useKeyedWrite({
     label: (mode: MessageDeliveryMode) => `Delivery to ${label} again, as ${MODE_LABELS[mode]}`,
     onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["broadcast"] }),
     method: "POST",
+    mutationKey: retryKey,
     write: (mode, bounds) => api.createMessageDelivery(recipient.message.id, mode, bounds),
   });
+  const retryHeld = retryOut.isPending && !retryOut.late;
   // The row shows the recipient's whole thread, so its replies are read. Only these: the
   // session's replies anywhere else, older or newer, stay unread until a view shows them.
   const replies = recipient.replies ?? [];
@@ -138,18 +149,19 @@ function BroadcastRecipientRow({
           canSteer={capabilities?.includes("steer") !== false}
           latest={latest}
           onRetry={retry.mutate}
-          retrying={retry.isPending}
+          retrying={retryHeld}
           targetName={recipientAgent}
         />
       ) : latest === undefined || stranded ? (
         // Outstanding, and nobody is carrying it. Only the attempt's own mode is offered: the
         // frame may already have reached the agent, and a repeat of the same mode is recognised
         // by its dedupe key while a different mode is a new key - that would be a second delivery.
+        // Until the retry's deadline, Retry is held (`heldPress`), keeping focus and its Tab stop
+        // without taking another press.
         <div className="mt-3">
           <button
-            className={`min-h-11 rounded-lg border px-3 text-sm font-medium ${secondaryButtonBorder} ${secondaryButtonText}`}
-            disabled={retry.isPending}
-            onClick={() => retry.mutate(latest?.delivery ?? delivery)}
+            className={`min-h-11 rounded-lg border px-3 text-sm font-medium ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonDisabledText}`}
+            {...heldPress(retryHeld, () => retry.mutate(latest?.delivery ?? delivery))}
             type="button"
           >
             Retry
@@ -182,8 +194,7 @@ function BroadcastRecipientRow({
 /** One broadcast: what was sent, and where every recipient's copy of it got to. */
 export function BroadcastPage(): ReactNode {
   const { id = "" } = useParams<{ id: string }>();
-  const location = useLocation();
-  const excluded = exclusionsFromState(location.state);
+  const excluded = exclusionsFromState(useNavigationState());
   const { agents, current } = useAgents(true, true);
   const broadcast = useQuery({
     queryFn: () => api.getBroadcast(id),

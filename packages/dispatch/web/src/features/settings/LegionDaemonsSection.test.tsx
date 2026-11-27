@@ -1,19 +1,31 @@
 import { afterEach, beforeAll, expect, jest, spyOn, test } from "bun:test";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { onlineManager, QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: the in-the-step row submits and checks in one synchronous step, which user-event has no form for
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
+import userEvent, { type UserEvent } from "@testing-library/user-event";
 
-import { realClock, settle } from "../../__tests__/fake-clock";
+import { holdNotifications } from "../../__tests__/commits";
+import { realClock, settle, tick } from "../../__tests__/fake-clock";
+import { heldNotDisabled, pressHeld } from "../../__tests__/held-press";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
+import { listOf, pickFromLabelled, textBoxes } from "../../__tests__/list-picks";
+import { answerRoute } from "../../__tests__/send-answers";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
-import { ApiError, api, NetworkError } from "../../api/client";
+import {
+  ApiError,
+  api,
+  NetworkError,
+  REQUEST_DEADLINE_MS,
+  type WriteBounds,
+} from "../../api/client";
 import { legionDaemonQuery } from "../../api/queries";
 import { DispatchQueryClient } from "../../api/query-client";
 import type { AuthenticatedUser, LegionSetting } from "../../api/types";
+import { emulateChromiumFocusFixup } from "../issue-page/chromium-focus-fixup";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
-import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
+import { SEND_DEADLINE_MS, SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
+import { writesOf } from "../writes/write-store";
 import { LegionDaemonsSection } from "./LegionDaemonsSection";
 
 // The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
@@ -109,6 +121,43 @@ async function renderSection(
   return within(await screen.findByRole("region", { name: "Legion" }));
 }
 
+/** `PUT /api/v1/projects/{key}/legion/daemon`, as Save makes it from its request alone
+ *  (`legionDaemonRequest`): called with the project, the body and the attempt's bounds. */
+function answerDaemonSaves() {
+  return answerRoute<
+    (project: string, body: { state_url: string }, bounds: WriteBounds) => Promise<LegionSetting>
+  >("PUT", "/api/v1/projects/*/legion/daemon");
+}
+
+/** `DELETE /api/v1/projects/{key}/legion/daemon`, as a row's Remove makes it from its request
+ *  alone (`legionDaemonRemovalRequest`): called with the project, no body and the bounds. */
+function answerDaemonRemovals() {
+  return answerRoute<(project: string, body: undefined, bounds: WriteBounds) => Promise<void>>(
+    "DELETE",
+    "/api/v1/projects/*/legion/daemon"
+  );
+}
+
+/** A write's try that fails at the network, as every try does while Dispatch cannot be reached. */
+const failsAtTheNetwork = () =>
+  Promise.reject(
+    new NetworkError("/api/v1/projects/ACME/legion/daemon", new TypeError("Failed to fetch"))
+  );
+
+/** The section's two writes, by the control that makes each: Save, and a row's Remove, which
+ *  takes its row away at the press, so its hold is read on the other row's Remove (`start`). */
+const savesAndRemovals: { label: string; start: string | undefined }[] = [
+  { label: "Save Legion daemon", start: undefined },
+  { label: "Remove the Legion daemon of CORE", start: "Remove the Legion daemon of ACME" },
+];
+
+/** How many tries `writes` took between them: every call of each. */
+function triesOf(
+  writes: readonly { readonly mock: { readonly calls: readonly (readonly unknown[])[] } }[]
+): number {
+  return writes.reduce((count, write) => count + write.mock.calls.length, 0);
+}
+
 test("every project that names a daemon is a row of its own", async () => {
   const section = await renderSection(
     legionServer([setting, { ...setting, project: "CORE", state_url: "https://daemon.example" }])
@@ -157,17 +206,22 @@ test("a project whose daemon cannot be read fails the list rather than dropping 
 test("naming a project's daemon sends the PUT and lists what the server stored", async () => {
   const user = userEvent.setup();
   const server = legionServer([]);
-  const putLegionDaemon = spyOn(api, "putLegionDaemon").mockImplementation(server.put);
-  spies.push(putLegionDaemon);
+  const putLegionDaemon = answerDaemonSaves().mockImplementation((project, body) =>
+    server.put(project, body.state_url)
+  );
   const section = await renderSection(server);
 
-  await user.selectOptions(await section.findByLabelText("Legion project"), "ACME");
+  await pickFromLabelled(user, "Legion project", "ACME · ACME");
   await user.click(section.getByLabelText("Legion daemon state URL"));
   await user.paste("http://127.0.0.1:9731");
   await user.click(section.getByRole("button", { name: "Save Legion daemon" }));
 
   await waitFor(() =>
-    expect(putLegionDaemon).toHaveBeenLastCalledWith("ACME", "http://127.0.0.1:9731", keyedAttempt)
+    expect(putLegionDaemon).toHaveBeenLastCalledWith(
+      "ACME",
+      { state_url: "http://127.0.0.1:9731" },
+      keyedAttempt
+    )
   );
   expect(await section.findByRole("cell", { name: "http://127.0.0.1:9731" })).toBeDefined();
   // The form is empty again, ready for the next project's daemon.
@@ -177,31 +231,581 @@ test("naming a project's daemon sends the PUT and lists what the server stored",
 test("removing a project's daemon sends the DELETE and drops its row", async () => {
   const user = userEvent.setup();
   const server = legionServer([setting]);
-  const deleteLegionDaemon = spyOn(api, "deleteLegionDaemon").mockImplementation(server.remove);
-  spies.push(deleteLegionDaemon);
+  const deleteLegionDaemon = answerDaemonRemovals().mockImplementation((project) =>
+    server.remove(project)
+  );
   const section = await renderSection(server);
 
   await user.click(
     await section.findByRole("button", { name: "Remove the Legion daemon of ACME" })
   );
 
-  await waitFor(() => expect(deleteLegionDaemon).toHaveBeenLastCalledWith("ACME", keyedAttempt));
+  await waitFor(() =>
+    expect(deleteLegionDaemon).toHaveBeenLastCalledWith("ACME", undefined, keyedAttempt)
+  );
   expect(await section.findByText("No project names a Legion daemon yet.")).toBeDefined();
 });
+
+test("Remove hands focus to the preceding daemon's Remove as its row goes", async () => {
+  const user = userEvent.setup();
+  const server = legionServer([setting, { ...setting, project: "CORE" }]);
+  const remove = answerDaemonRemovals().mockImplementation((project) => server.remove(project));
+  const section = await renderSection(server);
+  const pressed = await section.findByRole("button", { name: "Remove the Legion daemon of CORE" });
+  const preceding = section.getByRole("button", { name: "Remove the Legion daemon of ACME" });
+  act(() => pressed.focus());
+  await user.keyboard("{Enter}");
+  await waitFor(() => expect(pressed).not.toBeInTheDocument());
+  expect(remove).toHaveBeenCalledTimes(1);
+  expect(preceding).toHaveFocus();
+});
+
+// While a write of the section is out, Save Legion daemon, the address box and every row's Remove
+// are held, by `aria-disabled`, never `disabled` (`pressHeld`). A Remove takes its row away at the
+// press, so its hold is read on the other row's Remove, which the reader moves to. The control
+// keeps the focus, and a second press sends nothing.
+test.each([
+  { label: "Save Legion daemon", role: "button", start: undefined },
+  { label: "Legion daemon state URL", role: "textbox", start: undefined },
+  {
+    label: "Remove the Legion daemon of CORE",
+    role: "button",
+    start: "Remove the Legion daemon of ACME",
+  },
+] as const)(
+  "$label, held while a write of the section is out, keeps the focus, and a second press sends nothing",
+  async ({ label, role, start }) => {
+    const user = userEvent.setup();
+    // The writes' answer, held until the case refuses it inside `act`.
+    const answer = Promise.withResolvers<never>();
+    const writes = [
+      answerDaemonSaves().mockReturnValue(answer.promise),
+      answerDaemonRemovals().mockReturnValue(answer.promise),
+    ];
+    const section = await renderSection(
+      legionServer([setting, { ...setting, project: "CORE", state_url: "https://daemon.example" }])
+    );
+    try {
+      await section.findByRole("cell", { name: "CORE" });
+      await pickFromLabelled(user, "Legion project", "ACME · ACME");
+      await user.click(section.getByLabelText("Legion daemon state URL"));
+      await user.paste("http://127.0.0.1:9731");
+      await pressHeld(user, section.getByRole(role, { name: label }), {
+        name: label,
+        sent: () => triesOf(writes),
+        start: start === undefined ? undefined : section.getByRole("button", { name: start }),
+      });
+    } finally {
+      await act(async () => answer.reject(new ApiError(403, { code: "FORBIDDEN", error: "no" })));
+    }
+  }
+);
+
+// Offline, a write of the section is tried under its key until Dispatch answers it: each try
+// fails at the network, and the next waits out its backoff, whatever the browser says of the
+// network (`networkMode: "always"`). At its deadline (`SEND_DEADLINE_MS`) the write goes late,
+// still tried and now stoppable at the shell's indicator, and the section's hold ends there, so a
+// write that never answers locks none of its controls. The control the reader pressed keeps the
+// focus while it is held and once it is let go, under `emulateChromiumFocusFixup` throughout. A
+// Remove takes its row away at the press, so its hold is read on the other row's Remove, which
+// the reader moves to.
+test.each(savesAndRemovals)(
+  "offline, $label is held until its write's deadline, let go there, and keeps the focus throughout",
+  async ({ label, start }) => {
+    const writes = [
+      answerDaemonSaves().mockImplementation(failsAtTheNetwork),
+      answerDaemonRemovals().mockImplementation(failsAtTheNetwork),
+    ];
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const section = await renderSection(
+      legionServer([setting, { ...setting, project: "CORE", state_url: "https://daemon.example" }]),
+      true,
+      queryClient
+    );
+    await section.findByRole("cell", { name: "CORE" });
+    // The form is filled on the real clock, so every read the section makes has answered before
+    // the clock is held for the write.
+    if (start === undefined) await fillDaemonForm("http://127.0.0.1:9731");
+    const pressed = section.getByRole("button", { name: label }) as HTMLButtonElement;
+    const online = onlineManager.isOnline();
+    jest.useFakeTimers();
+    const stopFocusFixup = emulateChromiumFocusFixup();
+    try {
+      onlineManager.setOnline(false);
+      await pressHeld(userOnFakeClock(), pressed, {
+        name: label,
+        sent: () => triesOf(writes),
+        start: start === undefined ? undefined : section.getByRole("button", { name: start }),
+      });
+
+      // A second short of the deadline the write is still within it, and the control still held.
+      await tick(SEND_DEADLINE_MS - 1_000);
+      expect(writesOf(queryClient).rows()[0]?.status).toBe("sending");
+      expect(heldNotDisabled(pressed, label)).toBe(true);
+      expect(pressed).toHaveFocus();
+
+      // Past it the write is late and still tried, and the control is let go with the focus on it.
+      await tick(1_000);
+      expect(writesOf(queryClient).rows()[0]?.status).toBe("late");
+      expect(heldNotDisabled(pressed, label)).toBe(false);
+      expect(pressed).toHaveFocus();
+    } finally {
+      // The section and its reads go before the network returns, so no read goes on after the row.
+      cleanup();
+      queryClient.clear();
+      onlineManager.setOnline(online);
+      stopFocusFixup();
+      realClock();
+    }
+  }
+);
+
+// A write that lands as the browser goes offline has the read of its project paused by the
+// network, with no deadline of its own running: the app's client holds a read of an idle query
+// until its paused fetch answers (`DispatchQueryClient`). The section holds Save and every
+// Remove through that read only up to the request deadline (`REQUEST_DEADLINE_MS`), lets them go
+// there with the focus on the control pressed, and says why the daemons are not read yet. Once
+// the network returns the project is read, and the note goes.
+test.each(savesAndRemovals)(
+  "offline, $label whose write landed is let go at the request deadline, and the section says why",
+  async ({ label, start }) => {
+    const saved = Promise.withResolvers<LegionSetting>();
+    const removed = Promise.withResolvers<void>();
+    const writes = [
+      answerDaemonSaves().mockImplementation(() => saved.promise),
+      answerDaemonRemovals().mockImplementation(() => removed.promise),
+    ];
+    const queryClient = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
+    const section = await renderSection(
+      legionServer([setting, { ...setting, project: "CORE", state_url: "https://daemon.example" }]),
+      true,
+      queryClient
+    );
+    await section.findByRole("cell", { name: "CORE" });
+    // The form is filled on the real clock, so every read the section makes has answered before
+    // the clock is held for the write.
+    if (start === undefined) await fillDaemonForm("http://127.0.0.1:9731");
+    const pressed = section.getByRole("button", { name: label }) as HTMLButtonElement;
+    const online = onlineManager.isOnline();
+    jest.useFakeTimers();
+    const stopFocusFixup = emulateChromiumFocusFixup();
+    try {
+      await pressHeld(userOnFakeClock(), pressed, {
+        name: label,
+        sent: () => triesOf(writes),
+        start: start === undefined ? undefined : section.getByRole("button", { name: start }),
+      });
+
+      // The write lands as the network goes: the project's read is asked, and paused.
+      onlineManager.setOnline(false);
+      await act(async () => {
+        saved.resolve({ ...setting, state_url: "http://127.0.0.1:9731" });
+        removed.resolve();
+      });
+      await tick(0);
+      expect(queryClient.getQueryState(legionDaemonQuery("ACME").queryKey)?.fetchStatus).toBe(
+        "paused"
+      );
+
+      // The write landed in the step before, which is when the hold's timer started: two seconds
+      // short of the request deadline the control is still held.
+      await tick(REQUEST_DEADLINE_MS - 2_000);
+      expect(heldNotDisabled(pressed, label)).toBe(true);
+      expect(pressed).toHaveFocus();
+
+      // At it the section lets the control go, with the focus on it, and says why.
+      await tick(2_000);
+      expect(heldNotDisabled(pressed, label)).toBe(false);
+      expect(pressed).toHaveFocus();
+      expect(section.getByRole("alert").textContent).toBe(
+        "Couldn't load the Legion daemons. Dispatch could not be reached."
+      );
+
+      // The network returns, the project is read, and the note goes.
+      act(() => onlineManager.setOnline(true));
+      await waitFor(() => expect(section.queryByRole("alert")).toBeNull());
+    } finally {
+      // The section and its reads go before the network returns, so no read paused offline goes on.
+      cleanup();
+      queryClient.clear();
+      onlineManager.setOnline(online);
+      stopFocusFixup();
+      realClock();
+    }
+  }
+);
+
+// The request deadline ends a write's hold and draws the section's line in one change of the
+// hold's store, and the write, which `onSuccess` keeps pending through that hold, stops pending as
+// it ends. Save and every Remove let go in that same task, so a press made once the section says
+// why is not refused. A browser tells TanStack's observers of the write's end a timer later
+// (`holdNotifications`), so the row holds those notifications back. The project's read starts as
+// the write lands, before the clock moves, so one jump of the deadline lands on the bound's own
+// timer, and only microtasks run after it. A Remove takes its row away at the press, so its hold
+// is read on the other row's Remove.
+test.each(savesAndRemovals)(
+  "$label is let go in the task the section says why at the request deadline",
+  async ({ label, start }) => {
+    const server = legionServer([
+      setting,
+      { ...setting, project: "CORE", state_url: "https://daemon.example" },
+    ]);
+    // The read of ACME the write asks for once it lands, held until the row ends.
+    const reread = Promise.withResolvers<void>();
+    let holding = false;
+    const saved = Promise.withResolvers<LegionSetting>();
+    const removed = Promise.withResolvers<void>();
+    answerDaemonSaves().mockImplementation(() => saved.promise);
+    answerDaemonRemovals().mockImplementation(() => removed.promise);
+    const queryClient = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
+    const section = await renderSection(
+      {
+        ...server,
+        get: async (project) => {
+          if (holding && project === "ACME") {
+            holding = false;
+            await reread.promise;
+          }
+          return server.get(project);
+        },
+      },
+      true,
+      queryClient
+    );
+    await section.findByRole("cell", { name: "CORE" });
+    // The form is filled on the real clock, so every read the section makes has answered before
+    // the clock is held for the write.
+    if (start === undefined) await fillDaemonForm("http://127.0.0.1:9731");
+    const pressed = section.getByRole("button", { name: label }) as HTMLButtonElement;
+    jest.useFakeTimers();
+    try {
+      const user = userOnFakeClock();
+      await user.click(
+        start === undefined ? pressed : section.getByRole("button", { name: start })
+      );
+      await tick(0);
+      holding = true;
+      await act(async () => {
+        saved.resolve({ ...setting, state_url: "http://127.0.0.1:9731" });
+        removed.resolve();
+      });
+      expect(queryClient.getQueryState(legionDaemonQuery("ACME").queryKey)?.fetchStatus).toBe(
+        "fetching"
+      );
+      expect(heldNotDisabled(pressed, label)).toBe(true);
+
+      const notifications = holdNotifications();
+      try {
+        await act(async () => {
+          jest.advanceTimersByTime(REQUEST_DEADLINE_MS);
+          await settle();
+        });
+        expect(section.getByRole("alert").textContent).toBe(
+          "Couldn't load the Legion daemons. Dispatch did not answer within 30 seconds."
+        );
+        expect(heldNotDisabled(pressed, label), "the section said why while it held").toBe(false);
+      } finally {
+        notifications.tell();
+      }
+    } finally {
+      reread.resolve();
+      cleanup();
+      queryClient.clear();
+      realClock();
+    }
+  }
+);
+
+// The line a removal's project read the bound ended draws is that project's read's own: the next
+// write of that project's daemon takes it away as it lands, though the earlier read is still out,
+// and that read answering says nothing more. A removal takes its row away at the press, so the
+// next write of ACME's daemon is a Save that names it again, whose read Dispatch answers at once.
+// A write of another project's daemon leaves the line, a read of its own being no answer to
+// ACME's (`useReadBounds`).
+test("the line a removal's project read the bound ended draws goes as the next write of that daemon lands, whose read answers", async () => {
+  const server = legionServer([
+    setting,
+    { ...setting, project: "CORE", state_url: "https://daemon.example" },
+  ]);
+  // The first read of ACME once the row asks for it, held until the row answers it.
+  const reread = Promise.withResolvers<void>();
+  let holding = false;
+  // The removal's answer and the save's, held until the row gives each, so what each sets off
+  // runs in `act`.
+  const removed = Promise.withResolvers<void>();
+  answerDaemonRemovals().mockImplementation(async (project) => {
+    await removed.promise;
+    await server.remove(project);
+  });
+  const saved = Promise.withResolvers<void>();
+  const save = answerDaemonSaves().mockImplementation(async (project, body) => {
+    await saved.promise;
+    return server.put(project, body.state_url);
+  });
+  const queryClient = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
+  const section = await renderSection(
+    {
+      ...server,
+      get: async (project) => {
+        if (holding && project === "ACME") {
+          holding = false;
+          await reread.promise;
+        }
+        return server.get(project);
+      },
+    },
+    true,
+    queryClient
+  );
+  await section.findByRole("cell", { name: "CORE" });
+  const removeCore = section.getByRole("button", {
+    name: "Remove the Legion daemon of CORE",
+  }) as HTMLButtonElement;
+  const why = "Couldn't load the Legion daemons. Dispatch did not answer within 30 seconds.";
+  jest.useFakeTimers();
+  try {
+    const user = userOnFakeClock();
+    holding = true;
+    await user.click(section.getByRole("button", { name: "Remove the Legion daemon of ACME" }));
+    await tick(0);
+    await act(async () => removed.resolve());
+    await tick(0);
+    expect(heldNotDisabled(removeCore, "Remove the Legion daemon of CORE")).toBe(true);
+    await tick(REQUEST_DEADLINE_MS);
+    expect(heldNotDisabled(removeCore, "Remove the Legion daemon of CORE")).toBe(false);
+    expect(section.getByRole("alert").textContent).toBe(why);
+
+    await saveDaemon(user, "ACME", "http://127.0.0.1:9732");
+    await tick(0);
+    expect(save).toHaveBeenCalledTimes(1);
+    await act(async () => saved.resolve());
+    await tick(0);
+    expect(section.getByRole("cell", { name: "http://127.0.0.1:9732" })).toBeInTheDocument();
+    expect(
+      section.queryByRole("alert"),
+      "the earlier removal's read kept its line past the next write of its daemon"
+    ).toBeNull();
+
+    await act(async () => reread.resolve());
+    await tick(0);
+    expect(section.queryByRole("alert")).toBeNull();
+  } finally {
+    await act(async () => {
+      removed.resolve();
+      saved.resolve();
+      reread.resolve();
+    });
+    cleanup();
+    queryClient.clear();
+    realClock();
+  }
+});
+
+/** The section over ACME's and CORE's daemons in the app's own client, with each Save's answer
+ *  held until the row gives it (`saves`, in press order), and every read of ACME held from
+ *  `holdAcme` until `answerAcme`. */
+async function renderHeldSaves() {
+  const server = legionServer([
+    setting,
+    { ...setting, project: "CORE", state_url: "https://daemon.example" },
+  ]);
+  const saves: (() => void)[] = [];
+  answerDaemonSaves().mockImplementation(async (project, body) => {
+    const { promise, resolve } = Promise.withResolvers<void>();
+    saves.push(resolve);
+    await promise;
+    return server.put(project, body.state_url);
+  });
+  const acme = Promise.withResolvers<void>();
+  let holding = false;
+  const queryClient = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
+  const section = await renderSection(
+    {
+      ...server,
+      get: async (project) => {
+        if (holding && project === "ACME") await acme.promise;
+        return server.get(project);
+      },
+    },
+    true,
+    queryClient
+  );
+  await section.findByRole("cell", { name: "CORE" });
+  return {
+    answerAcme: () => {
+      holding = false;
+      acme.resolve();
+    },
+    holdAcme: () => {
+      holding = true;
+    },
+    queryClient,
+    saves,
+    section,
+  };
+}
+
+/** Names `url` as `project`'s daemon through the section's form, on the held clock's `user`, and
+ *  presses Save. */
+async function saveDaemon(user: UserEvent, project: string, url: string) {
+  await pickFromLabelled(user, "Legion project", `${project} · ${project}`);
+  await user.click(screen.getByLabelText("Legion daemon state URL"));
+  await user.paste(url);
+  await user.click(screen.getByRole("button", { name: "Save Legion daemon" }));
+}
+
+// A second Save of a daemon gives the read of its project up at its press, before its own write
+// lands, and asks nothing then. A cancel is no answer (`DispatchQueryClient`), so the line the
+// first Save's read left at the bound stays while that write is out: no read of the project has
+// answered (the tester's row of `legion.e2e.ts`).
+test("a second Save of a daemon leaves the line its first Save's read left at the bound while its own write is out", async () => {
+  const { answerAcme, holdAcme, queryClient, saves, section } = await renderHeldSaves();
+  const why = "Couldn't load the Legion daemons. Dispatch did not answer within 30 seconds.";
+  jest.useFakeTimers();
+  try {
+    const user = userOnFakeClock();
+    await saveDaemon(user, "ACME", "http://127.0.0.1:9732");
+    await tick(0);
+    holdAcme();
+    await act(async () => saves[0]?.());
+    await tick(0);
+    const save = section.getByRole("button", { name: "Save Legion daemon" }) as HTMLButtonElement;
+    expect(heldNotDisabled(save, "Save Legion daemon")).toBe(true);
+    await tick(REQUEST_DEADLINE_MS);
+    expect(heldNotDisabled(save, "Save Legion daemon")).toBe(false);
+    expect(section.getByRole("alert").textContent).toBe(why);
+
+    await saveDaemon(user, "ACME", "http://127.0.0.1:9733");
+    await tick(0);
+    expect(saves).toHaveLength(2);
+    expect(
+      section.queryByRole("alert")?.textContent,
+      "the second Save took the line while no read of ACME had answered"
+    ).toBe(why);
+  } finally {
+    await act(async () => {
+      saves[1]?.();
+      answerAcme();
+    });
+    cleanup();
+    queryClient.clear();
+    realClock();
+  }
+});
+
+// Each project's daemon is a read of its own, with a hold of its own: a Save of another project,
+// whose read answers, takes nothing of the line ACME's read left at the bound, which goes once
+// ACME's read answers (the tester's row of `legion.e2e.ts`).
+test("a Save of another project whose read answers leaves the line the first project's read left at the bound", async () => {
+  const { answerAcme, holdAcme, queryClient, saves, section } = await renderHeldSaves();
+  const why = "Couldn't load the Legion daemons. Dispatch did not answer within 30 seconds.";
+  jest.useFakeTimers();
+  try {
+    const user = userOnFakeClock();
+    await saveDaemon(user, "ACME", "http://127.0.0.1:9732");
+    await tick(0);
+    holdAcme();
+    await act(async () => saves[0]?.());
+    await tick(REQUEST_DEADLINE_MS);
+    expect(section.getByRole("alert").textContent).toBe(why);
+
+    await saveDaemon(user, "CORE", "https://core.example");
+    await tick(0);
+    await act(async () => saves[1]?.());
+    await tick(0);
+    const save = section.getByRole("button", { name: "Save Legion daemon" }) as HTMLButtonElement;
+    expect(heldNotDisabled(save, "Save Legion daemon"), "CORE's read has answered").toBe(false);
+    expect(section.getByRole("cell", { name: "https://core.example" })).toBeInTheDocument();
+    expect(
+      section.queryByRole("alert")?.textContent,
+      "CORE's answered read took the line ACME's unanswered read left"
+    ).toBe(why);
+
+    await act(async () => answerAcme());
+    await tick(0);
+    expect(section.queryByRole("alert")).toBeNull();
+  } finally {
+    await act(async () => answerAcme());
+    cleanup();
+    queryClient.clear();
+    realClock();
+  }
+});
+
+// A write the reader stops while the browser is offline settles at once, and the read of its
+// project that settling asks for is paused by the network. A stopped write is no longer late, so
+// a section that held its controls through that read would hold them again, with nothing to end
+// it until the network returns. The section lets them go with the stop instead, says the write
+// was stopped, and the project is still read once the network returns.
+test.each(savesAndRemovals)(
+  "offline, $label is let go when its late write is stopped, though the project's read is paused",
+  async ({ label, start }) => {
+    const writes = [
+      answerDaemonSaves().mockImplementation(failsAtTheNetwork),
+      answerDaemonRemovals().mockImplementation(failsAtTheNetwork),
+    ];
+    const queryClient = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
+    const section = await renderSection(
+      legionServer([setting, { ...setting, project: "CORE", state_url: "https://daemon.example" }]),
+      true,
+      queryClient
+    );
+    await section.findByRole("cell", { name: "CORE" });
+    if (start === undefined) await fillDaemonForm("http://127.0.0.1:9731");
+    const pressed = section.getByRole("button", { name: label }) as HTMLButtonElement;
+    const online = onlineManager.isOnline();
+    jest.useFakeTimers();
+    const stopFocusFixup = emulateChromiumFocusFixup();
+    try {
+      onlineManager.setOnline(false);
+      await pressHeld(userOnFakeClock(), pressed, {
+        name: label,
+        sent: () => triesOf(writes),
+        start: start === undefined ? undefined : section.getByRole("button", { name: start }),
+      });
+      await stopTheLateWrite(queryClient);
+
+      expect(queryClient.getQueryState(legionDaemonQuery("ACME").queryKey)?.fetchStatus).toBe(
+        "paused"
+      );
+      expect(heldNotDisabled(pressed, label)).toBe(false);
+      expect(pressed).toHaveFocus();
+      // The alert's paragraph, without its Retry button's name: it is the only alert, so no
+      // "not read yet" line stands beside the stop's.
+      expect(section.getByRole("alert").querySelector("p")?.textContent).toBe(
+        start === undefined
+          ? stoppedWriteNote("the Legion daemon of ACME", "saved", {
+              method: "PUT",
+              stopped: new SendStoppedError(),
+            })
+          : stoppedWriteNote("the removal of ACME's Legion daemon", "made", {
+              method: "DELETE",
+              stopped: new SendStoppedError(),
+            })
+      );
+    } finally {
+      // The section and its reads go before the network returns, so no read paused offline goes on.
+      cleanup();
+      queryClient.clear();
+      onlineManager.setOnline(online);
+      stopFocusFixup();
+      realClock();
+    }
+  }
+);
 
 test("a refusal the server made is shown as the server wrote it, and the row goes back", async () => {
   const user = userEvent.setup();
   const server = legionServer([]);
-  const putLegionDaemon = spyOn(api, "putLegionDaemon").mockRejectedValue(
+  answerDaemonSaves().mockRejectedValue(
     new ApiError(403, {
       code: "SCOPE_FORBIDDEN",
       error: "this credential names one project and cannot write a deployment setting",
     })
   );
-  spies.push(putLegionDaemon);
   const section = await renderSection(server);
 
-  await user.selectOptions(await section.findByLabelText("Legion project"), "ACME");
+  await pickFromLabelled(user, "Legion project", "ACME · ACME");
   await user.click(section.getByLabelText("Legion daemon state URL"));
   await user.paste("http://127.0.0.1:9731");
   await user.click(section.getByRole("button", { name: "Save Legion daemon" }));
@@ -220,11 +824,12 @@ test("a refusal the server made is shown as the server wrote it, and the row goe
 test("a URL with a path is refused by the field, in the words the route uses", async () => {
   const user = userEvent.setup();
   const server = legionServer([]);
-  const putLegionDaemon = spyOn(api, "putLegionDaemon").mockImplementation(server.put);
-  spies.push(putLegionDaemon);
+  const putLegionDaemon = answerDaemonSaves().mockImplementation((project, body) =>
+    server.put(project, body.state_url)
+  );
   const section = await renderSection(server);
 
-  await user.selectOptions(await section.findByLabelText("Legion project"), "ACME");
+  await pickFromLabelled(user, "Legion project", "ACME · ACME");
   await user.click(section.getByLabelText("Legion daemon state URL"));
   await user.paste("http://127.0.0.1:9731/legion/v1/state");
   await user.click(section.getByRole("button", { name: "Save Legion daemon" }));
@@ -237,22 +842,83 @@ test("a URL with a path is refused by the field, in the words the route uses", a
   expect(putLegionDaemon).not.toHaveBeenCalled();
 });
 
+// The Legion project list is a button, which no `required` holds as the select it replaced held
+// the form: with no project picked the form files nothing and says to choose one, as the browser
+// said for the select, until a project is picked.
+test("with no project picked, Save Legion daemon files nothing and says to choose a project", async () => {
+  const user = userEvent.setup();
+  const server = legionServer([]);
+  const putLegionDaemon = answerDaemonSaves().mockImplementation((project, body) =>
+    server.put(project, body.state_url)
+  );
+  const section = await renderSection(server);
+
+  expect(await section.findByLabelText("Legion project")).toHaveTextContent("Choose a project");
+  await user.click(section.getByLabelText("Legion daemon state URL"));
+  await user.paste("http://127.0.0.1:9731");
+  await user.click(section.getByRole("button", { name: "Save Legion daemon" }));
+  await act(async () => {});
+  expect(putLegionDaemon, "a daemon was saved for no project").not.toHaveBeenCalled();
+  expect(section.getByRole("alert")).toHaveTextContent("Choose a project.");
+
+  await pickFromLabelled(user, "Legion project", "ACME · ACME");
+  expect(section.queryByRole("alert")).toBeNull();
+  await user.click(section.getByRole("button", { name: "Save Legion daemon" }));
+  await waitFor(() =>
+    expect(putLegionDaemon).toHaveBeenLastCalledWith(
+      "ACME",
+      { state_url: "http://127.0.0.1:9731" },
+      keyedAttempt
+    )
+  );
+  expect(putLegionDaemon).toHaveBeenCalledTimes(1);
+});
+
+// The Legion project list's options are every project, which grow with the deployment. Opened
+// from its trigger, the list holds a text box of its own, and a word typed there leaves only the
+// projects whose key or name holds it.
+test("the Legion daemon's project list holds a text box that narrows its projects", async () => {
+  const user = userEvent.setup();
+  const section = await renderSection(legionServer([]));
+
+  const trigger = await section.findByLabelText("Legion project");
+  const before = new Set(textBoxes());
+  await user.click(trigger);
+  const own = textBoxes().filter((box) => !before.has(box));
+  expect(own, "the Legion project list holds no text box of its own").toHaveLength(1);
+  const box = own[0] as HTMLElement;
+  expect(box).toHaveAccessibleName("Search projects");
+  const list = listOf(box);
+  expect(within(list).getAllByRole("option")).toHaveLength(2);
+  await user.type(box, "co");
+  await waitFor(() =>
+    expect(
+      within(list).queryAllByRole("option", { name: /^ACME\b/ }),
+      `"co" leaves ACME in the Legion project list`
+    ).toHaveLength(0)
+  );
+  expect(
+    within(list)
+      .getAllByRole("option")
+      .map((option) => option.textContent)
+  ).toEqual(["CORE · CORE"]);
+});
+
 // A daemon's save the reader stopped may have been made: the section says so, and that its Retry
-// sends the same `PUT` again, which is the same however often it is made. The section is drawn on
-// the real clock, so every read it makes has answered before the clock is held for the save.
+// sends the same `PUT` again, which is the same however often it is made. The section is drawn,
+// and its project picked, on the real clock, so every read it makes has answered before the clock
+// is held for the save.
 test("a daemon save the reader stopped says Retry sends it again, not that it failed", async () => {
-  const putLegionDaemon = spyOn(api, "putLegionDaemon").mockRejectedValue(
+  answerDaemonSaves().mockRejectedValue(
     new NetworkError("/api/v1/projects/ACME/legion/daemon", new TypeError("Failed to fetch"))
   );
-  spies.push(putLegionDaemon);
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const section = await renderSection(legionServer([]), true, queryClient);
-  const projectField = await section.findByLabelText("Legion project");
+  await pickFromLabelled(userEvent.setup(), "Legion project", "ACME · ACME");
 
   jest.useFakeTimers();
   try {
     const user = userOnFakeClock();
-    await user.selectOptions(projectField, "ACME");
     await user.click(section.getByLabelText("Legion daemon state URL"));
     await user.paste("http://127.0.0.1:9731");
     await user.click(section.getByRole("button", { name: "Save Legion daemon" }));
@@ -274,10 +940,9 @@ test("a daemon save the reader stopped says Retry sends it again, not that it fa
 // failed write from the write's own error handler (`onError`), so a stopped one is told apart
 // there: the section says what Retry does with it, not that the removal failed.
 test("a daemon removal the reader stopped says Retry makes it again, not that it failed", async () => {
-  const deleteLegionDaemon = spyOn(api, "deleteLegionDaemon").mockRejectedValue(
+  answerDaemonRemovals().mockRejectedValue(
     new NetworkError("/api/v1/projects/ACME/legion/daemon", new TypeError("Failed to fetch"))
   );
-  spies.push(deleteLegionDaemon);
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const section = await renderSection(legionServer([setting]), true, queryClient);
   const remove = await section.findByRole("button", { name: "Remove the Legion daemon of ACME" });
@@ -387,7 +1052,7 @@ function shownUrls(): (string | null)[] {
 /** Names `url` as ACME's daemon through the section's form, without pressing Save. */
 async function fillDaemonForm(url: string) {
   const user = userEvent.setup();
-  await user.selectOptions(screen.getByLabelText("Legion project"), "ACME");
+  await pickFromLabelled(user, "Legion project", "ACME · ACME");
   await user.click(screen.getByLabelText("Legion daemon state URL"));
   await user.paste(url);
 }
@@ -403,15 +1068,20 @@ test("another browser's daemon of the project shows while this page's save is ou
   const queryClient = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
   const server = legionServer([setting]);
   const held = heldWrites(server, { savedFirst: true });
-  const putLegionDaemon = spyOn(api, "putLegionDaemon").mockImplementation(held.server.put);
-  spies.push(putLegionDaemon);
+  const putLegionDaemon = answerDaemonSaves().mockImplementation((project, body) =>
+    held.server.put(project, body.state_url)
+  );
   const section = await renderSection(held.server, true, queryClient);
 
   await section.findByRole("cell", { name: "http://127.0.0.1:9731" });
   await fillDaemonForm("https://daemon.example");
   await user.click(section.getByRole("button", { name: "Save Legion daemon" }));
   await waitFor(() =>
-    expect(putLegionDaemon).toHaveBeenCalledWith("ACME", "https://daemon.example", keyedAttempt)
+    expect(putLegionDaemon).toHaveBeenCalledWith(
+      "ACME",
+      { state_url: "https://daemon.example" },
+      keyedAttempt
+    )
   );
   expect(shownUrls()).toEqual(["https://daemon.example"]);
 
@@ -442,16 +1112,17 @@ test("another browser's daemon of the project shows while this page's removal is
   const queryClient = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
   const server = legionServer([setting]);
   const held = heldWrites(server, { savedFirst: true });
-  const deleteLegionDaemon = spyOn(api, "deleteLegionDaemon").mockImplementation(
-    held.server.remove
+  const deleteLegionDaemon = answerDaemonRemovals().mockImplementation((project) =>
+    held.server.remove(project)
   );
-  spies.push(deleteLegionDaemon);
   const section = await renderSection(held.server, true, queryClient);
 
   await user.click(
     await section.findByRole("button", { name: "Remove the Legion daemon of ACME" })
   );
-  await waitFor(() => expect(deleteLegionDaemon).toHaveBeenCalledWith("ACME", keyedAttempt));
+  await waitFor(() =>
+    expect(deleteLegionDaemon).toHaveBeenCalledWith("ACME", undefined, keyedAttempt)
+  );
   expect(shownUrls()).toEqual([]);
 
   // The other browser's save, and the event's refresh of this page's project.
@@ -478,8 +1149,9 @@ test("another browser's daemon of the project shows while this page's removal is
 test("a daemon's save is in the project's query in the step of the press", async () => {
   const queryClient = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
   const held = heldWrites(legionServer([setting]));
-  const putLegionDaemon = spyOn(api, "putLegionDaemon").mockImplementation(held.server.put);
-  spies.push(putLegionDaemon);
+  answerDaemonSaves().mockImplementation((project, body) =>
+    held.server.put(project, body.state_url)
+  );
   const section = await renderSection(held.server, true, queryClient);
 
   await section.findByRole("cell", { name: "http://127.0.0.1:9731" });
@@ -508,17 +1180,22 @@ test("a read of a project out when its daemon's save is answered does not put ba
   const user = userEvent.setup();
   const queryClient = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
   const held = heldWrites(legionServer([setting]));
-  const putLegionDaemon = spyOn(api, "putLegionDaemon").mockImplementation(held.server.put);
-  spies.push(putLegionDaemon);
+  const putLegionDaemon = answerDaemonSaves().mockImplementation((project, body) =>
+    held.server.put(project, body.state_url)
+  );
   const section = await renderSection(held.server, true, queryClient);
 
   await section.findByRole("cell", { name: "http://127.0.0.1:9731" });
-  await user.selectOptions(section.getByLabelText("Legion project"), "ACME");
+  await pickFromLabelled(user, "Legion project", "ACME · ACME");
   await user.click(section.getByLabelText("Legion daemon state URL"));
   await user.paste("https://daemon.example");
   await user.click(section.getByRole("button", { name: "Save Legion daemon" }));
   await waitFor(() =>
-    expect(putLegionDaemon).toHaveBeenCalledWith("ACME", "https://daemon.example", keyedAttempt)
+    expect(putLegionDaemon).toHaveBeenCalledWith(
+      "ACME",
+      { state_url: "https://daemon.example" },
+      keyedAttempt
+    )
   );
 
   // Asked while the save is out, as an event's refresh would ask it.
@@ -549,4 +1226,115 @@ test("a read of a project out when its daemon's save is answered does not put ba
   });
   await waitFor(() => expect(queryClient.isFetching()).toBe(0));
   expect(shownUrls()).toEqual(["https://daemon.example"]);
+});
+
+/**
+ * The two presses of a row where Save of ACME's daemon is made behind an earlier write of it that
+ * is late: `first` - Save of `https://first.example`, or ACME's Remove - and then, past that
+ * write's deadline and past the try it makes a second after it, Save of `https://second.example`,
+ * each pressed with Enter from the focus. Dispatch cannot be reached meanwhile: each try of a
+ * write fails at the network, until `reach`, after which each try is taken by the server's rows
+ * and named in `taken`, in the order Dispatch took it. Nothing tells the page it can be reached
+ * again - no `online`, as when the browser's network was never lost and a gateway comes back - so
+ * each write that waits tries again at the end of its own backoff. The section is drawn and filled
+ * on the real clock and pressed on the fake one, which the row puts back (`realClock`).
+ */
+async function saveBehindLateWrite(
+  first: "Save Legion daemon" | "Remove the Legion daemon of ACME"
+) {
+  const server = legionServer([setting]);
+  const taken: string[] = [];
+  let reachable = false;
+  answerDaemonSaves().mockImplementation((project, body) => {
+    if (!reachable) return failsAtTheNetwork();
+    taken.push(`PUT ${body.state_url}`);
+    return server.put(project, body.state_url);
+  });
+  answerDaemonRemovals().mockImplementation((project) => {
+    if (!reachable) return failsAtTheNetwork();
+    taken.push("DELETE");
+    return server.remove(project);
+  });
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const section = await renderSection(server, true, queryClient);
+  await section.findByRole("cell", { name: "ACME" });
+  await fillDaemonForm(
+    first === "Save Legion daemon" ? "https://first.example" : "https://second.example"
+  );
+  const save = section.getByRole("button", { name: "Save Legion daemon" }) as HTMLButtonElement;
+  jest.useFakeTimers();
+  const user = userOnFakeClock();
+  act(() => section.getByRole("button", { name: first }).focus());
+  await user.keyboard("{Enter}");
+  // The write tries at 0, 1, 3, 7, 15 and 31 s, each failing at the network; its next try waits
+  // its longest backoff, half a minute.
+  await tick(SEND_DEADLINE_MS + 2_000);
+  expect(writesOf(queryClient).rows()[0]?.status).toBe("late");
+  if (first === "Save Legion daemon") {
+    await user.clear(section.getByLabelText("Legion daemon state URL"));
+    await user.paste("https://second.example");
+  }
+  act(() => save.focus());
+  await user.keyboard("{Enter}");
+  await tick(0);
+  return {
+    queryClient,
+    reach: () => {
+      reachable = true;
+    },
+    save,
+    taken,
+  };
+}
+
+// A write of the section past its deadline holds the form no longer, so the reader can make
+// another write of the same daemon while the first is still tried. Both go on the daemon's line,
+// in press order: the later press waits its turn behind the late write and goes once that one is
+// decided. Off the line, the later press would try again a second after Dispatch can be reached,
+// long before the late write's next try, half a minute on, which would then land last and undo
+// it. On the line, Dispatch takes the two in press order, the section ends on the later press's
+// URL, and the focus is on the Save the reader pressed last.
+test.each([
+  {
+    first: "Save Legion daemon",
+    inPressOrder: ["PUT https://first.example", "PUT https://second.example"],
+  },
+  {
+    first: "Remove the Legion daemon of ACME",
+    inPressOrder: ["DELETE", "PUT https://second.example"],
+  },
+] as const)(
+  "a Save pressed while $first's write of the daemon is late goes after it, and the daemon ends as the Save left it",
+  async ({ first, inPressOrder }) => {
+    try {
+      const { queryClient, reach, save, taken } = await saveBehindLateWrite(first);
+      reach();
+      // Past the late write's next try, and the later press's write after it.
+      await tick(SEND_DEADLINE_MS);
+      expect(taken).toEqual([...inPressOrder]);
+      expect(writesOf(queryClient).rows()).toEqual([]);
+      expect(shownUrls()).toEqual(["https://second.example"]);
+      expect(save).toHaveFocus();
+    } finally {
+      realClock();
+    }
+  }
+);
+
+// The later press waits its turn behind the late write, and no deadline of its own runs while it
+// waits: it holds the form no more than the late write does, so a write that never answers locks
+// the form no more by a second press than by the first. Save is free, with the focus on it.
+test("a Save pressed while an earlier write of its daemon is late waits its turn, and holds the form no more than that write does", async () => {
+  try {
+    const { queryClient, save } = await saveBehindLateWrite("Save Legion daemon");
+    expect(
+      writesOf(queryClient)
+        .rows()
+        .map((row) => row.status)
+    ).toEqual(["late", "queued"]);
+    expect(heldNotDisabled(save, "Save Legion daemon")).toBe(false);
+    expect(save).toHaveFocus();
+  } finally {
+    realClock();
+  }
 });

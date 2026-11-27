@@ -1,9 +1,22 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { type FormEvent, type ReactNode, useState } from "react";
+import { type FormEvent, type ReactNode, useLayoutEffect, useRef, useState } from "react";
 
 import { api, apiErrorMessage, isSourceNotFound, removedEvenIfGone } from "../../api/client";
 import { architectureSourcesQuery, projectsQuery } from "../../api/queries";
+import { invalidateWaitingForPaused } from "../../api/query-client";
+import { useReadBound } from "../../api/read-bound";
+import { ARM_ON_PRESS, useFocusPlace } from "../../components/focus-place";
+import { heldField, heldPress } from "../../components/held-press";
 import { QueryError } from "../../components/QueryError";
+import {
+  TableBody,
+  TableCell,
+  TableEmpty,
+  TableHead,
+  TableHeadCell,
+  TableRow,
+  TableShell,
+} from "../../components/TableShell";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
 import {
   borderDefault,
@@ -14,15 +27,14 @@ import {
   textMutedOnCanvas,
   textMutedOnSurface,
   textPrimaryOnCanvas,
-  textPrimaryOnSurface,
   textSecondaryOnCanvas,
-  textSecondaryOnSurface,
 } from "../../theme/classes";
 import { Timestamp } from "../refs/Timestamp";
 import {
   refusedNote,
   stoppedNote,
   useKeyedWrite,
+  usePendingKeyedPress,
   useRefusalOfSubject,
 } from "../writes/useKeyedWrite";
 import {
@@ -30,11 +42,8 @@ import {
   settingsFieldLabel,
   settingsMonoInput,
   settingsSubmitButton,
-  settingsTableHead,
-  settingsTableRow,
-  settingsTableWrapper,
 } from "./classes";
-import { ProjectSelect } from "./ProjectSelect";
+import { NoProjectPicked, ProjectSelect } from "./ProjectSelect";
 
 /** A source's address: a project and one of its repositories. */
 interface SourceKey {
@@ -46,6 +55,10 @@ interface SourceKey {
 function sourceName(source: SourceKey): string {
   return `the architecture source ${source.repo} for ${source.project}`;
 }
+
+/** What the section says when its list failed to load, and before why the list read after a
+ *  removal has not settled. */
+const ARCHITECTURE_SOURCES_NOT_LOADED = "Couldn't load architecture sources.";
 
 /** The id of the section's heading, which an address names to open Settings at this section
  *  (`SettingsPage`): an issue's Components line links there while its project has no source. */
@@ -59,17 +72,26 @@ export const ARCHITECTURE_SOURCES_HEADING_ID = "architecture-sources-heading";
 export function ArchitectureSourcesSection(): ReactNode {
   const queryClient = useQueryClient();
   const [project, setProject] = useState("");
+  // The form was submitted with no project picked, and says so until one is.
+  const [projectMissing, setProjectMissing] = useState(false);
   const [repository, setRepository] = useState("");
   const [branch, setBranch] = useState("main");
   const submitGuard = useSubmitGuard();
   const sources = useQuery(architectureSourcesQuery());
   const projects = useQuery(projectsQuery());
+  const list = useRef<HTMLElement>(null);
+  const noteFocus = useFocusPlace(
+    () => list.current,
+    () => null
+  );
+  const [unsettled, holdThrough] = useReadBound(architectureSourcesQuery().queryKey);
   // The form shows a refused save beside the repository it was refused over.
   const saveSource = useKeyedWrite({
     inline: true,
     label: (input: { project: string; repo: string; branch: string }) =>
       `${input.project}'s architecture source ${input.repo}`,
     method: "PUT",
+    readsLate: true,
     write: (input, bounds) =>
       api.putArchitectureSource(input.project, input.repo, { branch: input.branch }, bounds),
     onSettled: () => submitGuard.release(),
@@ -81,18 +103,29 @@ export function ArchitectureSourcesSection(): ReactNode {
       setBranch("main");
     },
   });
+  // The removal goes under a name of its own, and the section reads its press from TanStack's
+  // mutation cache, which tells its listeners at once (`usePendingKeyedPress`). The observer
+  // `useMutation` reads is told a timer later, a task after the bound that ends the removal's
+  // hold has drawn why the list is not read, so a Delete held by that observer would refuse a
+  // press made once the line says why.
+  const deleteKey = ["architecture-source-remove"];
+  const deleteOut = usePendingKeyedPress(deleteKey);
   const deleteSource = useKeyedWrite({
+    mutationKey: deleteKey,
     label: (source: SourceKey) => `${source.project}'s architecture source ${source.repo} removed`,
     // A removal made again after one that landed finds no source (`404 SOURCE_NOT_FOUND`), which
     // is the removal done (`removedEvenIfGone`).
     method: "DELETE",
+    readsLate: true,
     write: (source, bounds) =>
       removedEvenIfGone(
         api.deleteArchitectureSource(source.project, source.repo, bounds),
         isSourceNotFound
       ),
+    // The re-read removes the pressed Delete. Keep its hand-off armed until the read answers
+    // or reaches its deadline.
     onSuccess: () =>
-      void queryClient.invalidateQueries({ queryKey: architectureSourcesQuery().queryKey }),
+      holdThrough(invalidateWaitingForPaused(queryClient, architectureSourcesQuery().queryKey)),
   });
   // A refresh settles into the row either way: a rejected model comes back 200
   // with the reason in last_error, and even a 409 (access revoked, branch gone)
@@ -101,12 +134,27 @@ export function ArchitectureSourcesSection(): ReactNode {
     label: (source: SourceKey) =>
       `Refresh of ${source.project}'s architecture source ${source.repo}`,
     method: "POST",
+    readsLate: true,
     write: (source, bounds) => api.syncArchitectureSource(source.project, source.repo, bounds),
     onSettled: () =>
       void queryClient.invalidateQueries({ queryKey: architectureSourcesQuery().queryKey }),
   });
+  // The form and row actions are held only until the deadline of the write holding them.
+  const saveHeld = saveSource.isPending && !saveSource.late;
+  const deleteHeld = deleteOut.isPending && !deleteOut.late;
+  const refreshHeld = refreshSource.isPending && !refreshSource.late;
+  const formHeld = saveHeld || deleteHeld;
+  useLayoutEffect(() => {
+    if (saveSource.late) submitGuard.release();
+  }, [saveSource.late, submitGuard]);
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    if (formHeld) return;
+    // The project list is a button, which no `required` holds: an empty one files nothing here.
+    if (project === "") {
+      setProjectMissing(true);
+      return;
+    }
     submitGuard.guard(() => saveSource.mutate({ branch, project, repo: repository }));
   };
   // A removal's and a refresh's refusals sit under the table, each one line for every row, so each
@@ -123,7 +171,12 @@ export function ArchitectureSourcesSection(): ReactNode {
     : undefined;
 
   return (
-    <section aria-labelledby={ARCHITECTURE_SOURCES_HEADING_ID}>
+    <section
+      {...ARM_ON_PRESS}
+      aria-labelledby={ARCHITECTURE_SOURCES_HEADING_ID}
+      onFocus={noteFocus}
+      ref={list}
+    >
       <h2
         className={`text-xl font-semibold ${textPrimaryOnCanvas}`}
         id={ARCHITECTURE_SOURCES_HEADING_ID}
@@ -144,7 +197,7 @@ export function ArchitectureSourcesSection(): ReactNode {
       {sources.isError ? (
         <div className="mt-6">
           <QueryError
-            message="Couldn't load architecture sources."
+            message={ARCHITECTURE_SOURCES_NOT_LOADED}
             onRetry={() => void sources.refetch()}
             retrying={sources.isFetching}
           />
@@ -152,135 +205,118 @@ export function ArchitectureSourcesSection(): ReactNode {
       ) : null}
       {sources.isSuccess && projects.isSuccess ? (
         <>
-          <div className={settingsTableWrapper}>
-            <table className="w-full text-left text-sm">
-              <thead className={settingsTableHead}>
-                <tr>
-                  <th className="px-4 py-3 font-semibold" scope="col">
-                    Project
-                  </th>
-                  <th className="px-4 py-3 font-semibold" scope="col">
-                    Repository
-                  </th>
-                  <th className="px-4 py-3 font-semibold" scope="col">
-                    Branch
-                  </th>
-                  <th className="px-4 py-3 font-semibold" scope="col">
-                    Status
-                  </th>
-                  <th className="px-4 py-3" scope="col">
-                    <span className="sr-only">Actions</span>
-                  </th>
-                </tr>
-              </thead>
-              <tbody>
-                {sources.data.length === 0 ? (
-                  <tr>
-                    <td className={`px-4 py-5 ${textMutedOnSurface}`} colSpan={5}>
-                      No architecture sources yet.
-                    </td>
-                  </tr>
-                ) : (
-                  sources.data.map((source) => (
-                    <tr className={settingsTableRow} key={`${source.project} ${source.repo}`}>
-                      <td className={`px-4 py-3 font-mono ${textPrimaryOnSurface}`}>
-                        {source.project}
-                      </td>
-                      <td className={`px-4 py-3 font-mono ${textPrimaryOnSurface}`}>
-                        {source.repo}
-                      </td>
-                      <td className={`px-4 py-3 font-mono ${textSecondaryOnSurface}`}>
-                        {source.branch}
-                      </td>
-                      <td className={`px-4 py-3 ${textSecondaryOnSurface}`}>
-                        {source.last_error !== null ? (
-                          <>
-                            <span className={dangerText}>{source.last_error}</span>
-                            {source.last_commit !== null ? (
-                              <div className={textMutedOnSurface}>
-                                Previous model stays up at{" "}
-                                <span className="font-mono">{source.last_commit.slice(0, 12)}</span>
-                                {` · ${componentCount(source.components)}`}
-                              </div>
-                            ) : null}
-                          </>
-                        ) : source.last_commit !== null ? (
-                          <>
-                            Synced{" "}
-                            <span className="font-mono">{source.last_commit.slice(0, 12)}</span>
-                            {` · ${componentCount(source.components)}`}
-                            {source.last_sync_at !== null ? (
-                              <>
-                                {" "}
-                                <Timestamp
-                                  at={source.last_sync_at}
-                                  className={textMutedOnSurface}
-                                />
-                              </>
-                            ) : null}
-                          </>
-                        ) : (
-                          "Access verified"
+          <TableShell className="mt-6" label="Architecture sources">
+            <TableHead>
+              <TableHeadCell>Project</TableHeadCell>
+              <TableHeadCell>Repository</TableHeadCell>
+              <TableHeadCell>Branch</TableHeadCell>
+              <TableHeadCell>Status</TableHeadCell>
+              <TableHeadCell>
+                <span className="sr-only">Actions</span>
+              </TableHeadCell>
+            </TableHead>
+            <TableBody>
+              {sources.data.length === 0 ? (
+                <TableEmpty colSpan={5}>No architecture sources yet.</TableEmpty>
+              ) : (
+                sources.data.map((source) => (
+                  <TableRow key={`${source.project} ${source.repo}`}>
+                    <TableCell mono tone="primary">
+                      {source.project}
+                    </TableCell>
+                    <TableCell mono tone="primary">
+                      {source.repo}
+                    </TableCell>
+                    <TableCell mono tone="secondary">
+                      {source.branch}
+                    </TableCell>
+                    <TableCell tone="secondary">
+                      {source.last_error !== null ? (
+                        <>
+                          <span className={dangerText}>{source.last_error}</span>
+                          {source.last_commit !== null ? (
+                            <div className={textMutedOnSurface}>
+                              Previous model stays up at{" "}
+                              <span className="font-mono">{source.last_commit.slice(0, 12)}</span>
+                              {` · ${componentCount(source.components)}`}
+                            </div>
+                          ) : null}
+                        </>
+                      ) : source.last_commit !== null ? (
+                        <>
+                          Synced{" "}
+                          <span className="font-mono">{source.last_commit.slice(0, 12)}</span>
+                          {` · ${componentCount(source.components)}`}
+                          {source.last_sync_at !== null ? (
+                            <>
+                              {" "}
+                              <Timestamp at={source.last_sync_at} className={textMutedOnSurface} />
+                            </>
+                          ) : null}
+                        </>
+                      ) : (
+                        "Access verified"
+                      )}
+                    </TableCell>
+                    {/* A row's Refresh and Delete are held while a write of the section is out
+                        (`heldPress`), not disabled, so the one the reader pressed keeps the focus
+                        and a press of either then sends nothing. */}
+                    <TableCell align="right">
+                      <button
+                        aria-label={`Refresh architecture source ${source.repo} for ${source.project}`}
+                        className={`mr-4 font-medium refused:cursor-not-allowed refused:opacity-50 ${linkText} ${linkHoverText}`}
+                        {...heldPress(refreshHeld || formHeld, () =>
+                          refreshSource.mutate({ project: source.project, repo: source.repo })
                         )}
-                      </td>
-                      <td className="px-4 py-3 text-right">
-                        <button
-                          aria-label={`Refresh architecture source ${source.repo} for ${source.project}`}
-                          className={`mr-4 font-medium disabled:cursor-not-allowed disabled:opacity-50 ${linkText} ${linkHoverText}`}
-                          disabled={
-                            refreshSource.isPending ||
-                            deleteSource.isPending ||
-                            saveSource.isPending
-                          }
-                          onClick={() =>
-                            refreshSource.mutate({ project: source.project, repo: source.repo })
-                          }
-                          type="button"
-                        >
-                          {refreshSource.isPending &&
-                          refreshSource.variables.project === source.project &&
-                          refreshSource.variables.repo === source.repo
-                            ? "Refreshing…"
-                            : "Refresh"}
-                        </button>
-                        <button
-                          aria-label={`Delete architecture source ${source.repo} for ${source.project}`}
-                          className={`font-medium disabled:cursor-not-allowed disabled:opacity-50 ${dangerText} ${dangerHoverText}`}
-                          disabled={deleteSource.isPending || saveSource.isPending}
-                          onClick={() =>
-                            deleteSource.mutate({ project: source.project, repo: source.repo })
-                          }
-                          type="button"
-                        >
-                          Delete
-                        </button>
-                      </td>
-                    </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
-          </div>
+                        type="button"
+                      >
+                        {refreshSource.isPending &&
+                        refreshSource.variables.project === source.project &&
+                        refreshSource.variables.repo === source.repo
+                          ? "Refreshing…"
+                          : "Refresh"}
+                      </button>
+                      <button
+                        aria-label={`Delete architecture source ${source.repo} for ${source.project}`}
+                        className={`font-medium refused:cursor-not-allowed refused:opacity-50 ${dangerText} ${dangerHoverText}`}
+                        {...heldPress(formHeld, () =>
+                          deleteSource.mutate({ project: source.project, repo: source.repo })
+                        )}
+                        type="button"
+                      >
+                        Delete
+                      </button>
+                    </TableCell>
+                  </TableRow>
+                ))
+              )}
+            </TableBody>
+          </TableShell>
+          {unsettled === undefined ? null : (
+            <div className="mt-4">
+              <QueryError message={`${ARCHITECTURE_SOURCES_NOT_LOADED} ${unsettled}.`} />
+            </div>
+          )}
 
           <form
             className={`mt-6 grid gap-4 rounded-xl border p-4 sm:grid-cols-2 sm:items-end ${borderDefault}`}
             onSubmit={submit}
           >
-            <label className={settingsFieldLabel} htmlFor="architecture-source-project">
-              Source project
-              <ProjectSelect
-                disabled={saveSource.isPending}
-                id="architecture-source-project"
-                onChange={setProject}
-                projects={projects.data}
-                value={project}
-              />
-            </label>
+            <ProjectSelect
+              held={saveHeld}
+              label="Source project"
+              onChange={(picked) => {
+                setProject(picked);
+                setProjectMissing(false);
+              }}
+              projects={projects.data}
+              value={project}
+            />
             <label className={settingsFieldLabel} htmlFor="architecture-source-repository">
               Source repository
               <input
-                className={settingsMonoInput}
-                disabled={saveSource.isPending}
+                {...heldField(saveHeld)}
+                className={`${settingsMonoInput} aria-disabled:opacity-50`}
                 id="architecture-source-repository"
                 onChange={(event) => setRepository(event.target.value)}
                 pattern={ownerRepoPattern}
@@ -292,8 +328,8 @@ export function ArchitectureSourcesSection(): ReactNode {
             <label className={settingsFieldLabel} htmlFor="architecture-source-branch">
               Branch
               <input
-                className={settingsMonoInput}
-                disabled={saveSource.isPending}
+                {...heldField(saveHeld)}
+                className={`${settingsMonoInput} aria-disabled:opacity-50`}
                 id="architecture-source-branch"
                 onChange={(event) => setBranch(event.target.value)}
                 required
@@ -301,13 +337,14 @@ export function ArchitectureSourcesSection(): ReactNode {
               />
             </label>
             <button
+              aria-disabled={formHeld || undefined}
               className={settingsSubmitButton}
-              disabled={saveSource.isPending || deleteSource.isPending}
               type="submit"
             >
               Add source
             </button>
           </form>
+          {projectMissing ? <NoProjectPicked /> : null}
           {saveSource.isError ? (
             <div className="mt-4">
               <QueryError

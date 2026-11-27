@@ -3,10 +3,12 @@
  * and/or `onMarkHover`; this plugin replaces the mark popover. A click inside a proof or
  * dispatch mark span reports the id of the mark it names (./record-mark-target.ts: the narrowest
  * record mark there) - the click is not consumed, so the caret still moves; hover reports that
- * id on enter and null on leave.
+ * id on enter and null on leave. A click on a link the editor opens (./dispatch-link-open.ts)
+ * reports nothing: it opens the link, and the comment stays reachable from the text beside it.
  */
 import { $prose } from '@milkdown/kit/utils';
 import { Plugin, PluginKey } from '@milkdown/kit/prose/state';
+import { opensLinkOn } from './dispatch-link-open';
 import { markIdAt } from './record-mark-target';
 
 const markEventsKey = new PluginKey('dispatch-mark-events');
@@ -23,6 +25,7 @@ export const dispatchMarkEventsPlugin = (options: MarkEventsOptions) =>
         key: markEventsKey,
         props: {
           handleClick(view, _pos, event) {
+            if (opensLinkOn(view, event)) return false;
             const id = markIdAt(view, event.target);
             if (id && options.onMarkClick) options.onMarkClick(id);
             return false;

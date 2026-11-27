@@ -8,6 +8,7 @@ import * as C from "../web/src/theme/classes";
 import { oklchToSrgb8 } from "../web/src/theme/contrast";
 import type { Swatch } from "../web/src/theme/palette";
 import { createAsk, createComment, createIssue, createProject } from "./api";
+import { normalizeComputedColor, toRgbString } from "./colors";
 import { conversationThreadScope } from "./editor";
 import { stubbed } from "./stub/stub-test";
 
@@ -16,38 +17,11 @@ const session = {
   as: "agent" as const,
 };
 
-// Chromium serializes `getComputedStyle` colors in the color space they were declared in —
-// Tailwind v4's default palette is `oklch()`, so `backgroundColor`/`color`/`borderBottomColor`
-// come back as e.g. `oklch(0.208 0.042 265.755)`, not `rgb(...)`. Rather than pin that literal
-// string (brittle against browser/Tailwind version formatting changes) or fall back to a
-// lightness-threshold check (accepts any two colors on the right side of the light/dark line,
-// not the *specific* token the component is supposed to render), this converts the actual
-// computed color through the same OKLCH→sRGB math `palette.test.ts` uses to verify contrast,
-// then compares it against the exact expected `classes.ts` `ColorPair` swatch for the
-// element's role and color scheme — an 8-bit RGB triple, exact.
-const OKLCH_PATTERN = /^oklch\(([\d.]+)\s+([\d.]+)\s+([\d.]+)/;
-const RGB_PATTERN = /^rgba?\((\d+),\s*(\d+),\s*(\d+)/;
-
-function toRgbString([r, g, b]: readonly [number, number, number]): string {
-  return `rgb(${r}, ${g}, ${b})`;
-}
-
-/** Normalizes a computed color string (`oklch(...)` or `rgb(...)`/`rgba(...)`) to a canonical
- * `rgb(r, g, b)` 8-bit triple, dropping alpha — none of this suite's assertions target a
- * translucent element. */
-function normalizeComputedColor(value: string): string {
-  const oklchMatch = OKLCH_PATTERN.exec(value);
-  if (oklchMatch !== null) {
-    const [, l, c, h] = oklchMatch;
-    return toRgbString(oklchToSrgb8({ c: Number(c), h: Number(h), l: Number(l) }));
-  }
-  const rgbMatch = RGB_PATTERN.exec(value);
-  if (rgbMatch !== null) {
-    const [, r, g, b] = rgbMatch;
-    return toRgbString([Number(r), Number(g), Number(b)]);
-  }
-  throw new Error(`could not parse a css color from "${value}"`);
-}
+// A computed color is converted to 8-bit sRGB (`e2e/colors.ts`, `normalizeComputedColor`) and
+// compared against the exact expected `classes.ts` `ColorPair` swatch for the element's role and
+// color scheme — an 8-bit RGB triple, exact — rather than a lightness-threshold check, which
+// accepts any two colors on the right side of the light/dark line, not the *specific* token the
+// component is supposed to render.
 
 /** The exact 8-bit RGB `classes.ts` expects a `Swatch` to render as. */
 function expectedRgb(swatch: Swatch): string {

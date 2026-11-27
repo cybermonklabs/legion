@@ -2,29 +2,15 @@ import { useQuery } from "@tanstack/react-query";
 import { useCallback, useSyncExternalStore } from "react";
 
 import { whoAmIQuery } from "../../api/queries";
-import { userPreferenceStorageKey } from "../shell/userPreference";
+import { preferenceStore, userPreferenceStorageKey } from "../shell/userPreference";
 
 /** Which page an issue's address draws for the reader: `outline` is the new issue page, `tabs`
  *  is today's. */
 export type IssuePageChoice = "outline" | "tabs";
 
-/** Every caller mounted now, each told when the stored choice may have changed. */
-const listeners = new Set<() => void>();
-
-function notify(): void {
-  for (const listener of listeners) listener();
-}
-
-/** Adds a caller. While any caller is mounted the window's `storage` event tells them all,
- *  which is how a choice made in another tab of this browser reaches this one. */
-function subscribe(listener: () => void): () => void {
-  if (listeners.size === 0) window.addEventListener("storage", notify);
-  listeners.add(listener);
-  return () => {
-    listeners.delete(listener);
-    if (listeners.size === 0) window.removeEventListener("storage", notify);
-  };
-}
+/** The callers of the stored choice, each told when it may have changed: by a write here, or by
+ *  another tab of this browser. */
+const { notify, subscribe } = preferenceStore();
 
 /** Where this browser keeps `login`'s choice. */
 function storageKey(login: string): string {

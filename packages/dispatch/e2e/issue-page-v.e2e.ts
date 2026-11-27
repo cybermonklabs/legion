@@ -881,14 +881,24 @@ test("the Verification view is worked by the keyboard alone", async ({ browser }
       })
       .toBe(statements.length);
     const check1 = verificationCheck(page, checkOf(1));
-    await tabTo(
-      check1.locator("[data-verification-check-words]"),
-      "Tab does not reach check 1's words"
-    );
+    // A check's words take no Tab stop: the control of its facts beside them does.
+    const facts = check1.locator("[data-verification-facts]");
+    await tabTo(facts, "Tab does not reach the control of check 1's facts");
     await expect(
       rowBody(check1).first(),
-      "the focus on check 1's words does not open its facts"
+      "the focus on the control of check 1's facts does not open them"
     ).toBeVisible();
+    // Enter on it shuts the facts the focus opened, and Enter again opens them.
+    await page.keyboard.press("Enter");
+    await expect(facts, "Enter on the control does not shut check 1's facts").toHaveAttribute(
+      "aria-expanded",
+      "false"
+    );
+    await page.keyboard.press("Enter");
+    await expect(facts, "a second Enter on the control does not open them").toHaveAttribute(
+      "aria-expanded",
+      "true"
+    );
     await tabTo(
       rowBody(check1)
         .getByRole("button", { exact: true, name: CONTROL_LABELS.copy_command })
@@ -997,8 +1007,8 @@ test("the Verification view is worked by the keyboard alone", async ({ browser }
       "axe finds the view's tree breaking a rule of its structure"
     ).toEqual([]);
 
-    // `t` then `k` with the focus on a row of the view turns it off: the tree's keys do nothing
-    // while a chord is pending, so the page's keymap takes the second key.
+    // `t` then `k` with the focus on a row of the view turns it off: the tree's keys are the page
+    // keymap's, which tries the chord `t k` before the tree's own `k`.
     await verificationCard(page, nodeOf(1)).focus();
     await page.keyboard.press("t");
     await page.keyboard.press("k");

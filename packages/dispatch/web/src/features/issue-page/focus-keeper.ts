@@ -1,6 +1,6 @@
 import { type RefObject, useEffect, useLayoutEffect, useRef } from "react";
 
-import { focusOnDocument } from "../shell/roving";
+import { focusOnDocument, hearPressCancellation } from "../shell/roving";
 import { DETAILS_ATTRIBUTE } from "./margin-slot";
 
 /** What a region lost the focus to, as each fallback of `useFocusKeeper` reads it. */
@@ -133,8 +133,9 @@ function firstHolder(fallbacks: readonly FocusFallback[], loss: FocusLoss): HTML
 
 /**
  * Hears the reader's pointer presses on `page`, and returns what ends the hearing. It is the one
- * reader of presses on the page: the keeper's watches and the header's title row read presses
- * through it, so a press is over for each of them on the same events. `begin` is told of each
+ * reader of presses on the page: the keeper's watches, the header's title row and a panel's
+ * scroll gate (`AnchoredPanel`) read presses through it, so a press is over for each of them on
+ * the same events. `begin` is told of each
  * press as its pointer goes down; once the press is over, `done` is told where the focus was as
  * the press began and what `begin` answered. A press is over at the first of these:
  * - Its pointerup, where it has moved the focus by then or is of a button other than the primary
@@ -185,22 +186,15 @@ export function hearPresses<T>(
     // whether or not it moved the focus.
     if (press !== null && (!press.primary || page.activeElement !== press.from)) endPress();
   };
-  const view = page.defaultView;
+  const stopCancellations = hearPressCancellation(page, endPress);
   page.addEventListener("pointerdown", notePress, true);
   page.addEventListener("pointerup", notePointerUp, true);
-  page.addEventListener("pointercancel", endPress, true);
-  page.addEventListener("dragend", endPress, true);
-  page.addEventListener("contextmenu", endPress, true);
   page.addEventListener("click", endPress, true);
-  view?.addEventListener("blur", endPress);
   return () => {
     page.removeEventListener("pointerdown", notePress, true);
     page.removeEventListener("pointerup", notePointerUp, true);
-    page.removeEventListener("pointercancel", endPress, true);
-    page.removeEventListener("dragend", endPress, true);
-    page.removeEventListener("contextmenu", endPress, true);
     page.removeEventListener("click", endPress, true);
-    view?.removeEventListener("blur", endPress);
+    stopCancellations();
   };
 }
 
@@ -318,7 +312,7 @@ function watchLayer(
     if (!dropped || pressedOntoPage || canHoldFocus(opener)) return;
     const place = around.find((element) => element.isConnected) ?? null;
     const loss: FocusLoss = { added: [], lost: opener, place, root: region };
-    firstHolder(fallbacks.current, loss)?.focus();
+    firstHolder(fallbacks.current, loss)?.focus({ preventScroll: true });
   };
 
   // Each change that closes the layer is a record on the layer or on one of its ancestors, so no
@@ -375,6 +369,13 @@ function watchLayer(
  * or the reader moved it; and on unmount. A focus in another layer - a dialog the app draws in its
  * root, or a popover the layer opened on the page's body - keeps it going, since that layer gives
  * the focus back as it closes.
+ *
+ * Every focus the keeper gives - to a fallback, back to a control enabled again, and to a fallback
+ * once a layer has closed - is given with no scroll of the browser's own, which centres a control
+ * not wholly in view. The keeper answers a loss the reader did not cause, which moves the focus
+ * and nothing else: at 390 px, where the whole header scrolls away with the page, a write that
+ * took the focused labels' count away while the reader read further down scrolled the page back
+ * to "Issue actions".
  *
  * `fallbacks` may be a new array on every render; the keeper always asks the latest one.
  */
@@ -521,7 +522,7 @@ export function useFocusKeeper(
       }
       if (!canHoldFocus(from) || page.activeElement !== to) return;
       given = null;
-      from.focus();
+      from.focus({ preventScroll: true });
     };
     const check = () => {
       if (held === null) return;
@@ -565,7 +566,7 @@ export function useFocusKeeper(
       }
       // One move is kept at a time: this one replaces whatever an older move kept.
       given = disabled ? { from: lost, to: next } : null;
-      next.focus();
+      next.focus({ preventScroll: true });
       if (!region.contains(page.activeElement)) forget();
     };
     const noteFocus = (event: FocusEvent) => {

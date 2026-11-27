@@ -9,6 +9,7 @@ import type {
   ArchitectureTreeComponent,
   ArchitectureTreeSource,
 } from "../../api/types";
+import { heldPress } from "../../components/held-press";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import { QueryError } from "../../components/QueryError";
 import { TruncatedText } from "../../components/TruncatedText";
@@ -38,6 +39,7 @@ import {
 import { ARCHITECTURE_COMPONENT_PARAM } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
 import { useKeymap, useKeymapScope } from "../shell/keymap";
+import { openLinkInNewTab } from "../shell/new-tab";
 import { closestMatching, roveFocus } from "../shell/roving";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import { AttachmentLists, type AttachmentView } from "./AttachmentLists";
@@ -54,6 +56,8 @@ import {
 } from "./logic/architecture-model";
 
 const ROW_SELECTOR = "[data-component-row]";
+/** The row's own link, its title: what `o` follows on a leaf and Shift+O opens on every row. */
+const COMPONENT_LINK = "[data-component-link]";
 const rowFocusRing = `outline-none focus-visible:ring-2 ${focusVisibleRing}`;
 
 function rowAround(node: Element | null): HTMLElement | null {
@@ -125,6 +129,7 @@ export function ArchitecturePage({ project }: { project: string }): ReactNode {
   const refresh = useKeyedWrite({
     label: (repo: string) => `Refresh of ${project}'s architecture source ${repo}`,
     method: "POST",
+    readsLate: true,
     write: (repo, bounds) => api.syncArchitectureSource(project, repo, bounds),
     onSettled: () => {
       void queryClient.invalidateQueries({ queryKey: ["architecture", project] });
@@ -154,6 +159,7 @@ export function ArchitecturePage({ project }: { project: string }): ReactNode {
         refresh.isPending
           ? {
               error: null,
+              held: !refresh.late,
               pending: true,
               repo: refresh.variables,
             }
@@ -171,6 +177,7 @@ export function ArchitecturePage({ project }: { project: string }): ReactNode {
  *  request itself if it failed. */
 interface RefreshState {
   readonly error: string | null;
+  readonly held: boolean;
   readonly pending: boolean;
   readonly repo: string;
 }
@@ -263,33 +270,16 @@ function ArchitectureTreeView({
   useKeymapScope("architecture");
   useKeymap("architecture", [
     // Movement is what the arrow keys are for; a palette row that moves the cursor helps nobody.
+    { action: "architecture.next", run: () => rove(1) },
+    { action: "architecture.previous", run: () => rove(-1) },
     {
-      id: "next",
-      keys: "j",
-      label: "Next component",
-      palette: false,
-      run: () => rove(1),
-    },
-    {
-      id: "previous",
-      keys: "k",
-      label: "Previous component",
-      palette: false,
-      run: () => rove(-1),
-    },
-    {
-      id: "arrows",
-      keys: ["ArrowDown", "ArrowUp"],
-      label: "Next / previous component while one is focused",
+      action: "architecture.arrows",
       run: (event) => rove(event.key === "ArrowDown" ? 1 : -1),
       when: () => rowAround(document.activeElement) !== null,
     },
     {
-      // Both keys do the same thing, so the palette offers it; a row presses Enter.
-      id: "open",
-      keys: ["Enter", "o"],
-      label: "Open the focused component: its children, else its details",
-      palette: true,
+      // Both keys do the same thing, so the palette offers it.
+      action: "architecture.open",
       run: () => {
         const id = focusedRowId();
         if (id === undefined) {
@@ -306,27 +296,18 @@ function ArchitectureTreeView({
     {
       // Out of the palette: on a row with children `open` above already goes into them, and on
       // a leaf this row would do nothing.
-      id: "descend",
-      keys: ["l", "ArrowRight"],
-      label: "Into the focused component's children",
-      palette: false,
+      action: "architecture.descend",
       run: descend,
       when: () => rowAround(document.activeElement) !== null,
     },
     {
       // Both keys do the same thing, and its `when` needs no focused row, so it is a row.
-      id: "ascend",
-      keys: ["h", "ArrowLeft"],
-      label: "Up one level",
-      palette: true,
+      action: "architecture.ascend",
       run: ascend,
       when: () => level !== undefined,
     },
     {
-      id: "back",
-      inEditable: true,
-      keys: "Escape",
-      label: "Back to the component row, then out",
+      action: "architecture.back",
       run: () => {
         const active = document.activeElement;
         const row = rowAround(active);
@@ -337,6 +318,14 @@ function ArchitectureTreeView({
         }
       },
       when: () => rowAround(document.activeElement) !== null,
+    },
+    {
+      // R20: what `o` opens, in a new tab: the row's own link, on a leaf its details and on a
+      // component with children the level of them, which is the same address.
+      action: "architecture.open-new-tab",
+      run: () =>
+        openLinkInNewTab(rowAround(document.activeElement)?.querySelector(COMPONENT_LINK) ?? null),
+      when: () => rowAround(document.activeElement)?.querySelector(COMPONENT_LINK) != null,
     },
   ]);
 
@@ -538,9 +527,8 @@ function SourceLine({
         <span aria-hidden="true">·</span>
         <button
           aria-label={refreshing ? `Refreshing ${source.repo}…` : `Refresh ${source.repo}`}
-          className={`min-h-11 font-medium disabled:cursor-not-allowed disabled:opacity-50 md:min-h-0 ${linkText} ${linkHoverText}`}
-          disabled={refresh?.pending === true}
-          onClick={onRefresh}
+          className={`min-h-11 font-medium refused:cursor-not-allowed refused:opacity-50 md:min-h-0 ${linkText} ${linkHoverText}`}
+          {...heldPress(refresh?.held === true, onRefresh)}
           type="button"
         >
           {refreshing ? "Refreshing…" : "Refresh"}
@@ -666,6 +654,7 @@ function ComponentRow({
               <div className="flex min-w-0">
                 <Link
                   className={`flex min-h-11 min-w-0 flex-1 items-center py-2 font-medium md:min-h-0 md:py-0 ${textPrimaryOnSurface} ${linkHoverText}`}
+                  data-component-link=""
                   to={{ search: rowSearch(component.id) }}
                 >
                   <TruncatedText className="min-w-0 flex-1" title={component.title}>

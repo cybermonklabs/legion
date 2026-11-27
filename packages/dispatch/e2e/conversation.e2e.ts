@@ -31,6 +31,7 @@ import {
   resolveComment,
 } from "./api";
 import { conversationFilter } from "./editor";
+import { settledScrollTop } from "./frames";
 import { openIssueDetails } from "./issue-details";
 import { navigateInApp } from "./sends";
 import { expect, type Locator, type Page, test } from "./test";
@@ -910,6 +911,75 @@ test("the filter opens on All in a fresh context and ignores the settings an old
     await expectEverythingListed(page);
   } finally {
     await stored.close();
+  }
+});
+
+/** Scrolls the window so the All, Open and Closed buttons stand in sight, 24 px under the docked
+ *  composer, and answers where the window settles. */
+async function showFilters(page: Page): Promise<number> {
+  await page.evaluate(() => {
+    const group = document.querySelector('[aria-label="Conversations"]');
+    const composer = document.querySelector('[aria-label="Comment composer"]');
+    if (group === null) throw new Error("no All, Open and Closed buttons");
+    const under = (composer?.getBoundingClientRect().bottom ?? 0) + 24;
+    window.scrollBy(0, group.getBoundingClientRect().top - under);
+  });
+  return settledScrollTop(page, 3);
+}
+
+// The scroll keeper holds the turn the reader is on where it stands (`ViewportAnchor`): with no
+// turn under the reader's hand or focus, the turn at the list's centre. All, Open and Closed stand
+// above the turns, so a press of All draws the closed conversations between those buttons and that
+// turn, and holding the turn there would move the window down by all of them, taking the pressed
+// button off the screen. The pressed button stays where the reader pressed it instead.
+test("a press of All, Open or Closed leaves the pressed button where the reader pressed it", async ({
+  browser,
+}) => {
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({ project: "CORE", title: "Filter in place" });
+  for (let index = 0; index < 12; index += 1) {
+    await createMessage(issue.key, { body: `Open message ${index + 1}` }, agent);
+  }
+  // Answered after every message, so the closed asks are the newest conversations, drawn above
+  // the messages.
+  const asks: string[] = [];
+  for (let index = 0; index < 6; index += 1) {
+    const ask = await createAsk(
+      issue.key,
+      { options: [{ label: "Ship" }], question: `Closed question ${index + 1}?` },
+      agent
+    );
+    await answerAsk(ask.id, { expected_edited_at: null, selected: ["Ship"] }, { login: "bob" });
+    asks.push(ask.id);
+  }
+  const closed = (page: Page) =>
+    page.locator(asks.map((id) => `[data-turn="ask:${id}"]`).join(", "));
+
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    await page.setViewportSize({ height: 800, width: 1280 });
+    await page.goto(`/issues/${issue.key}/conversation`);
+    await expect(closed(page)).toHaveCount(6);
+    await showFilters(page);
+    await conversationFilter(page, "Open").click();
+    await expect(closed(page)).toHaveCount(0);
+
+    // Scrolled off the top of the page, so the keeper holds the turn at the list's centre.
+    expect(await showFilters(page), "the window stands at the top of the page").toBeGreaterThan(0);
+    const all = conversationFilter(page, "All");
+    const pressedAt = (await all.boundingBox())?.y ?? Number.NaN;
+    await all.click();
+    await expect(closed(page)).toHaveCount(6);
+    await settledScrollTop(page, 3);
+    const standsAt = (await all.boundingBox())?.y ?? Number.NaN;
+    expect(
+      Math.abs(standsAt - pressedAt),
+      `All moved from ${pressedAt} px, where the reader pressed it, to ${standsAt} px`
+    ).toBeLessThanOrEqual(1);
+    await expect(all).toBeInViewport({ ratio: 1 });
+  } finally {
+    await alice.close();
   }
 });
 

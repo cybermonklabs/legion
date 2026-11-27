@@ -10,6 +10,7 @@ import {
   WriteDiscardedError,
 } from "../writes/keyed-write";
 import { waitingToSend } from "../writes/PendingWritesIndicator";
+import { useLateWrites } from "../writes/useKeyedWrite";
 import { ofKind, useWrites, type Write, type Writes } from "../writes/write-store";
 import {
   fieldWritesOf,
@@ -33,8 +34,15 @@ export interface IssueFieldWrite<Value> {
   /** True after a save failed, until the next pick here; a refusal reported with no Retry also
    *  ends once a newer write of the field lands or the field is picked again in another picker. */
   failed: boolean;
-  /** True while a pick made here is in the store, not yet landed, refused or taken out. */
+  /** True while a pick made here is in the store, not yet landed, refused or taken out: what the
+   *  picker says (`Assigning…`). */
   pending: boolean;
+  /** True while a pick made here is out within its deadline: `pending`, until each pick out is
+   *  late or waits its turn behind one that is (`useLateWrites`). A pick is tried under its key
+   *  until Dispatch decides it or the reader stops it, so a host that holds its control while a
+   *  pick is out holds it on this, and a pick that never answers - offline - locks it no longer
+   *  than its deadline (the Inbox's Assign to me). */
+  held: boolean;
   /** Makes the refused pick again - its issue and its value, from the pick itself - under its own
    *  key where Dispatch never decided it (`retriesUnderItsKey`). Undefined while nothing is
    *  refused, and for a refused pick with a newer live write of its field, which the screen shows
@@ -160,7 +168,9 @@ export function useIssueFieldWrite<F extends IssueField>(
   type Value = IssueFieldValues[F];
   const client = useQueryClient();
   const writes = useWrites();
-  const [out, setOut] = useState(0);
+  /** The key of each pick made here that is out, from its press until it is decided. */
+  const [out, setOut] = useState<readonly string[]>([]);
+  const late = useLateWrites(out);
   const [refused, setRefused] = useState<Refused<Value> | undefined>(undefined);
   const [held, setHeld] = useState<Held<Value> | undefined>(undefined);
   /** The report shown, for the listener of the issue's line below, which outlives a render. */
@@ -207,9 +217,9 @@ export function useIssueFieldWrite<F extends IssueField>(
       if (other.id !== joined.id && waitingToSend(other)) writes.discard(other.id);
     }
     press.then(
-      () => setOut((count) => count - 1),
+      () => setOut((keys) => keys.filter((each) => each !== key)),
       (error: unknown) => {
-        setOut((count) => count - 1);
+        setOut((keys) => keys.filter((each) => each !== key));
         release();
         // Taken out - by a newer pick here, or by the reader's Discard in the Pending changes
         // list: no refusal of Dispatch's.
@@ -241,7 +251,7 @@ export function useIssueFieldWrite<F extends IssueField>(
     // the picker draws `host`, which draws the move's lane, as the caches do.
     setHeld(waitingMoveOf(client, pick) ? undefined : hold);
     report(undefined);
-    setOut((count) => count + 1);
+    setOut((keys) => [...keys, key]);
     // The pick joins its line in a microtask of the press - before anything else can happen, a
     // reload included - so the picker renders the press as pending before the pick shows: a
     // surface that keeps its control while its write is live (the Inbox's Assign to me, whose row
@@ -327,7 +337,8 @@ export function useIssueFieldWrite<F extends IssueField>(
   return {
     error: stoppedText ?? refused?.refusal.message,
     failed: refused !== undefined,
-    pending: out > 0,
+    held: out.some((key) => !late.has(key)),
+    pending: out.length > 0,
     retry:
       refused?.retryable === true ? () => make(refused.write.detail, refused.value) : undefined,
     shown: held !== undefined && held.issueKey === issueKey ? held.value : host,

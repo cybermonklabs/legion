@@ -17,7 +17,7 @@
 
 import { inboxThreadRow } from "@legion/contracts";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { type ReactNode, useEffect, useRef, useState } from "react";
+import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 
 import { api } from "../../api/client";
@@ -59,9 +59,11 @@ import { MentionComposer } from "../conversation/MentionComposer";
 import { useProjectArtifact } from "../document/useProjectArtifact";
 import { AgentName } from "../refs/AgentName";
 import { agentsQuery } from "../refs/agent-registry";
+import { CopyRefButton } from "../refs/CopyRefButton";
 import { PostBody } from "../refs/PostBody";
 import { EditedMark } from "../refs/PostMarks";
 import { type PostDeletion, postDeletion } from "../refs/post-marks";
+import { type DispatchReferenceRoute, itemRoute } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
 import { textSourceOf } from "../refs/text-references";
 import { type DwellRef, useDwell } from "../shell/useDwell";
@@ -70,6 +72,7 @@ import { threadLayout, unreadWrites } from "../threads/thread-layout";
 import { useThreadOrder } from "../threads/thread-order";
 import { type RepliesOwner, useMarkThreadRead } from "../threads/useMarkThreadRead";
 import { AskCard } from "./AskCard";
+import { inboxActionMark } from "./inbox-action-mark";
 
 /** One message of a thread, whatever route it was read from. A flattened view model, so the two
  *  marks a corrected post carries are read into it rather than from the row. */
@@ -93,6 +96,10 @@ interface ThreadTurn {
   /** Drawn under the body: an Agent reply the session took as a turn of its live conversation
    *  says so there. */
   readonly note?: ReactNode;
+  /** The message's own reference, which its Copy reference copies: a comment's, under its issue
+   *  or its document, and an issue message's. A message to a session names no issue and has
+   *  none. */
+  readonly reference?: DispatchReferenceRoute;
 }
 
 /** The text a thread in a document is anchored to, which a card and the pane's fall-back show in
@@ -134,6 +141,7 @@ function ThreadTurnView({
           <AgentName actor={turn.author} inline /> · <Timestamp at={turn.created_at} />
           <EditedMark at={turn.edited} deleted={turn.deleted} />
         </span>
+        {turn.reference === undefined ? null : <CopyRefButton route={turn.reference} />}
         {unread ? (
           <span
             className={`rounded-full px-1.5 py-0.5 text-[10px] font-semibold uppercase ${badgePrimary.bg} ${badgePrimary.text}`}
@@ -164,6 +172,7 @@ function ThreadTurnView({
 function ThreadTurns({
   composer,
   markNewest,
+  noReplyBox = false,
   openAtFirstUnread,
   replies,
   root,
@@ -174,6 +183,11 @@ function ThreadTurns({
   /** The read mark's watch, placed on the thread's newest message: once that message has been
    *  on screen long enough (`useDwell`), the thread is read. */
   markNewest: DwellRef;
+  /** Whether the thread is drawn with no reply box, and will draw none while what it read stands:
+   *  the composer's own branches that leave the box out, as the body that draws it decides them.
+   *  The thread then carries the mark that says so, by its id (`noReplyBoxSelector` in
+   *  `ReadingView.tsx`). */
+  noReplyBox?: boolean;
   /** Whether the thread scrolls its first unread message into view when it opens, which the
    *  reading pane's own thread body and its fall-backs do under **Oldest first**, and which a
    *  thread drawn inside a document the pane has placed and a card never do. */
@@ -224,6 +238,7 @@ function ThreadTurns({
   const fold = (
     <EarlierReplies
       count={folded.length}
+      marks={inboxActionMark("inbox.earlier-replies")}
       onToggle={() => setShowEarlier(!showEarlier)}
       open={showEarlier}
       replies={(id) => (
@@ -234,7 +249,11 @@ function ThreadTurns({
     />
   );
   return (
-    <div className="mt-2 space-y-2" data-inbox-thread={threadId}>
+    <div
+      className="mt-2 space-y-2"
+      data-inbox-no-reply-box={noReplyBox ? threadId : undefined}
+      data-inbox-thread={threadId}
+    >
       {root === undefined ? null : turnView(root)}
       {composerFirst ? composer : fold}
       {shown.length === 0 ? null : <div className="space-y-2">{shown.map(turnView)}</div>}
@@ -332,7 +351,11 @@ function CommentThreadBody({
   });
   if (comments.isPending) return <LoadingSkeleton label="Opening the thread" />;
   if (comments.isError) {
-    return <p className={`mt-2 text-sm ${dangerText}`}>Could not load this thread.</p>;
+    return (
+      <p className={`mt-2 text-sm ${dangerText}`} data-inbox-no-reply-box={thread.thread_id}>
+        Could not load this thread.
+      </p>
+    );
   }
   const byId = new Map(comments.data.map((comment) => [comment.id, comment]));
   const root = byId.get(thread.thread_id);
@@ -344,8 +367,8 @@ function CommentThreadBody({
       (left, right) =>
         compareTimestamps(left.created_at, right.created_at) || left.id.localeCompare(right.id)
     )
-    .map(commentTurn);
-  const rootTurn = root === undefined ? undefined : commentTurn(root);
+    .map((comment) => commentTurn(comment, thread.document));
+  const rootTurn = root === undefined ? undefined : commentTurn(root, thread.document);
   return (
     <ThreadTurns
       composer={
@@ -369,6 +392,7 @@ function CommentThreadBody({
           <MentionComposer
             box="inbox-thread-reply"
             closed={issue.data !== undefined && issue.data.closed_at !== null}
+            escapeToPage
             frame="mt-2"
             inline
             kind="comment"
@@ -387,6 +411,9 @@ function CommentThreadBody({
         )
       }
       markNewest={markNewest}
+      // The composer's own branches above that draw no box: a root the read does not hold, and a
+      // root its author deleted.
+      noReplyBox={root === undefined || postDeletion(root) !== null}
       openAtFirstUnread={openAtFirstUnread}
       replies={replies}
       root={rootTurn}
@@ -396,7 +423,13 @@ function CommentThreadBody({
   );
 }
 
-function commentTurn(comment: CommentWithTrees): ThreadTurn {
+/** A comment as a turn, referenced under its issue, else under `document`, the project document
+ *  the thread is in. */
+function commentTurn(
+  comment: CommentWithTrees,
+  document: { project: string; slug: string } | undefined
+): ThreadTurn {
+  const reference = itemRoute("comment", comment, document);
   return {
     author: comment.author,
     body: comment.body,
@@ -407,10 +440,17 @@ function commentTurn(comment: CommentWithTrees): ThreadTurn {
     issue: comment.issue_key,
     kind: "comment",
     tree: comment.body_tree,
+    ...(reference === undefined ? {} : { reference }),
   };
 }
 
-function messageTurn(message: MessageWithTrees, note?: ReactNode): ThreadTurn {
+/** A message as a turn, referenced under `issueKey` where it is an issue's: a message to a
+ *  session names no issue. */
+function messageTurn(
+  message: MessageWithTrees,
+  issueKey: string | undefined,
+  note?: ReactNode
+): ThreadTurn {
   return {
     author: message.author,
     body: message.body,
@@ -422,6 +462,9 @@ function messageTurn(message: MessageWithTrees, note?: ReactNode): ThreadTurn {
     kind: "message",
     tree: message.body_tree,
     ...(note === undefined ? {} : { note }),
+    ...(issueKey === undefined
+      ? {}
+      : { reference: { id: message.id, key: issueKey, kind: "message" } as const }),
   };
 }
 
@@ -446,12 +489,16 @@ function MessageThreadBody({
   });
   if (messages.isPending) return <LoadingSkeleton label="Opening the thread" />;
   if (messages.isError) {
-    return <p className={`mt-2 text-sm ${dangerText}`}>Could not load this thread.</p>;
+    return (
+      <p className={`mt-2 text-sm ${dangerText}`} data-inbox-no-reply-box={thread.thread_id}>
+        Could not load this thread.
+      </p>
+    );
   }
   const read = messages.data.find((candidate) => candidate.message.id === thread.thread_id);
   const root = read?.message;
-  const rootTurn = root === undefined ? undefined : messageTurn(root);
-  const replies = (read?.replies ?? []).map((message) => messageTurn(message));
+  const rootTurn = root === undefined ? undefined : messageTurn(root, issueKey);
+  const replies = (read?.replies ?? []).map((message) => messageTurn(message, issueKey));
   // A reply into a targeted thread is delivered as the thread's newest attempt was, which is how
   // the issue's Conversation addresses one.
   const last =
@@ -472,6 +519,7 @@ function MessageThreadBody({
           <MentionComposer
             box="inbox-thread-reply"
             closed={issue.data !== undefined && issue.data.closed_at !== null}
+            escapeToPage
             frame="mt-2"
             inline
             key={`composer:${thread.thread_id}`}
@@ -497,6 +545,8 @@ function MessageThreadBody({
         )
       }
       markNewest={markNewest}
+      // The composer's own branches above that draw no box, as a comment thread's are.
+      noReplyBox={root === undefined || postDeletion(root) !== null}
       openAtFirstUnread={openAtFirstUnread}
       replies={replies}
       root={rootTurn}
@@ -531,14 +581,19 @@ function AskThreadBody({
   const read = useQuery(askThreadQuery(thread.thread_id));
   if (read.isPending) return <LoadingSkeleton label="Opening the thread" />;
   if (read.isError) {
-    return <p className={`mt-2 text-sm ${dangerText}`}>Could not load this thread.</p>;
+    return (
+      <p className={`mt-2 text-sm ${dangerText}`} data-inbox-no-reply-box={thread.thread_id}>
+        Could not load this thread.
+      </p>
+    );
   }
   return (
     <div className="mt-2" data-inbox-thread={thread.thread_id} ref={markNewest}>
       {/* Keyed by the ask: the column draws this body for one ask's thread after another, and
-          the card holds the writes it made - an answer, a question back, a reply, a decline, a
-          hand-on, an upload, an unfollow, an unsubscribe - each with its refusal and its Retry,
-          so the next ask is drawn with a card of its own, never under this one's refusal. */}
+          the card holds the writes it made - an upload, an unfollow, an unsubscribe - each with
+          its refusal and its Retry, so the next ask is drawn with a card of its own, never under
+          this one's refusal. Its answer, question back, reply, decline and hand-on are the
+          Inbox's, by ask, so the card drawn for an ask shows that ask's own. */}
       <AskCard
         ask={read.data.ask}
         initialThread={read.data}
@@ -585,7 +640,9 @@ function AgentThreadBody({
   const messages = useQuery(agentMessagesQuery(sessionId));
   const live = useQuery(agentsQuery());
   const agent = live.data?.find((candidate) => candidate.session_id === sessionId);
-  const sendKey = threadSendKey(thread.thread_id);
+  // One name while the thread is drawn: the composer follows the mutation cache under it
+  // (`AgentMessageComposer`), which a new name at each render would drop and take up again.
+  const sendKey = useMemo(() => threadSendKey(thread.thread_id), [thread.thread_id]);
   const hold = useSending(sendKey);
   // Read before the loading branches, because the mark below is a hook: the thread's own
   // conversation among the session's, which is undefined until the read lands.
@@ -595,12 +652,17 @@ function AgentThreadBody({
   const markNewest = useAgentThreadRead(thread, read?.replies ?? NO_REPLIES);
   if (messages.isPending) return <LoadingSkeleton label="Opening the conversation" />;
   if (messages.isError) {
-    return <p className={`mt-2 text-sm ${dangerText}`}>Could not load this conversation.</p>;
+    return (
+      <p className={`mt-2 text-sm ${dangerText}`} data-inbox-no-reply-box={thread.thread_id}>
+        Could not load this conversation.
+      </p>
+    );
   }
   const newest = read === undefined ? undefined : ((read.replies ?? []).at(-1) ?? read.message);
   const turn = (message: MessageWithTrees): ThreadTurn =>
     messageTurn(
       message,
+      undefined,
       (message.deliveries ?? []).some((attempt) => attempt.accepted_as === "user_turn") ? (
         <AcceptedAsTurn sessionId={sessionId} />
       ) : undefined
@@ -629,6 +691,7 @@ function AgentThreadBody({
                   ones answering this thread. */}
               <AgentMessageComposer
                 agent={agent}
+                escapeToPage
                 hold={hold}
                 key={`composer:${thread.thread_id}`}
                 onCancelReply={noReturn}
@@ -643,6 +706,11 @@ function AgentThreadBody({
           )
         }
         markNewest={markNewest}
+        // The composer's own branch above that draws none, once the live list has answered: until
+        // it has, no box is no answer yet.
+        noReplyBox={
+          !live.isPending && (agent === undefined || read === undefined || newest === undefined)
+        }
         openAtFirstUnread={openAtFirstUnread}
         replies={turns.slice(1)}
         root={turns[0]}
@@ -662,7 +730,9 @@ function AgentThreadBody({
 }
 
 /** The composer has nothing to close here: the thread's reply box is the thread's, not a reply
- *  the reader opened and can leave. */
+ *  the reader opened and can leave. So Escape in the box is the page's (`escapeToPage`), whose
+ *  keys take the reader out of it with the draft kept in it: to the reading view's scroller, to
+ *  the row beside the reading column, and to the card in the drawer (`useInboxKeymap`). */
 function noReturn(): void {}
 
 export interface ThreadBodyProps {
@@ -730,14 +800,18 @@ export function ThreadBody({
       />
     );
   };
+  // The two branches above that draw nothing - a message thread whose row names no issue, and a
+  // thread of a project document whose read answered with no document - leave no box either.
+  const drawn = body();
   return (
     <div
       className={`border-t pt-2 ${borderDefault}`}
+      data-inbox-no-reply-box={drawn === null ? thread.thread_id : undefined}
       data-inbox-thread-body={thread.kind}
       data-testid={`inbox-thread-${thread.kind}`}
     >
       {quote ? <ThreadQuote thread={thread} /> : null}
-      {body()}
+      {drawn}
     </div>
   );
 }

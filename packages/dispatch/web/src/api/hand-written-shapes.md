@@ -32,9 +32,9 @@ generated.
   `POST /api/v1/issues/{key}/status-change` already changed (`StatusChangeEntry`). The client
   reads the body before it knows which refusal it holds, so one shape takes every member.
 - **`client.ts`'s projections of generated types** — `CreateArtifactReviewInput` is
-  `Body<"/api/v1/artifacts/{id}/reviews", "post">`, `ErrorCandidate` is the union of the
-  candidate shapes a refusal carries, and `ReferenceSourceKind` is read off that route's own
-  query schema. Each is derived from the document rather than declared beside it.
+  `Body<"/api/v1/artifacts/{id}/versions/{number}/reviews", "post">`, `ErrorCandidate` is the
+  union of the candidate shapes a refusal carries, and `ReferenceSourceKind` is read off that
+  route's own query schema. Each is derived from the document rather than declared beside it.
 - **`types.ts`'s `IssueCollaboratorLegionAgent`** — the generated `IssueCollaboratorAgent` with
   its `legion` entry narrowed to non-null. The two readers that keep the registry's sessions
   apart from the rest - the Collaborators tab's Legion sections and the composer's "Not running"

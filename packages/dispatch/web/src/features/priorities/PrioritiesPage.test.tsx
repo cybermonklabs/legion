@@ -30,6 +30,7 @@ import { textMutedOnCanvas } from "../../theme/classes";
 import { DocumentRuntime } from "../doc/runtime";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { KeymapProvider } from "../shell/KeymapProvider";
+import { appKeymap } from "../shell/keymap";
 import { writesOf } from "../writes/write-store";
 import { SAVE_AFTER_MS } from "./InPlaceField";
 import { PrioritiesPage } from "./PrioritiesPage";
@@ -680,6 +681,65 @@ test("with no priority the page says so, and offers a writer the way to add the 
   expect(create.mock.calls[0]?.[0]).toEqual({ title: "First" });
 });
 
+// The first priority added from the empty state takes the empty state off the page as its read
+// lands, and with it the New priority its form gave the focus back to. The table's toolbar draws
+// New priority in that one's place, and the focus goes to it, where the going would leave it on
+// the page's body.
+test("the first priority added from the empty state gives the focus to the table's New priority as it lands", async () => {
+  const user = userEvent.setup();
+  const { create, priorities } = page(body({ empty: "No priority has been written yet." }));
+  expect(await screen.findByText("No priority has been written yet.")).toBeDefined();
+  // The read after the add answers with the priority it added.
+  priorities.mockResolvedValue(body({ priorities: [priority("first", { title: "First" })] }));
+  await user.click(screen.getByRole("button", { name: "New priority" }));
+  await user.click(screen.getByRole("textbox", { name: "Title of the new priority" }));
+  await user.keyboard("First{Enter}");
+  await waitFor(() => expect(create).toHaveBeenCalledTimes(1));
+  await screen.findByRole("row", { name: "#1 First" });
+  expect(screen.queryByText("No priority has been written yet.")).toBeNull();
+  await waitFor(() =>
+    expect(document.activeElement, "the first priority's landing left the focus on the body").toBe(
+      screen.getByRole("button", { name: "New priority" })
+    )
+  );
+});
+
+// The hand-off lasts only while the empty state's add may still draw the table: an add Dispatch
+// refused, and one that landed but whose read after it drew no priority, end it. A table another
+// person's priority draws later takes the focus nowhere, as any table drawn with no press of the
+// reader's does: the New priority its drawing takes off the page leaves the focus on the body.
+test.each(["refused", "landed, and read again with no priority"] as const)(
+  "a first add from the empty state that is %s hands a table drawn later no focus",
+  async (end) => {
+    const user = userEvent.setup();
+    const { client, create, priorities } = page(
+      body({ empty: "No priority has been written yet." })
+    );
+    expect(await screen.findByText("No priority has been written yet.")).toBeDefined();
+    if (end === "refused") {
+      create.mockRejectedValue(
+        new ApiError(409, { code: "PRIORITY_EXISTS", error: "A priority named First exists." })
+      );
+    }
+    await user.click(screen.getByRole("button", { name: "New priority" }));
+    await user.click(screen.getByRole("textbox", { name: "Title of the new priority" }));
+    await user.keyboard("First{Enter}");
+    // The add ends, and the priorities are read again after it, with none.
+    await waitFor(() => expect(priorities).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(client.isMutating()).toBe(0));
+    await act(async () => {});
+    expect(screen.getByText("No priority has been written yet.")).toBeDefined();
+
+    // Another person's first priority reaches the page, as a refresh of its read brings it.
+    const theirs = body({ priorities: [priority("theirs", { title: "Theirs" })] });
+    priorities.mockResolvedValue(theirs);
+    act(() => client.setQueryData(prioritiesQuery().queryKey, theirs));
+    await screen.findByRole("row", { name: "#1 Theirs" });
+    await act(async () => {});
+    expect(document.activeElement, "the ended add's hand-off moved the focus").toBe(document.body);
+  }
+);
+
 test("with no priority a reader who may not write one is shown only the sentence", async () => {
   page(body({ empty: "No priority has been written yet." }), [], false);
   expect(await screen.findByText("No priority has been written yet.")).toBeDefined();
@@ -971,6 +1031,48 @@ test("a person who may write adds a priority", async () => {
   await user.click(screen.getByRole("button", { name: "Add priority" }));
   await waitFor(() => expect(create).toHaveBeenCalledTimes(1));
   expect(create.mock.calls[0]?.[0]).toEqual({ title: "Spend ruthlessly" });
+});
+
+// The New priority form a click on its Cancel ends gives the focus back to New priority, the
+// button that opened it (`useFocusBack`): the form goes with the Cancel that held the focus, which
+// would leave it on the page's body.
+test("Cancel on the New priority form gives the focus back to the New priority button that opened it", async () => {
+  const user = userEvent.setup();
+  page(FIFTEEN);
+  await screen.findByRole("row", { name: "#1 Legion works reliably first" });
+  const opener = screen.getByRole("button", { name: "New priority" });
+  await user.click(opener);
+  const form = screen.getByRole("form", { name: "New priority" });
+  await user.click(within(form).getByRole("textbox", { name: "Title of the new priority" }));
+  await user.click(within(form).getByRole("button", { name: "Cancel" }));
+  expect(screen.queryByRole("form", { name: "New priority" })).toBeNull();
+  expect(document.activeElement, "Cancel left the focus off New priority").toBe(opener);
+});
+
+// The New priority form its submit ends - a click on Add priority, or Enter in its title - gives
+// the focus back to New priority as well: the form goes with the control that held the focus as
+// the priority is sent, which would leave it on the page's body.
+test("a priority added by Add priority or by Enter gives the focus back to the New priority button that opened the form", async () => {
+  const user = userEvent.setup();
+  const { create } = page(FIFTEEN);
+  await screen.findByRole("row", { name: "#1 Legion works reliably first" });
+  const opener = screen.getByRole("button", { name: "New priority" });
+  const titleBox = () => screen.getByRole("textbox", { name: "Title of the new priority" });
+
+  await user.click(opener);
+  await user.click(titleBox());
+  await user.keyboard("Spend ruthlessly");
+  await user.click(screen.getByRole("button", { name: "Add priority" }));
+  await waitFor(() => expect(create).toHaveBeenCalledTimes(1));
+  expect(screen.queryByRole("form", { name: "New priority" })).toBeNull();
+  expect(document.activeElement, "Add priority left the focus off New priority").toBe(opener);
+
+  await user.click(opener);
+  await user.click(titleBox());
+  await user.keyboard("Ship the daemon{Enter}");
+  await waitFor(() => expect(create).toHaveBeenCalledTimes(2));
+  expect(screen.queryByRole("form", { name: "New priority" })).toBeNull();
+  expect(document.activeElement, "Enter in the title left the focus off New priority").toBe(opener);
 });
 
 // Dispatch refuses a priority title longer than an issue title may be, so the New priority form
@@ -1341,11 +1443,12 @@ test("j, k, x and Enter act on the priorities, a row opened or not", async () =>
   expect(focused()).toBe("#3 OSS Verify");
   await user.keyboard("k");
   expect(focused()).toBe("#2 Linkage closure eval");
-  // `x` is the priorities table's too: the binding takes the key, and since a priority row has
-  // nothing to select, the focus stays where it is and nothing else moves.
+  // `x` is no key of the priorities table: a priority row has nothing to select, so the table
+  // registers no select key (INFRA-3135's review round 1, R10), the key is not taken, and the
+  // focus stays where it is and nothing else moves.
   const second = screen.getByRole("row", { name: "#2 Linkage closure eval" });
   // user-event cannot say whether a key was taken; the event fireEvent dispatches can.
-  expect(fireEvent.keyDown(second, { code: "KeyX", key: "x" })).toBe(false);
+  expect(fireEvent.keyDown(second, { code: "KeyX", key: "x" })).toBe(true);
   expect(focused()).toBe("#2 Linkage closure eval");
   expect(screen.queryAllByRole("checkbox")).toEqual([]);
   expect(screen.getByTestId("address").textContent).toBe("POP /priorities");
@@ -1427,24 +1530,155 @@ test("a grouped table counts each group in the plural its rows are called by", a
     [issue("CORE-1"), issue("CORE-2")]
   );
   await screen.findByRole("row", { name: "#1 Legion works reliably first" });
-  // The grouping control of each table reads "Group by".
-  const groupBy = (region: string) =>
-    within(screen.getByRole("region", { name: region })).getByRole("combobox", {
-      name: "Group by",
-    });
+  // Group by is a section of each table's own display menu (`components/DisplayMenu.tsx`), the
+  // same one the project List draws.
+  const groupBy = async (region: string, column: string) => {
+    await user.click(
+      within(screen.getByRole("region", { name: region })).getByRole("button", { name: "View" })
+    );
+    await user.click(
+      within(screen.getByRole("dialog", { name: "View" })).getByRole("radio", { name: column })
+    );
+  };
   // No rule makes a plural from a singular: adding "s" to "priority" wrote "2 prioritys", so each
   // table names both words, as its pager does. The priorities table's heading is the one group
   // row every table draws (`DataTableGroupRow`).
-  await user.selectOptions(groupBy("Priorities"), "owner");
+  await groupBy("Priorities", "Owner");
   expect(
     await screen.findByRole("button", { name: "Collapse INFRA controller, 2 priorities" })
   ).toBeDefined();
   await user.click(screen.getByRole("tab", { name: "Active under no priority 2" }));
   await screen.findByRole("row", { name: "CORE-1 Work CORE-1" });
-  await user.selectOptions(groupBy("Active under no priority"), "status");
+  await groupBy("Active under no priority", "Status");
   expect(
     await screen.findByRole("button", { name: "Collapse In progress, 2 issues" })
   ).toBeDefined();
+});
+
+// INFRA-3135's review round 1, R10: the priorities table registered `x`, "Select or deselect the
+// priority", though the table selects nothing, so the shortcut help listed a key that did
+// nothing. It registers no select key. The issue tables whose project scope has `x` are on
+// other tabs and are not mounted here. The control row registers Shift+V for View, and
+// Shift+F is not available here because the row draws no filter trigger.
+test("the priorities table registers no select key, so the shortcut help lists no x", async () => {
+  page(FIFTEEN);
+  const priorities = await screen.findByRole("table", { name: "Priorities table" });
+  await within(priorities).findByRole("row", { name: "#1 Legion works reliably first" });
+  act(() => rowsOf(priorities, "data-priority-row")[0]?.focus());
+  const described = appKeymap.describe().filter((entry) => entry.scope === "project");
+  expect(Object.fromEntries(described.map((entry) => [entry.id, entry.keys]))).toEqual({
+    display: ["Shift+V"],
+    filter: ["Shift+F"],
+    next: ["j"],
+    open: ["o"],
+    "open-enter": ["Enter"],
+    "open-new-tab": ["Shift+O"],
+    previous: ["k"],
+  });
+  const enabled = (id: string) => described.find((entry) => entry.id === id)?.enabled;
+  expect(enabled("select")).toBeUndefined();
+  expect(enabled("filter")).toBe(false);
+  expect(enabled("open")).toBe(true);
+  expect(enabled("open-new-tab")).toBe(true);
+  expect(enabled("display")).toBe(true);
+});
+
+// dispatch://INFRA-2160, R20: Shift+O opens the priority `o` opens in a new tab.
+test("Shift+O on a priority's row opens the priority's page in a new tab, and this page stays", async () => {
+  const user = userEvent.setup();
+  const open = spyOn(window, "open").mockImplementation(() => null);
+  try {
+    page(FIFTEEN);
+    const priorities = await screen.findByRole("table", { name: "Priorities table" });
+    await within(priorities).findByRole("row", { name: "#1 Legion works reliably first" });
+    await user.keyboard("j");
+    const [first] = rowsOf(priorities, "data-priority-row");
+    expect(first).toHaveFocus();
+    const link = first?.querySelector<HTMLAnchorElement>("[data-priority-link]");
+    if (link === null || link === undefined) throw new Error("the row draws no priority link");
+    await user.keyboard("{Shift>}O{/Shift}");
+    expect(open).toHaveBeenCalledTimes(1);
+    expect(open).toHaveBeenCalledWith(link.href, "_blank", "noopener");
+    expect(first).toHaveFocus();
+  } finally {
+    open.mockRestore();
+  }
+});
+
+/** The rows `table` draws under `attribute`, in the order it draws them. */
+function rowsOf(table: HTMLElement, attribute: string): HTMLElement[] {
+  return [...table.querySelectorAll<HTMLElement>(`[${attribute}]`)];
+}
+
+// INFRA-3135's review round 1, R10: every table of the page registered `j` and `k` in the
+// `project` scope, a scope this page never pushed: measured before the change, `j` moved the focus
+// nowhere at all. The page pushes the scope its tables register in, and each tab draws one table,
+// so `j` and `k` walk that table's rows from anywhere on the page: the priorities on their tab, and
+// a fault list's issues on its own.
+test("j and k walk the table of the tab chosen from anywhere on the page", async () => {
+  const user = userEvent.setup();
+  page(
+    body({
+      ...FIFTEEN,
+      work_under_no_priority: { by_project: { CORE: 2 }, count: 2, issues: null },
+    }),
+    [issue("CORE-1"), issue("CORE-2")]
+  );
+  const priorities = await screen.findByRole("table", { name: "Priorities table" });
+  await within(priorities).findByRole("row", { name: "#1 Legion works reliably first" });
+  const priorityRows = rowsOf(priorities, "data-priority-row");
+  await user.keyboard("j");
+  expect(priorityRows[0], "j from the page, on the Priorities tab").toHaveFocus();
+  await user.keyboard("j");
+  expect(priorityRows[1], "a second j").toHaveFocus();
+  await user.keyboard("k");
+  expect(priorityRows[0], "k").toHaveFocus();
+
+  await user.click(screen.getByRole("tab", { name: "Active under no priority 2" }));
+  const faults = await screen.findByRole("table", { name: "Active under no priority table" });
+  await within(faults).findByRole("row", { name: "CORE-2 Work CORE-2" });
+  const faultRows = rowsOf(faults, "data-issue-row");
+  await user.keyboard("j");
+  expect(faultRows[0], "j from the fault tab's own tab button").toHaveFocus();
+  await user.keyboard("j");
+  expect(faultRows[1], "a second j on the fault tab").toHaveFocus();
+});
+
+// R1, the architect's chip rule: every narrowing that is on is visible and removable from the
+// control row, whatever set it. This table's narrowings are all its columns', set on their own
+// headers, and the reader may hide a column with the columns menu, which leaves its filter
+// narrowing the table with no header to show it. So the row draws a chip for each.
+test("a column filter of the priorities table is a chip of its row, even while its column is hidden", async () => {
+  const user = userEvent.setup();
+  page(FIFTEEN, [], true, { box: DESKTOP_BOX });
+  // Every control here is read inside the priorities section, the tab's one table.
+  const section = await screen.findByRole("region", { name: "Priorities" });
+  const table = await within(section).findByRole("table", { name: "Priorities table" });
+  /** How many priorities the table lists, its header row left out. */
+  const listed = () => within(table).getAllByRole("row").length - 1;
+  const before = listed();
+
+  await user.click(within(table).getByRole("button", { name: "Filter Owner" }));
+  await user.click(await screen.findByRole("option", { name: /^BET controller/ }));
+  await user.keyboard("{Escape}");
+  await waitFor(() => expect(listed()).toBe(1));
+  expect(within(table).getByRole("row", { name: /Linkage closure eval/ })).toBeDefined();
+  const chip = () =>
+    within(section).getByRole("button", { name: "Remove Owner: BET controller filter" });
+  expect(chip()).toBeDefined();
+
+  // Hidden, the column takes its header and its filter control off the page; the chip is then
+  // the one place the narrowing shows, and its press gives every row back.
+  await user.click(within(section).getByRole("button", { name: "Columns" }));
+  await user.click(screen.getByRole("checkbox", { name: "Owner" }));
+  await user.keyboard("{Escape}");
+  await waitFor(() =>
+    expect(within(table).queryByRole("button", { name: "Filter Owner" })).toBeNull()
+  );
+  expect(listed()).toBe(1);
+  await user.click(chip());
+  await waitFor(() => expect(listed()).toBe(before));
+  expect(screen.queryByRole("button", { name: /^Remove Owner: / })).toBeNull();
 });
 
 test("no header of the priorities table is longer than 16 characters, whichever columns show", async () => {

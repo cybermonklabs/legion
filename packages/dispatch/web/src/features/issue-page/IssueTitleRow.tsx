@@ -1,6 +1,7 @@
 import { ISSUE_TITLE_MAX } from "@legion/contracts";
 import { type ReactNode, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 
+import { useFocusBack } from "../../hooks/useFocusBack";
 import { inputMethodKey } from "../../lib/input-method-key";
 import {
   bgTransparent,
@@ -86,14 +87,12 @@ export function IssueTitleRow({
   // as that press ends.
   const heldForPress = useRef(false);
   const heading = useRef<HTMLHeadingElement>(null);
+  // Edit title, drawn while the issue is open and its title is not being edited, which a key
+  // that ends the edit gives the focus back to once it is drawn again (`useFocusBack`).
+  const focusBack = useFocusBack(editing);
   // The heading's `id`, which Edit title is described by.
   const headingId = useId();
-  // Edit title, while it is drawn: the issue is open and its title is not being edited.
-  const editButton = useRef<HTMLButtonElement>(null);
   const editor = useRef<HTMLTextAreaElement | null>(null);
-  // Set by a key that ends the edit, and read once Edit title is drawn again: the focus goes
-  // back to it.
-  const returning = useRef(false);
   // The draft a switch or a hide of this edit sent or queued since the reader last changed it,
   // trimmed as it went, or null: a change the reader makes clears it (the editor's `onChange`),
   // and so does the next edit (`openEdit`). A draft goes once: once it has gone (`went`), neither
@@ -119,11 +118,6 @@ export function IssueTitleRow({
     setWritten(drafts.title);
     setEditing(true);
   };
-  useEffect(() => {
-    if (editing || !returning.current) return;
-    editButton.current?.focus({ preventScroll: true });
-    returning.current = false;
-  }, [editing]);
   // The editor takes the focus once, as the edit opens. Focused at every render, it took the
   // focus back from a control the page's code had moved it to while the reader was away, and the
   // edit then stayed open as they came back.
@@ -250,7 +244,7 @@ export function IssueTitleRow({
           aria-label={CONTROL_LABELS.edit_title}
           className={`[grid-area:1/1] min-w-0 cursor-text rounded-md border outline-none focus-visible:ring-2 ${borderTransparent} ${borderStrongHover} ${focusVisibleRing}`}
           onClick={openEdit}
-          ref={editButton}
+          ref={focusBack.opener}
           type="button"
         />
       )}
@@ -284,19 +278,22 @@ export function IssueTitleRow({
           onKeyDown={(event) => {
             // The Escape that cancels an IME composition and the Enter that confirms one are the
             // input method's keys, not the reader ending the edit. Safari sends them after its
-            // compositionend, with `isComposing` false and keyCode 229 (WebKit bug 165004).
+            // compositionend, with `isComposing` false and keyCode 229 (`inputMethodKey`).
             if (inputMethodKey(event.nativeEvent)) return;
             if (event.key === "Escape") {
-              // Puts back the issue's title, or while a write is out the title it carries, which
-              // the issue is about to hold (decision 316).
+              // The press is the editor's: marked taken, so Details' own Escape and the key
+              // registry pass over it (`shell/keymap.ts`). Puts back the issue's title, or while a
+              // write is out the title it carries, which the issue is about to hold (decision
+              // 316). The focus goes back to Edit title (`useFocusBack`).
+              event.preventDefault();
               drafts.discardTitle();
-              returning.current = true;
+              focusBack.handBack();
               setEditing(false);
               return;
             }
             if (event.key === "Enter") {
               event.preventDefault();
-              returning.current = true;
+              focusBack.handBack();
               event.currentTarget.blur();
             }
           }}

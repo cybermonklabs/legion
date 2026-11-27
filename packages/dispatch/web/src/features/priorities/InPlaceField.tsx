@@ -9,6 +9,7 @@ import {
   useState,
 } from "react";
 import { createPortal } from "react-dom";
+import { useFocusBack } from "../../hooks/useFocusBack";
 import { inputMethodKey } from "../../lib/input-method-key";
 import {
   bgTransparent,
@@ -19,13 +20,22 @@ import {
   calloutWarningText,
   focusBorder,
   focusVisibleRing,
+  hasFocusVisibleRing,
   inputClasses,
   surfaceMutedStrongBg,
   textPrimaryOnSurface,
   textSecondaryHoverToPrimary,
   textSecondaryOnSurface,
 } from "../../theme/classes";
-import { answered, arrival, NOTHING_KEPT, type SentText, usedOn } from "./field-arrival";
+import {
+  answered,
+  arrival,
+  NOTHING_KEPT,
+  newestKnown,
+  type SentText,
+  usedOn,
+  type WriteAnswer,
+} from "./field-arrival";
 
 /** How long the reader may stop typing before what they wrote is saved. Nothing else in
  *  Dispatch asks a person to press Save, so a priority's fields are saved as they are written:
@@ -122,6 +132,33 @@ function heldText(draft: string, base: string, required: boolean): string {
   return required && typed === "" ? base : typed;
 }
 
+/** Makes a box as tall as the text it holds at the width it has now: a heading's box here, and an
+ *  inline box a reply is written in (`MentionField`). At `auto` each is one line tall
+ *  (`rows={1}`), so its `scrollHeight` is its text's height and its padding, and a box that held
+ *  more lines gives back those its text no longer fills; its border, which `offsetHeight` counts
+ *  and `clientHeight` does not, is added. */
+export function fitToText(node: HTMLElement): void {
+  node.style.height = "auto";
+  node.style.height = `${node.scrollHeight + node.offsetHeight - node.clientHeight}px`;
+}
+
+/** Makes `node` as tall as its text again (`fitToText`) at each new width it takes, from the width
+ *  it has now, and answers what ends that: a new width wraps the text on more lines or fewer. Only
+ *  a new width does: the height set here changes the box's size too, which the observer hears, and
+ *  the same text wraps the same at the same width. Where there is no `ResizeObserver` nothing is
+ *  watched, and the box keeps the height its text last gave it. */
+export function refitOnNewWidth(node: HTMLElement): (() => void) | undefined {
+  if (typeof ResizeObserver === "undefined") return undefined;
+  let width = node.clientWidth;
+  const sizes = new ResizeObserver(() => {
+    if (node.clientWidth === width) return;
+    width = node.clientWidth;
+    fitToText(node);
+  });
+  sizes.observe(node);
+  return () => sizes.disconnect();
+}
+
 /** The type an issue's title is drawn in, in its header (`IssueHeader.tsx`): a field drawn as a
  *  heading reads in it, and so does the box it opens into. */
 const TITLE_TYPE = "text-[22px] leading-7 font-semibold tracking-tight";
@@ -171,7 +208,9 @@ export const FIELD_CHIP = `inline-flex min-h-11 max-w-full items-center gap-1 ro
  * with whether it landed: one that did is no write of the reader's still out when another person's
  * text arrives, and one that did not is no write whose answer the field waits for (`sent`), and no
  * text the field writes again on its own once the write before it comes back: the reader discarded
- * it, or the shell's line holds it, with its Retry. Each write hands on too the text the field
+ * it, or the shell's line holds it, with its Retry. One that ended with no verdict - she stopped
+ * it - is answered not known (`NOT_KNOWN`): no write still out either, but its text arriving is
+ * hers, landed after all, and no other person's. Each write hands on too the text the field
  * held as its edit began (`onSave`'s `on`, `made`): Use my text's as well, since it puts the
  * kept text in place of what the field holds - but for Use my text of a text a write of the
  * reader's carried, which is that same edit, and hands on what that write was made on: the
@@ -183,12 +222,19 @@ export const FIELD_CHIP = `inline-flex min-h-11 max-w-full items-center gap-1 ro
  *
  * Drawn `closed`, the field reads as its text until the reader opens it, and closes as they leave
  * it; what it writes, and when, is the same. A heading (`closed="heading"`) is the page's heading,
- * in an issue title's type, as an issue's header draws its title: a click, the focus, Enter or
- * Space opens it, and open, the heading holds a box in the same type that wraps as the heading
- * does, so every word of a long title stays in view as it is written, and nothing under it moves
- * as it opens and closes. A chip (`closed="chip"`) reads the field's name and its text in a label
- * chip's shape (`FIELD_CHIP`), and a click opens it into the plain box, its name beside it. While
- * it is closed, the heading or the chip is what names the notice as what describes it.
+ * in an issue title's type, as an issue's header draws its title: its text is a button inside it,
+ * which Tab reaches and a screen reader names a button, and the heading takes no Tab stop of its
+ * own. A click on the heading, or Enter or Space on the button, opens it; a focus alone never
+ * does, since a focus can come to the button with no act of the reader's and a box opened then
+ * would change the page on focus (WCAG 2.2, 3.2.1 On Focus). Open, the heading holds a box in the
+ * same type that wraps as the heading does, so every word of a long title stays in view as it is
+ * written, and nothing under it moves as it opens and closes. A chip (`closed="chip"`) reads the
+ * field's name and its text in a label chip's shape (`FIELD_CHIP`), and a click opens it into the
+ * plain box, its name beside it. While it is closed, the heading or the chip is what names the
+ * notice as what describes it. Enter and Escape leave a field drawn closed as any leaving does,
+ * and give the focus back to the button the box was opened from, the heading's or the chip's,
+ * with no scroll; leaving it any other way, a click elsewhere or Tab, leaves the focus where the
+ * reader put it.
  */
 export function InPlaceField({
   closed,
@@ -230,9 +276,10 @@ export function InPlaceField({
    *  it wrote, though that write did not land, or the last it took in, whichever came last - or,
    *  for Use my text of a text whose own write is known, what that write was made on, since it
    *  writes that same edit again. So a write made on a stopped one's text is known to carry it
-   *  (`PriorityTextWrite.made`). Answers, where the page tells, whether the write landed. */
+   *  (`PriorityTextWrite.made`). Answers, where the page tells, whether the write landed, or that
+   *  it is not known (`WriteAnswer`). */
   // biome-ignore lint/suspicious/noConfusingVoidType: a page that does not say whether its write landed - the owner's - hands any callback, as a void callback takes one
-  onSave: (next: string, from: string, on: string) => Promise<boolean> | void;
+  onSave: (next: string, from: string, on: string) => Promise<WriteAnswer> | void;
   /** What other rows already hold, offered beside the field: a reader picks one of the owners
    *  the deployment uses, or writes a new one, since nothing bounds what an owner may be. */
   options?: readonly string[];
@@ -254,6 +301,11 @@ export function InPlaceField({
   // Whether the reader has opened a field drawn `closed`; any other is always open.
   const [opened, setOpened] = useState(false);
   const box = useRef<HTMLInputElement | HTMLTextAreaElement | null>(null);
+  // The button a field drawn `closed` reads as while it is, the heading's or the chip's, which
+  // the reader opens the box from, and which a key that ends the edit gives the focus back to,
+  // with no scroll, once it is drawn in the box's place: the box took the focus with it as it
+  // went (`useFocusBack`).
+  const focusBack = useFocusBack(opened);
   // Where the field stands against the server's text (`FieldStand`): what the reader's text is
   // compared with, and the texts written that the server has not answered with yet, oldest first.
   const base = useRef(value);
@@ -273,8 +325,8 @@ export function InPlaceField({
   latest.current = { draft, kept, onSave, required, setKept };
 
   // Writes `text`, made on `on`: `made`, unless Use my text says otherwise. The page's answer is
-  // that write's own (`answered`): one that landed is no write still out, and one that did not
-  // never comes back, so the field waits for no answer with it.
+  // that write's own (`answered`): one that landed is no write still out, one that did not never
+  // comes back, so the field waits for no answer with it, and one not known may still come back.
   const write = (text: string, on = made.current) => {
     base.current = text;
     made.current = text;
@@ -340,9 +392,17 @@ export function InPlaceField({
   useLayoutEffect(() => {
     const node = box.current;
     if (closed !== "heading" || node === null) return;
-    node.style.height = "auto";
-    node.style.height = `${node.scrollHeight + node.offsetHeight - node.clientHeight}px`;
+    fitToText(node);
   }, [closed, draft, opened]);
+  // A width the open box changes to - the window resized while the reader writes - wraps the
+  // title on more lines or fewer, so the box is made as tall as its text again
+  // (`refitOnNewWidth`). The observer starts from the width the box has as the effect above sets
+  // its height, in the same commit, so no change of width falls between the two.
+  useLayoutEffect(() => {
+    const node = box.current;
+    if (closed !== "heading" || !opened || node === null) return;
+    return refitOnNewWidth(node);
+  }, [closed, opened]);
 
   // One of the reader's kept texts, put back in the field and written at once, even where the
   // field holds it already: the page offered it beside the other person's text, which it goes over.
@@ -356,8 +416,10 @@ export function InPlaceField({
     stopTimer(timer);
     setKept(NOTHING_KEPT);
     setDraft(text);
-    const newest = sent.current.at(-1);
-    if (newest?.text === text && !newest.landed) return;
+    // A write whose landing is not known is no write still out, and does not count as the newest
+    // (`newestKnown`).
+    const newest = newestKnown(sent.current);
+    if (newest?.text === text && newest.landed === false) return;
     const on = usedOn(text, kept, (one) => madeOn.get(one) ?? keptMadeOn?.(one)) ?? made.current;
     write(text, on);
   };
@@ -393,12 +455,18 @@ export function InPlaceField({
       timer.current = window.setTimeout(save, SAVE_AFTER_MS);
     },
     onKeyDown: (event: KeyboardEvent<HTMLInputElement | HTMLTextAreaElement>) => {
-      // The Enter that ends an input method's composition takes the word composed, and is no
-      // Enter of the reader's: it neither writes nor leaves the field. Safari sends it after its
+      // The Enter that ends an input method's composition takes the word composed, and the
+      // Escape that ends one drops it: each is the input method's key, and no key of the
+      // reader's, so it neither writes nor leaves the field. Safari sends it after its
       // compositionend, with `isComposing` false and keyCode 229 (`inputMethodKey`).
-      if (event.key !== "Enter" || inputMethodKey(event.nativeEvent)) return;
+      if (inputMethodKey(event.nativeEvent)) return;
+      // Enter writes and leaves the field. So does Escape in a field drawn `closed`, whose press
+      // is then marked taken (`shell/keymap.ts`); one always open leaves Escape to the page.
+      // Either key leaving a field drawn `closed` gives the focus back to its button.
+      if (event.key !== "Enter" && (event.key !== "Escape" || closed === undefined)) return;
       event.preventDefault();
       save();
+      if (closed !== undefined) focusBack.handBack();
       event.currentTarget.blur();
     },
     placeholder,
@@ -417,25 +485,53 @@ export function InPlaceField({
           <h1 className={`-mx-2 min-w-0 ${TITLE_TYPE} ${textPrimaryOnSurface}`}>
             <textarea
               {...typing}
-              className={`block w-full resize-none overflow-hidden rounded-lg border px-2 py-1 outline-none md:py-0 ${TITLE_TYPE} ${borderTransparent} ${bgTransparent} ${textPrimaryOnSurface} ${borderStrongHover} ${focusBorder}`}
+              // Below 1280 px `styles.css` gives every box a 44 px floor (the touch target
+              // `packages/dispatch/README.md` asks of every control), in no layer. The box keeps
+              // the floor: 7 px of padding above and below a one-line title's 28 px line, inside
+              // its 1 px border, make it 44 px tall. As much negative margin as that padding adds
+              // to the closed heading's (`HEADING_BOX`) keeps the box in the heading's place and
+              // its words where the heading draws them, so nothing under it moves as it opens.
+              // Below 768 px the heading is 38 px tall (1 + 4 + 28 + 4 + 1), its words 5 px down,
+              // and 3 px of margin above and below leave the box a 38 px place, its words at
+              // -3 + 1 + 7 = 5 px. From 768 px the heading is 30 px tall (1 + 28 + 1), its words
+              // 1 px down, and 7 px leave the box a 30 px place, its words at -7 + 1 + 7 = 1 px. A
+              // title of more lines takes the same padding and margin, so the height the layout
+              // effect above gives the box leaves it its heading's place too. From 1280 px there
+              // is no floor, and the box takes the heading's padding, none, and no margin.
+              className={`-my-[3px] block w-full resize-none overflow-hidden rounded-lg border px-2 py-[7px] outline-none md:-my-[7px] xl:my-0 xl:py-0 ${TITLE_TYPE} ${borderTransparent} ${bgTransparent} ${textPrimaryOnSurface} ${borderStrongHover} ${focusBorder}`}
+              // The heading's 22 px type at every width, so the title wraps in the box as in the
+              // heading. Below 1280 px `styles.css` sets every box's type to 16 px
+              // (`font-size: 1rem`, the floor that keeps a phone from zooming in), in no layer,
+              // over `TITLE_TYPE`'s `text-[22px]`: a set size, not a minimum. `data-own-type`
+              // takes it off this box.
+              data-own-type=""
               rows={1}
             />
           </h1>
         ) : (
+          // biome-ignore lint/a11y/useKeyWithClickEvents: the heading's click takes a press on its rule and its padding as on its words; the button inside it is the control, which takes the keys and whose click reaches this one.
           <h1
             aria-describedby={describedBy}
-            className={`cursor-text ${HEADING_BOX} ${borderStrongHover}`}
+            className={`cursor-text ${HEADING_BOX} ${borderStrongHover} has-focus-visible:ring-2 ${hasFocusVisibleRing}`}
             onClick={() => setOpened(true)}
-            onFocus={() => setOpened(true)}
-            onKeyDown={(event) => {
-              if (event.key !== "Enter" && event.key !== " ") return;
-              event.preventDefault();
-              setOpened(true);
-            }}
-            // biome-ignore lint/a11y/noNoninteractiveTabindex: the heading is the title's edit control, as the issue title's heading is, and a keyboard reaches it by Tab.
-            tabIndex={0}
           >
-            {draft}
+            <button
+              // The title's words, drawn in the heading's box as the heading drew them. Below
+              // 1280 px `styles.css` gives every button a 44 px floor (the touch target
+              // `packages/dispatch/README.md` asks of every control) and an `inline-flex`
+              // display, in no layer. The button keeps the floor: 8 px of padding above and
+              // below its 28 px line make it 44 px tall, and as much negative margin keeps its
+              // place in the heading one line tall, so the title stands where the closed
+              // heading and its open box draw it. `block!` and `min-w-0!` take the display and
+              // the width floor off, which would keep a long word from breaking at the heading's
+              // edge, since a layered utility wins over an unlayered rule only with `!`. The
+              // heading draws the focus ring on its own box (`has-focus-visible`).
+              className="block! min-w-0! -my-2 w-full cursor-text py-2 text-left outline-none xl:my-0 xl:py-0"
+              ref={focusBack.opener}
+              type="button"
+            >
+              {draft}
+            </button>
           </h1>
         )}
         {placed}
@@ -471,6 +567,7 @@ export function InPlaceField({
           aria-describedby={describedBy}
           className={`${FIELD_CHIP} ${textSecondaryHoverToPrimary} outline-none focus-visible:ring-2 ${focusVisibleRing}`}
           onClick={() => setOpened(true)}
+          ref={focusBack.opener}
           type="button"
         >
           <span className="font-normal">{label}</span>

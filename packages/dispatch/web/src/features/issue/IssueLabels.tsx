@@ -17,6 +17,7 @@ import {
   surfaceMutedStrongBg,
   textSecondaryOnSurface,
 } from "../../theme/classes";
+import { propertyControl } from "./property-control";
 
 const maxLabelLength = 40;
 const maxLabels = 20;
@@ -65,20 +66,21 @@ function saveLabels(draft: readonly string[], labels: readonly string[]): string
  *  draft, else the issue's labels) and no save is in flight. */
 const editLabelsName = "Edit labels";
 
-/** The name the labels control answers to, which the new issue page's add menu, its `l` key and
- *  its rows find it by inside `NoTooltips` rather than drawing a second one. `inside` is
- *  required: the control's state inside `NoTooltips`, or `null` outside it, where the name is
- *  `main`'s "Edit labels" in every state. Inside it carries the labels the control draws,
- *  whether a save is in flight, and the page's words (`ANSWER_LINES` and `CONTROL_LABELS`). With
- *  no label the name is the words the control draws, then the list's `control_name_to` and the
- *  issue's key ("Add a label to CORE-1", as the priority's is "Add a priority to CORE-1"), so a
- *  voice user saying what they read presses it (WCAG 2.5.3); with no key it is those words
- *  alone. With a label it is `main`'s "Edit labels". While a save is in flight the control draws
- *  `saving_labels` ("Saving labels…") whatever it holds, so the name is those words with their
- *  trailing ellipsis dropped, then the list's `control_name_of` and the issue's key ("Saving
- *  labels of CORE-1"), or those words alone with no key. The words are the page's list's, passed
- *  in rather than imported: the page names the control outside React from the list it imports,
- *  and this file imports nothing of that list (`components/tooltips.tsx`). */
+/** The name the labels control answers to: what a screen reader reads of it and what a voice user
+ *  says to press it. The page finds the control by its mark (`propertyControl`), never by this
+ *  name, which changes with the control's state. `inside` is required: the control's state inside
+ *  `NoTooltips`, or `null` outside it, where the name is `main`'s "Edit labels" in every state.
+ *  Inside it carries the labels the control draws, whether a save is in flight, and the page's
+ *  words (`ANSWER_LINES` and `CONTROL_LABELS`). With no label the name is the words the control
+ *  draws, then the list's `control_name_to` and the issue's key ("Add a label to CORE-1", as the
+ *  priority's is "Add a priority to CORE-1"), so a voice user saying what they read presses it
+ *  (WCAG 2.5.3); with no key it is those words alone. With a label it is `main`'s "Edit labels".
+ *  While a save is in flight the control draws `saving_labels` ("Saving labels…") whatever it
+ *  holds, so the name is those words with their trailing ellipsis dropped, then the list's
+ *  `control_name_of` and the issue's key ("Saving labels of CORE-1"), or those words alone with no
+ *  key. The words are the page's list's, passed in rather than imported: the control reads them
+ *  through `usePageWords`, and this file imports nothing of that list
+ *  (`components/tooltips.tsx`). */
 export function labelsControlName(
   issueKey: string | undefined,
   inside: {
@@ -106,9 +108,11 @@ export interface IssueLabelsProps {
    *  new issue page's Details draws the prototype's `.lchip`). Given, the labels wrap. */
   readonly chipClassName?: string;
   readonly disabled: boolean;
-  /** The issue's key, `labelsControlName`'s first argument, which ends the control's name inside
+  /** The issue's key: `labelsControlName`'s first argument, which ends the control's name inside
    *  `NoTooltips` while the control draws no label (`displayLabels`: the open popover's draft,
-   *  else `labels`) or a save is in flight. Outside `NoTooltips` it changes nothing. */
+   *  else `labels`) or a save is in flight, and on every surface the key of the trigger's mark
+   *  (`propertyControl`), which the new issue page's add menu and its `l` key reach it by. With
+   *  none the trigger carries no mark. */
   readonly issueKey?: string;
   readonly labels: readonly string[];
   readonly onSave: (labels: string[]) => Promise<unknown>;
@@ -156,8 +160,8 @@ export function IssueLabels({
   // Inside `NoTooltips` the control's name begins with the words it draws: "Add a label" with no
   // label (below), as the priority's "Add a priority to CORE-1" does, and "Saving labels…" while it
   // saves, so a voice user says what they read (WCAG 2.5.3 Label in Name).
-  // `labelsControlName` builds that name, and the page finds the control by it. Given `null`
-  // everywhere outside, it is `main`'s name.
+  // `labelsControlName` builds that name; the page finds the control by its mark (below), never by
+  // the name. Given `null` everywhere outside, it is `main`'s name.
   const triggerName = labelsControlName(
     issueKey,
     page === null ? null : { labels: displayLabels, saving, words: page }
@@ -256,6 +260,12 @@ export function IssueLabels({
           searchLabel="Search or create label"
           selected={draft}
           triggerAriaLabel={triggerName}
+          // The new issue page's add menu reaches the trigger by this mark rather than drawing a
+          // second one (`IssueAddMenu.tsx`), and its `l` key presses it by the mark
+          // (`slots/details.tsx`), whatever the name says of the control's state.
+          marks={
+            issueKey === undefined ? undefined : { trigger: propertyControl("labels", issueKey) }
+          }
           // Inside `NoTooltips` each colour is one of the new issue page's: a label above is
           // its label chip (the prototype's `.lchip`), and this trigger its secondary control, the
           // header control's rule and muted words on the paper, with quiet words while it is busy.

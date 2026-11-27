@@ -16,6 +16,7 @@ import {
   pageQuietText,
 } from "../../theme/classes";
 import { buildIssuePath } from "../refs/routes";
+import { stepIndex } from "../shell/roving";
 import { dialogOpen, useMediaQuery } from "../shell/useDialog";
 import { FILTER_ROW_ATTRIBUTE, HEADER_SCROLLS_QUERY } from "./identity-block";
 import { presetPath } from "./issue-address";
@@ -146,13 +147,15 @@ export function IssuePresets({
     };
     // The press is the open menu's alone: the page's own Escape - Details' among them - waits for
     // the next one. The menu reads it in the capture phase, so it marks the press before any
-    // listener of the page's that a layer under it added earlier. A dialog open over the row
-    // takes the press wherever the focus is: on the dialog itself in its first frame, on its
-    // field, or gone to the page after a press on its text. Whether one is open is `useDialog`'s
-    // registry's answer (`dialogOpen()`), which also decides which dialog the key closes, as
-    // Details' drawer asks it.
+    // listener of the page's that a layer under it added earlier. A press a layer over the menu
+    // took first - the hover card's, whose listener the shell adds as it mounts, so it hears the
+    // press before the menu's (`RefPreview.tsx`) - is that layer's, and leaves the menu open. A
+    // dialog open over the row takes the press wherever the focus is: on the dialog itself in its
+    // first frame, on its field, or gone to the page after a press on its text. Whether one is
+    // open is `useDialog`'s registry's answer (`dialogOpen()`), which also decides which dialog
+    // the key closes, as Details' drawer asks it.
     const closeOnEscape = (event: globalThis.KeyboardEvent) => {
-      if (event.key !== "Escape" || inDialog(event.target)) return;
+      if (event.key !== "Escape" || event.defaultPrevented || inDialog(event.target)) return;
       if (dialogOpen()) return;
       event.preventDefault();
       setOpen(undefined);
@@ -186,7 +189,7 @@ export function IssuePresets({
   };
   const walk = (event: KeyboardEvent<HTMLElement>, from: Preset) => {
     const at = PRESET_ORDER.indexOf(from);
-    const to = step(event.key, at, PRESET_ORDER.length, "ArrowLeft", "ArrowRight");
+    const to = stepIndex(event.key, at, PRESET_ORDER.length, "ArrowLeft", "ArrowRight");
     const next = to === undefined ? undefined : PRESET_ORDER[to];
     if (next === undefined) return;
     event.preventDefault();
@@ -204,7 +207,7 @@ export function IssuePresets({
     }
     const items = [...event.currentTarget.querySelectorAll<HTMLElement>('[role="menuitemradio"]')];
     const at = event.target instanceof HTMLElement ? items.indexOf(event.target) : -1;
-    const to = at < 0 ? undefined : step(event.key, at, items.length, "ArrowUp", "ArrowDown");
+    const to = at < 0 ? undefined : stepIndex(event.key, at, items.length, "ArrowUp", "ArrowDown");
     if (to === undefined) return;
     event.preventDefault();
     items[to]?.focus();
@@ -421,22 +424,6 @@ type OpenMenu = "presets" | undefined;
 /** The widths the row is one control at: below 1280 px, from which R2 has the views one row.
  *  1279 px, not `80rem`: the row's widths are the reader's pixels, as the header's are. */
 const ONE_CONTROL_QUERY = "(max-width: 1279px)";
-
-/** Where a roving focus goes from `at` of `count` controls on `key`: `back` and `forward` step
- *  one, wrapping, and Home and End go to the ends; undefined for any other key. */
-function step(
-  key: string,
-  at: number,
-  count: number,
-  back: string,
-  forward: string
-): number | undefined {
-  if (key === forward) return (at + 1) % count;
-  if (key === back) return (at - 1 + count) % count;
-  if (key === "Home") return 0;
-  if (key === "End") return count - 1;
-  return undefined;
-}
 
 /**
  * What one control draws after its name: its count, then the noun the count is in, or what of

@@ -19,6 +19,7 @@ import { createElement, type ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { realClock, settle } from "../../__tests__/fake-clock";
+import { pickNamed } from "../../__tests__/list-picks";
 import { renderWithQueries } from "../../__tests__/query-provider";
 import { answerIssuePatches } from "../../__tests__/send-answers";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
@@ -345,9 +346,8 @@ const architectureSource: ArchitectureSource = {
   repo: "legion/legion",
 };
 
-// The new issue page's add menu reaches four controls of today's pages by name, so each name is
-// the one the control has there - `main`'s for three, `CONTROL_LABELS.edit_priorities` for the
-// priorities' picker - and each control answers to it.
+// Three of today's controls take their accessible names from exported functions. The priorities
+// picker answers to the page's Edit priorities label. The Add menu reaches them by property mark.
 test("the four control names are those of today's pages", async () => {
   expect(assigneeControlName("CORE-1")).toBe("Assignee of CORE-1");
   expect(repoControlName("CORE-1")).toBe("Repository of CORE-1");
@@ -384,8 +384,12 @@ test("the four control names are those of today's pages", async () => {
   );
   try {
     const scope = within(view.container);
-    expect(scope.getByRole("combobox", { name: "Assignee of CORE-1" })).toBeInTheDocument();
-    expect(scope.getByRole("combobox", { name: "Repository of CORE-1" })).toBeInTheDocument();
+    expect(
+      scope.getByRole("button", { name: pickNamed("Assignee of CORE-1") })
+    ).toBeInTheDocument();
+    expect(
+      scope.getByRole("button", { name: pickNamed("Repository of CORE-1") })
+    ).toBeInTheDocument();
     expect(
       await scope.findByRole("button", { name: "Edit components of CORE-1" })
     ).toBeInTheDocument();
@@ -396,12 +400,13 @@ test("the four control names are those of today's pages", async () => {
   }
 });
 
-// The new issue page's add menu, its `l` key and its rows find the labels control by the name it
-// carries inside `NoTooltips`, which `labelsControlName` builds: the words it draws, then the
-// joining word of `page-words.ts` and the issue's key, while it has no label; `main`'s name once
-// it has one; and while it saves, the words it draws then, their ellipsis dropped, then the
-// joining word of `page-words.ts` and the key. Given `null`, outside `NoTooltips`, it is `main`'s
-// name in every state. Each expected name is built from the words of `page-words.ts`.
+// Inside `NoTooltips` the labels control carries the name `labelsControlName` builds, which a
+// screen reader reads and a voice user says (the page finds the control by its mark): the words
+// it draws, then the joining word of `page-words.ts` and the issue's key, while it has no label;
+// `main`'s name once it has one; and while it saves, the words it draws then, their ellipsis
+// dropped, then the joining word of `page-words.ts` and the key. Given `null`, outside
+// `NoTooltips`, it is `main`'s name in every state. Each expected name is built from the words of
+// `page-words.ts`.
 test("labelsControlName names the labels control as it is drawn", () => {
   const words = { ANSWER_LINES, CONTROL_LABELS };
   const addName = `${CONTROL_LABELS.add_label} ${CONTROL_LABELS.control_name_to} CORE-1`;
@@ -463,7 +468,7 @@ test("labelsControlName names the labels control as it is drawn", () => {
   }
 });
 
-// The new issue page's add menu and its rows find the components picker by the name its trigger
+// The new issue page's rows find the components picker by the name its trigger
 // carries inside `NoTooltips`, which `componentsControlName` builds: the words the trigger draws,
 // then the joining word of `page-words.ts` and the issue's key, and while it saves the page's
 // `saving_components` that `ComponentPicker` draws in their place, its ellipsis dropped. On the
@@ -817,7 +822,7 @@ function entryOf(view: RenderResult, step: string): HTMLElement {
 
 /** Records the reader's every review as Dispatch answers an approval of `artifactId`. */
 function answerReviews(artifactId: string) {
-  return spyOn(api, "createArtifactReview").mockResolvedValue({
+  return spyOn(api, "createArtifactVersionReview").mockResolvedValue({
     actor: { id: "alice", kind: "user" },
     artifact_id: artifactId,
     ask_id: null,
@@ -888,7 +893,8 @@ test("ApprovalSteps draws Approve and Request changes on each entry of actionsOn
       );
       await waitFor(() => expect(createArtifactReview).toHaveBeenCalledTimes(1));
       expect(createArtifactReview.mock.calls[0]?.[0]).toBe(VERIFICATION_ID);
-      expect(createArtifactReview.mock.calls[0]?.[1]).toEqual({ state: "approved" });
+      expect(createArtifactReview.mock.calls[0]?.[1]).toBe(1);
+      expect(createArtifactReview.mock.calls[0]?.[2]).toEqual({ state: "approved" });
     } finally {
       waitingOnReader.unmount();
     }
@@ -971,7 +977,8 @@ test("ApprovalSteps names each document's actions when actionsOn holds two docum
       );
       await waitFor(() => expect(createArtifactReview).toHaveBeenCalledTimes(1));
       expect(createArtifactReview.mock.calls[0]?.[0]).toBe(VERIFICATION_ID);
-      expect(createArtifactReview.mock.calls[0]?.[1]).toEqual({ state: "approved" });
+      expect(createArtifactReview.mock.calls[0]?.[1]).toBe(1);
+      expect(createArtifactReview.mock.calls[0]?.[2]).toEqual({ state: "approved" });
     } finally {
       undraw(both);
     }

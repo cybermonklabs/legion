@@ -16,6 +16,7 @@ import { expect, type Locator, type Page, type Request } from "@playwright/test"
 
 import type { IssueField } from "../web/src/features/issue/issue-field-writes";
 import { getIssueEvents } from "./api";
+import { listTrigger } from "./filters";
 import { drawer, peekTrigger } from "./inbox-drawer";
 import { keptWrites, pendingWrites } from "./keyed-writes";
 import { settledState } from "./settled";
@@ -76,7 +77,7 @@ export async function holdIssuePatches(page: Page, issueKey: string): Promise<He
     try {
       // The hold is the row's whole point: the save stays out at least this long, and until the
       // row lets it go, so the next pick, reload or read happens while it is out.
-      await Promise.all([sleep(PICK_HOLD_MS), released.promise]);
+      await Promise.all([heldFor(patch.arrivedAt), released.promise]);
       patch.held = false;
       await route.fallback();
       forwarded.push(patch.body);
@@ -89,6 +90,19 @@ export async function holdIssuePatches(page: Page, issueKey: string): Promise<He
     }
   });
   return { forwarded, holding: () => holding, release: () => released.resolve(), sent };
+}
+
+/** Sleeps until `Date.now()` reads `PICK_HOLD_MS` past `arrivedAt`. A timer runs on the
+ *  monotonic clock, and `Date.now()`, which a row reads a hold by (`HeldPatch`), on the wall
+ *  clock, each in whole milliseconds, so one `sleep(PICK_HOLD_MS)` can end while `Date.now()`
+ *  still reads 2999 ms (CI run 44781930916, `board.e2e.ts`'s priority-lane row): the hold is
+ *  ended by the clock that reads it. */
+async function heldFor(arrivedAt: number): Promise<void> {
+  for (let left = PICK_HOLD_MS; left > 0; left = PICK_HOLD_MS - (Date.now() - arrivedAt)) {
+    // What is left of the hold by `Date.now()`: the save stays out this long, so the row's
+    // next pick, reload or read happens while it is out.
+    await sleep(left);
+  }
 }
 
 /** Waits until no save of `held` is held and the tab keeps no write for a reload to send: every
@@ -245,10 +259,12 @@ export function expectReadWhileHeld(
  *  drawer draws outside both. */
 export const ISSUE_PAGE_PICKERS = ':is(main, aside[aria-label="Details"])';
 
-/** The issue page's own picker named `name` (an `aria-label`, such as `Priority of CORE-1`),
- *  inside `ISSUE_PAGE_PICKERS`. */
+/** The issue page's own picker named `name` (such as `Priority of CORE-1`), inside
+ *  `ISSUE_PAGE_PICKERS`: the shared list's single pick (`MultiSelect`), whose trigger is named
+ *  `name` and then what it shows, such as the priority's, the assignee's and the repository's
+ *  (`listTrigger`). */
 export function pagePicker(page: Page, name: string): Locator {
-  return page.locator(ISSUE_PAGE_PICKERS).getByRole("combobox", { name });
+  return listTrigger(page.locator(ISSUE_PAGE_PICKERS), name);
 }
 
 /**
@@ -340,34 +356,41 @@ async function exposeShown(page: Page): Promise<{ binding: string; shown: Shown 
 }
 
 /**
- * Records every value the controls named `name` (an `aria-label`, such as `Priority of CORE-1`)
- * show in `page`, read at every animation frame of every document the page loads from now on -
- * so from the first frame a reload paints. A `<select>` or an `<input>` shows its value - an
- * input's is what is typed into it as well as what it holds; any other element its text.
- * `within`, a CSS selector, reads only the controls inside what it matches - the page's `main`,
- * `main` and Details (`ISSUE_PAGE_PICKERS`), or the Inbox drawer
- * (`[role="dialog"][aria-label="Inbox"]`). Call it before the page loads the document a row
- * watches.
+ * Records every value the controls named `name` (such as `Priority of CORE-1`) show in `page`,
+ * read at every animation frame of every document the page loads from now on - so from the first
+ * frame a reload paints. A control is named `name` by its `aria-label`, or, as the shared list's
+ * single pick (`MultiSelect`) is, by the element its `aria-labelledby` names first. A `<select>`
+ * or an `<input>` shows its value - an input's is what is typed into it as well as what it holds;
+ * any other element its text less what it hides from assistive technology, which for a single
+ * pick's trigger is what its name reads after its label: the badge an Assignee or a hand-on shows,
+ * or the words a Repository's badge is read by. `within`, a CSS selector, reads only the controls
+ * inside what it matches - the page's `main`, `main` and Details (`ISSUE_PAGE_PICKERS`), or the
+ * Inbox drawer (`[role="dialog"][aria-label="Inbox"]`). Call it before the page loads the document
+ * a row watches.
  */
 export async function watchShown(page: Page, name: string, within = ":root"): Promise<Shown> {
   const { binding, shown } = await exposeShown(page);
   await page.addInitScript(
     ({ binding, name, within }: { binding: string; name: string; within: string }) => {
       const report = Reflect.get(window, binding) as (value: string) => Promise<void>;
-      const selector = `${within} [aria-label="${CSS.escape(name)}"]`;
+      const selector = `${within} [aria-label="${CSS.escape(name)}"], ${within} [aria-labelledby]`;
+      const named = (element: Element): boolean => {
+        if (element.getAttribute("aria-label") === name) return true;
+        const [label = ""] = (element.getAttribute("aria-labelledby") ?? "").split(" ");
+        return label !== "" && document.getElementById(label)?.textContent === name;
+      };
+      const shownBy = (element: Element): string => {
+        if (element instanceof HTMLSelectElement || element instanceof HTMLInputElement) {
+          return element.value;
+        }
+        const words = element.cloneNode(true) as Element;
+        for (const hidden of words.querySelectorAll('[aria-hidden="true"]')) hidden.remove();
+        return words.textContent ?? "";
+      };
       let last: string | undefined;
       const sample = () => {
-        const controls = [...document.querySelectorAll(selector)];
-        const value =
-          controls.length === 0
-            ? "(none)"
-            : controls
-                .map((element) =>
-                  element instanceof HTMLSelectElement || element instanceof HTMLInputElement
-                    ? element.value
-                    : (element.textContent ?? "")
-                )
-                .join("|");
+        const controls = [...document.querySelectorAll(selector)].filter(named);
+        const value = controls.length === 0 ? "(none)" : controls.map(shownBy).join("|");
         if (value !== last) {
           last = value;
           void report(value);

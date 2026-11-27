@@ -19,7 +19,14 @@ import {
 import { priorityTriggerName } from "../web/src/features/priorities/IssuePriorityLine";
 import { buildDispatchReference, buildIssuePath } from "../web/src/features/refs/routes";
 import { setLiveSessions } from "./agents";
-import { createPriority, getIssue, patchIssue, putProjectDefaultRepository } from "./api";
+import {
+  createIssue,
+  createPriority,
+  createProject,
+  getIssue,
+  patchIssue,
+  putProjectDefaultRepository,
+} from "./api";
 import { nextFrames } from "./frames";
 import {
   closeDetails,
@@ -58,7 +65,7 @@ import {
   TWENTY_LABELS,
   UNPINNED_COMMENT,
 } from "./issue-page-h";
-import { expect, type Locator, type Page, type Request, test } from "./test";
+import { expect, type Locator, type Page, type Request, type Route, test } from "./test";
 import { assertWhole } from "./unclipped";
 
 /**
@@ -1071,6 +1078,69 @@ test("a repository of a long name is whole in Details at every width @phone", as
   });
 });
 
+// The tester's red row of round 21 (an inline box a button ends leaves the focus on the page's
+// body: RepoControl.tsx:782-793, the Repository box's clear control, whose press puts the focus
+// in the box and says "once the write lands the box hands it to the row's text", and that
+// hand-off, `focusHeld` (:558-569), which gives a focus that fell to the document to whichever of
+// the row's None, its repository's text and the box takes the other's place, and hands nothing on
+// where the row drew text in its last commit and draws text again (:563-566); the architect's
+// ruling of 2026-11-26T05:17Z). The row opens ONE's Repository box by a click on the row's text,
+// types another repository in it and clicks the box's clear control, Clear the repository of
+// ONE. Neither ONE's parent nor its project holds a repository, so once the clear lands the row
+// reads None. At c3b536cc the focus is then on the page's body, at 1440 and at 390 px, in Chromium
+// (4 of 4) and Firefox (2 of 2).
+// SLOW(>=2s): one seeded issue page open with Details, one Repository box opened and typed in,
+// and one write, the clear, waited on until Dispatch holds it and the row reads None.
+// @firefox: the engine's focus after the element that held it is removed (playwright.config.ts names the clause).
+test("Details' Repository box gives the focus to its row's None once the clear of the repository lands @firefox", async ({
+  browser,
+}) => {
+  test.setTimeout(120_000);
+  await phase(browser, seedDetailsIssue, async (page, seeded) => {
+    const { one } = seeded.keys;
+    const step = (text: string) => `Details' Repository box of ${one} cleared: ${text}`;
+    await page.setViewportSize(viewportAt(1440));
+    await gotoIssue(page, `/issues/${one}`);
+    await openDetails(page);
+    const row = detailsRow(page, PROPERTY_LABELS.repository);
+    const text = row.getByRole("button", {
+      exact: true,
+      name: repoTextControlName(one, { resolvedRepo: REPOSITORY, words: CONTROL_NAME_WORDS }),
+    });
+    const box = row.getByRole("combobox", { exact: true, name: repoControlName(one) });
+    const none = row.getByRole("button", {
+      exact: true,
+      name: repoTextControlName(one, { resolvedRepo: null, words: CONTROL_NAME_WORDS }),
+    });
+    await expect(text, step(`the Repository row draws ${REPOSITORY} as its text.`)).toHaveText(
+      REPOSITORY
+    );
+    await text.click();
+    await expect(
+      box,
+      step("a click on the row's text opens the box with the focus in it.")
+    ).toBeFocused();
+    await box.fill("acme/review");
+    await row.getByRole("button", { exact: true, name: `Clear the repository of ${one}` }).click();
+    await expect
+      .poll(async () => (await getIssue(one)).repo, {
+        message: step("the clear lands at Dispatch."),
+      })
+      .toBeNull();
+    await expect(
+      none,
+      step("once the clear lands the row reads None, since ONE inherits no repository.")
+    ).toHaveText(CONTROL_LABELS.none);
+    await expect(box, step("once the clear lands the box is gone.")).toHaveCount(0);
+    await expect(
+      row.locator(":focus"),
+      step(
+        "once the clear lands the focus is on the row's None, the row's text the box hands it to (RepoControl.tsx's `focusHeld`, `noneControl`), not on the page's body."
+      )
+    ).toHaveCount(1);
+  });
+});
+
 /** The bottom of Details' head, the element that holds its Close, which stays at the top while
  *  the panel under it scrolls. */
 function detailsHeadBottom(page: Page): Promise<number> {
@@ -1207,26 +1277,27 @@ test("each control in Details saves and reads back", async ({ browser }) => {
       }),
       "TWO resolves to no repository, but its Repository row does not read None"
     ).toHaveText(CONTROL_LABELS.none);
-    await addControl(page).click();
-    // Add lists Assignee only where the header draws the assignee's control, which the menu
-    // focuses, and only while TWO has no assignee: an issue someone is assigned to has a value for
-    // it, and Add lists no property that has one. The header is read once it is drawn.
+    // TWO has no assignee (the seed clears the one Dispatch gives every issue it creates), so the
+    // header's assignee control, which Add reaches by its mark, draws Unassigned, and Add lists
+    // Assignee for it: an issue someone is assigned to has a value for it, and Add lists no
+    // property that has one. Both are read before Add opens, once the header that draws that
+    // control is drawn.
     const twoStored = await getIssue(two);
+    expect(twoStored.assignee, "TWO has an assignee, so Add lists no Assignee").toBeNull();
     await expect(
       issuePage(page).getByRole("heading", { level: 1, name: twoStored.title })
     ).toBeVisible();
-    // One read is the header's answer here: the assignee's control waits on no read, so a header
-    // that draws it draws it in the commit that drew the heading awaited above.
-    const assigneeControls = await page
-      .locator(`[aria-label="${assigneeControlName(two)}"]`)
-      .count();
-    const listsAssignee = assigneeControls > 0 && twoStored.assignee === null;
+    await expect(
+      issuePage(page).getByLabel(assigneeControlName(two), { exact: true }),
+      "the header draws an assignee of TWO"
+    ).toHaveAccessibleName(`${assigneeControlName(two)} ${CONTROL_LABELS.unassigned}`);
+    await addControl(page).click();
     await expect(
       openMenu(page).getByRole("menuitem"),
       "the Add menu lists other than TWO's empty fields, in `IssueAddMenu`'s order"
     ).toHaveText([
       PROPERTY_LABELS.parent,
-      ...(listsAssignee ? [PROPERTY_LABELS.assignee] : []),
+      PROPERTY_LABELS.assignee,
       PROPERTY_LABELS.labels,
       PROPERTY_LABELS.route,
       PROPERTY_LABELS.blocked_by,
@@ -1613,6 +1684,8 @@ async function expectFocusKept(
  *  refused the press. */
 async function expectPressRefused(page: Page, pressed: Locator, moment: string): Promise<void> {
   await nextFrames(page);
+  // This branch draws the add control's Priority to advance as the shared list where main drew a
+  // select, so its trigger, a button or a select, is what the form shows once it opens.
   await expect(
     priorityPicker(page),
     `${moment}: the press opened the priorities' picker`
@@ -1897,5 +1970,282 @@ test("Details' priority picker's removal of an issue's last priority keeps the f
       addPriority,
       "once the new read moved the line back beside Add, the focus is not on its add control"
     ).toBeFocused();
+  });
+});
+
+/** What a row holds of the reads the page makes of one route: `hold` keeps every later GET the
+ *  route names unanswered, `out` counts how many it kept, and `answer` sends on to Dispatch each
+ *  kept GET the page still waits on and lets every later one through. A kept GET is answered by
+ *  nothing else, so the page gives it up at its own 30 s deadline and asks again. */
+interface BoundReads {
+  readonly answer: () => Promise<void>;
+  readonly hold: () => void;
+  readonly out: () => number;
+}
+
+/** Routes the page's GETs that `matches` names, which go through until `hold` is called. */
+async function routeBoundReads(page: Page, matches: (url: URL) => boolean): Promise<BoundReads> {
+  let holding = false;
+  let kept = 0;
+  const waiting: Route[] = [];
+  await page.route(matches, async (route: Route) => {
+    if (!holding || route.request().method() !== "GET") return route.fallback();
+    kept += 1;
+    waiting.push(route);
+    return undefined;
+  });
+  return {
+    // A GET the page gave up has no answer left to take, and its route refuses the fallback.
+    answer: async () => {
+      holding = false;
+      for (const route of waiting.splice(0)) await route.fallback().catch(() => undefined);
+    },
+    hold: () => {
+      holding = true;
+    },
+    out: () => kept,
+  };
+}
+
+/** The two priorities the row below's issue advances, each distinct enough that its whole title
+ *  typed into the picker's text box leaves that priority alone in the list. */
+const ADVANCED_PRIORITIES = ["Ledger replay budget", "Mirror cutover window"] as const;
+
+/** An issue that advances both priorities of its own and inherits none. Dispatch takes a write
+ *  with no revision one relation at a time (`ADVANCES_REVISION`), so each is written alone. */
+async function seedIssueAdvancingTwo(): Promise<string> {
+  await createProject({ key: "CORE", name: "Core" });
+  const first = await createPriority({ owner: "alice", title: ADVANCED_PRIORITIES[0] });
+  const second = await createPriority({ owner: "alice", title: ADVANCED_PRIORITIES[1] });
+  const issue = await createIssue({ project: "CORE", title: "Work under two priorities" });
+  await patchIssue(issue.key, { advances: [first.id] });
+  await patchIssue(issue.key, { advances: [first.id, second.id] });
+  return issue.key;
+}
+
+// The tester's red row of round 21 (read-bound.ts:40-47: "why the latest read handed to
+// `waitWithinBound` has not settled"; the architect's ruling of 2026-11-26T04:19Z). Details draws
+// the priorities' line in the Advances row while the issue advances a priority, and beside Add
+// once it advances none: two places in IssueMargin.tsx (:552-561 and :798-801), switched on
+// `advances.length === 0`, each its own `IssuePriorityLine` with its own `useReadBound`
+// (IssuePriorityLine.tsx:154). The removal of the last priority takes the line from the first
+// place to the second as it lands, so the hold it starts is in an instance that is gone and the
+// page never says why its read of the priorities has not settled. At c3b536cc the line of the
+// first removal shows at its bound and the last removal's shows nothing for the whole 15 s the
+// row waits; with three priorities, where the last removal never comes, it shows. Measured in
+// Chromium and Firefox, twice each.
+// SLOW(>=2s): one issue page open, two priorities removed from it with the priorities' read held,
+// and the page's clock moved twice past the 30 s bound.
+// @firefox: the timers of a read's own deadline and of the bound a held control waits on, which
+// each engine runs.
+test("Details' priority line says why the priorities are not read at the bound of the removal of an issue's last priority, once @firefox", async ({
+  browser,
+}) => {
+  test.setTimeout(120_000);
+  await phase(browser, seedIssueAdvancingTwo, async (page, key) => {
+    const step = (text: string) =>
+      `Details' priority line of an issue advancing two priorities: ${text}`;
+    const unreadWords = `${ANSWER_LINES.priorities_unreadable} Dispatch did not answer within 30 seconds.`;
+    const priorityReads = await routeBoundReads(
+      page,
+      (url) => url.pathname === "/api/v1/priorities"
+    );
+    await page.clock.install();
+    await gotoIssue(page, `/issues/${key}`);
+    await openDetails(page);
+    const advances = marginSlot(page).getByTestId("issue-advances");
+    const trigger = advances.getByRole("button", {
+      name: new RegExp(`${priorityTriggerName(key, false)}|${priorityTriggerName(key, true)}`),
+    });
+    const chips = advances.getByRole("link");
+    await expect(chips, step("the Advances row names both priorities.")).toHaveCount(2);
+    const unreadLine = marginSlot(page)
+      .getByRole("alert")
+      .filter({ hasText: /did not answer within 30 seconds/ });
+    const written = () =>
+      page.waitForResponse(
+        (response) =>
+          response.request().method() === "PATCH" &&
+          new URL(response.url()).pathname === `/api/v1/issues/${key}`
+      );
+
+    priorityReads.hold();
+    const firstAnswer = written();
+    await togglePriority(page, trigger, ADVANCED_PRIORITIES[0], false);
+    expect((await firstAnswer).ok(), step("the first removal lands at Dispatch.")).toBe(true);
+    await expect
+      .poll(priorityReads.out, {
+        message: step("the read of the priorities the first removal starts is out."),
+      })
+      .toBeGreaterThan(0);
+    await page.clock.fastForward(30_000);
+    await expect(
+      unreadLine,
+      step(
+        "at the 30 s bound after the first removal the line says why the priorities are not read."
+      )
+    ).toHaveText([unreadWords]);
+    await expect(
+      chips,
+      step("once the first removal is drawn the Advances row names the second priority alone.")
+    ).toHaveCount(1);
+
+    const secondAnswer = written();
+    await togglePriority(page, trigger, ADVANCED_PRIORITIES[1], false);
+    expect(
+      (await secondAnswer).ok(),
+      step("the removal of the last priority lands at Dispatch.")
+    ).toBe(true);
+    await page.clock.fastForward(30_000);
+    await expect(
+      unreadLine,
+      step(
+        "at the 30 s bound after the removal of the last priority the line says why the priorities are not read, once."
+      )
+    ).toHaveText([unreadWords]);
+  });
+});
+
+/** Both priorities of the row below, and an issue of its own project that advances none. */
+async function seedIssueAdvancingNone(): Promise<string> {
+  await createProject({ key: "CORE", name: "Core" });
+  for (const title of ADVANCED_PRIORITIES) await createPriority({ owner: "alice", title });
+  const issue = await createIssue({ project: "CORE", title: "Work under no priority yet" });
+  return issue.key;
+}
+
+// The tester's red row of round 22 (B4: the first priority added says nothing at the bound; the
+// architect's ruling of 2026-11-26T23:11Z). The line's read of the priorities runs only while the
+// picker is open or the issue advances one (`enabled: open || advances.length > 0`,
+// IssuePriorityLine.tsx:236). The first add's write settles with the picker closed and the issue
+// still read as advancing none, so its invalidation of the priorities (:118) fetches nothing and
+// the hold (:128) waits on the issue's read alone; the read of the priorities the move to the
+// Advances row then starts has no hold. At e4ece294 that read is out past the 30 s bound and
+// Details says nothing. Measured in Chromium and Firefox, twice each.
+// SLOW(>=2s): one issue page open with Details, the picker opened twice, one priority added with
+// the priorities' read held, and the page's clock moved once past the 30 s bound.
+// @firefox: the timers of a read's own deadline and of the bound a held control waits on, which
+// each engine runs.
+test("Details' priority line says why the priorities are not read at the bound of the first priority added to an issue @firefox", async ({
+  browser,
+}) => {
+  test.setTimeout(120_000);
+  await phase(browser, seedIssueAdvancingNone, async (page, key) => {
+    const step = (text: string) =>
+      `Details' priority line of an issue advancing no priority: ${text}`;
+    const unreadWords = `${ANSWER_LINES.priorities_unreadable} Dispatch did not answer within 30 seconds.`;
+    const priorityReads = await routeBoundReads(
+      page,
+      (url) => url.pathname === "/api/v1/priorities"
+    );
+    await page.clock.install();
+    await gotoIssue(page, `/issues/${key}`);
+    await openDetails(page);
+    const place = marginSlot(page).getByTestId("issue-advances");
+    const trigger = place.getByRole("button", {
+      name: new RegExp(`${priorityTriggerName(key, false)}|${priorityTriggerName(key, true)}`),
+    });
+    const chips = place.getByRole("link");
+    await expect(chips, step("the issue advances no priority.")).toHaveCount(0);
+    // The picker opened once and closed with no change reads the priorities while every read
+    // goes through, so the add below finds the list it names them by.
+    await trigger.focus();
+    await page.keyboard.press("Enter");
+    await expect(
+      priorityPicker(page).getByRole("option"),
+      step("the picker lists both priorities.")
+    ).toHaveCount(2);
+    await page.keyboard.press("Escape");
+    await expect(priorityPicker(page), step("Escape closes the picker.")).toHaveCount(0);
+    const unreadLine = marginSlot(page)
+      .getByRole("alert")
+      .filter({ hasText: /did not answer within 30 seconds/ });
+
+    priorityReads.hold();
+    const answer = page.waitForResponse(
+      (response) =>
+        response.request().method() === "PATCH" &&
+        new URL(response.url()).pathname === `/api/v1/issues/${key}`
+    );
+    await togglePriority(page, trigger, ADVANCED_PRIORITIES[0], true);
+    expect((await answer).ok(), step("the first priority's add lands at Dispatch.")).toBe(true);
+    await expect(
+      chips,
+      step("once the add is drawn the Advances row names the priority added.")
+    ).toHaveCount(1);
+    await expect
+      .poll(priorityReads.out, {
+        message: step("the read of the priorities after the add is out."),
+      })
+      .toBeGreaterThan(0);
+    await page.clock.fastForward(30_000);
+    await expect(
+      unreadLine,
+      step(
+        "at the 30 s bound after the first priority added the line says why the priorities are not read, once."
+      )
+    ).toHaveText([unreadWords]);
+
+    await priorityReads.answer();
+    await page.clock.runFor(1_000);
+    await expect(
+      unreadLine,
+      step("the priorities' read answered takes the line away.")
+    ).toHaveCount(0);
+  });
+});
+
+/** A label TWO's open draft holds and no issue of the seed does: the labels list's Create row
+ *  makes it in the draft alone. */
+const DRAFT_ONLY_LABEL = "label-draft-only";
+
+// Details lists a label only the open draft holds only while the draft holds it (`IssueLabels`),
+// so Enter on that label's focused row unpicks it and takes the row away with the focus in it.
+// The list gives its text box that focus as the commit lands (`MultiSelect`'s row press), rather
+// than leave it to fall to the body, where Escape no longer reaches the list. A label row stands
+// right after the one that goes, so a hand-off to the control now at the lost one's place would
+// put the focus on that row, not on the text box: the text box holding the focus is the list's
+// own hand-off.
+// @webkit @firefox: each engine's handling of a focused element a commit takes off the page,
+// which the list reads through `focusLost` (the body, or an element no longer on the page).
+test("Details' labels list gives its text box the focus when Enter on the focused row of a label only the draft holds takes that row away @firefox @webkit", async ({
+  browser,
+}) => {
+  test.setTimeout(120_000);
+  await phase(browser, seedDetailsIssue, async (page, seeded) => {
+    const { two } = seeded.keys;
+    await gotoIssue(page, `/issues/${two}`);
+    await openDetails(page);
+    await detailsRow(page, PROPERTY_LABELS.labels)
+      .getByRole("button", {
+        name: labelsControlName(two, { labels: [], saving: false, words: CONTROL_NAME_WORDS }),
+      })
+      .click();
+    const search = page.getByRole("combobox", { name: "Search or create label" });
+    await expect(search).toBeFocused();
+    await search.fill(DRAFT_ONLY_LABEL);
+    await expect(page.getByRole("option", { name: `Create "${DRAFT_ONLY_LABEL}"` })).toBeVisible();
+    await search.press("Enter");
+    // The draft's one label first, and ONE's labels, which TWO's project lists, after it.
+    const rows = page.getByRole("listbox", { name: "Labels options" }).getByRole("option");
+    const draftOnly = rows.first();
+    await expect(draftOnly).toHaveAccessibleName(DRAFT_ONLY_LABEL);
+    await expect(
+      rows.nth(1),
+      "no label row stands after the draft's, so the page's rescue could land on the text box"
+    ).toHaveAccessibleName(TWENTY_LABELS[0] ?? "");
+    await draftOnly.focus();
+    await expect(draftOnly).toBeFocused();
+    await page.keyboard.press("Enter");
+    await nextFrames(page);
+    // One read: the commit that took the row away and its effects are done within the frames.
+    expect(
+      await search.evaluate((box) => box === document.activeElement),
+      "the focus is not on the list's text box once Enter took the focused label's row away"
+    ).toBe(true);
+    await expect(
+      page.getByRole("option", { exact: true, name: DRAFT_ONLY_LABEL }),
+      "Enter left the label the draft no longer holds listed"
+    ).toHaveCount(0);
   });
 });

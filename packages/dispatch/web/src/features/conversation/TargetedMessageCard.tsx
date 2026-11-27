@@ -1,9 +1,11 @@
 import { DELETED_POST_DELIVERY_ERROR } from "@legion/contracts";
-import type { ReactNode } from "react";
+import { type ReactNode, useContext } from "react";
 
 import type { Actor, Agent, DeliveryAttemptState, MessageDeliveryMode } from "../../api/types";
+import { heldPress } from "../../components/held-press";
 import {
   secondaryButtonBorder,
+  secondaryButtonDisabledText,
   secondaryButtonText,
   surfaceMutedHoverBg,
   textMutedOnSurface,
@@ -11,6 +13,7 @@ import {
 } from "../../theme/classes";
 import { type AgentPart, AgentParts } from "../refs/AgentName";
 import type { PostDeletion } from "../refs/post-marks";
+import type { DispatchReferenceRoute } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
 import type { DwellRef } from "../shell/useDwell";
 import {
@@ -24,6 +27,7 @@ import {
   withGuidance,
 } from "./delivery";
 import { ReplyButton } from "./ReplyButton";
+import { ConversationTurns, turnFocusRing, turnMarks } from "./turn-keys";
 
 /** The current live capabilities behind a stored delivery target - a bare session, or a role
  *  re-resolved to whoever holds it now, since a role's holder can change between a recorded
@@ -188,9 +192,12 @@ export function DeliveryStatus({
   );
 }
 
-/** The retry row an unanswered targeted message keeps while its issue is open. A disabled
- *  button's reason renders as visible text beneath it - not a `title` - so it reaches a phone,
- *  where a tooltip on a disabled control is unreachable.
+/** The retry row an unanswered targeted message keeps while its issue is open. A button is
+ *  disabled only while the session does not take its mode. That reason renders as visible text
+ *  beneath the button - not a `title` - so it reaches a phone, where a tooltip on a disabled
+ *  control is unreachable. While a retry's write is out (`retrying`), every button of the row is
+ *  held (`heldPress`), not disabled. The pressed one keeps the focus and its Tab stop, and a
+ *  press of any of them sends nothing.
  *
  *  Retry re-sends in the attempt's OWN mode, and appears only while `isSafeRetry` holds for
  *  `latest`, the attempt the failure guidance above it describes: that send carries the same
@@ -229,9 +236,9 @@ export function DeliveryRetry({
       {!sameModeRetry ? null : (
         <div>
           <button
-            className={`min-h-11 rounded-lg border px-3 text-sm font-medium ${secondaryButtonBorder} ${secondaryButtonText}`}
-            disabled={retrying || !supports[mode]}
-            onClick={() => onRetry(mode)}
+            className={`min-h-11 rounded-lg border px-3 text-sm font-medium ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonDisabledText}`}
+            disabled={!supports[mode]}
+            {...heldPress(retrying, () => onRetry(mode))}
             type="button"
           >
             Retry
@@ -246,9 +253,9 @@ export function DeliveryRetry({
       {mode === "btw" ? null : (
         <div>
           <button
-            className={`min-h-11 rounded-lg border px-3 text-sm font-medium ${secondaryButtonBorder} ${secondaryButtonText}`}
-            disabled={retrying || !canBtw}
-            onClick={() => onRetry("btw")}
+            className={`min-h-11 rounded-lg border px-3 text-sm font-medium ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonDisabledText}`}
+            disabled={!canBtw}
+            {...heldPress(retrying, () => onRetry("btw"))}
             type="button"
           >
             Use {MODE_LABELS.btw} instead
@@ -263,9 +270,9 @@ export function DeliveryRetry({
       {mode === "steer" ? null : (
         <div>
           <button
-            className={`min-h-11 rounded-lg border px-3 text-sm font-medium ${secondaryButtonBorder} ${secondaryButtonText}`}
-            disabled={retrying || !canSteer}
-            onClick={() => onRetry("steer")}
+            className={`min-h-11 rounded-lg border px-3 text-sm font-medium ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonDisabledText}`}
+            disabled={!canSteer}
+            {...heldPress(retrying, () => onRetry("steer"))}
             type="button"
           >
             Use {MODE_LABELS.steer} instead
@@ -301,11 +308,15 @@ interface TargetedMessageCardProps {
   readonly deleted: PostDeletion | null;
   readonly deliveries: readonly TargetedMessageAttempt[];
   readonly header: ReactNode;
-  readonly onReply?: () => void;
+  /** Starts a reply to the message, handed the Reply pressed (`ReplyButton`). */
+  readonly onReply?: (button: HTMLButtonElement) => void;
   readonly onRetry?: (delivery: MessageDeliveryMode) => void;
   /** Holds the Reply button while the composer it would address is busy with a send. */
-  readonly replyDisabled?: boolean;
+  readonly replyHeld?: boolean;
   readonly register?: DwellRef;
+  /** The message's own reference, which the Conversation tab's `y` copies off the card: a
+   *  message to a session that names no issue has none. */
+  readonly reference?: DispatchReferenceRoute;
   readonly retrying?: boolean;
   /** Who the message went to (`DeliveryStatus`). */
   readonly targetName: AgentPart;
@@ -328,12 +339,14 @@ export function TargetedMessageCard({
   onReply,
   onRetry,
   register,
-  replyDisabled = false,
+  reference,
+  replyHeld = false,
   retrying = false,
   targetName,
   thread,
   turnID,
 }: TargetedMessageCardProps): ReactNode {
+  const inTab = useContext(ConversationTurns);
   // Narrowed once, so the render below needs no second test of the same condition.
   const retry =
     answeredBy === undefined && !takenAsUserTurn(deliveries) && resendable(deleted)
@@ -342,15 +355,16 @@ export function TargetedMessageCard({
   return (
     <li
       aria-current={current ? "true" : undefined}
-      className={`my-2 rounded-lg border p-3 ${surfaceMutedHoverBg} ${secondaryButtonBorder}`}
+      className={`my-2 rounded-lg border p-3 ${surfaceMutedHoverBg} ${secondaryButtonBorder} ${inTab ? turnFocusRing : ""}`}
       data-turn={turnID}
       ref={register}
+      {...turnMarks(inTab, reference)}
     >
       <div className="flex gap-3">
         {header}
         <div className="min-w-0 flex-1">{body}</div>
         {onReply === undefined || deleted !== null ? null : (
-          <ReplyButton className="self-start" disabled={replyDisabled} onClick={onReply} />
+          <ReplyButton className="self-start" held={replyHeld} onClick={onReply} />
         )}
       </div>
       <DeliveryStatus

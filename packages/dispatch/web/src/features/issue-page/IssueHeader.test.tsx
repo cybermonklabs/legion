@@ -16,18 +16,23 @@ import { http } from "msw";
 import type { ReactNode } from "react";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 
-import { realClock, tick } from "../../__tests__/fake-clock";
+import { realClock, settle, tick } from "../../__tests__/fake-clock";
+import { heldAnswers } from "../../__tests__/held-answers";
+import { heldUntilLate, pressesOf } from "../../__tests__/held-until-late";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
+import { listOpen, optionsOffered, pickFromList, pickNamed } from "../../__tests__/list-picks";
 import { answerRequests } from "../../__tests__/network";
 import {
   artifactRecordHandler,
   decisionsAndReadMarkHandlers,
 } from "../../__tests__/proof-document";
+import { recordEscapes } from "../../__tests__/record-escapes";
 import { answerIssuePatches } from "../../__tests__/send-answers";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
-import { ApiError, api, NetworkError } from "../../api/client";
+import { ApiError, api, NetworkError, REQUEST_DEADLINE_MS } from "../../api/client";
 import { issueQuery } from "../../api/queries";
+import { DispatchQueryClient } from "../../api/query-client";
 import type {
   ArtifactReview,
   Ask,
@@ -47,7 +52,12 @@ import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { buildDispatchReference, DECISIONS_DOCUMENT_SLUG, parseIssuePath } from "../refs/routes";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { appKeymap, useKeymapScope } from "../shell/keymap";
-import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
+import {
+  MAX_BACKOFF_MS,
+  SEND_DEADLINE_MS,
+  SendStoppedError,
+  stoppedWriteNote,
+} from "../writes/keyed-write";
 import { writesOf } from "../writes/write-store";
 import { ACTION_WORDS } from "./approval-chip-box";
 import { CONTROL_LABELS } from "./page-words";
@@ -523,10 +533,13 @@ test("the header keeps state actions available while approval awaits", async () 
     expect(pin).toHaveAttribute("aria-pressed", "false");
 
     const stateActions = screen.getByTestId("issue-state-actions");
-    expect(within(stateActions).getByRole("combobox", { name: "Status" })).not.toBeNull();
+    expect(within(stateActions).getByRole("button", { name: pickNamed("Status") })).toHaveAttribute(
+      "aria-haspopup",
+      "listbox"
+    );
     expect(
-      within(stateActions).getByRole("combobox", { name: "Priority of CORE-1" })
-    ).not.toBeNull();
+      within(stateActions).getByRole("button", { name: pickNamed("Priority of CORE-1") })
+    ).toHaveAttribute("aria-haspopup", "listbox");
     expect(within(stateActions).getByRole("button", { name: "Awaiting approval" })).not.toBeNull();
     expect(within(stateActions).getByRole("button", { name: "Approve" })).not.toBeNull();
     // Close is an action, not a property, so it sits behind row one's one actions control.
@@ -666,6 +679,116 @@ test("the header keeps the primary document's chip when no gated step reviews it
   }
 });
 
+// Every review the header's line makes reads the same reads of the issue again, so the line one
+// document's chip draws for a read the bound ended goes as another document's review lands, though
+// that read is still out: the line holds every chip's review through that read with one hold
+// (`useListReadBound`), and the second chip alone says why the read its own review made has not
+// settled, once that read's bound ends.
+test("the line one document's review on the header leaves goes as another document's review lands", async () => {
+  const verification = {
+    ...issue.artifacts[0],
+    id: "artifact-2",
+    name: "verification.md",
+    primary: false,
+    ref_key: "CORE-1/verification",
+    slug: "verification",
+  };
+  const restore = stubHeader({
+    ...issue,
+    artifacts: [
+      { ...issue.artifacts[0], approval: { latest_version: 1, state: "awaiting" } },
+      { ...verification, approval: { latest_version: 1, state: "awaiting" } },
+    ],
+    open_asks: [
+      approvalAsk(),
+      {
+        ...approvalAsk(),
+        artifact_id: verification.id,
+        id: "ask-verification",
+        question: "Approve the verification?",
+      },
+    ],
+    verification_artifact_id: verification.id,
+  });
+  const gated: Project = {
+    created_at: "2026-09-09T00:00:00Z",
+    gated_steps: ["spec", "criteria"],
+    open_asks: 0,
+    key: "CORE",
+    name: "Core",
+    proven_sessions: false,
+  };
+  const listProjects = spyOn(api, "listProjects").mockResolvedValue([gated]);
+  // Each review's answer, held until the row gives it, so what it sets off runs in `act`.
+  const { answers: reviews, next } = heldAnswers<ArtifactReview>();
+  const createArtifactVersionReview = spyOn(api, "createArtifactVersionReview").mockImplementation(
+    next
+  );
+  const approved = (artifactId: string): ArtifactReview => ({
+    ...changeRequest,
+    artifact_id: artifactId,
+    reason: null,
+    state: "approved",
+  });
+  const queryClient = new DispatchQueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
+  });
+  const view = renderHeader("/issues/CORE-1/conversation", queryClient);
+  let getIssue: Mock<typeof api.getIssue> | undefined;
+
+  try {
+    const stateActions = await screen.findByTestId("issue-state-actions");
+    const steps = await within(stateActions).findByTestId("issue-approval-steps");
+    const step = (name: string) => {
+      const place = steps.querySelector<HTMLElement>(`[data-approval-step="${name}"]`);
+      if (place === null) throw new Error(`the header draws no ${name} step`);
+      return place;
+    };
+    const spec = step("spec");
+    const criteria = step("criteria");
+    const approveSpec = await within(spec).findByRole("button", { name: /^Approve/ });
+    const approveCriteria = within(criteria).getByRole("button", { name: /^Approve/ });
+    // Dispatch answers no read of the issue from the first review on while the row runs.
+    getIssue = spyOn(api, "getIssue").mockReturnValue(
+      Promise.withResolvers<IssueDetails>().promise
+    );
+    jest.useFakeTimers();
+    const user = userOnFakeClock();
+    await user.click(approveSpec);
+    await tick(0);
+    await act(async () => reviews[0]?.(approved("artifact-1")));
+    await tick(0);
+    await tick(REQUEST_DEADLINE_MS);
+    expect(within(spec).getByRole("alert").textContent).toContain(
+      "The new approval is not read yet."
+    );
+
+    await user.click(approveCriteria);
+    await tick(0);
+    expect(createArtifactVersionReview).toHaveBeenCalledTimes(2);
+    await act(async () => reviews[1]?.(approved(verification.id)));
+    await tick(0);
+    expect(
+      within(spec).queryByRole("alert"),
+      "the spec's review kept its line on its chip past the verification's review"
+    ).toBeNull();
+
+    await tick(REQUEST_DEADLINE_MS);
+    expect(within(criteria).getByRole("alert").textContent).toContain(
+      "The new approval is not read yet."
+    );
+    expect(within(spec).queryByRole("alert")).toBeNull();
+  } finally {
+    view.unmount();
+    queryClient.clear();
+    realClock();
+    getIssue?.mockRestore();
+    createArtifactVersionReview.mockRestore();
+    listProjects.mockRestore();
+    restore();
+  }
+});
+
 // The page's typeface holds only the characters of `subset.sh`'s UNICODES, which the face's
 // `unicode-range` in styles.css repeats: a character outside them is drawn in a face of the
 // reader's own machine, at that face's width, so the header draws such a shape as an inline svg -
@@ -696,7 +819,9 @@ test("the header draws no character the page's typeface lacks", async () => {
     expect(
       within(header).getByRole("button", { name: CONTROL_LABELS.issue_actions })
     ).toBeInTheDocument();
-    expect(within(header).getByRole("combobox", { name: "Status" })).toHaveValue("in_progress");
+    expect(within(header).getByRole("button", { name: pickNamed("Status") })).toHaveTextContent(
+      "In progress"
+    );
     const offenders: string[] = [];
     let read = 0;
     const walker = document.createTreeWalker(header, NodeFilter.SHOW_TEXT);
@@ -811,6 +936,101 @@ test("a pin the reader stopped says it may have been saved, not that it failed",
     realClock();
     view.unmount();
     putIssueState.mockRestore();
+    state.mockRestore();
+    restore();
+  }
+});
+
+test("Pin issue lets go at the header write deadline and sends the new choice", async () => {
+  const restore = stubHeader(issue);
+  const state = spyOn(api, "getMyState").mockResolvedValue({});
+  const put = spyOn(api, "putIssueState").mockRejectedValue(
+    new NetworkError("/api/v1/me/issues/CORE-1/state", new TypeError("Failed to fetch"))
+  );
+  const queryClient = headerClient();
+  const view = renderHeader("/issues/CORE-1", queryClient);
+  try {
+    await within(view.container).findByRole("heading", { level: 1, name: issue.title });
+    await openIssueActions();
+    const pin = within(view.container).getByRole<HTMLButtonElement>("button", {
+      name: "Pin issue",
+    });
+    jest.useFakeTimers();
+    const user = userOnFakeClock();
+    act(() => pin.focus());
+    await user.keyboard("{Enter}");
+    await tick(1_000);
+    expect(pressesOf([put])).toBe(1);
+    const trigger = within(view.container).getByRole("button", {
+      name: CONTROL_LABELS.issue_actions,
+    });
+    expect(trigger).toHaveFocus();
+    expect(pin).toHaveAttribute("aria-disabled", "true");
+    const row = () =>
+      writesOf(queryClient)
+        .rows()
+        .find(({ label }) => label === "CORE-1 pinned");
+    await tick(SEND_DEADLINE_MS - 2_000);
+    expect(row()?.status).toBe("sending");
+    expect(pin).toHaveAttribute("aria-disabled", "true");
+    await tick(1_000);
+    expect(row()?.status).toBe("late");
+    expect(pin).not.toHaveAttribute("aria-disabled");
+    expect(trigger).toHaveFocus();
+    await user.keyboard("{Enter}");
+    await user.click(pin);
+    await tick(1_000);
+    expect(pressesOf([put])).toBe(2);
+    expect(put.mock.calls.at(-1)?.[1]).toEqual({ pinned: false });
+  } finally {
+    realClock();
+    view.unmount();
+    queryClient.clear();
+    put.mockRestore();
+    state.mockRestore();
+    restore();
+  }
+});
+
+test("Pin Retry lets go at the header write deadline and retries again", async () => {
+  const restore = stubHeader(issue);
+  const state = spyOn(api, "getMyState").mockResolvedValue({});
+  const put = spyOn(api, "putIssueState").mockRejectedValueOnce(
+    new ApiError(403, { error: "Cannot pin yet" })
+  );
+  const queryClient = headerClient();
+  const view = renderHeader("/issues/CORE-1", queryClient);
+  const card = within(view.container);
+  try {
+    await card.findByRole("heading", { level: 1, name: issue.title });
+    await openIssueActions();
+    await userEvent.setup().click(card.getByRole("button", { name: "Pin issue" }));
+    const retry = await card.findByRole<HTMLButtonElement>("button", { name: "Retry" });
+    // Start counting at Retry; leave the form's refusal in place but drop its old store row.
+    const store = writesOf(queryClient);
+    act(() => {
+      store.supersede(store.rows()[0]?.id ?? 0);
+    });
+    put.mockClear();
+    put.mockRejectedValue(
+      new NetworkError("/api/v1/me/issues/CORE-1/state", new TypeError("Failed to fetch"))
+    );
+    jest.useFakeTimers();
+    const user = userOnFakeClock();
+    await heldUntilLate(user, retry, {
+      label: "CORE-1 pinned",
+      name: "Retry",
+      queryClient,
+      sent: () => pressesOf([put]),
+    });
+    await user.keyboard("{Enter}");
+    await tick(1_000);
+    expect(pressesOf([put])).toBe(2);
+  } finally {
+    realClock();
+    view.unmount();
+    queryClient.clear();
+    put.mockRestore();
     state.mockRestore();
     restore();
   }
@@ -932,29 +1152,36 @@ test("the header closes an issue and reopens it into Backlog", async () => {
   const view = renderHeader();
 
   try {
-    const openStatus = (await screen.findByLabelText("Status")) as HTMLSelectElement;
-    expect([...openStatus.options].map((option) => option.value)).not.toContain("done");
+    const openStatus = await screen.findByRole("button", { name: pickNamed("Status") });
+    expect(await optionsOffered(user, openStatus)).not.toContain("Done");
 
     await openIssueActions();
     await user.click(screen.getByRole("button", { name: "Close issue" }));
     await waitFor(() =>
       expect(patchIssue).toHaveBeenCalledWith("CORE-1", { status: "done" }, keyedAttempt)
     );
-    // While the write is in flight the control is disabled and says so: no second close can be
+    // While the write is in flight the control is held and says so: no second close can be
     // queued, and the words it shows are its name.
     await openIssueActions();
-    expect((screen.getByRole("button", { name: "Closing…" }) as HTMLButtonElement).disabled).toBe(
-      true
-    );
+    const closing = screen.getByRole("button", { name: "Closing…" });
+    expect(closing).toHaveAttribute("aria-disabled", "true");
+    await user.click(closing);
+    expect(patchIssue).toHaveBeenCalledTimes(1);
     await act(async () => {
       closeSave.resolve({ ...issue, closed_at: "2026-09-12T10:00:00Z", status: "done" });
       await closeSave.promise;
     });
 
     expect(await screen.findByText("This issue is closed.")).toBeTruthy();
-    const closedStatus = screen.getByLabelText("Status") as HTMLSelectElement;
-    expect(closedStatus.disabled).toBe(true);
-    expect(closedStatus.value).toBe("done");
+    // A closed issue's status is held, never disabled: it keeps the focus, and a press of it
+    // opens nothing and writes nothing.
+    const closedStatus = screen.getByRole("button", { name: pickNamed("Status") });
+    expect(closedStatus).toHaveAttribute("aria-disabled", "true");
+    expect(closedStatus).not.toHaveAttribute("disabled");
+    expect(closedStatus).toHaveTextContent("Done");
+    await user.click(closedStatus);
+    expect(listOpen(), "a press opened the closed issue's status list").toBe(false);
+    expect(patchIssue).toHaveBeenCalledTimes(1);
 
     await openIssueActions();
     // The control is named by the words it shows, so a voice user who says what it reads
@@ -964,9 +1191,10 @@ test("the header closes an issue and reopens it into Backlog", async () => {
       expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { status: "backlog" }, keyedAttempt)
     );
     await openIssueActions();
-    expect((screen.getByRole("button", { name: "Reopening…" }) as HTMLButtonElement).disabled).toBe(
-      true
-    );
+    const reopening = screen.getByRole("button", { name: "Reopening…" });
+    expect(reopening).toHaveAttribute("aria-disabled", "true");
+    await user.click(reopening);
+    expect(patchIssue).toHaveBeenCalledTimes(2);
     await act(async () => {
       reopenSave.resolve({ ...issue, status: "backlog" });
       await reopenSave.promise;
@@ -975,8 +1203,73 @@ test("the header closes an issue and reopens it into Backlog", async () => {
     await waitFor(() =>
       expect(screen.queryByText("This issue is closed.")).not.toBeInTheDocument()
     );
-    expect(((await screen.findByLabelText("Status")) as HTMLSelectElement).value).toBe("backlog");
+    expect(await screen.findByRole("button", { name: pickNamed("Status") })).toHaveTextContent(
+      "Backlog"
+    );
   } finally {
+    view.unmount();
+    patchIssue.mockRestore();
+    restore();
+  }
+});
+
+// A close that never answers - each try fails at the network, and the next waits out its backoff
+// - holds Close and the palette's Close issue until its deadline, and no longer: offline it would
+// hold them for good. A press then is a close of its own, which waits behind the late one in the
+// issue's line and goes once that one lands.
+test("Close stops holding at its write's deadline, and a press then sends a close of its own behind it", async () => {
+  const restore = stubHeader(issue);
+  const patchIssue = answerIssuePatches().mockRejectedValue(
+    new NetworkError("/api/v1/issues/CORE-1", new TypeError("Failed to fetch"))
+  );
+  const queryClient = headerClient();
+  const view = renderHeader("/issues/CORE-1", queryClient);
+  // The header's Close, by its action, whatever words it shows.
+  const close = () => {
+    const found = view.container.querySelector('[data-issue-action="close"]');
+    if (!(found instanceof HTMLElement)) throw new Error("the header draws no Close");
+    return found;
+  };
+  const offered = () => appKeymap.actions().some((action) => action.label === "Close issue");
+  const statuses = () =>
+    writesOf(queryClient)
+      .rows()
+      .map((row) => row.status);
+
+  try {
+    await openIssueActions();
+    jest.useFakeTimers();
+    const user = userOnFakeClock();
+    await user.click(close());
+    await tick(SEND_DEADLINE_MS - 1_000);
+    expect(statuses()).toEqual(["sending"]);
+    expect(close(), "Close, a second short of the deadline").toHaveAttribute(
+      "aria-disabled",
+      "true"
+    );
+    expect(offered(), "the palette's Close issue, a second short of the deadline").toBe(false);
+
+    await tick(1_000);
+    expect(statuses()).toEqual(["late"]);
+    expect(close(), "Close, past the deadline").not.toHaveAttribute("aria-disabled");
+    expect(close()).toHaveTextContent(CONTROL_LABELS.close_issue);
+    expect(offered(), "the palette's Close issue, past the deadline").toBe(true);
+
+    await user.click(screen.getByRole("button", { name: CONTROL_LABELS.issue_actions }));
+    await user.click(close());
+    await tick(0);
+    expect(statuses()).toEqual(["late", "queued"]);
+
+    // Dispatch can be reached again: the late close lands at its next try, and the second goes.
+    patchIssue.mockImplementation(async (_key, input) => ({
+      ...issue,
+      status: input.status ?? issue.status,
+    }));
+    await tick(MAX_BACKOFF_MS);
+    expect(pressesOf([patchIssue])).toBe(2);
+    expect(patchIssue.mock.calls.at(-1)?.[1]).toEqual({ status: "done" });
+  } finally {
+    realClock();
     view.unmount();
     patchIssue.mockRestore();
     restore();
@@ -993,22 +1286,22 @@ test("the header lets a human move a Todo issue to In progress", async () => {
   const view = renderHeader("/issues/CORE-1/conversation");
 
   try {
-    const status = (await screen.findByLabelText("Status")) as HTMLSelectElement;
-    expect(status.value).toBe("todo");
-    expect(
-      [...status.options].map((option) => ({ text: option.text, value: option.value }))
-    ).toEqual([
-      { text: "Triage", value: "triage" },
-      { text: "Icebox", value: "icebox" },
-      { text: "Backlog", value: "backlog" },
-      { text: "Todo", value: "todo" },
-      { text: "In progress", value: "in_progress" },
-      { text: "Testing", value: "testing" },
-      { text: "Needs review", value: "needs_review" },
-      { text: "Retro", value: "retro" },
+    const status = await screen.findByRole("button", { name: pickNamed("Status") });
+    expect(status).toHaveTextContent("Todo");
+    expect(await optionsOffered(user, status)).toEqual([
+      "Triage",
+      "Icebox",
+      "Backlog",
+      "Todo",
+      "In progress",
+      "Testing",
+      "Needs review",
+      "Retro",
     ]);
 
-    await user.selectOptions(status, "in_progress");
+    await user.click(status);
+    expect(screen.getByRole("option", { name: "Todo" })).toHaveAttribute("aria-selected", "true");
+    await user.click(screen.getByRole("option", { name: "In progress" }));
     await waitFor(() =>
       expect(patchIssue).toHaveBeenCalledWith("CORE-1", { status: "in_progress" }, keyedAttempt)
     );
@@ -1033,7 +1326,7 @@ test("the approval chip's keys press its own actions, and only while those take 
     open_asks: [approvalAsk()],
   });
   const answered = Promise.withResolvers<ArtifactReview>();
-  const createArtifactReview = spyOn(api, "createArtifactReview").mockImplementation(
+  const createArtifactVersionReview = spyOn(api, "createArtifactVersionReview").mockImplementation(
     () => answered.promise
   );
   const view = renderHeader();
@@ -1055,7 +1348,7 @@ test("the approval chip's keys press its own actions, and only while those take 
     act(() => editTitleButton().focus());
     expect(bothApply()).toEqual([false, false]);
     await user.keyboard("a");
-    expect(createArtifactReview).not.toHaveBeenCalled();
+    expect(createArtifactVersionReview).not.toHaveBeenCalled();
 
     // On the chip and on each of its actions both apply, and Shift+R opens Request changes.
     for (const focused of [chip, approve, requestChanges]) {
@@ -1071,11 +1364,13 @@ test("the approval chip's keys press its own actions, and only while those take 
     );
     expect(document.activeElement).toBe(chip);
 
-    // `a` presses Approve, whose write is then out: neither key applies until it is answered.
+    // `a` presses Approve, which reviews the version it names, and whose write is then out:
+    // neither key applies until it is answered.
     await user.keyboard("a");
-    await waitFor(() => expect(createArtifactReview).toHaveBeenCalledTimes(1));
-    expect(createArtifactReview).toHaveBeenCalledWith(
+    await waitFor(() => expect(createArtifactVersionReview).toHaveBeenCalledTimes(1));
+    expect(createArtifactVersionReview).toHaveBeenCalledWith(
       "artifact-1",
+      2,
       { state: "approved" },
       keyedAttempt
     );
@@ -1084,12 +1379,73 @@ test("the approval chip's keys press its own actions, and only while those take 
     expect(bothApply()).toEqual([false, false]);
     await user.keyboard("a");
     await user.keyboard("{Shift>}R{/Shift}");
-    expect(createArtifactReview).toHaveBeenCalledTimes(1);
+    expect(createArtifactVersionReview).toHaveBeenCalledTimes(1);
     expect(screen.queryByRole("dialog", { name: "Request changes" })).not.toBeInTheDocument();
   } finally {
     answered.reject(new Error("the connection dropped"));
     view.unmount();
-    createArtifactReview.mockRestore();
+    createArtifactVersionReview.mockRestore();
+    restore();
+  }
+});
+
+// A held `a` repeats its keydown, and a repeat presses nothing. Approve is held while the review
+// its first press wrote is out, so only a repeat with nothing out shows the key's own refusal;
+// the press after it approves, which shows the key was there to act.
+test("a repeat of a held a on the approval chip approves nothing, and a press of a approves", async () => {
+  const user = userEvent.setup();
+  const restore = stubHeader({
+    ...issue,
+    artifacts: [
+      { ...issue.artifacts[0], approval: { latest_version: 2, state: "stale", version: 1 } },
+    ],
+    open_asks: [approvalAsk()],
+  });
+  const answered = Promise.withResolvers<ArtifactReview>();
+  const createArtifactVersionReview = spyOn(api, "createArtifactVersionReview").mockImplementation(
+    () => answered.promise
+  );
+  const view = renderHeader();
+
+  try {
+    const stateActions = await screen.findByTestId("issue-state-actions");
+    await within(stateActions).findByRole("button", { name: "Approve v2" });
+    const chip = stateActions.querySelector<HTMLElement>("[data-approval-artifact]");
+    if (chip === null) throw new Error("the header draws no approval chip");
+    act(() => chip.focus());
+    // user-event has no form for this: it sends a repeat only after the key's first keydown.
+    fireEvent.keyDown(chip, { key: "a", repeat: true });
+    await act(settle);
+    expect(createArtifactVersionReview).not.toHaveBeenCalled();
+    await user.keyboard("a");
+    await waitFor(() => expect(createArtifactVersionReview).toHaveBeenCalledTimes(1));
+  } finally {
+    answered.reject(new Error("the connection dropped"));
+    view.unmount();
+    createArtifactVersionReview.mockRestore();
+    restore();
+  }
+});
+
+// A held digit repeats its keydown, and only its first press writes the priority: each repeat
+// would be one more write of the same priority, sent behind the first.
+test("a held digit writes the header's priority once", async () => {
+  const user = userEvent.setup();
+  const restore = stubHeader(issue);
+  const patchIssue = answerIssuePatches().mockResolvedValue({ ...issue, priority: 2 });
+  const view = renderHeader();
+
+  try {
+    await screen.findByRole("heading", { level: 1, name: issue.title });
+    await user.keyboard("{2>4/}");
+    await waitFor(() =>
+      expect(patchIssue).toHaveBeenCalledWith("CORE-1", { priority: 2 }, keyedAttempt)
+    );
+    await act(settle);
+    expect(patchIssue).toHaveBeenCalledTimes(1);
+  } finally {
+    view.unmount();
+    patchIssue.mockRestore();
     restore();
   }
 });
@@ -1114,11 +1470,11 @@ test("Shift+P is offered with the actions menu shut, and pins the issue", async 
   const view = renderHeader();
 
   try {
-    const heading = await screen.findByRole("heading", { level: 1, name: issue.title });
+    await screen.findByRole("heading", { level: 1, name: issue.title });
     const control = screen.getByRole("button", { name: CONTROL_LABELS.issue_actions });
     expect(control).toHaveAttribute("aria-expanded", "false");
     expect(keyApplies("pin"), "Shift+P is off while the actions menu is shut").toBe(true);
-    act(() => heading.focus());
+    act(() => editTitleButton().focus());
     await user.keyboard("{Shift>}P{/Shift}");
     await waitFor(() =>
       expect(putIssueState, "Shift+P with the actions menu shut sent no pin").toHaveBeenCalledWith(
@@ -1135,9 +1491,10 @@ test("Shift+P is offered with the actions menu shut, and pins the issue", async 
   }
 });
 
-// The pin is disabled while its write is out, and the menu it was pressed from is shut again by
-// then: read up to that shut group, a disabled pin still takes no press, so `Shift+P` is off. A
-// key press is not read here: a disabled button takes no click whatever the key rule says.
+// The pin is held while its write is out (`heldPress`, `aria-disabled`), and the menu it was
+// pressed from is shut again by then: read up to that shut group, a held pin still takes no press,
+// so `Shift+P` is off. A key press is not read here: a held pin's click does nothing whatever the
+// key rule says.
 test("Shift+P is off while the pin's write is out", async () => {
   const user = userEvent.setup();
   const restore = stubHeader(issue);
@@ -1151,13 +1508,16 @@ test("Shift+P is off while the pin's write is out", async () => {
     const pin = screen.getByRole("button", { name: CONTROL_LABELS.pin_issue });
     await user.click(pin);
     await waitFor(() =>
-      expect(pin, "the pin is not disabled while its write is out").toBeDisabled()
+      expect(pin, "the pin is not held while its write is out").toHaveAttribute(
+        "aria-disabled",
+        "true"
+      )
     );
     expect(screen.getByRole("button", { name: CONTROL_LABELS.issue_actions })).toHaveAttribute(
       "aria-expanded",
       "false"
     );
-    expect(keyApplies("pin"), "Shift+P is offered while the pin is disabled").toBe(false);
+    expect(keyApplies("pin"), "Shift+P is offered while the pin is held").toBe(false);
   } finally {
     saved.resolve({ dismissed: [], last_read_seq: 0, pinned: true, seq: 1 });
     view.unmount();
@@ -1167,24 +1527,32 @@ test("Shift+P is off while the pin's write is out", async () => {
 });
 
 // The header's keys read the page's one rule (`usable-control.ts`), which refuses a control that
-// is busy, `aria-disabled`, as it refuses a disabled one: `s` is off while the status select is
-// `aria-disabled`, and focuses nothing.
-test("s is off while the status select is aria-disabled", async () => {
+// is busy, `aria-disabled`, as it refuses a disabled one: `s` is off while the status menu's
+// trigger is `aria-disabled`, and opens nothing.
+test("s is off while the status menu's trigger is aria-disabled", async () => {
   const user = userEvent.setup();
   const restore = stubHeader(issue);
   const view = renderHeader();
 
   try {
-    const heading = await screen.findByRole("heading", { level: 1, name: issue.title });
-    const status = within(screen.getByTestId("issue-state-actions")).getByRole("combobox", {
-      name: "Status",
+    await screen.findByRole("heading", { level: 1, name: issue.title });
+    const status = within(screen.getByTestId("issue-state-actions")).getByRole("button", {
+      name: pickNamed("Status"),
     });
-    expect(keyApplies("status"), "s is off while the status select takes a press").toBe(true);
+    expect(keyApplies("status"), "s is off while the status menu's trigger takes a press").toBe(
+      true
+    );
     act(() => status.setAttribute("aria-disabled", "true"));
-    expect(keyApplies("status"), "s is offered while the status select is busy").toBe(false);
-    act(() => heading.focus());
+    expect(keyApplies("status"), "s is offered while the status menu's trigger is busy").toBe(
+      false
+    );
+    act(() => editTitleButton().focus());
     await user.keyboard("s");
-    expect(status, "s focused a busy status select").not.toHaveFocus();
+    expect(status, "s opened the status menu from a busy trigger").toHaveAttribute(
+      "aria-expanded",
+      "false"
+    );
+    expect(listOpen(), "s opened a menu while the status menu's trigger is busy").toBe(false);
   } finally {
     view.unmount();
     restore();
@@ -1287,22 +1655,24 @@ function documentChip(stateActions: HTMLElement): HTMLElement {
  *  settles, at once unless a case holds it. Returns the spy of the review's write and what puts
  *  both back. */
 function answerChangeRequest(landing: Promise<void> = Promise.resolve()): {
-  readonly createArtifactReview: Mock<typeof api.createArtifactReview>;
+  readonly createArtifactVersionReview: Mock<typeof api.createArtifactVersionReview>;
   readonly restore: () => void;
 } {
   let read = awaitingApprovalIssue();
   const restoreHeader = stubHeader(read);
   const getIssue = spyOn(api, "getIssue").mockImplementation(async () => read);
-  const createArtifactReview = spyOn(api, "createArtifactReview").mockImplementation(async () => {
-    await landing;
-    read = answeredApprovalIssue("changes_requested");
-    stubbedIssue = read;
-    return changeRequest;
-  });
+  const createArtifactVersionReview = spyOn(api, "createArtifactVersionReview").mockImplementation(
+    async () => {
+      await landing;
+      read = answeredApprovalIssue("changes_requested");
+      stubbedIssue = read;
+      return changeRequest;
+    }
+  );
   return {
-    createArtifactReview,
+    createArtifactVersionReview,
     restore: () => {
-      createArtifactReview.mockRestore();
+      createArtifactVersionReview.mockRestore();
       getIssue.mockRestore();
       restoreHeader();
     },
@@ -1311,7 +1681,7 @@ function answerChangeRequest(landing: Promise<void> = Promise.resolve()): {
 
 test("a change request sent by Enter on the dialog's submit leaves the focus on the document's chip", async () => {
   const user = userEvent.setup();
-  const { createArtifactReview, restore } = answerChangeRequest();
+  const { createArtifactVersionReview, restore } = answerChangeRequest();
   const view = renderHeader();
 
   try {
@@ -1322,9 +1692,10 @@ test("a change request sent by Enter on the dialog's submit leaves the focus on 
     await user.keyboard("{Enter}");
 
     await waitFor(() => expect(dialog).not.toBeInTheDocument());
-    expect(createArtifactReview).toHaveBeenCalledTimes(1);
-    expect(createArtifactReview).toHaveBeenCalledWith(
+    expect(createArtifactVersionReview).toHaveBeenCalledTimes(1);
+    expect(createArtifactVersionReview).toHaveBeenCalledWith(
       "artifact-1",
+      1,
       { reason: CHANGE_REASON, state: "changes_requested" },
       keyedAttempt
     );
@@ -1338,7 +1709,7 @@ test("a change request sent by Enter on the dialog's submit leaves the focus on 
 
 test("a change request sent by Ctrl+Enter in the dialog's text box leaves the focus on the document's chip", async () => {
   const user = userEvent.setup();
-  const { createArtifactReview, restore } = answerChangeRequest();
+  const { createArtifactVersionReview, restore } = answerChangeRequest();
   const view = renderHeader();
 
   try {
@@ -1349,9 +1720,10 @@ test("a change request sent by Ctrl+Enter in the dialog's text box leaves the fo
     await user.keyboard("{Control>}{Enter}{/Control}");
 
     await waitFor(() => expect(dialog).not.toBeInTheDocument());
-    expect(createArtifactReview).toHaveBeenCalledTimes(1);
-    expect(createArtifactReview).toHaveBeenCalledWith(
+    expect(createArtifactVersionReview).toHaveBeenCalledTimes(1);
+    expect(createArtifactVersionReview).toHaveBeenCalledWith(
       "artifact-1",
+      1,
       { reason: CHANGE_REASON, state: "changes_requested" },
       keyedAttempt
     );
@@ -1370,7 +1742,7 @@ test("a change request sent by Ctrl+Enter in the dialog's text box leaves the fo
 test("a change request closed by Escape while its write is out leaves the focus on the document's chip once the answer removes Request changes", async () => {
   const user = userEvent.setup();
   const landing = Promise.withResolvers<void>();
-  const { createArtifactReview, restore } = answerChangeRequest(landing.promise);
+  const { createArtifactVersionReview, restore } = answerChangeRequest(landing.promise);
   const view = renderHeader();
 
   try {
@@ -1384,9 +1756,10 @@ test("a change request closed by Escape while its write is out leaves the focus 
     await user.keyboard("{Enter}");
     await waitFor(() => expect(submit).toHaveTextContent("Submitting…"));
     expect(submit).toHaveFocus();
-    await waitFor(() => expect(createArtifactReview).toHaveBeenCalledTimes(1));
-    expect(createArtifactReview).toHaveBeenCalledWith(
+    await waitFor(() => expect(createArtifactVersionReview).toHaveBeenCalledTimes(1));
+    expect(createArtifactVersionReview).toHaveBeenCalledWith(
       "artifact-1",
+      1,
       { reason: CHANGE_REASON, state: "changes_requested" },
       keyedAttempt
     );
@@ -1397,7 +1770,7 @@ test("a change request closed by Escape while its write is out leaves the focus 
     await waitFor(() => expect(dialog).not.toBeInTheDocument());
     await waitFor(() => expect(requestChanges).toHaveFocus());
     expect(requestChanges).toHaveAttribute("aria-disabled", "true");
-    expect(createArtifactReview).toHaveBeenCalledTimes(1);
+    expect(createArtifactVersionReview).toHaveBeenCalledTimes(1);
 
     // The write lands, and the issue's read after it answers the request: the header draws
     // neither action, and the focus is on the document's chip.
@@ -1407,7 +1780,7 @@ test("a change request closed by Escape while its write is out leaves the focus 
     });
     await waitFor(() => expect(headerReviewActions(stateActions)).toEqual([]));
     await waitFor(() => expect(documentChip(stateActions)).toHaveFocus());
-    expect(createArtifactReview).toHaveBeenCalledTimes(1);
+    expect(createArtifactVersionReview).toHaveBeenCalledTimes(1);
   } finally {
     // A case that fails while the write is held still lets it land before the header goes.
     landing.resolve();
@@ -1462,21 +1835,24 @@ test.each(["Cancel", "Escape"])(
 
 // The keeper finds the document's chip from where the lost control stood (`chipOfLostAction`):
 // the box `ApprovalChip` draws the chip in holds only the chip, its two actions and the dialogs it
-// opens. The Status select stands on the same line but outside that box, so when the issue's read
-// turns closed and disables it, the focus goes on to "Issue actions", not to the chip, whether the
-// document's request still waits on the reader or not.
+// opens. The Status menu's trigger stands on the same line but outside that box, and when the
+// issue's read turns closed it is held (`aria-disabled`), never disabled, so it keeps the focus:
+// neither the chip nor "Issue actions" takes it, a press of it opens nothing and nothing is
+// written, whether the document's request still waits on the reader or not.
 test.each(["waits on the reader", "is answered"])(
-  "the Status select disabled as the issue turns closed while the document's request %s leaves the focus on Issue actions, not on the chip",
+  "the Status menu held as the issue turns closed while the document's request %s keeps the focus, not on the chip",
   async (request) => {
+    const user = userEvent.setup();
     const open =
       request === "is answered" ? answeredApprovalIssue("approved") : awaitingApprovalIssue();
     const restore = stubHeader(open);
+    const patchIssue = answerIssuePatches();
     const queryClient = headerClient();
     const view = renderHeader("/issues/CORE-1", queryClient);
 
     try {
       const stateActions = await screen.findByTestId("issue-state-actions");
-      const status = within(stateActions).getByRole("combobox", { name: "Status" });
+      const status = within(stateActions).getByRole("button", { name: pickNamed("Status") });
       const chip = documentChip(stateActions);
       expect(headerReviewActions(stateActions).length).toBe(request === "is answered" ? 0 : 2);
       act(() => status.focus());
@@ -1487,13 +1863,18 @@ test.each(["waits on the reader", "is answered"])(
           status: "done",
         });
       });
-      await waitFor(() => expect(status).toBeDisabled());
+      await waitFor(() => expect(status).toHaveAttribute("aria-disabled", "true"));
+      expect(status).not.toHaveAttribute("disabled");
 
-      const issueActions = screen.getByRole("button", { name: "Issue actions" });
-      await waitFor(() => expect(issueActions).toHaveFocus());
+      await act(settle);
+      expect(status).toHaveFocus();
       expect(chip).toBeInTheDocument();
       expect(chip).not.toHaveFocus();
+      await user.keyboard("{Enter}");
+      expect(listOpen(), "Enter opened the closed issue's status list").toBe(false);
+      expect(patchIssue).not.toHaveBeenCalled();
     } finally {
+      patchIssue.mockRestore();
       view.unmount();
       restore();
     }
@@ -1519,6 +1900,62 @@ async function openTitleEditor(
   return { editor, heading };
 }
 
+// The title's heading keeps its role and takes no Tab stop of its own: the control is Edit title,
+// the button laid over the heading's box, in the Tab order, and a click, Enter and Space on it
+// each open the editor, as they opened it from the heading. Escape gives the focus back to it,
+// and a click on the heading's box, which Edit title covers, still opens the editor.
+test("the title's heading takes no Tab stop, and Edit title, laid over it, opens the editor by a click, Enter and Space", async () => {
+  const user = userEvent.setup();
+  const restore = stubHeader(issue);
+  const view = renderHeader();
+
+  try {
+    const heading = await screen.findByRole("heading", { level: 1, name: issue.title });
+    expect(heading.hasAttribute("tabindex")).toBe(false);
+    expect(editTitleButton().tabIndex).toBe(0);
+    for (const press of ["a click", "{Enter}", " "] as const) {
+      if (press === "a click") {
+        await user.click(editTitleButton());
+      } else {
+        act(() => editTitleButton().focus());
+        await user.keyboard(press);
+      }
+      const editor = await screen.findByRole("textbox", { name: "Issue title" });
+      await waitFor(() => expect(editor, `${press} opened no editor`).toHaveFocus());
+      await user.keyboard("{Escape}");
+      await waitFor(() => expect(editTitleButton()).toHaveFocus());
+    }
+    await user.click(editTitleButton());
+    expect(await screen.findByRole("textbox", { name: "Issue title" })).toHaveFocus();
+  } finally {
+    view.unmount();
+    restore();
+  }
+});
+
+// The title's editor takes the Escape that ends the edit: the press puts the title back and gives
+// the focus to Edit title, and is marked taken (`defaultPrevented`). The mark lets the key
+// registry (`keymap.ts`) and Details' own Escape (`Margin.tsx`) pass over the press.
+test("the Escape that ends the title's edit is marked taken, puts the title back and gives the focus to its button", async () => {
+  const user = userEvent.setup();
+  const restore = stubHeader(issue);
+  const view = renderHeader();
+  const escapes = recordEscapes();
+
+  try {
+    const { editor, heading } = await editTitle(user, "Review the plan");
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(editTitleButton()).toHaveFocus());
+    expect(editor).not.toBeInTheDocument();
+    expect(heading).toHaveTextContent(issue.title);
+    expect(escapes.presses.map((press) => press.defaultPrevented)).toEqual([true]);
+  } finally {
+    escapes.stop();
+    view.unmount();
+    restore();
+  }
+});
+
 // The heading holds the title and is no control: it takes no Tab stop. Edit title, the button laid
 // over the heading's box, is the control: Tab reaches it, it is named for what it does with the
 // title as its description, it draws no words of its own, and it opens the editor on its own
@@ -1532,8 +1969,8 @@ test("the title's heading takes no Tab stop, and Tab reaches Edit title, a butto
   try {
     const heading = await screen.findByRole("heading", { level: 1, name: issue.title });
     expect(heading).not.toHaveAttribute("tabindex");
-    const status = within(screen.getByTestId("issue-state-actions")).getByRole("combobox", {
-      name: "Status",
+    const status = within(screen.getByTestId("issue-state-actions")).getByRole("button", {
+      name: pickNamed("Status"),
     });
     // Every Tab stop from the page's start to the Status, which the header draws after the title.
     const stops: Element[] = [];
@@ -2623,7 +3060,11 @@ test("a title an edit ended with nothing typed while its write was out stays the
     await screen.findByText("Could not update this issue.");
     expect(heading).toHaveTextContent(/^Review the plan$/);
 
-    await user.selectOptions(screen.getByLabelText("Status"), "in_progress");
+    await pickFromList(
+      user,
+      screen.getByRole("button", { name: pickNamed("Status") }),
+      "In progress"
+    );
     await waitFor(() =>
       expect(patchIssue).toHaveBeenCalledWith("CORE-1", { status: "in_progress" }, keyedAttempt)
     );
@@ -2667,7 +3108,11 @@ test("a title draft the reader never touched takes the title a status pick's wri
 
   try {
     const heading = await screen.findByRole("heading", { level: 1, name: issue.title });
-    await user.selectOptions(await screen.findByLabelText("Status"), "in_progress");
+    await pickFromList(
+      user,
+      await screen.findByRole("button", { name: pickNamed("Status") }),
+      "In progress"
+    );
     await waitFor(() =>
       expect(patchIssue).toHaveBeenCalledWith("CORE-1", { status: "in_progress" }, keyedAttempt)
     );
@@ -2703,7 +3148,11 @@ test("a status pick that lands while a title saved after it waits behind it leav
   const view = renderHeader("/issues/CORE-1", queryClient);
 
   try {
-    await user.selectOptions(await screen.findByLabelText("Status"), "in_progress");
+    await pickFromList(
+      user,
+      await screen.findByRole("button", { name: pickNamed("Status") }),
+      "In progress"
+    );
     await waitFor(() =>
       expect(patchIssue).toHaveBeenCalledWith("CORE-1", { status: "in_progress" }, keyedAttempt)
     );
@@ -3098,14 +3547,49 @@ test("the actions group closes once a focus moved by code goes to a control outs
 
   try {
     const { control, group } = await openIssueActionsByKey(user);
-    const status = within(screen.getByTestId("issue-state-actions")).getByRole("combobox", {
-      name: "Status",
+    const status = within(screen.getByTestId("issue-state-actions")).getByRole("button", {
+      name: pickNamed("Status"),
     });
     act(() => status.focus());
     expect(status).toHaveFocus();
     expect(group.contains(document.activeElement)).toBe(false);
     await waitFor(() => expect(control).toHaveAttribute("aria-expanded", "false"));
   } finally {
+    view.unmount();
+    restore();
+  }
+});
+
+// The group's Escape is the group's but in a field that takes text, whose Escape is the field's,
+// by the field test the keymap reads (`takesText`), as Details reads it for its own Escape. A
+// focus that falls to the page's body leaves the group open, and a field the reader then reaches
+// takes no focus out of the group: Escape there leaves the group open and the focus in the field,
+// where it closed the group and took the focus out of the field onto the group's control. Escape
+// from the control still closes the group.
+test("the open actions group leaves an Escape pressed in a field that takes text to the field", async () => {
+  const user = userEvent.setup();
+  const restore = stubHeader(issue);
+  const view = renderHeader();
+  const field = document.body.appendChild(document.createElement("input"));
+
+  try {
+    const { control, first } = await openIssueActionsByKey(user);
+    act(() => first.blur());
+    expect(control, "a focus fallen to the body closed the group").toHaveAttribute(
+      "aria-expanded",
+      "true"
+    );
+    act(() => field.focus());
+    await user.keyboard("{Escape}");
+    expect(field, "Escape in a field took the focus out of it").toHaveFocus();
+    expect(control, "Escape in a field closed the group").toHaveAttribute("aria-expanded", "true");
+
+    act(() => control.focus());
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(control).toHaveAttribute("aria-expanded", "false"));
+    expect(control).toHaveFocus();
+  } finally {
+    field.remove();
     view.unmount();
     restore();
   }
@@ -3136,19 +3620,19 @@ test("a status pick the rule would refuse asks the question, and Keep as it is p
   const view = renderHeader();
 
   try {
-    const status = await screen.findByRole("combobox", { name: "Status" });
-    await user.selectOptions(status, "in_progress");
+    const status = await screen.findByRole("button", { name: pickNamed("Status") });
+    await pickFromList(user, status, "In progress");
     const question = await screen.findByRole("dialog", { name: "Move CORE-1 to In progress?" });
-    expect(status).toHaveValue("in_progress");
+    expect(status).toHaveTextContent("In progress");
     expect(patchIssue).not.toHaveBeenCalled();
 
     await user.click(within(question).getByRole("button", { name: "Keep as it is" }));
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
-    expect(status).toHaveValue("todo");
+    expect(status).toHaveTextContent("Todo");
     expect(patchIssue).not.toHaveBeenCalled();
 
     // The next pick is taken: its dry run asks nothing, and its PATCH goes.
-    await user.selectOptions(status, "backlog");
+    await pickFromList(user, status, "Backlog");
     await waitFor(() =>
       expect(patchIssue).toHaveBeenCalledWith("CORE-1", { status: "backlog" }, keyedAttempt)
     );
@@ -3173,12 +3657,12 @@ test("a status pick whose dry run is refused for another reason says why, and th
   const view = renderHeader();
 
   try {
-    const status = await screen.findByRole("combobox", { name: "Status" });
-    await user.selectOptions(status, "in_progress");
+    const status = await screen.findByRole("button", { name: pickNamed("Status") });
+    await pickFromList(user, status, "In progress");
     expect(
       await screen.findByText(`Couldn't change the status of CORE-1 — ${refusal.message}`)
     ).toHaveAttribute("role", "alert");
-    expect(status).toHaveValue("todo");
+    expect(status).toHaveTextContent("Todo");
     expect(patchIssue).not.toHaveBeenCalled();
   } finally {
     view.unmount();
@@ -3187,7 +3671,7 @@ test("a status pick whose dry run is refused for another reason says why, and th
   }
 });
 
-// The page takes a pick while an earlier one is out (its select is never disabled), and writes
+// The page takes a pick while an earlier one is out (no write holds its status list), and writes
 // each in the order they came. A pick of an issue under a parent sends the rule's dry run first:
 // a second pick made while that dry run is out shows at once and goes once the first has made its
 // write, as a pick made while a write is out waits behind it in the issue's line.
@@ -3205,11 +3689,11 @@ test("a second status pick while the first one's dry run is out shows at once, a
   const view = renderHeader();
 
   try {
-    const status = await screen.findByRole("combobox", { name: "Status" });
-    await user.selectOptions(status, "testing");
-    expect(status).toHaveValue("testing");
-    await user.selectOptions(status, "needs_review");
-    expect(status).toHaveValue("needs_review");
+    const status = await screen.findByRole("button", { name: pickNamed("Status") });
+    await pickFromList(user, status, "Testing");
+    expect(status).toHaveTextContent("Testing");
+    await pickFromList(user, status, "Needs review");
+    expect(status).toHaveTextContent("Needs review");
     expect(statusChanges).toHaveBeenCalledTimes(1);
     expect(patchIssue).not.toHaveBeenCalled();
 
@@ -3225,7 +3709,7 @@ test("a second status pick while the first one's dry run is out shows at once, a
       "testing",
       "needs_review",
     ]);
-    await waitFor(() => expect(status).toHaveValue("needs_review"));
+    await waitFor(() => expect(status).toHaveTextContent("Needs review"));
   } finally {
     view.unmount();
     patchIssue.mockRestore();

@@ -52,7 +52,7 @@ function atLiveEnd(element: HTMLElement): boolean {
 /**
  * The topmost turn the viewport shows any part of, with its offset from the viewport's top edge.
  * A hit test just inside that edge rather than a `getBoundingClientRect` scan over every turn,
- * the choice `features/shell/ViewportAnchor.tsx`'s `rowAtCenter` documents for the issue list and
+ * the choice `features/shell/ViewportAnchor.tsx`'s `rowAtHeight` documents for the issue list and
  * for the same reason: this runs on every scroll event a scrolled-back reader makes, and a scan
  * forces a layout read per turn above them. A point that lands between two turns walks downward
  * in small steps, so the answer there is the turn below - the one being read into.

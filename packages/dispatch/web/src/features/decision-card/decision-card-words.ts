@@ -57,6 +57,10 @@ export const DECISION_ACT_WORDS = Object.freeze({
   change_to: "Change to",
   keep: "Keep",
   send_change: "Send change",
+  /** After Send change, pressed again while the change it sent before is still out past its
+   *  deadline (`useOneCreateOut`): "Send change sent nothing: …". */
+  still_sending:
+    "sent nothing: your change is still being sent. This form closes once Dispatch posts it; if it fails, this form says why and you can press Send change again.",
   /** What the card says of a write the reader stopped (`stoppedWriteNote`): the write, what it
    *  may have done, and what the control does now. These are the words today's Decisions tab
    *  said on `main`. */

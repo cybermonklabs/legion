@@ -19,11 +19,14 @@ import {
   isDocumentUnloadable,
 } from "../../api/client";
 import { artifactBlocksQuery } from "../../api/queries";
-import { replaceQueryData } from "../../api/query-client";
+import { invalidateWaitingForPaused, replaceQueryData } from "../../api/query-client";
+import { useReadBound } from "../../api/read-bound";
 import type { Artifact, AuthenticatedUser, Version } from "../../api/types";
+import { heldPress } from "../../components/held-press";
 import { TruncatedText } from "../../components/TruncatedText";
 import { useTooltips } from "../../components/tooltips";
 import { copyText } from "../../lib/clipboard";
+import { inputMethodKey } from "../../lib/input-method-key";
 import {
   badgeMed,
   dangerText,
@@ -50,6 +53,7 @@ import {
 import { useMargin } from "../margin/margin-context";
 import type { MarginOwner } from "../margin/useMarginItems";
 import { blockFragment } from "../refs/block-reference";
+import { useLinkOpener } from "../refs/link-open";
 import { PlainText } from "../refs/plain-text";
 import { watchPicturePath } from "../refs/reference-target";
 import {
@@ -63,14 +67,15 @@ import { importWhenOnline } from "../shell/DeploymentResilience";
 import { useKeymap, useKeymapScope } from "../shell/keymap";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { LandedWithoutAnswer } from "../writes/LandedWithoutAnswer";
-import { useKeyedWrite } from "../writes/useKeyedWrite";
+import { useKeyedWrite, usePendingKeyedPress } from "../writes/useKeyedWrite";
+import { useOneCreateOut } from "../writes/useOneCreateOut";
 import { AskBlockCard } from "./AskBlockCard";
 import type { AnchoredBlockHost } from "./ask-block";
 import { ChangeView } from "./ChangeView";
 import type { ConnectionState, DocumentConnection } from "./connection";
 import { colorForLogin } from "./connection";
 import { DocumentRefPicker } from "./DocumentRefPicker";
-import { DocumentReferences, useReferenceClick } from "./document-references";
+import { DocumentReferences } from "./document-references";
 import type { EditorHandle, EditorOptions } from "./editor";
 import { bindRemoteMarks } from "./editor";
 import type { Highlight } from "./highlight";
@@ -123,6 +128,10 @@ interface AdmissionBlock {
   readonly kind: "repair" | "rebuild" | "newer" | "failed";
   readonly message: string;
 }
+
+/** What the rebuild offer says beside Rebuild, before why the read of the rebuilt document has
+ *  not settled once its hold ran out (`useReadBound`). */
+const REBUILT_DOCUMENT_NOT_READ = "The rebuilt document is not read yet.";
 
 function admissionBlock(error: unknown): AdmissionBlock {
   const message = error instanceof Error ? error.message : String(error);
@@ -260,6 +269,20 @@ function setSearchHighlights(root: HTMLElement, query: string): void {
   CSS.highlights.set("dispatch-search", new Highlight(...ranges));
 }
 
+/** The page editor's `keydown` handler of `handleDOMEvents`: true for a plain Escape, which
+ *  ProseMirror then leaves to the page (`leave-editor`); a press with a modifier stays the
+ *  editor's, and so does an input method's (`inputMethodKey`): one pressed during a composition,
+ *  or the one that ends it, which Safari sends with `isComposing` false and keyCode 229. The
+ *  caller keeps every Escape the editor's while the document's reference list stands open, so
+ *  the editor offers it to that list, which closes (`DocumentRefPicker`'s `listOpen`). */
+function plainEscape(_view: EditorHandle["view"], event: KeyboardEvent): boolean {
+  return (
+    event.key === "Escape" &&
+    !inputMethodKey(event) &&
+    !(event.altKey || event.ctrlKey || event.metaKey || event.shiftKey)
+  );
+}
+
 export function ProofDocument({
   anchoredThread,
   artifact,
@@ -278,6 +301,13 @@ export function ProofDocument({
   version,
 }: ProofDocumentProps): ReactNode {
   const root = useRef<HTMLDivElement>(null);
+  /** The document's frame, which Escape in the editor gives the focus to (`leave-editor`). */
+  const article = useRef<HTMLElement>(null);
+  /** Whether the reference list stands open in the editor (`DocumentRefPicker`), whose own
+   *  Escape closes it: a handler of `handleDOMEvents` that takes a key keeps it from every
+   *  plugin's `handleKeyDown`, the picker's among them, so a plain Escape is left to the page
+   *  only while the list is shut. */
+  const refListOpen = useRef(false);
   const editorRef = useRef<EditorHandle | undefined>(undefined);
   // The handle this document's references are drawn through, beside the ref the callbacks reach
   // it by: the titles are a render of their own, so the surface that draws them re-renders with
@@ -332,7 +362,10 @@ export function ProofDocument({
     () => textSourceOf("artifact", artifact.id, artifact.issue_key),
     [artifact.id, artifact.issue_key]
   );
-  const followReference = useReferenceClick();
+  // The page's link opener, which the editor calls for a click on one of its links and for
+  // Alt+Enter (`features/refs/link-open.ts`). It is one function for the life of this view and
+  // follows the router's latest `navigate`, so the editor, which reads its options once, holds it.
+  const openLink = useLinkOpener();
   // The address's fragment as the dashboard's own navigation leaves it: a click on a link to a
   // block of this document changes it in place, firing no event of the browser's own.
   const { hash: routedHash } = useLocation();
@@ -435,6 +468,7 @@ export function ProofDocument({
     // `write` comes first: `onSuccess` reads its answer.
     write: (summary: string, bounds) => api.createArtifactVersion(artifact.id, { summary }, bounds),
     method: "POST",
+    readsLate: true,
     inline: true,
     label: () => `New version of ${artifact.name}`,
     onSuccess: (created) => {
@@ -457,17 +491,37 @@ export function ProofDocument({
       onVersionChange(created.number);
     },
   });
+  const namingVersion = nameVersion.isPending && !nameVersion.late;
+  const oneVersion = useOneCreateOut(nameVersion);
+  // Why the read of the latest rebuilt document has not settled, once the hold over it ran out,
+  // and whether that hold is on: an editor drawn again while the rebuild's read is out - the row's
+  // editor closed and opened again - finds both (`useReadBound`). The hold is under the key of the
+  // read it waits on, the document's, which no hold of another read shares: an approval chip of
+  // the document holds its review's reads under its reviews' key (`ApprovalChip`). One drawn
+  // again while the rebuild itself is out, before it lands, draws the offer again, the document's
+  // text being refused still, and finds that rebuild by the document's name for it: its Rebuild
+  // is held from that press until the rebuild's deadline, as the one pressed was
+  // (`usePendingKeyedPress`).
+  const [rebuildUnsettled, holdThrough, rebuildHolding] = useReadBound(["artifact", artifact.id]);
+  const rebuildKey = ["artifact-rebuild", artifact.id];
+  const rebuildOut = usePendingKeyedPress(rebuildKey);
   const rebuild = useKeyedWrite({
     inline: true,
     label: () => `Rebuild of ${artifact.name}`,
+    mutationKey: rebuildKey,
     onSuccess: () => {
-      const reread = queryClient.invalidateQueries({ queryKey: ["artifact", artifact.id] });
       // Outside `NoTooltips` the rebuild stops pending as it lands and the document's reads go on
       // after it, as on `main`. Inside, `onSuccess` returns them, which TanStack Query awaits
       // before the rebuild stops pending: Rebuild stays refused, and keeps the focus, until the
-      // rebuilt document is read, and a text read that succeeds then takes the offer off the page.
-      if (tooltips) return;
-      return reread;
+      // rebuilt document is read, or until the request deadline where that read has not settled -
+      // one the network paused while the browser is offline - so no read holds Rebuild for good,
+      // and the offer says why beside Rebuild until the read settles or the next rebuild lands
+      // (`useReadBound`). A text read that succeeds then takes the offer off the page.
+      if (tooltips) {
+        void queryClient.invalidateQueries({ queryKey: ["artifact", artifact.id] });
+        return;
+      }
+      return holdThrough(invalidateWaitingForPaused(queryClient, ["artifact", artifact.id]));
     },
     method: "POST",
     write: (_variables, bounds) => api.rebuildArtifact(artifact.id, undefined, bounds),
@@ -629,20 +683,47 @@ export function ProofDocument({
   // document is its own scope, since the issue page and a project's document page both render
   // one. A pane pushes no scope and registers no binding: the scope stack belongs to the page the
   // reader is on, and a pane's editor takes no edits, so it would never offer Comment.
+  // Alt+Enter, Google Docs' key for the link at the caret, opens the link or the reference title
+  // the caret is in or beside, as a click does, and changes no text: a link in a document the
+  // reader edits opens on a click, so this is how a writer opens one from the keyboard. A view
+  // the reader cannot edit puts its links in the tab order instead, and Enter opens the focused
+  // one.
   useKeymapScope(page ? "document" : null);
   useKeymap(
     "document",
     page
       ? [
           {
-            id: "comment-on-selection",
-            inEditable: true,
-            keys: "$mod+Alt+m",
-            label: "Comment on selection",
+            action: "document.comment-on-selection",
             run: () => editorRef.current?.commentOnSelection(),
             when: () => {
               const view = editorRef.current?.view;
               return view?.editable === true && view.hasFocus() && !view.state.selection.empty;
+            },
+          },
+          {
+            action: "document.open-link",
+            run: () => editorRef.current?.openLinkAtCaret(),
+            when: () => {
+              const editor = editorRef.current;
+              return (
+                editor?.view.editable === true &&
+                editor.view.hasFocus() &&
+                editor.linkAtCaret() !== null
+              );
+            },
+          },
+          {
+            // Escape takes the focus out of the editor the reader edits, onto the document's own
+            // frame, so the page's keys work again; the next Tab goes back into the editor, where
+            // ProseMirror kept the caret. The editor leaves the press to the page (`plainEscape`):
+            // the page editor runs in margin mode, which installs no mark popover, so no menu of
+            // the editor's own takes Escape.
+            action: "document.leave-editor",
+            run: () => article.current?.focus({ preventScroll: true }),
+            when: () => {
+              const view = editorRef.current?.view;
+              return view?.editable === true && view.hasFocus();
             },
           },
         ]
@@ -664,7 +745,7 @@ export function ProofDocument({
       connection,
       pending,
       copyBlockLink,
-      isNamingVersion: nameVersion.isPending,
+      isNamingVersion: namingVersion,
       requestNamedVersion,
       versions,
     });
@@ -672,7 +753,7 @@ export function ProofDocument({
     connection,
     pending,
     copyBlockLink,
-    nameVersion.isPending,
+    namingVersion,
     onToolbarChange,
     page,
     requestNamedVersion,
@@ -764,6 +845,11 @@ export function ProofDocument({
         setSearchHighlights(handle.view.dom, highlightTermRef.current);
         marginRef.current.registerDocument({
           artifactId: artifact.id,
+          // The margin calls it as a comment ends, at every width, and again a frame later where
+          // the sheet closed, by when this editor may be gone.
+          focus: () => {
+            if (bound) handle.view.focus();
+          },
           focusBlock: (blockId) => {
             requestAnimationFrame(() => {
               if (bound) focusInEditor(() => handle.focusBlock(blockId));
@@ -780,6 +866,21 @@ export function ProofDocument({
           setActiveBlocks: (blockIds) => handle.setActiveBlocks(blockIds),
           setActiveMarks: (markIds) => handle.setActiveMarks(markIds),
           whenSent,
+        });
+      }
+      // ProseMirror's base keymap binds Escape to "select the parent node", which claims the press
+      // before the page's registry reads it; on the page, Escape takes the focus out of the editor
+      // (`leave-editor`), but for the Escape that closes an open reference list (`refListOpen`),
+      // which the editor offers to the picker. A `handleDOMEvents` handler that answers true
+      // leaves the event to the page: ProseMirror neither handles it nor prevents its default.
+      // The editor's own direct handlers stay beside it (`ask-content.ts` in the editor library
+      // sets them).
+      if (page) {
+        handle.view.setProps({
+          handleDOMEvents: {
+            ...handle.view.props.handleDOMEvents,
+            keydown: (view, event) => !refListOpen.current && plainEscape(view, event),
+          },
         });
       }
       const unbindRemoteMarks = bindRemoteMarks(connection.doc, handle);
@@ -994,6 +1095,7 @@ export function ProofDocument({
                 },
                 onMarkClick: (markId) => marginRef.current.focusItemForMark(markId),
                 onMarkHover: (markId) => marginRef.current.hoverItemForMark(markId),
+                openLink,
                 // A pane takes no edits and no comments: a reader who clicks into the text from a
                 // list never changes the document they are reading.
                 access: editorAccess(page, isClosedRef.current, schemaReadOnlyRef.current),
@@ -1053,6 +1155,7 @@ export function ProofDocument({
     focusInEditor,
     followBlockHash,
     loadTransport,
+    openLink,
     page,
     pendingWaiter,
     queryClient,
@@ -1103,12 +1206,19 @@ export function ProofDocument({
       <NameVersionDialog
         error={nameVersion.error}
         onClose={() => {
-          nameVersion.reset();
+          if (!nameVersion.isPending) nameVersion.reset();
           setIsNameDialogOpen(false);
         }}
-        onSave={(summary) => nameVersion.mutate(summary)}
+        onSave={(summary) => {
+          if (!oneVersion.refuse()) nameVersion.mutate(summary);
+        }}
         open={isNameDialogOpen}
-        saving={nameVersion.isPending}
+        outstandingNote={
+          oneVersion.refused
+            ? `Save sent nothing: the version “${nameVersion.variables}” is still being sent. It opens once Dispatch names it. If it fails, you can press Save again.`
+            : undefined
+        }
+        saving={namingVersion}
       />
       {nameVersion.unanswered === undefined ? null : (
         <LandedWithoutAnswer what={`The version “${nameVersion.unanswered.variables}”`} />
@@ -1138,14 +1248,11 @@ export function ProofDocument({
             version.
           </p>
           <button
-            // Inside `NoTooltips` the button keeps its focus while it rebuilds: it is
-            // `aria-disabled` then, in place of `disabled`, and a press does nothing. Outside it
-            // is `disabled` while it rebuilds, as on `main`.
-            aria-disabled={(!tooltips && rebuild.isPending) || undefined}
+            // The button keeps its focus while it rebuilds, on both sides of `NoTooltips`: it is
+            // held then (`heldPress`), `aria-disabled` in place of `disabled`, and a press does
+            // nothing.
             className={`min-h-11 rounded-lg border px-3 py-2 text-sm font-medium ${tooltips ? `${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder}` : controlOnPage}`}
-            disabled={tooltips && rebuild.isPending}
-            onClick={() => {
-              if (rebuild.isPending) return;
+            {...heldPress((rebuildOut.isPending && !rebuildOut.late) || rebuildHolding, () => {
               if (
                 window.confirm(
                   "Rebuild this document from its latest version? This discards its unreadable history."
@@ -1153,10 +1260,12 @@ export function ProofDocument({
               ) {
                 rebuild.mutate();
               }
-            }}
+            })}
             type="button"
           >
-            {rebuild.isPending ? "Rebuilding…" : "Rebuild from the latest version"}
+            {rebuildOut.isPending || rebuildHolding
+              ? "Rebuilding…"
+              : "Rebuild from the latest version"}
           </button>
           {rebuild.isError ? (
             <p className={failedText}>
@@ -1171,7 +1280,23 @@ export function ProofDocument({
                   : "Could not rebuild this document."}
             </p>
           ) : null}
+          {/* Only inside `NoTooltips` does Rebuild hold through the rebuilt document's read, so
+              only there does a read outlive its hold and say why here, until it settles or the
+              next rebuild lands. */}
+          {rebuildUnsettled === undefined ? null : (
+            <p className={failedText}>{`${REBUILT_DOCUMENT_NOT_READ} ${rebuildUnsettled}.`}</p>
+          )}
         </div>
+      )}
+      {/* An editor drawn again while a rebuild's read is out - the row's editor closed and opened
+          again - waits on that read for its own admission (`admit`), so it draws no offer and no
+          Rebuild yet. Once the rebuild's hold has run out it says why the read has not settled in
+          the offer's place, until the read settles and the admission draws the offer or the
+          editor. */}
+      {!page || rebuildError !== undefined || rebuildUnsettled === undefined ? null : (
+        <p className={failedText} role="alert">
+          {`${REBUILT_DOCUMENT_NOT_READ} ${rebuildUnsettled}.`}
+        </p>
       )}
       {/* The server admits a socket read-only for a closed issue as it does for a page the
           fleet's schema numbers do not admit, so the admission alone cannot say whether a reload
@@ -1258,14 +1383,15 @@ export function ProofDocument({
           This document could not load: {shownLoadError}
         </p>
       )}
-      {/* biome-ignore lint/a11y/useKeyWithClickEvents: dispatch:// link clicks bubble here; the
-      editor already handles keyboard activation of its own links. */}
+      {/* The page's document takes the focus Escape gives it out of the editor (`leave-editor`),
+          which no Tab reaches; a pane's takes none, since its editor takes no edits. */}
       <article
         aria-label="Document"
-        className="dispatch-doc relative"
+        className="dispatch-doc relative outline-none"
         data-read-only={isClosed || schemaReadOnly}
         hidden={version !== undefined || admissionHidesEditor}
-        onClick={followReference}
+        ref={article}
+        tabIndex={page ? -1 : undefined}
       >
         <div ref={root} />
         {anchoredThread === undefined || anchoredHost === undefined
@@ -1279,6 +1405,7 @@ export function ProofDocument({
           editor={editorHandle}
           enabled={editorAccess(page, isClosed, schemaReadOnly) === "edit"}
           issueKey={owner.kind === "issue" ? owner.key : undefined}
+          listOpen={refListOpen}
           project={owner.kind === "document" ? owner.project : undefined}
         />
         {askBlockHosts.map((host) => {
@@ -1286,6 +1413,7 @@ export function ProofDocument({
           return (
             <AskBlockCard
               ask={blockAsks.find((candidate) => candidate.block_id === blockId)}
+              asksRead={!asksQuery.isPending}
               host={host}
               inBody={false}
               key={host.key}
@@ -1303,27 +1431,32 @@ export function ProofDocument({
             aria-label="Block references"
             className="pointer-events-none absolute top-0 right-0 z-10 w-8"
           >
-            {blockReferencesQuery.data
-              .filter((block) => block.references.comments + block.references.asks > 0)
-              .map((block) => {
-                const count = block.references.comments + block.references.asks;
-                return (
-                  <button
-                    aria-label={`${count} references on block`}
-                    className={`pointer-events-auto absolute right-0 min-h-11 min-w-11 rounded-full text-xs font-semibold ${countChip}`}
-                    data-block-references={block.id}
-                    key={block.id}
-                    onClick={() => {
-                      marginRef.current.filterToBlock(block.id);
-                      focusInEditor(() => editorRef.current?.focusBlock(block.id));
-                    }}
-                    style={{ top: `${blockPlacements.get(block.id)?.top ?? 0}px` }}
-                    type="button"
-                  >
-                    {count}
-                  </button>
-                );
-              })}
+            {/* One item per block, each button placed against the aside at its block's height:
+                the items are static, so the aside stays the box each button is placed in. */}
+            <ul>
+              {blockReferencesQuery.data
+                .filter((block) => block.references.comments + block.references.asks > 0)
+                .map((block) => {
+                  const count = block.references.comments + block.references.asks;
+                  return (
+                    <li key={block.id}>
+                      <button
+                        aria-label={`${count} references on block`}
+                        className={`pointer-events-auto absolute right-0 min-h-11 min-w-11 rounded-full text-xs font-semibold ${countChip}`}
+                        data-block-references={block.id}
+                        onClick={() => {
+                          marginRef.current.filterToBlock(block.id);
+                          focusInEditor(() => editorRef.current?.focusBlock(block.id));
+                        }}
+                        style={{ top: `${blockPlacements.get(block.id)?.top ?? 0}px` }}
+                        type="button"
+                      >
+                        {count}
+                      </button>
+                    </li>
+                  );
+                })}
+            </ul>
           </aside>
         ) : null}
       </article>

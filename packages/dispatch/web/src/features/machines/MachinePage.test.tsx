@@ -1,4 +1,5 @@
 import { expect, spyOn, test } from "bun:test";
+import { SEARCH_QUERY_MAX } from "@legion/contracts/dispatch-tools";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -170,6 +171,19 @@ test("picking a window puts it in the address and draws it", async () => {
   }
 });
 
+// The strip scrolls sideways where its picks are wider than the page, and Firefox makes a box
+// that scrolls a Tab stop of its own, which here would read as nothing: each pick is a link, the
+// strip's stops.
+test("the window strip is no Tab stop of its own", async () => {
+  const machine = renderMachine([session(id("a"), PLACE)]);
+  try {
+    await screen.findAllByTestId("window-pick");
+    expect(screen.getByTestId("window-strip")).toHaveAttribute("tabindex", "-1");
+  } finally {
+    machine.close();
+  }
+});
+
 test("a window id two servers both hold picks one window, on the server whose strip it was picked in", async () => {
   const user = userEvent.setup();
   // Each server holds a `@0` and a `@1`, which is what tmux gives: it numbers windows per
@@ -283,6 +297,20 @@ test("a machine whose sessions are in no pane says so and opens the Agents page 
     );
     expect(screen.queryByTestId("machine-server")).toBeNull();
     expect(screen.queryByTestId("machine-drawing-age")).toBeNull();
+  } finally {
+    machine.close();
+  }
+});
+
+// The Agents page's `?machine=` is cut at `SEARCH_QUERY_MAX`, so a link for a longer host would
+// open the sessions of a cut name, none or another machine's: the page draws no link for it and
+// still names the host in its heading.
+test("a machine whose name is past the address's cap names itself and has no Agents link", async () => {
+  const host = "h".repeat(SEARCH_QUERY_MAX + 1);
+  const machine = renderMachine([session(id("a"), undefined, { host, machine_id: host })], host);
+  try {
+    expect((await screen.findByRole("heading", { level: 1 })).textContent).toBe(host);
+    expect(screen.queryByRole("link", { name: "Agents on this machine" })).toBeNull();
   } finally {
     machine.close();
   }

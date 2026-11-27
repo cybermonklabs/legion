@@ -11,6 +11,7 @@ import {
   countDocumentSockets,
   documentEditor,
   markSpan,
+  openVersions,
   selectEditorText,
 } from "./editor";
 import { askCard as inboxAskCard, inboxRow } from "./inbox-pane";
@@ -66,12 +67,14 @@ test("documentCollaborationLive", async ({ browser }, testInfo) => {
     await expect(documentEditor(alicePage)).toContainText("Alice wrote this.");
     // The picker lists every settled version and the live document. A settlement landing between
     // a read of the versions and a read of the options moves both, so one poll reads the pair and
-    // compares them against each other rather than against a count read before it.
+    // compares them against each other rather than against a count read before it. The list is
+    // opened once, and its options follow the versions while it stands open.
+    const versionOptions = (await openVersions(alicePage)).getByRole("option");
     await expect
       .poll(async () => {
         const [current, options] = await Promise.all([
           getArtifact(artifact.id),
-          alicePage.getByRole("combobox", { name: "Version" }).locator("option").count(),
+          versionOptions.count(),
         ]);
         const versions = (current.versions ?? []).length;
         return versions > 1 && options === versions + 1
@@ -79,6 +82,7 @@ test("documentCollaborationLive", async ({ browser }, testInfo) => {
           : `${options} options for ${versions} settled versions`;
       })
       .toBe("one option per settled version, and one for the live document");
+    await alicePage.keyboard.press("Escape");
     await alicePage.screenshot({
       path: testInfo.outputPath("project-document-live.png"),
       fullPage: true,

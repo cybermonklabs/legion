@@ -310,7 +310,9 @@ test("agent-held-send: the live view's held message draws every form but a quest
   );
 
   await view.getByTestId("agent-composer").locator("textarea").fill(readingText(world));
-  await view.getByRole("button", { name: "Send" }).click();
+  // The submit is named Send alone; the delivery mode's trigger beside it reads its label and
+  // the mode it shows, which is also Send.
+  await view.getByRole("button", { exact: true, name: "Send" }).click();
   const held = view.getByTestId("agent-send-held");
   await expect(held.getByRole("status")).toHaveText("Sending…");
   // The held turn is in no link or button, so the draft draws through the renderer, as the

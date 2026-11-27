@@ -1,6 +1,6 @@
-import { expect, mock, test } from "bun:test";
+import { expect, mock, spyOn, test } from "bun:test";
 // biome-ignore lint/style/noRestrictedImports: the press case needs a press, a blur and a removal inside one task, and user-event's press awaits between its events; the tap cases need a tap's order, its pointer up before the blur its mousedown makes, and user-event moves the focus as its pointer goes down; the cancelled, right-button, clickless and window-blur press cases need a pointercancel, a press of another button that moves no focus, a contextmenu with no pointerup, a pointerup with no click after it, and a blur of the window with a press under way; the press reader's own cases need each way a press ends, a dragend and the window's blur among them, alone after a bare pointerdown, which user-event has no form for.
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, type RenderResult, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
@@ -450,6 +450,73 @@ test("a Retry that fails twice has the focus back after each failure", async () 
   } finally {
     view.unmount();
     stopFixup();
+  }
+});
+
+// Each focus the keeper gives is with no scroll of the browser's own, which centres a control not
+// wholly in view: the keeper answers a loss the reader did not cause, and a reader who scrolled
+// the region out of the window keeps what they were reading in view. That is so for a fallback in
+// the region, for the control the keeper gives the focus back to once it is enabled again, and
+// for a fallback once a layer the focus left the region for has closed.
+test("each focus the keeper gives scrolls nothing of the browser's own", async () => {
+  /** Each focus that moved the focus since the last read: what took it, and whether it was asked
+   *  to scroll nothing. */
+  let given: { readonly still: boolean; readonly to: string }[] = [];
+  const focus = HTMLElement.prototype.focus;
+  const focuses = spyOn(HTMLElement.prototype, "focus").mockImplementation(function (
+    this: HTMLElement,
+    options?: FocusOptions
+  ) {
+    if (document.activeElement !== this) {
+      given.push({ still: options?.preventScroll === true, to: this.textContent ?? "" });
+    }
+    focus.call(this, options);
+  });
+  const take = () => {
+    const taken = given;
+    given = [];
+    return taken;
+  };
+  const stopFixup = emulateChromiumFocusFixup();
+  // The tree mounted now, which the `finally` takes away whatever check fails.
+  let mounted: RenderResult | undefined;
+  try {
+    const region = render(<Region />);
+    mounted = region;
+    act(() => button("Save").focus());
+    take();
+    region.rerender(<Region save="disabled" />);
+    await waitFor(() => expect(button("First fallback")).toHaveFocus());
+    const toFallback = take();
+    region.rerender(<Region />);
+    await waitFor(() => expect(button("Save")).toHaveFocus());
+    const backToSave = take();
+    region.unmount();
+    mounted = undefined;
+
+    const layered = render(<LayerRegion />);
+    mounted = layered;
+    let afterLayer: { readonly still: boolean; readonly to: string }[] = [];
+    await onFakeClock(async () => {
+      await openLayer();
+      layered.rerender(<LayerRegion opener={false} />);
+      await jump(1);
+      take();
+      layered.rerender(<LayerRegion layer="removed" opener={false} />);
+      await jump(1);
+      expect(button("First fallback")).toHaveFocus();
+      afterLayer = take();
+    });
+
+    expect({ afterLayer, backToSave, toFallback }).toEqual({
+      afterLayer: [{ still: true, to: "First fallback" }],
+      backToSave: [{ still: true, to: "Save" }],
+      toFallback: [{ still: true, to: "First fallback" }],
+    });
+  } finally {
+    mounted?.unmount();
+    stopFixup();
+    focuses.mockRestore();
   }
 });
 

@@ -2,7 +2,7 @@ import { expect, spyOn, test } from "bun:test";
 import { act, render } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
-import { type ReactNode, useState } from "react";
+import { type ReactNode, useRef, useState } from "react";
 
 import { KeymapProvider } from "./KeymapProvider";
 import { useDialog } from "./useDialog";
@@ -645,6 +645,136 @@ test("a dialog opened inside another in one commit gives the focus back into the
     expect(document.activeElement, "the thread gave the focus to no control of the sheet").toBe(
       view.getByRole("button", { name: "First control of the sheet" })
     );
+  } finally {
+    frames.restore();
+    view.unmount();
+  }
+});
+
+/** A sheet whose owner answers `keepFocusOnClose`, counting each question in `asked`. Its Done
+ *  puts the focus in the document beside it and closes the sheet, as a comment's end closes the
+ *  margin sheet with the caret back in the commented document, and answers true for that close
+ *  alone. Its Close only closes it, and its Search closes it and opens another dialog in one
+ *  handler. */
+function SheetWhoseOwnerPlacesTheFocus({ asked }: { asked: { count: number } }) {
+  const [open, setOpen] = useState(false);
+  const [search, setSearch] = useState(false);
+  const placed = useRef(false);
+  const editor = useRef<HTMLTextAreaElement>(null);
+  const sheet = useDialog<HTMLDivElement>({
+    keepFocusOnClose: () => {
+      asked.count += 1;
+      const keep = placed.current;
+      placed.current = false;
+      return keep;
+    },
+    onClose: () => setOpen(false),
+    open,
+  });
+  return (
+    <>
+      <button onClick={() => setOpen(true)} type="button">
+        Open
+      </button>
+      <textarea aria-label="Document" ref={editor} />
+      {open ? (
+        <div aria-label="Sheet" ref={sheet.containerRef} role="dialog">
+          <button
+            onClick={() => {
+              editor.current?.focus();
+              placed.current = true;
+              setOpen(false);
+            }}
+            type="button"
+          >
+            Done
+          </button>
+          <button onClick={() => setOpen(false)} type="button">
+            Close
+          </button>
+          <button
+            onClick={() => {
+              setOpen(false);
+              setSearch(true);
+            }}
+            type="button"
+          >
+            Search
+          </button>
+        </div>
+      ) : null}
+      <Dialog label="Search" onClose={() => setSearch(false)} open={search} />
+    </>
+  );
+}
+
+// A close whose update has put the focus where the reader goes next - the margin sheet's, as a
+// comment's end puts the caret back in the commented document - leaves the focus there, and the
+// control that opened the dialog does not take it back.
+test("a dialog whose owner kept the focus as it closed leaves it where the owner put it", async () => {
+  const user = userEvent.setup();
+  const asked = { count: 0 };
+  const view = render(
+    <KeymapProvider>
+      <SheetWhoseOwnerPlacesTheFocus asked={asked} />
+    </KeymapProvider>
+  );
+  const frames = holdFrames();
+  try {
+    await user.click(view.getByRole("button", { name: "Open" }));
+    frames.run();
+    await user.click(view.getByRole("button", { name: "Done" }));
+    expect(view.queryByRole("dialog", { name: "Sheet" }), "Done left the sheet open").toBeNull();
+    expect(document.activeElement, "the sheet gave the focus back to Open").toBe(
+      view.getByRole("textbox", { name: "Document" })
+    );
+    expect(asked.count, "the close asked keepFocusOnClose").toBe(1);
+  } finally {
+    frames.restore();
+    view.unmount();
+  }
+});
+
+// Every close asks once, whoever takes the focus - an owner that answers once per close must hear
+// each - and one answered false gives the focus back as before: to the opener, or to a dialog
+// opened in the commit that closes this one.
+test("a dialog asks keepFocusOnClose once on every close, and on false gives the focus back as before", async () => {
+  const user = userEvent.setup();
+  const asked = { count: 0 };
+  const view = render(
+    <KeymapProvider>
+      <SheetWhoseOwnerPlacesTheFocus asked={asked} />
+    </KeymapProvider>
+  );
+  const frames = holdFrames();
+  try {
+    const opener = view.getByRole("button", { name: "Open" });
+    await user.click(opener);
+    frames.run();
+    await user.click(view.getByRole("button", { name: "Close" }));
+    expect(
+      { asked: asked.count, opener: document.activeElement === opener },
+      "the sheet's Close"
+    ).toEqual({ asked: 1, opener: true });
+
+    await user.click(opener);
+    frames.run();
+    await user.keyboard("{Escape}");
+    expect(
+      { asked: asked.count, opener: document.activeElement === opener },
+      "the sheet's Escape"
+    ).toEqual({ asked: 2, opener: true });
+
+    await user.click(opener);
+    frames.run();
+    await user.click(view.getByRole("button", { name: "Search" }));
+    expect(
+      {
+        asked: asked.count,
+        search: document.activeElement === view.getByRole("dialog", { name: "Search" }),
+      },
+      "Search, which opens a dialog as it closes the sheet"
+    ).toEqual({ asked: 3, search: true });
   } finally {
     frames.restore();
     view.unmount();

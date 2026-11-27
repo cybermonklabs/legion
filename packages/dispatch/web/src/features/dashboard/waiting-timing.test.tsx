@@ -339,7 +339,9 @@ test("K6: a stale approval leaves once the issue read says approved, and holds u
     (artifact) => artifact.approval?.state === "stale"
   );
   if (stale === undefined) throw new Error("the issue fixture holds no stale approval");
-  spies.push(spyOn(api, "createArtifactReview").mockImplementation(async () => ({}) as never));
+  spies.push(
+    spyOn(api, "createArtifactVersionReview").mockImplementation(async () => ({}) as never)
+  );
   const { client, view } = draw(store);
   try {
     await expectCount(1);

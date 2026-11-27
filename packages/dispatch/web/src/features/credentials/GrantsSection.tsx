@@ -2,6 +2,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 
 import { api } from "../../api/client";
+import { invalidateWaitingForPaused } from "../../api/query-client";
 import type { ApproverGrantResp } from "../../api/types";
 import { textSecondaryOnSurface } from "../../theme/classes";
 import { Timestamp } from "../refs/Timestamp";
@@ -114,10 +115,9 @@ export function GrantsSection(): ReactNode {
       heading="Live grants"
       headingId="credential-grants-heading"
       noun="grants"
-      onRevoked={() =>
-        void queryClient.invalidateQueries({ queryKey: credentialGrantsQuery().queryKey })
-      }
+      onRevoked={() => invalidateWaitingForPaused(queryClient, credentialGrantsQuery().queryKey)}
       query={grants}
+      readKey={credentialGrantsQuery().queryKey}
       revoke={(grant, bounds) => api.revokeCredentialGrant(grant.grant_id, bounds)}
       rowKey={(grant) => grant.grant_id}
       rowName={({ enrollment, names }) => {

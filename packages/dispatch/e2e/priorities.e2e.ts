@@ -29,6 +29,7 @@ import {
   patchPriority,
 } from "./api";
 import { actionBar, placeCaretAtEnd } from "./editor";
+import { nextFrames } from "./frames";
 import { issueDetailsRow, openIssueDetails } from "./issue-details";
 import { pendingWrites } from "./keyed-writes";
 import { pauseClock } from "./page-clock";
@@ -279,8 +280,10 @@ async function chooseTab(page: Page, tab: keyof typeof TABS): Promise<void> {
  *  where that table is the last thing on the page and its box takes the window rather than
  *  standing under another table below the fold. */
 function pagerBelowWindow(page: Page): Promise<number> {
+  // The pager of the tab's one table, by its component's own test identifier, as
+  // `tablesOverflow` finds its box: `priorities-table-pager` or `issues-table-pager`.
   return page
-    .getByTestId("issues-table-pager")
+    .locator('[data-testid$="-table-pager"]')
     .evaluate((pager) => pager.getBoundingClientRect().bottom - window.innerHeight);
 }
 
@@ -347,11 +350,12 @@ async function expectNoForecast(page: Page): Promise<void> {
   expect(drawn).not.toMatch(/\b(on track|at risk|off track|behind schedule|ahead of schedule)\b/i);
 }
 
-/** Every row of a table, by the name a reader hears: `#1 <title>` on the priorities table and
- *  `<KEY> <title>` on a fault list. */
+/** Every row of a table, by the name a reader hears: `#1 <title>` on the priorities table, whose
+ *  rows carry `data-priority-row`, and `<KEY> <title>` on a fault list, whose carry
+ *  `data-issue-row`. */
 function rowNames(scope: Locator): Promise<string[]> {
   return scope
-    .locator("tr[data-issue-row]")
+    .locator("tr[data-issue-row], tr[data-priority-row]")
     .evaluateAll((rows) => rows.map((row) => row.getAttribute("aria-label") ?? ""));
 }
 
@@ -390,7 +394,7 @@ async function cellUnder(table: Locator, row: Locator, header: string): Promise<
 async function columnTexts(table: Locator, header: string): Promise<string[]> {
   const at = await columnIndex(table, header);
   return table
-    .locator("tr[data-issue-row]")
+    .locator("tr[data-issue-row], tr[data-priority-row]")
     .evaluateAll(
       (rows, index) =>
         rows.map((row) => row.querySelectorAll("td")[index]?.textContent?.trim() ?? ""),
@@ -529,8 +533,14 @@ test("the priorities page opens on the order, and each fault list is a tab of it
     await expect.poll(() => documentOverflow(page)).toBeLessThanOrEqual(0);
     await expect.poll(() => pagerBelowWindow(page)).toBeLessThanOrEqual(0);
 
-    // The grouping control reads "Group by".
-    await expect(priorities.getByRole("combobox", { exact: true, name: "Group by" })).toBeVisible();
+    // The grouping control reads "Group by", inside the View display menu (INFRA-3135, R2).
+    await priorities.getByRole("button", { exact: true, name: "View" }).click();
+    await expect(
+      page
+        .getByRole("dialog", { name: "View" })
+        .getByRole("group", { exact: true, name: "Group by" })
+    ).toBeVisible();
+    await page.keyboard.press("Escape");
 
     // The count closed in the last 7 days is hidden until the column control turns it on.
     const closed = prioritiesTable.getByRole("columnheader", { name: /^Closed, 7 days/ });
@@ -577,7 +587,7 @@ test("the priorities page opens on the order, and each fault list is a tab of it
     await expect
       .poll(() =>
         page.getByTestId("priorities-table-scroll").evaluate((box) => {
-          const last = [...box.querySelectorAll("tr[data-issue-row]")].at(-1);
+          const last = [...box.querySelectorAll("tr[data-priority-row]")].at(-1);
           if (last === undefined) return Number.NaN;
           return box.getBoundingClientRect().bottom - last.getBoundingClientRect().bottom;
         })
@@ -713,9 +723,11 @@ test("the priorities page opens on the order, and each fault list is a tab of it
     // cap: the chip, and the title wrapping whole after it.
     await page.setViewportSize(DESKTOP);
     await expect.poll(() => tablesOverflow(page)).toEqual({ [BACKLOG_TABLE]: 0 });
+    // The header's name starts with the column's: the column's Move menu and grip stand in the
+    // header too, and their names join it, as `/^Title/` reads the Title header below.
     expect(
       await backlogTable
-        .getByRole("columnheader", { exact: true, name: "Advances" })
+        .getByRole("columnheader", { name: /^Advances/ })
         .evaluate((header) => header.getBoundingClientRect().width)
     ).toBeLessThanOrEqual(BACKLOG_ADVANCES_CAP);
     await priorityPage(page);
@@ -973,6 +985,44 @@ test("a long title through the New priority form lands under its cut id", async 
   }
 });
 
+// The tester's red row of round 21 (the New priority form a click on Cancel ends drops the focus
+// on the page body: features/priorities/NewPriority.tsx:64-73's Cancel runs `setAdding(false)` and
+// `setTitle("")` alone (:66-69), so the form goes with the Cancel that held the focus, and the file
+// holds no `.focus(` that gives it back to New priority; the architect's ruling of
+// 2026-11-26T05:17Z). New priority opens its form, a click puts the caret in its title, and a click
+// on Cancel takes the form away; the focus must go back to the New priority button that opened
+// it. At c3b536cc it is on the body in every sample: Chromium twice and Firefox once, at 1440x900
+// and at 390x664.
+// SLOW(>=2s): one priority seeded, one Priorities page open, and its form opened and cancelled.
+// @firefox: the engine's focus after the element that held it is removed (playwright.config.ts names the clause).
+test("after a click on Cancel the New priority form gives the focus back to the New priority button that opened it @firefox", async ({
+  page,
+}) => {
+  const step = (text: string) => `the New priority form, cancelled: ${text}`;
+  const seeded = await createPriority({ owner: "alice", title: "Ship the daemon everywhere" });
+  await priorityPage(page);
+  await page.goto(PRIORITIES_PATH);
+  await expect(
+    page.getByRole("row", { exact: true, name: `#1 ${seeded.title}` }),
+    step("the Priorities page draws the seeded priority's row.")
+  ).toBeVisible();
+  const opener = page.getByRole("button", { exact: true, name: "New priority" });
+  const form = page.getByRole("form", { name: "New priority" });
+  const titleBox = form.getByRole("textbox", { name: "Title of the new priority" });
+  await opener.click();
+  await expect(form, step("New priority opens its form.")).toBeVisible();
+  await titleBox.click();
+  await expect(titleBox, step("a click puts the caret in the new priority's title.")).toBeFocused();
+  await form.getByRole("button", { exact: true, name: "Cancel" }).click();
+  await expect(form, step("Cancel takes the form away.")).toHaveCount(0);
+  await expect(
+    opener,
+    step(
+      "after Cancel the focus is on the New priority button that opened the form, not on the page body."
+    )
+  ).toBeFocused();
+});
+
 // SLOW(>=2s): the seed, three writes a person makes on a priority's page and on a row, and a
 // reload that reads them back.
 test("a priority row opens its description, its title its page, and what is written there reads back on the row after a reload", async ({
@@ -994,9 +1044,9 @@ test("a priority row opens its description, its title its page, and what is writ
     ).toBeVisible();
     await expect(page.getByRole("table")).toHaveCount(1);
     await expect(page.locator('section[aria-label^="Work advancing"]')).toHaveCount(0);
-    await page.locator(`tr[data-issue-row="${seed.ids[1]}"]`).focus();
+    await page.locator(`tr[data-priority-row="${seed.ids[1]}"]`).focus();
     await page.keyboard.press("j");
-    await expect(page.locator(`tr[data-issue-row="${seed.ids[2]}"]`)).toBeFocused();
+    await expect(page.locator(`tr[data-priority-row="${seed.ids[2]}"]`)).toBeFocused();
     await page.getByRole("button", { name: `Close #3 ${seed.titles[2]}` }).click();
 
     // The work is on the priority's own page, which the title opens: there the work table is
@@ -1162,7 +1212,7 @@ test("a priority added through the form and a row dragged write the order, which
       name: `Move #3 ${seed.titles[2]}: drag it, or press the up and down arrows`,
     });
     await expect(handle).toBeVisible();
-    await handle.dragTo(page.locator(`tr[data-issue-row="${seed.ids[1]}"]`));
+    await handle.dragTo(page.locator(`tr[data-priority-row="${seed.ids[1]}"]`));
     await expect(page.getByRole("row", { name: `#2 ${seed.titles[2]}` })).toBeVisible();
 
     // Both are the store's now, not the page's: read back from the server, and then from a page
@@ -1481,7 +1531,7 @@ test("a priority's own page writes its title and description and lists only its 
 // width the key, the project and the status leave, so no space stands empty at the table's
 // right: the last column that draws anything ends at the box's right edge, less the room a
 // filling column leaves there for the box's borders and a scrollbar (`EDGE_ROOM`, 20 px,
-// `features/project/issues-table-layout.ts`). An issue title of 190 characters reads whole there
+// `components/table-layout.ts`). An issue title of 190 characters reads whole there
 // and on each fault tab: no ellipsis, no clamp, nothing of it past its box. One of 900, as long
 // as production's longest run, is drawn in eight lines ending in '…', its whole text in its
 // tooltip.
@@ -1721,14 +1771,15 @@ test("at 1280 by 800 the priorities pages draw production's owners and descripti
           })
         )
       );
-    // Each toolbar's controls by their heights: the row the table's search box stands in, and
-    // every input, select and button drawn in it.
+    // Each toolbar's controls by their heights: each shared control row a table of the page draws
+    // its search box in (`data-control="control-row"`), and every input, select and button drawn
+    // in it.
     const toolbarHeights = () =>
-      page.locator('input[type="search"]').evaluateAll((boxes) =>
-        boxes
-          .filter((box) => box.getBoundingClientRect().height > 0)
-          .map((box) =>
-            [...(box.parentElement?.querySelectorAll("input, select, button") ?? [])]
+      page.locator('[data-control="control-row"]').evaluateAll((rows) =>
+        rows
+          .filter((row) => row.getBoundingClientRect().height > 0)
+          .map((row) =>
+            [...row.querySelectorAll("input, select, button")]
               .filter((control) => control.getBoundingClientRect().height > 0)
               .map((control) => ({
                 height: control.getBoundingClientRect().height,
@@ -1946,7 +1997,7 @@ test("on a phone the priorities tab keeps each place and title together as wide 
           const style = getComputedStyle(node);
           return rect.width > 0 && rect.height > 0 && style.visibility !== "hidden";
         };
-        return [...element.querySelectorAll("tbody tr[data-issue-row]")].map((row, at) => {
+        return [...element.querySelectorAll("tbody tr[data-priority-row]")].map((row, at) => {
           const leaves = [...row.querySelectorAll("*")].filter(
             (node) =>
               shown(node) && node.children.length === 0 && (node.textContent ?? "").trim() !== ""
@@ -2541,21 +2592,27 @@ test("the fault tabs draw a holder's claim whole, and no status bar of these pag
 });
 
 // INFRA-2947 R15 and check 0abe1d81 (Verification v69): a project's Issues tab, the one page
-// outside the priorities pages this change reaches. At 1280 by 800 the search box, each select,
-// Columns, Needs you and Unread each stand 34 px high; at 900 px wide the search box takes a row
-// of its own above the other controls; and at 390 by 844 each of those controls is at least
-// 44 px high.
+// outside the priorities pages this change reaches. At 1280 by 800 the search box, View, Columns
+// and Filters each stand 34 px high; at 900 px wide the search box takes a row of its own above
+// the other controls; and at 390 by 844 each of those controls is at least 44 px high.
 // SLOW(>=2s): a project and one issue written, and the tab read at three sizes.
 test("a project's Issues tab draws its toolbar 34 px high at 1280, its search box on a row of its own at 900, and each control 44 px or more on a phone", async ({
   browser,
 }) => {
   await createProject({ key: "TOOLS", name: "Tools" });
   await createIssue({ project: "TOOLS", title: "An issue the table draws" });
-  // Each control of the toolbar the search box stands in, by its name and its box: the box
-  // itself, the select by the words of the label it stands in (`Group by`), and each button.
+  // Each control of the toolbar the search box stands in, by its name and its box: the shared
+  // control row (`data-control="control-row"`), the search box itself and each button in it.
+  // Group by is a section of the row's display menu, so its control is that menu's trigger,
+  // `View`; Needs you and Unread are in the row's filter panel, so their control is that panel's
+  // trigger, `Filters` (dispatch://INFRA-3135, R2).
   const toolbar = (page: Page) =>
     page.getByRole("searchbox", { exact: true, name: "Search issues" }).evaluate((box) =>
-      [...(box.parentElement?.querySelectorAll("input, select, button") ?? [])]
+      [
+        ...(box
+          .closest('[data-control="control-row"]')
+          ?.querySelectorAll("input, select, button") ?? []),
+      ]
         .filter((control) => control.getBoundingClientRect().height > 0)
         .map((control) => {
           const rect = control.getBoundingClientRect();
@@ -2573,7 +2630,7 @@ test("a project's Issues tab draws its toolbar 34 px high at 1280, its search bo
           };
         })
     );
-  const named = ["Search issues", "Group by", "Columns", "Needs you", "Unread"];
+  const named = ["Search issues", "View", "Columns", "Filters"];
   const context = await asUser(browser, "alice");
   try {
     const page = await context.newPage();
@@ -4370,3 +4427,224 @@ for (const { field, name, run, slow } of tableCells) {
     }
   });
 }
+
+// The tester's red row of round 19 (R20, "a priority's page", and the class of the controller's
+// item 4 of 10:10Z, "a heading and a div were Tab stops that act as buttons"; the architect's
+// ruling of 2026-11-25T17:06Z). A priority's title on its own page is a control the keyboard
+// reaches by Tab as a button, a Tab onto it opens no editor, and Enter opens the editor, as the
+// issue header's Edit title does. At 4f36cd63 `InPlaceField.tsx`'s closed heading is an `<h1>`
+// with `tabIndex={0}` that acts as a button, and its `onFocus` opens the editor, so a Tab onto
+// the title, with no act of the reader's, already puts the caret in its box (WCAG 2.2, 3.2.1 On
+// Focus). Measured in Chromium and Firefox.
+// @firefox: where the engine moves the focus on Tab from a link to the next stop, and whether it
+// focuses an element with a tabindex there.
+test("on a priority's page Tab from Priorities reaches the title as a button that opens no editor, and Enter opens it @firefox", async ({
+  page,
+}) => {
+  const step = (text: string) => `a priority's title by the keyboard: ${text}`;
+  const priority = await createPriority({ owner: "alice", title: "Ship the daemon everywhere" });
+  await priorityPage(page);
+  await page.goto(`/priorities/${priority.id}`);
+  await expect(titleHeading(page), step("the header draws the title")).toHaveText(
+    "Ship the daemon everywhere"
+  );
+  const box = page.getByRole("textbox", { name: "Title" });
+  const back = page.getByRole("link", { name: "‹ Priorities" });
+  await back.focus();
+  await page.keyboard.press("Tab");
+  await expect(box, step("a Tab onto the title opens no editor")).toHaveCount(0);
+  const focused = await page.evaluate(() => {
+    const element = document.activeElement;
+    return element === null
+      ? null
+      : {
+          role: element.getAttribute("role") ?? element.tagName.toLowerCase(),
+          text: (element.textContent ?? "").trim(),
+        };
+  });
+  expect(focused?.role, step("the Tab after Priorities lands on the title's button")).toBe(
+    "button"
+  );
+  await page.keyboard.press("Enter");
+  await expect(box, step("Enter on the title opens its editor")).toBeFocused();
+  await expect(box, step("the editor holds the title")).toHaveValue("Ship the daemon everywhere");
+});
+
+// The tester's red row of round 20 (InPlaceField.tsx:192-194: "nothing under it moves as it opens
+// and closes"; the architect's ruling of 2026-11-25T21:46Z). Below 1280 px, opening a priority's
+// title box must keep the heading's 22 px type and the header's height. At ef1769c3 styles.css's
+// unlayered `textarea { font-size: 1rem }` below 1280 px overrides InPlaceField's `text-[22px]`,
+// because the `revert-layer` exception covers only `[data-issue-page] [data-issue-header]`: the
+// type drops from 22 px to 16 px and the header shrinks from 144 px to 122 px. Measured in
+// Chromium, Firefox and WebKit.
+// @firefox: the phone-width `textarea` font-size rule against the heading's `text-[22px]`.
+test("on a 390 px phone opening a priority's title keeps its 22 px type and the header's height @firefox", async ({
+  page,
+}) => {
+  const step = (text: string) => `a priority's title box at 390 px: ${text}`;
+  const priority = await createPriority({ owner: "alice", title: "Ship the daemon everywhere" });
+  await page.setViewportSize(PHONE);
+  await page.goto(`/priorities/${priority.id}`);
+  const header = page.getByTestId("priority-header");
+  const button = header.getByRole("heading", { level: 1 }).getByRole("button");
+  const box = page.getByRole("textbox", { name: "Title" });
+  await expect(button, step("the title is drawn")).toHaveText("Ship the daemon everywhere");
+  const titleTypeAndHeader = () =>
+    header.evaluate((node) => {
+      const control = node.querySelector("h1 button, h1 textarea");
+      return {
+        fontSize: control === null ? null : getComputedStyle(control).fontSize,
+        headerHeight: Math.round(node.getBoundingClientRect().height * 10) / 10,
+      };
+    });
+  const before = await titleTypeAndHeader();
+  await button.focus();
+  await page.keyboard.press("Enter");
+  await expect(box, step("Enter opens the title box")).toBeFocused();
+  await nextFrames(page);
+  const open = await titleTypeAndHeader();
+  expect(open.fontSize, step("the open title box keeps the heading's 22px type")).toBe(
+    before.fontSize
+  );
+  expect(open.headerHeight, step("the open title box keeps the header's height")).toBe(
+    before.headerHeight
+  );
+});
+
+// Round 21's row, of the class of the tester's red row of round 20 above (InPlaceField.tsx's
+// "nothing under it moves as it opens and closes"), found by a search of that class rather than
+// measured. Below 1280 px `styles.css` gives every `textarea` a 44 px floor. At 99366266 a
+// one-line title's open box is shorter than that - a 28 px line, 4 px of padding above and below
+// under 768 px and none from there, a 1 px border - while its closed heading is 38 px tall under
+// 768 px and 30 px from there, so by the classes' arithmetic opening it grows the header by 6 px
+// at 390 px and by 14 px at 1024 px. A title of two lines or more is taller than the floor and
+// moves nothing. The open box keeps the floor and its heading's place: 7 px of padding above and
+// below, and as much negative margin as that adds to the heading's padding. Each reading opens
+// the title as the keyboard does, the heading's button focused and Enter pressed, and compares
+// the open box with the closed heading. The three-line title is three words each too wide to
+// share a line with another at 390 px, from Arial's metrics to DejaVu Sans Bold's, so it takes
+// three lines in whichever font the engine draws it.
+// SLOW(>=2s): two priorities written, two pages read, and the title opened at two widths.
+test("below 1280 px opening a one-line priority title, and a three-line one at 390 px, keeps the box's 44 px floor, the header's height, the title's type and where its words stand", async ({
+  page,
+}) => {
+  const step = (text: string) => `a priority's title box below 1280 px: ${text}`;
+  const threeLines = "Decommissioning overcompensating counterbalancing";
+  const short = await createPriority({ owner: "alice", title: "Ship it" });
+  const long = await createPriority({ owner: "alice", title: threeLines });
+  const header = page.getByTestId("priority-header");
+  const button = titleHeading(page).getByRole("button");
+  const box = page.getByRole("textbox", { name: "Title" });
+  // What the reader sees of the title, closed or open: the height of its button or its box, the
+  // header's height, the title's type, the lines it takes, and the top of the box its words are
+  // drawn in - the content box of the button or of the open box - in the window.
+  const reading = () =>
+    header.evaluate((node) => {
+      const control = node.querySelector("h1 button, h1 textarea");
+      if (control === null) throw new Error("the header draws no title");
+      const style = getComputedStyle(control);
+      const rect = control.getBoundingClientRect();
+      const padding = Number.parseFloat(style.paddingTop) + Number.parseFloat(style.paddingBottom);
+      return {
+        controlHeight: rect.height,
+        fontSize: style.fontSize,
+        headerHeight: Math.round(node.getBoundingClientRect().height * 10) / 10,
+        lines: Math.round((control.clientHeight - padding) / Number.parseFloat(style.lineHeight)),
+        wordsTop: rect.top + control.clientTop + Number.parseFloat(style.paddingTop),
+      };
+    });
+  // Opens the title at `at` from the keyboard, compares the open box with the closed heading,
+  // and closes it again with Escape, which gives the focus back to the heading's button.
+  const openAndCompare = async (at: string, lines: number) => {
+    const closed = await reading();
+    expect(closed.lines, step(`${at}: the closed title takes ${lines} line(s)`)).toBe(lines);
+    await button.focus();
+    await page.keyboard.press("Enter");
+    await expect(box, step(`${at}: Enter opens the title box`)).toBeFocused();
+    await nextFrames(page);
+    const open = await reading();
+    expect(
+      open.controlHeight,
+      step(`${at}: the open box keeps the 44 px floor`)
+    ).toBeGreaterThanOrEqual(44);
+    expect(open.headerHeight, step(`${at}: the open box keeps the header's height`)).toBe(
+      closed.headerHeight
+    );
+    expect(open.fontSize, step(`${at}: the open box keeps the heading's type`)).toBe(
+      closed.fontSize
+    );
+    expect(
+      Math.abs(open.wordsTop - closed.wordsTop),
+      step(`${at}: the open box keeps the title's words where the heading drew them, within 1 px`)
+    ).toBeLessThanOrEqual(1);
+    await page.keyboard.press("Escape");
+    await expect(button, step(`${at}: Escape gives the focus back to the title`)).toBeFocused();
+  };
+
+  await page.setViewportSize({ height: 664, width: 390 });
+  await page.goto(`/priorities/${short.id}`);
+  await expect(button, step("the one-line title is drawn")).toHaveText("Ship it");
+  await openAndCompare("at 390x664, a one-line title", 1);
+  await page.setViewportSize({ height: 768, width: 1024 });
+  await nextFrames(page);
+  await openAndCompare("at 1024x768, a one-line title", 1);
+
+  await page.setViewportSize({ height: 664, width: 390 });
+  await page.goto(`/priorities/${long.id}`);
+  await expect(button, step("the three-line title is drawn")).toHaveText(threeLines);
+  await openAndCompare("at 390x664, a three-line title", 3);
+});
+
+// The tester's red row of round 21 (InPlaceField.tsx:192-194: "every word of a long title stays in
+// view as it is written, and nothing under it moves as it opens and closes"; the architect's ruling
+// of 2026-11-26T03:09Z). A priority's title box left open while the window is resized must keep
+// every line in view and leave the header the height its heading has when it closes. At c3b536cc
+// InPlaceField.tsx:354-360's layout effect reads no width change, so narrowing 1024 px to 390 px
+// leaves 84 px of a long title scrolled out of the box and closing moves the header by 84 px;
+// narrowing 1440 px to 1024 px moves it by 14 px. Measured in Chromium and Firefox.
+// SLOW(>=2s): one page open, its title box opened twice, the window resized while it is open.
+// @firefox: the textarea's scrollHeight after a window resize in each engine.
+test("a priority's title box left open while the window is resized holds every line and leaves the header the height its heading has @firefox", async ({
+  page,
+}) => {
+  const step = (text: string) => `a priority's title box resized while open: ${text}`;
+  const longTitle =
+    "Ship the daemon rollout to every machine of the fleet before the freeze so no old build stays in production and the smoke checks pass clean";
+  const priority = await createPriority({ owner: "alice", title: longTitle });
+  const header = page.getByTestId("priority-header");
+  const box = header.getByRole("textbox", { name: "Title" });
+  await page.setViewportSize({ height: 768, width: 1024 });
+  await page.goto(`/priorities/${priority.id}`);
+  await header.getByRole("heading", { level: 1 }).getByRole("button").click();
+  await expect(box, step("a click on the heading opens the box at 1024 px")).toBeFocused();
+  await page.setViewportSize(PHONE);
+  await nextFrames(page);
+  const hidden = await box.evaluate((node) => node.scrollHeight - node.clientHeight);
+  expect(
+    hidden,
+    step("at 390 px no line of the title is scrolled out of the box")
+  ).toBeLessThanOrEqual(1);
+  const openHeight = (await header.boundingBox())?.height ?? 0;
+  await page.keyboard.press("Escape");
+  await nextFrames(page);
+  const closedHeight = (await header.boundingBox())?.height ?? 0;
+  expect(
+    Math.abs(openHeight - closedHeight),
+    step("at 390 px the header keeps its height as the box closes, within 1 px")
+  ).toBeLessThanOrEqual(1);
+  await page.setViewportSize(WIDE);
+  await header.getByRole("heading", { level: 1 }).getByRole("button").click();
+  await expect(box, step("the box opens again at 1440 px")).toBeFocused();
+  await page.setViewportSize({ height: 768, width: 1024 });
+  await nextFrames(page);
+  const tall = (await header.boundingBox())?.height ?? 0;
+  await page.keyboard.press("Escape");
+  await nextFrames(page);
+  const heading = (await header.boundingBox())?.height ?? 0;
+  expect(
+    Math.abs(tall - heading),
+    step(
+      "at 1024 px, after the window narrowed from 1440 px, the header keeps its height as the box closes, within 1 px"
+    )
+  ).toBeLessThanOrEqual(1);
+});

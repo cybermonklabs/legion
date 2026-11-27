@@ -25,8 +25,9 @@ import { gatedStepEntries, STEP_LABELS } from "../issue/gated-steps";
 import { IssueComponentsLine } from "../issue/IssueComponentsLine";
 import { IssueLabels } from "../issue/IssueLabels";
 import { stateForIssue } from "../issue/pins";
+import { propertyControlSelector } from "../issue/property-control";
 import { RepoControl, type RepoControlFailure } from "../issue/RepoControl";
-import { IssuePriorityLine } from "../priorities/IssuePriorityLine";
+import { IssuePriorityLine, usePriorityLineWrite } from "../priorities/IssuePriorityLine";
 import { AgentName } from "../refs/AgentName";
 import { ReferencedBy } from "../refs/ReferencedBy";
 import { EVENT_FRESH, standsFailed } from "../refs/reference-target";
@@ -63,7 +64,7 @@ import {
   STATUS_ROW_SHAPE,
 } from "./details-leaves";
 import { DetailsFocusedNode, DetailsHistory, DetailsPeople } from "./details-more";
-import { blockedByControlName, referencedByControlName } from "./details-names";
+import { referencedByControlName } from "./details-names";
 import { detailsEditor, detailsOpener } from "./details-rows";
 import { IssueAddMenu } from "./IssueAddMenu";
 import { IssueClaimControl } from "./IssueClaimControl";
@@ -375,9 +376,10 @@ export function IssueMarginPanel({
   // is cached, even where that read failed before it answered. A line that goes with no press of
   // its Retry - a read answering on an event or a window focus - or before that answer - the set
   // changed or emptied in another session while the read is out - leaves the focus on the page's
-  // body. In Blocked by the focus goes to the row's control, found by its name as the add menu
-  // finds it (`blockedByControlName`), and where the row draws none - on a closed issue, or while
-  // its editor is open - to the first issue the row waits on, each passing over a control that
+  // body. In Blocked by the focus goes to the row's control, found by its mark
+  // (`propertyControlSelector`) - the row's one control carries it whether it says Add, the issue
+  // waiting on none, or Edit - and where the row draws none - on a closed issue, or while its
+  // editor is open - to the first issue the row waits on, each passing over a control that
   // takes no press (`usableControl`). The row draws that issue whenever the read has answered,
   // since the titles are read only for a set that holds one. In Blocks, which has no control, the
   // focus of the Retry of what waits on the issue goes to the first issue the row draws, or else
@@ -387,7 +389,7 @@ export function IssueMarginPanel({
   const titlesRetry = useTitlesRetry(blockerTitles, blockerRead.queryKey, () =>
     firstUsable(
       blockedByValue.current?.querySelector<HTMLElement>(
-        `[aria-label="${CSS.escape(blockedByControlName(issue.key, blockers.length))}"]`
+        propertyControlSelector("blocked_by", issue.key)
       ),
       blockedByValue.current?.querySelector<HTMLElement>("a[href]")
     )
@@ -398,6 +400,11 @@ export function IssueMarginPanel({
   const blockingRetry = useRetryHandOff(() => firstWaiting() ?? blocksNone.current);
   const waitingRetry = useTitlesRetry(waitingTitles, waitingRead.queryKey, firstWaiting);
   const priority = usePriorityHandOffs(issue, developmentHeading);
+  // The priority line's write, with its hold and its refusal, held here rather than in the line:
+  // the line is drawn in one of two places, and the first priority added and the last one
+  // removed take it from the place the write was made in to the other as the read after that
+  // write is drawn (`usePriorityLineWrite`).
+  const priorityWrite = usePriorityLineWrite(issue.key);
   // The Repository row's control draws its own refused write, and hands it to the row to say
   // (`sayFailure`), as Details says its own. A failed read of the project list, which the box's
   // suggestion of the project's default repository comes from, costs the suggestion and says
@@ -475,7 +482,7 @@ export function IssueMarginPanel({
     : [{ document: documentArtifact, label: STEP_LABELS.spec, step: "spec" as const }, ...gated];
   const pullRequests = (issue.external_links ?? []).filter((link) => link.kind === "github_pr");
   const otherLinks = (issue.external_links ?? []).filter((link) => link.kind !== "github_pr");
-  const labels = issue.labels ?? [];
+  const labels = writes.labelsShown;
   const advances = issue.advances ?? [];
   const artifacts = issue.artifacts ?? [];
   const files = filesOpen ? artifacts : artifacts.slice(0, FOLD_AFTER);
@@ -536,14 +543,16 @@ export function IssueMarginPanel({
             labels={labels}
             onSave={(next) => writes.labels.mutateAsync({ issueKey: issue.key, labels: next })}
             project={issue.project}
-            saving={writes.labels.isPending}
+            saving={writes.labelsHeld}
             variant="rail"
           />
         </Row>
         {/* The priorities the issue advances, with the control that adds and removes one: an
             issue that advances none draws no such row, and its control stands beside the add
             control below, where a focus in the row moves on as the reader's own removal of the
-            last one lands (`usePriorityHandOffs`). */}
+            last one lands (`usePriorityHandOffs`), and that removal's write goes on with it:
+            its hold, its refusal, and why the reads it made stale have not settled
+            (`priorityWrite`). */}
         {advances.length === 0 ? null : (
           <Row
             glyph="↗"
@@ -552,7 +561,12 @@ export function IssueMarginPanel({
             valueRef={priority.advancesValue}
           >
             <div className="contents" ref={priority.rowLeft}>
-              <IssuePriorityLine disabled={isClosed} inRow issue={issue} />
+              <IssuePriorityLine
+                disabled={isClosed}
+                inRow
+                issue={issue}
+                priorityWrite={priorityWrite}
+              />
             </div>
           </Row>
         )}
@@ -732,8 +746,10 @@ export function IssueMarginPanel({
               the write store leaves its refusal to this row, and the header, which says the
               page's other refusals, never sees it. The line stays while the save its Retry sent
               again is out (`useSaidFailure`), and says Dispatch's new reason if that is refused
-              too; its Retry takes no press while that save is out (`refused`), since the drafts
-              send nothing while a save is out (`useSubmitGuard`), and is never disabled. A
+              too; its Retry takes no press while that save is out within its deadline
+              (`refused`, `fieldHeld`), since the drafts send nothing while a save is out
+              (`useSubmitGuard`), and is never disabled. Past the deadline it takes a press again,
+              which sends no second route beside the one still tried (`useIssueDrafts`). A
               save the reader stopped is no refusal: it may have been saved, and the line says so
               in the header's words for a title or a route save, whose Retry is this one, a press
               of its own; on a closed issue, whose line draws no Retry, it says so in Details' own
@@ -757,7 +773,7 @@ export function IssueMarginPanel({
                   : apiErrorMessage(fieldFailure.error, "Could not update this issue."))
               }
               onRetry={isClosed ? undefined : writes.drafts.retry}
-              refused={writes.updateIssue.isPending}
+              refused={writes.fieldHeld}
               {...routeRetry}
             />
           ) : null}
@@ -779,7 +795,8 @@ export function IssueMarginPanel({
             its control; and, while the issue advances no priority, the control that adds one,
             which is the priority row (`IssuePriorityLine`) with nothing in it yet. The focus it
             holds as the reader's own first priority lands and moves the line goes on to the
-            Advances row (`usePriorityHandOffs`). */}
+            Advances row (`usePriorityHandOffs`), and so does that write, with its hold and its
+            refusal (`priorityWrite`). */}
         <div className="flex min-w-0 flex-wrap items-center gap-2 py-2" ref={priority.addRow}>
           <IssueAddMenu
             drawerBox={drawerBox}
@@ -790,7 +807,12 @@ export function IssueMarginPanel({
           />
           {advances.length === 0 ? (
             <div className="contents" data-testid="issue-advances" ref={priority.besideAddLeft}>
-              <IssuePriorityLine disabled={isClosed} inRow issue={issue} />
+              <IssuePriorityLine
+                disabled={isClosed}
+                inRow
+                issue={issue}
+                priorityWrite={priorityWrite}
+              />
             </div>
           ) : null}
         </div>

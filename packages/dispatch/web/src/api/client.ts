@@ -161,6 +161,8 @@ export class ApiError extends Error {
   }
 }
 
+/** The message of a `NetworkError`. */
+export const NETWORK_ERROR_MESSAGE = "Dispatch could not be reached";
 /** The items an `ID_AMBIGUOUS` refusal listed, or undefined for any other failure and for a
  *  refusal that listed none, which there is no list to show for. The code is what says the
  *  entries are these and not a duplicate check's issues (`ErrorCandidate`). */
@@ -183,7 +185,7 @@ export class NetworkError extends Error {
   readonly path: string;
 
   constructor(path: string, cause: unknown) {
-    super("Dispatch could not be reached", { cause });
+    super(NETWORK_ERROR_MESSAGE, { cause });
     this.name = "NetworkError";
     this.path = path;
   }
@@ -236,6 +238,11 @@ export { REFERENCE_TARGETS_MAX };
  *  16 KB. It is set under that one known limit, not measured against the deployed Dispatch. */
 export const REFERENCE_TARGETS_MAX_QUERY_CHARS = 12_000;
 
+/** The message of a `RequestTimeoutError` given up after `deadlineMs` of silence. */
+export function requestTimeoutMessage(deadlineMs: number): string {
+  return `Dispatch did not answer within ${deadlineMs / 1000} seconds`;
+}
+
 /** A request Dispatch went silent on for its deadline, which the page then aborted. It is no
  *  refusal: the request may still have reached Dispatch, so only a read, or a write made again
  *  under its key (`writeUnderKey`), is asked again. */
@@ -243,7 +250,7 @@ export class RequestTimeoutError extends Error {
   readonly path: string;
 
   constructor(path: string, deadlineMs: number) {
-    super(`Dispatch did not answer within ${deadlineMs / 1000} seconds`);
+    super(requestTimeoutMessage(deadlineMs));
     this.name = "RequestTimeoutError";
     this.path = path;
   }
@@ -572,7 +579,11 @@ export function apiErrorCodeIn(error: unknown, codes: ReadonlySet<string>): erro
  *  conversation, named by the agent's session id (direct messages on the Agents page). */
 export type ArtifactOwner = { issue: string } | { project: string } | { session: string };
 
-export type CreateArtifactReviewInput = Body<"/api/v1/artifacts/{id}/reviews", "post">;
+/** What a review says: approved, or changes requested with the reason Dispatch requires for it. */
+export type CreateArtifactReviewInput = Body<
+  "/api/v1/artifacts/{id}/versions/{number}/reviews",
+  "post"
+>;
 
 /** What a decline carries: the person's own note, which is optional. */
 export type DeclineAskInput = Body<"/api/v1/asks/{id}/decline", "post">;
@@ -652,7 +663,7 @@ export function agentMessageRequest(
   );
 }
 
-/** `PUT /api/v1/me/asks/{id}/snooze` (`snoozeAsk`). */
+/** `PUT /api/v1/me/asks/{id}/snooze` (`useAskSnoozeWrites`, `useAskSnoozeMany`). */
 export function askSnoozeRequest(id: string, snoozedUntil: string) {
   return writeRequest(
     "put",
@@ -660,6 +671,11 @@ export function askSnoozeRequest(id: string, snoozedUntil: string) {
     { id },
     { snoozed_until: snoozedUntil }
   );
+}
+
+/** `DELETE /api/v1/me/asks/{id}/snooze`: brings the row back now (`useAskSnoozeWrites`). */
+export function askUnsnoozeRequest(id: string) {
+  return writeRequest("delete", "/api/v1/me/asks/{id}/snooze", { id });
 }
 
 /** `PUT /api/v1/me/threads/{id}/read`: a thread's read mark (`markThreadRead`). */
@@ -713,6 +729,29 @@ export function agentStateRequest(
     { session_id: sessionID },
     input
   );
+}
+
+/** `PUT /api/v1/projects/{key}/legion/daemon`: names the daemon a project's state is read from,
+ *  answered with the row as it was stored. Deployment-scoped (`scopeDeployment`), so a credential
+ *  naming one project is refused it; a `state_url` that is not an absolute http(s) URL with a host
+ *  and no path, carrying no user, password, query or fragment, is `400 LEGION_SETTING_INPUT` with
+ *  the server's own reason (`legionStateURL` in
+ *  packages/envoy/internal/dispatch/api/settings_legion.go), and an unknown project is
+ *  `404 PROJECT_NOT_FOUND`. */
+export function legionDaemonRequest(project: string, stateUrl: string) {
+  return writeRequest(
+    "put",
+    "/api/v1/projects/{key}/legion/daemon",
+    { key: project },
+    { state_url: stateUrl }
+  );
+}
+
+/** `DELETE /api/v1/projects/{key}/legion/daemon`: stops reading a project's daemon; what was read
+ *  stays, and nothing re-reads it. Scoped as the `PUT` is (`legionDaemonRequest`); a project with
+ *  no daemon is `404 NOT_FOUND`. */
+export function legionDaemonRemovalRequest(project: string) {
+  return writeRequest("delete", "/api/v1/projects/{key}/legion/daemon", { key: project });
 }
 
 /** The same-origin route of one stored version's bytes, addressed by the owner and the artifact's
@@ -1394,18 +1433,6 @@ export class DispatchApiClient {
     return this.read("/api/v1/inbox", {}, { project });
   }
 
-  /** `PUT /api/v1/me/asks/{id}/snooze`: fold this inbox row away for the caller until
-   *  `snoozedUntil` (RFC3339). Needs the `person` scope, like the inbox itself. */
-  async snoozeAsk(id: string, snoozedUntil: string, bounds: WriteBounds) {
-    return this.send(askSnoozeRequest(id, snoozedUntil), bounds);
-  }
-
-  /** `DELETE /api/v1/me/asks/{id}/snooze`: bring the row back now. A row that is not snoozed
-   *  answers the same 204. */
-  async unsnoozeAsk(id: string, bounds: WriteBounds): Promise<void> {
-    await this.remove("/api/v1/me/asks/{id}/snooze", { id }, bounds);
-  }
-
   /** `PUT /api/v1/asks/{id}/asked-of`: hand an open ask to `askedOf`, the email of somebody who
    *  has signed in, so the ask waits on them wherever its issue goes and their Inbox lists it.
    *  Naming the assignee of the ask's own issue empties the stored field, which hands the ask
@@ -1864,8 +1891,22 @@ export class DispatchApiClient {
     return this.read("/api/v1/artifacts/{id}/reviews", { id });
   }
 
-  createArtifactReview(id: string, input: CreateArtifactReviewInput, bounds: WriteBounds) {
-    return this.post("/api/v1/artifacts/{id}/reviews", { id }, input, bounds);
+  /** A review of version `version` of the document, the version the reader read. Dispatch records
+   *  it only while that is the version a review would record - the latest settled version, or
+   *  the one an open approval request names - and refuses any other with `409
+   *  REVIEW_VERSION_MOVED`, writing nothing, so no review approves a version nobody read. */
+  createArtifactVersionReview(
+    id: string,
+    version: number,
+    input: CreateArtifactReviewInput,
+    bounds: WriteBounds
+  ) {
+    return this.post(
+      "/api/v1/artifacts/{id}/versions/{number}/reviews",
+      { id, number: String(version) },
+      input,
+      bounds
+    );
   }
 
   listArtifactAsks(id: string, state: "all" | "open" | "answered" = "all") {
@@ -1970,27 +2011,6 @@ export class DispatchApiClient {
    *  project key is `400 INVALID_PROJECT`, and an unknown project `404 PROJECT_NOT_FOUND`. */
   getLegionDaemon(project: string) {
     return this.read("/api/v1/projects/{key}/legion/daemon", { key: project });
-  }
-
-  /** Names the daemon a project's state is read from, and answers the row as it was stored.
-   *  Deployment-scoped (`scopeDeployment`), so a credential naming one project is refused it; a
-   *  `state_url` that is not an absolute http(s) URL with a host and no path, carrying no user,
-   *  password, query or fragment, is `400 LEGION_SETTING_INPUT` with the server's own reason
-   *  (`legionStateURL` in packages/envoy/internal/dispatch/api/settings_legion.go), and an
-   *  unknown project is `404 PROJECT_NOT_FOUND`. */
-  putLegionDaemon(project: string, stateUrl: string, bounds: WriteBounds) {
-    return this.put(
-      "/api/v1/projects/{key}/legion/daemon",
-      { key: project },
-      { state_url: stateUrl },
-      bounds
-    );
-  }
-
-  /** Stops reading a project's daemon: what was read stays, and nothing re-reads it. Scoped as
-   *  the PUT is; a project with no daemon is `404 NOT_FOUND`. */
-  async deleteLegionDaemon(project: string, bounds: WriteBounds): Promise<void> {
-    await this.remove("/api/v1/projects/{key}/legion/daemon", { key: project }, bounds);
   }
 
   /** Creates a Delivery session group: its sessions' pull requests take it as their Parent agent.

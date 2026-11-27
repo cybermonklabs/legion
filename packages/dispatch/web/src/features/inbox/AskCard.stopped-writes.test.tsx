@@ -2,14 +2,20 @@ import { beforeAll, expect, jest, mock, spyOn, test } from "bun:test";
 // biome-ignore lint/style/noRestrictedImports: the pastes below carry a file, which user-event has no form for
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import type { ReactNode } from "react";
 
 import { realClock, tick } from "../../__tests__/fake-clock";
+import { heldNotDisabled } from "../../__tests__/held-press";
+import { heldUntilLate, pressesOf } from "../../__tests__/held-until-late";
+import { openList } from "../../__tests__/list-picks";
 import { stopTheLateWrite, untilAttempted } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
-import { api, NetworkError, type WriteBounds } from "../../api/client";
+import { ApiError, api, NetworkError, type WriteBounds } from "../../api/client";
 import type { AnswerAskInput, Ask, AskRead, Comment } from "../../api/types";
+import { emulateChromiumFocusFixup } from "../issue-page/chromium-focus-fixup";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
-import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
+import { SEND_DEADLINE_MS, SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
+import { writesOf } from "../writes/write-store";
 import { AskCard } from "./AskCard";
 import { answerDraft, setAnswerDraft } from "./answer-drafts";
 import {
@@ -19,6 +25,12 @@ import {
   renderCard,
   thread,
 } from "./ask-card-fixture";
+import {
+  AskAnswerWritesContext,
+  AskClarificationWritesContext,
+  useOutstandingAnswerWrites,
+} from "./outstanding-answers";
+import { AskHandOnWritesContext, useAskHandOnWrites } from "./useAskHandOn";
 
 // The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
 // random order, so the file loads the engine before its first row, whichever row that is.
@@ -54,12 +66,11 @@ test("a hand-on the reader stopped says what Retry does, not a message's words",
   const { queryClient, view } = renderCard(<AskCard ask={open} initialThread={thread(open, [])} />);
   const card = within(view.container);
   try {
-    const control = await card.findByLabelText<HTMLSelectElement>("Hand this question to");
     // The people are read only once the reader reaches for the control (`AskHandOn`).
-    await userEvent.setup().click(control);
-    await waitFor(() => expect(within(control).getByRole("option", { name: "bob" })).toBeTruthy());
+    const list = await openList(userEvent.setup(), "Hand this question to");
+    await waitFor(() => expect(within(list).getByRole("option", { name: "bob" })).toBeTruthy());
     jest.useFakeTimers();
-    await userOnFakeClock().selectOptions(control, "bob");
+    await userOnFakeClock().click(within(list).getByRole("option", { name: "bob" }));
     await stopTheLateWrite(queryClient);
 
     // The alert's paragraph, without its Retry button's name.
@@ -81,6 +92,159 @@ test("a hand-on the reader stopped says what Retry does, not a message's words",
 /** A fetch that failed, which the write is tried again after: it goes late, for the reader to
  *  stop. */
 const dropped = (path: string) => new NetworkError(path, new TypeError("Failed to fetch"));
+
+/** An Inbox's hand-ons, answers and questions back around `children`, as the Inbox provides
+ *  them: a card under it makes each of those presses through the Inbox's write of its ask. */
+function InboxWrites({ children }: { children: ReactNode }): ReactNode {
+  return (
+    <AskHandOnWritesContext value={useAskHandOnWrites()}>
+      <AskAnswerWritesContext value={useOutstandingAnswerWrites()}>
+        <AskClarificationWritesContext value={useOutstandingAnswerWrites()}>
+          {children}
+        </AskClarificationWritesContext>
+      </AskAnswerWritesContext>
+    </AskHandOnWritesContext>
+  );
+}
+
+/** `card`, inside an Inbox's writes where `inbox` says so. */
+function drawn(card: ReactNode, inbox: boolean): ReactNode {
+  return inbox ? <InboxWrites>{card}</InboxWrites> : card;
+}
+
+/** Presses `name` on an open question's card, drawn inside an Inbox's writes where `inbox` says
+ *  so, its write never answering, and checks the hold that follows ends at the write's
+ *  deadline: a press then answers again, or, for a question back, posts nothing while the first
+ *  is out and one once it failed. */
+async function questionWriteLetsGo(
+  name: "Answer" | "Ask back" | "Ask back instead" | "Answer with it anyway",
+  inbox: boolean
+): Promise<void> {
+  const open = answeredAsk({ answer: null, state: "open" });
+  const answer = mock((_id: string, _input: AnswerAskInput, _bounds: WriteBounds) =>
+    Promise.reject<Ask>(dropped("/api/v1/asks/ask-1/answer"))
+  );
+  const comment = spyOn(api, "createComment").mockRejectedValue(
+    dropped("/api/v1/issues/CORE-1/comments")
+  );
+  const { queryClient, view } = renderCard(
+    drawn(<AskCard answerAsk={answer} ask={open} initialThread={thread(open, [])} />, inbox)
+  );
+  try {
+    const card = within(view.container);
+    const prepare = userEvent.setup();
+    if (name === "Answer") {
+      await prepare.click(await card.findByRole("radio", { name: "Ship" }));
+    } else {
+      const field = card.getByLabelText("Your answer");
+      await prepare.click(field);
+      await prepare.paste("Ship what, exactly?");
+      if (name !== "Ask back") await prepare.click(card.getByRole("button", { name: "Answer" }));
+    }
+    const button = card.getByRole<HTMLButtonElement>("button", { name });
+    const field = card.getByLabelText<HTMLTextAreaElement>("Your answer");
+    jest.useFakeTimers();
+    const user = userOnFakeClock();
+    const sent = () => pressesOf([answer, comment]);
+    const clarification = name.startsWith("Ask back");
+    await heldUntilLate(user, button, {
+      alongside: (held) => {
+        expect(field.readOnly, "Your answer").toBe(held);
+      },
+      label: `${clarification ? "Question back on" : "Answer to"} “Which release path?”`,
+      name,
+      queryClient,
+      sent,
+    });
+    await user.keyboard("{Enter}");
+    await tick(1_000);
+    if (clarification) {
+      expect(sent()).toBe(1);
+      const stillSending = /sent nothing:.*question back is still being sent/;
+      expect(card.getByText(stillSending)).toBeInTheDocument();
+      comment.mockRejectedValue(new ApiError(403, { error: "Cannot post the question" }));
+      await tick(30_000);
+      expect(card.queryByText(stillSending)).toBeNull();
+      await user.keyboard("{Enter}");
+      await tick(1_000);
+    }
+    expect(sent()).toBe(2);
+  } finally {
+    realClock();
+    view.unmount();
+    queryClient.clear();
+    comment.mockRestore();
+  }
+}
+
+test.each(["Answer", "Ask back", "Ask back instead", "Answer with it anyway"] as const)(
+  "%s lets go at the question write deadline",
+  (name) => questionWriteLetsGo(name, false)
+);
+
+// Inside an Inbox the answer and the question back are the Inbox's writes of the ask, which hold
+// the card as its own writes do: until their deadline and no longer.
+test.each(["Answer", "Ask back"] as const)(
+  "%s in an Inbox lets go at the question write deadline",
+  (name) => questionWriteLetsGo(name, true)
+);
+
+/** Picks bob in an open question's hand-on list, drawn inside an Inbox's writes where `inbox`
+ *  says so, the hand-on never answering, and checks the trigger is held until the write's
+ *  deadline and no longer, and that a pick then sends another hand-on. */
+async function handOnLetsGo(inbox: boolean): Promise<void> {
+  const open = answeredAsk({ answer: null, state: "open" });
+  const hand = spyOn(api, "handAskTo").mockRejectedValue(dropped("/api/v1/asks/ask-1/asked-of"));
+  const users = spyOn(api, "listUsers").mockResolvedValue([{ login: "alice" }, { login: "bob" }]);
+  const getAsk = spyOn(api, "getAsk").mockResolvedValue(thread(open, []));
+  const { queryClient, view } = renderCard(
+    drawn(<AskCard ask={open} initialThread={thread(open, [])} />, inbox)
+  );
+  try {
+    const list = await openList(userEvent.setup(), "Hand this question to");
+    const option = await within(list).findByRole("option", { name: "bob" });
+    const trigger = screen.getByRole<HTMLButtonElement>("button", {
+      name: /Hand this question to/,
+    });
+    jest.useFakeTimers();
+    const user = userOnFakeClock();
+    const stopFocusFixup = emulateChromiumFocusFixup();
+    try {
+      await user.click(option);
+      await tick(0);
+      await tick(SEND_DEADLINE_MS - 1_000);
+      expect(heldNotDisabled(trigger, "Hand on"), "Hand on, a second short of the deadline").toBe(
+        true
+      );
+      expect(trigger).toHaveFocus();
+      await tick(1_000);
+      expect(writesOf(queryClient).rows()[0]?.status).toBe("late");
+      expect(heldNotDisabled(trigger, "Hand on"), "Hand on, past the deadline").toBe(false);
+      expect(trigger).toHaveFocus();
+    } finally {
+      stopFocusFixup();
+    }
+    await user.keyboard("{Enter}");
+    await user.click(screen.getByRole("option", { name: "bob" }));
+    await tick(1_000);
+    expect(pressesOf([hand])).toBe(2);
+  } finally {
+    realClock();
+    view.unmount();
+    queryClient.clear();
+    hand.mockRestore();
+    users.mockRestore();
+    getAsk.mockRestore();
+  }
+}
+
+test("Hand on lets go at the question write deadline and sends another pick", () =>
+  handOnLetsGo(false));
+
+// Inside an Inbox the hand-on is the Inbox's write of the ask, which holds the trigger as the
+// card's own does: until its deadline and no longer.
+test("Hand on in an Inbox lets go at the question write deadline and sends another pick", () =>
+  handOnLetsGo(true));
 
 /** An open question on its card over the held clock, its answer write `answerAsk`: the reader
  *  picks Ship and presses Answer. */
@@ -265,12 +429,11 @@ test("a stopped hand-on's Retry after the card moves to another ask hands on the
     <AskCard ask={open} initialThread={thread(open, [])} />
   );
   try {
-    const control = await screen.findByLabelText<HTMLSelectElement>("Hand this question to");
     // The people are read only once the reader reaches for the control (`AskHandOn`).
-    await userEvent.setup().click(control);
-    await waitFor(() => expect(within(control).getByRole("option", { name: "bob" })).toBeTruthy());
+    const list = await openList(userEvent.setup(), "Hand this question to");
+    await waitFor(() => expect(within(list).getByRole("option", { name: "bob" })).toBeTruthy());
     jest.useFakeTimers();
-    await userOnFakeClock().selectOptions(control, "bob");
+    await userOnFakeClock().click(within(list).getByRole("option", { name: "bob" }));
     await stopTheLateWrite(queryClient);
     const stopped = handAskTo.mock.calls.length;
 
@@ -502,3 +665,63 @@ test("a stopped upload's Retry after the card moves to another ask adds the file
     uploadArtifact.mockRestore();
   }
 });
+
+// A picture still uploading is not in the answer yet, so Answer and Ask back wait for it - but
+// only until the upload's deadline: an upload that never answers is still tried, its text joins
+// the answer if it lands, and a press sends what the card holds.
+test.each(["Answer", "Ask back"] as const)(
+  "%s lets go of a pasted picture's upload at its deadline and sends",
+  async (name) => {
+    const uploadArtifact = spyOn(api, "uploadArtifact").mockRejectedValue(
+      dropped("/api/v1/issues/CORE-1/artifacts")
+    );
+    const open = answeredAsk({ answer: null, state: "open" });
+    const answer = mock((_id: string, _input: AnswerAskInput, _bounds: WriteBounds) =>
+      Promise.reject<Ask>(new ApiError(403, { error: "Cannot answer" }))
+    );
+    const comment = spyOn(api, "createComment").mockRejectedValue(
+      new ApiError(403, { error: "Cannot post the question" })
+    );
+    const { queryClient, view } = renderCard(
+      <AskCard answerAsk={answer} ask={open} initialThread={thread(open, [])} />
+    );
+    try {
+      const card = within(view.container);
+      const prepare = userEvent.setup();
+      const field = card.getByLabelText<HTMLTextAreaElement>("Your answer");
+      if (name === "Answer") {
+        await prepare.click(await card.findByRole("radio", { name: "Ship" }));
+      } else {
+        await prepare.click(field);
+        await prepare.paste("Ship what, exactly?");
+      }
+      const button = card.getByRole<HTMLButtonElement>("button", { name });
+      jest.useFakeTimers();
+      const user = userOnFakeClock();
+      // user-event's paste carries text, never the file this field uploads.
+      fireEvent.paste(field, { clipboardData: { files: [shot] } });
+      await untilAttempted(uploadArtifact, 1);
+      const status = () =>
+        writesOf(queryClient)
+          .rows()
+          .find((row) => row.label === "Upload of shot.png")?.status;
+
+      await tick(SEND_DEADLINE_MS - 1_000);
+      expect(status(), "the upload, a second short of its deadline").toBe("sending");
+      expect(button.disabled, `${name}, a second short of the upload's deadline`).toBe(true);
+
+      await tick(1_000);
+      expect(status(), "the upload, past its deadline").toBe("late");
+      expect(button.disabled, `${name}, past the upload's deadline`).toBe(false);
+      await user.click(button);
+      await tick(1_000);
+      expect(pressesOf([answer, comment]), `a press of ${name} past the deadline sends`).toBe(1);
+    } finally {
+      realClock();
+      view.unmount();
+      queryClient.clear();
+      uploadArtifact.mockRestore();
+      comment.mockRestore();
+    }
+  }
+);

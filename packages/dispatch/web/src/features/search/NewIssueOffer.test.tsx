@@ -6,14 +6,16 @@ import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 
-import { realClock } from "../../__tests__/fake-clock";
+import { realClock, tick } from "../../__tests__/fake-clock";
+import { pressesOf } from "../../__tests__/held-until-late";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api, NetworkError } from "../../api/client";
 import type { ArtifactUploadResponse, Issue, Message } from "../../api/types";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { KeymapProvider } from "../shell/KeymapProvider";
-import { stoppedWriteNote } from "../writes/keyed-write";
+import { SEND_DEADLINE_MS, stoppedWriteNote } from "../writes/keyed-write";
+import { writesOf } from "../writes/write-store";
 import { firstCriterion } from "./new-issue";
 import { SearchPalette } from "./SearchPalette";
 import { searchAnswer } from "./search-fixture";
@@ -306,6 +308,58 @@ test("a write onto the issue the person stopped says it may have landed, not tha
       })}`
     );
     expect(bar.patchIssue).not.toHaveBeenCalled();
+  } finally {
+    realClock();
+    bar.restore();
+  }
+});
+
+// A create that never answers - offline, each try failing at the network - takes the row away
+// until its deadline and no longer: past it the create is still tried, and the row is listed
+// again. A press of it then makes no second issue, and the line says so; once the create is
+// refused, a press makes one.
+test("a create that never answers lists its row again at its deadline, and a press then makes no second issue", async () => {
+  const user = userEvent.setup();
+  const bar = openBar({ label: "from-the-bar", session: "sess-1" });
+  const offer = `Make a new issue from “${words}”`;
+  const label = `New issue “${words}”`;
+  const status = () =>
+    writesOf(bar.queryClient)
+      .rows()
+      .find((row) => row.label === label)?.status;
+  const sent = () => pressesOf([bar.createIssue]);
+  try {
+    bar.createIssue.mockRejectedValue(
+      new NetworkError("/api/v1/issues", new TypeError("Failed to fetch"))
+    );
+    const row = await offerFor(user);
+    jest.useFakeTimers();
+    const clockUser = userOnFakeClock();
+    await clockUser.click(row);
+    await tick(0);
+    expect(sent(), "the press").toBe(1);
+    expect(screen.queryByText(offer), "the row while the create is out").toBeNull();
+
+    await tick(SEND_DEADLINE_MS - 1_000);
+    expect(status(), "the create, a second short of its deadline").toBe("sending");
+    expect(screen.queryByText(offer), "the row, a second short of the deadline").toBeNull();
+
+    await tick(1_000);
+    expect(status(), "the create, past its deadline").toBe("late");
+    expect(screen.queryByText(offer), "the row, past the deadline").not.toBeNull();
+    await clockUser.click(screen.getByText(offer));
+    await tick(1_000);
+    expect(sent(), "a press while the create is out makes no second issue").toBe(1);
+    const stillMaking = /^Make a new issue sent nothing: the issue is still being made\./;
+    expect(screen.getByText(stillMaking)).toBeInTheDocument();
+
+    bar.createIssue.mockRejectedValue(new ApiError(403, { error: "Issue limits reached" }));
+    await tick(30_000);
+    expect(screen.queryByText(stillMaking)).toBeNull();
+    expect(screen.getByTestId("search-new-issue-said")).toHaveTextContent("Issue limits reached");
+    await clockUser.click(screen.getByText(offer));
+    await tick(1_000);
+    expect(sent(), "a press once the create is refused makes one").toBe(2);
   } finally {
     realClock();
     bar.restore();

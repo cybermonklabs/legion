@@ -1,9 +1,12 @@
+import { QUERY_RETRY_DELAY_MS } from "../web/src/api/query-client";
+
 import { setLiveSessions } from "./agents";
-import { createIssue, createProject, listMyReplies } from "./api";
-import { selectedRow, selectRow } from "./inbox-pane";
+import { createIssue, createProject, listMyReplies, markThreadRead } from "./api";
+import { drawer, peekTrigger } from "./inbox-drawer";
+import { inboxRow, selectedRow, selectRow } from "./inbox-pane";
 import { replyRowId, seedCommentThread, THREAD_SESSION, unreadThreadRows } from "./inbox-threads";
 import { hasReadingPane } from "./reading-pane";
-import { expect, test } from "./test";
+import { expect, type Locator, type Page, type Route, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -93,4 +96,219 @@ test("a reply taller than the reading pane is marked read by reading it, and its
   } finally {
     await context.close();
   }
+});
+
+/** What a row holds of the reads the page makes of one route: `hold` keeps every later GET the
+ *  route names unanswered, `out` counts how many it kept, and `answer` sends on to Dispatch each
+ *  kept GET the page still waits on and lets every later one through. A kept GET is answered by
+ *  nothing else, so the page gives it up at its own 30 s deadline and asks again. */
+interface BoundReads {
+  readonly answer: () => Promise<void>;
+  readonly hold: () => void;
+  readonly out: () => number;
+}
+
+/** Routes the page's GETs that `matches` names, which go through until `hold` is called. */
+async function routeBoundReads(page: Page, matches: (url: URL) => boolean): Promise<BoundReads> {
+  let holding = false;
+  let kept = 0;
+  const waiting: Route[] = [];
+  await page.route(matches, async (route: Route) => {
+    if (!holding || route.request().method() !== "GET") return route.fallback();
+    kept += 1;
+    waiting.push(route);
+    return undefined;
+  });
+  return {
+    // A GET the page gave up has no answer left to take, and its route refuses the fallback.
+    answer: async () => {
+      holding = false;
+      for (const route of waiting.splice(0)) await route.fallback().catch(() => undefined);
+    },
+    hold: () => {
+      holding = true;
+    },
+    out: () => kept,
+  };
+}
+
+// The tester's red row of round 21 (read-bound.ts:40-47: a read that has not settled is said "for
+// the latest read" alone, and "forgets at once why any earlier read had not settled"; the
+// architect's ruling of 2026-11-26T04:19Z). Every thread card of the Inbox owns a `useReadBound`
+// (ThreadRowCard.tsx:53), though every Mark read reads the Inbox's list again (:78), so a Mark
+// read on the second card begins a new read of the list and takes nothing away from the line the
+// first Mark read left for the read before it. At c3b536cc the first card still says "Could not
+// load your inbox. Dispatch did not answer within 30 seconds." for the whole 15 s the row waits
+// after the second mark landed. Measured in Chromium and Firefox, twice each. Those lines are
+// c3b536cc's: since fec0003c the list owns the one bound (`useListReadBound`, Inbox.tsx:1279) and
+// hands every card its hold (ThreadRowCard.tsx:53-66), and a Mark read's read of the list is at
+// ThreadRowCard.tsx:91. Since cybermonklabs/legion#5223 the Inbox page lists short rows at every
+// width and only the Peek drawer draws these cards, the same `ThreadRowCard` (Inbox.tsx:787), so
+// the row presses Mark read in the drawer over a project page.
+// SLOW(>=2s): two threads seeded and marked read, the Peek drawer open over a project page, two
+// marks written and the page's clock moved once past the 30 s bound.
+// @firefox: the timers of a read's own deadline and of the bound a held control waits on, which
+// each engine runs.
+test("a Mark read on a second thread card takes away the line the first Mark read left for the Inbox read that had not settled @firefox", async ({
+  page,
+}) => {
+  const step = (text: string) => `Mark read on two thread cards of the Inbox: ${text}`;
+  await setLiveSessions([THREAD_SESSION]);
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({ project: "CORE", title: "Replay budget" });
+  const firstThread = await seedCommentThread(
+    issue.key,
+    "How far back does a replay go?",
+    "One hour, then it gives up."
+  );
+  const secondThread = await seedCommentThread(
+    issue.key,
+    "Who owns the cutover?",
+    "The platform team does."
+  );
+  // Both threads are read before the page opens, so no card sends a mark of its own as it is
+  // watched, and every mark of the row is a press of Mark read.
+  await markThreadRead(firstThread, new Date().toISOString());
+  await markThreadRead(secondThread, new Date().toISOString());
+  expect(await unreadThreadRows(), step("both seeded threads are read.")).toBe(0);
+  const listReads = await routeBoundReads(page, (url) => url.pathname === "/api/v1/me/replies");
+  await page.setViewportSize({ height: 900, width: 1024 });
+  await page.clock.install();
+  await page.goto("/projects/CORE");
+  await peekTrigger(page).click();
+  const markOf = (thread: string) =>
+    inboxRow(page, replyRowId(thread)).locator('[data-inbox-action="mark-read"]');
+  await expect(markOf(firstThread), step("the first thread's card draws Mark read.")).toHaveText(
+    "Mark read"
+  );
+  await expect(markOf(secondThread), step("the second thread's card draws Mark read.")).toHaveText(
+    "Mark read"
+  );
+  const unreadLine = (thread: string): Locator =>
+    inboxRow(page, replyRowId(thread))
+      .getByRole("alert")
+      .filter({ hasText: /did not answer within 30 seconds/ });
+  const marks = (thread: string) =>
+    page.waitForResponse(
+      (response) =>
+        response.request().method() === "PUT" &&
+        new URL(response.url()).pathname === `/api/v1/me/threads/${thread}/read`
+    );
+
+  listReads.hold();
+  const firstAnswer = marks(firstThread);
+  await markOf(firstThread).click();
+  expect((await firstAnswer).ok(), step("the first mark lands at Dispatch.")).toBe(true);
+  await expect
+    .poll(listReads.out, { message: step("the list read the first mark starts is out.") })
+    .toBeGreaterThan(0);
+  await page.clock.fastForward(30_000);
+  await expect(
+    unreadLine(firstThread),
+    step("at the 30 s bound the first card says why the Inbox is not read.")
+  ).toHaveText(["Could not load your inbox. Dispatch did not answer within 30 seconds."]);
+
+  const secondAnswer = marks(secondThread);
+  await markOf(secondThread).click();
+  expect((await secondAnswer).ok(), step("the second mark lands at Dispatch.")).toBe(true);
+  await expect(
+    unreadLine(firstThread),
+    step(
+      "the first card loses its line as the second mark lands and a new read of the Inbox begins."
+    )
+  ).toHaveCount(0);
+});
+
+// The tester's red row of round 22 (B2 (2): a hold's reason dropped when its caller is drawn
+// again while its read is still out; the architect's ruling of 2026-11-26T23:11Z). The Peek
+// drawer's thread cards hold their Mark read through the Inbox's read with the list's one hold
+// (Inbox.tsx:1282), and the drawer draws nothing while it is closed (InboxDrawer.tsx:67), so the
+// drawer opened again mounts a new list whose hold knows nothing of the mark. At e4ece294 the card
+// says "Could not load your inbox. Dispatch did not answer within 30 seconds." at the bound, and
+// says nothing once the drawer is open again, though the read is still out and no later mark
+// began. Measured in Chromium and Firefox, twice each.
+// SLOW(>=2s): one thread seeded and marked read, one project page open with the Peek drawer, one
+// mark written, the page's clock moved once past the 30 s bound, and the drawer closed and opened.
+// @firefox: the timers of a read's own deadline and of the bound a held control waits on, which
+// each engine runs.
+test("a Mark read in the Peek drawer whose Inbox read the bound ended still says why once the drawer is opened again @firefox", async ({
+  page,
+}) => {
+  const step = (text: string) => `Mark read in the Peek drawer, closed and opened: ${text}`;
+  await setLiveSessions([THREAD_SESSION]);
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({ project: "CORE", title: "Replay budget" });
+  const thread = await seedCommentThread(
+    issue.key,
+    "How far back does a replay go?",
+    "One hour, then it gives up."
+  );
+  // The thread is read before the page opens, so its card sends no mark of its own as it is
+  // watched, and the one mark of the row is the press of Mark read.
+  await markThreadRead(thread, new Date().toISOString());
+  expect(await unreadThreadRows(), step("the seeded thread is read.")).toBe(0);
+  const listReads = await routeBoundReads(page, (url) => url.pathname === "/api/v1/me/replies");
+  await page.setViewportSize({ height: 900, width: 1024 });
+  await page.clock.install();
+  await page.goto("/projects/CORE");
+  await peekTrigger(page).click();
+  const card = inboxRow(page, replyRowId(thread));
+  const mark = card.locator('[data-inbox-action="mark-read"]');
+  await expect(mark, step("the thread's card in the drawer draws Mark read.")).toHaveText(
+    "Mark read"
+  );
+  const unreadLine = card
+    .getByRole("alert")
+    .filter({ hasText: /did not answer within 30 seconds/ });
+  const unreadWords = "Could not load your inbox. Dispatch did not answer within 30 seconds.";
+
+  listReads.hold();
+  const marked = page.waitForResponse(
+    (response) =>
+      response.request().method() === "PUT" &&
+      new URL(response.url()).pathname === `/api/v1/me/threads/${thread}/read`
+  );
+  await mark.click();
+  expect((await marked).ok(), step("the mark lands at Dispatch.")).toBe(true);
+  await expect
+    .poll(listReads.out, { message: step("the Inbox read the mark starts is out.") })
+    .toBeGreaterThan(0);
+  await page.clock.fastForward(30_000);
+  await expect(
+    unreadLine,
+    step("at the 30 s bound the card says why the Inbox is not read.")
+  ).toHaveText([unreadWords]);
+
+  // The bound's 30 s also end the read's first attempt at its own deadline, and the page asks
+  // again `QUERY_RETRY_DELAY_MS` later. A caller drawn away inside that wait takes the read's last
+  // observer with it, which cancels the retry (query-core's `Query.removeObserver`), so the read
+  // ends failed and the caller drawn again shows that failure, whatever a correct hold keeps: the
+  // row lets the wait run out, and the read be asked again, before the caller is drawn away.
+  const askedAtBound = listReads.out();
+  await page.clock.runFor(QUERY_RETRY_DELAY_MS);
+  await expect
+    .poll(() => listReads.out(), {
+      message: step(
+        "the Inbox read is asked again after its first attempt's 30 s deadline, and held."
+      ),
+    })
+    .toBeGreaterThan(askedAtBound);
+
+  await drawer(page).getByRole("button", { exact: true, name: "Close" }).click();
+  await expect(drawer(page), step("the drawer's Close closes the drawer.")).toHaveCount(0);
+  await peekTrigger(page).click();
+  await expect(drawer(page), step("the Peek opens the drawer again.")).toBeVisible();
+  await expect(mark, step("the drawer opened again draws the thread's card.")).toHaveText(
+    "Mark read"
+  );
+  await expect(
+    unreadLine,
+    step(
+      "the drawer opened again, with the Inbox read still out and no later mark, the card still says why the Inbox is not read."
+    )
+  ).toHaveText([unreadWords]);
+
+  await listReads.answer();
+  await page.clock.runFor(1_000);
+  await expect(unreadLine, step("the Inbox read answered takes the line away.")).toHaveCount(0);
 });

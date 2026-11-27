@@ -1,6 +1,7 @@
 import { type RefObject, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { NavigationType, useLocation, useNavigationType } from "react-router-dom";
 
+import { focusableIn } from "../../components/focus-place";
 import { DIALOG_SCOPE, useKeymap, useKeymapScope } from "./keymap";
 
 /** Below Tailwind's `xl`: the margin is a sheet and the sidebar a drawer. */
@@ -20,24 +21,6 @@ export const MD_VIEWPORT_QUERY = "(min-width: 48rem)";
  *  for `MD_VIEWPORT_QUERY`'s reason: it is paired with `xl:` classes, which Tailwind declares at
  *  `80rem`, so only a `rem` query switches with them at any default font size. */
 export const READING_PANE_QUERY = "(min-width: 80rem)";
-
-const focusableSelector = [
-  "a[href]",
-  "button:not(:disabled)",
-  "textarea:not(:disabled)",
-  "input:not(:disabled)",
-  "select:not(:disabled)",
-  '[tabindex]:not([tabindex="-1"])',
-].join(", ");
-
-/** The controls focus can reach inside `container`, in order. One under a `hidden` ancestor - a
- *  composer kept mounted, out of sight, for a send it has out - takes no focus, so it is neither
- *  where the trap starts nor where it wraps. */
-function focusableIn(container: HTMLElement): HTMLElement[] {
-  return [...container.querySelectorAll<HTMLElement>(focusableSelector)].filter(
-    (element) => element.closest("[hidden]") === null
-  );
-}
 
 // Depth-counted so a picker opening inside an already-locked sheet does not unlock scroll
 // when the picker (not the sheet) closes first; only the outermost acquire/release touches
@@ -91,6 +74,16 @@ function innermostOpenDialog(): HTMLElement | null | undefined {
     }
   }
   return innermost;
+}
+
+/** Whether no open dialog stands over `container`: it is the innermost open dialog, or none is
+ *  open yet - the commit that opens it, before its effect below adds it to the open ones. The
+ *  Inbox drawer gates every key of its tree on it (`KeymapGateContext`), and its own `?` too, so
+ *  they work from the render that opens it and stand down under a dialog opened over it: the help
+ *  that `?` opens, or a card's Decline box. */
+export function noDialogOver(container: HTMLElement | null): boolean {
+  const innermost = innermostOpenDialog();
+  return innermost === undefined || innermost === container;
 }
 
 /** Whether a dialog is open. Its Escape is then its own wherever the focus is: on the dialog
@@ -190,6 +183,12 @@ function handOverFocus(container: HTMLElement | null, giveBackTo: HTMLElement | 
 export interface UseDialogOptions {
   /** Element to focus first instead of the container's first focusable descendant. */
   initialFocusRef?: RefObject<HTMLElement | null>;
+  /** Asked once as the dialog closes, on every close: true when the update that closed it has
+   *  already put the focus where the reader goes next, so this close leaves the focus where it
+   *  is and gives none back. The margin sheet answers true when a comment's end closes it, having
+   *  put the caret back in the commented document. Without it, or with false, the focus goes back
+   *  as `useDialog` says. */
+  keepFocusOnClose?: () => boolean;
   onClose: () => void;
   open: boolean;
 }
@@ -211,13 +210,21 @@ export interface DialogHandle<T extends HTMLElement> {
  */
 export function useDialog<T extends HTMLElement>({
   initialFocusRef,
+  keepFocusOnClose,
   onClose,
   open,
 }: UseDialogOptions): DialogHandle<T> {
   const containerRef = useRef<T>(null);
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
+  // Read by the cleanup that closes the dialog, in the commit that closes it, after the render
+  // that set it.
+  const keepFocusOnCloseRef = useRef(keepFocusOnClose);
+  keepFocusOnCloseRef.current = keepFocusOnClose;
   useKeymapScope(open ? DIALOG_SCOPE : null);
+  // Outside any gate around the dialog (`KeymapGateContext`): its `when` is the whole rule, so the
+  // Decline box a card of the Inbox drawer opens closes on Escape while the drawer's keys, gated
+  // on no dialog standing over the drawer, stand down under it.
   useKeymap(
     DIALOG_SCOPE,
     open
@@ -231,7 +238,8 @@ export function useDialog<T extends HTMLElement>({
             when: () => innermostOpenDialog() === containerRef.current,
           },
         ]
-      : []
+      : [],
+    { outsideGate: true }
   );
 
   // This dialog's record, set by its layout effect in the commit that opens it. It is read through
@@ -365,7 +373,9 @@ export function useDialog<T extends HTMLElement>({
       stopBeingFocusable();
       scrollLock.release();
       const giveBackTo = record?.giveBackTo ?? null;
-      if (handOverFocus(container, giveBackTo)) {
+      // Asked before the hand-over, so every close asks it once, whoever takes the focus.
+      const keepFocus = keepFocusOnCloseRef.current?.() === true;
+      if (handOverFocus(container, giveBackTo) || keepFocus) {
         return;
       }
       if (giveBackTo !== null && document.contains(giveBackTo)) {

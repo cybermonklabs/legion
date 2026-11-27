@@ -1,5 +1,6 @@
 import { type KeyboardEvent, type ReactNode, useRef, useState } from "react";
 
+import { heldField, heldPress } from "../../components/held-press";
 import { inputMethodKey } from "../../lib/input-method-key";
 import {
   backdrop40,
@@ -23,6 +24,8 @@ export interface NameVersionDialogProps {
   onClose: () => void;
   onSave: (summary: string) => void;
   open: boolean;
+  /** Why Save sent nothing while the version is still being named. */
+  outstandingNote?: string;
   saving: boolean;
 }
 
@@ -37,6 +40,7 @@ export function NameVersionDialog({
   onClose,
   onSave,
   open,
+  outstandingNote,
   saving,
 }: NameVersionDialogProps): ReactNode {
   const [summary, setSummary] = useState("");
@@ -48,7 +52,8 @@ export function NameVersionDialog({
   }
 
   const trimmed = summary.trim();
-
+  // While the save is out the field and Save are held rather than disabled: whichever holds the
+  // focus keeps it (`heldPress`), and `commit` sends nothing more.
   const commit = (): void => {
     if (trimmed === "" || saving) {
       return;
@@ -56,10 +61,10 @@ export function NameVersionDialog({
     onSave(trimmed);
   };
 
+  // The Enter that ends an input method's composition commits what the reader composed into the
+  // field, and names nothing: Safari sends it with `isComposing` false and keyCode 229
+  // (`inputMethodKey`).
   const handleInputKeyDown = (event: KeyboardEvent<HTMLInputElement>): void => {
-    // The Enter that ends an input method's composition takes the word composed, and is no
-    // Enter of the reader's: it saves nothing. Safari sends it after its compositionend, with
-    // `isComposing` false and keyCode 229 (`inputMethodKey`).
     if (event.key !== "Enter" || inputMethodKey(event.nativeEvent)) {
       return;
     }
@@ -82,8 +87,8 @@ export function NameVersionDialog({
           <label className={`block text-sm font-medium ${textSecondaryOnSurface}`}>
             What changed?
             <input
-              className={`mt-1 block w-full rounded-lg border px-2 py-1.5 text-sm font-normal outline-none ${inputClasses(false)}`}
-              disabled={saving}
+              {...heldField(saving)}
+              className={`mt-1 block w-full rounded-lg border px-2 py-1.5 text-sm font-normal outline-none aria-disabled:opacity-50 ${inputClasses(false)}`}
               onChange={(event) => setSummary(event.target.value)}
               onKeyDown={handleInputKeyDown}
               ref={inputRef}
@@ -112,13 +117,18 @@ export function NameVersionDialog({
             </button>
             <button
               className={`rounded-lg px-3 py-1.5 text-sm font-medium ${primaryButtonBg} ${primaryButtonEnabledHoverBg} ${primaryButtonDisabled}`}
-              disabled={trimmed === "" || saving}
-              onClick={commit}
+              disabled={trimmed === ""}
+              {...heldPress(saving, commit)}
               type="button"
             >
               {saving ? "Saving…" : "Save"}
             </button>
           </div>
+          {outstandingNote === undefined ? null : (
+            <p className={`text-sm ${textSecondaryOnSurface}`} role="status">
+              {outstandingNote}
+            </p>
+          )}
         </div>
       </div>
     </>

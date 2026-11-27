@@ -6,7 +6,8 @@ import userEvent, { type UserEvent } from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
-import { realClock } from "../../__tests__/fake-clock";
+import { realClock, tick } from "../../__tests__/fake-clock";
+import { heldUntilLate, pressesOf } from "../../__tests__/held-until-late";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
@@ -297,6 +298,38 @@ test("a release the reader stopped says in Details that it may have been made, n
     realClock();
     view.unmount();
     view.client.clear();
+    release.mockRestore();
+    agents.mockRestore();
+    subscribers.mockRestore();
+  }
+});
+
+test("Release in Details stops holding at the release deadline and takes another press", async () => {
+  const subscribers = spyOn(api, "getIssueSubscribers").mockResolvedValue([]);
+  const agents = spyOn(api, "listAgents").mockResolvedValue([]);
+  const release = spyOn(api, "releaseIssueClaim").mockRejectedValue(
+    new NetworkError("/api/v1/issues/CORE-1/claim", new TypeError("Failed to fetch"))
+  );
+  const view = claimRow({ ...base, claim });
+  try {
+    const control = await screen.findByRole<HTMLButtonElement>("button", {
+      name: "Release the claim on CORE-1",
+    });
+    jest.useFakeTimers();
+    const user = userOnFakeClock();
+    await heldUntilLate(user, control, {
+      label: "Claim on CORE-1 released",
+      name: "Release in Details",
+      queryClient: view.client,
+      sent: () => pressesOf([release]),
+    });
+    await user.keyboard("{Enter}");
+    await tick(0);
+    expect(pressesOf([release])).toBe(2);
+  } finally {
+    view.unmount();
+    view.client.clear();
+    realClock();
     release.mockRestore();
     agents.mockRestore();
     subscribers.mockRestore();

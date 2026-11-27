@@ -100,6 +100,10 @@ export const ASK_FORM_WORDS = Object.freeze({
   save_answer: "Save answer",
   saving: "Saving…",
   sending: "Sending…",
+  /** After Ask back, or Ask back instead, pressed again while the question back it sent before
+   *  is still out past its deadline (`useOneCreateOut`): "Ask back sent nothing: …". */
+  still_sending:
+    "sent nothing: your question back is still being sent. It shows in the thread once Dispatch posts it. If it fails, you can ask back again.",
   /** What a stopped write says of the answer and the question back (`stoppedNote`), and of an
    *  answer stopped as the question closed. */
   stopped: Object.freeze({
@@ -122,7 +126,6 @@ export const ASK_HAND_ON_WORDS = Object.freeze({
   hand_to: "Hand this question to",
   handed_on_by: "handed on by",
   handing_on: "Handing on…",
-  nobody: "Nobody",
 } as const);
 
 /** Decline to answer, and the dialog it opens. */

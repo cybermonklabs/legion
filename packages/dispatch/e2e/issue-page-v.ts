@@ -27,10 +27,11 @@ import { openPreset } from "./issue-page-i";
  *
  * - **A card** `[data-verification-card]` for each statement, with `data-node-id`,
  *   `data-statement-state` (met, not_met, unknown) and `data-node-context`. Inside it each check
- *   `[data-verification-check]` with `data-node-id` and `data-node-state`, its words the control
- *   `[data-verification-check-words]` that opens its facts, its latest result
- *   `[data-verification-result]` (`data-result-stands` on the one its state stands on), and the
- *   control `[data-verification-earlier]` that opens its earlier ones.
+ *   `[data-verification-check]` with `data-node-id` and `data-node-state`, its words
+ *   `[data-verification-check-words]`, which a press opens its facts by and which take no Tab
+ *   stop, beside them the disclosure button `[data-verification-facts]` that opens them from the
+ *   keyboard, its latest result `[data-verification-result]` (`data-result-stands` on the one its
+ *   state stands on), and the control `[data-verification-earlier]` that opens its earlier ones.
  * - **Over the cards** the issue's own row `[data-verification-issue]`, the tree's first row,
  *   holding the summary `[data-verification-summary]` with `[data-verification-covered]`,
  *   `[data-verification-bar]`, `[data-verification-legend]`, `[data-verification-check-legend]`

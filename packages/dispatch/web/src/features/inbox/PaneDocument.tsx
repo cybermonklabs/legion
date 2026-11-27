@@ -16,6 +16,7 @@ import { issueQuery, whoAmIQuery } from "../../api/queries";
 import type { Artifact, AuthenticatedUser } from "../../api/types";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import { focusVisibleRing, quoteAccentBorder } from "../../theme/classes";
+import { ASK_BLOCK_NO_ROW_SELECTOR } from "../doc/AskBlockCard";
 import { BLOCK_ID_ATTRIBUTE } from "../doc/block-id";
 import { liveTextQueryOptions, ProofDocument, type ProofDocumentProps } from "../doc/ProofDocument";
 import { cancelBlockScroll, scrollBlockToTop, scrollElementToTop } from "../doc/scroll-block";
@@ -130,7 +131,8 @@ export function PaneFrame({
       {/* The one scroller every flow draws in is a focus stop of its own, so a reader who has
           read the head can hand the keyboard to the document. Nothing here scrolls it: the
           browser scrolls whichever focusable element holds the focus on the arrow keys, Page
-          Up, Page Down, Space, Home and End, so this writes no scrolling code. A labelled
+          Up, Page Down, Space, Home and End, so this writes no scrolling code, and the list's
+          own keys for the document scroll it from the list (`useInboxKeymap.ts`). A labelled
           `<section>` is `role="region"`, and its name is neither a superset nor a subset of
           the enclosing section's name, since Playwright matches an accessible name by
           substring: each of the two names matches only itself. */}
@@ -169,6 +171,10 @@ interface DocumentAtBlock {
   /** Whether the editor has drawn the block the column is opened at; undefined while it has
    *  drawn no block at all, and false once it has drawn a document holding no such block. */
   readonly blockFound: boolean | undefined;
+  /** Whether the block the column is opened at is a decision block whose question the document's
+   *  asks read, once answered or failed, does not hold, which draws no card of the question
+   *  (`ASK_BLOCK_NO_ROW_SELECTOR`). */
+  readonly blockWithoutAsk: boolean;
   readonly content: RefObject<HTMLDivElement | null>;
   /** The document cannot be opened beside the list: the read failed, or its own admission did. */
   readonly failed: boolean;
@@ -216,13 +222,18 @@ function useDocumentAtBlock({
   const [sectionBlockId, setSectionBlockId] = useState<string | undefined>(undefined);
   // Whether the editor has drawn the block the column is opened at; undefined while it has drawn
   // no blocks at all. A document that holds no such block is an anchor the column cannot place,
-  // which is what its host falls back from.
+  // or a decision block's question that has gone, which is what its host falls back from.
   const [blockFound, setBlockFound] = useState<boolean | undefined>(undefined);
-  // This column's placement, while one is on: the hold on the column, and the item it was armed
-  // for. The reading effect below arms one for each item the reader opens, the effect after it
-  // lets it go, and "Skip to the answer" - a placement of the reader's own, pressed in the head
-  // rather than in the column - lets it go early.
-  const placement = useRef<{ hold: SectionHold; item: string } | undefined>(undefined);
+  // Whether that block is a decision block whose question the document's asks read, once
+  // answered or failed, does not hold: it draws its own record and no card
+  // (`ASK_BLOCK_NO_ROW_SELECTOR`).
+  const [blockWithoutAsk, setBlockWithoutAsk] = useState(false);
+  // This column's placement, while one is on: the hold on the column for the item the reader
+  // opened. The item effect below arms one for each item and lets it go with it, the reading
+  // effect after it writes the column while the hold allows, and "Skip to the answer" - a
+  // placement of the reader's own, pressed in the head rather than in the column - lets it go
+  // early.
+  const placement = useRef<SectionHold | undefined>(undefined);
   const settled = useSettledOnDocument(artifactId);
 
   const user = useQuery(whoAmIQuery()).data;
@@ -247,14 +258,40 @@ function useDocumentAtBlock({
   const failed = artifactQuery.isError || textQuery.isError || unavailable === artifactId;
   const showsDocument = !failed && artifact !== undefined;
 
+  // The placement is armed with the item it is for, as the item opens, and not once its document
+  // draws: the reader can move the column before the read returns - a press in it, or the
+  // list's own keys for it (`PANE_READER_MOVE`) - and a hold armed only after that would place
+  // the column under them anyway. Both clocks start at the first drawing pass, not here, so an
+  // early hold waits no less for a slow document (`pane-placement.ts`). It is let go with the
+  // item and not with the document the column happens to be showing, so a read of the document
+  // that fails and recovers arms no second placement for the item the reader is still on.
+  // Declared before the reading effect: React runs every cleanup of a commit before every
+  // effect of it, in declaration order, so another item lets the old hold go and arms its own
+  // before the reading effect places anything with it.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `item` is what this effect is of - it holds the placement for as long as that item is the open one - and it reads only refs.
+  useEffect(() => {
+    const column = scroller.current;
+    const hold = column === null ? undefined : holdSection(column);
+    placement.current = hold;
+    return () => {
+      hold?.release();
+      placement.current = undefined;
+      // "Skip to the answer" leaves a re-run that reads the reader on the window and lives up
+      // to three seconds. Dropped here, it cannot write the next item's column.
+      cancelBlockScroll();
+    };
+  }, [item]);
+
   // The editor draws its blocks after the socket syncs, and a diagram or a picture moves them
   // again afterwards, so the placement runs on every change of the drawn document: the scroll
   // for as long as the placement may still write the column (`pane-placement.ts`), and the bar
   // whenever the blocks move.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `item` is what each placement is of - another item opened at the same block (two threads anchored to one paragraph) is placed anew under its own hold, which the run reads from the ref.
   useEffect(() => {
     setSectionBar(undefined);
     setSectionBlockId(undefined);
     setBlockFound(undefined);
+    setBlockWithoutAsk(false);
     const column = scroller.current;
     const drawn = content.current;
     if (column === null || drawn === null || !showsDocument) {
@@ -264,16 +301,12 @@ function useDocumentAtBlock({
     // in pieces, so the first scroll is clamped by a column still shorter than the document,
     // and every block that lands above the heading afterwards pushes it down again. So the
     // column is put back at its section on every drawing pass, until the drawing settles, the
-    // limit passes or the reader moves the column (`pane-placement.ts`). One placement is armed
-    // for each item the reader opens, and no document of that item's is placed twice.
-    if (placement.current?.item !== item) {
-      placement.current?.hold.release();
-      placement.current = { hold: holdSection(column), item };
-    }
+    // limit passes or the reader moves the column (`pane-placement.ts`), under the one hold the
+    // item effect above armed for the item: no document of that item's is placed twice.
     const place = () => {
       // The ref owns the hold, so each pass reads it rather than closing over one: an item the
       // reader has moved on from leaves no hold here to write this column with.
-      const hold = placement.current?.hold;
+      const hold = placement.current;
       const block = blockElement(drawn, blockId);
       if (block === null) {
         // Nothing drawn yet says nothing about the block; a drawn document without it does.
@@ -310,6 +343,7 @@ function useDocumentAtBlock({
       }
       const bar = sectionBarOf(drawn, heading, block);
       setSectionBar((current) => (sameBar(current, bar) ? current : bar));
+      setBlockWithoutAsk(block.querySelector(ASK_BLOCK_NO_ROW_SELECTOR) !== null);
     };
     place();
     // The editor moves its blocks by more than it adds them: a picture or a diagram that draws
@@ -330,28 +364,11 @@ function useDocumentAtBlock({
     };
   }, [blockId, item, showsDocument]);
 
-  // The placement is let go with the item it was armed for, and not with the document the
-  // column happens to be showing. React runs every cleanup of a commit before every effect of
-  // it, in declaration order, so another item runs the reading cleanup, then this one, then the
-  // reading effect: the old hold goes before the new one is armed. A change of `showsDocument`
-  // or `blockId` alone runs neither half of this effect, so a read of the document that fails
-  // and recovers arms no second placement for the item the reader is still on.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: `item` is what this effect is of - it holds the placement for as long as that item is the open one - and the release below reads only refs.
-  useEffect(() => {
-    return () => {
-      placement.current?.hold.release();
-      placement.current = undefined;
-      // "Skip to the answer" leaves a re-run that reads the reader on the window and lives up
-      // to three seconds. Dropped here, it cannot write the next item's column.
-      cancelBlockScroll();
-    };
-  }, [item]);
-
   const skipToBlock = useCallback(() => {
     const column = scroller.current;
     if (column !== null) {
       // The reader's own placement: the column is theirs from here, so the section's is over.
-      placement.current?.hold.release();
+      placement.current?.release();
       scrollBlockToTop(blockId, column);
     }
   }, [blockId]);
@@ -359,6 +376,7 @@ function useDocumentAtBlock({
   return {
     artifact,
     blockFound,
+    blockWithoutAsk,
     content,
     failed,
     isClosed: issue.data !== undefined && issue.data.closed_at !== null,
@@ -420,8 +438,8 @@ function noVersionChange(): void {}
 
 /**
  * The body the column draws in a document: the live document opened at one block, under the
- * host's own head, with what it falls back to where the document cannot be opened or the block
- * cannot be placed.
+ * host's own head, with what it falls back to where the document cannot be opened or holds no
+ * such block.
  *
  * The two hosts draw the same pane - a question written as a decision block
  * (`ReadingPane.tsx`) and a thread in its own document (`ThreadPane.tsx`) - and differ only in
@@ -442,14 +460,14 @@ export function DocumentPane({
   paneBody,
 }: {
   /** The thread drawn under its own block, for a comment thread anchored in the document; a
-   *  decision block's ask needs none, because the block draws its own question and thread. A
-   *  host that passes one falls back where the document holds no such block: an anchor the
-   *  column cannot place leaves the thread nowhere to be drawn. */
+   *  decision block's ask needs none, because the block draws its own question and thread. */
   anchoredThread: ProofDocumentProps["anchoredThread"];
   artifactId: string;
   blockId: string;
-  /** What the column draws in this frame instead of the document: the question's own card, or
-   *  the thread alone with the text it is anchored to, marked as the host marks it. */
+  /** What the column draws in this frame instead of the document, where it cannot be opened or
+   *  holds no such block: the question's own card, or the thread alone with the text it is
+   *  anchored to - a decision block's question's thread with its card - marked as the host
+   *  marks it. */
   fallback: ReactNode;
   /** The head above the document, given what the column found in it. */
   head: (document: DocumentAtBlock) => ReactNode;
@@ -473,7 +491,10 @@ export function DocumentPane({
   const { artifact, blockFound, failed, user } = document;
 
   const body = (): ReactNode => {
-    if (failed || (anchoredThread !== undefined && blockFound === false)) {
+    // A document that cannot be opened, and one drawn without the block it was opened at: an
+    // anchor the column cannot place leaves the thread nowhere to be drawn, and a decision
+    // block's question that has gone takes its card, its answer and its thread with it.
+    if (failed || blockFound === false) {
       return fallback;
     }
     const drawn =
@@ -488,7 +509,21 @@ export function DocumentPane({
           user={user}
         />
       );
-    return paneBody === undefined ? drawn : <div data-inbox-pane-body={paneBody}>{drawn}</div>;
+    // A decision block whose question the document's asks read, once answered or failed, does
+    // not hold draws its own record and no card (`ASK_BLOCK_NO_ROW_SELECTOR`), so the item's
+    // thread is drawn with no reply box: the mark says so, by the item, and the reading view's
+    // `r` lands at its scroller rather than waiting for one (`noReplyBoxSelector` in
+    // `ReadingView.tsx`).
+    return paneBody === undefined ? (
+      drawn
+    ) : (
+      <div
+        data-inbox-no-reply-box={document.blockWithoutAsk ? item : undefined}
+        data-inbox-pane-body={paneBody}
+      >
+        {drawn}
+      </div>
+    );
   };
 
   return (

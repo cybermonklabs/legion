@@ -1,15 +1,33 @@
 import { afterEach, beforeAll, expect, jest, type Mock, spyOn, test } from "bun:test";
 import { DELETED_POST_DELIVERY_ERROR } from "@legion/contracts";
-import { type MutationKey, QueryClientProvider, useQuery } from "@tanstack/react-query";
-// biome-ignore lint/style/noRestrictedImports: the two clicks of one same-tick double press, which user-event cannot fire inside a single task
-import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import {
+  type MutationKey,
+  onlineManager,
+  QueryClientProvider,
+  useQuery,
+} from "@tanstack/react-query";
+import {
+  act,
+  // biome-ignore lint/style/noRestrictedImports: the two clicks of one same-tick double press, which user-event cannot fire inside a single task
+  fireEvent,
+  render,
+  renderHook,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
+import { correction, EDITED_AT } from "../../__tests__/correction-feed";
 import { displayTree } from "../../__tests__/display-trees";
 import { type Lists, newQueryClient, stubLists, tab } from "../../__tests__/draft-matrix-fixture";
-import { jump, settle } from "../../__tests__/fake-clock";
+import { jump, realClock, settle, tick } from "../../__tests__/fake-clock";
+import { afterFrameAndTasks } from "../../__tests__/frames";
+import { heldAnswers } from "../../__tests__/held-answers";
+import { heldNotDisabled, pressHeld } from "../../__tests__/held-press";
+import { heldUntilLate, pressesOf } from "../../__tests__/held-until-late";
 import {
   dwellOn,
   type IntersectionControl,
@@ -21,10 +39,13 @@ import { messageCorrectionFields } from "../../__tests__/message-fixture";
 import { ownReplies } from "../../__tests__/own-replies";
 import { answerIssueStates, answerThreadReads } from "../../__tests__/send-answers";
 import { heldDraftWords, stopReplySend } from "../../__tests__/stop-late-write";
+import { userOnFakeClock } from "../../__tests__/user";
 import { wholeText } from "../../__tests__/whole-text";
 import type { WriteBounds } from "../../api/client";
-import { ApiError, api } from "../../api/client";
-import { userStateQuery } from "../../api/queries";
+import { ApiError, api, NetworkError, REQUEST_DEADLINE_MS } from "../../api/client";
+import { markCorrectedPost } from "../../api/corrected-post";
+import { inboxQuery, userStateQuery } from "../../api/queries";
+import { DispatchQueryClient, hearLiveEvent } from "../../api/query-client";
 import type {
   Actor,
   Agent,
@@ -45,11 +66,13 @@ import type {
 } from "../../api/types";
 import { messageDeliveryFields } from "../agents/delivery-fixture";
 import { PHONE_WIDTH, stubViewport } from "../margin/margin-fixture";
+import { useMarginItems } from "../margin/useMarginItems";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { KeymapProvider } from "../shell/KeymapProvider";
+import { useKeymapScope } from "../shell/keymap";
 import { userPreferenceStorageKey } from "../shell/userPreference";
 import { seedUnread } from "../threads/replies-fixture";
-import { SendStoppedError } from "../writes/keyed-write";
+import { SEND_DEADLINE_MS, SendStoppedError } from "../writes/keyed-write";
 import { writesOf } from "../writes/write-store";
 import { ConversationTab } from "./ConversationTab";
 import { answeredWithErrorGuidance, safeRetryGuidance } from "./delivery";
@@ -353,9 +376,16 @@ test("Conversation holds Reply while its composer sends", async () => {
     await user.click(field);
     await user.paste("Status please");
     await user.click(screen.getByRole("button", { name: "Send" }));
-    await waitFor(() => expect(field.closest("fieldset")?.disabled).toBe(true));
-    const reply = screen.getByRole("button", { name: "Reply" }) as HTMLButtonElement;
-    expect(reply.disabled).toBe(true);
+    await waitFor(() =>
+      expect(field.closest("fieldset")?.getAttribute("aria-disabled")).toBe("true")
+    );
+    // The held composer keeps the box focusable, and a key in it writes nothing.
+    act(() => field.focus());
+    await user.keyboard("x");
+    expect(field.value).toBe("Status please");
+    const reply = screen.getByRole("button", { name: "Reply" });
+    expect(reply).toHaveAttribute("aria-disabled", "true");
+    expect(reply.hasAttribute("disabled")).toBe(false);
     await user.click(reply);
     expect(screen.queryByRole("button", { name: "Cancel reply" })).not.toBeInTheDocument();
 
@@ -1469,6 +1499,29 @@ test("on a phone, the reader's own Resolve keeps the thread composer's refused r
   }
 });
 
+// A phone's thread view scrolls its card in a list of its own, which Firefox makes a Tab stop of
+// its own, with no name. The card holds its controls from its head to its foot, the Tab stops
+// that bring each part into view, so the list takes no Tab stop.
+test("on a phone, the thread view's list is no Tab stop of its own", async () => {
+  const user = userEvent.setup();
+  const restoreViewport = stubViewport(PHONE_WIDTH);
+  const root = comment("root-comment", { body: "Root comment" });
+  const reply = comment("reply-comment", { body: "Reply comment", reply_to: "root-comment" });
+  const stub = stubLists({ comments: [root, reply] });
+  const view = render(tab({ "CORE-1": issueState() }, true, newQueryClient()));
+
+  try {
+    await screen.findByText("Root comment");
+    await user.click(screen.getByRole("button", { name: "Expand thread" }));
+    const dialog = await screen.findByRole("dialog", { name: "Thread" });
+    expect(within(dialog).getAllByRole("list")[0]).toHaveAttribute("tabindex", "-1");
+  } finally {
+    view.unmount();
+    stub.restore();
+    restoreViewport();
+  }
+});
+
 // The same, with the reply refused while the Resolve is still out: the decision lands on a thread
 // that already shows the refusal.
 test("on a phone, a thread reply refused while the reader's Resolve is out outlives the Resolve", async () => {
@@ -1822,6 +1875,14 @@ function phoneOverCommentA(
   });
   const view = render(tab({ "CORE-1": issueState() }, true, queryClient));
   return {
+    /** Answers the comments again without `Comment A`, which leaves the list. */
+    dropCommentA: async () => {
+      stub.lists.comments = [];
+      await act(() => queryClient.invalidateQueries({ queryKey: ["comments", "CORE-1"] }));
+      await waitFor(() =>
+        expect(view.container.querySelector('[data-turn="comment:comment-a"]')).toBe(null)
+      );
+    },
     restore: () => {
       view.unmount();
       createComment.mockRestore();
@@ -1966,6 +2027,83 @@ test("on a phone, Cancel reply over a docked draft of its own keeps both, and th
     expect(docked.value).toBe("Docked draft");
     expect(within(composer).queryByText(/is kept/)).not.toBeInTheDocument();
     expect(createComment).toHaveBeenCalledTimes(1);
+  } finally {
+    phone.restore();
+  }
+});
+
+// Once the comment a reply put away answers leaves the list, the docked composer draws that reply
+// itself, with Discard my draft (`parkedNotice`). The press takes the offer away, and with it the
+// button that held the focus: the docked composer's text box takes the focus then, with no scroll
+// and the caret at the end of the draft it holds, as a composer's field takes the focus its own
+// offers leave (`handFocusOn`).
+test("on a phone, Discard my draft on a reply put away whose comment left the list hands the focus to the docked composer's box, with no scroll and the caret at the end", async () => {
+  const user = userEvent.setup();
+  const createComment = spyOn(api, "createComment").mockResolvedValue(comment("comment-b"));
+  const phone = phoneOverCommentA(createComment);
+
+  try {
+    await screen.findByText("Comment A");
+    const composer = screen.getByRole("form", { name: "Comment composer" });
+    const docked = within(composer).getByRole<HTMLTextAreaElement>("textbox", { name: "Comment" });
+    await user.click(docked);
+    await user.paste("Docked draft");
+    const dialog = await writeInThread(user, phone.turn(), "Reply meant for A");
+    await user.click(within(dialog).getByRole("button", { name: "Cancel reply" }));
+    await user.click(within(dialog).getByRole("button", { name: "Back" }));
+    await phone.dropCommentA();
+    const discard = within(composer).getByRole("button", { name: "Discard my draft" });
+    const focuses = spyOn(docked, "focus");
+
+    try {
+      await user.click(discard);
+      expect({
+        caret: [docked.selectionStart, docked.selectionEnd],
+        focuses: focuses.mock.calls,
+        inTheBox: document.activeElement === docked,
+        offered: within(composer).queryByRole("button", { name: "Discard my draft" }) !== null,
+        text: docked.value,
+      }).toEqual({
+        caret: ["Docked draft".length, "Docked draft".length],
+        focuses: [[{ preventScroll: true }]],
+        inTheBox: true,
+        offered: false,
+        text: "Docked draft",
+      });
+    } finally {
+      focuses.mockRestore();
+    }
+  } finally {
+    phone.restore();
+  }
+});
+
+// On a phone the thread composer's Cancel reply and Escape end its reply and take the composer,
+// with the focus it holds, out of the thread, which stays open. The focus goes to the turn whose
+// Reply started the reply where the thread draws it: a Reply pressed in the list, which the
+// thread covers, leaves no such turn in the thread, and the thread's Back takes the focus; the
+// Reply of the thread's own turn leaves that turn (`giveBackFromPhoneReply`).
+test("on a phone, the thread composer's Cancel reply and Escape give the focus to the turn whose Reply started the reply, else to the thread's Back", async () => {
+  const user = userEvent.setup();
+  const createComment = spyOn(api, "createComment").mockResolvedValue(comment("comment-b"));
+  const phone = phoneOverCommentA(createComment);
+
+  try {
+    await screen.findByText("Comment A");
+    const dialog = await writeInThread(user, phone.turn(), "Reply meant for A");
+    await user.click(within(dialog).getByRole("button", { name: "Cancel reply" }));
+    expect(within(dialog).queryByRole("textbox", { name: "Comment" })).not.toBeInTheDocument();
+    expect(within(dialog).getByRole("button", { name: "Back" })).toHaveFocus();
+
+    const turn = dialog.querySelector<HTMLElement>('[data-turn="comment:comment-a"]');
+    if (turn === null) throw new Error("expected comment-a's turn in the thread");
+    await user.click(within(turn).getByRole("button", { name: "Reply" }));
+    const field = await within(dialog).findByRole("textbox", { name: "Comment" });
+    await waitFor(() => expect(field).toHaveFocus());
+    await user.keyboard("{Escape}");
+    expect(within(dialog).queryByRole("textbox", { name: "Comment" })).not.toBeInTheDocument();
+    expect(document.activeElement).toBe(turn);
+    expect(createComment).not.toHaveBeenCalled();
   } finally {
     phone.restore();
   }
@@ -2224,6 +2362,80 @@ test(
   })
 );
 
+// The pill counts the conversations after the reader's read mark as it stands, while every `New`
+// the visit drew stays drawn (`visitBoundary`): the two turns the reader was shown and then read
+// keep their marks, and only the two tails that arrive after the read mark are counted.
+test(
+  "Jump to latest counts the turns after the read mark while the visit's New marks stay drawn",
+  withScrollY(async () => {
+    const layout = installScrollLayoutMocks();
+    const stub = stubLists({
+      comments: [
+        comment("comment-1", { body: "An older comment", created_at: "2026-09-20T00:00:00Z" }),
+        comment("comment-2", { body: "A newer comment", created_at: "2026-09-20T00:05:00Z" }),
+      ],
+      head: [headEvent(9, "2026-09-20T00:05:00Z")],
+      unread: [headEvent(4, "2026-09-20T00:00:00Z")],
+    });
+    const queryClient = newQueryClient();
+    const view = render(tab({ "CORE-1": issueState([], 3) }, true, queryClient));
+    /** Whether each turn, in page order, draws a `New` mark. */
+    const newMarks = () =>
+      Array.from(view.container.querySelectorAll<HTMLElement>("[data-turn]")).map(
+        (turn) => within(turn).queryByText("New", { exact: true }) !== null
+      );
+    const pillText = () => screen.getByTestId("jump-to-latest").textContent;
+    /** Comment `id` arrives as event `seq`, as its live event refreshes the comments and the
+     *  issue's event reads. */
+    const arrive = async (id: string, body: string, seq: number, at: string) => {
+      stub.lists.comments = [...(stub.lists.comments ?? []), comment(id, { body, created_at: at })];
+      stub.lists.head = [headEvent(seq, at)];
+      await act(async () => {
+        await queryClient.invalidateQueries({ queryKey: ["comments", "CORE-1"] });
+        await queryClient.invalidateQueries({ queryKey: ["events", "CORE-1"] });
+      });
+      await screen.findByText(body);
+    };
+
+    try {
+      await screen.findByText("A newer comment");
+      await waitFor(() => expect(window.scrollY).toBe(RESTING_SCROLL_Y));
+      await waitFor(() => expect(newMarks()).toEqual([true, true]));
+
+      // The read mark through the head: nothing is unread under the new key.
+      stub.lists.unread = [];
+      view.rerender(tab({ "CORE-1": issueState([], 9) }, true, queryClient));
+      await waitFor(() =>
+        expect(queryClient.getQueryState(["events", "CORE-1", "unread-boundary", 9])?.status).toBe(
+          "success"
+        )
+      );
+      Object.defineProperty(window, "scrollY", {
+        configurable: true,
+        value: 4_500,
+        writable: true,
+      });
+      act(() => {
+        window.dispatchEvent(new Event("scroll"));
+      });
+      await screen.findByTestId("jump-to-latest");
+      expect(pillText()).toBe("Jump to latest");
+
+      // Event 10, the first tail's, is the first the reader has not read, through both arrivals.
+      stub.lists.unread = [headEvent(10, "2026-09-20T00:10:00Z")];
+      await arrive("comment-3", "A tail", 10, "2026-09-20T00:10:00Z");
+      await waitFor(() => expect(pillText()).toBe("Jump to latest · 1 new"));
+      await arrive("comment-4", "Another tail", 11, "2026-09-20T00:15:00Z");
+      await waitFor(() => expect(pillText()).toBe("Jump to latest · 2 new"));
+      expect(newMarks()).toEqual([true, true, true, true]);
+    } finally {
+      view.unmount();
+      layout.restore();
+      stub.restore();
+    }
+  })
+);
+
 test(
   "a reader pinned to the top stays pinned when a conversation arrives",
   withScrollY(async () => {
@@ -2356,9 +2568,9 @@ test("a comment-delivery retry guards a same-tick double click to exactly one at
 
   try {
     const retry = await screen.findByRole("button", { name: "Retry" });
-    // Both clicks fire in the same task, before any re-render could disable the button - the
-    // window a disabled-prop check (which lags on React state) cannot catch. user-event has no
-    // form for this: each `await user.click` lets React re-render between the two presses.
+    // Both clicks fire in the same task, before any re-render could hold the button - the window
+    // a check of the held state (which lags on React state) cannot catch. user-event has no form
+    // for this: each `await user.click` lets React re-render between the two presses.
     fireEvent.click(retry);
     fireEvent.click(retry);
     resolve();
@@ -2369,6 +2581,199 @@ test("a comment-delivery retry guards a same-tick double click to exactly one at
     stub.restore();
   }
 });
+
+// A mention's Retry is held while its retry is out, by `aria-disabled`, never `disabled`
+// (`pressHeld`): the pressed Retry keeps the focus through the write, and a second press, by key or
+// by pointer, sends nothing.
+test("a mention's held Retry keeps the focus while its retry is out, and a second press sends nothing", async () => {
+  const user = userEvent.setup();
+  const stub = stubLists({
+    agents: [agent("worker-session", "Worker", ["steer"])],
+    comments: [
+      comment("comment-1", {
+        body: "@Worker take a look",
+        deliveries: [mentionAttempt({ error: "no live session worker" })],
+      }),
+    ],
+  });
+  const queryClient = newQueryClient();
+  // The retry's answer, held until the case gives it inside `act`.
+  const answer = Promise.withResolvers<CommentDelivery>();
+  const createCommentDelivery = spyOn(api, "createCommentDelivery").mockReturnValue(answer.promise);
+  const view = render(tab({ "CORE-1": issueState() }, true, queryClient));
+
+  try {
+    await pressHeld(user, await screen.findByRole("button", { name: "Retry" }), {
+      name: "Retry",
+      sent: () => createCommentDelivery.mock.calls.length,
+    });
+  } finally {
+    await act(async () =>
+      answer.resolve(mentionAttempt({ attempt: 2, error: null, state: "sent" }))
+    );
+    view.unmount();
+    createCommentDelivery.mockRestore();
+    stub.restore();
+  }
+});
+
+test.each([
+  { turn: "comment", name: "Retry", mode: "Send" },
+  { turn: "message", name: "Retry", mode: "Aside" },
+  { turn: "message", name: "Use BTW instead", mode: "BTW" },
+  { turn: "message", name: "Use Send instead", mode: "Send" },
+  { turn: "reply", name: "Retry", mode: "Aside" },
+  { turn: "reply", name: "Use BTW instead", mode: "BTW" },
+  { turn: "reply", name: "Use Send instead", mode: "Send" },
+] as const)(
+  "$turn: $name lets go at the delivery write deadline and sends again",
+  async ({ turn, name, mode }) => {
+    const target = "session:worker-session";
+    const failed = attempt({
+      delivery: "aside",
+      error: "no live session",
+      session_id: "worker-session",
+      state: "failed",
+    });
+    const lists =
+      turn === "comment"
+        ? {
+            comments: [
+              comment("comment-1", { deliveries: [mentionAttempt({ error: "no live session" })] }),
+            ],
+          }
+        : {
+            messages: [
+              turn === "message"
+                ? thread(message("message-1", { deliveries: [failed], target }))
+                : thread(message("message-1", { target }), [
+                    message("message-2", {
+                      author: { id: "worker-session", kind: "session" },
+                      in_reply_to: "message-1",
+                    }),
+                    message("message-3", {
+                      deliveries: [{ ...failed, message_id: "message-3" }],
+                      in_reply_to: "message-1",
+                    }),
+                  ]),
+            ],
+          };
+    const stub = stubLists({
+      ...lists,
+      agents: [agent("worker-session", "Worker", ["aside", "btw", "steer"])],
+    });
+    const dropped = new NetworkError("/api/v1/deliveries", new TypeError("Failed to fetch"));
+    const retryComment = spyOn(api, "createCommentDelivery").mockRejectedValue(dropped);
+    const retryMessage = spyOn(api, "createMessageDelivery").mockRejectedValue(dropped);
+    const queryClient = newQueryClient();
+    const view = render(tab({ "CORE-1": issueState() }, true, queryClient));
+    try {
+      const button = await screen.findByRole<HTMLButtonElement>("button", { name });
+      jest.useFakeTimers();
+      const user = userOnFakeClock();
+      const sent = () => pressesOf([retryComment, retryMessage]);
+      await heldUntilLate(user, button, {
+        label: `Delivery ${turn === "comment" ? "of the comment " : ""}to Worker again, as ${mode}`,
+        name,
+        queryClient,
+        sent,
+      });
+      await user.keyboard("{Enter}");
+      await tick(1_000);
+      expect(sent()).toBe(2);
+    } finally {
+      view.unmount();
+      queryClient.clear();
+      retryComment.mockRestore();
+      retryMessage.mockRestore();
+      stub.restore();
+    }
+  }
+);
+
+// The Conversation tab left and opened again draws its turns anew, and may do so while a delivery
+// Retry's write is still out, before it lands. Each retry goes under the name of what it delivers
+// again, so the Retry drawn again holds from that press's own state (`usePendingKeyedPress`), as
+// the one pressed did: a press of it sends no second retry, and it lets go at the retry's deadline
+// (`SEND_DEADLINE_MS`). Dispatch never answers the retry: each try fails at the network and is
+// tried again under its key.
+test.each(["comment", "message", "reply"] as const)(
+  "%s: a Retry drawn again while its retry's write is out holds until the retry's deadline and sends no second retry",
+  async (turn) => {
+    const target = "session:worker-session";
+    const failed = attempt({
+      delivery: "aside",
+      error: "no live session",
+      session_id: "worker-session",
+      state: "failed",
+    });
+    const lists =
+      turn === "comment"
+        ? {
+            comments: [
+              comment("comment-1", { deliveries: [mentionAttempt({ error: "no live session" })] }),
+            ],
+          }
+        : {
+            messages: [
+              turn === "message"
+                ? thread(message("message-1", { deliveries: [failed], target }))
+                : thread(message("message-1", { target }), [
+                    message("message-2", {
+                      author: { id: "worker-session", kind: "session" },
+                      in_reply_to: "message-1",
+                    }),
+                    message("message-3", {
+                      deliveries: [{ ...failed, message_id: "message-3" }],
+                      in_reply_to: "message-1",
+                    }),
+                  ]),
+            ],
+          };
+    const stub = stubLists({
+      ...lists,
+      agents: [agent("worker-session", "Worker", ["aside", "btw", "steer"])],
+    });
+    const dropped = new NetworkError("/api/v1/deliveries", new TypeError("Failed to fetch"));
+    const retryComment = spyOn(api, "createCommentDelivery").mockRejectedValue(dropped);
+    const retryMessage = spyOn(api, "createMessageDelivery").mockRejectedValue(dropped);
+    const queryClient = newQueryClient();
+    let view = render(tab({ "CORE-1": issueState() }, true, queryClient));
+    const retryOf = () => screen.getByRole<HTMLButtonElement>("button", { name: "Retry" });
+    const sent = () => pressesOf([retryComment, retryMessage]);
+    try {
+      await screen.findByRole("button", { name: "Retry" });
+      jest.useFakeTimers();
+      const user = userOnFakeClock();
+      await user.click(retryOf());
+      await tick(0);
+      expect(sent()).toBe(1);
+
+      view.unmount();
+      view = render(tab({ "CORE-1": issueState() }, true, queryClient));
+      await tick(0);
+      expect(
+        heldNotDisabled(retryOf(), "Retry"),
+        "the Retry drawn again let go while its retry was out"
+      ).toBe(true);
+      await user.click(retryOf());
+      await tick(0);
+      expect(sent(), "a press of the Retry drawn again sent a second retry").toBe(1);
+
+      await tick(SEND_DEADLINE_MS - 1_000);
+      expect(heldNotDisabled(retryOf(), "Retry")).toBe(true);
+      await tick(1_000);
+      expect(heldNotDisabled(retryOf(), "Retry")).toBe(false);
+    } finally {
+      realClock();
+      view.unmount();
+      queryClient.clear();
+      retryComment.mockRestore();
+      retryMessage.mockRestore();
+      stub.restore();
+    }
+  }
+);
 
 test("a root targeted-message retry checks the role's current holder after a handoff, not the failed attempt's session", async () => {
   const stub = stubLists({
@@ -2552,6 +2957,547 @@ test("Conversation restores edit controls and the draft when its owner save reje
     );
   } finally {
     view.unmount();
+    editComment.mockRestore();
+    stub.restore();
+  }
+});
+
+// The Conversation tab left and opened again draws its turns anew, and may do so while a comment
+// edit's save is still out, before it lands. The save is the held-send store's, so the card drawn
+// again opens its editor on it with Save held, and it hides every Edit of the card from that
+// save's own state (`useHeldSendsUnder`), as the card it was saved on did: a press of Save saves
+// nothing more, and the Edits come back at the save's deadline (`SEND_DEADLINE_MS`), where the
+// save is still tried and Save still held (`MentionComposer`). Dispatch never answers the save:
+// each try fails at the network and is tried again under its key.
+test("a card drawn again while a comment edit's save is out hides every Edit until the save's deadline, and its held Save saves nothing more", async () => {
+  const user = userEvent.setup();
+  const root = comment("root-comment", { body: "Root comment" });
+  const reply = comment("reply-comment", { body: "Reply comment", reply_to: "root-comment" });
+  const stub = stubLists({ comments: [root, reply] });
+  const editComment = spyOn(api, "editComment").mockRejectedValue(
+    new NetworkError("/api/v1/comments/root-comment", new TypeError("Failed to fetch"))
+  );
+  const queryClient = newQueryClient();
+  queryClient.setQueryData(["whoami"], { kind: "user", login: "alice" });
+  let view = render(tab({ "CORE-1": issueState() }, true, queryClient));
+  const card = () => screen.getByTestId("margin-comment-root-comment");
+  const editsOf = () => within(card()).queryAllByRole("button", { name: "Edit" });
+  const sent = () => pressesOf([editComment]);
+  try {
+    await screen.findByTestId("margin-comment-root-comment");
+    await user.click(screen.getByRole("button", { name: "Expand thread" }));
+    await waitFor(() => expect(editsOf()).toHaveLength(2));
+    await user.click(editsOf()[0] as HTMLElement);
+    const editField = screen.getByLabelText("Edit comment");
+    await user.clear(editField);
+    await user.click(editField);
+    await user.paste("Updated root");
+    jest.useFakeTimers();
+    const onFakeClock = userOnFakeClock();
+    await onFakeClock.click(screen.getByRole("button", { name: "Save" }));
+    await tick(0);
+    expect(sent()).toBe(1);
+
+    view.unmount();
+    view = render(tab({ "CORE-1": issueState() }, true, queryClient));
+    await tick(0);
+    await onFakeClock.click(screen.getByRole("button", { name: "Expand thread" }));
+    await tick(0);
+    expect(
+      editsOf(),
+      "the card drawn again offered Edit while a save of its edit was out"
+    ).toHaveLength(0);
+    const save = within(card()).getByRole<HTMLButtonElement>("button", {
+      name: /^(Save|Sending…)$/,
+    });
+    expect(heldNotDisabled(save, "Save")).toBe(true);
+    await onFakeClock.click(save);
+    await tick(0);
+    expect(sent(), "a press of the Save drawn again saved a second time").toBe(1);
+
+    await tick(SEND_DEADLINE_MS - 1_000);
+    expect(editsOf()).toHaveLength(0);
+    await tick(1_000);
+    expect(editsOf()).toHaveLength(2);
+    expect(heldNotDisabled(save, "Save")).toBe(true);
+  } finally {
+    realClock();
+    view.unmount();
+    queryClient.clear();
+    editComment.mockRestore();
+    stub.restore();
+  }
+});
+
+// A save that lands just as the browser goes offline: the comments it changed are asked again,
+// and the network pauses that read until it returns, with no deadline of its own running: the
+// app's client holds a read of an idle query until its paused fetch answers
+// (`DispatchQueryClient`). The save holds the edit - its editor open and every Edit of the card
+// hidden - through that read only up to the request deadline (`REQUEST_DEADLINE_MS`), and lets it
+// go there, as the other holds through a read do (`readWithinBound`).
+test("offline, a comment edit's save holds the edit through the read it made stale only until the request deadline", async () => {
+  const user = userEvent.setup();
+  const root = comment("root-comment", { body: "Root comment" });
+  const reply = comment("reply-comment", { body: "Reply comment", reply_to: "root-comment" });
+  const stub = stubLists({ comments: [root, reply] });
+  const save = Promise.withResolvers<Comment>();
+  const editComment = spyOn(api, "editComment").mockImplementation(() => save.promise);
+  const queryClient = new DispatchQueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
+  });
+  queryClient.setQueryData(["whoami"], { kind: "user", login: "alice" });
+  const view = render(tab({ "CORE-1": issueState() }, true, queryClient));
+  const online = onlineManager.isOnline();
+
+  try {
+    const card = await screen.findByTestId("margin-comment-root-comment");
+    await user.click(screen.getByRole("button", { name: "Expand thread" }));
+    await waitFor(() =>
+      expect(within(card).getAllByRole("button", { name: "Edit" })).toHaveLength(2)
+    );
+    await user.click(within(card).getAllByRole("button", { name: "Edit" })[0] as HTMLElement);
+    const editField = screen.getByLabelText("Edit comment");
+    await user.clear(editField);
+    await user.click(editField);
+    await user.paste("Updated root");
+    jest.useFakeTimers();
+    await userOnFakeClock().click(screen.getByRole("button", { name: "Save" }));
+    await settle();
+    expect(editComment).toHaveBeenCalledWith(
+      "root-comment",
+      { body: "Updated root" },
+      keyedAttempt
+    );
+
+    // The save lands with the browser offline, and the comments' read it starts is paused.
+    onlineManager.setOnline(false);
+    await act(async () => {
+      save.resolve({ ...root, body: "Updated root" });
+      await save.promise;
+    });
+
+    // A second short of the request deadline the read is still paused, and the edit held.
+    await tick(REQUEST_DEADLINE_MS - 1_000);
+    expect(within(card).queryAllByRole("button", { name: "Edit" })).toHaveLength(0);
+    expect(screen.getByLabelText("Edit comment")).toBeInTheDocument();
+
+    // At it the save lets the edit go: its editor closes, and each Edit is back.
+    await tick(1_000);
+    expect(screen.queryByLabelText("Edit comment")).not.toBeInTheDocument();
+    expect(within(card).getAllByRole("button", { name: "Edit" })).toHaveLength(2);
+  } finally {
+    save.resolve(root);
+    view.unmount();
+    queryClient.clear();
+    onlineManager.setOnline(online);
+    realClock();
+    editComment.mockRestore();
+    stub.restore();
+  }
+});
+
+// A save that lands while the read of the comments it changed goes unanswered: the save holds the
+// edit through that read up to the request deadline and lets it go there, and the comment says
+// why beneath its card, in the words of the error such a read ends with. The line goes once that
+// read settles.
+test("a comment edit's save whose read has not answered by the request deadline lets the edit go there, and the comment says why until that read settles", async () => {
+  const user = userEvent.setup();
+  const root = comment("root-comment", { body: "Root comment" });
+  const reply = comment("reply-comment", { body: "Reply comment", reply_to: "root-comment" });
+  const stub = stubLists({ comments: [root, reply] });
+  const listComments = api.listComments as Mock<typeof api.listComments>;
+  const save = Promise.withResolvers<Comment>();
+  const editComment = spyOn(api, "editComment").mockImplementation(() => save.promise);
+  const reread = Promise.withResolvers<Comment[]>();
+  const queryClient = newQueryClient();
+  queryClient.setQueryData(["whoami"], { kind: "user", login: "alice" });
+  const view = render(tab({ "CORE-1": issueState() }, true, queryClient));
+  const why = "The edited comment is not read yet. Dispatch did not answer within 30 seconds.";
+
+  try {
+    const card = await screen.findByTestId("margin-comment-root-comment");
+    const turn = card.closest("[data-turn]");
+    if (!(turn instanceof HTMLElement)) throw new Error("the comment's card is drawn in no turn");
+    await user.click(screen.getByRole("button", { name: "Expand thread" }));
+    await waitFor(() =>
+      expect(within(card).getAllByRole("button", { name: "Edit" })).toHaveLength(2)
+    );
+    await user.click(within(card).getAllByRole("button", { name: "Edit" })[0] as HTMLElement);
+    const editField = screen.getByLabelText("Edit comment");
+    await user.clear(editField);
+    await user.click(editField);
+    await user.paste("Updated root");
+    listComments.mockImplementation(() => reread.promise);
+    jest.useFakeTimers();
+    await userOnFakeClock().click(screen.getByRole("button", { name: "Save" }));
+    await settle();
+    expect(editComment).toHaveBeenCalledWith(
+      "root-comment",
+      { body: "Updated root" },
+      keyedAttempt
+    );
+
+    // The save lands, and the comments' read it starts goes unanswered.
+    await act(async () => {
+      save.resolve({ ...root, body: "Updated root" });
+      await save.promise;
+    });
+
+    // A second short of the request deadline the read is still out, the edit held, and nothing
+    // said.
+    await tick(REQUEST_DEADLINE_MS - 1_000);
+    expect(screen.getByLabelText("Edit comment")).toBeInTheDocument();
+    expect(screen.queryByText(why)).toBeNull();
+
+    // At it the save lets the edit go, and the comment's turn says why.
+    await tick(1_000);
+    expect(screen.queryByLabelText("Edit comment")).not.toBeInTheDocument();
+    expect(within(turn).getByText(why)).toBeInTheDocument();
+
+    // The read answers with the saved words, and the line goes.
+    await act(async () => reread.resolve([{ ...root, body: "Updated root" }, reply]));
+    await tick(0);
+    expect(screen.queryByText(why)).toBeNull();
+  } finally {
+    save.resolve(root);
+    reread.resolve([root, reply]);
+    view.unmount();
+    queryClient.clear();
+    realClock();
+    editComment.mockRestore();
+    stub.restore();
+  }
+});
+
+// A margin action - a thread resolved beside the spec - gives the issue's comments read up as it
+// shows its change (`useMarginItems`), and asks nothing then. A cancel is no answer
+// (`DispatchQueryClient`): a comment edit's save, which reads the comments again, still holds the
+// edit through that read until a later read of the comments answers or the bound comes.
+test("a margin action that gives the comments' read up leaves a landed edit's save held through its read", async () => {
+  const user = userEvent.setup();
+  const root = comment("root-comment", { body: "Root comment" });
+  const reply = comment("reply-comment", { body: "Reply comment", reply_to: "root-comment" });
+  const stub = stubLists({ comments: [root, reply] });
+  const listComments = api.listComments as Mock<typeof api.listComments>;
+  // The save's answer and the action's, held until the row gives each, so what each sets off
+  // runs in `act`.
+  const save = Promise.withResolvers<Comment>();
+  const editComment = spyOn(api, "editComment").mockImplementation(() => save.promise);
+  const resolved = Promise.withResolvers<never>();
+  const resolveComment = spyOn(api, "resolveComment").mockImplementation(() => resolved.promise);
+  const reread = Promise.withResolvers<Comment[]>();
+  const queryClient = new DispatchQueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
+  });
+  queryClient.setQueryData(["whoami"], { kind: "user", login: "alice" });
+  // What the margin reads beside the comments, as the issue page holds it already.
+  queryClient.setQueryData(inboxQuery().queryKey, []);
+  queryClient.setQueryData(userStateQuery().queryKey, {});
+  queryClient.setQueryData(["asks", "CORE-1"], []);
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue([]);
+  const view = render(tab({ "CORE-1": issueState() }, true, queryClient));
+  const margin = renderHook(
+    () =>
+      useMarginItems(
+        { key: "CORE-1", kind: "issue" },
+        "comments",
+        undefined,
+        new Map(),
+        new Map(),
+        undefined
+      ),
+    {
+      wrapper: ({ children }: { children: ReactNode }) => (
+        <MemoryRouter>
+          <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+        </MemoryRouter>
+      ),
+    }
+  );
+
+  try {
+    const card = await screen.findByTestId("margin-comment-root-comment");
+    await user.click(screen.getByRole("button", { name: "Expand thread" }));
+    await waitFor(() =>
+      expect(within(card).getAllByRole("button", { name: "Edit" })).toHaveLength(2)
+    );
+    await user.click(within(card).getAllByRole("button", { name: "Edit" })[0] as HTMLElement);
+    const editField = screen.getByLabelText("Edit comment");
+    await user.clear(editField);
+    await user.click(editField);
+    await user.paste("Updated root");
+    listComments.mockImplementation(() => reread.promise);
+    jest.useFakeTimers();
+    await userOnFakeClock().click(screen.getByRole("button", { name: "Save" }));
+    await settle();
+    expect(editComment).toHaveBeenCalledTimes(1);
+
+    // The save lands, and the comments' read it starts goes unanswered.
+    await act(async () => {
+      save.resolve({ ...root, body: "Updated root" });
+      await save.promise;
+    });
+    await tick(0);
+    expect(screen.getByLabelText("Edit comment")).toBeInTheDocument();
+
+    act(() => margin.result.current.mutateItem({ id: "reply-comment", kind: "resolve" }));
+    await tick(0);
+    expect(resolveComment).toHaveBeenCalledTimes(1);
+    expect(
+      screen.queryByLabelText("Edit comment") !== null,
+      "a margin action let the edit go with no read of the comments answered"
+    ).toBe(true);
+  } finally {
+    await act(async () => {
+      resolved.reject(new ApiError(404, { error: "no such comment" }));
+      reread.resolve([{ ...root, body: "Updated root" }, reply]);
+    });
+    margin.unmount();
+    view.unmount();
+    queryClient.clear();
+    realClock();
+    editComment.mockRestore();
+    resolveComment.mockRestore();
+    getInbox.mockRestore();
+    stub.restore();
+  }
+});
+
+// The save's own event reaches the page while the read of the comments its landing started is
+// out, as the live feed brings it: the feed writes the edit's time into the comments over that
+// read, which it gives up and asks again (`markCorrectedPost`, `replaceQueryData`). The save holds
+// the edit through the read asked again (`DispatchQueryClient`), so where that read goes
+// unanswered the comment says why at the request deadline, until that read answers.
+test("a comment edit's save whose read its own event asks again holds the edit through the read asked again, and the comment says why at the request deadline until it answers", async () => {
+  const user = userEvent.setup();
+  const root = comment("root-comment", { body: "Root comment" });
+  const reply = comment("reply-comment", { body: "Reply comment", reply_to: "root-comment" });
+  const stub = stubLists({ comments: [root, reply] });
+  const listComments = api.listComments as Mock<typeof api.listComments>;
+  const save = Promise.withResolvers<Comment>();
+  const editComment = spyOn(api, "editComment").mockImplementation(() => save.promise);
+  // Each read of the comments from the save on, held until the row answers it.
+  const { answers: rereads, next: nextReread } = heldAnswers<Comment[]>();
+  const queryClient = new DispatchQueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
+  });
+  queryClient.setQueryData(["whoami"], { kind: "user", login: "alice" });
+  const view = render(tab({ "CORE-1": issueState() }, true, queryClient));
+  const why = "The edited comment is not read yet. Dispatch did not answer within 30 seconds.";
+  const edited = correction("comment", root.id, true);
+
+  try {
+    const card = await screen.findByTestId("margin-comment-root-comment");
+    const turn = card.closest("[data-turn]");
+    if (!(turn instanceof HTMLElement)) throw new Error("the comment's card is drawn in no turn");
+    await user.click(screen.getByRole("button", { name: "Expand thread" }));
+    await waitFor(() =>
+      expect(within(card).getAllByRole("button", { name: "Edit" })).toHaveLength(2)
+    );
+    await user.click(within(card).getAllByRole("button", { name: "Edit" })[0] as HTMLElement);
+    const editField = screen.getByLabelText("Edit comment");
+    await user.clear(editField);
+    await user.click(editField);
+    await user.paste("Updated root");
+    listComments.mockImplementation(nextReread);
+    jest.useFakeTimers();
+    await userOnFakeClock().click(screen.getByRole("button", { name: "Save" }));
+    await settle();
+    expect(editComment).toHaveBeenCalledWith(
+      "root-comment",
+      { body: "Updated root" },
+      keyedAttempt
+    );
+
+    // The save lands, and the comments' read it starts goes unanswered.
+    await act(async () => {
+      save.resolve({ ...root, body: "Updated root" });
+      await save.promise;
+    });
+    expect(rereads).toHaveLength(1);
+
+    // The save's own event comes as the feed hears it (`hearLiveEvent`, then `markCorrectedPost`,
+    // in `useEventFeed`): it gives that read up and asks the comments again, and that read goes
+    // unanswered too.
+    await act(async () => {
+      hearLiveEvent(queryClient, edited, "alice");
+      markCorrectedPost(queryClient, edited);
+    });
+    expect(rereads).toHaveLength(2);
+
+    // A second short of the request deadline the edit is still held, and nothing said.
+    await tick(REQUEST_DEADLINE_MS - 1_000);
+    expect(screen.getByLabelText("Edit comment")).toBeInTheDocument();
+    expect(screen.queryByText(why)).toBeNull();
+
+    // At it the save lets the edit go, and the comment's turn says why.
+    await tick(1_000);
+    expect(screen.queryByLabelText("Edit comment")).not.toBeInTheDocument();
+    expect(within(turn).getByText(why)).toBeInTheDocument();
+
+    // The read asked again answers with the saved words, and the line goes.
+    await act(async () =>
+      rereads[1]?.([{ ...root, body: "Updated root", edited_at: EDITED_AT }, reply])
+    );
+    await tick(0);
+    expect(screen.queryByText(why)).toBeNull();
+  } finally {
+    save.resolve(root);
+    for (const answer of rereads) answer([root, reply]);
+    view.unmount();
+    queryClient.clear();
+    realClock();
+    editComment.mockRestore();
+    stub.restore();
+  }
+});
+
+// The line a save's read the bound ended draws is that save's own: the next save of an edit takes
+// it away as it lands, though the earlier read is still out, and that save's read answering says
+// nothing more. Dispatch holds each read of the comments until the row answers them, and the next
+// save's read waits for the earlier one's fetch (`DispatchQueryClient`), so it answers after it.
+test("the line a comment edit's read the bound ended draws goes as the next save lands, whose read answers", async () => {
+  const user = userEvent.setup();
+  const root = comment("root-comment", { body: "Root comment" });
+  const reply = comment("reply-comment", { body: "Reply comment", reply_to: "root-comment" });
+  const stub = stubLists({ comments: [root, reply] });
+  const listComments = api.listComments as Mock<typeof api.listComments>;
+  // Each save's answer and each read of the comments, held until the row gives them.
+  const { answers: saves, next: nextSave } = heldAnswers<Comment>();
+  const editComment = spyOn(api, "editComment").mockImplementation(nextSave);
+  const { answers: rereads, next: nextReread } = heldAnswers<Comment[]>();
+  const queryClient = new DispatchQueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
+  });
+  queryClient.setQueryData(["whoami"], { kind: "user", login: "alice" });
+  const view = render(tab({ "CORE-1": issueState() }, true, queryClient));
+  const why = "The edited comment is not read yet. Dispatch did not answer within 30 seconds.";
+
+  try {
+    const card = await screen.findByTestId("margin-comment-root-comment");
+    const turn = card.closest("[data-turn]");
+    if (!(turn instanceof HTMLElement)) throw new Error("the comment's card is drawn in no turn");
+    await user.click(screen.getByRole("button", { name: "Expand thread" }));
+    await waitFor(() =>
+      expect(within(card).getAllByRole("button", { name: "Edit" })).toHaveLength(2)
+    );
+    listComments.mockImplementation(nextReread);
+    jest.useFakeTimers();
+    const onClock = userOnFakeClock();
+    /** Saves `body` as the root comment's words through its editor, and lands the save. */
+    const saveRoot = async (body: string) => {
+      await onClock.click(within(card).getAllByRole("button", { name: "Edit" })[0] as HTMLElement);
+      const editField = screen.getByLabelText("Edit comment");
+      await onClock.clear(editField);
+      await onClock.click(editField);
+      await onClock.paste(body);
+      await onClock.click(screen.getByRole("button", { name: "Save" }));
+      await settle();
+      await act(async () => saves.at(-1)?.({ ...root, body }));
+      await tick(0);
+    };
+
+    await saveRoot("Updated root");
+    await tick(REQUEST_DEADLINE_MS);
+    expect(screen.queryByLabelText("Edit comment")).not.toBeInTheDocument();
+    expect(within(turn).getByText(why)).toBeInTheDocument();
+
+    await saveRoot("Updated again");
+    expect(editComment).toHaveBeenCalledTimes(2);
+    expect(screen.getByLabelText("Edit comment")).toBeInTheDocument();
+    expect(
+      within(turn).queryByText(why),
+      "the earlier save's read kept its line past the next save"
+    ).toBeNull();
+
+    const saved = [{ ...root, body: "Updated again" }, reply];
+    listComments.mockResolvedValue(saved);
+    await act(async () => {
+      for (const answer of rereads) answer(saved);
+    });
+    await tick(0);
+    expect(screen.queryByLabelText("Edit comment")).not.toBeInTheDocument();
+    expect(screen.queryByText(why)).toBeNull();
+  } finally {
+    view.unmount();
+    queryClient.clear();
+    realClock();
+    editComment.mockRestore();
+    stub.restore();
+  }
+});
+
+// Every comment's edit reads the one list of the issue's comments again, so the line one comment's
+// turn draws for a read the bound ended goes as another comment's save lands, though that read is
+// still out: the turn list's one hold forgets it then (`useListReadBound`), and the second turn
+// alone says why the read its own save made has not settled, once that read's bound ends.
+test("the line one comment's edit leaves goes as another comment's save lands", async () => {
+  const user = userEvent.setup();
+  const first = comment("first-comment", { body: "First comment" });
+  const second = comment("second-comment", { body: "Second comment" });
+  const stub = stubLists({ comments: [first, second] });
+  const listComments = api.listComments as Mock<typeof api.listComments>;
+  // Each save's answer and each read of the comments, held until the row gives them.
+  const { answers: saves, next: nextSave } = heldAnswers<Comment>();
+  const editComment = spyOn(api, "editComment").mockImplementation(nextSave);
+  const { answers: rereads, next: nextReread } = heldAnswers<Comment[]>();
+  const queryClient = new DispatchQueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
+  });
+  queryClient.setQueryData(["whoami"], { kind: "user", login: "alice" });
+  const view = render(tab({ "CORE-1": issueState() }, true, queryClient));
+  const why = "The edited comment is not read yet. Dispatch did not answer within 30 seconds.";
+
+  try {
+    /** The comment's card, open on its thread, and the turn it is drawn in. */
+    const opened = async (id: string) => {
+      const card = await screen.findByTestId(`margin-comment-${id}`);
+      const turn = card.closest("[data-turn]");
+      if (!(turn instanceof HTMLElement)) throw new Error(`${id}'s card is drawn in no turn`);
+      await user.click(within(turn).getByRole("button", { name: "Expand thread" }));
+      await waitFor(() =>
+        expect(within(card).getAllByRole("button", { name: "Edit" })).toHaveLength(1)
+      );
+      return { card, turn };
+    };
+    const firstTurn = await opened(first.id);
+    const secondTurn = await opened(second.id);
+    listComments.mockImplementation(nextReread);
+    jest.useFakeTimers();
+    const onClock = userOnFakeClock();
+    /** Saves `body` as the words of the comment drawn in `card` through its editor, and lands
+     *  the save. */
+    const save = async (card: HTMLElement, saved: Comment, body: string) => {
+      await onClock.click(within(card).getByRole("button", { name: "Edit" }));
+      const editField = screen.getByLabelText("Edit comment");
+      await onClock.clear(editField);
+      await onClock.click(editField);
+      await onClock.paste(body);
+      await onClock.click(screen.getByRole("button", { name: "Save" }));
+      await settle();
+      await act(async () => saves.at(-1)?.({ ...saved, body }));
+      await tick(0);
+    };
+
+    await save(firstTurn.card, first, "First, edited");
+    await tick(REQUEST_DEADLINE_MS);
+    expect(within(firstTurn.turn).getByText(why)).toBeInTheDocument();
+
+    await save(secondTurn.card, second, "Second, edited");
+    expect(editComment).toHaveBeenCalledTimes(2);
+    expect(
+      within(firstTurn.turn).queryByText(why),
+      "the first comment's read kept its line on its turn past the second comment's save"
+    ).toBeNull();
+
+    await tick(REQUEST_DEADLINE_MS);
+    expect(within(secondTurn.turn).getByText(why)).toBeInTheDocument();
+    expect(within(firstTurn.turn).queryByText(why)).toBeNull();
+  } finally {
+    for (const answer of rereads) answer([first, second]);
+    view.unmount();
+    queryClient.clear();
+    realClock();
     editComment.mockRestore();
     stub.restore();
   }
@@ -3036,6 +3982,670 @@ test("a Conversation turn links the `#q2` the question map of its message names"
     stub.restore();
     getAsk.mockRestore();
     getReferenceQuestions.mockRestore();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// The keys of the turns (dispatch://INFRA-2160, R22): `j` and `k` walk the turns and the replies
+// drawn in them; Enter, `o`, `r`, `y` and Shift+Y act on the turn the focus is on.
+// ---------------------------------------------------------------------------
+
+/** Pushes the issue page's scope, under which the tab registers its keys (`IssuePage`). */
+function IssueScope(): null {
+  useKeymapScope("issue");
+  return null;
+}
+
+const bob: Actor = { id: "bob", kind: "user" };
+
+/** One conversation of each kind a turn comes in, newest activity first: a message with a reply,
+ *  a comment thread with two replies, and a handoff. */
+function turnLists(): Lists {
+  return {
+    comments: [
+      comment("comment-1", {
+        body: "The ledger needs a lease.",
+        created_at: "2026-09-20T00:00:00Z",
+      }),
+      comment("reply-a", {
+        author: bob,
+        body: "First answer",
+        created_at: "2026-09-20T00:01:00Z",
+        reply_to: "comment-1",
+      }),
+      comment("reply-b", {
+        author: bob,
+        body: "Second answer",
+        created_at: "2026-09-20T00:02:00Z",
+        reply_to: "comment-1",
+      }),
+    ],
+    handoffs: [handoffRecord("handoff-1", 1, '{"summary":"First pass"}', "2026-09-10T09:00:00Z")],
+    messages: [
+      thread(
+        message("message-1", {
+          body: "Who holds the lease?",
+          created_at: "2026-09-21T00:00:00Z",
+        }),
+        [
+          message("message-2", {
+            author: bob,
+            body: "The mirror does.",
+            created_at: "2026-09-21T00:01:00Z",
+            in_reply_to: "message-1",
+          }),
+        ]
+      ),
+    ],
+  };
+}
+
+/** The tab under the issue page's scope, once `first` - a turn's `data-turn` - is drawn. */
+async function renderTurns(lists: Lists, first: string, visible = true) {
+  const stub = stubLists(lists);
+  const view = render(
+    <>
+      <IssueScope />
+      {tab({ "CORE-1": issueState() }, visible, newQueryClient())}
+    </>
+  );
+  const turn = (id: string) => {
+    const found = view.container.querySelector<HTMLElement>(`[data-turn="${id}"]`);
+    if (found === null) throw new Error(`expected the ${id} turn`);
+    return found;
+  };
+  await waitFor(() => turn(first));
+  const list = screen.getByRole("list", { name: "Conversation turns" });
+  return {
+    cleanup: () => {
+      view.unmount();
+      stub.restore();
+    },
+    /** Every turn and reply the list draws, top to bottom. */
+    rows: () => [...list.querySelectorAll<HTMLElement>("[data-turn], [data-reply]")],
+    turn,
+  };
+}
+
+/** The reply box of the comment thread `root` holds, once it is drawn. */
+function threadBox(root: HTMLElement): Promise<HTMLElement> {
+  return waitFor(() => {
+    const found = root.querySelector<HTMLElement>("[data-thread-reply] [data-reply-box]");
+    if (found === null) throw new Error("the thread drew no reply box");
+    return found;
+  });
+}
+
+test("j and k walk the Conversation's turns and the replies drawn in them, each a turn Tab does not stop on", async () => {
+  const user = userEvent.setup();
+  const page = await renderTurns(turnLists(), "message:message-1");
+  try {
+    // A comment's thread is closed, so its replies are not drawn and not walked.
+    expect(page.rows().map((row) => row.getAttribute("data-turn"))).toEqual([
+      "message:message-1",
+      "message:message-2",
+      "comment:comment-1",
+      "handoff:handoff-1",
+    ]);
+    for (const row of page.rows()) expect(row).toHaveAttribute("tabindex", "-1");
+
+    await user.keyboard("j");
+    expect(document.activeElement).toBe(page.turn("message:message-1"));
+    await user.keyboard("j");
+    expect(document.activeElement).toBe(page.turn("message:message-2"));
+    await user.keyboard("jj");
+    expect(document.activeElement).toBe(page.turn("handoff:handoff-1"));
+    // The walk stops at either end.
+    await user.keyboard("j");
+    expect(document.activeElement).toBe(page.turn("handoff:handoff-1"));
+    await user.keyboard("k");
+    expect(document.activeElement).toBe(page.turn("comment:comment-1"));
+  } finally {
+    page.cleanup();
+  }
+});
+
+test("Enter and o open and close a comment's thread with the focus kept on the turn and its reply box standing, and j then walks its replies", async () => {
+  const user = userEvent.setup();
+  const page = await renderTurns(turnLists(), "comment:comment-1");
+  try {
+    const root = page.turn("comment:comment-1");
+    act(() => root.focus());
+    await user.keyboard("{Enter}");
+    expect(within(root).getByRole("button", { name: "Collapse thread" })).toBeTruthy();
+    // The thread's box is drawn, and takes no focus: it is standing.
+    await threadBox(root);
+    expect(document.activeElement).toBe(root);
+
+    await user.keyboard("j");
+    const first = (await within(root).findByText("First answer")).closest("[data-reply]");
+    expect(document.activeElement).toBe(first);
+    expect(first).toHaveAttribute("data-turn-ref", "dispatch://CORE-1/comment/reply-a");
+    // `o` on a reply closes its thread, which takes the reply away: the thread's turn has the
+    // focus.
+    await user.keyboard("o");
+    expect(within(root).getByRole("button", { name: "Expand thread" })).toBeTruthy();
+    expect(document.activeElement).toBe(root);
+    await user.keyboard("o");
+    expect(within(root).getByRole("button", { name: "Collapse thread" })).toBeTruthy();
+    expect(document.activeElement).toBe(root);
+    await user.keyboard("{Enter}");
+    expect(within(root).getByRole("button", { name: "Expand thread" })).toBeTruthy();
+    expect(document.activeElement).toBe(root);
+  } finally {
+    page.cleanup();
+  }
+});
+
+test("r puts the caret in a comment thread's reply box, opening the thread, and Escape in the empty box gives the focus back to the turn and keeps the thread open", async () => {
+  const user = userEvent.setup();
+  const page = await renderTurns(turnLists(), "comment:comment-1");
+  try {
+    const root = page.turn("comment:comment-1");
+    act(() => root.focus());
+    await user.keyboard("r");
+    const box = await threadBox(root);
+    await waitFor(() => expect(box).toHaveFocus());
+    await user.keyboard("{Escape}");
+    expect(document.activeElement).toBe(root);
+    expect(within(root).getByRole("button", { name: "Collapse thread" })).toBeTruthy();
+
+    // From a reply of the open thread `r` reaches the same box, and Escape gives the focus back
+    // to the reply.
+    await user.keyboard("j");
+    const reply = document.activeElement;
+    expect(reply?.hasAttribute("data-reply")).toBe(true);
+    await user.keyboard("r");
+    expect(box).toHaveFocus();
+    await user.keyboard("{Escape}");
+    expect(document.activeElement).toBe(reply);
+    expect(within(root).getByRole("button", { name: "Collapse thread" })).toBeTruthy();
+
+    // A thread the pointer opens keeps its own Escape, which closes it.
+    await user.keyboard("k");
+    await user.keyboard("o");
+    await user.click(within(root).getByRole("button", { name: "Expand thread" }));
+    await waitFor(async () => expect(await threadBox(root)).toHaveFocus());
+    await user.keyboard("{Escape}");
+    expect(within(root).getByRole("button", { name: "Expand thread" })).toBeTruthy();
+  } finally {
+    page.cleanup();
+  }
+});
+
+test("r on a message presses its Reply, and Escape in the composer gives the focus back to the turn", async () => {
+  const user = userEvent.setup();
+  const page = await renderTurns(turnLists(), "message:message-2");
+  try {
+    const reply = page.turn("message:message-2");
+    act(() => reply.focus());
+    await user.keyboard("r");
+    const composer = screen.getByRole("form", { name: "Comment composer" });
+    await waitFor(() => expect(composer.querySelector("[data-reply-box]")).toHaveFocus());
+    expect(within(composer).getByRole("button", { name: "Cancel reply" })).toBeTruthy();
+    await user.keyboard("{Escape}");
+    expect(document.activeElement).toBe(reply);
+    expect(within(composer).queryByRole("button", { name: "Cancel reply" })).toBeNull();
+  } finally {
+    page.cleanup();
+  }
+});
+
+// A composer a key or a button inside it ends gives the focus back to the control that opened it,
+// or keeps it in a composer that stays, never on the page's body (dispatch://INFRA-2160, E1).
+
+// Escape over a typed draft in the docked composer asks Discard draft?, and the question's Discard
+// takes itself away with the question while it holds the focus. The docked composer stays, so the
+// caret goes back to its Comment box, which held it before the question (`MentionComposer`).
+test("Discard over a typed draft in the Conversation's comment composer puts the caret back in its Comment box", async () => {
+  const user = userEvent.setup();
+  const stub = stubLists();
+  const view = render(tab({ "CORE-1": issueState() }, true, newQueryClient()));
+  try {
+    const composer = await screen.findByRole("form", { name: "Comment composer" });
+    // A string `name` matches the whole accessible name, so no box whose name only holds the
+    // word "Comment" is taken for it.
+    const field = within(composer).getByRole<HTMLTextAreaElement>("textbox", { name: "Comment" });
+    await user.click(field);
+    await user.keyboard("Half a thought about the clock");
+    await user.keyboard("{Escape}");
+    const question = within(composer).getByRole("alert");
+    expect(question).toHaveTextContent("Discard draft?");
+    await user.click(within(question).getByRole("button", { name: "Discard" }));
+    expect(within(composer).queryByRole("alert")).toBeNull();
+    expect(field.value).toBe("");
+    expect(field).toHaveFocus();
+  } finally {
+    view.unmount();
+    stub.restore();
+  }
+});
+
+// A second Escape over Discard draft? in a comment's edit composer ends the edit unsaved and takes
+// the editor away with the focus it holds: the focus goes back to the comment's Edit, which
+// opened it (`ThreadCard`, `useFocusBack`).
+test("a second Escape over Discard draft? in a Conversation comment's edit composer gives the focus back to the comment's Edit", async () => {
+  const user = userEvent.setup();
+  const stub = stubLists({
+    comments: [comment("comment-1", { body: "Why is the clock shared?" })],
+  });
+  const queryClient = newQueryClient();
+  queryClient.setQueryData(["whoami"], { kind: "user", login: "alice" });
+  const view = render(tab({ "CORE-1": issueState() }, true, queryClient));
+  try {
+    const card = await screen.findByTestId("margin-comment-comment-1");
+    await user.click(screen.getByRole("button", { name: "Expand thread" }));
+    await user.click(await within(card).findByRole("button", { name: "Edit" }));
+    const field = within(card).getByRole("textbox", { name: "Edit comment" });
+    await user.click(field);
+    await user.keyboard(" And since when?");
+    await user.keyboard("{Escape}");
+    expect(within(card).getByRole("alert")).toHaveTextContent("Discard draft?");
+    expect(field).toHaveFocus();
+    await user.keyboard("{Escape}");
+    expect(within(card).queryByRole("textbox", { name: "Edit comment" })).toBeNull();
+    expect(within(card).getByRole("button", { name: "Edit" })).toHaveFocus();
+  } finally {
+    view.unmount();
+    stub.restore();
+  }
+});
+
+// Save in a comment's edit composer, and Ctrl+Enter in its field, end the edit once the save
+// lands and the comments are read again with the saved words, and take the editor away with the
+// focus it holds: the focus goes back to the comment's Edit, which opened it (`ThreadCard`,
+// `useFocusBack`; dispatch://INFRA-2160, S1).
+for (const saves of ["Save", "Ctrl+Enter"] as const) {
+  test(`${saves} in a Conversation comment's edit composer gives the focus back to the comment's Edit`, async () => {
+    const user = userEvent.setup();
+    const stub = stubLists({
+      comments: [comment("comment-1", { body: "Why is the clock shared?" })],
+    });
+    const saved = "Why is the clock shared, and since when?";
+    const editComment = spyOn(api, "editComment").mockImplementation(async (id, { body }) => {
+      const edited = comment(id, { body, edited_at: "2026-09-10T00:05:00Z" });
+      stub.lists.comments = [edited];
+      return edited;
+    });
+    const queryClient = newQueryClient();
+    queryClient.setQueryData(["whoami"], { kind: "user", login: "alice" });
+    const view = render(tab({ "CORE-1": issueState() }, true, queryClient));
+    try {
+      const card = await screen.findByTestId("margin-comment-comment-1");
+      await user.click(screen.getByRole("button", { name: "Expand thread" }));
+      await user.click(await within(card).findByRole("button", { name: "Edit" }));
+      await user.click(within(card).getByRole("textbox", { name: "Edit comment" }));
+      await user.keyboard("{Control>}a{/Control}");
+      await user.paste(saved);
+      if (saves === "Save") {
+        await user.click(within(card).getByRole("button", { name: "Save" }));
+      } else {
+        await user.keyboard("{Control>}{Enter}{/Control}");
+      }
+      await waitFor(() =>
+        expect(within(card).queryByRole("textbox", { name: "Edit comment" })).toBeNull()
+      );
+      expect(editComment).toHaveBeenCalledWith("comment-1", { body: saved }, keyedAttempt);
+      expect(card).toHaveTextContent(saved);
+      expect(within(card).getByRole("button", { name: "Edit" })).toHaveFocus();
+    } finally {
+      view.unmount();
+      editComment.mockRestore();
+      stub.restore();
+    }
+  });
+}
+
+// A thread Expand thread opened, not the tab's `r`: Escape in its reply box ends the reply and
+// closes the thread, which takes the box away with the focus it holds. The focus goes to the
+// turn's Expand thread, which opened the thread (`CommentTurn`, `useFocusBack`).
+test("Escape in the reply box of a thread Expand thread opened closes the thread with the focus on its Expand thread", async () => {
+  const user = userEvent.setup();
+  const page = await renderTurns(turnLists(), "comment:comment-1");
+  try {
+    const root = page.turn("comment:comment-1");
+    await user.click(within(root).getByRole("button", { name: "Expand thread" }));
+    await user.click(await threadBox(root));
+    await user.keyboard("{Escape}");
+    expect(root.querySelector("[data-thread-reply]")).toBeNull();
+    const toggle = within(root).getByRole("button", { name: "Expand thread" });
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    expect(toggle).toHaveFocus();
+  } finally {
+    page.cleanup();
+  }
+});
+
+// A thread `r` opened, whose reply Dispatch refused: the reply box's Discard draft drops the reply
+// and ends it as its Cancel reply does there (`onReplyCancel`, `giveBackFromThread`), so the
+// thread stays open, its box empty, and the focus goes back to the turn `r` was pressed on.
+test("Discard draft over a refused reply in a thread r opened gives the focus back to the turn and keeps the thread open", async () => {
+  const user = userEvent.setup();
+  const createComment = spyOn(api, "createComment").mockRejectedValue(
+    new ApiError(409, { code: "UNAVAILABLE", error: "the server is down" })
+  );
+  const page = await renderTurns(turnLists(), "comment:comment-1");
+  try {
+    const root = page.turn("comment:comment-1");
+    act(() => root.focus());
+    await user.keyboard("r");
+    const box = await threadBox(root);
+    await waitFor(() => expect(box).toHaveFocus());
+    await user.paste("A reply Dispatch refuses");
+    await user.keyboard("{Control>}{Enter}{/Control}");
+    await user.click(await within(root).findByRole("button", { name: "Discard draft" }));
+    expect(within(root).getByRole("button", { name: "Collapse thread" })).toBeTruthy();
+    expect(((await threadBox(root)) as HTMLTextAreaElement).value).toBe("");
+    expect(document.activeElement).toBe(root);
+  } finally {
+    page.cleanup();
+    createComment.mockRestore();
+  }
+});
+
+// A reply the docked composer takes from a turn's Reply, pressed with the pointer: Cancel reply
+// ends it and takes itself away with the focus it holds, and the focus goes back to the Reply that
+// started the reply, which the press hands on (`ReplyButton`, `beginDockedReply`). A comment's
+// Reply and a message reply's Reply each start one.
+for (const [kind, turnId] of [
+  ["a comment's", "comment:comment-1"],
+  ["a message reply's", "message:message-2"],
+] as const) {
+  test(`Cancel reply in the Conversation's docked composer gives the focus back to ${kind} Reply that started the reply`, async () => {
+    const user = userEvent.setup();
+    const page = await renderTurns(turnLists(), turnId);
+    try {
+      const composer = screen.getByRole("form", { name: "Comment composer" });
+      await user.click(within(page.turn(turnId)).getByRole("button", { name: "Reply" }));
+      const cancel = await within(composer).findByRole("button", { name: "Cancel reply" });
+      await user.click(cancel);
+      expect(within(composer).queryByRole("button", { name: "Cancel reply" })).toBeNull();
+      expect(within(page.turn(turnId)).getByRole("button", { name: "Reply" })).toHaveFocus();
+    } finally {
+      page.cleanup();
+    }
+  });
+}
+
+// A reply the docked composer took from a message's Reply, whose message has left the list since:
+// Cancel reply ends it and takes itself away with the focus it holds, and no Reply is left in the
+// page to give the focus back to (`giveBackFromDockedReply`). The composer stays, so the caret is
+// in its field, where Cancel reply put it first (`MentionComposer`'s `cancelReply`).
+test("Cancel reply in the Conversation's docked composer, once the message whose Reply started the reply has left the list, puts the caret in its field", async () => {
+  const user = userEvent.setup();
+  const stub = stubLists(turnLists());
+  const queryClient = newQueryClient();
+  const view = render(tab({ "CORE-1": issueState() }, true, queryClient));
+  try {
+    const composer = await screen.findByRole("form", { name: "Comment composer" });
+    const turn = await waitFor(() => {
+      const found = view.container.querySelector<HTMLElement>('[data-turn="message:message-2"]');
+      if (found === null) throw new Error("expected the message:message-2 turn");
+      return found;
+    });
+    await user.click(within(turn).getByRole("button", { name: "Reply" }));
+    await within(composer).findByRole("button", { name: "Cancel reply" });
+    stub.lists.messages = [];
+    await act(() => queryClient.invalidateQueries({ queryKey: ["issue-messages", "CORE-1"] }));
+    await waitFor(() => expect(turn.isConnected).toBe(false));
+
+    await user.click(within(composer).getByRole("button", { name: "Cancel reply" }));
+    expect(within(composer).queryByRole("button", { name: "Cancel reply" })).toBeNull();
+    expect(within(composer).getByRole("textbox", { name: "Comment" })).toHaveFocus();
+  } finally {
+    view.unmount();
+    stub.restore();
+  }
+});
+
+// A turn the focus is given back to may stand anywhere in the list, far above the docked
+// composer or a long thread's box, and the browser's own scroll of a focused element centres one
+// not wholly in view: each turn takes the focus with no scroll of that kind, and scrolls to its
+// nearest edge only where the reader cannot see it whole (`focusIntoView`). Escape in a thread's
+// box or in the docked composer gives a turn back, and so does `o` on a reply, which takes the
+// reply away with the thread it closes.
+test("a turn given back the focus, by Escape from a reply box or by o on a reply, takes it with no scroll of the browser's own", async () => {
+  const user = userEvent.setup();
+  /** Each focus that moved the focus to a turn or a reply since the last read: the turn's
+   *  `data-turn`, else `reply`, and whether it was asked to scroll nothing. */
+  let given: { readonly at: string; readonly still: boolean }[] = [];
+  const page = await renderTurns(turnLists(), "comment:comment-1");
+  const focus = HTMLElement.prototype.focus;
+  const focuses = spyOn(HTMLElement.prototype, "focus").mockImplementation(function (
+    this: HTMLElement,
+    options?: FocusOptions
+  ) {
+    if (this.matches("[data-turn], [data-reply]") && document.activeElement !== this) {
+      given.push({ at: this.dataset.turn ?? "reply", still: options?.preventScroll === true });
+    }
+    focus.call(this, options);
+  });
+  try {
+    const root = page.turn("comment:comment-1");
+    act(() => root.focus());
+    await user.keyboard("r");
+    await waitFor(async () => expect(await threadBox(root)).toHaveFocus());
+    given = [];
+    await user.keyboard("{Escape}");
+    expect(document.activeElement).toBe(root);
+    const fromThreadBox = given;
+    given = [];
+
+    await user.keyboard("j");
+    expect(document.activeElement?.hasAttribute("data-reply")).toBe(true);
+    given = [];
+    await user.keyboard("o");
+    expect(document.activeElement).toBe(root);
+    const fromReply = given;
+    given = [];
+
+    const message = page.turn("message:message-2");
+    act(() => message.focus());
+    await user.keyboard("r");
+    const composer = screen.getByRole("form", { name: "Comment composer" });
+    await waitFor(() => expect(composer.querySelector("[data-reply-box]")).toHaveFocus());
+    given = [];
+    await user.keyboard("{Escape}");
+    expect(document.activeElement).toBe(message);
+
+    expect({ fromDockedComposer: given, fromReply, fromThreadBox }).toEqual({
+      fromDockedComposer: [{ at: "message:message-2", still: true }],
+      fromReply: [{ at: "comment:comment-1", still: true }],
+      fromThreadBox: [{ at: "comment:comment-1", still: true }],
+    });
+  } finally {
+    page.cleanup();
+    focuses.mockRestore();
+  }
+});
+
+// A post its author deleted takes no reply (409 POST_DELETED), so its turn draws no Reply and its
+// thread no reply box: `r` on a deleted comment's turn has no box to put the caret in, so it opens
+// no thread and the focus stays on the turn, as on a handoff, which takes no reply either.
+test("r on a comment its author deleted opens no thread and leaves the focus on the turn", async () => {
+  const user = userEvent.setup();
+  const lists = turnLists();
+  const page = await renderTurns(
+    {
+      ...lists,
+      comments: (lists.comments ?? []).map((item) =>
+        item.id === "comment-1"
+          ? { ...item, body: "", deleted_at: "2026-09-20T00:05:00Z", deleted_by: alice }
+          : item
+      ),
+    },
+    "comment:comment-1"
+  );
+  try {
+    const root = page.turn("comment:comment-1");
+    act(() => root.focus());
+    await user.keyboard("r");
+    expect({
+      expanded: within(root).queryByRole("button", { name: "Collapse thread" }) !== null,
+      focused: document.activeElement === root,
+    }).toEqual({ expanded: false, focused: true });
+  } finally {
+    page.cleanup();
+  }
+});
+
+test("y and Shift+Y copy the focused turn's reference and its page address, and on a handoff, which has neither, copy nothing", async () => {
+  const user = userEvent.setup();
+  const originalClipboard = navigator.clipboard;
+  const writeText = spyOn({ writeText: async () => undefined }, "writeText");
+  Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+  const page = await renderTurns(turnLists(), "handoff:handoff-1");
+  try {
+    act(() => page.turn("comment:comment-1").focus());
+    await user.keyboard("y");
+    await waitFor(() =>
+      expect(writeText).toHaveBeenLastCalledWith("dispatch://CORE-1/comment/comment-1")
+    );
+    await user.keyboard("{Shift>}Y{/Shift}");
+    await waitFor(() =>
+      expect(writeText).toHaveBeenLastCalledWith(
+        `${window.location.origin}/issues/CORE-1/comments/comment-1`
+      )
+    );
+    act(() => page.turn("message:message-2").focus());
+    await user.keyboard("y");
+    await waitFor(() =>
+      expect(writeText).toHaveBeenLastCalledWith("dispatch://CORE-1/message/message-2")
+    );
+
+    const handoff = page.turn("handoff:handoff-1");
+    act(() => handoff.focus());
+    const copies = writeText.mock.calls.length;
+    await user.keyboard("y{Shift>}Y{/Shift}");
+    expect(writeText.mock.calls.length).toBe(copies);
+    // Enter opens the handoff's other fold, its fields, and the focus stays on it.
+    await user.keyboard("{Enter}");
+    expect(within(handoff).getByRole("button", { name: "Hide fields" })).toBeTruthy();
+    expect(document.activeElement).toBe(handoff);
+  } finally {
+    page.cleanup();
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: originalClipboard });
+  }
+});
+
+test("Enter on an ask's turn opens its earlier replies, and r on an answered ask puts the caret in its reply box", async () => {
+  const user = userEvent.setup();
+  const replies = ["First", "Second", "Third"].map((body, index) =>
+    comment(`ask-reply-${index + 1}`, {
+      ask_id: "ask-1",
+      author: bob,
+      body: `${body} reply`,
+      created_at: `2026-09-10T09:0${index + 1}:00Z`,
+    })
+  );
+  const answered = askRow(
+    {
+      answer: { at: "2026-09-10T09:00:30Z", selected: ["Ship"], text: null, user: "alice" },
+      state: "answered",
+    },
+    replies
+  );
+  const page = await renderTurns({ asks: [answered], comments: replies }, "ask:ask-1");
+  try {
+    const ask = page.turn("ask:ask-1");
+    expect(ask).toHaveAttribute("data-turn-ref", "dispatch://CORE-1/ask/ask-1");
+    const fold = await within(ask).findByRole("button", { name: "Show 1 earlier reply" });
+    act(() => ask.focus());
+    await user.keyboard("{Enter}");
+    expect(fold).toHaveAttribute("aria-expanded", "true");
+    expect(document.activeElement).toBe(ask);
+    // Each reply is a turn, with its own reference.
+    const drawn = [...ask.querySelectorAll("[data-reply]")];
+    expect(drawn.map((row) => row.getAttribute("data-turn-ref"))).toEqual(
+      expect.arrayContaining(replies.map(({ id }) => `dispatch://CORE-1/comment/${id}`))
+    );
+    expect(drawn).toHaveLength(3);
+
+    await user.keyboard("r");
+    await waitFor(() => expect(document.activeElement?.matches("[data-reply-box]")).toBe(true));
+    expect(ask.contains(document.activeElement)).toBe(true);
+  } finally {
+    page.cleanup();
+  }
+});
+
+test("every comment, reply and message the Conversation draws has its own Copy reference, and a comment's own is drawn once", async () => {
+  const user = userEvent.setup();
+  const page = await renderTurns(turnLists(), "comment:comment-1");
+  try {
+    await user.click(
+      within(page.turn("comment:comment-1")).getByRole("button", { name: "Expand thread" })
+    );
+    await screen.findByText("Second answer");
+    for (const reference of [
+      "message/message-1",
+      "message/message-2",
+      "comment/comment-1",
+      "comment/reply-a",
+      "comment/reply-b",
+    ]) {
+      expect(
+        screen.getAllByRole("button", { name: `Copy reference dispatch://CORE-1/${reference}` })
+      ).toHaveLength(1);
+    }
+    expect(page.turn("handoff:handoff-1").querySelector("[data-copy-ref]")).toBeNull();
+    expect(page.turn("handoff:handoff-1").hasAttribute("data-turn-ref")).toBe(false);
+  } finally {
+    page.cleanup();
+  }
+});
+
+test("the turns' keys stand down while another tab is shown", async () => {
+  const user = userEvent.setup();
+  const page = await renderTurns(turnLists(), "message:message-1", false);
+  try {
+    await user.keyboard("j");
+    expect(document.activeElement).toBe(document.body);
+    act(() => page.turn("comment:comment-1").focus());
+    await user.keyboard("{Enter}");
+    expect(
+      within(page.turn("comment:comment-1")).getByRole("button", { name: "Expand thread" })
+    ).toBeTruthy();
+  } finally {
+    page.cleanup();
+  }
+});
+
+// A turn is a row of the tab's list: an `<li>`, a row by its element alone (`row-marker.ts`'s
+// `ROW_SELECTOR`). A refetch that takes the turn holding the focus away is a loss the reader did
+// not cause: no press of theirs armed a hand-off (`causedByReader`), so in the page's main content,
+// as the shell draws it, the focus goes into no other turn: the reader's next `r` or `y` acts on
+// no conversation they did not pick.
+test("a turn a refetch takes away from under the focus hands it to no other turn", async () => {
+  const stub = stubLists(turnLists());
+  const queryClient = newQueryClient();
+  const view = render(
+    <main>
+      <IssueScope />
+      {tab({ "CORE-1": issueState() }, true, queryClient)}
+    </main>
+  );
+  try {
+    const turn = await waitFor(() => {
+      const found = view.container.querySelector<HTMLElement>('[data-turn="comment:comment-1"]');
+      if (found === null) throw new Error("expected the comment:comment-1 turn");
+      return found;
+    });
+    const expand = within(turn).getByRole("button", { name: "Expand thread" });
+    act(() => expand.focus());
+
+    stub.lists.comments = [];
+    await act(async () => {
+      await queryClient.refetchQueries();
+    });
+    await waitFor(() => expect(turn).not.toBeInTheDocument());
+    await afterFrameAndTasks();
+
+    expect(document.activeElement?.closest("[data-turn], [data-reply]") ?? null).toBeNull();
+    expect(view.container.querySelector('[data-turn="handoff:handoff-1"]')).not.toBeNull();
+  } finally {
+    view.unmount();
+    stub.restore();
   }
 });
 

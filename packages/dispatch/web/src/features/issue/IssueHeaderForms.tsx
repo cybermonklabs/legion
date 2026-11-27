@@ -2,6 +2,7 @@ import { type FormEvent, type ReactNode, useEffect, useRef } from "react";
 import { Link } from "react-router-dom";
 
 import { TruncatedText } from "../../components/TruncatedText";
+import { useFocusBack } from "../../hooks/useFocusBack";
 import { inputMethodKey } from "../../lib/input-method-key";
 import {
   borderTransparent,
@@ -29,19 +30,21 @@ export const routeHint =
   "New asks, comments, and messages on this issue wake this agent or role; replies inside a thread reach their participants directly. It is where messages go, not who is working the issue — that is the claim.";
 export const routeHintId = "issue-route-hint";
 
-const saveButton = `min-h-11 rounded px-2 py-1 text-sm font-medium disabled:cursor-not-allowed md:min-h-8 ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonDisabledText}`;
+const saveButton = `min-h-11 rounded px-2 py-1 text-sm font-medium refused:cursor-not-allowed md:min-h-8 ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonDisabledText}`;
 const cancelButton = `min-h-11 rounded border px-2 py-1 text-sm font-medium md:min-h-8 ${borderTransparent} ${textMutedHoverToSecondary}`;
 const fieldBox = `w-full rounded px-2 py-1 text-sm outline-none md:w-64 ${inputClasses(true)}`;
 
 interface HeaderFormProps {
   drafts: IssueDrafts;
+  /** Whether the header's issue write is out within its deadline, which holds Save
+   *  (`aria-disabled`), never disables it: the pressed Save keeps the focus, and a save submitted
+   *  meanwhile waits in `useIssueDrafts` until the writes out have landed. */
+  held: boolean;
   isClosed: boolean;
   /** Gives the edit up and closes the editor: its Cancel and its Escape. */
   onCancel: () => void;
   /** Closes the editor after a save that was sent or queued. */
   onSaved: () => void;
-  /** Whether the header's issue write is out, which holds Save. */
-  saving: boolean;
 }
 
 /**
@@ -63,10 +66,10 @@ function useFocusOnOpen() {
  */
 export function IssueRouteForm({
   drafts,
+  held,
   isClosed,
   onCancel,
   onSaved,
-  saving,
 }: HeaderFormProps): ReactNode {
   const input = useFocusOnOpen();
   const save = (event: FormEvent<HTMLFormElement>) => {
@@ -85,9 +88,13 @@ export function IssueRouteForm({
         onKeyDown={(event) => {
           // The Escape that drops an input method's composition is no key of the reader's: it
           // gives up the composition, not the edit. Safari sends it after its compositionend, with
-          // `isComposing` false and keyCode 229 (`inputMethodKey`).
+          // `isComposing` false and keyCode 229 (`inputMethodKey`). Any other Escape is the
+          // editor's, and marked taken, so the key registry passes over it (`shell/keymap.ts`).
           if (inputMethodKey(event.nativeEvent)) return;
-          if (event.key === "Escape") onCancel();
+          if (event.key === "Escape") {
+            event.preventDefault();
+            onCancel();
+          }
         }}
         placeholder="role:legion-controller-core"
         ref={input}
@@ -96,8 +103,9 @@ export function IssueRouteForm({
       {/* Save and Cancel are one group: the form wraps it whole onto the next line. */}
       <span className="inline-flex shrink-0 items-center gap-2">
         <button
+          aria-disabled={held || undefined}
           className={saveButton}
-          disabled={isClosed || !drafts.routeIsValid || saving}
+          disabled={isClosed || !drafts.routeIsValid}
           type="submit"
         >
           Save route
@@ -122,11 +130,11 @@ export function IssueRouteForm({
  */
 export function IssueParentForm({
   drafts,
+  held,
   isClosed,
   onCancel,
   onSaved,
   project,
-  saving,
 }: HeaderFormProps & { project: string }): ReactNode {
   const input = useFocusOnOpen();
   const save = (event: FormEvent<HTMLFormElement>) => {
@@ -145,16 +153,25 @@ export function IssueParentForm({
         id="issue-parent"
         onChange={(event) => drafts.writeParent(event.target.value)}
         onKeyDown={(event) => {
-          // The Escape that drops an input method's composition is no key of the reader's.
+          // The Escape that drops an input method's composition is no key of the reader's. Any
+          // other is the editor's, and marked taken (`shell/keymap.ts`).
           if (inputMethodKey(event.nativeEvent)) return;
-          if (event.key === "Escape") onCancel();
+          if (event.key === "Escape") {
+            event.preventDefault();
+            onCancel();
+          }
         }}
         placeholder={`${project}-12`}
         ref={input}
         value={drafts.parent}
       />
       <span className="inline-flex shrink-0 items-center gap-2">
-        <button className={saveButton} disabled={isClosed || saving} type="submit">
+        <button
+          aria-disabled={held || undefined}
+          className={saveButton}
+          disabled={isClosed}
+          type="submit"
+        >
           Save parent
         </button>
         <button className={cancelButton} onClick={onCancel} type="button">
@@ -168,7 +185,10 @@ export function IssueParentForm({
   );
 }
 
-/** Whether an editor of Details is open, held by the header, which closes it with Details. */
+/** Whether an editor of Details is open, held by the header, which closes it with Details. Each
+ *  editor's own end - a save (Enter or Save), Escape or Cancel, a key or a button inside it -
+ *  closes it with the focus back on the control that opened it (`useFocusBack`); Details closing
+ *  over it calls `onCancel` alone, and the focus stays on Details. */
 interface DetailsEditorProps extends Omit<HeaderFormProps, "onSaved"> {
   editing: boolean;
   onEditingChange: (editing: boolean) => void;
@@ -187,6 +207,7 @@ export function IssueRouteDetails({
 }: DetailsEditorProps): ReactNode {
   const { drafts, isClosed } = form;
   const agentText = useAgentText();
+  const focus = useFocusBack(editing);
   // A `session:` route is an agent: its button names it as `AgentName` does, with the agent's own
   // live link beside it. A role route is its address.
   const routeSession = sessionOfAddress(drafts.route);
@@ -204,6 +225,7 @@ export function IssueRouteDetails({
       className={`inline-flex min-h-11 min-w-0 max-w-full items-center truncate rounded-full px-3 py-2 text-left text-sm outline-none focus-visible:ring-2 xl:px-2 ${surfaceMutedStrongBg} ${textSecondaryOnSurface} ${textSecondaryHoverToPrimary} ${focusVisibleRing}`}
       disabled={isClosed}
       onClick={() => onEditingChange(true)}
+      ref={focus.opener}
       title={drafts.route === "" ? undefined : drafts.route}
       type="button"
     >
@@ -213,7 +235,17 @@ export function IssueRouteDetails({
   return (
     <>
       {editing ? (
-        <IssueRouteForm {...form} onSaved={() => onEditingChange(false)} />
+        <IssueRouteForm
+          {...form}
+          onCancel={() => {
+            focus.handBack();
+            form.onCancel();
+          }}
+          onSaved={() => {
+            focus.handBack();
+            onEditingChange(false);
+          }}
+        />
       ) : routeSession === undefined ? (
         routeButton(drafts.route === "" ? "No route" : drafts.route)
       ) : (
@@ -244,8 +276,22 @@ export function IssueParentDetails({
   project,
   ...form
 }: DetailsEditorProps & { parent: string | null; project: string }): ReactNode {
+  const focus = useFocusBack(editing);
   if (editing) {
-    return <IssueParentForm {...form} onSaved={() => onEditingChange(false)} project={project} />;
+    return (
+      <IssueParentForm
+        {...form}
+        onCancel={() => {
+          focus.handBack();
+          form.onCancel();
+        }}
+        onSaved={() => {
+          focus.handBack();
+          onEditingChange(false);
+        }}
+        project={project}
+      />
+    );
   }
   return (
     <span className="flex min-w-0 flex-wrap items-center gap-2">
@@ -265,6 +311,7 @@ export function IssueParentDetails({
         className={`inline-flex min-h-11 shrink-0 items-center rounded-full px-3 py-2 text-left text-sm outline-none focus-visible:ring-2 xl:px-2 ${surfaceMutedStrongBg} ${textSecondaryOnSurface} ${textSecondaryHoverToPrimary} ${focusVisibleRing}`}
         disabled={form.isClosed}
         onClick={() => onEditingChange(true)}
+        ref={focus.opener}
         type="button"
       >
         {parent === null ? "None" : "Edit"}

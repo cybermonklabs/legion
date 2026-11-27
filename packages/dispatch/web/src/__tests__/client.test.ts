@@ -1177,7 +1177,7 @@ test("API client reaches every remaining documented endpoint", async () => {
   await api.getArtifactVersion("artifact-1", 3);
   await api.createArtifactVersion("artifact-1", { summary: "Save" }, keyed("write-9"));
   await api.listArtifactReviews("artifact-1");
-  await api.createArtifactReview("artifact-1", { state: "approved" }, keyed("write-10"));
+  await api.createArtifactVersionReview("artifact-1", 3, { state: "approved" }, keyed("write-10"));
   await api.getMyState();
   await api.putIssueState("CORE-1", { pinned: true }, keyed("put-2"));
   await api.getMyAgentState();
@@ -1234,7 +1234,7 @@ test("API client reaches every remaining documented endpoint", async () => {
     ["GET", "/api/v1/artifacts/artifact-1/versions/3"],
     ["POST", "/api/v1/artifacts/artifact-1/versions"],
     ["GET", "/api/v1/artifacts/artifact-1/reviews"],
-    ["POST", "/api/v1/artifacts/artifact-1/reviews"],
+    ["POST", "/api/v1/artifacts/artifact-1/versions/3/reviews"],
     ["GET", "/api/v1/me/state"],
     ["PUT", "/api/v1/me/issues/CORE-1/state"],
     ["GET", "/api/v1/me/agents/state"],

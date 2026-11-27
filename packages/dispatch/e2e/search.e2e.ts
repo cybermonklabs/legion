@@ -21,7 +21,7 @@ import { asUser } from "./users";
  * `search.stub.e2e.ts`, and the fixture both files read is in `search.ts`.
  */
 
-test("Ctrl+K and Cmd+K open the palette, grouped results navigate a document to its highlighted term", async ({
+test("Ctrl+K opens the palette, grouped results navigate a document to its highlighted term", async ({
   browser,
 }) => {
   const fixture = await seedSearchFixture();
@@ -90,7 +90,9 @@ test("Ctrl+K and Cmd+K open the palette, grouped results navigate a document to 
       .toBe(true);
     await expect(dialog).toHaveCount(0);
 
-    await page.keyboard.press("Meta+k");
+    // The project's user agent names no Mac, so `$mod` is Control and Cmd+K is no key here (the
+    // Mac user agent rows of `keyboard-palette.e2e.ts` read Cmd+K).
+    await page.keyboard.press("Control+k");
     await expect(dialog).toBeVisible();
     await page.keyboard.press("Escape");
     await expect(dialog).toHaveCount(0);

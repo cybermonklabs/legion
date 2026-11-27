@@ -12,6 +12,7 @@ import {
 } from "../../theme/classes";
 import { PlainText } from "../refs/plain-text";
 import { Timestamp } from "../refs/Timestamp";
+import type { WriteAnswer } from "./field-arrival";
 import { PriorityDescription } from "./PriorityDescription";
 import {
   NEVER_MOVED,
@@ -38,13 +39,13 @@ export interface PriorityRowActions {
   /** Writes `description` as the priority's description, over `from`, the server's text the
    *  description's editor last took in, which the write names as the text it goes over unless a
    *  write of the page's own goes before it (`describe`), made on `on` (`PriorityDescription`'s
-   *  `onSave`). Answers whether it landed. */
+   *  `onSave`). Answers whether it landed, or that it is not known (`WriteAnswer`). */
   readonly onDescribe: (
     item: PriorityItem,
     description: string,
     from: string,
     on: string
-  ) => Promise<boolean>;
+  ) => Promise<WriteAnswer>;
   /** The reader's texts kept beside a priority's description while it shows another person's,
    *  where the page reads `held`, and the change of them: held in the write store
    *  (`usePriorityWrites`) rather than by the editor, which a row scrolling away takes with it.
@@ -188,11 +189,11 @@ function TitleCell({ item }: { item: PriorityItem }) {
   return (
     <div className="min-w-0 space-y-1">
       {/* The title is read here and renamed on the priority's own page, which it opens: a
-          click, or `o` and Enter on the focused row, which open the row's `data-issue-link`.
+          click, or `o` and Enter on the focused row, which open the row's `data-priority-link`.
           It wraps whole, however long, in the type of the Issues table's titles. */}
       <Link
         className={`flex w-full min-w-0 ${linkText} ${linkHoverText}`}
-        data-issue-link
+        data-priority-link
         to={priorityPath(item.priority.id)}
       >
         <span className={`min-w-0 flex-1 break-words ${textPrimaryOnCanvas}`}>{title}</span>

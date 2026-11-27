@@ -2,10 +2,15 @@ import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import { type RefObject, useMemo } from "react";
 
 import { dismissedThreadsQuery, inboxThreadsQuery } from "../../api/queries";
+import type { MyReplyRow } from "../../api/types";
 import { useIsHuman } from "../../hooks/useIsHuman";
 import type { InboxShow } from "../refs/routes";
 import type { InboxListRow } from "./list-row";
 import { useMotionHold } from "./motion-hold";
+
+/** The Inbox read's answer where it holds no thread, which the route sends as `rows: null`: one
+ *  array, so the motion hold is handed the same one on every render. */
+const NO_THREADS: readonly MyReplyRow[] = [];
 
 /** The thread side of the Inbox: the rows it lists, the mark a write over that list carries, and
  *  the page behind **Show more** where the list is paged. */
@@ -13,6 +18,14 @@ export interface InboxThreadRows {
   /** The read mark of the list read these rows came from, which **Mark all read** and a
    *  **Select all** dismiss both carry. */
   readonly asOf: string | undefined;
+  /** Whether `rows` are the answer of the read they come from: false while that read is out, was
+   *  refused with no answer before it, or is not asked (until the sign-in read says the reader is
+   *  a person), so nothing counted over them stands for a list not read yet. A count over them is
+   *  drawn only once that read has answered. In the Dismissed view the read is the pages read so
+   *  far, which are the rows the list holds and a filter narrows: it has answered once its first
+   *  page is in, and a count counts those pages while **Show more** has more to read. A list
+   *  narrowed to asks lists no thread whatever the read says, so its none is the answer. */
+  readonly answered: boolean;
   /** Whether the list draws every thread row it will draw from this read: the read of the list
    *  showing has settled with an error, or with rows the pointer hold has handed on (`rows`), or
    *  this list reads none - asks only, or a principal that is no person. A read that lands while
@@ -64,15 +77,21 @@ export function useInboxThreadRows({
   // One array per set of pages, and the same array until they change: the motion hold adopts what
   // it is given by identity (`motion-hold.ts`), so a fresh `flatMap` on every render would have it
   // adopt - and so re-render - for ever. The Inbox read above hands over its own `rows`, which the
-  // query cache keeps for it.
+  // query cache keeps for it. Either is undefined only while it has no answer.
   const paged = useMemo(() => pages?.flatMap((page) => page.rows ?? []), [pages]);
-  const read = show === "dismissed" ? paged : (threads.data?.rows ?? undefined);
+  const read =
+    show === "dismissed"
+      ? paged
+      : threads.data === undefined
+        ? undefined
+        : (threads.data.rows ?? NO_THREADS);
   // A refetch can land while a pointer travels between rows; adopt it once that pointer settles.
   const adopted = useMotionHold(read, listRef);
   const listed = asksOnly ? [] : (adopted ?? []);
   const reads = human && !asksOnly;
   const shownRead = show === "dismissed" ? dismissed : threads;
   return {
+    answered: asksOnly || adopted !== undefined,
     // The mark of the read these rows came from: the Dismissed view's is its first page's, the
     // one snapshot its cursor walks on from.
     asOf: show === "dismissed" ? pages?.[0]?.as_of : threads.data?.as_of,

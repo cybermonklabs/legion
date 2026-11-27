@@ -1,8 +1,9 @@
 import { expect, test } from "bun:test";
-// biome-ignore lint/style/noRestrictedImports: the Enter that ends an input method's composition below, which user-event cannot mark as one
+// biome-ignore lint/style/noRestrictedImports: the Enter that ends an IME composition is a key marked as the input method's, which user-event has no form for.
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
+import { INPUT_METHOD_MARKS } from "../../__tests__/input-method-marks";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { NameVersionDialog } from "./NameVersionDialog";
 
@@ -125,6 +126,39 @@ test("Enter does nothing while the input is empty", async () => {
     view.unmount();
   }
 });
+
+// The Enter that ends an input method's composition commits what the reader composed into the
+// field and is the input method's (`INPUT_METHOD_MARKS`): it names no version. The plain Enter
+// after it saves the summary.
+test.each(INPUT_METHOD_MARKS)(
+  "an Enter that ends an IME composition, marked by %s, names no version",
+  async (_mark, composing) => {
+    const user = userEvent.setup();
+    const saved: string[] = [];
+    const view = render(
+      <NameVersionDialog
+        error={null}
+        onClose={() => {}}
+        onSave={(summary) => saved.push(summary)}
+        open
+        saving={false}
+      />
+    );
+    try {
+      const input = screen.getByLabelText("What changed?");
+      await user.click(input);
+      await user.paste("Tightened the intro");
+      // The key that ends a composition: user-event has no form for `isComposing` or keyCode 229.
+      fireEvent.keyDown(input, { ...composing, key: "Enter" });
+      expect(saved, "the Enter that ended a composition named a version").toEqual([]);
+
+      await user.keyboard("{Enter}");
+      expect(saved).toEqual(["Tightened the intro"]);
+    } finally {
+      view.unmount();
+    }
+  }
+);
 
 test("Cancel calls onClose", async () => {
   const user = userEvent.setup();

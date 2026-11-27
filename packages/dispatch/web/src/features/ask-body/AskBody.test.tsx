@@ -5,6 +5,7 @@ import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 
 import { precedes } from "../../__tests__/document-order";
+import { pickNamed } from "../../__tests__/list-picks";
 import { whoAmIQuery } from "../../api/queries";
 import type { Ask } from "../../api/types";
 import { type PageWords, PageWordsProvider } from "../../components/tooltips";
@@ -173,13 +174,17 @@ test("each option keeps its description, its role and the option mark", async ()
   }
 });
 
-test("Other keeps its role, and carries no option mark and no description", async () => {
+// Other carries the option mark too, as the digit after the last real option, which picks it in
+// the Inbox (dispatch://INFRA-2160 R17, `inbox/option-digits.ts`).
+test("Other keeps its role, carries the option mark after the real options, and no description", async () => {
   const view = draw(<Body ask={openAsk()} />);
   try {
     const root = bodyOf(view.container);
     const other = await within(root).findByRole("radio", { name: "Other" });
-    expect(other).not.toHaveAttribute("data-ask-option");
-    expect(root.querySelectorAll("[data-ask-option]")).toHaveLength(2);
+    expect(other).toHaveAttribute("data-ask-option", "");
+    const marked = [...root.querySelectorAll("[data-ask-option]")];
+    expect(marked).toHaveLength(3);
+    expect(marked.at(-1)).toBe(other);
   } finally {
     view.unmount();
   }
@@ -310,7 +315,7 @@ test("an open question says whom it waits on, and draws Hand on and Decline", as
   try {
     const body = within(bodyOf(mine.container));
     expect((await body.findByTestId("turn-ask-1")).textContent).toBe("Waiting on you");
-    expect(body.getByRole("combobox", { name: "Hand this question to" })).toBeTruthy();
+    expect(body.getByRole("button", { name: pickNamed("Hand this question to") })).toBeTruthy();
     expect(body.getByRole("button", { name: "Decline to answer" })).toBeTruthy();
   } finally {
     mine.unmount();
@@ -439,7 +444,7 @@ test("the ask body sends no request", async () => {
     const body = within(bodyOf(view.container));
     expect(await body.findByRole("radio", { name: "Approve" })).toBeTruthy();
     expect(body.getByRole("textbox", { name: "Reason" })).toBeTruthy();
-    expect(body.getByRole("combobox", { name: "Hand this question to" })).toBeTruthy();
+    expect(body.getByRole("button", { name: pickNamed("Hand this question to") })).toBeTruthy();
     // Every read the body could start has had its chance to.
     await waitFor(() => expect(body.getByText(/^Approved at version 11/)).toBeTruthy());
     const tick = Promise.withResolvers<void>();

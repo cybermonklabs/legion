@@ -75,6 +75,14 @@ export const listingName = (listing: IssueListing): string =>
         ...(listing.statuses ?? []),
       ].join(":");
 
+/** The read of `listing`'s rows: every issue it holds, or its open issues alone with `open`. The
+ *  table reads the two (`useIssueTableItems`), and an action holds through the full one
+ *  (`useIssueTableActions`), so all three name the same keys. */
+export const listingQuery = (listing: IssueListing, open = false) =>
+  "project" in listing
+    ? projectIssuesQuery(listing.project, [], open)
+    : advancesIssuesQuery(listing, open);
+
 /**
  * One project's issues as the table shows them - or, under a scope, every project's issues that
  * advance one priority: the open listing, the full one once the reader lets closed issues
@@ -97,19 +105,9 @@ export function useIssueTableItems(
   // Scoped, the listing is the priority's own, which names no project: a priority belongs to
   // none, so the work under it is every project's. A listing its open read answers whole never
   // asks for this one (`answeredWhole`, which `IssuesTable` reads).
-  const everyIssue = useQuery({
-    ...("project" in listing
-      ? projectIssuesQuery(listing.project, [])
-      : advancesIssuesQuery(listing)),
-    enabled: wantsDone,
-  });
+  const everyIssue = useQuery({ ...listingQuery(listing), enabled: wantsDone });
   const doneLoaded = wantsDone && everyIssue.data !== undefined;
-  const openIssues = useQuery({
-    ...("project" in listing
-      ? projectIssuesQuery(listing.project, [], true)
-      : advancesIssuesQuery(listing, true)),
-    enabled: !doneLoaded,
-  });
+  const openIssues = useQuery({ ...listingQuery(listing, true), enabled: !doneLoaded });
   const issues = doneLoaded ? everyIssue : openIssues;
   const listingError =
     wantsDone && everyIssue.isError ? everyIssue : issues.isError ? issues : undefined;

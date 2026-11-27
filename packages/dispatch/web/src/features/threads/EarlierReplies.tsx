@@ -11,16 +11,21 @@ import { earlierRepliesLabel } from "./thread-layout";
  * so the two cannot drift; what folds at all is `threadLayout`'s (`thread-layout.ts`), and the
  * fold is drawn furthest from the newest message, under the root in Oldest first and at the
  * foot of the thread in Newest first. Each host lists its replies its own way, so it is handed
- * the id the button names and gives back the list wearing it. Nothing folded, no control.
+ * the id the button names and gives back the list wearing it. Nothing folded, no control. `marks`
+ * are the host's own handles on the button, by which its keys find and press it: the Inbox's
+ * command bar by the mark its thread bodies pass (`inboxActionMark`), inside the item in hand.
+ * The Conversation tab's Enter and `o` press it by `data-turn-fold`, on an ask's turn.
  */
 export function EarlierReplies({
   count,
+  marks,
   onToggle,
   open,
   replies,
 }: {
   /** How many replies the fold holds. */
   count: number;
+  marks?: Readonly<Record<`data-${string}`, string>>;
   onToggle: () => void;
   open: boolean;
   /** The folded replies, drawn only while the fold is open, in the element the host lists them
@@ -37,6 +42,8 @@ export function EarlierReplies({
         aria-controls={foldId}
         aria-expanded={open}
         className={`min-h-11 text-sm font-medium ${linkText} ${linkHoverText}`}
+        {...marks}
+        data-turn-fold=""
         onClick={onToggle}
         type="button"
       >

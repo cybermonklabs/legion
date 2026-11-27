@@ -12,6 +12,7 @@ import {
   listMyAnswers,
 } from "./api";
 import { documentEditor } from "./editor";
+import { settledScrollTop } from "./frames";
 import { navigateInApp } from "./sends";
 import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
@@ -197,6 +198,62 @@ test("the answers page lists a person's answers and replies, opens each ask, and
     await expect(answerRows(page)).toHaveCount(0);
   } finally {
     await bob.close();
+  }
+});
+
+// Change answer goes as its press opens the form in its place, under its row, which can stand at
+// the window's foot: the form then opens below the window. The focus goes to the form's first
+// control - the options' group, at the option the answer picked - and the window scrolls the
+// least that shows it whole, so it stands at the window's foot rather than in its middle.
+test("Change answer puts the focus on its form's first control, shown whole with the least scroll", async ({
+  browser,
+}) => {
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({ project: "CORE", title: "Billing freeze" });
+  const asked: string[] = [];
+  for (let index = 0; index < 6; index += 1) {
+    const ask = await createAsk(
+      issue.key,
+      { options: shipOrHold, question: `Freeze billing ${index + 1}?` },
+      session
+    );
+    await answerAsk(ask.id, { expected_edited_at: null, selected: ["Hold"] });
+    asked.push(ask.id);
+  }
+  // Newest first, so the first answer is the list's last row.
+  const last = asked[0] ?? "";
+
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    // 1280 px wide, where no scroll padding keeps a landing off the window's foot.
+    await page.setViewportSize({ height: 600, width: 1280 });
+    await page.goto("/answers");
+    await expect(answerRows(page)).toHaveCount(6);
+    const change = page
+      .locator(`[data-answer-row="${last}"]`)
+      .getByRole("button", { name: "Change answer" });
+    await change.evaluate((button) => button.scrollIntoView({ block: "end" }));
+    await change.click();
+
+    const hold = page.locator(`[data-answer-card="${last}"]`).getByRole("radio", { name: "Hold" });
+    await expect(hold).toBeChecked();
+    await expect(hold, "the form's picked option took no focus").toBeFocused();
+    // Read once the window has settled, to the pixel: a scroll lands on a whole pixel, and an
+    // edge at a fraction of one is the control's own place.
+    await settledScrollTop(page, 3);
+    const { bottom, height, top } = await hold.evaluate((option) => ({
+      bottom: option.getBoundingClientRect().bottom,
+      height: window.innerHeight,
+      top: option.getBoundingClientRect().top,
+    }));
+    expect(top, "the form's first control stands above the window").toBeGreaterThanOrEqual(0);
+    expect(
+      Math.abs(bottom - height),
+      `the form's first control ends at ${bottom} px in a ${height} px window: not at its foot, the least scroll that shows it whole`
+    ).toBeLessThanOrEqual(1);
+  } finally {
+    await alice.close();
   }
 });
 

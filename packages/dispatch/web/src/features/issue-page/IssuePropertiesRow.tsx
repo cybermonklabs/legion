@@ -3,10 +3,11 @@ import { type ReactNode, useLayoutEffect, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 
 import { projectsQuery } from "../../api/queries";
+import { useListReadBound } from "../../api/read-bound";
 import type { Artifact, IssueChild, IssueDetails } from "../../api/types";
+import { MultiSelect } from "../../components/MultiSelect";
 import { approvalPillClassName } from "../../components/Pill";
 import {
-  bgTransparent,
   focusVisibleRing,
   pageInkText,
   pageLabelChip,
@@ -27,8 +28,9 @@ import { AssigneeControl } from "../issue/AssigneeControl";
 import { gatedStepEntries, isProjectRoot } from "../issue/gated-steps";
 import { PriorityEditor } from "../issue/PriorityControl";
 import { UnreachableRouteMarker } from "../issue/RouteReach";
+import { STATUS_MARKS, STATUS_MENU } from "../issue/status-pick";
 import type { IssuePriorityWrite } from "../issue/useIssuePriority";
-import { issueStatuses, openIssueStatuses, statusLabel } from "../project/board-model";
+import { issueStatuses, openIssueStatuses, statusText } from "../project/board-model";
 import { EVENT_FRESH } from "../refs/reference-target";
 import { APPROVAL_CHIP } from "./approval-chip-box";
 import { presetPath } from "./issue-address";
@@ -73,11 +75,13 @@ export function IssuePropertiesRow({
   // the press on this control caused, or an earlier pick of the status still being saved - is
   // held by the header's writes (`pickStatus`: a keyed write in the issue's line, sent after the
   // write in flight), so the press lands on the control as it does with nothing edited, and the
-  // header and Details read one status, the newest one held. No write disables the select, not
-  // even its own: only a closed issue does. The browser moves the focus off a control that turns
-  // disabled, so disabling the select while its pick saves would leave a keyboard pick's focus on
-  // the page's body.
+  // header and Details read one status, the newest one held. No write holds the status list, not
+  // even its own: only a closed issue holds it (`aria-disabled`, never disabled, so it keeps the
+  // focus, and a press of it or `s` opens nothing).
   const status = writes.pendingStatus ?? issue.status;
+  // What the status list's trigger shows: the status a pick is saving, else the issue's.
+  const statusShown = statusText(status);
+  const [statusOpen, setStatusOpen] = useState(false);
   const openAsks = (issue.open_asks ?? []).filter((ask) => ask.state === "open");
   // What waits on the reader: Dashboard's items, from the one rule and the reads Dashboard reads
   // (`features/dashboard/useWaitingItems.ts`), so the count is the number of Dashboard's items on
@@ -110,6 +114,12 @@ export function IssuePropertiesRow({
     (entry) => entry.document?.id === issue.primary_artifact_id
   );
   const approval = documentArtifact?.approval;
+  // Every review of a document of this issue reads the issue again, which every chip of the line
+  // draws from, so the line holds the reviews of all its chips - the primary document's and each
+  // step's - through those reads with one hold: a review that lands forgets why an earlier one's
+  // reads had not settled, whichever chip's it was, and only the chip whose review made the latest
+  // reads says why those have not (`ApprovalChip`'s `reviewReads`).
+  const reviewReads = useListReadBound(["issue", issue.key]);
   const line = useRef<HTMLDivElement>(null);
 
   // The count's press, where a question or a decision waits: it sets the Decisions filter's
@@ -143,33 +153,37 @@ export function IssuePropertiesRow({
       data-testid="issue-state-actions"
       ref={line}
     >
-      {/* The prototype's `.pill`: the status's shape and word inside a rule of its colour. The
-          rule is drawn inside the pill's box, so the select can fill that box: 24 px tall at
-          every width, the least a target may be (WCAG 2.5.8). The shape is an svg and not text,
-          since the page's typeface lacks ◐; it hides itself from assistive technology and holds
-          no words, so its span only centres it on the pill while the select stretches. */}
-      <label
-        className={`inline-flex min-h-6 shrink-0 items-stretch gap-1 rounded-full px-2 text-xs leading-[18px] font-semibold shadow-[inset_0_0_0_1px_currentColor] ${statusTone(status)}`}
+      {/* The prototype's `.pill`: the status's shape and word inside a rule of its colour, which
+          is the status list's trigger (the shared single pick, with D5's rules: `STATUS_MENU`),
+          24 px tall at every width, the least a target may be (WCAG 2.5.8). Its list holds every
+          open status on an open issue, and every status on a closed one, whose trigger is held
+          (`aria-disabled`) and takes no pick, since its way back is Reopen; the status shown is
+          picked. The shape is an svg and not text, since the page's typeface lacks ◐; it hides
+          itself from assistive technology and holds no words. */}
+      <MultiSelect
+        ariaDisabled={isClosed}
+        chevron={false}
+        emptyMessage="No status matches that."
+        label={PROPERTY_LABELS.status}
+        marks={STATUS_MARKS}
+        menu={STATUS_MENU}
+        mode="single"
+        onOpenChange={(next) => setStatusOpen(next && !isClosed)}
+        onPick={(picked) => {
+          if (!isClosed && picked !== status) writes.pickStatus(picked);
+        }}
+        open={statusOpen}
+        optionLabel={statusText}
+        options={selectableStatuses}
+        searchLabel="Search statuses"
+        triggerClassName={`inline-flex min-h-6 shrink-0 cursor-pointer items-center gap-1 rounded-full px-2 text-xs leading-[18px] font-semibold shadow-[inset_0_0_0_1px_currentColor] outline-none focus-visible:ring-2 refused:cursor-not-allowed refused:opacity-50 ${statusTone(status)} ${focusVisibleRing}`}
+        value={status}
       >
-        <span className="self-center">
+        <span className="inline-flex items-center gap-1">
           <StatusGlyph glyph={statusGlyph(status)} />
+          <span {...pageChrome}>{statusShown}</span>
         </span>
-        {/* Sized to the status it shows, as the prototype's pill is; a browser with no
-            `field-sizing` draws the select at its longest option, which is its own width. */}
-        <select
-          aria-label={PROPERTY_LABELS.status}
-          className={`min-w-0 cursor-pointer appearance-none font-inherit outline-none [field-sizing:content] disabled:cursor-not-allowed disabled:opacity-50 ${bgTransparent} ${focusVisibleRing}`}
-          disabled={isClosed}
-          onChange={(event) => writes.pickStatus(event.target.value)}
-          value={status}
-        >
-          {selectableStatuses.map((choice) => (
-            <option key={choice} value={choice}>
-              {statusLabel(choice)}
-            </option>
-          ))}
-        </select>
-      </label>
+      </MultiSelect>
       {/* The priority and the assignee stay enabled while another write is in flight and queue a
           pick behind it, as the status does and as their own controls say: a press straight out
           of the title's editor lands on them. */}
@@ -236,6 +250,7 @@ export function IssuePropertiesRow({
           artifact={documentArtifact}
           keepActionsTogether
           layout="contents"
+          reviewReads={reviewReads}
           showActions={requested.includes(documentArtifact.id)}
           size="compact"
           variant="header"
@@ -248,6 +263,7 @@ export function IssuePropertiesRow({
           layout="contents"
           primaryArtifactId={issue.primary_artifact_id}
           reasons={false}
+          reviewReads={reviewReads}
           size="compact"
         />
       )}

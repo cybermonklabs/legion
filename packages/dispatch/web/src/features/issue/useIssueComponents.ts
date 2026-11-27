@@ -71,6 +71,7 @@ export function useIssueComponents(
     // The components line says why a save was refused, beside the picker it came from.
     inline: true,
     label: () => `Components of ${issue.key}`,
+    readsLate: true,
     // One write to the issue, in press order with every other (`issue:<KEY>`).
     target: () => `issue:${issue.key}`,
     request: (input: IssueComponentsInput) => issuePatchRequest(issue.key, { components: input }),
@@ -124,7 +125,7 @@ export function useIssueComponents(
               anew: "They are read again from Dispatch, and saving them again sends a new write.",
             })
           : mutation.error.message,
-    pending: mutation.isPending,
+    pending: mutation.isPending && !mutation.late,
     stopped: mutation.error instanceof SendStoppedError,
     submit: async (input) => {
       try {

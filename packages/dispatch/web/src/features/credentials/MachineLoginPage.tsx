@@ -1,5 +1,5 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { type FormEvent, type ReactNode, useState } from "react";
+import { type FormEvent, type ReactNode, useEffect, useState } from "react";
 
 import { api, apiErrorMessage } from "../../api/client";
 import type { DecisionResponse, StateResponse } from "../../api/types";
@@ -73,12 +73,14 @@ export function MachineLoginPage(): ReactNode {
   const queryClient = useQueryClient();
   const submitGuard = useSubmitGuard();
 
-  // A lookup and a decision are the form's own: it shows a refusal, beside the code it names.
+  // A lookup and a decision are the form's own: it shows a refusal, beside the code it names. Each
+  // holds its buttons only while it is out within its deadline (`readsLate`).
   const lookup = useKeyedWrite({
     inline: true,
     label: () => "Lookup of a machine login code",
     onSettled: () => submitGuard.release(),
     method: "POST",
+    readsLate: true,
     write: (lookupCode: string, bounds) => api.lookupMachineCredential(lookupCode, bounds),
   });
   // A lookup Dispatch answered with nothing it kept shows nothing until it is looked up again.
@@ -89,6 +91,7 @@ export function MachineLoginPage(): ReactNode {
   // Each is typed by its answer, which its callbacks read.
   const approve = useKeyedWrite<DecisionResponse>({
     method: "POST",
+    readsLate: true,
     write: (_variables, bounds) =>
       api.approveCredentialRecord(record?.record_id ?? "", { code: lookedUpCode }, bounds),
     inline: true,
@@ -103,6 +106,7 @@ export function MachineLoginPage(): ReactNode {
   });
   const deny = useKeyedWrite<StateResponse>({
     method: "POST",
+    readsLate: true,
     write: (_variables, bounds) =>
       api.denyCredentialRecord(record?.record_id ?? "", { code: lookedUpCode }, bounds),
     inline: true,
@@ -116,8 +120,18 @@ export function MachineLoginPage(): ReactNode {
 
   useDocumentTitle("Machine login · Dispatch");
 
+  // While a lookup is out within its deadline - Look up's own, or the one an approval or a denial
+  // Dispatch answered with nothing starts outside the guard - Look up and Enter send no second
+  // one; the guard drops a second press made in the same task as the first. A write past its
+  // deadline (`KeyedWriteResult.late`) holds them no longer, and the guard lets go there too, so a
+  // press then is a lookup or a decision of its own rather than nothing.
+  const lookingUp = lookup.isPending && !lookup.late;
+  useEffect(() => {
+    if (lookup.late || approve.late || deny.late) submitGuard.release();
+  }, [lookup.late, approve.late, deny.late, submitGuard]);
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    if (lookingUp) return;
     submitGuard.guard(() => {
       approve.reset();
       deny.reset();
@@ -171,9 +185,12 @@ export function MachineLoginPage(): ReactNode {
             value={code}
           />
         </div>
+        {/* Held rather than disabled while a lookup is out within its deadline, so it keeps the
+            focus Enter gave it (`heldPress`); `submit` sends no second lookup then. */}
         <button
+          aria-disabled={lookingUp || undefined}
           className={`min-h-11 rounded-lg px-4 py-2 text-sm font-medium ${primaryButtonBg} ${primaryButtonEnabledHoverBg} ${primaryButtonDisabled}`}
-          disabled={lookup.isPending || code.trim() === ""}
+          disabled={code.trim() === ""}
           type="submit"
         >
           Look up

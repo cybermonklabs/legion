@@ -29,6 +29,9 @@ export interface DocumentBridge {
   /** The artifact the registered document shows. The link hold compares it with the artifact
    *  whose cards the margin shows before it trusts the registered document's layout report. */
   artifactId: string;
+  /** Puts the caret back in the editor, at the selection the editor kept: where the reader
+   *  commented, once the comment they started there ends. */
+  focus(): void;
   focusBlock(blockId: string): void;
   focusMark(markId: string): void;
   /** Removes the record mark `markId` from the document, whatever its kind. */

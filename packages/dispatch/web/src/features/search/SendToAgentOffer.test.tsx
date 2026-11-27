@@ -6,15 +6,17 @@ import type { UserEvent } from "@testing-library/user-event";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 
-import { realClock } from "../../__tests__/fake-clock";
+import { realClock, tick } from "../../__tests__/fake-clock";
+import { pressesOf } from "../../__tests__/held-until-late";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
-import { api, NetworkError } from "../../api/client";
+import { ApiError, api, NetworkError } from "../../api/client";
 import type { IssueClaim, IssueDetails, Message } from "../../api/types";
 import { BLOCK_ID_ATTRIBUTE } from "../doc/block-id";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { KeymapProvider } from "../shell/KeymapProvider";
-import { stoppedWriteNote } from "../writes/keyed-write";
+import { SEND_DEADLINE_MS, stoppedWriteNote } from "../writes/keyed-write";
+import { writesOf } from "../writes/write-store";
 import { SearchPalette } from "./SearchPalette";
 import { searchAnswer } from "./search-fixture";
 import { handoffBody } from "./send-to-agent";
@@ -323,6 +325,60 @@ test("a send the person stopped says it may have been sent, not that it could no
         anew: "Pressing Send this to the agent again sends it as a new message.",
       })
     );
+  } finally {
+    realClock();
+    bar.restore();
+  }
+});
+
+// A send that never answers - offline, each try failing at the network - takes the row away until
+// its deadline and no longer: past it the send is still tried, and the row is listed again. A
+// press of it then sends no second message, and the line says so; once the send is refused, a
+// press sends one.
+test("a send that never answers lists its row again at its deadline, and a press then sends no second message", async () => {
+  const user = userEvent.setup();
+  const bar = openBar(sessionClaim, "live");
+  const label = `“${words}” to the agent on ${issueKey}`;
+  const status = () =>
+    writesOf(bar.queryClient)
+      .rows()
+      .find((row) => row.label === label)?.status;
+  const sent = () => pressesOf([bar.createAgentMessage]);
+  try {
+    bar.createAgentMessage.mockRejectedValue(
+      new NetworkError("/api/v1/agents/session-one/messages", new TypeError("Failed to fetch"))
+    );
+    await typeWords(user);
+    const row = await waitFor(() => screen.getByText(offerLabel));
+    jest.useFakeTimers();
+    const clockUser = userOnFakeClock();
+    await clockUser.click(row);
+    await tick(0);
+    expect(sent(), "the press").toBe(1);
+    expect(screen.queryByText(offerLabel), "the row while the send is out").toBeNull();
+
+    await tick(SEND_DEADLINE_MS - 1_000);
+    expect(status(), "the send, a second short of its deadline").toBe("sending");
+    expect(screen.queryByText(offerLabel), "the row, a second short of the deadline").toBeNull();
+
+    await tick(1_000);
+    expect(status(), "the send, past its deadline").toBe("late");
+    expect(screen.queryByText(offerLabel), "the row, past the deadline").not.toBeNull();
+    await clockUser.click(screen.getByText(offerLabel));
+    await tick(1_000);
+    expect(sent(), "a press while the send is out sends no second message").toBe(1);
+    const stillSending = new RegExp(
+      `^Send this to the agent on ${issueKey} sent nothing: your message is still being sent\\.`
+    );
+    expect(screen.getByText(stillSending)).toBeInTheDocument();
+
+    bar.createAgentMessage.mockRejectedValue(new ApiError(403, { error: "Session refused" }));
+    await tick(30_000);
+    expect(screen.queryByText(stillSending)).toBeNull();
+    expect(screen.getByTestId("search-send-to-agent-said")).toHaveTextContent("Session refused");
+    await clockUser.click(screen.getByText(offerLabel));
+    await tick(1_000);
+    expect(sent(), "a press once the send is refused sends one").toBe(2);
   } finally {
     realClock();
     bar.restore();

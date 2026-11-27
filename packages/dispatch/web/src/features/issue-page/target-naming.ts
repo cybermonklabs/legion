@@ -115,8 +115,8 @@ export interface TreeContext {
  * `editedAt`), and its reading is of the words alone: a place that draws the name of an edited
  * one, a comment, a message or a block of either, cuts the words to its own length and marks what
  * the cut left, so no cut takes the mark. The row's chip draws the mark as an element of its own
- * (`NodeRow.tsx`'s `Chip`, with `EditedMark`), and a place that names the post in one string
- * writes it with `editedName`.
+ * (`NodeRow.tsx`'s `NodeReference`, with `EditedMark`), and a place that names the post in one
+ * string writes it with `editedName`.
  */
 export function treeContext(reads: IssueTreeReads): TreeContext {
   const key = reads.issue.key;

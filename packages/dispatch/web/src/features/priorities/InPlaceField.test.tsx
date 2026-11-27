@@ -1,5 +1,5 @@
 import { expect, jest, test } from "bun:test";
-// biome-ignore lint/style/noRestrictedImports: the Enter that ends an input method's composition below, which user-event cannot mark as one
+// biome-ignore lint/style/noRestrictedImports: user-event cannot mark a key as the input method's.
 import { act, fireEvent, render, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { type ReactNode, useState } from "react";
@@ -9,6 +9,8 @@ import {
   stepBeforeEffects,
 } from "../../__tests__/before-effects";
 import { jump, onFakeClock, realClock, settle } from "../../__tests__/fake-clock";
+import { INPUT_METHOD_MARKS } from "../../__tests__/input-method-marks";
+import { installResizeObserver } from "../../__tests__/scroll-box";
 import { userOnFakeClock } from "../../__tests__/user";
 import { createApiClient, priorityPatchRequest } from "../../api/client";
 import { InPlaceField, SAVE_AFTER_MS } from "./InPlaceField";
@@ -70,6 +72,38 @@ test("a text written elsewhere replaces what a field the reader is not holding s
   );
   view.unmount();
 });
+
+// Enter in a one-line field saves what the reader wrote and leaves the field. The Enter that ends
+// an input method's composition commits what the reader composed into the field and is the input
+// method's (`INPUT_METHOD_MARKS`): it saves nothing, and the field keeps the focus. The plain
+// Enter after it saves and leaves.
+test.each(INPUT_METHOD_MARKS)(
+  "an Enter that ends an IME composition, marked by %s, saves nothing and leaves the focus in the field",
+  async (_mark, composing) => {
+    const user = userEvent.setup();
+    const saved: string[] = [];
+    const view = render(
+      <InPlaceField label="Title" onSave={(next) => void saved.push(next)} value="Old name" />
+    );
+    try {
+      const field = within(view.container).getByRole("textbox", { name: "Title" });
+      await user.clear(field);
+      await user.paste("New name");
+      // The key that ends a composition: user-event has no form for `isComposing` or keyCode 229.
+      fireEvent.keyDown(field, { ...composing, key: "Enter" });
+      expect(saved, "the Enter that ended a composition saved").toEqual([]);
+      expect(field, "the Enter that ended a composition left the field").toHaveFocus();
+
+      await user.keyboard("{Enter}");
+      // Plain Enter saves the draft and leaves the field.
+      expect(saved.length).toBeGreaterThan(0);
+      expect(saved.every((text) => text === "New name")).toBe(true);
+      expect(field).not.toHaveFocus();
+    } finally {
+      view.unmount();
+    }
+  }
+);
 
 // The rest and the leaving are each a moment of their own here: the clock is held, so the rest
 // comes when the row moves it past `SAVE_AFTER_MS` and never between two keys of the typing. The
@@ -750,7 +784,7 @@ test("each write hands on the text the field held as its edit began, and a field
     await user.type(field(), "A");
     await jump(SAVE_AFTER_MS);
   });
-  // "A" is stopped: the page answers it did not land, and the reader writes on from it.
+  // "A" ends without landing - Dispatch refused it - and the reader writes on from it.
   await answerAt(answers, 0, false);
   await onFakeClock(async () => {
     await user.type(field(), "B");
@@ -804,7 +838,7 @@ test("Use my text of typing the field never wrote is made on the text the field 
 
 // The text an edit was made on is the field's own, apart from what it compares the reader's text
 // with (`base`), which a read moves under typing she has not written. "A", made on "Old", lands,
-// and the read that shows it is slow; "AB", made on "A", ends without landing (she stopped it).
+// and the read that shows it is slow; "AB", made on "A", ends without landing (refused, say).
 // She types on, and the read answers "A" while her typing waits: the field compares with "A" from
 // then on, but her typing was made on "AB", and its write says so.
 test("a read that answers an earlier write while the reader's typing waits leaves that typing made on the text it began on", async () => {
@@ -836,6 +870,147 @@ test("a read that answers an earlier write while the reader's typing waits leave
   view.unmount();
   expect(writes).toEqual(["A", "AB", "ABC"]);
   expect(madeOn).toEqual(["Old", "A", "AB"]);
+});
+
+/** A field drawn `closed`, as a priority's page draws its title (`"heading"`) and its owner
+ *  (`"chip"`), with a control after it that a Tab out of the box reaches. Every text the field
+ *  writes is kept in `writes`. */
+function closedField(closed: "chip" | "heading") {
+  const writes: string[] = [];
+  const view = render(
+    <>
+      <InPlaceField
+        closed={closed}
+        label="Title"
+        onSave={(next) => void writes.push(next)}
+        value="Old name"
+      />
+      <button type="button">Next</button>
+    </>
+  );
+  const page = within(view.container);
+  return {
+    box: () => page.queryByRole("textbox", { name: "Title" }),
+    // The button the closed field reads as: the one inside the heading, or the chip, which its
+    // label names first.
+    opener: () =>
+      closed === "heading"
+        ? within(page.getByRole("heading", { level: 1 })).getByRole("button")
+        : page.getByRole("button", { name: /^Title/ }),
+    page,
+    view,
+    writes,
+  };
+}
+
+// A heading's title is a button inside the heading, which Tab reaches and a screen reader names a
+// button, and the heading takes no Tab stop of its own. A focus on the button opens nothing: a
+// focus can come to it with no act of the reader's, and a box that opened then would change the
+// page on focus (WCAG 2.2, 3.2.1 On Focus). Enter and Space, a button's own keys, open the box
+// inside the heading with the focus in it.
+test("a heading's title is a button inside the heading, which a focus does not open and Enter and Space open with the focus in the box", async () => {
+  const user = userEvent.setup();
+  const { box, opener, page, view } = closedField("heading");
+  try {
+    const heading = page.getByRole("heading", { level: 1, name: "Old name" });
+    expect(heading).not.toHaveAttribute("tabindex");
+    for (const key of ["{Enter}", " "]) {
+      const title = opener();
+      expect(title, key).toHaveAccessibleName("Old name");
+      expect(title, key).toHaveAttribute("type", "button");
+      act(() => title.focus());
+      expect(title, key).toHaveFocus();
+      expect(box(), `${key}: the focus opened the box`).toBeNull();
+      await user.keyboard(key);
+      const opened = box();
+      expect(opened, key).toHaveFocus();
+      expect(opened, key).toHaveValue("Old name");
+      expect(heading.contains(opened), key).toBe(true);
+      await user.keyboard("{Escape}");
+      expect(box(), key).toBeNull();
+    }
+  } finally {
+    view.unmount();
+  }
+});
+
+// Enter and Escape end the edit of a field drawn closed as leaving it does: what the reader wrote
+// is written, and the box closes. Each takes the box, which held the focus, off the page, and the
+// focus goes back to the button the box was opened from, the heading's or the chip's, so the
+// keyboard reader is where they were. A Tab out of the box ends the edit too, and the focus stays
+// on the control the Tab reached. The clock is held, so nothing is written as the typing rests.
+test.each(["heading", "chip"] as const)(
+  "Enter and Escape in a %s's box write what the reader wrote and give the focus back to its button, and a Tab out leaves the focus on the control it reached",
+  async (closed) => {
+    const user = userEvent.setup({ delay: null });
+    const { box, opener, page, view, writes } = closedField(closed);
+    try {
+      await onFakeClock(async () => {
+        for (const [key, typed] of [
+          ["{Enter}", ", mine"],
+          ["{Escape}", " too"],
+        ] as const) {
+          await user.click(opener());
+          expect(box(), key).toHaveFocus();
+          await user.keyboard(typed);
+          await user.keyboard(key);
+          expect(box(), key).toBeNull();
+          expect(opener(), key).toHaveFocus();
+        }
+        expect(writes).toEqual(["Old name, mine", "Old name, mine too"]);
+        await user.click(opener());
+        expect(box()).toHaveFocus();
+        await user.tab();
+      });
+      expect(box()).toBeNull();
+      expect(page.getByRole("button", { name: "Next" })).toHaveFocus();
+      expect(writes).toEqual(["Old name, mine", "Old name, mine too"]);
+    } finally {
+      view.unmount();
+    }
+  }
+);
+
+// A heading's open box is as tall as the title it holds. The window resized while it is open
+// wraps the title anew at the box's new width, and the box is made as tall as its text again, so
+// no line of it is scrolled out of the box and nothing under it moves as it closes. The height the
+// box sets itself changes its size too, and at the same width that sets nothing more. happy-dom
+// lays nothing out, so the row says how wide the box is and how tall its text is, and tells the
+// box's observer when that changed.
+test("a heading's open box the window narrows is made as tall as its text again, and its own height sets nothing more", async () => {
+  const user = userEvent.setup();
+  const sizes = installResizeObserver();
+  const { box, opener, view } = closedField("heading");
+  try {
+    await user.click(opener());
+    const opened = box();
+    if (opened === null) throw new Error("the heading opened no box");
+    const laidOut = { text: 28, width: 600 };
+    // The box's text and padding (`scrollHeight`) at its width, inside a 1 px border above and
+    // below: drawn 2 px taller than the area inside it.
+    for (const [name, read] of [
+      ["clientWidth", () => laidOut.width],
+      ["scrollHeight", () => laidOut.text],
+      ["offsetHeight", () => 30],
+      ["clientHeight", () => 28],
+    ] as const) {
+      Object.defineProperty(opened, name, { configurable: true, get: read });
+    }
+    sizes.resize(opened);
+    expect(opened.style.height, "the box laid out 600 px wide").toBe("30px");
+
+    Object.assign(laidOut, { text: 84, width: 300 });
+    sizes.resize(opened);
+    expect(opened.style.height, "the box the window narrowed to 300 px").toBe("86px");
+
+    // Measured again, the box would be 114 px tall: at the same width it is not measured.
+    laidOut.text = 112;
+    sizes.resize(opened);
+    expect(opened.style.height, "the box's own height change, at the same width").toBe("86px");
+  } finally {
+    view.unmount();
+    sizes.restore();
+  }
 });
 
 /** A field whose value nothing moves, with every text it wrote recorded in `saves`, in order. */

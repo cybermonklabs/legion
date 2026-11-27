@@ -11,6 +11,7 @@ import { nextFrame as oneFrame } from "../../__tests__/frames";
 import { api } from "../../api/client";
 import type { Ask, Comment } from "../../api/types";
 import { useDrawerPage } from "../issue-page/drawer-page";
+import { IssueActionsMenu } from "../issue-page/IssueActionsMenu";
 import {
   type MarginDrawer,
   type MarginDrawerPage,
@@ -18,6 +19,7 @@ import {
   MarginSlotProvider,
   useFillMarginSlot,
 } from "../issue-page/margin-slot";
+import { CONTROL_LABELS } from "../issue-page/page-words";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { buildIssuePath } from "../refs/routes";
 import { KeymapProvider } from "../shell/KeymapProvider";
@@ -492,6 +494,104 @@ test("with the list of keys over Details, Escape closes the list alone, the focu
     await user.keyboard("{Escape}");
     expect(list(), "Escape with the focus on the page left the list open").toBeNull();
     expect(details.hasAttribute("hidden"), "that Escape closed Details under the list").toBe(false);
+  } finally {
+    view.unmount();
+    restoreMatchMedia();
+  }
+});
+
+// At a desktop width Details' Escape is the drawer's but in a field that takes text, which keeps
+// its own Escape, by the field test the keymap reads (`takesText`), which the header's actions
+// menu reads for its Escape too. A text box beside the drawer keeps the press and Details stays
+// open; a `<select>` and a range take no text, so Escape closes Details from them as from a
+// button.
+test("at a desktop width Escape closes Details from beside it but in a field that takes text", async () => {
+  const user = userEvent.setup();
+  const restoreMatchMedia = stubViewport(DESKTOP_WIDTH);
+  try {
+    for (const [name, control, closes] of [
+      ["a text box", <input aria-label="beside" key="text" />, false],
+      [
+        "a select",
+        <select aria-label="beside" key="select">
+          <option>one</option>
+        </select>,
+        true,
+      ],
+      ["a range", <input aria-label="beside" key="range" type="range" />, true],
+    ] as const) {
+      const view = render(
+        <MemoryRouter initialEntries={[buildIssuePath({ key: issue.key, kind: "issue" })]}>
+          <QueryClientProvider client={landingClient([])}>
+            <KeymapProvider>
+              <MarginProvider>
+                <Details open>
+                  <Margin />
+                </Details>
+                {control}
+              </MarginProvider>
+            </KeymapProvider>
+          </QueryClientProvider>
+        </MemoryRouter>
+      );
+      try {
+        const details = await screen.findByTestId("desktop-margin-shell");
+        await waitFor(() => expect(details.hasAttribute("hidden")).toBe(false));
+        act(() => screen.getByLabelText("beside").focus());
+        await user.keyboard("{Escape}");
+        expect(details.hasAttribute("hidden"), `Escape on ${name} beside Details`).toBe(closes);
+      } finally {
+        view.unmount();
+      }
+    }
+  } finally {
+    restoreMatchMedia();
+  }
+});
+
+// R14: Escape closes the innermost layer. With Details open, the header's Issue actions menu
+// opened beside it is that layer, and it takes the press before Details hears it, though Details
+// opened first and so added its listener first: one Escape closes the menu, gives the focus back
+// to Issue actions and leaves Details open. The next Escape, with the menu shut, closes Details.
+test("with Details open, one Escape in the header's Issue actions menu closes the menu alone, and the next closes Details", async () => {
+  const user = userEvent.setup();
+  const restoreMatchMedia = stubViewport(DESKTOP_WIDTH);
+  const view = render(
+    <MemoryRouter initialEntries={[buildIssuePath({ key: issue.key, kind: "issue" })]}>
+      <QueryClientProvider client={landingClient([])}>
+        <KeymapProvider>
+          <MarginProvider>
+            <Details open>
+              <Margin />
+            </Details>
+            <IssueActionsMenu actions={[{ id: "pin", run: () => undefined, text: "Pin" }]} />
+          </MarginProvider>
+        </KeymapProvider>
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  try {
+    const details = await screen.findByTestId("desktop-margin-shell");
+    await waitFor(() => expect(details.hasAttribute("hidden")).toBe(false));
+    const trigger = screen.getByRole("button", { name: CONTROL_LABELS.issue_actions });
+    act(() => trigger.focus());
+    await user.keyboard("{Enter}");
+    expect(trigger, "Enter on Issue actions opened no menu").toHaveAttribute(
+      "aria-expanded",
+      "true"
+    );
+    await user.tab();
+    expect(screen.getByRole("button", { name: "Pin" })).toHaveFocus();
+
+    await user.keyboard("{Escape}");
+    expect(trigger, "one Escape left the menu open").toHaveAttribute("aria-expanded", "false");
+    expect(trigger, "one Escape left the focus off Issue actions").toHaveFocus();
+    expect(details.hasAttribute("hidden"), "the Escape the menu took closed Details").toBe(false);
+
+    await user.keyboard("{Escape}");
+    expect(details.hasAttribute("hidden"), "an Escape with the menu shut left Details open").toBe(
+      true
+    );
   } finally {
     view.unmount();
     restoreMatchMedia();

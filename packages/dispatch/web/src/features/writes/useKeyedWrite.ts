@@ -2,13 +2,23 @@ import {
   type DefaultError,
   type MutateOptions,
   type MutationFunctionContext,
+  type MutationKey,
   type UseMutateAsyncFunction,
   type UseMutateFunction,
   type UseMutationOptions,
   type UseMutationResult,
   useMutation,
+  useQueryClient,
 } from "@tanstack/react-query";
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 
 import {
   apiErrorMessage,
@@ -24,7 +34,7 @@ import {
   SendStoppedError,
   stoppedWriteNote,
 } from "./keyed-write";
-import { plainWrite, useWrites, type WriteKind } from "./write-store";
+import { plainWrite, useWrites, type Write, type WriteKind, type Writes } from "./write-store";
 
 /** A write a surface makes for the reader: `useMutation`'s options, but for `mutationFn`, which
  *  the write path makes from `write` or `request` and `label`. Its data is Dispatch's answer, or
@@ -55,6 +65,9 @@ export type KeyedWriteOptions<TData, TVariables, TContext, D = null, K = D> = Om
   readonly holds?: (variables: TVariables) => ReadHold;
   /** `false` for a write that goes under no key whatever its method (`WriteSpec.keyed`). */
   readonly keyed?: false;
+  /** Whether the surface reads the result's `late`: only such a hook follows the store for it, so
+   *  a hook whose surface does not adds no listener to the store. */
+  readonly readsLate?: true;
 } & KeyedWriteMade<TData, TVariables> &
   KeyedWriteKind<TVariables, D, K>;
 
@@ -167,6 +180,20 @@ export type KeyedWriteResult<TData, TVariables, TContext> = UseMutationResult<
    *  it a second time (`endedStopped`, `stoppedWriteNote`); `undefined` while the newest press did
    *  not end stopped. */
   readonly method: WriteMethod | undefined;
+  /** Whether the newest press is past a deadline: its write is out past its own
+   *  (`SEND_DEADLINE_MS`), or waits its turn behind a write to its target that is. Either way it
+   *  is still pending, tried under its key - or, waiting, to be - until Dispatch decides it or the
+   *  reader stops it at the shell's indicator. A surface that holds its controls while its write
+   *  is out lets them go here, so a write that never answers - offline, its tries waiting out the
+   *  network - locks none of them, and a press made then, waiting behind it, locks none again.
+   *  Read only where the write was made with `readsLate`; `false` for any other. */
+  readonly late: boolean;
+  /** Whether the press made with `variables` - those very values, by identity - is out past a
+   *  deadline, as `late` is of the newest press: for a surface that holds more than one press of
+   *  the write at once, each by what it is of (an Inbox's write of every ask, a draft's uploads).
+   *  `false` for a press that is not out. Read only where the write was made with `readsLate`;
+   *  `false` for any other. */
+  readonly lateOf: (variables: TVariables) => boolean;
 };
 
 /** Whether the newest press of `write` ended with the reader's stop: its `error` is then that
@@ -175,6 +202,102 @@ export function endedStopped<
   W extends { readonly error: unknown; readonly method: WriteMethod | undefined },
 >(write: W): write is W & { readonly error: SendStoppedError; readonly method: WriteMethod } {
   return write.error instanceof SendStoppedError && write.method !== undefined;
+}
+
+/** Whether the write the store holds under `key` is late, or waits its turn on its target's line
+ *  behind a write that is (`KeyedWriteResult.late`). */
+function lateIn(rows: readonly Write[], key: string): boolean {
+  const own = rows.find((row) => row.key === key);
+  if (own === undefined) return false;
+  if (own.status === "late") return true;
+  return (
+    own.status === "queued" &&
+    own.target !== undefined &&
+    rows.some(
+      (row) => row.target === own.target && row.joined < own.joined && row.status === "late"
+    )
+  );
+}
+
+/** Whether the write the store holds under `key` is late (`lateIn`), followed only while there is
+ *  a `key`: `KeyedWriteResult.late`, and the lateness of a press `usePendingKeyedPress` finds. */
+function useLateIn(writes: Writes, key: string | undefined): boolean {
+  const follow = useCallback(
+    (listener: () => void) => (key === undefined ? () => undefined : writes.subscribe(listener)),
+    [key, writes]
+  );
+  return useSyncExternalStore(follow, () => key !== undefined && lateIn(writes.rows(), key));
+}
+
+/** The keys among `keys()` whose write the store holds late (`lateIn`), followed only while
+ *  `following`, as one string of them, so a change of the store that turns none of them late
+ *  draws nothing again. */
+function useLateKeys(writes: Writes, following: boolean, keys: () => readonly string[]): string {
+  const subscribe = useCallback(
+    (listener: () => void) => (following ? writes.subscribe(listener) : () => undefined),
+    [following, writes]
+  );
+  return useSyncExternalStore(subscribe, () => {
+    if (!following) return "";
+    const rows = writes.rows();
+    return keys()
+      .filter((key) => lateIn(rows, key))
+      .join(" ");
+  });
+}
+
+/** The keys among `keys` whose write the store holds late, or waiting its turn on its target's
+ *  line behind a write that is (`lateIn`), as `KeyedWriteResult.late` reads a keyed write's. For
+ *  a surface that makes its writes with `Writes.run` under keys of its own rather than through
+ *  this hook, and holds a control while it waits on them: it lets the control go once each write
+ *  it waits on is late, so a write that never answers - offline, its tries waiting out the
+ *  network - locks nothing. A key the store holds no write under - not joined yet, or decided -
+ *  is not late. The set is the same object while the same keys are late, and the store is
+ *  followed only while `keys` names any. */
+export function useLateWrites(keys: readonly string[]): ReadonlySet<string> {
+  const late = useLateKeys(useWrites(), keys.length > 0, () => keys);
+  return useMemo(() => new Set(late === "" ? [] : late.split(" ")), [late]);
+}
+
+/** The pending press of a keyed write shared by exact mutation key. A surface that mounts
+ *  while the press is out can release its hold at that same press's deadline. `of`, where given,
+ *  picks out the presses of what the surface is drawn for, by their variables: a hook whose one
+ *  key serves each subject in turn - a card drawn for one ask after another - keeps its key, and
+ *  with it the press it holds, as the surface moves on. */
+export function usePendingKeyedPress<TVariables = unknown>(
+  mutationKey: MutationKey,
+  of?: (variables: TVariables) => boolean
+): {
+  readonly isPending: boolean;
+  readonly late: boolean;
+  readonly submittedAt: number;
+} {
+  const writes = useWrites();
+  const cache = useQueryClient().getMutationCache();
+  // The newest pending press under this render's key and `of`, read with this render's filters.
+  // TanStack's `useMutationState` filters only in its cache listener, with the options an effect
+  // hands it after each commit, so a card drawn for another subject drew the press of the one
+  // before until some other mutation event came: a card drawn back for an ask whose Unfollow was
+  // out let it go, and a second DELETE could be sent. The snapshot is that press's state, which
+  // TanStack replaces as the press changes and keeps otherwise, so the surface draws again only as
+  // the newest press changes, settles or gives way to another.
+  const press = useSyncExternalStore(
+    cache.subscribe,
+    () =>
+      cache
+        .findAll({
+          exact: true,
+          mutationKey,
+          predicate:
+            of === undefined
+              ? undefined
+              : ({ state }) => of((state.variables as Press<TVariables>).variables),
+          status: "pending",
+        })
+        .at(-1)?.state
+  );
+  const late = useLateIn(writes, (press?.variables as Press<unknown> | undefined)?.key);
+  return { isPending: press !== undefined, late, submittedAt: press?.submittedAt ?? 0 };
 }
 
 /** The sentence a surface shows for its write where the reader stopped it, under the plain Retry
@@ -224,33 +347,6 @@ export function useRefusalOfSubject<TVariables>(
     if (gone) reset();
   }, [gone, reset]);
   return write.isError && !gone;
-}
-
-/** The variables of `write`'s newest press while that press is out or refused: the press the
- *  surface still shows, with its `…ing` or its refusal and Retry; `undefined` once Dispatch has
- *  decided it, or before any press. A host may draw one control for one subject after another,
- *  so what a live write asks the list around it to hold is this press's subject, never the one
- *  the control is drawn for by then (`useLiveRegistration`). */
-export function livePress<TVariables>(write: {
-  readonly isError: boolean;
-  readonly isPending: boolean;
-  readonly variables: TVariables | undefined;
-}): TVariables | undefined {
-  return write.isPending || write.isError ? write.variables : undefined;
-}
-
-/** Registers `subject` with `register` while a write of it is live: `true` once it is, and
- *  `false` once the write is decided, the subject changes, or the surface goes. `subject` is the
- *  live press's own (`livePress`), and `undefined` registers nothing. */
-export function useLiveRegistration(
-  subject: string | undefined,
-  register: (subject: string, live: boolean) => void
-): void {
-  useEffect(() => {
-    if (subject === undefined) return;
-    register(subject, true);
-    return () => register(subject, false);
-  }, [register, subject]);
 }
 
 /** The callbacks a surface hands one `mutate`, as TanStack calls them with the press the hook made
@@ -344,6 +440,7 @@ export function useKeyedWrite<TData, TVariables = void, TContext = unknown, D = 
   onMutate,
   onSettled,
   onSuccess,
+  readsLate,
   request,
   target,
   write,
@@ -361,6 +458,9 @@ export function useKeyedWrite<TData, TVariables = void, TContext = unknown, D = 
   /** The press the hook made last (`mutate`, `mutateAsync`, `again`), set as it is made, before
    *  TanStack tells React of it. */
   const newestMade = useRef<Press<TVariables> | undefined>(undefined);
+  /** Every press whose run is out, by the key its attempts go out under, from the start of its
+   *  run until it settles: the presses `lateOf` looks among. */
+  const out = useRef(new Map<string, TVariables>());
   const [unanswered, setUnanswered] = useState<UnansweredLanding<TVariables> | undefined>(
     undefined
   );
@@ -377,6 +477,7 @@ export function useKeyedWrite<TData, TVariables = void, TContext = unknown, D = 
     mutationFn: (press) => {
       const { key, variables } = press;
       setUnanswered(undefined);
+      out.current.set(key, variables);
       const spec = {
         // A press names a kind and its record together, or neither (`KeyedWriteKind`): with
         // neither it is a plain write, whose record is `D`'s default, `null`.
@@ -400,10 +501,12 @@ export function useKeyedWrite<TData, TVariables = void, TContext = unknown, D = 
             })
       ).then(
         (answer) => {
+          out.current.delete(key);
           if (answer === null) setUnanswered({ at: Date.now(), variables });
           return answer;
         },
         (error: unknown) => {
+          out.current.delete(key);
           if (retriesUnderItsKey(error instanceof Error ? error : undefined)) {
             held.current = [press, ...held.current];
           }
@@ -500,6 +603,24 @@ export function useKeyedWrite<TData, TVariables = void, TContext = unknown, D = 
     [makePress]
   );
   const newest = mutation.variables;
+  // The newest press's write as the store holds it, by the key the press made it under, and the
+  // writes ahead of it on its target's line, followed only where the surface reads it
+  // (`readsLate`).
+  const late = useLateIn(writes, readsLate === true ? newest?.key : undefined);
+  // Every press out that is late, followed only where the surface reads it (`readsLate`), from
+  // the newest press on and while any press is out.
+  const lateOut = useLateKeys(
+    writes,
+    readsLate === true && (newest !== undefined || out.current.size > 0),
+    () => [...out.current.keys()]
+  );
+  const lateOf = useCallback(
+    (variables: TVariables) => {
+      const keys = lateOut.split(" ");
+      return [...out.current].some(([key, made]) => made === variables && keys.includes(key));
+    },
+    [lateOut]
+  );
   // Built only once the newest press ended stopped, when its request went out: a press whose
   // request could not be built ended with that error instead, which building it here would throw.
   const newestMethod =
@@ -530,6 +651,8 @@ export function useKeyedWrite<TData, TVariables = void, TContext = unknown, D = 
     ...mutation,
     again,
     forgetUnanswered,
+    late,
+    lateOf,
     method: newestMethod,
     mutate,
     mutateAsync,

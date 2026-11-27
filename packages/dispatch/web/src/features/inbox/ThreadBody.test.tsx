@@ -17,7 +17,7 @@ import type {
 } from "../../api/types";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { agentRow, plannerAgentRow } from "../threads/replies-fixture";
-import { ThreadRowCard } from "./ThreadRowCard";
+import { ListedCards } from "./thread-cards-fixture";
 
 // The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
 // random order, so the file loads the engine before its first row, whichever row that is.
@@ -143,7 +143,7 @@ function renderCard(thread: MyReplyRow): QueryClient {
   const tree: ReactNode = (
     <MemoryRouter>
       <QueryClientProvider client={client}>
-        <ThreadRowCard thread={thread} />
+        <ListedCards threads={[thread]} />
       </QueryClientProvider>
     </MemoryRouter>
   );
@@ -312,6 +312,59 @@ test("a comment thread's card draws the quote it is anchored to and the thread w
   expect(turns[1]?.hasAttribute("data-inbox-thread-unread")).toBe(true);
 });
 
+test("each message of a comment thread on an issue draws its own Copy reference, and the card's own is the one the Inbox's y presses", async () => {
+  spy("getIssue", { closed_at: null } as unknown as IssueDetails);
+  spy("listComments", [
+    comment("comment-1", "The retry budget is too small."),
+    comment("comment-2", "Agreed.", {
+      author: { id: "bob", kind: "user" },
+      created_at: "2026-10-12T01:00:00Z",
+      reply_to: "comment-1",
+    }),
+  ]);
+  renderCard(commentRow());
+
+  const body = await screen.findByTestId("inbox-thread-comment");
+  await waitFor(() => expect(body.textContent).toContain("Agreed."));
+  const turns = [...body.querySelectorAll<HTMLElement>("[data-inbox-thread-turn]")];
+  expect(
+    turns.map((turn) => within(turn).getByRole("button", { name: /^Copy reference / }))
+  ).toHaveLength(2);
+  expect(
+    within(turns[1] as HTMLElement).getByRole("button", { name: /^Copy reference / })
+  ).toHaveAttribute("aria-label", "Copy reference dispatch://CORE-1/comment/comment-2");
+  // The card's own control is the thread's, drawn above the thread, and the only one marked as
+  // the item's.
+  const items = document.querySelectorAll('[data-copy-ref="item"] button');
+  expect(items).toHaveLength(1);
+  expect(items[0]).toHaveAttribute(
+    "aria-label",
+    "Copy reference dispatch://CORE-1/comment/comment-1"
+  );
+  expect(body.contains(items[0] as Node)).toBe(false);
+});
+
+test("a message to a session names no issue, so neither the card nor its messages draw a Copy reference", async () => {
+  spy("listAgents", [session]);
+  spy("listAgentMessages", [
+    {
+      message: message("message-1", "Have a look at the build"),
+      replies: [
+        message("reply-1", "Looked at it.", {
+          author: { id: "planner", kind: "session" },
+          created_at: "2026-10-12T01:00:00Z",
+          in_reply_to: "message-1",
+        }),
+      ],
+    } satisfies MessageRead,
+  ]);
+  renderCard(plannerAgentRow());
+
+  const body = await screen.findByTestId("inbox-thread-agent");
+  await waitFor(() => expect(body.textContent).toContain("Looked at it."));
+  expect(document.querySelector("[data-copy-ref]")).toBeNull();
+});
+
 // Only a message on an issue takes an edit or a delete (409 NOT_AN_ISSUE_MESSAGE), so the thread
 // is an issue's message conversation: an Agent thread's messages are on no issue.
 test("an inbox thread marks an edited message and reads a deleted one as deleted", async () => {
@@ -420,6 +473,61 @@ test("a comment thread whose root is deleted draws no box, and keeps the reply t
   });
 });
 
+// Discard my draft takes the kept reply's offer away, and with it the button that held the focus.
+// The focus goes on, with no scroll, to the control now at the offer's place in the thread, else
+// to the nearest one before it (`handFocusFrom`): under Oldest first the offer ends the thread, so
+// the newest reply's Copy reference takes it.
+test("Discard my draft on a reply kept under a deleted root hands the focus to the newest reply's Copy reference, with no scroll", async () => {
+  const user = userEvent.setup();
+  spy("getIssue", { closed_at: null } as unknown as IssueDetails);
+  const reply = comment("comment-2", "Agreed.", {
+    author: { id: "bob", kind: "user" },
+    created_at: "2026-10-12T01:00:00Z",
+    reply_to: "comment-1",
+  });
+  const listComments = spyOn(api, "listComments").mockResolvedValue([
+    comment("comment-1", "The retry budget is too small."),
+    reply,
+  ]);
+  restores.push(listComments);
+  const client = renderCard(commentRow());
+  const thread = await screen.findByTestId("inbox-thread-comment");
+  await user.click(await within(thread).findByRole("textbox", { name: "Reply" }));
+  await user.paste("Raise it to five.");
+  listComments.mockResolvedValue([
+    comment("comment-1", "", {
+      deleted_at: "2026-10-12T02:00:00Z",
+      deleted_by: { id: "alice", kind: "user" },
+    }),
+    reply,
+  ]);
+  await act(() => client.invalidateQueries({ queryKey: ["comments", "CORE-1"] }));
+  const discard = await within(thread).findByRole("button", { name: "Discard my draft" });
+  const target = within(thread).getByRole("button", {
+    name: "Copy reference dispatch://CORE-1/comment/comment-2",
+  });
+  const focuses = spyOn(target, "focus");
+
+  try {
+    await user.click(discard);
+    const focused = document.activeElement;
+    expect({
+      focused:
+        focused === target
+          ? "the newest reply's Copy reference"
+          : focused === document.body
+            ? "the page's body"
+            : focused?.outerHTML,
+      focuses: focuses.mock.calls,
+    }).toEqual({
+      focused: "the newest reply's Copy reference",
+      focuses: [[{ preventScroll: true }]],
+    });
+  } finally {
+    focuses.mockRestore();
+  }
+});
+
 /** A card for each of `threads`, as the Inbox lists them below 1280 px; the setter draws the list
  *  again with the threads it is handed, over the same client. */
 function renderCards(threads: readonly MyReplyRow[]): (threads: readonly MyReplyRow[]) => void {
@@ -428,9 +536,7 @@ function renderCards(threads: readonly MyReplyRow[]): (threads: readonly MyReply
   const tree = (rows: readonly MyReplyRow[]): ReactNode => (
     <MemoryRouter>
       <QueryClientProvider client={client}>
-        {rows.map((row) => (
-          <ThreadRowCard key={row.thread_id} thread={row} />
-        ))}
+        <ListedCards threads={rows} />
       </QueryClientProvider>
     </MemoryRouter>
   );

@@ -1,10 +1,11 @@
 import { useLocation, useNavigate } from "react-router-dom";
 
-import { type IssueTab, parseIssuePath } from "../refs/routes";
+import { parseIssuePath } from "../refs/routes";
 import { useKeymap, useKeymapScope } from "../shell/keymap";
+import type { KeymapActionId } from "../shell/keymap-catalogue";
 import { bringOnScreen } from "./identity-block";
 import { issueAddress, presetPath } from "./issue-address";
-import { CONTROL_LABELS, PRESET_NAMES, type Preset } from "./page-words";
+import { CONTROL_LABELS, type Preset } from "./page-words";
 
 /**
  * The parts of the page a chord brings the reader to, by the mark the page draws each one
@@ -100,29 +101,28 @@ function toggled(key: string, view: Preset, active: Preset): string {
  * `t w` toggles Dashboard (dispatch://INFRA-5702/spec#b-r-new-page), which draws no outline, so
  * it leaves the focus where it was. `t s`, `t k`, `t p` and `t d` toggle the Spec, Verification,
  * Plan and Decisions views, and `t c` is the conversation, the page with every view off; each
- * leaves the focus in the outline. A label names what the chord does on this page, in the view
- * row's own names (`PRESET_NAMES`). The table is exported for the inventory of the places that
- * write Conversation's address (`issue-address.test.ts`).
+ * leaves the focus in the outline. Each but `t w` is the catalogue's action of today's page's tab
+ * of the same name (`keymap-catalogue.ts`), which gives it its keys, the person's where they
+ * changed them, and a label that names what it does on both pages; `t w` is the new page's own
+ * action, since today's page binds no key to its Dashboard tab. The table is exported for the
+ * inventory of the places that write Conversation's address (`issue-address.test.ts`).
  */
 export const CHORDS: readonly {
-  keys: string;
-  label: string;
+  action: KeymapActionId;
   /** The address the chord opens from the view on. */
   path: (key: string, active: Preset) => string;
   /** The part the chord puts the focus in, where the address draws one. */
   part?: keyof typeof PARTS;
-  /** What names the binding, which is the tab the address was that tab's. */
-  tab: IssueTab;
+  /** The view the chord turns on, which is the tab of the same name on today's page. */
+  tab: Preset;
 }[] = [
   {
-    keys: "t w",
-    label: `Turn ${PRESET_NAMES.dashboard} on or off`,
+    action: "issue.tab-dashboard",
     path: (key, active) => toggled(key, "dashboard", active),
     tab: "dashboard",
   },
   {
-    keys: "t s",
-    label: `Turn the ${PRESET_NAMES.spec} filter on or off`,
+    action: "issue.tab-spec",
     part: "tree",
     path: (key, active) => toggled(key, "spec", active),
     tab: "spec",
@@ -130,29 +130,25 @@ export const CHORDS: readonly {
   // `t v` is the activity and `t c` the conversation, so the checks take their own `k`; `t p`
   // is free (`p` alone focuses the priority, which is a different scope of key).
   {
-    keys: "t k",
-    label: `Turn the ${PRESET_NAMES.verification} filter on or off`,
+    action: "issue.tab-verification",
     part: "tree",
     path: (key, active) => toggled(key, "verification", active),
     tab: "verification",
   },
   {
-    keys: "t p",
-    label: `Turn the ${PRESET_NAMES.plan} filter on or off`,
+    action: "issue.tab-plan",
     part: "tree",
     path: (key, active) => toggled(key, "plan", active),
     tab: "plan",
   },
   {
-    keys: "t d",
-    label: `Turn the ${PRESET_NAMES.decisions} filter on or off`,
+    action: "issue.tab-decisions",
     part: "tree",
     path: (key, active) => toggled(key, "decisions", active),
     tab: "decisions",
   },
   {
-    keys: "t c",
-    label: `${PRESET_NAMES.conversation}: turn every filter off`,
+    action: "issue.tab-conversation",
     part: "tree",
     path: (key) => presetPath(key, "conversation"),
     tab: "conversation",
@@ -176,10 +172,8 @@ export function useIssueKeymap(issueKey: string): void {
   useKeymapScope("issue");
   useKeymap(
     "issue",
-    CHORDS.map(({ keys, label, part, path, tab }) => ({
-      id: `tab-${tab}`,
-      keys,
-      label,
+    CHORDS.map(({ action, part, path }) => ({
+      action,
       run: () => {
         navigate(path(issueKey, active));
         // The part is looked for once the address has drawn: the outline is the same element

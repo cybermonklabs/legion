@@ -19,7 +19,16 @@ import { countDocumentSockets, documentEditor, documentTransport, typeAtEnd } fr
 import { ONE_PIXEL_PNG } from "./one-pixel-png";
 import { navigateInApp } from "./sends";
 import { expandedState } from "./settled";
-import { expect, type Locator, type Page, type Request, type TestInfo, test } from "./test";
+import {
+  expect,
+  type Locator,
+  type Page,
+  type Request,
+  type Route,
+  type TestInfo,
+  test,
+} from "./test";
+import { assertPageFits } from "./unclipped";
 
 // The files a row uploads are written in that row's own output directory, which Playwright gives
 // each row of each worker (`testInfo.outputPath`): two workers running these rows at once would
@@ -59,6 +68,27 @@ async function confirmUpload(page: Page): Promise<void> {
   await page.getByRole("button", { exact: true, name: "Upload" }).click();
 }
 
+// Whole inside the window: no part of `control` left of the window's left edge or past its right
+// edge, where a phone reader can neither see nor press it. `name` is what a failure calls it. The
+// window is the width the browser was given, not `window.innerWidth`: a page wider than a phone's
+// window widens `innerWidth` to the page (`assertPageFits`, `unclipped.ts`), so a 480 px control
+// on a 390 px phone sits inside an `innerWidth` of 504. The failure names both.
+async function expectWithinWindow(page: Page, control: Locator, name: string): Promise<void> {
+  await expect(control).toBeVisible();
+  const [box, innerWidth] = await Promise.all([
+    control.boundingBox(),
+    page.evaluate(() => window.innerWidth),
+  ]);
+  const windowWidth = page.viewportSize()?.width;
+  if (box === null || windowWidth === undefined) {
+    throw new Error(`expected ${name} to have a box in a window of a set width`);
+  }
+  const right = box.x + box.width;
+  const where = `${name} spans ${box.x}px to ${right}px (${box.width}px wide) in a ${windowWidth}px window (innerWidth ${innerWidth}px)`;
+  expect(box.x, where).toBeGreaterThanOrEqual(0);
+  expect(right, where).toBeLessThanOrEqual(windowWidth);
+}
+
 // `page.request` sends the page's session cookie and no `Origin`, and the server refuses a
 // cookie-authenticated write whose `Origin` is not the dashboard's (enforceCookieOrigin).
 function postAsPage(page: Page, path: string, data?: object) {
@@ -85,10 +115,57 @@ test("artifacts upload, version, references, and phone layout @phone @pr", async
   await expect(documentEditor(page)).toContainText("The original document.");
   await expect.poll(sockets).toBe(1);
   await openArtifacts(page, testInfo.project.name === "iphone");
+  // The tab's own slot of the control row ran a staged upload off a 390 px window once (CI run
+  // 43204682061), and #3508 put the `New document` control in that same slot beside `Upload`. So
+  // on the phone each control there lies whole inside the window and takes a press, and the form
+  // `New document` opens fits too.
+  if (testInfo.project.name === "iphone") {
+    const newDocument = page.getByRole("button", { exact: true, name: "New document" });
+    const pickFile = page.getByRole("button", { exact: true, name: "Upload" });
+    await expectWithinWindow(page, newDocument, "New document");
+    await expectWithinWindow(page, pickFile, "Upload");
+    // Playwright holds the chooser the press opens, and it is left unanswered: nothing is staged.
+    const chooser = page.waitForEvent("filechooser");
+    await pickFile.click();
+    await chooser;
+    await newDocument.click();
+    const newDocumentForm = page.getByRole("form", { name: "New document" });
+    await expectWithinWindow(
+      page,
+      newDocumentForm.getByRole("textbox", { exact: true, name: "Title" }),
+      "the New document form's Title field"
+    );
+    await expectWithinWindow(
+      page,
+      newDocumentForm.getByRole("button", { exact: true, name: "Create" }),
+      "the New document form's Create"
+    );
+    await newDocumentForm.getByRole("button", { exact: true, name: "Cancel" }).click();
+    await expect(newDocumentForm).toHaveCount(0);
+  }
 
   const upload = page.getByLabel("Upload artifact");
   const diagramUpload = await diagramFile(testInfo);
   await upload.setInputFiles(diagramUpload);
+  // What run 43204682061 caught: the staged file takes the slot's line, and its Summary field and
+  // the two presses that store or discard it stay inside the window.
+  if (testInfo.project.name === "iphone") {
+    await expectWithinWindow(
+      page,
+      page.getByRole("textbox", { exact: true, name: "Summary (optional)" }),
+      "the staged upload's Summary field"
+    );
+    await expectWithinWindow(
+      page,
+      page.getByRole("button", { exact: true, name: "Upload" }),
+      "the staged upload's Upload"
+    );
+    await expectWithinWindow(
+      page,
+      page.getByRole("button", { exact: true, name: "Cancel" }),
+      "the staged upload's Cancel"
+    );
+  }
   await confirmUpload(page);
   const diagram = page.getByTestId("artifact-diagram-png");
   await expect(diagram).toContainText("diagram.png");
@@ -210,9 +287,9 @@ test("artifacts upload, version, references, and phone layout @phone @pr", async
     await openMargin.click();
     await expect(page.getByTestId("margin-sheet")).toHaveAttribute("data-expanded", "true");
     await page.screenshot({ path: testInfo.outputPath("iphone-margin-sheet.png"), fullPage: true });
-    expect(
-      await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)
-    ).toBe(true);
+    // `scrollWidth <= innerWidth` cannot fail on a phone, which widens `innerWidth` to a page
+    // wider than its window; `assertPageFits` holds `innerWidth` to the window as well.
+    await assertPageFits(page);
   }
 });
 
@@ -346,8 +423,12 @@ test("the version history compares two versions of a document with the change vi
   await page.goto(`/issues/${issue.key}/artifacts/notes-md`);
   const compare = page.getByRole("region", { name: "Compare versions for notes.md" });
   await compare.getByRole("button", { name: "Show comparison" }).click();
-  await compare.getByLabel("Compare notes.md from").selectOption("1");
-  await compare.getByLabel("Compare notes.md to").selectOption("2");
+  // Each side is a list, portalled out of the region, and the one open list's options are the
+  // ones pressed.
+  await compare.getByRole("button", { name: "Compare notes.md from" }).click();
+  await page.getByRole("option", { name: /^Version 1(?: — |$)/ }).click();
+  await compare.getByRole("button", { name: "Compare notes.md to" }).click();
+  await page.getByRole("option", { name: /^Version 2(?: — |$)/ }).click();
   const changed = compare.getByTestId("change-view").locator('[data-change="changed"]');
   await expect(changed).toHaveCount(1);
   await expect(changed.locator("del")).toHaveText(["three"]);
@@ -751,4 +832,215 @@ test("a live document refuses a rebuild", async ({ page }) => {
   expect(rebuilt.status()).toBe(409);
   await expect(rebuilt.text()).resolves.toContain(`"code":"DOCUMENT_LIVE"`);
   await expect(documentEditor(page)).toContainText("before");
+});
+
+/** What a row holds of the reads the page makes of one route: `hold` keeps every later GET the
+ *  route names unanswered, `out` counts how many it kept, and `answer` sends on to Dispatch each
+ *  kept GET the page still waits on and lets every later one through. A kept GET is answered by
+ *  nothing else, so the page gives it up at its own 30 s deadline and asks again. */
+interface BoundReads {
+  readonly answer: () => Promise<void>;
+  readonly hold: () => void;
+  readonly out: () => number;
+}
+
+/** Routes the page's GETs that `matches` names, which go through until `hold` is called. */
+async function routeBoundReads(page: Page, matches: (url: URL) => boolean): Promise<BoundReads> {
+  let holding = false;
+  let kept = 0;
+  const waiting: Route[] = [];
+  await page.route(matches, async (route: Route) => {
+    if (!holding || route.request().method() !== "GET") return route.fallback();
+    kept += 1;
+    waiting.push(route);
+    return undefined;
+  });
+  return {
+    // A GET the page gave up has no answer left to take, and its route refuses the fallback.
+    answer: async () => {
+      holding = false;
+      for (const route of waiting.splice(0)) await route.fallback().catch(() => undefined);
+    },
+    hold: () => {
+      holding = true;
+    },
+    out: () => kept,
+  };
+}
+
+// The tester's red row of round 21 (read-bound.ts:40-47: a read that has not settled is said "for
+// the latest read" alone, and "forgets at once why any earlier read had not settled"; the
+// architect's ruling of 2026-11-26T04:19Z). Every document row of the Artifacts tab owns a
+// `useReadBound` (DocumentWayBack.tsx:234), though every Remove reads the issue's document list
+// again (:257), so a Remove of the second document begins a new read of the list and takes
+// nothing away from the line the first Remove left for the read before it. At c3b536cc the first
+// row still says "Could not load artifacts. Dispatch did not answer within 30 seconds." for the
+// whole 15 s the row waits after the second removal landed. Measured in Chromium and Firefox,
+// twice each.
+// SLOW(>=2s): two documents seeded, one Artifacts tab open, two removals written and the page's
+// clock moved once past the 30 s bound.
+// @firefox: the timers of a read's own deadline and of the bound a held control waits on, which
+// each engine runs.
+test("a Remove of a second document takes away the line the first Remove left for the document list read that had not settled @firefox", async ({
+  page,
+}) => {
+  const step = (text: string) => `Remove of two documents on the Artifacts tab: ${text}`;
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({
+    project: "CORE",
+    spec: "The spec itself.",
+    title: "Two notes",
+  });
+  const firstNotes = (await createIssueArtifact(issue.key, { name: "Draft notes" })).artifact;
+  const secondNotes = (await createIssueArtifact(issue.key, { name: "More notes" })).artifact;
+  const listReads = await routeBoundReads(
+    page,
+    (url) => url.pathname === `/api/v1/issues/${issue.key}/artifacts`
+  );
+  await page.clock.install();
+  // A removal's live event would read the list beside the read the press holds through, so the
+  // page has no live feed for the row.
+  await page.routeWebSocket(/\/ws\/live$/u, (route) =>
+    route.close({ code: 1011, reason: "test network drop" })
+  );
+  await page.goto(`/issues/${issue.key}/artifacts`);
+  const first = page.getByTestId(`artifact-${firstNotes.slug}`);
+  const second = page.getByTestId(`artifact-${secondNotes.slug}`);
+  const removeOf = (row: Locator) => row.getByRole("button", { exact: true, name: "Remove" });
+  await expect(
+    removeOf(first),
+    step("the first document is listed with its Remove.")
+  ).toBeVisible();
+  await expect(
+    removeOf(second),
+    step("the second document is listed with its Remove.")
+  ).toBeVisible();
+  const unreadLine = (row: Locator) =>
+    row.getByRole("alert").filter({ hasText: /did not answer within 30 seconds/ });
+  const removals = (id: string) =>
+    page.waitForResponse(
+      (response) =>
+        response.request().method() === "DELETE" &&
+        new URL(response.url()).pathname === `/api/v1/artifacts/${id}`
+    );
+
+  listReads.hold();
+  const firstAnswer = removals(firstNotes.id);
+  await removeOf(first).click();
+  expect((await firstAnswer).status(), step("the first removal lands at Dispatch.")).toBe(204);
+  await expect
+    .poll(listReads.out, { message: step("the list read the first removal starts is out.") })
+    .toBeGreaterThan(0);
+  await page.clock.fastForward(30_000);
+  await expect(
+    unreadLine(first),
+    step("at the 30 s bound the first document's row says why the list is not read.")
+  ).toHaveText(["Could not load artifacts. Dispatch did not answer within 30 seconds."]);
+
+  const secondAnswer = removals(secondNotes.id);
+  await removeOf(second).click();
+  expect((await secondAnswer).status(), step("the second removal lands at Dispatch.")).toBe(204);
+  await expect(
+    unreadLine(first),
+    step(
+      "the first document's row loses its line as the second removal lands and a new read of the list begins."
+    )
+  ).toHaveCount(0);
+});
+
+// The tester's red row of round 22 (B2 (3): a hold's reason dropped when its caller is drawn
+// again while its read is still out; the architect's ruling of 2026-11-26T23:11Z). The Artifacts
+// tab holds its rows' Remove through the document list's read with one hold of its own
+// (ArtifactsTab.tsx:467), and the issue page draws the tab only on its own address
+// (ArtifactRoutePanel.tsx:46-47), so a switch to the Spec tab and back mounts a new tab whose
+// hold knows nothing of the removal. At e4ece294 the row of the removed document says "Could not
+// load artifacts. Dispatch did not answer within 30 seconds." at the bound, and says nothing once
+// the reader is back on the tab, though the read is still out and no later removal began.
+// Measured in Chromium and Firefox, twice each.
+// SLOW(>=2s): one document seeded, one Artifacts tab open, one removal written, the page's clock
+// moved once past the 30 s bound, and two tab switches.
+// @firefox: the timers of a read's own deadline and of the bound a held control waits on, which
+// each engine runs.
+test("a Remove on the Artifacts tab whose list read the bound ended still says why once the reader is back on the tab @firefox", async ({
+  page,
+}) => {
+  const step = (text: string) => `Remove on the Artifacts tab, to Spec and back: ${text}`;
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({ project: "CORE", spec: "The spec itself.", title: "One note" });
+  const notes = (await createIssueArtifact(issue.key, { name: "Draft notes" })).artifact;
+  const listReads = await routeBoundReads(
+    page,
+    (url) => url.pathname === `/api/v1/issues/${issue.key}/artifacts`
+  );
+  await page.clock.install();
+  // A removal's live event would read the list beside the read the press holds through, so the
+  // page has no live feed for the row.
+  await page.routeWebSocket(/\/ws\/live$/u, (route) =>
+    route.close({ code: 1011, reason: "test network drop" })
+  );
+  await page.goto(`/issues/${issue.key}/artifacts`);
+  const row = page.getByTestId(`artifact-${notes.slug}`);
+  const remove = row.getByRole("button", { exact: true, name: "Remove" });
+  await expect(remove, step("the document is listed with its Remove.")).toBeVisible();
+  const unreadLine = row.getByRole("alert").filter({ hasText: /did not answer within 30 seconds/ });
+  const unreadWords = "Could not load artifacts. Dispatch did not answer within 30 seconds.";
+
+  listReads.hold();
+  const removal = page.waitForResponse(
+    (response) =>
+      response.request().method() === "DELETE" &&
+      new URL(response.url()).pathname === `/api/v1/artifacts/${notes.id}`
+  );
+  await remove.click();
+  expect((await removal).status(), step("the removal lands at Dispatch.")).toBe(204);
+  await expect
+    .poll(listReads.out, { message: step("the list read the removal starts is out.") })
+    .toBeGreaterThan(0);
+  await page.clock.fastForward(30_000);
+  await expect(
+    unreadLine,
+    step("at the 30 s bound the document's row says why the list is not read.")
+  ).toHaveText([unreadWords]);
+
+  // The bound's 30 s also end the read's first attempt at its own deadline, and the page asks
+  // again `QUERY_RETRY_DELAY_MS` later. A caller drawn away inside that wait takes the read's last
+  // observer with it, which cancels the retry (query-core's `Query.removeObserver`), so the read
+  // ends failed and the caller drawn again shows that failure, whatever a correct hold keeps: the
+  // row lets the wait run out, and the read be asked again, before the caller is drawn away.
+  const askedAtBound = listReads.out();
+  await page.clock.runFor(QUERY_RETRY_DELAY_MS);
+  await expect
+    .poll(() => listReads.out(), {
+      message: step(
+        "the list read is asked again after its first attempt's 30 s deadline, and held."
+      ),
+    })
+    .toBeGreaterThan(askedAtBound);
+
+  const spec = page.getByRole("tab", { name: "Spec" });
+  const artifacts = page.getByRole("tab", { name: /^Artifacts\b/ });
+  await spec.click();
+  await expect(spec, step("the Spec tab is the one shown.")).toHaveAttribute(
+    "aria-selected",
+    "true"
+  );
+  await artifacts.click();
+  await expect(artifacts, step("the Artifacts tab is the one shown again.")).toHaveAttribute(
+    "aria-selected",
+    "true"
+  );
+  await expect(
+    row,
+    step("back on the Artifacts tab the removed document is listed still, its list read out.")
+  ).toBeVisible();
+  await expect(
+    unreadLine,
+    step(
+      "back on the Artifacts tab, with the list read still out and no later removal, the document's row still says why the list is not read."
+    )
+  ).toHaveText([unreadWords]);
+
+  await listReads.answer();
+  await page.clock.runFor(1_000);
+  await expect(row, step("the list read answered takes the removed document away.")).toHaveCount(0);
 });

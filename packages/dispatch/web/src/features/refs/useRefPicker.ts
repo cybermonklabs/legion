@@ -320,7 +320,12 @@ export function useRefPicker({
   // The trigger the reader dismissed with Escape stays shut while they type on after it: Escape
   // leaves the character they typed, and the picker must not open again on the next letter.
   const [dismissed, setDismissed] = useState<RefPickerTrigger | undefined>(undefined);
-  if (dismissed !== undefined && trigger?.start !== dismissed.start) setDismissed(undefined);
+  // A dismissal follows the trigger the text and the caret stand on, whether or not the picker
+  // may open now: a box held while its send is out keeps the close the send made
+  // (`MentionField`'s `closePicker`), so a refusal that hands the draft back opens no list over
+  // it again.
+  const standing = enabled || dismissed === undefined ? trigger : readTrigger(text, caret, links);
+  if (dismissed !== undefined && standing?.start !== dismissed.start) setDismissed(undefined);
   const open = trigger !== undefined && trigger.start !== dismissed?.start;
   const query = open ? trigger.query : "";
   const debounced = useSettled(query, SEARCH_DEBOUNCE_MS);

@@ -15,16 +15,19 @@ import { signIn } from "./users";
 /**
  * Two people on one document, each served by a different Dispatch process on one Postgres, as two
  * pods behind a load balancer serve them: alice's page is pinned to Dispatch A and bob's to B.
- * Each sees what the other types and the other's cursor within one second, and neither page's
- * document socket is closed or replaced on the way: one `/ws/doc/` socket per page, open from
- * start to end, and a connection dot that never leaves "connected".
+ * Each sees what the other types within one second of the last keystroke, and the other's cursor
+ * within one second more: the cursor's wait starts once the text shows, so it allows up to two
+ * seconds from that keystroke. Neither page's document socket is closed or replaced on the way:
+ * one `/ws/doc/` socket per page, open from start to end, and a connection dot that never leaves
+ * "connected".
  *
  * It runs in two-process mode (`bun run e2e:multiprocess`, DISPATCH_E2E_PROCESSES=2) alone, as
  * every `*.multiprocess.e2e.ts` does (e2e/playwright.config.ts): it reads the round-robin proxy's
  * socket log (`GET /_proxy/sockets`) and pins each page with the proxy's cookie.
  */
 
-/** What a page must show within this long of the keystroke that caused it. */
+/** How long each wait allows a page to show what the other page did, from where the wait starts:
+ *  a text's wait starts at the keystroke that typed it, a cursor's once that text shows. */
 const liveWithin = 1000;
 
 /** How often each page reads its own connection dot. */
@@ -183,7 +186,8 @@ test("two people on two processes see each other's typing and cursor within a se
     expect.soft(aliceSockets(), "document sockets alice's page opened").toBe(1);
     expect.soft(bobSockets(), "document sockets bob's page opened").toBe(1);
 
-    // Each wait starts at the last keystroke, so what it allows is the time from that keystroke.
+    // A text's wait starts at the last keystroke, so what it allows is the time from that
+    // keystroke; the cursor's wait after it starts once the text shows (`liveWithin`).
     await typeAtEnd(alicePage, "Alice types on A.");
     await expect
       .soft(bobEditor, "bob's page on B shows alice's typing within 1 s of her last keystroke")

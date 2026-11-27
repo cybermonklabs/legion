@@ -1,11 +1,12 @@
 import { hashKey, type MutationKey } from "@tanstack/react-query";
-import type { ReactNode } from "react";
+import { type ReactNode, useContext, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 
 import type { Suggestion } from "../../api/types";
 import { Pill } from "../../components/Pill";
 import { QueryError } from "../../components/QueryError";
 import { useCopyFeedback } from "../../hooks/useCopyFeedback";
+import { useFocusBack } from "../../hooks/useFocusBack";
 import {
   borderDefault,
   calloutDangerBorder,
@@ -31,11 +32,12 @@ import {
   textSecondaryOnSurface,
 } from "../../theme/classes";
 import { useHeldSend, useHeldSends, useHeldSendsUnder } from "../conversation/held-sends";
-import { KeptReplyToDeleted } from "../conversation/KeptDraftOffers";
+import { handFocusFrom, KeptReplyToDeleted } from "../conversation/KeptDraftOffers";
 import { KeptReply } from "../conversation/KeptReply";
 import { MentionComposer } from "../conversation/MentionComposer";
 import { passageItem, ReplyQuote } from "../conversation/ReplyQuote";
 import type { SaveCommentEdit } from "../conversation/send-request";
+import { ConversationTurns, turnFocusRing, turnMarks } from "../conversation/turn-keys";
 import { useUnsentDrafts } from "../conversation/unsent-drafts";
 import { composerNameOf } from "../conversation/useKeptDrafts";
 import { AgentName } from "../refs/AgentName";
@@ -62,7 +64,7 @@ import {
 } from "./useMarginItems";
 
 /** The name every comment edit's save sits beneath, followed by the comment's id. */
-const COMMENT_EDIT_SEND_KEY: MutationKey = ["comment-edit"];
+export const COMMENT_EDIT_SEND_KEY: MutationKey = ["comment-edit"];
 
 /** 44 px tall through tablet widths (the compact sheet's `min-height: 44px` rule in `styles.css`
  *  holds until `xl`), 32 px in the desktop margin. */
@@ -124,6 +126,13 @@ export interface ThreadCardProps {
    *  thread's own - so the card's reply composer stays mounted, hidden, keeping an unsent draft
    *  for when that reply ends. */
   hideReplyComposer?: boolean;
+  /** What the card's reply box's Escape, its Cancel reply and its Discard draft do in place of
+   *  folding the card. The Conversation tab always hands one (`CommentTurn`): where its `r` put
+   *  the reader in the box, the focus goes back to the turn `r` was pressed on and the thread
+   *  stays open; elsewhere the thread closes as `onToggle` closes it, and an inline thread gives
+   *  the focus to its Expand thread. Unset, the card folds with the focus on its preview
+   *  (`foldFromReply`). */
+  onReplyCancel?(): void;
   expanded: boolean;
   hovered: boolean;
   isClosed: boolean;
@@ -148,8 +157,12 @@ export interface ThreadCardProps {
    *  and draft, whatever unmounted the last one; and a host that holds its own Replies while one
    *  of its sends is out (the Conversation tab) holds them for this one too. */
   replyMutationKey?: MutationKey;
-  /** Conversation owns the turn-level copy control outside this card. */
-  showReference?: boolean;
+  /** The reply box mounts standing (`MentionComposer`), taking no focus: the Conversation tab's
+   *  Enter or `o` opened the thread, and the focus stays on the turn it was pressed on. */
+  replyStanding?: boolean;
+  /** Whether the card draws its root's Copy reference, beside its preview while collapsed. The
+   *  Conversation tab draws the root's on its own turn instead; every reply draws its own. */
+  showRootReference?: boolean;
   /** Document margins pulse an orphaned block; timeline cards link to the document instead. */
   pulseOrphanBlock?: boolean;
   /** The thread named by the current document URL; it can be selected without expanding on phone. */
@@ -301,10 +314,12 @@ function CommentBody({
  * `awayName`) - and the card says it is kept in this browser, drawing none of its words: an edit
  * is mostly the words of the comment it was written over, and the delete took those off every
  * surface (INFRA-1523, R3). Copy my edit puts the whole edit on the clipboard, and a copy the
- * browser refuses says so and keeps the edit; Discard my edit drops it where it is kept. Nothing
- * is saved meanwhile, and a save still out draws nothing until Dispatch answers it.
+ * browser refuses says so and keeps the edit; Discard my edit drops it where it is kept, and hands
+ * the focus it leaves to the control nearest its place in the card (`handFocusFrom`). Nothing is
+ * saved meanwhile, and a save still out draws nothing until Dispatch answers it.
  */
 function DeletedCommentEdit({ commentId }: { commentId: string }): ReactNode {
+  const offer = useRef<HTMLDivElement>(null);
   const mutationKey = [...COMMENT_EDIT_SEND_KEY, commentId];
   const store = useHeldSends();
   const held = useHeldSend(mutationKey);
@@ -320,7 +335,7 @@ function DeletedCommentEdit({ commentId }: { commentId: string }): ReactNode {
   const draft = refused?.draft.draft ?? (held === undefined ? kept?.draft : undefined);
   if (draft === undefined) return null;
   return (
-    <div className="mt-2 space-y-2">
+    <div className="mt-2 space-y-2" ref={offer}>
       <div className={`space-y-1 text-sm ${textMutedOnSurfaceMuted}`} role="status">
         <p>
           This comment was deleted, and Dispatch saves no edit of a deleted comment. Your unsaved
@@ -343,10 +358,12 @@ function DeletedCommentEdit({ commentId }: { commentId: string }): ReactNode {
         </button>
         <button
           className={`text-sm font-medium underline ${dangerText}`}
-          onClick={() => {
-            if (refused !== undefined) store.discard(mutationKey);
-            else unsent.forgetAway(name, { anchor: undefined, replyTo: null });
-          }}
+          onClick={() =>
+            handFocusFrom(() => {
+              if (refused !== undefined) store.discard(mutationKey);
+              else unsent.forgetAway(name, { anchor: undefined, replyTo: null });
+            }, offer.current)
+          }
           type="button"
         >
           Discard my edit
@@ -369,16 +386,18 @@ export function ThreadCard({
   onAction,
   onEdit,
   onRetryAction,
+  onReplyCancel,
   onSelect,
   onToggle,
   owner,
   selected = false,
-  showReference = true,
+  showRootReference = true,
   pendingAction,
   pulseOrphanBlock = true,
   renderDeliveries,
   reopenControl,
   replyMutationKey,
+  replyStanding = false,
   thread,
   viewerLogin,
   editingCommentId: editingId,
@@ -386,8 +405,14 @@ export function ThreadCard({
   onEditingChange: setEditingId,
 }: ThreadCardProps): ReactNode {
   const { focusBlock } = useMargin();
+  const inTab = useContext(ConversationTurns);
   const active = expanded || selected;
   const root = thread.root.comment;
+  // The document that owns a comment on no issue, under which its reference is named.
+  const documentOwner = owner.kind === "document" ? owner : undefined;
+  // The root's reference, which only the folded card's copy button reads.
+  const rootReference =
+    showRootReference && !expanded ? itemRoute("comment", root, documentOwner) : undefined;
   const rootDeleted = postDeletion(root);
   const rootSuggestion = root.suggestion;
   const terminalSuggestion = rootSuggestion !== null && rootSuggestion.accepted !== null;
@@ -432,14 +457,32 @@ export function ThreadCard({
   const editing = (comment: ThreadComment) =>
     postDeletion(comment) === null &&
     (editingId === comment.id || heldEdits.some((held) => held.request.edit?.id === comment.id));
+  // The comment whose editor a key or a button inside it ended last - a second Escape over
+  // `Discard draft?`, its Discard, and Save or Ctrl+Enter once the save lands (`onSent`) - and
+  // whose Edit takes the focus back once that editor has left the page, whatever other editor of
+  // the card stays open (`useFocusBack`, which reads that editor alone): the root's Edit stands
+  // beside its open editor, and a reply's is drawn again in the editor's place. A saved edit's
+  // editor stays until the saved words are read, and the focus goes back only from the page's
+  // body, where the editor's going left it (`useFocusBack`): a reader who moved the focus on
+  // meanwhile keeps it where they put it.
+  const [editHandedBack, setEditHandedBack] = useState<string>();
+  const editFocus = useFocusBack(
+    threadItems.some((comment) => comment.id === editHandedBack && editing(comment))
+  );
+  /** Ends the edit of `comment` with the focus back on its Edit (`editHandedBack`). */
+  const endEdit = (comment: ThreadComment) => {
+    setEditHandedBack(comment.id);
+    editFocus.handBack();
+    setEditingId(undefined);
+  };
   const renderEditor = (comment: ThreadComment) => (
     <MentionComposer
       box="margin-comment-edit"
       edit={{ body: comment.body, id: comment.id }}
       kind="comment"
       mutationKey={[...COMMENT_EDIT_SEND_KEY, comment.id]}
-      onClose={() => setEditingId(undefined)}
-      onSent={() => setEditingId(undefined)}
+      onClose={() => endEdit(comment)}
+      onSent={() => endEdit(comment)}
       owner={composerOwner(owner)}
       saveEdit={onEdit}
     />
@@ -455,11 +498,23 @@ export function ThreadCard({
       <button
         className={`font-medium ${linkText} ${linkHoverText}`}
         onClick={() => setEditingId(comment.id)}
+        ref={comment.id === editHandedBack ? editFocus.opener : undefined}
         type="button"
       >
         Edit
       </button>
     ) : null;
+  // The card's own end of the reply its box holds, where the host hands no `onReplyCancel`:
+  // Escape in the box, its Cancel reply, and its Discard draft over a reply Dispatch refused or
+  // the reader stopped fold the card (`onToggle`), which takes the box away with the focus it
+  // holds, and the preview drawn again in its place, which opened the thread, takes the focus
+  // back (`useFocusBack`).
+  const foldFocus = useFocusBack(expanded);
+  const foldFromReply = () => {
+    foldFocus.handBack();
+    onToggle();
+  };
+  const endReply = onReplyCancel ?? foldFromReply;
   /* Mounted while the card is expanded, under the thread's reply send name, so a reply still
      out or refused - which the held-send store keeps for the thread - is there each time the
      card expands. A closed issue takes a reply as it takes any comment, so the composer shows
@@ -470,13 +525,17 @@ export function ThreadCard({
      composer stays away from it. Its quote of the root marks the root edited as the root's own
      byline does (`replyParent`). `contents`, so the composer's own box is the one laid out. It
      sits next to the newest message: under the root in Newest first, at the foot of the thread
-     in Oldest first. Its Cancel reply, and Escape in its field, close the thread and keep the
-     draft for it, typed or refused or stopped, which the closed card says (`keptReply`). It
-     answers the card's own comment alone, which leaves the page with the card, so no line of it
-     can outlive the comment it names, and it is handed no `listed`. */
+     in Oldest first. Its Cancel reply, Escape in its field, and its Discard draft end the reply:
+     the card folds with the focus on its preview (`foldFromReply`), keeping the draft for the
+     thread, typed or refused or stopped, which the closed card says (`keptReply`), unless
+     Discard draft dropped it; a host that hands `onReplyCancel` ends the reply its own way, as
+     the Conversation tab does. It answers the card's own comment alone, which leaves the page
+     with the card, so no line of it can outlive the comment it names, and it is handed no
+     `listed`. `data-thread-reply` tells its box from a comment's edit box, which the
+     Conversation tab's `r` leaves alone. */
   const replyComposer =
     expanded && rootDeleted === null ? (
-      <div className="contents" hidden={hideReplyComposer}>
+      <div className="contents" data-thread-reply="" hidden={hideReplyComposer}>
         <MentionComposer
           box="margin-thread-reply"
           closed={isClosed}
@@ -485,12 +544,13 @@ export function ThreadCard({
           inline
           kind="comment"
           mutationKey={replyMutationKey}
-          onCancelReply={onToggle}
-          onClose={onToggle}
+          onCancelReply={endReply}
+          onClose={endReply}
           onSent={() => {}}
           owner={composerOwner(owner)}
           replyParent={root}
           replyTo={{ actor: root.author, excerpt: "", id: root.id, parentKind: "comment" }}
+          standing={replyStanding}
         />
       </div>
     ) : null;
@@ -529,7 +589,7 @@ export function ThreadCard({
 
   return (
     <>
-      {/* biome-ignore lint/a11y/useAriaPropsSupportedByRole: the card exposes its expand/collapse state to the margin bridge */}
+      {/* biome-ignore lint/a11y/useAriaPropsSupportedByRole lint/a11y/useKeyWithClickEvents: the card exposes its expand/collapse state to the margin bridge; and it takes no focus, so no key ever reached a handler of its own (dispatch://INFRA-2160, R12): a press on it is the pointer's way to its thread, and the keyboard's is the controls inside it */}
       <article
         aria-current={active ? "true" : undefined}
         aria-busy={pendingAction || undefined}
@@ -547,16 +607,6 @@ export function ThreadCard({
           ) {
             focusBlock(thread.anchor.block_id);
           }
-        }}
-        onKeyDown={(event) => {
-          if (
-            event.target !== event.currentTarget ||
-            (event.key !== "Enter" && event.key !== " ")
-          ) {
-            return;
-          }
-          event.preventDefault();
-          onSelect?.();
         }}
         onClick={(event) => {
           if (
@@ -614,7 +664,7 @@ export function ThreadCard({
                   comment={root}
                   owner={owner}
                   showOrphan
-                  showReference={showReference}
+                  showReference={showRootReference}
                 />
                 {rootDeleted === null ? null : <DeletedCommentEdit commentId={root.id} />}
                 {renderDeliveries?.(root)}
@@ -667,11 +717,14 @@ export function ThreadCard({
                   return (
                     <li
                       aria-current={reply.id === currentReplyId ? "true" : undefined}
-                      className={`rounded-lg p-2 ${card}`}
+                      className={`rounded-lg p-2 ${card} ${inTab ? turnFocusRing : ""}`}
                       data-reply=""
                       key={reply.id}
                       ref={reply === newestReply ? markRead : undefined}
                       style={{ marginLeft: "0px" }}
+                      {...(inTab
+                        ? turnMarks(true, itemRoute("comment", reply, documentOwner))
+                        : {})}
                     >
                       {editing(reply) ? (
                         renderEditor(reply)
@@ -693,7 +746,7 @@ export function ThreadCard({
                             comment={reply}
                             owner={owner}
                             showOrphan={false}
-                            showReference={showReference}
+                            showReference
                           />
                           {postDeletion(reply) === null ? null : (
                             <DeletedCommentEdit commentId={reply.id} />
@@ -712,67 +765,79 @@ export function ThreadCard({
           </>
         ) : (
           // The collapsed card is a record a reader reads - it is the Conversation tab's whole
-          // default view of a turn - so its references are links, as they were before the host
-          // decided it (`links="live"` at both previews below). The button around it opens the
-          // thread; it is not the link-or-button shape R6 names, which is a reference drawn
-          // inside a control that navigates somewhere else.
-          <button
-            aria-expanded={false}
-            className={`block w-full text-left ${textPrimaryOnSurface}`}
-            onClick={() => {
-              if (
-                pulseOrphanBlock &&
-                thread.anchor?.orphaned &&
-                typeof thread.anchor.block_id === "string"
-              ) {
-                focusBlock(thread.anchor.block_id);
-              }
-              onToggle();
-            }}
-            type="button"
-          >
-            {/* The compact sheet's stylesheet lays every button out inline-flex, so one block
-                wrapper keeps the preview's rows stacked. */}
-            <span className="block w-full">
-              {rootSuggestion !== null && root.anchor !== null ? (
-                <>
-                  {root.anchor.orphaned ? (
-                    <p className={`mb-2 text-xs font-medium ${inlineWarningText}`}>Text changed.</p>
-                  ) : null}
-                  <span className="block space-y-1 font-mono text-xs">
-                    <SuggestionDiff clamp quote={root.anchor.quote} suggestion={rootSuggestion} />
-                  </span>
-                  {root.body === "Suggested replacement." ? null : (
-                    <CollapsedRootPreview
-                      className={`mt-2 text-xs ${textSecondaryOnSurface}`}
-                      comment={root}
-                      deleted={rootDeleted}
-                      lines={1}
-                    />
-                  )}
-                </>
-              ) : (
-                <>
-                  {root.anchor === null ? null : (
-                    <blockquote
-                      className={`mb-2 border-l-2 pl-2 ${quoteAccentBorder} ${quoteBodyText}`}
-                    >
-                      {/* The document's own words: the reading list's `anchor-quote`. */}
-                      {root.anchor.quote}
-                    </blockquote>
-                  )}
-                  <CollapsedRootPreview comment={root} deleted={rootDeleted} lines={2} />
-                </>
-              )}
-              {thread.replies.length === 0 ? null : (
-                <p className={`mt-2 text-xs ${textMutedOnSurfaceMuted}`}>
-                  {thread.replies.length} {thread.replies.length === 1 ? "reply" : "replies"} · last
-                  reply{" "}
-                  {thread.lastReplyAt === undefined ? null : <Timestamp at={thread.lastReplyAt} />}
-                </p>
-              )}
-            </span>
-          </button>
+          // default view of a turn - so its references are links: both previews below draw in
+          // the `record` host (`ReferenceHostIs`). The button around them opens the thread; it is
+          // not the link-or-button shape R6 names, which is a reference drawn inside a control
+          // that navigates somewhere else. It opens the thread on a press anywhere but on one of
+          // the preview's links: a click or a Ctrl+click on a link opens the link and leaves the
+          // card folded, the link still in the page. A middle click is no `click`, so it never
+          // reaches this handler. The root's Copy reference sits beside the preview, outside it.
+          <div className="flex items-start gap-1">
+            <button
+              aria-expanded={false}
+              className={`block min-w-0 flex-1 text-left ${textPrimaryOnSurface}`}
+              onClick={(event) => {
+                if (event.target instanceof Element && event.target.closest("a") !== null) return;
+                if (
+                  pulseOrphanBlock &&
+                  thread.anchor?.orphaned &&
+                  typeof thread.anchor.block_id === "string"
+                ) {
+                  focusBlock(thread.anchor.block_id);
+                }
+                onToggle();
+              }}
+              ref={foldFocus.opener}
+              type="button"
+            >
+              {/* The compact sheet's stylesheet lays every button out inline-flex, so one block
+                  wrapper keeps the preview's rows stacked. */}
+              <span className="block w-full">
+                {rootSuggestion !== null && root.anchor !== null ? (
+                  <>
+                    {root.anchor.orphaned ? (
+                      <p className={`mb-2 text-xs font-medium ${inlineWarningText}`}>
+                        Text changed.
+                      </p>
+                    ) : null}
+                    <span className="block space-y-1 font-mono text-xs">
+                      <SuggestionDiff clamp quote={root.anchor.quote} suggestion={rootSuggestion} />
+                    </span>
+                    {root.body === "Suggested replacement." ? null : (
+                      <CollapsedRootPreview
+                        className={`mt-2 text-xs ${textSecondaryOnSurface}`}
+                        comment={root}
+                        deleted={rootDeleted}
+                        lines={1}
+                      />
+                    )}
+                  </>
+                ) : (
+                  <>
+                    {root.anchor === null ? null : (
+                      <blockquote
+                        className={`mb-2 border-l-2 pl-2 ${quoteAccentBorder} ${quoteBodyText}`}
+                      >
+                        {/* The document's own words: the reading list's `anchor-quote`. */}
+                        {root.anchor.quote}
+                      </blockquote>
+                    )}
+                    <CollapsedRootPreview comment={root} deleted={rootDeleted} lines={2} />
+                  </>
+                )}
+                {thread.replies.length === 0 ? null : (
+                  <p className={`mt-2 text-xs ${textMutedOnSurfaceMuted}`}>
+                    {thread.replies.length} {thread.replies.length === 1 ? "reply" : "replies"} ·
+                    last reply{" "}
+                    {thread.lastReplyAt === undefined ? null : (
+                      <Timestamp at={thread.lastReplyAt} />
+                    )}
+                  </p>
+                )}
+              </span>
+            </button>
+            {rootReference === undefined ? null : <CopyRefButton route={rootReference} />}
+          </div>
         )}
         {keptReply}
         {keptReplyToDeleted}

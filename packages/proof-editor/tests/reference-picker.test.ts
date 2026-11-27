@@ -45,9 +45,13 @@ function select(view: EditorView, from: number, to = from): void {
 }
 
 /** The key as ProseMirror's own listener offers it to the plugins, answering whether a plugin
- *  took it - which is what keeps it from reaching the document. */
-function press(view: EditorView, key: string): boolean {
-  const event = new window.KeyboardEvent("keydown", { key }) as unknown as KeyboardEvent;
+ *  took it - which is what keeps it from reaching the document. `modifiers` are the key's
+ *  `altKey`, `ctrlKey`, `metaKey` and `shiftKey`. */
+function press(view: EditorView, key: string, modifiers: KeyboardEventInit = {}): boolean {
+  const event = new window.KeyboardEvent("keydown", {
+    key,
+    ...modifiers,
+  }) as unknown as KeyboardEvent;
   return view.someProp("handleKeyDown", (handleKeyDown) => handleKeyDown(view, event)) === true;
 }
 
@@ -283,5 +287,31 @@ test("a key the host's list takes never reaches the document, and every other ke
     handle.setReferencePicker(null);
     expect(press(view, "ArrowDown")).toBe(false);
     expect(host.keys).toEqual(["ArrowDown", "Enter", "ArrowLeft"]);
+  });
+});
+
+// Alt+Enter opens the link at the caret, Ctrl or Cmd+Enter is the host's submit and Shift+Enter
+// the reader's line break: an open picker's list takes none of them as a pick, so the host is
+// offered none of them, and the editor's own keymap keeps each (Shift+Enter's hard break among
+// them), while a plain Enter is still the list's.
+test("a modified Enter is never offered to the host's list, and a plain Enter still is", async () => {
+  const host = hostPicker(["Enter"]);
+  await withMarksEditor("See the spec", ({ handle, view }) => {
+    handle.setReferencePicker(host.picker);
+    setFocus(view, true);
+    select(view, 13);
+
+    for (const modifiers of [
+      { altKey: true },
+      { ctrlKey: true },
+      { metaKey: true },
+      { shiftKey: true },
+    ]) {
+      press(view, "Enter", modifiers);
+      expect(host.keys, JSON.stringify(modifiers)).toEqual([]);
+    }
+
+    expect(press(view, "Enter")).toBe(true);
+    expect(host.keys).toEqual(["Enter"]);
   });
 });

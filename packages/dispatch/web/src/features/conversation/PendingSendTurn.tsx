@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 
 import { apiErrorMessage } from "../../api/client";
 import { RefusableButton } from "../../components/RefusableButton";
+import { ROW_MARKER } from "../../components/row-marker";
 import {
   dangerText,
   surfaceMutedBg,
@@ -24,7 +25,10 @@ import type { SessionSends } from "./useSessionSends";
  * still being tried past its deadline with Stop trying; or refused with why, Retry and Discard.
  * The session's live view and its Agents row both show it, and either's controls act on the
  * same write (`useSessionSends`). It leaves once Dispatch makes it, and the stored message takes
- * its place.
+ * its place. It is a row to the page's focus hand-offs by the row marker (`row-marker.ts`), not
+ * by list markup: in the live view it is a turn of the transcript, whose stored turns are no
+ * list, so a list around the held turns would read to a screen reader as a list the transcript
+ * is not.
  *
  * The draft is drawn by the renderer, as the message it becomes will be: its line breaks and
  * formatting as the stored message shows them, and a mention the picker wrote as the party's
@@ -43,6 +47,7 @@ export function PendingSendTurn({
       className="mt-4 flex flex-col items-end gap-1"
       data-message-id={`pending:${held.id}`}
       data-testid="agent-send-held"
+      {...ROW_MARKER}
     >
       <div
         className={`max-w-[80%] rounded-xl px-3 py-2 text-sm opacity-80 ${surfaceMutedBg} ${textPrimaryOnCanvas}`}

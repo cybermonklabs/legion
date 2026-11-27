@@ -38,9 +38,11 @@ export interface OfferedReference {
 }
 
 /** What a candidate resolves to: `href` is the `dispatch://` reference the drawn title carries as
- *  `data-dispatch-href` (the host's click handler and hover card read it), absent for a target
- *  that opens no page - a person, whom no page shows - whose title is drawn as words and no link;
- *  `title` the words the editor draws in place of the stored text, `titleKey` an issue key
+ *  `data-dispatch-href` (what the editor opens it by, `./dispatch-link-open.ts`, and what the
+ *  host's hover card reads), `path` the host's own address of the target, which the title links
+ *  to as its `href`, so a browser opens it in a new tab and Tab reaches it - both absent for a
+ *  target that opens no page, a person, whom no page shows, whose title is drawn as words and no
+ *  link; `title` the words the editor draws in place of the stored text, `titleKey` an issue key
  *  `title` starts with, drawn in semibold, and `length` how many of the candidate's characters,
  *  from its start, the title stands for, when that is fewer than all of them: the rest stay
  *  drawn as stored text (a `#q2-` whose question is q2 draws its title for `#q2` and keeps the
@@ -48,6 +50,7 @@ export interface OfferedReference {
  *  it). */
 export interface ReferenceTarget {
   readonly href?: string;
+  readonly path?: string;
   readonly title: string;
   readonly titleKey?: string;
   readonly length?: number;
@@ -102,6 +105,8 @@ interface ReferenceDecorations {
    *  the same array while that set is unchanged. */
   readonly keys: readonly OfferedReference[];
   readonly focused: boolean;
+  /** Whether the reader edits the view: its titles are no Tab stop then (`titleWidget`). */
+  readonly editable: boolean;
   /** The ranges (`from:to`) of the resolved candidates the selection touches, joined by spaces. */
   readonly revealed: string;
   readonly decorations: DecorationSet;
@@ -109,7 +114,8 @@ interface ReferenceDecorations {
 
 type ReferenceChange =
   | { readonly kind: "references"; readonly references: EditorReferences | null }
-  | { readonly kind: "focus"; readonly focused: boolean };
+  | { readonly kind: "focus"; readonly focused: boolean }
+  | { readonly kind: "access"; readonly editable: boolean };
 
 const referencesKey = new PluginKey<ReferenceDecorations>("dispatch-reference-decorations");
 
@@ -247,11 +253,10 @@ function blockCandidates(
     const spec: CandidateSpec = {
       key: candidate.key,
       mention: candidate.mention,
-      // A link's marks but the link itself, so the title stands beside its anchor, never inside
-      // it: a link inside a link is no link at all.
-      marks:
-        block.childAfter(candidate.start).node?.marks.filter((mark) => mark.type.name !== "link") ??
-        [],
+      // The marks of its first character. A link read as a reference - its text its own address,
+      // or its words a mention - keeps its link mark, so the title is drawn inside that link,
+      // which stays the one link there (`titleWidget`).
+      marks: block.childAfter(candidate.start).node?.marks ?? [],
     };
     return Decoration.inline(start + candidate.start, start + candidate.end, {}, spec);
   });
@@ -376,6 +381,23 @@ function drawnEnd(candidate: Decoration, target: ReferenceTarget): number {
     : Math.min(candidate.to, candidate.from + target.length);
 }
 
+/** Each resolved candidate of `candidates` between `from` and `to` whose title touches `from` (a
+ *  caret inside it or at either end, or a range overlapping it), in the order `find` gives them,
+ *  with its target and where its title ends (`drawnEnd`). */
+function* titlesTouching(
+  candidates: DecorationSet,
+  answers: ReferenceAnswers,
+  from: number,
+  to: number
+): Generator<{ candidate: Decoration; end: number; target: ReferenceTarget }> {
+  for (const candidate of candidates.find(from, to)) {
+    const target = answerFor(answers, candidate.spec as CandidateSpec);
+    if (!target) continue;
+    const end = drawnEnd(candidate, target);
+    if (end > candidate.from && from <= end) yield { candidate, end, target };
+  }
+}
+
 /** The ranges each resolved candidate's title stands for that the selection touches (a caret
  *  inside or at either end, or a range overlapping one), while the editor has focus; empty
  *  otherwise. */
@@ -388,28 +410,54 @@ function revealedRanges(
   if (!focused) return "";
   const ranges: string[] = [];
   for (const range of state.selection.ranges) {
-    for (const candidate of candidates.find(range.$from.pos, range.$to.pos)) {
-      const target = answerFor(answers, candidate.spec as CandidateSpec);
-      if (!target) continue;
-      const to = drawnEnd(candidate, target);
-      if (to > candidate.from && range.$from.pos <= to) {
-        ranges.push(`${candidate.from}:${to}`);
-      }
+    for (const { candidate, end } of titlesTouching(
+      candidates,
+      answers,
+      range.$from.pos,
+      range.$to.pos
+    )) {
+      ranges.push(`${candidate.from}:${end}`);
     }
   }
   return ranges.sort().join(" ");
 }
 
-/** The title drawn over a resolved candidate: a link carrying its target's address, or, for a
- *  target that opens no page, the same words as no link. */
-function titleWidget(target: ReferenceTarget): (view: EditorView) => HTMLElement {
+/** The resolved reference whose title stands for text holding or touching `pos` (a caret inside
+ *  it or at either end), the title `revealedRanges` gives way to there, if any: what Alt+Enter
+ *  opens beside a bare key (`./dispatch-link-open.ts`). */
+export function referenceAt(state: EditorState, pos: number): ReferenceTarget | undefined {
+  const value = referencesKey.getState(state);
+  if (value === undefined || value.references === null) return undefined;
+  for (const { target } of titlesTouching(value.candidates, value.references, pos, pos)) {
+    return target;
+  }
+  return undefined;
+}
+
+/** The title drawn over a resolved candidate. Over bare text it is a link to the target's own
+ *  address (`path`), so a browser opens it in a new tab and, in a view the reader cannot edit,
+ *  Tab reaches it; while the reader edits the view it is out of the tab order, since a link
+ *  inside a document being edited is opened with Alt+Enter from the text, never tabbed to. Over a
+ *  link read as a reference it is drawn inside that link (`marks`), which is the link the reader
+ *  clicks and tabs to, so it carries no address of its own: an `a` with no `href` is no link, and
+ *  no link stands inside another. Beside that link instead, it left the link holding only hidden
+ *  text, a stop of Tab that drew nothing. A target that opens no page (no `href`) is drawn as the
+ *  same words and no link. */
+function titleWidget(
+  target: ReferenceTarget,
+  editable: boolean,
+  inLink: boolean
+): (view: EditorView) => HTMLElement {
   return (view) => {
     const document = view.dom.ownerDocument;
-    const { href, title, titleKey } = target;
+    const { href, path, title, titleKey } = target;
     const drawn = document.createElement(href === undefined ? "span" : "a");
     drawn.className = TITLE_CLASS;
     if (href !== undefined) {
-      drawn.setAttribute("role", "link");
+      if (!inLink && path !== undefined) {
+        drawn.setAttribute("href", path);
+        if (editable) drawn.tabIndex = -1;
+      }
       drawn.dataset.dispatchHref = href;
     }
     if (titleKey !== undefined && titleKey !== "" && title.startsWith(titleKey)) {
@@ -420,7 +468,8 @@ function titleWidget(target: ReferenceTarget): (view: EditorView) => HTMLElement
       drawn.textContent = title;
     }
     // A press on the title neither moves the caret nor focuses the editor, so the title stays
-    // drawn until the click lands and the host follows it.
+    // drawn until the click lands and the editor opens it (`./dispatch-link-open.ts`); a middle
+    // press pastes nothing.
     drawn.addEventListener("mousedown", (event) => event.preventDefault());
     return drawn;
   };
@@ -430,7 +479,8 @@ function drawnDecorations(
   doc: ProseMirrorNode,
   candidates: DecorationSet,
   answers: ReferenceAnswers,
-  revealed: string
+  revealed: string,
+  editable: boolean
 ): DecorationSet {
   if (answers.targets.size === 0 && answers.mentions.size === 0) return DecorationSet.empty;
   const shown = new Set(revealed === "" ? [] : revealed.split(" "));
@@ -443,14 +493,22 @@ function drawnDecorations(
     if (to <= candidate.from || shown.has(`${candidate.from}:${to}`)) continue;
     decorations.push(
       Decoration.inline(candidate.from, to, { class: HIDDEN_TEXT_CLASS }),
-      Decoration.widget(candidate.from, titleWidget(target), {
-        ignoreSelection: true,
-        // Widgets with the same key are interchangeable, so ProseMirror keeps the drawn one.
-        key: JSON.stringify([target, spec.marks]),
-        marks: spec.marks,
-        side: 1,
-        stopEvent: () => true,
-      })
+      Decoration.widget(
+        candidate.from,
+        titleWidget(
+          target,
+          editable,
+          spec.marks.some((mark) => mark.type.name === "link")
+        ),
+        {
+          ignoreSelection: true,
+          // Widgets with the same key are interchangeable, so ProseMirror keeps the drawn one.
+          key: JSON.stringify([target, spec.marks, editable]),
+          marks: spec.marks,
+          side: 1,
+          stopEvent: () => true,
+        }
+      )
     );
   }
   return DecorationSet.create(doc, decorations);
@@ -468,6 +526,7 @@ function sameTargets(
       if (target !== other) return false;
     } else if (
       target.href !== other.href ||
+      target.path !== other.path ||
       target.title !== other.title ||
       target.titleKey !== other.titleKey ||
       target.length !== other.length
@@ -500,10 +559,11 @@ function dispatchReferenceChange(view: EditorView, change: ReferenceChange): voi
  * each candidate's key resolves to, and what each mention draws; both reach the plugin through
  * `setReferences`, as a host's change marks reach `./editor-change-decorations.ts`, because a
  * host class written on editor DOM is read back as an edit. A resolved candidate is drawn as its
- * target's title, a link carrying `data-dispatch-href` (words and no link for a target that
- * opens no page), with its stored text hidden; while the focused editor's selection touches it,
- * the stored text shows instead, so an author edits what is stored. An edit re-reads only the
- * text blocks it touched; mapping carries the other candidates.
+ * target's title, a link to the target's own address carrying `data-dispatch-href` (words and no
+ * link for a target that opens no page), with its stored text hidden; while the focused editor's
+ * selection touches it, the stored text shows instead, so an author edits what is stored. A
+ * change of access (`setReferenceAccess`) redraws the titles into or out of the tab order. An
+ * edit re-reads only the text blocks it touched; mapping carries the other candidates.
  */
 export const referenceDecorationsPlugin = $prose(
   () =>
@@ -513,6 +573,7 @@ export const referenceDecorationsPlugin = $prose(
         init: () => ({
           candidates: DecorationSet.empty,
           decorations: DecorationSet.empty,
+          editable: true,
           focused: false,
           keys: [],
           references: null,
@@ -521,6 +582,7 @@ export const referenceDecorationsPlugin = $prose(
         apply(transaction, value, _previous, state) {
           const change = transaction.getMeta(referencesKey) as ReferenceChange | undefined;
           const focused = change?.kind === "focus" ? change.focused : value.focused;
+          const editable = change?.kind === "access" ? change.editable : value.editable;
           const references = change?.kind === "references" ? change.references : value.references;
           let candidates = value.candidates;
           if (references === null) {
@@ -535,13 +597,15 @@ export const referenceDecorationsPlugin = $prose(
           if (
             candidates === value.candidates &&
             references === value.references &&
-            revealed === value.revealed
+            revealed === value.revealed &&
+            editable === value.editable
           ) {
             return focused === value.focused ? value : { ...value, focused };
           }
           return {
             candidates,
-            decorations: drawnDecorations(state.doc, candidates, answers, revealed),
+            decorations: drawnDecorations(state.doc, candidates, answers, revealed, editable),
+            editable,
             focused,
             keys:
               candidates === value.candidates ? value.keys : candidateKeys(candidates, value.keys),
@@ -594,4 +658,11 @@ export function setReferences(view: EditorView, references: EditorReferences | n
     return;
   }
   dispatchReferenceChange(view, { kind: "references", references });
+}
+
+/** Tells the titles whether the reader edits the view (`'edit'` access), which takes them out of
+ *  the tab order, and redraws them where that changed. */
+export function setReferenceAccess(view: EditorView, editable: boolean): void {
+  if (view.isDestroyed || referencesKey.getState(view.state)?.editable === editable) return;
+  dispatchReferenceChange(view, { editable, kind: "access" });
 }

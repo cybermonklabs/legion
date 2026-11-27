@@ -1,6 +1,7 @@
 import AxeBuilder from "@axe-core/playwright";
-import type { Browser, BrowserContext, Locator, Page } from "@playwright/test";
+import type { Browser, BrowserContext, Locator, Page, Route } from "@playwright/test";
 
+import { QUERY_RETRY_DELAY_MS } from "../web/src/api/query-client";
 import { firstLineOf } from "../web/src/features/issue-page/first-line";
 import {
   FOOT_HEIGHT_PROPERTY,
@@ -5049,6 +5050,264 @@ test("Tab from a row's editor stops at the references button of the node's own b
         "Tab from the statement's references button did not go past every other block's to the first tab stop after the editor's box"
       ).toBeFocused();
       await expect(editable, "Tab out of the editor's box did not end the editing").toHaveCount(0);
+    }
+  );
+});
+
+// The tester's red row of round 18 (6ddbadd7's reads that hold write controls, bounded at the
+// request deadline, and read-bound.ts's "The page shows it beside the sentence it shows for a
+// read that failed"). Inside `NoTooltips` Rebuild is held through the read its landed rebuild
+// makes and lets go at the deadline where that read has not settled (`readWithinBound`,
+// ProofDocument.tsx), but at a97f63a2 the page says nothing of why: the offer stands as it stood
+// before the press, with Rebuild pressable again, where the Legion daemons' Save and Remove and a
+// document's Remove say why (`useReadBound`). Measured in Chromium and Firefox.
+// SLOW(>=2s): a rebuild landed in a row's editor, and its re-read left unanswered past 30 s.
+/** What Dispatch answers the text read of a document whose stored history cannot load. */
+const PROBE_UNLOADABLE = JSON.stringify({
+  code: "DOCUMENT_UNLOADABLE",
+  error: "decode live document: unexpected end of input",
+});
+
+/** What Dispatch answers a rebuild that restored the document's latest saved version. */
+const PROBE_REBUILT = JSON.stringify({
+  head: 1,
+  removed_checkpoints: 0,
+  removed_snapshots: 0,
+  removed_updates: 3,
+  source_version: 1,
+  validation_error: "decode live document: unexpected end of input",
+});
+
+test("a rebuild in a row's editor whose re-read is never answered lets Rebuild go at the request deadline, and the page says why", async ({
+  browser,
+}) => {
+  test.setTimeout(120_000);
+  await phase(
+    browser,
+    async () => {
+      await createProject({ key: PROJECT, name: "Rebuild bound" });
+      const issue = await createIssue(
+        {
+          force: true,
+          project: PROJECT,
+          spec: "# Rebuild bound\n\n## Requirements\n\n:::requirement{#r-rebuild-one}\nThe ledger keeps one clock for every mirror.\n:::\n",
+          title: "Rebuild bound",
+        },
+        asPlanner
+      );
+      return issue.key;
+    },
+    async (page, key) => {
+      const spec = ((await getIssue(key)).artifacts ?? []).find((artifact) => artifact.primary);
+      const documentPath = `/api/v1/artifacts/${spec?.id ?? ""}`;
+      await gotoIssue(page, `/issues/${key}`);
+      await expectIssuePageDrawn(page);
+      await expectOpeningLanded(page);
+      await focusRow(page, blockNodeId(spec?.slug ?? "", "r-rebuild-one"));
+      let rebuilt = false;
+      await page.route(
+        (url) => url.pathname.startsWith(documentPath),
+        async (route) => {
+          const request = route.request();
+          if (request.method() === "POST") {
+            rebuilt = true;
+            await route.fulfill({
+              body: PROBE_REBUILT,
+              contentType: "application/json",
+              status: 200,
+            });
+            return;
+          }
+          // Once the rebuild has landed, no read of the document is answered.
+          if (rebuilt) return;
+          if (new URL(request.url()).pathname.endsWith("/text")) {
+            await route.fulfill({
+              body: PROBE_UNLOADABLE,
+              contentType: "application/json",
+              status: 409,
+            });
+            return;
+          }
+          await route.fallback();
+        }
+      );
+      page.on("dialog", (dialog) => {
+        void dialog.accept();
+      });
+      await page.keyboard.press("Enter");
+      const rebuild = page.getByRole("button", {
+        name: /^Rebuild(ing…| from the latest version)$/,
+      });
+      await expect(rebuild, "the row's editor offers Rebuild").toBeVisible({ timeout: 20_000 });
+      await rebuild.click();
+      await expect(rebuild, "Rebuild is held while the rebuilt document is read").toHaveAttribute(
+        "aria-disabled",
+        "true"
+      );
+      await expect(rebuild, "Rebuild lets go at the 30 s bound").not.toHaveAttribute(
+        "aria-disabled",
+        "true",
+        { timeout: 35_000 }
+      );
+      await expect(
+        page.getByText(/did not answer within 30 seconds/),
+        "the page says why the rebuilt document is not read yet"
+      ).toBeVisible();
+    }
+  );
+});
+
+// The tester's red row of round 22 (B2 (4): a hold's reason dropped when its caller is drawn
+// again while its read is still out; the architect's ruling of 2026-11-26T23:11Z). A row's editor
+// is drawn only while a row is edited in it, and Rebuild holds through the rebuilt document's read
+// with a hold of the editor's own (ProofDocument.tsx:497), so the editor closed and opened again
+// is a new one whose hold knows nothing of the rebuild. At e4ece294 the editor says "The rebuilt
+// document is not read yet. Dispatch did not answer within 30 seconds." at the bound, and says
+// nothing once the row's editor is open again, though the reads are still out and no later
+// rebuild began. Measured in Chromium and Firefox, twice each.
+// SLOW(>=2s): one issue page open, its row's editor opened twice, one rebuild answered in the
+// page, and the page's clock moved once past the 30 s bound.
+// @firefox: the timers of a read's own deadline and of the bound a held control waits on, which
+// each engine runs.
+test("a rebuild in a row's editor whose re-read the bound ended still says why once the row's editor is opened again @firefox", async ({
+  browser,
+}) => {
+  test.setTimeout(120_000);
+  await phase(
+    browser,
+    async () => {
+      await createProject({ key: PROJECT, name: "Rebuild bound" });
+      const issue = await createIssue(
+        {
+          force: true,
+          project: PROJECT,
+          spec: "# Rebuild bound\n\n## Requirements\n\n:::requirement{#r-rebuild-one}\nThe ledger keeps one clock for every mirror.\n:::\n",
+          title: "Rebuild bound",
+        },
+        asPlanner
+      );
+      return issue.key;
+    },
+    async (page, key) => {
+      const step = (text: string) => `Rebuild in a row's editor, closed and opened: ${text}`;
+      const spec = ((await getIssue(key)).artifacts ?? []).find((artifact) => artifact.primary);
+      const documentPath = `/api/v1/artifacts/${spec?.id ?? ""}`;
+      const nodeId = blockNodeId(spec?.slug ?? "", "r-rebuild-one");
+      await page.clock.install();
+      await gotoIssue(page, `/issues/${key}`);
+      await expectIssuePageDrawn(page);
+      await expectOpeningLanded(page);
+      await focusRow(page, nodeId);
+      // The document's text is refused as unloadable every time, so the row's editor offers
+      // Rebuild, and the rebuild is answered in the page.
+      await page.route(
+        (url) => url.pathname.startsWith(documentPath),
+        async (route) => {
+          const request = route.request();
+          if (request.method() === "POST") {
+            await route.fulfill({
+              body: PROBE_REBUILT,
+              contentType: "application/json",
+              status: 200,
+            });
+            return;
+          }
+          if (new URL(request.url()).pathname.endsWith("/text")) {
+            await route.fulfill({
+              body: PROBE_UNLOADABLE,
+              contentType: "application/json",
+              status: 409,
+            });
+            return;
+          }
+          await route.fallback();
+        }
+      );
+      // Registered after that route, so these reads come here first: once the rebuild has landed,
+      // every read of the document is held until the row answers it.
+      let holding = false;
+      const held: Route[] = [];
+      await page.route(
+        (url) =>
+          url.pathname === documentPath ||
+          url.pathname === `${documentPath}/text` ||
+          url.pathname === `${documentPath}/blocks`,
+        (route) => {
+          if (!holding || route.request().method() !== "GET") return route.fallback();
+          held.push(route);
+          return undefined;
+        }
+      );
+      page.on("dialog", (dialog) => {
+        void dialog.accept();
+      });
+      await page.keyboard.press("Enter");
+      const editor = page.getByRole("region", { name: "Document editor" });
+      const rebuild = editor.getByRole("button", {
+        exact: true,
+        name: "Rebuild from the latest version",
+      });
+      await expect(rebuild, step("the row's editor offers Rebuild.")).toBeVisible({
+        timeout: 20_000,
+      });
+      const unreadLine = editor
+        .getByRole("alert")
+        .getByText(/^The rebuilt document is not read yet\./);
+      const unreadWords =
+        "The rebuilt document is not read yet. Dispatch did not answer within 30 seconds.";
+
+      holding = true;
+      const rebuilt = page.waitForResponse(
+        (response) =>
+          response.request().method() === "POST" &&
+          new URL(response.url()).pathname === `${documentPath}/rebuild`
+      );
+      await rebuild.click();
+      expect((await rebuilt).status(), step("the rebuild lands.")).toBe(200);
+      await expect
+        .poll(() => held.length, { message: step("the reads of the rebuilt document are out.") })
+        .toBeGreaterThan(0);
+      await page.clock.fastForward(30_000);
+      await expect(
+        unreadLine,
+        step("at the 30 s bound the row's editor says why the rebuilt document is not read.")
+      ).toHaveText([unreadWords]);
+
+      // The bound's 30 s also end the read's first attempt at its own deadline, and the page asks
+      // again `QUERY_RETRY_DELAY_MS` later. A caller drawn away inside that wait takes the read's last
+      // observer with it, which cancels the retry (query-core's `Query.removeObserver`), so the read
+      // ends failed and the caller drawn again shows that failure, whatever a correct hold keeps: the
+      // row lets the wait run out, and the read be asked again, before the caller is drawn away.
+      const askedAtBound = held.length;
+      await page.clock.runFor(QUERY_RETRY_DELAY_MS);
+      await expect
+        .poll(() => held.length, {
+          message: step(
+            "the reads are asked again after their first attempts' 30 s deadline, and held."
+          ),
+        })
+        .toBeGreaterThan(askedAtBound);
+
+      await rebuild.focus();
+      await page.keyboard.press("Escape");
+      await expect(editor, step("Escape closes the row's editor.")).toHaveCount(0);
+      await focusRow(page, nodeId);
+      await page.keyboard.press("Enter");
+      await expect(editor, step("Enter on the row opens its editor again.")).toHaveCount(1, {
+        timeout: 20_000,
+      });
+      await expect(
+        unreadLine,
+        step(
+          "the row's editor opened again, with the reads still out and no later rebuild, the editor still says why the rebuilt document is not read."
+        )
+      ).toHaveText([unreadWords]);
+
+      holding = false;
+      // A read the page gave up has no answer left to take, and its route refuses the fallback.
+      for (const route of held.splice(0)) await route.fallback().catch(() => undefined);
+      await page.clock.runFor(1_000);
+      await expect(unreadLine, step("the reads answered take the line away.")).toHaveCount(0);
     }
   );
 });

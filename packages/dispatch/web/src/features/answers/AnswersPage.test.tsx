@@ -453,6 +453,45 @@ test("a row's Change answer opens the seeded form; after Save the row and the ca
   }
 });
 
+// Change answer goes as its press opens the form in its place, so the focus would fall to the
+// page's body. It goes to the form's first control instead, the one Tab would reach first: the
+// options' group, at the option the recorded answer picked.
+test("a row's Change answer puts the focus on the first control of the form it opens", async () => {
+  const user = userEvent.setup();
+  const holdAnswer: AskAnswer = {
+    at: "2026-10-08T04:00:00Z",
+    selected: ["Hold"],
+    text: null,
+    user: "alice",
+  };
+  const listMyAnswers = spyOn(api, "listMyAnswers").mockResolvedValue(
+    page([answerRow({ answer: holdAnswer, at: holdAnswer.at })])
+  );
+  const getAsk = spyOn(api, "getAsk").mockResolvedValue({
+    answers: [holdAnswer],
+    ask: answeredAsk(holdAnswer),
+    claimant: null,
+    edits: [],
+    followers: [],
+    replies: [],
+    route: null,
+    route_holder: null,
+    route_status: null,
+    route_status_reason: null,
+  });
+  const { view } = renderPage();
+  try {
+    await user.click(await view.findByRole("button", { name: "Change answer" }));
+    const hold = (await view.findByRole("radio", { name: "Hold" })) as HTMLInputElement;
+    expect(hold.checked).toBe(true);
+    await waitFor(() => expect(hold).toHaveFocus());
+  } finally {
+    view.unmount();
+    listMyAnswers.mockRestore();
+    getAsk.mockRestore();
+  }
+});
+
 test("a reply row whose comment was deleted reads as deleted and gives no part of its body", async () => {
   // With the engine loaded a body paints in the same pass as the deleted line, so a body the row
   // drew would be on the page when the check below first passes.

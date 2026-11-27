@@ -513,8 +513,9 @@ export function useNodeEditing({
       // the tree's tab stop for one commit and was gone. With the caret put off and the focus
       // elsewhere - in Details, on the page's body - the reader is out of the row, and the
       // editing's end takes no focus: the row taking it from the page's body moved the reader
-      // off where they were, and scrolled the page to it.
-      if (rowsFocus) row.focus();
+      // off where they were, and scrolled the page to it. The row takes the focus with no scroll
+      // of the browser's own, as every row the editing gives it back to does (`leave`, below).
+      if (rowsFocus) row.focus({ preventScroll: true });
       if (rowsFocus || box.contains(document.activeElement)) {
         report.current(KEY_REPORTS.editor_closed);
       }
@@ -881,7 +882,10 @@ export function useNodeEditing({
       if (row === null || !(event.target instanceof Node) || !row.contains(event.target)) return;
       event.preventDefault();
       (document.activeElement as HTMLElement | null)?.blur();
-      row.focus();
+      // The row the reader was writing in is on screen around the caret, and the browser's own
+      // scroll of a focused element centres one not wholly in view, which moved the page under
+      // the reader: the row takes the focus with no scroll, here and in the frame below.
+      row.focus({ preventScroll: true });
       stopEditing();
     };
     box.addEventListener("keydown", leave, true);
@@ -895,7 +899,9 @@ export function useNodeEditing({
     const acted = abortOnReaderAct();
     const frame = requestAnimationFrame(() => {
       if (acted.signal.aborted || !focusOnDocument()) return;
-      container.current?.querySelector<HTMLElement>(rowSelectorOf(left))?.focus();
+      container.current?.querySelector<HTMLElement>(rowSelectorOf(left))?.focus({
+        preventScroll: true,
+      });
     });
     return () => {
       cancelAnimationFrame(frame);

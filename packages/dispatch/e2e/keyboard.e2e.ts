@@ -31,7 +31,11 @@ test("c opens the create dialog; project and title create an issue the API retur
     // `c` inside the dialog's own inputs types; it never reopens or steals the key.
     await title.fill("c");
     await expect(title).toHaveValue("c");
-    await dialog.getByRole("combobox", { name: "Project" }).selectOption("OPS");
+    await dialog.getByRole("button", { name: /^Project(?: |$)/ }).click();
+    await page
+      .getByRole("listbox", { name: "Project options" })
+      .getByRole("option", { exact: true, name: "OPS · Operations" })
+      .click();
     await title.fill("Keyboard-created issue");
     await page.screenshot({
       path: testInfo.outputPath(`create-issue-${testInfo.project.name}.png`),

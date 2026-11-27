@@ -321,7 +321,7 @@ test("on a phone, a thread's own reply holds the thread's Reply while it is out 
     await expect(thread).toBeVisible();
     await expect(field).toHaveValue("Inline reply");
     await expect(field).toBeDisabled();
-    await expect(rootReply).toBeDisabled();
+    await expect(rootReply).toHaveAttribute("aria-disabled", "true");
 
     send.release();
     await expect(thread.getByRole("list", { name: "Replies" })).toContainText("Inline reply");
@@ -363,7 +363,7 @@ test("on a phone, a thread's own reply holds Back and Escape while it is out, an
 
     await expect(thread).toBeVisible();
     await expect(field).toBeDisabled();
-    await expect(back).toBeDisabled();
+    await expect(back).toHaveAttribute("aria-disabled", "true");
     // Escape from outside the composer is the thread dialog's own close.
     await thread.getByRole("button", { name: /^Copy reference/ }).focus();
     await page.keyboard.press("Escape");
@@ -582,7 +582,7 @@ test("on a phone, a thread's own reply out when the viewport widens keeps its th
     await page.setViewportSize({ height: 900, width: 1280 });
     await expect(thread).toBeVisible();
     await expect(field).toHaveValue("Reply through a widening");
-    await expect(back).toBeDisabled();
+    await expect(back).toHaveAttribute("aria-disabled", "true");
 
     refuse();
     await expect(form.getByText(WRITE_REFUSED_TEXT)).toBeVisible();
@@ -658,10 +658,10 @@ test("on a phone, a thread reply the server never answers lets Back go at the de
     await field.fill("Reply into the void");
     await form.getByRole("button", { exact: true, name: "Send" }).click();
     await expect(field).toBeDisabled();
-    await expect(back).toBeDisabled();
+    await expect(back).toHaveAttribute("aria-disabled", "true");
 
     await page.clock.fastForward(29_000);
-    await expect(back).toBeDisabled();
+    await expect(back).toHaveAttribute("aria-disabled", "true");
     await page.clock.fastForward(1_500);
     await expect(form.getByText(/^Still sending/)).toBeVisible();
     await expect(form.getByRole("button", { name: "Retry" })).toHaveCount(0);

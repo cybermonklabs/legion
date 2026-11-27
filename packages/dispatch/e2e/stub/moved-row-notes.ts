@@ -26,6 +26,12 @@
 export const unchangedByTheMove =
   "unchanged - the move renames the file, lifts the shared seeding into the fixture and adds the lane tag to the title, and touches no line of what the row asserts";
 
+/** What the map says of a row INFRA-3135 (cybermonklabs/legion#3729) wrote for the stubbed layer:
+ *  no copy of it ran before, so it has no assertions from before a move for `unchangedByTheMove`
+ *  to speak of. */
+const newInInfra3135 =
+  "new in INFRA-3135 (cybermonklabs/legion#3729): written for the stubbed layer with no copy before it, so no move touched it";
+
 const NEW_IN_THE_STUBBED_LAYER =
   "new - written in the stubbed layer from the start (dispatch://INFRA-5200), with no real-stack copy that moved";
 
@@ -36,19 +42,43 @@ export const newInTheStubbedLayer: Readonly<Record<string, string>> = {
   "layout-rule.stub.e2e.ts": NEW_IN_THE_STUBBED_LAYER,
 };
 
-/** The rows the sentence above is false for, keyed by the spec file and the title the listing
+/** The rows `unchangedByTheMove` is false for, keyed by the spec file and the title the listing
  *  gives, joined by ` › `. */
 export const movedRowNotes: Record<string, string> = {
   "agent-name.stub.e2e.ts › a claimed List row and Board card open their issue by keyboard, and the claim's agent link opens the agent @pr":
     'the List\'s row is read inside the issues table this branch ships (`getByRole("table", { name: "Project issues table" })`), since `[data-issue-row]` alone now also matches the Board\'s own rows; every key, link and address it asserts is main\'s',
+  "keyboard-inbox.stub.e2e.ts › inbox selection › a bulk snooze refused two different ways names the first reason and says so @pr":
+    "the bulk Snooze is the shared single pick's list now (dispatch://INFRA-2160), so the row picks Tomorrow from that list where main chose it in a select; the two refusals and the bar's text it asserts are main's",
+  "keyboard-inbox.stub.e2e.ts › inbox selection › keys still work with a pointer-ticked checkbox holding focus @pr":
+    "the bulk Snooze is the shared single pick's list now (dispatch://INFRA-2160), so after each `h` the row reads the focus in the list's text box and its first choice highlighted where main read the bulk picker focused; the ticks, the `j` and the row it selects or focuses are main's",
+  "keyboard-inbox.stub.e2e.ts › inbox selection › Escape leaves the bulk picker for the row it was opened from, keeping the marks @pr":
+    "`h` opens a Snooze list now (dispatch://INFRA-2160), the row's and the bar's, so the row reads the focus in each list's text box and its first choice highlighted where main read the picker focused. The Escape that hands the focus back to the row each was opened from, the mark it keeps, and the two Escapes that leave the row and clear the marks are main's",
+  "keyboard-inbox.stub.e2e.ts › inbox selection › a mark made under a wider filter neither counts nor snoozes once its row is out of the list @pr":
+    "`h` opens the row's Snooze list now (dispatch://INFRA-2160), so the row reads the focus in that list's text box and its first choice highlighted where main read the row's picker focused; the narrowing, the counts and the write that is not made are main's",
+  "keyboard-inbox.stub.e2e.ts › inbox selection › Escape dismisses a refusal the reader has already unticked @pr":
+    "the bulk Snooze is the shared single pick's list now (dispatch://INFRA-2160), so the row picks Tomorrow from that list where main chose it in a select; the refusal, the unticks and the Escape that dismisses it are main's",
+  "keyboard-inbox.stub.e2e.ts › inbox selection › h does not pull the reader out of an ask they are answering @pr":
+    "the bulk Snooze is the shared single pick's list now (dispatch://INFRA-2160), so the row asserts that `h` opens no bulk Snooze list where main asserted that the bulk picker did not take the focus; the radio that keeps the focus is main's",
+  "keyboard-inbox.stub.e2e.ts › inbox selection › Escape from a pointer-opened bulk picker goes back to its Snooze, not a stale row @pr":
+    "renamed from \"Escape from a pointer-opened bulk picker goes to the list, not a stale row\": the bulk Snooze is the shared single pick's list now (dispatch://INFRA-2160), which the row opens with a click where main focused the picker, and Escape from the list's text box hands the focus back to the Snooze. So the row asserts the Snooze focused, where main asserted the third row focused. The `h` from the first row and the marks before it are main's",
+  "hover-preview.stub.e2e.ts › a card survives a held-button drag that leaves its reference and comes back @pr":
+    "the Conversation tab keeps each `New` mark it drew for the whole visit now (`visitBoundary`, dispatch://INFRA-2160), so before the gesture the row waits for the dwell's read mark to be written (`PUT /api/v1/me/issues/{key}/state`) and reads the turn's `New` still drawn (a count of 1), where main waited for the dwell to drop the mark (a count of 0); the drag, its path and the card it keeps open are main's",
+  "hover-preview.stub.e2e.ts › a card survives a held-button move from the card back onto its reference @pr":
+    "the Conversation tab keeps each `New` mark it drew for the whole visit now (`visitBoundary`, dispatch://INFRA-2160), so before the gesture the row waits for the dwell's read mark to be written (`PUT /api/v1/me/issues/{key}/state`) and reads the turn's `New` still drawn (a count of 1), where main waited for the dwell to drop the mark (a count of 0); the move from the card back onto the reference and the card it keeps open are main's",
   "keyboard-issue.stub.e2e.ts › j and k cross a collapsed band instead of dead-ending in it, and reach its rows once it opens @pr":
     "the bands are the table's status groups: the row opens `?group=status&sort=key&nofilter=1`, collapses Todo through its heading button rather than a `details` summary, and walks the same four rows in the same order with the same keys. What it asserts - that j steps over a collapsed group and k comes back, and that opening it puts its rows between the two they sit between - is main's",
   "keyboard-issue.stub.e2e.ts › the project List view roves with j/k and opens the focused row with Enter and o @pr":
-    "the three rows are read inside the issues table rather than through the old `Todo issues` list; the roving, Enter, o and the shortcuts dialog are main's",
+    "the three rows are read inside the issues table rather than through the old `Todo issues` list, and the `?` help names the project scope's row actions after no list now (dispatch://INFRA-2160): it lists `Next row` and one `Open` row with its `o` where main read `Next issue` and `Open issue`. The roving, Enter and o are main's",
+  "keyboard-issue.stub.e2e.ts › a closed issue greys the shortcuts its header disables, and keeps the ones it does not @pr":
+    "the issue's status and priority are menus now (dispatch://INFRA-2160), so the row reads `Open the status menu` greyed where main read `Focus the status`, and reads `Open the priority menu` greyed as well; `t c` is one action of both issue pages now, so the row reads it enabled as `Conversation: open its tab (on the new page, every filter off)` where main read `Conversation tab`; the other four rows it reads are main's",
   "keyboard-issue.stub.e2e.ts › with every band collapsed j and k do nothing and ? greys them, and opening one restores both @pr":
-    "the bands are the table's status groups, collapsed through their heading buttons; what the row asserts - no rows, the keys doing nothing, the two shortcuts greyed, and both restored when one group opens - is main's",
+    "the bands are the table's status groups, collapsed through their heading buttons, and the two shortcuts are `Next row` and `Previous row` where main named them `Next issue` and `Previous issue` (dispatch://INFRA-2160); what the row asserts - no rows, the keys doing nothing, the two shortcuts greyed, and both restored when one group opens - is main's",
+  "keyboard-issue.stub.e2e.ts › the Board lists its own roving keys once: the List's are not registered while it shows @pr":
+    "the List's roving keys are named `Next row`, `Previous row` and `Open the focused row` now (dispatch://INFRA-2160), so those are the three labels the row reads absent where main read `Next issue`, `Previous issue` and `Open the focused issue`; the Board's own `Open issue` and `Toggle List / Board` are main's",
   "keyboard-palette.stub.e2e.ts › a List row's own row runs on the row that opened the palette, and its movement keys are no rows @pr":
-    "the row is read inside the issues table; everything the palette does in it is main's",
+    "the row is read inside the issues table, and the project scope's row actions name no list now (dispatch://INFRA-2160): the row offers and clicks `Open` with its `o` where main read `Open issue`, and reads `Next row`, `Previous row` and `Open the focused row` absent where main read the same three ending in `issue`. The issue the row opens is main's",
+  "keyboard-palette.stub.e2e.ts › the Inbox offers the selection's snooze and Clear the selection, but not the key that marks a row @pr":
+    "renamed from \"the Inbox offers the selection's snooze but not the keys that mark and clear it\": the bar's Clear selection is a row of the palette now (dispatch://INFRA-2160, R11), so off the row, with the mark made, the row reads it offered with its Esc where main read it absent. The bulk Snooze is a menu now too, so the snooze's row opens that menu on its first choice where main focused the picker. The snooze's row, the absent mark key and the Escape that leaves the row are main's",
   "polish.stub.e2e.ts › project filters stay collapsed until needed and margin asks use the compact composer @pr":
     "the project list half is the table: there is no collapsed filter strip to open, so the row asserts the table is drawn with no popover open, picks a label in the column filter and reads the trigger's own name. The board, inbox, margin and agents halves, and every screenshot, are main's",
   "project.stub.e2e.ts › a 1,000-character table search stays inside the page @phone @pr":
@@ -63,4 +93,16 @@ export const movedRowNotes: Record<string, string> = {
     "the Issues tab draws the table rather than a collapsed filter strip, so the row waits for the table instead of opening the strip, and the Status option it measures carries its count in its name; the fit and every other touch target are main's",
   "keyboard-palette.stub.e2e.ts › g d opens the route's project Documents, from an issue key or a project path, and g p picks a project @pr":
     "changed in one assertion, and this is the one row of the move that changed at all: the count of rows the query leaves is the Projects group's rather than main's dialog-wide one. Measured in this issue's pod, the row runs in two modes and they differ: on replay the bar's search is aborted, because no recording answers `/api/v1/search`, and `Operations` is the only row; in a recording run against the real harness the bar also offers `Make a new issue from \"operations\"`. The Projects group holds one row in both. Everything else is main's, Enter included: `g d` reads the route's project before and after, the group is visible, and Enter on the highlighted row opens `/projects/OPS/issues`",
+  "table-controls.stub.e2e.ts › each page draws every shared control its design gives it, and no other @pr":
+    newInInfra3135,
+  "table-controls.stub.e2e.ts › each page draws one row of controls, and nothing else between its title and its first row @phone @pr":
+    newInInfra3135,
+  "table-controls.stub.e2e.ts › each page's pager, selection bar and column filters take the size the page passes: compact on the List, comfortable on the Inbox @pr":
+    newInInfra3135,
+  "table-controls.stub.e2e.ts › no narrowing, panel, display menu or selection moves the first row of a list @phone @pr":
+    newInInfra3135,
+  "table-controls.stub.e2e.ts › one search box, panel trigger and chip across the Inbox and the Board, and the List's compact row behaving alike @pr":
+    newInInfra3135,
+  "table-controls.stub.e2e.ts › the Inbox is rows with their marks and no table, and opening one opens the reading pane at its own width @pr":
+    newInInfra3135,
 };

@@ -2,6 +2,7 @@ import { ISSUE_TAB_LABELS } from "../web/src/features/issue/issue-tab-list";
 import { HEADER_SCROLLS_QUERY } from "../web/src/features/issue-page/identity-block";
 import { presetPath } from "../web/src/features/issue-page/issue-address";
 import { PRESET_NAMES, PRESET_ORDER, type Preset } from "../web/src/features/issue-page/page-words";
+import { catalogueEntry } from "../web/src/features/shell/keymap-catalogue";
 import {
   createAsk,
   createIssue,
@@ -566,15 +567,21 @@ test("the six controls are toggles with an address each, one line at every width
     await page.keyboard.press("ArrowLeft");
     await expect(presetToggle(page, "decisions")).toBeFocused();
 
-    // Keys opens the list of keys, which names each view's chord; the five of Conversation and
-    // the filters are read here.
+    // Keys opens the list of keys, which names each view's chord by the label of its action, the
+    // actions of today's issue page's tab chords where the view has one (`keymap-catalogue.ts`);
+    // the five of Conversation and the filters are read here.
     await filterRow(page).getByRole("button", { exact: true, name: "Keys" }).click();
     const keys = page.getByRole("dialog", { name: "Keyboard shortcuts" });
     await expect(keys).toBeVisible();
-    for (const view of ["spec", "verification", "plan", "decisions"] as const) {
-      await expect(keys).toContainText(`Turn the ${PRESET_NAMES[view]} filter on or off`);
+    for (const action of [
+      "issue.tab-spec",
+      "issue.tab-verification",
+      "issue.tab-plan",
+      "issue.tab-decisions",
+      "issue.tab-conversation",
+    ] as const) {
+      await expect(keys).toContainText(catalogueEntry(action).label);
     }
-    await expect(keys).toContainText(`${PRESET_NAMES.conversation}: turn every filter off`);
     await page.keyboard.press("Escape");
     await expect(keys).toBeHidden();
 

@@ -75,11 +75,11 @@ export function usableControl(control: Element | null, within?: Element | null):
     return canHoldFocus(control, bound) && !ariaHiddenBelow(control, bound);
   }
   if (!canHoldFocus(control) || ariaHiddenBelow(control, details)) return false;
-  // `checkVisibility()` needs Safari 17.4, Chrome 105 or Firefox 106, and Dispatch still runs on
-  // browsers without it (`shell/roving.ts`): there the attributes above are the whole rule. With
-  // no options it does not read `visibility: hidden`, so the options ask for that too, by both of
-  // its names: a browser that shipped `checkVisibility()` before `visibilityProperty` knows it
-  // only as `checkVisibilityCSS`.
+  // `checkVisibility()` says whether the control is drawn. On an element that has no such method
+  // the attributes above are the whole rule, so the rule calls nothing that is not there and a
+  // control still takes a press. With no options it does not read `visibility: hidden`, so the
+  // options ask for that too, by both of its names: a browser that shipped `checkVisibility()`
+  // before `visibilityProperty` knows it only as `checkVisibilityCSS`.
   return (
     typeof control.checkVisibility !== "function" ||
     control.checkVisibility({ checkVisibilityCSS: true, visibilityProperty: true })

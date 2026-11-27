@@ -1,6 +1,13 @@
 import type { DispatchReadingSurface } from "@legion/contracts";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { type ReactNode, useEffect, useLayoutEffect, useRef, useSyncExternalStore } from "react";
+import {
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useSyncExternalStore,
+} from "react";
 import { createPortal } from "react-dom";
 import { Link } from "react-router-dom";
 
@@ -9,6 +16,7 @@ import { issueQuery } from "../../api/queries";
 import type { DisplayTree } from "../../api/types";
 import { AttentionBadge } from "../../components/Badge";
 import { LabelPill, StatusPill } from "../../components/Pill";
+import { inputMethodKey } from "../../lib/input-method-key";
 import {
   card,
   linkText,
@@ -697,12 +705,12 @@ const ANCHOR_GAP_PX = 6;
 function PreviewCard({ target }: { target: PreviewTarget }): ReactNode {
   const element = useRef<HTMLDivElement>(null);
   const href = useReferenceHref(target.route);
-  // Re-measured on every render: the card grows when its data arrives, and its size decides
-  // whether it fits below the anchor. Fixed positioning against the anchor's viewport rect is
+  // Below the anchor where the card fits, else above it, and inside the viewport across. Its
+  // size decides whether it fits below. Fixed positioning against the anchor's viewport rect is
   // the boring choice that works in Chromium and iPhone Safari alike — the native Popover API
   // would still need this same arithmetic (CSS anchor positioning is not yet in every engine
   // the e2e projects cover), and the card has no need for the top layer.
-  useLayoutEffect(() => {
+  const place = useCallback(() => {
     const node = element.current;
     if (node === null) {
       return;
@@ -722,7 +730,23 @@ function PreviewCard({ target }: { target: PreviewTarget }): ReactNode {
     );
     node.style.top = `${top}px`;
     node.style.left = `${left}px`;
+  }, [target.anchor]);
+  // Placed on every render of the card, and again whenever its own size changes: what it shows
+  // renders on its own (a preview's read landing, its text being drawn) and the card grows with
+  // it, so a card placed above its anchor at its loading height would otherwise grow down over
+  // the anchor, under the pointer pressing it.
+  useLayoutEffect(() => {
+    place();
   });
+  useEffect(() => {
+    const node = element.current;
+    if (node === null) {
+      return;
+    }
+    const observer = new ResizeObserver(place);
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [place]);
   return (
     <div
       className={`fixed top-0 left-0 z-[60] w-80 max-w-[calc(100vw-1rem)] rounded-xl border p-3 text-sm shadow-lg ${card}`}
@@ -765,10 +789,17 @@ export function RefPreviewHost(_props: { surface?: DispatchReadingSurface }): Re
     const detachTriggers = attachTriggers();
     // Capture phase, ahead of `useDialog`'s Escape: while a card is open it is the topmost
     // layer, so Escape dismisses it alone and leaves the dialog beneath (the search palette)
-    // open. With no open card the key passes through untouched.
+    // open. The card takes the press: marked taken as it is stopped, which the key registry reads
+    // (`defaultPrevented`), and so does each menu and panel open under the card, whose own
+    // listener at this phase, added as it opened, hears the press after this one, added as the
+    // shell mounted (`IssueActionsMenu`, `AnchoredPanel`). With no open card the key passes
+    // through untouched.
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.isComposing) return;
+      // An Escape that ends an input method's composition is the input method's
+      // (`inputMethodKey`), and the card stays open.
+      if (inputMethodKey(event)) return;
       if (event.key === "Escape" && state?.phase === "open") {
+        event.preventDefault();
         event.stopPropagation();
         closeRefPreview();
       }

@@ -1,12 +1,22 @@
-import { beforeAll, expect, type Mock, spyOn, test } from "bun:test";
+import { beforeAll, expect, jest, type Mock, spyOn, test } from "bun:test";
 import { dispatchWritingBox } from "@legion/contracts";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor } from "@testing-library/react";
+import { onlineManager, QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 
 import { displayTree } from "../../__tests__/display-trees";
-import { ApiError, api } from "../../api/client";
+import { realClock, settle, tick } from "../../__tests__/fake-clock";
+import { heldNotDisabled } from "../../__tests__/held-press";
+import { heldUntilLate, pressesOf } from "../../__tests__/held-until-late";
+import { userOnFakeClock } from "../../__tests__/user";
+import {
+  ApiError,
+  api,
+  NetworkError,
+  REQUEST_DEADLINE_MS,
+  RequestTimeoutError,
+} from "../../api/client";
 import type { Artifact, ArtifactText, Decision, IssueDecisions } from "../../api/types";
 import {
   borderDefault,
@@ -24,9 +34,11 @@ import {
 } from "../../theme/classes";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { ReferenceNamesProvider } from "../refs/reference-names";
+import { SEND_DEADLINE_MS } from "../writes/keyed-write";
+import { emulateChromiumFocusFixup } from "./chromium-focus-fixup";
 import { ChangeDraftsProvider, DecisionActions } from "./DecisionActions";
 import { NoTooltips } from "./NoTooltips";
-import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
+import { ANSWER_LINES, CONTROL_LABELS, STATE_LINES } from "./page-words";
 import { Publisher, publishedNames } from "./projection-fixture";
 
 /**
@@ -83,6 +95,9 @@ const read: IssueDecisions = {
 const DOCUMENT_TEXT =
   "# Decisions of CORE-1\n\n## One tree, five presets\n\nThe presets are queries over the one tree.";
 
+/** The path of the decisions document's text read, which the error of a read that failed names. */
+const TEXT_PATH = `/api/v1/artifacts/${document_.id}/text`;
+
 /** The spy on the decisions document's text read, which a Change's send makes. */
 type DocumentTextSpy = Mock<typeof api.getArtifactText>;
 
@@ -97,12 +112,13 @@ function spyDocumentText(markdown: string | Error): DocumentTextSpy {
 
 /** Draws the decision's controls over `answer`, with the decisions document's text read answered
  *  by `documentText`; inside the page's `NoTooltips` where `page` says so, as the issue page
- *  draws them. */
+ *  draws them; one decision's controls for each of `nodes`, its reference. `client` is the page's
+ *  query client, whose store holds the writes. */
 function renderActions(
   answer: IssueDecisions = read,
   documentText: string | Error = DOCUMENT_TEXT,
-  { page = false }: { page?: boolean } = {}
-): { text: DocumentTextSpy; unmount: () => void } {
+  { nodes = [REFERENCE], page = false }: { nodes?: readonly string[]; page?: boolean } = {}
+): { client: QueryClient; text: DocumentTextSpy; unmount: () => void } {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   client.setQueryData(["decisions", KEY], answer);
   const decisions = spyOn(api, "getIssueDecisions").mockResolvedValue(answer);
@@ -113,13 +129,17 @@ function renderActions(
     </QueryClientProvider>
   );
   const view = render(
-    <DecisionActions document={document_} isClosed={false} nodeReference={REFERENCE} />,
+    nodes.map((node) => (
+      <DecisionActions document={document_} isClosed={false} key={node} nodeReference={node} />
+    )),
     { wrapper }
   );
   return {
+    client,
     text,
     unmount: () => {
       view.unmount();
+      client.clear();
       decisions.mockRestore();
       text.mockRestore();
     },
@@ -146,9 +166,220 @@ test("the change form opens with the caret in its field", async () => {
   }
 });
 
+// A reader who opened the Change form and ends it by its Cancel is back on the decision's Change
+// that opened it (`useFocusBack`). The form goes with the Cancel that held the focus, which would
+// leave it on the page's body, and in the tree the body of a row the focus has left closes
+// (`IssueTree.tsx`), taking Change with it.
+test("Cancel ends the Change form with the focus back on the Change that opened it", async () => {
+  const user = userEvent.setup();
+  const { unmount } = renderActions();
+  try {
+    const change = await screen.findByRole("button", { name: CONTROL_LABELS.change_decision });
+    await user.click(change);
+    await user.type(
+      screen.getByLabelText(CONTROL_LABELS.your_change),
+      "Tie it to the first statement instead."
+    );
+    await user.click(screen.getByRole("button", { name: CONTROL_LABELS.cancel }));
+    expect(screen.queryByLabelText(CONTROL_LABELS.your_change)).toBeNull();
+    expect(document.activeElement, "Cancel left the focus off the Change that opened it").toBe(
+      change
+    );
+  } finally {
+    unmount();
+  }
+});
+
+// A keyboard reader who presses Keep stays on it while the Keep is out: Keep is held
+// (`heldPress`, `aria-disabled`), never disabled, which would drop the focus to the page's body in
+// a browser and does here under `emulateChromiumFocusFixup`, and a second press keeps nothing more. The
+// controls are drawn with no row around them, so the focus stays the control's own: in the tree
+// the press hands it to the decision's row (`keepFocusOnRow`).
+test("Keep keeps the focus while its Keep is out, held rather than disabled, and a second press keeps nothing", async () => {
+  // Dispatch never answers the Keep.
+  const keepDecision = spyOn(api, "keepDecision").mockImplementation(
+    () => new Promise<never>(() => {})
+  );
+  const user = userEvent.setup();
+  const { unmount } = renderActions();
+  const stopFocusFixup = emulateChromiumFocusFixup();
+  try {
+    const keep = await screen.findByRole("button", { name: CONTROL_LABELS.keep_decision });
+    act(() => keep.focus());
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(keepDecision).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(keep).toHaveAttribute("aria-disabled", "true"));
+    expect(keep).toBeEnabled();
+    expect(keep, "Keep dropped the focus while its Keep was out").toHaveFocus();
+    await user.keyboard("{Enter}");
+    await user.click(keep);
+    expect(keepDecision, "a second press of Keep kept the decision again").toHaveBeenCalledTimes(1);
+  } finally {
+    stopFocusFixup();
+    unmount();
+    keepDecision.mockRestore();
+  }
+});
+
+// The same for Send change, the form's submit button: while the send reads the decisions document
+// and while the comment is out it is held, never disabled, so the focus the press gave it is still
+// on it once the comment is out, and a second press - Enter on it, or a click - submits nothing:
+// no second read of the document and no second comment.
+test("Send change keeps the focus while its change is out, held rather than disabled, and a second press sends nothing", async () => {
+  // Dispatch never answers the send.
+  const createComment = spyOn(api, "createComment").mockImplementation(
+    () => new Promise<never>(() => {})
+  );
+  const user = userEvent.setup();
+  const { text, unmount } = renderActions();
+  const stopFocusFixup = emulateChromiumFocusFixup();
+  try {
+    await user.click(await screen.findByRole("button", { name: CONTROL_LABELS.change_decision }));
+    await user.type(screen.getByLabelText(CONTROL_LABELS.your_change), "Keep one preset.");
+    const send = screen.getByRole("button", { name: CONTROL_LABELS.send_change });
+    act(() => send.focus());
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(createComment).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(send).toHaveAttribute("aria-disabled", "true"));
+    expect(send).toBeEnabled();
+    expect(send, "Send change dropped the focus while its change was out").toHaveFocus();
+    await user.keyboard("{Enter}");
+    await user.click(send);
+    expect(text, "a second press read the decisions document again").toHaveBeenCalledTimes(1);
+    expect(createComment, "a second press sent the change again").toHaveBeenCalledTimes(1);
+  } finally {
+    stopFocusFixup();
+    unmount();
+    createComment.mockRestore();
+  }
+});
+
+/** A write's try that fails at the network, as every try does while Dispatch cannot be reached. */
+const failsAtTheNetwork = () =>
+  Promise.reject(
+    new NetworkError("/api/v1/issues/CORE-1/comments", new TypeError("Failed to fetch"))
+  );
+
+// A Keep that never answers - each try fails at the network, and the next waits out its backoff -
+// holds Keep until its deadline (`SEND_DEADLINE_MS`), and no longer: past it the Keep is late and
+// still tried, and Keep is let go, with the focus on it. A press then sends a Keep of its own.
+test("Keep, held until its Keep's deadline, is let go there, and a press then sends a Keep again", async () => {
+  const keepDecision = spyOn(api, "keepDecision").mockImplementation(failsAtTheNetwork);
+  const { client, unmount } = renderActions();
+  try {
+    const keep = await screen.findByRole<HTMLButtonElement>("button", {
+      name: CONTROL_LABELS.keep_decision,
+    });
+    jest.useFakeTimers();
+    const user = userOnFakeClock();
+    await heldUntilLate(user, keep, {
+      label: `${CONTROL_LABELS.keep_decision} ${decision.heading}`,
+      name: "Keep",
+      queryClient: client,
+      sent: () => pressesOf([keepDecision]),
+    });
+    await user.keyboard("{Enter}");
+    await tick(1_000);
+    expect(pressesOf([keepDecision]), "a press past the deadline sent no Keep").toBe(2);
+  } finally {
+    realClock();
+    unmount();
+    keepDecision.mockRestore();
+  }
+});
+
+/**
+ * Opens the Change form and sends "Keep one preset." by Enter on Send change, to a Dispatch that
+ * never answers while `refusing` is false - each try fails at the network - and refuses once it is
+ * true, and checks Send change is held until that change's deadline and let go past it
+ * (`heldUntilLate`), with the change still out. Answers how many presses posted a change, and
+ * what puts the page and the fake clock away (`restore`).
+ */
+async function changeUntilLate(refusing: () => boolean) {
+  const createComment = spyOn(api, "createComment").mockImplementation(() =>
+    refusing()
+      ? Promise.reject(new ApiError(409, { code: "QUOTE_AMBIGUOUS", error: "two places" }))
+      : failsAtTheNetwork()
+  );
+  const { client, unmount } = renderActions();
+  const restore = () => {
+    realClock();
+    unmount();
+    createComment.mockRestore();
+  };
+  try {
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: CONTROL_LABELS.change_decision }));
+    await user.type(screen.getByLabelText(CONTROL_LABELS.your_change), "Keep one preset.");
+    jest.useFakeTimers();
+    const onFakeClock = userOnFakeClock();
+    await heldUntilLate(
+      onFakeClock,
+      screen.getByRole<HTMLButtonElement>("button", { name: CONTROL_LABELS.send_change }),
+      {
+        label: `${CONTROL_LABELS.change_decision} ${decision.heading}`,
+        name: "Send change",
+        queryClient: client,
+        sent: () => pressesOf([createComment]),
+      }
+    );
+    return { presses: () => pressesOf([createComment]), restore, user: onFakeClock };
+  } catch (error) {
+    restore();
+    throw error;
+  }
+}
+
+// A change that never answers holds Send change until its deadline, and no longer. A press then
+// would post the change a second time while the first is still tried under its key, so it sends
+// nothing, and the line beside Send change says why and what comes: the first is still being
+// sent, and it shows under the decision once Dispatch posts it.
+test("Send change is let go at its change's deadline, and a press while that change is out posts no second one and says so", async () => {
+  const page = await changeUntilLate(() => false);
+  try {
+    expect(screen.queryByRole("status")).toBeNull();
+    await page.user.keyboard("{Enter}");
+    await tick(1_000);
+    expect(page.presses(), "a press while the change is out posted one").toBe(1);
+    expect(screen.getByRole("status").textContent).toBe(ANSWER_LINES.change_still_sending);
+    expect(screen.getByRole("button", { name: CONTROL_LABELS.send_change })).toHaveFocus();
+  } finally {
+    page.restore();
+  }
+});
+
+// The line goes once the first change is decided. Refused, the form says the change was not
+// sent, and Send change takes a press again, which posts a change of its own.
+test("once a change out past its deadline is refused, Send change posts it again", async () => {
+  let refusing = false;
+  const page = await changeUntilLate(() => refusing);
+  try {
+    await page.user.keyboard("{Enter}");
+    await tick(1_000);
+    expect(screen.getByRole("status").textContent).toBe(ANSWER_LINES.change_still_sending);
+
+    refusing = true;
+    // Past the next try, half a minute at the longest backoff.
+    await tick(30_000);
+    expect(screen.getByRole("alert").textContent).toBe(ANSWER_LINES.change_not_sent);
+    expect(screen.queryByRole("status")).toBeNull();
+    await page.user.keyboard("{Enter}");
+    await tick(1_000);
+    expect(page.presses(), "a press after the refusal posted no change").toBe(2);
+  } finally {
+    page.restore();
+  }
+});
+
 /** The decision's node body as a view draws it, under the view's `ChangeDraftsProvider`:
- *  `close` takes the body away, as the focus leaving the rows does, and `open` draws it again. */
-function renderBody(): { close: () => void; open: () => void; unmount: () => void } {
+ *  `close` takes the body away, as the focus leaving the rows does, and `open` draws it again;
+ *  `text` is the spy on the decisions document's text read. */
+function renderBody(): {
+  close: () => void;
+  open: () => void;
+  text: DocumentTextSpy;
+  unmount: () => void;
+} {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   client.setQueryData(["decisions", KEY], read);
   const decisions = spyOn(api, "getIssueDecisions").mockResolvedValue(read);
@@ -166,6 +397,7 @@ function renderBody(): { close: () => void; open: () => void; unmount: () => voi
   return {
     close: () => view.rerender(body(false)),
     open: () => view.rerender(body(true)),
+    text,
     unmount: () => {
       view.unmount();
       decisions.mockRestore();
@@ -448,6 +680,11 @@ const OWN: Decision = {
   text: "## Draw it once\n\nDraw it once.",
 };
 
+/** The decisions document that holds `ABOVE` and `OWN`, below its title and `intro`. */
+function twoDecisionsText(intro: string): string {
+  return `# Decisions of CORE-1\n\n${intro}\n\n${ABOVE.text}\n\n${OWN.text}`;
+}
+
 /** The 409 Dispatch answers a comment whose anchor quote stands in `places` places of the
  *  document and whose occurrence names none of them: `TARGET_AMBIGUOUS` with each place, as
  *  `writeAmbiguousTarget` writes `pmdoc.ErrTargetAmbiguous` (`api/handler_errors.go`). */
@@ -463,11 +700,18 @@ function ambiguousQuote(quote: string, places: number): ApiError {
   });
 }
 
+/** The lines the form says as alerts, in the order it draws them. */
+function alertLines(): (string | null)[] {
+  return screen.queryAllByRole("alert").map((line) => line.textContent);
+}
+
 // With no reading of the document - its text read failed - the Change names no place: Dispatch
 // takes it where the quote stands once, and refuses it where the quote stands more than once,
 // which the form says in the page's words with the draft kept, rather than land it on a place
-// counted without the document.
-test("a Change whose document read fails names no place, and its refusal keeps the draft", async () => {
+// counted without the document. Beside Send change the form says the document could not be
+// loaded, and no more: the read's refusal is in the server's words, which the page never shows
+// (decision 92).
+test("a Change whose document read fails names no place, says the document could not be loaded, and its refusal keeps the draft", async () => {
   const createComment = spyOn(api, "createComment").mockRejectedValue(
     ambiguousQuote("Draw it once.", 2)
   );
@@ -480,13 +724,19 @@ test("a Change whose document read fails names no place, and its refusal keeps t
     await user.click(await screen.findByRole("button", { name: CONTROL_LABELS.change_decision }));
     await user.type(screen.getByLabelText(CONTROL_LABELS.your_change), "Say where.");
     await user.click(screen.getByRole("button", { name: CONTROL_LABELS.send_change }));
-    const alert = await screen.findByRole("alert");
+    await screen.findByText(ANSWER_LINES.change_not_sent);
     expect(text).toHaveBeenCalledTimes(1);
     expect(createComment).toHaveBeenCalledTimes(1);
     const anchor = createComment.mock.calls[0]?.[1]?.anchor;
     expect(anchor?.quote).toBe("Draw it once.");
     expect(anchor?.occurrence, "a Change with no reading named a place").toBeUndefined();
-    expect(alert.textContent).toBe(ANSWER_LINES.change_not_sent);
+    expect(alertLines()).toEqual([
+      STATE_LINES.decisions_document_unreadable,
+      ANSWER_LINES.change_not_sent,
+    ]);
+    expect(document.body.textContent, "the row draws the server's own words").not.toContain(
+      "the store is not reachable"
+    );
     const field = screen.getByLabelText(CONTROL_LABELS.your_change);
     expect(field instanceof HTMLTextAreaElement ? field.value : "").toBe("Say where.");
   } finally {
@@ -537,6 +787,544 @@ test("the quote of a first block with a hard break holds one space between its l
 test("a decision whose answer carried no reading quotes its first paragraph's markdown", async () => {
   const text = "## Keep a log\n\nA log is enough.\n\nUnsure: the index may be slow.";
   expect(await quoteOf({ text, text_tree: undefined })).toBe("A log is enough.");
+});
+
+// Offline, TanStack pauses a fetch the browser starts until the network returns, so a send that
+// waited on one for the document's text would post no comment and let go of nothing. The send
+// reads the text straight through the API client instead (`captureUploadBase`'s way), which
+// reaches the network, or fails there, whatever TanStack's pause says: the comment goes out and
+// Send change lets go at that comment's deadline, as it does online, and a press then posts no
+// second one.
+test("offline, Send change reads the document outside TanStack's pause, posts one change and lets go at its deadline", async () => {
+  const online = onlineManager.isOnline();
+  onlineManager.setOnline(false);
+  try {
+    const page = await changeUntilLate(() => false);
+    try {
+      expect(
+        api.getArtifactText,
+        "the send read the document's text other than once"
+      ).toHaveBeenCalledTimes(1);
+      expect(api.getArtifactText).toHaveBeenCalledWith(document_.id);
+      await page.user.keyboard("{Enter}");
+      await tick(1_000);
+      expect(page.presses(), "a press past the deadline posted a second change").toBe(1);
+    } finally {
+      page.restore();
+    }
+  } finally {
+    onlineManager.setOnline(online);
+  }
+});
+
+// A document read that never answers is the client's to end at `REQUEST_DEADLINE_MS`, and the
+// comment goes out then with no reading of the document (the plain quote). That read and the
+// comment are one press with one deadline, `SEND_DEADLINE_MS`: Send lets go there, not a second
+// deadline after the read's, and a press after it posts no second change. The read answering
+// after that posts nothing either.
+test("a document read that never answers does not double Send change's deadline, and its late answer posts no second change", async () => {
+  const answer = Promise.withResolvers<ArtifactText>();
+  const createComment = spyOn(api, "createComment").mockImplementation(failsAtTheNetwork);
+  const { text, unmount } = renderActions();
+  text.mockReturnValue(answer.promise);
+  const stopFocusFixup = emulateChromiumFocusFixup();
+  try {
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: CONTROL_LABELS.change_decision }));
+    await user.type(screen.getByLabelText(CONTROL_LABELS.your_change), "Keep one preset.");
+    const send = screen.getByRole<HTMLButtonElement>("button", {
+      name: CONTROL_LABELS.send_change,
+    });
+    jest.useFakeTimers();
+    const onFakeClock = userOnFakeClock();
+    act(() => send.focus());
+    await onFakeClock.keyboard("{Enter}");
+    await tick(0);
+
+    // A second short of the request deadline the read is still out: Send is held with the
+    // focus, no comment has gone, and a press reads nothing more.
+    await tick(REQUEST_DEADLINE_MS - 1_000);
+    expect(heldNotDisabled(send, CONTROL_LABELS.send_change)).toBe(true);
+    expect(send).toHaveFocus();
+    expect(createComment).not.toHaveBeenCalled();
+    await onFakeClock.keyboard("{Enter}");
+    await settle();
+    expect(text).toHaveBeenCalledTimes(1);
+
+    // At it the comment goes out once, with the plain quote, and Send lets go with the focus on
+    // it: the press has spent its deadline, and the comment's own is not waited out after it.
+    await tick(1_000);
+    await waitFor(() => expect(pressesOf([createComment])).toBe(1));
+    const anchor = createComment.mock.calls[0]?.[1]?.anchor;
+    expect(anchor?.artifact).toBe(document_.id);
+    expect(anchor?.quote).toBe(decision.heading);
+    expect(anchor?.occurrence, "a send with no reading named a place").toBeUndefined();
+    expect(heldNotDisabled(send, CONTROL_LABELS.send_change)).toBe(false);
+    expect(send).toHaveFocus();
+    await onFakeClock.keyboard("{Enter}");
+    await tick(1_000);
+    expect(pressesOf([createComment]), "a press past the deadline posted a second change").toBe(1);
+    expect(screen.getByRole("status").textContent).toBe(ANSWER_LINES.change_still_sending);
+
+    // The read answers late, and the press posts nothing for it.
+    await act(async () =>
+      answer.resolve({
+        markdown: DOCUMENT_TEXT,
+        markdown_tree: displayTree(DOCUMENT_TEXT),
+        token: "token",
+        version: 1,
+      })
+    );
+    await tick(SEND_DEADLINE_MS);
+    expect(pressesOf([createComment]), "the late read posted a second change").toBe(1);
+  } finally {
+    stopFocusFixup();
+    realClock();
+    unmount();
+    createComment.mockRestore();
+  }
+});
+
+// A document read that has not answered by the request deadline sends the change with no place
+// counted, and the form says why beside Send change, in the words the page says for a read of the
+// decisions document that failed and then the error such a read ends with: here the quote stands
+// twice, so Dispatch refuses the change, and the reader sees why it named no place. The line goes
+// once that read settles; the refusal and the draft stay.
+test("a Change whose document read has not answered by the request deadline says why beside Send change until that read settles", async () => {
+  const answer = Promise.withResolvers<ArtifactText>();
+  const createComment = spyOn(api, "createComment").mockRejectedValue(
+    ambiguousQuote("Draw it once.", 2)
+  );
+  const { text, unmount } = renderActions(
+    { ...read, decisions: [ABOVE, OWN] },
+    twoDecisionsText("The decisions this issue made.")
+  );
+  text.mockReturnValue(answer.promise);
+  const why = "Could not load the decisions document. Dispatch did not answer within 30 seconds.";
+  try {
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: CONTROL_LABELS.change_decision }));
+    await user.type(screen.getByLabelText(CONTROL_LABELS.your_change), "Say where.");
+    const send = screen.getByRole<HTMLButtonElement>("button", {
+      name: CONTROL_LABELS.send_change,
+    });
+    jest.useFakeTimers();
+    await userOnFakeClock().click(send);
+    await tick(0);
+
+    // A second short of the request deadline the read is still out: no change has gone, and
+    // nothing is said.
+    await tick(REQUEST_DEADLINE_MS - 1_000);
+    expect(createComment).not.toHaveBeenCalled();
+    expect(screen.queryByText(why)).toBeNull();
+
+    // At it the change goes with no place, and the form says why beside Send change.
+    await tick(1_000);
+    expect(createComment).toHaveBeenCalledTimes(1);
+    expect(
+      createComment.mock.calls[0]?.[1]?.anchor?.occurrence,
+      "a send with no reading named a place"
+    ).toBeUndefined();
+    expect(screen.getByText(why).closest("form")).toBe(send.closest("form"));
+    expect(screen.getByText(ANSWER_LINES.change_not_sent)).toBeInTheDocument();
+
+    // The read answers late, and the line goes; the refusal and the draft stay.
+    await act(async () =>
+      answer.resolve({
+        markdown: DOCUMENT_TEXT,
+        markdown_tree: displayTree(DOCUMENT_TEXT),
+        token: "token",
+        version: 1,
+      })
+    );
+    await tick(0);
+    expect(screen.queryByText(why)).toBeNull();
+    expect(screen.getByText(ANSWER_LINES.change_not_sent)).toBeInTheDocument();
+    const field = screen.getByLabelText(CONTROL_LABELS.your_change);
+    expect(field instanceof HTMLTextAreaElement ? field.value : "").toBe("Say where.");
+    expect(createComment).toHaveBeenCalledTimes(1);
+  } finally {
+    realClock();
+    unmount();
+    createComment.mockRestore();
+  }
+});
+
+// A read the bound ended may fail later, as a read whose body trickles in past the client's
+// deadline does: the line that said why it had not settled then says why it failed, since the
+// change it sent still named no place.
+test("a document read the request deadline ended that then fails says why it failed beside Send change", async () => {
+  const answer = Promise.withResolvers<ArtifactText>();
+  const createComment = spyOn(api, "createComment").mockRejectedValue(
+    ambiguousQuote("Draw it once.", 2)
+  );
+  const { text, unmount } = renderActions(
+    { ...read, decisions: [ABOVE, OWN] },
+    twoDecisionsText("The decisions this issue made.")
+  );
+  text.mockReturnValue(answer.promise);
+  const unread = STATE_LINES.decisions_document_unreadable;
+  try {
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: CONTROL_LABELS.change_decision }));
+    await user.type(screen.getByLabelText(CONTROL_LABELS.your_change), "Say where.");
+    const send = screen.getByRole<HTMLButtonElement>("button", {
+      name: CONTROL_LABELS.send_change,
+    });
+    jest.useFakeTimers();
+    await userOnFakeClock().click(send);
+    await tick(REQUEST_DEADLINE_MS);
+    expect(createComment).toHaveBeenCalledTimes(1);
+    expect(alertLines()).toEqual([
+      `${unread} Dispatch did not answer within 30 seconds.`,
+      ANSWER_LINES.change_not_sent,
+    ]);
+
+    await act(async () => answer.reject(new NetworkError(TEXT_PATH, new TypeError("network"))));
+    await tick(0);
+    expect(alertLines(), "the read's failure left no line").toEqual([
+      `${unread} Dispatch could not be reached.`,
+      ANSWER_LINES.change_not_sent,
+    ]);
+  } finally {
+    realClock();
+    unmount();
+    createComment.mockRestore();
+  }
+});
+
+// A document read Dispatch never answers fails at the API client's own deadline
+// (`REQUEST_DEADLINE_MS`), which the client sets as the read starts, before the send's bound
+// (`readWithinBound`) is set: the read rejects with a `RequestTimeoutError` while that bound still
+// runs. The change goes with no place counted, Send change lets go, and the form says why beside
+// Send change, in the words the page says for a read of the decisions document that failed and
+// then the timeout's own. The quote stands twice, so Dispatch refuses the change, and the line
+// stays beside the refusal: it is the press's own.
+test("a Change whose document read times out says why beside Send change, and still does once the change is refused", async () => {
+  const answer = Promise.withResolvers<ArtifactText>();
+  const createComment = spyOn(api, "createComment").mockRejectedValue(
+    ambiguousQuote("Draw it once.", 2)
+  );
+  const { text, unmount } = renderActions(
+    { ...read, decisions: [ABOVE, OWN] },
+    twoDecisionsText("The decisions this issue made.")
+  );
+  text.mockReturnValue(answer.promise);
+  try {
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: CONTROL_LABELS.change_decision }));
+    await user.type(screen.getByLabelText(CONTROL_LABELS.your_change), "Say where.");
+    const send = screen.getByRole<HTMLButtonElement>("button", {
+      name: CONTROL_LABELS.send_change,
+    });
+    await user.click(send);
+    expect(heldNotDisabled(send, CONTROL_LABELS.send_change)).toBe(true);
+    expect(createComment).not.toHaveBeenCalled();
+
+    await act(async () => answer.reject(new RequestTimeoutError(TEXT_PATH, REQUEST_DEADLINE_MS)));
+    await screen.findByText(ANSWER_LINES.change_not_sent);
+    expect(createComment).toHaveBeenCalledTimes(1);
+    const anchor = createComment.mock.calls[0]?.[1]?.anchor;
+    expect(anchor?.quote).toBe("Draw it once.");
+    expect(anchor?.occurrence, "a send with no reading named a place").toBeUndefined();
+    expect(heldNotDisabled(send, CONTROL_LABELS.send_change)).toBe(false);
+    expect(alertLines(), "the form does not say why the change named no place").toEqual([
+      `${STATE_LINES.decisions_document_unreadable} Dispatch did not answer within 30 seconds.`,
+      ANSWER_LINES.change_not_sent,
+    ]);
+  } finally {
+    unmount();
+    createComment.mockRestore();
+  }
+});
+
+// A document read that fails at the network - as one does at once offline, since the send reads
+// the text straight through the API client - gives the change no place either, and the form says
+// why beside Send change in the network error's own words, while the change is out.
+test("a Change whose document read fails at the network says beside Send change that Dispatch could not be reached", async () => {
+  // Dispatch never answers the change.
+  const createComment = spyOn(api, "createComment").mockImplementation(
+    () => new Promise<never>(() => {})
+  );
+  const { unmount } = renderActions(
+    read,
+    new NetworkError(TEXT_PATH, new TypeError("Failed to fetch"))
+  );
+  try {
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: CONTROL_LABELS.change_decision }));
+    await user.type(screen.getByLabelText(CONTROL_LABELS.your_change), "Keep one preset.");
+    await user.click(screen.getByRole("button", { name: CONTROL_LABELS.send_change }));
+    await waitFor(() => expect(createComment).toHaveBeenCalledTimes(1));
+    expect(createComment.mock.calls[0]?.[1]?.anchor?.occurrence).toBeUndefined();
+    expect(alertLines(), "the form does not say why the change named no place").toEqual([
+      `${STATE_LINES.decisions_document_unreadable} Dispatch could not be reached.`,
+    ]);
+  } finally {
+    unmount();
+    createComment.mockRestore();
+  }
+});
+
+// The line is the press's own: the next press of Send change takes it away as that press reads
+// the document again, and a read that answers says nothing. Dispatch refuses each change here, so
+// the form stays drawn with its refusal, and only the read's line has gone.
+test("the line a failed document read draws beside Send change goes at the next press, whose read answers", async () => {
+  const createComment = spyOn(api, "createComment").mockRejectedValue(
+    ambiguousQuote("Draw it once.", 2)
+  );
+  const { text, unmount } = renderActions(
+    { ...read, decisions: [ABOVE, OWN] },
+    new NetworkError(TEXT_PATH, new TypeError("Failed to fetch"))
+  );
+  const failed = `${STATE_LINES.decisions_document_unreadable} Dispatch could not be reached.`;
+  try {
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: CONTROL_LABELS.change_decision }));
+    await user.type(screen.getByLabelText(CONTROL_LABELS.your_change), "Say where.");
+    const send = screen.getByRole<HTMLButtonElement>("button", {
+      name: CONTROL_LABELS.send_change,
+    });
+    await user.click(send);
+    await screen.findByText(ANSWER_LINES.change_not_sent);
+    expect(alertLines()).toEqual([failed, ANSWER_LINES.change_not_sent]);
+
+    // The next press reads the document again, and the line goes as it does.
+    const answer = Promise.withResolvers<ArtifactText>();
+    text.mockReturnValue(answer.promise);
+    await user.click(send);
+    expect(text).toHaveBeenCalledTimes(2);
+    expect(screen.queryByText(failed), "the failed read's line outlived the next press").toBeNull();
+
+    // That read answers: the change names its place, and the form says nothing of the read.
+    const markdown = twoDecisionsText("The decisions this issue made.");
+    await act(async () =>
+      answer.resolve({ markdown, markdown_tree: displayTree(markdown), token: "token", version: 1 })
+    );
+    await waitFor(() => expect(createComment).toHaveBeenCalledTimes(2));
+    expect(createComment.mock.calls[1]?.[1]?.anchor?.occurrence).toBe(1);
+    await waitFor(() => expect(heldNotDisabled(send, CONTROL_LABELS.send_change)).toBe(false));
+    expect(alertLines()).toEqual([ANSWER_LINES.change_not_sent]);
+  } finally {
+    unmount();
+    createComment.mockRestore();
+  }
+});
+
+// The line a read the bound ended draws is the press's own as well: the next press of Send change
+// takes it away as that press reads the document again, though the earlier read never settles,
+// and a read that answers says nothing. Dispatch refuses each change here, so the form stays drawn
+// with its refusal, and only the read's line has gone (the tester's row of `issue-page-q.e2e.ts`,
+// "a Change whose document read the bound ended loses that read's line at the next press").
+test("the line a document read the bound ended draws beside Send change goes at the next press, whose read answers", async () => {
+  const createComment = spyOn(api, "createComment").mockRejectedValue(
+    ambiguousQuote("Draw it once.", 2)
+  );
+  const { text, unmount } = renderActions(
+    { ...read, decisions: [ABOVE, OWN] },
+    twoDecisionsText("The decisions this issue made.")
+  );
+  // Dispatch never answers the first press's read; the next press's is answered.
+  text.mockReturnValueOnce(new Promise<never>(() => {}));
+  const why = `${STATE_LINES.decisions_document_unreadable} Dispatch did not answer within 30 seconds.`;
+  try {
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: CONTROL_LABELS.change_decision }));
+    await user.type(screen.getByLabelText(CONTROL_LABELS.your_change), "Say where.");
+    const send = screen.getByRole<HTMLButtonElement>("button", {
+      name: CONTROL_LABELS.send_change,
+    });
+    jest.useFakeTimers();
+    const onFakeClock = userOnFakeClock();
+    await onFakeClock.click(send);
+    await tick(REQUEST_DEADLINE_MS);
+    expect(createComment).toHaveBeenCalledTimes(1);
+    expect(alertLines()).toEqual([why, ANSWER_LINES.change_not_sent]);
+
+    // The next press reads the document again, and Dispatch answers: the change names its place,
+    // and the form says nothing of the first press's read.
+    await onFakeClock.click(send);
+    await tick(0);
+    expect(text).toHaveBeenCalledTimes(2);
+    expect(createComment).toHaveBeenCalledTimes(2);
+    expect(createComment.mock.calls[1]?.[1]?.anchor?.occurrence).toBe(1);
+    expect(alertLines(), "the read the bound ended kept its line past the next press").toEqual([
+      ANSWER_LINES.change_not_sent,
+    ]);
+  } finally {
+    realClock();
+    unmount();
+    createComment.mockRestore();
+  }
+});
+
+/** The Change form of the decision `heading` names, and its Send change. */
+function changeForm(heading: string): { form: HTMLElement; send: HTMLButtonElement } {
+  const form = screen.getByRole("form", { name: `${CONTROL_LABELS.change_decision} ${heading}` });
+  return {
+    form,
+    send: within(form).getByRole<HTMLButtonElement>("button", {
+      name: CONTROL_LABELS.send_change,
+    }),
+  };
+}
+
+// Every decision's Send change reads the one decisions document, so every form of the document
+// holds one bound of its read (`useUnsettledRead`): another decision's Send change, which reads
+// the document again and is answered, takes away the line the first form left for its read,
+// though that read never settles, and the second form, whose read was answered, says nothing of
+// a read. Dispatch refuses each change, so both forms stay drawn with their refusal (the tester's
+// row of `issue-page-q.e2e.ts`, "a Change whose document read the bound ended loses that read's
+// line when another decision's Send change reads the document again").
+test("the line one decision's document read the bound ended draws goes as another decision's Send change reads the document again", async () => {
+  const createComment = spyOn(api, "createComment").mockRejectedValue(
+    ambiguousQuote("Draw it once.", 2)
+  );
+  const { text, unmount } = renderActions(
+    { ...read, decisions: [ABOVE, OWN] },
+    twoDecisionsText("The decisions this issue made."),
+    { nodes: [ABOVE.ref, OWN.ref] }
+  );
+  // Dispatch never answers the first form's read; the second form's is answered.
+  text.mockReturnValueOnce(new Promise<never>(() => {}));
+  const why = `${STATE_LINES.decisions_document_unreadable} Dispatch did not answer within 30 seconds.`;
+  try {
+    const user = userEvent.setup();
+    for (const change of await screen.findAllByRole("button", {
+      name: CONTROL_LABELS.change_decision,
+    })) {
+      await user.click(change);
+    }
+    for (const field of screen.getAllByLabelText(CONTROL_LABELS.your_change)) {
+      await user.type(field, "Say where.");
+    }
+    const first = changeForm(ABOVE.heading);
+    const second = changeForm(OWN.heading);
+    const linesOf = (form: HTMLElement) =>
+      within(form)
+        .queryAllByRole("alert")
+        .map((line) => line.textContent);
+    jest.useFakeTimers();
+    const onFakeClock = userOnFakeClock();
+    await onFakeClock.click(first.send);
+    await tick(REQUEST_DEADLINE_MS);
+    expect(createComment).toHaveBeenCalledTimes(1);
+    expect(linesOf(first.form)).toEqual([why, ANSWER_LINES.change_not_sent]);
+
+    await onFakeClock.click(second.send);
+    await tick(0);
+    expect(text).toHaveBeenCalledTimes(2);
+    expect(createComment).toHaveBeenCalledTimes(2);
+    expect(linesOf(second.form)).toEqual([ANSWER_LINES.change_not_sent]);
+    expect(
+      linesOf(first.form),
+      "the first form kept its read's line past the second form's read of the document"
+    ).toEqual([ANSWER_LINES.change_not_sent]);
+  } finally {
+    realClock();
+    unmount();
+    createComment.mockRestore();
+  }
+});
+
+// A Change sent and left while its document read is out comes back closed, and the Change pressed
+// again draws a new form. That form finds the press's read in the document's one hold
+// (`useUnsettledRead`): its Send change is held, as the press's own was, until the read's bound
+// ends, and the form then says why that read has not settled, as the form the press was made in
+// would have said.
+test("a Change opened again while its sent change's document read is out holds Send change through that read, and says why at its bound", async () => {
+  const createComment = spyOn(api, "createComment").mockRejectedValue(
+    ambiguousQuote("Draw it once.", 2)
+  );
+  const body = renderBody();
+  // Dispatch never answers the press's read of the document.
+  body.text.mockReturnValue(new Promise<never>(() => {}));
+  const why = `${STATE_LINES.decisions_document_unreadable} Dispatch did not answer within 30 seconds.`;
+  try {
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: CONTROL_LABELS.change_decision }));
+    await user.type(screen.getByLabelText(CONTROL_LABELS.your_change), "Keep one preset.");
+    jest.useFakeTimers();
+    const onFakeClock = userOnFakeClock();
+    await onFakeClock.click(screen.getByRole("button", { name: CONTROL_LABELS.send_change }));
+    await tick(0);
+    expect(body.text).toHaveBeenCalledTimes(1);
+    body.close();
+    body.open();
+    await onFakeClock.click(screen.getByRole("button", { name: CONTROL_LABELS.change_decision }));
+    await onFakeClock.type(screen.getByLabelText(CONTROL_LABELS.your_change), "Again.");
+    const send = screen.getByRole<HTMLButtonElement>("button", {
+      name: CONTROL_LABELS.send_change,
+    });
+    expect(
+      heldNotDisabled(send, CONTROL_LABELS.send_change),
+      "the form drawn again let Send change go while the press's read was out"
+    ).toBe(true);
+
+    await tick(REQUEST_DEADLINE_MS);
+    expect(createComment).toHaveBeenCalledTimes(1);
+    expect(heldNotDisabled(send, CONTROL_LABELS.send_change)).toBe(false);
+    expect(
+      screen.queryByText(why),
+      "the form drawn again said nothing of the press's read"
+    ).toBeInTheDocument();
+  } finally {
+    realClock();
+    body.unmount();
+    createComment.mockRestore();
+  }
+});
+
+// A Change sent and left while its comment is still out, before it lands, comes back closed, and
+// the Change pressed again draws a new form. Its Send change holds from that comment's own state
+// (`usePendingKeyedPress`), as the press's own did: a press of it sends no second comment, and it
+// lets go at the comment's deadline (`SEND_DEADLINE_MS`), past which a press while the comment is
+// still out sends nothing and the form says so (`useOneCreateOut`). Dispatch never answers the
+// comment: each try fails at the network and is tried again under its key.
+test("a Change opened again while its sent change's comment is out holds Send change until the comment's deadline and sends no second comment", async () => {
+  const createComment = spyOn(api, "createComment").mockRejectedValue(
+    new NetworkError("/api/v1/issues/CORE-1/comments", new TypeError("Failed to fetch"))
+  );
+  const body = renderBody();
+  const sent = () => pressesOf([createComment]);
+  try {
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: CONTROL_LABELS.change_decision }));
+    await user.type(screen.getByLabelText(CONTROL_LABELS.your_change), "Keep one preset.");
+    jest.useFakeTimers();
+    const onFakeClock = userOnFakeClock();
+    await onFakeClock.click(screen.getByRole("button", { name: CONTROL_LABELS.send_change }));
+    await tick(0);
+    expect(sent()).toBe(1);
+
+    body.close();
+    body.open();
+    await onFakeClock.click(screen.getByRole("button", { name: CONTROL_LABELS.change_decision }));
+    await onFakeClock.type(screen.getByLabelText(CONTROL_LABELS.your_change), "Again.");
+    const send = screen.getByRole<HTMLButtonElement>("button", {
+      name: CONTROL_LABELS.send_change,
+    });
+    expect(
+      heldNotDisabled(send, CONTROL_LABELS.send_change),
+      "the form drawn again let Send change go while the sent change's comment was out"
+    ).toBe(true);
+    await onFakeClock.click(send);
+    await tick(0);
+    expect(sent(), "a press of the Send change drawn again sent a second comment").toBe(1);
+
+    await tick(SEND_DEADLINE_MS - 1_000);
+    expect(heldNotDisabled(send, CONTROL_LABELS.send_change)).toBe(true);
+    await tick(1_000);
+    expect(heldNotDisabled(send, CONTROL_LABELS.send_change)).toBe(false);
+    await onFakeClock.click(send);
+    await tick(0);
+    expect(sent(), "a press past the deadline sent a second comment").toBe(1);
+    expect(screen.getByText(ANSWER_LINES.change_still_sending)).toBeInTheDocument();
+  } finally {
+    realClock();
+    body.unmount();
+    createComment.mockRestore();
+  }
 });
 
 // R6, R8 and the reading list's `decision-change-quote`: the Change quotes the words it is

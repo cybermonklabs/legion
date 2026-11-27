@@ -22,7 +22,9 @@ import { actorLabelText } from "../../refs/AgentName";
 import { warmMarkdownRenderer } from "../../refs/markdown-engine";
 import { type PublishedReferences, ReferenceNamesProvider } from "../../refs/reference-names";
 import { KeymapProvider } from "../../shell/KeymapProvider";
-import { appKeymap } from "../../shell/keymap";
+import { appKeymap, useKeymapScope } from "../../shell/keymap";
+import { setActionKeys } from "../../shell/keymap-keys";
+import { userPreferenceStorageKey } from "../../shell/userPreference";
 import { measureNearWords } from "../clamp-fixtures";
 import { issueDetails } from "../decisions-filter/decisions-fixtures";
 import type { IssueTreeReads, TreeNode } from "../issue-tree";
@@ -93,16 +95,25 @@ beforeAll(async () => {
  *  the view with no query where a case builds it itself (`whole`), which is otherwise built as
  *  the slot builds it, whether the body is drawn inside the stage the page draws a view in
  *  (`staged`), which moves the focus where a failed read's line leaves with it or the view's
- *  tree itself takes it (`ViewStage`), and what the page publishes of its batched names read
+ *  tree itself takes it (`ViewStage`), what the page publishes of its batched names read
  *  (`published`), which is what it publishes for the issue's statements where a case gives
- *  nothing else (`publishedStatements`). */
+ *  nothing else (`publishedStatements`), and who the keys are for (`login`), whose keys stored
+ *  in this browser the page's keymap takes (`keymap-keys.ts`): nobody signed in, and so every
+ *  action on its defaults, unless a case gives one. */
 interface DrawOptions {
+  readonly login?: string;
   readonly named?: readonly string[];
   readonly published?: PublishedReferences;
   readonly query?: string;
   readonly reads?: VerificationReads;
   readonly staged?: boolean;
   readonly whole?: TreeNode;
+}
+
+/** The page's own `issue` scope, which the view's keys are registered in. */
+function IssueScope(): ReactNode {
+  useKeymapScope("issue");
+  return null;
 }
 
 /** Every statement `root` holds, at any depth, that has an address. */
@@ -143,12 +154,15 @@ function testClient(): QueryClient {
  *  `NoTooltips`, as the slot draws it, so an author is named as the page names one, and where
  *  `staged` inside `ViewStage` around that, as the page's stage draws the slot; under the names
  *  store, with `published` published to it and handed to the body, as the slot hands it, and no
- *  names line (`NO_FAILED_READS`), as the slot hands it while no names read stands failed. A case
- *  that draws the body again with other reads passes it to `rerender` with the same `client`. */
+ *  names line (`NO_FAILED_READS`), as the slot hands it while no names read stands failed. The
+ *  page's keymap hears its keys, as `KeymapProvider` binds it to `window`, with the page's
+ *  `issue` scope pushed, which the view's keys are registered in. A case that draws the body
+ *  again with other reads passes it to `rerender` with the same `client`. */
 function bodyOf(
   statements: readonly TreeNode[],
   checks: readonly CheckBlock[],
   {
+    login,
     named = [],
     published: givenPublished,
     query = "",
@@ -181,7 +195,12 @@ function bodyOf(
   return (
     <QueryClientProvider client={client}>
       <ReferenceNamesProvider>
-        <MemoryRouter>{staged ? <ViewStage>{slot}</ViewStage> : slot}</MemoryRouter>
+        <MemoryRouter>
+          <KeymapProvider login={login}>
+            <IssueScope />
+            {staged ? <ViewStage>{slot}</ViewStage> : slot}
+          </KeymapProvider>
+        </MemoryRouter>
       </ReferenceNamesProvider>
     </QueryClientProvider>
   );
@@ -245,14 +264,16 @@ function failing(blockId: string): CheckBlock {
   });
 }
 
-/** Each key a handler held back, in the order pressed, from now until `stop` is called. */
+/** Each key held back, by a handler or by the page's keymap, in the order pressed, from now until
+ *  `stop` is called. It listens on `window` after the keymap, which `drawBody` bound there
+ *  first, so it reads each key once the keymap has taken it or left it. */
 function holdKeys(): { held: string[]; stop: () => void } {
   const held: string[] = [];
   const hold = (event: KeyboardEvent) => {
     if (event.defaultPrevented) held.push(event.key);
   };
-  document.addEventListener("keydown", hold);
-  return { held, stop: () => document.removeEventListener("keydown", hold) };
+  window.addEventListener("keydown", hold);
+  return { held, stop: () => window.removeEventListener("keydown", hold) };
 }
 
 /** The reads named refused once before they first answered, each by its name with its own
@@ -711,8 +732,9 @@ test("a statement that a child's check covers draws one line of the checks drawn
 // four of its attributes and a result what it recorded. The body opens where the reader's focus
 // reaches the check and closes when the focus leaves it; a press keeps it open once the focus has
 // gone, and a press on an open one closes it. The check's row says whether it is open, and its
-// words, a tab stop with no role, take the press by a pointer, Enter or Space, as its latest
-// result's cell takes a pointer's.
+// words, which have no role and no Tab stop (the control beside them takes it), take the press
+// by a pointer, and by Enter or Space where a press or a script gave them the focus, as its
+// latest result's cell takes a pointer's.
 test("a check's facts open where the reader's focus is: when as words, the run as a command", async () => {
   const user = userEvent.setup();
   const shot = "dispatch://CORE-1/artifact/screenshot-png@v1";
@@ -731,7 +753,7 @@ test("a check's facts open where the reader's focus is: when as words, the run a
       words?.tabIndex,
       words?.hasAttribute("role"),
       words?.hasAttribute("aria-expanded"),
-    ]).toEqual([0, false, false]);
+    ]).toEqual([-1, false, false]);
     expect(card?.getAttribute("aria-expanded")).toBe("false");
     act(() => words?.focus());
     expect(card?.getAttribute("aria-expanded")).toBe("true");
@@ -2519,14 +2541,18 @@ function layOut(height: number): () => void {
 }
 
 // The keyboard reaches each control of the view by Tab: each chip, the "more" control of a cut
-// statement, each check's words, each link in a check's words, each link in the words of a node
-// an address named, the line of earlier results and, in the opened facts, the copy control of a
-// command. This reads that each of them holds tab index 0, so none is out of the tab order; the
-// order Tab takes them in is read in the browser, where row 4 of `e2e/issue-page-v.e2e.ts` walks
-// it. The view passes `tabStops` to `CutWords`, `NodeFacts` and `RowText`, so none of them takes
-// its controls out of the tab order. In document order the issue's row comes before the chip
-// All, so the Tab after `t k` reaches the first chip. The page measures only the words of rows
-// near the viewport, so the rows' words are brought near and measured before the cut is read.
+// statement, each check's control of its facts, each link in a check's words, each link in the
+// words of a node an address named, the line of earlier results and, in the opened facts, the
+// copy control of a command. This reads that each of them holds tab index 0, so none is out of
+// the tab order; the order Tab takes them in is read in the browser, where row 4 of
+// `e2e/issue-page-v.e2e.ts` walks it. A check's words are no control and take no Tab stop: they
+// hold links, so no button holds them, and the control beside them is a real disclosure button,
+// named by the check, which says whether its facts are drawn and which Enter and Space press as a
+// press on the words does. The view passes `tabStops` to `CutWords`, `NodeFacts` and `RowText`,
+// so none of them takes its controls out of the tab order. In document order the issue's row
+// comes before the chip All, so the Tab after `t k` reaches the first chip. The page measures
+// only the words of rows near the viewport, so the rows' words are brought near and measured
+// before the cut is read.
 test("each control of the view is a tab stop", async () => {
   const user = userEvent.setup();
   const summary = readsCore2();
@@ -2577,6 +2603,18 @@ test("each control of the view is a tab stop", async () => {
         ...view.container.querySelectorAll<HTMLElement>("[data-verification-check-words]"),
       ];
       expect(words).toHaveLength(2);
+      expect(words.map((one) => one.tabIndex)).toEqual([-1, -1]);
+      const facts = [...view.container.querySelectorAll<HTMLElement>("[data-verification-facts]")];
+      expect(
+        facts.map((one) => ({
+          expanded: one.getAttribute("aria-expanded"),
+          named: one.getAttribute("aria-label")?.startsWith(`${VERIFICATION_WORDS.show_facts} `),
+          tag: one.tagName,
+        }))
+      ).toEqual([
+        { expanded: "false", named: true, tag: "BUTTON" },
+        { expanded: "false", named: true, tag: "BUTTON" },
+      ]);
 
       // The reader presses the first check's facts open, so they stay drawn wherever the focus
       // goes next.
@@ -2621,7 +2659,7 @@ test("each control of the view is a tab stop", async () => {
           chip,
         ]),
         ["more", more],
-        ...words.map((one, at): [string, HTMLElement] => [`words of check ${at + 1}`, one]),
+        ...facts.map((one, at): [string, HTMLElement] => [`facts of check ${at + 1}`, one]),
         ...links.map((link): [string, HTMLElement] => [`link ${link.getAttribute("href")}`, link]),
         ...otherLinks.map((link): [string, HTMLElement] => [
           `link of the named row ${link.getAttribute("href")}`,
@@ -2633,6 +2671,15 @@ test("each control of the view is a tab stop", async () => {
       expect(controls.map(([name, control]) => [name, control?.tabIndex])).toEqual(
         controls.map(([name]) => [name, 0])
       );
+
+      // Enter and Space on the control press the facts as a press on the words does: the focus
+      // on it draws them, Enter shuts them while it stays, and Space opens them again.
+      act(() => facts[1]?.focus());
+      expect(facts[1]?.getAttribute("aria-expanded")).toBe("true");
+      await user.keyboard("{Enter}");
+      expect(facts[1]?.getAttribute("aria-expanded")).toBe("false");
+      await user.keyboard(" ");
+      expect(facts[1]?.getAttribute("aria-expanded")).toBe("true");
     } finally {
       view.unmount();
     }
@@ -2643,12 +2690,13 @@ test("each control of the view is a tab stop", async () => {
   }
 });
 
-// The view's tree answers the outline's keys by a handler of its own. `j`, `k`, the arrows, Home
-// and End move the focus from the row it is on, or from the row that holds the control it is on,
-// and the tab stop moves with it; Enter on a row presses its checks' facts, `o` keeps them drawn,
-// and a pointer opens them from a check's latest result, from its words and from its statement's
-// words. The tree holds back each key it acts on and no other, and a key that goes on with a
-// chord the reader began is the page's keymap's, so `t k` from inside the view reaches it.
+// The view's tree answers the outline's actions of the page's keymap and an Enter of its own.
+// `j`, `k`, the arrows, Home and End move the focus from the row it is on, or from the row that
+// holds the control it is on, and the tab stop moves with it; Enter on a row presses its checks'
+// facts, `o` keeps them drawn, and a pointer opens them from a check's latest result, from its
+// words and from its statement's words. The keymap holds back each key the tree acts on and no
+// other, and a key that goes on with a chord the reader began is that chord's, so `t k` from
+// inside the view reaches it.
 test("the view's tree answers the outline's keys, and a check's facts open from its words, its result and its statement", async () => {
   const user = userEvent.setup();
   const one = passing("c-one");
@@ -2801,9 +2849,10 @@ test("the view's tree answers the outline's keys, and a check's facts open from 
     expect(standing().focus).toBe("issue");
     expect(opened()).toEqual(["true", "true", "false"]);
 
-    // The page's keymap listens on `window`, as `KeymapProvider` binds it. While a chord the
-    // reader began is pending, no key is the tree's: `j` moves nothing, and `k` goes on with
-    // `t` to the keymap's `t k`.
+    // The view's keys are the page keymap's now, which listens on `window`, as `KeymapProvider`
+    // binds it. A key that does not go on with a chord the reader began is read afresh, as on the
+    // outline (`keymap.ts`'s `handleKeyDown`): `j` after `t` moves to the next row. `k` goes on
+    // with `t` to the keymap's `t k`. The keys held back are the keymap's.
     let turnedOff = 0;
     const unregister = appKeymap.register("global", [
       {
@@ -2815,21 +2864,18 @@ test("the view's tree answers the outline's keys, and a check's facts open from 
         },
       },
     ]);
-    const keymap = render(<KeymapProvider>{null}</KeymapProvider>);
     try {
       held.length = 0;
       await user.keyboard("t");
-      expect(appKeymap.pending()).toBe("t");
+      expect(appKeymap.chord().keys).toBe("t");
       await user.keyboard("j");
-      expect(standing()).toEqual({ focus: "issue", stop: ["issue"] });
+      expect(standing()).toEqual({ focus: "r1", stop: ["r1"] });
       await user.keyboard("tk");
       expect(turnedOff).toBe(1);
-      expect(appKeymap.pending()).toBe("");
-      expect(standing()).toEqual({ focus: "issue", stop: ["issue"] });
-      // The keymap's own hold comes after the document's listener; the tree held back none.
-      expect(held).toEqual([]);
+      expect(appKeymap.chord().keys).toBe("");
+      expect(standing()).toEqual({ focus: "r1", stop: ["r1"] });
+      expect(held).toEqual(["t", "j", "t", "k"]);
     } finally {
-      keymap.unmount();
       unregister();
       // A chord a failed step left half typed is let go, so no later test types into it.
       appKeymap.handleKeyDown(new KeyboardEvent("keydown", { key: "Escape" }));
@@ -2837,6 +2883,44 @@ test("the view's tree answers the outline's keys, and a check's facts open from 
   } finally {
     stop();
     view.unmount();
+  }
+});
+
+// R14: the tree's keys are the outline's actions of the keymap's catalogue, so a key a person
+// gives one of them in Settings (`keymap-keys.ts`) moves the reader through the view's rows as it
+// moves her through the outline, and the default key it replaced does nothing here any more. Down
+// is a key nobody changes, so it still moves.
+test("a key alice gave Move to the next row moves to the view's next row, and j no longer does", async () => {
+  setActionKeys("alice", "issue.tree-next", ["n"]);
+  const user = userEvent.setup();
+  const one = passing("c-one");
+  const served = statementNode("r1", "The page draws it.", [checkNode(one)]);
+  const unserved = statementNode("r2", "Nothing serves this one.", []);
+  const view = drawBody([served, unserved], [one], { login: "alice" });
+  try {
+    const rows = [...view.container.querySelectorAll<HTMLElement>("[data-node-row]")];
+    const names = ["issue", "r1", "c-one", "r2"];
+    /** The row the focus is on, and each row that holds the tree's tab stop, by their names. */
+    const standing = () => ({
+      focus: names[rows.indexOf(document.activeElement as HTMLElement)],
+      stops: rows.flatMap((row, at) => (row.getAttribute("tabindex") === "0" ? [names[at]] : [])),
+    });
+    act(() => rows[0]?.focus());
+    await user.keyboard("j");
+    expect(standing(), "j moved the focus").toEqual({ focus: "issue", stops: ["issue"] });
+    await user.keyboard("n");
+    expect(standing(), "n did not move the focus to the next row").toEqual({
+      focus: "r1",
+      stops: ["r1"],
+    });
+    await user.keyboard("{ArrowDown}");
+    expect(standing(), "Down did not move the focus to the next row").toEqual({
+      focus: "c-one",
+      stops: ["c-one"],
+    });
+  } finally {
+    view.unmount();
+    window.localStorage.removeItem(userPreferenceStorageKey("alice", "shell.keymap"));
   }
 });
 

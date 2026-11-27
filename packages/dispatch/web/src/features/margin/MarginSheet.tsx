@@ -1,6 +1,7 @@
 import { type ReactNode, type RefObject, useLayoutEffect, useRef } from "react";
 
 import type { Artifact, Ask, DispatchEvent } from "../../api/types";
+import { heldPress } from "../../components/held-press";
 import { QueryError } from "../../components/QueryError";
 import { FOOT_COMPOSER_FRAME_BOUND, useFootInset } from "../../hooks/useFootInset";
 import {
@@ -126,6 +127,10 @@ export interface MarginSheetModel {
      *  draft and a refusal with it, as a Conversation phone thread's do. */
     closeThread: () => void;
     expanded: boolean;
+    /** Asked once as the sheet's dialog closes (`useDialog`'s `keepFocusOnClose`): true when a
+     *  comment's end closed it, having put the caret back in the commented document, which then
+     *  keeps it. Every other close gives the focus back to what held it as the sheet opened. */
+    keepFocusOnClose: () => boolean;
     /** That reply is out: Back holds. */
     replySending: boolean;
     thread: Thread | undefined;
@@ -229,6 +234,7 @@ export function MarginSheet({
   const sheetDragOrigin = useRef<number | undefined>(undefined);
   const sheetDragMoved = useRef(false);
   const dialog = useDialog<HTMLElement>({
+    keepFocusOnClose: sheet.keepFocusOnClose,
     onClose: () => sheet.toggle(false),
     open: sheet.expanded && compactSheet,
   });
@@ -510,15 +516,21 @@ export function MarginSheet({
           >
             <header className={`flex items-center border-b px-4 py-3 ${borderDefault}`}>
               <button
-                className={`min-h-11 text-sm font-medium disabled:cursor-not-allowed disabled:opacity-50 ${textPrimaryOnSurface}`}
-                disabled={sheet.replySending}
-                onClick={sheet.closeThread}
+                className={`min-h-11 text-sm font-medium refused:cursor-not-allowed refused:opacity-50 ${textPrimaryOnSurface}`}
+                {...heldPress(sheet.replySending, sheet.closeThread)}
                 type="button"
               >
                 Back
               </button>
             </header>
-            <div className="min-h-0 flex-1 overflow-y-auto px-4">
+            {/* No Tab stop of its own, which Firefox gives a box that scrolls, with no name: the
+                thread's card holds its controls from its head to its foot, the Tab stops that
+                bring each part into view, and the arrow keys scroll the box from any of them. */}
+            <div
+              className="min-h-0 flex-1 overflow-y-auto px-4"
+              data-testid="margin-thread-box"
+              tabIndex={-1}
+            >
               <ThreadCard
                 actionFailure={actionFailure?.id === phoneThread.key ? actionFailure : undefined}
                 artifactSlug={visibleArtifact.slug}

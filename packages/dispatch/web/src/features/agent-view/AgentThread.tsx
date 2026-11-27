@@ -464,8 +464,8 @@ export function AgentThread({
    *  the one in front is laid out over the page rather than in it, so its own geometry is the
    *  shell's doing and never the reader moving (`useLiveFollow`). */
   front: boolean;
-  /** Whether a model or thinking switch is pending on this session: Send is disabled, still
-   *  reading "Send", until it ends, and `placeholder` is what says why. */
+  /** Whether a model or thinking switch is pending on this session: Send is held (`busy` in
+   *  `RefusableButton`), still reading "Send", until it ends, and `placeholder` is what says why. */
   held: boolean;
   /** Where this session's reader was when its view last reported, which the view's entry in
    *  `live-views.ts` holds while the view sleeps, or `null` for one that was following. */
@@ -507,8 +507,8 @@ export function AgentThread({
   // turn on the same commit.
   const threadEmpty = useAuiState((state) => state.thread.isEmpty);
   // An empty box is the one thing that refuses Send (INFRA-442): a message still out, late or
-  // refused is a turn of its own, and the next message goes out behind it. A pending switch
-  // disables Send and names why instead. A turn still streaming does not refuse: the session
+  // refused is a turn of its own, and the next message goes out behind it. A pending switch holds
+  // Send and names why instead. A turn still streaming does not refuse: the session
   // decides what a message does mid-turn by its delivery mode, as at its terminal.
   const boxEmpty = useAuiState((state) => state.composer.isEmpty);
   const refusal = boxEmpty && !held ? "Type a message first." : null;
@@ -570,12 +570,19 @@ export function AgentThread({
               `[overflow-anchor:none]` (the sidebar's precedent in `app.tsx`) leaves the hook's
               own compensation the only one there is: the browser's anchoring would adjust a
               rebuild a frame after the hook already had, hiding that compensation and arriving
-              as a scroll event nothing can tell from the reader's own. */}
+              as a scroll event nothing can tell from the reader's own.
+
+              A region named for what it holds, since a box that scrolls is a Tab stop of its own -
+              Firefox's for any such box, and every engine's where the turns hold no control - and
+              that stop is how a keyboard reader scrolls turns of prose with no control among
+              them. Unnamed, the stop read as nothing. */}
           <ThreadPrimitive.Viewport
+            aria-label="Transcript"
             autoScroll={false}
             className="mt-3 min-h-0 flex-1 overflow-y-auto pr-1 pl-1 [overflow-anchor:none]"
             data-testid="agent-thread"
             ref={setViewport}
+            role="region"
             scrollToBottomOnInitialize={false}
             scrollToBottomOnRunStart={false}
             scrollToBottomOnThreadSwitch={false}

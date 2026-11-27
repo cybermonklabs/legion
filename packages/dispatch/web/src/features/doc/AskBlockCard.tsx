@@ -26,9 +26,19 @@ import { type AskBlockFacts, type AskBlockHost, askBlockFacts } from "./typed-bl
 
 const PILL_CLASS = "rounded-full px-2 py-0.5 text-[10px] font-semibold tracking-wide uppercase";
 
+/** A decision block whose document's asks read, once answered or failed, holds no ask row for
+ *  it: the block reads its own attributes and draws no card of its question, so no reply box
+ *  for its thread (`data-ask-block-no-row` on its header). The Inbox's pane reads it on the
+ *  block it is opened at (`PaneDocument.tsx`). */
+export const ASK_BLOCK_NO_ROW_SELECTOR = "[data-ask-block-no-row]";
+
 export interface AskBlockCardProps {
   /** The indexed ask row for this block, once the server has created it. */
   ask: Ask | undefined;
+  /** Whether the read of the document's asks that `ask` comes from has answered or failed, so an
+   *  `ask` it left undefined is no ask row for the block rather than one still coming. A block
+   *  standing in text no server reads has no such read. */
+  asksRead?: boolean;
   /** The block stands in text no server reads - a comment, ask or message body - so nothing
    *  ever activates it: a malformed one is not told to fix its text to re-activate. */
   detached?: boolean;
@@ -65,6 +75,7 @@ export interface AskBlockCardProps {
  * editor's content, so no part of this card repeats it. */
 export function AskBlockCard({
   ask,
+  asksRead = false,
   detached = false,
   host,
   inBody,
@@ -95,6 +106,15 @@ export function AskBlockCard({
         <>
           <header
             className={`mb-3 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm ${textMutedOnSurfaceMuted}`}
+            // A block that draws no card of its question draws no reply box and no "Write a
+            // reply" for its thread either. Where the block knows its ask - a read-only surface,
+            // a malformed block - the Inbox's mark says so by the ask's thread, and the reading
+            // view's `r` lands at its scroller rather than waiting for a box
+            // (`noReplyBoxSelector` in `inbox/ReadingView.tsx`). Where the asks read has
+            // answered without one, the block says so of itself, and the Inbox's pane, which
+            // knows the thread it opened the block for, marks that thread (`DocumentPane`).
+            data-ask-block-no-row={ask === undefined && asksRead ? "" : undefined}
+            data-inbox-no-reply-box={hosted || ask === undefined ? undefined : ask.id}
           >
             {malformed ? (
               <span className={`${PILL_CLASS} ${badgeBlocking.bg} ${badgeBlocking.text}`}>

@@ -437,6 +437,9 @@ export const VERIFICATION_WORDS = joinWords("VERIFICATION_WORDS", {
   latest_result: "Latest result",
   /** Between the two numbers of the covered count. */
   of: "of",
+  /** Before a check's first words, the name of the control beside them that opens or shuts the
+   *  check's facts. */
+  show_facts: "Show the facts of",
   /** How a statement stands at the commit the page names (R17): every check of it passed
    *  there, one failed there, or neither is known. */
   states: {
@@ -710,6 +713,10 @@ export const ANSWER_LINES = joinWords("ANSWER_LINES", {
   /** What a decision's Change form says when Dispatch refused its send, whatever the server
    *  answered: the reader's words stay in the field, to send again (`DecisionActions.tsx`). */
   change_not_sent: "Could not send the change.",
+  /** What a decision's Change form says of a Send change pressed while the change it sent before
+   *  is still out past its deadline: that press sent no second comment (`DecisionActions.tsx`). */
+  change_still_sending:
+    "Send change sent nothing, since your change is still being sent: it shows under the decision once Dispatch posts it; if it fails, this form says so and you can press Send change again.",
   /** What Left on a row of the Decisions list says, and so does the key that zooms out, since
    *  the list has no level above its rows: the outline's own report for those keys speaks of
    *  the whole issue, which the list is not (`decisions-filter/DecisionsFilterBody.tsx`). */

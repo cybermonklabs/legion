@@ -142,8 +142,8 @@ export interface DetailsSeed {
  *   of two items, one checked, an unpinned comment, a question waiting on alice, a pinned
  *   comment whose first line starts with a mark and a pinned line of its history, and it is
  *   blocked by THREE.
- * - **TWO** has no parent, route, label, blocker or priority, and an approval request waiting on
- *   alice, the project's default assignee.
+ * - **TWO** has no parent, assignee, route, label, blocker or priority, and an approval request
+ *   waiting on alice, the project's default assignee.
  * - **THREE**'s spec carries bob's request for changes with the reason `CHANGES_REASON`.
  */
 export async function seedDetailsIssue(): Promise<DetailsSeed> {
@@ -259,6 +259,9 @@ export async function seedDetailsIssue(): Promise<DetailsSeed> {
     spec: "TWO's spec, which waits on alice's approval.",
     title: "TWO holds nothing yet",
   });
+  // Dispatch gives every issue it creates an assignee - alice, who creates TWO - and only a write
+  // of none clears it (`issue_assignee.go`'s `defaultAssignee`), so TWO's is cleared here.
+  await patchIssue(two.key, { assignee: null });
   await requestApproval(two.primary_artifact_id ?? "", { summary: "Read it." }, asPlanner);
 
   return {

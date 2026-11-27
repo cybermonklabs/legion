@@ -1,4 +1,4 @@
-import { type ReactNode, useMemo } from "react";
+import { type ReactNode, useMemo, useRef } from "react";
 
 import type { Ask } from "../../api/types";
 import { EmptyState } from "../../components/EmptyState";
@@ -12,7 +12,7 @@ import {
 } from "../../theme/classes";
 import type { ComposerAnchor, ComposerKind, ComposerOwner } from "../conversation/composer-model";
 import { useHeldSend, useHeldSends } from "../conversation/held-sends";
-import { DraftOffer, KIND_WORDS } from "../conversation/KeptDraftOffers";
+import { DraftOffer, handFocusOn, KIND_WORDS } from "../conversation/KeptDraftOffers";
 import { MentionComposer } from "../conversation/MentionComposer";
 import type { SaveCommentEdit } from "../conversation/send-request";
 import type { AwayDraft } from "../conversation/unsent-drafts";
@@ -164,6 +164,10 @@ export function MarginComposerSlot({
   );
 }
 
+/** The tab the margin shows (`MarginSheet`'s tab list): the margin's kept drafts are drawn under
+ *  the Comments tab alone, so while the reader can press one, this is that tab. */
+const SELECTED_TAB = '[role="tab"][aria-selected="true"]';
+
 /**
  * What the margin's compose kept for words of the open document (`AwayDraft.anchor`), while no
  * compose is open on it (`useMarginSheet`'s `keptDrafts`). A reload, a sign-in after a lapse and
@@ -171,6 +175,12 @@ export function MarginComposerSlot({
  * the document would offer only the newest of its drafts, so the margin draws each here with the
  * words it was written for, the kind it was written as, and Discard my draft. A compose opened on
  * the document offers it beside its field, where Use my draft takes it in.
+ *
+ * Discard my draft takes its draft away, and the focus it leaves goes on (`handFocusOn`) to the
+ * next draft's Discard my draft, which stands at its place now, else to the previous draft's,
+ * else, with the list gone, to the Comments tab itself (`SELECTED_TAB`): the margin's own control
+ * for the tab the list is drawn under, drawn whenever the list is, just above where it stood in
+ * the same box.
  */
 export function MarginKeptDrafts({
   drafts,
@@ -181,16 +191,34 @@ export function MarginKeptDrafts({
   hidden: boolean;
   onDiscard: (away: AwayDraft) => void;
 }): ReactNode {
+  const list = useRef<HTMLDivElement>(null);
   const kept = drafts.filter(
     (away): away is AwayDraft & { anchor: ComposerAnchor } => away.anchor !== undefined
   );
   if (kept.length === 0) return null;
+  const discard = (away: AwayDraft, index: number) => {
+    const box = list.current?.parentElement;
+    handFocusOn(
+      () => onDiscard(away),
+      () => {
+        // Each draft here draws one button, its Discard my draft, in the list's order. The one
+        // before `index` is read only where none stands at `index`: at 0, an empty list.
+        const discards = Array.from(list.current?.querySelectorAll("button") ?? []);
+        return (
+          discards.at(index) ??
+          discards.at(index - 1) ??
+          box?.querySelector<HTMLElement>(SELECTED_TAB) ??
+          null
+        );
+      }
+    );
+  };
   return (
-    <div className="space-y-3 pt-3" hidden={hidden}>
-      {kept.map((away) => (
+    <div className="space-y-3 pt-3" hidden={hidden} ref={list}>
+      {kept.map((away, index) => (
         <DraftOffer
           body={away.draft.body}
-          drop={{ label: "Discard my draft", press: () => onDiscard(away) }}
+          drop={{ label: "Discard my draft", press: () => discard(away, index) }}
           // The words each draft was written for, as the document has them: `anchor-quote`.
           key={`${away.anchor.mark_id ?? ""}:${away.anchor.occurrence ?? ""}:${away.anchor.quote}`}
           // Those words again, named in the line over the draft: `anchor-quote`.

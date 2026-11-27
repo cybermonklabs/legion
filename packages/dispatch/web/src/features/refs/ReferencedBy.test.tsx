@@ -5,8 +5,9 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { displayTree } from "../../__tests__/display-trees";
 import { graphNodeFields } from "../../__tests__/graph-fixture";
+import { pressHeld } from "../../__tests__/held-press";
 import { answerQuestionOf, NAMED_ASK, NAMED_QUESTION } from "../../__tests__/question-answers";
-import { api } from "../../api/client";
+import { ApiError, api } from "../../api/client";
 import type { GraphEdge, GraphReferences } from "../../api/types";
 import type { BlockItemKind } from "./block-reference";
 import { warmMarkdownRenderer } from "./markdown-engine";
@@ -701,4 +702,49 @@ test("a serves edge reads as served by and a needs edge as needed by", async () 
   await within(panel).findByText("Run the suite.");
   expect(within(panel).getByRole("link", { name: "served by · CORE-1" })).toBeTruthy();
   expect(within(panel).getByRole("link", { name: "needed by · CORE-1" })).toBeTruthy();
+});
+
+// A refresh of the list that fails draws the line over the list it holds, with Retry, as the Inbox
+// card's panel and the Artifacts tab draw it. Retry is held while the read it sent is out, never
+// disabled: the browser takes the focus off a control that turns disabled, which would leave the
+// keyboard reader who pressed it on the page's body. Held, it keeps the focus, and a second press
+// sends no second read.
+test("Retry keeps the focus while the read it sent is out, and a press then sends nothing", async () => {
+  const read: GraphReferences = {
+    edges: [],
+    node: {
+      ...graphNodeFields(),
+      id: "CORE-1",
+      issue_key: "CORE-1",
+      kind: "issue",
+      ref: "dispatch://CORE-1",
+    },
+  };
+  const { client, getReferences, view } = renderPanel(read);
+  restore = () => {
+    getReferences.mockRestore();
+    view.unmount();
+    client.clear();
+  };
+
+  const panel = await screen.findByRole("region", { name: "Referenced by" });
+  await within(panel).findByText("Nothing references this yet.");
+  getReferences.mockRejectedValueOnce(
+    new ApiError(500, { code: "INTERNAL", error: "The read failed." })
+  );
+  await act(() => client.refetchQueries());
+  const retry = await within(panel).findByRole("button", { name: "Retry" });
+  // The read Retry sends is held until the case answers it.
+  const held = Promise.withResolvers<GraphReferences>();
+  getReferences.mockImplementationOnce(() => held.promise);
+  const before = getReferences.mock.calls.length;
+  await pressHeld(userEvent.setup(), retry, {
+    name: "Retry",
+    sent: () => getReferences.mock.calls.length - before,
+  });
+
+  await act(async () => held.resolve(read));
+  await waitFor(() =>
+    expect(within(panel).queryByText("Referenced by unavailable.")).not.toBeInTheDocument()
+  );
 });
