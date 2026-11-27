@@ -28,13 +28,11 @@ const INVISIBLE_MARK = /\p{Mn}/gu;
  *  written as its own `\u` escape, so the id a reader sees is the id Dispatch holds, character for
  *  character. It reads back as the same string. */
 function quotedCheck(check: string): string {
-  return oneLineJson(check).replace(
-    INVISIBLE_MARK,
-    (mark) =>
-      Array.from(
-        { length: mark.length },
-        (_, unit) => `\\u${mark.charCodeAt(unit).toString(16).padStart(4, "0")}`
-      ).join("")
+  return oneLineJson(check).replace(INVISIBLE_MARK, (mark) =>
+    Array.from(
+      { length: mark.length },
+      (_, unit) => `\\u${mark.charCodeAt(unit).toString(16).padStart(4, "0")}`
+    ).join("")
   );
 }
 

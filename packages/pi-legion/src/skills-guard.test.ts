@@ -642,7 +642,9 @@ test("retro gives a ci_check that no run answers to the architect, not to the im
 // check's words and the architect's acceptance name it as a check with no pass standing.
 test("a job held back without its label is a check with no pass, not wrong words: the tester reads no ci_check, and the architect corrects no such name", () => {
   const ciChecks = collapsed(path.join(staged, "legion-worker", "references", "ci-checks.md"));
-  expect(ciChecks).toContain("The tester runs and records only the checks with no `ci_check`. It neither reads nor records a `ci_check` check, which is CI's.");
+  expect(ciChecks).toContain(
+    "The tester runs and records only the checks with no `ci_check`. It neither reads nor records a `ci_check` check, which is CI's."
+  );
   expect(ciChecks).toContain(
     "The check's words are right: the implementer adds the label and pushes, and each other role sends the issue back to the implementer for it"
   );
