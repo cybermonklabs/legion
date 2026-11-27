@@ -420,6 +420,12 @@ export function transcriptAnswers(
     if (entry.kind === "call" && entry.callId !== undefined) calls.set(entry.callId, entry);
   const answers: Answer[] = [];
   for (const entry of upTo) {
+    if (entry.kind === "delivery") {
+      const relayed = answerOfPayload(entry.text ?? "");
+      if (relayed !== null)
+        answers.push({ source: "transcript", place: "a delivery", at: entry.at, ...relayed });
+      continue;
+    }
     if (entry.kind !== "result" || entry.callId === undefined) continue;
     const call = calls.get(entry.callId);
     if (call === undefined) continue;
