@@ -78,6 +78,7 @@ on:
       - 'packages/daemon/internal/controller/**'
       - 'packages/daemon/internal/credential/**'
       - 'packages/daemon/internal/dispatch/*'
+      - 'packages/daemon/internal/execfile/**'
       - 'packages/daemon/internal/experiment/**'
       - 'packages/daemon/internal/ghbranch/**'
       - 'packages/daemon/internal/ghconfig/**'
