@@ -57,3 +57,85 @@ func TestOneResultsReadReadsThroughNoMoreCommitsThanItsBound(t *testing.T) {
 		}
 	}
 }
+
+// What the bound costs a reader: whether a read that stopped short answers a check wrongly, or
+// only less completely. The issue's one pass is at headCommit, recorded before any pull request
+// carried it; then a pull request of the issue opens there and no event of it reaches Dispatch,
+// so only a read-time read-through of headCommit can learn it (TestAResultStandsAtItsCommitOnceAPullRequestOpensThere).
+// After the pass, fails are recorded at commits GitHub names no pull request for. Results are read
+// newest first, so those fails' commits are the ones learn reads through first.
+//
+// With one fail fewer than the bound the read reaches headCommit, learns the pull request, and
+// the pass stands: the fixture can answer yes. With as many fails as the bound it cannot reach
+// headCommit, and the answer it gives there is what this row measures, on a first read, on a
+// second read inside delivery.CommitPullReadStaleAfter, and on a read after that span.
+func TestABoundedReadAnswersAPassAtAnUnreadCommit(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name   string
+		fails  int
+		stored bool
+	}{
+		{"the read reaches the pass, no stored head", readThroughsPerRead - 1, false},
+		{"the read reaches the pass, a stored head", readThroughsPerRead - 1, true},
+		{"the bound is spent before the pass, no stored head", readThroughsPerRead, false},
+		{"the bound is spent before the pass, a stored head", readThroughsPerRead, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			handler, database, served, fake := readThroughGitHub(t, "acme/widgets")
+			issue := issueInRepository(t, handler, "RESBD", "acme/widgets", "A pass past the bound")
+			uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", twoChecks)
+			if tc.stored {
+				// An open pull request of the issue whose head Dispatch holds, at another commit.
+				writeHead(t, database, "acme/widgets", 90, newHeadCommit, "open", issue.Key)
+			}
+			pass := decodeBody[recordedResult](t, recordResult(t, handler, issue.Key, resultBody("k1", "pass", headCommit, nil)))
+			for at := range tc.fails {
+				commit := fmt.Sprintf("%040x", at+1)
+				if response := recordResult(t, handler, issue.Key, resultBody("k1", "fail", commit, nil)); response.Code != 201 {
+					t.Fatalf("record the fail at %s: %d %s", commit, response.Code, response.Body.String())
+				}
+			}
+			// The pull request opens at headCommit, and GitHub names it for that commit alone.
+			opened := openPullAt(93, issue.Key)
+			fake.answers(func(repo, sha string) string {
+				if sha != headCommit {
+					return `[]`
+				}
+				return opened(repo, sha)
+			})
+
+			answered := func(when string) string {
+				spent := fake.asks("acme/widgets")
+				check := checkOf(t, readResults(t, handler, issue.Key), "k1")
+				stands := "none"
+				for _, result := range check.Results {
+					if result.ID == pass.Result.ID && result.CommitStands != nil {
+						stands = result.CommitStands.Answer + "/" + result.CommitStands.Reason
+					}
+				}
+				t.Logf("%s: pass_stands %q, the pass %s, compared with %d bases, compared nothing %q, asked GitHub %d times",
+					when, check.PassStands.Answer, stands, len(check.ComparedWith), check.ComparedNothing,
+					fake.asks("acme/widgets")-spent)
+				return check.PassStands.Answer
+			}
+			first := answered("first read")
+			second := answered("second read")
+			rewindCommitPullReads(t, served)
+			third := answered("read after the span")
+			if tc.fails < readThroughsPerRead {
+				if first != model.PassStandsYes {
+					t.Fatalf("a read that reaches the pass answers pass_stands %q, want yes: the fixture cannot measure the bound", first)
+				}
+				return
+			}
+			for _, answer := range []string{first, second, third} {
+				if answer == model.PassStandsNo {
+					t.Fatalf("a read whose bound is spent before the pass answers pass_stands no (first %q, second %q, after the span %q), where a read that reaches it answers yes: the bound answers wrongly, not less completely",
+						first, second, third)
+				}
+			}
+		})
+	}
+}
