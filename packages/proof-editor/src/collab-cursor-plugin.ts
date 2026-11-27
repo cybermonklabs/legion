@@ -106,7 +106,8 @@ function labelPlacement(view: EditorView): { schedule(): void; destroy(): void }
     const labels = view.dom.querySelectorAll<HTMLElement>(".proof-collab-cursor__label");
     const placed = Array.from(labels, (label) => ({ label, ...labelFit(label, editorWindow) }));
     const blockRoot = view.state.doc.type.name !== "doc";
-    const editableTop = view.dom.getBoundingClientRect().top;
+    // Read only for a single-block root, so a whole document's editor reads no more layout.
+    const editableTop = blockRoot ? view.dom.getBoundingClientRect().top : 0;
     const hung = Array.from(labels, (label) => ({
       below: blockRoot && hangsAbove(label, editableTop),
       label,
