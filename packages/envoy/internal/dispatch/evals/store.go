@@ -94,11 +94,17 @@ const writeAttempts = 2
 // run found the document removed under it (errDocumentRemoved), which it answers before it writes
 // anything.
 //
-// Every registry write logs a change for its versions, readings and day rows, whose triggers
-// record each in the change log's outbox (delivery_changes_pending, migration 20261117100001) and
-// take no lock, so the write never takes the change log's lock (6900, delivery's
-// lockChangesStatement). Once it has committed, committed moves a batch of the outbox into the
-// log (drainChanges) before the caller answers.
+// The registry's own rows, its versions, readings and day rows, log a change for each write
+// through triggers that record it in the change log's outbox (delivery_changes_pending, migration
+// 20261117100001) and take no lock, so those writes never take the change log's lock (6900,
+// delivery's lockChangesStatement). RegisterWith also runs its caller's own work in this
+// transaction, and the delivery settings route's (api's settingsSave.write) writes the project's
+// delivery settings, whose triggers write a `settings` change into the change log itself for a
+// write that moves a logged column (delivery_change_log, migration 20261123010254): that write
+// takes the change log's lock, with the transaction already holding an id, and the transaction
+// holds it until it commits. Once the transaction has committed, committed moves one batch of the
+// outbox into the log (drainChanges), in a short transaction of its own, before the caller
+// answers.
 func (s *Store) inWrite(ctx context.Context, project string, fn func(ctx context.Context, w *writeTx) error) error {
 	if s.database == nil || s.database.Pool == nil {
 		return errors.New("evals: the registry has no database")

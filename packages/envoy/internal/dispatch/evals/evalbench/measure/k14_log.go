@@ -258,10 +258,14 @@ const (
 // signalsTables are the tables the production signals' loop writes (prodevents/signals).
 var signalsTables = []string{"production_events", "production_deploy_rules", "production_signal_cursors"}
 
-// kindOf is which work a transaction is: the write's own (route), the day-row refresher's and the
-// stored figures' (it writes an eval_ table), the production signals' loop's, the change log's
-// drain (it writes the change log alone), a read (it writes nothing), or other background work of
-// the server's (the Legion facts, the keyword fill, the reconcile's bookkeeping and the rest).
+// kindOf is which work a transaction is, inferred from the tables its logged statements write
+// (tablesWritten): the write's own (route), the day-row refresher's and the stored figures' (it
+// writes an eval_ table), the production signals' loop's, a direct write of the change log (it
+// writes the delivery_changes tables alone), a read (it writes nothing), or other background work
+// of the server's (the Legion facts, the keyword fill, the reconcile's bookkeeping and the rest).
+// The change log's drain is not told apart: its one statement,
+// `select delivery_changes_drain($1)` (delivery's drainOneBatch), writes through a SQL function
+// whose writes the log does not show, so it reads as a read.
 func kindOf(one transaction, write transaction) string {
 	switch {
 	case one.pid == write.pid && one.began.Equal(write.began):

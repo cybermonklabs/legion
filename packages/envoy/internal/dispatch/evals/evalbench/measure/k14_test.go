@@ -185,8 +185,9 @@ func transactionsOf(lines []logLine, mark func(logLine) string) []transaction {
 // TestK14TheStatementLogGivesTheWriteItsCommitAndEachTransactionItsSpan: transactionsOf reads each
 // backend's transactions from the statement log, from its begin's start to its commit's end, a
 // statement outside a transaction as a transaction of its own; writeOf finds the write's own by its
-// statement, and kindOf tells the refresher's, the production signals', the change log's drain,
-// reads and other background work apart; the instrument's own connections are none of them.
+// statement, and kindOf tells the refresher's, the production signals', a direct write of the
+// change log's tables, reads and other background work apart (the drain, whose statement writes no
+// table the log shows, reads as a read); the instrument's own connections are none of them.
 func TestK14TheStatementLogGivesTheWriteItsCommitAndEachTransactionItsSpan(t *testing.T) {
 	t.Parallel()
 	lines := logOf(t,

@@ -293,8 +293,10 @@ func (s *Store) Register(ctx context.Context, change Registration) (Registered, 
 // is inWrite's, with its ledger and its second attempt where the first found the project's
 // `evals-md` removed, so fn runs again in the new transaction too and must write nothing it cannot
 // write twice. The evals' locks are taken first, before fn runs, since fn may write and so hold a
-// transaction id, and inWrite takes every lock it waits for before that (lockEvals); each change
-// then runs as Register's does. The answer holds what each change left, in the order of changes.
+// transaction id, and inWrite takes every lock it waits for before that (lockEvals), but for the
+// change log's lock a delivery settings write's trigger takes after that write, which inWrite's
+// comment names; each change then runs as Register's does. The answer holds what each change left,
+// in the order of changes.
 // fn may be nil.
 func (s *Store) RegisterWith(ctx context.Context, project string, fn func(ctx context.Context, tx pgx.Tx) error, changes ...Registration) ([]Registered, error) {
 	evalIDs := make([]string, len(changes))

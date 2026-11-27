@@ -47,9 +47,14 @@ import (
 //     it once the write has settled; the time from the commit to the last page's update, which R14
 //     bounds at 2 s at both rates; whether each page then shows every item the fresh read answers
 //     (a page that shows another is a wrong delta); and every transaction from the write to its
-//     settling, by what wrote it, with the longest of those the write starts (its own, the
-//     refresher's, the production signals' and the change log's drain), and the live hub's
-//     recompute lines and the refresher's transaction lines of the server's log;
+//     settling, by the tables its logged statements write (kindOf), with the longest of those the
+//     write starts (its own, the refresher's, the production signals' and, as kind change-log, a
+//     direct write of the change log's tables), and the live hub's recompute lines and the
+//     refresher's transaction lines of the server's log. The drain that moves the outbox into the
+//     change log is none of them: its one statement, `select delivery_changes_drain($1)`
+//     (delivery's drainOneBatch), writes through a SQL function whose writes the statement log does
+//     not show, so k14 reads it as a read, counts it among the background transactions and times no
+//     drain;
 //  4. the warm reads of each project's two first-paint reads, written to -expect-file, which the
 //     first paints after the restarts that follow must answer item for item (`measure paint -mode
 //     k14`).

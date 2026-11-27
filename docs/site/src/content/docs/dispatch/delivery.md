@@ -39,6 +39,7 @@ They are:
   `failures_measured_since` is the first UTC day they count, and a save whose settings hold a failure source must hold that day too, named in its body or kept from the stored settings.
 
 - **Targets** (`targets`): the target of each of the project's evals `deploy-frequency`, `change-fail-rate`, `merge-to-production`, `pr-open-to-merge`, `deploy-run-success`, `failed-deploy-recovery` and `unowned-p0`, a number or `"off"`.
+  A number there lies in the range its eval's unit holds, or the save is refused: from 0 to 1 for a share (`change-fail-rate` and `deploy-run-success`, so 90 percent is `0.9`), and 0 or more for a count or a duration.
   No settings column holds a target.
   A save writes each target it changes as a new version of the project's eval row, in the save's own transaction, and every read takes the target back from that row.
   A target the save leaves out, or one the eval holds already, writes nothing.
@@ -57,14 +58,15 @@ A reader that wants a source's numbers after a save waits until its `reconciled_
 
 `GET` answers every reader of the project, a read-only token included, and answers `null` for a project that has saved no settings.
 `PUT` writes each top-level field its body names and keeps the stored value of each one it leaves out, as the settings stand when the save is written, so a save that waited for another save of the project keeps what that one wrote.
-`null` clears a field that may be empty.
+`null` clears a field that may be empty, such as a list.
+`delivery` is never empty, so a save that sends it as `null` is refused rather than read as `false`; send `false` to turn delivery off.
 `PUT` answers the settings as `GET` does.
 The settings belong to the deployment rather than to one project, so a credential the broker scoped to one project is refused `403 PROJECT_SCOPE_DEPLOYMENT`, the project its path names included.
 A person saves them, and so does an agent token that no broker scoped to a project; a broker token that acts for a service and no person is refused `403 SIGN_IN_REQUIRED`, as it is refused every write.
 A refused save writes nothing, and its body is `{code, error, field?, source?, project?}`:
 
 - `400 DELIVERY_SETTINGS_INPUT`: a field no reader could read, named in `field`, with the source's index in `source` for a field of a source.
-  Delivery on with no source, more than 50 sources, a kind that is neither `github_workflow` nor `events`, a `github_workflow` source with no deploy workflow, no production job, an empty production job name, a production job named twice or no pull-request checks workflow, a repository that is not `owner/name`, a second `events` source or one that names a repository or a workflow field, two sources that read one repository, a failure source that is not one of the four or is named twice, a failure source with no `failures_measured_since` or a day that is not `YYYY-MM-DD`, and a target of another eval, of an eval the project does not hold, or that is neither a number nor `"off"` are each refused this way.
+  Delivery on with no source, `delivery` sent as `null`, more than 50 sources, a kind that is neither `github_workflow` nor `events`, a `github_workflow` source with no deploy workflow, no production job, an empty production job name, a production job named twice or no pull-request checks workflow, a repository that is not `owner/name`, a second `events` source or one that names a repository or a workflow field, two sources that read one repository, a blank population author, an excluded repository that is not `owner/name`, a failure source that is not one of the four or is named twice, a failure source with no `failures_measured_since` or a day that is not `YYYY-MM-DD`, and a target of another eval, of an eval the project does not hold, that is neither a number nor `"off"` (`null` included), or that lies outside the range its eval's unit holds (named `targets.<slug>`) are each refused this way.
 
 - `409 DELIVERY_SETTINGS_ACCESS`: with delivery on, a `github_workflow` source whose repository Dispatch's GitHub App cannot read, named in `source`.
   Dispatch asks GitHub before it writes anything, and a save whose settings have delivery off asks nothing, so a project whose repository the App can no longer read can still turn delivery off.
@@ -241,9 +243,12 @@ A project's failure measures count each signal where the project has the failure
   A `bug` label makes no failure.
 
 - `api` (failure source `events`): a failure a system posts with an agent or service token, naming the deploy it blames by `deploy_id`, by the GitHub run (`cicd.pipeline.run.id` with `repo`), or by a commit the deploy shipped (`commit_sha`).
+  That deploy must count for the project of the route the failure is posted to, whichever project's record holds it, so a deploy shared with another project is taken.
+  By `commit_sha` the failure blames the earliest deploy holding the commit among the deploys that count for that project, and passes over every deploy that does not.
 
 - `person` (any failure source): a failure a person posts with a credential that holds the `person` scope, the person's flag of a deploy.
   The person is its actor, and its `source_ref` is the server's, `person:<deploy id>:<login>`, so a second flag of one deploy by the same person writes nothing.
+  Its deploy must count for the project of the route, as a system's failure's must.
 
 Every signal counts when it arrives, and no step waits for a person.
 A failure leaves the numbers only when it is rejected.
@@ -252,7 +257,7 @@ The row stays, with the reason, who rejected it and when (`state_reason`, `state
 A person is a credential that holds the `person` scope.
 The project's controller is the session that the project's Legion daemon names as its registered controller at the moment of the write, calling with that session's own broker-issued token.
 Dispatch asks the daemon that the project's Legion setting names, at `GET /legion/v1/controller`, before it writes, and waits at most 2 seconds for the answer.
-A person marks a failure restored with `{"state": "restored", "restored_by_deploy": "<deploy id>"}`, which sets `restored_at` to the time of the write and names the deploy that restored it where the body names one.
+A person marks a failure restored with `{"state": "restored", "restored_by_deploy": "<deploy id>"}`, which sets `restored_at` to the time of the write and names the deploy that restored it where the body names one: a deploy that counts for the project, whichever project's record holds it, and that finished no earlier than the deploy the failure blames.
 Anyone else is refused `403 PRODUCTION_EVENT_STATE_FORBIDDEN`, and so is a controller's write where the project names no Legion daemon or where its daemon names no registered controller or another session.
 Where Dispatch cannot learn the controller, a controller's write is refused `503 LEGION_CONTROLLER_UNREAD`, and the error says why: the daemon answered `404`, because its build is older than that route, it did not answer in time, or Dispatch could not read its answer.
 So the controller can reject or re-count only once its daemon runs a build that serves `GET /legion/v1/controller`, and a person can reject or re-count at any time.
@@ -265,9 +270,10 @@ They are on for a project with delivery on and at least one failure source, and 
 A failure is a fact about its deploy.
 A project's deploys of a UTC day are the deploy rows that finished that day and that count for the project (Which project a row counts for, below).
 A posted deploy counts here only for a project that holds an `events` source, and a `dropped` deploy counts for no project.
-The failures counted for the project are the failure rows on those deploys, whichever project's record holds them, that are not rejected and whose signal maps to a failure source the project has on: `check_fail` to `check_results`, `revert` to `reverts`, `incident_issue` to `incident_label`, and `api` to `events`.
+The failures counted for the project are the failure rows on those deploys that are not rejected and whose signal maps to a failure source the project has on: `check_fail` to `check_results`, `revert` to `reverts`, `incident_issue` to `incident_label`, and `api` to `events`.
 A person's flag counts under any failure source.
-So a failure counts for every project its deploy counts for whose failure sources count its signal.
+A failure of an automatic signal (`check_fail`, `revert` or `incident_issue`) counts for every project its deploy counts for whose failure sources count its signal, whichever project's record holds it.
+A posted failure (`api`, or a person's flag) counts for the project of the route it was posted to alone, whatever other projects its deploy counts for.
 
 - **Change failure rate**: the deploys with at least one counted failure, over every deploy.
   A deploy counts once, whatever number of failures blame it.
@@ -353,13 +359,17 @@ The record has three routes, each of a project:
   It answers `201` with the new row, or `200` with the row the project already holds under that `source_ref`, writing nothing.
   `note` is what the writer says of the event, kept as sent, at most 4,096 bytes.
   A deploy needs `finished_at`, and only an agent or service token posts one: a credential that holds the `person` scope is refused `403 PRODUCTION_EVENT_DEPLOY_FORBIDDEN`.
-  A failure names the deploy it blames, a deploy row of any project, one way, by `deploy_id`, by `cicd.pipeline.run.id` with `repo`, or by `commit_sha`, and one no deploy row matches is `409 PRODUCTION_EVENT_NO_DEPLOY`.
+  A failure names the deploy it blames one way, by `deploy_id`, by `cicd.pipeline.run.id` with `repo`, or by `commit_sha`, and that deploy must count for the route's project, whichever project's record holds it, so a deploy shared with another project is taken.
+  By `commit_sha` it blames the earliest deploy holding the commit, by `finished_at` and then `id`, among the deploys that count for the route's project, so an earlier deploy of another project cannot turn the post into a refusal.
+  A deploy no row matches and one that counts for other projects alone get one answer, `409 PRODUCTION_EVENT_NO_DEPLOY`, which shows nothing of another project's deploys.
+  The failure counts for the route's project alone (The failure measures, above).
   A system's post needs `source_ref`, its own key for the event, and one that starts with a prefix an automatic source keys its own rows under (`github:`, `person:`, `check:`, `revert:` or `incident:`) is refused, since that source's own write under the key would then write nothing.
   A person's flag takes the server's `source_ref`, and a person's post that names another is refused.
+  So are a `finished_at` before `started_at`, a `finished_at` or `detected_at` more than 5 minutes past the server's clock, and a `pull_requests` entry that is not `owner/repo#n`.
   Each of these refusals, and a field no row can hold, is `400 PRODUCTION_EVENT_INPUT`, naming the field.
 
 - `PUT /api/v1/projects/{key}/production-events/{id}/state` rejects, counts again or restores one failure, `{state, reason, restored_by_deploy?}` (The record of deploys and failed changes, above), and answers the row.
-  A row the project does not hold is `404 PRODUCTION_EVENT_NOT_FOUND`; a deploy's row, a state that is none of the three, a reject or a re-count without a reason, and a `restored_by_deploy` beside another state are `400 PRODUCTION_EVENT_STATE_INPUT`; and a `restored_by_deploy` that is no deploy row is `409 PRODUCTION_EVENT_NO_DEPLOY`.
+  A row the project does not hold is `404 PRODUCTION_EVENT_NOT_FOUND`; a deploy's row, a state that is none of the three, a reject or a re-count without a reason, a `restored_by_deploy` beside another state, and a `restored_by_deploy` that finished before the deploy the failure blames finished are `400 PRODUCTION_EVENT_STATE_INPUT`; and a `restored_by_deploy` that is no deploy row, or that counts for other projects alone, is `409 PRODUCTION_EVENT_NO_DEPLOY`, one answer for both.
 
 Each of the three answers `404 PROJECT_NOT_FOUND` for no such project, and a credential the broker scoped to another project is refused either write with `403 PROJECT_SCOPE`.
 
