@@ -598,10 +598,35 @@ test("new node below on a block of the issue's own fragment stands right after i
 });
 
 test("new node under stands first among the children of the issue's own fragment", () => {
-  // The third statement has no child of the spec: the new block is its first child.
+  // The third statement has no child of the spec, and a conversation - a lens and a comment - that
+  // the read answers before its ranked children: the new row is drawn after the comment, the last
+  // of them, where the read answers the new block once it is the first of the issue's own
+  // fragment there.
+  const three = (converted.nodes ?? []).filter((node) => node.parent?.id === "<statement-3>");
+  expect(three.map((node) => [node.kind, node.rank])).toEqual([
+    ["lens", null],
+    ["comment", null],
+  ]);
   expect(place("<statement-3>").new_under).toStrictEqual({
     kind: "new",
-    place: { after: null, body: { after: null, parent: "<statement-3>" } },
+    place: { after: "<comment-on-statement-3>", body: { after: null, parent: "<statement-3>" } },
+  });
+  // The message's own block opens its children, drawn in the message's row, and the agent's
+  // reply follows: the new row is drawn after the reply.
+  expect(
+    (converted.nodes ?? []).flatMap((node) => (node.parent?.id === "<message>" ? [node.id] : []))
+  ).toEqual(["message/<message>#b1", "<agent-reply>"]);
+  expect(place("<message>").new_under).toStrictEqual({
+    kind: "new",
+    place: { after: "<agent-reply>", body: { after: null, parent: "message/<message>" } },
+  });
+  // A node whose one child is its own block draws the new row first.
+  expect(place("<comment-on-statement-3>").new_under).toStrictEqual({
+    kind: "new",
+    place: {
+      after: null,
+      body: { after: null, parent: "comment/<comment-on-statement-3>" },
+    },
   });
   // The criterion has three children of the spec, which stand before its own-fragment children:
   // the new row is drawn after the last of them, and is the first of the issue's own fragment.

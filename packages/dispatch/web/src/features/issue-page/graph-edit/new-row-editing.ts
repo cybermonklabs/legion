@@ -189,6 +189,26 @@ export function useNewRowEditing({
     issue === undefined ? undefined : heldRead(client, issue)?.view_of
   );
 
+  // A placed node: its row leaves the new rows once the PATCH is taken, and the outline draws the
+  // node where the answer put it in the held read. Where that is under another key than the row
+  // edited - a place the answer gives other than the one the row stood at - the editing follows
+  // the node's own row there in this render, with the document's one editor and the caret where
+  // the reader had it, as after a taken move (`move-keys.ts`), before the tree's drop rule reads
+  // the edited row as gone and ends the editing (`IssueTree.tsx`). A refused placing lets its row
+  // go first (below).
+  if (issue !== undefined && editing !== undefined) {
+    for (const [blockId, mine] of made.current) {
+      if (mine.phase !== "edited" || mine.key !== editing.row) continue;
+      if (newRows.some((row) => row.blockId === blockId)) continue;
+      if (rows.some((row) => row.kind === "node" && rowKeyOf(row) === mine.key)) continue;
+      const drawn = drawnRowOf(rows, blockId);
+      if (drawn === undefined) continue;
+      const from = mine.key;
+      mine.key = rowKeyOf(drawn);
+      bridge.follow?.(from, mine.key);
+    }
+  }
+
   bridge.fresh =
     issue === undefined
       ? undefined
@@ -355,12 +375,13 @@ export function useNewRowEditing({
     }
   });
 
-  // A placing `PATCH` that was not taken: the focus on the row goes with its node to where the
-  // server keeps it (`RowReveal.kept`), or comes back to its row where a move drew it elsewhere
-  // under the same key (above).
+  // A placing `PATCH` that was not taken: the row is no longer this outline's to follow (above),
+  // and the focus on it goes with its node to where the server keeps it (`RowReveal.kept`), or
+  // comes back to its row where a move drew it elsewhere under the same key (above).
   useEffect(() => {
     if (issue === undefined) return;
     return subscribeRefusedPlacings(client, issue, (node, blockId) => {
+      made.current.delete(blockId);
       const focused = document.activeElement?.closest<HTMLElement>("[data-node-row]");
       if (focused?.dataset.nodeId !== blockId) return;
       kept.current = focused.dataset.rowKey;

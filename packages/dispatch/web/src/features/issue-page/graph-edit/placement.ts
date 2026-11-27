@@ -117,6 +117,9 @@ export type Placement = Readonly<Record<Entry, Verdict>>;
 interface Walk {
   /** Each node by its read id, the first the walk reaches where two share one. */
   readonly byId: ReadonlyMap<string, TreeAnswerNode>;
+  /** The children of each parent, by its read id, in the walk's order, which is the order the read
+   *  answers them in: no context and nothing gone. */
+  readonly children: ReadonlyMap<string, readonly TreeAnswerNode[]>;
   /** The ranked children of each parent, by its read id, in the walk's order. Ranks of one page
    *  are no ranks of another, so the walk's order is the one order of siblings. */
   readonly ranked: ReadonlyMap<string, readonly TreeAnswerNode[]>;
@@ -154,6 +157,22 @@ const TREE_SLUG = "tree";
 /** The kinds of node a person writes under as under a criterion (R3): an ask, a comment and a
  *  message. */
 const ITEM_KINDS: Readonly<Record<string, true>> = { ask: true, comment: true, message: true };
+
+/** The kinds of node the read answers first among a node's children, before every ranked one,
+ *  whatever their rank: a conversation item's own blocks, then the conversation - an ask, a
+ *  comment, a message, a lens and a risk (the server's `conversationKinds`,
+ *  `refs/tree_walk.go`). An item's own block is drawn in the item's row, never in one of its own. */
+const ITEM_BLOCK_KINDS: Readonly<Record<string, true>> = {
+  ask_block: true,
+  comment_block: true,
+  message_block: true,
+};
+const CONVERSATION_KINDS: Readonly<Record<string, true>> = {
+  ...ITEM_KINDS,
+  ...ITEM_BLOCK_KINDS,
+  lens: true,
+  risk: true,
+};
 
 const READ_NEXT: Verdict = { kind: "read_next" };
 
@@ -245,11 +264,17 @@ export function placingOf({ held, node, place }: PlacingInput): Placing {
   return { body: place.body, kind: "send", placementSeq: seq };
 }
 
-/** Indexes `held`: its nodes by read id, each parent's ranked children in the walk's order, and
- *  the nodes whose children may go on past the pages loaded. */
+/** Indexes `held`: its nodes by read id, each parent's children and its ranked children in the
+ *  walk's order, and the nodes whose children may go on past the pages loaded. */
 function walkOf(held: TreeAnswer): Walk {
   const byId = new Map<string, TreeAnswerNode>();
+  const children = new Map<string, TreeAnswerNode[]>();
   const ranked = new Map<string, TreeAnswerNode[]>();
+  const add = (under: Map<string, TreeAnswerNode[]>, parent: string, node: TreeAnswerNode) => {
+    const siblings = under.get(parent);
+    if (siblings === undefined) under.set(parent, [node]);
+    else siblings.push(node);
+  };
   let last: TreeAnswerNode | undefined;
   for (const node of held.nodes ?? []) {
     if (byId.has(node.id)) continue;
@@ -257,10 +282,9 @@ function walkOf(held: TreeAnswer): Walk {
     // The context the read carries stands in no issue's tree.
     if (node.role === "context") continue;
     last = node;
-    if (!hasRank(node) || node.state === "gone" || node.parent === null) continue;
-    const siblings = ranked.get(node.parent.id);
-    if (siblings === undefined) ranked.set(node.parent.id, [node]);
-    else siblings.push(node);
+    if (node.state === "gone" || node.parent === null) continue;
+    add(children, node.parent.id, node);
+    if (hasRank(node)) add(ranked, node.parent.id, node);
   }
   const open = new Set<string>();
   if (typeof held.cursor === "string" && held.cursor !== "") {
@@ -270,7 +294,7 @@ function walkOf(held: TreeAnswer): Walk {
       id = byId.get(id)?.parent?.id;
     }
   }
-  return { byId, open, ranked };
+  return { byId, children, open, ranked };
 }
 
 function hasRank(node: TreeAnswerNode): boolean {
@@ -470,13 +494,22 @@ function newBelow({ walk, node }: Focus): Verdict {
   }
 }
 
-/** New node under (R3): first among the node's children of the issue's own fragment, drawn after
- *  its last child of an earlier band (the spec's). */
+/** New node under (R3): first among the node's children of the issue's own fragment, drawn where
+ *  the read answers the node once placed. The read answers a node's children in one order - the
+ *  conversation (`CONVERSATION_KINDS`), then the ranked children by rank, band by band, then the
+ *  rest - so the new block stands right before the first child, in the walk's order, that the
+ *  read answers after it: a ranked child of its own band or a later one, or one of the rest. The
+ *  new row is drawn right after the last child before that one that the outline draws in a row of
+ *  its own, and first where there is none. */
 function newUnder({ walk, node }: Focus): Verdict {
   if (incomplete(walk, node.id, BAND.own)) return READ_NEXT;
-  const before = rankedChildren(walk, node.id)
-    .filter((child) => bandOf(child) < BAND.own)
-    .at(-1);
+  let before: TreeAnswerNode | undefined;
+  for (const child of walk.children.get(node.id) ?? NONE) {
+    const earlier =
+      Object.hasOwn(CONVERSATION_KINDS, child.kind) || (hasRank(child) && bandOf(child) < BAND.own);
+    if (!earlier) break;
+    if (!Object.hasOwn(ITEM_BLOCK_KINDS, child.kind)) before = child;
+  }
   return {
     kind: "new",
     place: { after: before?.id ?? null, body: { after: null, parent: routeId(node) } },

@@ -2574,6 +2574,136 @@ test("typing in a new row under a node while its placing settles keeps the row a
   expect(sent.patches.map((patch) => patch.body)).toEqual([{ after: null, parent: HEADING.id }]);
 });
 
+const MESSAGE = nodeOf(converted, "<message>");
+const AGENT_REPLY = nodeOf(converted, "<agent-reply>");
+
+/** The message as the node routes name it (`placement.ts`' `routeId`), and its own block. */
+const MESSAGE_ROUTE = `message/${MESSAGE.id}`;
+const MESSAGE_BLOCK = `${MESSAGE_ROUTE}#b1`;
+
+/** A new row New row under made on the row of `parent`, with `Q` typed in it, the read that holds
+ *  its node landed, and its placing PATCH answered with `answer` and taken: the page, the room of
+ *  the issue's own fragment and its editor, the new row and its editable, the keys of the rows
+ *  right under `parent`'s before the new row was made and as it was first drawn, the caret as the
+ *  reader left it, and what the PATCH carried. */
+async function placedUnder(
+  parent: TreeAnswerNode,
+  answer: { readonly after: string | null; readonly parent: string }
+) {
+  const user = userEvent.setup();
+  holdTreeReads();
+  const sent = answerNodeRoutes({
+    patches: [{ body: { ...answer, placement_seq: PLACED_SEQ }, status: 200 }],
+  });
+  const live = drawLive();
+  const tree = live.rooms.get(TREE_ID);
+  const above = await waitFor(() => {
+    const row = rowOf(live.view, parent);
+    if (row === null) throw new Error(`no row is drawn for ${parent.id}`);
+    return row;
+  });
+  const parentKey = above.dataset.rowKey ?? "";
+  const before = childKeys(live.view, parentKey);
+
+  await pickOn(live, user, parent, CONTROL_LABELS.edit_new_under);
+  const { editable, row } = await caretInNewRow(live);
+  const id = row.dataset.nodeId ?? "";
+  const drawn = childKeys(live.view, parentKey);
+  pressIn(editable, "Q");
+  await waitFor(() => expect(caretPlace()).toEqual([`${id}|Q|1`, `${id}|Q|1`]));
+  const caret = caretPlace();
+  const view = tree?.editor?.view;
+  if (view === undefined) throw new Error("the tree artifact's editor was never made");
+  const selection = [view.state.selection.anchor, view.state.selection.head];
+  act(() => live.client.setQueryData(outlineQuery(KEY, "graph").queryKey, indexedWith(id)));
+  await waitFor(() => expect(sent.patches).toHaveLength(1));
+  await waitFor(() =>
+    expect(heldSeq(live, id), "the PATCH's answer was not taken").toBe(PLACED_SEQ)
+  );
+  await waitInAct(50);
+  return {
+    before,
+    caret,
+    drawn,
+    editable,
+    id,
+    key: `${parentKey}>${id}`,
+    live,
+    parentKey,
+    row,
+    selection,
+    sent,
+    tree,
+    view,
+  };
+}
+
+// R3: the read answers a node's conversation - an item's own blocks, its replies - before its
+// ranked children. New row under a message that holds its block and a reply draws the new row
+// after the reply, where the read answers the node once its PATCH places it first of the issue's
+// own fragment there. The placed node keeps the row, the same element under the same key at the
+// same place, with the caret, and the next letter the reader types goes into its block.
+test("a new row under a node with conversation children stands after them and keeps the caret once placed", async () => {
+  expect(
+    (converted.nodes ?? []).flatMap((node) => (node.parent?.id === MESSAGE.id ? [node.id] : [])),
+    "the fixture's message holds another conversation"
+  ).toEqual([MESSAGE_BLOCK, AGENT_REPLY.id]);
+  const placed = await placedUnder(MESSAGE, { after: null, parent: MESSAGE_ROUTE });
+  const reply = `${placed.parentKey}>${AGENT_REPLY.id}`;
+  expect(placed.before, "the reply stands elsewhere").toEqual([reply]);
+  expect(placed.drawn, "New row under stands elsewhere among the message's children").toEqual([
+    reply,
+    placed.key,
+  ]);
+  expect(placed.sent.patches.map((patch) => patch.body)).toEqual([
+    { after: null, parent: MESSAGE_ROUTE },
+  ]);
+  expect(heldNode(placed.live, placed.id)?.parent?.id).toBe(MESSAGE.id);
+  expect(placed.row.isConnected, "the placed node is drawn in another row").toBe(true);
+  expect(childKeys(placed.live.view, placed.parentKey), "the placed node's row moved").toEqual([
+    reply,
+    placed.key,
+  ]);
+  expect(document.activeElement, "the row lost the caret").toBe(placed.editable);
+  expect(caretPlace(), "the caret moved").toEqual(placed.caret);
+  typeInEditor(placed.view, "u");
+  expect(fragmentOf(placed.tree).filter((block) => block.includes(placed.id))).toEqual([
+    `paragraph ${placed.id}: Qu`,
+  ]);
+  expect(document.activeElement, "the next letter took the caret out of the row").toBe(
+    placed.editable
+  );
+});
+
+// R3: where the PATCH's answer places the node under another parent - right after the heading
+// under the issue - the outline draws the node's own row there, under another key, and the
+// editing follows it with the document's one editor and the caret where the reader had it.
+test("a placed node drawn under another row's key takes the editing and the caret with it", async () => {
+  const placed = await placedUnder(MESSAGE, { after: HEADING.id, parent: `issue/${NAMED}` });
+  const key = `${KEY}>${placed.id}`;
+  const top = childKeys(placed.live.view, KEY);
+  expect(top.indexOf(key), "the placed node stands elsewhere").toBe(
+    top.indexOf(`${KEY}>${HEADING.id}`) + 1
+  );
+  expect(document.activeElement, "the placed node's row lost the caret").toBe(placed.editable);
+  expect(placed.editable.closest<HTMLElement>("[data-node-row]")?.dataset.rowKey).toBe(key);
+  // The row drawn anew draws the editor's selection again, which names the end of the block's
+  // text as the paragraph's own point: the caret is read from the editor and its block.
+  expect(
+    caretPlace().every((point) => point.startsWith(`${placed.id}|`)),
+    "the caret left the node's block"
+  ).toBe(true);
+  expect(
+    [placed.view.state.selection.anchor, placed.view.state.selection.head],
+    "the caret moved"
+  ).toEqual(placed.selection);
+  expect(editorsFrom(placed.live, TREE_ID), "the placing let the editor go").toEqual([TREE_ID]);
+  typeInEditor(placed.view, "u");
+  expect(fragmentOf(placed.tree).filter((block) => block.includes(placed.id))).toEqual([
+    `paragraph ${placed.id}: Qu`,
+  ]);
+});
+
 // R3: Enter in the middle of a block's text is the editor's own key - in a statement's paragraph
 // the editor refuses the split - and makes no new row; nothing is sent.
 test("Enter in the middle of a block's text keeps today's behaviour", async () => {
