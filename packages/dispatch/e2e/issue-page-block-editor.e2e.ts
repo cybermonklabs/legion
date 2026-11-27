@@ -25,6 +25,7 @@ import {
   documentEditor,
   documentTransport,
   openDocumentSockets,
+  openSpecAndAwaitHeadingIds,
   selectEditorText,
   typeAtEnd,
 } from "./editor";
@@ -424,6 +425,10 @@ test("the block editor shows two browsers each other's text and cursor live @pho
       await Promise.all([ready(alice), ready(bob)]);
       await enter(bob, firstRow(bob));
       await enter(alice, firstRow(alice));
+      // A peer's caret is not drawn where it stands on the focused editor's own caret
+      // (`@legion/proof-editor`'s `collab-cursor-plugin.ts`), and bob's caret at the block's start
+      // would move along with each letter alice types there, so bob's caret goes to the end.
+      await bob.keyboard.press("End");
       await alice.keyboard.type("sharedword ");
       await expect(rowEditor(firstRow(bob))).toContainText("sharedword", { timeout: 2_000 });
       await expect(rowEditor(firstRow(bob)).locator(".proof-collab-cursor__label")).toBeVisible();
@@ -500,6 +505,15 @@ test("the room differs only inside the block after an edit @phone", async ({ bro
     );
     const fragments = artifacts.map((artifact) => artifact.fragment ?? "prosemirror");
     expect(new Set(fragments).size, "the converted seed holds three fragments").toBe(3);
+    // The room's snapshots are read in the whole document's editor (`snapshot`), which writes the
+    // id of each heading it derives from the heading's words as it first opens a document whose
+    // headings hold none (Milkdown's `syncHeadingIdPlugin`): that write is made, and stored, here,
+    // before the first snapshot, so no write of the snapshots' own reader lands between two.
+    const heading = /^#+ (.+)$/m.exec((await getArtifactText(seed.specArtifactId)).markdown)?.[1];
+    if (heading === undefined) throw new Error("the seed's spec holds no heading");
+    await inReader(browser, "bob", false, (bob) =>
+      openSpecAndAwaitHeadingIds(bob, seed.key, seed.specArtifactId, heading)
+    );
     const sockets = openDocumentSockets(page);
     await openOutline(page, seed.key, FIRST);
     await ready(page);
@@ -621,9 +635,25 @@ test("the block editor ends and reports when another writer deletes or merges th
       });
       // Keep the outgoing edit in flight until the other browser's removal reached this editor.
       await expect(row.locator(EDITOR_BOX_SELECTOR)).toHaveCount(0);
-      await expect(page.getByRole("status").filter({ hasText: /not saved/i })).toBeVisible();
+      if (removal === "delete") {
+        await expect(page.getByRole("status").filter({ hasText: /not saved/i })).toBeVisible();
+      } else {
+        // The server writes the merged block into the held block's own element, by its place
+        // (`pmdoc/update.go`'s `updateChildren`), so the room keeps the edit in flight there:
+        // the status says the block was removed, and not that the typing was lost.
+        const status = page.getByRole("status").filter({ hasText: /was removed/i });
+        await expect(status).toBeVisible();
+        await expect(status).not.toContainText(/not saved/i);
+      }
       hold = false;
       for (const send of release.splice(0)) send();
+      if (removal === "merge") {
+        await expect
+          .poll(async () => (await getArtifactText(seed.specArtifactId)).markdown, {
+            message: "the room does not keep the typing in flight as the merge ended the editor",
+          })
+          .toContain("notkept");
+      }
       const before = (await getArtifactText(seed.specArtifactId)).markdown;
       await page.keyboard.type("afterremoval");
       expect((await getArtifactText(seed.specArtifactId)).markdown).toBe(before);
@@ -666,11 +696,15 @@ test("an open block editor stays writable when the block schema changes @phone",
 test("ArrowDown keeps the caret in the block after a hard break @phone", async ({ browser }) => {
   test.setTimeout(ROW_TIMEOUT);
   await inSeed(browser, async (seed, page) => {
+    // Under the post r1 answers, beside r1, so the outline draws rows below it as below r1: a
+    // statement that answers nothing stands under the issue, where it was the outline's last row.
+    const parent = seed.origins[FIRST];
+    if (parent === undefined) throw new Error(`the seed's ${FIRST} answers no post`);
     await editArtifact(seed.specArtifactId, {
       ops: [
         {
           after: `block:${FIRST}`,
-          markdown: ":::requirement{#r-hard-break}\nFirst line.  \nLast line.\n:::\n",
+          markdown: `:::requirement{#r-hard-break parent="${parent}"}\nFirst line.  \nLast line.\n:::\n`,
           op: "insert",
         },
       ],
@@ -680,7 +714,8 @@ test("ArrowDown keeps the caret in the block after a hard break @phone", async (
     const row = rowOf(page, "r-hard-break");
     await enter(page, row);
     const editor = rowEditor(row);
-    await expect(editor.locator("br")).toBeVisible();
+    // A `<br>` has no width, which Playwright reads as hidden whatever draws it.
+    await expect(editor.locator("br")).toHaveCount(1);
     await editor.evaluate((element) => {
       const afterBreak = element.querySelector("br")?.nextSibling;
       if (!afterBreak) throw new Error("no text after the hard break");
@@ -772,9 +807,20 @@ test("an Enter before the block editor is ready draws the caret at once and keep
       await expect.poll(() => caretIn(rowEditor(row))).toBe(offset + inserted.length);
       await inReader(browser, "bob", false, async (bob) => {
         await openWholeSpec(bob, seed.key);
-        await expect(documentEditor(bob).locator(`[data-block-id="${id}"]`)).toContainText(
-          expected
-        );
+        // Bob's editor draws alice's caret, which stands after `e`, with her name, in the block's
+        // text; the room's text is read without it.
+        const block = documentEditor(bob).locator(`[data-block-id="${id}"]`);
+        await expect
+          .poll(() =>
+            block.evaluate((element) => {
+              const text = element.cloneNode(true) as Element;
+              for (const cursor of text.querySelectorAll(".ProseMirror-yjs-cursor")) {
+                cursor.remove();
+              }
+              return text.textContent ?? "";
+            })
+          )
+          .toContain(expected);
       });
     });
   }

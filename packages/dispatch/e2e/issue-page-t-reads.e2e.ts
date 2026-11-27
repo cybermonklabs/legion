@@ -252,19 +252,14 @@ test("the first load reads the tree once and a filter its view once", async ({ b
     const statement = await focusRow(page, blockNodeId(specSlug, seeded.requirements[0]));
     await page.keyboard.press("Enter");
     await expect(
-      statement.locator("[data-editor-box] .dispatch-doc"),
-      "Enter on a statement row did not open the spec's editor"
+      statement.locator('[data-editor-box] [contenteditable="true"]'),
+      "Enter on a statement row did not open the block editor"
     ).toBeVisible();
-    await expect
-      .poll(() => commentsListReads(traffic.requests).length, {
-        message: "opening a document's editor did not send one whole-issue comments read",
-      })
-      .toBe(1);
     await expectLoadSettled(traffic);
     expect(
       commentsListReads(traffic.requests),
-      "opening a document's editor sent more than one whole-issue comments read"
-    ).toHaveLength(1);
+      "Enter on a statement sent a whole-issue comments read"
+    ).toEqual([]);
   });
 });
 

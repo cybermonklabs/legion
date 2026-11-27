@@ -470,6 +470,10 @@ export function caretInRowBlock(page: Page, blockId: string): Promise<boolean> {
       const editable = document.activeElement?.closest('[contenteditable="true"]') ?? null;
       if (editable === null || editable.closest(selectors.nodeRow) === null) return false;
       const anchor = window.getSelection()?.anchorNode ?? null;
+      // A row's block editor binds the block itself, whose editable carries the block's id.
+      if (editable.matches(`[data-block-id="${block}"]`)) {
+        return anchor !== null && editable.contains(anchor);
+      }
       const drawn = editable.querySelector(`[data-block-id="${block}"]`);
       return anchor !== null && drawn?.contains(anchor) === true;
     },
