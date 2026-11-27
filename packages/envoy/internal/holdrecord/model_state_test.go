@@ -145,9 +145,10 @@ type modelSlot struct {
 // commands have a done entry (Ever), which have one after the latest done prove (Since), the last
 // done entry, the latest prove's disks, which commands' latest entry is an intent, and, under
 // WayOut, what the stops of commands other than hold set and hold release left (Left). toDone
-// builds the record from it alone, so a Repeatable command can run without limit in a finite
-// space, and states with one journal stand for one record: what the package decides and reads on
-// a record is a function of its journal (modelTable.admits, disagreement).
+// combines the journal with the scenario's workflow and hub flag to build the record. A
+// Repeatable command can run without limit in this finite space. Each walk fixes its scenario
+// and table: admission depends on the journal and request (modelTable.admits), and disagreement
+// depends on the journal and current disks. explore owns both caches, so neither crosses walks.
 type modelJournal struct {
 	Rec        bool // the done record exists
 	Ever       modelCmds

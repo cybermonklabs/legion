@@ -288,8 +288,8 @@ func classify(r modelRules, sc modelScenario, kind string, s modelState, trace [
 
 // disagreement checks, at a hub-restore state of the current rules, that the package's own
 // readings of the record the state stands for are the model's: Step1, Proven, Epoch, Expected and
-// Moved. It returns "" when they agree, else what differs. It reads the state's journal j and its
-// disks cur alone, so it is a function of the two, and a walk checks each pair it reaches once.
+// Moved. It returns "" when they agree, else what differs. Within one walk's fixed scenario it
+// reads the state's journal j and disks cur, so that walk checks each pair it reaches once.
 func disagreement(sc modelScenario, j modelJournal, cur [2]modelDisk) string {
 	if !sc.Hub || !j.Rec {
 		return ""

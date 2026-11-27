@@ -288,10 +288,10 @@ func (a modelAsk) index() int {
 	return i
 }
 
-// admits reports whether decide admits a on the record j stands for (toDone). decide is a
-// function of the record and the request alone, and the record of a journal (toDone's whole
-// input), so a walk asks decide once for each journal and request it reaches, and every other
-// state with that journal takes the same answer.
+// admits reports whether decide admits a on the record j stands for in this walk's scenario.
+// decide reads the record and request; toDone also reads the scenario's workflow and hub flag.
+// explore gives each walk a fixed scenario and table and its own modelDecided, so journal and
+// request contain every varying input and each pair needs to be decided only once per walk.
 func (t modelTable) admits(sc modelScenario, j modelJournal, a modelAsk) bool {
 	d := t.decided
 	if d.answers == nil || d.last != j {
@@ -452,7 +452,8 @@ func explore(r modelRules, t modelTable, sc modelScenario, bound int) (int, []mo
 	// The operator steps, which liveness may use, in one list: node i's lead to the nodes
 	// opTo[opFrom[i]:opFrom[i+1]]. A node's steps are all found while it is expanded, which the
 	// walk does in node order.
-	var opFrom, opTo []int32
+	var opFrom []int
+	var opTo []int32
 	trace := func(i int32) []string {
 		n := 0
 		for j := i; j >= 0; j = nodes.at(j).parent {
@@ -483,7 +484,7 @@ func explore(r modelRules, t modelTable, sc modelScenario, bound int) (int, []mo
 	var edges []modelEdge // next's steps from one state, the buffer reused for every state
 	for i := int32(0); i < nodes.n; i++ {
 		s := nodes.at(i).s
-		opFrom = append(opFrom, int32(len(opTo)))
+		opFrom = append(opFrom, len(opTo))
 		if current {
 			k := modelReading{s.modelJournal, s.Cur}
 			why, seen := readings[k]
@@ -516,11 +517,11 @@ func explore(r modelRules, t modelTable, sc modelScenario, bound int) (int, []mo
 			}
 		}
 	}
-	opFrom = append(opFrom, int32(len(opTo)))
+	opFrom = append(opFrom, len(opTo))
 	n := nodes.n
 	// The operator steps reversed, in one list too: the steps into node j come from the nodes
 	// revFrom[revStart[j]:revStart[j+1]], in node order.
-	revStart := make([]int32, n+1)
+	revStart := make([]int, n+1)
 	for _, j := range opTo {
 		revStart[j+1]++
 	}
@@ -659,7 +660,7 @@ var (
 // Cost, measured with getrusage(RUSAGE_CHILDREN) in a local scoped run of the whole of
 // TestTheHoldJournalModel at its default (every profile at bound 2, and v62 at bound 3),
 // GOMAXPROCS=4 and -test.parallel=4, two large walks at once (failWalks) and a 4 GiB soft memory
-// limit: peak RSS 829,824 kB, wall 18.1 s. Each large walk is about 1.3 to 1.5 million states.
+// limit: peak RSS 910,624 kB, wall 18.9 s. Each large walk is about 1.3 to 1.5 million states.
 var pinnedBound2 = map[string]modelCount{
 	"v63":                        {1450140, 0, nil},
 	"v63-WayOut":                 {1430444, 14517, map[string]int{classWayOut: 14517}},
