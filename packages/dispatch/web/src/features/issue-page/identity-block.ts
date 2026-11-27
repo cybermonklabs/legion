@@ -21,8 +21,8 @@ export const HEADER_SCROLLS_QUERY = "(max-width: 760px)";
  *  at the widths where the filter row is what stays. */
 export const FILTER_ROW_ATTRIBUTE = "data-filter-row";
 
-/** How far the page has to have scrolled before the identity block draws its shadow, in CSS
- *  pixels: the prototype's own `scrollY > 40` for `#hdr-sticky.stuck`. */
+/** How far the page has to have scrolled before the identity block draws its soft shadow under
+ *  its lower line, in CSS pixels: the prototype's own `scrollY > 40` for `#hdr-sticky.stuck`. */
 const CONDENSED_AFTER = 40;
 
 /** How tall the box at the foot of the screen is while it is drawn - the one place to write,
@@ -72,24 +72,30 @@ export function bringOnScreen(element: HTMLElement): void {
 /**
  * Publishes the height of the band that stays at the top of the screen as
  * `IDENTITY_HEIGHT_PROPERTY` - `ref`, the identity block, from 761 px up, and the filter row at
- * 760 px and below, where the header scrolls away (`HEADER_SCROLLS_QUERY`) - and answers whether
- * the block is stuck to the top of the screen, which is when it draws its shadow: the prototype's
+ * 760 px and below, where the header scrolls away (`HEADER_SCROLLS_QUERY`) - and answers where
+ * the page stands under the block, which decides the edge the block draws: `scrolled` once the
+ * page has scrolled at all, which draws its lower line, and `condensed` once the block is stuck
+ * to the top of the screen, which draws its soft shadow under that line too: the prototype's
  * `#hdr-sticky.stuck`. The block keeps its size stuck or not, the title its 22 px type and the
  * key its row, as the approved picture of the scrolled page draws them (63 px at 1440 px); the
  * properties line under it is not in the block, and scrolls away under it.
  *
- * The block draws its shadow once the page has scrolled more than `CONDENSED_AFTER` pixels, as
- * the prototype does, at the widths where it stays: at 760 px and below it scrolls away with the
- * page (`HEADER_SCROLLS_QUERY`), is never stuck, and draws none, and the shadow is measured again
- * when the width crosses that line. `restoringTo` is the place the page is about to put the
- * reader back at, in pixels down the document, where it has one (`IssuePage`'s `panelScroll`):
- * the shadow is drawn for that place in the commit that restores it, rather than a frame later.
+ * The block draws its lower line, 1 px in the page's line colour, from the first pixel the page
+ * scrolls, so the properties line passes under an edge and not under a cut (R22 of
+ * dispatch://INFRA-3940), and its soft shadow once the page has scrolled more than
+ * `CONDENSED_AFTER` pixels, as the prototype does. Both hold at the widths where it stays: at
+ * 760 px and below it scrolls away with the page (`HEADER_SCROLLS_QUERY`), is never stuck, and
+ * draws neither, and both are measured again when the width crosses that line. `restoringTo` is
+ * the place the page is about to put the reader back at, in pixels down the document, where it
+ * has one (`IssuePage`'s `panelScroll`): the edge is drawn for that place in the commit that
+ * restores it, rather than a frame later.
  */
 export function useIdentityBlock(
   ref: RefObject<HTMLElement | null>,
   restoringTo?: number
-): { condensed: boolean } {
+): { condensed: boolean; scrolled: boolean } {
   const [stuck, setStuck] = useState(false);
+  const [scrolled, setScrolled] = useState(false);
 
   // The height is measured in a layout effect, so the first frame a reader sees already carries
   // it: a row placed against it on that frame would otherwise be placed against nothing. The
@@ -127,7 +133,12 @@ export function useIdentityBlock(
   useEffect(() => {
     if (ref.current === null) return;
     const narrow = window.matchMedia(HEADER_SCROLLS_QUERY);
-    const measure = () => setStuck(window.scrollY > CONDENSED_AFTER && !narrow.matches);
+    const measure = () => {
+      // How far the page has scrolled under the block: nothing where the block scrolls with it.
+      const under = narrow.matches ? 0 : window.scrollY;
+      setScrolled(under > 0);
+      setStuck(under > CONDENSED_AFTER);
+    };
     window.addEventListener("scroll", measure, { passive: true });
     window.addEventListener("resize", measure);
     narrow.addEventListener("change", measure);
@@ -139,14 +150,12 @@ export function useIdentityBlock(
     };
   }, [ref]);
 
-  // A page restored past `CONDENSED_AFTER` is a page the block draws its shadow on, at the widths
-  // where it stays. The measurement above takes over as soon as the reader scrolls again.
-  return {
-    condensed:
-      restoringTo === undefined
-        ? stuck
-        : restoringTo > CONDENSED_AFTER && !window.matchMedia(HEADER_SCROLLS_QUERY).matches,
-  };
+  // A page restored past 0 is a page the block draws its line on, and one restored past
+  // `CONDENSED_AFTER` its shadow too, at the widths where it stays. The measurement above takes
+  // over as soon as the reader scrolls again.
+  if (restoringTo === undefined) return { condensed: stuck, scrolled };
+  const under = window.matchMedia(HEADER_SCROLLS_QUERY).matches ? 0 : restoringTo;
+  return { condensed: under > CONDENSED_AFTER, scrolled: under > 0 };
 }
 
 /** The element that stays at the top of the screen for `element`: itself or its nearest
