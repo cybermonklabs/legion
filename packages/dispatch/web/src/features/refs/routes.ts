@@ -513,10 +513,12 @@ export function parseIssuePath(pathname: string, search = ""): IssueRoute | unde
   // A handoff's page address. It opens that handoff's entry in the history on the new page and
   // its card on today's Conversation tab, and names nothing in text (`pageRoutes`), as the
   // server's `text` reads no handoff. Its id is any one decoded segment, as an ask's, a comment's
-  // and a message's address takes: an id that is no handoff of the issue, in whatever form, opens
-  // the issue's page too, whose history says that no such handoff exists. It is lower-cased, as
-  // the server writes a handoff's id, so a UUID in upper case names its handoff. The id is
-  // `handoffId`, not `id`, so no reader of an item's route takes it in.
+  // and a message's address takes: an id that is no handoff of the issue opens the issue's page
+  // too, whose history says that no such handoff exists. A segment that does not decode, decodes
+  // empty or holds a control character (`decodedSegment`) gives no route, and the page drawn
+  // there is the not-found page. The id is lower-cased, as the server writes a handoff's id, so a
+  // UUID in upper case names its handoff. The id is `handoffId`, not `id`, so no reader of an
+  // item's route takes it in.
   const handoff = target.match(/^handoffs\/([^/?#\s]+)$/);
   if (handoff !== null) {
     const handoffId = decodedSegment(handoff[1] ?? "")?.toLowerCase();

@@ -457,7 +457,6 @@ export function IssueHistory({
     addressed,
     addressedEntry: addressedHere?.id,
     anchor,
-    handoffId: addressedHandoff?.id,
     heading,
     item,
     listDrawn,

@@ -738,9 +738,10 @@ test("the decisions tab owns its path and names the issue's decisions.md", () =>
 
 // A handoff's page address: both pages read it, the new page to open its entry in the history
 // and today's to open its card on the Conversation tab. Its id is any one decoded segment, as an
-// ask's, a comment's and a message's is, so an id that names no handoff of the issue, in whatever
-// form, opens the issue's page, which says so. The route names it `handoffId`, not `id`, so no
-// reader of an item's route (`ItemRoute`) takes it for an ask, a comment or a message.
+// ask's, a comment's and a message's is, so an id that names no handoff of the issue opens the
+// issue's page, which says so; a segment that holds no one decoded id gives no route (below). The
+// route names it `handoffId`, not `id`, so no reader of an item's route (`ItemRoute`) takes it
+// for an ask, a comment or a message.
 const HANDOFF_ID = "0195f3a4-7b2c-7d10-9a3e-5c1d2e3f4a5b";
 
 test("a handoff address is read and written back", () => {

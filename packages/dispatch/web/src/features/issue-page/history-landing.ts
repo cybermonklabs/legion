@@ -130,8 +130,8 @@ function useLanding(following: string | undefined): Landing {
  * nothing (`Landing.note`). Once the heading has landed it says so
  * (`HISTORY_HEADING_LANDED_EVENT`).
  *
- * A handoff's page address lands on the entry that holds that handoff (`handoffId`), and `/steps`
- * on the newest run (`addressed`, `addressedEntry`), on the first render that draws that entry:
+ * A handoff's page address lands on the entry that holds that handoff, and `/steps` on the
+ * newest run (`addressed`, `addressedEntry`), on the first render that draws that entry:
  * a handoff by its own line and fields inside a run's entry, and kept there by the history's
  * anchor as the bodies of the entries around it are read and drawn. An address whose handoff
  * the answered list does not hold, or whose list did not read, and `/steps` where no run is
@@ -143,7 +143,6 @@ export function useHistoryLandings({
   addressed,
   addressedEntry,
   anchor,
-  handoffId,
   heading,
   item,
   listDrawn,
@@ -156,8 +155,6 @@ export function useHistoryLandings({
   addressedEntry: string | undefined;
   /** The history's anchor, which keeps the reader's place in Details. */
   anchor: RefObject<ViewportAnchor | null>;
-  /** The id of the handoff `addressed` names, where it names one. */
-  handoffId: string | undefined;
   heading: RefObject<HTMLHeadingElement | null>;
   /** The turn the address names. */
   item: AddressedTurn | undefined;
@@ -198,9 +195,9 @@ export function useHistoryLandings({
       return;
     }
     const line =
-      handoffId === undefined
-        ? undefined
-        : entry.querySelector(`[data-handoff-line="${CSS.escape(handoffId)}"]`)?.parentElement;
+      addressed.kind === "handoff"
+        ? entry.querySelector(`[data-handoff-line="${CSS.escape(addressed.id)}"]`)?.parentElement
+        : undefined;
     landEntry(anchor.current, line ?? entry, entry);
   });
   return () => turnLanding.settled() && headingLanding.settled() && entryLanding.settled();

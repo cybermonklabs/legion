@@ -16,6 +16,7 @@ import {
   pageStatusProgressText,
 } from "../../theme/classes";
 import { ActivityLine } from "../activity/ActivityLine";
+import { activityDescription } from "../activity/activity-model";
 import { type SentencePart, SentenceParts } from "../activity/SentenceParts";
 import { HISTORY_ENTRY_ATTRIBUTE } from "../margin/details-focus-keeper";
 import { KEEPS_DETAILS_ATTRIBUTE } from "../margin/Margin";
@@ -37,7 +38,6 @@ import type {
   HistoryTurn,
   NamedBlock,
 } from "./history-model";
-import { handoffLine } from "./history-runs";
 import { useMarginDrawer } from "./margin-slot";
 import { DeletedLine, lineOrKindWord, useNodeLine } from "./node-line";
 import { useOutlineWriter } from "./outline-writer";
@@ -310,6 +310,22 @@ export function Entry({
       )}
     </li>
   );
+}
+
+/** The line of a handoff of the list, which names its phase and its version, in the words of
+ *  `main`'s line of its event (`activityDescription`), which carries the same three members: the
+ *  handoff's entry is drawn from the list, never from that event. */
+function handoffLine(handoff: HandoffSummary): SentencePart[] {
+  return activityDescription({
+    actor: handoff.author,
+    created_at: handoff.created_at,
+    id: 0,
+    issue_key: handoff.issue_key,
+    notify: false,
+    payload: { handoff_id: handoff.id, phase: handoff.phase, version: handoff.version },
+    seq: 0,
+    type: "handoff.recorded",
+  });
 }
 
 /**
