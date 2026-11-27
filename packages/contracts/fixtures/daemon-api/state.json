@@ -102,7 +102,167 @@
         "count": 0
       },
       "line": "slots: 5 of 5 in use (1 P0): 1 working (oldest 2026-09-22T09:16Z), 2 stopped (oldest 2026-09-22T08:47Z), 0 person, 0 issue, 2 idle (oldest 2026-09-20T16:42Z). Started work without a slot: 0 wait only for a slot, 0 in all. No issue waits for a slot."
-    }
+    },
+    "signals": {
+      "on": true,
+      "switch": {
+        "setBy": {
+          "kind": "operator"
+        },
+        "at": "2026-11-26T05:00:00Z",
+        "reason": "the owner turned admission by signals on"
+      },
+      "series": [
+        {
+          "signal": "idle",
+          "part": null,
+          "value": 0.25,
+          "absent": null,
+          "limit": 0.5,
+          "limitSet": {
+            "setBy": {
+              "kind": "controller",
+              "session": "ses_controller"
+            },
+            "at": "2026-11-26T06:00:00Z",
+            "reason": "the owner set the limit in the weekly plan"
+          },
+          "holds": false,
+          "since": "2026-11-26T07:00:00Z"
+        },
+        {
+          "signal": "queue",
+          "part": null,
+          "value": null,
+          "absent": "the daemon keeps the merge queue's events from 2026-11-26T06:00:00Z, so the span this signal counts is whole from 2026-11-26T12:00:00Z",
+          "limit": null,
+          "limitSet": null,
+          "holds": false,
+          "since": null
+        },
+        {
+          "signal": "provider",
+          "part": "headroom",
+          "value": 0.42,
+          "absent": null,
+          "limit": 0.9,
+          "limitSet": {
+            "setBy": {
+              "kind": "operator"
+            },
+            "at": "2026-11-26T05:00:00Z",
+            "reason": "the owner turned admission by signals on"
+          },
+          "holds": false,
+          "since": null
+        },
+        {
+          "signal": "kills",
+          "part": null,
+          "value": 3,
+          "absent": null,
+          "limit": 2,
+          "limitSet": {
+            "setBy": {
+              "kind": "controller",
+              "session": "ses_controller"
+            },
+            "at": "2026-11-26T06:00:00Z",
+            "reason": "the owner set the limit in the weekly plan"
+          },
+          "holds": true,
+          "since": "2026-11-26T07:00:00Z"
+        },
+        {
+          "signal": "approvals",
+          "part": null,
+          "value": 1,
+          "absent": null,
+          "limit": null,
+          "limitSet": null,
+          "holds": false,
+          "since": null
+        }
+      ],
+      "provider": {
+        "minutes": [
+          {
+            "at": "2026-11-26T07:58:00Z",
+            "held": true,
+            "uncachedInputTokens": 2520,
+            "tokenLimit": 6000
+          },
+          {
+            "at": "2026-11-26T07:59:00Z",
+            "held": false,
+            "uncachedInputTokens": 0,
+            "tokenLimit": 6000
+          }
+        ]
+      }
+    },
+    "signalChanges": [
+      {
+        "id": 5,
+        "at": "2026-11-26T07:00:00Z",
+        "signal": "kills",
+        "part": null,
+        "what": "holds",
+        "value": 1,
+        "absent": null,
+        "setBy": null,
+        "reason": null
+      },
+      {
+        "id": 4,
+        "at": "2026-11-26T07:00:00Z",
+        "signal": "kills",
+        "part": null,
+        "what": "value",
+        "value": 3,
+        "absent": null,
+        "setBy": null,
+        "reason": null
+      },
+      {
+        "id": 3,
+        "at": "2026-11-26T06:00:00Z",
+        "signal": "kills",
+        "part": null,
+        "what": "limit",
+        "value": 2,
+        "absent": null,
+        "setBy": {
+          "kind": "controller",
+          "session": "ses_controller"
+        },
+        "reason": "the owner set the limit in the weekly plan"
+      },
+      {
+        "id": 2,
+        "at": "2026-11-26T05:00:00Z",
+        "signal": "queue",
+        "part": null,
+        "what": "value",
+        "value": null,
+        "absent": "the daemon has not begun keeping the merge queue's events",
+        "setBy": null,
+        "reason": null
+      },
+      {
+        "id": 1,
+        "at": "2026-11-26T05:00:00Z",
+        "signal": null,
+        "part": null,
+        "what": "switch",
+        "value": 1,
+        "absent": null,
+        "setBy": {
+          "kind": "operator"
+        },
+        "reason": "the owner turned admission by signals on"
+      }
+    ]
   },
   "issues": {
     "LEGION-207": {

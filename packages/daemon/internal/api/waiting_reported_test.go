@@ -155,8 +155,10 @@ type waitingIssue struct {
 // under whichever word the ladder gives it. An issue a person moved to backlog is in none of the four lists,
 // since nothing of it is waiting for Legion. An issue at work on nothing is in
 // `admission.active` alone. And the `admission` object carries the keys it carries without this
-// change, no more and no fewer: a reader of the state — the controller, the plugin, `legion
-// state` — reads the same object.
+// change, no more and no fewer, beside the record of changes of admission by signals
+// (`signalChanges`, an empty list before the first change), which a state of the current
+// contract always carries: a reader of the state — the controller, the plugin, `legion state` —
+// reads the same object.
 func TestAWaitingIssueIsReportedWaitingAndBlocked(t *testing.T) {
 	const (
 		startedLink  = "LEGION-210"
@@ -259,7 +261,7 @@ func TestAWaitingIssueIsReportedWaitingAndBlocked(t *testing.T) {
 	}
 	// The projection gives `p0Holders` on every state (the P0 start's entry); `p0Bound` is the daemon's
 	// source's, which this test's source is not.
-	if got, want := slices.Sorted(maps.Keys(served.Admission)), []string{"active", "blocked", "cap", "held", "p0Holders", "slots", "trees", "waiting"}; !slices.Equal(got, want) {
+	if got, want := slices.Sorted(maps.Keys(served.Admission)), []string{"active", "blocked", "cap", "held", "p0Holders", "signalChanges", "slots", "trees", "waiting"}; !slices.Equal(got, want) {
 		t.Fatalf("the admission object carries %v, want %v: a reader of the state reads the object it read before the change, and the P0 holders", got, want)
 	}
 

@@ -164,7 +164,7 @@ var contractComparisonRows = []contractComparisonRow{
 		comparedIn("internal/api/controller.go", "server.controllerSecret", "req.PluginContract != DaemonAPIVersion()"),
 		comparedIn("internal/api/controller.go", "server.controllerSecret", "req.PluginContract != 0"),
 		comparedIn("internal/api/controller.go", "server.registerController", "req.PluginContract != DaemonAPIVersion()"),
-		comparedIn("internal/api/controller.go", "server.refuseIfStaleController", "stored.PluginContract == DaemonAPIVersion()"),
+		comparedIn("internal/api/controller.go", "staleOperatorController", "stored.PluginContract != DaemonAPIVersion()"),
 	}},
 	{row: "The idle rule", compares: []comparisonSite{
 		comparedIn("internal/workflow/idle.go", "IdleRelease", "c.PluginContract != contract"),

@@ -99,6 +99,21 @@ type Client interface {
 	WebhookAppInstalled(ctx context.Context, repo string) (bool, error)
 }
 
+// ApprovalReads is the Dispatch surface the boot's read for the approvals signal uses: the project's
+// issues, one issue, the project's open asks with its default assignee, and an issue's open asks.
+// HTTPClient is its one implementation, and it is no part of Client: the workflow reads none of it,
+// so no stand-in for Client needs to answer it.
+type ApprovalReads interface {
+	ListIssues(ctx context.Context, project string, statuses []string) ([]IssueSummary, error)
+	GetIssue(ctx context.Context, key string) (Issue, error)
+	// OpenAsks is the project's open asks of its issues and its default assignee, as one read of
+	// Dispatch gives them (GET /api/v1/asks/open?project=).
+	OpenAsks(ctx context.Context, project string) (OpenAsks, error)
+	// IssueAsks is the issue's open asks with the person each was handed to and whose turn it is
+	// (GET /api/v1/issues/{key}/asks?state=open).
+	IssueAsks(ctx context.Context, key string) ([]IssueAsk, error)
+}
+
 // DesignGateDocument is one entry of an issue's design-gate publication, as Dispatch's route
 // takes and answers it: Step is one of `decisions`, `criteria` and `spec`, ArtifactID the
 // document that step's gate recorded, and Holds whether the issue's tree is gated on that step,
@@ -246,6 +261,11 @@ type IssueSummary struct {
 	// nor anyone the daemon can name, so the read says nothing of the claim.
 	ClaimedBy   string
 	ClaimUnread bool
+	// Assignee is the issue's assignee as the read answers it, a login or "" for nobody, and
+	// AssigneeKnown says the read answered the member at all, which a Dispatch before assignees
+	// does not.
+	Assignee      string
+	AssigneeKnown bool
 }
 
 // Issue is the summary as an Issue, for a reader that has only Dispatch's listing of the issue:
@@ -258,7 +278,8 @@ func (s IssueSummary) Issue() Issue {
 		claim = &Claim{Kind: kind, ID: id}
 	}
 	return Issue{Key: s.Key, Title: s.Title, Status: s.Status, Parent: s.Parent, Rank: s.Rank, Priority: s.Priority, Resolved: s.Resolved, Labels: s.Labels, HandedOver: s.HandedOver,
-		LastSeq: s.LastSeq, ResolvedRepo: s.ResolvedRepo, BlockedBy: s.BlockedBy, Claim: claim, ClaimUnread: s.ClaimUnread}
+		LastSeq: s.LastSeq, ResolvedRepo: s.ResolvedRepo, BlockedBy: s.BlockedBy, Claim: claim, ClaimUnread: s.ClaimUnread,
+		Assignee: s.Assignee, AssigneeKnown: s.AssigneeKnown}
 }
 
 // Issue is the workflow data from Dispatch's issue-detail route. HandedOver is resolved here, at
@@ -291,6 +312,34 @@ type Issue struct {
 	// Claim is the issue's claim Dispatch shows, nil for none; ClaimUnread is IssueSummary's.
 	Claim       *Claim
 	ClaimUnread bool
+	// Assignee and AssigneeKnown are IssueSummary's.
+	Assignee      string
+	AssigneeKnown bool
+}
+
+// OpenAsks is Dispatch's read of a project's open asks (GET /api/v1/asks/open?project=): the time
+// Dispatch read them (AsOf, zero where its answer gave no time the daemon reads), each open ask of
+// an issue of the project, and the project's default assignee read in the same statement, a login.
+// DefaultAssignee is "" where the read answered none: a Dispatch before the member, or a project it
+// stores no default of. It is never taken for nobody's, nor guessed from the person an ask waits on.
+type OpenAsks struct {
+	AsOf            time.Time
+	Asks            []OpenAsk
+	DefaultAssignee string
+}
+
+// OpenAsk is one open ask of an issue: its id and its issue's key.
+type OpenAsk struct {
+	ID, Issue string
+}
+
+// IssueAsk is one open ask of an issue as Dispatch's list of the issue's asks reads it: its id, the
+// person it was handed to ("" for none: it waits on the issue's assignee, else the project's
+// default), and whether it waits on a person rather than the agent that asked it.
+type IssueAsk struct {
+	ID            string
+	AskedOf       string
+	WaitsOnPerson bool
 }
 
 // ResolvedPriority is a resolved priority as a Dispatch read serves it: Priority its level, 0 for P0

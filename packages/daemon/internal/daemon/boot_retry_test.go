@@ -17,13 +17,16 @@ func TestABootFactThatFailsWhileServingIsRetriedAndOnlyTheStopEndsIt(t *testing.
 	var logged bytes.Buffer
 	log := slog.New(slog.NewTextHandler(&logged, nil))
 	calls := 0
-	retryUntilApplied(context.Background(), log, time.Millisecond, time.Millisecond, func(context.Context) error {
+	retrying := func(attempt int, wait time.Duration, err error) {
+		log.Error("legion daemon could not apply its boot; retrying", "attempt", attempt, "retryIn", wait, "error", err)
+	}
+	retryUntilApplied(context.Background(), time.Millisecond, time.Millisecond, func(context.Context, int) error {
 		calls++
 		if calls == 1 {
 			return context.DeadlineExceeded
 		}
 		return nil
-	})
+	}, retrying)
 	if calls != 2 || strings.Count(logged.String(), "level=ERROR") != 1 || !strings.Contains(logged.String(), "deadline exceeded") {
 		t.Fatalf("applied %d times, log %q; want the timeout logged at ERROR once and applied again", calls, logged.String())
 	}
@@ -31,11 +34,11 @@ func TestABootFactThatFailsWhileServingIsRetriedAndOnlyTheStopEndsIt(t *testing.
 	logged.Reset()
 	ctx, stop := context.WithCancel(context.Background())
 	calls = 0
-	retryUntilApplied(ctx, log, time.Millisecond, time.Millisecond, func(context.Context) error {
+	retryUntilApplied(ctx, time.Millisecond, time.Millisecond, func(context.Context, int) error {
 		calls++
 		stop()
 		return context.Canceled
-	})
+	}, retrying)
 	if calls != 1 || logged.Len() != 0 {
 		t.Fatalf("after the stop: applied %d times, log %q; want one attempt and no error", calls, logged.String())
 	}

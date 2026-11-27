@@ -346,6 +346,15 @@ Each item below names a script, then what it proves.
   a root that ran as a tree of its own is never held so, and takes the free slot;
   and a child recorded in another live tree is refused 409 `CHILD_IN_OTHER_TREE` naming it and that tree, with nothing changed or written
 
+- `admission-signals.sh`
+
+  a person turns admission by signals on and sets each limit while the daemon runs, and the daemon keeps each change (dispatch://INFRA-5899), driven through the whole daemon `legion start` boots, over a PostgreSQL the caller names and a `nats-server` of the run's own, with each change made by the `legion` binary this checkout builds:
+  with the merge queue's wait over its limit, which the daemon reads from a recorded GitHub timeline, and the rule on, a P0 issue starts as it does with the rule off, the two issues below P0 wait, `legion state --json` names the queue holding with its value and its limit, and the daemon logs each start it held;
+  a lower limit still under the value holds the first of them again at its own pass, the proof's negative control, and the limit raised above the value starts it with no restart;
+  a restart over the same store reads back the switch, the limit, who set them, why and every entry of the record of changes;
+  a limit outside its signal's range is refused with its reason and changes nothing, as is a limit on the provider's part `refusals`, which the provider does not have, and a limit cleared while the rule is on takes that limit alone away;
+  and with the rule off the cap starts the second issue once its Dispatch link is gone, though the queue still reads over its limit, while no write of an admission reading reached Dispatch
+
 - `sub-architect.sh`
 
   every child that starts runs under an architect of its own (dispatch://INFRA-3915), driven through the whole daemon `legion start` boots, over a PostgreSQL the caller names and a `nats-server` of the run's own, with each claim the proof needs played over the daemon's own HTTP routes and worker stream:
@@ -4569,6 +4578,65 @@ each claim is launched by the package's fake runtime, which provisions each clai
 T, X, Y, step 7's Q6, step 9's tree lifecycle under R, step 10's Q and step 11's U and G are seeded through the store, as every daemon test seeds its fixture, and each seed is printed as one.
 The configuration load, the store and its migrations, the HTTP API, the claim supervision, `openWorkflow`, the JetStream consumers and the outbox lanes are the real ones.
 `CHILD_ADOPTION_EVIDENCE_DIR` (default a fresh directory under `TMPDIR`, kept and printed) keeps the transcript, the `nats-server`'s log and the daemon's own, which the driver writes through `LEGION_E2E_DAEMON_LOG`.
+
+## admission-signals.sh
+
+```sh
+LEGION_TEST_PG_DSN=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable \
+  [LEGION_E2E_NATS_BIN=<nats-server>] bash scripts/e2e/admission-signals.sh     # → "admission signals e2e: PASS in <n>s", exit 0
+```
+
+dispatch://INFRA-5899's live proof (its check `c-live`) that a person turns admission by signals on and sets each limit while the daemon runs, and that the daemon keeps each change.
+Runs on any Linux host with `go`, `git`, `jj` 0.38 or later (the daemon's boot refuses to start without them), `awk` and `python3` (for [`lib/loopback-dsn.py`](#libloopback-dsnpy)) — no Docker, no cluster, no agent.
+`LEGION_TEST_PG_DSN` is required and names the PostgreSQL the daemon migrates and runs on;
+the script starts none, so CI's service, a devbox container and a pod's own embedded PostgreSQL all satisfy it on a loopback address.
+The DSN's host must be loopback: `prerequisites` refuses one that is not with exit 2, before the driver is built and before the broker starts.
+The broker is the run's own: the `nats-server` `LEGION_E2E_NATS_BIN` names, or the pinned `v2.15.1` the script installs with `go install` into a GOBIN of its own, started with JetStream on a port the kernel picks for it (`-p -1`, read back from its log) and stopped on any exit.
+A run took 74 s in a Legion worker pod: 53 s building the driver, and 20 s the proof, its build of the `legion` binary and its nine steps.
+The four checks below are [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh)'s, the run `child-adoption.sh` makes too.
+
+| check | what it holds |
+| :--- | :--- |
+| `prerequisites` | `LEGION_TEST_PG_DSN` is set (the DSN itself is not printed), `go`, `awk` and `python3` are on PATH, the DSN names a loopback host ([`lib/loopback-dsn.sh`](#libloopback-dsnsh)'s `require_loopback_dsn` reads it, and a host that is not `127.0.0.1`, `localhost` or `::1` ends the run with exit 2 before the driver is built), and a `nats-server` is named or installed |
+| `broker` | that `nats-server`, with JetStream, listening on 127.0.0.1 and ready |
+| `driver` | a test binary of `TestAdmissionSignalsLive` (`internal/daemon/admission_signals_live_test.go`, `-tags e2e`) |
+| `proof` | the nine steps below, each printing what it drove and what it read back between its own `== <name>` and `ok <name>` |
+
+The driver builds the `legion` binary from this checkout, which makes every change of admission by signals (`legion project signals`, with the operator's bearer) and every read a step is judged on (`legion state --json`, and once `legion state` for its `signals:` line).
+It boots the whole daemon through `run`, the function `legion start` calls, over that PostgreSQL and that broker, with an admission cap of 4, room for every issue it starts.
+The merge queue's wait is the one signal the proof puts over a limit, from a recorded source and never from a value:
+the GitHub stand-in serves GitHub's timeline of `cybermonklabs/legion#4910` as `internal/daemon/testdata/queue/timeline-4910.json` records it, with every time moved by one offset so its last event is 20 minutes before the run, which keeps its two waits, 5h47m55s and 1h07m32s, inside the six hours the queue reads.
+The store is seeded as an earlier boot of this release leaves it: that boot began keeping the merge queue 8 hours before the run, and kept the pull request's first entry into the queue, an open wait.
+The boot then reads that pull request's timeline, as every boot reads the timeline of each open wait, and the queue reads the median of the two waits, 3.46 hours.
+The three issues it starts are recorded by the daemon from their own Dispatch envelopes on the `ENVOY_NOTIFICATIONS` stream: A at P0, B at P1 and C at P2, C `blocked_by` D, an issue no event closes.
+Each step also reads `GET /legion/v1/state` while it waits, and the daemon's own log records.
+
+| step | driven by | read back as |
+| :--- | :--- | :--- |
+| `fresh-state-off-with-no-limits` | the boot | `admission.signals` off, `switch` null, each of the five series with no limit, no setter and no hold; the queue reading 3.46 hours; no switch or limit entry in `admission.signalChanges`; cap 4 with no slot taken |
+| `limit-and-switch-before-the-candidates` | `legion project signals set-limit --signal queue --limit 1 --reason …`, then `legion project signals on --reason …` | on, its `switch` set by the operator with the reason; the queue holding under its limit 1, its hold dated; the daemon's `admission: a signal's hold changed` line for the queue |
+| `the-p0-starts-and-the-others-wait` | the `issue.updated` envelopes of A, B and C, each todo and labelled | A in `admission.active`; B and C in `admission.waiting` and on no slot; C in `admission.blocked` waiting on D; the queue holding at 3.46 hours over its limit 1; the daemon's `admission: a signal held a start` line naming B, the queue, its value and its limit; and `legion state`'s `signals:` line printed |
+| `negative-control-a-lower-limit-keeps-the-candidate-waiting` | `legion project signals set-limit --signal queue --limit 2 --reason …` | the daemon's held-start line naming B at the limit 2, from that change's own pass; over three seconds, B on no slot; the queue still holding |
+| `the-raised-limit-starts-the-candidate` | `legion project signals set-limit --signal queue --limit 4 --reason …` | B in `admission.active` with no restart (the daemon's boot count as at the first step); the queue at 3.46 hours under its limit 4, holding nothing; C still on no slot, waiting on D |
+| `a-restart-keeps-the-settings-and-the-record` | the daemon stopped and booted again over the same store | on, its `switch` set by the operator with its reason; the queue's limit 4 with its `limitSet` (the operator, a moment, the reason); every entry of `admission.signalChanges` read before the stop read back the same, ids rising by one; the one switch entry and the queue's three limit entries (1, 2 and 4), each with `setBy` the operator, its moment and its reason; the queue's holds entries 1 at the switch and 0 at the raised limit, with no setter; A and B on their slots |
+| `a-limit-outside-its-range-is-refused` | `legion project signals set-limit --signal queue --limit 200 --reason …`, then `--signal kills --limit 2.5`, then `--signal provider --part refusals --limit 3` | each command exits non-zero with the daemon's reason (`which is not above 0 and at most 168`, `which is no whole number from 1 to 1000000`, `provider (part headroom)`) and `nothing changed`; the switch and the queue's and the kills' limits and setters as before; no new limit or switch entry; and no series or entry of the provider's but its headroom's |
+| `a-limit-cleared-while-another-holds` | `set-limit --signal queue --limit 1`, `set-limit --signal kills --limit 5`, then `legion project signals clear-limit --signal kills --reason …` | the kills with no limit and a `limitSet` naming the operator's clear and its reason; the kills' two limit entries, 5 and then null, each with its setter and reason; on, the queue holding under its limit 1; A and B still on their slots, since a pass takes no slot back for a signal; ids rising by one |
+| `off-lets-the-cap-start-the-held-candidate` | `legion project signals off --reason …`, then C's envelope with no `blocked_by` | off, with the switch's second entry 0 by the operator; the queue at 3.46 hours, over its limit 1, holding nothing; C in `admission.active`, started by the cap alone; no write of an admission reading taken by the Dispatch stand-in |
+
+The negative control is the fourth step: the same change of a limit, under the value, runs a pass that holds B again, and only the limit above the value, in the fifth, starts it.
+The two states it was judged on are kept in the evidence directory, `state-*-negative-control-held.json` and `state-*-negative-control-raised.json`.
+
+What the proof stands in for lies outside the change:
+the broker is a native `nats-server`;
+Dispatch is the board the whole-daemon drivers share (`liveDispatch`, in `internal/daemon/dispatch_board_test.go`), fronted by the driver's own `signalsDispatch`, which adds to each read of an issue the priority and the `blocked_by` links the driver's last event of it carried, since the daemon prepares a todo event of an unrecorded issue from Dispatch's own view of it, and which refuses 403 and records any write whose route names a reading, a signal, an admission or an eval;
+its read of the project's open asks answers no ask and no default assignee, so the approvals read as not recorded;
+Envoy's listener is the package's `noticeListener`;
+GitHub serves the recorded timeline, a merge queue of no entry on each branch, each repository's default branch, and takes each issue branch the workflow creates;
+the two Apps' tokens are placeholders;
+and no agent runs: each claim is launched by the package's fake runtime, which provisions each claim's workspace in its own pod, and the daemon's supervision timers never fire, so each started issue's claim stays launching.
+The earlier boot's start of keeping the merge queue and its kept entry are seeded through the store, as every daemon test seeds its fixture, and printed as one.
+The configuration load, the store and its migrations, the HTTP API, the claim supervision, `openWorkflow` with its live signals and their timer, the JetStream consumers, the boot's reads of GitHub's merge queue and of Dispatch's open asks, and the outbox lanes are the real ones.
+`ADMISSION_SIGNALS_EVIDENCE_DIR` (default a fresh directory under `TMPDIR`, or `/tmp` when it is unset, kept and printed) keeps the transcript, the `nats-server`'s log, the daemon's own, which the driver writes through `LEGION_E2E_DAEMON_LOG`, the driver's output, and each `legion state --json` answer a step was judged on, numbered in the order the steps read them.
 
 ## sub-architect.sh
 

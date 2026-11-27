@@ -70,6 +70,7 @@ var legionCommands = [][]string{
 	{"claims", "stop"}, {"claims", "retry"}, {"claims", "compact"}, {"claims", "forget-session"},
 	{"claims", "release-names"}, {"claims", "close"}, {"claims", "list"},
 	{"project"}, {"project", "pause"}, {"project", "resume"}, {"project", "set-p0-bound"}, {"project", "clear-p0-bound"},
+	{"project", "signals"}, {"project", "signals", "on"}, {"project", "signals", "off"}, {"project", "signals", "set-limit"}, {"project", "signals", "clear-limit"},
 	{"sessions"}, {"sessions", "import"},
 	{"replay"}, {"replay", "collect"}, {"replay", "collect-git"}, {"replay", "collect-merges"}, {"replay", "collect-queue"}, {"replay", "neutralize"},
 	{"replay", "run"},

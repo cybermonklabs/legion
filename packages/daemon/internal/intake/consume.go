@@ -314,14 +314,15 @@ func OpenConsumers(ctx context.Context, js jetstream.JetStream, pool store.TxPoo
 	}
 
 	remade := &remadeFailures{}
-	// The Dispatch durable hears every issue event and every event of the project's merge holds
-	// document (mergeHoldsSubject). A durable an earlier daemon created with other filters takes
-	// the whole list here and keeps its position (openConsumer): JetStream keeps the stream
-	// sequence it delivers next, so an event of the document at or past that sequence is delivered
-	// to it, and one it has passed is not.
+	// The Dispatch durable hears every issue event, every event of the project's merge holds
+	// document (mergeHoldsSubject), and this project's one settings event the approvals signal
+	// reads, the move of its default assignee (defaultAssigneeSubject), and no other setting. A
+	// durable an earlier daemon created with other filters takes the whole list here and keeps its
+	// position (openConsumer): JetStream keeps the stream sequence it delivers next, so an event at
+	// or past that sequence is delivered to it, and one it has passed is not.
 	dispatch, err := openConsumer(ctx, js, stream, pool, spec, remade, jetstream.ConsumerConfig{
 		Durable:        dispatchConsumerName(spec.Project),
-		FilterSubjects: []string{"notifications.dispatch.issue.>", mergeHoldsSubject(spec.Project)},
+		FilterSubjects: []string{"notifications.dispatch.issue.>", mergeHoldsSubject(spec.Project), defaultAssigneeSubject(spec.Project)},
 		AckPolicy:      jetstream.AckExplicitPolicy,
 		AckWait:        spec.AckWait,
 	})

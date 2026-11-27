@@ -117,6 +117,10 @@ type Project struct {
 	// DefaultSteps is `default_steps` as the file names it, nil when it names none. Every reader
 	// asks RunsByDefault, which resolves the unset field.
 	DefaultSteps []plan.Step
+	// Provider is the project's two keys of its model provider's headroom
+	// (`signal_token_limit_per_minute` and `signal_token_model_pattern`); its zero value is a file
+	// that names neither.
+	Provider SignalProvider
 }
 
 // defaultStepWords is `default_steps` for a project that names none, as the file would write it:
@@ -321,6 +325,9 @@ func readProject(value *yaml.Node, key string) (Project, []string, error) {
 		if project.DefaultSteps, err = readDefaultSteps(steps, key+".default_steps"); err != nil {
 			return Project{}, nil, err
 		}
+	}
+	if project.Provider, err = readSignalProvider(fields, key); err != nil {
+		return Project{}, nil, err
 	}
 	return project, warnings, nil
 }

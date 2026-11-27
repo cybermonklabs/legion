@@ -727,6 +727,15 @@ type Admission struct {
 	// tick notice carries the same reading (record.Notice.Slots). Absent where the daemon read
 	// none.
 	Slots *SlotsReading `json:"slots,omitempty"`
+	// Signals is admission by signals (S2 of dispatch://INFRA-5899): whether it is on and who set
+	// the switch, and each of the five series as the live signals read it at the state's moment,
+	// its value or why the daemon cannot compute it, its limit and who set it, whether it holds
+	// admission and since when, with the provider's minutes of the last hour (SignalsReading).
+	// Absent where the daemon runs no workflow, which admits nothing.
+	Signals *SignalsReading `json:"signals,omitempty"`
+	// SignalChanges is the newest entries of the project's record of changes of admission by
+	// signals (S6), newest first, at most store.SignalChangesShown of them: `[]` before the first.
+	SignalChanges []SignalChange `json:"signalChanges,omitzero"`
 	// treesHidden is set on the copy the state route serves a caller whose plugin is older than
 	// the contract that added Trees (api's withoutTrees, below shaping.go's treeContract): that
 	// reader knows no `trees` and refuses the key as surely when it is empty as when it names a
@@ -737,6 +746,11 @@ type Admission struct {
 	// heldContract), whose reader refuses `held` emptied as surely as filled, so MarshalJSON
 	// leaves that key off too.
 	heldHidden bool
+	// signalChangesHidden is the same for SignalChanges: it is set on the copy served a caller
+	// whose plugin is older than the contract that added admission by signals (api's
+	// withoutAdmissionSignals, the band of admissionSignalsContract), whose reader refuses
+	// `signalChanges` emptied as surely as filled, so MarshalJSON leaves that key off too.
+	signalChangesHidden bool
 }
 
 // BlockedIssue is one issue of Blocked and the issues it waits on that are not done. It is
@@ -755,9 +769,18 @@ type HeldIssue = record.HeldIssue
 // notice's `slots` are one reading read two ways, and it is declared once, under both.
 type SlotsReading = record.SlotsReading
 
-// MarshalJSON keeps `active`, `waiting`, `trees`, `blocked` and `held` arrays on the wire, empty
-// rather than `null` — except on an admission whose trees are hidden, which carries no `trees`
-// key at all, and one whose held list is hidden, which carries no `held`. Those two keys are
+// SignalsReading is the state's reading of admission by signals. It is store.SignalsReading,
+// which admission's live signals build (admit.LiveSignals.State), declared once.
+type SignalsReading = store.SignalsReading
+
+// SignalChange is one entry of the record of changes of admission by signals, with exactly the
+// nine members of S6. It is store.SignalChange, the record's own entry, declared once.
+type SignalChange = store.SignalChange
+
+// MarshalJSON keeps `active`, `waiting`, `trees`, `blocked`, `held` and `signalChanges` arrays on
+// the wire, empty rather than `null` — except on an admission whose trees are hidden, which
+// carries no `trees` key at all, one whose held list is hidden, which carries no `held`, and one
+// whose record of changes is hidden, which carries no `signalChanges`. Those three keys are
 // tagged `omitzero`, so a nil slice writes no key and an empty one writes `[]`: a hidden list
 // is left nil here and every other list is filled, which is the whole of the rule. The keys
 // keep their place in the object, because they are written from the fields they are declared
@@ -788,6 +811,11 @@ func (a Admission) MarshalJSON() ([]byte, error) {
 		out.Held = nil
 	} else if out.Held == nil {
 		out.Held = []HeldIssue{}
+	}
+	if a.signalChangesHidden {
+		out.SignalChanges = nil
+	} else if out.SignalChanges == nil {
+		out.SignalChanges = []SignalChange{}
 	}
 	return json.Marshal(out)
 }

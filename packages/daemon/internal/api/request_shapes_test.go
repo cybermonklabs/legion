@@ -112,6 +112,7 @@ var routesWithNoPluginBody = map[string]string{
 	"POST /legion/v1/operator/claims/{token}/forget-session": sameBuild + " (`legion claims forget-session`)",
 	"POST /legion/v1/operator/project/pause":                 sameBuild + " (`legion project pause`)",
 	"POST /legion/v1/operator/project/resume":                sameBuild + " (`legion project resume`)",
+	"POST /legion/v1/operator/project/signals":               sameBuild + " (`legion project signals`)",
 	"POST /legion/v1/operator/intake/replay":                 sameBuild + " (`legion intake replay`)",
 	"POST /legion/v1/operator/intake/discard":                sameBuild + " (`legion intake discard`)",
 	"POST /legion/v1/operator/project/p0-bound":              sameBuild + " (`legion project set-p0-bound`)",

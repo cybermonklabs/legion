@@ -46,6 +46,11 @@ legion project clear-p0-bound	--config string	--json bool	--operator-token-file 
 legion project pause	--config string	--json bool	--operator-token-file string	--port int	--reason string
 legion project resume	--config string	--json bool	--operator-token-file string	--port int
 legion project set-p0-bound	--bound int	--config string	--json bool	--none bool	--operator-token-file string	--port int	--reason string
+legion project signals
+legion project signals clear-limit	--config string	--json bool	--operator-token-file string	--part string	--port int	--reason string	--signal string
+legion project signals off	--config string	--json bool	--operator-token-file string	--port int	--reason string
+legion project signals on	--config string	--json bool	--operator-token-file string	--port int	--reason string
+legion project signals set-limit	--config string	--json bool	--limit float64	--operator-token-file string	--part string	--port int	--reason string	--signal string
 legion replay
 legion replay collect	--after duration	--before duration	--collector string	--concurrency int	--default-assignee string	--dispatch-token-file string	--from string	--gate-steps string	--launcher-log stringArray	--linger duration	--log stringArray	--out string	--part stringArray	--project string	--provider string	--review-round-cap int	--stalled-tree-notice duration	--tick-interval duration	--to string	--worker-background duration	--worker-silence duration
 legion replay collect-git	--branch string	--clones string	--fetch-only bool	--git-only bool	--github-api string	--github-only bool	--github-rate float64	--github-reserve int	--github-token-env string	--memory-cap int64	--merge-only bool	--out string	--parallel int	--repo string

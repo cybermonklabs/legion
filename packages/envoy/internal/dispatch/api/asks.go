@@ -697,14 +697,26 @@ type openAsksResponse struct {
 	WaitingOnHuman int       `json:"waiting_on_human"`
 	WaitingOnAgent int       `json:"waiting_on_agent"`
 	Asks           []openAsk `json:"asks"`
+	// DefaultAssignee is, on a ?project= read, the default assignee that project stores: the
+	// person an ask on it reaches while nobody handed the ask on and its issue holds nobody, the
+	// last step of askedOfPersonExpression. Any credential already reads that person on this
+	// route, as the waiting_on_person of such an ask, so the field gives a credential without the
+	// `person` scope (a Legion daemon's, which needs the person when it boots) no new power: the
+	// routes that list every project's default and move one stay a person's
+	// (project_default_assignee.go). It holds the JSON the statement answers, the login or null
+	// where no project has the key, so that absent, null and a login stay three states
+	// (rawFieldSchemas). A ?author_session= read spans projects and leaves it out, which keeps
+	// that answer the one a reader before the field got.
+	DefaultAssignee json.RawMessage `json:"default_assignee,omitempty"`
 }
 
 // listOpenAsks returns every active open ask in one scope, oldest first: authored by one host
 // session (?author_session=) across issues and unlinked project documents, or every open ask on
 // one project's issues and documents (?project=) regardless of author -- issue-owned via
-// issues.project_key, document-owned via artifacts.project_key. Exactly one of the two query
-// parameters selects the scope. A human clarification leaves an ask open but makes the author
-// responsible for the next reply.
+// issues.project_key, document-owned via artifacts.project_key -- beside that project's default
+// assignee, which it answers even where the project has no open ask. Exactly one of the two
+// query parameters selects the scope. A human clarification leaves an ask open but makes the
+// author responsible for the next reply.
 func (s *server) listOpenAsks(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
@@ -736,6 +748,7 @@ func (s *server) listOpenAsks(w http.ResponseWriter, r *http.Request) {
 	var asOf time.Time
 	var openedSince bool
 	var rawAsks []byte
+	var defaultAssignee []byte
 	err := s.deps.Store.Pool.QueryRow(r.Context(), `
 		with mine as (
 			select a.* from asks a
@@ -778,8 +791,13 @@ func (s *server) listOpenAsks(w http.ResponseWriter, r *http.Request) {
 		select
 			statement_timestamp(),
 			exists (select 1 from mine where $2::timestamptz is not null and created_at >= $2),
-			coalesce((select jsonb_agg(to_jsonb(active) order by priority asc nulls last, created_at asc, id) from active), '[]'::jsonb)
-	`, sessionID, since, project).Scan(&asOf, &openedSince, &rawAsks)
+			coalesce((select jsonb_agg(to_jsonb(active) order by priority asc nulls last, created_at asc, id) from active), '[]'::jsonb),
+			-- The project's own default beside its asks, in this one statement so that both are
+			-- read from one snapshot and a move of the default cannot fall between them: the
+			-- login as JSON, JSON null where no project has the key, and SQL null - the field
+			-- left out - on an author's read, which names no project.
+			case when $3 <> '' then coalesce((select to_jsonb(default_assignee) from projects where key = $3), 'null'::jsonb) end
+	`, sessionID, since, project).Scan(&asOf, &openedSince, &rawAsks, &defaultAssignee)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -791,10 +809,11 @@ func (s *server) listOpenAsks(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	response := openAsksResponse{
-		SessionID:   sessionID,
-		AsOf:        timestampValue(asOf),
-		OpenedSince: openedSince,
-		Asks:        asks,
+		SessionID:       sessionID,
+		AsOf:            timestampValue(asOf),
+		OpenedSince:     openedSince,
+		Asks:            asks,
+		DefaultAssignee: defaultAssignee,
 	}
 	for _, ask := range asks {
 		switch ask.WaitingOn {

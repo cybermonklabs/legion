@@ -231,6 +231,10 @@ var rawFieldSchemas = map[rawFieldKeyOf]rawField{
 	// fields the daemon writes today and leaves the object open, so the generated type has them.
 	// The answer always carries the field, which its `required:"true"` says.
 	{reflect.TypeOf(legionIssueState{}), "waiting_on"}: rawField{Fragment: openAPILegionWaitingOn, Nullable: true},
+	// GET /api/v1/asks/open's default_assignee (asks.go): absent on an ?author_session= read,
+	// null where the ?project= read names no project, and otherwise the login that project
+	// defaults to.
+	{reflect.TypeOf(openAsksResponse{}), "default_assignee"}: rawField{Fragment: openAPIProjectDefaultAssignee, Nullable: true},
 }
 
 // The schemas rawFieldSchemas writes out, where no Go type names what a field's bytes hold.
@@ -291,6 +295,14 @@ var (
 		},
 		"required":             []string{"kind"},
 		"additionalProperties": true,
+	}
+	// A project's stored default assignee (projects.default_assignee, a person's lowercase
+	// email), as GET /api/v1/asks/open answers it beside the project's asks.
+	openAPIProjectDefaultAssignee = map[string]any{
+		"type": "string",
+		"description": "on a ?project= read, the login of that project's default assignee, whom an " +
+			"ask on it reaches while nobody handed the ask on and its issue holds nobody; null " +
+			"where no project has the key; absent on an ?author_session= read",
 	}
 )
 

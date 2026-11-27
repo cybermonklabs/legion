@@ -1200,6 +1200,19 @@ func withoutSlotsReading(state State) (State, bool) {
 	return state, moved
 }
 
+// withoutAdmissionSignals is state with no `admission.signals` and no `admission.signalChanges`,
+// the two keys of the state's own that admissionSignalsContract added. `signalChanges` is left off
+// rather than emptied, because a strict reader before the contract refuses it as surely when it is
+// empty as when it holds an entry, which is why Admission.MarshalJSON writes the key on every body
+// but this one (Admission.signalChangesHidden), as withoutHeld leaves off `held`. The admission
+// block is a value of the state's own, so the state the source answered is left as it was. The
+// band reports a move on every body it serves, as withoutHeld does.
+func withoutAdmissionSignals(state State) (State, bool) {
+	state.Admission.Signals = nil
+	state.Admission.SignalChanges, state.Admission.signalChangesHidden = nil, true
+	return state, true
+}
+
 // withoutRanksAndSlotStates is the issue with no `rank`, no `rootRank`, and a slot with no
 // `state` and no `since`, the four fields slotsReadingContract added to an issue. The slot is the
 // source's, so it is copied before its two fields are cleared, and only for a slot that carries

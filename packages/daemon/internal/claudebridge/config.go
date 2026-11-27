@@ -55,9 +55,10 @@ type Config struct {
 	Seed      bool
 	Title     string
 	// DaemonURL, BootTokenFile and Generation are what the bridge reports each turn's outcome
-	// with (turnoutcome.go): the daemon's API, the launch's own boot token file, and the launch
-	// generation, as the pane is told them (LEGION_DAEMON_URL, LEGION_BOOT_TOKEN_FILE,
-	// LEGION_GENERATION). A bridge run outside a pane has none of them and reports nothing.
+	// (turnoutcome.go) and each model request (modelrequests.go) with: the daemon's API, the
+	// launch's own boot token file, and the launch generation, as the pane is told them
+	// (LEGION_DAEMON_URL, LEGION_BOOT_TOKEN_FILE, LEGION_GENERATION). A bridge run outside a pane
+	// has none of them and reports nothing.
 	DaemonURL     string
 	BootTokenFile string
 	Generation    uint64
@@ -74,9 +75,9 @@ type Config struct {
 	Clock Clock
 }
 
-// Clock hands out the bridge's stop timers: After answers a channel that receives once d has
-// passed on the clock.
+// Clock measures report age and supplies the bridge's timers.
 type Clock interface {
+	Now() time.Time
 	After(d time.Duration) <-chan time.Time
 }
 
@@ -84,6 +85,7 @@ type Clock interface {
 type wallClock struct{}
 
 func (wallClock) After(d time.Duration) <-chan time.Time { return time.After(d) }
+func (wallClock) Now() time.Time                         { return time.Now() }
 
 // clock is cfg's Clock, the wall clock where it names none.
 func (cfg Config) clock() Clock {

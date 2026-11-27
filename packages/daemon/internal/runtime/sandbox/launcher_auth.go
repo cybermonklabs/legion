@@ -237,12 +237,20 @@ func keptVolumeSince(s *sandbox) time.Time {
 // reports where KernelKills came, as a microVM issue pod's does (the launcher's runsGuest). So a
 // gVisor controller pod re-adopted after a change of runtime.kubernetes.sandbox.type, which runs
 // on until its next launch replaces it, keeps its guard.
+//
+// Every issue pod's launcher is told, too, that this daemon knows a report of a process of no role
+// (NoRoleKills), which it keeps for the issue's project as it keeps every kill of an issue pod and
+// tells no role of, whatever the guard's settings: its launcher sends such a report only where it
+// is told so, and the kills signal counts every kill the pod's lines name. The controller's
+// launcher is never told it: no kill of the controller's pod counts, and a report of no role there
+// has no reader.
 func (r *Runtime) launcherHelloAck(kind podKind) shimwire.LauncherHelloAck {
 	ack := shimwire.LauncherHelloAck{KernelKills: true}
 	switch kind.(type) {
 	case issuePod:
 		ack.MemoryGuard = r.memoryGuard
 		ack.VolumeTrim = r.volumeTrim
+		ack.NoRoleKills = true
 	case controllerPod:
 		ack.MemoryGuard = r.controllerMemoryGuard
 	}

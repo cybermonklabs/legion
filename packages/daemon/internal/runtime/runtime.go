@@ -629,10 +629,12 @@ func (e KeptPodUnrecorded) Unwrap() error { return e.Err }
 // shimwire.MemoryKillCauseKernel, or shimwire.MemoryKillCauseKernelProtected for a process that
 // runs the role's session), which the launcher's guest watch names
 // (shimwire.LauncherMemoryKill): the launcher sends the report on the connection of the role whose
-// process it was, and the daemon tells that role why the process is gone. The session gives it the
-// issue key, the claim token of the role the connection authenticated for, the uid of the pod the
-// launcher runs in and the report; the three are the session's own and never the report's, so a
-// launcher cannot name another role, issue or pod.
+// process it was, and the daemon keeps it and tells that role why the process is gone. A process
+// of no role (the report's NoRole) is reported on the connection of one role of the pod, and the
+// daemon keeps it and tells no role. The session gives it the issue key, the claim token of the
+// role the connection authenticated for, the uid of the pod the launcher runs in and the report;
+// the three are the session's own and never the report's, so a launcher cannot name another role,
+// issue or pod.
 //
 // It takes the wire's own frame rather than a shape of this package's: shimwire imports nothing
 // of the daemon's own packages but internal/redact, which imports nothing of the daemon's, so the

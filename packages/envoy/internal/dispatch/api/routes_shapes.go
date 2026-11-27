@@ -526,7 +526,8 @@ type artifactVersionQuery struct {
 type openAsksQuery struct {
 	// AuthorSession lists the open asks one session authored.
 	AuthorSession string `query:"author_session"`
-	// Project lists every open ask on a project's issues and documents.
+	// Project lists every open ask on a project's issues and documents, and answers that
+	// project's default assignee beside them.
 	Project string `query:"project"`
 	// Since lists the asks opened at or after this one RFC3339 time.
 	Since string `query:"since"`

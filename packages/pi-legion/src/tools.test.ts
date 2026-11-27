@@ -278,6 +278,10 @@ const OMP_LEGION_TOOL_SCHEMA = JSON.stringify({
         "resume_agent",
         "pause",
         "resume",
+        "signals_on",
+        "signals_off",
+        "set_signal_limit",
+        "clear_signal_limit",
         "set_p0_bound",
         "clear_p0_bound",
         "replay_give_up",
@@ -332,7 +336,7 @@ const OMP_LEGION_TOOL_SCHEMA = JSON.stringify({
     reason: {
       type: "string",
       description:
-        "close_root's and request_backward_move's why, retry_or_escalate's optional why, the controller's pause's why, set_p0_bound's and clear_p0_bound's why, register_gate's reason for its basis, and discard_give_up's why, which it requires. No other operation takes it, replay_give_up included. rerun_child takes only issue: say why in a dispatch comment on the child",
+        "close_root's and request_backward_move's why, retry_or_escalate's optional why, the controller's pause's why, set_p0_bound's and clear_p0_bound's why, register_gate's reason for its basis, and discard_give_up's why, which it requires; for signals_on, signals_off, set_signal_limit and clear_signal_limit, which each require it, the person's cited word: whose word it is and what they said. No other operation takes it, replay_give_up included. rerun_child takes only issue: say why in a dispatch comment on the child",
     },
     decision: { type: "string", enum: ["retry", "escalate"] },
     summary: { type: "string" },
@@ -365,6 +369,21 @@ const OMP_LEGION_TOOL_SCHEMA = JSON.stringify({
       type: "number",
       description:
         "With consumer: the highest stream sequence replay_give_up or discard_give_up takes. read_state's summary gives each consumer's newest seq, which takes all of its open give-ups",
+    },
+    signal: {
+      type: "string",
+      enum: ["idle", "queue", "provider", "kills", "approvals"],
+      description: "set_signal_limit's and clear_signal_limit's signal",
+    },
+    part: {
+      type: "string",
+      enum: ["headroom"],
+      description:
+        "The provider's part for set_signal_limit and clear_signal_limit; no other signal takes one",
+    },
+    limit: {
+      type: "number",
+      description: "set_signal_limit's limit, which the signal holds admission at or over",
     },
     bound: {
       type: "number",
@@ -2679,13 +2698,14 @@ test("the controller asks for the replacement of an issue's pod with its own gra
 // The architect's operation set, pinned whole: every `op` the tool's schema lists that an
 // architect's session is not refused as unavailable. It is the tree's workflow operations, the
 // phase ops and read_build, which every session holds; the controller's read_state, set_status,
-// replace_pod, the six agent actions, pause, resume, set_p0_bound, clear_p0_bound and the
-// intake's replay_give_up and discard_give_up stay the controller's alone.
+// replace_pod, the six agent actions, pause, resume, set_p0_bound, clear_p0_bound, the intake's
+// replay_give_up and discard_give_up, and the four changes of admission by signals (signals_on,
+// signals_off, set_signal_limit and clear_signal_limit) stay the controller's alone.
 test("an architect's operation set is the tree's operations and none of the agent actions", async () => {
   const opSchema = z.toJSONSchema(toolFor(claimSession("architect")).parameters as z.ZodType)
     .properties?.op;
   const declared = typeof opSchema === "object" ? (opSchema.enum ?? []).map(String) : [];
-  expect(declared).toHaveLength(29);
+  expect(declared).toHaveLength(33);
   for (const architect of [claimSession("architect"), claimSession("architect", "LEGION-209")]) {
     const tool = toolFor(architect);
     const available: string[] = [];
@@ -2899,6 +2919,91 @@ test("the controller pauses the project with its reason and resumes it, and each
   }
   expect(posted).toHaveLength(2);
   expect(minted).toHaveLength(2);
+});
+
+// Admission by signals (dispatch://INFRA-5899, S3): the controller turns it on or off and sets or
+// clears a signal's limit only on a person's cited word, which each operation requires in reason;
+// a phase worker and an architect hold none of the four. Each goes through the real daemon client,
+// so the settings the controller reads back are the golden the daemon's own test wrote, parsed by
+// the contract's schema. A call the tool can tell is wrong is refused before a grant is minted or
+// a request sent.
+test("the controller changes admission by signals on a person's cited word and reads the settings back through the daemon client", async () => {
+  const { posted, daemon } = goldenDaemon({ "/legion/v1/project/signals": "project-signals.json" });
+  const minted: string[] = [];
+  const tool = controllerTool(daemon, minted);
+  const run = (parameters: Record<string, unknown>) =>
+    tool.execute("", parameters, undefined, undefined, context("ses_controller"));
+  const reason = "the owner's word in the weekly plan: hold starts while kills reach five";
+  const changes = [
+    [
+      { op: "signals_on", reason },
+      { action: "on", reason },
+    ],
+    [
+      { op: "set_signal_limit", signal: "provider", part: "headroom", limit: 2, reason },
+      { action: "set-limit", signal: "provider", part: "headroom", limit: 2, reason },
+    ],
+    [
+      { op: "clear_signal_limit", signal: "kills", reason },
+      { action: "clear-limit", signal: "kills", reason },
+    ],
+    [
+      { op: "signals_off", reason },
+      { action: "off", reason },
+    ],
+  ] as const;
+  for (const [parameters, body] of changes) {
+    const changed = await run(parameters);
+    expect(changed.isError).toBeUndefined();
+    expect(changed.details).toEqual(daemonFixture("project-signals.json"));
+    expect(posted.at(-1)).toEqual([
+      "/legion/v1/project/signals",
+      { grantId: "controller-grant-1", ...body },
+    ]);
+  }
+  expect(minted).toHaveLength(changes.length);
+
+  const refusals = [
+    [{ op: "signals_on" }, "signals_on requires reason"],
+    [{ op: "signals_off", reason: " " }, "signals_off requires reason"],
+    [{ op: "set_signal_limit", signal: "kills", limit: 5 }, "set_signal_limit requires reason"],
+    [{ op: "set_signal_limit", signal: "kills", reason }, "set_signal_limit requires limit"],
+    [{ op: "clear_signal_limit", reason }, "clear_signal_limit requires signal"],
+    [
+      { op: "signals_on", reason, limit: 5 },
+      'signals_on does not accept field "limit"; it takes reason',
+    ],
+  ] as const;
+  for (const [parameters, text] of refusals) {
+    await expect(run(parameters)).resolves.toEqual({
+      content: [{ type: "text", text }],
+      details: {},
+      isError: true,
+    });
+  }
+  expect(posted).toHaveLength(changes.length);
+  for (const parameters of [
+    { op: "set_signal_limit", signal: "kills", limit: 0, reason },
+    { op: "set_signal_limit", signal: "kills", limit: -1, reason },
+    { op: "set_signal_limit", signal: "unknown", limit: 1, reason },
+    { op: "clear_signal_limit", signal: "provider", part: "unknown", reason },
+  ]) {
+    const refused = await run(parameters);
+    expect(refused.isError).toBe(true);
+    expect(minted).toHaveLength(changes.length);
+    expect(posted).toHaveLength(changes.length);
+  }
+
+  for (const active of [claimSession("implementer"), claimSession("architect")]) {
+    const refused = await toolFor(active).execute(
+      "",
+      { op: "signals_on", reason },
+      undefined,
+      undefined,
+      context()
+    );
+    expect(refused.isError).toBe(true);
+  }
 });
 
 // The P0 bound (C3 of dispatch://INFRA-5636, check c-bound-tool). The controller sets the bound

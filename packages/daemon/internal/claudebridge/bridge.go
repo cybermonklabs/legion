@@ -103,6 +103,9 @@ type bridge struct {
 	// reports is this backend's producer of turn outcomes, nil for a pane that names no daemon
 	// (turnoutcome.go).
 	reports *turnReports
+	// requests is this backend's producer of model requests, nil for a pane that names no daemon
+	// (modelrequests.go). It reads every line of Claude Code's stream.
+	requests *modelRequests
 	// promptRun is the request id of the daemon's prompt whose turn is running, and "" in a turn
 	// no prompt of the daemon's started — an Envoy delivery's, or one Claude Code started by
 	// itself when a background task finished. The bridge reports it as Oh My Pi reports its own
@@ -160,7 +163,10 @@ func Run(ctx context.Context, cfg Config) (int, error) {
 	// file Claude Code writes to and exec's Wait copies nothing.
 	b := &bridge{cfg: cfg, log: log.New(redact.Writer(logOut), "[claude-bridge] ", 0)}
 	b.frames = shimwire.NewWriter(&b.encoded)
-	b.reports = startTurnReports(cfg, b.log)
+	if poster := startDaemonPoster(cfg, b.log); poster != nil {
+		b.reports = &turnReports{daemonPoster: poster}
+		b.requests = startModelRequests(poster)
+	}
 	// stop ends the outputs' writers and every reader's send, once Run returns. It does not
 	// interrupt a readLines blocked in ReadBytes, and Run does not wait for those readers.
 	stop := make(chan struct{})
@@ -519,11 +525,22 @@ func (b *bridge) fromClaude(line []byte) {
 		// cost the status alone: a result line the decode refused whole would be a turn whose
 		// end the daemon never learns.
 		APIErrorStatus json.RawMessage `json:"api_error_status"`
+		// The rest is what the model requests' producer reads (modelrequests.go): when the line
+		// was written, the session it is of and the subagent an assistant line of a subagent's is
+		// of (`agent_id`), each measured on the pinned Claude Code (testdata/subagent-turn.jsonl).
+		Timestamp string `json:"timestamp"`
+		SessionID string `json:"session_id"`
+		AgentID   string `json:"agent_id"`
 	}
 	if err := json.Unmarshal(line, &head); err != nil {
 		b.log.Printf("ignoring a line from Claude Code that is not JSON (%d bytes)", len(line))
 		return
 	}
+	b.requests.read(streamLine{
+		kind: head.Type, message: head.Message,
+		parent: head.ParentToolUseID, agent: head.AgentID, session: head.SessionID,
+		timestamp: head.Timestamp,
+	})
 	switch head.Type {
 	case "assistant":
 		b.assistant(head.Message, head.ParentToolUseID != "")

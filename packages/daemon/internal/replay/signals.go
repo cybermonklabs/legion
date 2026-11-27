@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/signals"
 )
@@ -298,10 +299,11 @@ func queueWaits(queue map[string][]json.RawMessage) ([]signals.Wait, error) {
 	return signals.WaitsOf(events), nil
 }
 
-// queueEvents is each event the queue files' lines record, as package signals reads it: the files
-// in the order of their names, each file's lines in its order, each event by the repository its url
-// names and its pull request. queueWaits pairs them for the signal, and the merge queue's model
-// pairs each pull request's own (queuePulls). It refuses a line ParseQueueLine refuses.
+// queueEvents is each event the queue files' lines record, as package signals reads it
+// (intake.QueueTimelineEvent.Signal, as the daemon keeps it): the files in the order of their
+// names, each file's lines in its order, each event by the repository its url names and its pull
+// request. queueWaits pairs them for the signal, and the merge queue's model pairs each pull
+// request's own (queuePulls). It refuses a line ParseQueueLine refuses.
 func queueEvents(queue map[string][]json.RawMessage) ([]signals.QueueEvent, error) {
 	var events []signals.QueueEvent
 	for _, file := range slices.Sorted(maps.Keys(queue)) {
@@ -310,8 +312,7 @@ func queueEvents(queue map[string][]json.RawMessage) ([]signals.QueueEvent, erro
 			if err != nil {
 				return nil, fmt.Errorf("replay: line %d of the merge queue of %s: %w", i+1, file, err)
 			}
-			events = append(events, signals.QueueEvent{ID: event.ID, Repo: event.Repo, PullRequest: event.PullRequest, At: event.At,
-				Enters: event.Event == queueAdded})
+			events = append(events, event.Signal())
 		}
 	}
 	return events, nil
@@ -523,7 +524,7 @@ func (r *SignalRecord) readAsks() error {
 		if err != nil {
 			return fmt.Errorf("replay: line %d of %s: %w", i+1, settingsFile, err)
 		}
-		if event.Type == defaultAssigneeEvent && event.Project == r.window.Project {
+		if event.Type == intake.DefaultAssigneeEvent && event.Project == r.window.Project {
 			r.defaults = append(r.defaults, personAt{at: event.At, person: event.DefaultAssignee})
 		}
 	}
@@ -582,8 +583,9 @@ type approvalEvent struct {
 // approvalEventOf reads the Dispatch event of kind on key's issue, with its payload, as readAsks
 // says: an issue event's assignee where its payload names one; a comment on an ask, with its
 // ask_waiting_on; and an ask's event, with what its payload says of the ask's state, of an
-// approval request's versions and of asked_of, null naming nobody. It refuses a payload that does
-// not read, and an ask's event that names no ask.
+// approval request's versions and of asked_of, null naming nobody, as the daemon reads its turn
+// (intake.AskTurnPayload.AskTurn). It refuses a payload that does not read, an ask's event that
+// names no ask, and one whose asked_of is no person.
 func approvalEventOf(kind, key string, payload json.RawMessage) (approvalEvent, error) {
 	switch kind {
 	case "issue.created", "issue.updated", "issue.closed":
@@ -612,14 +614,8 @@ func approvalEventOf(kind, key string, payload json.RawMessage) (approvalEvent, 
 			asks: comment.Ask != ""}, nil
 	case "ask.opened", "ask.asked_of", "ask.edited", "ask.handed_back", "ask.answered", "ask.resolved":
 		var ask struct {
-			ID       string          `json:"id"`
-			Kind     string          `json:"kind"`
-			State    *string         `json:"state"`
-			AskedOf  json.RawMessage `json:"asked_of"`
-			Approval *struct {
-				Version          *int `json:"version"`
-				RequestedVersion *int `json:"requested_version"`
-			} `json:"approval"`
+			intake.AskTurnPayload
+			Approval *intake.AskVersions `json:"approval"`
 		}
 		if err := json.Unmarshal(payload, &ask); err != nil {
 			return approvalEvent{}, err
@@ -627,22 +623,9 @@ func approvalEventOf(kind, key string, payload json.RawMessage) (approvalEvent, 
 		if ask.ID == "" {
 			return approvalEvent{}, fmt.Errorf("the %s event names no ask", kind)
 		}
-		turn := signals.AskEvent{Kind: signals.AskEventKind(strings.TrimPrefix(kind, "ask.")), Ask: ask.ID, Issue: key}
-		if ask.State != nil {
-			turn.State = signals.ReportsClosed
-			if *ask.State == "open" {
-				turn.State = signals.ReportsOpen
-			}
-		}
-		if moved := ask.Approval; ask.Kind == record.AskApproval && moved != nil {
-			turn.Approval = &signals.AskApproval{Version: moved.Version, RequestedVersion: moved.RequestedVersion}
-		}
-		if ask.AskedOf != nil {
-			var person *string
-			if err := json.Unmarshal(ask.AskedOf, &person); err != nil {
-				return approvalEvent{}, err
-			}
-			turn.AskedOfSet, turn.AskedOf = true, personOf(person)
+		turn, err := ask.AskTurn(kind, key, ask.Approval)
+		if err != nil {
+			return approvalEvent{}, err
 		}
 		return approvalEvent{ask: turn, asks: true}, nil
 	}

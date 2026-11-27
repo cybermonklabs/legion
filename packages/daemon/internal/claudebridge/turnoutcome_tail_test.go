@@ -22,14 +22,14 @@ func TestAFailedTurnReportLogsNoPartOfThePassword(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			var logged bytes.Buffer
-			reports := &turnReports{
-				url:        "http://" + passwordAt + tail + "/legion/v1/claims/turn-outcome",
+			reports := &turnReports{daemonPoster: &daemonPoster{
+				url:        "http://" + passwordAt + tail,
 				bootToken:  "boot-token",
 				generation: 1,
 				client:     &http.Client{Timeout: reportTimeout},
 				clock:      Config{}.clock(),
 				log:        log.New(&logged, "", 0),
-			}
+			}}
 			reports.post(claim.TurnOutcomeRequest{BootToken: "boot-token", Generation: 1, Sequence: 1, Outcome: claim.TurnClean})
 			lower := strings.ToLower(logged.String())
 			if !strings.Contains(lower, "could not report the outcome of turn 1") {

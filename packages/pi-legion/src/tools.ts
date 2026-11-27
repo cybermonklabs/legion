@@ -1,12 +1,16 @@
 import { GATED_STEPS, LEGION_ROLES, type LegionRole } from "@legion/contracts";
 import {
   LEGION_PHASES,
+  type LEGION_SIGNAL_ACTIONS,
+  LEGION_SIGNAL_PARTS,
+  LEGION_SIGNALS,
   LegionGateRegisterRequest,
   type LegionGrant,
   type LegionIssue,
   LegionP0BoundNumber,
   type LegionPhase,
   LegionPlanRegisterRequest,
+  LegionProjectSignalsRequest,
   type LegionState,
 } from "@legion/contracts/legion-api";
 import {
@@ -127,6 +131,10 @@ const OPERATIONS: Readonly<Record<LegionToolRole, readonly string[]>> = {
     ...AGENT_ACTIONS,
     "pause",
     "resume",
+    "signals_on",
+    "signals_off",
+    "set_signal_limit",
+    "clear_signal_limit",
     "set_p0_bound",
     "clear_p0_bound",
     "replay_give_up",
@@ -154,6 +162,10 @@ const OPERATION_FIELDS: Readonly<Record<string, readonly string[]>> = {
   ...Object.fromEntries(AGENT_ACTIONS.map((operation) => [operation, AGENT_FIELDS])),
   pause: ["reason"],
   resume: [],
+  signals_on: ["reason"],
+  signals_off: ["reason"],
+  set_signal_limit: ["signal", "part", "limit", "reason"],
+  clear_signal_limit: ["signal", "part", "reason"],
   set_p0_bound: ["bound", "unbounded", "reason"],
   clear_p0_bound: ["reason"],
   replay_give_up: ["giveUp", "consumer", "throughSeq"],
@@ -601,7 +613,7 @@ function toolSchema(pi: PiApi): unknown {
     reason: z
       .string()
       .describe(
-        "close_root's and request_backward_move's why, retry_or_escalate's optional why, the controller's pause's why, set_p0_bound's and clear_p0_bound's why, register_gate's reason for its basis, and discard_give_up's why, which it requires. No other operation takes it, replay_give_up included. rerun_child takes only issue: say why in a dispatch comment on the child"
+        "close_root's and request_backward_move's why, retry_or_escalate's optional why, the controller's pause's why, set_p0_bound's and clear_p0_bound's why, register_gate's reason for its basis, and discard_give_up's why, which it requires; for signals_on, signals_off, set_signal_limit and clear_signal_limit, which each require it, the person's cited word: whose word it is and what they said. No other operation takes it, replay_give_up included. rerun_child takes only issue: say why in a dispatch comment on the child"
       )
       .optional(),
     decision: z.enum(["retry", "escalate"]).optional(),
@@ -638,6 +650,22 @@ function toolSchema(pi: PiApi): unknown {
         "With consumer: the highest stream sequence replay_give_up or discard_give_up takes. read_state's summary gives each consumer's newest seq, which takes all of its open give-ups"
       )
       .optional(),
+    // The series a change of a limit names, as every surface of admission by signals names it:
+    // the signal, and for the provider its part.
+    signal: z
+      .enum(LEGION_SIGNALS)
+      .describe("set_signal_limit's and clear_signal_limit's signal")
+      .optional(),
+    part: z
+      .enum(LEGION_SIGNAL_PARTS)
+      .describe(
+        "The provider's part for set_signal_limit and clear_signal_limit; no other signal takes one"
+      )
+      .optional(),
+    limit: z
+      .number()
+      .describe("set_signal_limit's limit, which the signal holds admission at or over")
+      .optional(),
     bound: z
       .number()
       .describe(
@@ -662,6 +690,47 @@ function requiredString(
   if (typeof value !== "string" || value.trim() === "")
     throw new Error(`${operation} requires ${name}`);
   return value;
+}
+
+/** The action of each of the controller's four changes of admission by signals, as the daemon's
+ * route takes it (`LegionProjectSignalsRequest`). */
+const SIGNAL_ACTIONS: Readonly<Partial<Record<string, (typeof LEGION_SIGNAL_ACTIONS)[number]>>> = {
+  signals_on: "on",
+  signals_off: "off",
+  set_signal_limit: "set-limit",
+  clear_signal_limit: "clear-limit",
+};
+
+/** The daemon client's request, with the grant omitted so the tool can validate before minting. */
+const signalChangeRequest = LegionProjectSignalsRequest.omit({ grantId: true });
+type SignalChange = Omit<Parameters<LegionDaemonClient["projectSignals"]>[0], "grantId">;
+
+/** Checks required fields and validates their wire shape before the controller mints a grant. */
+function signalChange(
+  parameters: Record<string, unknown>,
+  operation: string,
+  action: SignalChange["action"]
+): SignalChange {
+  const reason = requiredString(parameters, operation, "reason");
+  const change: Record<string, unknown> = { action, reason };
+  if (action === "set-limit" || action === "clear-limit") {
+    change.signal = requiredString(parameters, operation, "signal");
+    if (parameters.part !== undefined) change.part = parameters.part;
+  }
+  if (action === "set-limit") {
+    if (typeof parameters.limit !== "number") throw new Error(`${operation} requires limit`);
+    change.limit = parameters.limit;
+  }
+  const parsed = signalChangeRequest.safeParse(change);
+  if (!parsed.success) {
+    const issue = parsed.error.issues[0];
+    throw new Error(
+      issue === undefined
+        ? `${operation}: invalid request`
+        : `${operation}: invalid ${issue.path.join(".") || "request"}: ${issue.message}`
+    );
+  }
+  return parsed.data;
 }
 
 /** A whole number from 1: a give-up's record id or a stream sequence. */
@@ -1123,6 +1192,12 @@ export function createLegionTool(deps: {
         "resume brings back a role the pause stopped. stop and suspend still run while the project is paused. An agent a " +
         "suspension holds when the project is resumed stays suspended until a resume_agent that may lift that " +
         "suspension, or the operator's legion claims resume, lifts it. " +
+        "Use signals_on or signals_off with a reason to turn admission by signals on or off. " +
+        "Use set_signal_limit or clear_signal_limit to set or clear a limit. Name the signal and, for provider, its part. " +
+        "Make a change only on a person's word. Cite their word in reason. Do not choose a change yourself. " +
+        "The tool refuses missing fields, blank reasons, unknown signal or part names, and limits that are not positive numbers. " +
+        "The daemon checks which part the signal takes and whether the limit is in range (SIGNAL_SETTING_INVALID). " +
+        "The answer gives changed (whether the setting changed) and the current settings. " +
         "A P0 issue, one Dispatch resolves to P0 (its own priority, else the nearest issue's above it), starts outside the admission cap; set_p0_bound (bound or " +
         "unbounded, reason) sets how many P0 issues may hold a slot at once, or no bound with unbounded true, whatever " +
         "legion.yaml's admission_p0_bound says, and clear_p0_bound (reason) returns to legion.yaml's; neither takes an " +
@@ -1225,6 +1300,16 @@ export function createLegionTool(deps: {
           if (operation === "resume") {
             const { grantId } = await controllerGrant(active.sessionID);
             return jsonSuccess(await client.projectResume({ grantId }));
+          }
+          // A change of admission by signals names no issue either, and each is the person's: it
+          // is validated whole, the person's cited word in reason among it, before its grant is
+          // minted, and its answer is the daemon's own, whether it moved the setting and the
+          // settings as they stand.
+          const action = SIGNAL_ACTIONS[operation];
+          if (action !== undefined) {
+            const change = signalChange(parameters, operation, action);
+            const { grantId } = await controllerGrant(active.sessionID);
+            return jsonSuccess(await client.projectSignals({ grantId, ...change }));
           }
           // The P0 bound's set and clear name no issue either, and are validated whole before the
           // grant is minted; each answer is the daemon's own: the bound in force after the change.

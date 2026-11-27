@@ -25,6 +25,59 @@ const reportTimeout = 15 * time.Second
 // bridge's clock, so the pane's line says the bound rather than the cancel that carried it.
 var errReportTimeout = fmt.Errorf("the daemon gave no answer within the report's bound of %s", reportTimeout)
 
+// daemonPoster shares the launch credential and HTTP client between both reporters.
+type daemonPoster struct {
+	url        string
+	bootToken  string
+	generation uint64
+	client     *http.Client
+	clock      Clock
+	log        *log.Logger
+}
+
+type daemonAnswer struct {
+	statusCode int
+	status     string
+	body       []byte
+}
+
+// postJSON bounds the whole call, including reading its answer, on the bridge's clock.
+// attempted distinguishes local request construction errors from failures to reach the daemon.
+// LEGION_DAEMON_URL is the daemon's daemon_url, which can carry a user name and a password: an
+// error that names the request is returned through redact.RequestError, so neither the URL's
+// credential nor the host a dial's error names (a password's tail, when it holds an unencoded "@")
+// reaches either reporter's log line.
+func (p *daemonPoster) postJSON(path string, body []byte, timeout time.Duration, cause error, maxBytes int64) (answer daemonAnswer, attempted bool, err error) {
+	route := p.url + path
+	ctx, cancel := context.WithCancelCause(context.Background())
+	defer cancel(nil)
+	post, err := http.NewRequestWithContext(ctx, http.MethodPost, route, bytes.NewReader(body))
+	if err != nil {
+		return daemonAnswer{}, false, redact.RequestError("the daemon", route, err)
+	}
+	bound := p.clock.After(timeout)
+	go func() {
+		select {
+		case <-bound:
+			cancel(cause)
+		case <-ctx.Done():
+		}
+	}()
+	post.Header.Set("Content-Type", "application/json")
+	defer func() {
+		if err != nil && context.Cause(ctx) != nil {
+			err = fmt.Errorf("%w (%v)", context.Cause(ctx), err)
+		}
+	}()
+	response, err := p.client.Do(post)
+	if err != nil {
+		return daemonAnswer{}, true, redact.RequestError("the daemon", route, err)
+	}
+	defer func() { _ = response.Body.Close() }()
+	content, err := readAnswer(response, maxBytes)
+	return daemonAnswer{response.StatusCode, response.Status, content}, true, err
+}
+
 // turnReports is the bridge as the Claude Code backend's producer of turn outcomes: every turn the
 // bridge ends is reported to the daemon, clean or refused, with the bridge's own sequence within
 // its launch generation (POST /legion/v1/claims/turn-outcome). The daemon derives the claim's run
@@ -47,34 +100,25 @@ var errReportTimeout = fmt.Errorf("the daemon gave no answer within the report's
 // bridge's exit cuts short is a turn the daemon never hears of, which counts neither way, and the
 // bridge is torn down only when its pane is ending.
 type turnReports struct {
-	url        string
-	bootToken  string
-	generation uint64
-	client     *http.Client
-	// clock is the bridge's (Config.Clock), which the report's bound runs on.
-	clock Clock
-	log   *log.Logger
+	*daemonPoster
 	// sequence is the bridge's own count of the turns it has ended at generation, from 1. It is
 	// atomic because the posts run off the loop, though only the loop ever takes a number.
 	sequence atomic.Uint64
 }
 
-// startTurnReports is the reporter for cfg, or nil when the environment the bridge was given names
-// no daemon, no boot token file or no generation: a bridge run by hand reports to nobody. A boot
-// token file it cannot read is the same, said once, since nothing it could report would
-// authenticate.
-func startTurnReports(cfg Config, logger *log.Logger) *turnReports {
+// startDaemonPoster returns nil for a pane without reporting credentials or a reachable token file.
+func startDaemonPoster(cfg Config, logger *log.Logger) *daemonPoster {
 	if cfg.DaemonURL == "" || cfg.BootTokenFile == "" || cfg.Generation == 0 {
-		logger.Printf("reporting no turn outcomes: this pane names %s", missingReportInputs(cfg))
+		logger.Printf("reporting no turn outcomes or model requests: this pane names %s", missingReportInputs(cfg))
 		return nil
 	}
 	token, err := os.ReadFile(cfg.BootTokenFile)
 	if err != nil {
-		logger.Printf("reporting no turn outcomes: the boot token the daemon would recognise this claim by could not be read: %v", err)
+		logger.Printf("reporting no turn outcomes or model requests: the boot token the daemon would recognise this claim by could not be read: %v", err)
 		return nil
 	}
-	return &turnReports{
-		url:        strings.TrimSuffix(cfg.DaemonURL, "/") + "/legion/v1/claims/turn-outcome",
+	return &daemonPoster{
+		url:        strings.TrimSuffix(cfg.DaemonURL, "/"),
 		bootToken:  strings.TrimSpace(string(token)),
 		generation: cfg.Generation,
 		client:     &http.Client{},
@@ -137,41 +181,18 @@ func (r *turnReports) post(request claim.TurnOutcomeRequest) {
 		r.log.Printf("could not encode the outcome of turn %d: %v", request.Sequence, err)
 		return
 	}
-	// The call's bound, reportTimeout, runs on the bridge's clock; ending the request's context
-	// ends its dial, its wait for an answer and its read of the body alike, and the cause it ends
-	// with, errReportTimeout, is what the line says.
-	ctx, cancel := context.WithCancelCause(context.Background())
-	defer cancel(nil)
-	go func() {
-		select {
-		case <-r.clock.After(reportTimeout):
-			cancel(errReportTimeout)
-		case <-ctx.Done():
-		}
-	}()
-	post, err := http.NewRequestWithContext(ctx, http.MethodPost, r.url, bytes.NewReader(body))
-	if err != nil {
-		r.log.Printf("could not report the outcome of turn %d: %v", request.Sequence, redact.RequestError("the daemon", r.url, err))
+	response, attempted, err := r.postJSON("/legion/v1/claims/turn-outcome", body, reportTimeout, errReportTimeout, maxAnswerBytes)
+	if !attempted {
+		r.log.Printf("could not report the outcome of turn %d: %v", request.Sequence, err)
 		return
 	}
-	post.Header.Set("Content-Type", "application/json")
-	// LEGION_DAEMON_URL is the daemon's daemon_url, which can carry a user name and a password: a
-	// report that got no answer is named through redact.RequestError, so neither the URL's
-	// credential nor the host a dial's error names (a password's tail, when it holds an unencoded
-	// "@") is logged.
-	response, err := r.client.Do(post)
-	if err != nil {
-		shown := redact.RequestError("the daemon", r.url, err)
-		if cause := context.Cause(ctx); cause != nil {
-			shown = fmt.Errorf("%w (%v)", cause, shown)
-		}
-		r.log.Printf("could not report the outcome of turn %d (%s): %v", request.Sequence, request.Outcome, shown)
+	if response.statusCode == 0 {
+		r.log.Printf("could not report the outcome of turn %d (%s): %v", request.Sequence, request.Outcome, err)
 		return
 	}
-	defer func() { _ = response.Body.Close() }()
-	answer, decoded := decodeTurnOutcome(ctx, response)
+	answer, decoded := decodeTurnOutcome(response, err)
 	switch {
-	case response.StatusCode/100 != 2:
+	case response.statusCode/100 != 2:
 		r.log.Printf("the daemon refused the outcome of turn %d (%s): %s", request.Sequence, request.Outcome, answer)
 	case decoded.Failed:
 		// claim.TurnOutcomeResponse says which report sets Failed.
@@ -184,26 +205,21 @@ func (r *turnReports) post(request claim.TurnOutcomeRequest) {
 // decodeTurnOutcome is what the daemon answered: the outcome it derived, and the text to log for
 // an answer that is not one — a refusal's sentence, or the status alone when the body says
 // nothing.
-func decodeTurnOutcome(ctx context.Context, response *http.Response) (string, claim.TurnOutcomeResponse) {
+func decodeTurnOutcome(response daemonAnswer, err error) (string, claim.TurnOutcomeResponse) {
 	var decoded claim.TurnOutcomeResponse
-	body, err := readAnswer(response)
 	if err != nil {
-		if cause := context.Cause(ctx); cause != nil {
-			err = fmt.Errorf("%w (%v)", cause, err)
-		}
-		return fmt.Sprintf("%s (its answer could not be read: %v)", response.Status, err), decoded
+		return fmt.Sprintf("%s (its answer could not be read: %v)", response.status, err), decoded
 	}
-	if json.Unmarshal(body, &decoded) != nil || len(body) == 0 {
-		return fmt.Sprintf("%s %s", response.Status, strings.TrimSpace(string(body))), decoded
+	if json.Unmarshal(response.body, &decoded) != nil || len(response.body) == 0 {
+		return fmt.Sprintf("%s %s", response.status, strings.TrimSpace(string(response.body))), decoded
 	}
-	return response.Status, decoded
+	return response.status, decoded
 }
 
-// readAnswer reads at most maxAnswerBytes of the daemon's answer: a refusal is a sentence, and
-// nothing the bridge logs needs more.
-func readAnswer(response *http.Response) ([]byte, error) {
+// readAnswer limits how many bytes the bridge reads from the daemon's answer.
+func readAnswer(response *http.Response, maxBytes int64) ([]byte, error) {
 	var buffer bytes.Buffer
-	_, err := buffer.ReadFrom(http.MaxBytesReader(nil, response.Body, maxAnswerBytes))
+	_, err := buffer.ReadFrom(http.MaxBytesReader(nil, response.Body, maxBytes))
 	return buffer.Bytes(), err
 }
 

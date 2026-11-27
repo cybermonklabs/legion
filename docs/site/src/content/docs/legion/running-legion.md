@@ -628,6 +628,23 @@ What each part is for:
   The loader refuses a name that is no `owner/name` and a repository the list names twice,
   compared without case and through `repository_renames`, and a daemon that predates the key
   refuses it at boot, as it does any key it does not know.
+- **`projects.<KEY>.signal_token_limit_per_minute` and `signal_token_model_pattern`** (optional) describe the project's model provider to the provider's headroom, a signal of admission by signals:
+
+  ```yaml
+  projects:
+    WIDGETS:
+      signal_token_limit_per_minute: 5500000
+      signal_token_model_pattern: '^claude-'
+  ```
+
+  The limit is the uncached input tokens the project's sessions may spend in a minute: fresh input and cache writes, never cache reads.
+  Without it the headroom reads as not recorded, never as zero.
+  Each minute keeps the limit that was in force when it began, so a daemon restarted with another limit reads no earlier minute again.
+  The model pattern selects the models whose tokens count against the limit, and every model counts without it; a request of another model is still kept, and its tokens count nowhere.
+  The model pattern is a Go regular expression (RE2 syntax), and a model counts where the pattern matches anywhere in the name a host gives it; anchor it with `^` and `$` to match the whole name.
+  The loader refuses, naming the key and why, an empty pattern, which would count every model as leaving the key out does, and a pattern that Go does not compile, with Go's own reason.
+  A refused file is refused whole, so none of its keys takes effect.
+  [Admission by signals](/legion/legion/admission-signals/) says what the headroom reads, how `legion state` shows it, and how a person turns the rule on and sets its limit.
 - **`repository_renames`** (optional) tells the daemon that two names are one repository, for a
   repository that moved: after a transfer GitHub's events name the new repository while every tree
   Legion has already recorded names the old one.
@@ -1520,6 +1537,9 @@ Closing the terminal leaves the project without one, and the daemon logs
   `--json` carries the same reading as `admission.slots`, with the number of P0 holders as `p0`, and each holder's state and the moment it entered it on its slot (`state`, `since`).
   The controller's tick notice carries the reading as `slots`, and the `legion` tool's `read_state` summary prints the line.
 
+  A daemon that keeps admission by signals prints one more line after the `slots` line, which the sample above leaves out, `signals: admission by signals on; idle 0.25 limit 0.5 does not hold; queue not recorded limit none does not hold; …`: whether the rule is on, and each of its five series by its signal and part, with its value or `not recorded`, its limit or `limit none`, and whether it holds admission, since when where a pass dated the hold.
+  [Admission by signals](/legion/legion/admission-signals/) says what each signal is, how to read it here and in `--json`, and how a person turns the rule on and off and sets or clears each limit.
+
   The `waiting line` block under it names the issues of `admission.waiting`, in the order the
   daemon promotes them.
   It orders them by the priority Dispatch resolves first: P0, P1, P2, P3, and then issues with no
@@ -1708,7 +1728,7 @@ Closing the terminal leaves the project without one, and the daemon logs
   [A message the intake gave up](/legion/legion/troubleshooting/#a-message-the-intake-gave-up)
   says what each reason means and what to do.
 
-  `--json` prints everything the daemon records: `admission` (`cap`, `p0Holders` how many slot holders are P0 and outside `cap`, `p0Bound` the P0 bound in force with configured and live values, `active` the issues holding a slot, `waiting` the issues in the line, `trees` the roots of the live trees, and `blocked`), each
+  `--json` prints everything the daemon records: `admission` (`cap`, `p0Holders` how many slot holders are P0 and outside `cap`, `p0Bound` the P0 bound in force with configured and live values, `active` the issues holding a slot, `waiting` the issues in the line, `trees` the roots of the live trees, `blocked`, and `signals` and `signalChanges`, admission by signals and its record of changes, which [Admission by signals](/legion/legion/admission-signals/#read-the-signals) describes), each
   issue under `issues` with its `phase`, `status`, `tree` (the root of its tree), on a root
   `treeRuns` (true when the root's tree runs: its lifecycle is open, the root does not linger, and
   the root does not wait in the line for its tree to open), `repo` and `defaultBranch`, `holdReason`,

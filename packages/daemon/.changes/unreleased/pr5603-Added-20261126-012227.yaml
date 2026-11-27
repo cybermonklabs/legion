@@ -1,0 +1,118 @@
+kind: Added
+body: |-
+  The daemon keeps each memory kill of its project's issue pods for the kills signal of admission
+  by signals: the memory guard's kill and the microVM kernel's kill, of a role's process and of a
+  process of no role, once by the report's guard and sequence, at the moment the launcher's watch
+  named the kill, so a report a reconnected launcher sends late counts at that moment. A kill in
+  the controller's pod is not kept. The first boot of this release records the moment it began
+  keeping the kills, and the kills signal counts an hour from it. A migration adds the tables
+  `memory_kills` and `signal_inputs`; its header carries the way back.
+
+  An issue pod's launcher now reports the kill of a process of no role too, such as the test
+  database's server, which it logged before and did not report: once, marked `noRole`, on the
+  connection of the first role whose daemon's answer carried `noRoleKills`, which the daemon sets
+  on every issue pod's answer and never on the controller pod's. Where connections are up and none
+  carried it, the launcher drops the report with a line. The daemon tells no role of such a kill.
+  The daemon API entry `20261126011643` (`admission-signals`) adds both members of the launcher
+  wire: an earlier daemon sends no `noRoleKills`, so it is sent no report of no role, and an
+  earlier launcher sends none, and the daemon counts what it sends.
+
+  The daemon also keeps each merge-queue entry and exit (a merge or a removal) of its project's
+  pull requests for the queue signal of admission by signals. The `enqueued`, `dequeued` and
+  merged pull request notifications of an issue branch of the project queue a `queue_timeline_read`
+  outbox row, which pages GitHub's timeline outside the fact lock, reads again when GitHub's
+  timeline lags behind the notified move, and applies the events under GitHub's own event id,
+  canonical repository and `created_at`. At boot the daemon pages GitHub's `mergeQueue` snapshot
+  for each repository and target branch that serves the project's pull requests, to find the pull
+  requests whose timeline it reads, and a failed boot read records `read_error` on `signal_inputs`,
+  so the queue reads absent with its reason rather than as an empty queue. A migration adds
+  `queue_events` and `signal_inputs.read_error`, and its header carries the way back; a second
+  migration, above every list of the outbox's kind check, adds the `queue_timeline_read` outbox
+  kind, and the first one's way back deletes that kind's rows.
+
+  The daemon also keeps what the approvals signal of admission by signals needs: each ask of the
+  project's issues with the person it was handed to (`asked_of`) and whose turn it is, each issue's
+  assignee, and the project's default assignee. The Dispatch consumer's durable now also takes this
+  project's `settings.project_default_assignee.updated` subject and no other setting, updated in
+  place with its position kept. Each event is kept at its sequence in Dispatch's log, so one
+  delivered twice or after a newer one changes nothing. The boot lists the project's issues, reads
+  its open asks with its default assignee (`GET /api/v1/asks/open?project=`, which a Dispatch before
+  this change answers without the default) and the open asks of each issue with one open, and
+  closes the asks it held open that Dispatch no longer lists. A failed read records its reason on
+  the `approvals` row of `signal_inputs`, and against a Dispatch that gives no default assignee,
+  with none kept from an event, the signal reads as not recorded with its reason, never as a number.
+  A migration adds `approval_asks`, `approval_assignees` and `approval_default_assignees`; its
+  header carries the way back.
+
+  The daemon also keeps each model request its project's hosts report, for the provider's
+  headroom: `POST /legion/v1/claims/model-requests` takes a batch of 1 to 200 requests, each with a
+  stable id, its session (the role's own, a subagent's or the controller's), its model, when it
+  ended and its uncached input tokens where known, and answers the ids it now holds. A host
+  authenticates as for a turn outcome, by the claim's secret or the launch's boot token, and the
+  operator's controller by its controller record; the project is the claim's. Each request counts
+  once, in the minute it ended. The daemon API entry `20261126011643` (`admission-signals`) adds
+  the route and its answer; the turn-outcome report and its answer are unchanged, and a minute a
+  turn of a host before that entry overlaps reads as not recorded, never as zero. Two optional
+  project keys configure it: `signal_token_limit_per_minute` and `signal_token_model_pattern`, a
+  Go regular expression (RE2 syntax) that the loader refuses, naming the key, where it is empty or
+  where Go does not compile it; a refused file is refused whole. A migration adds
+  `model_requests`, `model_request_minutes`, `signal_token_limits` and `claim_turns`; its header
+  carries the way back.
+
+  `legion claude-bridge` reports each model request of its Claude Code session on that route with
+  the launch's boot token: each answered request once, by its message id, however many stream lines
+  it took, ended at its last line, with `input_tokens + cache_creation_input_tokens`, and a
+  subagent's under its `agent_id`. A request is reported within 15 seconds of its end while the
+  turn goes on, and what is left at each `result` at once; the turn-outcome report is unchanged.
+
+  Each admission pass now reads the five series of admission by signals from what the daemon
+  keeps, with the replay's one definition of each: the idle share of the slot holders, the merge
+  queue's wait, the provider's headroom, the kills and the approvals. A series counted over a span
+  reads as not recorded, with its reason, until its span is whole after the first boot that kept
+  its input. While a project's settings turn admission by signals on, an issue below P0
+  starts only while every series that has a limit reads under it and the cap has room; a P0 issue,
+  every other hold and every holder's slot stand as with it off, and the tick starts no issue below
+  P0. Each start a signal held is logged once its fact commits as `admission: a signal held a
+  start`, with the issue, the signal and part, its value and its limit. Until a person sets them,
+  every project is off with no limit.
+
+  Each fact that keeps an input runs the pass only where it changed a row, so the same input
+  brought again runs none. A report of model requests and the start or end of a slot holder's turn
+  (a new supervision fact, `TurnEdge`) run the pass only where a series' hold moved against the last
+  committed pass's, or a series but the headroom moved by its step against the last value a pass
+  recorded. Each project has one timer: after each pass, report and turn edge, the earliest moment a
+  series with a limit would cross it with no new event is written under a rising fence and armed
+  once the fact commits, and the daemon arms it again from the store at each boot and stops it at
+  its stop. Its firing applies `SignalDeadline` with the fence, and a firing that is not the
+  committed deadline's, or comes early, runs no pass. A migration adds `signal_deadlines`; its
+  header carries the way back.
+
+  A person turns admission by signals on or off and sets or clears each signal's limit while the
+  daemon runs: `legion project signals on|off --reason …`, `set-limit --signal … [--part …] --limit
+  … --reason …` and `clear-limit --signal … [--part …] --reason …` on the operator's
+  `POST /legion/v1/operator/project/signals`, and the controller's `POST /legion/v1/project/signals`
+  on a person's cited word. A fresh project is off with no limit. Each change is a fact whose own
+  pass admits by it, and a restart keeps it. The daemon refuses a limit outside its signal's range
+  (the idle share above 0 to 1, the queue above 0 to 168 hours, the headroom above 0 to 10, and the
+  kills and the approvals a whole number from 1 to 1,000,000), a name of no signal and
+  a blank reason (`SIGNAL_SETTING_INVALID`), changing nothing.
+
+  The daemon keeps a record of changes of each project, each entry `{id, at, signal, part, what,
+  value, absent, setBy, reason}` with ids that rise by one: each change of the switch and of a limit
+  with who made it and why, each change of a hold with the series' value beside it, and each other
+  value that moved by its signal's step (idle 0.05, queue 0.25 hours, headroom 0.10, kills and
+  approvals 5), the headroom's only at a pass that gives out or takes back a slot. Holds are 0
+  while admission by signals is off, and no clock writes an entry. One log line goes with each
+  change of the switch, a limit and a hold. `legion state --json` gives `admission.signals`, each
+  series read at the state's moment with its value or why it cannot be computed, its limit, whether
+  it holds and since when, and the provider's minutes of the last hour, and
+  `admission.signalChanges`, the newest 50 entries newest first; `legion state` prints the signals in
+  one line after the slots line. A caller below the `admission-signals` entry is served neither. A
+  migration adds `signal_settings`, `signal_changes` and `signal_change_ids`; its header carries the
+  way back.
+
+  The replay's kill matcher reads the daemon's line of a kill of a process of no role as its record
+  of the launcher's kill of role `none`.
+time: 2026-11-26T01:22:27Z
+custom:
+    Issue: pr5603
