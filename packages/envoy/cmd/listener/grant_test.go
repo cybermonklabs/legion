@@ -26,11 +26,11 @@ import (
 
 // A listener whose NATS user holds exactly the grant envoy-infra renders for its machine
 // (testnats.ListenerGrant) takes its delivery lease, renews it, delivers a notification through
-// the delivery ledger, records a registered session's last-seen time, and releases the lease on
-// SIGTERM, and the server refuses it nothing. Each write to the listener state bucket is read
-// back by key, a direct get on the key's own subject, which the grant allows: a read by revision
-// is a direct get on the stream's bare subject, which it refuses, so the lease was never held and
-// no last-seen record was written.
+// the delivery ledger, records a registered session's last-seen time in the last-seen bucket, and
+// releases the lease on SIGTERM, and the server refuses it nothing. Each write to the listener
+// state bucket and to the last-seen bucket is read back by key, a direct get on the key's own
+// subject, which the grant allows: a read by revision is a direct get on the stream's bare
+// subject, which it refuses, so the lease was never held and no last-seen record was written.
 func TestAListenerUnderItsMachinesGrantHoldsTheLeaseAndRecordsLastSeen(t *testing.T) {
 	t.Parallel()
 	const (
@@ -103,8 +103,15 @@ func TestAListenerUnderItsMachinesGrantHoldsTheLeaseAndRecordsLastSeen(t *testin
 		keys, err := state.Legacy().Keys()
 		return err == nil && hasKeyWithPrefix(keys, ledger)
 	})
-	if _, err := state.Get("seen." + sessionID); err != nil {
+	lastSeen, err := bus.OpenKeyValue(t.Context(), admin.Conn, admin.JS(), bus.LastSeenBucket)
+	if err != nil {
+		t.Fatalf("open the last-seen bucket: %v\n%s", err, listener.Output.String())
+	}
+	if _, err := lastSeen.Get(bus.LastSeenPrefix + sessionID); err != nil {
 		t.Fatalf("read %s's last-seen record: %v\n%s", sessionID, err, listener.Output.String())
+	}
+	if _, err := state.Get(bus.LastSeenPrefix + sessionID); !errors.Is(err, natsgo.ErrKeyNotFound) {
+		t.Fatalf("read %s's last-seen record from %s: %v, want none there", sessionID, bus.ListenerStateBucket, err)
 	}
 
 	listener.Terminate(t)
@@ -160,7 +167,7 @@ func TestAMachinesGrantRefusesAnotherMachinesLeaseMarkAndLedger(t *testing.T) {
 		t.Fatalf("connect as box-a's user: %v", err)
 	}
 	t.Cleanup(conn.Close)
-	kv, err := openListenerState(t.Context(), conn, 1, listenerStateMaxAge, 2*time.Second)
+	kv, err := openListenerState(t.Context(), conn, 1, 2*time.Second)
 	if err != nil {
 		t.Fatalf("open the listener state bucket under box-a's grant: %v", err)
 	}
@@ -252,9 +259,10 @@ func awaitRefusals(t *testing.T, errs <-chan error, what string, subjects ...str
 // clean-hand-back mark or delivery ledger: the direct get of each of those keys is refused, so a
 // machine's user cannot ask the bucket for another machine's lease or deliveries (its _INBOX.>
 // subscription still receives every reply: natsgrant.ListenerState says what that leaves). It
-// still reads every session's last-seen record, whichever machine's listener wrote it: a role
-// claim names its holder session and no machine, and any listener answers a lapsed holder's
-// last_seen out of that record (GET /v1/roles/<role>).
+// still reads every session's last-seen record in the last-seen bucket, whichever machine's
+// listener wrote it: a role claim names its holder session and no machine, and any listener
+// answers a lapsed holder's last_seen out of that record (GET /v1/roles/<role>). The listener
+// state bucket holds no last-seen record any more, and the grant reads none there either.
 func TestAMachinesGrantRefusesAReadOfAnotherMachinesLeaseMarkAndLedgerAndReadsEveryLastSeen(t *testing.T) {
 	t.Parallel()
 	seedA, publicA := testnats.User(t)
@@ -270,7 +278,7 @@ func TestAMachinesGrantRefusesAReadOfAnotherMachinesLeaseMarkAndLedgerAndReadsEv
 		t.Fatalf("connect as box-b's user: %v", err)
 	}
 	t.Cleanup(connB.Close)
-	kvB, err := openListenerState(t.Context(), connB, 1, listenerStateMaxAge, 2*time.Second)
+	kvB, err := openListenerState(t.Context(), connB, 1, 2*time.Second)
 	if err != nil {
 		t.Fatalf("open the listener state bucket under box-b's grant: %v", err)
 	}
@@ -290,9 +298,13 @@ func TestAMachinesGrantRefusesAReadOfAnotherMachinesLeaseMarkAndLedgerAndReadsEv
 			t.Fatalf("box-b writes its own %s: %v", key, err)
 		}
 	}
+	lastSeenB, err := openLastSeen(t.Context(), connB, 1, lastSeenMaxAge)
+	if err != nil {
+		t.Fatalf("open the last-seen bucket under box-b's grant: %v", err)
+	}
 	seen := bus.LastSeenPrefix + dedupe.SessionToken("ses_on_box_b")
 	const seenValue = `{"at":1763500000000}`
-	if _, err := kvB.Put(seen, []byte(seenValue)); err != nil {
+	if _, err := lastSeenB.Put(seen, []byte(seenValue)); err != nil {
 		t.Fatalf("box-b records %s: %v", seen, err)
 	}
 
@@ -303,44 +315,49 @@ func TestAMachinesGrantRefusesAReadOfAnotherMachinesLeaseMarkAndLedgerAndReadsEv
 		t.Fatalf("connect as box-a's user: %v", err)
 	}
 	t.Cleanup(connA.Close)
-	kvA, err := openListenerState(t.Context(), connA, 1, listenerStateMaxAge, 2*time.Second)
+	kvA, err := openListenerState(t.Context(), connA, 1, 2*time.Second)
 	if err != nil {
 		t.Fatalf("open the listener state bucket under box-a's grant: %v", err)
 	}
-	for _, key := range theirs {
+	for _, key := range append(theirs, seen) {
 		if entry, err := kvA.Get(key); err == nil {
-			t.Fatalf("box-a's user read box-b's %s: %s", key, entry.Value())
+			t.Fatalf("box-a's user read %s in %s: %s", key, bus.ListenerStateBucket, entry.Value())
 		}
 		awaitRefusals(t, errs, "box-a's read of "+key, listenerStateDirectGet(key))
 	}
-	entry, err := kvA.Get(seen)
+	lastSeenA, err := openLastSeen(t.Context(), connA, 1, lastSeenMaxAge)
+	if err != nil {
+		t.Fatalf("open the last-seen bucket under box-a's grant: %v", err)
+	}
+	entry, err := lastSeenA.Get(seen)
 	if err != nil || string(entry.Value()) != seenValue {
 		t.Fatalf("box-a reads %s, which box-b wrote, as %v (%v), want %s", seen, entry, err, seenValue)
 	}
 	select {
 	case err := <-errs:
-		t.Fatalf("the server refused box-a's read of %s: %v", seen, err)
+		t.Fatalf("the server refused box-a's open of %s or its read of %s: %v", bus.LastSeenBucket, seen, err)
 	default:
 	}
 }
 
-// Every call a listener makes on its state bucket passes under its machine's grant
-// (testnats.ListenerGrant, whose bucket entries are natsgrant.ListenerState's eleven subjects),
-// and the server logs no permission violation, each made by the listener's own code:
-//   - the open of an absent bucket (openListenerState): its lookup, its create, the wait for its
-//     leader and the handle's open;
-//   - the age raise of a bucket an earlier build created with a shorter MaxAge (bus.RaiseMaxAge,
-//     from openListenerState), the stream info and update of KV_envoy_listener that the keeper's
-//     copy raise sends too (raiseReplicas and raiseStream reach the same updateStream), which a
-//     single server of one copy never needs;
+// Every call a listener makes on its state bucket and on the last-seen bucket passes under its
+// machine's grant (testnats.ListenerGrant, whose entries for the two buckets are
+// natsgrant.ListenerState's nine subjects and natsgrant.LastSeen's five), and the server logs no
+// permission violation, each made by the listener's own code:
+//   - the open of each absent bucket (openListenerState, openLastSeen): its lookup, its create,
+//     the wait for its leader and the handle's open;
+//   - the age raise of each bucket found with a shorter MaxAge (bus.RaiseMaxAge, from either
+//     open), the stream info and update of KV_envoy_listener and KV_envoy_last_seen that the
+//     keeper's copy raise sends too (raiseReplicas and raiseStream reach the same updateStream),
+//     which a single server of one copy never needs;
 //   - the lease: its create of an absent record and the read back, its renewal and its release,
 //     the clean-hand-back mark the stop writes and the pod that took the record reads, that pod's
 //     poll and take-over, and the released pod's read of its successor;
 //   - the delivery ledger (dedupe.KV): an attempt's create, a second attempt on the same pair,
 //     which nats.go's Create answers by reading the key after its failed write before the ledger
 //     reads it itself, a take-over's update, the record and the clear;
-//   - a session's last-seen record (session.SessionRegistry): written at its registration and
-//     read once the session lapsed.
+//   - a session's last-seen record in the last-seen bucket (session.SessionRegistry): written at
+//     its registration and read once the session lapsed.
 func TestEveryCallTheListenerMakesOnItsStateBucketPassesUnderItsMachinesGrant(t *testing.T) {
 	t.Parallel()
 	seed, public := testnats.User(t)
@@ -352,7 +369,7 @@ func TestEveryCallTheListenerMakesOnItsStateBucketPassesUnderItsMachinesGrant(t 
 		t.Fatalf("connect as %s's user: %v", leaseTestMachine, err)
 	}
 	t.Cleanup(conn.Close)
-	if _, err := openListenerState(t.Context(), conn, 1, listenerStateMaxAge, listenerStateRequestWait); err != nil {
+	if _, err := openListenerState(t.Context(), conn, 1, listenerStateRequestWait); err != nil {
 		t.Fatalf("open the absent listener state bucket under %s's grant: %v", leaseTestMachine, err)
 	}
 
@@ -372,7 +389,7 @@ func TestEveryCallTheListenerMakesOnItsStateBucketPassesUnderItsMachinesGrant(t 
 	if _, err := adminJS.UpdateStream(&earlier); err != nil {
 		t.Fatalf("shorten %s's age as an earlier build had it: %v", stream, err)
 	}
-	kv, err := openListenerState(t.Context(), conn, 1, listenerStateMaxAge, listenerStateRequestWait)
+	kv, err := openListenerState(t.Context(), conn, 1, listenerStateRequestWait)
 	if err != nil {
 		t.Fatalf("open the listener state bucket of an earlier build's age under %s's grant: %v", leaseTestMachine, err)
 	}
@@ -445,16 +462,39 @@ func TestEveryCallTheListenerMakesOnItsStateBucketPassesUnderItsMachinesGrant(t 
 		sessionID = "ses_granted"
 		ttl       = 3 * time.Second
 	)
-	sessions, err := session.OpenSessionRegistry(t.Context(), conn, session.WithSessionReplicas(1), session.WithSessionTTL(ttl),
-		session.WithLastSeenBucket(kv))
+	lastSeen := func(what string) bus.KeyValue {
+		t.Helper()
+		kv, err := openLastSeen(t.Context(), conn, 1, lastSeenMaxAge)
+		if err != nil {
+			t.Fatalf("open the %s last-seen bucket under %s's grant: %v", what, leaseTestMachine, err)
+		}
+		return kv
+	}
+	lastSeen("absent")
+	lastSeenStream := "KV_" + bus.LastSeenBucket
+	info, err = adminJS.StreamInfo(lastSeenStream)
+	if err != nil {
+		t.Fatalf("read %s: %v", lastSeenStream, err)
+	}
+	shorter := info.Config
+	shorter.MaxAge = 10 * time.Minute
+	if _, err := adminJS.UpdateStream(&shorter); err != nil {
+		t.Fatalf("shorten %s's age: %v", lastSeenStream, err)
+	}
+	seenKV := lastSeen("shorter")
+	if info, err := adminJS.StreamInfo(lastSeenStream); err != nil || info.Config.MaxAge != lastSeenMaxAge {
+		t.Fatalf("%s after the open: %v (%v), want its age raised to %s", lastSeenStream, info, err, lastSeenMaxAge)
+	}
+	sessions, err := session.OpenSessionRegistry(t.Context(), conn, session.WithSessionReplicas(1), session.WithSessionTTL(ttl))
 	if err != nil {
 		t.Fatalf("open the session registry under %s's grant: %v", leaseTestMachine, err)
 	}
 	t.Cleanup(sessions.StopWatch)
+	sessions.SetLastSeenBucket(seenKV)
 	if err := sessions.Put(sessionID, session.SessionEntry{Port: 4242, MachineID: leaseTestMachine}); err != nil {
 		t.Fatalf("register %s: %v", sessionID, err)
 	}
-	recorded, err := kv.Get(bus.LastSeenPrefix + dedupe.SessionToken(sessionID))
+	recorded, err := seenKV.Get(bus.LastSeenPrefix + dedupe.SessionToken(sessionID))
 	if err != nil {
 		t.Fatalf("read %s's last-seen record: %v", sessionID, err)
 	}

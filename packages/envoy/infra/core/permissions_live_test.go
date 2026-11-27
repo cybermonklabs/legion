@@ -231,9 +231,10 @@ func TestListenerAndCredentialFreeSessionsOnRealServers(t *testing.T) {
 // creating it on first use with one value per key and a 10 minute age, finds it on a second open,
 // and takes, renews and releases its machine's delivery lease there as the listener's lease does:
 // each write read back by key, a direct get on the key's subject, at the revision it wrote. It also
-// writes a session's last-seen record. A write to another machine's lease key is refused, on the
-// plain image and on the hub's. Every allowed operation comes first, so the refused publish after
-// them is the only violation the server logs.
+// opens the last-seen bucket and writes and reads back a session's last-seen record there. A
+// write to another machine's lease key is refused, on the plain image and on the hub's. Every
+// allowed operation comes first, so the refused publish after them is the only violation the
+// server logs.
 func TestListenerPermissionsOpenTheListenerStateBucketOnRealServers(t *testing.T) {
 	for _, image := range testnats.Images {
 		t.Run(image.Name, func(t *testing.T) {
@@ -266,8 +267,15 @@ func TestListenerPermissionsOpenTheListenerStateBucketOnRealServers(t *testing.T
 			released, err := kv.Update(lease, []byte(`{"holder":"box-a","boot":"0123456789abcdef","released":true}`), renewed)
 			require.NoError(t, err, "release the lease")
 			readBack(released, "releasing it")
-			_, err = kv.Put("seen."+liveSession, []byte(`{"at":1}`))
+			lastSeen, err := bus.EnsureKeyValue(t.Context(), conn, js, &natsgo.KeyValueConfig{
+				Bucket: bus.LastSeenBucket, History: 1, TTL: 4 * time.Hour, Storage: natsgo.FileStorage,
+			})
+			require.NoError(t, err, "create the %s bucket", bus.LastSeenBucket)
+			recorded, err := lastSeen.Put(bus.LastSeenPrefix+liveSession, []byte(`{"at":1}`))
 			require.NoError(t, err, "record a session's last-seen time")
+			entry, err := lastSeen.Get(bus.LastSeenPrefix + liveSession)
+			require.NoError(t, err, "read back the session's last-seen record")
+			require.Equal(t, recorded, entry.Revision(), "the last-seen record read back")
 
 			otherLease := "$KV." + bus.ListenerStateBucket + ".lease." + bus.ListenerDurable("example-host-b")
 			require.NoError(t, conn.Publish(otherLease, []byte(`{"holder":"box-a","boot":"0123456789abcdef"}`)))

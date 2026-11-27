@@ -1290,11 +1290,13 @@ func listenerGrantBeforeSessionConsumers() []string {
 	for _, bucket := range []string{bus.InterestBucket, bus.RoleClaimBucket, bus.SessionBucket, bus.CIStateBucket} {
 		allow = append(allow, bucketGrant(bucket)...)
 	}
-	// The listener state bucket is part of every listener's grant, before session consumers as
-	// after: the machine's delivery lease, its pods' clean-hand-back marks, its delivery ledger
-	// and every session's last-seen record, as the eleven subjects natsgrant.ListenerState builds,
-	// so this grant is no wider there than a rendered one.
+	// The listener state bucket and the last-seen bucket are part of every listener's grant,
+	// before session consumers as after: the machine's delivery lease, its pods' clean-hand-back
+	// marks and its delivery ledger, as the nine subjects natsgrant.ListenerState builds, and every
+	// session's last-seen record, as the five natsgrant.LastSeen builds, so this grant is no wider
+	// there than a rendered one.
 	allow = append(allow, natsgrant.ListenerState("test-machine")...)
+	allow = append(allow, natsgrant.LastSeen()...)
 	return append(allow, "$JS.API.STREAM.PURGE.KV_"+bus.InterestBucket)
 }
 

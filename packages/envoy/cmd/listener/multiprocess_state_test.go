@@ -78,7 +78,7 @@ type mpRoleSet struct {
 // writes, each a key naming the session or the role (roleSetHandler counts the round trips to
 // them): the claimant's registration, which the claim reads where the pod's cache does not hold
 // it, and which the refresh reads from the stream's leader, writes and reads back; the claimant's
-// last-seen record in the listener state bucket, which the refresh writes
+// last-seen record in the last-seen bucket, which the refresh writes
 // (session.SessionRegistry's recordSeen); the role's claim, which the claim reads, reads for its
 // delete marker and writes; and the claimant's interest record, which the claim reads and writes,
 // and reads once more after its tries to confirm the role's topic. The pod's own traffic names
@@ -88,7 +88,7 @@ type mpRoleSet struct {
 func roleSetKeys(sessionID, role string) []string {
 	return []string{
 		"$KV." + bus.SessionBucket + "." + sessionID,
-		"$KV." + bus.ListenerStateBucket + "." + bus.LastSeenPrefix + dedupe.SessionToken(sessionID),
+		"$KV." + bus.LastSeenBucket + "." + bus.LastSeenPrefix + dedupe.SessionToken(sessionID),
 		"$KV." + bus.RoleClaimBucket + "." + role,
 		"$KV." + bus.InterestBucket + "." + sessionID,
 	}
@@ -733,8 +733,8 @@ func (p *mpPod) sessionState(t *testing.T, sessionID string) (string, int64) {
 // live inside the live window, unresponsive past that window, and gone past the horizon, each
 // with one last_seen, the registration's own moment. Neither pod reads its own cache for any of
 // that — the state is the record's age (session.StateOf) and the time is the `seen.` record both
-// pods share (session.WithLastSeenBucket) — so a pod that never watched the session answers as
-// the pod that took its registration does.
+// pods share (session.SessionRegistry.SetLastSeenBucket) — so a pod that never watched the
+// session answers as the pod that took its registration does.
 //
 // The claim that session holds is released by neither pod while it is unresponsive: no lookup
 // takes a claim away whatever its holder's state, and the role claim reaper, the one path that

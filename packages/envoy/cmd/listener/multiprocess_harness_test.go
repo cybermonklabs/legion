@@ -16,10 +16,11 @@
 //
 // The rows use nothing but the binary cmdtest.Build builds, its environment, its HTTP API, NATS,
 // the relay in reconnect_shutdown_test.go and the APIs of the internal packages, among them the
-// names INFRA-557 gave the listener's state bucket and its records (bus.ListenerStateBucket,
-// bus.ListenerLeaseKey, bus.LastSeenPrefix), which a build before INFRA-557 (819dc283) lacks, so
-// these files compile only from INFRA-557 on. The few places a row has to recognise a listener
-// binary of such a build (a /healthz without "role") say so.
+// names INFRA-557 gave the listener's state bucket, the last-seen bucket and their records
+// (bus.ListenerStateBucket, bus.LastSeenBucket, bus.ListenerLeaseKey, bus.LastSeenPrefix), which a
+// build before INFRA-557 (819dc283) lacks, so these files compile only from INFRA-557 on. The few
+// places a row has to recognise a listener binary of such a build (a /healthz without "role") say
+// so.
 //
 // Its own build tag, and its own CI job, for the reason cmd/dispatch/multiprocess_test.go has
 // its: a row starts two processes and waits out a lease, an ack wait or a 140 s standby, tens of

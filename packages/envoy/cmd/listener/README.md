@@ -43,18 +43,11 @@ A standby runs none of them, never creates or updates the durable, and registers
 
 ### The delivery lease
 
-The lease is the key `lease.<durable>` (`lease.listener-<machine id>`) in the KV bucket `envoy_listener` (`bus.ListenerStateBucket`), which the listener creates at `ENVOY_NATS_REPLICAS` replicas, file storage, one value per key and the `MaxAge` below (`listenerStateAge`), raising a bucket that keeps its keys for less on every open and lowering none.
+The lease is the key `lease.<durable>` (`lease.listener-<machine id>`) in the KV bucket `envoy_listener` (`bus.ListenerStateBucket`), which the listener creates at `ENVOY_NATS_REPLICAS` replicas, file storage, one value per key and a 20 minute `MaxAge` (`listenerStateMaxAge`), raising a bucket an earlier build created with a shorter one on every open.
 The `<durable>` of every key of this bucket, the lease's, the hand-back marks' and the ledger's, is the durable's name as one KV key token (`bus.ListenerLeaseKey`, `bus.ListenerHandBackPrefix`, `bus.ListenerLedgerPrefix`): each byte outside nats.go's key alphabet, and a `.`, is `/` and two upper-case hex digits, since nats.go refuses the `%` a dotted machine id's durable spells its dots with.
 So `host.example.internal`, whose durable is `listener-host%2Eexample%2Einternal`, holds the lease `lease.listener-host/252Eexample/252Einternal`, and an id with none of the characters the durable escapes keeps the key it has always had.
-The age is sized by the `seen.` records beside the lease, not by the lease:
-every pod answers a lapsed session's `last_seen` out of that record alone, for the session TTL and then its last-seen retention (`session.LastSeenMemory`, 2 hours, never less than the TTL) past the session's last registration write (`session.SessionRegistry.LastSeenWindow`), so the bucket keeps every key that long and the interest reaper's 15 minutes more (`store.InterestReapAllowance`), and that window, not the bucket, ends the answer on every pod at once.
-At the default 2 hour session TTL the age is 4 h 15 min (`listenerStateMaxAge`).
-A longer session TTL raises it: `ENVOY_SESSION_MAX_AGE`, or a session bucket that already keeps its records longer, at 6 h makes it 12 h 15 min.
-The start's open of the bucket, once the session registry has read its TTL, and a late join's open (`joinDeliveryLease`) each ask for that age at every try, and a TTL raised while the pods run reaches the bucket at the next pod's start or join.
-The age keeps the other keys' bytes and none of their decisions:
-a lease record or a delivery ledger record decides nothing once 20 minutes, the bucket's `MaxAge` before the `seen.` records sized it, have passed since its last write (`bus.ListenerStateRecordLife`), and a hand-back mark is read only by the term that replaced its revision.
-A standby takes a lease record that old as absent, with an update at its revision, and keeps none of its holder, flags, `former_boots` or `service_since`: a released one at once, an unreleased or unreadable one only once its revision has also stood unchanged for the TTL, as any unreleased record must, so a standby whose clock runs 20 minutes fast still takes no live holder's record; a holder whose own renewals have not landed for that long writes nothing over its record and takes it the same way.
-The ledger takes an attempt that old over, whoever made it.
+The 20 minutes are the lease's: a pod that starts within them after a killed holder's last renewal finds the holder's record and counts a push binding it finds as that holder's ("Two builds of the listener" below).
+The bucket holds the lease, the clean-hand-back marks and the delivery ledger alone, so no record of it outlives its 20 minutes; the sessions' last-seen records, which must outlive the session's last-seen window, are in a bucket of their own, `envoy_last_seen` ("State the pods share" below).
 The lease record's value is JSON: `holder` (the holding pod's instance), `boot` (random per process start), `deliver_subject`, `service_since`, `acquired_at`, `released`, `former_boots` (below), and `stale_binding`, `unsettled`, `ack_wait_owed` and `receiving` ("Take-over" below);
 a field this build does not know is kept across every rewrite.
 `former_boots` names the boots that held the lease before `holder` (`formerBoots`, `lease_record.go`):
@@ -71,7 +64,7 @@ Beside the lease, a pod that stopped gracefully writes one key per hand-over it 
 `handback.<durable>.<revision>` (`bus.ListenerHandBackPrefix`), the clean-hand-back mark, named for the revision of the lease record its own release wrote.
 Its value is JSON: `instance`, `boot` and `revision`.
 The pod that takes that very revision reads it inside its settle hold and ends the hold at the hand-back delay instead of an ack wait ("Take-over" below).
-Nothing deletes a mark: the bucket's `MaxAge` drops it, no pod reads a mark for a revision it did not replace, and revisions never repeat, so an old mark is never read as a newer hand-over's.
+Nothing deletes a mark: the bucket's 20 minute `MaxAge` drops it, no pod reads a mark for a revision it did not replace, and revisions never repeat, so an old mark is never read as a newer hand-over's.
 
 | Constant (`lease.go`) | Value | What it does |
 | --- | --- | --- |
@@ -81,7 +74,7 @@ Nothing deletes a mark: the bucket's `MaxAge` drops it, no pod reads a mark for 
 | `leaseStandbyPoll` | 500 ms | How often a standby reads the record. |
 | `leaseReceiveLost` | 3 s | How long this pod's receive connection may be down before the holder stops renewing and releases the record ("Take-over" below). |
 
-A standby takes an absent record with a create, a released one at once, and an unreleased one only once the TTL has passed on its own monotonic clock; the one wall-clock reading, a record's 20 minute age above, takes no unreleased record before that TTL either.
+A standby takes an absent record with a create, a released one at once, and an unreleased one only once the TTL has passed; no wall clocks are compared.
 A holder whose renewal finds its record taken (a compare-and-set conflict) steps down and unsubscribes.
 The holder receives with a core subscription on the durable's deliver subject, never `nats.Bind`, and handles a message only while it holds the lease:
 one received while it does not (the moment before an unsubscribe lands, or a subscription nats.go sent again after a reconnect in place) is dropped with no ack and no NAK, and the durable redelivers it to the holder after its ack wait.
@@ -268,7 +261,7 @@ This section is the one statement of that rule; the code and the other guides po
   A server answers some requests from its cluster's state and not from the request, even where the answer reads like a refused setting:
   no member can place the copies `ENVOY_NATS_REPLICAS` asks for (`no suitable peers for placement`, JetStream error code 10005; `replicas > 1 not supported in non-clustered mode`, 10074), JetStream is temporarily unavailable (the meta group has no leader, `JetStream system temporarily unavailable`, 10008; `insufficient resources`, 10023), or the member asked leads no longer (10009).
   A NATS rolling restart and a cluster that is still forming answer so, and the same start succeeds once the members are back, with no setting changed; the start reads the code, never the text (`bus.ClusterStateAnswer`).
-  The start's opens of the stream (the NATS connect, `connectListener`), the spent-proof bucket (`openSpentProofBucket`), the store buckets (`openStartStore`) and the listener state bucket (`openDeliveryLease`) each log `start refused by the NATS cluster's state; retrying` at every such try, with what was refused (`stream`, `bucket` or `buckets`), the `setting` it asked (`ENVOY_NATS_REPLICAS=<n>`), the answer's `code`, the server's text in `error` and `retry_in`, and try again after a wait that starts at 1 s and doubles up to 30 s (`waitOutClusterState`, `nextRefusedWait`).
+  The start's opens of the stream (the NATS connect, `connectListener`), the spent-proof bucket (`openSpentProofBucket`), the store buckets (`openStartStore`), the listener state bucket (`openDeliveryLease`) and the last-seen bucket (`startLastSeenBucket`) each log `start refused by the NATS cluster's state; retrying` at every such try, with what was refused (`stream`, `bucket` or `buckets`), the `setting` it asked (`ENVOY_NATS_REPLICAS=<n>`), the answer's `code`, the server's text in `error` and `retry_in`, and try again after a wait that starts at 1 s and doubles up to 30 s (`logClusterState`, `nextRefusedWait`).
   The line is an ERROR from the first try, except for 10008 and 10023, what a routine JetStream leader change answers until its election ends: those are a WARN until the step's first of them came 30 s before, and an ERROR at each try after (`clusterUnavailableWarnFor`).
   A NATS grant that refuses the stream's read or create at the reconcile, or an edge listener's read of it once the 180 s credential wait is over (`notification stream refused by the NATS grant; retrying`, with the `stream` and the `grant` it lacks, the edge's own on an edge listener), the durable (`durable consumer refused by the NATS grant; retrying`, "A holder that cannot use the durable" above), the spent-proof bucket (`spent-proof bucket refused by the NATS grant; retrying`), a store bucket (`KV bucket refused by the NATS grant; retrying`, with the `bucket` and the `grant` it lacks), the role lane in both its queue groups (`role lane refused by the NATS grant; retrying`) or the session relay's reply subscription (`session relay reply subscription refused by the NATS grant; retrying`) keeps the pod up and backs off the same way, each try logging its line at ERROR with the refused `subject`, the server's text in `error` and `retry_in`:
   every pod of the machine connects as the same NATS user and would be refused alike, and an exit would only send each pod into a crash loop whose backoff delays the recovery by minutes once the grant is fixed.
@@ -283,11 +276,25 @@ This section is the one statement of that rule; the code and the other guides po
 
 - **A NATS that does not answer keeps the pod up, and the start waits for it.**
   A dial no server answers, a server that ends the handshake because the connect's CONNECT came after its `auth_timeout` (`nats: Authentication Timeout`), a request no server answers, an edge listener's read of the stream that drew no answer, a connection that closed under a step (the stream's ensure finding it closed as it reads the server's version among them), and a step the start's hang guard ends (36 s for one open of the stream or of a bucket, `bus.EnsureKeyValue`) are tried again every 2 s (`startRetry`, `natsConnectionError`) with a WARN, for as long as NATS takes:
-  `NATS connect failed; retrying`, `<store> open failed; retrying`, `spent-proof bucket open failed; retrying`, `listener state bucket open failed; retrying`, and, once the ten dials of the session consumers' or the role lane's connection found no server, `session consumer connection failed; retrying` and `role lane connection failed; retrying`.
+  `NATS connect failed; retrying`, `<store> open failed; retrying`, `spent-proof bucket open failed; retrying`, `listener state bucket open failed; retrying`, `last-seen bucket open failed; retrying`, and, once the ten dials of the session consumers' or the role lane's connection found no server, `session consumer connection failed; retrying` and `role lane connection failed; retrying`.
 
 Meanwhile the pod is live (`/livez` 204) and not ready (`/healthz` `503 starting`, or `503 unhealthy` naming the refusal while a connect waits out a refused credential), `/v1` stays closed, and a SIGTERM or SIGINT ends it at once, since the start installs no handler for either until `/v1` serves.
 
 The listener state bucket's grant refusal ends nothing either: the pod delivers without a lease, tries the bucket again by this rule, and joins the lease with no restart once a grant lets it open the bucket ("Without the grant: no-lease mode" below).
+
+The last-seen bucket, `envoy_last_seen` ("State the pods share" below), ends nothing and holds nothing back either.
+Its open starts once the session registry is open, on the main client's connection, in a loop of its own that neither the lease's open nor the lease's join waits on (`startLastSeenBucket`).
+The start waits only for the loop's first try to end, whatever it came to, before `/v1` opens, and that try ends within 6 s (`lastSeenOpenBound`), so a healthy start has the bucket before its first registration.
+Each try that fails is tried again by the rule above:
+
+- a grant that refuses the bucket logs `last-seen bucket refused by the NATS grant; keeping last-seen in process and retrying` at ERROR at each try, with the `bucket`, the `grant` it lacks, the refused `subject`, the server's text in `error` and `retry_in`, which starts at 1 s and doubles up to 30 s (`logGrantRefusal`);
+- an answer of the cluster's state logs `start refused by the NATS cluster's state; retrying` as above, with the `bucket`;
+- an account at one of its JetStream limits, or a server that fails the request, logs `last-seen bucket refused by the NATS account's limits or the server's state; keeping last-seen in process and retrying` at ERROR at each try, with the `bucket`, the answer's `code`, the server's text in `error` and `retry_in`, which starts at 1 s and doubles up to 30 s (`logAccountState`);
+- any other failure, a try that drew no answer within its 6 s included, logs `last-seen bucket open failed; retrying` at WARN, with the `bucket`, `retry_in` 2 s and the `error`.
+
+None of them keeps the pod unready, and none ends it: the pod serves, keeps last-seen times in its own process meanwhile, and opens the bucket with no restart once the grant, the cluster or the account takes it, logging `last-seen bucket opened: recording each session's last-seen time in it` at INFO.
+A try the shutdown cut logs nothing.
+An edge listener opens no last-seen bucket: its grant holds no call of it (`natsgrant.Edge`), so it logs `last-seen bucket not opened: an edge listener's grant holds no last-seen bucket; keeping last-seen in process` at INFO once and keeps last-seen times in process.
 
 ## Readiness: `/healthz`
 
@@ -406,11 +413,16 @@ Every pod of a machine id reads and writes the same records, so a pod that takes
 
 - **Clean-hand-back marks** (`handback.<durable>.<revision>` in `envoy_listener`):
   a pod that stopped gracefully vouches for the lease record it released, and the pod that took that record reads the mark inside its settle hold ("Take-over" above).
-  A mark nobody reads leaves the bucket with its `MaxAge`; a mark for a released record that has outlived its 20 minutes (`bus.ListenerStateRecordLife`) is never read, since a pod takes that record as absent, which makes no hand-back candidate.
+  A mark nobody reads leaves the bucket with its 20 minute `MaxAge`.
 
-- **Last seen** (`seen.<session token>` in `envoy_listener`, the same session token as in the ledger key above):
-  every session registration write records when the session was last seen, and every pod answers a lapsed session's `last_seen` out of that record alone, so two pods never answer one session differently - a pod that watched the session keeps no answer of its own.
-  The registry reports it for the session TTL and then its last-seen retention (`session.LastSeenMemory`, 2 hours, never less than the TTL) past the last write, 4 hours at the default 2 hour TTL, and the bucket keeps the record that long and 15 minutes more, raised with a longer TTL ("The delivery lease" above), so the answer lasts that whole window on every pod.
+- **Last seen** (`seen.<session token>` in the KV bucket `envoy_last_seen`, `bus.LastSeenBucket`, the same session token as in the ledger key above):
+  every session registration write records when the session was last seen, and every pod of every machine answers a lapsed session's `last_seen` out of that record alone, so two pods never answer one session differently - a pod that watched the session keeps no answer of its own.
+  The registry reports it for the session TTL and then its last-seen retention (`session.LastSeenMemory`, 2 hours, never less than the TTL) past the last write, 4 hours at the default 2 hour TTL (`session.SessionRegistry.LastSeenWindow`).
+  The listener creates the bucket at `ENVOY_NATS_REPLICAS` replicas, file storage, one value per key and a `MaxAge` of that window and the interest reaper's 15 minutes more (`store.InterestReapAllowance`), 4 h 15 min at the default session settings (`lastSeenMaxAge`), so that window, not the bucket, ends the answer on every pod at once.
+  A longer session TTL raises the age: `ENVOY_SESSION_MAX_AGE`, or a session bucket that already keeps its records longer, at 6 h makes it 12 h 15 min (`lastSeenAge`).
+  Each try of the bucket's open asks for that age, raises a bucket that keeps its keys for less (`bus.RaiseMaxAge`) and lowers none, and a TTL raised while the pods run reaches the bucket at the next pod's open.
+  The records are in a bucket of their own so that their age keeps no lease or ledger record: `envoy_listener` keeps its keys 20 minutes.
+  The bucket is opened on the main client's connection, by a loop of its own that never ends the process ("Start" above); until it opens, at the start or later, the pod keeps last-seen times in its own process, which a restart forgets.
   With no record in the bucket - it was never written, a bucket with a shorter age removed it, or it could not be read within the request's budget - no pod answers one.
 
 - **Role-claim grace** counts from the machine's service start, `service_since` in the lease record:
@@ -480,10 +492,9 @@ this build's lease holder, finding the durable push-bound when it took an absent
 subscriber's push binding to end`) and subscribes within a second of that binding's end.
 Past 135 s it logs `lease holder cannot deliver from the durable` at ERROR, and again every 5 min, which the AWS `subscribe-exhausted` alarm matches; it never exits for it.
 
-An unreleased record counts as its holder's for 20 minutes after its last write (`bus.ListenerStateRecordLife`), where an earlier build of this release kept it 10:
+An unreleased record stays in the bucket for the bucket's `MaxAge`, 20 minutes, where an earlier build of this release kept it 10:
 after every pod of this build died hard, a pod starting within 20 minutes finds that record, takes it as an expired one and counts a push binding it finds as the dead holder's rather than a pre-lease build's - the window in which that reading holds is now twice as long.
-A pod starting later takes the record, which the bucket keeps for its whole `MaxAge`, as absent and waits such a binding out as a pre-lease build's, as it always has.
-An earlier build of this release reads a record by its presence alone and lowers no bucket's age, so rolled back to over a bucket this build raised, it counts such a record as its holder's for that bucket's whole `MaxAge`, 4 h 15 min at the defaults, where this build counts it for 20 minutes.
+A pod starting later finds no record and waits such a binding out as a pre-lease build's, as it always has.
 
 Rolling back to a build before this release works: that build corrects the durable's filter to its own list and binds once this build's pods have stopped.
 But a hard stop of this build's lease holder while a build from before the release is up and polling to bind can deliver messages twice:
@@ -493,20 +504,24 @@ A rollback that stops every pod of this build before starting the old one carrie
 ## Without the grant: no-lease mode
 
 The listener's NATS user needs the `envoy_listener` bucket in its grant (`infra/core` `ListenerPermissions`, `DispatchPermissions` and `HostPermissions`, and the NATS auth service's answer to a listener or Dispatch connection, carry it from this release).
-That grant names only the machine's own keys, `lease.listener-<machine id>`, `handback.listener-<machine id>.*` and `delivery.listener-<machine id>.*.*` (each `listener-<machine id>` in the key spelling "The delivery lease" gives), and every session's `seen.*` record: it writes each of them and reads each by key, and its other calls on the bucket are the bucket stream's info, create and update, which the open and the raises send (`natsgrant.ListenerState` names the call behind each subject);
+That grant names only the machine's own keys, `lease.listener-<machine id>`, `handback.listener-<machine id>.*` and `delivery.listener-<machine id>.*.*` (each `listener-<machine id>` in the key spelling "The delivery lease" gives): it writes each of them and reads each by key, and its other calls on the bucket are the bucket stream's info, create and update, which the open and the raises send (`natsgrant.ListenerState` names the call behind each subject);
 that is a subject's reach, and what every listener user of the fleet can still do to the whole bucket is in `packages/envoy/infra/README.md` ("Permission sets").
+The same grants hold the `envoy_last_seen` bucket, every session's last-seen record, with the same rights each machine held on those records when they were in `envoy_listener`: the bucket stream's info, create and update, and a write and a read by key of every session's `seen.*` record (`natsgrant.LastSeen`).
+A hub's users gain it only when envoy-infra renders their grant again; a pod whose grant lacks it serves all the same, keeping last-seen in its own process, and opens the bucket once the grant carries it ("Start" above).
 It reads each of its other buckets by key too, a direct get on the key's own subject, and on every bucket it refuses a get by revision, a direct get on the stream's bare subject.
 So the listener reads back each write it must stamp, the lease's acquiring write and a session registration in `envoy_sessions`, by key, and counts it as its own only at the revision it wrote;
 another revision there means a newer write landed first.
 A listener whose grant refuses the bucket does not exit: it logs one ERROR, `listener lease unavailable: the NATS user lacks the grant for KV bucket envoy_listener; delivering without a lease`, with the `retry_in` of its next try, and delivers as the machine's one deliverer, receiving from the durable only while no other subscriber holds it push-bound and waiting for as long as one does.
 `/healthz` says so in `lease`: `"lease":"unavailable: missing NATS grant for KV bucket envoy_listener"`.
-The shared state above falls back to the pod's own: the ledger is in process, last-seen is in process, and the role-claim grace counts from the pod's own start.
+The shared state above falls back to the pod's own: the ledger is in process, and the role-claim grace counts from the pod's own start.
+Last-seen is the last-seen bucket's, which a pod without the lease opens all the same when its grant carries it, and keeps in process when it does not.
 Run one pod per machine id in this mode: it has no fencing against a second deliverer after a reconnect in place.
 
 The pod tries the bucket again on the lease's own connection by the start rule ("Start" above), logging `listener state bucket refused by the NATS grant; delivering without a lease and retrying` at ERROR at each try, with the `bucket`, the `grant` it lacks, the refused `subject`, the server's text in `error` and `retry_in`, which starts at 2 s, twice the 1 s the start's ERROR names for the first try, and doubles up to 30 s (`joinDeliveryLease`).
 A grant applied after the pod started is so taken within one wait, with no restart, and the pod joins the lease:
 
-- The shared state follows: the keeper keeps the bucket, last-seen is recorded in the bucket, the role-claim grace counts from the lease's `service_since`, and the ledger is the machine's shared one.
+- The shared state follows: the keeper keeps the bucket, the role-claim grace counts from the lease's `service_since`, and the ledger is the machine's shared one.
+  Last-seen does not follow the join: it is recorded in the last-seen bucket from the moment that bucket opens, which its own loop does, before the join, after it or at the start ("Start" above).
   A pair the pod delivered or attempted before the join is still answered from its own ledger for as long as that record stops a delivery, since the shared ledger holds nothing of it (`dedupe.Joining`).
   Another pod that meets a repeat of such a message forwards it again with no pair in the shared ledger, and the stream stores that forward once: every forward to a session carries one `Nats-Msg-Id` however often it is sent (`bus.ForwardMsgID`), which the stream keeps for its 72 h duplicate window, so the session is handed the message once.
 
@@ -525,11 +540,12 @@ A grant applied after the pod started is so taken within one wait, with no resta
   A try the stop cut, in that wait or in its open of the bucket, logs nothing of its own from the stop on, so a pod stopped while it still tries the bucket logs none of `listener state bucket refused by the NATS grant; delivering without a lease and retrying` at ERROR, `start refused by the NATS cluster's state; retrying` (`clusterStateLine`) and `listener state bucket open failed; retrying` at WARN for a retry it will not make.
   A shutdown that comes as the lease joins ends the term the pod received on without a lease, its subscription drained and what it holds NAKed, rather than handing that term to the lease (`durableReceiver.receive`); one that comes once the lease has taken the term over ends it as the holder's term, with the hand-back a holder's stop makes (`durableReceiver.run`).
 
-Deploy prerequisite: render and apply the NATS grant carrying `envoy_listener` (for a `gcp:NatsHub`, its users;
+Deploy prerequisite: render and apply the NATS grant carrying `envoy_listener` and `envoy_last_seen` (for a `gcp:NatsHub`, its users, which gain `envoy_last_seen` only when envoy-infra renders their grant again;
 for a host, its NATS authorization) before running a second pod of a machine id.
 
 An edge listener (`ENVOY_EDGE_PROJECTS` set) always runs in this mode.
 Its grant (`natsgrant.Edge`) holds no call of `envoy_listener`, so it opens no lease connection, logs one INFO, `delivery lease not opened: an edge listener's grant holds no listener state bucket; delivering without a lease`, and never tries the bucket again (`main.go`).
+It holds no call of `envoy_last_seen` either, so it opens no last-seen bucket, logs one INFO, `last-seen bucket not opened: an edge listener's grant holds no last-seen bucket; keeping last-seen in process`, and keeps last-seen times in process.
 `/healthz` says `"lease":"unavailable: missing NATS grant for KV bucket envoy_listener"` as above.
 Run one edge pod per machine id, since a second one has no lease to stand by under:
 a second edge pod for one machine id, a rolling update's surge pod included, can deliver a message twice, as an edge listener of a build before this release can.
@@ -556,7 +572,7 @@ These concern the pods of one machine id:
   Go's text log lines carry no instance prefix, since the deployed text metric filters match by position.
 
 - `ENVOY_NATS_REPLICAS`:
-  Replicas of every bucket the listener creates, `envoy_listener` included.
+  Replicas of every bucket the listener creates, `envoy_listener` and `envoy_last_seen` included.
 
 ## Recreating the durable
 

@@ -73,9 +73,19 @@ const (
 	WebhookRedeliveryBucket = "envoy_webhook_redelivery"
 	// ListenerStateBucket holds the state every listener pod of a machine shares: the machine's
 	// delivery lease (ListenerLeaseKey, cmd/listener), the clean-hand-back marks of its stopping
-	// pods (ListenerHandBackPrefix), its delivery ledger (ListenerLedgerPrefix, internal/dedupe)
-	// and every session's last-seen record (LastSeenPrefix, internal/session).
+	// pods (ListenerHandBackPrefix) and its delivery ledger (ListenerLedgerPrefix,
+	// internal/dedupe). The listener keeps its keys 20 minutes past their last write
+	// (cmd/listener's listenerStateMaxAge).
 	ListenerStateBucket = "envoy_listener"
+	// LastSeenBucket holds every session's last-seen record (LastSeenPrefix, internal/session),
+	// the one answer every listener pod of the fleet gives for a lapsed session's last_seen. It
+	// is a bucket of its own because its records must outlive the session's last-seen window, 4
+	// hours at the default session settings, and the lease records beside them must not: the
+	// listener keeps its keys for that window and the interest reaper's allowance
+	// (cmd/listener's lastSeenAge), and ListenerStateBucket's for 20 minutes. Like
+	// ListenerStateBucket it is in no ListenerBuckets list: its grant is narrower than KVWrite
+	// (natsgrant.LastSeen), and the keeper keeps it only once the listener has opened it.
+	LastSeenBucket = "envoy_last_seen"
 	// PrivateProjectsBucket holds one key per private project, its value the repositories
 	// Dispatch names for it, and a key exists exactly while its project is private: Dispatch writes
 	// it and the listeners read it to hold each session to its token's projects
@@ -101,26 +111,13 @@ func ListenerBuckets() []string {
 	return []string{InterestBucket, RoleClaimBucket, SessionBucket, KnownSessionBucket, LegionAgentBucket, CIStateBucket, DPoPProofBucket}
 }
 
-// LastSeenPrefix begins each session's last-seen record in ListenerStateBucket. The listener's
-// grant writes these keys for every session, whichever machine registered it: a role claim
+// LastSeenPrefix begins each session's last-seen record in LastSeenBucket. The listener's grant
+// writes these keys for every session, whichever machine registered it: a role claim
 // (RoleClaimBucket, one bucket for the whole fleet) names its holder session and no machine, so
 // GET /v1/roles/<role> on any listener answers a lapsed holder's last_seen out of that session's
 // record whichever machine the holder registered through. A key scoped to the writing machine
 // would leave every such read with no record to find.
 const LastSeenPrefix = "seen."
-
-// ListenerStateRecordLife is how long past its last write a delivery lease record
-// (ListenerLeaseKey) or a delivery ledger record (ListenerLedgerPrefix) in ListenerStateBucket
-// decides anything: 20 minutes, the bucket's MaxAge before the `seen.` records (LastSeenPrefix)
-// sized that age to the sessions' last-seen window. The bucket now keeps every key for that
-// longer age, so each reader of the two families judges a record's age itself, on its own clock
-// against the server's timestamp of the write, and decides as it did when the bucket had dropped
-// the record: the lease takes a record that old as absent, at its revision, an unreleased one only
-// once its revision has also stood the lease's ttl (cmd/listener, lease.poll), and the ledger takes
-// an attempt that old over from whichever boot made it
-// (dedupe.KV). A clean-hand-back mark (ListenerHandBackPrefix) needs no age: only the term that
-// replaced the revision it names reads it.
-const ListenerStateRecordLife = 20 * time.Minute
 
 // ListenerLeaseKey is the key of machine machineID's delivery lease in ListenerStateBucket. The
 // listener's grant writes this key and no other machine's. The machine's token in it is its

@@ -146,7 +146,7 @@ func (r *SessionRegistry) armExpiryLocked() {
 // removed through the copy's own removal (kvwatch.Copy.Remove), which keeps the key's revision in
 // the fence -- no record removed it, so a delayed record older than that revision is still fenced
 // out. The session's final heartbeat is already recorded (storedLocked wrote it to seenLocal, or
-// recordSeen to the listener state bucket), so LastSeen answers the same before and after the
+// recordSeen to the last-seen bucket), so LastSeen answers the same before and after the
 // removal; the removal only schedules the id's last-seen deadline.
 //
 // A last-seen deadline removes the id's seenLocal record. It changes no entry, so it reports

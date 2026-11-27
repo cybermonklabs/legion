@@ -465,9 +465,8 @@ lease and the delivery state every listener of the machine shares (`ListenerPerm
 envoy-infra release that added it; see `packages/envoy/cmd/listener/README.md`). Each user may write
 only its own machine's keys there, `lease.listener-<machine id>` (the lease),
 `handback.listener-<machine id>.*` (the lease's hand-back marks) and
-`delivery.listener-<machine id>.*.*` (the delivery ledger), and the sessions' last-seen records,
-`seen.*` (`natsgrant.ListenerState`). A hub whose users an earlier envoy-infra rendered lacks the
-bucket: a listener image that uses it then logs
+`delivery.listener-<machine id>.*.*` (the delivery ledger) (`natsgrant.ListenerState`). A hub whose
+users an earlier envoy-infra rendered lacks the bucket: a listener image that uses it then logs
 `listener lease unavailable: the NATS user lacks the grant for KV bucket envoy_listener; delivering without a lease`
 at ERROR once and delivers without a lease, as the machine's only deliverer, keeping that state in
 its own process until it joins the lease. Meanwhile it tries the bucket again, and logs
@@ -479,6 +478,16 @@ its users again, which replaces the VM. A hub rendered with the bucket's writes 
 each machine's keys runs this listener as it is; the update narrows them.
 A listener elsewhere started with `ENVOY_MACHINE_ID=<h>` would share the hub listener's lease and
 become its standby, or its deliverer, so no other listener takes the hub's `hostname` as its id.
+
+The listener's user also grants the `envoy_last_seen` bucket, where every listener keeps each
+session's last-seen record, `seen.*`: each user writes and reads every session's record there, as
+it did in `envoy_listener` before the records moved (`natsgrant.LastSeen`). A hub's users gain this
+bucket only when envoy-infra renders them again. A listener image that uses it under a grant
+rendered before then logs
+`last-seen bucket refused by the NATS grant; keeping last-seen in process and retrying` at ERROR at
+each try, with a `retry_in` that starts at 1 s and doubles up to 30 s, serves all the same with
+last-seen times kept in its own process, and opens the bucket with no restart once its grant
+carries it.
 
 ### The listener's broker check
 

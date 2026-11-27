@@ -559,9 +559,8 @@ func (c roleLaneClaims) RoleClaim(ctx context.Context, role string) (store.RoleC
 // context.Background(), and each of its two reads is bounded on its own by roleHolderReadTimeout:
 // the claim read by roleLaneClaims and the holder's session read by roleHolderSessions.Holder. A
 // holder the session bucket holds no record for adds a read of its last-seen time from the
-// machine's listener state bucket (session.SessionRegistry.LastSeen), which that bucket's
-// connection bounds by its own request wait (listenerStateRequestWait, as long as
-// roleHolderReadTimeout).
+// last-seen bucket (session.SessionRegistry.LastSeen), whose handle bounds it by its own request
+// wait (listenerStateRequestWait, as long as roleHolderReadTimeout, openLastSeen).
 func resolveCoreRoleHolder(cfg listenerDeliveryHandlerConfig, item contracts.Envelope, role string) (string, session.SessionEntry, bool) {
 	resolved, err := roles.ResolveHolder(context.Background(), roleLaneClaims{cfg.registry}, roleHolderSessions{cfg.sessions}, role)
 	sessionID := resolved.Holder

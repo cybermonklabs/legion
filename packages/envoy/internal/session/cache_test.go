@@ -217,7 +217,7 @@ func TestExpiredLastSeenReadsZeroAndLeavesAtItsDeadline(t *testing.T) {
 	}
 }
 
-// Without the listener state bucket a lapsed session's last-seen time is the registry's own
+// Without the last-seen bucket a lapsed session's last-seen time is the registry's own
 // (seenLocal), reported for one retention after the expiry of the registration it came from and
 // then dropped at that deadline.
 func TestPerProcessLastSeenEndsOneTTLAfterTheRegistrationsExpiry(t *testing.T) {

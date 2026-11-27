@@ -18,31 +18,34 @@ import (
 	"github.com/sjawhar/envoy/internal/testnats"
 )
 
-// listenerStateBucket opens the listener state bucket over conn, as the listener's lease does.
-func listenerStateBucket(t *testing.T, conn *natsgo.Conn) bus.KeyValue {
+// lastSeenBucket opens the last-seen bucket over conn, as the listener does (cmd/listener's
+// openLastSeen): one value per key, kept for a default registry's last-seen window.
+func lastSeenBucket(t *testing.T, conn *natsgo.Conn) bus.KeyValue {
 	t.Helper()
 	js, err := conn.JetStream()
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}
-	kv, err := bus.EnsureKeyValue(t.Context(), conn, js, &natsgo.KeyValueConfig{Bucket: bus.ListenerStateBucket, Replicas: 1, Storage: natsgo.FileStorage, TTL: 10 * time.Minute})
+	kv, err := bus.EnsureKeyValue(t.Context(), conn, js, &natsgo.KeyValueConfig{Bucket: bus.LastSeenBucket, History: 1, Replicas: 1, Storage: natsgo.FileStorage, TTL: DefaultLastSeenWindow})
 	if err != nil {
-		t.Fatalf("open the listener state bucket: %v", err)
+		t.Fatalf("open the last-seen bucket: %v", err)
 	}
 	return kv
 }
 
-// lastSeenPod opens one listener pod's session registry over a NATS connection of its own, with
-// the listener state bucket opened over that connection too, and returns it once its cache is warm.
+// lastSeenPod opens one listener pod's session registry over a NATS connection of its own, gives
+// it the last-seen bucket opened over that connection too, as the listener does once the
+// registry is open (SetLastSeenBucket), and returns it once its cache is warm.
 func lastSeenPod(t *testing.T, name string, ttl time.Duration, options ...SessionRegistryOption) *SessionRegistry {
 	t.Helper()
 	client := setupNATS(t)
-	options = append([]SessionRegistryOption{WithSessionReplicas(1), WithSessionTTL(ttl), WithLastSeenBucket(listenerStateBucket(t, client.Conn))}, options...)
+	options = append([]SessionRegistryOption{WithSessionReplicas(1), WithSessionTTL(ttl)}, options...)
 	reg, err := OpenSessionRegistry(t.Context(), client.Conn, options...)
 	if err != nil {
 		t.Fatalf("open pod %s's session registry: %v", name, err)
 	}
 	t.Cleanup(reg.StopWatch)
+	reg.SetLastSeenBucket(lastSeenBucket(t, client.Conn))
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := reg.WaitForCacheReady(ctx); err != nil {
@@ -101,11 +104,12 @@ func TestEveryPodReportsALapsedSessionsLastSeenAlike(t *testing.T) {
 // Every pod answers a lapsed session's last-seen time out of the bucket's `seen.` record alone,
 // so a pod that watched the session answers exactly what a pod that never saw it answers for as
 // long as the window lasts, and nothing once the record is gone. The listener keeps the record for
-// the whole window and more (cmd/listener's listenerStateAge), so a live deployment reaches the
+// the whole window and more (cmd/listener's lastSeenAge), so a live deployment reaches the
 // second case for a record that could not be read or that a bucket with a shorter MaxAge dropped,
-// as an earlier build's 20 minutes did inside the window at the default retention (lastseen.go).
-// A pod that kept an answer of its own would go on reporting the session after the bucket's
-// record was gone, and two pods would answer GET /v1/interests/ differently for one session.
+// as the listener state bucket's 20 minutes did inside the window at the default retention when
+// the records were kept there (lastseen.go). A pod that kept an answer of its own would go on
+// reporting the session after the bucket's record was gone, and two pods would answer
+// GET /v1/interests/ differently for one session.
 func TestEveryPodAnswersAlikeOnceTheBucketsLastSeenRecordIsGone(t *testing.T) {
 	const (
 		sessionID = "ses_outlives_record"
@@ -126,8 +130,8 @@ func TestEveryPodAnswersAlikeOnceTheBucketsLastSeenRecordIsGone(t *testing.T) {
 	if onA, onB := a.LastSeen(context.Background(), sessionID), b.LastSeen(context.Background(), sessionID); onA != onB {
 		t.Fatalf("pod a reports %s last seen %d while the record stands; pod b, started after it lapsed, reports %d", sessionID, onA, onB)
 	}
-	// This delete does what a bucket MaxAge shorter than the window does to the record, as an
-	// earlier build's 20 minutes did inside the window at the default retention.
+	// This delete does what a bucket MaxAge shorter than the window does to the record, as the
+	// listener state bucket's 20 minutes did inside the window at the default retention.
 	if err := a.seen.Delete(lastSeenKey(sessionID)); err != nil {
 		t.Fatalf("remove %s's seen record: %v", sessionID, err)
 	}
@@ -143,7 +147,7 @@ func TestEveryPodAnswersAlikeOnceTheBucketsLastSeenRecordIsGone(t *testing.T) {
 // A registry's LastSeenWindow is the span seenUntil adds to a registration write at the TTL and
 // retention the registry runs with: one TTL and then the retention, never less than that TTL, and
 // DefaultLastSeenWindow on a registry opened with no option over a bucket it created. The
-// listener sizes its state bucket's age by it (cmd/listener's listenerStateAge), so a `seen.`
+// listener sizes the last-seen bucket's age by it (cmd/listener's lastSeenAge), so a `seen.`
 // record stands for as long as any pod reports it.
 func TestLastSeenWindowIsWhereSeenUntilEndsALapsedSessionsAnswer(t *testing.T) {
 	client := setupNATS(t)
@@ -175,7 +179,7 @@ func TestLastSeenWindowIsWhereSeenUntilEndsALapsedSessionsAnswer(t *testing.T) {
 	}
 }
 
-// failingPutKV is a listener state bucket whose every Put fails.
+// failingPutKV is a last-seen bucket whose every Put fails.
 type failingPutKV struct {
 	natsgo.KeyValue
 }
@@ -207,13 +211,13 @@ func (b *syncBuffer) String() string {
 func TestARegistrationWhoseLastSeenRecordFailsIsStillWritten(t *testing.T) {
 	client := setupNATS(t)
 	var logs syncBuffer
-	state := listenerStateBucket(t, client.Conn)
+	state := lastSeenBucket(t, client.Conn)
 	reg, err := OpenSessionRegistry(t.Context(), client.Conn, WithSessionReplicas(1),
-		WithLastSeenBucket(bus.NewKeyValue(failingPutKV{KeyValue: state.Legacy()}, state.WatchHandle(), state.Streams())),
 		WithSessionLogger(slog.New(slog.NewTextHandler(&logs, nil))))
 	if err != nil {
 		t.Fatalf("open the session registry: %v", err)
 	}
+	reg.SetLastSeenBucket(bus.NewKeyValue(failingPutKV{KeyValue: state.Legacy()}, state.WatchHandle(), state.Streams()))
 	t.Cleanup(reg.StopWatch)
 	if err := reg.Put("ses_unrecorded", SessionEntry{Port: 4242, MachineID: "box-a"}); err != nil {
 		t.Fatalf("register with a failing last-seen record: %v, want the registration written", err)
@@ -241,12 +245,13 @@ func TestARegistrationUnderTheListenersGrantRecordsItsLastSeen(t *testing.T) {
 	}
 	t.Cleanup(conn.Close)
 	var logs syncBuffer
-	reg, err := OpenSessionRegistry(t.Context(), conn, WithSessionReplicas(1), WithLastSeenBucket(listenerStateBucket(t, conn)),
+	reg, err := OpenSessionRegistry(t.Context(), conn, WithSessionReplicas(1),
 		WithSessionLogger(slog.New(slog.NewTextHandler(&logs, nil))))
 	if err != nil {
 		t.Fatalf("open the session registry under the listener's grant: %v", err)
 	}
 	t.Cleanup(reg.StopWatch)
+	reg.SetLastSeenBucket(lastSeenBucket(t, conn))
 	if err := reg.Put(sessionID, SessionEntry{Port: 4242, MachineID: "box-a"}); err != nil {
 		t.Fatalf("register %s: %v", sessionID, err)
 	}
@@ -265,9 +270,9 @@ func TestARegistrationUnderTheListenersGrantRecordsItsLastSeen(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read %s's registration: %v", sessionID, err)
 	}
-	state, err := js.KeyValue(bus.ListenerStateBucket)
+	state, err := js.KeyValue(bus.LastSeenBucket)
 	if err != nil {
-		t.Fatalf("open the listener state bucket: %v", err)
+		t.Fatalf("open the last-seen bucket: %v", err)
 	}
 	entry, err := state.Get(lastSeenKey(sessionID))
 	if err != nil {
@@ -292,12 +297,13 @@ func TestALastSeenReadBackThatFindsANewerWriteRecordsNothing(t *testing.T) {
 	const sessionID = "ses_replaced"
 	client := setupNATS(t)
 	var logs syncBuffer
-	state := listenerStateBucket(t, client.Conn)
-	reg, err := OpenSessionRegistry(t.Context(), client.Conn, WithSessionReplicas(1), WithLastSeenBucket(state),
+	state := lastSeenBucket(t, client.Conn)
+	reg, err := OpenSessionRegistry(t.Context(), client.Conn, WithSessionReplicas(1),
 		WithSessionLogger(slog.New(slog.NewTextHandler(&logs, nil))))
 	if err != nil {
 		t.Fatalf("open the session registry: %v", err)
 	}
+	reg.SetLastSeenBucket(state)
 	t.Cleanup(reg.StopWatch)
 	value, err := encodeSessionEntry(SessionEntry{Port: 4242, MachineID: "box-a"})
 	if err != nil {
@@ -339,7 +345,7 @@ func TestALastSeenReadBackThatFindsANewerWriteRecordsNothing(t *testing.T) {
 // last-seen time where its last registration put it, and a renewal of the stored entry
 // (RenewWithin) moves it to the renewal's stamp: the mark says nothing of whether the session
 // answers, and a renewal stands for the heartbeats a repository outage refuses. The registry has
-// no listener state bucket, as the edge listener's has none (it opens no lease), so LastSeen
+// no last-seen bucket, as the edge listener's has none (it opens none), so LastSeen
 // answers the stamp of the entry its copy holds. Its clock moves on a second before each write,
 // so a write that stamped the entry would show. Control: with SetRepositoryGap stamping the entry
 // as RenewWithin does, the mark's write moves the last-seen time and the row fails.

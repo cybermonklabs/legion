@@ -2547,8 +2547,8 @@ func TestASettingNATSCannotChangeOnTheListenerDurableIsRefused(t *testing.T) {
 // No retry can receive from a refused durable, so the listener exits at once instead of starting.
 // The refusal comes right after the NATS connect, before the interest and session cache warm-ups
 // (30 s each): on a NATS that holds no KV bucket yet, a refused listener exits without having
-// opened one, the CI bucket, which a listener mounting the GitHub route opens first, and the
-// listener state bucket included.
+// opened one, the CI bucket, which a listener mounting the GitHub route opens first, the listener
+// state bucket and the last-seen bucket included.
 func TestARefusedDurableStopsTheListenerAtOnce(t *testing.T) {
 	t.Parallel()
 	client := setupTestNATS(t)
@@ -2575,7 +2575,7 @@ func TestARefusedDurableStopsTheListenerAtOnce(t *testing.T) {
 	if strings.Contains(output.String(), "envoy-listener /v1 open") {
 		t.Fatalf("the listener opened /v1 before it refused the durable:\n%s", output.String())
 	}
-	for _, bucket := range []string{bus.InterestBucket, bus.SessionBucket, bus.CIStateBucket, bus.ListenerStateBucket} {
+	for _, bucket := range []string{bus.InterestBucket, bus.SessionBucket, bus.CIStateBucket, bus.ListenerStateBucket, bus.LastSeenBucket} {
 		if _, err := client.JS().KeyValue(bucket); !errors.Is(err, natsgo.ErrBucketNotFound) {
 			t.Fatalf("KV bucket %s after the refused start: %v, want not found: the refusal came after the cache warm-ups", bucket, err)
 		}
@@ -3878,7 +3878,7 @@ func newListenerDeliveryHarnessOn(t *testing.T, client *bus.Client, sessionOptio
 // request limit.
 func testDeliveryLedger(t testing.TB, conn *natsgo.Conn, machineID, boot string) *dedupe.KV {
 	t.Helper()
-	kv, err := openListenerState(t.Context(), conn, 1, listenerStateMaxAge, listenerStateRequestWait)
+	kv, err := openListenerState(t.Context(), conn, 1, listenerStateRequestWait)
 	if err != nil {
 		t.Fatalf("open the listener state bucket: %v", err)
 	}
@@ -5308,18 +5308,17 @@ func TestTheDefaultRoleClaimReapIntervalIsFiveMinutesAndTwoPassesFitInsideTheGon
 }
 
 // The listener sets no last-seen retention of its own: it opens the session registry on
-// session.LastSeenMemory, the package's own value. A listener without a delivery lease keeps
+// session.LastSeenMemory, the package's own value. A listener without the last-seen bucket keeps
 // last-seen times in process for that retention, which must outlast the two deadlines it reads a
 // departed session's last heartbeat for. The interest reaper can hold a dead session's row until
 // store.InterestReapAllowance after its last write, and /v1/interests/ gives that row's session
 // its real last heartbeat; and a refusal for a session past the gone horizon says when it last
 // registered. A retention shorter than either - the fifteen minutes the listener used to set -
 // leaves a row listed with no heartbeat to give and a gone session's refusal unable to say when
-// it was last seen. A listener with a delivery lease reads the time from its state bucket, whose
-// MaxAge (listenerStateAge: the registry's last-seen window, the session TTL and this retention,
-// plus that allowance, 4 h 15 min at the defaults) keeps the record past both deadlines, so the
-// same retention ends the answer there (main.go, where the bucket is wired). That bucket's lease
-// and ledger records still decide nothing past their own 20 minutes (bus.ListenerStateRecordLife).
+// it was last seen. A listener with the last-seen bucket reads the time from it, whose MaxAge
+// (lastSeenAge: the registry's last-seen window, the session TTL and this retention, plus that
+// allowance, 4 h 15 min at the defaults) keeps the record past both deadlines, so the same
+// retention ends the answer there (main.go, where the bucket is opened).
 func TestTheRegistrysLastSeenMemoryOutlastsWhatTheListenerReadsItFor(t *testing.T) {
 	t.Parallel()
 	if allowance := store.InterestReapAllowance(store.InterestReapGrace); session.LastSeenMemory <= allowance {

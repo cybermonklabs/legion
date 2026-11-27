@@ -22,9 +22,10 @@ import (
 )
 
 // stateTestPod is one listener pod for a test of the state its pods share: its own NATS connection,
-// its own handle on the listener state bucket and its delivery lease over it, and its interest and
-// session registries wired to them as main wires them. startedAgo is how long before now the pod
-// started, as its interest registry's clock reads while it opens.
+// its own handles on the listener state bucket and the last-seen bucket and its delivery lease
+// over the first, and its interest and session registries wired to them as main wires them.
+// startedAgo is how long before now the pod started, as its interest registry's clock reads while
+// it opens.
 type stateTestPod struct {
 	deps  *listenerDeps
 	lease *lease
@@ -45,12 +46,17 @@ func openStateTestPod(t *testing.T, instance string, startedAgo time.Duration, s
 	}
 	t.Cleanup(registry.StopWatch)
 	elapsed.Store(0)
-	sessionOptions = append([]session.SessionRegistryOption{session.WithSessionReplicas(1), session.WithLastSeenBucket(stateKV)}, sessionOptions...)
+	seen, err := openLastSeen(t.Context(), stateKV.Conn(), 1, lastSeenMaxAge)
+	if err != nil {
+		t.Fatalf("open pod %s's last-seen bucket: %v", instance, err)
+	}
+	sessionOptions = append([]session.SessionRegistryOption{session.WithSessionReplicas(1)}, sessionOptions...)
 	sessions, err := session.OpenSessionRegistry(t.Context(), client.Conn, sessionOptions...)
 	if err != nil {
 		t.Fatalf("open pod %s's session registry: %v", instance, err)
 	}
 	t.Cleanup(sessions.StopWatch)
+	sessions.SetLastSeenBucket(seen)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := sessions.WaitForCacheReady(ctx); err != nil {

@@ -1998,7 +1998,7 @@ func sessionEntryHandler(d *listenerDeps) http.HandlerFunc {
 // interestRowFor answers item with its session's last heartbeat: the live entry's UpdatedAt while
 // the session is live, else the final heartbeat still reported for it
 // (session.SessionRegistry.LastSeen), else none. That heartbeat is the session's `seen.` record in
-// the listener state bucket, the one every pod of the fleet answers from, read within ctx: the
+// the last-seen bucket, the one every pod of the fleet answers from, read within ctx: the
 // route passes its request's own budget, so a bucket that does not answer costs that budget once
 // for the whole answer and leaves the rows it could not read without a last heartbeat. A listener
 // without that bucket keeps the records in process, so one that restarted since the session died
@@ -2014,7 +2014,7 @@ func interestRowFor(ctx context.Context, sessions *session.SessionRegistry, item
 }
 
 // adminInterestsHandler lists, reads and removes persisted interests. Each row a GET answers
-// carries its session's last heartbeat (interestRowFor), read from the listener state bucket for
+// carries its session's last heartbeat (interestRowFor), read from the last-seen bucket for
 // a session that has lapsed. GET /v1/interests/ answers from the interest cache and reads those
 // heartbeats within sendRequestBudget of the request's own context, the one budget for the whole
 // list: a bucket that stopped answering leaves the rows it could not read without a last

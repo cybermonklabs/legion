@@ -19,7 +19,7 @@ import (
 	"github.com/sjawhar/envoy/listenerwire"
 )
 
-// hangingSeenKV is the listener state bucket as a pod reads it over a bus that went silent
+// hangingSeenKV is the last-seen bucket as a pod reads it over a bus that went silent
 // without closing the connection: every read blocks until the test releases it.
 type hangingSeenKV struct {
 	natsgo.KeyValue
@@ -31,7 +31,7 @@ func (k hangingSeenKV) Get(string) (natsgo.KeyValueEntry, error) {
 	return nil, natsgo.ErrKeyNotFound
 }
 
-// GET /v1/interests/ reads each lapsed row's last heartbeat from the listener state bucket
+// GET /v1/interests/ reads each lapsed row's last heartbeat from the last-seen bucket
 // (interestRowFor). A bucket that stopped answering must cost the answer the route's own budget
 // and no more: the rows still list, without a last heartbeat for the ones it could not read.
 // Before this change that read had no budget at all, so the whole list waited out the JetStream
@@ -51,16 +51,16 @@ func TestTheInterestsListAnswersWithinItsBudgetWhileTheLastSeenBucketHangs(t *te
 		t.Fatalf("open the interest registry: %v", err)
 	}
 	t.Cleanup(registry.StopWatch)
-	state, err := openListenerState(t.Context(), client.Conn, 1, listenerStateMaxAge, listenerStateRequestWait)
+	seen, err := openLastSeen(t.Context(), client.Conn, 1, lastSeenMaxAge)
 	if err != nil {
-		t.Fatalf("open the listener state bucket: %v", err)
+		t.Fatalf("open the last-seen bucket: %v", err)
 	}
-	sessions, err := session.OpenSessionRegistry(t.Context(), client.Conn, session.WithSessionReplicas(1),
-		session.WithLastSeenBucket(bus.NewKeyValue(hangingSeenKV{KeyValue: state.Legacy(), released: released}, state.WatchHandle(), state.Streams())))
+	sessions, err := session.OpenSessionRegistry(t.Context(), client.Conn, session.WithSessionReplicas(1))
 	if err != nil {
 		t.Fatalf("open the session registry: %v", err)
 	}
 	t.Cleanup(sessions.StopWatch)
+	sessions.SetLastSeenBucket(bus.NewKeyValue(hangingSeenKV{KeyValue: seen.Legacy(), released: released}, seen.WatchHandle(), seen.Streams()))
 
 	// The session never registered, so the session cache misses it and the row's last heartbeat
 	// is read from the bucket, as a lapsed session's is.

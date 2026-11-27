@@ -17,11 +17,12 @@ import (
 // (the stream's subjects, the role lanes, every exception lane and any ad-hoc topic) but the two
 // lanes listenerDeny names, the stream (its stored-message get, `bus.Client.NextStoredMessage`)
 // and its own durable, then each bucket in turn, the listener state bucket's reads and writes only
-// of the machine's own lease, hand-back entries and ledger and of the last-seen records, then the
-// interest bucket's purge and the known-session bucket's. HostPermissions and DispatchPermissions
-// are built on it, so neither holds a session consumer's call; the edge set (EdgePermissions) and
-// the auth service's edge answers (natsgrant.Edge) hold both purges too. TestSessionPermissions's
-// exact list holds none of it: no session gets the stored-message read or a consumer.
+// of the machine's own lease, hand-back entries and ledger, the last-seen bucket's reads and
+// writes of every session's last-seen record, then the interest bucket's purge and the
+// known-session bucket's. HostPermissions and DispatchPermissions are built on it, so neither
+// holds a session consumer's call; the edge set (EdgePermissions) and the auth service's edge
+// answers (natsgrant.Edge) hold both purges too. TestSessionPermissions's exact list holds none of
+// it: no session gets the stored-message read or a consumer.
 var listenerBasePublish = []string{
 	"notifications.>",
 	"$JS.API.STREAM.INFO.ENVOY_NOTIFICATIONS",
@@ -101,11 +102,14 @@ var listenerBasePublish = []string{
 	"$JS.API.DIRECT.GET.KV_envoy_listener.$KV.envoy_listener.lease.listener-example-host-a",
 	"$JS.API.DIRECT.GET.KV_envoy_listener.$KV.envoy_listener.handback.listener-example-host-a.*",
 	"$JS.API.DIRECT.GET.KV_envoy_listener.$KV.envoy_listener.delivery.listener-example-host-a.*.*",
-	"$JS.API.DIRECT.GET.KV_envoy_listener.$KV.envoy_listener.seen.*",
 	"$KV.envoy_listener.lease.listener-example-host-a",
 	"$KV.envoy_listener.handback.listener-example-host-a.*",
 	"$KV.envoy_listener.delivery.listener-example-host-a.*.*",
-	"$KV.envoy_listener.seen.*",
+	"$JS.API.STREAM.INFO.KV_envoy_last_seen",
+	"$JS.API.STREAM.CREATE.KV_envoy_last_seen",
+	"$JS.API.STREAM.UPDATE.KV_envoy_last_seen",
+	"$JS.API.DIRECT.GET.KV_envoy_last_seen.$KV.envoy_last_seen.seen.*",
+	"$KV.envoy_last_seen.seen.*",
 	"$JS.API.STREAM.PURGE.KV_envoy_interests",
 	"$JS.API.STREAM.PURGE.KV_envoy_known_sessions",
 }

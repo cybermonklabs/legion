@@ -1,6 +1,6 @@
 // The session registry's last-seen times: when each session last wrote its registration, which
-// LastSeen answers for a session that has lapsed, from the listener state bucket's shared record
-// (WithLastSeenBucket) or from this process's own (SessionRegistry.seenLocal).
+// LastSeen answers for a session that has lapsed, from the last-seen bucket's shared record
+// (SetLastSeenBucket) or from this process's own (SessionRegistry.seenLocal).
 
 package session
 
@@ -17,22 +17,14 @@ import (
 	"github.com/sjawhar/envoy/internal/dedupe"
 )
 
-// WithLastSeenBucket sets the listener state bucket (bus.ListenerStateBucket), where every
-// registration write also records the session's last-seen time under `seen.<session token>`
-// (lastSeenKey), the one record every listener pod answers LastSeen for a lapsed session from, a
-// pod that started after the session lapsed included. Without it the registry keeps last-seen
-// times in process (SessionRegistry.seenLocal): a listener whose NATS user lacks the grant for
-// that bucket runs so, and a restart forgets them, until it opens the bucket later
-// (SetLastSeenBucket).
-func WithLastSeenBucket(kv bus.KeyValue) SessionRegistryOption {
-	return func(o *sessionRegistryOpts) { o.seen = kv }
-}
-
-// SetLastSeenBucket gives a registry opened without the listener state bucket that bucket from
-// here on, as WithLastSeenBucket gives it at the open. The listener opens that bucket only after
-// the registry, whose TTL the bucket's age follows, so it calls this at its start once it has
-// opened the bucket, and again when a pod that started without the grant for the bucket opens it
-// and joins its machine's delivery lease (cmd/listener's joinDeliveryLease). From then on every
+// SetLastSeenBucket gives the registry the last-seen bucket (bus.LastSeenBucket) from here on,
+// where every registration write also records the session's last-seen time under
+// `seen.<session token>` (lastSeenKey), the one record every listener pod answers LastSeen for a
+// lapsed session from, a pod that started after the session lapsed included. A registry is opened
+// without it and keeps last-seen times in process until then (SessionRegistry.seenLocal), which a
+// restart forgets: the listener opens the bucket on its own, after the registry, and calls this
+// once an open succeeds, at its start or at a later try for a pod whose grant, cluster or account
+// refused the bucket at first (cmd/listener's startLastSeenBucket). From then on every
 // registration write records the session's last-seen time in the bucket, and LastSeen answers a
 // lapsed session from the bucket's record alone, as every other pod of the fleet does: the times
 // this process kept before (seenLocal), those its watcher delivered before the call included,
@@ -50,18 +42,18 @@ func (r *SessionRegistry) SetLastSeenBucket(kv bus.KeyValue) {
 // and never less than one TTL) after that registration's expiry, so callers can report why an
 // otherwise durable reference stopped resolving.
 //
-// With the listener state bucket (WithLastSeenBucket) that time is the session's `seen.` record
-// alone, the server's timestamp of the write, which every pod reads alike, a pod started after the
+// With the last-seen bucket (SetLastSeenBucket) that time is the session's `seen.` record alone,
+// the server's timestamp of the write, which every pod reads alike, a pod started after the
 // session lapsed included: every pod of the fleet answers one time for one session through the
 // whole window, and a record the bucket has not got (it was never written, a bucket MaxAge shorter
 // than the window removed it, or it could not be read) is no answer on any of them. The listener
 // keeps a record for this registry's LastSeenWindow and the interest reaper's allowance past its
-// last write, and longer when the bucket already keeps it longer (cmd/listener's
-// listenerStateAge), so the window, not the bucket, ends the answer, and every pod ends it at the
-// same moment. Without the bucket the time is this
-// process's own record (seenLocal), the UpdatedAt of every registration this process wrote or its
-// watcher saw, which a restart forgets. The window is measured on this process's clock against
-// the server's timestamp; a skew of seconds against a TTL of minutes moves its end by that skew.
+// last write, and longer when the bucket already keeps it longer (cmd/listener's lastSeenAge), so
+// the window, not the bucket, ends the answer, and every pod ends it at the same moment. Without
+// the bucket the time is this process's own record (seenLocal), the UpdatedAt of every
+// registration this process wrote or its watcher saw, which a restart forgets. The window is
+// measured on this process's clock against the server's timestamp; a skew of seconds against a
+// TTL of minutes moves its end by that skew.
 //
 // Its read of the bucket waits no longer than ctx (bus.BoundedOn), so a caller answering a request
 // keeps its own budget: a bucket that does not answer costs that budget once, and every further
@@ -87,7 +79,7 @@ func (r *SessionRegistry) LastSeen(ctx context.Context, sessionID string) int64 
 	if seen.Opened() {
 		stored, err := readSeen(ctx, seen, sessionID)
 		if err != nil {
-			r.logger().Warn("session last-seen unavailable: its record in the listener state bucket could not be read",
+			r.logger().Warn("session last-seen unavailable: its record in the last-seen bucket could not be read",
 				slog.String("session_id", sessionID), slog.String("key", lastSeenKey(sessionID)), slog.String("error", err.Error()))
 		}
 		at = stored
@@ -116,21 +108,21 @@ func (r *SessionRegistry) lastSeenUntilLocked(sessionID string, left time.Time) 
 	return until
 }
 
-// seenRecord is the value of a session's `seen.` record in the listener state bucket: at is the
+// seenRecord is the value of a session's `seen.` record in the last-seen bucket: at is the
 // server's timestamp, in Unix milliseconds, of the session's last registration write.
 type seenRecord struct {
 	At int64 `json:"at"`
 }
 
-// lastSeenKey is sessionID's last-seen key in the listener state bucket, `seen.<session token>`
-// (bus.LastSeenPrefix), with the session token every key of that bucket names a session by
+// lastSeenKey is sessionID's last-seen key in the last-seen bucket, `seen.<session token>`
+// (bus.LastSeenPrefix), with the session token the delivery ledger's keys name a session by too
 // (dedupe.SessionToken).
 func lastSeenKey(sessionID string) string {
 	return bus.LastSeenPrefix + dedupe.SessionToken(sessionID)
 }
 
 // recordSeen records the registration write at revision written as sessionID's last-seen time in
-// the listener state bucket, when the registry has it: it reads the write back from the session
+// the last-seen bucket, when the registry has it: it reads the write back from the session
 // bucket for the server's timestamp, the clock the registration's expiry runs on, and puts it under
 // lastSeenKey, each bucket call waiting no longer than ctx (bus.BoundedOn). A failure of either
 // logs a WARN and leaves the registration, which is written, as it is: the record keeps the
@@ -163,20 +155,20 @@ func (r *SessionRegistry) recordSeen(ctx context.Context, kv bus.KeyValue, sessi
 		_, _, err = bus.BoundedOn(ctx, seen, func() (uint64, error) { return seen.Put(lastSeenKey(sessionID), value) })
 	}
 	if err != nil {
-		r.logger().Warn("session last-seen not recorded in the listener state bucket",
+		r.logger().Warn("session last-seen not recorded in the last-seen bucket",
 			slog.String("session_id", sessionID), slog.String("key", lastSeenKey(sessionID)), slog.String("error", err.Error()))
 	}
 }
 
 // readSeen reads sessionID's last-seen time, in Unix milliseconds, from its record in seen, the
-// listener state bucket: 0 when there is none. The read waits no longer than ctx (bus.BoundedOn),
+// last-seen bucket: 0 when there is none. The read waits no longer than ctx (bus.BoundedOn),
 // so a route that answers a caller is held no longer than its own budget by a bucket that does not
 // answer; a read ctx ended is an error naming the key, which the caller reports as no time.
 func readSeen(ctx context.Context, seen bus.KeyValue, sessionID string) (int64, error) {
 	key := lastSeenKey(sessionID)
 	entry, answered, err := bus.BoundedOn(ctx, seen, func() (nats.KeyValueEntry, error) { return seen.Get(key) })
 	if !answered {
-		return 0, fmt.Errorf("read %s from the listener state bucket: %w", key, err)
+		return 0, fmt.Errorf("read %s from the last-seen bucket: %w", key, err)
 	}
 	if errors.Is(err, nats.ErrKeyNotFound) {
 		return 0, nil
