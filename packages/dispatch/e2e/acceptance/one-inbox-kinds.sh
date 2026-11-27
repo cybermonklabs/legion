@@ -300,16 +300,16 @@ names_its_node() {
 # The document socket's writer, run by bun from this file's directory so that its imports resolve
 # in this package's node_modules, as e2e/acceptance/socket-scope.ts's do. It opens the document
 # socket as the person whose Cookie header the file it is given holds, through the browser's own
-# Hocuspocus provider, presenting the schema version it is given both as the version it reads and
-# as the highest it creates, as web/src/features/doc/connection.ts presents a page's. It prints the
-# scope the server's authentication answers; on `read-write` it types the marker at the end of the
-# document's first paragraph and prints `accepted` once the server has acknowledged every update
-# the socket sent as applied (a SyncStatus frame each, which the provider counts down in
+# Hocuspocus provider. It presents the manifest's readable version and computes the creatable
+# version with the same helper as the browser. It prints the authentication scope.
+# On `read-write` it appends the marker to the first paragraph. It prints `accepted` once the
+# server acknowledges each update as applied (a SyncStatus frame per update, counted down in
 # unsyncedChanges). A refusal, a read-only admission, a close or no answer within fifteen seconds
 # exits 1 and says which. Its inputs are environment variables, so no argument list names a file.
 read -r -d '' socket_writer <<'TS' || true
 import { HocuspocusProvider, HocuspocusProviderWebsocket } from "@hocuspocus/provider";
 import * as Y from "yjs";
+import { schemaCreatable } from "../../web/src/features/doc/schema-creatable";
 
 const env = (name: string): string => {
   const value = process.env[name];
@@ -321,7 +321,8 @@ const env = (name: string): string => {
 };
 const server = env("SOCKET_SERVER");
 const documentId = env("SOCKET_DOCUMENT");
-const version = env("SOCKET_SCHEMA_VERSION");
+const schema: Parameters<typeof schemaCreatable>[0] = await Bun.file(env("SOCKET_SCHEMA_FILE")).json();
+const version = String(schema.version);
 const marker = env("SOCKET_MARKER");
 const cookie = (await Bun.file(env("SOCKET_COOKIE_FILE")).text()).trim();
 const origin = new URL(server).origin;
@@ -343,7 +344,7 @@ const timer = setTimeout(
 const doc = new Y.Doc();
 const websocket = new HocuspocusProviderWebsocket({
   WebSocketPolyfill: CookieWebSocket,
-  parameters: { schema_creatable: version, schema_version: version },
+  parameters: { schema_creatable: schemaCreatable(schema), schema_version: version },
   url: `${origin.replace(/^http/, "ws")}/ws/doc/${encodeURIComponent(documentId)}`,
 });
 let typed = false;
@@ -1340,7 +1341,7 @@ editor_section() {
     cd -- "$script_dir"
     # shellcheck disable=SC2031 # lib.sh's `cli` exports its own PATH, HOME and TMPDIR; these are this run's
     exec env -i PATH="$PATH" HOME="${HOME:-$work}" TMPDIR="${TMPDIR:-/tmp}" \
-      SOCKET_SERVER="$base" SOCKET_DOCUMENT="$spec" SOCKET_SCHEMA_VERSION="$version" \
+      SOCKET_SERVER="$base" SOCKET_DOCUMENT="$spec" SOCKET_SCHEMA_FILE="$work/body" \
       SOCKET_COOKIE_FILE="$work/cookie" SOCKET_MARKER="$marker" bun -e "$socket_writer"
   ) >"$work/socket.out" 2>"$work/socket.err" || socket_status=$?
   grep -qx 'scope read-write' "$work/socket.out" ||
