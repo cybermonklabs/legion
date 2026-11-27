@@ -1,16 +1,37 @@
 import type { IssueSteps, StepRecord } from "../../api/types";
 
+/** One planned step as the server answers it. */
+type AnsweredStep = NonNullable<NonNullable<IssueSteps["tasks"]>[number]["planned"]>[number];
+
+/** Where the server says a step of the plan stands: the enum of the contract's planned step states
+ *  (`PLANNED_STEP_STATES`), `not started`, `running`, or the result its newest run ended with. */
+export type AnsweredState = AnsweredStep["state"];
+
+/** Where a run stands, in the contract's words, which a run's result and a planned step share:
+ *  `running` until the daemon writes its end, then the result it ended with. Every state of the
+ *  tab is built from it and from `OtherState`, so the words are written once, in the contract. */
+export type RunState = Exclude<AnsweredState, "not started">;
+
+/** A state this build has no word for, which only a newer Dispatch can send, kept in `result` in
+ *  the server's own word. */
+export type OtherState = { state: "other"; result: string };
+
+/** A state a run's result and a planned step both show (StepsTab's StateLabel). */
+export type ShownState = { state: RunState } | OtherState;
+
+/** The states of a run that sent its task back. */
+type SentBack = Extract<RunState, "failed" | "stopped">;
+
 /** Where a run stands, with only what that can hold: running until the daemon writes its end,
  *  then the result it ended with. Only a failed or a stopped run sent its task back, so only it
  *  carries `returnedTo` (Dispatch takes `returned_to` only from the write that sets a failed or
  *  stopped result, so a record never pairs one end's result with another end's destination):
  *  where it sent it, as its Result cell names it - `step <n>`, or `the retro` for place 0
- *  (`returnPlace`) - or null when it sent it nowhere. `other` is a result this build has no word
- *  for, which only a newer Dispatch can send, kept in `result` in the server's own word. */
+ *  (`returnPlace`) - or null when it sent it nowhere. */
 export type StepEnd =
-  | { state: "running" | "passed" }
-  | { state: "failed" | "stopped"; returnedTo: string | null }
-  | { state: "other"; result: string };
+  | { state: Exclude<RunState, SentBack> }
+  | { state: SentBack; returnedTo: string | null }
+  | OtherState;
 
 /** One run of one step, as the Steps tab draws it: the fields of its row, and nothing the row
  *  does not show (the task is the table's, `StepTaskRows`). `label` names the step: its place in
@@ -29,9 +50,19 @@ export type StepRow = StepEnd & {
   ended: string | null;
 };
 
-/** One task's runs, in the order the server read them. */
+/** One step the plan gives a task: `step` is its place in the task, from 1, and `name` the plan's
+ *  word for it, a role or `role:key`. Its state is where the server says it stands among the runs
+ *  of the plan's own run of the issue: `not started`, a state a run shows (`RunState`), or `other`
+ *  with the server's own word. */
+export type PlannedStep = { step: number; name: string } & ({ state: "not started" } | ShownState);
+
+/** One task: the tasks of the plan it needs, null where its plan node recorded none or the plan
+ *  does not hold it, and [] where it needs none; the steps the plan gives it, empty for a task the
+ *  plan does not hold; and its runs in the order the server read them. */
 export interface StepTaskRows {
   task: string;
+  needs: string[] | null;
+  planned: PlannedStep[];
   rows: StepRow[];
 }
 
@@ -84,11 +115,34 @@ function stepRow(record: StepRecord): StepRow {
   };
 }
 
-/** The issue's tasks in the server's order (the order of each task's first step), each with its
- *  runs in the order of the read: by generation, then start, a run with no start first. The
- *  generated shape lets either list be null, which reads as empty. */
+/** A planned step as the server answers it, its state kept as answered: the client works out no
+ *  state from the runs it lists, which hold every run of the issue. */
+function plannedStep(answered: AnsweredStep): PlannedStep {
+  const { name, step } = answered;
+  switch (answered.state) {
+    case "not started":
+    case "running":
+    case "passed":
+    case "failed":
+    case "stopped":
+      return { name, state: answered.state, step };
+    default:
+      // A state only a newer Dispatch sends, which this build's contract does not name, keeps its
+      // own word; a state the contract names, adds or renames fails to compile here until it has
+      // a case, so a renamed state never shows as `other`.
+      return { name, result: answered.state satisfies never, state: "other", step };
+  }
+}
+
+/** The issue's tasks in the server's order - the tasks of its newest plan first, in the plan's
+ *  order, then each other task with a run, by its first run - each with its needs, its planned
+ *  steps and its runs in the order of the read: by generation, then start, a run with no start
+ *  first. The generated shape lets either list be null, which reads as empty; a server older than
+ *  the plan's tasks sends no `needs` or `planned`, which read as needs not recorded and no step. */
 export function stepTasks(steps: IssueSteps): StepTaskRows[] {
   return (steps.tasks ?? []).map((task) => ({
+    needs: task.needs ?? null,
+    planned: (task.planned ?? []).map(plannedStep),
     rows: (task.steps ?? []).map(stepRow),
     task: task.task,
   }));

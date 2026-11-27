@@ -1925,10 +1925,17 @@ type PlanDocument struct {
 	Version    int    `json:"version"`
 }
 
-// PlanRecordTask is one task of a plan: its id and its steps in order, each a role or `role:key`.
+// PlanRecordTask is one task of a plan: its id, its steps in order, each a role or `role:key`, and
+// the tasks it needs, each by its id (record.PlanTask.Needs, as register_plan resolved them), [] for
+// a task that needs none. Needs is nil in a row the release before wrote, which carried no needs:
+// the write then carries no member, and Dispatch reads the plan's needs as not recorded. The
+// release before decodes strictly (DisallowUnknownFields), so the way back in docs/kubernetes.md,
+// "Rolling back the release that records each task's needs", takes `needs` off each queued row
+// before that release boots.
 type PlanRecordTask struct {
-	ID    string   `json:"id"`
-	Steps []string `json:"steps"`
+	ID    string    `json:"id"`
+	Steps []string  `json:"steps"`
+	Needs *[]string `json:"needs,omitempty"`
 }
 
 func (PlanRecord) OutboxKind() OutboxKind { return OutboxKindPlanRecord }

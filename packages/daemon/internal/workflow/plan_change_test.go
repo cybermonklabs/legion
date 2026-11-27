@@ -283,7 +283,7 @@ func TestAPlanGivenIsStoredWhereItsTaskHasNotStarted(t *testing.T) {
 		}
 		node := record.PlanRecord{ID: PlanID(root.Key, root.Generation), Generation: root.Generation, Source: record.PlanSourceOwner,
 			PlanDocument: &record.PlanDocument{ArtifactID: planArtifact, Version: 2},
-			Tasks:        []record.PlanRecordTask{{ID: "a", Steps: []string{"planner", "implementer", "tester", "reviewer", "acceptance:owner"}}}}
+			Tasks:        []record.PlanRecordTask{{ID: "a", Steps: []string{"planner", "implementer", "tester", "reviewer", "acceptance:owner"}, Needs: &[]string{}}}}
 		if nodes := planWrites(t, pool, root.Key); len(nodes) == 0 || !reflect.DeepEqual(nodes[len(nodes)-1], node) {
 			t.Fatalf("the plan nodes of %s after version 2 = %+v, want the newest %+v", root.Key, nodes, node)
 		}
@@ -395,7 +395,7 @@ func TestALaterVersionChangesOnlyAWaitingOrStoppedTask(t *testing.T) {
 		}
 		node := record.PlanRecord{ID: PlanID(key, gen), Generation: gen, Source: record.PlanSourceOwner,
 			PlanDocument: &record.PlanDocument{ArtifactID: planArtifact, Version: 4},
-			Tasks:        []record.PlanRecordTask{{ID: "a", Steps: []string{"implementer", "tester", "reviewer"}}}}
+			Tasks:        []record.PlanRecordTask{{ID: "a", Steps: []string{"implementer", "tester", "reviewer"}, Needs: &[]string{}}}}
 		if nodes := planWrites(t, pool, key); len(nodes) == 0 || !reflect.DeepEqual(nodes[len(nodes)-1], node) {
 			t.Fatalf("the plan nodes of %s after version 4 = %+v, want the newest %+v", key, nodes, node)
 		}

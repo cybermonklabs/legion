@@ -199,11 +199,13 @@ type PlanDocument struct {
 	Version    int    `json:"version"`
 }
 
-// PlanTask is one task of a plan's write: its id and its steps in order, each a role or
-// `role:key`.
+// PlanTask is one task of a plan's write: its id, its steps in order, each a role or `role:key`,
+// and the tasks it needs, each by its id, [] for a task that needs none. A nil Needs writes no
+// member, which Dispatch reads as needs not recorded.
 type PlanTask struct {
-	ID    string   `json:"id"`
-	Steps []string `json:"steps"`
+	ID    string    `json:"id"`
+	Steps []string  `json:"steps"`
+	Needs *[]string `json:"needs,omitempty"`
 }
 
 // LegionLabel is the Dispatch label that hands an issue to Legion. A human sets it from the issue
