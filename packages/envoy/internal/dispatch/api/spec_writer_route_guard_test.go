@@ -81,11 +81,14 @@ var specWriterExempt = map[string]string{
 	"POST /api/v1/projects":                             evalsDocumentExemption,
 	"POST /api/v1/projects/{key}/evals":                 evalsDocumentExemption,
 	"POST /api/v1/projects/{key}/evals/{slug}/readings": evalsDocumentExemption,
+	"PUT /api/v1/projects/{key}/settings/delivery":      evalsDocumentExemption,
 }
 
-// evalsDocumentExemption is why specWriterExempt leaves unchecked the three routes that write a
+// evalsDocumentExemption is why specWriterExempt leaves unchecked the four routes that write a
 // document only through the eval registry (specWriterRegistryPkg): a project's create, which seeds
-// its evals-md, and the register and readings writes, which write an eval's section into it.
+// its evals-md, the register and readings writes, which write an eval's section into it, and a
+// project's delivery settings save (dispatch://INFRA-978, R3), which writes each target it holds as
+// a new version of that eval's row.
 const evalsDocumentExemption = "it writes only the project's evals-md (dispatch://INFRA-2916, R5), a document of the project " +
 	"that the eval registry creates and edits (evals' createDocument and editDocument), never an issue's spec or " +
 	"Verification document, the two documents the check judges the writer of (spec_writer.go)"
@@ -110,6 +113,7 @@ const evalsDocumentExemption = "it writes only the project's evals-md (dispatch:
 // does in the other static guards of this package; the behavior tests (spec_writer_test.go) hold
 // the branches.
 func TestEveryRouteThatWritesADocumentChecksItsWriter(t *testing.T) {
+	t.Parallel()
 	graph := copyLockGraph(t)
 	if graph.named[specWriterCheck] == nil {
 		t.Errorf("%s, the check every route that writes a checked document calls, is not declared: "+
@@ -154,6 +158,7 @@ func TestEveryRouteThatWritesADocumentChecksItsWriter(t *testing.T) {
 // TestTheSpecWriterExemptionsStillHold holds each route specWriterExempt names to its reason: the
 // table serves the route, and its path still does not call the check.
 func TestTheSpecWriterExemptionsStillHold(t *testing.T) {
+	t.Parallel()
 	routes := specWriterRoutes(t, copyLockGraph(t))
 	for _, name := range slices.Sorted(maps.Keys(specWriterExempt)) {
 		t.Logf("%s: exempt - %s", name, specWriterExempt[name])
@@ -175,6 +180,7 @@ func TestTheSpecWriterExemptionsStillHold(t *testing.T) {
 // one that needs the person scope, and one that writes nothing, and neither helper names any of
 // them.
 func TestTheSpecWriterGuardSeesAPlantedWriter(t *testing.T) {
+	t.Parallel()
 	graph := plantedSpecWriterGraph(t)
 	routes := specWriterReaches(graph, specWriterRouteHandlers(t, graph))
 	scopes := map[string]routeScopeSet{"POST /planted/person": {model.ScopePerson}}

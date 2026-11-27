@@ -17,6 +17,7 @@ import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import * as ts from "typescript";
 import { z } from "zod";
 import {
+  callReadyWithRetry,
   createLegionDaemonClient,
   daemonUnreachable,
   LegionDaemonApiError,
@@ -385,6 +386,11 @@ test("posts every Stage 3 workflow request through its matching route", async ()
     readonly issueStatus: (body: object) => Promise<unknown>;
     readonly freshSession: (body: object) => Promise<unknown>;
     readonly compact: (body: object) => Promise<unknown>;
+    readonly stopAgent: (body: object) => Promise<unknown>;
+    readonly retryAgent: (body: object) => Promise<unknown>;
+    readonly suspendAgent: (body: object) => Promise<unknown>;
+    readonly resumeAgent: (body: object) => Promise<unknown>;
+    readonly issuePodUpdate: (body: object) => Promise<unknown>;
     readonly projectPause: (body: object) => Promise<unknown>;
     readonly projectResume: (body: object) => Promise<unknown>;
     readonly intakeReplay: (body: object) => Promise<unknown>;
@@ -455,6 +461,41 @@ test("posts every Stage 3 workflow request through its matching route", async ()
       { grantId: "grant-208", issue: "LEGION-209", role: "implementer" },
       "compact.json",
     ],
+    // Four of the six agent actions (stop, retry, suspend, resume) take the body of the other
+    // two, the recoveries, and answer the claim's state after each, with who holds a suspension
+    // over the agent.
+    [
+      "stopAgent",
+      "/legion/v1/agents/stop",
+      { grantId: "grant-208", issue: "LEGION-209", role: "implementer" },
+      "agent-stop.json",
+    ],
+    [
+      "retryAgent",
+      "/legion/v1/agents/retry",
+      { grantId: "grant-208", issue: "LEGION-209", role: "implementer" },
+      "agent-retry.json",
+    ],
+    [
+      "suspendAgent",
+      "/legion/v1/agents/suspend",
+      { grantId: "grant-208", issue: "LEGION-209", role: "implementer" },
+      "agent-suspend.json",
+    ],
+    [
+      "resumeAgent",
+      "/legion/v1/agents/resume",
+      { grantId: "grant-208", issue: "LEGION-209", role: "implementer" },
+      "agent-resume.json",
+    ],
+    // The controller's replace_pod: the daemon's update round over the issue's pod, its reasons,
+    // and whether this request opened it.
+    [
+      "issuePodUpdate",
+      "/legion/v1/issues/pod-update",
+      { grantId: "grant-208", issue: "LEGION-209" },
+      "issue-pod-update.json",
+    ],
     // The controller's pause and resume name no project: the daemon pauses its own. Each
     // answers the pause as the daemon's golden wrote it, the resume with how many held rows it
     // let out.
@@ -493,6 +534,23 @@ test("posts every Stage 3 workflow request through its matching route", async ()
         issue: "LEGION-208",
         artifactId: "d2f1c6b4-8e07-4a53-9c1d-6b8f2e5a7093",
         version: 7,
+      },
+      "gate-register.json",
+    ],
+    // A registration on an ancestor's basis carries the ancestor's document id, its version and
+    // the architect's reason beside the root's own document (entry 20261125161152 (gate-basis)).
+    [
+      "gateRegister",
+      "/legion/v1/gates/register",
+      {
+        grantId: "grant-208",
+        issue: "LEGION-208",
+        artifactId: "d2f1c6b4-8e07-4a53-9c1d-6b8f2e5a7093",
+        version: 4,
+        step: "spec",
+        basisArtifactId: "6f4a2c8e-1b3d-4f5a-8c7e-9d0b1a2c3e4f",
+        basisVersion: 3,
+        reason: "LEGION-208's checks serve P2 of LEGION-100's approved spec.",
       },
       "gate-register.json",
     ],
@@ -1011,6 +1069,177 @@ test("a 502 refusal keeps its stable code through a key no schema names, and is 
   expect(waits).toEqual([]);
 });
 
+/** A daemon behind a proxy whose first answer is the proxy's own page with `status`, which
+ *  carries no code, and every later one the daemon's coded refusal. */
+function behindAProxy(status: number): { client: LegionDaemonClient; attempts: () => number } {
+  let attempts = 0;
+  const client = createLegionDaemonClient("http://daemon.test", {
+    pluginContract: CONTRACT,
+    fetch: (async (_input, _init) => {
+      attempts += 1;
+      return attempts === 1
+        ? new Response(`<html>${status}</html>`, {
+            status,
+            headers: { "Content-Type": "text/html" },
+          })
+        : Response.json(
+            { code: "GATE_UNAPPROVED", error: "the gate is not approved" },
+            { status: 409 }
+          );
+    }) as typeof fetch,
+  });
+  return { client, attempts: () => attempts };
+}
+
+// An outage whose body is not the daemon's refusal shape (`@legion/contracts/http-status`), a
+// proxy's page, is no answer of the daemon's, so the restart retry waits it out. The daemon writes
+// no 429, so a proxy turned the request away before it forwarded anything: that attempt reached
+// nothing. After a 5xx or a 408 it may have (a proxy whose own timeout runs out after it forwarded
+// the request answers 408), so the daemon's refusal that follows says the earlier attempt may have
+// been applied.
+test.each([
+  [408, "dropped"],
+  [429, "refused"],
+  [500, "dropped"],
+  [502, "dropped"],
+  [503, "dropped"],
+  [504, "dropped"],
+] as const)("a proxy's page answering %i is an outage the restart retry waits out, %s", async (status, reading) => {
+  const { client, attempts } = behindAProxy(status);
+  const first = await client.state().catch((error: unknown) => error);
+  expect(first).toMatchObject({ status, code: undefined, refusalShape: false });
+  expect(daemonUnreachable(first)).toBe(reading);
+
+  const proxied = behindAProxy(status);
+  let clock = 0;
+  const refused = (await retryWhileDaemonRestarts(
+    "handoff_complete",
+    () => proxied.client.state(),
+    {
+      now: () => clock,
+      sleep: async (ms: number) => {
+        clock += ms;
+      },
+    }
+  ).catch((error: unknown) => error)) as LegionDaemonApiError;
+  expect(attempts()).toBe(1);
+  expect(proxied.attempts()).toBe(2);
+  expect(refused).toMatchObject({ status: 409, code: "GATE_UNAPPROVED" });
+  expect(refused.message.includes("may have been applied")).toBe(reading === "dropped");
+});
+
+// The daemon's refusal shape is its own answer, whatever its status and with no code: a claim
+// route answers a failure of its own with a sentence alone (`refuse` in the daemon's
+// `internal/api/credentials.go`, as `claims.go` does for release records it keeps none of).
+// Asking again would hold the agent for the restart budget and then call a daemon that answered
+// unreachable, so the retry hands the refusal back at once.
+test.each([
+  408, 429, 500, 502, 503, 504,
+])("the daemon's own refusal answering %i with no code is its answer, handed back at once", async (status) => {
+  const sentence = "the daemon keeps no release records";
+  let attempts = 0;
+  const client = createLegionDaemonClient("http://daemon.test", {
+    pluginContract: CONTRACT,
+    fetch: (async (_input, _init) => {
+      attempts += 1;
+      return Response.json({ error: sentence }, { status });
+    }) as typeof fetch,
+  });
+  const first = await client.state().catch((error: unknown) => error);
+  expect(first).toBeInstanceOf(LegionDaemonApiError);
+  expect(first).toMatchObject({ status, code: undefined, detail: sentence, refusalShape: true });
+  expect(daemonUnreachable(first)).toBeUndefined();
+
+  attempts = 0;
+  let clock = 0;
+  const waits: number[] = [];
+  const told: string[] = [];
+  const refused = await retryWhileDaemonRestarts("handoff_complete", () => client.state(), {
+    now: () => clock,
+    sleep: async (ms: number) => {
+      waits.push(ms);
+      clock += ms;
+    },
+    onRetrying: (message) => told.push(message),
+  }).catch((error: unknown) => error);
+  expect(refused).toBeInstanceOf(LegionDaemonApiError);
+  expect(refused).toMatchObject({ status, code: undefined, detail: sentence });
+  expect((refused as Error).message).not.toContain("unreachable");
+  expect(attempts).toBe(1);
+  expect(waits).toEqual([]);
+  expect(told).toEqual([]);
+});
+
+test("a coded refusal of an outage's status and a 4xx with no code are the daemon's answer, and a page whose status is no outage is not retried", () => {
+  for (const [status, code, refusalShape] of [
+    [500, "STORE_FAILED", true],
+    [503, "PAUSE_UNAVAILABLE", true],
+    [429, "SOME_CODE", true],
+    [404, undefined, true],
+    [409, undefined, true],
+    [404, undefined, false],
+  ] as const) {
+    const refusal = new LegionDaemonApiError(
+      "POST",
+      "/legion/v1/x",
+      status,
+      code,
+      "refused",
+      refusalShape,
+      0
+    );
+    expect([status, refusalShape, daemonUnreachable(refusal)]).toEqual([
+      status,
+      refusalShape,
+      undefined,
+    ]);
+  }
+});
+
+/** The daemon's golden ready request, which these rows send. */
+const readyInput: ReadyInput = LegionReadyRequest.parse(daemonFixture("ready.json"));
+
+// A proxy's 429 or 503 can say how long to wait (`Retry-After`). The ready's retry waits that long
+// between its three attempts, never less than its own 1 s and never more than 30 s: a proxy that
+// asks for longer is asked again at 30 s, so the ready never waits past the daemon's registration
+// deadline (360 s by default) on a proxy's word.
+test.each([
+  ["5", [5_000, 5_000]],
+  ["120", [30_000, 30_000]],
+  ["0", [1_000, 1_000]],
+  [undefined, [1_000, 1_000]],
+] as const)("a ready answered 429 with Retry-After %p waits %p between its attempts", async (asked, waited) => {
+  let attempts = 0;
+  const client = createLegionDaemonClient("http://daemon.test", {
+    pluginContract: CONTRACT,
+    fetch: (async (_input, _init) => {
+      attempts += 1;
+      if (attempts === 3) return new Response(null, { status: 204 });
+      return new Response("<html>429 Too Many Requests</html>", {
+        status: 429,
+        headers: asked === undefined ? {} : { "Retry-After": asked },
+      });
+    }) as typeof fetch,
+  });
+  const first = await client.ready(readyInput).catch((error: unknown) => error);
+  expect(first).toMatchObject({
+    status: 429,
+    retryAfterMs: asked === undefined ? 0 : Number(asked) * 1_000,
+  });
+
+  attempts = 0;
+  const waits: number[] = [];
+  await callReadyWithRetry(
+    "claims/ready",
+    () => client.ready(readyInput),
+    async (ms) => {
+      waits.push(ms);
+    }
+  );
+  expect(attempts).toBe(3);
+  expect(waits).toEqual([...waited]);
+});
+
 /** A daemon that answers `body` with `contract` in its `Legion-Daemon-Contract` header, and
  * states no contract where `contract` is undefined. */
 function stating(body: unknown, contract: number | undefined, status = 200): typeof fetch {
@@ -1136,8 +1365,9 @@ test("a non-success answer that is not the daemon's refusal names both contracts
     .state()
     .catch((error: unknown) => error);
   expect(behind).toBeInstanceOf(LegionDaemonApiError);
-  expect(behind).toMatchObject({ status: 503, code: undefined });
-  // Still a dropped attempt to the restart retry: the class, status and missing code are kept.
+  expect(behind).toMatchObject({ status: 503, code: undefined, refusalShape: false });
+  // Still a dropped attempt to the restart retry: the class, the status and a body that is not
+  // the daemon's refusal shape are kept.
   expect(daemonUnreachable(behind)).toBe("dropped");
   const detail = (behind as LegionDaemonApiError).detail;
   expect(detail).toContain(`This build speaks daemon API contract ${CONTRACT}.`);

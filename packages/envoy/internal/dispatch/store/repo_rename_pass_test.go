@@ -63,6 +63,12 @@ const renamedRepositoriesSeed = `
 	insert into branch_commits (repo, branch, sha, on_branch) values
 		('SJawhar/Legion', 'main', 'c1', true),
 		('sjawhar/dotfiles', 'main', 'c1', true);
+	insert into commit_holds (repo, commit_sha, merge_sha, holds, checked_at) values
+		('sjawhar/legion', 'c2', 'm1', true, '2026-01-01T00:00:00Z'),
+		('sjawhar/dotfiles', 'c2', 'm1', true, '2026-01-01T00:00:00Z');
+	insert into deploys (repo, program, commit_sha, deployed_at, source, recorded_by) values
+		('sjawhar/legion', 'dispatch', repeat('d', 40), '2026-01-01T00:00:00Z', 'route', '{"kind":"user","id":"alice"}'),
+		('sjawhar/legion-smoke', 'dispatch', repeat('e', 40), '2026-01-01T00:00:00Z', 'route', '{"kind":"user","id":"alice"}');
 	insert into delivery_pull_requests (repo, number, title, url, author, updated_at,
 			attribution_title_keys, attribution_cited_issues, attribution_branch_keys, attribution_commit_keys) values
 		('sjawhar/legion', 11, 'Eleven', 'https://github.com/sjawhar/legion/pull/11', 'octocat', '2026-01-01T00:00:00Z',
@@ -137,6 +143,9 @@ var renamedRepositoriesAfter = map[string]string{
 	`select string_agg(repo || '#' || number || ' ' || url, ' ' order by number) from pull_request_heads`: "cybermonklabs/legion#7 https://github.com/cybermonklabs/legion/pull/7 " +
 		"sjawhar/legion-smoke#8 https://github.com/sjawhar/legion-smoke/pull/8",
 	`select string_agg(repo, ' ' order by repo) from branch_commits`: "cybermonklabs/legion sjawhar/dotfiles",
+	`select string_agg(repo, ' ' order by repo) from commit_holds`:   "cybermonklabs/legion sjawhar/dotfiles",
+	`select string_agg(repo || ' ' || commit_sha, ' ' order by repo) from deploys`: "cybermonklabs/legion " + strings.Repeat("d", 40) +
+		" sjawhar/legion-smoke " + strings.Repeat("e", 40),
 	`select string_agg(repo || '#' || number || ' ' || url || ' ' || coalesce(attribution_cited_issues::text, 'null'), ' ' order by number) from delivery_pull_requests`: "cybermonklabs/legion#11 https://github.com/cybermonklabs/legion/pull/11 " +
 		"{https://github.com/cybermonklabs/legion/issues/5,https://github.com/sjawhar/legion-smoke/issues/6} " +
 		"sjawhar/legion-smoke#12 https://github.com/sjawhar/legion-smoke/pull/12 null",
@@ -298,7 +307,7 @@ func TestTheRenamePassWritesEveryFieldAndASecondRunWritesNothing(t *testing.T) {
 	}
 	for field, want := range map[string]float64{
 		"issues.repo": 2, "projects.default_repo": 1, "issue_facts.repo": 1, "check_results.commit_repo": 1, "issue_external_links.url": 2,
-		"pull_request_heads.repo": 1, "pull_request_heads.url": 1, "branch_commits.repo": 1,
+		"pull_request_heads.repo": 1, "pull_request_heads.url": 1, "branch_commits.repo": 1, "commit_holds.repo": 1, "deploys.repo": 1,
 		"delivery_pull_requests.repo": 1, "delivery_pull_requests.url": 1, "delivery_pull_requests.attribution_cited_issues": 1,
 		"delivery_runs.repo": 1, "delivery_run_jobs.repo": 2, "delivery_runs.url": 1, "delivery_run_warnings.repo": 1,
 		"delivery_settings.deploy_repo": 1, "delivery_settings.excluded_repos": 1, "delivery_reconcile_progress.scope": 2,
@@ -454,6 +463,9 @@ const renameCollisionsSeed = `
 	insert into branch_commits (repo, branch, sha, on_branch) values
 		('sjawhar/legion', 'main', 'c1', false),
 		('cybermonklabs/legion', 'main', 'c1', true);
+	insert into commit_holds (repo, commit_sha, merge_sha, holds, checked_at) values
+		('sjawhar/legion', 'c1', 'm1', false, now()),
+		('cybermonklabs/legion', 'c1', 'm1', true, now());
 	insert into delivery_pull_requests (repo, number, title, url, author) values
 		('sjawhar/legion', 11, 'Old', 'https://github.com/sjawhar/legion/pull/11', 'octocat'),
 		('CybermonkLabs/Legion', 11, 'New', 'https://github.com/CybermonkLabs/Legion/pull/11', 'octocat');
@@ -510,8 +522,8 @@ func TestTheRenamePassKeepsTheNewNameRowOfEachCollision(t *testing.T) {
 
 	pass := RewriteRenamedRepositories(ctx, store.Pool, pairs)
 
-	if pass.Deleted != 12 || pass.Failures != 0 || pass.Left != noneLeft {
-		t.Fatalf("the pass = %+v, want 12 rows deleted, no failure and nothing left", pass)
+	if pass.Deleted != 13 || pass.Failures != 0 || pass.Left != noneLeft {
+		t.Fatalf("the pass = %+v, want 13 rows deleted, no failure and nothing left", pass)
 	}
 	for query, want := range map[string]string{
 		`select string_agg(issue_key || ' ' || url, ' | ' order by url) from issue_external_links where url like '%/issues/5'`:      "INFRA-2 https://github.com/cybermonklabs/legion/issues/5",
@@ -519,6 +531,7 @@ func TestTheRenamePassKeepsTheNewNameRowOfEachCollision(t *testing.T) {
 		`select string_agg(repo || ' ' || head_sha, ' | ' order by number) from pull_request_heads where number = 7`:                "cybermonklabs/legion new",
 		`select string_agg(repo, ' | ') from pull_request_heads where number = 9`:                                                   "cybermonklabs/legion",
 		`select string_agg(repo || ' ' || on_branch, ' | ') from branch_commits`:                                                    "cybermonklabs/legion true",
+		`select string_agg(repo || ' ' || holds, ' | ') from commit_holds`:                                                          "cybermonklabs/legion true",
 		`select string_agg(repo || ' ' || title, ' | ') from delivery_pull_requests`:                                                "CybermonkLabs/Legion New",
 		`select string_agg(repo || '#' || run_id || ' ' || head_sha, ' | ' order by run_id) from delivery_runs`:                     "cybermonklabs/legion#100 new | cybermonklabs/legion#101 moved",
 		`select string_agg(repo || '#' || run_id || ' ' || name, ' | ' order by run_id, name) from delivery_run_jobs`:               "cybermonklabs/legion#100 twin-build | cybermonklabs/legion#101 moved-build",
@@ -546,7 +559,7 @@ func TestTheRenamePassKeepsTheNewNameRowOfEachCollision(t *testing.T) {
 		deleted[record["table"].(string)]++
 	}
 	want := map[string]int{
-		"issue_external_links": 2, "pull_request_heads": 2, "branch_commits": 1, "delivery_pull_requests": 1,
+		"issue_external_links": 2, "pull_request_heads": 2, "branch_commits": 1, "commit_holds": 1, "delivery_pull_requests": 1,
 		"delivery_runs": 1, "delivery_run_warnings": 1, "architecture_sources": 1, "code_repos": 1, "code_changes": 1, "code_days": 1,
 	}
 	if len(deleted) != len(want) {
@@ -1177,5 +1190,424 @@ func TestARenameMovesTheRecordOfProductionEventsAndTheReverts(t *testing.T) {
 	}
 	if again := RewriteRenamedRepositories(ctx, store.Pool, pairs); again != (RepoRenamePass{Pairs: 1, Left: noneLeft}) {
 		t.Errorf("a second pass = %+v, want one pair and nothing written, deleted, failed or left", again)
+	}
+}
+
+// renamedSourceSeed holds the rename pair acme/widgets to acme/gizmos. The old name is ALPHA's
+// deploy source, with one deploy run stored under its name in mixed case, and the repository its
+// rows stand built under (eval_days_rules) is spelled as its rows are keyed, its rule kept from the
+// day of that run; BRAVO's source reads acme/tools under a rule of its own. Under the old name it
+// holds day rows of the repository's source key (':Acme/Widgets||>~', evals.sourceKey), which
+// ALPHA reads through the rule, and ALPHA's own rows with the old name as their deploy repository,
+// in ALPHA's own cut and in acme/site's; and, in the old name's other spelling, a row of a source
+// key and one of ALPHA's that rename to the keys of two of those, whose deploy repository no read
+// selects. Its members are the source key's run and ALPHA's pull request in both spellings.
+// ALPHA's stored figures fold the old name, in either spelling, as their deploy repository in its
+// own cut and in those of acme/site and acme/web, beside the union (`*`) of two of them, and
+// BRAVO's fold acme/tools alone. A mark of one eval stands on ALPHA's own cut, and one on a cut of
+// BRAVO's.
+const renamedSourceSeed = `
+	insert into projects (key, name, default_assignee, default_repo) values
+		('ALPHA', 'Alpha', 'alice', 'acme/site'),
+		('BRAVO', 'Bravo', 'alice', 'acme/tools');
+	insert into repo_projects (repo, project, created_by, renamed_to) values
+		('Acme/Widgets', 'ALPHA', '{"kind":"user","id":"alice"}', 'Acme/Gizmos');
+	insert into project_delivery_settings (project_key, delivery, population_authors, excluded_repos, updated_by, updated_at) values
+		('ALPHA', true, '{octocat}', '{}', '{"kind":"user","id":"alice"}', '2026-11-20T00:00:00Z'),
+		('BRAVO', true, '{octocat}', '{}', '{"kind":"user","id":"alice"}', '2026-11-20T00:00:00Z');
+	insert into project_deploy_sources (project_key, position, kind, repo, deploy_workflow_path, production_job_names, pr_checks_workflow_path) values
+		('ALPHA', 0, 'github_workflow', 'acme/widgets', 'deploy.yml', '{release}', 'pr.yml'),
+		('BRAVO', 0, 'github_workflow', 'acme/tools', 'deploy.yml', '{ship}', 'pr.yml');
+	insert into delivery_runs (repo, run_id, kind, head_sha, head_commit_at, started_at, url) values
+		('Acme/Widgets', 100, 'deploy', 'h100', '2026-11-02T09:00:00Z', '2026-11-02T10:00:00Z', 'https://github.com/Acme/Widgets/actions/runs/100');
+	insert into delivery_run_jobs (repo, run_id, name) values ('Acme/Widgets', 100, 'release');
+	insert into eval_days_rules (repo, project_key, production_job_names, kept_since, updated_at) values
+		('Acme/Widgets', 'ALPHA', '{release}', '2026-11-02', '2026-11-20T00:00:00Z'),
+		('acme/tools', 'BRAVO', '{ship}', '2026-10-01', '2026-11-20T00:00:00Z');
+	insert into eval_days (project_key, eval_id, deploy_repo, series, repo, day, listed, n, sum, built_by)
+		select key, key || '/' || slug, deploy, series, repo, day::date, true, n, n, 'test'
+		from (values
+			(':Acme/Widgets||>~', 'deploy-frequency', 'Acme/Widgets', 'deploys', '', '2026-11-03', 2),
+			(':Acme/Widgets||>~', 'deploy-frequency', 'Acme/Widgets', 'deploys', '', '2026-11-04', 3),
+			(':acme/widgets||>~', 'deploy-frequency', 'acme/widgets', 'deploys', '', '2026-11-04', 4),
+			('ALPHA', 'deploy-frequency', 'Acme/Widgets', 'deploys', '', '2026-11-03', 1),
+			('ALPHA', 'deploy-frequency', 'acme/widgets', 'deploys', '', '2026-11-03', 6),
+			('ALPHA', 'deploy-frequency', 'Acme/Widgets', 'deploys', 'acme/site', '2026-11-03', 1),
+			('ALPHA', 'pr-open-to-merge', '', 'opened', '', '2026-11-03', 1),
+			('BRAVO', 'deploy-frequency', 'acme/tools', 'deploys', '', '2026-11-03', 7)
+		) as given(key, slug, deploy, series, repo, day, n);
+	insert into eval_day_members (project_key, family, deploy_repo, row_key, day) values
+		(':Acme/Widgets||>~', 'delivery', 'Acme/Widgets', 'delivery_run:Acme/Widgets#100', '2026-11-03'),
+		('ALPHA', 'delivery', 'Acme/Widgets', 'pull_request:acme/site#7', '2026-11-03'),
+		('ALPHA', 'delivery', 'acme/widgets', 'pull_request:acme/site#7', '2026-11-03'),
+		('BRAVO', 'delivery', 'acme/tools', 'pull_request:acme/tools#8', '2026-11-03');
+	insert into eval_range_figures (project_key, repo, days, end_day, eval_id, deploy_repo, fold_key, figures, oldest_updated_at, built_by) values
+		('ALPHA', '', 7, '2026-11-04', 'ALPHA/deploy-frequency', 'Acme/Widgets', 1, '\x01', '2026-11-20T00:00:00Z', 'test'),
+		('ALPHA', '', 7, '2026-11-04', 'ALPHA/deploy-frequency', '*', 1, '\x02', '2026-11-20T00:00:00Z', 'test'),
+		('ALPHA', 'acme/site', 7, '2026-11-04', 'ALPHA/deploy-frequency', 'Acme/Widgets', 1, '\x03', '2026-11-20T00:00:00Z', 'test'),
+		('ALPHA', 'acme/site', 7, '2026-11-04', 'ALPHA/deploy-frequency', '*', 1, '\x04', '2026-11-20T00:00:00Z', 'test'),
+		('BRAVO', '', 7, '2026-11-04', 'BRAVO/deploy-frequency', 'acme/tools', 1, '\x05', '2026-11-20T00:00:00Z', 'test'),
+		('BRAVO', '', 7, '2026-11-04', 'BRAVO/deploy-frequency', '*', 1, '\x06', '2026-11-20T00:00:00Z', 'test');
+	insert into eval_day_figures (project_key, repo, day, eval_id, deploy_repo, fold_key, figures, rows_stamp, built_by) values
+		('ALPHA', '', '2026-11-03', 'ALPHA/deploy-frequency', 'acme/widgets', 1, '\x07', 1, 'test'),
+		('ALPHA', 'acme/web', '2026-11-03', 'ALPHA/deploy-frequency', 'Acme/Widgets', 1, '\x08', 1, 'test'),
+		('BRAVO', '', '2026-11-03', 'BRAVO/deploy-frequency', '*', 1, '\x09', 1, 'test');
+	insert into eval_figures_built (project_key, through, built_by, union_through) values
+		('ALPHA', '2026-11-04', 'test', '2026-11-04'),
+		('BRAVO', '2026-11-04', 'test', '2026-11-04');
+	insert into eval_figure_cuts_stale (project_key, repo, generation, ready_through, next_day, evals) values
+		('ALPHA', '', 1, '2026-11-03', '2026-11-01', '{ALPHA/pr-open-to-merge}'),
+		('BRAVO', 'acme/tools', 2, '2026-11-03', '2026-11-01', '{BRAVO/a}');
+`
+
+// renamedSourceHeldSeed adds to renamedSourceSeed what the new name holds already, spelled in mixed
+// case: a deploy run of Acme/Gizmos with its job, BRAVO's rule of it, with a start and a field of
+// its own, a day row of its source key and one of ALPHA's with it as their deploy repository, whose
+// keys the old name's 2026-11-03 rows of the source key and of ALPHA rename to, the members of its
+// source key's run and of ALPHA's pull request, whose key ALPHA's member of the old name renames
+// to, and a stored figure of BRAVO's that folds it, in acme/web's cut. The old name's 2026-11-04
+// row and run member of its source key, ALPHA's row of acme/site and the old name's run rename to
+// keys no row holds.
+const renamedSourceHeldSeed = `
+	insert into delivery_runs (repo, run_id, kind, head_sha, head_commit_at, started_at, url) values
+		('Acme/Gizmos', 200, 'deploy', 'h200', '2026-10-20T09:00:00Z', '2026-10-20T10:00:00Z', 'https://github.com/Acme/Gizmos/actions/runs/200');
+	insert into delivery_run_jobs (repo, run_id, name) values ('Acme/Gizmos', 200, 'ship');
+	insert into eval_days_rules (repo, project_key, production_job_names, kept_since, updated_at) values
+		('Acme/Gizmos', 'BRAVO', '{ship}', '2026-10-20', '2026-11-21T00:00:00Z');
+	insert into eval_days (project_key, eval_id, deploy_repo, series, repo, day, listed, n, sum, built_by)
+		select key, key || '/deploy-frequency', 'Acme/Gizmos', 'deploys', '', '2026-11-03', true, n, n, 'test'
+		from (values (':Acme/Gizmos||>~', 9), ('ALPHA', 5)) as given(key, n);
+	insert into eval_day_members (project_key, family, deploy_repo, row_key, day) values
+		(':Acme/Gizmos||>~', 'delivery', 'Acme/Gizmos', 'delivery_run:Acme/Gizmos#200', '2026-10-20'),
+		('ALPHA', 'delivery', 'Acme/Gizmos', 'pull_request:acme/site#7', '2026-11-01');
+	insert into eval_day_figures (project_key, repo, day, eval_id, deploy_repo, fold_key, figures, rows_stamp, built_by) values
+		('BRAVO', 'acme/web', '2026-11-03', 'BRAVO/deploy-frequency', 'Acme/Gizmos', 1, '\x0a', 1, 'test');
+`
+
+// The reads of renamedSourceSeed's rows, rules and marks that TestARenamedSourceRepositoryKeepsItsRowsAndItsRule
+// compares.
+const (
+	// renamedSourceSelection is the deploy repositories a read of the evals keyed by the deploy
+	// repository selects, each with the project whose source reads it: evals.DeployReposIn's
+	// statement, each rule's repository as it spells it, of the rules that name a project.
+	renamedSourceSelection = `select string_agg(repo || ' for ' || project_key, ', ' order by repo collate "C")
+		from eval_days_rules where project_key is not null`
+	// renamedSourceRecord is ALPHA's source, the rule recorded for its repository (compared without
+	// case, as a rule is held by, evals.ruleKey), with its project and its start, and the first day
+	// of the runs stored under the repository as the rule spells it: the record a refresher's pass
+	// compares with the source and the runs (evals' syncSettings, syncKept, keptRepos).
+	renamedSourceRecord = `select string_agg(s.project_key || ' reads ' || s.repo || ', recorded ' ||
+			coalesce(r.repo || ' for ' || coalesce(r.project_key, 'none') || ' from ' || r.kept_since, 'nowhere') || ', its runs from ' ||
+			coalesce((select min(k.started_at at time zone 'UTC')::date::text from delivery_runs k where k.repo = r.repo), 'none'), ' | ')
+		from project_deploy_sources s left join eval_days_rules r on lower(r.repo) = lower(s.repo) where s.project_key = 'ALPHA'`
+	// renamedSourceReaders is the reader of each source key, as every read takes it
+	// (eval_project_owners), with whether it reads the key through the repository.
+	renamedSourceReaders = `select coalesce(string_agg(owner || ' ' || project_key || ' ' || via, ', ' order by owner collate "C", project_key collate "C"), 'none')
+		from eval_project_owners where owner like ':%||>~'`
+	renamedSourceRows = `select string_agg(project_key || ' ' || substr(eval_id, length(project_key) + 2) || ' ' || coalesce(nullif(deploy_repo, ''), '-') || ' ' ||
+			coalesce(nullif(repo, ''), '-') || ' ' || day || '=' || n, ', '
+			order by project_key collate "C", eval_id collate "C", deploy_repo collate "C", repo collate "C", day)
+		from eval_days`
+	renamedSourceMembers = `select string_agg(project_key || ' ' || deploy_repo || ' ' || row_key || ' ' || day, ', '
+			order by project_key collate "C", deploy_repo collate "C", row_key collate "C")
+		from eval_day_members`
+	renamedSourceOwners = `select string_agg(owner || ' ' || repo, ', ' order by owner collate "C") from eval_day_owners`
+	renamedSourceRules  = `select string_agg(repo || ' ' || coalesce(project_key, 'none') || ' ' || production_job_names::text || ' ' ||
+			coalesce(kept_since::text, 'none') || ' ' || to_char(updated_at at time zone 'UTC', 'YYYY-MM-DD'), ' | ' order by repo collate "C")
+		from eval_days_rules`
+	renamedSourceMarks = `select string_agg(project_key || ' ' || coalesce(nullif(repo, ''), '-') || ' ' || generation || ' ' ||
+			coalesce(ready_through::text, '-') || ' ' || coalesce(next_day::text, '-') || ' ' || coalesce(evals::text, 'every'), ' | '
+			order by project_key, repo collate "C")
+		from eval_figure_cuts_stale`
+	// renamedSourceRuns is each stored run with the repository and name of each of its jobs.
+	renamedSourceRuns = `select string_agg(r.repo || '#' || r.run_id || ' ' || coalesce((select string_agg(j.repo || ' ' || j.name, ',' order by j.name)
+			from delivery_run_jobs j where j.repo = r.repo and j.run_id = r.run_id), '-'), ', ' order by r.run_id)
+		from delivery_runs r`
+	// renamedSourceUntouched is every row of the eval tables that names neither name in any case,
+	// each with the transaction that wrote it; the stored figures and how far each project's are
+	// built among them, and the mark of BRAVO's acme/tools.
+	renamedSourceUntouched = `select string_agg(line, E'\n' order by line collate "C") from (
+			select 'day ' || d.xmin || ' ' || to_jsonb(d)::text as line from eval_days d
+				where lower(d.deploy_repo) not in ('acme/widgets', 'acme/gizmos')
+				  and lower(split_part(d.project_key, '|', 1)) not in (':acme/widgets', ':acme/gizmos')
+			union all select 'member ' || m.xmin || ' ' || to_jsonb(m)::text from eval_day_members m
+				where lower(m.deploy_repo) not in ('acme/widgets', 'acme/gizmos')
+				  and lower(split_part(m.project_key, '|', 1)) not in (':acme/widgets', ':acme/gizmos')
+			union all select 'rule ' || r.xmin || ' ' || to_jsonb(r)::text from eval_days_rules r
+				where lower(r.repo) not in ('acme/widgets', 'acme/gizmos')
+			union all select 'range ' || f.xmin || ' ' || to_jsonb(f)::text from eval_range_figures f
+			union all select 'day figures ' || f.xmin || ' ' || to_jsonb(f)::text from eval_day_figures f
+			union all select 'built ' || b.xmin || ' ' || to_jsonb(b)::text from eval_figures_built b
+			union all select 'mark ' || s.xmin || ' ' || to_jsonb(s)::text from eval_figure_cuts_stale s where s.repo = 'acme/tools'
+		) lines`
+	// renamedSourceWritten is every row of the tables the pass wrote of renamedSourceSeed, each with
+	// the transaction that wrote it.
+	renamedSourceWritten = `select string_agg(line, E'\n' order by line collate "C") from (
+			select 'day ' || t.xmin || ' ' || to_jsonb(t)::text as line from eval_days t
+			union all select 'member ' || t.xmin || ' ' || to_jsonb(t)::text from eval_day_members t
+			union all select 'owner ' || t.xmin || ' ' || to_jsonb(t)::text from eval_day_owners t
+			union all select 'rule ' || t.xmin || ' ' || to_jsonb(t)::text from eval_days_rules t
+			union all select 'mark ' || t.xmin || ' ' || to_jsonb(t)::text from eval_figure_cuts_stale t
+			union all select 'source ' || t.xmin || ' ' || to_jsonb(t)::text from project_deploy_sources t
+			union all select 'run ' || t.xmin || ' ' || to_jsonb(t)::text from delivery_runs t
+			union all select 'job ' || t.xmin || ' ' || to_jsonb(t)::text from delivery_run_jobs t
+		) lines`
+)
+
+// renamedSourceReads is, of project, the rows a read of its evals keyed by the deploy repository
+// folds: those of each owner key the project reads (eval_project_owners: its own, and a source key
+// through the rule of its repository) whose deploy repository is, exactly as spelled, one the
+// selection holds (renamedSourceSelection, evals.DeployReposIn; a read's deployRepoCase compares
+// the deploy repository so), each with its key, its slug, its deploy repository, its cut and its
+// day.
+func renamedSourceReads(project string) string {
+	return `select coalesce(string_agg(o.owner || ' ' || substr(d.eval_id, length(d.project_key) + 2) || ' ' || d.deploy_repo || ' ' ||
+			coalesce(nullif(d.repo, ''), '-') || ' ' || d.day || '=' || d.n, ', '
+			order by d.day, o.owner collate "C", d.repo collate "C", d.deploy_repo collate "C"), 'none')
+		from eval_project_owners o join eval_days d on d.project_key = o.owner
+		where o.project_key = ` + QuoteLiteral(project) + ` and d.deploy_repo in (select repo from eval_days_rules where project_key is not null)`
+}
+
+// renamedSourceChanges is each run change logged after the change seq, as the refresher reads the
+// change log (delivery_changes, kind run): the run's repository and id, and whether the change is
+// the run's arrival (in) or its leaving (out).
+func renamedSourceChanges(seq string) string {
+	return `select coalesce(string_agg(distinct (repo || '#' || ref || case when t_old is null then ' in' when t_new is null then ' out' else ' moved' end) collate "C", ', '
+			order by (repo || '#' || ref || case when t_old is null then ' in' when t_new is null then ' out' else ' moved' end) collate "C"), 'none')
+		from delivery_changes where kind = 'run' and seq > ` + seq
+}
+
+// A rename of a deploy source's repository moves the repository's rule and its rows with it, in the
+// line of the eval tables, rather than leaving them for the refresher to build again: the rule
+// (eval_days_rules) takes the new name with its project, its start and every field it records;
+// the rows and members of the repository as their deploy repository, of every owner key, take it
+// beside the source key, so the reader of the renamed source key is the project the renamed rule
+// names and reads the rows it read before under the new name, and the source, the rule and the
+// runs name one repository from the rule's start on: the record a refresher's pass finds the
+// source's rule in, so it builds no row again. Rows of the old name in its two spellings that
+// rename to one key keep the one a read selected, whose deploy repository the rule spells.
+//
+// Where the new name holds a rule already, spelled in mixed case, the pass first moves the new
+// name's spellings of case to the new name in lower case, in the rule's repository (its fields and
+// times kept), the rows' deploy repository, the source key and the runs and their jobs, and then
+// the old name's, so the old name's rule goes, the new name's stays with its project, its start and
+// its fields, and one repository holds every rule, row, member, run and job of both: the one a
+// read selects by its exact spelling (renamedSourceSelection). A row whose key the new name holds
+// already goes and the new name's stays, counted once; the rows and the member of keys it holds
+// none of are read beside the new name's, ALPHA's row of acme/site by ALPHA and the source key's
+// 2026-11-04 row by BRAVO, whose source key it is now. The change log names each moved run's
+// arrival under the new name and its leaving under the name it had, the old name's under the new
+// name as the change log's own line renames it, so the refresher's next page rewrites the days of
+// both runs (evals' addChange, deliveryItemDays).
+//
+// The pass marks stale, for every eval, each cut whose stored figures fold the old name as their
+// deploy repository, in either spelling, or the new name in another spelling, in the project's
+// union (`*`) or alone, and, where the new name's rule names another project, the cuts of that
+// project's moved source key rows; it writes no stored figure, and no row, mark or rule of
+// acme/tools, nor how far a project's figures are built. A second pass writes nothing. Red where
+// the pass leaves the rule and the deploy repository on the old name, and red where it leaves the
+// new name's rule, rows or runs in mixed case beside the old name's moved under the new name in
+// lower case: no read selects the rows it moved, or the refresher's first pass finds the source's
+// runs under two repositories.
+func TestARenamedSourceRepositoryKeepsItsRowsAndItsRule(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	const oldRecord = "ALPHA reads acme/widgets, recorded Acme/Widgets for ALPHA from 2026-11-02, its runs from 2026-11-02"
+	for _, one := range []struct {
+		name, seed, changes string
+		deleted             int64
+		before, after       map[string]string
+	}{{
+		name: "the old name alone",
+		// Of each pair in two spellings, the row, the member and the source key's owner row spelled
+		// as the rule spells the repository.
+		deleted: 4,
+		// The old run's copy under the new name, the rewrite of its URL, and its leaving under the
+		// old name, which the change log's own line then renames.
+		changes: "acme/gizmos#100 in, acme/gizmos#100 moved, acme/gizmos#100 out",
+		before: map[string]string{
+			renamedSourceSelection: "Acme/Widgets for ALPHA, acme/tools for BRAVO",
+			renamedSourceRecord:    oldRecord,
+			renamedSourceReads("ALPHA"): ":Acme/Widgets||>~ deploy-frequency Acme/Widgets - 2026-11-03=2, ALPHA deploy-frequency Acme/Widgets - 2026-11-03=1, " +
+				"ALPHA deploy-frequency Acme/Widgets acme/site 2026-11-03=1, :Acme/Widgets||>~ deploy-frequency Acme/Widgets - 2026-11-04=3",
+		},
+		after: map[string]string{
+			renamedSourceSelection: "acme/gizmos for ALPHA, acme/tools for BRAVO",
+			renamedSourceRecord:    "ALPHA reads acme/gizmos, recorded acme/gizmos for ALPHA from 2026-11-02, its runs from 2026-11-02",
+			renamedSourceReaders:   ":acme/gizmos||>~ ALPHA true",
+			renamedSourceReads("ALPHA"): ":acme/gizmos||>~ deploy-frequency acme/gizmos - 2026-11-03=2, ALPHA deploy-frequency acme/gizmos - 2026-11-03=1, " +
+				"ALPHA deploy-frequency acme/gizmos acme/site 2026-11-03=1, :acme/gizmos||>~ deploy-frequency acme/gizmos - 2026-11-04=3",
+			renamedSourceReads("BRAVO"): "BRAVO deploy-frequency acme/tools - 2026-11-03=7",
+			renamedSourceRows: ":acme/gizmos||>~ deploy-frequency acme/gizmos - 2026-11-03=2, :acme/gizmos||>~ deploy-frequency acme/gizmos - 2026-11-04=3, " +
+				"ALPHA deploy-frequency acme/gizmos - 2026-11-03=1, ALPHA deploy-frequency acme/gizmos acme/site 2026-11-03=1, " +
+				"ALPHA pr-open-to-merge - - 2026-11-03=1, BRAVO deploy-frequency acme/tools - 2026-11-03=7",
+			renamedSourceMembers: ":acme/gizmos||>~ acme/gizmos delivery_run:Acme/Widgets#100 2026-11-03, " +
+				"ALPHA acme/gizmos pull_request:acme/site#7 2026-11-03, BRAVO acme/tools pull_request:acme/tools#8 2026-11-03",
+			renamedSourceOwners: ":acme/gizmos||>~ acme/gizmos",
+			renamedSourceRules:  "acme/gizmos ALPHA {release} 2026-11-02 2026-11-20 | acme/tools BRAVO {ship} 2026-10-01 2026-11-20",
+			renamedSourceRuns:   "acme/gizmos#100 acme/gizmos release",
+			renamedSourceMarks: "ALPHA - 2 - - every | ALPHA acme/site 1 - - every | ALPHA acme/web 1 - - every | " +
+				"BRAVO acme/tools 2 2026-11-03 2026-11-01 {BRAVO/a}",
+		},
+	}, {
+		name: "the new name held already in mixed case",
+		seed: renamedSourceHeldSeed,
+		// The old name's rule, whose twin the new name holds; the source key's two owner rows, which
+		// rename to the new name's; the source key's row and ALPHA's two rows and two members whose
+		// keys the new name's rows hold; and of the source key's 2026-11-04 rows in two spellings the
+		// one a read did not select.
+		deleted: 9,
+		// Beside the old run's, the new name's run in mixed case leaves under its spelling and arrives
+		// under the new name.
+		changes: "Acme/Gizmos#200 out, acme/gizmos#100 in, acme/gizmos#100 moved, acme/gizmos#100 out, acme/gizmos#200 in",
+		before: map[string]string{
+			renamedSourceSelection: "Acme/Gizmos for BRAVO, Acme/Widgets for ALPHA, acme/tools for BRAVO",
+			renamedSourceRecord:    oldRecord,
+			renamedSourceReads("ALPHA"): ":Acme/Widgets||>~ deploy-frequency Acme/Widgets - 2026-11-03=2, ALPHA deploy-frequency Acme/Gizmos - 2026-11-03=5, " +
+				"ALPHA deploy-frequency Acme/Widgets - 2026-11-03=1, ALPHA deploy-frequency Acme/Widgets acme/site 2026-11-03=1, " +
+				":Acme/Widgets||>~ deploy-frequency Acme/Widgets - 2026-11-04=3",
+			renamedSourceReads("BRAVO"): ":Acme/Gizmos||>~ deploy-frequency Acme/Gizmos - 2026-11-03=9, BRAVO deploy-frequency acme/tools - 2026-11-03=7",
+		},
+		after: map[string]string{
+			renamedSourceSelection:      "acme/gizmos for BRAVO, acme/tools for BRAVO",
+			renamedSourceRecord:         "ALPHA reads acme/gizmos, recorded acme/gizmos for BRAVO from 2026-10-20, its runs from 2026-10-20",
+			renamedSourceReaders:        ":acme/gizmos||>~ BRAVO true",
+			renamedSourceReads("ALPHA"): "ALPHA deploy-frequency acme/gizmos - 2026-11-03=5, ALPHA deploy-frequency acme/gizmos acme/site 2026-11-03=1",
+			renamedSourceReads("BRAVO"): ":acme/gizmos||>~ deploy-frequency acme/gizmos - 2026-11-03=9, BRAVO deploy-frequency acme/tools - 2026-11-03=7, " +
+				":acme/gizmos||>~ deploy-frequency acme/gizmos - 2026-11-04=3",
+			renamedSourceRows: ":acme/gizmos||>~ deploy-frequency acme/gizmos - 2026-11-03=9, :acme/gizmos||>~ deploy-frequency acme/gizmos - 2026-11-04=3, " +
+				"ALPHA deploy-frequency acme/gizmos - 2026-11-03=5, ALPHA deploy-frequency acme/gizmos acme/site 2026-11-03=1, " +
+				"ALPHA pr-open-to-merge - - 2026-11-03=1, BRAVO deploy-frequency acme/tools - 2026-11-03=7",
+			renamedSourceMembers: ":acme/gizmos||>~ acme/gizmos delivery_run:Acme/Gizmos#200 2026-10-20, :acme/gizmos||>~ acme/gizmos delivery_run:Acme/Widgets#100 2026-11-03, " +
+				"ALPHA acme/gizmos pull_request:acme/site#7 2026-11-01, BRAVO acme/tools pull_request:acme/tools#8 2026-11-03",
+			renamedSourceOwners: ":acme/gizmos||>~ acme/gizmos",
+			renamedSourceRules:  "acme/gizmos BRAVO {ship} 2026-10-20 2026-11-21 | acme/tools BRAVO {ship} 2026-10-01 2026-11-20",
+			renamedSourceRuns:   "acme/gizmos#100 acme/gizmos release, acme/gizmos#200 acme/gizmos ship",
+			renamedSourceMarks: "ALPHA - 2 - - every | ALPHA acme/site 1 - - every | ALPHA acme/web 1 - - every | BRAVO - 1 - - every | " +
+				"BRAVO acme/tools 2 2026-11-03 2026-11-01 {BRAVO/a} | BRAVO acme/web 1 - - every",
+		},
+	}} {
+		t.Run(one.name, func(t *testing.T) {
+			store, pairs := openRenamedRepositoriesStore(t, renamedSourceSeed+one.seed)
+			for query, want := range one.before {
+				if got := readText(t, store, query); got != want {
+					t.Fatalf("before the pass %s\n= %s\nwant %s", query, got, want)
+				}
+			}
+			untouched := readText(t, store, renamedSourceUntouched)
+			seq := readText(t, store, `select coalesce(max(seq), 0)::text from delivery_changes`)
+
+			pass := RewriteRenamedRepositories(ctx, store.Pool, pairs)
+
+			if pass.Deleted != one.deleted || pass.Failures != 0 || pass.Left != noneLeft || pass.Err() != nil {
+				t.Fatalf("the pass = %+v (%v), want %d rows deleted, no failure and nothing left", pass, pass.Err(), one.deleted)
+			}
+			if got := readText(t, store, renamedSourceChanges(seq)); got != one.changes {
+				t.Errorf("the pass logged the run changes %s, want %s", got, one.changes)
+			}
+			for query, want := range one.after {
+				if got := readText(t, store, query); got != want {
+					t.Errorf("%s\n= %s\nwant %s", query, got, want)
+				}
+			}
+			if got := readText(t, store, renamedSourceUntouched); got != untouched {
+				t.Errorf("the rows naming neither name, the stored figures or how far they are built changed:\nbefore %s\nafter  %s", untouched, got)
+			}
+			written := readText(t, store, renamedSourceWritten)
+			if again := RewriteRenamedRepositories(ctx, store.Pool, pairs); again != (RepoRenamePass{Pairs: 1, Left: noneLeft}) {
+				t.Errorf("a second pass = %+v, want one pair and nothing written, deleted, failed or left", again)
+			}
+			if got := readText(t, store, renamedSourceWritten); got != written {
+				t.Errorf("a second pass wrote rows:\nbefore %s\nafter  %s", written, got)
+			}
+		})
+	}
+}
+
+// renamedRuleSeed holds the rename pair acme/widgets to acme/gizmos, the rule ALPHA's rows of the
+// old name stand built under (eval_days_rules), and one day row of ALPHA's with the old name as its
+// deploy repository.
+const renamedRuleSeed = `
+	insert into projects (key, name, default_assignee) values ('ALPHA', 'Alpha', 'alice');
+	insert into repo_projects (repo, project, created_by, renamed_to) values
+		('acme/widgets', 'ALPHA', '{"kind":"user","id":"alice"}', 'acme/gizmos');
+	insert into eval_days_rules (repo, project_key, production_job_names, kept_since) values ('acme/widgets', 'ALPHA', '{release}', '2026-11-02');
+	insert into eval_days (project_key, eval_id, deploy_repo, series, repo, day, listed, n, sum, built_by) values
+		('ALPHA', 'ALPHA/deploy-frequency', 'acme/widgets', 'deploys', '', '2026-11-03', true, 1, 1, 'test');
+`
+
+// The line of the eval tables renames the rules (eval_days_rules) beside the day rows, and a
+// refresher's page commit (evals.recordRules in commitPage) and a settings rewrite's publication
+// (evals.recordRule in rewriteSettings) write their rule rows before their first day row. So the
+// line takes the rules' own lock before eval_days' (evals/defaults.go's lock order). Over
+// renamedRuleSeed, a transaction records the old name's rule, as such a commit does, and the pass
+// runs: its line waits for the rules' lock holding no lock of eval_days, the commit then writes a
+// day row without waiting for the line and commits, and the line, let on, renames the rule and the
+// row the commit wrote. The pass fails nowhere and leaves nothing on the old name. Red where the
+// line locks eval_days alone first: it then waits for the rule's row holding eval_days' lock, and
+// the commit's write of a day row waits for that lock, a cycle Postgres breaks by failing one of the
+// two with `deadlock detected` (40P01).
+func TestTheRenamePassLocksTheRulesBeforeTheDayRows(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	store, pairs := openRenamedRepositoriesStore(t, renamedRuleSeed)
+	commit, err := store.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the commit that records the rule: %v", err)
+	}
+	t.Cleanup(func() { _ = commit.Rollback(context.Background()) })
+	if _, err := commit.Exec(ctx, `update eval_days_rules set updated_at = now() where repo = 'acme/widgets'`); err != nil {
+		t.Fatalf("record the rule: %v", err)
+	}
+	passed := make(chan RepoRenamePass, 1)
+	go func() { passed <- RewriteRenamedRepositories(ctx, store.Pool, pairs) }()
+	// queued is the lock the line waits for behind the commit, by pg_locks, and the backend it runs on.
+	type queued struct {
+		pid  uint32
+		lock string
+	}
+	wait := testwait.Until(t, "the line to wait behind the commit", func() (queued, bool) {
+		select {
+		case pass := <-passed:
+			t.Fatalf("the pass answered %+v while the commit held the rule, want it to wait for the commit", pass)
+		default:
+		}
+		var q queued
+		if err := commit.QueryRow(ctx, `
+			select coalesce(max(l.pid), 0), coalesce(max(l.locktype || ' ' || coalesce(l.relation::regclass::text, '-') || ' ' || l.mode), '')
+			from pg_locks l where not l.granted and pg_backend_pid() = any(pg_blocking_pids(l.pid))
+		`).Scan(&q.pid, &q.lock); err != nil {
+			t.Fatalf("read the waits behind the commit: %v", err)
+		}
+		return q, q.pid != 0
+	})
+	var holdsDays bool
+	if err := commit.QueryRow(ctx, `select exists (select 1 from pg_locks where pid = $1 and granted and relation = 'eval_days'::regclass)`,
+		wait.pid).Scan(&holdsDays); err != nil {
+		t.Fatalf("read the line's locks: %v", err)
+	}
+	if wait.lock != "relation eval_days_rules ShareRowExclusiveLock" || holdsDays {
+		t.Errorf("the line waits behind the commit for %q, holding eval_days' lock %t; want it to wait for the rules' lock, holding none of eval_days",
+			wait.lock, holdsDays)
+	}
+	written := make(chan error, 1)
+	go func() {
+		_, err := commit.Exec(ctx, `update eval_days set n = n + 1 where project_key = 'ALPHA'`)
+		if err == nil {
+			err = commit.Commit(ctx)
+		}
+		written <- err
+	}()
+	requireNoDeadlock(t, "the commit's write of a day row", testwait.Receive(t, "the commit's write of a day row", written))
+	if pass := testwait.Receive(t, "the rename pass", passed); pass.Failures != 0 || pass.Left != noneLeft {
+		t.Errorf("the pass = %+v (%v), want no failure and nothing left", pass, pass.Err())
+	}
+	for query, want := range map[string]string{
+		`select string_agg(repo || ' ' || project_key, ', ') from eval_days_rules`: "acme/gizmos ALPHA",
+		`select string_agg(deploy_repo || ' ' || n, ', ') from eval_days`:          "acme/gizmos 2",
+	} {
+		if got := readText(t, store, query); got != want {
+			t.Errorf("%s\n= %s\nwant %s", query, got, want)
+		}
 	}
 }

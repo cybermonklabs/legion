@@ -7,15 +7,22 @@ package api
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/delivery"
+	"github.com/sjawhar/envoy/internal/dispatch/evals"
 	"github.com/sjawhar/envoy/internal/dispatch/legion"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/prodevents"
@@ -77,9 +84,15 @@ func readProductionEvent(t *testing.T, database *store.Store, project, id string
 // plain names; a repeat of its source_ref answers the first row, 200, and writes nothing; a
 // failure names its deploy by OpenTelemetry's run id (the GitHub adapter's row of that run), by a
 // commit and by the row's id, each the signal api; and the list read answers the envelope with
-// its window, kind, state, deploy_id and page applied.
+// its window, kind, state, deploy_id and page applied. The other systems that write do so too: a
+// pod's service-account token posts a deploy, and so does a broker token an account entry naming
+// no person and no project minted, which writes as its account, as the sign-in rule of
+// writeNeedsASignedInPerson lets it (a machine's token that names a service alone does not,
+// which TestEveryOtherCallerOfTheWritesIsRefusedAndWritesNothing holds).
 func TestASystemPostsDeploysAndFailuresAndReadsThemBack(t *testing.T) {
-	handler, database := newTestHandlerWithStore(t)
+	issuer := newServiceTokenIssuer(t)
+	rig := newBrokerTokenRigOn(t, testServerOptions{oidc: issuer.verifier(t)})
+	handler, database := rig.handler, rig.database
 	createTestProject(t, handler, "PRD")
 	now := time.Now().UTC().Truncate(time.Second)
 	adapter := writeProductionDeploy(t, database, "PRD", 4242, now.Add(-3*time.Hour), "1111111111111111111111111111111111111111")
@@ -226,20 +239,66 @@ func TestASystemPostsDeploysAndFailuresAndReadsThemBack(t *testing.T) {
 	if anonymous := dispatchRequest(t, handler, http.MethodGet, productionEventsPath("PRD"), nil, ""); anonymous.Code != http.StatusUnauthorized {
 		t.Fatalf("an anonymous read: status=%d body=%s, want 401", anonymous.Code, anonymous.Body.String())
 	}
+
+	// A pod's service-account token holds no scope and proves no session, so it names the session
+	// that writes, and its verified subject rides on the row as the service. It writes a deploy
+	// as a system does, and a repeat of its source_ref answers the first row.
+	podToken := issuer.mint(t, serviceTokenAudience)
+	podDeploy := map[string]any{
+		"kind": "deploy", "source_ref": "k8s:deploy-1", "finished_at": now.Add(-30 * time.Minute), "deployment.status": "succeeded",
+		"actor": map[string]any{"kind": "session", "id": "ses-pod"},
+	}
+	podPosted := agentRequest(t, handler, http.MethodPost, productionEventsPath("PRD"), podDeploy, podToken)
+	if podPosted.Code != http.StatusCreated {
+		t.Fatalf("a service-account token's deploy: status=%d body=%s, want 201", podPosted.Code, podPosted.Body.String())
+	}
+	pod := decodeBody[prodevents.Event](t, podPosted)
+	if pod.Kind != prodevents.KindDeploy || pod.Source != prodevents.SourceAPI || pod.ProjectKey != "PRD" || pod.State != prodevents.StateCounted ||
+		pod.Actor.Kind != "session" || pod.Actor.ID != "ses-pod" || pod.Actor.Service == nil || *pod.Actor.Service != serviceTokenSubject {
+		t.Fatalf("the pod's deploy is %s from %s of %s, state %s, by %+v; want an api deploy of PRD, counted, by the session ses-pod under the service %s",
+			pod.Kind, pod.Source, pod.ProjectKey, pod.State, pod.Actor, serviceTokenSubject)
+	}
+	podAgain := agentRequest(t, handler, http.MethodPost, productionEventsPath("PRD"), podDeploy, podToken)
+	if podAgain.Code != http.StatusOK || decodeBody[prodevents.Event](t, podAgain).ID != pod.ID {
+		t.Fatalf("a repeat of the pod's deploy: status=%d body=%s, want 200 and the first row", podAgain.Code, podAgain.Body.String())
+	}
+
+	// A broker token an account entry naming no person and no project minted writes as its
+	// account, recorded as the session the token proved (TestAPersonlessTokenWritesAsItsAccount).
+	caller := newBrokerCaller(t)
+	const accountToken = "a-token-of-an-account-entry-naming-no-person"
+	rig.broker.Says(accountToken, personlessAccountToken(caller.jkt))
+	accountPosted := rig.serve(caller.presenting(t, http.MethodPost, productionEventsPath("PRD"), accountToken, map[string]any{
+		"kind": "deploy", "source_ref": "account:deploy-1", "finished_at": now.Add(-20 * time.Minute),
+	}))
+	if accountPosted.Code != http.StatusCreated {
+		t.Fatalf("an account entry's token's deploy: status=%d body=%s, want 201", accountPosted.Code, accountPosted.Body.String())
+	}
+	account := decodeBody[prodevents.Event](t, accountPosted)
+	if account.Kind != prodevents.KindDeploy || account.Source != prodevents.SourceAPI || account.Actor.Kind != "session" ||
+		account.Actor.ID != brokerTestSession || !account.Actor.Proven || account.Actor.Service == nil || *account.Actor.Service != brokerTestAccount {
+		t.Fatalf("the account's deploy is %s from %s by %+v; want an api deploy by the session %s the token proved, under the service %s",
+			account.Kind, account.Source, account.Actor, brokerTestSession, brokerTestAccount)
+	}
+	if rows := countRows(t, database, `select count(*) from production_events`); rows != 7 {
+		t.Fatalf("the record holds %d rows, want the five before, the pod's deploy and the account's", rows)
+	}
 }
 
 // TestAPersonFlagsAFailureAndPostsNoDeploy: a person's credential posts a failure, the drill-down's
-// flag, as the signal person with the person as actor and the server's source_ref, so a second flag
-// of the deploy, its id spelled in capitals included, answers the first row and writes nothing; a
-// source_ref other than the server's is refused; and a deploy from a person's credential is
-// refused.
+// flag, as the signal person with the person as actor and the server's source_ref; a flag naming
+// two pull requests and carrying a note keeps both and the note as sent (R7), in its answer and
+// in the stored row; a second flag of the deploy, its id spelled in capitals included, answers
+// the first row and writes nothing; a source_ref other than the server's is refused; and a deploy
+// from a person's credential is refused.
 func TestAPersonFlagsAFailureAndPostsNoDeploy(t *testing.T) {
 	handler, database := newTestHandlerWithStore(t)
 	createTestProject(t, handler, "PRD")
 	deploy := writeProductionDeploy(t, database, "PRD", 7, time.Now().UTC().Add(-time.Hour))
 
 	const note = "The deploy broke the sign-in page; reverted by hand."
-	flag := map[string]any{"kind": "failure", "deploy_id": deploy.ID, "note": note}
+	pulls := []string{"acme/app#7", "acme/app#9"}
+	flag := map[string]any{"kind": "failure", "deploy_id": deploy.ID, "note": note, "pull_requests": pulls}
 	flagged := dispatchRequest(t, handler, http.MethodPost, productionEventsPath("PRD"), flag, "alice")
 	if flagged.Code != http.StatusCreated {
 		t.Fatalf("a person's flag: status=%d body=%s, want 201", flagged.Code, flagged.Body.String())
@@ -250,8 +309,11 @@ func TestAPersonFlagsAFailureAndPostsNoDeploy(t *testing.T) {
 		t.Fatalf("the flag is signal %v from %s by %s:%s under %q; want signal person by alice under person:%s:alice",
 			failure.Signal, failure.Source, failure.Actor.Kind, failure.Actor.ID, failure.SourceRef, deploy.ID)
 	}
-	if failure.Note != note {
-		t.Fatalf("the flag's note reads back %q, want %q", failure.Note, note)
+	if failure.Note != note || !slices.Equal(failure.PullRequests, pulls) {
+		t.Fatalf("the flag's answer holds note %q and pull requests %v, want %q and %v", failure.Note, failure.PullRequests, note, pulls)
+	}
+	if stored := readProductionEvent(t, database, "PRD", failure.ID); stored.Note != note || !slices.Equal(stored.PullRequests, pulls) {
+		t.Fatalf("the stored flag holds note %q and pull requests %v, want %q and %v", stored.Note, stored.PullRequests, note, pulls)
 	}
 	long := dispatchRequest(t, handler, http.MethodPost, productionEventsPath("PRD"), map[string]any{
 		"kind": "failure", "deploy_id": deploy.ID, "note": strings.Repeat("x", productionEventNoteBytes+1),
@@ -281,25 +343,36 @@ func TestAPersonFlagsAFailureAndPostsNoDeploy(t *testing.T) {
 }
 
 // TestEveryOtherCallerOfTheWritesIsRefusedAndWritesNothing: no credential, a broker token scoped
-// to another project, a service-only broker token and a read-only token are each refused both
-// writes by their own code; an unknown project is 404; a system's post without source_ref and a
-// failure whose deploy no row matches (by commit, by run and by id) are refused. None of them
-// writes a row or moves the failure's state, and the read-only token still reads the list.
+// to one project writing a private project it does not name (main's project-scope rule closes
+// that one and no public project: project_scope.go), a machine's service-only broker token (a
+// service and no person, under the project scope person, which writes nothing because nobody has
+// signed in on that machine; a token an account entry naming no person minted writes as its
+// account, as TestASystemPostsDeploysAndFailuresAndReadsThemBack holds), a token the broker
+// revoked and a read-only token are each refused both writes by their own code; an unknown
+// project is 404; a system's post without source_ref and a failure whose deploy no row matches
+// (by commit, by run and by id) are refused. None of them writes a row or moves the failure's
+// state, and the read-only token still reads the list.
 func TestEveryOtherCallerOfTheWritesIsRefusedAndWritesNothing(t *testing.T) {
 	rig := newBrokerTokenRig(t)
 	caller := newBrokerCaller(t)
-	const scoped, serviceOnly, readOnly = "a-token-of-another-project", "a-token-naming-no-person", "a-token-that-only-reads"
+	const scoped, serviceOnly, revoked, readOnly = "a-token-of-another-project", "a-token-naming-no-person", "a-token-the-broker-revoked", "a-token-that-only-reads"
 	rig.broker.Says(scoped, liveNamedToken(caller.jkt))
 	rig.broker.Says(serviceOnly, serviceOnlyToken(caller.jkt))
+	rig.broker.Says(revoked, ciphertoken.Introspection{Active: false})
 	rig.broker.Says(readOnly, readOnlyToken(caller.jkt))
-	for _, key := range []string{brokerTestProject, "OTHER"} {
+	for _, key := range []string{brokerTestProject, "OTHER", "HIDDEN"} {
 		if created := rig.asPerson(t, http.MethodPost, "/api/v1/projects", map[string]any{"key": key, "name": key}); created.Code != http.StatusCreated {
 			t.Fatalf("create project %s: status=%d body=%s", key, created.Code, created.Body.String())
 		}
 	}
+	if _, err := rig.database.Pool.Exec(t.Context(), `update projects set visibility = 'private' where key = 'HIDDEN'`); err != nil {
+		t.Fatalf("mark HIDDEN private: %v", err)
+	}
 	now := time.Now().UTC()
 	deploy := writeProductionDeploy(t, rig.database, "OTHER", 1, now.Add(-time.Hour), "2222222222222222222222222222222222222222")
 	failure := writeProductionFailure(t, rig.database, "OTHER", "alerts:1", deploy.ID, now.Add(-time.Minute))
+	hiddenDeploy := writeProductionDeploy(t, rig.database, "HIDDEN", 2, now.Add(-time.Hour), "4444444444444444444444444444444444444444")
+	hiddenFailure := writeProductionFailure(t, rig.database, "HIDDEN", "alerts:3", hiddenDeploy.ID, now.Add(-time.Minute))
 	rows := countRows(t, rig.database, `select count(*) from production_events`)
 
 	post := map[string]any{"kind": "failure", "source_ref": "alerts:2", "deploy_id": deploy.ID}
@@ -310,22 +383,33 @@ func TestEveryOtherCallerOfTheWritesIsRefusedAndWritesNothing(t *testing.T) {
 		send   func(method, path string, body any) *httptest.ResponseRecorder
 		status int
 		code   string
+		// hidden is whether the row writes the private project: the one a token scoped to
+		// another project is refused, where a public one it may write.
+		hidden bool
 	}{
 		{"no credential", func(method, path string, body any) *httptest.ResponseRecorder {
 			return rig.serve(brokerRequest(t, method, path, body, "", ""))
-		}, http.StatusUnauthorized, "NO_IDENTITY"},
+		}, http.StatusUnauthorized, "NO_IDENTITY", false},
 		{"a broker token scoped to another project", func(method, path string, body any) *httptest.ResponseRecorder {
 			return rig.serve(caller.presenting(t, method, path, scoped, body))
-		}, http.StatusForbidden, codeProjectScope},
-		{"a service-only broker token", func(method, path string, body any) *httptest.ResponseRecorder {
+		}, http.StatusForbidden, codeProjectScope, true},
+		{"a machine's service-only broker token", func(method, path string, body any) *httptest.ResponseRecorder {
 			return rig.serve(caller.presenting(t, method, path, serviceOnly, body))
-		}, http.StatusForbidden, contracts.DispatchSignInRequired},
+		}, http.StatusForbidden, contracts.DispatchSignInRequired, false},
+		{"a revoked broker token", func(method, path string, body any) *httptest.ResponseRecorder {
+			return rig.serve(caller.presenting(t, method, path, revoked, body))
+		}, http.StatusUnauthorized, "BROKER_TOKEN_NOT_ACTIVE", false},
 		{"a read-only token", func(method, path string, body any) *httptest.ResponseRecorder {
 			return rig.serve(caller.presenting(t, method, path, readOnly, body))
-		}, http.StatusForbidden, contracts.DispatchReadOnlyToken},
+		}, http.StatusForbidden, contracts.DispatchReadOnlyToken, false},
 	} {
-		expectRefusal(t, refused.name+" posting", refused.send(http.MethodPost, postPath, post), refused.status, refused.code)
-		expectRefusal(t, refused.name+" writing a state", refused.send(http.MethodPut, statePath, state), refused.status, refused.code)
+		posted, stated, body := postPath, statePath, post
+		if refused.hidden {
+			posted, stated = productionEventsPath("HIDDEN"), productionEventStatePath("HIDDEN", hiddenFailure.ID)
+			body = map[string]any{"kind": "failure", "source_ref": "alerts:4", "deploy_id": hiddenDeploy.ID}
+		}
+		expectRefusal(t, refused.name+" posting", refused.send(http.MethodPost, posted, body), refused.status, refused.code)
+		expectRefusal(t, refused.name+" writing a state", refused.send(http.MethodPut, stated, state), refused.status, refused.code)
 	}
 
 	shared := func(method, path string, body map[string]any) *httptest.ResponseRecorder {
@@ -364,26 +448,41 @@ func TestEveryOtherCallerOfTheWritesIsRefusedAndWritesNothing(t *testing.T) {
 	}
 }
 
-// TestTheStateRouteTakesAPersonAndTheProvenControllerAlone: a person rejects and restores a
-// failure; the project's controller, the session the daemon's newest read names and a broker
-// token proves, re-counts it and may not restore it; once a later read names another session the
-// same token is refused; a session that is neither, and the shared token, which proves none, are
-// refused; and a row of another project is not the path's project's to write.
+// TestTheStateRouteTakesAPersonAndTheProvenControllerAlone: a person rejects, re-counts and
+// restores a failure; the project's controller, the session the daemon's newest read names and a
+// broker token proves, rejects and re-counts it and may not restore it; once a later read names
+// another session the same token is refused; a session that is neither, a reader that is neither
+// (a read-only token) and the shared token, which proves none, are refused, and the row is as it
+// was; and a row of another project is not the path's project's to write. Each reject and each
+// re-count answers 200 and keeps its reason, its writer and its time, the server's (R8), and the
+// change fail rate, read after each, leaves the row out after a reject and puts it back in after
+// a re-count. A restore keeps its time and its writer through every write after it (R7).
 func TestTheStateRouteTakesAPersonAndTheProvenControllerAlone(t *testing.T) {
 	rig := newBrokerTokenRig(t)
 	caller := newBrokerCaller(t)
-	const controller, neither = "the-controllers-token", "a-token-of-another-session"
+	const controller, neither, reader = "the-controllers-token", "a-token-of-another-session", "a-token-that-only-reads"
 	rig.broker.Says(controller, liveNamedToken(caller.jkt))
 	another := liveNamedToken(caller.jkt)
 	another.Session = "ses_neither"
 	rig.broker.Says(neither, another)
+	rig.broker.Says(reader, readOnlyToken(caller.jkt))
 	for _, key := range []string{brokerTestProject, "OTHER"} {
 		if created := rig.asPerson(t, http.MethodPost, "/api/v1/projects", map[string]any{"key": key, "name": key}); created.Code != http.StatusCreated {
 			t.Fatalf("create project %s: status=%d body=%s", key, created.Code, created.Body.String())
 		}
 	}
 	now := time.Now().UTC()
-	deploy := writeProductionDeploy(t, rig.database, brokerTestProject, 1, now.Add(-time.Hour))
+	today := now.Truncate(24 * time.Hour)
+	since := today.AddDate(0, 0, -3)
+	saveProjectDelivery(t, rig.database.Pool, delivery.ProjectSettingsInput{
+		Project: brokerTestProject, Delivery: true, Sources: []delivery.SourceInput{{Kind: delivery.SourceKindEvents}},
+		PopulationAuthors: []string{"octocat"}, ExcludedRepos: []string{},
+		FailureSources: []string{delivery.FailureSourceEvents}, FailuresMeasuredSince: &since,
+	})
+	finished := now.Add(-time.Hour)
+	deploy := writeProductionEvent(t, rig.database.Pool, prodevents.Event{
+		ProjectKey: brokerTestProject, Kind: prodevents.KindDeploy, Source: prodevents.SourceAPI, SourceRef: "ci:deploy-1", FinishedAt: &finished,
+	})
 	failure := writeProductionFailure(t, rig.database, brokerTestProject, "alerts:1", deploy.ID, now.Add(-time.Minute))
 	path := productionEventStatePath(brokerTestProject, failure.ID)
 	readDaemon := func(at time.Time, session string) {
@@ -397,35 +496,100 @@ func TestTheStateRouteTakesAPersonAndTheProvenControllerAlone(t *testing.T) {
 		t.Helper()
 		return readProductionEvent(t, rig.database, brokerTestProject, failure.ID)
 	}
+	asPerson := func(body map[string]any) *httptest.ResponseRecorder {
+		return rig.asPerson(t, http.MethodPut, path, body)
+	}
+	asController := func(body map[string]any) *httptest.ResponseRecorder {
+		return rig.serve(caller.presenting(t, http.MethodPut, path, controller, body))
+	}
+	person := model.Actor{Kind: "user", ID: brokerTestPerson}
+	session := model.Actor{Kind: "session", ID: brokerTestSession}
 
-	rejected := rig.asPerson(t, http.MethodPut, path, map[string]any{"state": "rejected", "reason": "A flaky probe."})
-	if rejected.Code != http.StatusOK {
-		t.Fatalf("a person's reject: status=%d body=%s, want 200", rejected.Code, rejected.Body.String())
+	// requireChangeFailRate builds the day rows the writes so far logged changes for, reads the
+	// project's change fail rate over the days around now as the eval route answers it, and fails
+	// unless the one deploy is counted failed (failed 1, rate 1) or not (failed 0, rate 0).
+	registry := evals.New(rig.database, rig.deps.Docs, rig.deps.Events, rig.deps.Attributor)
+	window := url.Values{"from": {today.AddDate(0, 0, -2).Format(time.RFC3339)}, "to": {today.AddDate(0, 0, 1).Format(time.RFC3339)}}
+	figure := func(value *float64) string {
+		if value == nil {
+			return "null"
+		}
+		return fmt.Sprintf("%g", *value)
 	}
-	if row := decodeBody[prodevents.Event](t, rejected); row.State != prodevents.StateRejected || row.StateReason == nil ||
-		*row.StateReason != "A flaky probe." || row.StateBy == nil || row.StateBy.Kind != "user" || row.StateBy.ID != brokerTestPerson || row.StateAt == nil {
-		t.Fatalf("the reject answered state %s, reason %v, writer %v at %v; want rejected with its reason, by %s, with a time",
-			row.State, row.StateReason, row.StateBy, row.StateAt, brokerTestPerson)
+	requireChangeFailRate := func(when string, failed float64) {
+		t.Helper()
+		refreshEvalDays(t, registry, rig.database, time.Now().UTC())
+		list := evalGet[evalListResponse](t, rig.handler, "/api/v1/projects/"+brokerTestProject+"/evals?limit=200&"+window.Encode())
+		for _, item := range list.Items {
+			if item.Definition.Slug != evals.SlugChangeFailRate || len(item.Series) == 0 {
+				continue
+			}
+			got := item.Series[0].Window
+			if failedGot, total, rate := got["failed"], got["total"], got["rate"]; failedGot == nil || total == nil || rate == nil ||
+				*failedGot != failed || *total != 1 || *rate != failed {
+				t.Fatalf("%s: the change fail rate reads %s failed of %s deploys, rate %s; want %g of 1, rate %g",
+					when, figure(failedGot), figure(total), figure(rate), failed, failed)
+			}
+			return
+		}
+		t.Fatalf("%s: the evals of %s hold no change fail rate series", when, brokerTestProject)
 	}
-	restored := rig.asPerson(t, http.MethodPut, path, map[string]any{"state": "restored"})
-	if row := decodeBody[prodevents.Event](t, restored); restored.Code != http.StatusOK || row.RestoredAt == nil || row.RestoredBy == nil || row.RestoredBy.ID != brokerTestPerson {
-		t.Fatalf("a person's restore: status=%d body=%s, want 200 with its time and %s", restored.Code, restored.Body.String(), brokerTestPerson)
+	// setState sends a reject or a re-count, which must answer 200, and holds the row it answered
+	// and the row the store keeps to the state, the reason sent, the writer and a time inside the
+	// request's own span: the server's.
+	setState := func(what string, send func(map[string]any) *httptest.ResponseRecorder, state, reason string, by model.Actor) {
+		t.Helper()
+		before := time.Now().UTC().Add(-time.Millisecond)
+		response := send(map[string]any{"state": state, "reason": reason})
+		after := time.Now().UTC().Add(time.Millisecond)
+		if response.Code != http.StatusOK {
+			t.Fatalf("%s: status=%d body=%s, want 200", what, response.Code, response.Body.String())
+		}
+		for name, row := range map[string]prodevents.Event{"answered": decodeBody[prodevents.Event](t, response), "stored": stateOf()} {
+			if row.State != state || row.StateReason == nil || *row.StateReason != reason || row.StateBy == nil ||
+				row.StateBy.Kind != by.Kind || row.StateBy.ID != by.ID || row.StateAt == nil || row.StateAt.Before(before) || row.StateAt.After(after) {
+				held := "none"
+				if row.StateReason != nil {
+					held = *row.StateReason
+				}
+				t.Fatalf("%s: the %s row is state %s, reason %q, writer %v at %v; want %s, %q, %s:%s, at a time between %s and %s",
+					what, name, row.State, held, row.StateBy, row.StateAt, state, reason, by.Kind, by.ID,
+					before.Format(time.RFC3339Nano), after.Format(time.RFC3339Nano))
+			}
+		}
 	}
+
+	requireChangeFailRate("before any state write", 1)
+	setState("a person's reject", asPerson, prodevents.StateRejected, "A flaky probe.", person)
+	requireChangeFailRate("after the person's reject", 0)
+
+	before := time.Now().UTC().Add(-time.Millisecond)
+	restored := asPerson(map[string]any{"state": "restored"})
+	after := time.Now().UTC().Add(time.Millisecond)
+	if restored.Code != http.StatusOK {
+		t.Fatalf("a person's restore: status=%d body=%s, want 200", restored.Code, restored.Body.String())
+	}
+	for name, row := range map[string]prodevents.Event{"answered": decodeBody[prodevents.Event](t, restored), "stored": stateOf()} {
+		if row.RestoredAt == nil || row.RestoredAt.Before(before) || row.RestoredAt.After(after) || row.RestoredBy == nil ||
+			row.RestoredBy.Kind != person.Kind || row.RestoredBy.ID != person.ID || row.State != prodevents.StateRejected {
+			t.Fatalf("a person's restore: the %s row is restored at %v by %v in state %s; want a time between %s and %s, by %s:%s, the reject untouched",
+				name, row.RestoredAt, row.RestoredBy, row.State, before.Format(time.RFC3339Nano), after.Format(time.RFC3339Nano), person.Kind, person.ID)
+		}
+	}
+	restoredAt, restoredBy := *stateOf().RestoredAt, *stateOf().RestoredBy
+	setState("a person's re-count", asPerson, prodevents.StateCounted, "The probe was right.", person)
+	requireChangeFailRate("after the person's re-count", 1)
 
 	// Before any read names it, the controller's session is no controller.
-	expectRefusal(t, "a session no read names", rig.serve(caller.presenting(t, http.MethodPut, path, controller, map[string]any{
+	expectRefusal(t, "a session no read names", asController(map[string]any{
 		"state": "counted", "reason": "It was real.",
-	})), http.StatusForbidden, codeProductionEventStateForbidden, brokerTestSession)
+	}), http.StatusForbidden, codeProductionEventStateForbidden, brokerTestSession)
 	readDaemon(now.Add(-2*time.Minute), brokerTestSession)
-	counted := rig.serve(caller.presenting(t, http.MethodPut, path, controller, map[string]any{"state": "counted", "reason": "It was real."}))
-	if counted.Code != http.StatusOK {
-		t.Fatalf("the controller's re-count: status=%d body=%s, want 200", counted.Code, counted.Body.String())
-	}
-	if row := decodeBody[prodevents.Event](t, counted); row.State != prodevents.StateCounted || row.StateBy == nil ||
-		row.StateBy.Kind != "session" || row.StateBy.ID != brokerTestSession || row.StateReason == nil || *row.StateReason != "It was real." {
-		t.Fatalf("the re-count answered state %s by %v for %v; want counted by the session %s with its reason", row.State, row.StateBy, row.StateReason, brokerTestSession)
-	}
-	expectRefusal(t, "the controller's restore", rig.serve(caller.presenting(t, http.MethodPut, path, controller, map[string]any{"state": "restored"})),
+	setState("the controller's reject", asController, prodevents.StateRejected, "A duplicate of the first alert.", session)
+	requireChangeFailRate("after the controller's reject", 0)
+	setState("the controller's re-count", asController, prodevents.StateCounted, "It was real.", session)
+	requireChangeFailRate("after the controller's re-count", 1)
+	expectRefusal(t, "the controller's restore", asController(map[string]any{"state": "restored"}),
 		http.StatusForbidden, codeProductionEventStateForbidden)
 	expectRefusal(t, "a session that is neither", rig.serve(caller.presenting(t, http.MethodPut, path, neither, map[string]any{
 		"state": "rejected", "reason": "Says another session.",
@@ -434,13 +598,33 @@ func TestTheStateRouteTakesAPersonAndTheProvenControllerAlone(t *testing.T) {
 		"state": "rejected", "reason": "Says the shared token.",
 	}, "Bearer agent-token", "")), http.StatusForbidden, codeProductionEventStateForbidden)
 
+	// A reader is neither a person nor the controller: a read-only token reads the record and is
+	// refused both writes of a reason, with the row as it was.
+	unchanged, err := json.Marshal(stateOf())
+	if err != nil {
+		t.Fatalf("encode the row: %v", err)
+	}
+	for _, state := range []string{prodevents.StateRejected, prodevents.StateCounted} {
+		expectRefusal(t, "a reader's "+state, rig.serve(caller.presenting(t, http.MethodPut, path, reader, map[string]any{
+			"state": state, "reason": "Says a reader.",
+		})), http.StatusForbidden, contracts.DispatchReadOnlyToken)
+	}
+	if kept, err := json.Marshal(stateOf()); err != nil || string(kept) != string(unchanged) {
+		t.Fatalf("the reader's refused writes left the row %s (%v), want it as it was, %s", kept, err, unchanged)
+	}
+
 	readDaemon(now.Add(-time.Minute), "ses_successor")
-	expectRefusal(t, "the controller after a read names another session", rig.serve(caller.presenting(t, http.MethodPut, path, controller, map[string]any{
+	expectRefusal(t, "the controller after a read names another session", asController(map[string]any{
 		"state": "rejected", "reason": "Too late.",
-	})), http.StatusForbidden, codeProductionEventStateForbidden, brokerTestSession)
+	}), http.StatusForbidden, codeProductionEventStateForbidden, brokerTestSession)
 	if row := stateOf(); row.State != prodevents.StateCounted || row.StateBy == nil || row.StateBy.ID != brokerTestSession {
 		t.Fatalf("the refused writes moved the failure to %s by %v, want the controller's re-count to stand", row.State, row.StateBy)
 	}
+	if row := stateOf(); row.RestoredAt == nil || !row.RestoredAt.Equal(restoredAt) || row.RestoredBy == nil ||
+		row.RestoredBy.Kind != restoredBy.Kind || row.RestoredBy.ID != restoredBy.ID {
+		t.Fatalf("after every later write the failure is restored at %v by %v, want the restore's own %v by %v", row.RestoredAt, row.RestoredBy, restoredAt, restoredBy)
+	}
+	requireChangeFailRate("after the refused writes", 1)
 
 	otherDeploy := writeProductionDeploy(t, rig.database, "OTHER", 2, now.Add(-time.Hour))
 	otherFailure := writeProductionFailure(t, rig.database, "OTHER", "alerts:2", otherDeploy.ID, now.Add(-time.Minute))
@@ -457,8 +641,8 @@ func TestTheStateRouteTakesAPersonAndTheProvenControllerAlone(t *testing.T) {
 // the handler's own read of production_events.
 func TestAReadOnlyTokensReadOfTheRecordWritesOnlyItsProof(t *testing.T) {
 	database := storetest.Open(t)
-	marked := &markedStatements{}
-	rig := newBrokerTokenRigOn(t, testServerOptions{store: storetest.TracedStore(t, database, marked)})
+	traced := &poolStatements{}
+	rig := newBrokerTokenRigOn(t, testServerOptions{store: storetest.TracedStore(t, database, traced)})
 	caller := newBrokerCaller(t)
 	const token = "a-read-only-token-reading-the-record"
 	rig.broker.Says(token, readOnlyToken(caller.jkt))
@@ -466,7 +650,7 @@ func TestAReadOnlyTokensReadOfTheRecordWritesOnlyItsProof(t *testing.T) {
 		t.Fatalf("create project RDR: status=%d body=%s", created.Code, created.Body.String())
 	}
 	writeProductionDeploy(t, database, "RDR", 1, time.Now().UTC().Add(-time.Hour))
-	marked.take()
+	from := traced.count()
 
 	request := caller.presenting(t, http.MethodGet, productionEventsPath("RDR"), token, nil)
 	request = request.WithContext(context.WithValue(request.Context(), countedRead{}, true))
@@ -474,37 +658,144 @@ func TestAReadOnlyTokensReadOfTheRecordWritesOnlyItsProof(t *testing.T) {
 	if page := decodeBody[productionEventList](t, response); response.Code != http.StatusOK || page.Total != 1 {
 		t.Fatalf("the read-only token's read: status=%d body=%s, want 200 and the one deploy", response.Code, response.Body.String())
 	}
-	requireOnlyProofAndCaches(t, marked.take(), regexp.MustCompile(`(?i)\bfrom\s+production_events\b`))
-}
-
-// requireOnlyProofAndCaches fails unless every write of statements is to the proof's replay row or
-// a cache Dispatch rebuilds, the proof's insert among them, and handlerRead, the handler's own
-// read, is among them too. Each statement is read by writesOf (read_only_token_test.go).
-func requireOnlyProofAndCaches(t *testing.T, statements []string, handlerRead *regexp.Regexp) {
-	t.Helper()
-	allowed := map[string]bool{"dpop_proofs": true, "text_trees": true, "route_roster": true}
-	var proofInserted, readByHandler bool
-	var written []string
-	for _, statement := range statements {
-		writes, readable := writesOf(statement)
-		if !readable {
-			t.Errorf("the request ran a write this test cannot read a table for: %s", statement)
-		}
-		for _, write := range writes {
-			written = append(written, write)
-			verb, table, _ := strings.Cut(write, " ")
-			if !allowed[table] {
-				t.Errorf("the request wrote %s, which is neither its proof's replay row nor a cache Dispatch rebuilds: %s", table, statement)
-			}
-			proofInserted = proofInserted || (verb == "insert" && table == "dpop_proofs")
-		}
-		readByHandler = readByHandler || handlerRead.MatchString(statement)
-	}
-	if !proofInserted {
+	statements := traced.since(from)
+	written := requireReadsWrites(t, "GET "+productionEventsPath("RDR"), statements)
+	if !holdsStatement(statements, proofInsert) {
 		t.Errorf("the tracer saw no insert into dpop_proofs among %d statements: it did not see the request's proof spent", len(statements))
 	}
-	if !readByHandler {
+	handlerRead := regexp.MustCompile(`(?i)\bfrom\s+production_events\b`)
+	if !holdsStatement(statements, handlerRead) {
 		t.Errorf("the tracer saw no statement matching %s among %d statements: it did not see the handler's reads", handlerRead, len(statements))
 	}
 	t.Logf("the request ran %d statements, whose writes were %v", len(statements), written)
+}
+
+// The five routes added for delivery settings and the production-event record return settings
+// and facts, not figures of the three failure measures. A new route under either path must get
+// its own row here. The settings' eval targets are goals, not observed values.
+func TestNoRouteThisChildAddsAnswersAFailureMeasure(t *testing.T) {
+	t.Parallel()
+	const settings = "/api/v1/projects/{key}/settings/delivery"
+	const events = "/api/v1/projects/{key}/production-events"
+	handler, database, deps := newTestServer(t, testServerOptions{})
+	fixture := seedFailureHistory(t, database)
+	registry := evals.New(database, deps.Docs, deps.Events, deps.Attributor)
+	if _, err := registry.Ensure(t.Context(), "FAIL"); err != nil {
+		t.Fatalf("seed FAIL's evals and targets: %v", err)
+	}
+	refreshEvalDays(t, registry, database, failuresNow)
+
+	routes := []struct {
+		method, pattern, suffix string
+		body                    any
+		status                  int
+	}{
+		{http.MethodGet, settings, "", nil, http.StatusOK},
+		{http.MethodPut, settings, "", map[string]any{}, http.StatusOK},
+		{http.MethodGet, events, "?" + failureWindowQuery(0, 2), nil, http.StatusOK},
+		{http.MethodPost, events, "", map[string]any{"kind": "failure", "deploy_id": fixture["P2"].ID}, http.StatusCreated},
+		{http.MethodPut, events + "/{id}/state", "", map[string]any{"state": "rejected", "reason": "Not a production failure."}, http.StatusOK},
+	}
+	want := make(map[string]bool, len(routes))
+	for _, route := range routes {
+		want[route.method+" "+route.pattern] = true
+	}
+	index, err := os.ReadFile(routeIndexGolden)
+	if err != nil {
+		t.Fatalf("read the route index: %v", err)
+	}
+	for line := range strings.SplitSeq(string(index), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) != 3 {
+			continue
+		}
+		path := fields[1]
+		if path != settings && !strings.HasPrefix(path, settings+"/") && path != events && !strings.HasPrefix(path, events+"/") {
+			continue
+		}
+		key := fields[0] + " " + path
+		if !want[key] {
+			t.Errorf("%s lists %s but no test row exercises it", routeIndexGolden, key)
+		}
+		delete(want, key)
+	}
+	if len(want) != 0 {
+		t.Errorf("%s lacks the inventory routes %v", routeIndexGolden, want)
+	}
+
+	// The fixture actually has a figure that a route could accidentally include.
+	rate := getDeliveryMeasures(t, handler, failureWindowQuery(0, 2)).Measures.ChangeFailureRate
+	if rate == nil || rate.Rate == nil {
+		t.Fatal("the failure fixture must have a measured change fail rate")
+	}
+	for _, route := range routes {
+		t.Run(route.method+" "+route.pattern, func(t *testing.T) {
+			path := strings.NewReplacer("{key}", "FAIL", "{id}", fixture["FB"].ID).Replace(route.pattern)
+			response := dispatchRequest(t, handler, route.method, path+route.suffix, route.body, "alice")
+			if response.Code != route.status {
+				t.Fatalf("status=%d body=%s, want %d", response.Code, response.Body.String(), route.status)
+			}
+			answer := decodeBody[map[string]any](t, response)
+			if answer == nil {
+				t.Fatal("the route answered null, want a record or list")
+			}
+			if field := failureFigureAt(answer, ""); field != "" {
+				t.Errorf("answer carries a failure measure at %s", field)
+			}
+			if route.method != http.MethodGet || route.pattern != settings {
+				return
+			}
+			targets, _ := answer["targets"].(map[string]any)
+			for _, slug := range []string{evals.SlugChangeFailRate, evals.SlugFailedDeployRecovery} {
+				if !isDeliveryGoal(targets[slug]) {
+					t.Errorf("settings target for %s = %v, want a goal (a number or off)", slug, targets[slug])
+				}
+			}
+			// Control: the settings answer with the measured rate beside its targets is a leak.
+			withFigure := decodeBody[map[string]any](t, response)
+			withFigure[evals.SlugChangeFailRate] = map[string]any{"value": *rate.Rate}
+			if field := failureFigureAt(withFigure, ""); field != "."+evals.SlugChangeFailRate {
+				t.Errorf("control found %q, want the injected change fail rate figure", field)
+			}
+		})
+	}
+}
+
+func isDeliveryGoal(value any) bool {
+	_, number := value.(float64)
+	return number || value == deliveryTargetOff
+}
+
+// failureFigureAt walks the actual JSON, including records inside lists, so new response fields
+// cannot disappear in a typed decode. It distinguishes counts from event facts (restored_at,
+// state, and so on) and pagination's total. A top-level targets map may contain scalar goals,
+// not a measured value or series.
+func failureFigureAt(value any, path string) string {
+	switch node := value.(type) {
+	case []any:
+		for i, item := range node {
+			if field := failureFigureAt(item, fmt.Sprintf("%s[%d]", path, i)); field != "" {
+				return field
+			}
+		}
+	case map[string]any:
+		for name, member := range node {
+			field := path + "." + name
+			slug := strings.ReplaceAll(name, "_", "-")
+			switch slug {
+			case evals.SlugChangeFailRate, evals.SlugFailedDeployRecovery, evals.SlugDeploymentReworkRate:
+				if path != ".targets" || !isDeliveryGoal(member) {
+					return field
+				}
+			case "change-failure-rate", "time-to-restore", "rate", "median", "median-minutes",
+				"failure-count", "restore-count", "rework-count", "failed", "failures", "restored", "restores",
+				"restoring", "not-restored", "rework", "per-deploy", "series", "value":
+				return field
+			}
+			if nested := failureFigureAt(member, field); nested != "" {
+				return nested
+			}
+		}
+	}
+	return ""
 }

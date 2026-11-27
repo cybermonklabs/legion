@@ -313,7 +313,8 @@ var thisHeadsMigrations = []int64{
 	20261117100000, 20261117100001, 20261117100002, 20261117100003, 20261117100005, 20261117100006,
 	20261117100007, 20261117100008, 20261117100010, 20261117100012, 20261117100013, 20261117100014,
 	20261117100015, 20261117100016, 20261117100019, 20261117100020, 20261117100021, 20261117100022,
-	20261120072042, 20261120111107,
+	20261117100023, 20261120072042, 20261120111107, 20261123002035, 20261123002036, 20261123002037,
+	20261123010254, 20261123020640, 20261123041500, 20261123041501, 20261126090000, 20261126125956,
 }
 
 // openBase is a database of the base's schema, main's at the commit this head merges: this tree's
@@ -492,28 +493,34 @@ func TestTheAttributionModeWritesK15sCase(t *testing.T) {
 }
 
 // TestARefusedAttributionLeavesTheDeliverySettingsAsTheyWere: -attribution writes its three
-// projects before the one delivery_settings row it replaces, so a case whose projects the database
+// projects before the project's delivery settings it saves, so a case whose projects the database
 // refuses (under a ten-character key, whose "B" and "C" projects run past the ten characters a
-// project key holds) leaves the settings an earlier load wrote as they were.
+// project key holds) leaves the settings an earlier load wrote to that project as they were.
 func TestARefusedAttributionLeavesTheDeliverySettingsAsTheyWere(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := t.Context()
+	alice := model.Actor{Kind: "user", ID: "alice"}
 	kept := delivery.DeliverySettings{
 		DeployRepo: "acme/kept", DeployWorkflowPath: ".github/workflows/deploy.yml", ProductionJobNames: []string{"deploy"},
 		PRChecksWorkflowPath: ".github/workflows/pr-checks.yml", PopulationAuthors: []string{}, ExcludedRepos: []string{},
 	}
-	if _, err := delivery.PutSettings(ctx, database.Pool, kept, model.Actor{Kind: "user", ID: "alice"}); err != nil {
+	if _, err := database.Pool.Exec(ctx, `
+		insert into projects (key, name, default_assignee, next_number) values ('ATTRIBUTIO', 'ATTRIBUTIO', 'alice', 1)
+	`); err != nil {
+		t.Fatalf("write the project: %v", err)
+	}
+	if _, err := evalfixture.PutDeliverySettings(ctx, database.Pool, "ATTRIBUTIO", kept, alice); err != nil {
 		t.Fatalf("write the delivery settings: %v", err)
 	}
 	if _, err := evalfixture.WriteAttribution(ctx, database.Pool, "ATTRIBUTIO", now); err == nil {
 		t.Fatal("k15's case under ATTRIBUTIO was written, whose project ATTRIBUTIOB no project key holds; want a refusal")
 	}
-	settings, err := delivery.GetSettings(ctx, database.Pool)
+	settings, err := delivery.GetProjectSettings(ctx, database.Pool, "ATTRIBUTIO")
 	if err != nil {
 		t.Fatalf("read the delivery settings: %v", err)
 	}
-	if settings.DeployRepo != kept.DeployRepo {
-		t.Errorf("the refused case left the delivery settings naming the deploy repository %s, want %s as they were", settings.DeployRepo, kept.DeployRepo)
+	if rules := settings.Rules(); len(rules) != 1 || rules[0].DeployRepo != kept.DeployRepo {
+		t.Errorf("the refused case left ATTRIBUTIO's delivery settings reading the rules %+v, want the one naming the deploy repository %s as they were", rules, kept.DeployRepo)
 	}
 }
 

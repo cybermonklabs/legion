@@ -329,6 +329,11 @@ func (r *Reconcile) runOnce(ctx context.Context) {
 			slog.Info("dispatch delivery: recorded issue.deployed", "events", written, "repo", w.rule.DeployRepo, "by", "reconcile")
 		}
 	}
+	for _, w := range walks {
+		if _, err := RecordProductionDeploys(ctx, r.pool, w.rule, r.events); err != nil {
+			record(w.rule.DeployRepo, "record production deploys", err)
+		}
+	}
 
 	for _, w := range walks {
 		var texts []string

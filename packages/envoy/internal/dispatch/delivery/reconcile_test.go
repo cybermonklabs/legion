@@ -1382,7 +1382,10 @@ func TestTheReconcileWalksEachDeployRepositoryWithItsOwnRule(t *testing.T) {
 	runIDs := map[string]int64{"acme/widgets": 901, "acme/gadgets": 902, "acme/tools": 903}
 	runs := map[string][]map[string]any{}
 	for _, rule := range []DeliverySettings{widgetsRule, gadgetsRule, toolsRule} {
-		runs[rule.DeployRepo+" "+rule.DeployWorkflowPath] = []map[string]any{backfillRun(runIDs[rule.DeployRepo], created)}
+		id := runIDs[rule.DeployRepo]
+		run := backfillRun(id, created)
+		run["head_sha"] = fmt.Sprintf("%040d", id)
+		runs[rule.DeployRepo+" "+rule.DeployWorkflowPath] = []map[string]any{run}
 	}
 	fake := newListingsFake(t, runs)
 
@@ -1417,6 +1420,17 @@ func TestTheReconcileWalksEachDeployRepositoryWithItsOwnRule(t *testing.T) {
 		}
 		if !maps.Equal(got, wantSteps) {
 			t.Errorf("the apply steps recorded on %s's run = %v, want its own rule's, %v", repo, got, wantSteps)
+		}
+		deploys, err := CurrentDeploys(ctx, pool, repo)
+		if err != nil {
+			t.Fatalf("read program deploys for %s: %v", repo, err)
+		}
+		if repo == toolsRule.DeployRepo {
+			if len(deploys) != 0 {
+				t.Errorf("the failed apply of %s recorded a program deploy: %+v", repo, deploys)
+			}
+		} else if len(deploys) != 1 || deploys[0].Program != "delivery" || deploys[0].Commit != run.HeadSHA {
+			t.Errorf("program deploys for %s = %+v, want its production run at %s", repo, deploys, run.HeadSHA)
 		}
 	}
 	for repo, rule := range sourcesByRepo(t, ctx, pool) {

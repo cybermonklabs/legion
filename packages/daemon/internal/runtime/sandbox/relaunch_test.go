@@ -479,9 +479,16 @@ func TestALaunchReplacesASandboxOfTheOtherDiskShape(t *testing.T) {
 			}
 		}
 	}
-	// roundOver ends loc's pod as its update round does once every role in it has answered.
+	// roundOver ends loc's pod as its update round does once every role in it has answered. The
+	// round's wait for the pod to go runs on a fake clock the test never moves, so it ends once the
+	// controller stand-in has ended the pod, however long a loaded runner takes it to: on the boot
+	// timeout's 2 s of wall clock, a runner busy migrating the package's database template for 27 s
+	// ran the wait out first (`wait out its pod: timed out after 2s`).
 	roundOver := func(t *testing.T, g *rig, r *Runtime, loc runtime.Locator) {
 		t.Helper()
+		was := r.clock
+		r.clock = clocktest.New(rigNow)
+		defer func() { r.clock = was }()
 		if err := r.ReplacePod(g.ctx, runtime.Known{Claim: workerToken, Locator: &loc}, stillDue); err != nil {
 			t.Fatalf("ReplacePod: %v", err)
 		}
@@ -1244,20 +1251,21 @@ func TestAPodOfATreeLaunchesWhileAnotherIsStillInitializing(t *testing.T) {
 	}
 }
 
-// ProvisionBound is the three provisioning phases' bounds together, workspace.FetchBudget (190m:
+// ProvisionBound is the three provisioning phases' bounds together, workspace.FetchBudget (205m:
 // the wait for the repository cache, which covers the cache's own first clone, then one bound for
-// the verification of what the cache streamed, then one of its own for the delta from GitHub) for
+// the attempt on the cache's bucket, then one for the verification of what the cache's /tar
+// streamed when that attempt failed, then one of its own for the delta from GitHub) for
 // workspace-fetch, workspace.CloneTimeout (30m) for workspace-init's shared clone, and
 // workspace.CheckoutTimeout (60m) for the issue's own checkout of that clone, and nothing more:
 // provisioning from the feed onto the pod's own disk waits on no other pod, so no lock wait is
 // added to it. The cache's stream holds the low-speed bound and no clock, so a stream that keeps
 // receiving runs on into the slack this bound holds over what its fetch actually waited and
-// checked. Pinned to a literal, 280 minutes, since no test can wait the real bound out.
+// checked. Pinned to a literal, 295 minutes, since no test can wait the real bound out.
 func TestProvisionBoundIsTheFetchsWholeBudgetTheClonesBoundAndTheCheckouts(t *testing.T) {
 	t.Parallel()
 	g := newRig(t, nil)
-	if got, want := g.r.ProvisionBound(), workspace.CacheWaitTimeout+2*workspace.FetchTimeout+workspace.CloneTimeout+workspace.CheckoutTimeout; got != 280*time.Minute || got != want {
-		t.Fatalf("ProvisionBound = %s, want %s: the cache wait, the verification's bound, the delta's own, the shared clone's, and the checkout's", got, want)
+	if got, want := g.r.ProvisionBound(), workspace.CacheWaitTimeout+workspace.BucketFetchTimeout+2*workspace.FetchTimeout+workspace.CloneTimeout+workspace.CheckoutTimeout; got != 295*time.Minute || got != want {
+		t.Fatalf("ProvisionBound = %s, want %s: the cache wait, the bucket attempt's bound, the verification's, the delta's own, the shared clone's, and the checkout's", got, want)
 	}
 }
 
@@ -1338,7 +1346,7 @@ func TestALaunchReturnsOnlyOnceTheSandboxStoreHoldsItsRunningPatch(t *testing.T)
 func TestALaunchThatFailsAfterRunningLeavesItsSandboxSuspended(t *testing.T) {
 	t.Parallel()
 	g := newRig(t, nil, withOptions(func(o *Options) { o.BootTimeout = 300 * time.Millisecond }))
-	g.hold.Store(true)
+	g.setHold(true)
 	if _, err := g.r.Spawn(g.ctx, workerSpec(t)); err == nil || !strings.Contains(err.Error(), "wait for its new pod") {
 		t.Fatalf("Spawn: %v, want the new pod's timeout", err)
 	}
@@ -1365,7 +1373,7 @@ func TestALaunchThatWaitsOutItsPodSaysWhatTheSandboxReports(t *testing.T) {
 	fc := clocktest.New(rigNow)
 	g := newRig(t, nil, withOptions(func(o *Options) { o.BootTimeout = 300 * time.Millisecond }))
 	g.r.clock = fc
-	g.hold.Store(true)
+	g.setHold(true)
 	// The controller reports on the generation it observed, and a condition of an earlier one is
 	// not read as this launch's, so the rig writes it as the controller would: after the Running
 	// patch, against the generation that patch produced.
@@ -1717,12 +1725,15 @@ func TestAFailedLauncherBindingReadNeverLeavesASupervisedRoleChildRunning(t *tes
 // refusal of the record, RBAC's 403, charged on each try, the third failing the claim; and a
 // throttle that outlasts the launch's own deadline, charged once per try after each has sent the
 // patch again while the throttle lasted, so a server that stays overloaded fails the claim rather
-// than holding its launch for ever.
+// than holding its launch for ever. Every row runs at the explicit two-second boot timeout
+// (withTestBootTimeout): the throttle row's verdict is that the launch gives up at that bound after
+// three tries, so it stays a finite bound rather than the rig's deadline default. A row that
+// shortened it to 300 ms, to end its tries sooner, put its setup's wait for the role launcher under
+// that bound too, and on a loaded runner the wait ran out, or the setup's launch failed once and
+// left the claim a generation ahead of the setup's events.
 func TestAnAPIServerThrottleOnTheAddressRecordSpendsNoLaunchBudget(t *testing.T) {
 	t.Parallel()
 	for name, tc := range map[string]struct {
-		// bootTimeout is the rig's boot timeout, 0 for the rig's own.
-		bootTimeout time.Duration
 		// answer is the server's answer to an address record after refused refusals, nil to apply it.
 		answer func(refused int32) error
 		// err is what the relaunch fails with, "" for a relaunch that launches uncharged; one that
@@ -1753,18 +1764,13 @@ func TestAnAPIServerThrottleOnTheAddressRecordSpendsNoLaunchBudget(t *testing.T)
 			refused: func(n int32) bool { return n == 3 }, want: "3, once per charged try",
 		},
 		"a throttle past the launch's deadline, charged once per try": {
-			bootTimeout: 300 * time.Millisecond,
-			answer:      func(int32) error { return apierrors.NewInternalError(errors.New(etcdThrottle)) },
-			err:         "etcdserver: throttle: too many requests",
-			refused:     func(n int32) bool { return n > 3 }, want: "more than 3, each try sending it again while the throttle lasted",
+			answer:  func(int32) error { return apierrors.NewInternalError(errors.New(etcdThrottle)) },
+			err:     "etcdserver: throttle: too many requests",
+			refused: func(n int32) bool { return n > 3 }, want: "more than 3, each try sending it again while the throttle lasted",
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
-			var options []rigOption
-			if tc.bootTimeout != 0 {
-				options = append(options, withOptions(func(o *Options) { o.BootTimeout = tc.bootTimeout }))
-			}
-			g := newRig(t, nil, options...)
+			g := newRig(t, nil, withTestBootTimeout())
 			spec := workerSpec(t)
 			machine, _, _ := supervisedSandboxMachine(t, g, spec)
 			first := startSupervisedSandboxRole(t, g, machine, spec, resumeSession)
@@ -1780,7 +1786,15 @@ func TestAnAPIServerThrottleOnTheAddressRecordSpendsNoLaunchBudget(t *testing.T)
 				refused.Add(1)
 				return true, nil, answer
 			})
+			start := time.Now()
 			err := machine.Handle(g.ctx, supervise.RuntimeObservation{Observation: runtime.Observation{Locator: *first, Kind: runtime.StaleAddress, At: rigNow}})
+			// Remove the two-second bound and each throttled try runs to the test deadline: this row
+			// then passes vacuously after about 200 s, the 845 s CI failure's shape. The guard fails
+			// it by name instead. One minute is far above the three tries' ~6 s at the bound and far
+			// below the deadline.
+			if elapsed := time.Since(start); elapsed > time.Minute {
+				t.Fatalf("the relaunch took %s, want its tries bounded by the two-second boot timeout", elapsed)
+			}
 			got := machine.Claim()
 			if tc.err == "" {
 				if err != nil {
@@ -1976,7 +1990,11 @@ func startSupervisedSandboxRole(
 // pod: the Stop names the issued generation, never the previous one, which is the caller's. The
 // start deadline runs on the rig's fake clock (g.r.clock), which the test moves past it only once
 // the launcher holds the Start: on the wall clock's one second, a loaded CI runner once got the
-// deadline's error without the launcher ever receiving the Start (run 45723523570).
+// deadline's error without the launcher ever receiving the Start (run 45723523570). The waits that
+// stay on the wall clock, the first spawn's and the issued generation's Stop (stopIssuedChild), run
+// under a boot timeout as long as the test binary's deadline allows (withWaitsToTheDeadline): under
+// the one second they had, a Stop whose write a loaded machine held past it failed, the runtime
+// closed the launcher's connection, and the launcher never received the Stop this test is about.
 func TestAStartWhoseAnswerIsDelayedPastItsDeadlineIsStoppedBeforeResumeReturns(t *testing.T) {
 	t.Parallel()
 	for name, previous := range map[string]bool{
@@ -1984,9 +2002,7 @@ func TestAStartWhoseAnswerIsDelayedPastItsDeadlineIsStoppedBeforeResumeReturns(t
 		"on the same pod as its previous locator": true,
 	} {
 		t.Run(name, func(t *testing.T) {
-			g := newRig(t, nil, withOptions(func(o *Options) {
-				o.BootTimeout, o.TerminationGrace = time.Second, 50*time.Millisecond
-			}))
+			g := newRig(t, nil)
 			spec := workerSpec(t)
 			first := g.spawn(spec)
 			delayed := g.scriptedStartLauncher(spec.Claim, 1, func(shimwire.LauncherStart) *shimwire.LauncherStartResult { return nil })
@@ -2010,11 +2026,7 @@ func TestAStartWhoseAnswerIsDelayedPastItsDeadlineIsStoppedBeforeResumeReturns(t
 				t.Fatalf("Start = generation %d, want generation 2", start.Generation)
 			}
 			// The start deadline is the launcher wait's, the boot timeout from the wait's start at
-			// the fake clock's moment, plus the termination grace. It moves only once the runtime has
-			// finished writing the Start (written): an end of the deadline inside the write closes the
-			// connection, as a write the context cuts does, and the Stop that follows would find no
-			// launcher.
-			delayed.written()
+			// the fake clock's moment, plus the termination grace.
 			fc.Advance(g.opts.BootTimeout + g.opts.TerminationGrace)
 			if err := testwait.Receive(t, "the Resume", resumed); err == nil || !strings.Contains(err.Error(), "start through its authenticated launcher") {
 				t.Fatalf("Resume = %v, want the delayed Start's deadline", err)
@@ -2086,16 +2098,18 @@ type scriptedStartLauncher struct {
 	stops   chan shimwire.LauncherStop
 }
 
-// written returns once the runtime has finished writing the frame the scripted launcher last read
-// and stopped watching that write's context: requestSession holds the session's lock through both,
-// and the launcher reads the frame only while the write holds it.
-func (d *scriptedStartLauncher) written() {
-	d.session.mu.Lock()
-	defer d.session.mu.Unlock()
-}
-
 func (g *rig) scriptedStartLauncher(
 	token claim.Token, running uint64, answer func(shimwire.LauncherStart) *shimwire.LauncherStartResult,
+) *scriptedStartLauncher {
+	g.t.Helper()
+	return g.scriptedStartLauncherOver(token, running, answer, nil)
+}
+
+// scriptedStartLauncherOver is scriptedStartLauncher with the daemon's end of the connection
+// handed to the runtime through wrap, when wrap is not nil: the connection the runtime writes its
+// requests to and reads the launcher's frames from.
+func (g *rig) scriptedStartLauncherOver(
+	token claim.Token, running uint64, answer func(shimwire.LauncherStart) *shimwire.LauncherStartResult, wrap func(net.Conn) net.Conn,
 ) *scriptedStartLauncher {
 	g.t.Helper()
 	g.r.launchers.mu.Lock()
@@ -2105,6 +2119,9 @@ func (g *rig) scriptedStartLauncher(
 		old.close()
 	}
 	server, client := net.Pipe()
+	if wrap != nil {
+		server = wrap(server)
+	}
 	pod := g.pod(SandboxName(token))
 	session := g.r.launchers.accept(token, launcherIssue(token), g.keptSince(token), shimwire.LauncherHello{
 		LauncherID: "scripted-" + string(token), PodUID: string(pod.UID), ResumesBySession: g.resumesBySession,
@@ -2317,7 +2334,7 @@ func (s *supervisedSandboxStore) PutClaimStep(_ context.Context, token claim.Tok
 func TestALaunchWhoseRunningPatchTimesOutAfterApplyingLeavesItsSandboxSuspended(t *testing.T) {
 	t.Parallel()
 	g := newRig(t, nil)
-	g.hold.Store(true)
+	g.setHold(true)
 	applyThenTimeOut := k8stesting.ObjectReaction(g.dyn.Tracker())
 	g.dyn.PrependReactor("patch", "sandboxes", func(a k8stesting.Action) (bool, k8sruntime.Object, error) {
 		patch := a.(k8stesting.PatchAction)
@@ -2367,6 +2384,50 @@ func TestALaunchThatWaitedOutAPendingPodReportsItsEvents(t *testing.T) {
 	for _, want := range []string{"sandbox " + name + " is Running", "Pending", "events: Warning FailedBinding: volume issue is still bound to the previous pod"} {
 		if !strings.Contains(detail, want) {
 			t.Errorf("waitedOut over a pending pod = %q, want it to carry %q", detail, want)
+		}
+	}
+}
+
+// A pending pod's FailedMount on the providers volume names the setting whose key is missing, not
+// the key: the kubelet's message quotes it, and a provider_keys value can be a provider's key
+// pasted where its name goes, here a made-up one, among three keys. Another volume's message of
+// the same wording, whose key matches a providers key, is printed as written, as is the event's
+// type and reason.
+func TestAPendingPodsEventsNameTheSettingOfAMissingProvidersKey(t *testing.T) {
+	const pasted = "MadeUpProviderKey0123456789abcdefXYZ"
+	g := newRig(t, nil, withOptions(func(o *Options) {
+		o.ProviderKeys = map[string]string{"ANTHROPIC_API_KEY": "ANTHROPIC", "OPENAI_API_KEY": pasted, "GEMINI_API_KEY": "token"}
+	}))
+	loc := g.spawn(workerSpec(t))
+	name := loc.Sandbox.Name
+	pod := g.pod(name)
+	for i, message := range []string{
+		`MountVolume.SetUp failed for volume "providers" : references non-existent secret key: ` + pasted,
+		`MountVolume.SetUp failed for volume "operator-token" : references non-existent secret key: token`,
+	} {
+		if _, err := g.kube.CoreV1().Events(testNamespace).Create(g.ctx, &corev1.Event{
+			ObjectMeta:     metav1.ObjectMeta{Name: fmt.Sprintf("%s.%d", name, i), Namespace: testNamespace},
+			InvolvedObject: corev1.ObjectReference{Kind: "Pod", Name: name, UID: pod.UID},
+			Type:           "Warning", Reason: "FailedMount", Message: message,
+		}, metav1.CreateOptions{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	g.update(pod, func(p *corev1.Pod) { p.Status.Phase = corev1.PodPending })
+	g.eventually("the informer to see the pending pod", func() bool {
+		p := g.r.storedPod(name)
+		return p != nil && p.Status.Phase == corev1.PodPending
+	})
+	detail := g.r.waitedOut(g.ctx, g.sandbox(name))
+	if strings.Contains(detail, pasted) {
+		t.Fatalf("waitedOut = %q, prints the made-up key of the providers Secret", detail)
+	}
+	for _, want := range []string{
+		`Warning FailedMount: MountVolume.SetUp failed for volume "providers" : references a key the Secret does not hold: the key of provider_keys.OPENAI_API_KEY`,
+		`Warning FailedMount: MountVolume.SetUp failed for volume "operator-token" : references non-existent secret key: token`,
+	} {
+		if !strings.Contains(detail, want) {
+			t.Errorf("waitedOut = %q, want it to carry %q", detail, want)
 		}
 	}
 }

@@ -161,8 +161,9 @@ func WriteAttribution(ctx context.Context, pool *store.Pool, project string, now
 		result.Projects, []string{deployRepo, otherRepo, ""}); err != nil {
 		return AttributionResult{}, err
 	}
-	// The first project's delivery settings are saved only once the projects are written, so a
-	// case whose projects the database refuses leaves the settings an earlier load wrote.
+	// The project's delivery settings are saved once the projects are written (a project's row
+	// exists first), so a case whose projects the database refuses leaves the settings an earlier
+	// load wrote.
 	if _, err := PutDeliverySettings(ctx, pool, project, deliverySettingsOf(deployRepo), actor); err != nil {
 		return AttributionResult{}, fmt.Errorf("write the delivery settings of k15's case: %w", err)
 	}

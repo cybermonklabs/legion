@@ -62,6 +62,11 @@
 // Scale multiplies every count (issues, events, pull requests, runs a day, the smaller projects'
 // issues, readings) and keeps every span of days and the shape of each row, so a small load in a
 // pod exercises every table and every read the full one does.
+//
+// K14 adds, for k14's writes and first paints (dispatch://INFRA-978, T19.9), two more projects at
+// INFRA's size, PAIR with two github_workflow sources and MIXED with a github_workflow source and
+// an events source, each with its failure history (k14.go). No other load holds them, so the
+// base's and this head's paint of the fixture read the same population as before.
 package evalbench
 
 import (
@@ -138,6 +143,9 @@ type Spec struct {
 	// OneProject writes the one-project fixture of k22 and k24 (the package comment): INFRA alone,
 	// its pull requests in the deploy repository and one other, and no reading.
 	OneProject bool
+	// K14 adds the k14 projects (k14.go) after the smaller projects. A load of the base holds
+	// none: k14 measures this head.
+	K14 bool
 	// BuiltBy is the build the readings write records on the logged evals' day rows
 	// (eval_days.built_by): the server's stamped commit, so every family's rows carry the running
 	// build once the server's refresher has walked. Required where readings are written: neither
@@ -170,12 +178,15 @@ type Counts map[string]int64
 
 // countedTables are the tables Counts reads, in the order it prints them, the code survival
 // results' (codeTables) last; it reads those the database holds, so a load of the base counts none
-// of the registry's.
+// of the registry's. A k14 load counts the k14CountedTables after them, which its failure
+// histories write.
 var countedTables = slices.Concat([]string{
 	"projects", "issues", "events", "handoffs", "legion_observations", "legion_settings",
 	"delivery_pull_requests", "delivery_runs", "delivery_run_jobs",
 	"session_titles", "eval_versions", "eval_series", "eval_readings", "eval_days",
 }, codeTables)
+
+var k14CountedTables = []string{"project_deploy_sources", "production_events", "delivery_reverts"}
 
 // Load writes the fixture spec names into the database, which the server must have migrated and
 // nothing else written, and answers the counts it then holds. logf reports each step as it ends.
@@ -190,6 +201,13 @@ var countedTables = slices.Concat([]string{
 // OneProject it then checks the rows it wrote (CheckOneProject), and refuses the load where a
 // check fails.
 func Load(ctx context.Context, database *store.Store, spec Spec, logf func(format string, args ...any)) (Counts, error) {
+	return load(ctx, database, spec, logf, true)
+}
+
+// load is Load, with writeReadings run only when readings is true: a unit test of the k14 projects'
+// load skips INFRA's 730-day logged-readings batches (14,600 sequential WriteReadings transactions
+// regardless of Scale) while running every other step of Load unchanged.
+func load(ctx context.Context, database *store.Store, spec Spec, logf func(format string, args ...any), readings bool) (Counts, error) {
 	switch {
 	case spec.Scale <= 0 || spec.Scale > 1:
 		return nil, fmt.Errorf("the scale is above 0 and at most 1, not %g", spec.Scale)
@@ -199,6 +217,10 @@ func Load(ctx context.Context, database *store.Store, spec Spec, logf func(forma
 		return nil, errors.New("-one-project writes into a database of this head or of the base head 82380570f8, and -base into one of the base, main at the commit this head merges: name one")
 	case spec.readings() && spec.BuiltBy == "":
 		return nil, errors.New("name the build the readings' day rows record (the server's stamped commit)")
+	case spec.Base && spec.K14:
+		return nil, errors.New("the k14 projects are this head's measurement, and a load of the base holds none")
+	case spec.OneProject && spec.K14:
+		return nil, errors.New("the k14 projects are added to this head's full load, and -one-project writes INFRA alone: name one")
 	}
 	spec.Now = spec.Now.UTC()
 	pool := database.Pool
@@ -230,12 +252,12 @@ func Load(ctx context.Context, database *store.Store, spec Spec, logf func(forma
 	step := func(what string) {
 		logf("%s done after %s", what, time.Since(started).Round(time.Second))
 	}
-	history, err := writeInfra(ctx, pool, spec)
+	history, err := writeProject(ctx, pool, spec, infraFixture)
 	if err != nil {
 		return nil, err
 	}
 	step("INFRA's issues, events, handoffs and observations")
-	if err := writeDelivery(ctx, pool, spec, history); err != nil {
+	if _, err := writeDelivery(ctx, pool, spec, history); err != nil {
 		return nil, err
 	}
 	step("INFRA's delivery history")
@@ -259,7 +281,13 @@ func Load(ctx context.Context, database *store.Store, spec Spec, logf func(forma
 		projects = append(projects, SmallProjects...)
 		step("the nine smaller projects")
 	}
-	if spec.readings() {
+	if spec.K14 {
+		if err := writeK14(ctx, pool, spec, step); err != nil {
+			return nil, err
+		}
+		projects = append(projects, K14Projects...)
+	}
+	if spec.readings() && readings {
 		if err := writeReadings(ctx, database, spec, history, logf); err != nil {
 			return nil, err
 		}
@@ -287,7 +315,11 @@ func Load(ctx context.Context, database *store.Store, spec Spec, logf func(forma
 		}
 		step("the one-project checks")
 	}
-	return count(ctx, pool)
+	tables := countedTables
+	if spec.K14 {
+		tables = slices.Concat(countedTables, k14CountedTables)
+	}
+	return count(ctx, pool, tables)
 }
 
 // checkSchema refuses a database of the wrong head and answers which of this head's derived
@@ -420,9 +452,9 @@ const keywordFillCaughtUpQuery = `
 	   set event_id = excluded.event_id, event_at = excluded.event_at, reach = null,
 	       holder = excluded.holder, rules = excluded.rules, updated_at = now()`
 
-// count reads how many rows each of countedTables holds, those the database has.
-func count(ctx context.Context, pool *store.Pool) (Counts, error) {
-	held, err := evalfixture.ExistingTables(ctx, pool, countedTables)
+// count reads how many rows each of tables holds, those the database has.
+func count(ctx context.Context, pool *store.Pool, tables []string) (Counts, error) {
+	held, err := evalfixture.ExistingTables(ctx, pool, tables)
 	if err != nil {
 		return nil, err
 	}
@@ -437,10 +469,10 @@ func count(ctx context.Context, pool *store.Pool) (Counts, error) {
 	return counts, nil
 }
 
-// Lines is the counts as one line a table, in countedTables' order.
+// Lines is the counts as one line a table, in countedTables' order and then k14CountedTables'.
 func (c Counts) Lines() []string {
 	var lines []string
-	for _, table := range countedTables {
+	for _, table := range slices.Concat(countedTables, k14CountedTables) {
 		if rows, held := c[table]; held {
 			lines = append(lines, fmt.Sprintf("%s=%d", table, rows))
 		}

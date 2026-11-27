@@ -119,9 +119,24 @@ create function project_delivery_settings_changed() returns trigger language plp
 declare
   bookkeeping constant text[] := array['last_event_at', 'last_reconcile_at', 'last_error', 'updated_at', 'updated_by'];
   project text := coalesce(new.project_key, old.project_key);
+  before_first date;
+  after_first date;
+  change_ref text;
 begin
   if tg_op <> 'UPDATE' or (to_jsonb(old) - bookkeeping) is distinct from (to_jsonb(new) - bookkeeping) then
-    perform delivery_change_log('settings', null, project, null, null, null);
+    if tg_table_name = 'project_delivery_settings' then
+      if tg_op <> 'INSERT' and old.delivery and cardinality(old.failure_sources) > 0 then
+        before_first := old.failures_measured_since;
+      end if;
+      if tg_op <> 'DELETE' and new.delivery and cardinality(new.failure_sources) > 0 then
+        after_first := new.failures_measured_since;
+      end if;
+      if before_first is distinct from after_first then
+        -- The eval refresher may need to announce a moved data_since even without day rows.
+        change_ref := 'failure-first-day';
+      end if;
+    end if;
+    perform delivery_change_log('settings', null, project, change_ref, null, null);
     perform pg_notify('dispatch_delivery_settings', project);
   end if;
   if tg_table_name = 'project_deploy_sources' and tg_op <> 'DELETE' then

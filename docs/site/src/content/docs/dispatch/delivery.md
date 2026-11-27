@@ -281,7 +281,12 @@ A window's value folds its days: the two rates divide the summed numerators by t
 From `failures_measured_since` on, every day holds a row of each of the three, a day with no deploy a row of zeros, so the two rates of a window from that day with no failure read 0 percent.
 A window that starts before that day reads "no data": every statistic of the series is null, and the series' `data_since` names that day.
 A `failures_measured_since` in the past counts the record's rows from that day.
-A write to the record, a reject and a restore each make the eval refresher rewrite the days they move, and a change of the project's delivery settings rewrites the project's rows whole.
+A write to the record, including a reject, re-count or restore, makes the eval refresher rewrite the days it affects and update their stored figures together.
+A save of the failure sources or measurement start rewrites the project's failure rows; an open Evals page receives the new figures together.
+If both the previous and new measurement start are in the future, the page still updates the date it shows, even though there are no failure day rows yet.
+A default-repository move changes which projects count a deploy only after the refresher publishes the move.
+In the same pass it updates the affected projects' failure rows and figures.
+A source move, a repository's source moved to another project, or delivery turned off or on is published the same way: from that commit, the Evals page answers the periods the move touched from the day rows until the refresher has stored their figures again, so the numbers move once, to the new sources' values.
 
 `GET /api/v1/projects/{key}/evals/{slug}/items` of each of the three lists the rows of the record behind its numbers, `deploy` and `failure` rows, each with its `relation` to the numbers: `failed`, `restoring`, `deployed` or `blamed` for a deploy, and `counted`, `restored` or `not_restored` for a failure.
 
@@ -291,7 +296,8 @@ A window that starts before that project's `failures_measured_since` reads "no d
 
 ## Which project a row counts for
 
-Each delivery and CI eval counts its rows for projects by one rule, and the failure measures count a deploy by the same rule:
+Each delivery and CI eval counts its rows for projects by one rule.
+The failure measures and their items use the same deploy attribution, including the published defaults and source selection:
 
 - A pull request counts for the project of the issue it names.
   One that names no issue, or an issue Dispatch does not hold, counts for each project whose default repository is its repository, and for no project where no project's default repository is.
@@ -304,7 +310,7 @@ Each delivery and CI eval counts its rows for projects by one rule, and the fail
 
 - A deploy run that ships no pull request counts for the project whose deploy source reads its repository, and for no other project, whatever the default repositories say.
   A run that did not reach production ships nothing, so it counts there too.
-  Where no delivery-on source reads its repository, it counts as a pull request with no issue does.
+  Such runs follow the source: once the refresher's next pass has recorded a source moved to another repository, or a repository's source moved to another project, they count for the project whose source reads their repository then, and while no delivery-on source reads it they count for no project.
 
 - A posted deploy counts for the project of the route it was posted to, and for no other project.
   While that project has delivery on and an `events` source, the deploy adds one to its `deploy-frequency` on the UTC day the deploy finished, and each population pull request it names adds its time from merge to the deploy's finish to `merge-to-production`, where no earlier deploy shipped it.

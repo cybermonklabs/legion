@@ -102,11 +102,12 @@ func firstApply(merged time.Time, applies []delivery.Apply) *delivery.Apply {
 //
 // What no issue attributes counts for its repository's owner key (owners.go, R15): a pull request
 // that names no issue, and a deploy run that ships one, under the key whose sharers are the
-// projects it counts for through issues; a deploy run that ships none counts for the project whose
-// deploy source reads its repository alone (dispatch://INFRA-978, R12). So a deploy run's day is
-// rewritten in each owner key it counted for before or after the change where the key moved or the
-// run's row in it did, and a key whose first input the change brings writes its zero rows through
-// today, as one that no input counts for any more deletes every row it held (keyDays).
+// projects it counts for through issues; a deploy run that ships none counts under its repository's
+// source key (sourceKey), which the project whose deploy source reads the repository reads alone
+// (dispatch://INFRA-978, R12). So a deploy run's day is rewritten in each owner key it counted for
+// before or after the change where the key moved or the run's row in it did, the source key among
+// them, and a key whose first input the change brings writes its zero rows through today, as one
+// that no input counts for any more deletes every row it held (keyDays).
 func TestEachDeliveryChangeRewritesExactlyItsDays(t *testing.T) {
 	t.Parallel()
 	r := newRefresherRig(t)
@@ -179,8 +180,8 @@ func TestEachDeliveryChangeRewritesExactlyItsDays(t *testing.T) {
 	// of the pull requests it ships through their issues, which its CI rows count for too; where it
 	// ships a pull request no issue attributes, its repository's owner key with those projects as
 	// its sharers, whose row of the day holds whether the run reached production and those pull
-	// requests; and, where it ships none, the project whose deploy source reads its repository,
-	// main, and no other (dispatch://INFRA-978, R12).
+	// requests; and, where it ships none, its repository's source key, whose row of the day holds
+	// whether it reached production, and no project's own rows (dispatch://INFRA-978, R12).
 	type runCount struct {
 		projects map[string]bool
 		owner    string
@@ -204,7 +205,7 @@ func TestEachDeliveryChangeRewritesExactlyItsDays(t *testing.T) {
 		}
 		switch {
 		case !ships:
-			count.projects[main] = true
+			count.owner = sourceKey(runRepos[runID])
 		case len(unissued) > 0:
 			slices.Sort(unissued)
 			count.owner = ownerKeyOf(runRepos[runID], slices.Collect(maps.Keys(count.projects))...)

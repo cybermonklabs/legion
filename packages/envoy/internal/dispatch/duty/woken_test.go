@@ -72,6 +72,7 @@ func noLease(t *testing.T) duty.ExclusiveFunc {
 // After its boot pass a loop with no wake and no due time does nothing at all - no pass in an hour,
 // so no timer is armed either, since an armed timer would have fired one.
 func TestAWokenLoopRunsOnceAtStartAndThenNothingWhileIdle(t *testing.T) {
+	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
 		var passes passClock
 		booted := time.Now()
@@ -86,10 +87,49 @@ func TestAWokenLoopRunsOnceAtStartAndThenNothingWhileIdle(t *testing.T) {
 	})
 }
 
+// Idle is called each time the loop is about to wait with nothing owed and nothing due, and not
+// while a pass's due time is armed: here the boot pass asks to run again 10 s on, so the loop is
+// first idle after that pass, and again after the pass a later wake earns.
+func TestAWokenLoopReportsIdleOnlyWithNothingOwedOrDue(t *testing.T) {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		var passes, idles passClock
+		wake := make(chan struct{}, 1)
+		booted := time.Now()
+		first := true
+		cancel, done := runLoop(duty.WokenLoop{
+			Wake:   wake,
+			MinGap: 5 * time.Second,
+			Pass: func(context.Context) time.Time {
+				passes.record()
+				if first {
+					first = false
+					return booted.Add(10 * time.Second)
+				}
+				return time.Time{}
+			},
+			Idle: idles.record,
+		}, noLease(t))
+		time.Sleep(time.Minute)
+		signal(wake)
+		time.Sleep(time.Minute)
+		stop(cancel, done)
+		wantPassesAt(t, &passes, booted, 0, 10*time.Second, time.Minute)
+		var reported []time.Duration
+		for _, at := range idles.times() {
+			reported = append(reported, at.Sub(booted))
+		}
+		if want := []time.Duration{10 * time.Second, time.Minute}; !slices.Equal(reported, want) {
+			t.Fatalf("idle reported at %v after boot, want %v", reported, want)
+		}
+	})
+}
+
 // Wakes that arrive inside MinGap of a pass's start collapse into one pass at the end of the gap,
 // so a loop under load runs no more often than the timer it replaced; a wake after the gap runs at
 // once.
 func TestWakesInsideTheMinimumGapCollapseIntoOnePass(t *testing.T) {
+	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
 		var passes passClock
 		wake := make(chan struct{}, 1)
@@ -116,6 +156,7 @@ func TestWakesInsideTheMinimumGapCollapseIntoOnePass(t *testing.T) {
 // A change that lands while a pass runs may have been read too early by it, so its wake earns one
 // more pass after the gap.
 func TestAWakeDuringAPassEarnsAPassAfterIt(t *testing.T) {
+	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
 		var passes passClock
 		wake := make(chan struct{}, 1)
@@ -146,6 +187,7 @@ func TestAWakeDuringAPassEarnsAPassAfterIt(t *testing.T) {
 
 // A due time a pass returns fires one pass, and only one: the next pass returns none.
 func TestADueTimeAPassReturnsFiresOnce(t *testing.T) {
+	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
 		var passes passClock
 		calls := 0
@@ -170,6 +212,7 @@ func TestADueTimeAPassReturnsFiresOnce(t *testing.T) {
 // Each pass's due time replaces the one before: a pass woken before the first due time that
 // returns a later one moves the timer there, and nothing fires at the first.
 func TestALaterPassesDueTimeReplacesTheEarlierOne(t *testing.T) {
+	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
 		var passes passClock
 		wake := make(chan struct{}, 1)
@@ -201,6 +244,7 @@ func TestALaterPassesDueTimeReplacesTheEarlierOne(t *testing.T) {
 // A due time sooner than MinGap after the pass that returned it waits out the gap: a pass asking
 // to run again at once cannot make the loop poll faster than its gap.
 func TestADueTimeWaitsOutTheMinimumGap(t *testing.T) {
+	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
 		var passes passClock
 		calls := 0
@@ -344,6 +388,8 @@ func (f *fakeLease) exclusive(ctx context.Context, _ *slog.Logger, _ duty.Leases
 // this loop. Once it has run, the loop is idle again. Every attempt goes through the lease named
 // for the loop, with no period and no due time.
 func TestARefusedLeaseIsRetriedUntilAPassOfItsOwnRuns(t *testing.T) {
+	// Not parallel: it fixes duty.JitterN (fixJitter), the package variable every jittered wait
+	// reads.
 	const retry = 2 * time.Second
 	fixJitter(t, func(n time.Duration) time.Duration { return n - 1 })
 	synctest.Test(t, func(t *testing.T) {
@@ -382,6 +428,7 @@ func TestARefusedLeaseIsRetriedUntilAPassOfItsOwnRuns(t *testing.T) {
 // wait. A pass shutdown cut short reports it did not run, and the loop returns rather than
 // retrying it.
 func TestAWokenLoopReturnsAtOnceWhenItsContextEnds(t *testing.T) {
+	t.Parallel()
 	returnsAtOnce := func(t *testing.T, cancel context.CancelFunc, done <-chan struct{}) {
 		t.Helper()
 		synctest.Wait()
@@ -396,12 +443,14 @@ func TestAWokenLoopReturnsAtOnceWhenItsContextEnds(t *testing.T) {
 	idlePass := func(context.Context) time.Time { return time.Time{} }
 
 	t.Run("idle", func(t *testing.T) {
+		t.Parallel()
 		synctest.Test(t, func(t *testing.T) {
 			cancel, done := runLoop(duty.WokenLoop{Wake: make(chan struct{}, 1), Pass: idlePass}, noLease(t))
 			returnsAtOnce(t, cancel, done)
 		})
 	})
 	t.Run("waiting to retry a refused lease", func(t *testing.T) {
+		t.Parallel()
 		synctest.Test(t, func(t *testing.T) {
 			lease := &fakeLease{refusals: 1 << 30}
 			cancel, done := runLoop(duty.WokenLoop{Lease: "l", Retry: time.Hour, Pass: idlePass}, lease.exclusive)
@@ -409,6 +458,7 @@ func TestAWokenLoopReturnsAtOnceWhenItsContextEnds(t *testing.T) {
 		})
 	})
 	t.Run("waiting out the gap", func(t *testing.T) {
+		t.Parallel()
 		synctest.Test(t, func(t *testing.T) {
 			wake := make(chan struct{}, 1)
 			cancel, done := runLoop(duty.WokenLoop{Wake: wake, MinGap: time.Hour, Pass: idlePass}, noLease(t))
@@ -418,6 +468,7 @@ func TestAWokenLoopReturnsAtOnceWhenItsContextEnds(t *testing.T) {
 		})
 	})
 	t.Run("a pass cut short", func(t *testing.T) {
+		t.Parallel()
 		synctest.Test(t, func(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())
 			attempts := 0
@@ -438,6 +489,9 @@ func TestAWokenLoopReturnsAtOnceWhenItsContextEnds(t *testing.T) {
 // Against Postgres: a lease another session holds keeps the pass from running, and the retry runs
 // it once that session lets go, with no wake in between.
 func TestRunWokenRetriesALeaseHeldElsewhereUntilThePassRuns(t *testing.T) {
+	// Not parallel: it holds the pass to not running in the 500 ms the lease is held elsewhere, a
+	// quiet window the parallel tests' load could make vacuous by holding the loop's first lease
+	// attempt past it.
 	database := storetest.Open(t)
 	leases := leasesOf(t, database)
 	ctx := context.Background()

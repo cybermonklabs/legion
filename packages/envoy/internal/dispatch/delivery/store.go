@@ -637,7 +637,7 @@ func listPullRequests(ctx context.Context, pool *store.Pool, query string, args 
 }
 
 // RunColumns is the delivery_runs select list ScanRun reads, in scan order.
-const RunColumns = `repo, run_id, kind, pr_number, head_sha, head_commit_at, started_at, created_at, completed_at, conclusion, url, head_branch, event`
+const RunColumns = `repo, run_id, kind, pr_number, head_sha, head_commit_at, started_at, created_at, completed_at, conclusion, url, head_branch, event, run_attempt`
 
 // runCreatedAt is when GitHub created the delivery_runs row r: DeliveryRun.Created in SQL, whose
 // comment says why a row without created_at reads started_at. delivery_runs_kind_created
@@ -658,7 +658,7 @@ func scanRun(row pgx.Row, extra ...any) (DeliveryRun, error) {
 	var conclusion *string
 	dest := []any{
 		&run.Repo, &run.RunID, &kind, &run.PRNumber, &run.HeadSHA, &run.HeadCommitAt,
-		&run.StartedAt, &run.CreatedAt, &run.CompletedAt, &conclusion, &run.URL, &run.HeadBranch, &run.Event,
+		&run.StartedAt, &run.CreatedAt, &run.CompletedAt, &conclusion, &run.URL, &run.HeadBranch, &run.Event, &run.RunAttempt,
 	}
 	if err := row.Scan(append(dest, extra...)...); err != nil {
 		return DeliveryRun{}, err
@@ -683,8 +683,8 @@ func UpsertRun(ctx context.Context, pool *store.Pool, run DeliveryRun) error {
 		conclusion = &c
 	}
 	_, err := pool.Exec(ctx, `
-		insert into delivery_runs (repo, run_id, kind, pr_number, head_sha, head_commit_at, started_at, created_at, completed_at, conclusion, url, head_branch, event)
-		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+		insert into delivery_runs (repo, run_id, kind, pr_number, head_sha, head_commit_at, started_at, created_at, completed_at, conclusion, url, head_branch, event, run_attempt)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
 		on conflict (repo, run_id) do update set
 			kind = excluded.kind,
 			pr_number = excluded.pr_number,
@@ -696,8 +696,9 @@ func UpsertRun(ctx context.Context, pool *store.Pool, run DeliveryRun) error {
 			conclusion = excluded.conclusion,
 			url = excluded.url,
 			head_branch = excluded.head_branch,
-			event = excluded.event
-	`, run.Repo, run.RunID, string(run.Kind), run.PRNumber, run.HeadSHA, run.HeadCommitAt, run.StartedAt, run.CreatedAt, run.CompletedAt, conclusion, run.URL, run.HeadBranch, run.Event)
+			event = excluded.event,
+			run_attempt = excluded.run_attempt
+	`, run.Repo, run.RunID, string(run.Kind), run.PRNumber, run.HeadSHA, run.HeadCommitAt, run.StartedAt, run.CreatedAt, run.CompletedAt, conclusion, run.URL, run.HeadBranch, run.Event, run.RunAttempt)
 	return err
 }
 
@@ -972,9 +973,15 @@ func ListRunJobs(ctx context.Context, pool *store.Pool, repo string, runID int64
 	return jobs, nil
 }
 
-// runJobsNamedForRunsQuery is ListRunJobsForRuns' read. Every one of its three conditions is a
-// key of delivery_run_jobs' primary key (repo, run_id, name), so the read is a descent of that
-// key for each run and name it asks for, and never a run's other jobs.
+// runJobsNamedForRunsQuery is ListRunJobsForRuns' read: an Index Only Scan of
+// delivery_run_jobs_named (repo, name, run_id; migration 20261117100023), whose index condition
+// holds all three of its conditions and which includes every other column of JobColumns. The index
+// holds a repository's jobs of one name together, so the read of a few names over many runs reads a
+// few leaf pages for each name and never a run's other jobs, and it reads no heap page the
+// visibility map marks all-visible. Through the primary key (repo, run_id, name) the read fetched
+// each run's named jobs from a heap page of their own: on the farm at ten times the stated run
+// rate, a cold settings change's 80 such reads read 54,677 blocks from disk in 1,123 ms
+// (dispatch://INFRA-2916, R14).
 const runJobsNamedForRunsQuery = `select ` + JobColumns + ` from delivery_run_jobs where repo = $1 and run_id = any($2) and name = any($3)`
 
 // runJobsFailedForRunsQuery is listRunJobsFailedForRuns' read: each run's failed jobs not named

@@ -32,9 +32,10 @@ func TestSlotUseAnswersOneUsePerSlotState(t *testing.T) {
 	}
 }
 
-// TestCardWaitingAnswersOneReasonPerWait: the four reasons an issue waits for, one case each, and
-// the nil answer for an issue that waits for nothing. Since is the phase entry, and the moment a
-// person was asked where the issue waits for that person.
+// TestCardWaitingAnswersOneReasonPerWait: the four reasons an issue waits for, one case each, the
+// two waits of a parent in `awaiting_children`, and the nil answer for an issue that waits for
+// nothing. Since is the phase entry, and the moment a person was asked where the issue waits for
+// that person.
 func TestCardWaitingAnswersOneReasonPerWait(t *testing.T) {
 	entered := time.Date(2026, 11, 3, 9, 0, 0, 0, time.UTC)
 	asked := time.Date(2026, 11, 3, 8, 0, 0, 0, time.UTC)
@@ -79,6 +80,19 @@ func TestCardWaitingAnswersOneReasonPerWait(t *testing.T) {
 				WaitingOn: &Wait{Kind: "gate", Since: &asked},
 			},
 			reason: WaitingPerson, since: asked,
+		},
+		{
+			name: "its open children hold a parent waiting on them, which the daemon lists as blocked",
+			in: WaitingInput{
+				Phase: PhaseAwaitingChildren, Column: ColumnAwaitingChildren,
+				BlockedBy: []string{"ACME-12"}, PhaseSince: &entered,
+			},
+			reason: WaitingBlocked, since: entered,
+		},
+		{
+			name:   "a parent whose last child closed is ready for the pass that returns it",
+			in:     WaitingInput{Phase: PhaseAwaitingChildren, Column: ColumnAwaitingChildren, PhaseSince: &entered},
+			reason: WaitingReady, since: entered,
 		},
 	} {
 		waiting := CardWaiting(want.in)
@@ -129,6 +143,8 @@ func TestColumnAnswersTheQueueForEachStateOfTheWaitingLine(t *testing.T) {
 		{"no block was read of a slot holder", PhaseAdmitted, &slot, QueuedUnread, ColumnDesign},
 		{"no block was read of an issue at work", PhaseImplementing, nil, QueuedUnread, ColumnImplementing},
 		{"no block was read of an issue waiting on a person", PhaseAwaitingPerson, nil, QueuedUnread, ColumnAwaiting},
+		{"a blocker link holds a parent waiting on its children", PhaseAwaitingChildren, nil, QueuedYes, ColumnAwaitingChildren},
+		{"no block was read of a parent waiting on its children", PhaseAwaitingChildren, nil, QueuedUnread, ColumnAwaitingChildren},
 		{"the phase is on no column", PhaseDone, nil, QueuedUnread, ""},
 	} {
 		if column := Column(want.phase, want.slot, want.queued); column != want.column {

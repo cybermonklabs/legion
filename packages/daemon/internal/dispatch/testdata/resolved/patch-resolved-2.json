@@ -1,0 +1,21 @@
+{
+  "key": "ACME-12",
+  "project": "ACME",
+  "number": 12,
+  "status": "in_progress",
+  "priority": null,
+  "resolved_priority": 2,
+  "priority_from": "OTHER-5",
+  "rank": "UUUk",
+  "labels": [],
+  "parent": "ACME-7",
+  "blocked_by": [],
+  "claim": null,
+  "resolved_repo": "acme/widgets",
+  "last_seq": 3,
+  "advice": {
+    "issue_status": "in_progress",
+    "session_writes_since_human": 0,
+    "your_open_asks": []
+  }
+}

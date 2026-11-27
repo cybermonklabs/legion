@@ -2672,6 +2672,62 @@ func TestASubscriberGetsTheGETBodyAsItsSnapshot(t *testing.T) {
 	}
 }
 
+// TestTheHubServesAViewOverTwoSourceRepositoriesEachUnderItsOwnRule (dispatch://INFRA-978, D9):
+// ALPHA reads two source repositories, acme/one under the production job `one / release` and
+// acme/two under `two / release`, and each holds a run of its own job and a run of the other's:
+// acme/one's 1001 and acme/two's 1002 are deploys by their own repository's rule, and acme/two's
+// 1003 (one's job) and acme/one's 1004 (two's job) are none. A subscriber's first answer of the
+// `measures` view counts two successful deploys and its first answer of the `pipeline` view holds a
+// production card of both repositories' jobs with two deploys, each the body its route answers, as
+// the routes count them (TestTheDeliveryRoutesReadEachSourceRepositoryUnderItsOwnRule).
+func TestTheHubServesAViewOverTwoSourceRepositoriesEachUnderItsOwnRule(t *testing.T) {
+	t.Parallel()
+	rig := newHubRig(t, nil)
+	createTestProject(t, rig.handler, "ALPHA")
+	saveProjectRules(t, rig.database, "ALPHA", deployRule("acme/one", "one / release"), deployRule("acme/two", "two / release"))
+	seedSourceRun(t, rig.database, "acme/one", 1001, 1, "one / release")
+	seedSourceRun(t, rig.database, "acme/two", 1002, 2, "two / release")
+	seedSourceRun(t, rig.database, "acme/two", 1003, 3, "one / release")
+	seedSourceRun(t, rig.database, "acme/one", 1004, 4, "two / release")
+	from, to := sourcesDay, sourcesDay.AddDate(0, 0, 1)
+	at := sourcesDay.Add(20 * time.Hour)
+
+	conn := newFakeLiveConn()
+	bodies := map[string]json.RawMessage{}
+	for i, test := range []struct {
+		sub, kind, query string
+		view             DeliveryLiveView
+	}{
+		{"measures", deliveryLiveMeasures, "", measuresRange(from, to, "")},
+		{"pipeline", deliveryLivePipeline, "at=" + at.Format(time.RFC3339Nano), livePipelineView(&at)},
+	} {
+		rig.hub.Subscribe(conn, subscribeFrame(test.sub, test.view))
+		snapshot := conn.snapshot(t, test.sub)
+		if i > 0 {
+			// The first view's read set the hub's verdict silently; every later view's snapshot is
+			// followed by it.
+			conn.freshness(t, "the verdict after the snapshot of "+test.sub)
+		}
+		requireSameBody(t, test.sub, snapshot.Body, getBody(t, rig.handler, windowTarget(t, test.kind, snapshot.Body, test.query)))
+		bodies[test.sub] = snapshot.Body
+	}
+
+	var measured deliveryMeasuresResponse
+	if err := json.Unmarshal(bodies["measures"], &measured); err != nil {
+		t.Fatalf("decode the measures snapshot: %v", err)
+	}
+	if deploys := measured.Measures.DeployFrequency.SuccessfulDeploys; deploys != 2 {
+		t.Errorf("the hub's measures view counts %d successful deploys, want 2: acme/one's 1001 and acme/two's 1002, each by its own rule", deploys)
+	}
+	var pipeline deliveryPipelineResponse
+	if err := json.Unmarshal(bodies["pipeline"], &pipeline); err != nil {
+		t.Fatalf("decode the pipeline snapshot: %v", err)
+	}
+	if card := pipeline.ProductionApply; card.Job != "one / release or two / release" || card.Total.N != 2 {
+		t.Errorf("the hub's pipeline view holds the production card %+v, want both repositories' jobs and their two deploys", card)
+	}
+}
+
 func TestAMergedPullRequestReachesTheSubscriberAsOneDelta(t *testing.T) {
 	t.Parallel()
 	rig := newHubRig(t, nil)
@@ -2964,18 +3020,19 @@ func TestOneRecomputeAtATime(t *testing.T) {
 	}
 }
 
-// TestTheHubRecomputesUpToFourEvalsViewsAtOnce: five evals views of one project, a timeline and a
-// measures view are open, and a day row of the project marks the five evals views at one moment.
-// The reads of the first evalsRecomputes evals views to take their position are held there: four
-// begin and are held at once, and the fifth, which the worker has picked, waits for a slot and
-// begins no recompute while they hold every slot. Three of the four are let go and finish while
-// the first is still held; the fifth then takes a slot and finishes beside it; and a merge made
-// while the first is held marks the timeline and the measures view, which the worker recomputes
-// itself, one at a time, while the first is still held. No view is computed twice at once, each
-// evals view is recomputed once, and every view is sent its one delta. A hub that recomputes one
-// view at a time begins no second evals view while the first is held, so the wait for the four
-// has a bound of its own rather than the test binary's deadline.
-func TestTheHubRecomputesUpToFourEvalsViewsAtOnce(t *testing.T) {
+// TestTheHubRecomputesUpToEvalsRecomputesEvalsViewsAtOnce: evalsRecomputes+1 evals views of one
+// project, a timeline and a measures view are open, and a day row of the project marks every evals
+// view at one moment. The reads of the first evalsRecomputes evals views to take their position are
+// held there: evalsRecomputes begin and are held at once, and the one that waits, which the worker
+// has picked, begins no recompute while they hold every slot. All but the first of those held are
+// let go and finish while the first is still held; the one that waited then takes a slot and
+// finishes beside it; and a merge made while the first is held marks the timeline and the
+// measures view, which the worker recomputes itself, one at a time, while the first is still held.
+// No view is computed twice at once, each evals view is recomputed once, and every view is sent its
+// one delta. A hub that recomputes one view at a time begins no second evals view while the first
+// is held, so the wait for the held reads has a bound of its own rather than the test binary's
+// deadline.
+func TestTheHubRecomputesUpToEvalsRecomputesEvalsViewsAtOnce(t *testing.T) {
 	t.Parallel()
 	var (
 		mu        sync.Mutex
@@ -3042,9 +3099,12 @@ func TestTheHubRecomputesUpToFourEvalsViewsAtOnce(t *testing.T) {
 		mu.Unlock()
 		close(gate)
 	}
-	seedHubSettings(t, rig.database)
 	createTestProject(t, rig.handler, "ACME")
+	saveProjectRules(t, rig.database, "ACME", deployRule("acme/widgets", "release / release"))
 	today := rig.clock.Now().UTC().Truncate(24 * time.Hour)
+	// The day row below is of acme/widgets', which a read of ACME's evals reads once the refresher's
+	// record names it (eval_days_rules, evals.DeployReposIn).
+	publishDeployRepo(t, rig.database, "ACME", deployRule("acme/widgets", "release / release"), today.AddDate(0, 0, -27))
 	keyOf := func(frame DeliveryLiveView) string {
 		spec, refusal := parseDeliveryLiveView(frame)
 		if refusal != nil {
@@ -3058,10 +3118,15 @@ func TestTheHubRecomputesUpToFourEvalsViewsAtOnce(t *testing.T) {
 	rig.hub.Subscribe(delivered, subscribeFrame("t", timeline))
 	rig.hub.Subscribe(delivered, subscribeFrame("m", measures))
 	delivered.firstSnapshots(t, "t", "m")
-	frames := []DeliveryLiveView{
-		evalsLiveView("ACME", DeliveryLiveWindow{Preset: new(7)}, ""), evalsLiveView("ACME", DeliveryLiveWindow{Preset: new(14)}, ""),
-		evalsLiveView("ACME", DeliveryLiveWindow{Preset: new(28)}, ""), evalsLiveView("ACME", DeliveryLiveWindow{Preset: new(84)}, ""),
-		evalsLiveView("ACME", evalsDays(today.AddDate(0, 0, -27), today.AddDate(0, 0, 1)), ""),
+	// evalsRecomputes+1 evals views of ACME: one of each preset, then windows of the days to
+	// tomorrow, a day longer each, for the rest.
+	frames := make([]DeliveryLiveView, evalsRecomputes+1)
+	for i := range frames {
+		window := evalsDays(today.AddDate(0, 0, -27-i), today.AddDate(0, 0, 1))
+		if i < len(deliveryLivePresets) {
+			window = DeliveryLiveWindow{Preset: new(deliveryLivePresets[i])}
+		}
+		frames[i] = evalsLiveView("ACME", window, "")
 	}
 	conns, keys := make([]*fakeLiveConn, len(frames)), make([]string, len(frames))
 	for i, frame := range frames {
@@ -3089,7 +3154,7 @@ func TestTheHubRecomputesUpToFourEvalsViewsAtOnce(t *testing.T) {
 		case key := <-held:
 			reading = append(reading, key)
 		case <-time.After(bound):
-			t.Fatalf("%d evals views' reads were held %s after the day row marked five, want %d at once (evalsRecomputes)", len(reading), bound, evalsRecomputes)
+			t.Fatalf("%d evals views' reads were held %s after the day row marked %d, want %d at once (evalsRecomputes)", len(reading), bound, len(frames), evalsRecomputes)
 		}
 	}
 	first, waiting := reading[0], ""
@@ -3106,7 +3171,7 @@ func TestTheHubRecomputesUpToFourEvalsViewsAtOnce(t *testing.T) {
 	}
 	rig.waitNoRecompute(t, 2*viewQuiet)
 	if n := begins(waiting); n != 0 {
-		t.Fatalf("the fifth evals view began %d recomputes while four held every slot, want none", n)
+		t.Fatalf("the evals view that waited began %d recomputes while %d held every slot, want none", n, evalsRecomputes)
 	}
 
 	upsertPR(t, rig.database, hubPR(1, rig.clock.Now().Add(-time.Hour)))
@@ -3115,7 +3180,7 @@ func TestTheHubRecomputesUpToFourEvalsViewsAtOnce(t *testing.T) {
 		release(key)
 	}
 	finished := append(slices.Clone(reading[1:]), waiting, keyOf(timeline), keyOf(measures))
-	testwait.Until(t, "the three evals views let go, the fifth and both delivery views to finish while the first is held (those left)", func() ([]string, bool) {
+	testwait.Until(t, "the evals views let go, the one that waited and both delivery views to finish while the first is held (those left)", func() ([]string, bool) {
 		var left []string
 		for _, key := range finished {
 			if ends(key) == 0 {
@@ -3151,7 +3216,7 @@ func TestTheHubRecomputesUpToFourEvalsViewsAtOnce(t *testing.T) {
 	if mostEvals != evalsRecomputes || mostDelivery != 1 {
 		t.Errorf("at most %d evals views and %d delivery views were computed at once, want %d and 1", mostEvals, mostDelivery, evalsRecomputes)
 	}
-	t.Logf("%d evals views computed at once, the fifth waiting; the delivery views one at a time, while the first evals view was held", mostEvals)
+	t.Logf("%d evals views computed at once, one waiting; the delivery views one at a time, while the first evals view was held", mostEvals)
 }
 
 func TestAChangeOutsideAWindowRecomputesNothing(t *testing.T) {

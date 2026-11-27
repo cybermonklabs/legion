@@ -305,10 +305,10 @@ function storedSourceInput(source: ProjectDeploySource): ProjectDeploySourceInpu
   };
 }
 
-/** The save of a project with delivery off: the switch, and every other field as stored, so
- *  turning delivery on again starts from them. It names no target, so each eval keeps its own. */
+/** With delivery off, start from the stored record and discard edits to the hidden fields. */
 function storedInput(record: ProjectDeliverySettings | null): ProjectDeliverySettingsInput {
   return {
+    ...record,
     delivery: false,
     sources: record?.sources?.map(storedSourceInput) ?? [],
     population_authors: record?.population_authors ?? [],
@@ -360,9 +360,14 @@ function parsedTarget(text: string): number | typeof TARGET_OFF | undefined {
   return trimmed === "" || !Number.isFinite(value) ? undefined : value;
 }
 
-/** The save of a project with delivery on: every field as typed, and each target box that holds
- *  text (a box left empty keeps its eval's target). `refusalOf` passed the draft first. */
-function draftInput(draft: Draft): ProjectDeliverySettingsInput {
+/** The save of a project with delivery on: built from the record it read (sending back every field
+ *  the form does not edit, one it does not know included), overwriting the fields the form edits
+ *  and each target box that holds text (a box left empty keeps its eval's target). `refusalOf`
+ *  passed the draft first. */
+function draftInput(
+  draft: Draft,
+  record: ProjectDeliverySettings | null
+): ProjectDeliverySettingsInput {
   const targets: NonNullable<ProjectDeliverySettingsInput["targets"]> = {};
   for (const slug of TARGET_SLUGS) {
     const target = parsedTarget(draft.targets[slug]);
@@ -371,6 +376,7 @@ function draftInput(draft: Draft): ProjectDeliverySettingsInput {
     }
   }
   return {
+    ...record,
     delivery: true,
     sources: draft.sources.map(sourceInput),
     population_authors: listEntries(draft.population_authors),
@@ -492,7 +498,7 @@ interface DeliverySettingsSectionProps {
  * logins, with Add, Move up, Move down and Remove; the failure sources with the day they are
  * counted from; and the targets of the seven delivery evals, each a number or `off`. With
  * delivery off it shows the switch alone, and Save sends the stored fields back unchanged. Save
- * replaces the project's settings through `PUT /api/v1/projects/{key}/settings/delivery`; a
+ * updates the project's settings through `PUT /api/v1/projects/{key}/settings/delivery`; a
  * refusal shows under the form as the server wrote it and the draft stays. A save starts the
  * fields over from the record the server stored, and so does anyone else's save once the record
  * is read again.
@@ -681,7 +687,7 @@ function DeliverySettingsFields({
       onRefused();
       return;
     }
-    onSave(draftInput(draft));
+    onSave(draftInput(draft, record));
   };
 
   return (

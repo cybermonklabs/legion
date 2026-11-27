@@ -103,20 +103,26 @@ func requireBusSettings(t *testing.T, js natsgo.JetStreamContext, want busSettin
 // state served by one server per build (serve), so each handling is recorded with the build that
 // did it.
 //
-// A handling is counted at the pull request's own fetch, GET /repos/{owner}/{repo}/pulls/{number}
-// (delivery.FetchPullRequest), as the multiprocess suite's mergedPullRequestFake counts one: the
-// merge path's first GitHub call after its head write (recordPullRequestHead pages the commits
-// before it), and the one call it makes exactly once however the handling then ends. The commit
-// listing is counted by neither suite, and a merged pull request whose
-// payload names its head is paged twice for it -- once to attribute the head row, once for the
-// completion's session trailers.
+// A handling is one delivery.FetchPullRequest, the read of a merged pull request the delivery
+// timeline handles: the intake's, or the reconcile's completion of one the intake left partial.
+// It is counted at the one call only FetchPullRequest makes, its read of the first commit,
+// GET /repos/{owner}/{repo}/pulls/{number}/commits?per_page=1 (delivery/github_prs.go), which it
+// makes exactly once however the handling then ends. The pull request's own fetch,
+// GET /repos/{owner}/{repo}/pulls/{number}, counts nothing, since a read that handles no message
+// makes it too: the reconcile's refresh of a head row (delivery.Attributor.RefreshPullRequestHead)
+// reads it for every merged row stored under an older delivery.AttributionRuleVersion
+// (ListStalePullRequestHeads), so a build whose rule is above the other build's reads again each
+// merged row the other build wrote. That is a backfill of the row under the newer rule, not a
+// second handling of its message. The other listings of the commits -- the head write's, which
+// attributes the row, and the completion's, which reads its session trailers -- ask for 100 a
+// page, and count nothing either.
 //
-// The fake takes delay to answer that listing, which spreads the messages' handling over a stop,
-// and a listing whose process went away while it waited (the request's context ended) is counted
-// as abandoned. A handling counted is therefore not a handling finished: one a stop gave up
-// unfinished is counted at its fetch all the same, and NATS delivers that message again, which
-// is one of the repeats a hand-over's in-flight window bounds. Anything else is answered with an
-// empty list.
+// The fake takes delay to answer each listing of the commits, which spreads the messages'
+// handling over a stop, and a listing whose process went away while it waited (the request's
+// context ended) is counted as abandoned. A handling counted is therefore not a handling
+// finished: one a stop gave up at its read of the first commit is counted all the same, and NATS
+// delivers that message again, which is one of the repeats a hand-over's in-flight window bounds.
+// Anything else is answered with an empty list.
 type pullRequestFake struct {
 	delay time.Duration
 
@@ -155,9 +161,6 @@ func (f *pullRequestFake) serve(t *testing.T, build string) string {
 			http.NotFound(w, r)
 			return
 		}
-		f.mu.Lock()
-		f.done[number] = append(f.done[number], handling{build: build, at: time.Now()})
-		f.mu.Unlock()
 		_, _ = fmt.Fprintf(w, `{"number":%d,"title":"A pull request","user":{"login":"octocat"},"labels":[],"merged_at":"2026-10-27T00:00:00Z","additions":1,"deletions":1}`, number)
 	})
 	mux.HandleFunc("GET /repos/{owner}/{repo}/pulls/{number}/commits", func(w http.ResponseWriter, r *http.Request) {
@@ -165,6 +168,11 @@ func (f *pullRequestFake) serve(t *testing.T, build string) string {
 		if err != nil {
 			http.NotFound(w, r)
 			return
+		}
+		if r.URL.Query().Get("per_page") == "1" {
+			f.mu.Lock()
+			f.done[number] = append(f.done[number], handling{build: build, at: time.Now()})
+			f.mu.Unlock()
 		}
 		select {
 		case <-time.After(f.delay):
@@ -220,11 +228,10 @@ func seedPullRequestSettings(t *testing.T, builds *twoBuilds) {
 // The payload names the head -- its repository, its branch and its commit -- as
 // publishMergedPullRequests does in multiprocess_test.go, so that handling it once settles the
 // pull request's head row for good. An envelope naming no head repository attributes nobody, and
-// the reconcile's merged arm re-reads every merged row credited to nobody once per rule version
-// (reconcilePullRequestHeads): that re-read fetches the pull request's commits, which is what
-// this row counts as a handling, so a message above the ack floor could be read a second time by
-// the taking build and pass as a replay. With the head named, the one repeat the row can see is a
-// NATS redelivery.
+// the reconcile's merged arm then re-reads the row (ListStalePullRequestHeads), as it re-reads
+// every merged row stored under an older rule. That re-read is the reconcile's refresh, which
+// makes no read of the first commit, so pullRequestFake counts no handling for it, and the one
+// repeat the row can see is a NATS redelivery.
 func publishMergedPullRequest(t *testing.T, js natsgo.JetStreamContext, number int, delivery string) uint64 {
 	t.Helper()
 	payload, err := json.Marshal(map[string]string{
@@ -519,6 +526,12 @@ func TestTwoBuildsPassMessagesBothWays(t *testing.T) {
 	if err != nil {
 		t.Fatalf("JetStream context: %v", err)
 	}
+	// The seed's own events (seedPullRequestSettings saves the delivery settings before either
+	// build starts) are published as the first build starts, so they sit below the stream's head
+	// and neither build's writes below made them. Every event is published before the head is
+	// read, so no event of the seed reaches the stream after it.
+	waitForEveryEventPublished(t, builds.database, 60*time.Second)
+	seeded := publishedEventIDs(t, builds)
 	head := streamHead(t, js)
 	baseline := readBusSettings(t, js)
 	t.Logf("bus settings with both builds running: %+v", baseline)
@@ -532,6 +545,9 @@ func TestTwoBuildsPassMessagesBothWays(t *testing.T) {
 		}
 		waitForEveryEventPublished(t, builds.database, 60*time.Second)
 		events := publishedEventIDs(t, builds)
+		for id := range seeded {
+			delete(events, id)
+		}
 		streamed := map[string]bool{}
 		for _, item := range readStreamFrom(t, js, head) {
 			if item.Source == "dispatch" {
@@ -574,7 +590,7 @@ func TestTwoBuildsPassMessagesBothWays(t *testing.T) {
 
 	// Read last, after both restarts, so a message either hand-over delivered again and had
 	// handled again is counted. A handling a stopping process abandoned is one of them: it is
-	// counted at the pull request's fetch, which it made, and NATS delivers that message again,
+	// counted at its read of the first commit, which it made, and NATS delivers that message again,
 	// so the build that took the durable over handles it once more -- a repeat the hand-over's
 	// in-flight window bounds, with the messages whose acknowledgement landed above the floor.
 	time.Sleep(5 * time.Second)

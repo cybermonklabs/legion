@@ -291,6 +291,8 @@ func (r *roleActRig) requireNoForward(t *testing.T, window time.Duration) {
 // required to do what the record says: the role message, the kept-role sweep, the drain hold and
 // the handover's retry. The test logs the cases it ran and their count.
 func TestEachActReadsTheRecordInBothDirections(t *testing.T) {
+	// Not parallel: its handover retry surplus case requires the handover (drainKeptRole), which
+	// ends at its first lane read, to end inside roleKeepDrainRetryPause (1 s).
 	const (
 		holder = "ses_act_holder"
 		other  = "ses_act_other"
@@ -496,6 +498,8 @@ func TestEachActReadsTheRecordInBothDirections(t *testing.T) {
 // drives with the reads answering: the message and each kept copy reach the holder, and the
 // registration renews the claim with no WARN.
 func TestTheActHoldsOnAFailedRead(t *testing.T) {
+	// Not parallel: its failed-read handover case requires the handover (drainKeptRole), which
+	// ends at its first claim read that fails, to end inside roleKeepDrainRetryPause (1 s).
 	const holder = "ses_act_held"
 	for _, reads := range []struct {
 		name string
@@ -589,6 +593,7 @@ func TestTheActHoldsOnAFailedRead(t *testing.T) {
 							t.Fatalf("the handover of role %s reported %v", role, err)
 						}
 						rig.awaitForward(t, holder, item, time.Second)
+						requireLeftLines(t, rig.harness.logs.String(), role, 0, nil, "")
 						return
 					}
 					if err != nil || elapsed >= roleKeepDrainRetryPause || failed.Load() == 0 {
@@ -596,6 +601,13 @@ func TestTheActHoldsOnAFailedRead(t *testing.T) {
 							role, elapsed, failed.Load(), err)
 					}
 					rig.requireNoForward(t, time.Second)
+					// Nothing reported is not nothing said: the handover says at WARN that it left the
+					// lane to the role's next claim, naming the resolution that failed.
+					requireLeftLines(t, rig.harness.logs.String(), role, 1, map[string]any{
+						"read":              "listener kept role message could not resolve the role's holder",
+						"bound":             float64(roleKeepHolderWindow),
+						"claim_read_failed": true,
+					}, errRoleBucketReadFailed.Error())
 				})
 				t.Run("sweep", func(t *testing.T) {
 					const role = "act-held-sweep"

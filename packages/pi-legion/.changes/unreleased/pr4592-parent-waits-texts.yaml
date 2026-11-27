@@ -1,0 +1,15 @@
+kind: Changed
+body: |-
+  The `sign_off` description names `WAITING_ON_CHILDREN`, the refusal of an issue that waits in
+  `awaiting_children` while a Dispatch child of it is open. It says that a parent goes back by
+  itself to the start it held once no child is open, a held test, review or acceptance as the
+  first step after the implementer's that its task runs (`testing` on the default steps) unless
+  its pull request merged during the wait, and that a parent is accepted on a
+  head that need not carry its children's merges, once each check a role runs has a pass at that
+  head whose observed line names a base commit carrying every needed child's merge; a check whose
+  pass names an older base commit, or none, goes back to `testing` (`implementing` where no tester
+  step comes before acceptance, with a reason that tells the implementer to run those checks on the
+  head merged with the base tip, push that merge nowhere and record each result with that base
+  commit) with `request_backward_move`.
+custom:
+    Issue: pr4592

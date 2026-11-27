@@ -1203,6 +1203,8 @@ func TestAnEvalWhoseNumbersMovedIsTheOneItemSent(t *testing.T) {
 // `go test ./internal/dispatch/api -run TestTheLiveFixturesAreWhatTheDiffWrites -update`
 // rewrites them.
 func TestTheLiveFixturesAreWhatTheDiffWrites(t *testing.T) {
+	// Not parallel: it sets pmdoc's block ID generator for the whole process
+	// (pmdoc.SetBlockIDGenerator in liveFixtureEventFrame).
 	heldTo := liveFrom.Add(48 * time.Hour)
 	second := withIssue(livePR(2), "ACME-2", "Second issue")
 	second.Author = "hubot"

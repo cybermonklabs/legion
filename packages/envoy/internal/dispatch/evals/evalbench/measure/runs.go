@@ -14,11 +14,12 @@ import (
 // (`measure paint -run <n> -runs-file <file>`) appends its reads to the file, one line a run, once
 // it has judged them. `measure runs` then reads the file and prints, for each read and each group
 // of reads, its database time in every run with the median and the maximum of the runs, and fails
-// a read or a group that is over its budget in any run, naming the runs. The budget binds every
-// run, not the median: k8 holds each of the runs to it. A file that does not hold each of the runs
-// 1 to -runs once, or a run that lacks a read another run made, fails too, since a run that ended
-// before it recorded its reads would otherwise leave the median and the maximum to the runs that
-// passed.
+// a read or a group that is over its budget in any run, naming the runs; at ten times the stated
+// run rate, where no check gates the database time, that line is a RECORD line
+// (report.overStated). The budget binds every run, not the median: k8 holds each of the runs to
+// it. A file that does not hold each of the runs 1 to -runs once, or a run that lacks a read
+// another run made, fails too, at any rate, since a run that ended before it recorded its reads
+// would otherwise leave the median and the maximum to the runs that passed.
 
 // paintRun is one run's reads as the runs file holds them.
 type paintRun struct {
@@ -95,8 +96,8 @@ type runSeries struct {
 }
 
 // judgeRuns prints each read's and each group's database time over runs, with the median and the
-// maximum, and fails one over its budget in any run, a file that does not hold each of the runs 1
-// to want once, and a read or a group missing from a run.
+// maximum, and fails one over its budget in any run (judgeSeries), a file that does not hold each of
+// the runs 1 to want once, and a read or a group missing from a run.
 func judgeRuns(r *report, runs []paintRun, want int) {
 	counts := map[int]int{}
 	for _, run := range runs {
@@ -151,8 +152,8 @@ func judgeRuns(r *report, runs []paintRun, want int) {
 	}
 }
 
-// judgeSeries prints one read's or group's line over the runs and fails it where a run is over its
-// budget or lacks it.
+// judgeSeries prints one read's or group's line over the runs and fails it where it lacks a run, or
+// where a run is over its budget, which k8 states at the stated run rate (report.overStated).
 func judgeSeries(r *report, kind string, one *runSeries, runs int) {
 	budget := "none"
 	if one.budgetMs > 0 {
@@ -173,7 +174,7 @@ func judgeSeries(r *report, kind string, one *runSeries, runs int) {
 		}
 	}
 	if len(over) > 0 {
-		r.fail("k8 %s=%s is over its budget of %.0f ms in %d of %d runs: run %s", kind, one.name, one.budgetMs, len(over), len(one.values),
+		r.overStated("k8 %s=%s is over its budget of %.0f ms in %d of %d runs: run %s", kind, one.name, one.budgetMs, len(over), len(one.values),
 			strings.Join(over, ", run "))
 	}
 }

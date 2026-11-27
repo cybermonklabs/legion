@@ -195,6 +195,90 @@ func TestTheWindowsRunsReadIsBoundedThroughItsIndexes(t *testing.T) {
 	}
 }
 
+// TestTheDaysRunsReadBuildsEachDaysListOnce: the read of several days' runs (daysRunsQuery) reads
+// the days once, so it builds each day's list of runs, and the bound of the day's apply runs, once
+// a day, under either plan-cache mode, with every join a nested loop (ExplainAfter), the join the
+// planner took over a fresh database's tables no ANALYZE had read. The deploy runs here all failed
+// their production job, so no day's bound finds a deploy that shipped after the day, and each walks
+// every later run and probes its jobs, as the bounds did while a fixture's jobs were not yet
+// committed in the eval day-row refresher's snapshot (dispatch://INFRA-2916). The read answers the
+// runs its control answers: the statement as it stood, the days' lists inside the IN of the read of
+// the runs, which must break the rule under the custom plan, since it built every day's lists again
+// for each deploy run.
+func TestTheDaysRunsReadBuildsEachDaysListOnce(t *testing.T) {
+	pool, ctx := deliveryTestPool(t)
+	const runs = 60
+	if _, err := pool.Exec(ctx, `
+		insert into delivery_runs (repo, run_id, kind, head_sha, head_commit_at, started_at, created_at, url, head_branch, event)
+		select 'acme/deploy', n, 'deploy', lpad(n::text, 40, '0'), at - interval '5 minutes', at, at,
+			'https://github.com/acme/deploy/actions/runs/' || n, 'main', 'push'
+		from generate_series(1, $1::int) n, lateral (select timestamptz '2026-11-01 00:00:00+00' + n * interval '6 hours' as at) moment
+	`, runs); err != nil {
+		t.Fatalf("seed the deploy runs: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+		insert into delivery_run_jobs (repo, run_id, name, started_at, completed_at, conclusion)
+		select repo, run_id, 'production', started_at, started_at + interval '20 minutes', 'failure'
+		from delivery_runs where repo = 'acme/deploy'
+	`); err != nil {
+		t.Fatalf("seed the runs' failed production jobs: %v", err)
+	}
+	var days []time.Time
+	for day := range 15 {
+		days = append(days, time.Date(2026, 11, 1+day, 0, 0, 0, 0, time.UTC))
+	}
+	from, to, err := dayWindows(days)
+	if err != nil {
+		t.Fatal(err)
+	}
+	args := []any{"acme/deploy", from, to, []string{"production"}, (*string)(nil), MaxRunsPerWindow * len(days)}
+	control := `
+		select ` + RunColumns + `
+		from delivery_runs r
+		where r.repo = $1 and r.kind = 'deploy' and r.head_branch = 'main' and r.run_id in (` + daysRunsListed + `
+		)
+		order by ` + runCreatedAt + `, r.run_id
+		limit $6`
+	// readsAgain is each read of statement's plan under mode that ran more often than once a day:
+	// the scan of the days more than once, or the jobs probed more than once a day for each run.
+	readsAgain := func(statement, mode string) (again []string, outline string) {
+		plan := explaintest.ExplainAfter(t, ctx, pool, nil, explaintest.Statement{SQL: statement, Args: args}, mode, "json")
+		for _, node := range explaintest.Nodes(t, plan) {
+			switch {
+			case node.Type == "Function Scan" && node.Loops > 1:
+				again = append(again, fmt.Sprintf("%s ran %.0f times", node, node.Loops))
+			case node.Relation == "delivery_run_jobs" && node.Loops > float64(runs*len(days)):
+				again = append(again, fmt.Sprintf("%s ran %.0f times, more than %d runs a day for %d days", node, node.Loops, runs, len(days)))
+			}
+		}
+		return again, explaintest.Outline(t, plan)
+	}
+	for _, mode := range explaintest.PlanCacheModes {
+		if again, outline := readsAgain(daysRunsQuery, mode); len(again) > 0 {
+			t.Errorf("under %s the read of the days' runs builds the days' lists again for each run: %v\n%s", mode, again, outline)
+		}
+	}
+	again, outline := readsAgain(control, "force_custom_plan")
+	if len(again) == 0 {
+		t.Fatalf("the control, the days' lists inside the IN, reads nothing again under the custom plan, so the check cannot fail:\n%s", outline)
+	}
+	t.Logf("the control reads again: %v", again)
+	answered := func(statement string) []int64 {
+		rows, err := pool.Query(ctx, statement, args...)
+		if err != nil {
+			t.Fatalf("read the days' runs: %v", err)
+		}
+		read, err := collectRuns(rows)
+		if err != nil {
+			t.Fatalf("read the days' runs: %v", err)
+		}
+		return runIDsOf(read)
+	}
+	if got, want := answered(daysRunsQuery), answered(control); len(got) != runs || !slices.Equal(got, want) {
+		t.Errorf("the read answers runs %v; its control answers %v, of %d runs", got, want, runs)
+	}
+}
+
 // seedWindowHistory replaces the stored runs, their jobs and the pull requests with a generated
 // history of two weeks from base (TestAWindowsReadAnswersWhatItsTwoReadsAnswer says what it holds).
 // Each job completes after its run was created, as GitHub's do (latestShipBefore), and each

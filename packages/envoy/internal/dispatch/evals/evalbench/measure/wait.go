@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"slices"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/evals"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -20,6 +22,12 @@ import (
 // (evals.RefresherGap, 10 s; a change's wake runs its pass as soon as the running one ends), so a
 // cursor or a walk that stood still for a whole poll had a pass in which to move.
 const pollEvery = 15 * time.Second
+
+// atBase reports whether mode measures the base's server, main at the commit this head merges:
+// base, or base-failure-day, the base over a history with a failure day added.
+func atBase(mode string) bool {
+	return mode == "base" || mode == "base-failure-day"
+}
 
 // lagPolls is how many polls old the heads a cursor is held to are: each cursor must stand at or
 // past where its feed stood lagPolls polls before. The rows the Legion facts consumer writes log
@@ -49,7 +57,10 @@ type heads struct {
 // day row, so k22's capture at its base head waits for the facts and the fill alone (readConsumers),
 // as it did before the code evals. A merge of main can change what the base runs. Where the
 // database holds code_projects (codeBuilt), the regroup's pass at the server's start has built a
-// project's day rows of the code evals when its row holds the digest of its groups.
+// project's day rows of the code evals when its row holds the digest of its groups. In mode k14 it
+// reads the production signals' loop too (prodevents/signals): its three cursors, and each source
+// repository whose GitHub deploy rows stand derived under another rule than its own, or under
+// none (signalsOwed).
 type consumerState struct {
 	heads       heads
 	legionFacts bool
@@ -66,6 +77,8 @@ type consumerState struct {
 	built       map[string]time.Time
 	codeBuilt   map[string]bool
 	fill        *int64
+	signals     map[string]int64
+	signalsOwed []string
 }
 
 // walk is one row of eval_days_walks: builtBy is the build whose process last moved it.
@@ -165,7 +178,7 @@ func readConsumers(ctx context.Context, pool *store.Pool, mode string, baseRefre
 	}
 	state.legionFacts, state.registry = true, true
 	fill := true
-	if mode == "base" {
+	if atBase(mode) {
 		if err := pool.QueryRow(ctx, `select to_regclass('issue_facts_cursor') is not null, to_regclass('search_text_versions_fill') is not null,
 			to_regclass('eval_days_cursor') is not null`).Scan(&state.legionFacts, &fill, &state.registry); err != nil {
 			return consumerState{}, fmt.Errorf("read which consumers the base runs: %w", err)
@@ -287,7 +300,50 @@ func readConsumers(ctx context.Context, pool *store.Pool, mode string, baseRefre
 			state.codeBuilt[key] = true
 		}
 	}
+	if mode == "k14" {
+		if err := readSignals(ctx, pool, &state); err != nil {
+			return consumerState{}, err
+		}
+	}
 	return state, nil
+}
+
+// readSignals reads the production signals' loop's cursors and, for each source repository's
+// rule (delivery.ReadSourceRules), whether its GitHub deploy rows stand derived under it
+// (production_deploy_rules): its project and the two fields of the rule that decide a deploy.
+func readSignals(ctx context.Context, pool *store.Pool, state *consumerState) error {
+	state.signals = map[string]int64{}
+	if err := collectPairs(ctx, pool, `select name, position from production_signal_cursors`, state.signals); err != nil {
+		return err
+	}
+	rules, err := delivery.ReadSourceRules(ctx, pool)
+	if err != nil {
+		return err
+	}
+	for _, rule := range rules.All() {
+		var project string
+		var names []string
+		var step *string
+		err := pool.QueryRow(ctx, `select project_key, production_job_names, production_apply_step_name from production_deploy_rules where repo = $1`,
+			strings.ToLower(rule.DeployRepo)).Scan(&project, &names, &step)
+		switch {
+		case errors.Is(err, pgx.ErrNoRows):
+			state.signalsOwed = append(state.signalsOwed, fmt.Sprintf("the GitHub deploy rows of %s derived under its rule (none recorded)", rule.DeployRepo))
+		case err != nil:
+			return fmt.Errorf("read the rule the deploy rows of %s stand derived under: %w", rule.DeployRepo, err)
+		case project != rule.Project || !slices.Equal(names, rule.ProductionJobNames) || !sameStep(step, rule.ProductionApplyStepName):
+			state.signalsOwed = append(state.signalsOwed, fmt.Sprintf("the GitHub deploy rows of %s derived under its rule (derived under %s's %v)", rule.DeployRepo, project, names))
+		}
+	}
+	return nil
+}
+
+// sameStep reports whether two optional apply step names are one.
+func sameStep(a, b *string) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	return *a == *b
 }
 
 // collectPairs reads a name and a position a row into into.
@@ -408,6 +464,14 @@ func (s consumerState) caughtUp(build string, previous *heads, codeProject strin
 	if s.codeBuilt != nil && !s.codeBuilt[codeProject] {
 		missing = append(missing, fmt.Sprintf("the regroup of %s's day rows of the code evals (its row of code_projects holds no digest)", codeProject))
 	}
+	if s.signals != nil {
+		missing = append(missing, s.signalsOwed...)
+		if previous != nil {
+			behind("the production signals", s.signals, "deploys", previous.changes)
+			behind("the production signals", s.signals, "checks", previous.events)
+			behind("the production signals", s.signals, "incidents", previous.events)
+		}
+	}
 	return missing
 }
 
@@ -471,6 +535,10 @@ func (s consumerState) summary(build string) string {
 	if s.codeBuilt != nil {
 		line += fmt.Sprintf(" code_projects_built=%d", len(s.codeBuilt))
 	}
-	return line + fmt.Sprintf(" refresher_cursors=%v walks=%d done=%d served=%d of %d rebuilding=%d figures_built=%d of %d day_rows_by_build=[%s]",
+	line += fmt.Sprintf(" refresher_cursors=%v walks=%d done=%d served=%d of %d rebuilding=%d figures_built=%d of %d day_rows_by_build=[%s]",
 		s.days, len(s.walks), done, served, len(s.serving), s.rebuilding, len(s.built), len(s.dayProjects), strings.Join(builds, " "))
+	if s.signals != nil {
+		line += fmt.Sprintf(" signals_cursors=%v signals_rules_owed=%d", s.signals, len(s.signalsOwed))
+	}
+	return line
 }

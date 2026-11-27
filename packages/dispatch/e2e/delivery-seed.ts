@@ -27,7 +27,16 @@ function deliverySettingsSql(project = "ACME", name = "Acme"): string[] {
      ) VALUES (
        '${project}', 0, 'github_workflow', null, '.github/workflows/deploy.yml',
        ARRAY['widgets-release / widgets-release'], '.github/workflows/pr-checks.yml'
-     )`,
+    )`,
+    // Kept for the previous build's server during the two-builds roll (`cross-build.multiprocess.e2e.ts`),
+    // which reads the singleton row while this build reads `project_delivery_settings` and its sources.
+    `INSERT INTO delivery_settings (
+      singleton, deploy_repo, deploy_workflow_path, production_job_names,
+      pr_checks_workflow_path, population_authors, excluded_repos, updated_by
+    ) VALUES (
+      true, 'acme/widgets', '.github/workflows/deploy.yml', ARRAY['widgets-release / widgets-release'],
+      '.github/workflows/pr-checks.yml', ARRAY['octocat'], ARRAY[]::text[], ${SEED_ACTOR}
+    ) ON CONFLICT (singleton) DO NOTHING`,
   ];
 }
 

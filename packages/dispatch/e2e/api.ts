@@ -409,7 +409,9 @@ export function getProjectDeliverySettings(project: string, options: ApiOptions 
   return get("/api/v1/projects/{key}/settings/delivery", { params: { key: project } }, options);
 }
 
-/** `PUT /api/v1/projects/{key}/settings/delivery`: replaces `project`'s delivery settings, as its
+/** `PUT /api/v1/projects/{key}/settings/delivery`: updates `project`'s delivery settings (a
+ *  top-level field left out keeps its stored value, `null` clears a field that may be empty,
+ *  `sources` present replaces the list, and a `targets` key changes that target alone), as its
  *  settings tab saves them, after the server proves its GitHub App can read each source's
  *  repository. A person's call by default. */
 export function putProjectDeliverySettings(

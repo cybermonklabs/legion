@@ -120,6 +120,7 @@ func TestTaskProgressIsCountedAtStartAndThenNothingRuns(t *testing.T) {
 // to the retries after it, and the first of those after the writer lets go counts it; the
 // reconciliation then returns.
 func TestTaskProgressLockedThroughTheBootPassIsCountedByARetry(t *testing.T) {
+	// Not parallel: it swaps the default logger (logtest.SetDefault in captureLogs).
 	database := storetest.Open(t)
 	ctx := context.Background()
 	free := seedUncountedIssue(t, database, 1, "- [x] a\n- [ ] b\n")

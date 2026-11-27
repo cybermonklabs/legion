@@ -64,7 +64,9 @@ func (w window) live() map[string]string {
 // stored figures answer (checkStoredFiguresReads). codeStated marks a read whose window holds days
 // the code evals measured, whose answer states a value of each of them (checkCodeEvals). bodyUnjudged
 // marks a read whose body is measured and judged by no budget, as the registry base's list reads
-// are (registryBaseCases).
+// are (registryBaseCases). strict marks a read whose database budget binds at ten times the stated
+// run rate too (k14's, k14Cases), where the head's first paint's budgets are k8's at the stated
+// rate alone (report.overStated).
 type paintCase struct {
 	name           string
 	path           string
@@ -78,6 +80,7 @@ type paintCase struct {
 	storedFigures  bool
 	codeStated     bool
 	bodyUnjudged   bool
+	strict         bool
 }
 
 // measuredCase is one read as the instrument saw it: cataloguedOwn is how many statements of the
@@ -143,30 +146,53 @@ func gzipSize(body []byte) int {
 // reads among them, is the first read after a restart twice.
 func headCases(project string, today time.Time, run int) []paintCase {
 	w84, c84, w28 := before(today, 84), before(today.AddDate(0, 0, -84), 84), before(today, 28)
-	list := func(w window, compare *window, repo string) string {
-		query := url.Values{"from": {w.from.Format(time.RFC3339)}, "to": {w.to.Format(time.RFC3339)}, "limit": {"200"}}
-		if compare != nil {
-			query.Set("compare_from", compare.from.Format(time.RFC3339))
-			query.Set("compare_to", compare.to.Format(time.RFC3339))
-		}
-		if repo != "" {
-			query.Set("repo", repo)
-		}
-		return "/api/v1/projects/" + project + "/evals?" + query.Encode()
-	}
-	compare := url.Values{"compare_from": {c84.from.Format(time.RFC3339)}, "compare_to": {c84.to.Format(time.RFC3339)}, "limit": {"200"}}
 	repo := evalbench.Repos[0]
 	lists := []paintCase{
-		{name: "list-84d-compare", path: list(w84, &c84, ""), budgetMs: budget84Ms, serverBudgetMs: budgetServerMs, storedFigures: true, codeStated: true},
-		{name: "list-84d-compare-repo", path: list(w84, &c84, repo), budgetMs: budget84Ms, serverBudgetMs: budgetServerMs, storedFigures: true, codeStated: true},
-		{name: "list-28d", path: list(w28, nil, ""), budgetMs: budget28Ms, serverBudgetMs: budgetServerMs, storedFigures: true},
-		{name: "list-28d-repo", path: list(w28, nil, repo), budgetMs: budget28Ms, serverBudgetMs: budgetServerMs, storedFigures: true},
+		{name: "list-84d-compare", path: evalListPath(project, w84, &c84, ""), budgetMs: budget84Ms, serverBudgetMs: budgetServerMs, storedFigures: true, codeStated: true},
+		{name: "list-84d-compare-repo", path: evalListPath(project, w84, &c84, repo), budgetMs: budget84Ms, serverBudgetMs: budgetServerMs, storedFigures: true, codeStated: true},
+		{name: "list-28d", path: evalListPath(project, w28, nil, ""), budgetMs: budget28Ms, serverBudgetMs: budgetServerMs, storedFigures: true},
+		{name: "list-28d-repo", path: evalListPath(project, w28, nil, repo), budgetMs: budget28Ms, serverBudgetMs: budgetServerMs, storedFigures: true},
 	}
 	first := (max(run, 1) - 1) % len(lists)
 	cases := slices.Concat(lists[first:], lists[:first])
 	cases = append(cases, paintCase{name: "view-evals-84d-compare", kind: "evals", budgetMs: budget84Ms, serverBudgetMs: budgetServerMs, storedFigures: true,
-		view: map[string]any{"kind": "evals", "project": project, "window": w84.live(), "query": compare.Encode()}})
+		view: evalsView(project, w84, &c84)})
 	return append(cases, timelineCases("", today)...)
+}
+
+// evalListQuery is the query of a read of the eval list over w: its window, its compare range
+// where compare names one, its repository where repo names one, and its page of 200.
+func evalListQuery(w window, compare *window, repo string) url.Values {
+	query := url.Values{"from": {w.from.Format(time.RFC3339)}, "to": {w.to.Format(time.RFC3339)}, "limit": {"200"}}
+	if compare != nil {
+		query.Set("compare_from", compare.from.Format(time.RFC3339))
+		query.Set("compare_to", compare.to.Format(time.RFC3339))
+	}
+	if repo != "" {
+		query.Set("repo", repo)
+	}
+	return query
+}
+
+// evalListPath is the read of project's eval list over w (evalListQuery).
+func evalListPath(project string, w window, compare *window, repo string) string {
+	return "/api/v1/projects/" + project + "/evals?" + evalListQuery(w, compare, repo).Encode()
+}
+
+// k14Cases are k14's first paint of a k14 project (evalbench.K14Projects) in run run of its runs
+// (0 read as 1): the Evals tab's list read at 84 days with an 84-day compare range and at 28 days
+// with none, each with no repository, which the stored figures of the project's own cut answer,
+// the fold of all its deploy repositories' rows (R14, T19 path 2), under the first paint's server
+// budget and its database budgets, which R14 binds at both rates (strict). Run n starts with the
+// ((n-1) mod 2)th of them, so over two runs each is the first read after a restart once.
+func k14Cases(project string, today time.Time, run int) []paintCase {
+	w84, c84, w28 := before(today, 84), before(today.AddDate(0, 0, -84), 84), before(today, 28)
+	lists := []paintCase{
+		{name: "list-84d-compare", path: evalListPath(project, w84, &c84, ""), budgetMs: budget84Ms, serverBudgetMs: budgetServerMs, storedFigures: true, strict: true},
+		{name: "list-28d", path: evalListPath(project, w28, nil, ""), budgetMs: budget28Ms, serverBudgetMs: budgetServerMs, storedFigures: true, strict: true},
+	}
+	first := (max(run, 1) - 1) % len(lists)
+	return slices.Concat(lists[first:], lists[:first])
 }
 
 // timelineCases are the Delivery timeline's first paint at this head (packages/dispatch/web
@@ -190,28 +216,35 @@ func timelineCases(prefix string, today time.Time) []paintCase {
 	}
 }
 
-// baseCases are the base's Delivery page's first paint at 84 days with a compare range, read as
-// main's page reads it at the commit this head merges (packages/dispatch/web DeliveryPage.tsx): the
+// baseCases are the base's Delivery page's first paint, read as main's page reads it at the commit
+// this head merges (packages/dispatch/web DeliveryPage.tsx): at 84 days with a compare range, the
 // timeline view of the 84-day window, whose answer carries the window's measures, and a measures
 // view of the 84-day compare range before it, the view that page subscribes for a range of its own
-// (a brush). Main's page has no compare range and no Pipeline section of its own, and main's
-// pipeline view names no window (its Pipeline page reads the seven days to an `at`), so the base's
-// paint is the timeline of the window and the measures of the compare range: the reads
-// timelineCases time at this head at 84 days.
-func baseCases(today time.Time) []paintCase {
-	w84, c84 := before(today, 84), before(today.AddDate(0, 0, -84), 84)
+// (a brush), and at 28 days the timeline view of the 28-day window. Main's page has no compare
+// range and no Pipeline section of its own, and main's pipeline view names no window (its Pipeline
+// page reads the seven days to an `at`), so the base's paint is the timeline of the window and the
+// measures of the compare range, which form one group as timelineCases' reads do, and the
+// timeline of the 28-day window: the reads timelineCases time at this head. No budget judges
+// them, the base being what the head is set beside. prefix names the history the windows hold, as
+// timelineCases' does ("failure-day-" in mode base-failure-day).
+func baseCases(prefix string, today time.Time) []paintCase {
+	w84, c84, w28 := before(today, 84), before(today.AddDate(0, 0, -84), 84), before(today, 28)
+	group := prefix + "timeline-84d-compare"
 	return []paintCase{
-		{name: "base-timeline-84d", kind: "timeline", view: map[string]any{"kind": "timeline", "window": w84.live(), "query": ""}, delivery: true},
-		{name: "base-measures-compare-84d", kind: "measures", view: map[string]any{"kind": "measures", "window": c84.live(), "query": ""}, delivery: true},
+		{name: prefix + "base-timeline-84d", kind: "timeline", view: map[string]any{"kind": "timeline", "window": w84.live(), "query": ""}, group: group, delivery: true},
+		{name: prefix + "base-measures-compare-84d", kind: "measures", view: map[string]any{"kind": "measures", "window": c84.live(), "query": ""}, group: group, delivery: true},
+		{name: prefix + "base-timeline-28d", kind: "timeline", view: map[string]any{"kind": "timeline", "window": w28.live(), "query": ""}, delivery: true},
 	}
 }
 
 // paint measures the first paint (the package comment) and, at this head and outside -info,
 // k2, k13 and k16 after it, in its first run alone where the paint is one of several (-run); in
 // mode failure-day, the timeline's first paint alone, its run-jobs reads and the failure day the
-// database holds. Its windows end at the day of -now, where the history the generator wrote ends
-// (job.sh's EVALBENCH_NOW), whatever day the clock has reached since: a run that crosses a
-// midnight reads the windows of the history it loaded, and its paint line names both days.
+// database holds, and in mode base-failure-day the base's Delivery page over the same history,
+// with the failure day the database holds. Its windows end at the day of -now, where the history
+// the generator wrote ends (job.sh's EVALBENCH_NOW), whatever day the clock has reached since: a
+// run that crosses a midnight reads the windows of the history it loaded, and its paint line names
+// both days.
 func paint(ctx context.Context, r *report, o options) error {
 	database, err := store.Open(ctx, o.database)
 	if err != nil {
@@ -259,12 +292,16 @@ func paint(ctx context.Context, r *report, o options) error {
 		if registry, err = holdsRegistry(ctx, pool); err != nil {
 			return err
 		}
-		cases = baseCases(today)
+		cases = baseCases("", today)
 		if registry {
 			cases = registryBaseCases(o.project, today)
 		}
+	case "base-failure-day":
+		cases = baseCases("failure-day-", today)
 	case "failure-day":
 		cases = timelineCases("failure-day-", today)
+	case "k14":
+		cases = k14Cases(o.project, today, o.run)
 	}
 	firstLog, err := fileSize(o.pgLog)
 	if err != nil {
@@ -300,20 +337,23 @@ func paint(ctx context.Context, r *report, o options) error {
 	}
 	judgePaint(r, o, measured)
 	printHistories(r, o, measured)
-	if o.githubLog != "" {
+	if o.githubLog != "" && o.mode != "k14" {
 		if requests, err := readGitHubLog(o.githubLog); err != nil {
 			r.fail("k17 %v", err)
 		} else {
 			checkGitHubStub(r, requests, measured)
 		}
 	}
-	if o.runsFile != "" {
+	if o.runsFile != "" && o.mode != "k14" {
 		if err := recordRun(o.runsFile, runOf(o.run, measured)); err != nil {
 			r.fail("k8 record run %d in %s: %v", o.run, o.runsFile, err)
 		}
 	}
 	if o.info {
 		return nil
+	}
+	if o.mode == "k14" {
+		return judgeK14Paint(r, o, measured)
 	}
 	indexes, err := failureIndexes(ctx, pool)
 	if err != nil {
@@ -327,6 +367,9 @@ func paint(ctx context.Context, r *report, o options) error {
 			baseControls(r, measured, indexes)
 		}
 		return nil
+	}
+	if o.mode == "base-failure-day" {
+		return failureDayLine(ctx, r, pool, today)
 	}
 	checkRunJobsReads(r, o, measured, indexes)
 	if o.mode == "failure-day" {
@@ -601,6 +644,10 @@ func planCase(ctx context.Context, r *report, explain *explainer, one *measuredC
 // judgePaint prints each read of the paint with its statements and plans, and judges its budgets
 // (outside -info): a read of the evals' first paint by its body too, and a read of the Delivery
 // page by its database time alone, with a line saying its body was measured outside the budget.
+// The database-time budgets are k8's at the stated run rate, so at ten times that rate a read over
+// one is a RECORD line (report.overStated); the server time and the body are the first paint's
+// limit, which the root's R14 holds at ten times too, so they fail at either rate, as its answer,
+// its own statements and a paint with no plan examined do.
 func judgePaint(r *report, o options, measured []measuredCase) {
 	total, plans := 0.0, 0
 	for _, one := range measured {
@@ -636,7 +683,11 @@ func judgePaint(r *report, o options, measured []measuredCase) {
 			r.fail("paint case=%s: no statement of its own was counted, so its database time measures nothing", one.name)
 		}
 		if one.budgetMs > 0 && own > one.budgetMs {
-			r.fail("paint case=%s db_ms=%.2f is over its budget of %.0f ms", one.name, own, one.budgetMs)
+			if one.strict {
+				r.fail("paint case=%s db_ms=%.2f is over its budget of %.0f ms, which binds at both rates", one.name, own, one.budgetMs)
+			} else {
+				r.overStated("paint case=%s db_ms=%.2f is over its budget of %.0f ms", one.name, own, one.budgetMs)
+			}
 		}
 		switch {
 		case one.delivery:
@@ -661,7 +712,8 @@ func judgePaint(r *report, o options, measured []measuredCase) {
 }
 
 // judgeGroups prints each group of reads (paintCase.group) with their database time together, in
-// the order the paint met them, and judges it against the group's budget (outside -info).
+// the order the paint met them, and judges it against the group's budget (outside -info), which
+// k8 states at the stated run rate (report.overStated).
 func judgeGroups(r *report, o options, measured []measuredCase) {
 	var order []string
 	reads, ms, budgets := map[string][]string{}, map[string]float64{}, map[string]float64{}
@@ -679,7 +731,7 @@ func judgeGroups(r *report, o options, measured []measuredCase) {
 	for _, group := range order {
 		r.result("paint-group mode=%s group=%s reads=%s db_ms=%.2f budget_ms=%.0f", o.mode, group, strings.Join(reads[group], ","), ms[group], budgets[group])
 		if !o.info && budgets[group] > 0 && ms[group] > budgets[group] {
-			r.fail("paint-group group=%s db_ms=%.2f is over its budget of %.0f ms", group, ms[group], budgets[group])
+			r.overStated("paint-group group=%s db_ms=%.2f is over its budget of %.0f ms", group, ms[group], budgets[group])
 		}
 	}
 }
@@ -804,10 +856,12 @@ var titleRead = regexp.MustCompile(`(?is)\bactor\b.*\bfrom events\b`)
 // control that examined nothing shows nothing of the base, so each fails then: k8's with no read
 // measured, or with a page that shows no history (no pull request attributed to an issue on the
 // timeline, or none in the measures: historyOf), k13's with no statement examined or none of them
-// a read of delivery_run_jobs. k8's control fails too where the base's first paint costs no more
-// database time than this head's 84-day budget: k8's negative control is that the base passes it
-// (564 ms at the commit before the change), and a base within the budget shows no read the change
-// brought under it.
+// a read of delivery_run_jobs. k8's control fails too where the base's first paint of 84 days with
+// a compare range (the reads of baseCases' group, not its 28-day read) costs no more database time
+// than this head's 84-day budget: k8's negative control is that the base passes it (564 ms at the
+// commit before the change), and a base within the budget shows no read the change brought under
+// it. That control is k8's at the stated run rate: at ten times the rate, where the database time is
+// judged by setting the head's reads beside the base's, it is a RECORD line (report.overStated).
 //
 // Where a background loop of the base resolves session titles with the same statement its
 // timeline does, that statement is in the background catalogue, and each read's own time counts
@@ -828,8 +882,10 @@ func baseControls(r *report, measured []measuredCase, failed map[string]bool) {
 	total, inFlight := 0.0, 0.0
 	examined, readsEvents, catalogued, unnamed, jobReads := 0, 0, 0, 0, 0
 	for _, one := range measured {
-		total += dbMs(one.own)
-		inFlight += dbMs(one.all)
+		if one.group != "" {
+			total += dbMs(one.own)
+			inFlight += dbMs(one.all)
+		}
 		for queryID, plan := range one.plans {
 			examined++
 			if reads, byID := eventsRead(one.statements[queryID], plan); reads && !byID {
@@ -857,7 +913,7 @@ func baseControls(r *report, measured []measuredCase, failed map[string]bool) {
 	case len(measured) == 0:
 		r.fail("k8-control: no read of the base's first paint was measured")
 	case total <= budget84Ms:
-		r.fail("k8-control: the base's first paint costs %.2f ms of database time, within this head's budget of %d ms, so the negative control shows no read the change brought under the budget", total, budget84Ms)
+		r.overStated("k8-control: the base's first paint costs %.2f ms of database time, within this head's budget of %d ms, so the negative control shows no read the change brought under the budget", total, budget84Ms)
 	}
 	switch {
 	case examined == 0:

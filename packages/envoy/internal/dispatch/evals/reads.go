@@ -555,9 +555,10 @@ func CountedIn(ctx context.Context, q delivery.Querier, project, family string, 
 // each), the fence took the median execution from 77 to 78 ms to 64 to 67 ms, with the same plan.
 //
 // A row answers what the folds and the answer read and nothing more (WindowRow), since what the
-// read costs is the bytes it sends: no project, listing or build, but the owner it is stored under
-// and, in a read that names repositories, the repository it is stored under, which the folds order
-// a day's rows by (sortWindowRows) and a rebuild's overlay of staged rows reads
+// read costs is the bytes it sends: no project, listing or build, but the owner it is stored under,
+// in a read that names repositories the repository it is stored under, and in a read that folds
+// more than one deploy repository of a project the deploy repository it is stored under, which the
+// folds order a day's rows by (sortWindowRows) and a rebuild's overlay of staged rows reads
 // (readOverlayGroups); a read that names none reads the rows stored under "" alone, and sends no
 // repository. And a sample list only for a series whose fold reads one (readsSamples), so a
 // logged series folded by anything but a quantile, whose rows keep every value of their day, sends
@@ -581,19 +582,26 @@ func CountedIn(ctx context.Context, q delivery.Querier, project, family string, 
 // read, every run reads the one moment the answer's other reads read, as one statement would; on
 // the pool, or in a transaction at read committed, each reads the rows that stand when it runs.
 func DayWindowIn(ctx context.Context, q delivery.Querier, projects []string, entries []Entry, deployRepos *DeployRepos, repos []string, window Range, compare *Range) ([]WindowRow, error) {
-	cut, storedRepo, ownedRepo, scan := `d.repo = any($2)`, "", "", scanWindowRow
-	if len(repos) == 0 {
+	multiDeploy := slices.ContainsFunc(projects, func(project string) bool { return len(deployRepos.Of(project)) > 1 })
+	cut, storedRepo, ownedRepo := `d.repo = any($2)`, "", ""
+	withRepo := len(repos) > 0
+	if !withRepo {
 		repos = []string{""}
 	} else {
-		cut, storedRepo, ownedRepo, scan = repoCut("d", "$2", "o.project_key"), ", repo", ", d.repo", scanRepoWindowRow
+		cut, storedRepo, ownedRepo = repoCut("d", "$2", "o.project_key"), ", repo", ", d.repo"
 	}
+	storedDeploy := ""
+	if multiDeploy {
+		storedDeploy = ", deploy_repo"
+	}
+	scan := func(row pgx.CollectableRow) (WindowRow, error) { return scanWindowRowOf(row, withRepo, multiDeploy) }
 	ranged := func(inWindow string, from, to int) string {
 		return `select ` + inWindow + `, eval_id, series, day, n, sum, num, den, max,
 				case when (eval_id, series) in (select * from unnest($4::text[], $5::text[])) then samples end,
 				last_value, last_at,
 				case when (eval_id, series) in (select * from unnest($7::text[], $8::text[])) then last_recorded_at end,
 				case when (eval_id, series) in (select * from unnest($7::text[], $8::text[])) then coalesce(last_reading::text, '') else '' end,
-				nullif(counts, '{}'), via_repository, updated_at, owner` + storedRepo + `
+				nullif(counts, '{}'), via_repository, updated_at, owner` + storedRepo + storedDeploy + `
 			from (
 				select o.owner, o.project_key, o.project_key || substr(d.eval_id, length(o.owner) + 1) as eval_id, d.writer, d.deploy_repo, d.series, d.day,
 					d.n, d.sum, d.num, d.den, d.max, d.samples, d.last_value, d.last_at, d.last_recorded_at, d.last_reading, d.counts,
@@ -621,7 +629,7 @@ func DayWindowIn(ctx context.Context, q delivery.Querier, projects []string, ent
 			base += 4 + len(name)
 		}
 	}
-	lastPairs := len(repos) > 1 || slices.ContainsFunc(projects, func(project string) bool { return len(deployRepos.Of(project)) > 1 })
+	lastPairs := len(repos) > 1 || multiDeploy
 	days := []WindowRow{}
 	for run := range statementChunks(entries, base, func(entry *Entry) int { return windowEntryBytes(entry, lastPairs) }) {
 		evalIDs := make([]string, len(run))
@@ -680,11 +688,6 @@ func windowEntryBytes(entry *Entry, lastPairs bool) int {
 		}
 	}
 	return bytes
-}
-
-// Items is ItemsIn on the pool.
-func (s *Store) Items(ctx context.Context, evalID, series, rowKind, row string, repos []string, window Range, limit, offset int) (Page[Reading], error) {
-	return ItemsIn(ctx, s.database.Pool, evalID, series, rowKind, row, repos, window, limit, offset)
 }
 
 // ItemsIn reads in q one page of a logged eval's standing readings (superseded_at is null)

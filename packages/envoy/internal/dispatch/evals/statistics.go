@@ -117,8 +117,18 @@ func FoldStatistics(definition Definition, series []Series, parts []measures.Day
 		}
 	default:
 		folded = make(map[string]Statistics, len(series))
+		if len(series) <= 1 {
+			for _, one := range series {
+				folded[one.Series] = aggStatistics(one.Agg, parts, one.Series)
+			}
+			break
+		}
+		bySeries := make(map[string][]measures.DayPart, len(series))
+		for _, part := range parts {
+			bySeries[part.Series] = append(bySeries[part.Series], part)
+		}
 		for _, one := range series {
-			folded[one.Series] = aggStatistics(one.Agg, parts, one.Series)
+			folded[one.Series] = aggStatistics(one.Agg, bySeries[one.Series], one.Series)
 		}
 	}
 	return writable(folded)
@@ -221,19 +231,21 @@ func dailyFolds(definition Definition, headline []Series, byDay map[time.Time][]
 // sortWindowRows sorts rows in place into the one order a read of the day rows (SeriesValuesOf),
 // the stored figures (newFigureGroup) and a rebuild's overlay of staged rows (readOverlayGroups)
 // all fold them in: by day, and within a day by the key each row is stored under (WindowRow.owner),
-// then by its repository (WindowRow.repo) and then by its series. A day of one series can hold
-// several rows: a project's own row and an owner key's (owners.go), and in the cut of the project's
-// default repository its own row of the repository and its own row stored under
-// legionfacts.DefaultRepo (repoCut). No two rows of one eval and range share all four, so the order
-// is total, and a sum of floats, whose bits depend on the order of its parts (1e16, -1e16 and 1 sum
-// to 1 in that order and to 0 in another), answers the same bits whatever order the database
-// answered the rows in.
+// then by its repository (WindowRow.repo), then by its deploy repository (WindowRow.deployRepo)
+// and then by its series. A day of one series can hold several rows: a project's own row and an
+// owner key's (owners.go), in the cut of the project's default repository its own row of the
+// repository and its own row stored under legionfacts.DefaultRepo (repoCut), and in a project's
+// union cut rows of several deploy repositories. No two rows of one eval and range share all five,
+// so the order is total, and a sum of floats, whose bits depend on the order of its parts (1e16,
+// -1e16 and 1 sum to 1 in that order and to 0 in another), answers the same bits whatever order the
+// database answered the rows in.
 func sortWindowRows(rows []WindowRow) {
 	slices.SortFunc(rows, func(a, b WindowRow) int {
 		if order := a.Part.Day.Compare(b.Part.Day); order != 0 {
 			return order
 		}
-		return cmp.Or(strings.Compare(a.owner, b.owner), strings.Compare(a.repo, b.repo), strings.Compare(a.Part.Series, b.Part.Series))
+		return cmp.Or(strings.Compare(a.owner, b.owner), strings.Compare(a.repo, b.repo),
+			strings.Compare(a.deployRepo, b.deployRepo), strings.Compare(a.Part.Series, b.Part.Series))
 	})
 }
 

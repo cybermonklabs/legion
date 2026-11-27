@@ -120,7 +120,7 @@ type codePlan struct {
 
 // planCode draws the history of spec: every commit, change and pair, the same for one seed. It draws
 // from its own random stream, so it moves no other part of the load.
-func planCode(spec Spec, history infraHistory) codePlan {
+func planCode(spec Spec, history projectHistory) codePlan {
 	rng := newRand(spec.Seed, "code survival")
 	opened := make([]time.Time, len(history.issues))
 	for i, issue := range history.issues {
@@ -197,7 +197,7 @@ func planCode(spec Spec, history infraHistory) codePlan {
 // commits that merged no pull request. An agents' change is, by the share of codeLegionShare, one
 // of a head branch under legion/ by a login of an agents' App, or by the branch alone, or by the
 // login alone, so every way a group takes a change is held; every other change is a person's.
-func planChange(rng *rand.Rand, history infraHistory, opened []time.Time, commit survival.Commit, pr int) codeChange {
+func planChange(rng *rand.Rand, history projectHistory, opened []time.Time, commit survival.Commit, pr int) codeChange {
 	change := codeChange{sha: commit.SHA, committed: commit.CommittedAt, pr: pr}
 	agents := rng.Float64() < codeLegionShare
 	share := codeOtherIssueShare
@@ -231,7 +231,7 @@ func planChange(rng *rand.Rand, history infraHistory, opened []time.Time, commit
 
 // issueOpenAt is the key of an INFRA issue open at at, drawn from those opened in the fortnight
 // before it as a pull request's issue is (planPullRequests), and "" when the draws find none.
-func issueOpenAt(rng *rand.Rand, history infraHistory, opened []time.Time, at time.Time) string {
+func issueOpenAt(rng *rand.Rand, history projectHistory, opened []time.Time, at time.Time) string {
 	last := sort.Search(len(opened), func(i int) bool { return opened[i].After(at) })
 	first := sort.Search(len(opened), func(i int) bool { return !opened[i].Before(at.Add(-14 * 24 * time.Hour)) })
 	if last <= first {
@@ -278,7 +278,7 @@ func checkCodeSchema(ctx context.Context, pool *store.Pool) error {
 // writeDelivery has written the settings of) and the code survival results of planCode, in one
 // transaction. The save logs a settings change, which the load's consumers are owed none of
 // (Load), and is drained once it has committed as every save of settings is.
-func writeCode(ctx context.Context, pool *store.Pool, spec Spec, history infraHistory) error {
+func writeCode(ctx context.Context, pool *store.Pool, spec Spec, history projectHistory) error {
 	plan := planCode(spec, history)
 	repo, today := strings.ToLower(Repos[0]), survival.DayOf(spec.Now)
 	groups, err := json.Marshal(codeGroups)

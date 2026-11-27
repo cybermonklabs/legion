@@ -656,27 +656,27 @@ async function deploysTarget(page: Page): Promise<number | null> {
 test("the measures panel judges deploys a day by the target a person set on the eval", async ({
   browser,
 }) => {
-  // Made through the API, whose create seeds its evals in its own transaction, so ACME holds them
-  // once it has answered, before the fixture's settings name it: its source reads acme/widgets, the
-  // repository every deploy of the fixture runs in.
+  // Made through the API, so its evals are seeded in the create's own transaction and ACME holds
+  // them once it has answered, before the fixture's settings name it: its source reads
+  // acme/widgets, the repository every deploy of the fixture runs in.
   await createProject({ key: "ACME", name: "Acme" });
   await seedMeasuresFixture();
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
   const card = page.getByLabel("KPI targets").locator('[data-kpi="Deploys a day"]');
 
-  // 5 deploys over the window: under the catalogue's 20 a day, which is also the target ACME's
-  // seed wrote.
+  // 5 deploys over the window: under the catalogue's 20 a day, which is also the target ACME's seed
+  // wrote.
   await page.goto(`/delivery?mode=list&${MEASURES_QUERY}`);
   await expect(card).toContainText("5 deploys");
   await expect(card).toContainText("target \u2265 20/day");
   await expect(card).toContainText("\u2717 missed");
 
-  // A target written on ACME reaches the measures answer only once the eval refresher has
-  // published acme/widgets as ACME's default repository, which ACME's source, naming none, reads: a
-  // page of the refresher's does so after the fixture's write; until then the answer judges by the
-  // catalogue's entry (evals.Store.DeployRepoEvals). So each write is awaited at the answer before
-  // the page loads again.
+  // A target written on ACME reaches the measures answer only once the eval refresher has published
+  // ACME's default repository, acme/widgets, which the fixture's source reads, a page of the
+  // refresher's does after the fixture's write; until then the answer judges by the catalogue's
+  // entry (evals.Store.DeployRepoEvals). So each write is awaited at the answer before the page
+  // loads again.
   await registerEval("ACME", { slug: "deploy-frequency", target: 0.1, target_inclusive: true });
   await expect.poll(() => deploysTarget(page)).toBe(0.1);
   await page.goto(`/delivery?mode=list&${MEASURES_QUERY}`);

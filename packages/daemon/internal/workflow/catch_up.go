@@ -137,7 +137,7 @@ func QueueCatchUp(ctx context.Context, tx pgx.Tx, store record.Store, steps []re
 // is written on a catch-up no pacing holds, which reports no wait, having had none.
 func queueCatchUp(ctx context.Context, tx pgx.Tx, records record.Store, steps []record.DesignStep, issue record.Issue, launch uint64,
 	relaunch string, now time.Time, hold func(id int64, issue string)) error {
-	catchUp, awaiting, err := treeCatchUp(ctx, tx, records, steps, issue)
+	catchUp, waits, err := treeCatchUp(ctx, tx, records, steps, issue)
 	if err != nil {
 		return err
 	}
@@ -161,9 +161,10 @@ func queueCatchUp(ctx context.Context, tx pgx.Tx, records record.Store, steps []
 		catchUp.Decided, catchUp.Kept = decided, kept
 		reason = fmt.Sprintf("the tree of %s at generation %d as the daemon records it now; start or resume it as your role says", issue.Key, issue.Generation)
 	}
-	if len(awaiting) > 0 {
-		reason += fmt.Sprintf("; in accepting, waiting for your acceptance, which no worker gives: %s (read the evidence, then sign_off or request_backward_move)", strings.Join(awaiting, ", "))
+	if len(waits.accepting) > 0 {
+		reason += fmt.Sprintf("; in accepting, waiting for your acceptance, which no worker gives: %s (read the evidence, then sign_off or request_backward_move)", strings.Join(waits.accepting, ", "))
 	}
+	reason += strings.Join(waits.resting, "")
 	if relaunch != "" {
 		reason = relaunch + "\n\n" + reason
 	}
@@ -209,6 +210,16 @@ func queuedRowCovers(run record.RoleRun, root record.Issue, current phase.Phase)
 // another project (internal/daemon's projectRecords). A claim that holds a task is left alone: it
 // has work, and a second task would be a second prompt for work under way. So is a role a queued
 // row already covers (queuedRowCovers).
+//
+// The ready is the first moment a phase worker relaunched by an update round's replacement of its
+// pod is given its task back: the turn in which it answered the round retired the task it held
+// though its phase was not complete (supervise's settle), and the round's end sends only what is
+// still pending, so the worker's new process gets its phase's task here, once it is ready, before
+// the silence sweep would give it. A worker whose phase is over is given nothing: the issue has left
+// the phase for one its role does not work (RoleFor), or the phase's terminating fact has come
+// (PhaseFinished). The ready does not read a phase row's completion (record.PhaseRow.CompletedAt),
+// which the silence repair reads (PhaseWorkerOwedTurn): a merger that the boot relaunches with a
+// READY completion still on its row is owed its merging task at its ready (cutoverMergerRepair).
 //
 // The daemon's own delivery of a relaunch's record is no task (supervise.HoldsTask), so a claim
 // that holds that alone is read as holding nothing. The phase's task that this queues takes that
@@ -311,15 +322,24 @@ func (e *Engine) readyWorkerTask(ctx context.Context, tx pgx.Tx, fact intake.Cla
 	return nil
 }
 
+// treeWaits is what a catch-up's reason names of the issues an architect owns beyond the catch-up
+// itself (treeCatchUp): the keys of the issues waiting for this architect's acceptance, and a
+// clause for each listed issue that roots rest on (restingClause).
+type treeWaits struct {
+	accepting []string
+	resting   []string
+}
+
 // treeCatchUp is what issue's architect owns as the record holds it. A tree root's architect owns
 // its whole tree: the catch-up says whether a hand-over created the root at this generation, and
 // whether its old root's gate came with it, each design-gate step the root must hold open and how
-// it stands, and every issue of the tree in key order. The steps are the ones the tree is gated on
-// (classify.TreeSteps), so a criteria row the architect registered beside a deployment that gates
-// spec and not criteria is listed after the spec, gated as the spec is. A child's architect owns
-// the child and every issue whose recorded parent chain reaches it (record.Beneath), listed in key
-// order at the child's own generation: a child registers no gate and no hand-over creates one, so
-// its catch-up states no step and is neither handed over nor carried.
+// it stands, and every issue of the tree in key order. The steps are the ones the tree's work
+// waits on (record.TreeGate.Required), so a criteria row the architect registered beside a
+// deployment that gates spec and not criteria is listed after the spec, gated as the spec is. A
+// child's architect owns the child and every issue whose recorded parent chain reaches it
+// (record.Beneath), listed in key order at the child's own generation: a child registers no gate
+// and no hand-over creates one, so its catch-up states no step and is neither handed over nor
+// carried.
 //
 // With it come the keys, in key order, of the listed issues waiting for this architect's
 // acceptance (awaitingAcceptance). No worker runs in accepting, and the one phase-finished notice
@@ -329,29 +349,42 @@ func (e *Engine) readyWorkerTask(ctx context.Context, tx pgx.Tx, fact intake.Cla
 // comes back learns of the wait from its catch-up alone; the reason names these keys so that the
 // catch-up, which a revived architect reads as its issues already running, says what is the
 // architect's own to do.
-func treeCatchUp(ctx context.Context, tx pgx.Tx, store record.Store, steps []record.DesignStep, issue record.Issue) (record.CatchUp, []string, error) {
+//
+// With them come, for each listed issue still in the workflow, in key order, the roots that rest
+// on its approval and are still in the workflow (record.RestingRoots, dispatch://INFRA-3320 R8),
+// read for all of them at once (record.RestingRootsOn): their work holds that issue's acceptance
+// and its close, and a resting-root notice that told of one is ended undelivered when the
+// architect's claim has failed, as the phase-finished notice is, so the reason names them beside
+// the accepting list.
+func treeCatchUp(ctx context.Context, tx pgx.Tx, store record.Store, steps []record.DesignStep, issue record.Issue) (record.CatchUp, treeWaits, error) {
 	catchUp := record.CatchUp{Generation: issue.Generation, Gates: []record.CatchUpGate{}}
 	if claim.IsTreeRoot(issue.Key, issue.Tree) {
 		handed, err := ArchitectCarried(ctx, tx, store, issue)
 		if err != nil {
-			return record.CatchUp{}, nil, err
+			return record.CatchUp{}, treeWaits{}, err
 		}
 		if handed != nil {
 			catchUp.HandedOver, catchUp.Carried = true, handed.GateCarried
 		}
 		gates, err := store.GatesOf(ctx, tx, issue.Key)
 		if err != nil {
-			return record.CatchUp{}, nil, err
+			return record.CatchUp{}, treeWaits{}, err
 		}
 		gated := classify.TreeSteps(steps, gates)
-		required := classify.RequiredSteps(gated)
+		required := record.TreeGate{Steps: steps, Rows: gates}.Required()
 		catchUp.Gates = make([]record.CatchUpGate, 0, len(required))
 		for _, step := range required {
 			stated := record.CatchUpGate{Step: step, Gated: slices.Contains(gated, step)}
 			if recorded, ok := gates[step]; ok {
 				stated.Artifact, stated.Version, stated.Open = recorded.ArtifactID, recorded.LatestVersion, classify.DesignGateOpen(recorded)
-				if recorded.ApprovedVersion != nil {
+				// A step open on an ancestor's approval holds the version the root registered as
+				// its ApprovedVersion, which no person approved, so it states no approved version:
+				// the basis beside it is what opened the step (dispatch://INFRA-3320, R2).
+				if recorded.ApprovedVersion != nil && !recorded.OnBasis() {
 					stated.Approved = *recorded.ApprovedVersion
+				}
+				if recorded.Basis != nil {
+					stated.Pending, stated.Basis = recorded.PendingOnBasis(), record.CatchUpBasisOf(*recorded.Basis)
 				}
 			} else {
 				stated.Unregistered = true
@@ -361,7 +394,7 @@ func treeCatchUp(ctx context.Context, tx pgx.Tx, store record.Store, steps []rec
 	}
 	members, err := store.TreeIssues(ctx, tx, issue.Tree)
 	if err != nil {
-		return record.CatchUp{}, nil, err
+		return record.CatchUp{}, treeWaits{}, err
 	}
 	owned := map[string]bool{issue.Key: true}
 	for _, under := range record.Beneath(issue, members) {
@@ -369,6 +402,7 @@ func treeCatchUp(ctx context.Context, tx pgx.Tx, store record.Store, steps []rec
 	}
 	catchUp.Issues = make([]record.CatchUpIssue, 0, len(owned))
 	var accepting []record.Issue
+	var live []string
 	for _, member := range members {
 		if !owned[member.Key] {
 			continue
@@ -378,15 +412,28 @@ func treeCatchUp(ctx context.Context, tx pgx.Tx, store record.Store, steps []rec
 			listed.Parent = *member.Parent
 		}
 		catchUp.Issues = append(catchUp.Issues, listed)
-		if member.Phase == phase.Accepting && record.InWorkflow(member) {
+		if !record.InWorkflow(member) {
+			continue
+		}
+		if member.Phase == phase.Accepting {
 			accepting = append(accepting, member)
 		}
+		live = append(live, member.Key)
 	}
-	awaiting, err := awaitingAcceptance(ctx, tx, store, issue, accepting)
+	var waits treeWaits
+	if waits.accepting, err = awaitingAcceptance(ctx, tx, store, issue, accepting); err != nil {
+		return record.CatchUp{}, treeWaits{}, err
+	}
+	resting, err := record.RestingRootsOn(ctx, tx, store, live)
 	if err != nil {
-		return record.CatchUp{}, nil, err
+		return record.CatchUp{}, treeWaits{}, err
 	}
-	return catchUp, awaiting, nil
+	for _, key := range live {
+		if roots := resting[key]; len(roots) > 0 {
+			waits.resting = append(waits.resting, restingClause(key, roots))
+		}
+	}
+	return catchUp, waits, nil
 }
 
 // awaitingAcceptance is the keys, in the order given, of accepting — issues of issue's tree that
@@ -395,9 +442,10 @@ func treeCatchUp(ctx context.Context, tx pgx.Tx, store record.Store, steps []rec
 // the issue itself over the architect claims this transaction reads (record.ReadOwnerWalk). So a
 // root's architect is not asked to accept an issue whose own architect, or an architect between
 // the two, holds its role, and is asked to accept one whose architects up to the root have all
-// failed, retired, never started, or been suspended by the workflow or an operator (a claim the
-// idle release suspended still holds its role). An issue whose key makes no claim token has no
-// architect, so the walk makes it the tree root's to accept. No claim is read when nothing waits.
+// failed, retired, never started, or been suspended by anyone but the idle release — the workflow,
+// the operator or the controller alike — whose suspended claim still holds its role
+// (supervise.HoldsRole). An issue whose key makes no claim token has no architect, so the walk
+// makes it the tree root's to accept. No claim is read when nothing waits.
 func awaitingAcceptance(ctx context.Context, tx pgx.Tx, store record.Store, issue record.Issue, accepting []record.Issue) ([]string, error) {
 	if len(accepting) == 0 {
 		return nil, nil

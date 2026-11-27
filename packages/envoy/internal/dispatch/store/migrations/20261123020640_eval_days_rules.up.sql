@@ -7,23 +7,29 @@
 -- (eval_days.deploy_repo) are built under its own source's rule, and a project's read folds the rows
 -- of each of its source repositories.
 --
--- eval_days_rules holds one row per repository that is a source the refresher last brought its rows
--- to (evals.syncSettings, evals.syncKept):
+-- eval_days_rules holds one row per repository that has been a source the refresher brought its rows
+-- to (evals.syncSettings, evals.syncKept), and keeps it, with the repository's rows, once no source
+-- reads the repository any more: which repositories a project reads is a selection, so a source
+-- moved away and back, or a later source on the repository under the same rule, rebuilds nothing:
 --   repo         the repository, spelled as its rows are keyed (eval_days.deploy_repo).
---   project_key  the delivery-on project whose source reads it (delivery.DeployRules): a deploy of
---              it that ships no pull request counts for this project and no other (INFRA-978 R12),
---              and this project's read selects its rows (evals.DeployReposIn), so a read answers
---              the selection the rows were built for, the old one whole or the new one whole.
+--   project_key  the delivery-on project whose source reads it (delivery.DeployRules), null once no
+--              source reads it: a deploy of it that ships no pull request is a row of the
+--              repository's source key (evals.sourceKey), which this project reads and no other
+--              (INFRA-978 R12, eval_project_owners, 20261126090000), and this project's read
+--              selects its rows (evals.DeployReposIn), so a read answers the selection the rows
+--              were recorded for, the old one whole or the new one whole.
 --   production_job_names, production_apply_step_name, staging_e2e_job_name, staging_apply_job_name
 --              the four fields of its rule a day row reads (evals.settingsMoves says which evals
---              each moves). A pass that reads another rule, or another project, for the repository
---              rewrites that repository's days the difference moves, and no other repository's, in
---              one transaction that records the new row (evals.rewriteSettings).
+--              each moves). A pass that reads another rule for the repository rewrites that
+--              repository's days the difference moves, and no other repository's, in one
+--              transaction that records the new row (evals.rewriteSettings); one that reads
+--              another project alone records it with its cursors and rewrites no day row.
 --   kept_since the start of the repository's history the rows stand built from (the UTC day of its
 --              first deploy or PR-checks run, evals.keptRepo), null while it holds no delivery
---              run and so no row. A page that finds a repository's first runs, its runs gone, its
---              start moved, or the repository no source any more builds or deletes its days in
---              the transaction of its cursors (evals.syncKept, span.go).
+--              run and so no row. A page that finds a repository's first runs under its first
+--              rule, its runs gone or its start moved builds or deletes its days in the
+--              transaction of its cursors (evals.syncKept, span.go); one whose source leaves it
+--              keeps them.
 --   updated_at when the row was last recorded.
 --
 -- eval_days_settings stays as it is: the release before this one reads and writes it, and the
@@ -35,7 +41,7 @@
 -- first pass then finds no rule recorded and rebuilds the rows aside under the rules it reads.
 create table eval_days_rules (
   repo text primary key check (repo <> ''),
-  project_key text not null,
+  project_key text,
   production_job_names text[] not null,
   production_apply_step_name text,
   staging_e2e_job_name text,

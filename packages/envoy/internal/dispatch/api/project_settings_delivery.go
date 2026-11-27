@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -76,16 +77,18 @@ type projectDeploySource struct {
 	ReconciledThrough *time.Time `json:"reconciled_through"`
 }
 
-// projectDeliverySettingsInput is the body PUT /api/v1/projects/{key}/settings/delivery takes: every
-// field of the settings, replacing what the project holds, and the targets it changes. targets is
-// an object of the slugs of deliverySettingsTargetSlugs, each a number or "off"; a slug it leaves
-// out keeps its target, and a slug whose target is the eval's already writes no version.
-// code_groups is the project's whole list of code groups, in order (codeGroupsRefusal): absent or
-// null keeps the list the project holds, as the release before this one, which sends none, needs,
-// and [] clears it.
+// projectDeliverySettingsInput is the body PUT /api/v1/projects/{key}/settings/delivery takes:
+// every top-level field is optional, and a field the body leaves out keeps its stored value (the
+// two-build rule, store/README.md: a build that does not know a field saves without dropping it).
+// Explicit null clears a field that may be empty; sources, when present, replaces the list;
+// targets is an object of the slugs of deliverySettingsTargetSlugs, each a number or "off", where
+// a slug it leaves out keeps its target and a slug whose target is the eval's already writes no
+// version. code_groups is the project's whole list of code groups, in order (codeGroupsRefusal):
+// absent or null keeps the list the project holds, as the release before this one, which sends
+// none, needs, and [] clears it.
 type projectDeliverySettingsInput struct {
-	Delivery              bool                       `json:"delivery" required:"true"`
-	Sources               []projectDeploySourceInput `json:"sources" required:"true"`
+	Delivery              bool                       `json:"delivery"`
+	Sources               []projectDeploySourceInput `json:"sources"`
 	PopulationAuthors     []string                   `json:"population_authors"`
 	ExcludedRepos         []string                   `json:"excluded_repos"`
 	FailureSources        []string                   `json:"failure_sources"`
@@ -197,9 +200,11 @@ func (s *server) readProjectDeliverySettings(ctx context.Context, project string
 	return answer, nil
 }
 
-// putProjectDeliverySettings answers PUT /api/v1/projects/{key}/settings/delivery: it replaces the
-// project's delivery settings with the body's and writes each target the body changes as a new
-// version of the project's eval, in one transaction, and answers the stored settings as GET does.
+// putProjectDeliverySettings answers PUT /api/v1/projects/{key}/settings/delivery: it updates the
+// project's delivery settings with each top-level field the body names (keeping the stored value
+// of every top-level field it leaves out; null clears a field that may be empty; sources, when
+// present, replaces the list) and writes each target the body changes as a new version of the
+// project's eval, in one transaction, and answers the stored settings as GET does.
 //
 // It refuses, writing nothing: a field no reader could read, 400 DELIVERY_SETTINGS_INPUT naming the
 // field and, for a source's, the source's index (delivery.ValidateProjectSettings, and the targets,
@@ -218,12 +223,18 @@ func (s *server) readProjectDeliverySettings(ctx context.Context, project string
 // transaction commits, as every eval write's are (evals.Store.RegisterWith).
 func (s *server) putProjectDeliverySettings(w http.ResponseWriter, r *http.Request) {
 	var input projectDeliverySettingsInput
-	if err := decodeJSON(r, &input); err != nil {
+	body, err := decodeJSONBody(r, &input)
+	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
 	actor, ok := s.requireActor(w, r, input.Actor)
 	if !ok {
+		return
+	}
+	present, err := topLevelJSONMembers(body)
+	if err != nil {
+		s.writeHandlerError(w, err)
 		return
 	}
 	ctx := r.Context()
@@ -235,6 +246,10 @@ func (s *server) putProjectDeliverySettings(w http.ResponseWriter, r *http.Reque
 	}
 	save, refusal := s.projectSettingsSave(key, input)
 	if refusal == nil {
+		if err := s.keepStoredDeliverySettings(ctx, &save, present); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
 		refusal = delivery.ValidateProjectSettings(save)
 	}
 	targets, targetRefusal := parseDeliveryTargets(input.Targets)
@@ -308,6 +323,78 @@ func codeGroupSeriesRoom(ctx context.Context, tx pgx.Tx, project string, groups 
 		return delivery.InputRefusal(nil, "code_groups", "%s", full.Message)
 	}
 	return err
+}
+
+// topLevelJSONMembers reads the top-level names independently of their values. In the typed
+// decode both an omitted list and an explicit null list are nil; only the latter clears one.
+func topLevelJSONMembers(body []byte) (map[string]jsonMember, error) {
+	var members map[string]jsonMember
+	if err := json.NewDecoder(bytes.NewReader(body)).Decode(&members); err != nil {
+		return nil, fmt.Errorf("read the settings body's members: %w", err)
+	}
+	return members, nil
+}
+
+// keepStoredDeliverySettings fills the fields the body leaves out, without normalizing those
+// values again. Do it before validation and the GitHub access check: both read the whole save.
+func (s *server) keepStoredDeliverySettings(ctx context.Context, save *delivery.ProjectSettingsInput, present map[string]jsonMember) error {
+	has := func(field string) bool {
+		if _, named := present[field]; named {
+			return true
+		}
+		// encoding/json matches struct fields case-insensitively.
+		for name := range present {
+			if strings.EqualFold(field, name) {
+				return true
+			}
+		}
+		return false
+	}
+	deliveryNamed, sourcesNamed := has("delivery"), has("sources")
+	authorsNamed, excludedNamed := has("population_authors"), has("excluded_repos")
+	failuresNamed, sinceNamed := has("failure_sources"), has("failures_measured_since")
+	if deliveryNamed && sourcesNamed && authorsNamed && excludedNamed && failuresNamed && sinceNamed {
+		return nil
+	}
+	stored, err := delivery.GetProjectSettings(ctx, s.deps.Store.Pool, save.Project)
+	if errors.Is(err, delivery.ErrNoSettings) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if !deliveryNamed {
+		save.Delivery = stored.Delivery
+	}
+	if !sourcesNamed {
+		save.Sources = make([]delivery.SourceInput, len(stored.Sources))
+		for i, source := range stored.Sources {
+			save.Sources[i] = delivery.SourceInput{
+				Kind:                    source.Kind,
+				Repo:                    source.Repo,
+				DeployWorkflowPath:      source.DeployWorkflowPath,
+				ProductionJobNames:      source.ProductionJobNames,
+				ProductionApplyStepName: source.ProductionApplyStepName,
+				StagingE2EJobName:       source.StagingE2EJobName,
+				StagingApplyJobName:     source.StagingApplyJobName,
+				PRChecksWorkflowPath:    source.PRChecksWorkflowPath,
+				PRChecksRollupJobName:   source.PRChecksRollupJobName,
+			}
+		}
+	}
+	if !authorsNamed {
+		save.PopulationAuthors = stored.PopulationAuthors
+	}
+	if !excludedNamed {
+		save.ExcludedRepos = stored.ExcludedRepos
+	}
+	if !failuresNamed {
+		save.FailureSources = stored.FailureSources
+	}
+	if !sinceNamed {
+		save.FailuresMeasuredSince = stored.FailuresMeasuredSince
+	}
+	return nil
 }
 
 // projectSettingsSave is the save input names, its repositories canonical: each source's

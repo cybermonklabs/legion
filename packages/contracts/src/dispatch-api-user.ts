@@ -37,15 +37,16 @@ export interface AuthenticatedUser {
  *  fleet its machine belongs to, the Kubernetes account an exchange entry lists or a job's identity
  *  as its job entry lists it, null otherwise.
  *  `session` is the session the credential itself proved, which only an access token the secrets
- *  broker issued does, and `project` the one project key that credential lets the caller write,
- *  null where it names none. `sign_in_required` is whether Dispatch refuses every write of the
- *  credential until a person signs in on its machine (`SIGN_IN_REQUIRED`), the decision its write
- *  check makes, and false for a read-only credential, which no sign-in lets write. A client reads
- *  an absent `service`, `session`, `project` or `sign_in_required` as
- *  a Dispatch older than that field, not as null or false: `service` is absent from one older than
- *  verified service tokens, `session` and `project` from one older than broker-issued tokens, and
- *  `sign_in_required` from one older than the field, whose rule the client then reads from the
- *  owner, the service and the session.
+ *  broker issued does, and `project` the project key that credential's token names, null where
+ *  it names none. Such a token writes other projects' objects as a credential that names none
+ *  does, a private project it does not name excepted. `sign_in_required` is whether Dispatch
+ *  refuses every write of the credential until a person signs in on its machine
+ *  (`SIGN_IN_REQUIRED`), the decision its write check makes, and false for a read-only
+ *  credential, which no sign-in lets write. A client reads an absent `service`, `session`,
+ *  `project` or `sign_in_required` as a Dispatch older than that field, not as null or false:
+ *  `service` is absent from one older than verified service tokens, `session` and `project` from
+ *  one older than broker-issued tokens, and `sign_in_required` from one older than the field,
+ *  whose rule the client then reads from the owner, the service and the session.
  *
  *  `project_scope` is a broker-issued token's project scope, absent for every other credential:
  *  `named` for a token an operator's or a job's entry mapped to its project, and for an exchange
@@ -56,8 +57,10 @@ export interface AuthenticatedUser {
  *  older than the field leaves it out for every credential, and refuses a job's token outright.
  *
  *  `scopes` is the OAuth scopes the caller's own credential holds, which decide the routes it may
- *  call: both of them for a person at a browser, the set its row names for a personal token, and
- *  `[]` for the shared token and a verified service token, which act as nobody. A read-only
+ *  call and whether it may make an issue's own priority 0: all three (`person`, `approve`, `p0`)
+ *  for a person at a browser, the set its row names for a personal token, `["person"]` for a
+ *  broker-issued token acting for its person, and `[]` for the shared token, a verified service
+ *  token and every other broker-issued token. A read-only
  *  credential, a broker's or a person's, is answered `read` after the scopes it holds
  *  (`DISPATCH_TOKEN_SCOPES`), and `cut` names the past time it reads at, null for none and for
  *  every credential that writes. A Dispatch older than read-only tokens names neither. A Legion

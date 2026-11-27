@@ -625,10 +625,10 @@ func (r *refresh) fillLoggedZeros(ctx context.Context, project string) (int64, e
 		return 0, err
 	}
 	// An eval read logged above that the seed took over before its lock was taken is computed now,
-	// so the insert reads which of them are logged again, under their locks. The days it writes are
-	// the days whose stored figures it may have moved, folded again in its transaction
-	// (foldFiguresInTx) under the locks it holds.
-	spans := map[string]daySpan{}
+	// so the insert reads which of them are logged again, under their locks. The days it writes,
+	// each run apart (daySpans), are the days whose stored figures it may have moved, folded again
+	// in its transaction (foldFiguresInTx) under the locks it holds.
+	spans := daySpans{}
 	written, err := writeZeroRows(ctx, tx, `
 		select project_key, eval_id, series, day,
 		       lead(day) over series_days as next_day,
@@ -641,7 +641,7 @@ func (r *refresh) fillLoggedZeros(ctx context.Context, project string) (int64, e
 	if err != nil {
 		return 0, fmt.Errorf("write the zero rows of %s's logged evals: %w", project, err)
 	}
-	if err := foldFiguresInTx(ctx, tx, r.build, map[string]map[string]daySpan{project: spans}); err != nil {
+	if err := foldFiguresInTx(ctx, tx, r.build, writtenSpans{project: spans}.sets()...); err != nil {
 		return 0, err
 	}
 	if err := tx.Commit(ctx); err != nil {

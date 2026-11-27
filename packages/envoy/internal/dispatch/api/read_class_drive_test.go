@@ -98,6 +98,7 @@ var readRowDrives = map[string]rowDrive{
 	"GET /api/v1":               {target: "/api/v1", fromMemory: "the route index is built in memory when the table is registered"},
 	"GET /api/v1/schema/blocks": {target: "/api/v1/schema/blocks", fromMemory: "the block schema is a constant of the document package"},
 	"GET /api/v1/limits":        {target: "/api/v1/limits", fromMemory: "the limits are constants"},
+	"GET /api/v1/deploys":       {target: "/api/v1/deploys?repo=acme/widgets", statement: statementOf(`\bfrom\s+deploys\b`)},
 	"GET /api/v1/projects":      {target: "/api/v1/projects", statement: statementOf(`\bcoalesce\(open_asks\.total\b`)},
 	"GET /api/v1/projects/{key}/artifacts": {target: "/api/v1/projects/$project/artifacts",
 		statement: statementOf(`\bfrom\s+artifacts\s+where\s+project_key\s*=\s*\$1\s+and\s+not\s+is_primary\b`)},
@@ -183,6 +184,7 @@ var readRowDrives = map[string]rowDrive{
 		volatile: []volatileMember{
 			{"checks.*.compared_with.*.learned_at.at", "the moment the read learned a pull request's head from GitHub, its own clock: the read-only read stores nothing and keeps nothing after its request, so its writer's read asks GitHub again"},
 			{"checks.*.results.*.commit_stands.basis.learned_at.at", "the same moment, on the basis each result stands at"},
+			{"checks.*.pass_stands.subjects.*.basis.learned_at.at", "the same moment, on the basis each subject's pass stands at"},
 		}},
 	"GET /api/v1/issues/{key}/coverage":      {target: "/api/v1/issues/$issue/coverage", statement: statementOf(`\bt\.type\s*=\s*'requirement'`)},
 	"GET /api/v1/issues/{key}/messages":      {target: "/api/v1/issues/$issue/messages", statement: statementOf(`\bfrom\s+messages\s+where\s+issue_key\s*=\s*\$1\s+and\s+in_reply_to\s+is\s+null\b`)},

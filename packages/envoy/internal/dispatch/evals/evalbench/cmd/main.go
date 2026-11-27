@@ -11,9 +11,10 @@
 // fixture of the Evals tab's k22 and k24 (INFRA alone, its pull requests in two repositories, no
 // reading) into a database this head or the base head 82380570f8 migrated, and prints the checks
 // it holds the rows to; -scale multiplies every count (0.02 loads in a pod in a few minutes);
-// -ten-times writes ten times the stated run rate. Every time is relative to -now, the current
-// UTC midnight by default, so a load of the base and one of this head with one -now and one
-// -seed hold the same history at the same times.
+// -ten-times writes ten times the stated run rate; -k14 adds the two projects k14's writes and
+// first paints read (evalbench's k14.go), which no other mode loads. Every time is relative to
+// -now, the current UTC midnight by default, so a load of the base and one of this head with one
+// -now and one -seed hold the same history at the same times.
 //
 // -code, on by default, writes INFRA's code survival results (dispatch://INFRA-3206, check k17):
 // 365 days of its default repository's chain at cybermonklabs/legion's measured rate, INFRA's two
@@ -47,7 +48,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-const usage = "usage: evalbench -database <url> [-built-by <commit>] [-seed <n>] [-scale <share>] [-ten-times] [-code=false] [-base | -one-project] [-now <RFC 3339>] [-failure-day <days> [-failure-day-runs <n>] [-failure-day-jobs <m>]]"
+const usage = "usage: evalbench -database <url> [-built-by <commit>] [-seed <n>] [-scale <share>] [-ten-times] [-code=false] [-base | -one-project] [-k14] [-now <RFC 3339>] [-failure-day <days> [-failure-day-runs <n>] [-failure-day-jobs <m>]]"
 
 // config is what the command line asks: the load, the failure day to add instead of it where
 // -failure-day names one, and the database to write into.
@@ -75,6 +76,7 @@ func parseConfig(args []string, stderr io.Writer) (config, error) {
 	flags.BoolVar(&cfg.spec.TenTimes, "ten-times", false, "write ten times the stated run rate")
 	flags.BoolVar(&cfg.spec.Base, "base", false, "write into a database of the base, main at the commit this head merges (git merge-base <head> origin/main), with no eval reading")
 	flags.BoolVar(&cfg.spec.OneProject, "one-project", false, "write the one-project fixture of the Evals tab's k22 and k24 (INFRA alone, its pull requests in the deploy repository and one other, no reading), into a database of this head or of the base head 82380570f8")
+	flags.BoolVar(&cfg.spec.K14, "k14", false, "add the two projects at INFRA's size that k14 measures: PAIR, with two github_workflow sources, and MIXED, with a github_workflow source and an events source")
 	flags.BoolVar(&code, "code", true, "write INFRA's code survival results (365 days of its default repository's chain, its two code groups and the repository's row); -base and -one-project write none. A database whose schema predates them takes -code=false: k17's control base, a commit of this branch that holds the eval registry's tables but not the code evals, its delivery settings with or without code_groups (migration 20261126133047)")
 	flags.StringVar(&cfg.spec.BuiltBy, "built-by", "", "the build the logged evals' day rows record: the server's stamped commit")
 	flags.StringVar(&now, "now", "", "the moment every history ends at, RFC 3339; the current UTC midnight by default")
@@ -134,8 +136,8 @@ func main() {
 			added.Day.Format(time.DateOnly), added.Runs, added.Jobs, added.FailedJobs, time.Since(started).Seconds())
 		return
 	}
-	logf("loading seed %d at scale %g (ten times the run rate: %t, base: %t, one project: %t, code survival results: %t), ending at %s",
-		cfg.spec.Seed, cfg.spec.Scale, cfg.spec.TenTimes, cfg.spec.Base, cfg.spec.OneProject, cfg.spec.WritesCode(), cfg.spec.Now.Format(time.RFC3339))
+	logf("loading seed %d at scale %g (ten times the run rate: %t, base: %t, one project: %t, k14 projects: %t, code survival results: %t), ending at %s",
+		cfg.spec.Seed, cfg.spec.Scale, cfg.spec.TenTimes, cfg.spec.Base, cfg.spec.OneProject, cfg.spec.K14, cfg.spec.WritesCode(), cfg.spec.Now.Format(time.RFC3339))
 	counts, err := evalbench.Load(ctx, opened, cfg.spec, logf)
 	if err != nil {
 		fail(err)

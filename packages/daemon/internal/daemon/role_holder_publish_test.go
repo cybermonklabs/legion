@@ -116,6 +116,15 @@ func (r *roleHoldersRig) moveClaim(token claim.Token, state supervise.ClaimState
 	}
 }
 
+// suspendedBy records by as the source that suspended the claim, with a statement of its own that
+// leaves the claim's updated_at as it stands, so a seed changed long ago stays so.
+func (r *roleHoldersRig) suspendedBy(token claim.Token, by supervise.SuspendSource) {
+	r.t.Helper()
+	if _, err := r.pool.Exec(r.ctx, `update claims set suspended_by = $2 where token = $1`, string(token), string(by)); err != nil {
+		r.t.Fatalf("record %s's suspension by %s: %v", token, by, err)
+	}
+}
+
 func (r *roleHoldersRig) enqueue(issue string) {
 	r.t.Helper()
 	if err := store.Transact(r.ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
@@ -154,11 +163,12 @@ func queuedRoleHolders(t *testing.T, pool *store.Pool) ([]string, int) {
 	return issues, len(issues)
 }
 
-// The executor reads the issue's live set from the claims at run time and sends it whole: a claim
-// counts while it is registered, ready, working or idle and records a session. A retired, a
-// suspended and a failed claim leave the set, and so does a claim with no session yet. The set is
-// read when the row runs, not when it is queued, so a claim that ended between the two is gone.
-func TestTheExecutorPublishesTheLiveSetAtRunTime(t *testing.T) {
+// The executor reads the issue's set from the claims at run time and sends it whole: a claim
+// counts while it holds its role (supervise.HoldsRole) and records a session. A retired, a
+// failed and a suspended claim whose suspension is not the idle release's leave the set, and so
+// does a claim with no session yet. The set is read when the row runs, not when it is queued, so a
+// claim that ended between the two is gone.
+func TestTheExecutorPublishesTheHeldSetAtRunTime(t *testing.T) {
 	t.Parallel()
 	const issue = "LEGION-208"
 	r := newRoleHoldersRig(t)
@@ -190,7 +200,7 @@ func TestTheExecutorPublishesTheLiveSetAtRunTime(t *testing.T) {
 // session's id, in the claim's own project. The claim holding its own session is published as
 // before.
 //
-// The controls (the pull request records the runs): LiveRoleHolders without its claim_sessions
+// The controls (the pull request records the runs): RoleHolders without its claim_sessions
 // clause publishes all six sessions; without its `h.kind` predicate it publishes the one held as a
 // file name, and without its `h.project` predicate the one held in another project.
 func TestTheExecutorPublishesNoSessionItsClaimDoesNotHold(t *testing.T) {
@@ -248,7 +258,7 @@ func TestTheExecutorPublishesNoSessionItsClaimDoesNotHold(t *testing.T) {
 // names is not, is left out, and so is one whose file is not a clean path. The claim holding every
 // name of its session is published as before.
 //
-// The control (the pull request records the run): LiveRoleHolders asking for the session id's
+// The control (the pull request records the run): RoleHolders asking for the session id's
 // hold alone, as round 13 did; every one of the four claims is published beside the architect.
 func TestTheExecutorPublishesASessionOnlyWhileItsClaimHoldsEveryNameOfIt(t *testing.T) {
 	t.Parallel()
@@ -361,11 +371,14 @@ func TestTheReadyOfAClaimOfAnotherProjectsIssueQueuesNoRolePublication(t *testin
 	}
 }
 
-// Each boot queues the publication of every issue of the project that has a live claim, or a claim
-// that changed in the last seven days: a daemon that upgrades from a release that published
-// nothing starts over running sessions Dispatch has never been told of, and a roll forward finds
-// the claims that release ended. A claim that changed longer ago and a claim of another project
-// are left out.
+// Each boot queues the publication of every issue of the project that has a claim that holds its
+// role, or a claim that changed in the last seven days: a daemon that upgrades from a release that
+// published nothing starts over sessions Dispatch has never been told of, one that upgrades from a
+// release that left a claim the idle release suspended out of the set finds that claim's role
+// unnamed, and a roll forward finds the claims that release ended. A claim that changed longer ago
+// and holds no role, and a claim of another project, are left out: of the suspensions changed
+// longer ago, only those whose source keeps the role (suspensionsKeepTheirRole) are read, one issue
+// for each source.
 func TestBootQueuesEveryRecentIssue(t *testing.T) {
 	t.Parallel()
 	r := newRoleHoldersRig(t)
@@ -374,20 +387,267 @@ func TestBootQueuesEveryRecentIssue(t *testing.T) {
 	r.seedClaim("LEGION-3", claim.RoleTester, "ses-3", supervise.StateRetired, 10*24*time.Hour)
 	r.seedClaim("OTHER-1", claim.RoleTester, "ses-4", supervise.StateReady, time.Minute)
 	r.seedClaim("LEGIONX-1", claim.RoleTester, "ses-5", supervise.StateReady, time.Minute)
+	want := []string{"LEGION-1", "LEGION-2"}
+	for i, tc := range suspensionsKeepTheirRole {
+		issue := fmt.Sprintf("LEGION-%d", 40+i)
+		r.suspendedBy(r.seedClaim(issue, claim.RoleArchitect, "ses-"+string(tc.by), supervise.StateSuspended, 30*24*time.Hour), tc.by)
+		if tc.keeps {
+			want = append(want, issue)
+		}
+	}
+	slices.Sort(want)
 	w := &workflowRuntime{pool: r.pool, records: r.records, dispatchProject: gatePublishProject, log: quietLogger()}
 
 	if err := w.queueRoleHoldersPublish(r.ctx); err != nil {
 		t.Fatalf("the boot's queue of the role-holder publications: %v", err)
 	}
-	if issues, _ := queuedRoleHolders(t, r.pool); !slices.Equal(issues, []string{"LEGION-1", "LEGION-2"}) {
-		t.Fatalf("the boot queued %v, want LEGION-1 and LEGION-2", issues)
+	issues, _ := queuedRoleHolders(t, r.pool)
+	if slices.Sort(issues); !slices.Equal(issues, want) {
+		t.Fatalf("the boot queued %v, want %v", issues, want)
 	}
 	// A second boot, a restart loop, queues no row beside the first.
 	if err := w.queueRoleHoldersPublish(r.ctx); err != nil {
 		t.Fatalf("the second boot's queue: %v", err)
 	}
-	if issues, rows := queuedRoleHolders(t, r.pool); rows != 2 {
-		t.Fatalf("after a second boot the outbox holds %v, want the same two rows", issues)
+	if issues, rows := queuedRoleHolders(t, r.pool); rows != len(want) {
+		t.Fatalf("after a second boot the outbox holds %v, want the same %d rows", issues, len(want))
+	}
+}
+
+// suspensionsKeepTheirRole is whether a claim suspended by each source holds its role, which is
+// whether Dispatch's set keeps naming its session (supervise.HoldsRole): the idle release's
+// suspension, which a project pause's stop makes too, keeps the session, the phase and the task,
+// and the next wake resumes the same session, so the role is still the claim's; every other source
+// stops the agent until a rule or a resume starts it again, and the role with it. One row for each
+// source, so a change of what a source does is one row's edit;
+// TestEverySuspensionSourceHasARowOfItsOwn holds the table to the sources supervise declares.
+var suspensionsKeepTheirRole = []struct {
+	by    supervise.SuspendSource
+	keeps bool
+}{
+	{supervise.SuspendedByReleased, true},
+	{supervise.SuspendedByOperator, false},
+	{supervise.SuspendedByController, false},
+	{supervise.SuspendedByDaemon, false},
+	{supervise.SuspendedByExit, false},
+	{supervise.SuspendedByUnknown, false},
+}
+
+func TestEverySuspensionSourceHasARowOfItsOwn(t *testing.T) {
+	t.Parallel()
+	var rows []supervise.SuspendSource
+	for _, tc := range suspensionsKeepTheirRole {
+		rows = append(rows, tc.by)
+	}
+	declared := supervise.SuspendSources()
+	slices.Sort(rows)
+	slices.Sort(declared)
+	if !slices.Equal(rows, declared) {
+		t.Fatalf("suspensionsKeepTheirRole has rows for %v, want one for each source supervise declares, %v", rows, declared)
+	}
+}
+
+// heldRoleIssue is the issue whose architect the held-role tests write, in its own tree.
+const heldRoleIssue = "LEGION-330"
+
+// heldRoleRig is the role-holder publication end to end over one database: the daemon's store,
+// whose claim writes queue the publication in their own transactions as a daemon with a workflow
+// has them do (store.PublishRoleHolders, store's putClaim), and the board lane that sends it
+// (roleHoldersRig). Its claim is heldRoleIssue's architect, whose sessions ses-1 and ses-2 are
+// both held for it, as the registration of each holds it.
+type heldRoleRig struct {
+	*roleHoldersRig
+	st    *store.Store
+	token claim.Token
+}
+
+func newHeldRoleRig(t *testing.T) *heldRoleRig {
+	t.Helper()
+	r := &heldRoleRig{roleHoldersRig: newRoleHoldersRig(t)}
+	r.st = outboxTreeStore(t, r.pool)
+	r.st.PublishRoleHolders(nil)
+	token, err := claim.NewToken("legion", heldRoleIssue, claim.RoleArchitect)
+	if err != nil {
+		t.Fatalf("the token of %s's architect: %v", heldRoleIssue, err)
+	}
+	r.token = token
+	for _, session := range []string{"ses-1", "ses-2"} {
+		if _, err := r.pool.Exec(r.ctx, `insert into claim_sessions (project, kind, name, claim) values ('legion', 'session', $1, $2)`,
+			session, string(token)); err != nil {
+			t.Fatalf("hold %s for %s: %v", session, token, err)
+		}
+	}
+	return r
+}
+
+// step writes the architect's claim in state, suspended by by, recording session, as a machine's
+// claim write does (store.PutClaim), and holds what follows to the step's want: whether the write
+// queued the issue's publication (moves), and the session the set Dispatch is then sent names as
+// the architect ("" for none). A write that queues nothing is read through a publication queued
+// by hand, as the ready of a resumed claim queues one (roleHoldersChanged), so every step reads the
+// set the claims hold at that step, and not only the sets a claim write sent.
+func (r *heldRoleRig) step(name string, state supervise.ClaimState, by supervise.SuspendSource, session string, moves bool, architect string) {
+	r.t.Helper()
+	if err := r.st.PutClaim(r.ctx, supervise.Claim{Token: r.token, Project: "legion", Tree: heldRoleIssue, Issue: heldRoleIssue,
+		Role: claim.RoleArchitect, Generation: 1, State: state, Session: session, SuspendedBy: by}); err != nil {
+		r.t.Fatalf("%s: write the claim: %v", name, err)
+	}
+	if _, rows := queuedRoleHolders(r.t, r.pool); (rows == 1) != moves {
+		r.t.Errorf("%s queued %d role-holder publications, want a publication queued: %t", name, rows, moves)
+	}
+	if !moves {
+		r.enqueue(heldRoleIssue)
+	}
+	want := []roleHoldersPublished{{Issue: heldRoleIssue, Holders: []dispatch.RoleHolder{}}}
+	if architect != "" {
+		want[0].Holders = []dispatch.RoleHolder{{Role: "architect", Session: architect}}
+	}
+	if got := r.published(); !reflect.DeepEqual(got, want) {
+		r.t.Errorf("%s: Dispatch was sent %+v, want %+v", name, got, want)
+	}
+}
+
+// A suspension keeps its claim's role in the set Dispatch is sent only where its source does
+// (suspensionsKeepTheirRole). The idle release's changes no holder, so it queues nothing, and the
+// set names the session through the suspension and through the resume over the kept session —
+// queued, launching, the agent's hello and its registration: an idle release is not the loss of a
+// role, and the set does not empty and fill again around it. Every other source ends the role: the
+// suspension queues the set without the session, and the first step of the resume over the session
+// the claim kept, a queued claim or a launching one, queues the set with it again, before the agent
+// registers, since a claim queued or launched over its session holds its role
+// (supervise.HoldsRole). Each source is resumed both ways: through the queue, and straight into the
+// launch.
+//
+// The control is the code before this change, which read a role as held only while a process ran
+// (supervise.HoldsCapability): there the idle release queues the empty set, and neither a queued
+// nor a launching claim queues the set back, so every row fails there.
+func TestASuspensionKeepsItsClaimsRoleOnlyWhereItsSourceDoes(t *testing.T) {
+	t.Parallel()
+	for _, tc := range suspensionsKeepTheirRole {
+		for _, resume := range []supervise.ClaimState{supervise.StateQueued, supervise.StateLaunching} {
+			t.Run(string(tc.by)+" resumed from "+string(resume), func(t *testing.T) {
+				t.Parallel()
+				r := newHeldRoleRig(t)
+				r.step("the registration", supervise.StateRegistered, "", "ses-1", true, "ses-1")
+				r.step("a turn's end", supervise.StateIdle, "", "ses-1", false, "ses-1")
+				suspended := ""
+				if tc.keeps {
+					suspended = "ses-1"
+				}
+				r.step("the suspension", supervise.StateSuspended, tc.by, "ses-1", !tc.keeps, suspended)
+				r.step("the resume's first step, "+string(resume)+" over the kept session", resume, "", "ses-1", !tc.keeps, "ses-1")
+				if resume == supervise.StateQueued {
+					r.step("the launch that runs the queued resume", supervise.StateLaunching, "", "ses-1", false, "ses-1")
+				}
+				r.step("the resumed agent's hello", supervise.StateShimConnected, "", "ses-1", false, "ses-1")
+				r.step("the resumed agent's registration", supervise.StateRegistered, "", "ses-1", false, "ses-1")
+			})
+		}
+	}
+}
+
+// A claim the idle release suspended holds its role until the claim ends or its role moves to
+// another session, and each of those changes queues its publication: a failure and a retirement
+// send the set without the session; a suspension by any other source over the released claim,
+// which changes its source alone (supervise's suspendedAgain: a linger, a leave, a park, an
+// operator's or the controller's suspend), sends the set without it too, one row for each such
+// source (suspensionsKeepTheirRole); a session the claim forgot, as a fresh start forgets it,
+// sends the set without it; and a resume whose agent registers under another session sends the
+// set naming the new session in the old one's place, with no empty set between them.
+//
+// The control is the code before this change, under which the release had already sent the empty
+// set: there no end of a released claim queues a publication, and the resume names no session
+// until the new one registers, so every row fails there.
+func TestAReleasedClaimKeepsItsRoleUntilItEndsOrMoves(t *testing.T) {
+	t.Parallel()
+	type write struct {
+		name      string
+		state     supervise.ClaimState
+		by        supervise.SuspendSource
+		session   string
+		moves     bool
+		architect string
+	}
+	type change struct {
+		name   string
+		writes []write
+	}
+	changes := []change{
+		{"failed", []write{{"the failure", supervise.StateFailed, "", "ses-1", true, ""}}},
+		{"retired", []write{{"the retirement", supervise.StateRetired, "", "ses-1", true, ""}}},
+		{"session forgotten", []write{{"the fresh start that forgets the session", supervise.StateQueued, "", "", true, ""}}},
+		{"another session", []write{
+			{"the launch that resumes the kept session", supervise.StateLaunching, "", "ses-1", false, "ses-1"},
+			{"the registration under another session", supervise.StateRegistered, "", "ses-2", true, "ses-2"},
+		}},
+	}
+	for _, source := range suspensionsKeepTheirRole {
+		if source.keeps {
+			continue
+		}
+		changes = append(changes, change{"suspended again by " + string(source.by), []write{
+			{"the suspension by " + string(source.by) + " over the released claim", supervise.StateSuspended, source.by, "ses-1", true, ""},
+		}})
+	}
+	for _, tc := range changes {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			r := newHeldRoleRig(t)
+			r.released()
+			for _, w := range tc.writes {
+				r.step(w.name, w.state, w.by, w.session, w.moves, w.architect)
+			}
+		})
+	}
+}
+
+// released puts the rig's architect where the idle release leaves it: registered under ses-1,
+// idle, then suspended by the release, with whatever those writes queued sent, so each write after
+// it is read on its own. It holds the release itself to nothing
+// (TestASuspensionKeepsItsClaimsRoleOnlyWhereItsSourceDoes does), so a test that starts from it
+// fails on its own write and not on the release.
+func (r *heldRoleRig) released() {
+	r.t.Helper()
+	r.step("the registration", supervise.StateRegistered, "", "ses-1", true, "ses-1")
+	r.step("a turn's end", supervise.StateIdle, "", "ses-1", false, "ses-1")
+	if err := r.st.PutClaim(r.ctx, supervise.Claim{Token: r.token, Project: "legion", Tree: heldRoleIssue, Issue: heldRoleIssue,
+		Role: claim.RoleArchitect, Generation: 1, State: supervise.StateSuspended, Session: "ses-1",
+		SuspendedBy: supervise.SuspendedByReleased}); err != nil {
+		r.t.Fatalf("the idle release's suspension: %v", err)
+	}
+	r.published()
+}
+
+// The resume of a released claim brings back the session the claim kept, and the claim holds its
+// role in every state the resume passes through (supervise.HoldsRole): queued; launch_uncertain,
+// which a launch a crash cut short leaves; launching; shim_connected, the state the shim's hello
+// writes (supervise's helloed); registered, the state the agent's registration writes; and ready.
+// So no write of the resume queues a publication, and the set Dispatch is sent names the kept
+// session after each. One row per state, each written over the released claim on its own.
+//
+// The control is the code before this change, which read a role as held only while a process ran
+// (supervise.HoldsCapability): there the release had already sent the empty set, so the four
+// states before the registration leave it empty, and the registration and the ready each queue the
+// set back, so every row fails there.
+func TestAResumeOfTheKeptSessionKeepsTheRoleInEveryStateOfIt(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name  string
+		state supervise.ClaimState
+	}{
+		{"queued", supervise.StateQueued},
+		{"launch_uncertain", supervise.StateLaunchUncertain},
+		{"launching", supervise.StateLaunching},
+		{"the hello, shim_connected", supervise.StateShimConnected},
+		{"the registration, registered", supervise.StateRegistered},
+		{"ready", supervise.StateReady},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			r := newHeldRoleRig(t)
+			r.released()
+			r.step("the resume's write of "+string(tc.state)+" over the kept session", tc.state, "", "ses-1", false, "ses-1")
+		})
 	}
 }
 
@@ -422,7 +682,9 @@ func TestARepairedEndIsPublishedWhenItsWriteLands(t *testing.T) {
 		state supervise.ClaimState
 		event func(claim.Token) supervise.Event
 	}{
-		{supervise.StateRetired, func(token claim.Token) supervise.Event { return supervise.RequestStop{Claim: token} }},
+		{supervise.StateRetired, func(token claim.Token) supervise.Event {
+			return supervise.RequestStop{Claim: token, By: supervise.SuspendedByOperator}
+		}},
 		{supervise.StateSuspended, func(token claim.Token) supervise.Event {
 			return supervise.RequestSuspend{Claim: token, By: supervise.SuspendedByOperator}
 		}},

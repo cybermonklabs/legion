@@ -29,12 +29,12 @@
 //     failed changes, each written through the writer production uses (WriteFailures).
 //
 // Legion adds to one project and writes that project's row only where it has none, so it combines
-// with Attribution, Delivery, MergePR and Failures; Base writes the same history alone, into a
+// with Attribution, Delivery, Failures and MergePR; Base writes the same history alone, into a
 // database of the base. Delivery adds to one project too, beside deliverytest's second project,
 // and gives the project the deploy repository as its default repository where it has none;
-// Attribution writes its three projects with their default repositories; Failures writes its two;
-// and each of the three writes the project's delivery settings, so no two of them are combined.
-// MergePR writes no project's rows.
+// Attribution writes its three projects with their default repositories; and each of the two, as
+// Failures does for its two projects, saves the project's delivery settings, so none of the three
+// is combined with another. MergePR writes no project's rows.
 //
 // Every time is relative to the moment the caller names (-now), so two loads with one -now hold
 // the same history at the same times. The rows bypass the server's own writers (legiontest's
@@ -111,9 +111,9 @@ const HeadTable = "eval_days"
 // LegionSpec is the Legion history of project the Legion mode writes: enough trees for at least
 // issues finished issues, ending at now, with the older half of the trees unobserved and every
 // observed root waiting for its slot (legiontest.Spec's Unobserved and Queued), finished issues
-// that sat parked in `icebox` and in `backlog`, a merged pull request for each issue the merger
-// closes and filings of all four classes (Parked, Merged and Filings, what k6 reads), numbered
-// after the offset issue numbers the project has already.
+// that waited in `icebox` and in `backlog`, a merged pull request for each issue the merger
+// closes and filings of all four classes (InBacklogOrIcebox, Merged and Filings, what k6 reads),
+// numbered after the offset issue numbers the project has already.
 func LegionSpec(project string, issues int, now time.Time, offset int) legiontest.Spec {
 	if issues <= 0 {
 		issues = DefaultIssues
@@ -122,7 +122,7 @@ func LegionSpec(project string, issues int, now time.Time, offset int) legiontes
 	return legiontest.Spec{
 		Project: project, Trees: trees, Now: now.UTC(),
 		Spacing: treeSpacing, Unobserved: trees / 2, Queued: true, IssueOffset: offset,
-		Parked: true, Merged: true, Filings: true,
+		InBacklogOrIcebox: true, Merged: true, Filings: true,
 	}
 }
 
@@ -474,16 +474,16 @@ func MergePR(ctx context.Context, pool *store.Pool, ref string, at time.Time) (M
 // shipDays is the UTC start day of the deploy run that ships a pull request of repo merged at at,
 // and of the one that ships it merged at was (nil for a pull request that had not merged): the
 // run of its first shipping apply (delivery.FirstShippingApply over the repository's production
-// applies under its source's rule, as delivery.ContainingRun ships a pull request). Each is nil
-// where no run ships it, and both are nil for a repository no delivery-on project's deploy source
-// reads (delivery.ReadSourceRules).
+// applies under the rule of the source that reads it, as delivery.ContainingRun ships a pull
+// request). Each is nil where no run ships it, and both are nil for a repository that no
+// delivery-on project's source reads, or where no project's settings are written.
 func shipDays(ctx context.Context, pool *store.Pool, repo string, at time.Time, was *time.Time) (*string, *string, error) {
 	rules, err := delivery.ReadSourceRules(ctx, pool)
 	if err != nil {
 		return nil, nil, fmt.Errorf("read the delivery settings: %w", err)
 	}
-	settings, held := rules.For(repo)
-	if !held {
+	settings, source := rules.For(repo)
+	if !source {
 		return nil, nil, nil
 	}
 	from := at

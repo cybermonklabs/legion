@@ -85,7 +85,7 @@ func TestCheckRefusesNoDatabaseNoModeAndModesThatCannotRunTogether(t *testing.T)
 		{"no mode", "at least one mode", options{database: "postgres://unused", project: "LEGK"}},
 		{"-base -legion", "-base writes the Legion history alone", options{database: "postgres://unused", project: "LEGK", base: true, legion: true}},
 		{"-base -merge-pr", "-base writes the Legion history alone", options{database: "postgres://unused", project: "LEGK", base: true, mergePR: "acme/api#1"}},
-		{"-attribution -delivery", "the project's delivery settings", options{database: "postgres://unused", project: "LEGK", attribution: true, delivery: true}},
+		{"-attribution -delivery", "each write the project's delivery settings", options{database: "postgres://unused", project: "LEGK", attribution: true, delivery: true}},
 	} {
 		if err := check(refused.o); err == nil || !strings.Contains(err.Error(), refused.reason) {
 			t.Errorf("%s was answered %v, want a refusal naming %q", refused.name, err, refused.reason)

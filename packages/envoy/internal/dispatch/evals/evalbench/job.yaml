@@ -1,64 +1,115 @@
 # The evalbench measurement Job on the build farm: the eval registry's (dispatch://INFRA-2916, T15:
-# k2, k8, k13, k16) and the Evals tab's (dispatch://INFRA-2918, T27: k4, k19, k22). It clones the
-# pushed commit, and evalbench/job.sh starts a Postgres 18 of its own with pg_stat_statements
-# preloaded and its data on the Job's volume, builds the generator, the instruments and
-# envoy-dispatch, loads the fixture and measures. MODE is:
+# k2, k8, k13, k16, k17), dispatch://INFRA-978's k14 (T19.9) and the Evals tab's
+# (dispatch://INFRA-2918, T27: k4, k19, k22). One pod of three containers that share the pod's
+# network and one volume: `server` runs envoy-dispatch and nothing else, held to the size of the
+# deployment this judges (SERVER_CPU and SERVER_MEMORY, request equal to limit), `postgres` runs
+# a Postgres 18 of its own with pg_stat_statements preloaded and its data on the volume, and
+# `driver` serves nothing: it builds the generator, the instrument and envoy-dispatch from the
+# checkout, loads the fixture at INFRA's stated rate (or ten times its run rate), and measures the
+# first paint (evalbench/job.sh). A supervisor in each of the other two (supervise.sh) runs its
+# process on the driver's request, through files in /scratch/control, so the driver restarts the
+# server for every cold run and Postgres for the information round; the supervisors end once the
+# driver does, since the driver holds their lock for as long as it runs. MODE is:
 #   head  this commit's first paint, 8 times, each after a fresh start of the server, k2, k13, k16,
 #         and the Delivery timeline's first paint over the history and again over it with INFRA's
 #         worst day of deploy failures added; with GITHUB_STUB=1 it is k17's too (the history holds
 #         the code survival results of INFRA's default repository, no paint reads them or makes a
 #         request to GitHub, and each paint holds both code evals);
-#   base  the first paint of the base, k8's and k13's negative controls: BASE, main at the commit
-#         COMMIT merges, `git merge-base <COMMIT> origin/main`, which base mode builds and loads;
-#         with BASE_FLAGS empty and BASE a commit of this branch that holds every table of the eval
-#         registry the load checks but not the code evals (its project_delivery_settings with or
-#         without code_groups, migration 20261126133047) it is k17's control: the evals list holds
-#         neither code eval;
+#   base  the base's Delivery page over the same two histories, k8's and k13's negative controls:
+#         BASE, main at the commit COMMIT merges, `git merge-base <COMMIT> origin/main`, which
+#         base mode builds and loads; with BASE_FLAGS empty and BASE a commit of this branch that
+#         holds every table of the eval registry the load checks but not the code evals (its
+#         project_delivery_settings with or without code_groups, migration 20261126133047) it is
+#         k17's control: the evals list holds neither code eval;
+#   k14   this commit over the fixture with the two k14 projects added: k14's writes with pages
+#         open and the two projects' first paints, run.sh's k14, with the GitHub stand-in the
+#         driver runs on loopback for the server's App;
 #   tab   the Evals tab in Chromium over the full fixture (job.sh tab): the paint's three cases,
 #         each after a restart, and the recompute under INFRA-2916's write drive, k4 with
 #         TEN_TIMES=0 and k19 with TEN_TIMES=1;
 #   k22   job.sh base over the one-project fixture at the base the checks name (legion/INFRA-978
 #         82380570f8), which captures its timeline to /scratch/base-timeline.json, then job.sh head
 #         over the same fixture, which compares this commit's pages with that capture.
-# The log is the evidence: judge it by its RESULT and FAIL lines and its closing VERDICT line, never
-# by the Job's phase. The VERDICT line names the scale and the rate the run had, and a run with no
-# FAIL line reads pass only at SCALE=1, INFRA's size, which k8 and k16 are judged at; at any other
-# scale it reads smoke, which shows the script and its rules work and judges no budget. The node
-# the pod ran on is printed too (EVALBENCH_NODE, from the pod's spec.nodeName). The container exits
-# 0 once it has printed that verdict, FAIL lines or not, so a failed check never runs the
-# measurement again; only a pod that ends before its verdict (a lost machine, an eviction, a failed
-# clone) is retried. Fill every ${…} variable (and only those, so the script's own $HOME, $COMMIT
-# and $BASE are left for the shell). LABEL_DOMAIN is the build
-# farm's label domain, the deployment's own, under which its policy reads a Job's session, cost,
-# branch and head; this public file names no domain, so the render refuses when it is unset, as it
-# refuses any variable unset but the three that follow. BASE_FLAGS, GITHUB_STUB and PAINT_RUNS are
-# optional: left unset they are -base, 0 and 8, which is how INFRA-2916's runs were made, so those
-# runs do not move. BASE_FLAGS is the generator's flags that name the base's schema (job.sh's
-# EVALBENCH_BASE_FLAGS), set empty (BASE_FLAGS=) for a base that holds the eval registry; GITHUB_STUB=1
-# runs the measurement with the GitHub stand-in of check k17 (run.sh's EVALBENCH_GITHUB_STUB);
-# PAINT_RUNS is how many times the head's first paint is measured. The sizes a mode takes, measured
-# by INFRA-2916's runs at each rate
-# (eight runs of the head mode's first paint, each with its own catch-up wait, checks and
-# information round, took 55 minutes end to end on the build farm) and grown for the tab's web
-# build and Chromium:
-#   head, base, k22: MEMORY=24Gi SCRATCH=46Gi EPHEMERAL=48Gi COST_USD=2.00 CPU_HOURS=10 MEMORY_GIB_HOURS=24
-#   tab, TEN_TIMES=0: MEMORY=32Gi SCRATCH=56Gi EPHEMERAL=60Gi COST_USD=3.00 CPU_HOURS=16 MEMORY_GIB_HOURS=64
-#   tab, TEN_TIMES=1: MEMORY=56Gi SCRATCH=120Gi EPHEMERAL=128Gi COST_USD=6.00 CPU_HOURS=24 MEMORY_GIB_HOURS=168
-#   export COMMIT=<pushed sha> BASE=$(git merge-base <pushed sha> origin/main) BRANCH=<its branch> MODE=tab SCALE=1 TEN_TIMES=0 \
-#     MEMORY=… SCRATCH=… EPHEMERAL=… COST_USD=… CPU_HOURS=… MEMORY_GIB_HOURS=… OMP_SESSION=<id> OMP_SESSION_TITLE=<title> LABEL_DOMAIN=<domain>
-#   python3 -c 'import os, re, sys; required = ("COMMIT", "BASE", "BRANCH", "MODE", "SCALE", "TEN_TIMES", "MEMORY", "SCRATCH", "EPHEMERAL", "COST_USD", "CPU_HOURS", "MEMORY_GIB_HOURS", "OMP_SESSION", "OMP_SESSION_TITLE", "LABEL_DOMAIN"); optional = {"BASE_FLAGS": "-base", "GITHUB_STUB": "0", "PAINT_RUNS": "8"}; missing = [n for n in required if not os.environ.get(n)]; missing and sys.exit("job.yaml: set " + ", ".join(missing)); sys.stdout.write(re.sub(r"\$\{(" + "|".join(required + tuple(optional)) + r")\}", lambda m: os.environ.get(m[1], optional.get(m[1])), sys.stdin.read()))' \
-#     < job.yaml > "$TMPDIR/job.yaml"
+#
+# The log of the `driver` container is the evidence: judge it by its RESULT and FAIL lines and its
+# closing SHAPE and VERDICT lines, never by the Job's phase. The SHAPE line (job.sh's header says
+# what it holds) names the node, the machine's CPUs, CPU model and memory, each container's
+# requests and limits as the API server gave them and the limits the kernel holds the server's
+# container to, and reads gating when the pod runs on the class GATING_CLASS names, the server's
+# requests are its limits and the kernel holds it to them, and the machine's CPUs beside the pod's
+# request are fewer than the server's; record otherwise. The machine type is the node's label
+# (node.kubernetes.io/instance-type), which the pod, with no API access, cannot read: read it beside
+# the log. The VERDICT line names the mode, the scale, the rate and the shape the run had. A run
+# with no FAIL line reads pass only at SCALE=1, INFRA's size, in the gating shape; at SCALE=1 in any
+# other shape it reads record, and at any other scale smoke, which shows the script and its rules
+# work and judges no budget. At TEN_TIMES=1 a database time over a budget stated at the stated
+# rate, and k8's base control, print RECORD lines, which no verdict counts, while the first paint's
+# server time and body still fail (measure's -ten-times); in mode k14 every bound fails at both
+# rates, R14's, so a k14 run prints no RECORD line. A k14 verdict is k14's evidence only with its
+# RESULT lines' counts: three writes measured whole at least and both projects' first paints
+# (k14-writes, k14-paints), which the run fails without. The container exits 0 once it has printed
+# that verdict, FAIL lines or not, so a failed check never runs the hour-long measurement again;
+# only a pod that ends before its verdict (a lost machine, an eviction, a failed clone) is
+# retried.
+#
+# The deployment that runs this Job chooses where it runs and how large it is: this public file
+# names no compute class, runtime class or machine size. Render it with render-job.py, which fills
+# the placeholders below from the environment, refuses when a required one is unset, and drops the
+# line of an optional one that is unset:
+#   COMMIT BASE MODE SCALE TEN_TIMES   the commit, its base, head, base, k14, tab or k22, INFRA's
+#                          scale (1) and whether the rate is ten times (0 or 1)
+#   JOB_NAME OWNER BRANCH  the Job's name prefix, its owner label and the branch it measures, which
+#                          the run supplies, so this file names no issue, session or deployment
+#   PAINT_RUNS             (optional) how many times each first paint is measured
+#                          (EVALBENCH_PAINT_RUNS); unset, the head's 8 times, k14's 2 a project
+#                          and the rest once
+#   CATCHUP                (optional) how long the consumers' catch-up may take (EVALBENCH_CATCHUP);
+#                          unset, 1h, and 150m in mode k14
+#   BASE_FLAGS             (optional, `-base` where unset) the generator's flags that name the
+#                          base's schema (job.sh's EVALBENCH_BASE_FLAGS); set empty (BASE_FLAGS=)
+#                          for a base that holds the eval registry
+#   GITHUB_STUB            (optional, 0 where unset) 1 runs head and base with the GitHub stand-in
+#                          of check k17 (run.sh's EVALBENCH_GITHUB_STUB)
+#   OMP_SESSION OMP_SESSION_TITLE      the session that runs it, as the farm's policy reads it
+#   LABEL_DOMAIN           the build farm's label domain, under which its policy reads a Job's
+#                          session, cost, branch, head and CPU class
+#   COST_USD               the cost annotation: the hours below at the machine's hourly price
+#   COMPUTE_CLASS          the compute class the pod runs on
+#   RUNTIME_CLASS          (optional) the pod's runtime class; leave it unset for a class that
+#                          runs natively, which a runtime class would be refused on
+#   GATING_CLASS           (optional) the compute class a run is judged on; a run on any other class
+#                          is a record, and with it unset no run is judged
+#   SERVER_CPU SERVER_MEMORY           the server container's request and limit, such as 9 and 21Gi
+#   PG_CPU PG_MEMORY       Postgres's request and limit; a database's share is not a served one's,
+#                          and the run prints it
+#   POD_CPU                the whole pod's CPU request: the driver gets what the server and Postgres
+#                          leave, and a pod that asks for the machine's CPUs keeps other pods off it
+#   DRIVER_MEMORY SCRATCH  the driver's memory and the size of the volume the run writes; INFRA-2918's
+#                          runs of mode tab grew them for the web build and Chromium: the driver 8Gi
+#                          above head's and SCRATCH 56Gi at TEN_TIMES=0, the driver 32Gi above head's
+#                          and SCRATCH 120Gi at TEN_TIMES=1
+# One attempt takes at most two hours (the pod's deadline) in modes head and base, three in modes
+# tab and k22, and four in mode k14, whose load holds two more projects at INFRA's size and whose
+# catch-up is the longer for them; the render writes the deadlines from the mode, the Job's being
+# three attempts', and the CPU-hours and GiB-hours of the cost annotations from the sizes at one
+# attempt's length. Example:
+#   export COMMIT=<pushed sha> BASE=$(git merge-base <pushed sha> origin/main) MODE=k14 SCALE=1 TEN_TIMES=0 JOB_NAME=<prefix> OWNER=<owner> BRANCH=<branch>
+#   export OMP_SESSION=<id> OMP_SESSION_TITLE=<title> LABEL_DOMAIN=<domain>
+#   export COMPUTE_CLASS=<class> GATING_CLASS=<class> SERVER_CPU=<n> SERVER_MEMORY=<n>Gi PG_CPU=<n> PG_MEMORY=<n>Gi POD_CPU=<n> DRIVER_MEMORY=<n>Gi SCRATCH=<n>Gi COST_USD=<price>
+#   python3 render-job.py < job.yaml > "$TMPDIR/job.yaml"
 #   kubectl -n builds create --dry-run=server -f "$TMPDIR/job.yaml" && kubectl -n builds create -f "$TMPDIR/job.yaml"
 apiVersion: batch/v1
 kind: Job
 metadata:
-  generateName: evalbench-${MODE}-
+  generateName: ${JOB_NAME}-
   namespace: builds
   labels:
-    owner: legion-evalbench
+    owner: ${OWNER}
     ${LABEL_DOMAIN}/omp-session: &omp-session "${OMP_SESSION}"
   annotations:
     ${LABEL_DOMAIN}/omp-session-title: &omp-session-title "${OMP_SESSION_TITLE}"
+    # The requests for one attempt's length at most (ATTEMPT_SECONDS): the pod's CPUs and the
+    # three containers' memory, each times that length.
     ${LABEL_DOMAIN}/cost-usd: "${COST_USD}"
     ${LABEL_DOMAIN}/expected-cpu-hours: "${CPU_HOURS}"
     ${LABEL_DOMAIN}/expected-memory-gib-hours: "${MEMORY_GIB_HOURS}"
@@ -66,37 +117,110 @@ metadata:
     ${LABEL_DOMAIN}/head: "${COMMIT}"
 spec:
   # A pod that ends before its verdict runs the measurement again from the start: it keeps nothing
-  # between pods. The Job's deadline counts across every pod and ends the Job whatever
-  # backoffLimit allows, so it is the pod's own once per attempt: (backoffLimit + 1) x 10800 s.
+  # between pods. The Job's deadline counts across every pod, the wait for a machine included, and
+  # ends the Job whatever backoffLimit allows, so it is the pod's own once per attempt:
+  # (backoffLimit + 1) x ATTEMPT_SECONDS.
   backoffLimit: 2
   podReplacementPolicy: Failed
   ttlSecondsAfterFinished: 86400
-  activeDeadlineSeconds: 32400
+  activeDeadlineSeconds: ${JOB_DEADLINE_SECONDS}
   template:
     metadata:
       labels:
         ${LABEL_DOMAIN}/kind: legion-evalbench
         ${LABEL_DOMAIN}/omp-session: *omp-session
+        # A timed run keeps its CPU request equal to its limit, in every container.
+        ${LABEL_DOMAIN}/cpu-qos: "guaranteed"
       annotations:
         ${LABEL_DOMAIN}/omp-session-title: *omp-session-title
+        kubectl.kubernetes.io/default-container: driver
     spec:
       restartPolicy: Never
       automountServiceAccountToken: false
-      runtimeClassName: gvisor
-      activeDeadlineSeconds: 10800
+      runtimeClassName: ${RUNTIME_CLASS}
+      activeDeadlineSeconds: ${ATTEMPT_SECONDS}
       terminationGracePeriodSeconds: 30
       nodeSelector:
-        cloud.google.com/compute-class: build
+        cloud.google.com/compute-class: ${COMPUTE_CLASS}
       volumes:
-      # Everything the run writes: the clone (and the base worktree), the Go and Bun caches, the
-      # builds, the web app and Chromium, the Postgres data with its WAL (the fixture is about 4 GB
-      # of tables and indexes at the stated rate, more at ten times the run rate) and the logs.
+      # Everything the run writes: the clone (and the base worktree), the Go caches, the builds,
+      # the Postgres data with its WAL (the fixture is about 4 GB of tables and indexes at the
+      # stated rate, more at ten times the run rate), the logs and the supervisors' control files.
       - name: scratch
         emptyDir: {sizeLimit: ${SCRATCH}}
-      containers:
-      - name: evalbench
+      # What the API server says each container's requests and limits are, in millicores and MiB,
+      # for the driver's SHAPE line.
+      - name: podinfo
+        downwardAPI:
+          items:
+          - {path: server.requests.cpu, resourceFieldRef: {containerName: server, resource: requests.cpu, divisor: 1m}}
+          - {path: server.limits.cpu, resourceFieldRef: {containerName: server, resource: limits.cpu, divisor: 1m}}
+          - {path: server.requests.memory, resourceFieldRef: {containerName: server, resource: requests.memory, divisor: 1Mi}}
+          - {path: server.limits.memory, resourceFieldRef: {containerName: server, resource: limits.memory, divisor: 1Mi}}
+          - {path: postgres.requests.cpu, resourceFieldRef: {containerName: postgres, resource: requests.cpu, divisor: 1m}}
+          - {path: postgres.limits.cpu, resourceFieldRef: {containerName: postgres, resource: limits.cpu, divisor: 1m}}
+          - {path: postgres.requests.memory, resourceFieldRef: {containerName: postgres, resource: requests.memory, divisor: 1Mi}}
+          - {path: postgres.limits.memory, resourceFieldRef: {containerName: postgres, resource: limits.memory, divisor: 1Mi}}
+          - {path: driver.requests.cpu, resourceFieldRef: {containerName: driver, resource: requests.cpu, divisor: 1m}}
+          - {path: driver.limits.cpu, resourceFieldRef: {containerName: driver, resource: limits.cpu, divisor: 1m}}
+          - {path: driver.requests.memory, resourceFieldRef: {containerName: driver, resource: requests.memory, divisor: 1Mi}}
+          - {path: driver.limits.memory, resourceFieldRef: {containerName: driver, resource: limits.memory, divisor: 1Mi}}
+      initContainers:
+      # The checkout, once, before any container of the run starts: the supervisors run from it.
+      - name: checkout
         # The worker image of main at 12ba4e6afa71 (release 20.8.0), the multi-architecture index digest.
-        image: ghcr.io/cybermonklabs/legion-worker@sha256:edba670bc12c2e22fc510a4f50446b670899cb967d3e25c80fd1cc18bf1c825e
+        image: &image ghcr.io/cybermonklabs/legion-worker@sha256:edba670bc12c2e22fc510a4f50446b670899cb967d3e25c80fd1cc18bf1c825e
+        env:
+        - {name: HOME, value: /scratch/home}
+        - {name: COMMIT, value: "${COMMIT}"}
+        - {name: MODE, value: "${MODE}"}
+        - {name: BASE, value: "${BASE}"}
+        - {name: ONE_PROJECT_BASE, value: "82380570f8dcebb7281fc54d7350c6794886dc98"}
+        volumeMounts:
+        - {name: scratch, mountPath: /scratch}
+        command: ["/bin/bash", "-c"]
+        args:
+        - |
+          set -euo pipefail
+          mkdir -p "$HOME"
+          git clone --filter=blob:none --no-checkout https://github.com/cybermonklabs/legion /scratch/src
+          cd /scratch/src
+          git fetch --depth 1 origin "$COMMIT"
+          git checkout --detach "$COMMIT"
+          case "$MODE" in
+            base) git fetch --depth 1 origin "$BASE" ;;
+            k22) git fetch --depth 1 origin "$ONE_PROJECT_BASE" ;;
+          esac
+          echo "MARK checkout $(git rev-parse HEAD)"
+        resources:
+          requests: {cpu: "1", memory: 2Gi, ephemeral-storage: 2Gi}
+          limits: {cpu: "1", memory: 2Gi, ephemeral-storage: 2Gi}
+      containers:
+      # The server, at the size of the deployment this judges, and nothing else in it.
+      - name: server
+        image: *image
+        command: ["/bin/bash", "/scratch/src/packages/envoy/internal/dispatch/evals/evalbench/supervise.sh"]
+        args: ["serve", "/scratch/control/server"]
+        env:
+        - {name: HOME, value: /scratch/home}
+        volumeMounts:
+        - {name: scratch, mountPath: /scratch}
+        resources:
+          requests: {cpu: "${SERVER_CPU}", memory: ${SERVER_MEMORY}, ephemeral-storage: 8Gi}
+          limits: {cpu: "${SERVER_CPU}", memory: ${SERVER_MEMORY}, ephemeral-storage: 8Gi}
+      - name: postgres
+        image: *image
+        command: ["/bin/bash", "/scratch/src/packages/envoy/internal/dispatch/evals/evalbench/supervise.sh"]
+        args: ["serve", "/scratch/control/postgres"]
+        env:
+        - {name: HOME, value: /scratch/home}
+        volumeMounts:
+        - {name: scratch, mountPath: /scratch}
+        resources:
+          requests: {cpu: "${PG_CPU}", memory: ${PG_MEMORY}, ephemeral-storage: 2Gi}
+          limits: {cpu: "${PG_CPU}", memory: ${PG_MEMORY}, ephemeral-storage: 2Gi}
+      - name: driver
+        image: *image
         env:
         - {name: HOME, value: /scratch/home}
         - {name: TMPDIR, value: /scratch/tmp}
@@ -109,29 +233,32 @@ spec:
         - {name: ONE_PROJECT_BASE, value: "82380570f8dcebb7281fc54d7350c6794886dc98"}
         - {name: EVALBENCH_SCALE, value: "${SCALE}"}
         - {name: EVALBENCH_TEN_TIMES, value: "${TEN_TIMES}"}
+        - {name: EVALBENCH_PAINT_RUNS, value: "${PAINT_RUNS}"}
+        - {name: EVALBENCH_CATCHUP, value: "${CATCHUP}"}
         - {name: EVALBENCH_NODE, valueFrom: {fieldRef: {fieldPath: spec.nodeName}}}
         - {name: EVALBENCH_BASE_FLAGS, value: "${BASE_FLAGS}"}
         - {name: EVALBENCH_GITHUB_STUB, value: "${GITHUB_STUB}"}
-        - {name: EVALBENCH_PAINT_RUNS, value: "${PAINT_RUNS}"}
+        - {name: EVALBENCH_COMPUTE_CLASS, value: "${COMPUTE_CLASS}"}
+        - {name: EVALBENCH_GATING_CLASS, value: "${GATING_CLASS}"}
+        - {name: EVALBENCH_RUNTIME_CLASS, value: "${RUNTIME_CLASS}"}
+        - {name: EVALBENCH_CONTROL, value: /scratch/control}
+        - {name: EVALBENCH_PODINFO, value: /podinfo}
         volumeMounts:
         - {name: scratch, mountPath: /scratch}
+        - {name: podinfo, mountPath: /podinfo}
         command: ["/bin/bash", "-c"]
         args:
         - |
           set -euo pipefail
-          mkdir -p "$HOME" "$TMPDIR" "$GOCACHE" "$GOMODCACHE" "$BUN_INSTALL_CACHE_DIR"
+          mkdir -p "$HOME" "$TMPDIR" "$GOCACHE" "$GOMODCACHE" "$BUN_INSTALL_CACHE_DIR" "$EVALBENCH_CONTROL"
+          # The supervisors' lock, held until this script exits, however it exits (supervise.sh).
+          exec 9>"$EVALBENCH_CONTROL/driver.lock.new"
+          flock 9
+          mv "$EVALBENCH_CONTROL/driver.lock.new" "$EVALBENCH_CONTROL/driver.lock"
+          # One moment for every job.sh of the run, so k22's two runs load one history.
           export EVALBENCH_NOW=$(date -u +%Y-%m-%dT00:00:00Z)
-          echo "MARK start $(date -u +%FT%TZ) commit=$COMMIT base=$BASE mode=$MODE scale=$EVALBENCH_SCALE ten_times=$EVALBENCH_TEN_TIMES now=$EVALBENCH_NOW node=$EVALBENCH_NODE"
-          git clone --filter=blob:none --no-checkout https://github.com/cybermonklabs/legion /scratch/src
-          cd /scratch/src
-          git fetch --depth 1 origin "$COMMIT"
-          git checkout --detach "$COMMIT"
-          case "$MODE" in
-            base) git fetch --depth 1 origin "$BASE" ;;
-            k22) git fetch --depth 1 origin "$ONE_PROJECT_BASE" ;;
-          esac
-          echo "MARK checkout $(git rev-parse HEAD)"
-          bench=packages/envoy/internal/dispatch/evals/evalbench
+          echo "MARK start $(date -u +%FT%TZ) commit=$COMMIT base=$BASE mode=$MODE scale=$EVALBENCH_SCALE ten_times=$EVALBENCH_TEN_TIMES now=$EVALBENCH_NOW compute_class=$EVALBENCH_COMPUTE_CLASS"
+          bench=/scratch/src/packages/envoy/internal/dispatch/evals/evalbench
           rc=0
           if [ "$MODE" = k22 ]; then
             {
@@ -145,15 +272,23 @@ spec:
               bash "$bench/job.sh" "$MODE" 2>&1 | tee /scratch/out.txt || rc=${PIPESTATUS[0]}
           fi
           echo "MARK failures:"; grep '^FAIL' /scratch/out.txt || echo "MARK none"
+          echo "MARK records: $(grep -c '^RECORD' /scratch/out.txt || true)"
           echo "MARK end $(date -u +%FT%TZ) rc=$rc"
           # The verdict: a pass is job.sh exiting 0 with no FAIL line, at SCALE=1, INFRA's size, the
-          # size k8 and k16 judge their budgets at; a run at any other scale with no FAIL line is a
-          # smoke run, which judges no budget. The run is over once it is printed, so the container
-          # exits 0 and the Job retries no failed check.
+          # size k8 and k16 judge their budgets at, in the gating shape (job.sh's last SHAPE line,
+          # printed again here beside it); at SCALE=1 in another shape it is a record, and at any
+          # other scale a smoke run, which judges no budget. The run is over once it is printed, so
+          # the container exits 0 and the Job retries no failed check.
           failures=$(grep -c '^FAIL' /scratch/out.txt || true)
-          if [ "$rc" -ne 0 ] || [ "$failures" -ne 0 ]; then verdict=fail; elif [ "$EVALBENCH_SCALE" = 1 ]; then verdict=pass; else verdict=smoke; fi
-          echo "VERDICT $verdict mode=$MODE rc=$rc fail_lines=$failures scale=$EVALBENCH_SCALE ten_times=$EVALBENCH_TEN_TIMES node=$EVALBENCH_NODE"
+          shape_line=$(grep '^SHAPE ' /scratch/out.txt | tail -n 1 || true)
+          shape=$(printf '%s\n' "$shape_line" | sed -n 's/^SHAPE \([a-z]*\).*/\1/p')
+          if [ "$rc" -ne 0 ] || [ "$failures" -ne 0 ]; then verdict=fail
+          elif [ "$EVALBENCH_SCALE" != 1 ]; then verdict=smoke
+          elif [ "$shape" = gating ]; then verdict=pass
+          else verdict=record; fi
+          echo "${shape_line:-SHAPE none: job.sh printed no SHAPE line}"
+          echo "VERDICT $verdict mode=$MODE rc=$rc fail_lines=$failures scale=$EVALBENCH_SCALE ten_times=$EVALBENCH_TEN_TIMES shape=${shape:-none} compute_class=$EVALBENCH_COMPUTE_CLASS node=$EVALBENCH_NODE"
           exit 0
         resources:
-          requests: {cpu: "8", memory: ${MEMORY}, ephemeral-storage: ${EPHEMERAL}}
-          limits: {cpu: "12", memory: ${MEMORY}, ephemeral-storage: ${EPHEMERAL}}
+          requests: {cpu: "${DRIVER_CPU}", memory: ${DRIVER_MEMORY}, ephemeral-storage: ${SCRATCH}}
+          limits: {cpu: "${DRIVER_CPU}", memory: ${DRIVER_MEMORY}, ephemeral-storage: ${SCRATCH}}

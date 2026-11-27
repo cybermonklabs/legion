@@ -218,7 +218,7 @@ func TestFarSideErrorBoundsTheCleanedTextKeepingItsStart(t *testing.T) {
 		{
 			name: "a short text loses its URL credentials",
 			text: `Get "https://u:` + planted + `@h.example/x?token=` + planted + `": EOF`,
-			want: `Get "https://h.example/x": EOF`,
+			want: `Get "https://[a URL with credentials]/x": EOF`,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -235,6 +235,56 @@ func TestFarSideErrorBoundsTheCleanedTextKeepingItsStart(t *testing.T) {
 			}
 			if again := FarSideError(got); again != got {
 				t.Fatalf("FarSideError of its own result gave %.80q…, want the result kept", again)
+			}
+		})
+	}
+}
+
+// FarSideErrorEnds keeps a long text's start and its end around one "…", the whole at most
+// FarSideErrorRunes runes, cut at runes and never inside a character, after the URL rule has read
+// the whole text; a text of at most the bound is kept whole.
+func TestFarSideErrorEndsKeepsBothEnds(t *testing.T) {
+	keep := FarSideErrorRunes / 2
+	middle := strings.Repeat("m", 1<<20)
+	for _, tc := range []struct {
+		name, text, want string
+	}{
+		{
+			name: "a megabyte between a start and a note at the end",
+			text: "Command failed (exit 1)" + middle + "the git lock is removed in 16 minutes",
+			want: "Command failed (exit 1)" + middle[:keep-1-len("Command failed (exit 1)")] + "…" +
+				middle[:keep-len("the git lock is removed in 16 minutes")] + "the git lock is removed in 16 minutes",
+		},
+		{
+			name: "multi-byte characters at both cuts",
+			text: strings.Repeat("é", FarSideErrorRunes+5),
+			want: strings.Repeat("é", keep-1) + "…" + strings.Repeat("é", keep),
+		},
+		{
+			name: "a URL's credentials in the part the cut drops",
+			text: "start https://u:" + planted + "@h.example/x " + middle + " end",
+			want: "start https://[a URL with credentials]/x " + middle[:keep-1-len("start https://[a URL with credentials]/x ")] + "…" + middle[:keep-len(" end")] + " end",
+		},
+		{
+			name: "a text of exactly the bound kept whole",
+			text: strings.Repeat("é", FarSideErrorRunes),
+			want: strings.Repeat("é", FarSideErrorRunes),
+		},
+		{
+			name: "a short text kept whole",
+			text: "dial tcp 127.0.0.1:9: connect: connection refused",
+			want: "dial tcp 127.0.0.1:9: connect: connection refused",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := FarSideErrorEnds(tc.text)
+			if got != tc.want {
+				t.Fatalf("FarSideErrorEnds(%.80q…) = %.80q…%.80q of %d runes, want %.80q…%.80q of %d runes",
+					tc.text, got, got[max(0, len(got)-80):], utf8.RuneCountInString(got),
+					tc.want, tc.want[max(0, len(tc.want)-80):], utf8.RuneCountInString(tc.want))
+			}
+			if !utf8.ValidString(got) || utf8.RuneCountInString(got) > FarSideErrorRunes || strings.Contains(got, planted) {
+				t.Fatalf("FarSideErrorEnds gave %d runes, want valid UTF-8 of at most %d runes with no credential", utf8.RuneCountInString(got), FarSideErrorRunes)
 			}
 		})
 	}

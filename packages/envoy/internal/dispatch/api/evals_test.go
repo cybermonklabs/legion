@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"maps"
@@ -738,11 +739,12 @@ func TestAnEvalsVersionsAreAnsweredNewestFirst(t *testing.T) {
 		detail.Total, numbers, targets, *minutes.Window["median"], *newest.Verdict.Met, *detail.DocText)
 }
 
-// TestAProjectScopedCredentialWritesNoOtherProjectsEval, the negative control of the writes'
+// TestAProjectScopedCredentialWritesNoPrivateProjectsEval, the negative control of the writes'
 // project scope: a broker token scoped to one project is refused 403 PROJECT_SCOPE for a readings
-// write and a register write of another project's eval, and neither stores a row; the same
-// readings write in its own project is answered by the handler.
-func TestAProjectScopedCredentialWritesNoOtherProjectsEval(t *testing.T) {
+// write and a register write of a private project it does not name, and neither stores a row; the
+// same readings write in its own project is answered by the handler (a public project it does not
+// name is covered by main's rule, TestAProjectScopedTokenWritesAnotherProjectsObjects).
+func TestAProjectScopedCredentialWritesNoPrivateProjectsEval(t *testing.T) {
 	t.Parallel()
 	rig := newBrokerTokenRig(t)
 	caller := newBrokerCaller(t)
@@ -752,6 +754,9 @@ func TestAProjectScopedCredentialWritesNoOtherProjectsEval(t *testing.T) {
 		if created := rig.asPerson(t, http.MethodPost, "/api/v1/projects", map[string]any{"key": key, "name": key}); created.Code != http.StatusCreated {
 			t.Fatalf("create project %s: status %d, body %s", key, created.Code, created.Body.String())
 		}
+	}
+	if _, err := rig.database.Pool.Exec(context.Background(), `update projects set visibility = 'private' where key = 'OTH'`); err != nil {
+		t.Fatalf("mark OTH private: %v", err)
 	}
 	body := map[string]any{"readings": []any{reading("hits", 3, time.Now().UTC().Add(-time.Minute))}}
 	send := func(method, path string, body any, key string) *httptest.ResponseRecorder {

@@ -1944,8 +1944,10 @@ export class DispatchApiClient {
     return this.read("/api/v1/projects/{key}/settings/delivery", { key: project });
   }
 
-  /** Replaces one project's delivery settings and sets the targets it names, each a new version
-   *  of the project's eval, in one write, and answers them as `getProjectDeliverySettings` does.
+  /** Updates one project's delivery settings (a top-level field the body leaves out keeps its
+   *  stored value; `null` clears a field that may be empty; `sources`, when present, replaces the
+   *  list; a `targets` key changes that target alone, each as a new version of the project's eval,
+   *  in one write) and answers them as `getProjectDeliverySettings` does.
    *  An agent viewer's save names the session it is made as (`bounds.session`) as its `actor`,
    *  which a bearer whose credential proves no session must (`400 ACTOR_KIND`); a person's names
    *  none, their cookie naming them. A refusal names its field and source
@@ -2062,6 +2064,15 @@ export class DispatchApiClient {
    *  rendered from, so this one read names its path and its answer itself. */
   whoAmI(): Promise<AuthenticatedUser> {
     return this.json<AuthenticatedUser>("/auth/whoami");
+  }
+
+  /** The scopes the caller's own credential holds, as `GET /api/v1/whoami` names them: for a
+   *  person at a browser, every scope of a person's own credential. `/auth/whoami` names none.
+   *  Settings offers Set P0 only where they name `p0`, which a build before it never does. A
+   *  list the answer leaves null holds none. */
+  async whoAmIScopes(): Promise<string[]> {
+    const whoami = await this.read("/api/v1/whoami", {});
+    return whoami.scopes ?? [];
   }
 
   /** Ends this browser's session. `/auth/logout` sits outside Dispatch's keyed layer and is the

@@ -218,7 +218,8 @@ type projectDeployRunQuery struct {
 type issueResultsQuery struct {
 	// At replaces what every check of the issue is compared with by this one commit, 40
 	// lowercase hex characters; any other value is 400 INVALID_QUERY. The only read of GitHub it
-	// leaves is the check runs of a check CI proves, read at the issue's newest pull request head.
+	// leaves is the check runs of a check CI proves, read at each open pull request head, or with
+	// none open the final head of the newest merged one.
 	At string `query:"at"`
 }
 
@@ -813,6 +814,13 @@ var routeShapes = map[string]routeShape{
 		OpaqueContentTypes: []string{"application/json"},
 	},
 	"GET /api/v1/limits": {Status: http.StatusOK, Response: model.DispatchLimits{}},
+	"POST /api/v1/deploys": {
+		Status: http.StatusCreated, Response: deployResponse{}, Request: deployInput{},
+		Also: []routeAnswer{{Status: http.StatusOK, Body: deployResponse{}}},
+	},
+	"GET /api/v1/deploys": {
+		Status: http.StatusOK, Response: deploysResponse{}, Params: deploysQuery{},
+	},
 	"POST /api/v1/markdown/round-trip": {
 		Status: http.StatusOK, Response: markdownRoundTripResponse{}, Request: markdownRoundTripInput{},
 	},
@@ -934,9 +942,12 @@ var routeShapes = map[string]routeShape{
 		// (project_settings_delivery.go).
 		Nullable: true,
 	},
-	// A refused save answers its own body (delivery.SettingsError: the code, the reason, and the
-	// field, the source's index and the other project where it names them), 400 for its input and
-	// 409 for every other refusal (writeSettingsRefusal).
+	// Every top-level field of projectDeliverySettingsInput is optional (a field the body leaves
+	// out keeps its stored value; null clears a field that may be empty; sources present replaces
+	// the list; a targets key changes that target alone). A refused save answers its own body
+	// (delivery.SettingsError: the code, the reason, and the field, the source's index and the
+	// other project where it names them), 400 for its input and 409 for every other refusal
+	// (writeSettingsRefusal).
 	"PUT /api/v1/projects/{key}/settings/delivery": {
 		Status: http.StatusOK, Response: projectDeliverySettings{}, Request: projectDeliverySettingsInput{},
 		Refusals: []routeAnswer{

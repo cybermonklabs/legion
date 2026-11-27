@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
-	"os"
 	"reflect"
 	"regexp"
 	"slices"
@@ -26,8 +25,6 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
-func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }
-
 // codeNow is the midnight the code survival histories of these tests end at.
 var codeNow = time.Date(2026, 11, 13, 0, 0, 0, 0, time.UTC)
 
@@ -37,8 +34,8 @@ const codeMarkDays = 30
 
 // codeIssues is a history of two INFRA issues opened a day, each closed five days after it opens but
 // every third, which the draws of an issue open at a commit's moment (issueOpenAt) read.
-func codeIssues(days int) infraHistory {
-	var history infraHistory
+func codeIssues(days int) projectHistory {
+	var history projectHistory
 	for i := range 2 * days {
 		opened := codeNow.AddDate(0, 0, -codeDays+i/2).Add(time.Duration(i%2) * 6 * time.Hour)
 		issue := plannedIssue{number: i + 1, key: fmt.Sprintf("INFRA-%d", i+1), opened: opened}
@@ -220,11 +217,11 @@ func TestNoCodeAndTheBaseModesWriteNoCodeResults(t *testing.T) {
 
 // codeRig is a database with INFRA written as far as the code survival results need it: its
 // project, issues and delivery settings.
-func codeRig(t *testing.T, spec Spec) (*store.Store, infraHistory) {
+func codeRig(t *testing.T, spec Spec) (*store.Store, projectHistory) {
 	t.Helper()
 	database := storetest.Open(t)
 	ctx := t.Context()
-	history, err := writeInfra(ctx, database.Pool, spec)
+	history, err := writeProject(ctx, database.Pool, spec, infraFixture)
 	if err != nil {
 		t.Fatalf("write INFRA's issues: %v", err)
 	}
@@ -249,7 +246,7 @@ func TestTheCodeResultsAreWrittenAndTheRegroupBuildsINFRAsDayRowsFromThem(t *tes
 	}
 	plan := planCode(spec, history)
 
-	counts, err := count(ctx, pool)
+	counts, err := count(ctx, pool, countedTables)
 	if err != nil {
 		t.Fatalf("count the rows: %v", err)
 	}
@@ -366,7 +363,7 @@ func TestTheDeliverySettingsAreWrittenWhereTheSettingsHoldNoCodeGroups(t *testin
 	if _, err := base.Pool.Exec(ctx, `alter table project_delivery_settings drop column code_groups`); err != nil {
 		t.Fatalf("drop code_groups: %v", err)
 	}
-	if _, err := writeInfra(ctx, base.Pool, spec); err != nil {
+	if _, err := writeProject(ctx, base.Pool, spec, infraFixture); err != nil {
 		t.Fatalf("write INFRA's issues: %v", err)
 	}
 	if err := putDeliverySettings(ctx, base.Pool); err != nil {

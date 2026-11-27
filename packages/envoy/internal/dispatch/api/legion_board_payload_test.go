@@ -146,7 +146,7 @@ func TestTheBoardsBodyAtInfrasSizeFitsTheFirstPayloadBound(t *testing.T) {
 	t.Logf("the body carries %d issues entries and %d cards", len(board.Issues), countBoardCards(board))
 }
 
-// countBoardCards is how many cards the board's eleven columns hold between them.
+// countBoardCards is how many cards the board's twelve columns hold between them.
 func countBoardCards(board legionBoardResponse) int {
 	cards := 0
 	for _, column := range board.Columns {
@@ -165,7 +165,7 @@ const boardComputeRuns = 20
 // subscribed board costs.
 //
 // The measured work is the GET route's own: the read of the daemon's observations, the read of
-// the project's stored facts and the cursor's age, the tree walk, the compute of the eleven columns
+// the project's stored facts and the cursor's age, the tree walk, the compute of the twelve columns
 // and the encoding of the body. The hub's recompute runs the same read and compute
 // (readLegionBoardView) and encodes the same body, so the number here is that recompute's as
 // well, less the delta it takes against what each subscriber holds.

@@ -173,6 +173,16 @@ func WriteCodeDaysTx(ctx context.Context, tx pgx.Tx, project string, evalIDs []s
 	return foldFiguresInTx(ctx, tx, build, map[string]map[string]daySpan{project: slugSpans(project, slugs, span)})
 }
 
+// slugSpans is span as the span of each of slugs' evals of project, by eval id: the days whose
+// stored figures a write of those evals' rows folds again (foldFiguresInTx).
+func slugSpans(project string, slugs []string, span daySpan) map[string]daySpan {
+	spans := make(map[string]daySpan, len(slugs))
+	for _, slug := range slugs {
+		spans[EvalID(project, slug)] = span
+	}
+	return spans
+}
+
 // WriteCodeGroupSeriesTx writes, in tx, the caller's transaction, the series of groups, project's
 // code groups by name and in order, into each code eval of project, by the seed's own version
 // write (seriesToWrite) over the eval's group series alone: version 1 of each group series of each

@@ -1628,7 +1628,7 @@ func TestAdoptWorkingCopyNamesTheStaleGitLockItFailedOn(t *testing.T) {
 // connection and send that line first again at each reconnect, so the role's stream would stay
 // down (ASVS v5.0.0-15.2.2). The answer keeps the start of the reason, which names the command and
 // its exit, and its end, where the note about a stale git lock goes, which tells the role what to
-// do; it says that the shim cut the bytes between. The connection then carries the next answer.
+// do; it says how many bytes were cut between. The connection then carries the next answer.
 func TestAdoptWorkingCopyFailureOverOneLineKeepsItsStartAndItsLockNote(t *testing.T) {
 	workspace := t.TempDir()
 	lock := filepath.Join(workspace, ".git", "index.lock")
@@ -1664,14 +1664,14 @@ func TestAdoptWorkingCopyFailureOverOneLineKeepsItsStartAndItsLockNote(t *testin
 	if !ok || got.ID != "adopt" || got.OK {
 		t.Fatalf("the shim answered %#v, want the failed adoption", got)
 	}
-	// The shim keeps 4 KiB of a reason and a line that says what it cut (shim's cutAnswerError).
+	// The shim keeps 4 KiB of a reason and a line that says what it cut (shimwire.CutAnswerError).
 	if len(got.Error) > 8<<10 {
 		t.Fatalf("the failed adoption's reason has %d bytes, want it cut to about 4 KiB", len(got.Error))
 	}
 	for _, want := range []string{
 		"Command failed (exit 1)",
 		"the working copy is stale",
-		"The shim cut",
+		"bytes of this error were cut here",
 		"git lock " + lock + " was last written 31m",
 		"Run the command again in about 16 minutes.",
 	} {
@@ -1695,7 +1695,8 @@ func TestAdoptWorkingCopyFailureOverOneLineKeepsItsStartAndItsLockNote(t *testin
 // the small repositories tests build, the two read alike. The variable tells them apart: the
 // patched mapping refuses a value that is not a budget at every pack open
 // (lib/chunked-mmap/src/chunked.rs, open), and an unpatched jj never reads it. So on a git
-// repository whose one commit sits in its one pack, the jj on PATH lists the commit's file under
+// repository whose one commit sits in its one pack, the pinned jj (fixturegit.PinnedJJ, the jj on
+// PATH with the pin's sha256, whatever jj stands in front of it) lists the commit's file under
 // JJ_PACK_MAPPED_LIMIT=512m and fails under JJ_PACK_MAPPED_LIMIT=not-a-number, where jj
 // 0.45.1-sami.20260910-043938 and v0.46.0-sami.20261008-234600 list the file both times. The
 // crate's own refusal names the variable, but it never reaches the user: gix-odb takes the pack it
@@ -1706,7 +1707,7 @@ func TestThePinnedJJCarriesTheChunkedPackPatch(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skipf("the chunked pack mapping is Linux's alone: on %s the patched jj reads no JJ_PACK_MAPPED_LIMIT", runtime.GOOS)
 	}
-	jj := fixturegit.CompiledJJ(t)
+	jj := fixturegit.PinnedJJ(t)
 	const file = "README.md"
 	home := t.TempDir()
 	repository := t.TempDir()
@@ -1870,7 +1871,7 @@ func TestAToolCallSummaryCutsTheArgumentsAfterTheURLRule(t *testing.T) {
 					t.Fatalf("the summary %q holds a part of the URL's user name or of its query", line)
 				}
 			}
-			left := []rune(head + `https://github.com/o/r.git"}`)
+			left := []rune(head + `https://[a URL with credentials]/o/r.git"}`)
 			summary := string(left)
 			if len(left) > 80 {
 				summary = string(left[:79]) + "…"

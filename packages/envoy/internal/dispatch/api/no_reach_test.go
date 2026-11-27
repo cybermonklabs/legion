@@ -498,6 +498,16 @@ func threeBadRequests(t *testing.T) {
 			}
 			continue
 		}
+		// A production event's state route holds the row to the path's project itself
+		// (prodevents.SetState), so under another project's key it answers 404
+		// PRODUCTION_EVENT_NOT_FOUND and leaves this project's row counted.
+		if route.Pattern == "/api/v1/projects/{key}/production-events/{id}/state" {
+			if code := responseCode(t, response); response.Code != http.StatusNotFound || code != codeProductionEventNotFound {
+				t.Errorf("%s answers %d %s for another project's production event, want 404 %s: %s",
+					route.Method+" "+target, response.Code, code, codeProductionEventNotFound, firstLine(response.Body.String()))
+			}
+			continue
+		}
 		if response.Code < 400 {
 			t.Errorf("%s answers %d for an identifier of another project: %s",
 				route.Method+" "+target, response.Code, firstLine(response.Body.String()))
@@ -649,6 +659,7 @@ var strictQueryReads = map[string]string{
 	"GET /api/v1/projects/{key}/evals":              "the project's eval list",
 	"GET /api/v1/projects/{key}/evals/{slug}":       "one eval's versions",
 	"GET /api/v1/projects/{key}/evals/{slug}/items": "one eval's rows",
+	"GET /api/v1/projects/{key}/production-events":  "the project's production events",
 }
 
 // routesNoSeedAnswers are the reads no object seedTwoProjects writes lets answer a row, each
@@ -691,6 +702,7 @@ func routeProbeQueries(owned crossProject) map[string]string {
 		"GET /api/v1/asks/open":            url.Values{"project": {"TEST"}}.Encode(),
 		"GET /api/v1/credential-requests":  url.Values{"approver": {"me"}}.Encode(),
 		"GET /api/v1/near-copy-checks":     url.Values{"project": {"TEST"}}.Encode(),
+		"GET /api/v1/deploys":              url.Values{"repo": {owned.deployRepo}}.Encode(),
 		// The session that opened the seeded ask (createIssueAsk writes it as sessionActor): its
 		// ask.opened event and its follow of the ask are records knownSessionsStatement counts.
 		"GET /api/v1/agents/known": url.Values{"id": {sessionActor()["id"].(string)}}.Encode(),
@@ -847,13 +859,20 @@ type crossProject struct {
 	// route of a project's eval and of one of its readings, and the slug the traversal probe
 	// reads the eval's routes at.
 	eval, reading string
+	// productionEvent is the id of a failure row this project alone holds, which the cross-project
+	// probe sends PUT /api/v1/projects/{key}/production-events/{id}/state under OTH's key.
+	productionEvent string
+	// deployRepo is the repository, owner/repo, of the one deploy seedTwoProjects records: the
+	// repository the read of deploys is sent, so that read answers a row.
+	deployRepo string
 }
 
 // seedTwoProjects writes one project with an issue, a document of the issue (design.md), a
 // comment, an ask, a message, a run of a step of the issue and a run of its retro, a project
 // document and a block of each document, an architecture source, and the Legion daemon it names
 // with a read of it; a second project with an issue, which the cross-project probe addresses them
-// under; and one priority, which belongs to neither project and is read at its own id. Under the
+// under; one priority, which belongs to neither project and is read at its own id; and one deploy
+// of a repository, which belongs to no project and is read by its repository. Under the
 // second project's key the probe sends each route the object of the first its path names
 // (crossProjectPath): design.md to a route of an issue document, the project document to a route
 // of a project document, the message to the message read, the run of a step to the step write,
@@ -926,6 +945,11 @@ func seedTwoProjects(t *testing.T, handler http.Handler, database *store.Store) 
 	// answers a row only for a priority the store holds: at a placeholder id it answers 404, and
 	// its traversal probe would read nothing.
 	owned.priority = createTestPriority(t, handler, map[string]any{"title": "A priority of the deployment"}, "alice").ID
+	// A deploy is written through its route, as a person writes one, because the read of a
+	// repository's deploys answers an empty list for a repository Dispatch holds none of, and its
+	// traversal probe would read nothing.
+	owned.deployRepo = "acme/widgets"
+	postDeploy(t, handler, map[string]any{"repo": owned.deployRepo, "program": "worker", "commit": headCommit}, http.StatusCreated)
 	// Every create records the near-copy gate's answer (issue_create.go, recordNearCopyCheck), so
 	// the project's own creates above left records; one of them is the row the read of a record
 	// by its id answers, which at a placeholder id answers 404 and reads nothing.
@@ -961,6 +985,34 @@ func seedTwoProjects(t *testing.T, handler http.Handler, database *store.Store) 
 		t.Fatalf("the seeded reading answers %v, want one reading with its id", readings)
 	}
 	owned.reading = readings[0].ID
+	// A production deploy and failure of TEST alone: the cross-project probe addresses the failure
+	// under OTH's key, and the traversal probe reads the project's collection.
+	postedDeploy := sessionRequest(t, handler, http.MethodPost, "/api/v1/projects/TEST/production-events", map[string]any{
+		"actor":       map[string]any{"kind": "session", "id": "reach-probe"},
+		"kind":        "deploy",
+		"source_ref":  "reach-probe-deploy",
+		"repo":        "acme/reach",
+		"finished_at": time.Now().UTC().Add(-time.Hour).Format(time.RFC3339),
+	})
+	if postedDeploy.Code != http.StatusCreated {
+		t.Fatalf("seed a production deploy: status=%d body=%s", postedDeploy.Code, postedDeploy.Body.String())
+	}
+	deployID := decodeBody[struct {
+		ID string `json:"id"`
+	}](t, postedDeploy).ID
+	postedFailure := sessionRequest(t, handler, http.MethodPost, "/api/v1/projects/TEST/production-events", map[string]any{
+		"actor":      map[string]any{"kind": "session", "id": "reach-probe"},
+		"kind":       "failure",
+		"source_ref": "reach-probe-failure",
+		"deploy_id":  deployID,
+		"note":       "A failure of this project.",
+	})
+	if postedFailure.Code != http.StatusCreated {
+		t.Fatalf("seed a production failure: status=%d body=%s", postedFailure.Code, postedFailure.Body.String())
+	}
+	owned.productionEvent = decodeBody[struct {
+		ID string `json:"id"`
+	}](t, postedFailure).ID
 	return owned
 }
 
@@ -1048,6 +1100,7 @@ func crossProjectPath(t *testing.T, route apiRoute, owned crossProject) (string,
 		{"/projects/{key}/architecture-sources/{owner}/{repo}", "{owner}/{repo}", owned.architectureSource},
 		{"/projects/{key}/evals/{slug}", "{slug}", owned.eval},
 		{"/evals/{slug}/readings/{id}", "{id}", owned.reading},
+		{"/projects/{key}/production-events/{id}/state", "{id}", owned.productionEvent},
 	} {
 		if strings.Contains(route.Pattern, place.named) {
 			pattern = strings.ReplaceAll(pattern, place.wildcard, place.object)
@@ -1101,6 +1154,8 @@ func crossProjectRequest(t *testing.T, handler http.Handler, route apiRoute, tar
 		return sessionRequest(t, handler, route.Method, target, defaultPlanBody(daemonSessionOf(owned.otherKey), 1))
 	case "POST /api/v1/issues/{key}/artifacts/{slug}/versions", "POST /api/v1/projects/{key}/artifacts/{slug}/versions":
 		return dispatchRequest(t, handler, route.Method, target, map[string]any{"summary": "A version under another project's key."}, "alice")
+	case "PUT /api/v1/projects/{key}/production-events/{id}/state":
+		return dispatchRequest(t, handler, route.Method, target, map[string]any{"state": "rejected", "reason": "A reject under another project's key."}, "alice")
 	}
 	return dispatchRequest(t, handler, route.Method, target, routeProbeBodyValue(route), "alice")
 }

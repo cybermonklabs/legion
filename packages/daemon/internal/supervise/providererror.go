@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/sjawhar/envoy/httpoutage"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 )
 
@@ -23,9 +24,9 @@ const (
 	// from [step/2, step] and caps at 32 times its base, which this ladder's exactness forbids.
 	promptRetryFirst = 30 * time.Second
 	promptRetryMax   = 10 * time.Minute
-	// providerErrorRunTold is the run of provider-error turns at which the project's controller
-	// is told, once (Deps.ProviderErrorRunReached). There is no hold and no attempt limit behind
-	// it: a chain's bottom refusing deterministically costs one request every promptRetryMax.
+	// providerErrorRunTold is the run of provider-error turns at which the run is handed, once, to
+	// Deps.ProviderErrorRunReached. There is no hold and no attempt limit behind it: a chain's
+	// bottom refusing deterministically costs one request every promptRetryMax.
 	providerErrorRunTold = 6
 )
 
@@ -97,7 +98,7 @@ func promptRetryDelay(attempt int) time.Duration {
 //
 // The cause is named once here and handed to whoever writes it down, since one failed turn has
 // one cause and the words are the same in the claim's failure, in the prompt the task goes
-// behind and in the controller's notice.
+// behind and in the notice at providerErrorRunTold.
 func (m *Machine) providerErrored(ctx context.Context, r StreamPromptResult) error {
 	cause, failed, err := m.providerErrorTurnEnded(ctx, providerErrorTurn{
 		status: r.HTTPStatus, code: r.Code, model: r.Model,
@@ -119,11 +120,11 @@ func (m *Machine) providerErrored(ctx context.Context, r StreamPromptResult) err
 // the plugin sent, an Envoy message, a background job's result — from its turn-outcome report
 // (turnOutcome), as providerErrored judges a prompt's turn from that prompt's result, and in the
 // same run of provider-error turns (providerErrorTurnEnded); a clean report ends that run in
-// turnOutcome, whoever ran the turn. It differs in one thing: no task is the turn's to keep or
-// send again, since whatever the claim owes, this turn did not carry it, and the reminder that
-// started it keeps its own pace (packages/pi-shared/src/phase-reminder.ts). So a refusal that can
-// clear, or whose report carries no status, is counted and written down and nothing more, and the
-// controller's notice says that nothing is sent again. The cause is built from the status and the
+// turnOutcome, whoever ran the turn. It differs in one thing: no task is the turn's to keep or send
+// again, since whatever the claim owes, this turn did not carry it, and the reminder that started
+// it keeps its own pace (packages/pi-shared/src/phase-reminder.ts). So a refusal that can clear, or
+// whose report carries no status, is counted and written down and nothing more, and the notice at
+// providerErrorRunTold says that nothing is sent again. The cause is built from the status and the
 // class the report carries (Code, pi-legion's reading of the refusal with the host's own
 // classifier), so a cyber-policy refusal fails the claim here as its prompt's result would, and
 // the notice names no model, since a report carries none. Whether the report failed the claim is
@@ -163,15 +164,15 @@ type providerErrorTurn struct {
 // providerErrorTurnEnded is what every turn that ended in a provider error does, whatever ran it
 // (providerErrored, unpromptedTurnEnded), so that both kinds make the claim's one run: the error
 // classified once from the status and the class alone (classifyProviderError), one more turn in
-// the run, the warning line, the controller's notice at providerErrorRunTold, then t.before, and,
-// for an error that cannot clear, the claim's failure under the word that classification gives,
-// which holds the issue for its architect. It answers the cause, and whether it failed the claim;
-// what a turn whose error can clear does next is its caller's.
+// the run, the warning line, the notice at providerErrorRunTold (tellOfProviderErrors), then
+// t.before, and, for an error that cannot clear, the claim's failure under the word that
+// classification gives, which holds the issue for its architect. It answers the cause, and whether
+// it failed the claim; what a turn whose error can clear does next is its caller's.
 func (m *Machine) providerErrorTurnEnded(ctx context.Context, t providerErrorTurn) (string, bool, error) {
 	class := classifyProviderError(t.status, t.code)
 	m.claim.ProviderErrorRun++
 	m.log.Warn(t.line, append(t.attrs, "httpStatus", t.status, "model", t.model, "providerErrorRun", m.claim.ProviderErrorRun)...)
-	m.tellControllerOfProviderErrors(t.model, class.cause, t.next)
+	m.tellOfProviderErrors(t.model, class.cause, t.next)
 	if t.before != nil {
 		if err := t.before(ctx); err != nil {
 			return class.cause, false, err
@@ -190,11 +191,11 @@ func (c Claim) HeldForCyberPolicy() bool { return CyberPolicyHolds(c.State, c.Fa
 // CyberPolicyHolds is whether a claim in state whose last failure is cause is held for OpenAI's
 // cyber-policy refusal: the record stands on a failed claim, and on one an operator stopped after
 // it failed, until a retry admits the claim (retry). Such a claim's agent is launched again by a
-// retry someone decided alone — the held phase's retry (RequestRetry.Decided) or the operator's
-// (RequestOperatorRetry) — and by no retry the daemon makes by itself (RetryHeld), and every
-// retry admitted for it starts the agent in a new session (freshSession). It takes the two fields
-// rather than a claim so that a reader holding no whole claim reads the same rule (record's
-// RoleClaim, which the admission pass's repair reads).
+// retry someone decided alone — the held phase's retry (RequestRetry.Decided) or the one the
+// operator or the controller asks (RequestAskedRetry) — and by no retry the daemon makes by itself
+// (RetryHeld), and every retry admitted for it starts the agent in a new session (freshSession).
+// It takes the two fields rather than a claim so that a reader holding no whole claim reads the
+// same rule (record's RoleClaim, which the admission pass's repair reads).
 func CyberPolicyHolds(state ClaimState, cause FailureCause) bool {
 	return cause == CauseCyberPolicy && FailedOrRetired(state)
 }
@@ -229,7 +230,7 @@ func (c Claim) RetryHeld(r RequestRetry) bool { return !r.Decided && c.HeldForCy
 // the keeper retries no more, since its retry is one the daemon makes by itself. It is the one
 // rule its three readers read: the keeper retries no failed or retired controller this is false
 // for (the daemon's controllerKeeper), and the operator's two doors refuse every claim it is true
-// for (operatorRetry, api's freshSession), so a held controller is the one controller they reach.
+// for (askedRetry, api's freshSession), so a held controller is the one controller they reach.
 func (c Claim) KeeperRetries() bool { return c.Role == claim.RoleController && !c.HeldForCyberPolicy() }
 
 // RetryCommand is the operator's command that retries token's claim, as every operator surface
@@ -286,16 +287,15 @@ type providerErrorClass struct {
 // status, so it is the last of these.
 //
 // The error fails the claim for a cyber-policy refusal (codeCyberPolicy), whatever its status,
-// under CauseCyberPolicy, and for a client error, 400 to 499, that is none of 401, 403, 408 and
-// 429, under CauseProviderError. A malformed request is the case the second exists for. Every other
-// error sends the task again:
+// under CauseCyberPolicy, and for a client error, 400 to 499, that is neither a credential (401
+// or 403) nor an outage (httpoutage.Is), under CauseProviderError. A malformed request is the
+// case the second exists for. Every other error sends the task again:
 //
-//   - 5xx, 408 and 429 are the provider saying "not now", which the ladder waits out;
+//   - an outage (httpoutage.Is), is the provider saying "not now", which the ladder waits out;
 //   - 401 and 403 are a credential, which is the fleet's and not this claim's work
 //     (dispatch://INFRA-956/comment/838bf35d-69dd-4fb2-a1b3-4b474b4525b3). Failing every claim
-//     whose turn hits one is worse than sending the task again, and the notice the project's
-//     controller is given at six such turns in a row is what tells a person
-//     (tellControllerOfProviderErrors);
+//     whose turn hits one is worse than sending the task again: the notice at
+//     providerErrorRunTold (tellOfProviderErrors) tells a person at six such turns in a row;
 //   - no status at all is a turn that ends with nothing but a message, three kinds among them.
 //     A content-filter refusal clears because the plugin has already moved the session down its
 //     model chain, so the next prompt goes to another model. A turn whose provider key could not
@@ -330,8 +330,11 @@ func classifyProviderError(status int, code string) providerErrorClass {
 	if code == codeCostCap {
 		class.cause = "the session's cost cap (Oh My Pi's session.maxCost, cost_cap)"
 	}
+	if httpoutage.Is(status) {
+		return class
+	}
 	switch status {
-	case http.StatusUnauthorized, http.StatusForbidden, http.StatusRequestTimeout, http.StatusTooManyRequests:
+	case http.StatusUnauthorized, http.StatusForbidden:
 		return class
 	}
 	if status >= 400 && status <= 499 {
@@ -378,14 +381,16 @@ func providerErrorTask(cause string) string {
 		"issue's branch. Then continue the task."
 }
 
-// tellControllerOfProviderErrors tells the project's controller, once, when the claim's run of
-// provider-error turns reaches providerErrorRunTold; a turn with no error puts the run back to
-// zero, and only then can another notice go. It is the one exit from a run of such turns, and it
-// is a notice rather than a hold: R2 forbids an attempt limit. model is the model the failed
-// request went to, and is empty when the error named none. next is what the daemon does about the
-// turn that reached the count, in the caller's words: a prompt's task is kept and sent again, and
-// a turn that ran no prompt of the daemon's has no task to send (providerErrorTurnEnded).
-func (m *Machine) tellControllerOfProviderErrors(model, cause, next string) {
+// tellOfProviderErrors hands the claim's run of provider-error turns to
+// Deps.ProviderErrorRunReached, once, when it reaches providerErrorRunTold. The run goes on past
+// it, and another notice can go only after the run is back at zero (Claim.ProviderErrorRun says
+// what puts it there). Who is told is that callback's to decide (internal/daemon's
+// providerErrorRunReached). It is a notice rather than a hold, and it ends no run: R2 forbids an
+// attempt limit. model is the model the failed request went to, and is empty when the error named
+// none. next is what the daemon does about the turn that reached the count, in the caller's words:
+// a prompt's task is kept and sent again, and a turn that ran no prompt of the daemon's has no task
+// to send (providerErrorTurnEnded).
+func (m *Machine) tellOfProviderErrors(model, cause, next string) {
 	if m.claim.ProviderErrorRun != providerErrorRunTold || m.deps.ProviderErrorRunReached == nil {
 		return
 	}
@@ -394,7 +399,7 @@ func (m *Machine) tellControllerOfProviderErrors(model, cause, next string) {
 		on = " on " + model
 	}
 	reason := fmt.Sprintf("%d turns in a row%s ended in %s; %s", m.claim.ProviderErrorRun, on, cause, next)
-	m.log.Warn("supervise: a run of turns that ended in a provider error; the controller is told",
+	m.log.Warn("supervise: a run of turns that ended in a provider error; it is handed to ProviderErrorRunReached",
 		"providerErrorRun", m.claim.ProviderErrorRun, "model", model, "reason", reason)
 	m.deps.ProviderErrorRunReached(m.current(), reason)
 }
@@ -432,8 +437,9 @@ func (m *Machine) waitsForProviderError(delivery string) bool {
 // hands: that task's agent_start would confirm the task that replaced it, and the turn's end
 // would retire that one unsent, with the outbox row that gave it already recorded as delivered.
 // The relaunch's delivery is held to the same rule by its outstanding prompt, which that
-// acknowledgement records (acked) and which stands until Oh My Pi answers that prompt or the
-// turn it ran is over for the machine (Machine.outstanding).
+// acknowledgement records (acked), or a send the compaction held keeps (keepHeldPrompt), and which
+// stands until Oh My Pi answers that prompt or the turn it ran is over for the machine
+// (Machine.outstanding).
 func (m *Machine) replaceable(p *Delivery) bool {
 	if !p.ConfirmedAt.IsZero() || m.send != nil {
 		return false

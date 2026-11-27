@@ -1264,7 +1264,11 @@ func TestAMoveLocksThePublishedDefaultsInTheOrderOfTheirKeys(t *testing.T) {
 	committed := make(chan error, 1)
 	go func() {
 		committed <- pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
-			_, err := publishDefaults(ctx, tx, r.build, work.defaults)
+			before, err := readSelection(ctx, tx)
+			if err != nil {
+				return err
+			}
+			_, err = publishDefaults(ctx, tx, r.build, nil, work.defaults, before, nil)
 			return err
 		})
 	}()
@@ -1428,7 +1432,11 @@ func TestAMoveJudgesByTheDeployRepositoryTheDeliverySettingsName(t *testing.T) {
 	}
 	seq := r.latestSeq(t)
 	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
-		_, err := publishDefaults(ctx, tx, r.build, work.defaults)
+		before, err := readSelection(ctx, tx)
+		if err != nil {
+			return err
+		}
+		_, err = publishDefaults(ctx, tx, r.build, nil, work.defaults, before, nil)
 		return err
 	}); err != nil {
 		t.Fatalf("commit the move: %v", err)
@@ -1535,4 +1543,747 @@ func TestTheReadersOfAnOwnerKeyAreTheProjectsThePublishedDefaultsPick(t *testing
 		"none picks":            "GAMMA via=false",
 		"a sharer and two ways": "ALPHA via=false, GAMMA via=false",
 	})
+}
+
+// sourceReaders is, by repository, the projects that read each of repos' source key (sourceKey) as
+// readersOf answers them, each with whether eval_project_owners reads the key through the
+// repository, `<project> via=<via>` joined by ", ", and "" where none reads it.
+func (r *refresherRig) sourceReaders(t *testing.T, repos ...string) map[string]string {
+	t.Helper()
+	ctx, pool := t.Context(), r.database.Pool
+	keys := make([]string, len(repos))
+	for i, repo := range repos {
+		keys[i] = sourceKey(repo)
+	}
+	readers, err := readersOf(ctx, pool, keys)
+	if err != nil {
+		t.Fatalf("read the readers of %v: %v", keys, err)
+	}
+	answers := map[string]string{}
+	for i, repo := range repos {
+		var read []string
+		for _, project := range readers[keys[i]] {
+			var via bool
+			if err := pool.QueryRow(ctx, `select via from eval_project_owners where owner = $1 and project_key = $2`, keys[i], project).Scan(&via); err != nil {
+				t.Fatalf("read whether %s reads %s through the repository: %v", project, keys[i], err)
+			}
+			read = append(read, fmt.Sprintf("%s via=%t", project, via))
+		}
+		answers[repo] = strings.Join(read, ", ")
+	}
+	return answers
+}
+
+// sourceProjects is, by repository, the project whose deploy source reads each of repos as a pass
+// reads the saved settings (delivery.DeployRules, a repository compared without case), none where
+// no source reads it: the reader the commit of the pass gives the repository's source key.
+func (r *refresherRig) sourceProjects(t *testing.T, repos ...string) map[string]string {
+	t.Helper()
+	projects, err := delivery.ListProjectSettings(t.Context(), r.database.Pool)
+	if err != nil {
+		t.Fatalf("read the delivery settings: %v", err)
+	}
+	rules := delivery.DeployRules(projects)
+	read := map[string]string{}
+	for _, repo := range repos {
+		if at := slices.IndexFunc(rules, func(rule delivery.DeliverySettings) bool { return strings.EqualFold(rule.DeployRepo, repo) }); at >= 0 {
+			read[repo] = rules[at].Project
+		}
+	}
+	return read
+}
+
+// recordSourceKeys records the source key of each of repos (recordOwners), as the first write of a
+// row of one records it, so its readers are read whether or not a row of it is written yet.
+func (r *refresherRig) recordSourceKeys(t *testing.T, repos ...string) {
+	t.Helper()
+	ctx := t.Context()
+	keys := make([]string, len(repos))
+	for i, repo := range repos {
+		keys[i] = sourceKey(repo)
+	}
+	tx, err := r.database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(ctx)
+	if err := recordOwners(ctx, tx, keys); err != nil {
+		t.Fatalf("record the source keys %v: %v", keys, err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// The readers of a source key (dispatch://INFRA-978, R12; plan T19 path 1): over the settled
+// three-source history, the reader of each repository's source key (readersOf, through
+// eval_project_owners) is the project the saved settings say a deploy source of reads the
+// repository (delivery.DeployRules), through the repository, and no other: ALPHA's of acme/alpha-app
+// and acme/alpha-ops, OMEGA's of acme/omega-app, none of acme/alpha-next, and a key that spells
+// acme/alpha-ops in capitals is read alike. Once ALPHA's source on acme/alpha-ops is saved on
+// acme/alpha-next, the readers stand as they were until the pass that records the move commits,
+// and then agree with the saved settings again: acme/alpha-next's key is ALPHA's, and acme/alpha-ops'
+// no project's. Red where no arm of eval_project_owners reads a source key: no key has a reader.
+func TestTheReadersOfASourceKeyAreTheProjectWhoseSourceReadsItsRepository(t *testing.T) {
+	t.Parallel()
+	r := newRefresherRig(t)
+	r.seedSources(t)
+	r.settle(t)
+	upper := strings.ToUpper(alphaOps)
+	repos := []string{alphaApp, alphaOps, upper, omegaApp, alphaNext}
+	r.recordSourceKeys(t, repos...)
+	check := func(what string, want map[string]string) {
+		t.Helper()
+		got := r.sourceReaders(t, repos...)
+		for _, repo := range repos {
+			if got[repo] != want[repo] {
+				t.Errorf("%s: the source key of %s is read by [%s], want [%s]", what, repo, got[repo], want[repo])
+			}
+		}
+	}
+	// agree checks that the view's readers are what the saved settings give each repository.
+	agree := func(what string) {
+		t.Helper()
+		want := map[string]string{}
+		for repo, project := range r.sourceProjects(t, repos...) {
+			want[repo] = project + " via=true"
+		}
+		check(what+", against the saved settings", want)
+	}
+	settled := map[string]string{alphaApp: "ALPHA via=true", alphaOps: "ALPHA via=true", upper: "ALPHA via=true", omegaApp: "OMEGA via=true"}
+	check("the settled history", settled)
+	agree("the settled history")
+	putSources(t, r.database.Pool, "ALPHA", []string{"dev-ana"},
+		deliverytest.SourceOf(ruleOfJob(alphaJob), nil), deliverytest.SourceOf(ruleOfJob(opsJob), new(alphaNext)))
+	check("after the save that moves ALPHA's source, before the pass", settled)
+	r.settle(t)
+	check("after the pass", map[string]string{alphaApp: "ALPHA via=true", omegaApp: "OMEGA via=true", alphaNext: "ALPHA via=true"})
+	agree("after the pass")
+}
+
+// releaseBeforesOwners is eval_project_owners as the release before states it (migration
+// 20261117100006): a project's own key, a plain key's readers by the published defaults, and a key
+// that carries lists read through eval_owner_readers alone.
+const releaseBeforesOwners = `
+	select key as project_key, key as owner, false as via from projects
+	union all
+	select r.project_key, o.owner, true
+	from eval_project_repos r join eval_day_owners o on lower(o.repo) = lower(r.repo)
+	where o.lists = '{}' and not (r.project_key = any(o.sharers))
+	union all
+	select reader.project_key, o.owner, reader.via
+	from eval_day_owners o cross join lateral eval_owner_readers(o.repo, o.sharers, o.lists) as reader
+	where o.lists <> '{}'`
+
+// A source key under the release before's rule (plan T19 path 1; cmd/dispatch/README.md, "Two
+// builds at once"): the key carries a list, '{>~}' in eval_day_owners, so the release before, whose
+// view reads such a key through eval_owner_readers alone, reads it by no project, whose terminal '~'
+// is no project's key, and neither does that function. Over the settled three-source history,
+// acme/alpha-app's source key, which this release's view gives ALPHA through the repository, has no
+// reader under the release before's view, where a key of the same repository whose list names ALPHA
+// as a condition (ALPHA's default being acme/alpha-app) is ALPHA's under both. Red where this
+// release's view gives the source key no reader either.
+func TestASourceKeyHasNoReaderUnderTheReleaseBeforesRule(t *testing.T) {
+	t.Parallel()
+	r := newRefresherRig(t)
+	ctx, pool := t.Context(), r.database.Pool
+	r.seedSources(t)
+	r.settle(t)
+	source, condition := sourceKey(alphaApp), OwnerKey(alphaApp, nil, []attributionList{{conditions: []string{"ALPHA"}}})
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(ctx)
+	if err := recordOwners(ctx, tx, []string{source, condition}); err != nil {
+		t.Fatalf("record the keys: %v", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var lists []string
+	if err := pool.QueryRow(ctx, `select lists from eval_day_owners where owner = $1`, source).Scan(&lists); err != nil {
+		t.Fatalf("read the lists of %s: %v", source, err)
+	}
+	if !slices.Equal(lists, []string{">~"}) {
+		t.Fatalf("eval_day_owners holds the lists %v of %s, want [>~]: a key with no list is a plain key, which the release before reads by default", lists, source)
+	}
+	readers := func(view, key string) string {
+		t.Helper()
+		var read string
+		if err := pool.QueryRow(ctx, `
+			select coalesce(string_agg(project_key || ' via=' || via, ', ' order by project_key), '') from (`+view+`) as readers where owner = $1
+		`, key).Scan(&read); err != nil {
+			t.Fatalf("read the readers of %s: %v", key, err)
+		}
+		return read
+	}
+	for _, c := range []struct{ name, view, key, want string }{
+		{"the release before's view", releaseBeforesOwners, source, ""},
+		{"the release before's view", releaseBeforesOwners, condition, "ALPHA via=false"},
+		{"this release's view", `select * from eval_project_owners`, source, "ALPHA via=true"},
+		{"this release's view", `select * from eval_project_owners`, condition, "ALPHA via=false"},
+	} {
+		if got := readers(c.view, c.key); got != c.want {
+			t.Errorf("%s gives %s the readers [%s], want [%s]", c.name, c.key, got, c.want)
+		}
+	}
+	if n := r.count(t, `
+		select count(*) from eval_day_owners o cross join lateral eval_owner_readers(o.repo, o.sharers, o.lists) where o.owner = $1
+	`, source); n != 0 {
+		t.Errorf("eval_owner_readers answers %d readers of %s, want none", n, source)
+	}
+}
+
+// foldedReads is, by project, shape and eval id, the fold of each of projects' day rows over each
+// of shapes as the eval list folds them (listValues' fold of DayWindowIn's rows, over the deploy
+// repositories recorded with the rows), with each series' version time left out, which a second
+// database stamps with its own seed's moment: what a second database whose whole walk ran under the
+// same settings answers alike.
+func (r *refresherRig) foldedReads(t *testing.T, projects []string, shapes []readShape) map[string]string {
+	t.Helper()
+	reads := map[string]string{}
+	for _, project := range projects {
+		for _, shape := range shapes {
+			state := r.readListState(t, project, nil, shape.window, shape.compare)
+			for i := range state.entries {
+				for j := range state.entries[i].Series {
+					state.entries[i].Series[j].CreatedAt = time.Time{}
+				}
+			}
+			_, folded, _ := state.values(t, shape.window, &shape.compare)
+			for id, values := range folded {
+				reads[shape.name+" "+id] = values
+			}
+		}
+	}
+	return reads
+}
+
+// ruleRecords is each repository eval_days_rules records, `<project or none> since <kept_since or
+// none>`, by repository.
+func (r *refresherRig) ruleRecords(t *testing.T) map[string]string {
+	t.Helper()
+	return r.xmins(t, `select repo, coalesce(project_key, 'none') || ' since ' || coalesce(kept_since::text, 'none') from eval_days_rules`)
+}
+
+// A source moved away from its repository and back (dispatch://INFRA-978, R12 and R14; plan T19
+// path 1): over the three-source history, ALPHA's source on acme/alpha-ops is saved on
+// acme/alpha-next, which holds runs of its own, and back, once so the rows of each stand built under
+// its rule (eval_days_rules), and then again. Each repository keeps its rows and its rule once no
+// source reads it (the rule with no project, its start kept: refresh.keptRepos keeps every
+// repository that holds a recorded rule and delivery runs), and the source key of each stays
+// recorded (eval_day_owners), where the delivery walk reads its owners (readOwners). So the second
+// move and the move back each write and delete no day row and no member: a pass records the
+// selection alone. ALPHA's and OMEGA's reads, before, between and after, fold to what a second
+// database answers whose whole walk ran under the same settings, and ALPHA's deploy-frequency counts
+// acme/alpha-ops' deploy 2001 before and after, and no deploy of acme/alpha-next, none of whose runs
+// ran the source's production job, between. Red where a source leaving a repository deletes its
+// rows and its rule, and one reaching it builds them again.
+func TestASourceMoveAwayAndBackWritesNoDayRow(t *testing.T) {
+	t.Parallel()
+	onOps := []delivery.SourceInput{deliverytest.SourceOf(ruleOfJob(alphaJob), nil), deliverytest.SourceOf(ruleOfJob(opsJob), new(alphaOps))}
+	onNext := []delivery.SourceInput{deliverytest.SourceOf(ruleOfJob(alphaJob), nil), deliverytest.SourceOf(ruleOfJob(opsJob), new(alphaNext))}
+	projects, shapes := []string{"ALPHA", "OMEGA"}, slices.Concat(moveShapes(), pastShapes())
+	// walked is the reads of a second database whose whole walk ran with ALPHA's sources.
+	walked := func(sources []delivery.SourceInput) map[string]string {
+		w := newRefresherRig(t)
+		w.seedSources(t)
+		putSources(t, w.database.Pool, "ALPHA", []string{"dev-ana"}, sources...)
+		w.settle(t)
+		return w.foldedReads(t, projects, shapes)
+	}
+	walks := map[string]map[string]string{"acme/alpha-ops": walked(onOps), "acme/alpha-next": walked(onNext)}
+	r := newRefresherRig(t)
+	r.seedSources(t)
+	r.settle(t)
+	for _, sources := range [][]delivery.SourceInput{onNext, onOps} {
+		putSources(t, r.database.Pool, "ALPHA", []string{"dev-ana"}, sources...)
+		r.settle(t)
+	}
+	owners, err := readOwners(t.Context(), r.database.Pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, repo := range []string{alphaOps, alphaNext} {
+		if !slices.Contains(owners, sourceKey(repo)) {
+			t.Errorf("the owners the delivery walk reads are %v, want %s's source key among them", owners, repo)
+		}
+	}
+	show := func(xmin string) string { return "written by " + xmin }
+	expect := func(what, reading string, deploys defaultTally, records map[string]string) {
+		t.Helper()
+		if got := r.ruleRecords(t); !maps.Equal(got, records) {
+			t.Errorf("%s: eval_days_rules records %v, want %v", what, got, records)
+		}
+		if got := r.deploysOn(t, "ALPHA", sourcesDay); got != deploys {
+			t.Errorf("%s: ALPHA's deploy-frequency counts %d deploys, %d through a repository; want %d and %d", what, got.n, got.via, deploys.n, deploys.via)
+		}
+		if differ := sameValues(r.foldedReads(t, projects, shapes), walks[reading], func(values string) string { return values }); len(differ) > 0 {
+			t.Errorf("%s: the reads differ from those of a whole walk with ALPHA's source on %s, first ones:\n\t%s", what, reading, strings.Join(differ, "\n\t"))
+		}
+	}
+	since := sourcesDay.Format(time.DateOnly)
+	onOpsRecords := map[string]string{alphaApp: "ALPHA since " + since, alphaOps: "ALPHA since " + since, alphaNext: "none since " + since,
+		omegaApp: "OMEGA since " + since, EventsRepo("OMEGA"): "OMEGA since none"}
+	onNextRecords := maps.Clone(onOpsRecords)
+	onNextRecords[alphaOps], onNextRecords[alphaNext] = "none since "+since, "ALPHA since "+since
+	expect("before the move", alphaOps, defaultTally{n: 2, via: 2}, onOpsRecords)
+	for _, move := range []struct {
+		name, repo string
+		sources    []delivery.SourceInput
+		deploys    defaultTally
+		records    map[string]string
+	}{
+		{"the move to " + alphaNext, alphaNext, onNext, defaultTally{n: 1, via: 1}, onNextRecords},
+		{"the move back to " + alphaOps, alphaOps, onOps, defaultTally{n: 2, via: 2}, onOpsRecords},
+	} {
+		rows, members := r.xmins(t, dayRowXmins), r.xmins(t, memberXmins)
+		putSources(t, r.database.Pool, "ALPHA", []string{"dev-ana"}, move.sources...)
+		r.settle(t)
+		if differ := sameValues(r.xmins(t, dayRowXmins), rows, show); len(differ) > 0 {
+			t.Errorf("%s wrote or deleted day rows, first ones:\n\t%s", move.name, strings.Join(differ, "\n\t"))
+		}
+		if differ := sameValues(r.xmins(t, memberXmins), members, show); len(differ) > 0 {
+			t.Errorf("%s wrote or deleted members, first ones:\n\t%s", move.name, strings.Join(differ, "\n\t"))
+		}
+		expect("after "+move.name, move.repo, move.deploys, move.records)
+	}
+}
+
+// The items project's deploy evals count on day (CountedIn, of the delivery family, over the deploy
+// repositories recorded with the rows), by row key.
+func (r *refresherRig) deployItems(t *testing.T, project string, day time.Time) []string {
+	t.Helper()
+	repos, err := DeployReposIn(t.Context(), r.database.Pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	counted, err := CountedIn(t.Context(), r.database.Pool, project, KindDelivery, repos.Of(project), nil, Range{From: day, To: day.AddDate(0, 0, 1)})
+	if err != nil {
+		t.Fatalf("read the items %s counts on %s: %v", project, day.Format(time.DateOnly), err)
+	}
+	var keys []string
+	for _, item := range counted {
+		keys = append(keys, item.RowKey)
+	}
+	slices.Sort(keys)
+	return slices.Compact(keys)
+}
+
+// A repository's source moved to another project (dispatch://INFRA-978, R12 and R14; plan T19 path
+// 1): over the three-source history, acme/alpha-ops' source moves from ALPHA to OMEGA under the same
+// rule. Its deploy 2001, which ships no pull request, is a row of the repository's source key, which
+// the pass gives OMEGA as its reader (eval_project_owners, among the keys a read of OMEGA folds) and
+// takes from ALPHA: ALPHA's deploy-frequency counts 2 deploys before and 1 after, OMEGA's 1 and then
+// 2, each through its repository, and the items each counts follow. The move writes and deletes no
+// day row and no member. Red where such a deploy is a row of its source's project, which the move
+// rewrites.
+func TestAnOwnerChangeOfARepositoryWritesNoDayRow(t *testing.T) {
+	t.Parallel()
+	r := newRefresherRig(t)
+	r.seedSources(t)
+	r.settle(t)
+	deploy, key := RunMember(alphaOps, 2001), sourceKey(alphaOps)
+	check := func(what, reader, other string, deploys map[string]defaultTally) {
+		t.Helper()
+		for _, project := range []string{"ALPHA", "OMEGA"} {
+			if got := r.deploysOn(t, project, sourcesDay); got != deploys[project] {
+				t.Errorf("%s: %s's deploy-frequency counts %d deploys, %d through a repository; want %d and %d",
+					what, project, got.n, got.via, deploys[project].n, deploys[project].via)
+			}
+		}
+		for project, reads := range map[string]bool{reader: true, other: false} {
+			if got := r.count(t, `select count(*) from eval_project_owners where project_key = $1 and owner = $2`, project, key) == 1; got != reads {
+				t.Errorf("%s: %s reads %s %t, want %t", what, project, key, got, reads)
+			}
+			if got := slices.Contains(r.deployItems(t, project, sourcesDay), deploy); got != reads {
+				t.Errorf("%s: %s counts %s among its deploys %t, want %t", what, project, deploy, got, reads)
+			}
+		}
+	}
+	check("before the move", "ALPHA", "OMEGA", map[string]defaultTally{"ALPHA": {n: 2, via: 2}, "OMEGA": {n: 1, via: 1}})
+	rows, members := r.xmins(t, dayRowXmins), r.xmins(t, memberXmins)
+	authors := []string{"dev-ana"}
+	putSources(t, r.database.Pool, "ALPHA", authors, deliverytest.SourceOf(ruleOfJob(alphaJob), nil))
+	putSources(t, r.database.Pool, "OMEGA", authors, deliverytest.SourceOf(ruleOfJob(omegaJob), nil), deliverytest.SourceOf(ruleOfJob(opsJob), new(alphaOps)), eventsSource)
+	r.settle(t)
+	show := func(xmin string) string { return "written by " + xmin }
+	if differ := sameValues(r.xmins(t, dayRowXmins), rows, show); len(differ) > 0 {
+		t.Errorf("the move wrote or deleted day rows, first ones:\n\t%s", strings.Join(differ, "\n\t"))
+	}
+	if differ := sameValues(r.xmins(t, memberXmins), members, show); len(differ) > 0 {
+		t.Errorf("the move wrote or deleted members, first ones:\n\t%s", strings.Join(differ, "\n\t"))
+	}
+	repos, err := DeployReposIn(t.Context(), r.database.Pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := repos.Owned("OMEGA"); !slices.Equal(got, []string{alphaOps, omegaApp}) {
+		t.Errorf("after the move OMEGA's sources stand recorded under %v, want %s and %s", got, alphaOps, omegaApp)
+	}
+	check("after the move", "OMEGA", "ALPHA", map[string]defaultTally{"ALPHA": {n: 1, via: 1}, "OMEGA": {n: 2, via: 2}})
+}
+
+// A move of the default repository a source naming no repository reads (dispatch://INFRA-978, R12
+// and R14; plan T19 path 1): over the three-source history, ALPHA's first source names none, so it
+// reads ALPHA's default. That default moves to acme/alpha-next and back once, so the rows of each
+// stand built under its rule, and then again: each move is a selection the pass records, with the
+// published default, and writes and deletes no day row and no member, and ALPHA's deploy-frequency
+// counts acme/alpha-next's 4001 and 4002 with acme/alpha-ops' 2001 while its default is
+// acme/alpha-next, and acme/alpha-app's 1001 with 2001 otherwise, each through its repository. Red
+// where the repository the source leaves loses its rows, and the one it reads builds them again.
+func TestADefaultMoveUnderASourceNamingNoRepositoryWritesNoDayRow(t *testing.T) {
+	t.Parallel()
+	r := newRefresherRig(t)
+	r.seedSources(t)
+	r.settle(t)
+	move := func(repo string) {
+		t.Helper()
+		r.exec(t, "move ALPHA's default repository", `update projects set default_repo = $1 where key = 'ALPHA'`, repo)
+		r.settle(t)
+		if published, err := PublishedDefaultIn(t.Context(), r.database.Pool, "ALPHA"); err != nil || published != repo {
+			t.Fatalf("ALPHA publishes %q as its default (%v), want %s", published, err, repo)
+		}
+	}
+	move(alphaNext)
+	move(alphaApp)
+	show := func(xmin string) string { return "written by " + xmin }
+	for _, step := range []struct {
+		repo    string
+		deploys defaultTally
+		owned   []string
+	}{
+		{alphaNext, defaultTally{n: 3, via: 3}, []string{alphaNext, alphaOps}},
+		{alphaApp, defaultTally{n: 2, via: 2}, []string{alphaApp, alphaOps}},
+	} {
+		rows, members := r.xmins(t, dayRowXmins), r.xmins(t, memberXmins)
+		move(step.repo)
+		if differ := sameValues(r.xmins(t, dayRowXmins), rows, show); len(differ) > 0 {
+			t.Errorf("the move to %s wrote or deleted day rows, first ones:\n\t%s", step.repo, strings.Join(differ, "\n\t"))
+		}
+		if differ := sameValues(r.xmins(t, memberXmins), members, show); len(differ) > 0 {
+			t.Errorf("the move to %s wrote or deleted members, first ones:\n\t%s", step.repo, strings.Join(differ, "\n\t"))
+		}
+		repos, err := DeployReposIn(t.Context(), r.database.Pool)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := repos.Owned("ALPHA"); !slices.Equal(got, step.owned) {
+			t.Errorf("after the move to %s ALPHA's sources stand recorded under %v, want %v", step.repo, got, step.owned)
+		}
+		if got := r.deploysOn(t, "ALPHA", sourcesDay); got != step.deploys {
+			t.Errorf("after the move to %s ALPHA's deploy-frequency counts %d deploys, %d through a repository; want %d and %d",
+				step.repo, got.n, got.via, step.deploys.n, step.deploys.via)
+		}
+	}
+}
+
+// opsSources is ALPHA's two GitHub sources of the three-source history with its second on repo:
+// the first names no repository (acme/alpha-app, its default, under alphaJob), the second names
+// repo, under opsJob.
+func opsSources(repo string) []delivery.SourceInput {
+	return []delivery.SourceInput{deliverytest.SourceOf(ruleOfJob(alphaJob), nil), deliverytest.SourceOf(ruleOfJob(opsJob), new(repo))}
+}
+
+// seedOpsMoveBack writes the three-source history (seedSources) with an issue of OMEGA's that owns
+// acme/alpha-ops, OMEGA-2, and a pull request of acme/alpha-ops that names it, merged on sourcesDay
+// before acme/alpha-ops' deploy 2001, which ships it, so 2001 counts for OMEGA in its own rows under
+// acme/alpha-ops' deploy repository (a deploy counts for the projects of the pull requests it ships,
+// dispatch://INFRA-978 A8), a repository whose source is ALPHA's; and a posted deploy of OMEGA, so
+// OMEGA's read selects its events repository; and builds it whole. ALPHA's second source is then
+// saved on acme/alpha-next, whose first rule builds its rows in the commit that records it, and the
+// refresher settles; and it is saved back on acme/alpha-ops, which kept its rows and its rule, and
+// which no pass has read yet.
+func (r *refresherRig) seedOpsMoveBack(t *testing.T) {
+	t.Helper()
+	r.seedSources(t)
+	r.exec(t, "OMEGA's issue of acme/alpha-ops", `insert into issues (key, project_key, number, title, status, rank, repo, created_by, created_at)
+		values ('OMEGA-2', 'OMEGA', 2, 'Omega work shipped through ops', 'in_progress', '00000002', $1, '{"kind":"system","id":"sources-test"}', $2)`,
+		alphaOps, sourcesDay.AddDate(0, 0, -1))
+	if err := delivery.UpsertPullRequest(t.Context(), r.database.Pool, delivery.DeliveryPullRequest{
+		Repo: alphaOps, Number: 7, Title: "OMEGA-2: ship through ops", URL: "https://github.com/" + alphaOps + "/pull/7",
+		Author: "dev-ana", CreatedAt: new(sourcesDay.Add(8 * time.Hour)), MergedAt: new(sourcesDay.Add(9 * time.Hour)), Sessions: []string{},
+		Attribution: &delivery.AttributionInputs{TitleKeys: []string{"OMEGA-2"}, CitedIssues: []string{}, BranchKeys: []string{}, CommitKeys: []string{}},
+	}); err != nil {
+		t.Fatalf("write OMEGA-2's pull request of %s: %v", alphaOps, err)
+	}
+	r.post(t, "OMEGA", "release-1", sourcesDay.Add(15*time.Hour))
+	r.settle(t)
+	r.expectBuilt(t, "the first whole build", refresherToday)
+	putSources(t, r.database.Pool, "ALPHA", []string{"dev-ana"}, opsSources(alphaNext)...)
+	r.settle(t)
+	if marks := r.staleMarks(t); len(marks) != 0 {
+		t.Fatalf("the passes after ALPHA's move to %s settled with the cuts %v stale", alphaNext, marks)
+	}
+	putSources(t, r.database.Pool, "ALPHA", []string{"dev-ana"}, opsSources(alphaOps)...)
+}
+
+// sourceState is what the evals' reads select as the store holds it: the deploy repositories
+// recorded with the rows (DeployReposIn) and the owner keys each project reads, with whether
+// through the repository (readOwnerPairs).
+type sourceState struct {
+	repos  *DeployRepos
+	owners map[string]map[string]bool
+}
+
+// sourceStateNow is the store's sourceState.
+func (r *refresherRig) sourceStateNow(t *testing.T) sourceState {
+	t.Helper()
+	repos, err := DeployReposIn(t.Context(), r.database.Pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	owners, err := readOwnerPairs(t.Context(), r.database.Pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return sourceState{repos: repos, owners: owners}
+}
+
+// marksOfSourceMove is the marks a commit that moves what the evals' reads select from before to
+// after names, by cut, read from every stored day row as the commit reads them, fresh being the
+// repositories whose every row the commit wrote (a repository's first rule or first runs): of the
+// cuts of each owner key a project gains, loses or reads otherwise, those marksOfMove names, but
+// for a fresh repository's source key; of each cut that holds a row of a deploy repository a
+// project's read gains or loses (DeployRepos.Of, a fresh one aside) among the rows the project
+// reads (its own and its owner keys'), its eval of each such row's slug that reads the deploy
+// repository; and, of each project either of those marks, its failure evals in each cut their
+// rows stand in. Each in byte order, and no cut that holds no row the commit moved.
+func (r *refresherRig) marksOfSourceMove(t *testing.T, before, after sourceState, fresh ...string) map[staleCut][]string {
+	t.Helper()
+	skip := func(pairs map[string]map[string]bool) map[string]map[string]bool {
+		kept := map[string]map[string]bool{}
+		for project, owners := range pairs {
+			kept[project] = maps.Clone(owners)
+			for _, repo := range fresh {
+				delete(kept[project], sourceKey(repo))
+			}
+		}
+		return kept
+	}
+	named := map[staleCut]map[string]bool{}
+	touched := map[string]bool{}
+	note := func(cut staleCut, evalID string) {
+		if named[cut] == nil {
+			named[cut] = map[string]bool{}
+		}
+		named[cut][evalID] = true
+		touched[cut.project] = true
+	}
+	for cut, evals := range r.marksOfMove(t, nil, skip(before.owners), skip(after.owners)) {
+		for _, evalID := range evals {
+			note(cut, evalID)
+		}
+	}
+	projects, err := r.registry.Projects(t.Context())
+	if err != nil {
+		t.Fatalf("read the projects: %v", err)
+	}
+	rows := r.dayRows(t)
+	for _, project := range projects {
+		moved := map[string]bool{}
+		for _, repo := range slices.Concat(before.repos.Of(project), after.repos.Of(project)) {
+			moved[repo] = slices.Contains(before.repos.Of(project), repo) != slices.Contains(after.repos.Of(project), repo) && !slices.Contains(fresh, repo)
+		}
+		keys := map[string]bool{project: true}
+		for _, owners := range []map[string]bool{before.owners[project], after.owners[project]} {
+			for owner := range owners {
+				keys[owner] = true
+			}
+		}
+		for _, row := range rows {
+			slug := slugOf(row.ProjectKey, row.EvalID)
+			if keys[row.ProjectKey] && moved[row.DeployRepo] && row.Repo != legionfacts.DefaultRepo && readsDeployRepo(slug) {
+				note(staleCut{project: project, repo: row.Repo}, EvalID(project, slug))
+			}
+		}
+	}
+	for _, row := range rows {
+		if touched[row.ProjectKey] && slices.Contains(failureDaySlugs, slugOf(row.ProjectKey, row.EvalID)) {
+			note(staleCut{project: row.ProjectKey, repo: row.Repo}, row.EvalID)
+		}
+	}
+	marks := make(map[staleCut][]string, len(named))
+	for cut, evals := range named {
+		marks[cut] = slices.Sorted(maps.Keys(evals))
+	}
+	return marks
+}
+
+// expectSelectionCommit checks that the page that published a source move wrote the rules of repos
+// it records (eval_days_rules), every stale mark and every stored figure written since figures
+// (figureXmins, read before the page) in the transaction that moved the refresher's change cursor:
+// the page's one commit (commitPage), so a read sees all of them or none. It answers how many
+// stored figures that transaction wrote.
+func (r *refresherRig) expectSelectionCommit(t *testing.T, what string, figures map[string]string, repos ...string) int {
+	t.Helper()
+	commit := r.xmins(t, `select name, xmin::text from eval_days_cursor where name = '`+changesCursor+`'`)[changesCursor]
+	if commit == "" {
+		t.Fatalf("%s: no page moved the refresher's change cursor", what)
+	}
+	for name, xmin := range r.xmins(t, `select 'the rule of ' || repo, xmin::text from eval_days_rules where repo = any('{`+strings.Join(repos, ",")+`}')
+		union all
+		select 'the mark of ' || project_key || '''s cut ' || quote_literal(repo), xmin::text from eval_figure_cuts_stale`) {
+		if xmin != commit {
+			t.Errorf("%s: %s was written by transaction %s, and the page's commit is %s", what, name, xmin, commit)
+		}
+	}
+	written := 0
+	for name, xmin := range r.xmins(t, figureXmins) {
+		if figures[name] == xmin {
+			continue
+		}
+		written++
+		if xmin != commit {
+			t.Errorf("%s: the stored figure %s was written by transaction %s, and the page's commit is %s", what, name, xmin, commit)
+		}
+	}
+	return written
+}
+
+// publishOpsMoveBack writes seedOpsMoveBack's history and has a page alone publish the move of
+// ALPHA's source back to acme/alpha-ops (pageAlone), the pass stopping before the rest of its work,
+// so the refold of the cuts the move marks has not begun. It answers the marks that move calls for
+// (marksOfSourceMove, read from the rows around the page), and checks the fixture: the move moves
+// OMEGA's own rows of acme/alpha-ops, in its own cut and in its cut of acme/alpha-ops, a cut of no
+// repository OMEGA's own sources read, and ALPHA's cut of acme/alpha-ops, whose source key it
+// reads again; and it moves no other cut of OMEGA's, its events repository's read standing as it
+// stood, and not ALPHA's cut of acme/alpha-app.
+func (r *refresherRig) publishOpsMoveBack(t *testing.T, figures *map[string]string) map[staleCut][]string {
+	t.Helper()
+	r.seedOpsMoveBack(t)
+	before := r.sourceStateNow(t)
+	if figures != nil {
+		*figures = r.xmins(t, figureXmins)
+	}
+	r.pageAlone(t)
+	want := r.marksOfSourceMove(t, before, r.sourceStateNow(t))
+	for _, cut := range []staleCut{{project: "OMEGA"}, {project: "OMEGA", repo: alphaOps}, {project: "ALPHA", repo: alphaOps}} {
+		if len(want[cut]) == 0 {
+			t.Fatalf("the move of ALPHA's source back to %s moves no row of %s's cut %q (%v), and the check needs it", alphaOps, cut.project, cut.repo, want)
+		}
+	}
+	for cut := range want {
+		if cut.project == "OMEGA" && cut.repo != "" && cut.repo != alphaOps || cut == (staleCut{project: "ALPHA", repo: alphaApp}) {
+			t.Fatalf("the move of ALPHA's source back to %s moves rows of %s's cut %q (%v), and the check needs it untouched", alphaOps, cut.project, cut.repo, want)
+		}
+	}
+	return want
+}
+
+// TestASourceMoveMarksOnlyTheCutsItTouches (dispatch://INFRA-978, R14; plan T19 path 3): over
+// seedOpsMoveBack's history, ALPHA's second source moved to acme/alpha-next and is saved back on
+// acme/alpha-ops, and a page alone publishes the move (publishOpsMoveBack). Its commit marks stale
+// the cuts the move moves rows of and no other, each naming the evals whose rows it moved there
+// (marksOfSourceMove), with its first paint folded in the same commit: ALPHA's cuts of the source
+// keys it reads again and no longer, and OMEGA's own cut and its cut of acme/alpha-ops, whose rows
+// of 2001, which ships OMEGA-2's pull request, OMEGA's read of the deploy evals selects again,
+// though no source of OMEGA's reads acme/alpha-ops: OMEGA's events repository and acme/omega-app
+// move nothing. The rules, every mark and every stored figure the page wrote are of the transaction
+// that moved the refresher's change cursor (expectSelectionCommit), and it wrote some figures.
+// Every stored figure the move leaves other than the fold of the rows that stand is of an eval a
+// mark names in its cut. A page that then reads a posted deploy of OMEGA, whose events repository
+// its read selects before and after, marks nothing. Once the refresher settles no cut is marked
+// and the stored figures are the fold of the rows that stand. Red where the page that records a
+// source move marks no cut (the union cuts `*` then stand folded over the repositories the read
+// selected before the move), where it marks the cuts of the requesting project alone, or every
+// cut, and where its marks or first paints land in a transaction of their own.
+func TestASourceMoveMarksOnlyTheCutsItTouches(t *testing.T) {
+	t.Parallel()
+	r := newRefresherRig(t)
+	var figures map[string]string
+	want := r.publishOpsMoveBack(t, &figures)
+	what := "the page that published ALPHA's move back to " + alphaOps
+	if written := r.expectSelectionCommit(t, what, figures, alphaOps, alphaNext); written == 0 {
+		t.Errorf("%s wrote no stored figure, and the check needs the first paints its commit folds", what)
+	}
+	r.expectMarks(t, what, want)
+	marked := markedEvals(r.staleMarks(t))
+	for cut, evals := range staleFiguresOf(t, r.storedFigures(t), r.truthFigures(t)) {
+		for _, evalID := range slices.Sorted(maps.Keys(evals)) {
+			if !slices.Contains(marked[cut], evalID) {
+				t.Errorf("the move left %s's stored figures of %s's cut %q other than the fold of the rows that stand, and no mark names it", evalID, cut.project, cut.repo)
+			}
+		}
+	}
+	r.settle(t)
+	if marks := r.staleMarks(t); len(marks) != 0 {
+		t.Errorf("the passes after the move settled with the cuts %v stale", marks)
+	}
+	r.post(t, "OMEGA", "release-2", refresherToday.Add(2*time.Hour))
+	r.pageAlone(t)
+	if marks := r.staleMarks(t); len(marks) != 0 {
+		t.Errorf("the page that read a posted deploy of OMEGA, whose events repository its read selects before and after, marked the cuts %v", marks)
+	}
+	r.settle(t)
+	expectTruth(t, "once the refresher settled", r.storedFigures(t), r.truthFigures(t))
+}
+
+// TestAReadOfAMovedSourcesCutBeforeItsRefoldFoldsTheDayRows (dispatch://INFRA-978, R14; plan T19
+// path 3): right after the page that publishes the move of ALPHA's source back to acme/alpha-ops
+// (publishOpsMoveBack), the refold of the cuts it marks not begun, a read of the past (pastShapes)
+// of each touched cut states each eval the move moved there from the fold of its day rows, and a
+// first paint's read (moveShapes) states it from the stored figures its commit folded, each the
+// fold of the rows that stand; a cut the move does not touch (OMEGA's acme/omega-app, ALPHA's
+// acme/alpha-app) states every eval from the stored figures throughout. Red where the move leaves
+// the cuts unmarked: a read of the past then states OMEGA's deploy evals, and ALPHA's, from union
+// cuts still folded over the repositories the read selected before the move.
+func TestAReadOfAMovedSourcesCutBeforeItsRefoldFoldsTheDayRows(t *testing.T) {
+	t.Parallel()
+	r := newRefresherRig(t)
+	want := r.publishOpsMoveBack(t, nil)
+	never, always := func(staleCut) bool { return false }, func(staleCut) bool { return true }
+	r.expectReads(t, "right after the page that published the move, of the past", want, readsOf(pastShapes()), never)
+	r.expectReads(t, "right after the page that published the move, over a first paint", want, readsOf(moveShapes()), always)
+	untouched := map[staleCut][]string{{project: "OMEGA", repo: omegaApp}: nil, {project: "ALPHA", repo: alphaApp}: nil}
+	r.expectReads(t, "right after the page that published the move, of a cut it does not touch", untouched, readsOf(slices.Concat(moveShapes(), pastShapes())), always)
+}
+
+// TestTheRefoldOfAMovedSourceEndsWithEveryCutsFiguresEqualToItsDayRows (dispatch://INFRA-978,
+// R14; plan T19 path 3): after the page that publishes the move of ALPHA's source back to
+// acme/alpha-ops (publishOpsMoveBack), with batches of one end day (refresherRig.batch) and every
+// pass run under an owed wake (owedPass), so each pass folds one batch, the refold of the cuts the
+// move marked goes on pass after pass, each first paint read from the stored figures throughout,
+// until no mark is left; then the stored figures of every cut, the union cuts `*` among them, are
+// the fold of the rows that stand, and every read of each cut the move touched, of a first paint
+// and of the past, states every eval from them. Red where the refold of a cut leaves its union cut
+// out, or the marks are cleared before it is folded.
+func TestTheRefoldOfAMovedSourceEndsWithEveryCutsFiguresEqualToItsDayRows(t *testing.T) {
+	t.Parallel()
+	r := newRefresherRig(t)
+	want := r.publishOpsMoveBack(t, nil)
+	r.batch = 1
+	always := func(staleCut) bool { return true }
+	for passes := 0; len(r.staleMarks(t)) > 0; passes++ {
+		if passes > 1000 {
+			t.Fatalf("%d passes left the cuts %v stale", passes, r.staleMarks(t))
+		}
+		r.expectReads(t, fmt.Sprintf("%d passes after the move's commit, over a first paint", passes), want, readsOf(moveShapes()), always)
+		r.owedPass(t, &gapBatch{})
+	}
+	expectTruth(t, "once the refold of the move was done", r.storedFigures(t), r.truthFigures(t))
+	r.expectReads(t, "once the refold of the move was done", want, readsOf(slices.Concat(moveShapes(), pastShapes())), always)
+}
+
+// TestTheFirstPaintOfAMovedSourceIsFoldedInItsCommit (dispatch://INFRA-978, R14; plan T19 path
+// 3): the commit of the page that publishes the move of ALPHA's source back to acme/alpha-ops
+// (publishOpsMoveBack) folds the first paint of every cut it marks, in the transaction that moves
+// the refresher's change cursor (expectSelectionCommit), with no later batch of the refold: every
+// stored row of each first paint is the fold of the rows that stand under the new selection
+// (expectPaintTruth), and every read a first paint of each cut names (firstPaintReads, and
+// windowBackReads one window back) states every eval from the stored figures, each the fold of its
+// day rows. Red where the commit folds no first paint, or folds it in a transaction of its own:
+// the reads then fold the day rows, or, served the stored figures anyway, state the union cuts as
+// they were folded before the move.
+func TestTheFirstPaintOfAMovedSourceIsFoldedInItsCommit(t *testing.T) {
+	t.Parallel()
+	r := newRefresherRig(t)
+	var figures map[string]string
+	want := r.publishOpsMoveBack(t, &figures)
+	through := refresherToday.AddDate(0, 0, FigureLead)
+	r.expectSelectionCommit(t, "the page that published the move", figures, alphaOps, alphaNext)
+	r.expectMarks(t, "the page that published the move", want)
+	expectPaintTruth(t, "right after the move's commit", through, want, r.storedFigures(t), r.truthFigures(t))
+	r.expectReads(t, "right after the move's commit", want, append(firstPaintReads(through), windowBackReads(through)...), func(staleCut) bool { return true })
 }

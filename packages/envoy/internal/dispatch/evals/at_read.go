@@ -51,7 +51,7 @@ const (
 	// each counted for the projects of the deploy it is (atReadDeploys).
 	atReadPushes
 	// atReadFailures is the record of deploys and failures (production_events) of the project, from
-	// its first day on (readFailureRecord), whose rows the refresher's builder builds
+	// its first day on (readFailureRecords), whose rows the refresher's builder builds
 	// (failureRecord.day: measures.ChangeFailRateDay, RecoveryDay and ReworkRateDay).
 	atReadFailures
 )
@@ -198,7 +198,7 @@ func (s *Store) ComputeAtRead(ctx context.Context, q delivery.Querier, read AtRe
 	if len(repos) == 0 {
 		repos = []string{""}
 	}
-	rows, err := failureRowsAtRead(ctx, q, failures, repos, ranges, days, read.Now)
+	rows, err := failureRowsAtRead(ctx, q, s.attributor, failures, repos, ranges, days, read.Now)
 	if err != nil || len(delivered) == 0 {
 		return rows, err
 	}
@@ -376,12 +376,12 @@ func inRanges(rows []WindowRow, ranges []Range, day time.Time, row WindowRow) []
 // that ranges hold, as the refresher's whole write of a project builds them
 // (refresh.writeFailures): each project's failure measures as its delivery settings turn them on
 // (failureProjectOf), none where they are off; its record read once, over the deploys of every
-// project (readFailureRecord); and each day from its first day through the UTC day of now built
+// project (readFailureRecords); and each day from its first day through the UTC day of now built
 // (failureRecord.day). They are the project's own rows, which no owner key holds and no deploy
 // repository keys, and which the project reads with none of them counted through a repository
 // (viaAsRead: its own key's via is false). Each row kept is of an eval entries names and of one of
 // repos ("" for the project's own row).
-func failureRowsAtRead(ctx context.Context, q delivery.Querier, entries []Entry, repos []string, ranges []Range, days []time.Time, now time.Time) ([]WindowRow, error) {
+func failureRowsAtRead(ctx context.Context, q delivery.Querier, attributor *delivery.Attributor, entries []Entry, repos []string, ranges []Range, days []time.Time, now time.Time) ([]WindowRow, error) {
 	if len(entries) == 0 {
 		return nil, nil
 	}
@@ -408,10 +408,11 @@ func failureRowsAtRead(ctx context.Context, q delivery.Querier, entries []Entry,
 		if !on || !slices.Contains(projects, project.project) {
 			continue
 		}
-		record, err := readFailureRecord(ctx, q, project, every)
+		read, err := readFailureRecords(ctx, q, attributor, []failureProject{project}, every, nil, nil)
 		if err != nil {
 			return nil, err
 		}
+		record := read.records[0]
 		for _, day := range days {
 			if day.After(today) {
 				break

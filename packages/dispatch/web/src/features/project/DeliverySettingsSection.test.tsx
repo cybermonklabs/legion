@@ -292,8 +292,9 @@ test("with delivery off Save keeps the stored fields", async () => {
     await user.click(screen.getByRole("button", { name: SAVE }));
     await waitFor(() => expect(put).toHaveBeenCalledTimes(1));
     expect(put.mock.calls[0]?.[0]).toBe(PROJECT);
-    // Every stored field goes back as stored, and no target: each eval keeps its own.
+    // The stored fields, including goals hidden while delivery is off, go back unchanged.
     expect(sentBody(put)).toEqual({
+      ...stored,
       code_groups: [],
       delivery: false,
       excluded_repos: ["acme/dojo", "acme/widgets-smoke"],
@@ -1496,6 +1497,47 @@ test("a refusal names its group", async () => {
     await waitFor(() => expect(put).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(screen.getByRole("alert").textContent).toBe(refused));
     expect(groupField(2, "Name").value).toBe(long);
+  } finally {
+    cleanup();
+    get.mockRestore();
+    put.mockRestore();
+  }
+});
+
+test("a save sends back each field of the record it read that the form does not edit, one it does not know included", async () => {
+  const user = userEvent.setup();
+  // A newer build adds `future_field` to the record: this build's editor does not know it, so a
+  // save — delivery on or delivery off — sends it back unchanged rather than dropping it.
+  const withUnknown = { ...record, future_field: ["x"] };
+  const later = { ...withUnknown, updated_at: "2026-11-21T09:00:00Z" };
+  const get = spyOn(api, "getProjectDeliverySettings")
+    .mockResolvedValueOnce(withUnknown)
+    .mockResolvedValue(later);
+  const put = spyOn(api, "putProjectDeliverySettings").mockResolvedValue(later);
+
+  try {
+    renderSection();
+    expect(await screen.findByRole("switch", { name: "Delivery" })).toBeChecked();
+
+    await user.click(screen.getByRole("button", { name: SAVE }));
+    await waitFor(() => expect(put).toHaveBeenCalledTimes(1));
+    const unedited = {
+      future_field: ["x"],
+      default_repo: withUnknown.default_repo,
+      project: withUnknown.project,
+      updated_by: withUnknown.updated_by,
+    };
+    expect(sentBody(put, 0)).toMatchObject({ ...unedited, updated_at: withUnknown.updated_at });
+    expect(await screen.findByRole("status")).toHaveTextContent("Delivery settings saved");
+
+    await user.click(deliverySwitch());
+    await user.click(screen.getByRole("button", { name: SAVE }));
+    await waitFor(() => expect(put).toHaveBeenCalledTimes(2));
+    expect(sentBody(put, 1)).toMatchObject({
+      ...unedited,
+      delivery: false,
+      targets: later.targets,
+    });
   } finally {
     cleanup();
     get.mockRestore();

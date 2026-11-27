@@ -16,7 +16,6 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -95,7 +94,12 @@ type Written struct {
 // MaxRefusedRows row errors and counts the rest (rowsRefusal), so its answer is bounded whatever
 // the body. The same transaction folds again the stored figures of the days whose rows it moved,
 // its zero rows' among them, where BuiltBy writes them (figures.go), under the eval's lock it
-// holds.
+// holds, those days each run apart (daySpans), where they are at most inlineFoldDaySeries days and
+// series (daySeries). A write past that, such as a first reading far in the past, whose zero rows
+// reach every day since, folds of them only the first paint of each cut its rows reach, and marks
+// those cuts stale for the refresher's refold, which folds the rest in budgeted batches
+// (foldWrittenPaints): a read of the eval folds its day rows meanwhile wherever no stored row it
+// would read is folded again, so every read answers what it answers after the refold.
 func (s *Store) WriteReadings(ctx context.Context, batch Batch) (Written, error) {
 	if !slugPattern.MatchString(batch.Slug) {
 		return Written{}, refusal(CodeSlugInvalid, "slug %q is not lower-case letters, digits and hyphens starting with a letter or a digit", batch.Slug)
@@ -155,17 +159,20 @@ func (s *Store) WriteReadings(ctx context.Context, batch Batch) (Written, error)
 			if err != nil {
 				return err
 			}
-			// spans is the days whose figures the write may have moved: those of the zero rows its day
-			// rows leave owed, which writeDays writes, and the days of its readings and of those they
-			// replace.
-			spans := map[string]daySpan{}
+			// spans is the days whose figures the write may have moved, each run apart: those of the
+			// zero rows its day rows leave owed and of the rows a correction empties, which writeDays
+			// writes and deletes, and the day of each of its readings and of those they replace;
+			// repos is the repository of each row they count in, the project's own ("") among them.
+			spans, repos := daySpans{}, []string{""}
 			if err := writeDays(ctx, w, definition, byName, readings, folded, batch.BuiltBy, spans); err != nil {
 				return err
 			}
 			for _, reading := range slices.Concat(readings, folded) {
-				if reading.Value != nil {
-					day := measures.Midnight(reading.MeasuredAt)
-					addSpan(spans, evalID, day, day)
+				if keys, _, ok := dayKeysOf(reading, -1); ok {
+					spans.add(evalID, keys[0].day, keys[0].day)
+					for _, key := range keys[1:] {
+						repos = append(repos, key.repo)
+					}
 				}
 			}
 			if len(spans) > 0 {
@@ -177,9 +184,16 @@ func (s *Store) WriteReadings(ctx context.Context, batch Batch) (Written, error)
 				if err != nil {
 					return err
 				}
-				if ok {
-					entry := Entry{Definition: definition, Series: slices.Collect(maps.Values(byName))}
-					if err := refoldFigures(ctx, w.Tx, scope, map[string]Entry{evalID: entry}, spans); err != nil {
+				entry := Entry{Definition: definition, Series: slices.Collect(maps.Values(byName))}
+				switch {
+				case !ok:
+				case daySeries(spans, entry, scope.through) > inlineFoldDaySeries:
+					slices.Sort(repos)
+					if err := foldWrittenPaints(ctx, w.Tx, scope, entry, slices.Compact(repos)); err != nil {
+						return err
+					}
+				default:
+					if err := refoldFigures(ctx, w.Tx, scope, map[string]Entry{evalID: entry}, spans.sets()...); err != nil {
 						return err
 					}
 				}
@@ -192,6 +206,37 @@ func (s *Store) WriteReadings(ctx context.Context, batch Batch) (Written, error)
 		return Written{}, err
 	}
 	return written, nil
+}
+
+// inlineFoldDaySeries is the most day and series pairs (daySeries) whose stored figures a readings
+// write folds in its own transaction, under the eval's lock and with a transaction id every reader
+// of the event log waits for (events.Horizon); a write whose days pass it folds the first paint of
+// each cut it writes and leaves the rest to the refresher's refold, in budgeted batches
+// (foldWrittenPaints). It holds that fold to about refoldBatchBudget's 250 ms at the largest eval
+// the routes take (MaxEvalSeries), whose fold costs the most for each day and series: on the build
+// farm a first reading of each of 234 series folded 1, 7, 30 and 120 days in 8, 41, 342 and 2,398
+// ms (49 µs a day and series at 30 days, 85 at 120), and one of 30 series 120 and 365 days in 70
+// and 204 ms (19 µs); so 5,000 pairs are 21 days of 234 series, and 166 of 30. The most a write
+// may owe, a first reading of each of 234 series on MeasuredAtFloor, is about 162,000 pairs.
+const inlineFoldDaySeries = 5000
+
+// daySeries is how many day and series pairs of entry's eval a fold of its stored figures over
+// spans folds: each day of its runs before through, the last end day the figures are folded
+// through (figureScope), past which no figure is written, times the eval's listed series, each of
+// which every range and day of it folds.
+func daySeries(spans daySpans, entry Entry, through time.Time) int {
+	listed, _ := listedAndHeadline(entry)
+	days := 0
+	for _, run := range spans[entry.Definition.EvalID] {
+		end := run.last.AddDate(0, 0, 1)
+		if end.After(through) {
+			end = through
+		}
+		if end.After(run.first) {
+			days += rangeDays(Range{From: run.first, To: end})
+		}
+	}
+	return days * len(listed)
 }
 
 // foldedReadings is each of replaced, readings of the eval evalID, that its day rows hold: one

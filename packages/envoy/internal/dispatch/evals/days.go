@@ -185,9 +185,9 @@ func dayKeysOf(reading Reading, row int) ([]dayKey, dayPart, bool) {
 // would leave holding more than MaxDaySamples values where it held fewer
 // (CodeReadingDaySamplesLimit); nothing is written then. Then it deletes the rows a correction
 // left with no value that no zero row stands for (dropEmptiedRows), and last it writes the zero
-// rows the rows it touched leave owed (writeLoggedZeros) and adds the days it wrote of them to
-// spans.
-func writeDays(ctx context.Context, w *writeTx, definition Definition, series map[string]Series, added, removed []Reading, builtBy string, spans map[string]daySpan) error {
+// rows the rows it touched leave owed (writeLoggedZeros), and it adds to spans each day it deleted
+// and each run of days it wrote zero rows on, apart (daySpans).
+func writeDays(ctx context.Context, w *writeTx, definition Definition, series map[string]Series, added, removed []Reading, builtBy string, spans daySpans) error {
 	// parts is each touched row's parts of the write's own readings, in the batch's order; refold
 	// holds each row a replaced reading counted in; first is the first row of the batch that
 	// touches each row, which answers for a value of that row the readings stored before the
@@ -349,10 +349,11 @@ func writeDays(ctx context.Context, w *writeTx, definition Definition, series ma
 // them: of each series keys touch (writeDays' keys, in their byte order), the zero row of every
 // day after each of its stored all-repositories rows from the first day the write touched of it
 // on, up to the series' next stored row, or through today after its newest (loggedZeros), and it
-// adds the days it wrote to spans. So a first reading of a series leaves it a row on every day from
-// the reading's through today, and a reading before a series' first day one on every day up to that
-// day, in the transaction that stores the reading: a view of the eval is sent the one change of the
-// write's day rows (each statement widens the transaction's one eval_days change, migration
+// adds each run of days it wrote to spans apart (daySpans), so a fold of their figures reads no day
+// between two of them. So a first reading of a series leaves it a row on every day from the
+// reading's through today, and a reading before a series' first day one on every day up to that
+// day, in the transaction that stores the reading: a view of the eval is sent the one change of
+// the write's day rows (each statement widens the transaction's one eval_days change, migration
 // 20261117100014), and never the days after a reading without their rows, which no whole fill
 // leaves. A gap before the first day the write touched of a series was owed before the write, and
 // is left to the fill.
@@ -364,7 +365,7 @@ func writeDays(ctx context.Context, w *writeTx, definition Definition, series ma
 // in the keys' order, each inserting its rows in the byte order of their keys, after every row
 // writeDays inserted and locked: every writer of the eval's rows holds its lock, so none takes them
 // beside this one.
-func writeLoggedZeros(ctx context.Context, w *writeTx, definition Definition, keys []dayKey, builtBy string, spans map[string]daySpan) error {
+func writeLoggedZeros(ctx context.Context, w *writeTx, definition Definition, keys []dayKey, builtBy string, spans daySpans) error {
 	// firsts is each touched series' first all-repositories key, the earliest day the write touched
 	// of it: keys are in their byte order, and every reading counts in its project's row
 	// (dayKeysOf).
@@ -414,9 +415,9 @@ func writeLoggedZeros(ctx context.Context, w *writeTx, definition Definition, ke
 // Only a readings correction empties a row: the zero fills write rows of the project's own alone,
 // and a register write moves a listing, not a value. The rows go in statements of at most
 // statementBytes of parameters (statementChunks), each deleting rows only this write may write,
-// under the eval's lock; the days it deleted are added to spans, whose figures the write folds
-// again.
-func dropEmptiedRows(ctx context.Context, w *writeTx, definition Definition, keys []dayKey, refold map[dayKey]bool, spans map[string]daySpan) error {
+// under the eval's lock; each day it deleted is added to spans apart (daySpans), whose figures the
+// write folds again.
+func dropEmptiedRows(ctx context.Context, w *writeTx, definition Definition, keys []dayKey, refold map[dayKey]bool, spans daySpans) error {
 	// names is each series a project's row of which the write refolded, as keys are in the byte
 	// order of their keys: a series' project rows come before its repositories'. repoKeys is
 	// each repository's row it refolded.
@@ -434,7 +435,7 @@ func dropEmptiedRows(ctx context.Context, w *writeTx, definition Definition, key
 	widen := func(rows pgx.Rows) error {
 		var day time.Time
 		_, err := pgx.ForEachRow(rows, []any{&day}, func() error {
-			addSpan(spans, definition.EvalID, measures.Midnight(day), measures.Midnight(day))
+			spans.add(definition.EvalID, measures.Midnight(day), measures.Midnight(day))
 			return nil
 		})
 		if err != nil {
@@ -499,9 +500,10 @@ func dropEmptiedRows(ctx context.Context, w *writeTx, definition Definition, key
 // the listing of the series' newest row (listed). The rows go in the byte order of their keys
 // (eval, series, day), the order every statement that inserts or locks one eval's day rows takes
 // them in (compareDayKeys); left to the database's collation, a series `latency` and a series
-// `Queue` would be taken in the other order. It answers, of each eval it wrote rows of, the first
-// and the last day it wrote and how many rows, so the most rows one write owes come back as three
-// numbers.
+// `Queue` would be taken in the other order. It answers, of each eval it wrote rows of, each run of
+// consecutive days it wrote rows on, by its first and its last day, and how many rows it wrote on
+// them, so a fold of their figures reads no day between two runs (daySpans), and the most rows one
+// write owes, a run of days every series of the eval shares, come back as three numbers.
 func loggedZeros(stored string) string {
 	return `
 		with written as (
@@ -514,12 +516,14 @@ func loggedZeros(stored string) string {
 			on conflict (project_key, eval_id, writer, deploy_repo, series, repo, day) do nothing
 			returning eval_id, day
 		)
-		select eval_id, min(day), max(day), count(*) from written group by eval_id`
+		select eval_id, min(day), max(day), count(*)
+		from (select eval_id, day, day - (dense_rank() over (partition by eval_id order by day))::int as run from written) runs
+		group by eval_id, run`
 }
 
-// writeZeroRows sends loggedZeros over stored with args in tx, adds to spans the days it wrote of
-// each eval, and answers how many rows it wrote.
-func writeZeroRows(ctx context.Context, tx pgx.Tx, stored string, spans map[string]daySpan, args ...any) (int64, error) {
+// writeZeroRows sends loggedZeros over stored with args in tx, adds to spans each run of days it
+// wrote of each eval, and answers how many rows it wrote.
+func writeZeroRows(ctx context.Context, tx pgx.Tx, stored string, spans daySpans, args ...any) (int64, error) {
 	rows, err := tx.Query(ctx, loggedZeros(stored), args...)
 	if err != nil {
 		return 0, err
@@ -528,7 +532,7 @@ func writeZeroRows(ctx context.Context, tx pgx.Tx, stored string, spans map[stri
 	var evalID string
 	var first, last time.Time
 	if _, err := pgx.ForEachRow(rows, []any{&evalID, &first, &last, &count}, func() error {
-		addSpan(spans, evalID, measures.Midnight(first), measures.Midnight(last))
+		spans.add(evalID, measures.Midnight(first), measures.Midnight(last))
 		written += count
 		return nil
 	}); err != nil {

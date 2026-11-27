@@ -1,13 +1,13 @@
 kind: Changed
 body: |-
-  Three reads of the Delivery page take their own keys instead of scanning: a session's title is
-  stored in `session_titles` (written by a trigger on `events` and filled at boot) and read by
-  primary key, a run-jobs read names the jobs it reads, and the open-P0 partial index
-  `issues_open_p0` serves the unowned-P0 count and the live hub's read of open P0 issues. The
-  timeline reads each deploy run's production jobs by name and its failed jobs through the new
-  partial index `delivery_run_jobs_failed`, rather than every job of every run. The lease pool
-  holds two more connections, one for the per-issue Legion facts and one for the day-row
-  refresher, whose first pass in a process also seeds every project's evals
-  (`store.LeasePoolSize` 29, with the keyword fill's two, the CI verify loop's one, the boot's
-  parent status fix's one and the reference forms drain's one), so a process opens 120
-  connections at most, and `infra/gcp`'s `dispatchConnectionsPerPod` is 120.
+  The Delivery timeline reads each deploy run's production jobs by name and its failed jobs
+  through the new partial index `delivery_run_jobs_failed`, rather than every job of every run.
+  Every read of the deploy runs' jobs by name, the timeline's and a delivery settings change's
+  rewrite among them, is an index-only read of the new index `delivery_run_jobs_named` (migration
+  `20261117100023`), which keeps a repository's jobs of one name together, rather than a read of a
+  heap page for each run through the primary key. The lease pool holds three more connections,
+  one for the per-issue Legion facts, one for the day-row refresher, whose first pass in a process
+  also seeds every project's evals, and one for the production signals' loop
+  (`store.LeasePoolSize` 30, with the keyword fill's two, the CI verify loop's one, the boot's
+  parent status fix's one and the reference forms drain's one), so a process opens 121
+  connections at most, and `infra/gcp`'s `dispatchConnectionsPerPod` is 121.

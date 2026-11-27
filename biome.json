@@ -13,6 +13,9 @@
       "!!packages/contracts/fixtures/classification",
       "!!packages/contracts/fixtures/daemon-api",
       "!!packages/contracts/fixtures/live",
+      "!!packages/contracts/fixtures/dispatch-frame-property.json",
+      "!!packages/contracts/fixtures/dispatch-frame-verdicts.json",
+      "!!packages/contracts/schemas/dispatch-frame.schema.json",
       "!!packages/dispatch/e2e/__recordings__",
       "!!packages/daemon/internal/runtime/sandbox/testdata/golden",
       "!!packages/envoy/internal/dispatch/pmdoc/testdata",
@@ -23,6 +26,8 @@
       "!!packages/envoy/infra/scripts/testdata",
       "!!packages/envoy/internal/cipher/approval/templates",
       "!!packages/daemon/docker/language-servers/package-lock.json",
+      "!!docs/research/internet-of-cognition/published",
+      "!!docs/research/internet-of-cognition/evidence",
       "!!.legion"
     ]
   },

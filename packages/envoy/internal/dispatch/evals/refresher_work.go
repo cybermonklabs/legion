@@ -45,17 +45,17 @@ import (
 //     that is the first to complete without it, which ships the pull requests merged before the
 //     repository's history began when the run does not (shippedNeighbours: no item records the
 //     deploy of such a pull request).
-//   - settings: a change of a project's delivery settings rewrites, in one transaction, the days
-//     of the delivery and CI evals it moves of each repository whose rule it moved, and of no
-//     other repository, from their first input day on, and begins no walk (settings_rewrite.go:
-//     settingsMoves names what each field of a rule moves and movedDeliveryDays the days it can
-//     move, and the pass finds the change by comparing each repository's rule it reads with the
-//     one the rows stand built under, so one that moves no eval rewrites nothing); a source that
-//     reads another repository builds that repository's days and deletes the old one's in the
-//     page's commit (syncKept), as a move of a project's default repository does for a source
-//     naming none, which the pass reads with the settings. The project's failure rows are written
-//     whole, and every failure row of each project whose failure measures are on where the kept
-//     repositories moved (applyFailures, failure_days.go).
+//   - settings: a change of a project's delivery settings rewrites the days of the delivery and CI
+//     evals it moves of each repository whose rule it moved, and of no other repository, from
+//     their first input day on, staged aside in short transactions and published in one with the
+//     rule, and begins no walk (settings_rewrite.go: settingsMoves names what each field of a rule
+//     moves and movedDeliveryDays the days it can move, and the pass finds the change by comparing
+//     each repository's rule it reads with the one the rows stand built under, so one that moves no
+//     eval rewrites nothing). A source move publishes a new selection (syncSettings); the
+//     repository gains rows where it had no rule before (syncKept), staged aside and published by
+//     the page's commit that records its first rule (stageKept). A settings save rewrites that
+//     project's failure rows. Changes to published defaults or source-key readers rewrite the
+//     affected measured projects' failure rows after publication (applyFailures, failure_days.go).
 //   - production_events: a posted deploy of a project whose events repository is read, its
 //     finished day before the change and after it (t_old and t_new), the merge days of the pull
 //     requests it names now and the days eval_day_members holds it and the pull requests it
@@ -318,8 +318,8 @@ func (r *refresh) ruleOf(repo string) (delivery.DeliverySettings, bool) {
 // issues whose repository or parent moved; the projects whose count of unowned P0 issues may have
 // moved; the walks to begin again; the rebuild to begin; whether a change of the delivery settings
 // is among its changes; whether the page records the rules the delivery and CI rows stand built
-// under with its cursors, and whether that record moves what every evals view reads; and the
-// repositories they stand built for, with those they stood built for before.
+// under with its cursors, and whether that record moves the repositories every evals view chooses
+// among; and the repositories they stand built for, with those they stood built for before.
 type pageWork struct {
 	prs  map[string]pullRequestRef
 	runs map[string]runRef
@@ -354,14 +354,21 @@ type pageWork struct {
 	// settingsOf is the projects whose delivery settings the page's changes name (a settings
 	// change's repo), whose failure rows the page writes whole (applyFailures).
 	settingsOf map[string]bool
+	// failureFirstDayOf is the projects for which a settings change moved the effective first
+	// measured day, which the Evals page reads even if the project has no failure day rows.
+	failureFirstDayOf map[string]bool
+	// failureSelection names projects whose source-key readers or published defaults the page
+	// moves. Their failure rows are written against the new selection after it commits.
+	failureSelection []string
 	// record is set where commitPage records refresh.builtUnder in eval_days_rules with the cursors
-	// and the rebuild the page begins (syncSettings, syncKept). settingsApplied is set where the
-	// page read a change of the settings and that record adds or drops a repository, which moves
-	// the repositories a read of the evals takes (DeployReposIn), or none was recorded: the commit
-	// then says that the day rows stand at the settings (markSettingsApplied), which every evals
-	// view is recomputed for, and otherwise says nothing, since no evals view reads what it moves.
-	record          bool
-	settingsApplied bool
+	// and the rebuild the page begins (syncSettings, syncKept). settingsApplied is set where that
+	// record moves the repositories a read of the evals chooses among (DeployReposIn: a source
+	// repository it gains or loses, or the project whose source reads one, which reads its source
+	// key), or none was recorded and the page read a change of the
+	// settings row: the commit then says that the day rows stand at the settings
+	// (markSettingsApplied), which every evals view is recomputed for, and otherwise says nothing,
+	// since no evals view reads what it moves.
+	record, settingsApplied bool
 	// kept is the repositories kept now (keptRepos), nil where they are the ones recorded, and
 	// keptWas those the rows stood built for until then (syncKept): the page builds the days of each
 	// repository that differs between the two in its commit (refresh.writeNamed).
@@ -387,6 +394,7 @@ func newPageWork() *pageWork {
 		prs: map[string]pullRequestRef{}, runs: map[string]runRef{}, left: map[string][]time.Time{}, ran: map[string]time.Time{},
 		prodEvents: map[string]map[string][]time.Time{}, legion: map[string]map[time.Time]bool{}, reparented: map[string]bool{},
 		unowned: map[string]bool{}, restart: map[string]bool{}, settingsOf: map[string]bool{},
+		failureFirstDayOf: map[string]bool{},
 	}
 }
 
@@ -427,6 +435,9 @@ func (w *pageWork) addChange(change delivery.Change) {
 		// project's failure rows whole (applyFailures).
 		w.settings = true
 		w.settingsOf[change.Repo] = true
+		if change.Ref == failureFirstDaySettingsRef {
+			w.failureFirstDayOf[change.Repo] = true
+		}
 	case delivery.ChangeKindProductionEvents:
 		// A row of a project's record (repo the project, ref the row's id), with the time it
 		// counts on before and after: a posted deploy's days are rewritten in its project
@@ -487,8 +498,9 @@ func (w *pageWork) restarts(projects []string) []walkKey {
 // it, brings the delivery and CI rows to the delivery settings it reads (syncSettings), writes the
 // days the page names, and moves the cursors in a transaction of its own, which also records the
 // walks the page begins again and the rebuild it begins, and, where the page's days move what days
-// it does not name hold, writes them and those days (apply, commitPage). It then writes each day a
-// write left owed (writeOwed). It answers whether a feed holds more rows.
+// it does not name hold, writes them and those days (apply, commitPage). When the page publishes
+// defaults or source rules, the failure rows follow that commit, under the published selection.
+// It then writes each day a write left owed (writeOwed). It answers whether a feed holds more rows.
 //
 // A database holding no cursor row has committed no pass: the cursors start at the feeds' heads,
 // and a rebuild of every family begins (rebuild.go), which builds every day the feeds' history
@@ -586,11 +598,27 @@ func (r *refresh) page(ctx context.Context, safe int64, limit int) (bool, error)
 	if err != nil {
 		return false, err
 	}
+	// Ordinarily the failure writes precede the cursors, so a failed write leaves its input
+	// changes to be read again. A page publishing a selection must use it after the commit.
+	afterPublish := work.defaults != nil || work.record
+	if !afterPublish {
+		if err := r.applyFailures(ctx, work); err != nil {
+			return false, err
+		}
+	}
 	parts.mark(partWork)
 	if err := r.commitPage(ctx, moved, work.restarts(r.projects), work, rebuilds); err != nil {
 		return false, err
 	}
 	parts.mark(partCommit)
+	if afterPublish {
+		if err := r.applyFailures(ctx, work); err != nil {
+			// The cursors have moved. Leave the failure walk owing a whole write on retry.
+			clear(r.failuresWritten)
+			return false, err
+		}
+		r.store.drainChanges(ctx)
+	}
 	if err := r.writeOwed(ctx); err != nil {
 		return false, err
 	}
@@ -621,8 +649,8 @@ func walkOf(family, project string) walkKey {
 // page's commit, as the span writes it answers, which the caller commits with the page's cursors
 // (commitPage). The days a write left owed before this page (owedDays) are named with the page's
 // own: a pass that failed after a moving write and before the day's own left them so. The
-// failure rows (applyFailures) and the unowned-p0 rows are written before it answers, so every
-// write the page's cursors pass is made, or is in the commit that moves them.
+// unowned-p0 rows are written before it answers. The caller writes the failure rows separately
+// (applyFailures), since those of a publishing page must follow its commit.
 func (r *refresh) apply(ctx context.Context, w *pageWork) ([]*spanWrite, error) {
 	owed, err := r.store.owedDays(ctx, r.owners)
 	if err != nil {
@@ -630,9 +658,6 @@ func (r *refresh) apply(ctx context.Context, w *pageWork) ([]*spanWrite, error) 
 	}
 	spans, err := r.applyFamilies(ctx, w, owed)
 	if err != nil {
-		return nil, err
-	}
-	if err := r.applyFailures(ctx, w); err != nil {
 		return nil, err
 	}
 	for _, project := range slices.Sorted(maps.Keys(w.unowned)) {
@@ -834,7 +859,14 @@ func (r *refresh) applyDelivery(ctx context.Context, w *pageWork, owed []owedDay
 func (r *refresh) applyPosted(ctx context.Context, days *pageDays, changed map[string]map[string][]time.Time) error {
 	for _, project := range slices.Sorted(maps.Keys(changed)) {
 		repo := EventsRepo(project)
-		if _, read := r.rules[ruleKey(repo)]; !read || !r.known[project] {
+		if _, read := r.rules[ruleKey(repo)]; !read {
+			continue
+		}
+		known, err := r.knows(ctx, project)
+		if err != nil {
+			return err
+		}
+		if !known {
 			continue
 		}
 		ids := slices.Sorted(maps.Keys(changed[project]))
@@ -1186,13 +1218,21 @@ func (r *refresh) nameDeliveryItems(ctx context.Context, days *pageDays, items [
 
 // keptRepos is the repositories whose rows of the evals that read the deploy repository the pass
 // keeps, read once a page (refresh.deployRepos), in the byte order of their names, each with its
-// rule: of the repositories that hold a delivery run (readDeployRepos), those a deploy source of a
-// delivery-on project reads (refresh.rules), and the events repository of each project whose
-// posted deploys are read that holds one (readPostedRepos). The intake keeps the runs of a source
-// repository alone, but a repository's runs stay when no source reads it any more: it is not kept.
+// rule: of the repositories that hold a delivery run (readDeployRepos), each that a deploy source
+// of a delivery-on project reads (refresh.rules), under that source's rule, and each whose rule
+// stands recorded with the rows (refresh.builtUnder) where no source reads it any more, under that
+// rule and no project, as the base kept every repository that holds runs; and the events
+// repository of each project whose posted deploys are read that holds one (readPostedRepos). The
+// intake keeps the runs of a source repository alone, and a repository's runs stay when no source
+// reads it any more, so its rows and its rule stay with them: a source moved away from it and back,
+// or a later source on it under the same rule, rebuilds none of its days (syncKept), and which
+// repositories a project reads is the selection recorded with the rules (DeployReposIn).
 func (r *refresh) keptRepos(ctx context.Context) ([]keptRepo, error) {
 	if r.deployRepos != nil {
 		return r.deployRepos, nil
+	}
+	if err := r.readBuiltOnce(ctx); err != nil {
+		return nil, err
 	}
 	held, err := readDeployRepos(ctx, r.store.database.Pool)
 	if err != nil {
@@ -1206,6 +1246,12 @@ func (r *refresh) keptRepos(ctx context.Context) ([]keptRepo, error) {
 		}
 		if rule, read := r.ruleOf(repo.name); read {
 			repo.rule = rule
+			repos = append(repos, repo)
+			continue
+		}
+		if recorded, found := r.builtUnder[ruleKey(repo.name)]; found {
+			repo.rule = recorded.rule
+			repo.rule.DeployRepo, repo.rule.Project = repo.name, ""
 			repos = append(repos, repo)
 		}
 	}

@@ -75,10 +75,12 @@ import (
 // it counts once more under an owner key of its repository that names those projects as its
 // sharers and carries the distinct lists of the rest, which each project those lists or the
 // repository's default reach reads once. A deploy run that ships no pull request (one that did not
-// reach production among them) counts for the delivery-on project whose deploy source reads its
-// repository, through the repository, and for no other, whatever the default repositories say
-// (INFRA-978 R12, which replaces R15's rule for such a deploy; where no source reads the
-// repository, under its plain owner key, as R15 has it), and a posted deploy for the project of
+// reach production among them) counts under its repository's source key (sourceKey, owners.go),
+// which the delivery-on project whose deploy source reads the repository reads, through the
+// repository, and no other project, whatever the default repositories say (INFRA-978 R12, which
+// replaces R15's rule for such a deploy): which project that is the refresher records with the
+// repository's rule (eval_days_rules, eval_project_owners), so a source moved to another
+// repository or another project rewrites no row of it. A posted deploy counts for the project of
 // its route (postedDayAs). A push run on main that is no deploy run of the day counts under its
 // repository's plain owner key.
 //
@@ -95,13 +97,13 @@ import (
 //
 // A day row's via_repository is how many of the rows its n counts reached their owner through
 // their repository rather than through an issue (its builder's n over those rows alone): every row
-// of an owner key counts it, and so does a deploy run that ships no pull request, with its push
-// run and that run's jobs, in its source's project's rows; no other row of a project does. A
-// project reads it of an owner key's rows only where it reads them through the repository
-// (eval_project_owners.via: a plain key, or every list of the key that reaches it picks none), and
-// reads 0 where a list picks it, which is through its issue (viaAsRead), so a project's read of
-// its own rows and its owner keys' adds up the rows it counts through a repository. It is never
-// more than n, and the repositories' rows add up to the all-repositories row's as their n do.
+// of an owner key counts it, a source key's among them, whose deploy runs ship no pull request,
+// with their push runs and those runs' jobs; no row of a project's own does. A project reads it of
+// an owner key's rows only where it reads them through the repository (eval_project_owners.via: a
+// plain key, a source key, or every list of the key that reaches it picks none), and reads 0 where
+// a list picks it, which is through its issue (viaAsRead), so a project's read of its own rows and
+// its owner keys' adds up the rows it counts through a repository. It is never more than n, and
+// the repositories' rows add up to the all-repositories row's as their n do.
 //
 // A project's rows of a day are, for each family of rows it holds that day (its pull requests,
 // its deploy runs, its PR-checks runs, its deploy push runs), the all-repositories row (repo '')
@@ -454,9 +456,9 @@ func deliveryReadOf(day time.Time, repos []keptRepo, prs []delivery.DeliveryPull
 // rule: prs, the pull requests merged that day, each shipped by its first shipping apply among that
 // repository's apply runs (delivery.ContainingRun, under which a pull request of that repository
 // alone ships); that repository's deploys, each with the pull requests it ships
-// (delivery.Deploys.ShippedBy) and counted for the projects attribution.deploy names, the rule's
-// project where it ships none; and its CI runs, the push runs by the cards of the rule; each
-// attributed to its projects.
+// (delivery.Deploys.ShippedBy) and counted for the projects and owner keys attribution.deploy
+// names, the repository's source key where it ships none; and its CI runs, the push runs by the
+// cards of the rule; each attributed to its projects.
 func (a attribution) dayAs(day time.Time, prs []delivery.DeliveryPullRequest, one repoReads) DeliveryDay {
 	settings := one.settings
 	read := DeliveryDay{Day: day, deployRepo: settings.DeployRepo, since: one.since, cards: measures.DeployCards(settings)}
@@ -478,7 +480,7 @@ func (a attribution) dayAs(day time.Time, prs []delivery.DeliveryPullRequest, on
 	if len(one.deploys.Started.Runs) > 0 {
 		shipped := one.deploys.ShippedBy(delivery.MergedRows{PullRequests: prs, ApplyRuns: one.applies.Runs, ApplyJobs: one.applies.Jobs}, settings)
 		for _, run := range one.deploys.Started.Runs {
-			read.deploys = append(read.deploys, a.deploy(run, reached[run.RunID], shipped[run.RunID], settings.Project))
+			read.deploys = append(read.deploys, a.deploy(run, reached[run.RunID], shipped[run.RunID]))
 		}
 	}
 	read.checks, read.checkJobs = a.checkRuns(one.ci.Checks.Runs), one.ci.Checks.Jobs
@@ -747,15 +749,14 @@ func (a attribution) pullRequest(pr delivery.DeliveryPullRequest, apply *deliver
 
 // deploy is run, a deploy run on main started on the day, as the builders read it: whether it
 // reached production, the pull requests it ships first (Deploys.ShippedBy's), and what it counts
-// for (deployProjects), owner being the delivery-on project whose deploy source reads its
-// repository, "" where none does.
-func (a attribution) deploy(run delivery.DeliveryRun, reached bool, shipped []*delivery.DeliveryPullRequest, owner string) dayDeploy {
+// for (deployProjects).
+func (a attribution) deploy(run delivery.DeliveryRun, reached bool, shipped []*delivery.DeliveryPullRequest) dayDeploy {
 	deploy := dayDeploy{
 		run: measures.Run{
 			ID: run.RunID, StartedAt: run.StartedAt, Conclusion: run.Conclusion,
 			ReachedProduction: reached, ShippedPRs: len(shipped),
 		},
-		repo: run.Repo, member: RunMember(run.Repo, run.RunID), projects: a.deployProjects(run.Repo, shipped, owner),
+		repo: run.Repo, member: RunMember(run.Repo, run.RunID), projects: a.deployProjects(run.Repo, shipped),
 	}
 	for _, pr := range shipped {
 		deploy.ships = append(deploy.ships, dayItem{member: PullRequestMember(pr.Repo, pr.Number), day: measures.Midnight(*pr.MergedAt)})
@@ -766,21 +767,22 @@ func (a attribution) deploy(run delivery.DeliveryRun, reached bool, shipped []*d
 // deployProjects is what a deploy of repo that ships shipped counts for: the terminal of each
 // constant list its pull requests hold, once each, and, where it ships a pull request whose list
 // is not constant or has no terminal, an owner key of repo with those projects as its sharers and
-// the distinct lists of the rest (INFRA-2916 R15). A deploy that ships no pull request counts for
-// owner, the delivery-on project whose deploy source found it (delivery.DeployRules), through its
-// repository, and for no other project, whatever the default repositories say (INFRA-978 R12): a
-// run that did not reach production ships none, and so counts for owner too; with no owner (no
-// source reads the repository) it counts for repo's plain owner key, as R15 has it. This is the
-// one rule the delivery evals, the failure measures (failure_days.go) and their items read a
-// deploy's projects by, and the project timeline its deploy and failed runs
-// (Attribution.CountsDeploy).
-func (a attribution) deployProjects(repo string, shipped []*delivery.DeliveryPullRequest, owner string) []counted {
-	if len(shipped) == 0 && owner != "" {
-		return []counted{{project: owner, via: true}}
+// the distinct lists of the rest (INFRA-2916 R15). A deploy that ships no pull request counts under
+// repo's source key (sourceKey) alone, which the delivery-on project whose deploy source reads repo
+// reads through the repository, and no other project, whatever the default repositories say
+// (INFRA-978 R12, eval_project_owners): a run that did not reach production ships none, and so
+// counts there too. Its rows are the repository's whichever project's source reads it, so a source
+// moved away and back, or to another project, rewrites none of them. A day's deploys are read of a
+// repository the refresher keeps alone (refresh.keptRepos), one that a source reads or read. This
+// is the one rule the delivery evals and the failure measures read a GitHub deploy's projects by,
+// and the project timeline its deploy and failed runs (Attribution.CountsDeploy).
+func (a attribution) deployProjects(repo string, shipped []*delivery.DeliveryPullRequest) []counted {
+	if len(shipped) == 0 {
+		return []counted{{project: sourceKey(repo), via: true}}
 	}
 	// Once in each project a constant list of its pull requests counts for; once more under its
-	// repository's key where any of them counts by another list, or none ships.
-	owned := len(shipped) == 0
+	// repository's key where any of them counts by another list.
+	owned := false
 	var projects []counted
 	var sharers []string
 	var lists []attributionList
@@ -806,12 +808,12 @@ func (a attribution) deployProjects(repo string, shipped []*delivery.DeliveryPul
 // the project timeline (api's project_timeline.go) and the run detail its run rows open (api's
 // project_deploy_run.go), whose rows are those their project counts. So the rule has this one
 // statement, whoever reads it. Beside the attribution list of each pull request the reader's rows
-// hold (rule), it holds the published state the delivery routes and the Evals tab judge by
-// (publishedSettingsIn, as DeployRepoEvals reads it): the delivery-on project whose deploy source
-// reads each repository (owners, by ruleKey), a source that names no repository reading its
-// project's published default, which a deploy run of the repository that ships nothing counts
-// for; and the repository each project publishes as its default (defaults, by project), which
-// decides the readers of each owner key's rows (eval_project_owners).
+// hold (rule), it holds the state the delivery routes and the Evals tab judge by: the delivery-on
+// project each repository's source reads it under, as the refresher recorded it with the rows
+// (BuiltSettingsOf over publishedSettingsIn's saved rules, as eval_days_rules holds it: owners, by
+// ruleKey), which reads the source key (sourceKey) of the repository, the owner key of the
+// deploys that ship nothing; and the repository each project publishes as its default (defaults,
+// by project), which decides the readers of each other owner key's rows (eval_project_owners).
 type Attribution struct {
 	rule     attribution
 	owners   map[string]string
@@ -819,7 +821,8 @@ type Attribution struct {
 }
 
 // ReadAttribution reads the Attribution of rows holding prs: the attribution list of each
-// (readAttribution), and the published state (publishedSettingsIn), side by side.
+// (readAttribution), and the published state (publishedSettingsIn), side by side, and then the
+// rules the rows stand built under of the repositories those sources read (BuiltSettingsOf).
 func (s *Store) ReadAttribution(ctx context.Context, prs []delivery.DeliveryPullRequest) (Attribution, error) {
 	pool := s.database.Pool
 	var read Attribution
@@ -836,9 +839,20 @@ func (s *Store) ReadAttribution(ctx context.Context, prs []delivery.DeliveryPull
 	); err != nil {
 		return Attribution{}, err
 	}
+	rules := delivery.DeployRules(projects)
+	repos := make([]string, len(rules))
+	for i, rule := range rules {
+		repos[i] = rule.DeployRepo
+	}
+	built, err := BuiltSettingsOf(ctx, pool, rules, repos)
+	if err != nil {
+		return Attribution{}, err
+	}
 	read.owners = map[string]string{}
-	for _, rule := range delivery.DeployRules(projects) {
-		read.owners[ruleKey(rule.DeployRepo)] = rule.Project
+	for i, rule := range built {
+		if rule != nil {
+			read.owners[ruleKey(repos[i])] = rule.Project
+		}
 	}
 	return read, nil
 }
@@ -852,24 +866,33 @@ func (a Attribution) CountsPullRequest(pr delivery.DeliveryPullRequest, project 
 // CountsDeploy is whether a deploy run of repo that ships shipped first
 // (delivery.Deploys.ShippedBy's) counts for project (attribution.deployProjects): through the
 // terminals of the pull requests it ships, through repo's owner key where project reads it, or,
-// where it ships none, as the project whose deploy source reads repo.
+// where it ships none, through repo's source key, which the project whose deploy source reads repo
+// reads.
 func (a Attribution) CountsDeploy(repo string, shipped []*delivery.DeliveryPullRequest, project string) bool {
-	return slices.ContainsFunc(a.rule.deployProjects(repo, shipped, a.owners[ruleKey(repo)]), func(c counted) bool { return a.reads(project, c) })
+	return slices.ContainsFunc(a.rule.deployProjects(repo, shipped), func(c counted) bool { return a.reads(project, c) })
 }
 
 // reads is whether project's read of its rows takes the rows of what c counts for, as
-// eval_project_owners selects them under the published defaults: c is project; or c is an owner
-// key whose sharers do not hold project and whose readers do (eval_owner_readers, migration
-// 20261117100006): for a plain key, each project whose default is the key's repository, compared
-// without case; for a key that carries lists, the project each list picks (its first condition
-// whose default is the key's repository, else its terminal), and, where some list picks none,
-// each project whose default is the key's repository.
+// eval_project_owners selects them under the published defaults: c is project; or c is a source
+// key (sourceKey) of a repository whose source project reads, through the repository (the arm of
+// migration 20261126090000: no other project reads it); or c is an owner key whose sharers do not
+// hold project and whose readers do (eval_owner_readers, migration 20261117100006): for a plain
+// key, each project whose default is the key's repository, compared without case; for a key that
+// carries lists, the project each list picks (its first condition whose default is the key's
+// repository, else its terminal), and, where some list picks none, each project whose default is
+// the key's repository.
 func (a Attribution) reads(project string, c counted) bool {
 	if project != "" && c.project == project {
 		return true
 	}
 	repo, sharers, lists, ok := parseOwner(c.project)
-	if !ok || slices.Contains(sharers, project) {
+	if !ok {
+		return false
+	}
+	if c.project == sourceKey(repo) {
+		return project != "" && a.owners[ruleKey(repo)] == project
+	}
+	if slices.Contains(sharers, project) {
 		return false
 	}
 	byDefault := strings.EqualFold(repo, a.defaults[project])
@@ -936,10 +959,26 @@ func (a attribution) pushRuns(runs []delivery.DeliveryRun, deploys []dayDeploy) 
 // a span's and a settings rewrite's pull requests are every one the history holds, which grow with
 // it.
 func readAttribution(ctx context.Context, q delivery.Querier, attributor *delivery.Attributor, prs []delivery.DeliveryPullRequest, checks []delivery.DeliveryRun) (attribution, error) {
+	var pulls []delivery.PullRequestKey
+	for _, run := range checks {
+		if run.PRNumber != nil {
+			pulls = append(pulls, delivery.PullRequestKey{Repo: run.Repo, Number: *run.PRNumber})
+		}
+	}
+	return readAttributionIn(ctx, q, attributor, prs, pulls, func(ctx context.Context, reads ...func(context.Context) error) error {
+		return delivery.ReadAll(ctx, q, reads...)
+	})
+}
+
+// readAttributionIn also accepts pull requests known only by key (PR-checks runs and GitHub
+// deploys in the production record). A snapshot uses sequential reads on its one connection.
+func readAttributionIn(ctx context.Context, q delivery.Querier, attributor *delivery.Attributor,
+	prs []delivery.DeliveryPullRequest, referenced []delivery.PullRequestKey,
+	readAll func(context.Context, ...func(context.Context) error) error) (attribution, error) {
 	var resolve []delivery.PullRequestKey
 	var keys []string
 	keyed := map[string][]string{}
-	// checked is a PR-checks run's pull request: its row key, its repository and its number.
+	// checked is a referenced pull request whose row may not hold attribution inputs yet.
 	type checked struct {
 		member, repo string
 		number       int32
@@ -962,17 +1001,14 @@ func readAttribution(ctx context.Context, q delivery.Querier, attributor *delive
 			keyed[*pr.IssueKey] = append(keyed[*pr.IssueKey], member)
 		}
 	}
-	for _, run := range checks {
-		if run.PRNumber == nil {
-			continue
-		}
-		member := PullRequestMember(run.Repo, *run.PRNumber)
+	for _, pull := range referenced {
+		member := PullRequestMember(pull.Repo, pull.Number)
 		if named[member] {
 			continue
 		}
 		named[member] = true
-		resolve = append(resolve, delivery.PullRequestKey{Repo: run.Repo, Number: *run.PRNumber})
-		pulls = append(pulls, checked{member: member, repo: run.Repo, number: int32(*run.PRNumber)})
+		resolve = append(resolve, pull)
+		pulls = append(pulls, checked{member: member, repo: pull.Repo, number: int32(pull.Number)})
 	}
 	resolved := map[delivery.PullRequestKey][]delivery.ResolvedCandidate{}
 	issueProjects, checkProjects := map[string]string{}, map[string]string{}
@@ -1024,20 +1060,20 @@ func readAttribution(ctx context.Context, q delivery.Querier, attributor *delive
 					where request.attribution_title_keys is null
 				`, members, repos, numbers)
 				if err != nil {
-					return fmt.Errorf("read the issues of the %d pull requests the PR-checks runs are of: %w", len(pulls), err)
+					return fmt.Errorf("read the issues of %d referenced pull requests: %w", len(pulls), err)
 				}
 				var member, project string
 				if _, err := pgx.ForEachRow(rows, []any{&member, &project}, func() error {
 					checkProjects[member] = project
 					return nil
 				}); err != nil {
-					return fmt.Errorf("read the issues of the %d pull requests the PR-checks runs are of: %w", len(pulls), err)
+					return fmt.Errorf("read the issues of %d referenced pull requests: %w", len(pulls), err)
 				}
 			}
 			return nil
 		})
 	}
-	if err := delivery.ReadAll(ctx, q, reads...); err != nil {
+	if err := readAll(ctx, reads...); err != nil {
 		return attribution{}, err
 	}
 	attribute := attribution{lists: make(map[string]attributionList, len(named))}
@@ -1053,53 +1089,6 @@ func readAttribution(ctx context.Context, q delivery.Querier, attributor *delive
 		attribute.lists[PullRequestMember(pull.Repo, pull.Number)] = attributionListOf(candidates)
 	}
 	return attribute, nil
-}
-
-// pullRequestSet is pull requests, each once, by their row key (PullRequestMember), in the order
-// they were added: what readPullRequestIssues reads the issues of.
-type pullRequestSet struct {
-	members, repos []string
-	numbers        []int32
-	named          map[string]bool
-}
-
-// add adds pull request number of repo, where the set does not hold it yet.
-func (s *pullRequestSet) add(repo string, number int) {
-	member := PullRequestMember(repo, number)
-	if s.named[member] {
-		return
-	}
-	if s.named == nil {
-		s.named = map[string]bool{}
-	}
-	s.named[member] = true
-	s.members, s.repos, s.numbers = append(s.members, member), append(s.repos, repo), append(s.numbers, int32(number))
-}
-
-// readPullRequestIssues reads, in q, the issue the stored row of each pull request of prs names, by
-// its row key (pulls), and that issue's project, by issue key (projects), where the population
-// holds a row of the pull request naming an issue the issues table holds: one statement, a probe
-// of delivery_pull_requests' key for each pull request. whose says whose pull requests they are, in
-// an error.
-func readPullRequestIssues(ctx context.Context, q delivery.Querier, prs pullRequestSet, whose string) (pulls, projects map[string]string, err error) {
-	rows, err := q.Query(ctx, `
-		select given.member, request.issue_key, issue.project_key
-		from unnest($1::text[], $2::text[], $3::int[]) as given(member, repo, number)
-		join delivery_pull_requests request on request.repo = given.repo and request.number = given.number
-		join issues issue on issue.key = request.issue_key
-	`, prs.members, prs.repos, prs.numbers)
-	if err != nil {
-		return nil, nil, fmt.Errorf("read the issues of the %d pull requests %s: %w", len(prs.members), whose, err)
-	}
-	pulls, projects = map[string]string{}, map[string]string{}
-	var member, issue, project string
-	if _, err := pgx.ForEachRow(rows, []any{&member, &issue, &project}, func() error {
-		pulls[member], projects[issue] = issue, project
-		return nil
-	}); err != nil {
-		return nil, nil, fmt.Errorf("read the issues of the %d pull requests %s: %w", len(prs.members), whose, err)
-	}
-	return pulls, projects, nil
 }
 
 // countedFor is every project the day counts the item member for (a pull request, a deploy run or

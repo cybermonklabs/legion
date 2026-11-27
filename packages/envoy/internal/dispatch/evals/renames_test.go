@@ -5,6 +5,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -49,31 +50,39 @@ func (r *refresherRig) renamedRows(t *testing.T) []string {
 	return lines
 }
 
-// ownerRows is each line of lines (renamedRows) of a day row or a member that stands under an owner
-// key (OwnerKey), with the key renamed where its repository is a name renamed holds, compared
-// without case as the boot's rename pass compares it, and the eval id of a day row with it: what the
-// pass writes of those rows, and nothing else of them.
-func ownerRows(lines []string, renamed map[string]string) []string {
-	var owned []string
+// renamedDayRows is every day row and member, with just the fields the rename pass moves:
+// its owner key, its eval id when it carries that key, and its deploy repository.
+func renamedDayRows(lines []string, renamed map[string]string) []string {
+	var rows []string
 	for _, line := range lines {
-		fields := strings.Split(line, " ")
-		if (fields[0] != "day" && fields[0] != "member") || !strings.HasPrefix(fields[1], ":") {
+		if strings.HasPrefix(line, "day figures ") {
 			continue
 		}
+		fields := strings.Split(line, " ")
+		if fields[0] != "day" && fields[0] != "member" {
+			continue
+		}
+		deploy := 3
+		if fields[0] == "day" {
+			deploy = 4
+		}
 		key := fields[1]
-		repo, rest, _ := strings.Cut(key[1:], "|")
-		for from, to := range renamed {
-			if strings.EqualFold(repo, from) {
+		if strings.HasPrefix(key, ":") {
+			repo, rest, _ := strings.Cut(key[1:], "|")
+			if to, ok := renamed[strings.ToLower(repo)]; ok {
 				fields[1] = ":" + to + "|" + rest
 				if fields[0] == "day" {
 					fields[2] = fields[1] + strings.TrimPrefix(fields[2], key)
 				}
 			}
 		}
-		owned = append(owned, strings.Join(fields, " "))
+		if to, ok := renamed[strings.ToLower(fields[deploy])]; ok {
+			fields[deploy] = to
+		}
+		rows = append(rows, strings.Join(fields, " "))
 	}
-	slices.Sort(owned)
-	return owned
+	slices.Sort(rows)
+	return rows
 }
 
 // A repository renamed by a pair the boot reads is stored and read under its new name once the
@@ -86,10 +95,10 @@ func ownerRows(lines []string, renamed map[string]string) []string {
 // rows, and deletes those it held under the old name. Three repositories are renamed: the deploy
 // repository, which every run and the settings name and every row of the evals that read the
 // deploy repository is kept under, a repository of pull requests alone, and the repository the
-// Legion issues own. Right after the pass, before a refresher pass writes a row again, the day
-// rows and members of the owner keys are the rows before with each key of an old name renamed
-// (ownerRows), the whole of what the pass writes of them: a row the pass deleted by mistake is
-// missing there, where the refresher's passes after it would write it again from its input.
+// Legion issues own. Right after the pass the day rows and members have only their owner keys and
+// deploy repositories renamed (renamedDayRows).
+// A row the pass deleted by mistake is missing there, even if the refresher would write it again
+// from its input.
 func TestARenamedRepositorysRowsAreStoredAndReadUnderItsNewName(t *testing.T) {
 	t.Parallel()
 	r := newRefresherRig(t)
@@ -147,12 +156,12 @@ func TestARenamedRepositorysRowsAreStoredAndReadUnderItsNewName(t *testing.T) {
 	if pass := store.RewriteRenamedRepositories(ctx, pool, pairs); pass.Err() != nil || pass.Failures != 0 {
 		t.Fatalf("the boot's rename pass = %+v (%v), want no failure and nothing left", pass, pass.Err())
 	}
-	if got, want := ownerRows(r.renamedRows(t), nil), ownerRows(before, renamed); !slices.Equal(got, want) {
+	if got, want := renamedDayRows(r.renamedRows(t), nil), renamedDayRows(before, renamed); !slices.Equal(got, want) {
 		missing, extra := difference(want, got), difference(got, want)
-		t.Fatalf("right after the pass the rows of the owner keys are not the rows before under the renamed keys: %d missing, %d extra\nmissing: %s\nextra: %s",
+		t.Fatalf("right after the pass the rows and members differ from the rows before under the renamed keys and deploy repositories: %d missing, %d extra\nmissing: %s\nextra: %s",
 			len(missing), len(extra), strings.Join(first(missing, 20), "\n  "), strings.Join(first(extra, 20), "\n  "))
-	} else if slices.Equal(want, ownerRows(before, nil)) {
-		t.Fatalf("no row of an owner key names a renamed repository before the pass, so the test cannot tell the pass's rows")
+	} else if slices.Equal(want, renamedDayRows(before, nil)) {
+		t.Fatalf("no day row or member names a renamed repository before the pass")
 	}
 	passes, _ := r.settle(t)
 
@@ -243,6 +252,150 @@ func TestARenamedPublishedDefaultIsReadUnderItsNewNameFromTheRefoldOfItsCut(t *t
 	r.settle(t)
 	check("once the refresher settled", false)
 	expectTruth(t, "once the refresher settled", r.storedFigures(t), r.truthFigures(t))
+}
+
+// A renamed deploy source whose new name a source of the same project reads already, its runs
+// stored under another spelling of case (the spelling GitHub gives the intake), so its rule, its
+// rows and its source key stand under that spelling: ALPHA's two sources, under one rule, read
+// acme/alpha-ops, whose run 2001 deploys on sourcesDay, and acme/alpha-core, whose runs 5001 and
+// 5002, stored as Acme/Alpha-Core, deploy three days before and on sourcesDay, so the new name's
+// rule starts first. The boot's rename of acme/alpha-ops to acme/alpha-core, and one refresher
+// pass after it, leave one repository, acme/alpha-core in lower case: the runs and their jobs,
+// whose moves the change log names, arriving under it and leaving under the name each had; one
+// rule, the new name's, its fields and times as they stood, recorded again by no pass; one deploy
+// repository a read selects (DeployReposIn), whose rows count each of the three deploys once,
+// under it, and no member of another spelling; and no rebuild, no walk begun again and no day row
+// written but on the two days the moved runs name, as the rule and its start stand. Red where the
+// pass leaves the new name's rule, rows or runs in mixed case beside the old name's moved under the
+// new name in lower case: the refresher's pass finds the source's runs under two repositories,
+// records a rule for each spelling and builds the new one's days again.
+func TestARenamedSourceRepositoryOfAMixedCaseDestinationIsReadAsOneRepository(t *testing.T) {
+	t.Parallel()
+	const coreRepo, coreSpelled = "acme/alpha-core", "Acme/Alpha-Core"
+	r := newRefresherRig(t)
+	ctx, pool := t.Context(), r.database.Pool
+	early := sourcesDay.AddDate(0, 0, -3)
+	r.exec(t, "the project", `insert into projects (key, name, default_assignee, next_number) values ('ALPHA', 'Alpha', 'alice', 1)`)
+	putSources(t, pool, "ALPHA", []string{"dev-ana"},
+		deliverytest.SourceOf(ruleOfJob(opsJob), new(alphaOps)), deliverytest.SourceOf(ruleOfJob(opsJob), new(coreRepo)))
+	r.deployRun(t, coreSpelled, 5001, early.Add(10*time.Hour), opsJob)
+	r.deployRun(t, alphaOps, 2001, sourcesDay.Add(10*time.Hour), opsJob)
+	r.deployRun(t, coreSpelled, 5002, sourcesDay.Add(11*time.Hour), opsJob)
+	r.settle(t)
+	since := func(day time.Time) string { return "ALPHA since " + day.Format(time.DateOnly) }
+	if got, want := r.ruleRecords(t), map[string]string{alphaOps: since(sourcesDay), coreSpelled: since(early)}; !maps.Equal(got, want) {
+		t.Fatalf("before the rename eval_days_rules records %v, want %v", got, want)
+	}
+	deploys := func(what string) {
+		t.Helper()
+		for _, day := range []time.Time{early, sourcesDay} {
+			want := defaultTally{n: 1, via: 1}
+			if day.Equal(sourcesDay) {
+				want = defaultTally{n: 2, via: 2}
+			}
+			if got := r.deploysOn(t, "ALPHA", day); got != want {
+				t.Errorf("%s: ALPHA's deploy-frequency on %s counts %d deploys, %d through a repository; want %d and %d",
+					what, day.Format(time.DateOnly), got.n, got.via, want.n, want.via)
+			}
+		}
+	}
+	deploys("before the rename")
+	// rule is the new name's rule, in any case, but for its repository: its project, its fields, its
+	// start and its times.
+	const rule = `select 'rule', (to_jsonb(r) - 'repo')::text from eval_days_rules r where lower(r.repo) = 'acme/alpha-core'`
+	destination := r.xmins(t, rule)["rule"]
+	seq := r.xmins(t, `select 'seq', coalesce(max(seq), 0)::text from delivery_changes`)["seq"]
+
+	r.exec(t, "declare the rename of "+alphaOps, `insert into repo_projects (repo, project, created_by, renamed_to)
+		values ($1, 'ALPHA', '{"kind":"user","id":"alice"}', $2)`, alphaOps, coreRepo)
+	pairs, err := store.ReadRepoRenames(ctx, pool)
+	if err != nil {
+		t.Fatalf("read the rename pairs: %v", err)
+	}
+	if pass := store.RewriteRenamedRepositories(ctx, pool, pairs); pass.Err() != nil || pass.Failures != 0 {
+		t.Fatalf("the boot's rename pass = %+v (%v), want no failure and nothing left", pass, pass.Err())
+	}
+	// The runs and their jobs, and the change log's word of each run's move: its arrival under the
+	// new name, and its leaving under the name it had, the old name's as the change log's own line
+	// of the pass renames it.
+	for query, want := range map[string]string{
+		`select 'runs', string_agg(r.repo || '#' || r.run_id || ' ' || (select string_agg(j.repo || ' ' || j.name, ',') from delivery_run_jobs j
+			where j.run_id = r.run_id), ', ' order by r.run_id) from delivery_runs r`: "acme/alpha-core#2001 acme/alpha-core ops / release, " +
+			"acme/alpha-core#5001 acme/alpha-core ops / release, acme/alpha-core#5002 acme/alpha-core ops / release",
+		`select 'runs', string_agg(distinct (repo || '#' || ref || case when t_old is null then ' in' when t_new is null then ' out' else ' moved' end) collate "C", ', '
+			order by (repo || '#' || ref || case when t_old is null then ' in' when t_new is null then ' out' else ' moved' end) collate "C")
+			from delivery_changes where kind = 'run' and seq > ` + seq: "Acme/Alpha-Core#5001 out, Acme/Alpha-Core#5002 out, acme/alpha-core#2001 in, " +
+			"acme/alpha-core#2001 moved, acme/alpha-core#2001 out, acme/alpha-core#5001 in, acme/alpha-core#5002 in",
+	} {
+		if got := r.xmins(t, query)["runs"]; got != want {
+			t.Errorf("after the rename pass %s\n= %s\nwant %s", query, got, want)
+		}
+	}
+	if got := r.xmins(t, rule)["rule"]; got != destination {
+		t.Errorf("after the rename pass the new name's rule reads %s, want it as it stood: %s", got, destination)
+	}
+	const settled = `select 'rule', xmin::text from eval_days_rules where repo = 'acme/alpha-core'`
+	moved, rows, rebuilds := r.xmins(t, settled)["rule"], r.xmins(t, dayRowXmins), r.count(t, `select count(*) from eval_rebuilds`)
+	walks := r.xmins(t, `select family || ' ' || project_key, xmin::text from eval_days_walks`)
+
+	report, _ := r.pass(t)
+
+	if got, want := r.ruleRecords(t), map[string]string{coreRepo: since(early)}; !maps.Equal(got, want) {
+		t.Errorf("after the refresher's pass eval_days_rules records %v, want %v", got, want)
+	}
+	if got := r.xmins(t, settled)["rule"]; got != moved {
+		t.Errorf("the refresher's pass recorded the new name's rule again (xmin %s, the rename pass's %s)", got, moved)
+	}
+	repos, err := DeployReposIn(ctx, pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := repos.Of("ALPHA"); !slices.Equal(got, []string{coreRepo}) {
+		t.Errorf("ALPHA's read of the deploy repository folds %v, want %s alone", got, coreRepo)
+	}
+	deploys("after the rename and one refresher pass")
+	for day, want := range map[time.Time][]string{
+		early:      {RunMember(coreRepo, 5001)},
+		sourcesDay: {RunMember(coreRepo, 2001), RunMember(coreRepo, 5002)},
+	} {
+		if got := r.deployItems(t, "ALPHA", day); !slices.Equal(got, want) {
+			t.Errorf("ALPHA's deploy evals count %v on %s, want %v", got, day.Format(time.DateOnly), want)
+		}
+	}
+	for what, query := range map[string]string{
+		"day rows of another spelling": `select count(*) from eval_days where lower(deploy_repo) in ('acme/alpha-ops', 'acme/alpha-core') and deploy_repo <> 'acme/alpha-core'`,
+		"members of another spelling": `select count(*) from eval_day_members where (lower(deploy_repo) in ('acme/alpha-ops', 'acme/alpha-core')
+			and deploy_repo <> 'acme/alpha-core') or (row_key like 'delivery_run:%' and row_key not like 'delivery_run:acme/alpha-core#%')`,
+		"source keys of another spelling": `select count(*) from eval_day_owners where lists = '{>~}' and owner <> ':acme/alpha-core||>~'`,
+	} {
+		if n := r.count(t, query); n != 0 {
+			t.Errorf("after the rename and one refresher pass %d %s stand", n, what)
+		}
+	}
+	if n := r.count(t, `select count(*) from eval_rebuilds`); n != rebuilds {
+		t.Errorf("the refresher's pass began %d rebuilds, want none", n-rebuilds)
+	}
+	if differ := sameValues(r.xmins(t, `select family || ' ' || project_key, xmin::text from eval_days_walks`), walks, func(xmin string) string { return xmin }); len(differ) > 0 {
+		t.Errorf("the refresher's pass began walks again:\n\t%s", strings.Join(differ, "\n\t"))
+	}
+	moves := map[string]bool{early.Format(time.DateOnly): true, sourcesDay.Format(time.DateOnly): true}
+	after := r.xmins(t, dayRowXmins)
+	for key := range rows {
+		if after[key] != rows[key] && !moves[key[strings.LastIndex(key, " ")+1:]] {
+			t.Errorf("the refresher's pass wrote or deleted the day row %s, on no day a moved run names", key)
+		}
+	}
+	for key := range after {
+		if _, held := rows[key]; !held && !moves[key[strings.LastIndex(key, " ")+1:]] {
+			t.Errorf("the refresher's pass wrote the day row %s, on no day a moved run names", key)
+		}
+	}
+	for day := range report.days {
+		if day.family == walkDelivery && !moves[day.day.Format(time.DateOnly)] {
+			t.Errorf("the refresher's pass built %s's delivery day %s, which no moved run names", day.project, day.day.Format(time.DateOnly))
+		}
+	}
+	t.Logf("after one refresher pass: %d day rows, %d delivery days built", len(after), len(report.days))
 }
 
 // difference is the lines of a that b does not hold, both sorted, each as often as a holds it

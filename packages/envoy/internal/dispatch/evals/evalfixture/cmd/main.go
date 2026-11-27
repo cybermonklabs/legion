@@ -18,10 +18,9 @@
 // -legion adds to one project and writes its projects row only where it has none, so it combines
 // with the other modes but -base, which writes the same history alone, into a database of the
 // base. -delivery adds to one project too, beside deliverytest's second project; -attribution
-// writes three projects, -project, -project+"B" and -project+"C"; -failures writes two, -project
-// and -project+"B"; and each of the three writes the project's delivery settings, so no two of
-// them run together. After them each project's next issue number is moved past every issue it
-// holds. Every mode but -merge-pr writes into -project, which it requires; -merge-pr names its
+// writes three projects, -project, -project+"B" and -project+"C"; and each of the two saves the
+// project's delivery settings. After them each project's next issue number is moved past every issue
+// it holds. Every mode but -merge-pr writes into -project, which it requires; -merge-pr names its
 // pull request by repository and number and writes no project's rows, so it needs none:
 //
 //	-legion       legiontest's Legion history, at least -issues finished issues, observed from

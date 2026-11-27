@@ -147,7 +147,7 @@ func parseLegionLiveView(spec *deliveryLiveSpec, view DeliveryLiveView) *LiveErr
 // a facet but the repository, or the search, is narrowed (deliveryLiveSpec.narrowed), and one whose
 // kind is delivery carries its project's deploy sources' freshness (deliveryLiveSpec.freshness).
 func parseEvalsLiveView(spec *deliveryLiveSpec, view DeliveryLiveView) *LiveError {
-	project, refusal := readLiveProject(view, "an evals view", errProjectNotFound.code)
+	project, refusal := readLiveProject(view, "an evals view", errProjectNotFound().code)
 	if refusal != nil {
 		return refusal
 	}

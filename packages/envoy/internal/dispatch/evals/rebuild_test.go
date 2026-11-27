@@ -822,7 +822,7 @@ type rebuildStatements struct {
 func (s *rebuildStatements) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if flip := slices.IndexFunc(flipStatements, func(one struct{ what, sql string }) bool { return one.sql == data.SQL }); flip >= 0 {
+	if flip := slices.IndexFunc(flipStatements, func(one flipStatement) bool { return one.sql == data.SQL }); flip >= 0 {
 		s.flip = append(s.flip, flipStatements[flip].what)
 		for _, arg := range data.Args {
 			if value := reflect.ValueOf(arg); value.Kind() == reflect.Slice && value.Type().Elem().Kind() != reflect.Uint8 {

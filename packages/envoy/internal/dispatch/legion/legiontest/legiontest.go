@@ -21,14 +21,17 @@ package legiontest
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/legion"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -82,10 +85,13 @@ const person = `{"kind":"user","id":"alice"}`
 // field takes its default: the package's own project, DefaultTrees, and this moment.
 //
 // The other fields are off where zero, and a Spec that sets none of them writes the history every
-// golden file of this change was recorded over, row for row. They shape the history a check of
-// the eval registry's Legion measures reads (dispatch://INFRA-2916, k6 and k17), which needs a
-// window before the project's first observation and one after it, finished issues that sat
-// parked, merged pull requests and filings of every class.
+// golden file of this change was recorded over, row for row, but for the open child's two hours
+// in `awaiting_children` (tree), which move no value a golden file holds: those are finished
+// issues' values, and the open child's root waits on it through those hours in either phase
+// (metrics' childWorkingPhases). They shape the history a check of the eval registry's Legion
+// measures reads (dispatch://INFRA-2916, k6 and k17), which needs a window before the project's
+// first observation and one after it, finished issues that waited in `backlog` or `icebox`,
+// merged pull requests and filings of every class.
 type Spec struct {
 	Project string
 	Trees   int
@@ -108,13 +114,14 @@ type Spec struct {
 	// IssueOffset is how many of the project's issue numbers another history took already: the
 	// issues are numbered from IssueOffset+1, so this history can be written beside that one.
 	IssueOffset int
-	// Parked has a finished child of every tree sit parked partway through its work, each park
-	// both a Dispatch status and what the daemon observes: in an even tree the implemented child
-	// sits in `icebox` for the two hours between its implementer's handoff and its tester, put
-	// there by a person, and in an odd tree the reviewed child is parked in `backlog` for three
-	// hours of its implementing by its tree's architect, as the daemon's parkChild moves a child.
-	// The sampler records phase `held` over each park, and the phase it returns to after it.
-	Parked bool
+	// InBacklogOrIcebox has a finished child of every tree wait in `icebox` or `backlog` partway
+	// through its work, each wait both a Dispatch status and what the daemon observes: in an even
+	// tree the implemented child sits in `icebox` for the two hours between its implementer's
+	// handoff and its tester, put there by a person, and in an odd tree its tree's architect moves
+	// the reviewed child to `backlog` for three hours of its implementing, as the daemon's
+	// parkChild moves a child. The sampler records phase `held` over each wait, and the phase the
+	// child returns to after it.
+	InBacklogOrIcebox bool
 	// Merged gives each issue the merger closes (each root and its implemented and reviewed
 	// children) a merged pull request naming it, merged an hour before its close, so the facts
 	// read its merge (metrics' Issue.MergedAt) and store it.
@@ -309,10 +316,10 @@ type phaseMark struct {
 // implemented, tested and sent back once, so its facts hold two review rounds. The second is
 // reviewed and merged, and a person answered an ask of it, so its hours land on waiting for a
 // person as well as on its phases. The third never closed, so its hours run to the moment of the
-// computation, and it sat parked for six of them. The fourth recorded its one handoff at the
-// moment it closed, so its work took no measured time and its facts hold an entry with no phase
-// hours. The fifth is a follow-up a person filed and no Legion role worked, so it gets no facts
-// entry at all.
+// computation, it waited six of them in `backlog` and two of them in `awaiting_children` before
+// its testing started. The fourth recorded its one handoff at the moment it closed, so its
+// work took no measured time and its facts hold an entry with no phase hours. The fifth is a
+// follow-up a person filed and no Legion role worked, so it gets no facts entry at all.
 func (s *seeding) tree(index int) {
 	start := s.spec.Now.Add(-(treeSpan + time.Duration(index)*s.spec.spacing()))
 	at := func(hours float64) time.Time {
@@ -370,9 +377,9 @@ func (s *seeding) tree(index int) {
 	s.handOver(implemented, SessionActor("architect", root), at(3))
 	s.roleEvent(implemented, "implementer", "comment.created", `{"status":"in_progress"}`, at(4))
 	s.handoff(implemented, "implement", "implementer", at(12))
-	// Under Spec.Parked an even tree's implemented child waits in `icebox` from its implementer's
-	// handoff to its tester, a person's park.
-	icebox := s.spec.Parked && index%2 == 0
+	// Under Spec.InBacklogOrIcebox an even tree's implemented child waits in `icebox` from its
+	// implementer's handoff to its tester, put there by a person.
+	icebox := s.spec.InBacklogOrIcebox && index%2 == 0
 	if icebox {
 		s.event(implemented, "issue.updated", person, `{"status":"icebox"}`, at(12))
 		s.event(implemented, "issue.updated", person, `{"status":"in_progress"}`, at(14))
@@ -404,9 +411,10 @@ func (s *seeding) tree(index int) {
 	s.event(reviewed, "issue.created", SessionActor("architect", root), filing(root), at(5))
 	s.handOver(reviewed, SessionActor("architect", root), at(6))
 	s.roleEvent(reviewed, "implementer", "comment.created", `{"status":"in_progress"}`, at(10))
-	// Under Spec.Parked an odd tree's reviewed child is parked in `backlog` for three hours of its
-	// implementing by its tree's architect, as the daemon's parkChild moves a child, and put back.
-	backlog := s.spec.Parked && index%2 == 1
+	// Under Spec.InBacklogOrIcebox its tree's architect moves an odd tree's reviewed child to
+	// `backlog` for three hours of its implementing, as the daemon's parkChild moves a child, and
+	// puts it back.
+	backlog := s.spec.InBacklogOrIcebox && index%2 == 1
 	if backlog {
 		s.event(reviewed, "issue.updated", SessionActor("architect", root), `{"status":"backlog"}`, at(16))
 		s.event(reviewed, "issue.updated", SessionActor("architect", root), `{"status":"in_progress"}`, at(19))
@@ -437,8 +445,13 @@ func (s *seeding) tree(index int) {
 	s.waiting(reviewed, "ask", at(28), at(31))
 
 	// The child nobody closed. Its work time runs to the moment of the computation, and the six
-	// hours it sat parked are off it. It ends in `held`, the one phase that leaves its root free
-	// to accept and to merge while the child is still open.
+	// hours it waited in `backlog` are off it. Its implementing ends two hours before its testing
+	// starts: it waits those two hours in `awaiting_children`, the phase a parent stands in while a
+	// Dispatch child of it is open (dispatch://INFRA-3320), which holds the start of its testing
+	// until the return. The history writes no child of it: the facts read the phase's hours, on the
+	// no-role bar and under the board's Waiting on children column, and no rule of them reads the
+	// children of an issue that is not a root. It ends in `held`, the one phase that leaves its
+	// root free to accept and to merge while the child is still open.
 	open := s.issue(number+3, "An open child", root, 2, at(8), nil)
 	s.fixture.Open = append(s.fixture.Open, open)
 	s.event(open, "issue.created", SessionActor("architect", root), filing(root), at(8))
@@ -452,6 +465,7 @@ func (s *seeding) tree(index int) {
 		{12, legion.PhaseImplementing},
 		{20, legion.PhaseHeld},
 		{26, legion.PhaseImplementing},
+		{36, legion.PhaseAwaitingChildren},
 		{38, legion.PhaseTesting},
 		{44, legion.PhaseHeld},
 	})
@@ -841,4 +855,56 @@ func (s *seeding) write(ctx context.Context, pool *store.Pool) error {
 			as seeded(issue, field, value, at)`,
 		s.spec.Project, s.rows.observeIssues, s.rows.observeFields, s.rows.observeValues,
 		s.rows.observeAt)
+}
+
+// SeededIssueEvent is one backdated issue event WriteIssueEvents stores for a fixture issue.
+type SeededIssueEvent struct {
+	Type    string
+	Actor   model.Actor
+	Payload any
+	At      time.Time
+}
+
+// WriteIssueEvents inserts events for issueKey in tx with sequences 1..len(events) and settles the
+// issue's last_seq. The events are dated in the fixture's past, so where keywordFill is true the
+// insert nulls the keyword fill's stored reach in the same statement (as seeding.write does).
+func WriteIssueEvents(ctx context.Context, tx pgx.Tx, issueKey string, events []SeededIssueEvent, keywordFill bool) error {
+	if len(events) == 0 {
+		return nil
+	}
+	seqs := make([]int32, len(events))
+	kinds := make([]string, len(events))
+	actors := make([]string, len(events))
+	payloads := make([]string, len(events))
+	times := make([]time.Time, len(events))
+	for i, event := range events {
+		actorJSON, err := json.Marshal(event.Actor)
+		if err != nil {
+			return fmt.Errorf("encode the actor of %s event %d: %w", issueKey, i+1, err)
+		}
+		payloadJSON, err := json.Marshal(event.Payload)
+		if err != nil {
+			return fmt.Errorf("encode the payload of %s event %d: %w", issueKey, i+1, err)
+		}
+		seqs[i] = int32(i + 1)
+		kinds[i] = event.Type
+		actors[i] = string(actorJSON)
+		payloads[i] = string(payloadJSON)
+		times[i] = event.At
+	}
+	statement := `
+		insert into events (issue_key, seq, type, actor, payload, notify, created_at)
+		select $1, seq, kind, actor::jsonb, payload::jsonb, false, at
+		from unnest($2::int[], $3::text[], $4::text[], $5::text[], $6::timestamptz[]) as seeded(seq, kind, actor, payload, at)`
+	if keywordFill {
+		statement = `
+		with reset as (update public.search_text_versions_fill set reach = null where id = 1)` + statement
+	}
+	if _, err := tx.Exec(ctx, statement, issueKey, seqs, kinds, actors, payloads, times); err != nil {
+		return fmt.Errorf("write the events of %s: %w", issueKey, err)
+	}
+	if _, err := tx.Exec(ctx, `update issues set last_seq = $2 where key = $1`, issueKey, len(events)); err != nil {
+		return fmt.Errorf("settle the last event of %s: %w", issueKey, err)
+	}
+	return nil
 }

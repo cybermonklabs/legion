@@ -15,19 +15,24 @@ import (
 // measures besides idle time and slot wait keep, and R6 of dispatch://INFRA-2916 for the bars.
 
 // The phases the daemon reports, written out here rather than taken from another package, so
-// this reading stands on the words and not on another reader's constants.
+// this reading stands on the words and not on another reader's constants. `awaiting_children`
+// came after the words the rules below quote: dispatch://INFRA-3320 added it, "a parent that held
+// a phase start because a Dispatch child of it is still open", which stands "outside RoleFor,
+// since no role works it" (packages/daemon/internal/phase), and each rule that names it says what
+// of that source it follows.
 const (
-	phaseAdmitted       = "admitted"
-	phaseAwaitingPerson = "awaiting_person"
-	phasePlanning       = "planning"
-	phaseImplementing   = "implementing"
-	phaseTesting        = "testing"
-	phaseReviewing      = "reviewing"
-	phaseAccepting      = "accepting"
-	phaseRetro          = "retro"
-	phaseMerging        = "merging"
-	phaseAwaitingMerge  = "awaiting_merge"
-	phaseHeld           = "held"
+	phaseAdmitted         = "admitted"
+	phaseAwaitingPerson   = "awaiting_person"
+	phaseAwaitingChildren = "awaiting_children"
+	phasePlanning         = "planning"
+	phaseImplementing     = "implementing"
+	phaseTesting          = "testing"
+	phaseReviewing        = "reviewing"
+	phaseAccepting        = "accepting"
+	phaseRetro            = "retro"
+	phaseMerging          = "merging"
+	phaseAwaitingMerge    = "awaiting_merge"
+	phaseHeld             = "held"
 )
 
 // The two phases this reading tells apart inside the daemon's `admitted`: "A root in `admitted`
@@ -70,8 +75,10 @@ const noRole = "no_role"
 // `design` and `accepting`; planner, `planning`; implementer, `implementing` and `retro`; tester,
 // `testing`; reviewer, `reviewing`; merger, `merging` and `awaiting_merge`. Retro is on the
 // implementer's bar because the daemon gives retro to the implementer" (R6), and the seventh, "no
-// role: `awaiting_person` and `held`" (legion-phase-time.md). Idle time by role reads the same bars
-// for the six roles (idleByRole).
+// role: `awaiting_person`, `awaiting_children` and `held`" (legion-phase-time.md), the phases no
+// role works. `awaiting_children` is on it because RoleFor in packages/daemon/internal/phase gives
+// it no role (dispatch://INFRA-3320). Idle time by role reads the same bars for the six roles
+// (idleByRole).
 var bars = []struct {
 	role   string
 	phases []string
@@ -82,7 +89,7 @@ var bars = []struct {
 	{"tester", []string{phaseTesting}},
 	{"reviewer", []string{phaseReviewing}},
 	{"merger", []string{phaseMerging, phaseAwaitingMerge}},
-	{noRole, []string{phaseAwaitingPerson, phaseHeld}},
+	{noRole, []string{phaseAwaitingPerson, phaseAwaitingChildren, phaseHeld}},
 }
 
 // The five segments each hour of a bar goes to, the first that holds: "Waiting on a person ... In
@@ -100,10 +107,13 @@ const (
 var segmentNames = [segmentCount]string{"waiting_on_person", "in_a_turn", "ci_wait", "waiting_on_children", "idle"}
 
 // childWorkingPhases are the phases "from planning to awaiting merge": a root with a child in one
-// of them is waiting on that child.
+// of them is waiting on that child. `awaiting_children` is one of them: a child in it is "a parent
+// that held a phase start because a Dispatch child of it is still open" (dispatch://INFRA-3320,
+// the daemon's phase.AwaitingChildren in packages/daemon/internal/phase), a start of planning
+// through accepting, so its own work goes on in those children, and its root waits on it.
 var childWorkingPhases = []string{
 	phasePlanning, phaseImplementing, phaseTesting, phaseReviewing, phaseAccepting,
-	phaseRetro, phaseMerging, phaseAwaitingMerge,
+	phaseRetro, phaseMerging, phaseAwaitingMerge, phaseAwaitingChildren,
 }
 
 // sentBackFrom is where a move to implementing is a send-back: "a move from `testing`,
@@ -429,7 +439,8 @@ func (r *reading) childrenStretches(key string) []span {
 // the event log's part ends in reviewing too: "An issue in flight when its first observation is
 // stored takes its phases from observations only from that observation on" (the base's rule
 // since 8beac41a07). An issue whose observations are only its closing mark has no sampler's part,
-// so all of it is read off its statuses.
+// so all of it is read off its statuses. On the sampler's part a move to implementing is read
+// across a wait in `awaiting_children` (beforeTheWait).
 //
 // "The first review": the first entry into status `needs_review` before the sampler's part
 // begins, and else the first `reviewing` stretch of that part. The hours after it are the
@@ -472,7 +483,7 @@ func (r *reading) rework(key string, worked []span) (int, bool, float64) {
 			at := one.stretch.from
 			firstReview = &at
 		}
-		if one.phase == phaseImplementing && slices.Contains(sentBackFrom, previous) {
+		if one.phase == phaseImplementing && slices.Contains(sentBackFrom, beforeTheWait(drawn.spans, index)) {
 			sentBack = true
 		}
 	}
@@ -482,6 +493,22 @@ func (r *reading) rework(key string, worked []span) (int, bool, float64) {
 		after = hoursOf(intersect(since, phaseStretches(drawn.spans, phaseImplementing, phaseTesting)))
 	}
 	return rounds, sentBack, rounded(after)
+}
+
+// beforeTheWait is the phase of the closest stretch before the one at index whose phase is not
+// `awaiting_children`, and "" where there is none: the phase a move into the stretch at index
+// left, read across a wait on children. A failed test or a review that requests changes while a
+// Dispatch child of the issue is open moves the issue into `awaiting_children` first, and the
+// return from there brings it to implementing, as the step its return takes
+// (dispatch://INFRA-3320, record.ReturnStep in packages/daemon/internal/record), so the send-back
+// is the move out of the phase before that wait.
+func beforeTheWait(spans []phaseSpan, index int) string {
+	for before := index - 1; before >= 0; before-- {
+		if spans[before].phase != phaseAwaitingChildren {
+			return spans[before].phase
+		}
+	}
+	return ""
 }
 
 // changes is the status marks with each repeat of the status before it left out: the moves the

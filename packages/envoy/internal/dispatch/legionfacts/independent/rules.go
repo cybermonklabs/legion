@@ -17,19 +17,24 @@ import (
 // file's own.
 
 // The phases the daemon reports, written out here rather than taken from another package, so
-// this reading stands on the words and not on another reader's constants.
+// this reading stands on the words and not on another reader's constants. `awaiting_children`
+// came after the requirements the rules below quote: dispatch://INFRA-3320 added it, "a parent
+// that held a phase start because a Dispatch child of it is still open", which stands "outside
+// RoleFor, since no role works it" (packages/daemon/internal/phase), and each rule that names it
+// says what of that source it follows.
 const (
-	phaseAdmitted       = "admitted"
-	phaseAwaitingPerson = "awaiting_person"
-	phasePlanning       = "planning"
-	phaseImplementing   = "implementing"
-	phaseTesting        = "testing"
-	phaseReviewing      = "reviewing"
-	phaseAccepting      = "accepting"
-	phaseRetro          = "retro"
-	phaseMerging        = "merging"
-	phaseAwaitingMerge  = "awaiting_merge"
-	phaseHeld           = "held"
+	phaseAdmitted         = "admitted"
+	phaseAwaitingPerson   = "awaiting_person"
+	phaseAwaitingChildren = "awaiting_children"
+	phasePlanning         = "planning"
+	phaseImplementing     = "implementing"
+	phaseTesting          = "testing"
+	phaseReviewing        = "reviewing"
+	phaseAccepting        = "accepting"
+	phaseRetro            = "retro"
+	phaseMerging          = "merging"
+	phaseAwaitingMerge    = "awaiting_merge"
+	phaseHeld             = "held"
 )
 
 // The two phases this reading tells apart inside the daemon's `admitted`, which the daemon does
@@ -73,8 +78,10 @@ const (
 
 // parts is "hours by phase": one part per column of the board, each holding the daemon's phases
 // that fall in it, and `other` for an hour of the work time in a phase no column names. Retro has
-// a column of its own, and merging holds merging and awaiting merge alone (the board's eleven
-// columns since dispatch://INFRA-1077's b74df7a79b).
+// a column of its own, and merging holds merging and awaiting merge alone (the board's columns
+// since dispatch://INFRA-1077's b74df7a79b); `awaiting_children` has a column of its own on the
+// board since dispatch://INFRA-3320 added the phase, the twelfth, so its hours are a part of their
+// own.
 var parts = []struct {
 	id     string
 	phases []string
@@ -87,15 +94,20 @@ var parts = []struct {
 	{"accepting", []string{phaseAccepting}},
 	{"retro", []string{phaseRetro}},
 	{"merging", []string{phaseMerging, phaseAwaitingMerge}},
+	{"awaiting_children", []string{phaseAwaitingChildren}},
 	{partPerson, []string{phaseAwaitingPerson}},
 	{"held", []string{phaseHeld}},
 }
 
 // childWorkingPhases are the phases "from planning to awaiting merge": a root with a child in
-// one of them is waiting on that child.
+// one of them is waiting on that child. `awaiting_children` is one of them: a child in it is "a
+// parent that held a phase start because a Dispatch child of it is still open"
+// (dispatch://INFRA-3320, the daemon's phase.AwaitingChildren in packages/daemon/internal/phase),
+// a start of planning through accepting, so its own work goes on in those children, and its root
+// waits on it.
 var childWorkingPhases = []string{
 	phasePlanning, phaseImplementing, phaseTesting, phaseReviewing, phaseAccepting,
-	phaseRetro, phaseMerging, phaseAwaitingMerge,
+	phaseRetro, phaseMerging, phaseAwaitingMerge, phaseAwaitingChildren,
 }
 
 // phaseSpan is one stretch of one phase.

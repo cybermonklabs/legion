@@ -578,7 +578,7 @@ func PutProjectSettings(ctx context.Context, tx pgx.Tx, input ProjectSettingsInp
 		return ProjectSettings{}, err
 	}
 	var defaultRepo *string
-	if err := tx.QueryRow(ctx, `select default_repo from projects where key = $1 for key share`, input.Project).Scan(&defaultRepo); err != nil {
+	if err := tx.QueryRow(ctx, `select default_repo from projects where key = $1`, input.Project).Scan(&defaultRepo); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return ProjectSettings{}, ErrProjectNotFound
 		}
